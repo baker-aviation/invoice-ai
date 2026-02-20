@@ -1,0 +1,92 @@
+{
+  "name": "invoice_extract",
+  "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "vendor",
+      "invoice_number",
+      "invoice_date",
+      "due_date",
+      "tail_number",
+      "airport_code",
+      "currency",
+      "totals",
+      "line_items",
+      "warnings"
+    ],
+    "properties": {
+      "vendor": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "raw_name"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "raw_name": { "type": ["string", "null"] }
+        }
+      },
+
+      "invoice_number": { "type": ["string", "null"] },
+      "invoice_date": { "type": ["string", "null"] },
+      "due_date": { "type": ["string", "null"] },
+
+      "tail_number": { "type": ["string", "null"] },
+      "airport_code": { "type": ["string", "null"] },
+      "currency": { "type": ["string", "null"], "minLength": 3, "maxLength": 3 },
+
+      "totals": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "subtotal",
+          "sales_tax",
+          "fuel_tax",
+          "handling_fee",
+          "total_amount",
+          "amount_paid",
+          "payment_method"
+        ],
+        "properties": {
+          "subtotal": { "type": ["number", "null"] },
+          "sales_tax": { "type": ["number", "null"] },
+          "fuel_tax": { "type": ["number", "null"] },
+          "handling_fee": { "type": ["number", "null"] },
+          "total_amount": { "type": ["number", "null"] },
+          "amount_paid": { "type": ["number", "null"] },
+          "payment_method": { "type": ["string", "null"] }
+        }
+      },
+
+      "line_items": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "description",
+            "category",
+            "quantity",
+            "uom",
+            "unit_price",
+            "tax",
+            "total"
+          ],
+          "properties": {
+            "description": { "type": "string", "minLength": 1 },
+            "category": { "type": ["string", "null"] },
+            "quantity": { "type": ["number", "null"] },
+            "uom": { "type": ["string", "null"] },
+            "unit_price": { "type": ["number", "null"] },
+            "tax": { "type": ["number", "null"] },
+            "total": { "type": ["number", "null"] }
+          }
+        }
+      },
+
+      "warnings": {
+        "type": "array",
+        "items": { "type": "string" }
+      }
+    }
+  }
+}
