@@ -1,17 +1,23 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
-PROJECT_ID="invoice-ai-487621"
-REGION="us-central1"
-SERVICE_NAME="invoice-parser"
+# ---- Config ----
+PROJECT_ID="${PROJECT_ID:-invoice-ai-487621}"
+REGION="${REGION:-us-central1}"
+SERVICE_NAME="${SERVICE_NAME:-invoice-parser}"
+SOURCE_DIR="${SOURCE_DIR:-./invoice-parser}"
 
-echo "Deploying $SERVICE_NAME to $REGION in project $PROJECT_ID..."
+echo "Deploying ${SERVICE_NAME} from ${SOURCE_DIR} to ${REGION} (project: ${PROJECT_ID})..."
 
-gcloud run deploy "$SERVICE_NAME" \
-  --project "$PROJECT_ID" \
-  --region "$REGION" \
-  --source ./invoice-parser \
+# ---- Deploy ----
+gcloud run deploy "${SERVICE_NAME}" \
+  --project "${PROJECT_ID}" \
+  --region "${REGION}" \
+  --source "${SOURCE_DIR}" \
   --platform managed \
-  --allow-unauthenticated
+  --allow-unauthenticated \
+  --cpu 1 \
+  --memory 512Mi \
+  --set-secrets "OPENAI_API_KEY=OPENAI_API_KEY:latest,SUPABASE_URL=SUPABASE_URL:latest,SUPABASE_SERVICE_ROLE_KEY=SUPABASE_SERVICE_ROLE_KEY:latest"
 
-echo "Deployment complete."
+echo "✅ Deployment complete."
