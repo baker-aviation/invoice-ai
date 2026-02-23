@@ -942,7 +942,6 @@ def api_alerts(
 
     for r in rows:
         mp = _safe_json_loads(r.get("match_payload")) or {}
-
         document_id = r.get("document_id")
 
         # --- Invoice context (vendor/tail/airport/currency) ---
@@ -951,7 +950,8 @@ def api_alerts(
         if document_id:
             invoice = safe_select_one(
                 PARSED_TABLE,
-                "vendor_name, tail_number, airport_code, currency",
+                # NOTE: add invoice-level fee fields so _pick_fee_details can fallback for handling/service/surcharge
+                "vendor_name, tail_number, airport_code, currency, handling_fee, service_fee, surcharge",
                 eq={"document_id": document_id},
             )
             doc = _fetch_document_row(document_id)
@@ -959,10 +959,7 @@ def api_alerts(
         vendor = (invoice or {}).get("vendor_name") or mp.get("vendor") or mp.get("fbo") or None
         tail = (invoice or {}).get("tail_number") or mp.get("tail") or None
 
-        airport_code = (
-            (invoice or {}).get("airport_code")
-            or mp.get("airport_code")
-        )
+        airport_code = (invoice or {}).get("airport_code") or mp.get("airport_code")
 
         # Fallback: infer from vendor / document if missing
         if not airport_code:
@@ -973,18 +970,22 @@ def api_alerts(
         # Rule name is stored in match_payload
         rule_name = mp.get("rule_name") or None
 
-        # Fee details (prefer matched line item)
-        fee_name = None
-        fee_amount = None
+        # --------- REQUIRED CHANGE: fee details via _pick_fee_details ----------
+        matched_line_items = mp.get("matched_line_items") or []
+        if isinstance(matched_line_items, str):
+            matched_line_items = _safe_json_loads(matched_line_items) or []
+        if not isinstance(matched_line_items, list):
+            matched_line_items = []
 
-        li = None
-        mli = mp.get("matched_line_items") or []
-        if isinstance(mli, str):
-            mli = _safe_json_loads(mli) or []
-        if isinstance(mli, list) and mli:
-            li = mli[0] or {}
-            fee_name = li.get("description") or li.get("name")
-            fee_amount = _to_float(li.get("total") or li.get("amount") or li.get("line_total"))
+        fee = _pick_fee_details(
+            matched_line_items,
+            fallback_fee_name=rule_name,
+            invoice=invoice or None,
+            rule_name=rule_name,
+        )
+        fee_name = fee.get("fee_name")
+        fee_amount = fee.get("fee_amount")
+        # ----------------------------------------------------------------------
 
         row = {
             "id": r.get("id"),
