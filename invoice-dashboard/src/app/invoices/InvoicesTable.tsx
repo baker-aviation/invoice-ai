@@ -1,0 +1,163 @@
+"use client";
+
+import Link from "next/link";
+import { useMemo, useState } from "react";
+
+function normalize(v: any) {
+  return String(v ?? "").trim();
+}
+
+export default function InvoicesTable({ initialInvoices }: { initialInvoices: any[] }) {
+  const [q, setQ] = useState("");
+  const [airport, setAirport] = useState("ALL");
+  const [vendor, setVendor] = useState("ALL");
+
+  const airports = useMemo(() => {
+    const set = new Set<string>();
+    for (const inv of initialInvoices) {
+      const a = normalize(inv.airport_code).toUpperCase();
+      if (a) set.add(a);
+    }
+    return ["ALL", ...Array.from(set).sort()];
+  }, [initialInvoices]);
+
+  const vendors = useMemo(() => {
+    const set = new Set<string>();
+    for (const inv of initialInvoices) {
+      const v = normalize(inv.vendor_name);
+      if (v) set.add(v);
+    }
+    return ["ALL", ...Array.from(set).sort((a, b) => a.localeCompare(b))];
+  }, [initialInvoices]);
+
+  const filtered = useMemo(() => {
+    const query = q.toLowerCase().trim();
+
+    return initialInvoices.filter((inv) => {
+      // dropdown filters
+      const invAirport = normalize(inv.airport_code).toUpperCase();
+      const invVendor = normalize(inv.vendor_name);
+
+      if (airport !== "ALL" && invAirport !== airport) return false;
+      if (vendor !== "ALL" && invVendor !== vendor) return false;
+
+      // search filter
+      if (!query) return true;
+
+      const haystack = [
+        inv.document_id,
+        inv.vendor_name,
+        inv.airport_code,
+        inv.tail_number,
+        inv.invoice_number,
+        inv.currency,
+      ]
+        .map((v) => String(v ?? "").toLowerCase())
+        .join(" ");
+
+      return haystack.includes(query);
+    });
+  }, [initialInvoices, q, airport, vendor]);
+
+  return (
+    <div className="p-6 space-y-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Search vendor, airport, tail, invoice #…"
+          className="w-full max-w-xl rounded-xl border bg-white px-4 py-2 text-sm shadow-sm outline-none"
+        />
+
+        <select
+          value={airport}
+          onChange={(e) => setAirport(e.target.value)}
+          className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm"
+        >
+          {airports.map((a) => (
+            <option key={a} value={a}>
+              {a === "ALL" ? "All airports" : a}
+            </option>
+          ))}
+        </select>
+
+        <select
+          value={vendor}
+          onChange={(e) => setVendor(e.target.value)}
+          className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm max-w-[320px]"
+        >
+          {vendors.map((v) => (
+            <option key={v} value={v}>
+              {v === "ALL" ? "All vendors" : v}
+            </option>
+          ))}
+        </select>
+
+        <button
+          onClick={() => {
+            setQ("");
+            setAirport("ALL");
+            setVendor("ALL");
+          }}
+          className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm hover:bg-gray-50"
+        >
+          Clear
+        </button>
+
+        <div className="text-xs text-gray-500">{filtered.length} shown</div>
+      </div>
+
+      <div className="rounded-xl border bg-white overflow-hidden shadow-sm">
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead className="bg-gray-100 text-left text-gray-700">
+              <tr>
+                <th className="px-4 py-3 font-medium">Created</th>
+                <th className="px-4 py-3 font-medium">Vendor</th>
+                <th className="px-4 py-3 font-medium">Airport</th>
+                <th className="px-4 py-3 font-medium">Tail</th>
+                <th className="px-4 py-3 font-medium">Invoice #</th>
+                <th className="px-4 py-3 font-medium">Total</th>
+                <th className="px-4 py-3"></th>
+              </tr>
+            </thead>
+
+            <tbody>
+              {filtered.map((inv) => (
+                <tr key={inv.id ?? inv.document_id} className="border-t hover:bg-gray-50">
+                  <td className="px-4 py-3">
+                    {String(inv.created_at ?? "").replace("T", " ").replace("+00:00", "Z")}
+                  </td>
+                  <td className="px-4 py-3">{inv.vendor_name ?? "—"}</td>
+                  <td className="px-4 py-3">{inv.airport_code ?? "—"}</td>
+                  <td className="px-4 py-3">{inv.tail_number ?? "—"}</td>
+                  <td className="px-4 py-3">{inv.invoice_number ?? "—"}</td>
+                  <td className="px-4 py-3">
+                    {inv.total ?? "—"} {inv.currency ?? ""}
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    {inv.document_id ? (
+                      <Link href={`/invoices/${inv.document_id}`} className="text-blue-600 hover:underline">
+                        View →
+                      </Link>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+                </tr>
+              ))}
+
+              {filtered.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="px-4 py-10 text-center text-gray-500">
+                    No invoices found.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}

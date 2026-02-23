@@ -1,10 +1,23 @@
-export function Topbar({ title }: { title: string }) {
+"use client";
+
+import Image from "next/image";
+
+export type TopbarProps = {
+  title?: string;
+};
+
+export function Topbar({ title }: TopbarProps) {
   return (
-    <header className="sticky top-0 z-10 bg-white/90 backdrop-blur border-b">
-      <div className="px-6 py-4 flex items-center justify-between">
-        <h1 className="text-xl font-semibold">{title}</h1>
-        <div className="text-xs text-gray-500">Baker Aviation • Internal</div>
+    <div className="flex items-center justify-between px-6 py-4 border-b bg-white">
+      <div className="flex items-center gap-3">
+        <Image src="/logo.png" alt="Logo" width={240} height={60} priority />
+        {title ? <span className="text-lg font-semibold">{title}</span> : null}
       </div>
-    </header>
+    </div>
   );
 }
+
+// ✅ This line makes BOTH of these work:
+//   import Topbar from "@/components/Topbar"
+//   import { Topbar } from "@/components/Topbar"
+export default Topbar;
