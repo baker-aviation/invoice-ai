@@ -163,13 +163,28 @@ def _is_rule_enabled(rule: Dict[str, Any]) -> bool:
     return bool(v)
 
 
-def _fetch_document_row(document_id: str) -> Dict[str, Any]:
+def _fetch_document_row(document_id: str) -> Optional[Dict[str, Any]]:
+    if not document_id:
+        return None
+
+    # Try the common patterns (depending on how your documents table is keyed)
     doc = safe_select_one(
         DOCS_TABLE,
-        "id, attachment_filename, gcs_bucket, gcs_path, storage_provider, storage_bucket, storage_path, raw_file_url, created_at",
+        "id, document_id, attachment_filename, gcs_bucket, gcs_path, storage_provider, storage_bucket, storage_path, raw_file_url, created_at",
         eq={"id": document_id},
     )
-    return doc or {}
+    if doc:
+        return doc
+
+    doc = safe_select_one(
+        DOCS_TABLE,
+        "id, document_id, attachment_filename, gcs_bucket, gcs_path, storage_provider, storage_bucket, storage_path, raw_file_url, created_at",
+        eq={"document_id": document_id},
+    )
+    if doc:
+        return doc
+
+    return None
 
 
 # get the runtime service account email (Cloud Run metadata)
@@ -724,32 +739,6 @@ def flush_alerts(limit: int = 25) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail="flush_alerts failed")
 
 
-def _infer_airport_code(invoice: Dict[str, Any], doc: Optional[Dict[str, Any]] = None) -> Optional[str]:
-    # 1) If parser gave airport_code, trust it
-    a = (invoice.get("airport_code") or "").strip()
-    if a:
-        return a.upper()
-
-    # 2) Try vendor_name like "Signature Aviation - BCT"
-    v = (invoice.get("vendor_name") or "").strip()
-    if v:
-        m = re.search(r"(?:-|–|—)\s*([A-Z0-9]{3,4})\b", v.upper())
-        if m:
-            return m.group(1)
-
-    # 3) Try filename/path like "BCT-C-P-54-0068200.pdf"
-    if doc:
-        for key in ("attachment_filename", "gcs_path", "storage_path"):
-            s = (doc.get(key) or "").strip()
-            if s:
-                base = s.split("/")[-1].upper()
-                m = re.match(r"^([A-Z0-9]{3,4})[-_]", base)
-                if m:
-                    return m.group(1)
-
-    return None
-
-
 @app.post("/jobs/debug_rule_match")
 def debug_rule_match(document_id: str, rule_id: Optional[str] = None, rule_name: Optional[str] = None) -> Dict[str, Any]:
     invoice = _fetch_invoice(document_id)
@@ -951,12 +940,14 @@ def api_alerts(
 
         # --- Invoice context (vendor/tail/airport/currency) ---
         invoice = None
+        doc = None
         if document_id:
             invoice = safe_select_one(
                 PARSED_TABLE,
                 "vendor_name, tail_number, airport_code, currency",
                 eq={"document_id": document_id},
             )
+            doc = _fetch_document_row(document_id)
 
         vendor = (invoice or {}).get("vendor_name") or mp.get("vendor") or mp.get("fbo") or None
         tail = (invoice or {}).get("tail_number") or mp.get("tail") or None
