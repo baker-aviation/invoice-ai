@@ -1,90 +1,183 @@
-from typing import Any, Dict, List, Optional
+import re
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Set
 
-def _safe_lower(s: Any) -> str:
-    return str(s or "").lower()
 
-def _line_item_texts(line_items: Any) -> List[str]:
-    if not isinstance(line_items, list):
+@dataclass
+class RuleMatchResult:
+    matched: bool
+    reason: str
+    matched_line_items: List[Dict[str, Any]]
+    matched_keywords: List[str]
+
+
+def _norm(s: Any) -> str:
+    if s is None:
+        return ""
+    if not isinstance(s, str):
+        s = str(s)
+    return s.strip().lower()
+
+
+def _listify(v: Any) -> List[Any]:
+    if v is None:
         return []
-    out: List[str] = []
-    for li in line_items:
-        if isinstance(li, dict):
-            out.append(_safe_lower(li.get("description")))
-            out.append(_safe_lower(li.get("item")))
-            out.append(_safe_lower(li.get("name")))
-            out.append(_safe_lower(li.get("category")))
-        else:
-            out.append(_safe_lower(li))
-    return [t for t in out if t]
+    if isinstance(v, list):
+        return v
+    # PostgREST sometimes returns arrays as Python lists already.
+    # If it comes as a string, we treat as single value.
+    return [v]
 
-def _warning_texts(warnings: Any) -> List[str]:
-    """
-    warnings may include:
-      - 'ON_CONTRACT_PRICING'
-      - 'KW:DE-ICE'
-    We normalize these into searchable tokens.
-    """
-    if not isinstance(warnings, list):
-        return []
-    out: List[str] = []
-    for w in warnings:
-        wl = _safe_lower(w)
-        if not wl:
-            continue
-        out.append(wl)
-        # Also add simplified token for KW: tags, e.g. "kw:fsii" -> "fsii"
-        if wl.startswith("kw:") and len(wl) > 3:
-            out.append(wl[3:])
-    return [t for t in out if t]
 
-def _get_handling_fee(invoice: Dict[str, Any]) -> Optional[float]:
-    """
-    Support both shapes:
-      invoice['handling_fee']
-      invoice['totals']['handling_fee']
-    """
-    hf = invoice.get("handling_fee")
-    if hf is None:
-        hf = (invoice.get("totals") or {}).get("handling_fee")
-    try:
-        return float(hf) if hf is not None else None
-    except Exception:
+def _to_float(v: Any) -> Optional[float]:
+    if v is None:
         return None
-
-def rule_matches(rule: Dict[str, Any], invoice: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """
-    Returns a payload dict describing what matched, or None if no match.
-    """
-    texts: List[str] = []
-    texts += _line_item_texts(invoice.get("line_items"))
-    texts += _warning_texts(invoice.get("warnings"))
-
-    # keyword match
-    keywords = rule.get("keywords") or []
-    if isinstance(keywords, str):
-        keywords = [keywords]
-
-    kw_hits: List[str] = []
-    for kw in keywords:
-        kwl = _safe_lower(kw)
-        if not kwl:
-            continue
-        if any(kwl in t for t in texts):
-            kw_hits.append(kw)
-
-    if kw_hits:
-        return {"type": "keywords", "hits": kw_hits}
-
-    # handling fee threshold
-    min_fee = rule.get("min_handling_fee")
-    try:
-        min_fee_val = float(min_fee) if min_fee is not None else None
-    except Exception:
-        min_fee_val = None
-
-    handling_fee = _get_handling_fee(invoice)
-
-    if min_fee_val is not None and handling_fee is not None and handling_fee >= min_fee_val:
-        return {"type": "min_handling_fee", "min": min_fee_val, "value": handling_fee}
-
+    if isinstance(v, (int, float)):
+        return float(v)
+    if isinstance(v, str):
+        s = v.strip().replace("$", "").replace(",", "")
+        if not s:
+            return None
+        try:
+            return float(s)
+        except Exception:
+            return None
     return None
+
+
+def _is_rule_enabled(rule: Dict[str, Any]) -> bool:
+    # Your table has both `is_enabled` and `enabled` (both boolean)
+    v = rule.get("is_enabled")
+    if v is None:
+        v = rule.get("enabled")
+    return bool(v)
+
+
+def _keyword_match(
+    keywords: List[str],
+    invoice: Dict[str, Any],
+) -> (Set[str], List[Dict[str, Any]]):
+    """
+    Match keywords against:
+      - each line_item description/name/desc
+      - plus a coarse "invoice text" (vendor_name, invoice_number, airport_code)
+    Returns: (matched_keywords_set, matched_line_items)
+    """
+    kws = [k for k in (_norm(k) for k in keywords) if k]
+    if not kws:
+        return set(), []
+
+    line_items = invoice.get("line_items") or []
+    matched_items: List[Dict[str, Any]] = []
+    matched_kws: Set[str] = set()
+
+    invoice_text = " ".join(
+        [
+            _norm(invoice.get("vendor_name")),
+            _norm(invoice.get("vendor_normalized")),
+            _norm(invoice.get("invoice_number")),
+            _norm(invoice.get("airport_code")),
+            _norm(invoice.get("tail_number")),
+            _norm(invoice.get("doc_type")),
+        ]
+    )
+
+    for li in line_items:
+        desc = _norm(li.get("description") or li.get("name") or li.get("desc"))
+        hay = desc or ""
+        li_hit = False
+        for kw in kws:
+            if kw and (kw in hay or kw in invoice_text):
+                matched_kws.add(kw)
+                li_hit = li_hit or (kw in hay)
+        if li_hit:
+            matched_items.append(li)
+
+    # If keywords matched invoice_text but not specific line items,
+    # we still treat as keyword match (matched_items may be empty).
+    if not matched_kws:
+        for kw in kws:
+            if kw and kw in invoice_text:
+                matched_kws.add(kw)
+
+    return matched_kws, matched_items
+
+
+def rule_matches(rule: Dict[str, Any], invoice: Dict[str, Any]) -> RuleMatchResult:
+    if not _is_rule_enabled(rule):
+        return RuleMatchResult(False, "rule disabled", [], [])
+
+    # Filters
+    vendor_allowed = _listify(rule.get("vendor_normalized_in"))
+    doc_type_allowed = _listify(rule.get("doc_type_in"))
+    airport_allowed = _listify(rule.get("airport_code_in"))
+    require_review_required = rule.get("require_review_required")
+
+    inv_vendor_norm = _norm(invoice.get("vendor_normalized") or invoice.get("vendor_name"))
+    inv_doc_type = _norm(invoice.get("doc_type"))
+    inv_airport = _norm(invoice.get("airport_code"))
+
+    if vendor_allowed:
+        allowed_norm = {_norm(x) for x in vendor_allowed if _norm(x)}
+        if inv_vendor_norm not in allowed_norm:
+            return RuleMatchResult(False, "vendor not in vendor_normalized_in", [], [])
+
+    if doc_type_allowed:
+        allowed_norm = {_norm(x) for x in doc_type_allowed if _norm(x)}
+        if inv_doc_type not in allowed_norm:
+            return RuleMatchResult(False, "doc_type not in doc_type_in", [], [])
+
+    if airport_allowed:
+        allowed_norm = {_norm(x) for x in airport_allowed if _norm(x)}
+        if inv_airport not in allowed_norm:
+            return RuleMatchResult(False, "airport_code not in airport_code_in", [], [])
+
+    if require_review_required is True:
+        if not bool(invoice.get("review_required")):
+            return RuleMatchResult(False, "invoice not review_required", [], [])
+
+    # Thresholds (only enforce if present)
+    inv_total = _to_float(invoice.get("total"))
+    inv_handling_fee = _to_float(invoice.get("handling_fee"))
+    inv_service_fee = _to_float(invoice.get("service_fee"))
+    inv_surcharge = _to_float(invoice.get("surcharge"))
+    inv_risk_score = invoice.get("risk_score")
+
+    min_total = _to_float(rule.get("min_total"))
+    min_handling_fee = _to_float(rule.get("min_handling_fee"))
+    min_service_fee = _to_float(rule.get("min_service_fee"))
+    min_surcharge = _to_float(rule.get("min_surcharge"))
+    min_risk_score = rule.get("min_risk_score")
+
+    if min_total is not None and inv_total is not None and inv_total < min_total:
+        return RuleMatchResult(False, "total below min_total", [], [])
+    if min_handling_fee is not None and inv_handling_fee is not None and inv_handling_fee < min_handling_fee:
+        return RuleMatchResult(False, "handling_fee below min_handling_fee", [], [])
+    if min_service_fee is not None and inv_service_fee is not None and inv_service_fee < min_service_fee:
+        return RuleMatchResult(False, "service_fee below min_service_fee", [], [])
+    if min_surcharge is not None and inv_surcharge is not None and inv_surcharge < min_surcharge:
+        return RuleMatchResult(False, "surcharge below min_surcharge", [], [])
+    if min_risk_score is not None and inv_risk_score is not None:
+        try:
+            if int(inv_risk_score) < int(min_risk_score):
+                return RuleMatchResult(False, "risk_score below min_risk_score", [], [])
+        except Exception:
+            pass
+
+    # Keywords (Postgres ARRAY comes through as a Python list)
+    keywords = _listify(rule.get("keywords"))
+    keywords = [str(k) for k in keywords if k is not None]
+
+    matched_kws, matched_items = _keyword_match(keywords, invoice)
+
+    # Match behavior:
+    # - If a rule has keywords, it must match at least one keyword.
+    # - If rule has no keywords, it's still a match if it passed filters/thresholds.
+    if keywords and not matched_kws:
+        return RuleMatchResult(False, "no keyword match", [], [])
+
+    reason = "matched"
+    if matched_kws:
+        reason = f"keyword match: {', '.join(sorted(matched_kws))}"
+
+    return RuleMatchResult(True, reason, matched_items, sorted(matched_kws))
