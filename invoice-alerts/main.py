@@ -371,7 +371,7 @@ def _build_slack_alert_payload(
 def _fetch_invoice(document_id: str) -> Dict[str, Any]:
     invoice = safe_select_one(
         PARSED_TABLE,
-        "id, document_id, vendor_name, vendor_normalized, airport_code, doc_type, "
+        "id, vendor_name, vendor_normalized, airport_code, doc_type, "
         "tail_number, currency, total, handling_fee, service_fee, surcharge, "
         "risk_score, review_required, line_items",
         eq={"document_id": document_id},
