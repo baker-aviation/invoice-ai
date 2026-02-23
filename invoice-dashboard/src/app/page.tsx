@@ -3,7 +3,7 @@ import { fetchInvoices } from "@/lib/invoiceApi";
 import { Topbar } from "@/components/Topbar";
 
 export default async function Home() {
-  const data = await fetchInvoices(100);
+  const data = await fetchInvoices({ limit: 100 });
   const invoices = data.invoices ?? [];
 
   return (
