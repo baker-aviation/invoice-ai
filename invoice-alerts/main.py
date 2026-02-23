@@ -176,7 +176,7 @@ def _fetch_document_row(document_id: str) -> Dict[str, Any]:
     # Try the common patterns (depending on how your documents table is keyed)
     doc = safe_select_one(
         DOCS_TABLE,
-        "id, document_id, attachment_filename, gcs_bucket, gcs_path, storage_provider, storage_bucket, storage_path, raw_file_url, created_at",
+        "id, attachment_filename, gcs_bucket, gcs_path, storage_provider, storage_bucket, storage_path, raw_file_url, created_at",
         eq={"id": document_id},
     )
     if doc:
@@ -184,8 +184,9 @@ def _fetch_document_row(document_id: str) -> Dict[str, Any]:
 
     doc = safe_select_one(
         DOCS_TABLE,
-        "id, document_id, attachment_filename, gcs_bucket, gcs_path, storage_provider, storage_bucket, storage_path, raw_file_url, created_at",
-        eq={"document_id": document_id},
+        "id, attachment_filename, gcs_bucket, gcs_path, storage_provider, storage_bucket, storage_path, raw_file_url, created_at",
+        eq={"document_id": 
+        document_id},
     )
     if doc:
         return doc
