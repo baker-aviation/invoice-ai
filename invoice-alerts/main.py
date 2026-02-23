@@ -163,9 +163,15 @@ def _is_rule_enabled(rule: Dict[str, Any]) -> bool:
     return bool(v)
 
 
-def _fetch_document_row(document_id: str) -> Optional[Dict[str, Any]]:
-    if not document_id:
-        return None
+def _fetch_document_row(document_id: str) -> Dict[str, Any]:
+    # NOTE: documents table primary key is "id" (same as document_id).
+    # There is NO "document_id" column in documents.
+    doc = safe_select_one(
+        DOCS_TABLE,
+        "id, attachment_filename, gcs_bucket, gcs_path, storage_provider, storage_bucket, storage_path, raw_file_url, created_at",
+        eq={"id": document_id},
+    )
+    return doc or {}
 
     # Try the common patterns (depending on how your documents table is keyed)
     doc = safe_select_one(
