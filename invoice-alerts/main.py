@@ -42,6 +42,11 @@ SIGNED_URL_EXP_MINUTES = int(os.getenv("SIGNED_URL_EXP_MINUTES", "2880"))
 # optional override; otherwise we auto-detect from metadata
 SIGNING_SERVICE_ACCOUNT_EMAIL = os.getenv("SIGNING_SERVICE_ACCOUNT_EMAIL", "").strip()
 
+if DEBUG_ERRORS:
+    @app.get("/api/debug/document/{document_id}")
+    def api_debug_document(document_id: str):
+        doc = _fetch_document_row(document_id)
+        return {"ok": True, "document_id": document_id, "doc": doc}
 
 @app.post("/jobs/debug_alerts")
 def debug_alerts(document_id: str) -> Dict[str, Any]:
@@ -544,13 +549,31 @@ def _infer_airport_code(invoice: Dict[str, Any], doc: Optional[Dict[str, Any]] =
 
     # 3) Try filename/path like "BCT-C-P-54-0068200.pdf"
     if doc:
-        for key in ("attachment_filename", "gcs_path", "storage_path"):
+        for key in (
+            "attachment_filename",
+            "filename",
+            "file_name",
+            "name",
+            "original_filename",
+            "gcs_path",
+            "gcs_key",
+            "storage_path",
+            "path",
+        ):
             s = (doc.get(key) or "").strip()
-            if s:
-                base = s.split("/")[-1].upper()
-                m = re.match(r"^([A-Z0-9]{3,4})[-_]", base)
-                if m:
-                    return m.group(1)
+            if not s:
+                continue
+            base = s.split("/")[-1].upper()
+
+            # match "BCT-..." or "BCT_..."
+            m = re.match(r"^([A-Z0-9]{3,4})[-_]", base)
+            if m:
+                return m.group(1)
+
+            # match "...-BCT-..." (airport embedded later)
+            m = re.search(r"(?:^|[-_])([A-Z0-9]{3,4})(?:[-_])", base)
+            if m:
+                return m.group(1)
 
     return None
 
@@ -597,8 +620,11 @@ def flush_alerts(limit: int = 25) -> Dict[str, Any]:
                 skipped += 1
                 continue
 
+
             invoice = _fetch_invoice(document_id)
-            doc = _fetch_document_row(document_id)
+            doc = None
+            if document_id:
+                doc = _fetch_document_row(document_id)
 
             signed_pdf_url = _get_gcs_signed_url(
                 doc.get("gcs_bucket") or "",
@@ -934,7 +960,16 @@ def api_alerts(
 
         vendor = (invoice or {}).get("vendor_name") or mp.get("vendor") or mp.get("fbo") or None
         tail = (invoice or {}).get("tail_number") or mp.get("tail") or None
-        airport_code = (invoice or {}).get("airport_code") or mp.get("airport_code") or None
+
+        airport_code = (
+            (invoice or {}).get("airport_code")
+            or mp.get("airport_code")
+        )
+
+        # Fallback: infer from vendor / document if missing
+        if not airport_code:
+            airport_code = _infer_airport_code(invoice or {}, doc)
+
         currency = (invoice or {}).get("currency") or mp.get("currency") or None
 
         # Rule name is stored in match_payload
