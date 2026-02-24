@@ -104,14 +104,13 @@ def _graph_list_inbox_messages(mailbox: str, token: str, top: int) -> List[Dict[
 
 
 def _graph_list_attachments(mailbox: str, token: str, message_id: str) -> List[Dict[str, Any]]:
-    mbox = _u(mailbox)
-    mid = _u(message_id)
-
-    url = f"https://graph.microsoft.com/v1.0/users/{mbox}/mailFolders/Inbox/messages/{mid}/attachments"
-    params = {
-        "$select": "id,name,contentType,size,isInline,@odata.type,contentBytes"
-    }
-
+    """
+    Attachments endpoint is picky about message IDs.
+    Keep '=' unescaped; only escape '/' if present.
+    """
+    mid = message_id.replace("/", "%2F")  # encode only what breaks path segments
+    url = f"https://graph.microsoft.com/v1.0/users/{mailbox}/messages/{mid}/attachments"
+    params = {"$select": "id,name,contentType,size,isInline,@odata.type,contentBytes"}
     data = _graph_get(url, token, params=params)
     return data.get("value", [])
 
