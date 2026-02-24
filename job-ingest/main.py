@@ -88,11 +88,19 @@ def _get_graph_token() -> str:
 def _graph_get(url: str, token: str, params: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     r = requests.get(
         url,
-        headers={"Authorization": f"Bearer {token}"},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+        },
         params=params or {},
         timeout=30,
     )
-    r.raise_for_status()
+    try:
+        r.raise_for_status()
+    except requests.HTTPError as e:
+        # Attach body to the exception message so we can see Graph's real complaint
+        body = (r.text or "")[:4000]
+        raise requests.HTTPError(f"{e} | body={body}", response=r)
     return r.json()
 
 
@@ -149,7 +157,7 @@ def _graph_get_attachment(mailbox: str, token: str, message_id: str, attachment_
     """
     mbox = _u(mailbox)
     mid = urllib.parse.quote(message_id, safe="=")
-    aid = urllib.parse.quote(attachment_id, safe="=")  # keep '=' unescaped
+    aid = urllib.parse.quote(attachment_id, safe="")  # keep '=' unescaped
 
     params = {"$select": "id,name,contentType,size,isInline,contentBytes"}
 
@@ -318,13 +326,19 @@ def pull_applicants(
             try:
                 full = _graph_get_attachment(mailbox, token, mid, att_id)
             except requests.HTTPError as e:
-                uploaded_files.append(
-                    {
-                        "filename": a.get("name"),
-                        "status": "attachment_fetch_failed",
-                        "error": str(e),
-                    }
-                )
+                status = None
+                body = ""
+                if getattr(e, "response", None) is not None:
+                    status = e.response.status_code
+                    body = (e.response.text or "")[:4000]
+
+                uploaded_files.append({
+                    "filename": a.get("name"),
+                    "status": "attachment_fetch_failed",
+                    "status_code": status,
+                    "error": str(e),
+                    "error_body": body,
+                })
                 continue
 
             b64 = full.get("contentBytes")
