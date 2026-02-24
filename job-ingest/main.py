@@ -1,12 +1,13 @@
 import os
 import base64
+import urllib.parse
 from typing import Any, Dict, List, Optional
 
 import requests
 from fastapi import FastAPI, HTTPException, Query
 from google.cloud import storage
 
-from supa import sb  # supports either sb() factory OR sb proxy/client
+from supa import sb
 
 app = FastAPI()
 
@@ -17,17 +18,9 @@ app = FastAPI()
 GCS_BUCKET = os.getenv("GCS_BUCKET")  # REQUIRED
 JOB_PREFIX = os.getenv("JOB_PREFIX", "job-apps")
 
-# Supabase tables (adjust if your schema uses different names)
 APPS_TABLE = os.getenv("APPS_TABLE", "job_applications")
 FILES_TABLE = os.getenv("FILES_TABLE", "job_application_files")
 
-# Outlook / MS Graph creds
-MS_TENANT_ID = os.getenv("MS_TENANT_ID")
-MS_CLIENT_ID = os.getenv("MS_CLIENT_ID")
-MS_CLIENT_SECRET = os.getenv("MS_CLIENT_SECRET")
-
-# Optional: limit which Inbox messages count as "applications"
-# Comma-separated, matched against subject (case-insensitive)
 INBOX_KEYWORDS = [
     s.strip().lower()
     for s in os.getenv(
@@ -56,12 +49,8 @@ def _require_nonempty(name: str, value: Optional[str]) -> str:
 
 
 def _get_supa():
-    """
-    Some services use sb() (factory) but in others sb may already be a client/proxy.
-    This avoids: TypeError: '_SBProxy' object is not callable
-    """
     try:
-        return sb()  # type: ignore[misc]
+        return sb()
     except TypeError:
         return sb
 
@@ -98,13 +87,10 @@ def _graph_get(url: str, token: str, params: Optional[Dict[str, str]] = None) ->
 
 
 def _graph_list_inbox_messages(mailbox: str, token: str, top: int) -> List[Dict[str, Any]]:
-    """
-    Read-only: does NOT move/mark read/delete.
-    """
     url = f"https://graph.microsoft.com/v1.0/users/{mailbox}/mailFolders/Inbox/messages"
     params = {
         "$top": str(top),
-        "$select": "id,subject,receivedDateTime,hasAttachments,from,internetMessageId",
+        "$select": "id,subject,receivedDateTime,hasAttachments",
         "$orderby": "receivedDateTime desc",
     }
     data = _graph_get(url, token, params=params)
@@ -112,7 +98,8 @@ def _graph_list_inbox_messages(mailbox: str, token: str, top: int) -> List[Dict[
 
 
 def _graph_list_attachments(mailbox: str, token: str, message_id: str) -> List[Dict[str, Any]]:
-    url = f"https://graph.microsoft.com/v1.0/users/{mailbox}/messages/{message_id}/attachments"
+    mid = urllib.parse.quote(message_id, safe="")
+    url = f"https://graph.microsoft.com/v1.0/users/{mailbox}/messages/{mid}/attachments"
     params = {"$select": "id,name,contentType,size,isInline,@odata.type,contentBytes"}
     data = _graph_get(url, token, params=params)
     return data.get("value", [])
@@ -137,7 +124,7 @@ def _get_existing_app_id(supa, message_id: str) -> Optional[str]:
             .execute()
         )
         data = getattr(res, "data", None) or []
-        if data and data[0].get("id"):
+        if data:
             return data[0]["id"]
     except Exception:
         return None
@@ -145,29 +132,35 @@ def _get_existing_app_id(supa, message_id: str) -> Optional[str]:
 
 
 def _safe_insert_application(supa, row: Dict[str, Any]) -> str:
-    """
-    Insert into APPS_TABLE, but if source_message_id already exists, return existing id.
-    This prevents 23505 duplicate key crashes.
-    """
     mid = row.get("source_message_id")
+
     if mid:
         existing = _get_existing_app_id(supa, mid)
         if existing:
             return existing
 
-    # Try insert
     ins = supa.table(APPS_TABLE).insert(row).execute()
     data = getattr(ins, "data", None) or []
+
     if data and data[0].get("id"):
         return data[0]["id"]
 
-    # If insert didn't return id for some reason, try fetch
-    if mid:
-        existing = _get_existing_app_id(supa, mid)
-        if existing:
-            return existing
-
     raise RuntimeError("Could not insert or resolve application id")
+
+
+def _file_exists(supa, gcs_key: str) -> bool:
+    try:
+        res = (
+            supa.table(FILES_TABLE)
+            .select("id")
+            .eq("gcs_key", gcs_key)
+            .limit(1)
+            .execute()
+        )
+        data = getattr(res, "data", None) or []
+        return bool(data)
+    except Exception:
+        return False
 
 
 # -------------------------
@@ -181,33 +174,23 @@ def health():
 
 @app.post("/jobs/pull_applicants")
 def pull_applicants(
-    mailbox: str = Query(..., description="Central mailbox, e.g. Hiring@baker-aviation.com"),
-    role_bucket: str = Query(..., description="pilot|sales|maintenance|other (metadata only)"),
+    mailbox: str = Query(...),
+    role_bucket: str = Query(...),
     max_messages: int = Query(50, ge=1, le=200),
 ):
-    """
-    Inbox-only, read-only ingestion.
-    Does NOT move or modify emails.
-
-    role_bucket is metadata only (NOT a folder path).
-    """
-    # Fail early if bucket missing (avoids cryptic google-cloud-storage error)
     bucket_name = _require_nonempty("GCS_BUCKET", GCS_BUCKET)
 
     token = _get_graph_token()
     supa = _get_supa()
 
-    # Read latest Inbox messages
     msgs = _graph_list_inbox_messages(mailbox=mailbox, token=token, top=max_messages)
-
-    # Filter to reduce noise
     msgs = [m for m in msgs if _looks_like_app(m)]
 
     storage_client = storage.Client()
     bucket = storage_client.bucket(bucket_name)
 
     results: List[Dict[str, Any]] = []
-    created_or_updated = 0
+    processed = 0
 
     for m in msgs:
         mid = m.get("id")
@@ -217,8 +200,7 @@ def pull_applicants(
         subject = m.get("subject")
         received_at = m.get("receivedDateTime")
 
-        # Attachments
-        atts = _graph_list_attachments(mailbox=mailbox, token=token, message_id=mid)
+        atts = _graph_list_attachments(mailbox, token, mid)
         file_atts = [
             a for a in atts
             if a.get("@odata.type") == "#microsoft.graph.fileAttachment"
@@ -227,10 +209,8 @@ def pull_applicants(
         ]
 
         if not file_atts:
-            results.append({"message_id": mid, "status": "no_file_attachments"})
             continue
 
-        # Create application row (idempotent via source_message_id unique constraint)
         app_row = {
             "mailbox": mailbox,
             "role_bucket": role_bucket,
@@ -242,9 +222,10 @@ def pull_applicants(
         try:
             app_id = _safe_insert_application(supa, app_row)
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Supabase application insert failed: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
 
         uploaded_files: List[Dict[str, Any]] = []
+
         for a in file_atts:
             name = a.get("name") or "attachment"
             content_type = a.get("contentType") or "application/octet-stream"
@@ -252,17 +233,18 @@ def pull_applicants(
             try:
                 raw = base64.b64decode(a["contentBytes"])
             except Exception:
-                uploaded_files.append({"filename": name, "status": "bad_attachment_b64"})
                 continue
 
             safe_name = name.replace("/", "_")
             gcs_key = f"{JOB_PREFIX}/{role_bucket}/{mid}/{safe_name}"
 
-            # Upload to GCS
+            if _file_exists(supa, gcs_key):
+                uploaded_files.append({"filename": name, "status": "already_saved"})
+                continue
+
             blob = bucket.blob(gcs_key)
             blob.upload_from_string(raw, content_type=content_type)
 
-            # Record file row
             file_row = {
                 "application_id": app_id,
                 "message_id": mid,
@@ -273,13 +255,11 @@ def pull_applicants(
                 "size_bytes": len(raw),
             }
 
-            try:
-                supa.table(FILES_TABLE).insert(file_row).execute()
-                uploaded_files.append({"filename": name, "gcs_key": gcs_key, "status": "uploaded"})
-            except Exception as e:
-                uploaded_files.append({"filename": name, "gcs_key": gcs_key, "status": f"db_insert_failed: {e}"})
+            supa.table(FILES_TABLE).insert(file_row).execute()
 
-        created_or_updated += 1
+            uploaded_files.append({"filename": name, "status": "uploaded"})
+
+        processed += 1
         results.append(
             {
                 "message_id": mid,
@@ -291,10 +271,7 @@ def pull_applicants(
     return {
         "ok": True,
         "mode": "inbox_readonly",
-        "mailbox": mailbox,
-        "role_bucket": role_bucket,
-        "max_messages": max_messages,
         "matched": len(msgs),
-        "created_or_updated": created_or_updated,
+        "processed": processed,
         "results": results,
     }
