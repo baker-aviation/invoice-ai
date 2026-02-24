@@ -98,7 +98,6 @@ def _graph_get(url: str, token: str, params: Optional[Dict[str, str]] = None) ->
     try:
         r.raise_for_status()
     except requests.HTTPError as e:
-        # Attach body to the exception message so we can see Graph's real complaint
         body = (r.text or "")[:4000]
         raise requests.HTTPError(f"{e} | body={body}", response=r)
     return r.json()
@@ -121,15 +120,14 @@ def _graph_list_attachments(mailbox: str, token: str, message_id: str) -> List[D
     List attachments for a message.
 
     IMPORTANT:
-    - Don't include '@odata.type' in $select (Graph 400s).
-    - This list call often does NOT include contentBytes; we fetch contentBytes
-      per attachment via _graph_get_attachment().
-    - Some tenants 400 on /users/{mailbox}/messages/{id}/attachments, so we fallback
-      to folder-scoped /mailFolders/Inbox/messages/{id}/attachments.
+    - Do NOT include '@odata.type' in $select (Graph 400s).
+    - Do NOT try to select 'contentBytes' here.
+    - We will filter by @odata.type if present, but we don't request it explicitly.
     """
     mbox = _u(mailbox)
     mid = urllib.parse.quote(message_id, safe="=")
 
+    # Keep select to safe base fields only
     params = {"$select": "id,name,contentType,size,isInline"}
 
     # Try direct path first
@@ -149,29 +147,27 @@ def _graph_list_attachments(mailbox: str, token: str, message_id: str) -> List[D
 
 def _graph_get_attachment(mailbox: str, token: str, message_id: str, attachment_id: str) -> Dict[str, Any]:
     """
-    Fetch a single attachment by id so we can get contentBytes reliably.
+    Fetch a single attachment by id.
 
-    Critical:
-    - message_id: keep '=' safe
-    - attachment_id: encode EVERYTHING (safe="")
+    CRITICAL FIX:
+    - Do NOT use $select=...contentBytes...
+      Graph treats the resource as microsoft.graph.attachment (base type) and rejects derived props.
+    - Instead: GET the attachment with NO $select so Graph can return the concrete type
+      (#microsoft.graph.fileAttachment) which includes contentBytes.
     """
     mbox = _u(mailbox)
     mid = urllib.parse.quote(message_id, safe="=")
-    aid = urllib.parse.quote(attachment_id, safe="")  # keep '=' unescaped
+    aid = urllib.parse.quote(attachment_id, safe="")  # encode EVERYTHING for path segment
 
-    params = {"$select": "id,name,contentType,size,isInline,contentBytes"}
-
-    # Try direct path first
     url1 = f"https://graph.microsoft.com/v1.0/users/{mbox}/messages/{mid}/attachments/{aid}"
     try:
-        return _graph_get(url1, token, params=params)
+        return _graph_get(url1, token, params=None)
     except requests.HTTPError as e:
         if getattr(e, "response", None) is None or e.response.status_code != 400:
             raise
 
-    # Folder-scoped fallback
     url2 = f"https://graph.microsoft.com/v1.0/users/{mbox}/mailFolders/Inbox/messages/{mid}/attachments/{aid}"
-    return _graph_get(url2, token, params=params)
+    return _graph_get(url2, token, params=None)
 
 
 def _looks_like_app(msg: Dict[str, Any]) -> bool:
@@ -201,10 +197,6 @@ def _get_existing_app_id(supa, message_id: str) -> Optional[str]:
 
 
 def _safe_insert_application(supa, row: Dict[str, Any]) -> str:
-    """
-    Insert into APPS_TABLE, but if source_message_id already exists, return existing id.
-    Prevents 23505 duplicate key crashes.
-    """
     mid = row.get("source_message_id")
     if mid:
         existing = _get_existing_app_id(supa, mid)
@@ -216,7 +208,6 @@ def _safe_insert_application(supa, row: Dict[str, Any]) -> str:
     if data and data[0].get("id"):
         return data[0]["id"]
 
-    # fallback: re-fetch if insert didn't return row
     if mid:
         existing = _get_existing_app_id(supa, mid)
         if existing:
@@ -278,7 +269,7 @@ def pull_applicants(
         subject = m.get("subject")
         received_at = m.get("receivedDateTime")
 
-        # 1) List attachments (no contentBytes here)
+        # 1) List attachments
         try:
             atts = _graph_list_attachments(mailbox, token, mid)
         except requests.HTTPError as e:
@@ -297,7 +288,7 @@ def pull_applicants(
             )
             continue
 
-        # keep non-inline attachments that have an id
+        # Keep non-inline attachments that have an id
         file_atts = [a for a in atts if not a.get("isInline") and a.get("id")]
         if not file_atts:
             results.append({"message_id": mid, "status": "no_attachments"})
@@ -319,7 +310,7 @@ def pull_applicants(
 
         uploaded_files: List[Dict[str, Any]] = []
 
-        # 3) Fetch each attachment by id to get contentBytes reliably
+        # 3) Fetch each attachment by id (NO $select) so fileAttachment includes contentBytes
         for a in file_atts:
             att_id = a["id"]
 
@@ -331,22 +322,25 @@ def pull_applicants(
                 if getattr(e, "response", None) is not None:
                     status = e.response.status_code
                     body = (e.response.text or "")[:4000]
-
-                uploaded_files.append({
-                    "filename": a.get("name"),
-                    "status": "attachment_fetch_failed",
-                    "status_code": status,
-                    "error": str(e),
-                    "error_body": body,
-                })
+                uploaded_files.append(
+                    {
+                        "filename": a.get("name"),
+                        "status": "attachment_fetch_failed",
+                        "status_code": status,
+                        "error": str(e),
+                        "error_body": body,
+                    }
+                )
                 continue
 
+            # Only fileAttachment has contentBytes
             b64 = full.get("contentBytes")
             if not b64:
                 uploaded_files.append(
                     {
                         "filename": full.get("name") or a.get("name"),
                         "status": "no_contentBytes",
+                        "odata_type": full.get("@odata.type"),
                     }
                 )
                 continue
