@@ -35,8 +35,12 @@ INBOX_KEYWORDS = [
 # -------------------------
 
 def _u(value: str) -> str:
-    """URL-encode helper for mailbox + IDs."""
-    return urllib.parse.quote(value, safe="")
+    """
+    URL-encode helper.
+    Keep '=' unescaped because Graph message IDs often end with '='
+    and encoding it as %3D causes 400 errors in path segments.
+    """
+    return urllib.parse.quote(value, safe="=")
 
 def _require_env(name: str) -> str:
     v = os.getenv(name)
@@ -98,14 +102,43 @@ def _graph_list_inbox_messages(mailbox: str, token: str, top: int) -> List[Dict[
 
 def _graph_list_attachments(mailbox: str, token: str, message_id: str) -> List[Dict[str, Any]]:
     """
-    Use folder-scoped path (more reliable in some tenants) AND URL-encode message_id.
+    Graph can be picky about which path accepts message IDs.
+    We try a few patterns and fall back if one returns 400.
+
+    NOTE: message_id is base64-ish and may contain + / =, so we URL-encode it.
+    Keep '=' unescaped (safe="=") to avoid the %3D issue.
     """
     mbox = _u(mailbox)
-    mid = _u(message_id)
-    url = f"https://graph.microsoft.com/v1.0/users/{mbox}/mailFolders/Inbox/messages/{mid}/attachments"
+    mid = urllib.parse.quote(message_id, safe="=")
+
     params = {"$select": "id,name,contentType,size,isInline,@odata.type,contentBytes"}
-    data = _graph_get(url, token, params=params)
-    return data.get("value", [])
+
+    # 1) direct message attachments (often the most reliable)
+    url1 = f"https://graph.microsoft.com/v1.0/users/{mbox}/messages/{mid}/attachments"
+    try:
+        data = _graph_get(url1, token, params=params)
+        return data.get("value", [])
+    except requests.HTTPError as e:
+        if getattr(e, "response", None) is None or e.response.status_code != 400:
+            raise
+
+    # 2) folder-scoped path (works in some tenants)
+    url2 = f"https://graph.microsoft.com/v1.0/users/{mbox}/mailFolders/Inbox/messages/{mid}/attachments"
+    try:
+        data = _graph_get(url2, token, params=params)
+        return data.get("value", [])
+    except requests.HTTPError as e:
+        if getattr(e, "response", None) is None or e.response.status_code != 400:
+            raise
+
+    # 3) expand attachments as part of the message object
+    url3 = f"https://graph.microsoft.com/v1.0/users/{mbox}/messages/{mid}"
+    expand_params = {
+        "$select": "id",
+        "$expand": "attachments($select=id,name,contentType,size,isInline,@odata.type,contentBytes)",
+    }
+    data = _graph_get(url3, token, params=expand_params)
+    return data.get("attachments", [])
 
 def _looks_like_app(msg: Dict[str, Any]) -> bool:
     if not msg.get("hasAttachments"):
@@ -209,9 +242,18 @@ def pull_applicants(
         try:
             atts = _graph_list_attachments(mailbox, token, mid)
         except requests.HTTPError as e:
-            results.append(
-                {"message_id": mid, "status": "attachments_fetch_failed", "error": str(e)}
-            )
+            status = None
+            body = ""
+            if getattr(e, "response", None) is not None:
+                status = e.response.status_code
+                body = (e.response.text or "")[:2000]
+
+            results.append({
+                "message_id": mid,
+                "status": "attachments_fetch_failed",
+                "status_code": status,
+                "error_body": body,
+            })
             continue
 
         file_atts = [
