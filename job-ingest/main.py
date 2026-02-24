@@ -35,6 +35,11 @@ INBOX_KEYWORDS = [
 # Helpers
 # -------------------------
 
+def _u(value: str) -> str:
+    """URL encode helper for mailbox + message IDs."""
+    return urllib.parse.quote(value, safe="")
+
+
 def _require_env(name: str) -> str:
     v = os.getenv(name)
     if not v:
@@ -87,7 +92,8 @@ def _graph_get(url: str, token: str, params: Optional[Dict[str, str]] = None) ->
 
 
 def _graph_list_inbox_messages(mailbox: str, token: str, top: int) -> List[Dict[str, Any]]:
-    url = f"https://graph.microsoft.com/v1.0/users/{mailbox}/mailFolders/Inbox/messages"
+    mbox = _u(mailbox)
+    url = f"https://graph.microsoft.com/v1.0/users/{mbox}/mailFolders/Inbox/messages"
     params = {
         "$top": str(top),
         "$select": "id,subject,receivedDateTime,hasAttachments",
@@ -98,9 +104,14 @@ def _graph_list_inbox_messages(mailbox: str, token: str, top: int) -> List[Dict[
 
 
 def _graph_list_attachments(mailbox: str, token: str, message_id: str) -> List[Dict[str, Any]]:
-    mid = urllib.parse.quote(message_id, safe="")
-    url = f"https://graph.microsoft.com/v1.0/users/{mailbox}/messages/{mid}/attachments"
-    params = {"$select": "id,name,contentType,size,isInline,@odata.type,contentBytes"}
+    mbox = _u(mailbox)
+    mid = _u(message_id)
+
+    url = f"https://graph.microsoft.com/v1.0/users/{mbox}/mailFolders/Inbox/messages/{mid}/attachments"
+    params = {
+        "$select": "id,name,contentType,size,isInline,@odata.type,contentBytes"
+    }
+
     data = _graph_get(url, token, params=params)
     return data.get("value", [])
 
@@ -183,7 +194,7 @@ def pull_applicants(
     token = _get_graph_token()
     supa = _get_supa()
 
-    msgs = _graph_list_inbox_messages(mailbox=mailbox, token=token, top=max_messages)
+    msgs = _graph_list_inbox_messages(mailbox, token, max_messages)
     msgs = [m for m in msgs if _looks_like_app(m)]
 
     storage_client = storage.Client()
@@ -200,7 +211,16 @@ def pull_applicants(
         subject = m.get("subject")
         received_at = m.get("receivedDateTime")
 
-        atts = _graph_list_attachments(mailbox, token, mid)
+        try:
+            atts = _graph_list_attachments(mailbox, token, mid)
+        except requests.HTTPError as e:
+            results.append({
+                "message_id": mid,
+                "status": "attachments_fetch_failed",
+                "error": str(e),
+            })
+            continue
+
         file_atts = [
             a for a in atts
             if a.get("@odata.type") == "#microsoft.graph.fileAttachment"
@@ -260,13 +280,11 @@ def pull_applicants(
             uploaded_files.append({"filename": name, "status": "uploaded"})
 
         processed += 1
-        results.append(
-            {
-                "message_id": mid,
-                "application_id": app_id,
-                "uploaded": uploaded_files,
-            }
-        )
+        results.append({
+            "message_id": mid,
+            "application_id": app_id,
+            "uploaded": uploaded_files,
+        })
 
     return {
         "ok": True,
