@@ -30,15 +30,13 @@ INBOX_KEYWORDS = [
     if s.strip()
 ]
 
-
 # -------------------------
 # Helpers
 # -------------------------
 
 def _u(value: str) -> str:
-    """URL encode helper for mailbox + message IDs."""
+    """URL-encode helper for mailbox + IDs."""
     return urllib.parse.quote(value, safe="")
-
 
 def _require_env(name: str) -> str:
     v = os.getenv(name)
@@ -46,19 +44,16 @@ def _require_env(name: str) -> str:
         raise RuntimeError(f"Missing env var: {name}")
     return v
 
-
 def _require_nonempty(name: str, value: Optional[str]) -> str:
     if not value or not str(value).strip():
         raise RuntimeError(f"Missing env var: {name}")
     return value
 
-
 def _get_supa():
     try:
-        return sb()
+        return sb()  # factory pattern
     except TypeError:
-        return sb
-
+        return sb    # already a client/proxy
 
 def _get_graph_token() -> str:
     tenant = _require_env("MS_TENANT_ID")
@@ -79,7 +74,6 @@ def _get_graph_token() -> str:
     r.raise_for_status()
     return r.json()["access_token"]
 
-
 def _graph_get(url: str, token: str, params: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     r = requests.get(
         url,
@@ -90,8 +84,8 @@ def _graph_get(url: str, token: str, params: Optional[Dict[str, str]] = None) ->
     r.raise_for_status()
     return r.json()
 
-
 def _graph_list_inbox_messages(mailbox: str, token: str, top: int) -> List[Dict[str, Any]]:
+    # encode mailbox (safe)
     mbox = _u(mailbox)
     url = f"https://graph.microsoft.com/v1.0/users/{mbox}/mailFolders/Inbox/messages"
     params = {
@@ -102,18 +96,16 @@ def _graph_list_inbox_messages(mailbox: str, token: str, top: int) -> List[Dict[
     data = _graph_get(url, token, params=params)
     return data.get("value", [])
 
-
 def _graph_list_attachments(mailbox: str, token: str, message_id: str) -> List[Dict[str, Any]]:
     """
-    Attachments endpoint is picky about message IDs.
-    Keep '=' unescaped; only escape '/' if present.
+    Use folder-scoped path (more reliable in some tenants) AND URL-encode message_id.
     """
-    mid = message_id.replace("/", "%2F")  # encode only what breaks path segments
-    url = f"https://graph.microsoft.com/v1.0/users/{mailbox}/messages/{mid}/attachments"
+    mbox = _u(mailbox)
+    mid = _u(message_id)
+    url = f"https://graph.microsoft.com/v1.0/users/{mbox}/mailFolders/Inbox/messages/{mid}/attachments"
     params = {"$select": "id,name,contentType,size,isInline,@odata.type,contentBytes"}
     data = _graph_get(url, token, params=params)
     return data.get("value", [])
-
 
 def _looks_like_app(msg: Dict[str, Any]) -> bool:
     if not msg.get("hasAttachments"):
@@ -122,7 +114,6 @@ def _looks_like_app(msg: Dict[str, Any]) -> bool:
         return True
     subj = (msg.get("subject") or "").lower()
     return any(k in subj for k in INBOX_KEYWORDS)
-
 
 def _get_existing_app_id(supa, message_id: str) -> Optional[str]:
     try:
@@ -134,16 +125,18 @@ def _get_existing_app_id(supa, message_id: str) -> Optional[str]:
             .execute()
         )
         data = getattr(res, "data", None) or []
-        if data:
+        if data and data[0].get("id"):
             return data[0]["id"]
     except Exception:
         return None
     return None
 
-
 def _safe_insert_application(supa, row: Dict[str, Any]) -> str:
+    """
+    Insert into APPS_TABLE, but if source_message_id already exists, return existing id.
+    Prevents 23505 duplicate key crashes.
+    """
     mid = row.get("source_message_id")
-
     if mid:
         existing = _get_existing_app_id(supa, mid)
         if existing:
@@ -151,12 +144,16 @@ def _safe_insert_application(supa, row: Dict[str, Any]) -> str:
 
     ins = supa.table(APPS_TABLE).insert(row).execute()
     data = getattr(ins, "data", None) or []
-
     if data and data[0].get("id"):
         return data[0]["id"]
 
-    raise RuntimeError("Could not insert or resolve application id")
+    # fallback: re-fetch if insert didn't return row
+    if mid:
+        existing = _get_existing_app_id(supa, mid)
+        if existing:
+            return existing
 
+    raise RuntimeError("Could not insert or resolve application id")
 
 def _file_exists(supa, gcs_key: str) -> bool:
     try:
@@ -172,7 +169,6 @@ def _file_exists(supa, gcs_key: str) -> bool:
     except Exception:
         return False
 
-
 # -------------------------
 # Routes
 # -------------------------
@@ -181,13 +177,13 @@ def _file_exists(supa, gcs_key: str) -> bool:
 def health():
     return {"ok": True}
 
-
 @app.post("/jobs/pull_applicants")
 def pull_applicants(
     mailbox: str = Query(...),
     role_bucket: str = Query(...),
     max_messages: int = Query(50, ge=1, le=200),
 ):
+    # fail early if missing
     bucket_name = _require_nonempty("GCS_BUCKET", GCS_BUCKET)
 
     token = _get_graph_token()
@@ -213,11 +209,9 @@ def pull_applicants(
         try:
             atts = _graph_list_attachments(mailbox, token, mid)
         except requests.HTTPError as e:
-            results.append({
-                "message_id": mid,
-                "status": "attachments_fetch_failed",
-                "error": str(e),
-            })
+            results.append(
+                {"message_id": mid, "status": "attachments_fetch_failed", "error": str(e)}
+            )
             continue
 
         file_atts = [
@@ -241,7 +235,7 @@ def pull_applicants(
         try:
             app_id = _safe_insert_application(supa, app_row)
         except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail=f"Supabase insert failed: {e}")
 
         uploaded_files: List[Dict[str, Any]] = []
 
@@ -252,6 +246,7 @@ def pull_applicants(
             try:
                 raw = base64.b64decode(a["contentBytes"])
             except Exception:
+                uploaded_files.append({"filename": name, "status": "bad_attachment_b64"})
                 continue
 
             safe_name = name.replace("/", "_")
@@ -275,15 +270,10 @@ def pull_applicants(
             }
 
             supa.table(FILES_TABLE).insert(file_row).execute()
-
-            uploaded_files.append({"filename": name, "status": "uploaded"})
+            uploaded_files.append({"filename": name, "gcs_key": gcs_key, "status": "uploaded"})
 
         processed += 1
-        results.append({
-            "message_id": mid,
-            "application_id": app_id,
-            "uploaded": uploaded_files,
-        })
+        results.append({"message_id": mid, "application_id": app_id, "uploaded": uploaded_files})
 
     return {
         "ok": True,
