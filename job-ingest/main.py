@@ -149,7 +149,7 @@ def _graph_get_attachment(mailbox: str, token: str, message_id: str, attachment_
     """
     mbox = _u(mailbox)
     mid = urllib.parse.quote(message_id, safe="=")
-    aid = urllib.parse.quote(attachment_id, safe="")  # encode everything
+    aid = urllib.parse.quote(attachment_id, safe="=")  # keep '=' unescaped
 
     params = {"$select": "id,name,contentType,size,isInline,contentBytes"}
 
