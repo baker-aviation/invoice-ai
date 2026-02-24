@@ -28,9 +28,7 @@ export default function HomePage() {
 
       <div className="p-6">
         <div className="max-w-4xl mx-auto space-y-6">
-          <div className="text-sm text-gray-600">
-            Choose a section to view.
-          </div>
+          <div className="text-sm text-gray-600">Choose a section to view.</div>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <CardLink
@@ -38,15 +36,17 @@ export default function HomePage() {
               title="Invoices"
               subtitle="Browse invoices and open PDFs"
             />
+
             <CardLink
               href="/alerts"
               title="Alerts"
               subtitle="Actionable fee alerts only"
             />
+
             <CardLink
-              href="/job-applications"
-              title="Job Applications"
-              subtitle="Coming soon"
+              href="/jobs"
+              title="Jobs"
+              subtitle="Browse parsed job applications"
             />
           </div>
         </div>

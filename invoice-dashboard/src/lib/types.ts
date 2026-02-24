@@ -47,3 +47,62 @@ export type AlertsResponse = {
   count: number;
   alerts: AlertRow[];
 };
+/* =========================
+   Jobs
+========================= */
+
+export type JobRow = {
+  id: number;
+  application_id: number;
+  created_at: string | null;
+  updated_at: string | null;
+
+  category: string | null;
+  employment_type: string | null;
+
+  candidate_name: string | null;
+  email: string | null;
+  phone: string | null;
+  location: string | null;
+
+  total_time_hours: number | null;
+  turbine_time_hours: number | null;
+  pic_time_hours: number | null;
+  sic_time_hours: number | null;
+
+  has_citation_x: boolean | null;
+  has_challenger_300_type_rating: boolean | null;
+  type_ratings: string[] | null;
+
+  soft_gate_pic_met: boolean | null;
+  soft_gate_pic_status: string | null;
+  needs_review: boolean | null;
+
+  notes: string | null;
+  model: string | null;
+
+  confidence?: any;
+  raw_extraction?: any;
+};
+
+export type JobsListResponse = {
+  ok: boolean;
+  count: number;
+  jobs: JobRow[];
+};
+
+export type JobFile = {
+  id: number;
+  filename?: string | null;
+  content_type?: string | null;
+  size_bytes?: number | null;
+  created_at?: string | null;
+  signed_url?: string | null;
+};
+
+export type JobDetailResponse = {
+  ok: boolean;
+  job: JobRow;
+  files: JobFile[];
+};
+
