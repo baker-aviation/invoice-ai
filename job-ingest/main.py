@@ -34,11 +34,12 @@ INBOX_KEYWORDS = [
 # Helpers
 # -------------------------
 
+
 def _u(value: str) -> str:
     """
     URL-encode helper.
     Keep '=' unescaped because Graph message IDs often end with '='
-    and encoding it as %3D causes 400 errors in path segments.
+    and encoding it as %3D can cause 400 errors in path segments.
     """
     return urllib.parse.quote(value, safe="=")
 
@@ -57,10 +58,11 @@ def _require_nonempty(name: str, value: Optional[str]) -> str:
 
 
 def _get_supa():
+    # supports both patterns: sb() factory OR sb already being a client/proxy
     try:
-        return sb()  # factory pattern
+        return sb()  # type: ignore[misc]
     except TypeError:
-        return sb    # already a client/proxy
+        return sb
 
 
 def _get_graph_token() -> str:
@@ -95,7 +97,6 @@ def _graph_get(url: str, token: str, params: Optional[Dict[str, str]] = None) ->
 
 
 def _graph_list_inbox_messages(mailbox: str, token: str, top: int) -> List[Dict[str, Any]]:
-    # encode mailbox (safe)
     mbox = _u(mailbox)
     url = f"https://graph.microsoft.com/v1.0/users/{mbox}/mailFolders/Inbox/messages"
     params = {
@@ -107,15 +108,48 @@ def _graph_list_inbox_messages(mailbox: str, token: str, top: int) -> List[Dict[
     return data.get("value", [])
 
 
+def _graph_list_attachments(mailbox: str, token: str, message_id: str) -> List[Dict[str, Any]]:
+    """
+    List attachments for a message.
+
+    IMPORTANT:
+    - Don't include '@odata.type' in $select (Graph 400s).
+    - This list call often does NOT include contentBytes; we fetch contentBytes
+      per attachment via _graph_get_attachment().
+    - Some tenants 400 on /users/{mailbox}/messages/{id}/attachments, so we fallback
+      to folder-scoped /mailFolders/Inbox/messages/{id}/attachments.
+    """
+    mbox = _u(mailbox)
+    mid = urllib.parse.quote(message_id, safe="=")
+
+    params = {"$select": "id,name,contentType,size,isInline"}
+
+    # Try direct path first
+    url1 = f"https://graph.microsoft.com/v1.0/users/{mbox}/messages/{mid}/attachments"
+    try:
+        data = _graph_get(url1, token, params=params)
+        return data.get("value", [])
+    except requests.HTTPError as e:
+        if getattr(e, "response", None) is None or e.response.status_code != 400:
+            raise
+
+    # Folder-scoped fallback
+    url2 = f"https://graph.microsoft.com/v1.0/users/{mbox}/mailFolders/Inbox/messages/{mid}/attachments"
+    data = _graph_get(url2, token, params=params)
+    return data.get("value", [])
+
+
 def _graph_get_attachment(mailbox: str, token: str, message_id: str, attachment_id: str) -> Dict[str, Any]:
     """
     Fetch a single attachment by id so we can get contentBytes reliably.
 
-    Critical: attachment_id MUST be fully URL-encoded as a path segment.
+    Critical:
+    - message_id: keep '=' safe
+    - attachment_id: encode EVERYTHING (safe="")
     """
     mbox = _u(mailbox)
-    mid = urllib.parse.quote(message_id, safe="=")         # keep '=' OK for message ids
-    aid = urllib.parse.quote(attachment_id, safe="")       # encode EVERYTHING for attachment ids
+    mid = urllib.parse.quote(message_id, safe="=")
+    aid = urllib.parse.quote(attachment_id, safe="")  # encode everything
 
     params = {"$select": "id,name,contentType,size,isInline,contentBytes"}
 
@@ -124,28 +158,12 @@ def _graph_get_attachment(mailbox: str, token: str, message_id: str, attachment_
     try:
         return _graph_get(url1, token, params=params)
     except requests.HTTPError as e:
-        # Only fallback on 400s (path quirks)
         if getattr(e, "response", None) is None or e.response.status_code != 400:
             raise
 
-    # Folder-scoped fallback (some tenants require this)
+    # Folder-scoped fallback
     url2 = f"https://graph.microsoft.com/v1.0/users/{mbox}/mailFolders/Inbox/messages/{mid}/attachments/{aid}"
     return _graph_get(url2, token, params=params)
-
-
-def _graph_get_attachment(mailbox: str, token: str, message_id: str, attachment_id: str) -> Dict[str, Any]:
-    """
-    Fetch a single attachment by id so we can get contentBytes reliably.
-    """
-    mbox = _u(mailbox)
-    mid = urllib.parse.quote(message_id, safe="=")
-    aid = urllib.parse.quote(attachment_id, safe="=")
-
-    # NOTE: no '@odata.type' here either
-    params = {"$select": "id,name,contentType,size,isInline,contentBytes"}
-
-    url = f"https://graph.microsoft.com/v1.0/users/{mbox}/messages/{mid}/attachments/{aid}"
-    return _graph_get(url, token, params=params)
 
 
 def _looks_like_app(msg: Dict[str, Any]) -> bool:
@@ -213,9 +231,11 @@ def _file_exists(supa, gcs_key: str) -> bool:
     except Exception:
         return False
 
+
 # -------------------------
 # Routes
 # -------------------------
+
 
 @app.get("/_health")
 def health():
@@ -228,7 +248,6 @@ def pull_applicants(
     role_bucket: str = Query(...),
     max_messages: int = Query(50, ge=1, le=200),
 ):
-    # fail early if missing
     bucket_name = _require_nonempty("GCS_BUCKET", GCS_BUCKET)
 
     token = _get_graph_token()
@@ -260,16 +279,17 @@ def pull_applicants(
             if getattr(e, "response", None) is not None:
                 status = e.response.status_code
                 body = (e.response.text or "")[:2000]
-
-            results.append({
-                "message_id": mid,
-                "status": "attachments_list_failed",
-                "status_code": status,
-                "error_body": body,
-            })
+            results.append(
+                {
+                    "message_id": mid,
+                    "status": "attachments_list_failed",
+                    "status_code": status,
+                    "error_body": body,
+                }
+            )
             continue
 
-        # Keep non-inline attachments that have an id
+        # keep non-inline attachments that have an id
         file_atts = [a for a in atts if not a.get("isInline") and a.get("id")]
         if not file_atts:
             results.append({"message_id": mid, "status": "no_attachments"})
@@ -298,26 +318,30 @@ def pull_applicants(
             try:
                 full = _graph_get_attachment(mailbox, token, mid, att_id)
             except requests.HTTPError as e:
-                uploaded_files.append({
-                    "filename": a.get("name"),
-                    "status": "attachment_fetch_failed",
-                    "error": str(e),
-                })
+                uploaded_files.append(
+                    {
+                        "filename": a.get("name"),
+                        "status": "attachment_fetch_failed",
+                        "error": str(e),
+                    }
+                )
                 continue
 
-            # If it's not a fileAttachment, Graph may omit contentBytes
-            if not full.get("contentBytes"):
-                uploaded_files.append({
-                    "filename": full.get("name") or a.get("name"),
-                    "status": "no_contentBytes",
-                })
+            b64 = full.get("contentBytes")
+            if not b64:
+                uploaded_files.append(
+                    {
+                        "filename": full.get("name") or a.get("name"),
+                        "status": "no_contentBytes",
+                    }
+                )
                 continue
 
             name = full.get("name") or "attachment"
             content_type = full.get("contentType") or "application/octet-stream"
 
             try:
-                raw = base64.b64decode(full["contentBytes"])
+                raw = base64.b64decode(b64)
             except Exception:
                 uploaded_files.append({"filename": name, "status": "bad_attachment_b64"})
                 continue
@@ -345,13 +369,8 @@ def pull_applicants(
             supa.table(FILES_TABLE).insert(file_row).execute()
             uploaded_files.append({"filename": name, "gcs_key": gcs_key, "status": "uploaded"})
 
-        # Mark processed if we actually attempted attachment handling
         processed += 1
-        results.append({
-            "message_id": mid,
-            "application_id": app_id,
-            "uploaded": uploaded_files,
-        })
+        results.append({"message_id": mid, "application_id": app_id, "uploaded": uploaded_files})
 
     return {
         "ok": True,
