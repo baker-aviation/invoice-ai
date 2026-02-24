@@ -1,4 +1,4 @@
-# supa.py
+# job-parse/supa.py
 import os
 import random
 import time
@@ -6,13 +6,29 @@ from typing import Any, Dict, List, Optional
 
 from supabase import Client, create_client
 
-SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+_SUPA: Optional[Client] = None
 
-if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
-    raise RuntimeError("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY env var")
 
-sb: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+def _require(name: str, value: str) -> str:
+    if not value or not str(value).strip():
+        raise RuntimeError(f"Missing {name} env var")
+    return value.strip()
+
+
+def _client() -> Client:
+    """
+    Lazily create and cache the Supabase client.
+    IMPORTANT: Do NOT raise at import time (Cloud Run must start).
+    """
+    global _SUPA
+    if _SUPA is not None:
+        return _SUPA
+
+    url = _require("SUPABASE_URL", os.getenv("SUPABASE_URL", ""))
+    key = _require("SUPABASE_SERVICE_ROLE_KEY", os.getenv("SUPABASE_SERVICE_ROLE_KEY", ""))
+    _SUPA = create_client(url, key)
+    return _SUPA
+
 
 # ---------------------------------------------------
 # Retry helpers
@@ -60,6 +76,7 @@ def _execute_with_retry(q, *, tries: int = 4):
         raise last
     raise RuntimeError("execute failed without exception?")
 
+
 # ---------------------------------------------------
 # Query helpers
 # ---------------------------------------------------
@@ -70,6 +87,7 @@ def safe_select_one(
     *,
     eq: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
+    sb = _client()
     q = sb.table(table).select(columns)
 
     if eq:
@@ -92,6 +110,7 @@ def safe_select_many(
     order: Optional[str] = None,
     desc: bool = False,
 ) -> List[Dict[str, Any]]:
+    sb = _client()
     q = sb.table(table).select(columns)
 
     if eq:
@@ -102,88 +121,5 @@ def safe_select_many(
         q = q.order(order, desc=desc)
 
     res = _execute_with_retry(q.limit(int(limit)))
-    data = getattr(res, "data", None) or []
-    return list(data)
-
-
-def safe_insert(
-    table: str,
-    row: Dict[str, Any],
-) -> Optional[Dict[str, Any]]:
-    q = sb.table(table).insert(row)
-    res = _execute_with_retry(q)
-    data = getattr(res, "data", None) or []
-    if not data:
-        return None
-    return data[0]
-
-
-def safe_update(
-    table: str,
-    row_id: str,
-    patch: Dict[str, Any],
-) -> Optional[Dict[str, Any]]:
-    q = sb.table(table).update(patch).eq("id", row_id)
-    res = _execute_with_retry(q)
-    data = getattr(res, "data", None) or []
-    if not data:
-        return None
-    return data[0]
-
-# ---------------------------------------------------
-# Atomic WHERE update (used for Slack claim lock)
-# ---------------------------------------------------
-
-def safe_update_where(
-    table: str,
-    patch: Dict[str, Any],
-    *,
-    eq: Optional[Dict[str, Any]] = None,
-    limit: Optional[int] = None,
-) -> int:
-    """
-    Update rows with WHERE filters and return number of rows updated.
-
-    Used for atomic "claim" operations like:
-        pending -> sending
-
-    Returns:
-        int = number of rows updated
-    """
-    q = sb.table(table).update(patch)
-
-    if eq:
-        for k, v in eq.items():
-            q = q.eq(k, v)
-
-    if limit is not None:
-        q = q.limit(int(limit))
-
-    res = _execute_with_retry(q)
-    data = getattr(res, "data", None) or []
-    return len(data)
-
-
-def safe_update_where_returning(
-    table: str,
-    patch: Dict[str, Any],
-    *,
-    eq: Optional[Dict[str, Any]] = None,
-    limit: Optional[int] = None,
-) -> List[Dict[str, Any]]:
-    """
-    Same as safe_update_where but returns updated rows.
-    Useful for debugging.
-    """
-    q = sb.table(table).update(patch)
-
-    if eq:
-        for k, v in eq.items():
-            q = q.eq(k, v)
-
-    if limit is not None:
-        q = q.limit(int(limit))
-
-    res = _execute_with_retry(q)
     data = getattr(res, "data", None) or []
     return list(data)

@@ -8,7 +8,11 @@
 #  - ONLY actionable alerts are created (fee_amount > 0 AND fee_name non-empty)
 #  - Slack is sent ONLY for actionable alerts
 #  - /api/alerts returns ONLY actionable alerts (legacy junk is filtered out)
+#  - Legacy rows WITHOUT matched_line_items are self-healed during flush (recompute via rule_matches)
 #  - /api/alerts is hardened: never returns 500 due to transient Supabase/doc lookups
+#
+# Anti-spam guarantee:
+#  - flush_alerts uses a CLAIM step (pending->sending) so only 1 runner can send an alert.
 
 import json
 import os
@@ -26,7 +30,7 @@ from google.cloud import storage
 from google.oauth2 import service_account
 
 from rules import rule_matches
-from supa import safe_insert, safe_select_many, safe_select_one, safe_update
+from supa import safe_insert, safe_select_many, safe_select_one, safe_update, safe_update_where
 
 app = FastAPI()
 
@@ -335,10 +339,13 @@ def _pick_fee_details(
     *,
     invoice: Optional[Dict[str, Any]] = None,
     rule_name: Optional[str] = None,
+    charged_only: bool = False,
 ) -> Dict[str, Any]:
     """
     Fee selection strategy:
       - Prefer the first matched line item: description/name + total/amount/etc.
+      - If charged_only=True, NEVER synthesize an amount from qty*unit_price.
+        This prevents waived $0 items from appearing as charged in Slack / alerts.
       - If still missing and invoice fields exist: fallback to handling/service/surcharge by rule_name keyword
     """
     fee_name = fallback_fee_name or (rule_name or "Fee")
@@ -366,7 +373,8 @@ def _pick_fee_details(
                 fee_amount = val
                 break
 
-        if fee_amount in (None, ""):
+        # IMPORTANT: Don't turn waived items into charged fees
+        if (fee_amount in (None, "")) and (not charged_only):
             qty = _to_float(li.get("quantity") or li.get("qty"))
             unit = _to_float(li.get("unit_price") or li.get("rate") or li.get("price"))
             if qty is not None and unit is not None:
@@ -467,7 +475,7 @@ def _fetch_rules() -> List[Dict[str, Any]]:
             RULES_TABLE,
             "id, name, is_enabled, enabled, keywords, "
             "min_handling_fee, min_service_fee, min_surcharge, "
-            "min_total, min_risk_score, "
+            "min_total, min_risk_score, require_charged_line_items, "
             "vendor_normalized_in, doc_type_in, airport_code_in, "
             "require_review_required, slack_channel, slack_channel_id, slack_channel_name, created_at",
             limit=2000,
@@ -554,10 +562,10 @@ def run_alerts(document_id: str) -> Dict[str, Any]:
     """
     Runs all enabled rules against a single parsed invoice.
 
-    Idempotent: skips duplicate inserts when unique(rule_id, parsed_invoice_id) already exists.
+    Idempotent: unique(rule_id, parsed_invoice_id)
 
-    Does NOT post to Slack. Slack is sent by /jobs/flush_alerts.
-    Creates ONLY actionable alerts (fee_name present and fee_amount > 0).
+    Creates ONLY actionable alerts (fee_name present AND fee_amount > 0).
+    If a legacy duplicate exists, upgrades it in-place instead of skipping forever.
     """
     try:
         invoice = _fetch_invoice(document_id)
@@ -577,12 +585,15 @@ def run_alerts(document_id: str) -> Dict[str, Any]:
             if not result.matched:
                 continue
 
+            # Determine actionable fee using matched line items
             fee_probe = _pick_fee_details(
                 result.matched_line_items or [],
                 fallback_fee_name=rule.get("name"),
                 invoice=invoice,
                 rule_name=rule.get("name"),
+                charged_only=True,
             )
+
             fee_name = (fee_probe.get("fee_name") or "").strip() or None
             fee_amount = _to_float(fee_probe.get("fee_amount"))
 
@@ -609,6 +620,7 @@ def run_alerts(document_id: str) -> Dict[str, Any]:
                 inserted = safe_insert(ALERTS_TABLE, alert_row)
                 if inserted:
                     matched_alerts += 1
+
                     if DEBUG_ERRORS:
                         matched_rules.append(
                             {
@@ -630,16 +642,69 @@ def run_alerts(document_id: str) -> Dict[str, Any]:
 
             except Exception as e:
                 msg = repr(e)
-                # Idempotency: if unique(rule_id, parsed_invoice_id) already exists, skip
+
+                # DUPLICATE → UPGRADE IN PLACE
                 if "23505" in msg or "duplicate key value violates unique constraint" in msg:
-                    _record_event(
-                        "alert_duplicate_skipped",
-                        document_id,
-                        {"rule_id": rule.get("id"), "rule_name": rule.get("name")},
-                        rule_id=rule.get("id"),
-                        parsed_invoice_id=invoice.get("id"),
-                    )
+                    try:
+                        existing = safe_select_one(
+                            ALERTS_TABLE,
+                            "id, slack_status, slack_error, match_payload",
+                            eq={"rule_id": rule.get("id"), "parsed_invoice_id": invoice.get("id")},
+                        ) or {}
+
+                        if existing.get("id"):
+                            existing_payload = _safe_json_loads(existing.get("match_payload")) or {}
+
+                            existing_payload.update(
+                                {
+                                    "rule_name": rule.get("name"),
+                                    "matched_keywords": result.matched_keywords,
+                                    "matched_line_items": result.matched_line_items,
+                                }
+                            )
+
+                            fee_probe2 = _pick_fee_details(
+                                result.matched_line_items or [],
+                                fallback_fee_name=rule.get("name"),
+                                invoice=invoice,
+                                rule_name=rule.get("name"),
+                                charged_only=True,
+                            )
+
+                            fee_name2 = (fee_probe2.get("fee_name") or "").strip() or None
+                            fee_amount2 = _to_float(fee_probe2.get("fee_amount"))
+                            is_actionable = bool(fee_name2) and fee_amount2 is not None and fee_amount2 > 0
+
+                            safe_update(
+                                ALERTS_TABLE,
+                                existing["id"],
+                                {
+                                    "match_payload": existing_payload,
+                                    "match_reason": result.reason,
+                                    "slack_status": "pending" if is_actionable else existing.get("slack_status"),
+                                    "slack_error": None if is_actionable else existing.get("slack_error"),
+                                },
+                            )
+
+                            _record_event(
+                                "alert_upgraded",
+                                document_id,
+                                {"rule_id": rule.get("id"), "rule_name": rule.get("name"), "actionable": is_actionable},
+                                rule_id=rule.get("id"),
+                                parsed_invoice_id=invoice.get("id"),
+                            )
+
+                    except Exception as upgrade_err:
+                        _record_event(
+                            "alert_upgrade_failed",
+                            document_id,
+                            {"rule_id": rule.get("id"), "error": repr(upgrade_err)},
+                            rule_id=rule.get("id"),
+                            parsed_invoice_id=invoice.get("id"),
+                        )
+
                     continue
+
                 raise
 
         _record_event(
@@ -675,15 +740,7 @@ def run_alerts_next(limit: int = 5, lookback_minutes: int = 240) -> Dict[str, An
     try:
         limit = max(1, min(int(limit), 50))
 
-        rows = (
-            safe_select_many(
-                PARSED_TABLE,
-                "document_id, created_at",
-                limit=max(limit, 50),  # pull extra to skip blanks
-            )
-            or []
-        )
-
+        rows = safe_select_many(PARSED_TABLE, "document_id, created_at", limit=max(limit, 50)) or []
         rows = sorted(rows, key=lambda r: str(r.get("created_at") or ""), reverse=True)
 
         ran = 0
@@ -712,25 +769,24 @@ def run_alerts_next(limit: int = 5, lookback_minutes: int = 240) -> Dict[str, An
 def flush_alerts(limit: int = 25) -> Dict[str, Any]:
     """
     Sends Slack exactly once per alert row by transitioning slack_status:
-      pending -> sent OR pending -> error OR pending -> skipped
+      pending -> sending -> sent OR pending -> sending -> error OR pending -> sending -> skipped
 
-    Only actionable alerts are sent (fee_name non-empty, fee_amount > 0).
-    Non-actionable legacy rows are marked slack_status=skipped to prevent reprocessing.
+    The key is the CLAIM step (pending->sending) so only ONE runner can send each alert.
     """
     try:
         limit = max(1, min(int(limit), 100))
 
-        rows = (
-            safe_select_many(
-                ALERTS_TABLE,
-                "id, created_at, rule_id, document_id, parsed_invoice_id, status, slack_status, slack_error, match_payload",
-                limit=500,
-            )
-            or []
-        )
+        # Load rules once (needed to self-heal legacy rows)
+        rules = _fetch_rules()
+        rules_by_id: Dict[str, Dict[str, Any]] = {str(r.get("id")): r for r in (rules or [])}
 
-        # Oldest first so alerts send in order
-        rows = sorted(rows, key=lambda r: str(r.get("created_at") or ""))
+        rows = safe_select_many(
+            ALERTS_TABLE,
+            "id, created_at, rule_id, document_id, parsed_invoice_id, status, slack_status, slack_error, match_payload",
+            limit=500,
+        ) or []
+
+        rows = sorted(rows, key=lambda r: str(r.get("created_at") or ""))  # oldest first
 
         sent = 0
         errored = 0
@@ -741,43 +797,105 @@ def flush_alerts(limit: int = 25) -> Dict[str, Any]:
             if sent + errored >= limit:
                 break
 
+            alert_id = a.get("id")
+            if not alert_id:
+                continue
+
+            # --- fast skip ---
             slack_status = (a.get("slack_status") or "").strip().lower()
             if slack_status in ("sent", "ok", "success"):
                 continue
             if slack_status not in ("", "pending", "null"):
-                # includes "error" and "skipped"
+                # includes "error", "skipped", "sending"
                 continue
+
+            # ------------------------------------------------------------------
+            # AUTO-HEAL: status says sent, but slack_status is still pending
+            # (this exact mismatch is what causes repeated sends)
+            # ------------------------------------------------------------------
+            if str(a.get("status") or "").lower() == "sent" and slack_status in ("", "pending", "null"):
+                try:
+                    safe_update(ALERTS_TABLE, alert_id, {"slack_status": "sent", "slack_error": None})
+                except Exception:
+                    pass
+                continue
+
+            # ------------------------------------------------------------------
+            # CLAIM: atomically move pending -> sending
+            # If another worker already claimed it, updated will be 0 and we skip.
+            # ------------------------------------------------------------------
+            claimed = 0
+            try:
+                claimed = int(
+                    safe_update_where(
+                        ALERTS_TABLE,
+                        {"slack_status": "sending", "slack_error": None},
+                        eq={"id": alert_id, "slack_status": "pending"},
+                    )
+                )
+            except Exception as e:
+                if DEBUG_ERRORS:
+                    _record_event("flush_claim_error", str(a.get("document_id") or "n/a"), {"error": repr(e), "alert_id": alert_id})
+                continue
+
+            if claimed != 1:
+                continue  # someone else is processing or it changed
 
             document_id = a.get("document_id")
             if not document_id:
                 skipped += 1
+                try:
+                    safe_update(ALERTS_TABLE, alert_id, {"slack_status": "skipped", "slack_error": "missing_document_id"})
+                except Exception:
+                    pass
                 continue
 
             invoice = _fetch_invoice(document_id)
-
             doc = _fetch_document_row(document_id)
 
             signed_pdf_url = None
             if doc:
-                signed_pdf_url = _get_gcs_signed_url(
-                    doc.get("gcs_bucket") or "",
-                    doc.get("gcs_path") or "",
-                )
+                signed_pdf_url = _get_gcs_signed_url(doc.get("gcs_bucket") or "", doc.get("gcs_path") or "")
 
             mp = _safe_json_loads(a.get("match_payload")) or {}
-            rule_name = mp.get("rule_name") or "Fee"
 
-            matched_line_items = mp.get("matched_line_items") or []
+            rule_id = str(a.get("rule_id") or "")
+            rule = rules_by_id.get(rule_id) if rule_id else None
+            rule_name = (mp.get("rule_name") or (rule or {}).get("name") or "Fee")
+            charged_only = bool((rule or {}).get("require_charged_line_items"))
+
+            matched_line_items = mp.get("matched_line_items")
             if isinstance(matched_line_items, str):
-                matched_line_items = _safe_json_loads(matched_line_items) or []
-            if not isinstance(matched_line_items, list):
-                matched_line_items = []
+                matched_line_items = _safe_json_loads(matched_line_items)
+            if not isinstance(matched_line_items, list) or len(matched_line_items) == 0:
+                # Legacy self-heal via rule_matches
+                if rule:
+                    try:
+                        res = rule_matches(rule, invoice)
+                        if res.matched:
+                            matched_line_items = res.matched_line_items or []
+                            try:
+                                new_mp = {**(mp or {})}
+                                new_mp["rule_name"] = rule_name
+                                new_mp["matched_keywords"] = res.matched_keywords
+                                new_mp["matched_line_items"] = matched_line_items
+                                safe_update(ALERTS_TABLE, alert_id, {"match_payload": new_mp})
+                                mp = new_mp
+                            except Exception:
+                                pass
+                        else:
+                            matched_line_items = []
+                    except Exception:
+                        matched_line_items = []
+                else:
+                    matched_line_items = []
 
             fee = _pick_fee_details(
-                matched_line_items,
+                matched_line_items or [],
                 fallback_fee_name=rule_name,
                 invoice=invoice,
                 rule_name=rule_name,
+                charged_only=charged_only,
             )
             fee_name = (fee.get("fee_name") or "").strip() or None
             fee_amount = _to_float(fee.get("fee_amount"))
@@ -786,7 +904,7 @@ def flush_alerts(limit: int = 25) -> Dict[str, Any]:
             if not fee_name or fee_amount is None or fee_amount <= 0:
                 safe_update(
                     ALERTS_TABLE,
-                    a["id"],
+                    alert_id,
                     {
                         "slack_status": "skipped",
                         "slack_error": "non_actionable_missing_fee",
@@ -795,7 +913,7 @@ def flush_alerts(limit: int = 25) -> Dict[str, Any]:
                 )
                 skipped += 1
                 if DEBUG_ERRORS:
-                    processed.append({"id": a.get("id"), "document_id": document_id, "slack_status": "skipped"})
+                    processed.append({"id": alert_id, "document_id": document_id, "slack_status": "skipped"})
                 continue
 
             fbo = invoice.get("vendor_name") or "—"
@@ -820,21 +938,17 @@ def flush_alerts(limit: int = 25) -> Dict[str, Any]:
             if slack_res.get("ok"):
                 safe_update(
                     ALERTS_TABLE,
-                    a["id"],
-                    {
-                        "slack_status": "sent",
-                        "slack_error": None,
-                        "status": a.get("status") or "pending",
-                    },
+                    alert_id,
+                    {"slack_status": "sent", "slack_error": None, "status": a.get("status") or "pending"},
                 )
                 sent += 1
                 if DEBUG_ERRORS:
-                    processed.append({"id": a.get("id"), "document_id": document_id, "slack_status": "sent"})
-                _record_event("alert_slack_sent", document_id, {"alert_id": a.get("id"), "slack_result": slack_res})
+                    processed.append({"id": alert_id, "document_id": document_id, "slack_status": "sent"})
+                _record_event("alert_slack_sent", document_id, {"alert_id": alert_id, "slack_result": slack_res})
             else:
                 safe_update(
                     ALERTS_TABLE,
-                    a["id"],
+                    alert_id,
                     {
                         "slack_status": "error",
                         "slack_error": json.dumps(slack_res)[:1000],
@@ -843,8 +957,8 @@ def flush_alerts(limit: int = 25) -> Dict[str, Any]:
                 )
                 errored += 1
                 if DEBUG_ERRORS:
-                    processed.append({"id": a.get("id"), "document_id": document_id, "slack_status": "error"})
-                _record_event("alert_slack_error", document_id, {"alert_id": a.get("id"), "slack_result": slack_res})
+                    processed.append({"id": alert_id, "document_id": document_id, "slack_status": "error"})
+                _record_event("alert_slack_error", document_id, {"alert_id": alert_id, "slack_result": slack_res})
 
         return {
             "ok": True,
@@ -874,9 +988,7 @@ def debug_rule_match(document_id: str, rule_id: Optional[str] = None, rule_name:
     if rule_name:
         rules = [r for r in rules if (r.get("name") or "").lower() == rule_name.lower()]
 
-    line_descs = [(li.get("description") or li.get("name") or "").strip() for li in (invoice.get("line_items") or [])][
-        :50
-    ]
+    line_descs = [(li.get("description") or li.get("name") or "").strip() for li in (invoice.get("line_items") or [])][:50]
 
     out: List[Dict[str, Any]] = []
     for rule in rules:
@@ -942,16 +1054,13 @@ def api_invoices(
     Returns ALL parsed invoices.
     Line items excluded here (detail view only).
     """
-    rows = (
-        safe_select_many(
-            PARSED_TABLE,
-            "id, document_id, created_at, vendor_name, invoice_number, "
-            "invoice_date, airport_code, tail_number, currency, total, "
-            "doc_type, review_required, risk_score, line_items",
-            limit=1000,
-        )
-        or []
-    )
+    rows = safe_select_many(
+        PARSED_TABLE,
+        "id, document_id, created_at, vendor_name, invoice_number, "
+        "invoice_date, airport_code, tail_number, currency, total, "
+        "doc_type, review_required, risk_score, line_items",
+        limit=1000,
+    ) or []
 
     if vendor:
         rows = [r for r in rows if vendor.lower() in (r.get("vendor_name") or "").lower()]
@@ -1013,17 +1122,19 @@ def api_alerts(
     qn = (q or "").strip().lower()
     limit = max(1, min(int(limit), 500))
 
-    # Pull more than requested, filter in Python
     try:
         rows = safe_select_many(
             ALERTS_TABLE,
-            "id, created_at, document_id, status, slack_status, match_payload",
+            "id, created_at, document_id, rule_id, status, slack_status, match_payload",
             limit=2000,
         ) or []
     except Exception as e:
         if DEBUG_ERRORS:
             _record_event("api_alerts_query_error", "n/a", {"error": repr(e)})
         return {"ok": True, "count": 0, "alerts": []}
+
+    rules = _fetch_rules()
+    rules_by_id: Dict[str, Dict[str, Any]] = {str(r.get("id")): r for r in (rules or [])}
 
     out: List[Dict[str, Any]] = []
 
@@ -1032,8 +1143,10 @@ def api_alerts(
             mp = _safe_json_loads(r.get("match_payload")) or {}
             document_id = r.get("document_id")
 
-            # Cheap fields first (no DB)
-            rule_name = mp.get("rule_name") or None
+            rule_id = str(r.get("rule_id") or "")
+            rule = rules_by_id.get(rule_id) if rule_id else None
+            rule_name = mp.get("rule_name") or (rule or {}).get("name") or None
+            charged_only = bool((rule or {}).get("require_charged_line_items"))
 
             matched_line_items = mp.get("matched_line_items") or []
             if isinstance(matched_line_items, str):
@@ -1041,20 +1154,19 @@ def api_alerts(
             if not isinstance(matched_line_items, list):
                 matched_line_items = []
 
-            # Fee probe first: if non-actionable, bail early with no DB calls
             fee_probe = _pick_fee_details(
                 matched_line_items,
                 fallback_fee_name=rule_name,
                 invoice=None,
                 rule_name=rule_name,
+                charged_only=charged_only,
             )
             fee_name = (fee_probe.get("fee_name") or "").strip() or None
             fee_amount = _to_float(fee_probe.get("fee_amount"))
 
             if not _is_actionable_fee(fee_name, fee_amount):
-                continue  # ACTIONABLE ONLY
+                continue
 
-            # Fetch invoice context only for actionable candidates (1 DB call)
             invoice: Optional[Dict[str, Any]] = None
             if document_id:
                 try:
@@ -1072,13 +1184,13 @@ def api_alerts(
                         )
                     invoice = None
 
-            # Re-run fee pick with invoice fallbacks (handling/service/surcharge)
             if invoice:
                 fee2 = _pick_fee_details(
                     matched_line_items,
                     fallback_fee_name=rule_name,
                     invoice=invoice,
                     rule_name=rule_name,
+                    charged_only=charged_only,
                 )
                 fee_name2 = (fee2.get("fee_name") or "").strip() or None
                 fee_amount2 = _to_float(fee2.get("fee_amount"))
@@ -1094,7 +1206,6 @@ def api_alerts(
 
             airport_code = (invoice or {}).get("airport_code") or mp.get("airport_code") or None
             if not airport_code:
-                # doc lookup only helps filename inference; vendor-name inference is already done inside _infer_airport_code
                 doc = _fetch_document_row(document_id) if document_id else None
                 airport_code = _infer_airport_code(invoice or {}, doc)
 
@@ -1113,13 +1224,11 @@ def api_alerts(
                 "currency": currency,
             }
 
-            # Filters
             if status and str(row.get("status") or "").lower() != status.lower():
                 continue
             if slack_status and str(row.get("slack_status") or "").lower() != slack_status.lower():
                 continue
 
-            # Search
             if qn:
                 hay = " ".join(
                     [

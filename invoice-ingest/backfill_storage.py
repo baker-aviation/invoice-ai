@@ -1,57 +1,95 @@
-import os, subprocess
-from supabase import create_client
+#!/usr/bin/env python3
 
-SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
-BUCKET = os.environ["GCS_BUCKET"]
+"""
+backfill_storage.py
 
-supa = create_client(SUPABASE_URL, SUPABASE_KEY)
+Cloud Run–safe GCS backfill script.
 
-def find_matches(fname: str):
-    pat = f"gs://{BUCKET}/invoices/**/{fname}"
-    p = subprocess.run(["gsutil", "ls", "-r", pat], capture_output=True, text=True)
-    if p.returncode != 0:
-        return []
-    return [ln.strip() for ln in p.stdout.splitlines() if ln.strip()]
+Replaces any usage of:
+  gsutil ls -r gs://bucket/invoices/**
 
-def to_path(gs_uri: str):
-    prefix = f"gs://{BUCKET}/"
-    return gs_uri[len(prefix):] if gs_uri.startswith(prefix) else None
+Uses google-cloud-storage instead.
 
-res = supa.table("documents") \
-    .select("id,attachment_filename,storage_bucket,storage_path,status") \
-    .eq("status","uploaded") \
-    .execute()
+Env required:
+  BUCKET (e.g. invoice-ai-487621-files)
 
-docs = res.data or []
-candidates = [
-    d for d in docs
-    if d.get("attachment_filename") and
-       (not d.get("storage_bucket") or not d.get("storage_path"))
-]
+Optional:
+  PREFIX (default: invoices/)
+"""
 
-print(f"candidates={len(candidates)}")
+import os
+import argparse
+from typing import List
+from google.cloud import storage
 
-updated = missing = ambiguous = 0
 
-for d in candidates:
-    doc_id = d["id"]
-    fname = d["attachment_filename"]
-    matches = find_matches(fname)
+BUCKET = os.getenv("BUCKET")
+DEFAULT_PREFIX = os.getenv("PREFIX", "invoices/")
 
-    if len(matches) == 1:
-        path = to_path(matches[0])
-        supa.table("documents").update({
-            "storage_bucket": BUCKET,
-            "storage_path": path
-        }).eq("id", doc_id).execute()
-        updated += 1
-        print(f"[ok] {doc_id} -> {path}")
-    elif len(matches) == 0:
-        missing += 1
-        print(f"[miss] {doc_id} fname={fname}")
+
+# --------------------------------------------------------
+# GCS LISTING
+# --------------------------------------------------------
+
+def list_all_under_prefix(bucket_name: str, prefix: str) -> List[str]:
+    """
+    Recursively list all objects under a prefix.
+    Returns full gs:// paths.
+    """
+    client = storage.Client()
+    blobs = client.list_blobs(bucket_name, prefix=prefix)
+
+    results = []
+    for blob in blobs:
+        if blob.name.endswith("/"):
+            continue
+        results.append(f"gs://{bucket_name}/{blob.name}")
+
+    return results
+
+
+def find_matches(bucket_name: str, prefix: str, fname: str) -> List[str]:
+    """
+    Replacement for:
+      gsutil ls -r gs://bucket/invoices/**/filename.pdf
+    """
+    client = storage.Client()
+    blobs = client.list_blobs(bucket_name, prefix=prefix)
+
+    matches = []
+    for blob in blobs:
+        if blob.name.endswith(fname):
+            matches.append(f"gs://{bucket_name}/{blob.name}")
+
+    return matches
+
+
+# --------------------------------------------------------
+# CLI
+# --------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--filename", help="Optional filename to match")
+    parser.add_argument("--prefix", default=DEFAULT_PREFIX)
+    args = parser.parse_args()
+
+    if not BUCKET:
+        raise RuntimeError("BUCKET environment variable must be set.")
+
+    print(f"Using bucket: {BUCKET}")
+    print(f"Using prefix: {args.prefix}")
+
+    if args.filename:
+        results = find_matches(BUCKET, args.prefix, args.filename)
     else:
-        ambiguous += 1
-        print(f"[ambig] {doc_id} fname={fname} matches={len(matches)}")
+        results = list_all_under_prefix(BUCKET, args.prefix)
 
-print(f"updated={updated} missing={missing} ambiguous={ambiguous}")
+    print(f"\nFound {len(results)} objects:\n")
+
+    for r in results:
+        print(r)
+
+
+if __name__ == "__main__":
+    main()

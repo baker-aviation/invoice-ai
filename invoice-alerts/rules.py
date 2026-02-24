@@ -1,6 +1,7 @@
+# rules.py
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 
 @dataclass
@@ -53,15 +54,45 @@ def _is_rule_enabled(rule: Dict[str, Any]) -> bool:
     return bool(v)
 
 
+def _is_waived_line_item(li: Dict[str, Any]) -> bool:
+    """
+    Best-effort waiver detection using your current line item schema:
+      - total == 0 (or near-zero)
+      - but unit_price > 0 and quantity > 0
+
+    This catches your Signature example:
+      unit_price: 1660, qty: 1, total: 0  => waived
+    """
+    qty = _to_float(li.get("quantity")) or 0.0
+    unit = _to_float(li.get("unit_price")) or 0.0
+    total = _to_float(li.get("total")) or 0.0
+    return qty > 0 and unit > 0 and abs(total) < 0.01
+
+
+def _line_item_is_charged(li: Dict[str, Any]) -> bool:
+    """
+    A "charged" line item is one that actually contributes to amount charged.
+    For now: total > 0 (with a tiny epsilon).
+    """
+    total = _to_float(li.get("total")) or 0.0
+    return total > 0.01
+
+
 def _keyword_match(
     keywords: List[str],
     invoice: Dict[str, Any],
-) -> (Set[str], List[Dict[str, Any]]):
+    *,
+    require_charged_line_items: bool = False,
+) -> Tuple[Set[str], List[Dict[str, Any]]]:
     """
     Match keywords against:
       - each line_item description/name/desc
-      - plus a coarse "invoice text" (vendor_name, invoice_number, airport_code)
-    Returns: (matched_keywords_set, matched_line_items)
+      - plus a coarse "invoice text" (vendor_name, invoice_number, airport_code, etc.)
+
+    If require_charged_line_items=True:
+      - we ONLY return matched_line_items whose total > 0
+      - invoice_text-only matches are still tracked in matched_keywords,
+        but rule_matches() can decide whether that counts as a match.
     """
     kws = [k for k in (_norm(k) for k in keywords) if k]
     if not kws:
@@ -86,15 +117,20 @@ def _keyword_match(
         desc = _norm(li.get("description") or li.get("name") or li.get("desc"))
         hay = desc or ""
         li_hit = False
+
         for kw in kws:
             if kw and (kw in hay or kw in invoice_text):
                 matched_kws.add(kw)
                 li_hit = li_hit or (kw in hay)
+
         if li_hit:
+            # If this rule wants only "charged" matches, filter here.
+            if require_charged_line_items and not _line_item_is_charged(li):
+                continue
             matched_items.append(li)
 
     # If keywords matched invoice_text but not specific line items,
-    # we still treat as keyword match (matched_items may be empty).
+    # we still record that a keyword matched. (matched_items may be empty.)
     if not matched_kws:
         for kw in kws:
             if kw and kw in invoice_text:
@@ -168,13 +204,31 @@ def rule_matches(rule: Dict[str, Any], invoice: Dict[str, Any]) -> RuleMatchResu
     keywords = _listify(rule.get("keywords"))
     keywords = [str(k) for k in keywords if k is not None]
 
-    matched_kws, matched_items = _keyword_match(keywords, invoice)
+    # NEW: allow per-rule behavior to require "charged" matches only.
+    # This prevents waived $0 line items (like waived Handling Fee) from triggering alerts.
+    #
+    # Add a boolean column in your rules table when you're ready, e.g.:
+    #   require_charged_line_items boolean default false
+    #
+    # Then set it TRUE for rules like "Handling fee" / "Service fee" etc.
+    require_charged_line_items = bool(rule.get("require_charged_line_items"))
+
+    matched_kws, matched_items = _keyword_match(
+        keywords,
+        invoice,
+        require_charged_line_items=require_charged_line_items,
+    )
 
     # Match behavior:
     # - If a rule has keywords, it must match at least one keyword.
     # - If rule has no keywords, it's still a match if it passed filters/thresholds.
     if keywords and not matched_kws:
         return RuleMatchResult(False, "no keyword match", [], [])
+
+    # NEW: if this rule requires charged line items, invoice_text-only matches do NOT count.
+    # We need at least one matched line item that is charged (total > 0).
+    if require_charged_line_items and not matched_items:
+        return RuleMatchResult(False, "no charged line item matches", [], sorted(matched_kws))
 
     reason = "matched"
     if matched_kws:
