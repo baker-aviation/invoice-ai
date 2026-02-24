@@ -1,34 +1,36 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+
+const BASE = process.env.JOB_API_BASE_URL;
+
+function mustBase(): string {
+  if (!BASE) throw new Error("Missing JOB_API_BASE_URL");
+  return BASE.replace(/\/$/, "");
+}
 
 export async function GET(
-  _req: Request,
-  { params }: { params: { id: string } }
+  _req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
 ) {
-  const base = process.env.JOB_API_BASE_URL;
-  if (!base) {
-    return NextResponse.json(
-      { ok: false, error: "Missing JOB_API_BASE_URL in .env.local" },
-      { status: 500 }
-    );
-  }
+  const { id } = await params;
 
-  const id = params?.id;
-  if (!id) {
-    return NextResponse.json(
-      { ok: false, error: "Missing id param" },
-      { status: 400 }
-    );
-  }
+  const base = mustBase();
+  const url = `${base}/api/jobs/${id}`;
 
-  const url = `${base.replace(/\/$/, "")}/api/jobs/${encodeURIComponent(id)}`;
-
-  const upstream = await fetch(url, { cache: "no-store" });
-  const text = await upstream.text();
-
-  return new NextResponse(text, {
-    status: upstream.status,
-    headers: {
-      "content-type": upstream.headers.get("content-type") ?? "application/json",
-    },
+  const res = await fetch(url, {
+    cache: "no-store",
+    headers: { Accept: "application/json" },
   });
+
+  const text = await res.text();
+
+  if (!res.ok) {
+    return new NextResponse(text || "Upstream error", { status: res.status });
+  }
+
+  // if upstream returned JSON, pass it through
+  try {
+    return NextResponse.json(JSON.parse(text));
+  } catch {
+    return new NextResponse(text, { status: 200 });
+  }
 }
