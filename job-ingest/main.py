@@ -107,30 +107,30 @@ def _graph_list_inbox_messages(mailbox: str, token: str, top: int) -> List[Dict[
     return data.get("value", [])
 
 
-def _graph_list_attachments(mailbox: str, token: str, message_id: str) -> List[Dict[str, Any]]:
+def _graph_get_attachment(mailbox: str, token: str, message_id: str, attachment_id: str) -> Dict[str, Any]:
     """
-    List attachments for a message.
-    IMPORTANT: Do NOT include '@odata.type' in $select or $expand (Graph 400s).
+    Fetch a single attachment by id so we can get contentBytes reliably.
+
+    Critical: attachment_id MUST be fully URL-encoded as a path segment.
     """
     mbox = _u(mailbox)
-    mid = urllib.parse.quote(message_id, safe="=")
+    mid = urllib.parse.quote(message_id, safe="=")         # keep '=' OK for message ids
+    aid = urllib.parse.quote(attachment_id, safe="")       # encode EVERYTHING for attachment ids
 
-    # NOTE: no '@odata.type' and no contentBytes here
-    params = {"$select": "id,name,contentType,size,isInline"}
+    params = {"$select": "id,name,contentType,size,isInline,contentBytes"}
 
     # Try direct path first
-    url1 = f"https://graph.microsoft.com/v1.0/users/{mbox}/messages/{mid}/attachments"
+    url1 = f"https://graph.microsoft.com/v1.0/users/{mbox}/messages/{mid}/attachments/{aid}"
     try:
-        data = _graph_get(url1, token, params=params)
-        return data.get("value", [])
+        return _graph_get(url1, token, params=params)
     except requests.HTTPError as e:
+        # Only fallback on 400s (path quirks)
         if getattr(e, "response", None) is None or e.response.status_code != 400:
             raise
 
-    # Folder-scoped fallback
-    url2 = f"https://graph.microsoft.com/v1.0/users/{mbox}/mailFolders/Inbox/messages/{mid}/attachments"
-    data = _graph_get(url2, token, params=params)
-    return data.get("value", [])
+    # Folder-scoped fallback (some tenants require this)
+    url2 = f"https://graph.microsoft.com/v1.0/users/{mbox}/mailFolders/Inbox/messages/{mid}/attachments/{aid}"
+    return _graph_get(url2, token, params=params)
 
 
 def _graph_get_attachment(mailbox: str, token: str, message_id: str, attachment_id: str) -> Dict[str, Any]:
