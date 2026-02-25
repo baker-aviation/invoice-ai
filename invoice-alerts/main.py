@@ -30,7 +30,7 @@ from google.cloud import storage
 from google.oauth2 import service_account
 
 from rules import rule_matches
-from supa import safe_insert, safe_select_in, safe_select_many, safe_select_one, safe_update, safe_update_where
+from supa import safe_insert, safe_select_many, safe_select_one, safe_update, safe_update_where
 
 app = FastAPI()
 
@@ -1173,28 +1173,23 @@ def api_alerts(
                 _record_event("api_alerts_row_error", str(r.get("document_id") or "n/a"), {"error": repr(e), "alert_id": r.get("id")})
             continue
 
-    # ── Batch fetch all needed parsed invoices in one query ──────────────────
-    doc_ids = list({r.get("document_id") for r, *_ in candidates if r.get("document_id")})
-    invoices_by_doc: Dict[str, Dict[str, Any]] = {}
-    if doc_ids:
-        try:
-            invoice_rows = safe_select_in(
-                PARSED_TABLE,
-                "document_id, vendor_name, tail_number, airport_code, currency, handling_fee, service_fee, surcharge",
-                "document_id",
-                doc_ids,
-            )
-            invoices_by_doc = {row["document_id"]: row for row in invoice_rows if row.get("document_id")}
-        except Exception as e:
-            if DEBUG_ERRORS:
-                _record_event("api_alerts_batch_invoice_error", "n/a", {"error": repr(e)})
-
-    # ── Pass 2: apply invoice data and build output rows ─────────────────────
+    # ── Pass 2: per-row invoice lookup + build output rows ───────────────────
     out: List[Dict[str, Any]] = []
     for r, mp, rule_name, charged_only, matched_line_items, fee_name, fee_amount in candidates:
         try:
             document_id = r.get("document_id")
-            invoice = invoices_by_doc.get(document_id) if document_id else None
+            invoice: Optional[Dict[str, Any]] = None
+            if document_id:
+                try:
+                    invoice = safe_select_one(
+                        PARSED_TABLE,
+                        "vendor_name, tail_number, airport_code, currency, handling_fee, service_fee, surcharge",
+                        eq={"document_id": document_id},
+                    )
+                except Exception as e:
+                    if DEBUG_ERRORS:
+                        _record_event("api_alerts_invoice_lookup_error", str(document_id), {"error": repr(e), "alert_id": r.get("id")})
+                    invoice = None
 
             if invoice:
                 fee2 = _pick_fee_details(
