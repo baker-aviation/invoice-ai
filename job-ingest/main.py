@@ -367,9 +367,6 @@ def pull_applicants(
                 "gcs_bucket": bucket_name,
                 "gcs_key": gcs_key,
                 "size_bytes": len(raw),
-                # Optional columns if you add them
-                "graph_attachment_id": att_id,
-                "sha256": sha256,
             }
 
             try:
