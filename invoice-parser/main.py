@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 from google.cloud import storage
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from supabase import create_client
 from dotenv import load_dotenv
 
@@ -142,3 +142,62 @@ def parse_document(document_id: str):
             pass
 
         raise HTTPException(status_code=500, detail=err)
+
+
+@app.post("/jobs/parse_next")
+def parse_next(
+    limit: int = Query(10, ge=1, le=50),
+    status: str = Query("uploaded"),
+):
+    """
+    Batch endpoint: claims up to `limit` documents with the given status,
+    parses each via parse_document, and returns a summary.
+    This is what the Cloud Scheduler 'invoice-parse-next' job calls.
+    """
+    # Select candidates
+    res = (
+        supa.table(DOCUMENTS_TABLE)
+        .select("id")
+        .eq("status", status)
+        .order("created_at", desc=False)
+        .limit(limit)
+        .execute()
+    )
+    candidate_ids = [r["id"] for r in (res.data or []) if r.get("id")]
+    if not candidate_ids:
+        return {"claimed": 0, "parsed": 0, "failed": 0, "results": []}
+
+    # Atomically claim each: only succeeds if status hasn't changed
+    claimed_ids = []
+    for did in candidate_ids:
+        try:
+            updated = (
+                supa.table(DOCUMENTS_TABLE)
+                .update({"status": "processing"})
+                .eq("id", did)
+                .eq("status", status)
+                .execute()
+            )
+            if updated.data:
+                claimed_ids.append(did)
+        except Exception:
+            pass
+
+    parsed = 0
+    failed = 0
+    results = []
+    for did in claimed_ids:
+        try:
+            parse_document(document_id=did)
+            results.append({"document_id": did, "ok": True})
+            parsed += 1
+        except Exception as e:
+            results.append({"document_id": did, "ok": False, "error": str(e)[:300]})
+            failed += 1
+
+    return {
+        "claimed": len(claimed_ids),
+        "parsed": parsed,
+        "failed": failed,
+        "results": results,
+    }
