@@ -48,6 +48,12 @@ export default function HomePage() {
               title="Jobs"
               subtitle="Browse parsed job applications"
             />
+
+            <CardLink
+              href="/maintenance"
+              title="Maintenance"
+              subtitle="Van positioning · overnight aircraft locations"
+            />
           </div>
         </div>
       </div>
