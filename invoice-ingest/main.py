@@ -136,15 +136,18 @@ def _claim_documents_for_parse(limit: int, status: str) -> List[Dict[str, Any]]:
     # Atomically claim each: only succeeds if status is still the expected value.
     claimed_ids = []
     for did in candidate_ids:
-        updated = (
-            supa.table(DOCS_TABLE)
-            .update({"status": "processing", "claimed_at": _utc_now()})
-            .eq("id", did)
-            .eq("status", status)
-            .execute()
-        )
-        if updated.data:
-            claimed_ids.append(did)
+        try:
+            updated = (
+                supa.table(DOCS_TABLE)
+                .update({"status": "processing"})
+                .eq("id", did)
+                .eq("status", status)
+                .execute()
+            )
+            if updated.data:
+                claimed_ids.append(did)
+        except Exception:
+            pass
 
     if not claimed_ids:
         return []
