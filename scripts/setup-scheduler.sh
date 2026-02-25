@@ -74,22 +74,23 @@ echo ""
 echo "── Invoice pipeline"
 
 # Step 1: pull emails from Outlook → GCS + Supabase (status=uploaded)
-upsert_job "invoice-pull-mailbox" "*/10 * * * *" \
-  "${INGEST_URL}/jobs/pull_mailbox?mailbox=${INVOICE_MAILBOX}&lookback_minutes=15&max_messages=50" \
+upsert_job "invoice-pull-mailbox" "*/15 * * * *" \
+  "${INGEST_URL}/jobs/pull_mailbox?mailbox=${INVOICE_MAILBOX}&lookback_minutes=20&max_messages=50" \
   --description "Pull invoice PDFs from Outlook mailbox into GCS"
 
 # Step 2: parse uploaded docs via invoice-parser → Supabase (status=parsed)
-upsert_job "invoice-parse-next" "*/10 * * * *" \
+upsert_job "invoice-parse-next" "*/15 * * * *" \
   "${INGEST_URL}/jobs/parse_next?limit=10&status=uploaded" \
   --description "Parse uploaded invoice documents"
 
 # Step 3: create alert rows from parsed invoices
-upsert_job "invoice-run-alerts-next" "*/10 * * * *" \
+upsert_job "invoice-run-alerts-next" "*/15 * * * *" \
   "${ALERTS_URL}/jobs/run_alerts_next?limit=10&lookback_minutes=30" \
   --description "Generate alert rows from newly parsed invoices"
 
-# Step 4: flush pending alerts to Slack (anti-spam: claim step prevents duplicates)
-upsert_job "invoice-flush-alerts" "*/10 * * * *" \
+# Step 4: flush pending alerts to Slack — kept PAUSED by default to avoid repeat alerts.
+# Resume manually once dedup is confirmed: gcloud scheduler jobs resume invoice-alerts-flush ...
+upsert_job "invoice-alerts-flush" "*/15 * * * *" \
   "${ALERTS_URL}/jobs/flush_alerts?limit=25" \
   --description "Send actionable alerts to Slack"
 
