@@ -26,14 +26,17 @@ function norm(v: any) {
 function fmtTime(s: any) {
   const t = norm(s);
   if (!t) return "—";
-  // Keep your existing formatting behavior
   return t.replace("T", " ").replace("+00:00", "Z");
 }
+
+type FlushState = "idle" | "loading" | "success" | "error";
 
 export default function AlertsTable({ initialAlerts }: { initialAlerts: AlertRow[] }) {
   const [airport, setAirport] = useState<string>("all");
   const [vendor, setVendor] = useState<string>("all");
   const [q, setQ] = useState<string>("");
+  const [flushState, setFlushState] = useState<FlushState>("idle");
+  const [flushMsg, setFlushMsg] = useState<string>("");
 
   const airports = useMemo(() => {
     const set = new Set<string>();
@@ -94,8 +97,50 @@ export default function AlertsTable({ initialAlerts }: { initialAlerts: AlertRow
     setQ("");
   };
 
+  const flushToSlack = async () => {
+    setFlushState("loading");
+    setFlushMsg("");
+    try {
+      const res = await fetch("/api/alerts/flush", { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        const sent = data.sent ?? data.flushed ?? "?";
+        setFlushMsg(`Sent ${sent} alert${sent === 1 ? "" : "s"} to Slack.`);
+        setFlushState("success");
+      } else {
+        setFlushMsg(data.error ?? `Error ${res.status}`);
+        setFlushState("error");
+      }
+    } catch (e: any) {
+      setFlushMsg(String(e?.message ?? "Network error"));
+      setFlushState("error");
+    }
+  };
+
   return (
     <div className="p-6 space-y-4">
+      {/* Slack flush bar */}
+      <div className="rounded-xl border bg-white shadow-sm px-4 py-3 flex items-center justify-between gap-4">
+        <div className="text-sm text-gray-600">
+          Send all pending alerts to Slack.
+        </div>
+        <div className="flex items-center gap-3">
+          {flushMsg && (
+            <span className={`text-xs font-medium ${flushState === "success" ? "text-green-700" : "text-red-600"}`}>
+              {flushMsg}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={flushToSlack}
+            disabled={flushState === "loading"}
+            className="h-9 rounded-lg bg-slate-900 px-4 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            {flushState === "loading" ? "Sending…" : "Send to Slack"}
+          </button>
+        </div>
+      </div>
+
       {/* Filters + Search */}
       <div className="rounded-xl border bg-white shadow-sm p-4">
         <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">

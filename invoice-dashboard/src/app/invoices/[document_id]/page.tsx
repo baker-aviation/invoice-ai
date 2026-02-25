@@ -61,8 +61,8 @@ export default async function InvoiceDetailPage({
               <span className="text-sm text-gray-500">No PDF URL</span>
             )}
 
-            <Link href="/" className="rounded-md border px-3 py-2 text-sm">
-              ← Back
+            <Link href="/invoices" className="rounded-md border px-3 py-2 text-sm">
+              ← Back to Invoices
             </Link>
           </div>
         </div>
