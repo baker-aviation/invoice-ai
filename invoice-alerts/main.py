@@ -18,7 +18,7 @@ import json
 import os
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import google.auth
@@ -745,13 +745,22 @@ def run_alerts(document_id: str) -> Dict[str, Any]:
 def run_alerts_next(limit: int = 5, lookback_minutes: int = 240) -> Dict[str, Any]:
     """
     Runs /jobs/run_alerts against the most recent parsed invoices.
-    NOTE: lookback_minutes is currently unused (safe_select_many is limited).
+    lookback_minutes filters to invoices created within the last N minutes.
     """
     try:
         limit = max(1, min(int(limit), 50))
 
-        rows = safe_select_many(PARSED_TABLE, "document_id, created_at", limit=max(limit, 50)) or []
-        rows = sorted(rows, key=lambda r: str(r.get("created_at") or ""), reverse=True)
+        since = datetime.now(timezone.utc) - timedelta(minutes=lookback_minutes)
+        since_iso = since.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        rows = safe_select_many(
+            PARSED_TABLE,
+            "document_id, created_at",
+            gte={"created_at": since_iso},
+            order="created_at",
+            desc=True,
+            limit=max(limit, 50),
+        ) or []
 
         ran = 0
         results: List[Dict[str, Any]] = []
@@ -793,6 +802,7 @@ def flush_alerts(limit: int = 25) -> Dict[str, Any]:
         rows = safe_select_many(
             ALERTS_TABLE,
             "id, created_at, rule_id, document_id, parsed_invoice_id, status, slack_status, slack_error, match_payload",
+            not_in={"slack_status": ["sent", "sending", "error", "skipped"]},
             limit=500,
         ) or []
 
@@ -995,6 +1005,98 @@ def flush_alerts(limit: int = 25) -> Dict[str, Any]:
         if DEBUG_ERRORS:
             raise HTTPException(status_code=500, detail=f"flush_alerts failed: {repr(e)}")
         raise HTTPException(status_code=500, detail="flush_alerts failed")
+
+
+@app.post("/jobs/send_alert")
+def send_alert(alert_id: str) -> Dict[str, Any]:
+    """
+    Send a single alert to Slack by ID.
+    Can be used for manual re-sends regardless of current slack_status.
+    """
+    try:
+        alert = safe_select_one(ALERTS_TABLE, "*", eq={"id": alert_id})
+        if not alert:
+            raise HTTPException(status_code=404, detail=f"Alert {alert_id} not found")
+
+        document_id = alert.get("document_id")
+        if not document_id:
+            raise HTTPException(status_code=400, detail="Alert has no document_id")
+
+        rules = _fetch_rules()
+        rules_by_id: Dict[str, Dict[str, Any]] = {str(r.get("id")): r for r in (rules or [])}
+
+        invoice = _fetch_invoice(document_id)
+        doc = _fetch_document_row(document_id)
+
+        signed_pdf_url = None
+        if doc:
+            signed_pdf_url = _get_gcs_signed_url(doc.get("gcs_bucket") or "", doc.get("gcs_path") or "")
+
+        mp = _safe_json_loads(alert.get("match_payload")) or {}
+        rule_id = str(alert.get("rule_id") or "")
+        rule = rules_by_id.get(rule_id) if rule_id else None
+        rule_name = (mp.get("rule_name") or (rule or {}).get("name") or "Fee")
+        charged_only = bool((rule or {}).get("require_charged_line_items"))
+
+        matched_line_items = mp.get("matched_line_items")
+        if isinstance(matched_line_items, str):
+            matched_line_items = _safe_json_loads(matched_line_items)
+        if not isinstance(matched_line_items, list) or len(matched_line_items) == 0:
+            if rule:
+                try:
+                    res = rule_matches(rule, invoice)
+                    matched_line_items = res.matched_line_items or [] if res.matched else []
+                except Exception:
+                    matched_line_items = []
+            else:
+                matched_line_items = []
+
+        fee = _pick_fee_details(
+            matched_line_items or [],
+            fallback_fee_name=rule_name,
+            invoice=invoice,
+            rule_name=rule_name,
+            charged_only=charged_only,
+        )
+        fee_name = (fee.get("fee_name") or "").strip() or None
+        fee_amount = _to_float(fee.get("fee_amount"))
+
+        if not fee_name or fee_amount is None or fee_amount <= 0:
+            raise HTTPException(status_code=400, detail="Alert is non-actionable (missing fee name or amount)")
+
+        fbo = invoice.get("vendor_name") or "—"
+        airport = _infer_airport_code(invoice, doc) or "—"
+        tail = invoice.get("tail_number") or "—"
+        currency = invoice.get("currency") or ""
+
+        slack_payload = _build_slack_alert_payload(
+            document_id=document_id,
+            rule_name=rule_name,
+            fbo=fbo,
+            airport_code=airport,
+            tail_number=tail,
+            fee_name=fee_name,
+            fee_amount=fee_amount,
+            currency=currency,
+            signed_pdf_url=signed_pdf_url,
+        )
+
+        slack_res = _slack_post(slack_payload)
+
+        if slack_res.get("ok"):
+            safe_update(ALERTS_TABLE, alert_id, {"slack_status": "sent", "slack_error": None})
+            _record_event("alert_slack_sent_manual", document_id, {"alert_id": alert_id})
+            return {"ok": True, "sent": True, "alert_id": alert_id}
+        else:
+            safe_update(ALERTS_TABLE, alert_id, {"slack_status": "error", "slack_error": json.dumps(slack_res)[:1000]})
+            raise HTTPException(status_code=502, detail=f"Slack error: {slack_res}")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        if DEBUG_ERRORS:
+            raise HTTPException(status_code=500, detail=f"send_alert failed: {repr(e)}")
+        raise HTTPException(status_code=500, detail="send_alert failed")
 
 
 @app.post("/jobs/debug_rule_match")

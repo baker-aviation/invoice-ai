@@ -112,19 +112,46 @@ def _doc_bucket_path(doc: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]
 
 def _claim_documents_for_parse(limit: int, status: str) -> List[Dict[str, Any]]:
     """
-    Fetch candidate docs by status.
-    NOTE: If you later add a 'claimed'/'processing' status, change this to be atomic.
+    Atomically claim documents by transitioning status -> processing.
+    Selects candidate IDs first, then claims each with a conditional update
+    (only updates if status is still the expected value). This prevents two
+    concurrent workers from double-processing the same document.
     """
     supa = sb()
+
+    # Select candidate IDs (may overlap with concurrent workers — that's fine,
+    # the per-row claim below is the atomic gate).
     res = (
         supa.table(DOCS_TABLE)
-        .select("*")
+        .select("id")
         .eq("status", status)
         .order("created_at", desc=False)
         .limit(limit)
         .execute()
     )
-    return res.data or []
+    candidate_ids = [r["id"] for r in (res.data or []) if r.get("id")]
+    if not candidate_ids:
+        return []
+
+    # Atomically claim each: only succeeds if status is still the expected value.
+    claimed_ids = []
+    for did in candidate_ids:
+        updated = (
+            supa.table(DOCS_TABLE)
+            .update({"status": "processing", "claimed_at": _utc_now()})
+            .eq("id", did)
+            .eq("status", status)
+            .execute()
+        )
+        if updated.data:
+            claimed_ids.append(did)
+
+    if not claimed_ids:
+        return []
+
+    # Fetch the full rows we successfully claimed.
+    res2 = supa.table(DOCS_TABLE).select("*").in_("id", claimed_ids).execute()
+    return res2.data or []
 
 
 # -------------------------
@@ -364,12 +391,6 @@ def parse_next(limit: int = 5, status: str = "uploaded"):
             continue
 
         claimed += 1
-
-        # optional: set status=processing (if you have it)
-        try:
-            supa.table(DOCS_TABLE).update({"status": "processing", "claimed_at": _utc_now()}).eq("id", did).execute()
-        except Exception:
-            pass
 
         try:
             r = parse_document(document_id=did)

@@ -88,6 +88,8 @@ def safe_select_many(
     columns: str = "*",
     *,
     eq: Optional[Dict[str, Any]] = None,
+    gte: Optional[Dict[str, Any]] = None,
+    not_in: Optional[Dict[str, List[Any]]] = None,
     limit: int = 100,
     order: Optional[str] = None,
     desc: bool = False,
@@ -97,6 +99,14 @@ def safe_select_many(
     if eq:
         for k, v in eq.items():
             q = q.eq(k, v)
+
+    if gte:
+        for k, v in gte.items():
+            q = q.gte(k, v)
+
+    if not_in:
+        for k, values in not_in.items():
+            q = q.not_.in_(k, list(values))
 
     if order:
         q = q.order(order, desc=desc)
