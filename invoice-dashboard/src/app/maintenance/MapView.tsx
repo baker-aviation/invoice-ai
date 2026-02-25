@@ -8,7 +8,6 @@
 import { useEffect } from "react";
 import { MapContainer, TileLayer, CircleMarker, Circle, Popup, Tooltip } from "react-leaflet";
 import type { VanAssignment } from "@/lib/maintenanceData";
-import "leaflet/dist/leaflet.css";
 
 type Props = {
   vans: VanAssignment[];
