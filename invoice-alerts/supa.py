@@ -106,6 +106,21 @@ def safe_select_many(
     return list(data)
 
 
+def safe_select_in(
+    table: str,
+    columns: str,
+    in_column: str,
+    values: List[Any],
+) -> List[Dict[str, Any]]:
+    """Fetch rows where in_column is in values — single query, no N+1."""
+    if not values:
+        return []
+    q = sb.table(table).select(columns).in_(in_column, list(values))
+    res = _execute_with_retry(q)
+    data = getattr(res, "data", None) or []
+    return list(data)
+
+
 def safe_insert(
     table: str,
     row: Dict[str, Any],

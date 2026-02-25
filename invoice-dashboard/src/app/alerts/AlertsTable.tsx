@@ -37,6 +37,8 @@ export default function AlertsTable({ initialAlerts }: { initialAlerts: AlertRow
   const [q, setQ] = useState<string>("");
   const [flushState, setFlushState] = useState<FlushState>("idle");
   const [flushMsg, setFlushMsg] = useState<string>("");
+  const [page, setPage] = useState(0);
+  const PAGE_SIZE = 20;
 
   const airports = useMemo(() => {
     const set = new Set<string>();
@@ -91,10 +93,14 @@ export default function AlertsTable({ initialAlerts }: { initialAlerts: AlertRow
     });
   }, [initialAlerts, airport, vendor, q]);
 
+  const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
+  const paged = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+
   const clear = () => {
     setAirport("all");
     setVendor("all");
     setQ("");
+    setPage(0);
   };
 
   const flushToSlack = async () => {
@@ -223,7 +229,7 @@ export default function AlertsTable({ initialAlerts }: { initialAlerts: AlertRow
             </thead>
 
             <tbody>
-              {filtered.map((a) => (
+              {paged.map((a) => (
                 <tr key={a.id} className="border-t hover:bg-gray-50 transition">
                   <td className="px-4 py-3 whitespace-nowrap">{fmtTime(a.created_at)}</td>
                   <td className="px-4 py-3 font-medium">{a.rule_name ?? "—"}</td>
@@ -264,7 +270,32 @@ export default function AlertsTable({ initialAlerts }: { initialAlerts: AlertRow
         </div>
       </div>
 
-      <div className="text-xs text-gray-500">Showing last {filtered.length} alerts.</div>
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between">
+          <button
+            type="button"
+            onClick={() => setPage((p) => Math.max(0, p - 1))}
+            disabled={page === 0}
+            className="h-9 rounded-lg border px-4 text-sm hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            ← Previous
+          </button>
+          <span className="text-xs text-gray-500">
+            Page {page + 1} of {totalPages}
+          </span>
+          <button
+            type="button"
+            onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+            disabled={page >= totalPages - 1}
+            className="h-9 rounded-lg border px-4 text-sm hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            Next →
+          </button>
+        </div>
+      )}
+
+      <div className="text-xs text-gray-500">Showing {filtered.length} alerts across {totalPages} page{totalPages === 1 ? "" : "s"}.</div>
     </div>
   );
 }

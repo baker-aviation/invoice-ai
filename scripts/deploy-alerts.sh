@@ -17,6 +17,7 @@ gcloud run deploy "${SERVICE_NAME}" \
   --cpu 1 \
   --memory 512Mi \
   --timeout 300 \
+  --min-instances 1 \
   --max-instances 20 \
   --set-secrets "SUPABASE_URL=SUPABASE_URL:latest,SUPABASE_SERVICE_ROLE_KEY=SUPABASE_SERVICE_ROLE_KEY:latest,SLACK_WEBHOOK_URL=SLACK_WEBHOOK_URL:latest" \
   --update-annotations "run.googleapis.com/startup-cpu-boost=true"
