@@ -54,6 +54,12 @@ export default function HomePage() {
               title="Maintenance"
               subtitle="Van positioning · overnight aircraft locations"
             />
+
+            <CardLink
+              href="/tanker"
+              title="Tanker Planner"
+              subtitle="Optimize fuel tankering — single & multi-leg"
+            />
           </div>
         </div>
       </div>
