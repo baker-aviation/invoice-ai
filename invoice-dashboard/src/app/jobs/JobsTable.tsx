@@ -7,10 +7,29 @@ function normalize(v: any) {
   return String(v ?? "").trim();
 }
 
+function triLabel(v: string) {
+  if (v === "true") return "Yes";
+  if (v === "false") return "No";
+  return "All";
+}
+
+function asBool(v: any): boolean | null {
+  if (v === true) return true;
+  if (v === false) return false;
+  const s = String(v ?? "").toLowerCase().trim();
+  if (s === "true") return true;
+  if (s === "false") return false;
+  return null;
+}
+
 export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
   const [q, setQ] = useState("");
   const [category, setCategory] = useState("ALL");
   const [softGate, setSoftGate] = useState("ALL");
+
+  // ✅ NEW filters
+  const [citation, setCitation] = useState<"all" | "true" | "false">("all");
+  const [challenger, setChallenger] = useState<"all" | "true" | "false">("all");
 
   const categories = useMemo(() => {
     const set = new Set<string>();
@@ -40,6 +59,20 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
       if (category !== "ALL" && jCategory !== category) return false;
       if (softGate !== "ALL" && jSoft !== softGate) return false;
 
+      // ✅ NEW: Citation filter
+      if (citation !== "all") {
+        const has = asBool(j.has_citation_x);
+        if (citation === "true" && has !== true) return false;
+        if (citation === "false" && has !== false) return false;
+      }
+
+      // ✅ NEW: Challenger filter
+      if (challenger !== "all") {
+        const has = asBool(j.has_challenger_300_type_rating);
+        if (challenger === "true" && has !== true) return false;
+        if (challenger === "false" && has !== false) return false;
+      }
+
       if (!query) return true;
 
       const haystack = [
@@ -59,7 +92,7 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
 
       return haystack.includes(query);
     });
-  }, [initialJobs, q, category, softGate]);
+  }, [initialJobs, q, category, softGate, citation, challenger]);
 
   return (
     <div className="p-6 space-y-4">
@@ -95,11 +128,35 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
           ))}
         </select>
 
+        {/* ✅ NEW */}
+        <select
+          value={citation}
+          onChange={(e) => setCitation(e.target.value as any)}
+          className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm"
+        >
+          <option value="all">Citation: {triLabel("all")}</option>
+          <option value="true">Citation: Yes</option>
+          <option value="false">Citation: No</option>
+        </select>
+
+        {/* ✅ NEW */}
+        <select
+          value={challenger}
+          onChange={(e) => setChallenger(e.target.value as any)}
+          className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm"
+        >
+          <option value="all">Challenger: {triLabel("all")}</option>
+          <option value="true">Challenger: Yes</option>
+          <option value="false">Challenger: No</option>
+        </select>
+
         <button
           onClick={() => {
             setQ("");
             setCategory("ALL");
             setSoftGate("ALL");
+            setCitation("all");
+            setChallenger("all");
           }}
           className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm hover:bg-gray-50"
         >
@@ -131,26 +188,23 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
                   <td className="px-4 py-3">
                     {String(j.created_at ?? "").replace("T", " ").replace("+00:00", "Z")}
                   </td>
-
                   <td className="px-4 py-3">
                     <div className="font-medium">{j.candidate_name ?? "—"}</div>
                     <div className="text-xs text-gray-500">{j.email ?? "—"}</div>
                   </td>
-
                   <td className="px-4 py-3">{j.category ?? "—"}</td>
                   <td className="px-4 py-3">{j.location ?? "—"}</td>
                   <td className="px-4 py-3">{j.total_time_hours ?? "—"}</td>
                   <td className="px-4 py-3">{j.pic_time_hours ?? "—"}</td>
                   <td className="px-4 py-3">{j.soft_gate_pic_status ?? "—"}</td>
 
-                  {/* ✅ FIXED: single <td>, no nested td */}
                   <td className="px-4 py-3 text-right">
                     {j.application_id ? (
                       <Link href={`/jobs/${j.application_id}`} className="text-blue-600 hover:underline">
                         View →
                       </Link>
                     ) : (
-                      <span className="text-gray-400">—</span>
+                      "—"
                     )}
                   </td>
                 </tr>

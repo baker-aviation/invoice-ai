@@ -7,6 +7,12 @@ function fmtDate(s: any) {
   return String(s ?? "").replace("T", " ").replace("+00:00", "Z");
 }
 
+function mustJobBase(): string {
+  const base = process.env.JOB_API_BASE_URL;
+  if (!base) throw new Error("Missing JOB_API_BASE_URL in .env.local");
+  return base.replace(/\/$/, "");
+}
+
 export default async function JobDetailPage({
   params,
 }: {
@@ -24,6 +30,7 @@ export default async function JobDetailPage({
     const data = await fetchJobDetail(applicationId);
     const job = data.job;
     const files = data.files ?? [];
+    const jobBase = mustJobBase();
 
     return (
       <>
@@ -125,18 +132,14 @@ export default async function JobDetailPage({
                       </div>
                     </div>
 
-                    {f.signed_url ? (
-                      <a
-                        href={f.signed_url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-blue-600 hover:underline whitespace-nowrap"
-                      >
-                        Open →
-                      </a>
-                    ) : (
-                      <span className="text-gray-400 whitespace-nowrap">No link</span>
-                    )}
+                    <a
+                      href={`${jobBase}/api/files/${f.id}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-blue-600 hover:underline whitespace-nowrap"
+                    >
+                      Open →
+                    </a>
                   </div>
                 ))}
               </div>

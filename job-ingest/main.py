@@ -2,7 +2,8 @@ import os
 import base64
 import hashlib
 import urllib.parse
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 from fastapi import FastAPI, HTTPException, Query
@@ -34,6 +35,7 @@ INBOX_KEYWORDS = [
 # -------------------------
 # Helpers
 # -------------------------
+
 
 def _u(value: str) -> str:
     """
@@ -102,16 +104,69 @@ def _graph_get(url: str, token: str, params: Optional[Dict[str, str]] = None) ->
     return r.json()
 
 
-def _graph_list_inbox_messages(mailbox: str, token: str, top: int) -> List[Dict[str, Any]]:
+def _graph_list_inbox_messages_page(
+    mailbox: str,
+    token: str,
+    *,
+    top: int,
+    received_since_iso: Optional[str] = None,
+    next_link: Optional[str] = None,
+) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """
+    Returns (messages, next_link).
+    Uses @odata.nextLink pagination when present.
+    """
+    if next_link:
+        data = _graph_get(next_link, token)
+        msgs = data.get("value", []) or []
+        return msgs, data.get("@odata.nextLink")
+
     mbox = _u(mailbox)
     url = f"https://graph.microsoft.com/v1.0/users/{mbox}/mailFolders/Inbox/messages"
-    params = {
+
+    params: Dict[str, str] = {
         "$top": str(top),
         "$select": "id,subject,receivedDateTime,hasAttachments",
         "$orderby": "receivedDateTime desc",
     }
+    if received_since_iso:
+        params["$filter"] = f"receivedDateTime ge {received_since_iso}"
+
     data = _graph_get(url, token, params=params)
-    return data.get("value", [])
+    msgs = data.get("value", []) or []
+    return msgs, data.get("@odata.nextLink")
+
+
+def _graph_list_inbox_messages(
+    mailbox: str,
+    token: str,
+    *,
+    max_messages: int,
+    received_since_iso: Optional[str] = None,
+    page_size: int = 50,
+) -> List[Dict[str, Any]]:
+    """
+    Paginate Inbox messages until max_messages reached or no nextLink.
+    """
+    out: List[Dict[str, Any]] = []
+    next_link: Optional[str] = None
+
+    while len(out) < max_messages:
+        take = min(page_size, max_messages - len(out))
+        msgs, next_link = _graph_list_inbox_messages_page(
+            mailbox,
+            token,
+            top=take,
+            received_since_iso=received_since_iso,
+            next_link=next_link,
+        )
+        if not msgs:
+            break
+        out.extend(msgs)
+        if not next_link:
+            break
+
+    return out
 
 
 def _graph_list_attachments(mailbox: str, token: str, message_id: str) -> List[Dict[str, Any]]:
@@ -151,8 +206,7 @@ def _graph_get_attachment(mailbox: str, token: str, message_id: str, attachment_
     """
     mbox = _u(mailbox)
     mid = _u(message_id)
-    # attachment ids should be fully encoded (encode everything)
-    aid = urllib.parse.quote(attachment_id, safe="")
+    aid = urllib.parse.quote(attachment_id, safe="")  # encode everything
 
     url1 = f"https://graph.microsoft.com/v1.0/users/{mbox}/messages/{mid}/attachments/{aid}"
     try:
@@ -226,27 +280,35 @@ def _file_exists(supa, gcs_key: str) -> bool:
         return False
 
 
+def _iso_days_ago(days: int) -> str:
+    dt = datetime.now(timezone.utc) - timedelta(days=int(days))
+    return dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
 # -------------------------
-# Routes
+# Core ingest routine
 # -------------------------
 
-@app.get("/_health")
-def health():
-    return {"ok": True}
 
-
-@app.post("/jobs/pull_applicants")
-def pull_applicants(
-    mailbox: str = Query(...),
-    role_bucket: str = Query(...),
-    max_messages: int = Query(50, ge=1, le=200),
-):
+def _ingest_messages(
+    *,
+    mailbox: str,
+    role_bucket: str,
+    max_messages: int,
+    received_since_iso: Optional[str],
+) -> Dict[str, Any]:
     bucket_name = _require_nonempty("GCS_BUCKET", GCS_BUCKET)
 
     token = _get_graph_token()
     supa = _get_supa()
 
-    msgs = _graph_list_inbox_messages(mailbox, token, max_messages)
+    msgs = _graph_list_inbox_messages(
+        mailbox,
+        token,
+        max_messages=max_messages,
+        received_since_iso=received_since_iso,
+        page_size=50,
+    )
     msgs = [m for m in msgs if _looks_like_app(m)]
 
     storage_client = storage.Client()
@@ -283,12 +345,70 @@ def pull_applicants(
             continue
 
         # keep non-inline attachments with an id
-        file_atts = [a for a in atts if not a.get("isInline") and a.get("id")]
-        if not file_atts:
+        candidates = [a for a in atts if not a.get("isInline") and a.get("id")]
+        if not candidates:
             results.append({"message_id": mid, "status": "no_attachments"})
             continue
 
-        # 2) Create application row (idempotent)
+        # 2) Pre-fetch candidates and ONLY proceed if we find at least one fileAttachment (contentBytes present)
+        # This prevents orphan job_applications rows caused by itemAttachment attachments (no contentBytes).
+        prefetched: List[Dict[str, Any]] = []
+        skipped: List[Dict[str, Any]] = []
+
+        for a in candidates:
+            att_id = a["id"]
+            name_hint = a.get("name")
+
+            try:
+                full = _graph_get_attachment(mailbox, token, mid, att_id)
+            except requests.HTTPError as e:
+                status = None
+                body = ""
+                if getattr(e, "response", None) is not None:
+                    status = e.response.status_code
+                    body = (e.response.text or "")[:1000]
+                skipped.append(
+                    {
+                        "filename": name_hint,
+                        "status": "attachment_fetch_failed",
+                        "status_code": status,
+                        "error": str(e),
+                        "error_body": body,
+                    }
+                )
+                continue
+
+            b64 = full.get("contentBytes")
+            if not b64:
+                # This is usually itemAttachment (embedded email) or a type that has no bytes.
+                skipped.append(
+                    {
+                        "filename": full.get("name") or name_hint,
+                        "status": "no_contentBytes",
+                        "odata_type": full.get("@odata.type") or full.get("odata.type"),
+                    }
+                )
+                continue
+
+            prefetched.append(
+                {
+                    "att_id": att_id,
+                    "meta": a,
+                    "full": full,
+                }
+            )
+
+        if not prefetched:
+            results.append(
+                {
+                    "message_id": mid,
+                    "status": "no_file_attachments",
+                    "skipped": skipped,
+                }
+            )
+            continue
+
+        # 3) Create application row (idempotent) ONLY AFTER we know we have at least 1 real file
         app_row = {
             "mailbox": mailbox,
             "role_bucket": role_bucket,
@@ -304,42 +424,27 @@ def pull_applicants(
 
         uploaded_files: List[Dict[str, Any]] = []
 
-        # 3) Fetch each attachment (contentBytes only exists for fileAttachment)
-        for a in file_atts:
-            att_id = a["id"]
-            name_hint = a.get("name")
-
-            try:
-                full = _graph_get_attachment(mailbox, token, mid, att_id)
-            except requests.HTTPError as e:
-                status = None
-                body = ""
-                if getattr(e, "response", None) is not None:
-                    status = e.response.status_code
-                    body = (e.response.text or "")[:4000]
-                uploaded_files.append(
-                    {
-                        "filename": name_hint,
-                        "status": "attachment_fetch_failed",
-                        "status_code": status,
-                        "error": str(e),
-                        "error_body": body,
-                    }
-                )
-                continue
+        # 4) Upload prefetched fileAttachments
+        for item in prefetched:
+            att_id = item["att_id"]
+            full = item["full"]
+            meta = item["meta"]
+            name_hint = meta.get("name")
 
             b64 = full.get("contentBytes")
             if not b64:
+                # Shouldn't happen because we filtered, but keep safe.
                 uploaded_files.append(
                     {
                         "filename": full.get("name") or name_hint,
                         "status": "no_contentBytes",
+                        "odata_type": full.get("@odata.type") or full.get("odata.type"),
                     }
                 )
                 continue
 
             name = full.get("name") or name_hint or "attachment"
-            content_type = full.get("contentType") or "application/octet-stream"
+            content_type = full.get("contentType") or meta.get("contentType") or "application/octet-stream"
 
             try:
                 raw = base64.b64decode(b64)
@@ -350,6 +455,7 @@ def pull_applicants(
             sha256 = hashlib.sha256(raw).hexdigest()
 
             safe_name = name.replace("/", "_")
+            # JOB_PREFIX/role_bucket/message_id/filename
             gcs_key = f"{JOB_PREFIX}/{role_bucket}/{mid}/{safe_name}"
 
             if _file_exists(supa, gcs_key):
@@ -367,7 +473,6 @@ def pull_applicants(
                 "gcs_bucket": bucket_name,
                 "gcs_key": gcs_key,
                 "size_bytes": len(raw),
-                # Optional columns if you add them
                 "graph_attachment_id": att_id,
                 "sha256": sha256,
             }
@@ -378,13 +483,69 @@ def pull_applicants(
             except Exception as e:
                 uploaded_files.append({"filename": name, "gcs_key": gcs_key, "status": f"db_insert_failed: {e}"})
 
+        # carry forward any skipped attachment info for visibility
+        if skipped:
+            uploaded_files.extend(skipped)
+
         processed += 1
         results.append({"message_id": mid, "application_id": app_id, "uploaded": uploaded_files})
 
     return {
         "ok": True,
-        "mode": "inbox_readonly",
-        "matched": len(msgs),
+        "mailbox": mailbox,
+        "role_bucket": role_bucket,
+        "received_since": received_since_iso,
+        "matched_after_filter": len(msgs),
         "processed": processed,
         "results": results,
     }
+
+
+# -------------------------
+# Routes
+# -------------------------
+
+
+@app.get("/_health")
+def health():
+    return {"ok": True}
+
+
+@app.post("/jobs/pull_applicants")
+def pull_applicants(
+    mailbox: str = Query(...),
+    role_bucket: str = Query(...),
+    max_messages: int = Query(50, ge=1, le=500),
+):
+    """
+    Backwards compatible:
+    - pulls newest max_messages, paginated
+    - filters by hasAttachments + subject keywords
+    """
+    return _ingest_messages(
+        mailbox=mailbox,
+        role_bucket=role_bucket,
+        max_messages=max_messages,
+        received_since_iso=None,
+    )
+
+
+@app.post("/jobs/backfill_applicants")
+def backfill_applicants(
+    mailbox: str = Query(...),
+    role_bucket: str = Query(...),
+    days: int = Query(90, ge=1, le=365),
+    max_messages: int = Query(300, ge=1, le=5000),
+):
+    """
+    Backfill last N days (default 90).
+    - paginates until max_messages or no more
+    - inserts idempotently (won't duplicate)
+    """
+    since_iso = _iso_days_ago(days)
+    return _ingest_messages(
+        mailbox=mailbox,
+        role_bucket=role_bucket,
+        max_messages=max_messages,
+        received_since_iso=since_iso,
+    )

@@ -26,7 +26,6 @@ function norm(v: any) {
 function fmtTime(s: any) {
   const t = norm(s);
   if (!t) return "—";
-  // Keep your existing formatting behavior
   return t.replace("T", " ").replace("+00:00", "Z");
 }
 
@@ -93,6 +92,8 @@ export default function AlertsTable({ initialAlerts }: { initialAlerts: AlertRow
     setVendor("all");
     setQ("");
   };
+
+  const invoiceApiBase = process.env.NEXT_PUBLIC_INVOICE_API_BASE_URL;
 
   return (
     <div className="p-6 space-y-4">
@@ -199,10 +200,28 @@ export default function AlertsTable({ initialAlerts }: { initialAlerts: AlertRow
                       slack: {a.slack_status ?? "—"}
                     </Badge>
                   </td>
-                  <td className="px-4 py-3 text-right whitespace-nowrap">
-                    <Link className="text-blue-600 hover:underline" href={`/invoices/${a.document_id}`}>
-                      View invoice →
-                    </Link>
+
+                  <td className="px-4 py-3 text-right whitespace-nowrap space-x-3">
+                    {a.document_id ? (
+                      <>
+                        <Link className="text-blue-600 hover:underline" href={`/invoices/${a.document_id}`}>
+                          View invoice →
+                        </Link>
+
+                        {invoiceApiBase ? (
+                          <a
+                            className="text-blue-600 hover:underline"
+                            href={`${invoiceApiBase.replace(/\/$/, "")}/api/invoices/${a.document_id}/file`}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            PDF →
+                          </a>
+                        ) : null}
+                      </>
+                    ) : (
+                      "—"
+                    )}
                   </td>
                 </tr>
               ))}
@@ -218,6 +237,12 @@ export default function AlertsTable({ initialAlerts }: { initialAlerts: AlertRow
           </table>
         </div>
       </div>
+
+      {!invoiceApiBase ? (
+        <div className="text-xs text-amber-600">
+          Missing NEXT_PUBLIC_INVOICE_API_BASE_URL — add it to .env.local to enable PDF links.
+        </div>
+      ) : null}
 
       <div className="text-xs text-gray-500">Showing last {filtered.length} alerts.</div>
     </div>

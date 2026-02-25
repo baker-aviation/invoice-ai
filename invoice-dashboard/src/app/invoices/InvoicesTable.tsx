@@ -1,47 +1,87 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { fetchInvoices } from "@/lib/invoiceApi";
 
 function normalize(v: any) {
   return String(v ?? "").trim();
 }
 
+function fmtCreated(s: any) {
+  return String(s ?? "").replace("T", " ").replace("+00:00", "Z");
+}
+
+function invoiceFileUrl(documentId: string) {
+  // Next.js route (or rewrite) that ultimately hits:
+  // invoice-alerts Cloud Run: GET /api/invoices/:document_id/file -> 302 to signed GCS URL
+  return `/api/invoices/${encodeURIComponent(documentId)}/file`;
+}
+
 export default function InvoicesTable({ initialInvoices }: { initialInvoices: any[] }) {
+  // LIVE DATA (not frozen to initial prop)
+  const [invoices, setInvoices] = useState<any[]>(initialInvoices ?? []);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  // Filters
   const [q, setQ] = useState("");
   const [airport, setAirport] = useState("ALL");
   const [vendor, setVendor] = useState("ALL");
 
+  // If server sends a newer set (navigation), sync it in
+  useEffect(() => {
+    setInvoices(initialInvoices ?? []);
+  }, [initialInvoices]);
+
+  async function refresh() {
+    try {
+      setIsRefreshing(true);
+      const data = await fetchInvoices({ limit: 200 });
+      setInvoices(data.invoices ?? []);
+    } catch (e) {
+      // optional: console.error(e);
+    } finally {
+      setIsRefreshing(false);
+    }
+  }
+
+  // AUTO-REFRESH
+  useEffect(() => {
+    // refresh immediately on mount, then poll
+    refresh();
+    const id = setInterval(refresh, 30_000); // <--- change to 10_000 for 10s, etc.
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const airports = useMemo(() => {
     const set = new Set<string>();
-    for (const inv of initialInvoices) {
+    for (const inv of invoices) {
       const a = normalize(inv.airport_code).toUpperCase();
       if (a) set.add(a);
     }
     return ["ALL", ...Array.from(set).sort()];
-  }, [initialInvoices]);
+  }, [invoices]);
 
   const vendors = useMemo(() => {
     const set = new Set<string>();
-    for (const inv of initialInvoices) {
+    for (const inv of invoices) {
       const v = normalize(inv.vendor_name);
       if (v) set.add(v);
     }
     return ["ALL", ...Array.from(set).sort((a, b) => a.localeCompare(b))];
-  }, [initialInvoices]);
+  }, [invoices]);
 
   const filtered = useMemo(() => {
     const query = q.toLowerCase().trim();
 
-    return initialInvoices.filter((inv) => {
-      // dropdown filters
+    return invoices.filter((inv) => {
       const invAirport = normalize(inv.airport_code).toUpperCase();
       const invVendor = normalize(inv.vendor_name);
 
       if (airport !== "ALL" && invAirport !== airport) return false;
       if (vendor !== "ALL" && invVendor !== vendor) return false;
 
-      // search filter
       if (!query) return true;
 
       const haystack = [
@@ -57,7 +97,7 @@ export default function InvoicesTable({ initialInvoices }: { initialInvoices: an
 
       return haystack.includes(query);
     });
-  }, [initialInvoices, q, airport, vendor]);
+  }, [invoices, q, airport, vendor]);
 
   return (
     <div className="p-6 space-y-4">
@@ -104,7 +144,18 @@ export default function InvoicesTable({ initialInvoices }: { initialInvoices: an
           Clear
         </button>
 
-        <div className="text-xs text-gray-500">{filtered.length} shown</div>
+        <button
+          onClick={refresh}
+          disabled={isRefreshing}
+          className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm hover:bg-gray-50 disabled:opacity-50"
+        >
+          {isRefreshing ? "Refreshing…" : "Refresh"}
+        </button>
+
+        <div className="text-xs text-gray-500">
+          {filtered.length} shown{" "}
+          <span className="ml-2 text-gray-400">(total {invoices.length})</span>
+        </div>
       </div>
 
       <div className="rounded-xl border bg-white overflow-hidden shadow-sm">
@@ -118,16 +169,14 @@ export default function InvoicesTable({ initialInvoices }: { initialInvoices: an
                 <th className="px-4 py-3 font-medium">Tail</th>
                 <th className="px-4 py-3 font-medium">Invoice #</th>
                 <th className="px-4 py-3 font-medium">Total</th>
-                <th className="px-4 py-3"></th>
+                <th className="px-4 py-3 text-right font-medium">Actions</th>
               </tr>
             </thead>
 
             <tbody>
               {filtered.map((inv) => (
                 <tr key={inv.id ?? inv.document_id} className="border-t hover:bg-gray-50">
-                  <td className="px-4 py-3">
-                    {String(inv.created_at ?? "").replace("T", " ").replace("+00:00", "Z")}
-                  </td>
+                  <td className="px-4 py-3">{fmtCreated(inv.created_at)}</td>
                   <td className="px-4 py-3">{inv.vendor_name ?? "—"}</td>
                   <td className="px-4 py-3">{inv.airport_code ?? "—"}</td>
                   <td className="px-4 py-3">{inv.tail_number ?? "—"}</td>
@@ -135,11 +184,26 @@ export default function InvoicesTable({ initialInvoices }: { initialInvoices: an
                   <td className="px-4 py-3">
                     {inv.total ?? "—"} {inv.currency ?? ""}
                   </td>
+
                   <td className="px-4 py-3 text-right">
                     {inv.document_id ? (
-                      <Link href={`/invoices/${inv.document_id}`} className="text-blue-600 hover:underline">
-                        View →
-                      </Link>
+                      <div className="flex justify-end gap-4">
+                        <Link
+                          href={`/invoices/${inv.document_id}`}
+                          className="text-blue-600 hover:underline whitespace-nowrap"
+                        >
+                          View →
+                        </Link>
+
+                        <a
+                          href={invoiceFileUrl(inv.document_id)}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-blue-600 hover:underline whitespace-nowrap"
+                        >
+                          PDF →
+                        </a>
+                      </div>
                     ) : (
                       "—"
                     )}

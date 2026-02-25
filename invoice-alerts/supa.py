@@ -1,18 +1,26 @@
 # supa.py
+import json
 import os
 import random
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from supabase import Client, create_client
+import requests
 
-SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
 
 if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
     raise RuntimeError("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY env var")
 
-sb: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+REST_BASE = f"{SUPABASE_URL}/rest/v1"
+
+_DEFAULT_HEADERS = {
+    "apikey": SUPABASE_SERVICE_ROLE_KEY,
+    "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+    "Content-Type": "application/json",
+}
+
 
 # ---------------------------------------------------
 # Retry helpers
@@ -45,11 +53,28 @@ def _sleep_backoff(attempt: int) -> None:
     time.sleep(min(2.5, base + jitter))
 
 
-def _execute_with_retry(q, *, tries: int = 4):
+def _request_with_retry(
+    method: str,
+    url: str,
+    *,
+    headers: Optional[Dict[str, str]] = None,
+    params: Optional[Dict[str, str]] = None,
+    json_body: Any = None,
+    tries: int = 4,
+    timeout: int = 15,
+) -> requests.Response:
     last: Optional[Exception] = None
     for attempt in range(tries):
         try:
-            return q.execute()
+            r = requests.request(
+                method,
+                url,
+                headers=headers,
+                params=params,
+                json=json_body,
+                timeout=timeout,
+            )
+            return r
         except Exception as e:
             last = e
             if attempt < tries - 1 and _is_transient_error(e):
@@ -58,10 +83,31 @@ def _execute_with_retry(q, *, tries: int = 4):
             raise
     if last:
         raise last
-    raise RuntimeError("execute failed without exception?")
+    raise RuntimeError("request failed without exception?")
+
+
+def _raise_for_status(r: requests.Response) -> None:
+    if 200 <= r.status_code < 300:
+        return
+    # Include a trimmed body for debugging
+    body = (r.text or "")[:1200]
+    raise RuntimeError(f"Supabase REST error {r.status_code}: {body}")
+
+
+def _build_eq_params(eq: Optional[Dict[str, Any]]) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    if not eq:
+        return out
+    for k, v in eq.items():
+        if v is None:
+            out[k] = "is.null"
+        else:
+            out[k] = f"eq.{v}"
+    return out
+
 
 # ---------------------------------------------------
-# Query helpers
+# Query helpers (PostgREST)
 # ---------------------------------------------------
 
 def safe_select_one(
@@ -70,14 +116,13 @@ def safe_select_one(
     *,
     eq: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
-    q = sb.table(table).select(columns)
+    url = f"{REST_BASE}/{table}"
+    params = {"select": columns, "limit": "1"}
+    params.update(_build_eq_params(eq))
 
-    if eq:
-        for k, v in eq.items():
-            q = q.eq(k, v)
-
-    res = _execute_with_retry(q.limit(1))
-    data = getattr(res, "data", None) or []
+    r = _request_with_retry("GET", url, headers=_DEFAULT_HEADERS, params=params)
+    _raise_for_status(r)
+    data = r.json() or []
     if not data:
         return None
     return data[0]
@@ -92,17 +137,17 @@ def safe_select_many(
     order: Optional[str] = None,
     desc: bool = False,
 ) -> List[Dict[str, Any]]:
-    q = sb.table(table).select(columns)
-
-    if eq:
-        for k, v in eq.items():
-            q = q.eq(k, v)
+    url = f"{REST_BASE}/{table}"
+    params: Dict[str, str] = {"select": columns, "limit": str(int(limit))}
+    params.update(_build_eq_params(eq))
 
     if order:
-        q = q.order(order, desc=desc)
+        direction = "desc" if desc else "asc"
+        params["order"] = f"{order}.{direction}"
 
-    res = _execute_with_retry(q.limit(int(limit)))
-    data = getattr(res, "data", None) or []
+    r = _request_with_retry("GET", url, headers=_DEFAULT_HEADERS, params=params)
+    _raise_for_status(r)
+    data = r.json() or []
     return list(data)
 
 
@@ -110,9 +155,13 @@ def safe_insert(
     table: str,
     row: Dict[str, Any],
 ) -> Optional[Dict[str, Any]]:
-    q = sb.table(table).insert(row)
-    res = _execute_with_retry(q)
-    data = getattr(res, "data", None) or []
+    url = f"{REST_BASE}/{table}"
+    headers = dict(_DEFAULT_HEADERS)
+    headers["Prefer"] = "return=representation"
+
+    r = _request_with_retry("POST", url, headers=headers, json_body=row)
+    _raise_for_status(r)
+    data = r.json() or []
     if not data:
         return None
     return data[0]
@@ -123,16 +172,18 @@ def safe_update(
     row_id: str,
     patch: Dict[str, Any],
 ) -> Optional[Dict[str, Any]]:
-    q = sb.table(table).update(patch).eq("id", row_id)
-    res = _execute_with_retry(q)
-    data = getattr(res, "data", None) or []
+    url = f"{REST_BASE}/{table}"
+    params = {"id": f"eq.{row_id}", "select": "*"}
+    headers = dict(_DEFAULT_HEADERS)
+    headers["Prefer"] = "return=representation"
+
+    r = _request_with_retry("PATCH", url, headers=headers, params=params, json_body=patch)
+    _raise_for_status(r)
+    data = r.json() or []
     if not data:
         return None
     return data[0]
 
-# ---------------------------------------------------
-# Atomic WHERE update (used for Slack claim lock)
-# ---------------------------------------------------
 
 def safe_update_where(
     table: str,
@@ -142,25 +193,23 @@ def safe_update_where(
     limit: Optional[int] = None,
 ) -> int:
     """
-    Update rows with WHERE filters and return number of rows updated.
-
-    Used for atomic "claim" operations like:
-        pending -> sending
-
-    Returns:
-        int = number of rows updated
+    Atomic-ish update using WHERE filters.
+    Returns number of rows updated (based on returned representation).
+    This is what we use for the Slack CLAIM lock.
     """
-    q = sb.table(table).update(patch)
-
-    if eq:
-        for k, v in eq.items():
-            q = q.eq(k, v)
+    url = f"{REST_BASE}/{table}"
+    params: Dict[str, str] = {"select": "id"}
+    params.update(_build_eq_params(eq))
 
     if limit is not None:
-        q = q.limit(int(limit))
+        params["limit"] = str(int(limit))
 
-    res = _execute_with_retry(q)
-    data = getattr(res, "data", None) or []
+    headers = dict(_DEFAULT_HEADERS)
+    headers["Prefer"] = "return=representation"
+
+    r = _request_with_retry("PATCH", url, headers=headers, params=params, json_body=patch)
+    _raise_for_status(r)
+    data = r.json() or []
     return len(data)
 
 
@@ -170,20 +219,19 @@ def safe_update_where_returning(
     *,
     eq: Optional[Dict[str, Any]] = None,
     limit: Optional[int] = None,
+    columns: str = "*",
 ) -> List[Dict[str, Any]]:
-    """
-    Same as safe_update_where but returns updated rows.
-    Useful for debugging.
-    """
-    q = sb.table(table).update(patch)
-
-    if eq:
-        for k, v in eq.items():
-            q = q.eq(k, v)
+    url = f"{REST_BASE}/{table}"
+    params: Dict[str, str] = {"select": columns}
+    params.update(_build_eq_params(eq))
 
     if limit is not None:
-        q = q.limit(int(limit))
+        params["limit"] = str(int(limit))
 
-    res = _execute_with_retry(q)
-    data = getattr(res, "data", None) or []
+    headers = dict(_DEFAULT_HEADERS)
+    headers["Prefer"] = "return=representation"
+
+    r = _request_with_retry("PATCH", url, headers=headers, params=params, json_body=patch)
+    _raise_for_status(r)
+    data = r.json() or []
     return list(data)

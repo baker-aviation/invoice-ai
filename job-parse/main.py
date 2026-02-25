@@ -11,8 +11,9 @@ from supa import safe_select_many, safe_select_one
 
 from pypdf import PdfReader
 from docx import Document
+from starlette.responses import RedirectResponse
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 app = FastAPI()
 
@@ -98,7 +99,8 @@ def _download_gcs_bytes(bucket: storage.Bucket, gcs_key: str) -> bytes:
         raise FileNotFoundError(f"GCS key not found: {gcs_key}")
     return blob.download_as_bytes()
 
-def _get_gcs_signed_url(bucket_name: str, gcs_key: str, expires_seconds: int = 900) -> Optional[str]:
+
+def _get_gcs_signed_url(bucket_name: str, gcs_key: str, expires_seconds: int = 604800) -> Optional[str]:
     """
     Generate a V4 signed URL for a GCS object.
     Works locally and on Cloud Run. On Cloud Run, we often need to use the
@@ -147,6 +149,7 @@ def _get_gcs_signed_url(bucket_name: str, gcs_key: str, expires_seconds: int = 9
     except Exception as e:
         print("SIGNED URL ERROR:", repr(e), "bucket=", bucket_name, "key=", gcs_key)
         return None
+
 
 def _extract_text_pdf(data: bytes) -> str:
     reader = PdfReader(io.BytesIO(data))
@@ -390,9 +393,6 @@ def _upsert_parse_row(supa: Client, application_id: int, result: Dict[str, Any])
         "type_ratings": tr.get("ratings") or [],
         "type_ratings_raw": tr.get("raw_snippet"),
 
-        # your soft gate result (requires column in job_application_parse)
-        "soft_gate_pic_met": soft_gate_pic_met,
-
         # misc
         "notes": result.get("notes"),
         "confidence": result.get("confidence"),
@@ -452,9 +452,54 @@ def _pick_next_applications(supa: Client, limit: int) -> List[Dict[str, Any]]:
     return out
 
 
+def _parse_iso_dt(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    # accept Z or +00:00
+    s = s.replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(s)
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _iso_days_ago(days: int) -> datetime:
+    return datetime.now(timezone.utc) - timedelta(days=int(days))
+
+
 # -------------------------
 # Routes
 # -------------------------
+
+@app.get("/api/files/{file_id}")
+def api_file_redirect(file_id: int):
+    """
+    Stable file URL:
+      /api/files/{file_id} -> 302 redirect to a fresh signed GCS URL
+    """
+    f = safe_select_one(
+        FILES_TABLE,
+        "id, gcs_bucket, gcs_key, filename, content_type",
+        eq={"id": file_id},
+    )
+    if not f:
+        raise HTTPException(status_code=404, detail="file not found")
+
+    signed_url = _get_gcs_signed_url(
+        f.get("gcs_bucket") or "",
+        f.get("gcs_key") or "",
+        expires_seconds=604800,
+    )
+    if not signed_url:
+        raise HTTPException(status_code=500, detail="could not sign url")
+
+    return RedirectResponse(url=signed_url, status_code=302)
 
 
 @app.get("/_health")
@@ -531,6 +576,9 @@ def parse_application(application_id: int = Query(..., ge=1)):
 
     combined_text = _strip_nulls("\n".join(chunks)) or "\n".join(chunks)
 
+    print("DEBUG TEXT LENGTH:", len(combined_text))
+    print("DEBUG TEXT SAMPLE:", combined_text[:1500])
+
     # OpenAI extraction
     try:
         extracted = _openai_extract(combined_text)
@@ -581,6 +629,92 @@ def parse_next(limit: int = Query(10, ge=1, le=50)):
             )
 
     return {"ok": True, "attempted": len(apps), "results": results}
+
+
+@app.post("/jobs/parse_backlog")
+def parse_backlog(
+    days: int = Query(90, ge=1, le=365),
+    limit: int = Query(25, ge=1, le=100),
+):
+    """
+    Parse up to `limit` unparsed applications from the last `days` days.
+
+    Uses job_applications.received_at (fallback to created_at) for windowing.
+    Skips any application_id already present in job_application_parse.
+    """
+    supa = _supa()
+
+    # pull a reasonably large window, then filter in-memory (keeps it simple)
+    res = (
+        supa.table(APPS_TABLE)
+        .select("id,mailbox,role_bucket,subject,received_at,created_at,source_message_id")
+        .order("created_at", desc=True)
+        .limit(2000)
+        .execute()
+    )
+    apps = getattr(res, "data", None) or []
+
+    cutoff = _iso_days_ago(days)
+
+    recent: List[Dict[str, Any]] = []
+    for a in apps:
+        dt = _parse_iso_dt(a.get("received_at")) or _parse_iso_dt(a.get("created_at"))
+        if not dt:
+            continue
+        if dt >= cutoff:
+            recent.append(a)
+
+    # newest first by received_at/created_at string (good enough after filtering)
+    recent.sort(key=lambda x: str(x.get("received_at") or x.get("created_at") or ""), reverse=True)
+
+    # get parsed ids (limit big enough for typical 3 month window; if huge we can optimize later)
+    parsed = safe_select_many(PARSE_TABLE, "application_id", limit=20000) or []
+    parsed_ids = {int(r["application_id"]) for r in parsed if r.get("application_id") is not None}
+
+    to_parse = []
+    for a in recent:
+        aid = a.get("id")
+        if aid is None:
+            continue
+        if int(aid) in parsed_ids:
+            continue
+        to_parse.append(a)
+        if len(to_parse) >= int(limit):
+            break
+
+    results: List[Dict[str, Any]] = []
+    parsed_n = 0
+    failed_n = 0
+
+    for a in to_parse:
+        aid = int(a["id"])
+        try:
+            out = parse_application(application_id=aid)
+            extracted = out.get("extracted") or {}
+            results.append(
+                {
+                    "application_id": aid,
+                    "status": "parsed",
+                    "category": extracted.get("category"),
+                    "soft_gate_pic_met": extracted.get("soft_gate_pic_met"),
+                }
+            )
+            parsed_n += 1
+        except HTTPException as e:
+            results.append({"application_id": aid, "status": "failed", "error": str(e.detail)})
+            failed_n += 1
+
+    return {
+        "ok": True,
+        "days": int(days),
+        "limit": int(limit),
+        "eligible_recent": len(recent),
+        "attempted": len(to_parse),
+        "parsed": parsed_n,
+        "failed": failed_n,
+        "results": results,
+    }
+
 
 # ---------------------------------------------------------------------
 # API: Jobs (Dashboard)
@@ -684,6 +818,7 @@ def api_job_detail(application_id: int) -> Dict[str, Any]:
     signed_files: List[Dict[str, Any]] = []
 
     for f in files:
+        signed_url = None
         try:
             signed_url = _get_gcs_signed_url(
                 f.get("gcs_bucket") or "",
