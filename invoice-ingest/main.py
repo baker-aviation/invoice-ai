@@ -258,7 +258,6 @@ def pull_mailbox(
                     "source": "mailbox",
                     "source_mailbox": mailbox,
                     "source_message_id": msg_id,
-                    "sha256": digest,
                 }
 
                 # If your schema has different column names, adjust here.
