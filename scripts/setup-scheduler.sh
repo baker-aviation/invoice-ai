@@ -97,13 +97,13 @@ upsert_job "invoice-alerts-flush" "*/15 * * * *" \
 echo ""
 echo "── Job applications pipeline"
 
-# Step 1: pull job application emails → GCS + Supabase
-upsert_job "job-pull-applicants" "*/15 * * * *" \
+# Step 1: pull job application emails → GCS + Supabase (hourly is sufficient)
+upsert_job "job-ingest-pull-applicants" "0 * * * *" \
   "${JOB_INGEST_URL}/jobs/pull_applicants?mailbox=${JOB_MAILBOX}&role_bucket=${JOB_ROLE_BUCKET}&max_messages=50" \
   --description "Pull job application emails from Outlook into GCS"
 
 # Step 2: parse applications via OpenAI → Supabase
-upsert_job "job-parse-next" "*/15 * * * *" \
+upsert_job "job-parse-hourly" "0 * * * *" \
   "${JOB_PARSE_URL}/jobs/parse_next?limit=10" \
   --description "Parse job applications with OpenAI extraction"
 
