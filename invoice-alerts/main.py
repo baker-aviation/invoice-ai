@@ -675,14 +675,24 @@ def run_alerts(document_id: str) -> Dict[str, Any]:
                             fee_amount2 = _to_float(fee_probe2.get("fee_amount"))
                             is_actionable = bool(fee_name2) and fee_amount2 is not None and fee_amount2 > 0
 
+                            existing_ss = (existing.get("slack_status") or "").strip().lower()
+                            _TERMINAL = {"sent", "ok", "success", "skipped", "error"}
+                            if existing_ss in _TERMINAL:
+                                # Already processed — don't re-queue or it will send again
+                                new_ss = existing_ss
+                                new_err = existing.get("slack_error")
+                            else:
+                                new_ss = "pending" if is_actionable else existing_ss
+                                new_err = None if is_actionable else existing.get("slack_error")
+
                             safe_update(
                                 ALERTS_TABLE,
                                 existing["id"],
                                 {
                                     "match_payload": existing_payload,
                                     "match_reason": result.reason,
-                                    "slack_status": "pending" if is_actionable else existing.get("slack_status"),
-                                    "slack_error": None if is_actionable else existing.get("slack_error"),
+                                    "slack_status": new_ss,
+                                    "slack_error": new_err,
                                 },
                             )
 
@@ -808,6 +818,15 @@ def flush_alerts(limit: int = 25) -> Dict[str, Any]:
             if slack_status not in ("", "pending", "null"):
                 # includes "error", "skipped", "sending"
                 continue
+
+            # Normalize legacy null/empty rows to "pending" so the claim step
+            # can match them (claim uses eq slack_status="pending").
+            if slack_status in ("", "null"):
+                try:
+                    safe_update(ALERTS_TABLE, alert_id, {"slack_status": "pending"})
+                    slack_status = "pending"
+                except Exception:
+                    continue
 
             # ------------------------------------------------------------------
             # AUTO-HEAL: status says sent, but slack_status is still pending
