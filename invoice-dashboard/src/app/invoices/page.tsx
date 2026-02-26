@@ -1,3 +1,5 @@
+export const dynamic = "force-dynamic";
+
 import { Topbar } from "@/components/Topbar";
 import { fetchInvoices } from "@/lib/invoiceApi";
 import InvoicesTable from "./InvoicesTable";

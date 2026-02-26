@@ -1,3 +1,5 @@
+export const dynamic = "force-dynamic";
+
 import { Topbar } from "@/components/Topbar";
 import { fetchAlerts } from "@/lib/invoiceApi";
 import AlertsTable from "./AlertsTable";

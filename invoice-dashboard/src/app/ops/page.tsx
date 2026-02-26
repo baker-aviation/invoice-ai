@@ -1,3 +1,5 @@
+export const dynamic = "force-dynamic";
+
 import { Topbar } from "@/components/Topbar";
 import { AutoRefresh } from "@/components/AutoRefresh";
 import { fetchFlights } from "@/lib/opsApi";
