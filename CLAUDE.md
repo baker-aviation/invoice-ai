@@ -88,5 +88,10 @@ Backend secrets in GCP Secret Manager: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KE
 ## Active branch
 `claude/check-gcs-github-push-gqC1E`
 
+## Service URLs (real Cloud Run URLs from `gcloud run services describe`)
+- `invoice-ingest`: `https://invoice-ingest-hrzd5jf3da-uc.a.run.app`
+- Note: `gcloud run deploy` reports a `{project-number}.{region}.run.app` URL that returns GFE 404 — use the `hrzd5jf3da` URL instead.
+- `/healthz` is intercepted by Cloud Run's GFE and returns 404; use `/debug/env` to verify env + Supabase connectivity.
+
 ## Known issues / TODO
 - `invoice-alerts-flush` Cloud Scheduler job is **paused** — alerts were sending duplicates to Slack. Needs dedup investigation in `invoice-alerts/main.py` `flush_alerts()` before re-enabling.
