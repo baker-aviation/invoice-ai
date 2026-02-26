@@ -7,7 +7,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query
 from icalendar import Calendar
 
 from supa import sb
@@ -504,8 +504,8 @@ def _find_flight_for_alert(supa, alert: Dict) -> Optional[str]:
 # ─── Job: check_notams ────────────────────────────────────────────────────────
 
 
-def _run_check_notams(lookahead_hours: int):
-    """Background worker — called by check_notams after returning 202."""
+def _run_check_notams(lookahead_hours: int) -> dict:
+    """Run NOTAM checks for all upcoming flights. Returns stats dict."""
     supa = sb()
     now = datetime.now(timezone.utc)
     cutoff = now + timedelta(hours=lookahead_hours)
@@ -520,7 +520,7 @@ def _run_check_notams(lookahead_hours: int):
     flights = flights_res.data or []
     if not flights:
         print("check_notams: no upcoming flights, nothing to check", flush=True)
-        return
+        return {"flights_checked": 0, "airports_checked": 0, "alerts_created": 0}
 
     # Collect unique airports
     airports: set = set()
@@ -587,20 +587,20 @@ def _run_check_notams(lookahead_hours: int):
         f"check_notams complete: flights={len(flights)} airports={len(airports)} alerts_created={alerts_created}",
         flush=True,
     )
+    return {"flights_checked": len(flights), "airports_checked": len(airports), "alerts_created": alerts_created}
 
 
 @app.post("/jobs/check_notams")
-def check_notams(background_tasks: BackgroundTasks, lookahead_hours: int = Query(120, ge=1, le=168)):
+def check_notams(lookahead_hours: int = Query(120, ge=1, le=168)):
     """
     For each upcoming flight, query the FAA NOTAM API for departure and arrival
     airports and store relevant NOTAMs as ops_alerts.
-    Runs in the background so the request returns immediately.
     """
     if not FAA_CLIENT_ID or not FAA_CLIENT_SECRET:
         raise HTTPException(400, "FAA_CLIENT_ID / FAA_CLIENT_SECRET not configured for NMS API")
 
-    background_tasks.add_task(_run_check_notams, lookahead_hours)
-    return {"ok": True, "status": "queued"}
+    stats = _run_check_notams(lookahead_hours)
+    return {"ok": True, **stats}
 
 
 def _fetch_notams(icao: str) -> List[Dict]:
