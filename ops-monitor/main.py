@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
@@ -41,29 +42,36 @@ OPS_ALERTS_TABLE = "ops_alerts"
 import time as _time
 
 _nms_token_cache: Dict[str, Any] = {"token": None, "expires_at": 0.0}
+_nms_token_lock = threading.Lock()
 
 
 def _get_nms_token() -> str:
-    """Fetch (or return cached) NMS bearer token using client_credentials flow."""
+    """Fetch (or return cached) NMS bearer token using client_credentials flow.
+    Thread-safe: only one thread fetches a new token at a time."""
     now = _time.time()
     if _nms_token_cache["token"] and now < _nms_token_cache["expires_at"] - 60:
         return _nms_token_cache["token"]
-    if not FAA_CLIENT_ID or not FAA_CLIENT_SECRET:
-        raise RuntimeError("FAA_CLIENT_ID / FAA_CLIENT_SECRET not configured")
-    r = requests.post(
-        NMS_AUTH_URL,
-        data={"grant_type": "client_credentials"},
-        auth=(FAA_CLIENT_ID, FAA_CLIENT_SECRET),
-        timeout=15,
-    )
-    r.raise_for_status()
-    data = r.json()
-    token = data["access_token"]
-    expires_in = int(data.get("expires_in", 1799))
-    _nms_token_cache["token"] = token
-    _nms_token_cache["expires_at"] = now + expires_in
-    print(f"NMS token refreshed, expires in {expires_in}s", flush=True)
-    return token
+    with _nms_token_lock:
+        # Re-check inside lock — another thread may have refreshed already
+        now = _time.time()
+        if _nms_token_cache["token"] and now < _nms_token_cache["expires_at"] - 60:
+            return _nms_token_cache["token"]
+        if not FAA_CLIENT_ID or not FAA_CLIENT_SECRET:
+            raise RuntimeError("FAA_CLIENT_ID / FAA_CLIENT_SECRET not configured")
+        r = requests.post(
+            NMS_AUTH_URL,
+            data={"grant_type": "client_credentials"},
+            auth=(FAA_CLIENT_ID, FAA_CLIENT_SECRET),
+            timeout=15,
+        )
+        r.raise_for_status()
+        data = r.json()
+        token = data["access_token"]
+        expires_in = int(data.get("expires_in", 1799))
+        _nms_token_cache["token"] = token
+        _nms_token_cache["expires_at"] = now + expires_in
+        print(f"NMS token refreshed, expires in {expires_in}s", flush=True)
+        return token
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -530,10 +538,12 @@ def _run_check_notams(lookahead_hours: int) -> dict:
         if f.get("arrival_icao"):
             airports.add(f["arrival_icao"])
 
-    # Fetch all airports in parallel — one request per ICAO (FAA API limitation)
+    # Fetch all airports in parallel — one request per ICAO (FAA API limitation).
+    # Pre-fetch the token once so all workers share it rather than racing.
+    token = _get_nms_token()
     notams_by_airport: Dict[str, List] = {}
-    with ThreadPoolExecutor(max_workers=min(len(airports), 8)) as pool:
-        future_to_icao = {pool.submit(_fetch_notams, icao): icao for icao in airports}
+    with ThreadPoolExecutor(max_workers=min(len(airports), 20)) as pool:
+        future_to_icao = {pool.submit(_fetch_notams, icao, token): icao for icao in airports}
         for future in as_completed(future_to_icao):
             icao = future_to_icao[future]
             try:
@@ -603,30 +613,24 @@ def check_notams(lookahead_hours: int = Query(120, ge=1, le=168)):
     return {"ok": True, **stats}
 
 
-def _fetch_notams(icao: str) -> List[Dict]:
-    """Return list of GeoJSON feature dicts from the NMS API for a given ICAO."""
-    token = _get_nms_token()
-    for attempt in range(4):
-        r = requests.get(
-            f"{NMS_API_BASE}/v1/notams",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "nmsResponseFormat": "GEOJSON",
-            },
-            params={"location": icao, "classification": "DOMESTIC"},
-            timeout=20,
-        )
-        print(f"NMS NOTAM {icao}: status={r.status_code} body={r.text[:300]!r}", flush=True)
-        if r.status_code == 429:
-            wait = 2 ** attempt  # 1s, 2s, 4s, 8s
-            print(f"NMS rate limit {icao}, retrying in {wait}s (attempt {attempt + 1})", flush=True)
-            _time.sleep(wait)
-            continue
-        r.raise_for_status()
-        return r.json().get("data", {}).get("geojson", [])
-    # All retries exhausted
+def _fetch_notams(icao: str, token: str) -> List[Dict]:
+    """Return list of GeoJSON feature dicts from the NMS API for a given ICAO.
+    Accepts a pre-fetched token so all workers share one auth call."""
+    r = requests.get(
+        f"{NMS_API_BASE}/v1/notams",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "nmsResponseFormat": "GEOJSON",
+        },
+        params={"location": icao, "classification": "DOMESTIC"},
+        timeout=10,
+    )
+    print(f"NMS NOTAM {icao}: status={r.status_code} body={r.text[:200]!r}", flush=True)
+    if r.status_code == 429:
+        print(f"NMS rate limit {icao}, skipping", flush=True)
+        return []
     r.raise_for_status()
-    return []
+    return r.json().get("data", {}).get("geojson", [])
 
 
 def _is_relevant_notam_msg(msg: str) -> bool:
