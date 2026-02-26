@@ -473,7 +473,7 @@ def check_notams(lookahead_hours: int = Query(120, ge=1, le=168)):
                     "airport_icao": icao,
                     "subject": notam_data.get("number", "")[:500],
                     "body": msg[:2000],
-                    "source_message_id": f"notam-{notam_id}",
+                    "source_message_id": f"notam-{notam_id}-{fid}",
                     "raw_data": json.dumps(notam),
                     "created_at": _utc_now(),
                 }
