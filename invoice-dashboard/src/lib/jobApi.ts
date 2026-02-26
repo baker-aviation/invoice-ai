@@ -26,6 +26,11 @@ export async function fetchJobs(
     employment_type?: string;
     needs_review?: "true" | "false";
     soft_gate_pic_met?: "true" | "false";
+
+    // ✅ NEW
+    has_citation_x?: "true" | "false";
+
+    // already supported
     has_challenger_300_type_rating?: "true" | "false";
   } = {}
 ): Promise<JobsListResponse> {
@@ -38,6 +43,10 @@ export async function fetchJobs(
   if (params.employment_type) url.searchParams.set("employment_type", params.employment_type);
   if (params.needs_review) url.searchParams.set("needs_review", params.needs_review);
   if (params.soft_gate_pic_met) url.searchParams.set("soft_gate_pic_met", params.soft_gate_pic_met);
+
+  // ✅ NEW
+  if (params.has_citation_x) url.searchParams.set("has_citation_x", params.has_citation_x);
+
   if (params.has_challenger_300_type_rating) {
     url.searchParams.set("has_challenger_300_type_rating", params.has_challenger_300_type_rating);
   }

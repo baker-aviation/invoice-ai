@@ -5,6 +5,9 @@ import { fetchInvoices } from "@/lib/invoiceApi";
 import InvoicesTable from "./InvoicesTable";
 import { AutoRefresh } from "@/components/AutoRefresh";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 export default async function InvoicesPage() {
   const data = await fetchInvoices({ limit: 200 });
   const invoices = data.invoices ?? [];
