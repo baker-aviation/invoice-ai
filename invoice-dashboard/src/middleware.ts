@@ -1,58 +1,43 @@
-import { NextResponse } from "next/server";
-import type { NextRequest } from "next/server";
+import { createServerClient } from "@supabase/ssr";
+import { NextResponse, type NextRequest } from "next/server";
 
-function unauthorized() {
-  return new NextResponse("Authentication required", {
-    status: 401,
-    headers: {
-      "WWW-Authenticate": 'Basic realm="Secure Demo"',
-    },
-  });
-}
+export async function middleware(request: NextRequest) {
+  let supabaseResponse = NextResponse.next({ request });
 
-function loadUsers(): Array<{ user: string; pass: string }> {
-  // Multi-user: DEMO_USERS=alice:pass1,bob:pass2
-  const multi = process.env.DEMO_USERS;
-  if (multi) {
-    return multi.split(",").flatMap((entry) => {
-      const colon = entry.indexOf(":");
-      if (colon === -1) return [];
-      return [{ user: entry.slice(0, colon).trim(), pass: entry.slice(colon + 1).trim() }];
-    });
-  }
-  // Single-user fallback: DEMO_USER + DEMO_PASS
-  const user = process.env.DEMO_USER;
-  const pass = process.env.DEMO_PASS;
-  if (user && pass) return [{ user, pass }];
-  return [];
-}
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        getAll() {
+          return request.cookies.getAll();
+        },
+        setAll(cookiesToSet) {
+          cookiesToSet.forEach(({ name, value }) =>
+            request.cookies.set(name, value)
+          );
+          supabaseResponse = NextResponse.next({ request });
+          cookiesToSet.forEach(({ name, value, options }) =>
+            supabaseResponse.cookies.set(name, value, options)
+          );
+        },
+      },
+    }
+  );
 
-export function middleware(req: NextRequest) {
-  const users = loadUsers();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
 
-  if (users.length === 0) {
-    return unauthorized();
-  }
-
-  const auth = req.headers.get("authorization");
-
-  if (!auth?.startsWith("Basic ")) {
-    return unauthorized();
+  if (!user && !request.nextUrl.pathname.startsWith("/login")) {
+    const url = request.nextUrl.clone();
+    url.pathname = "/login";
+    return NextResponse.redirect(url);
   }
 
-  const base64 = auth.split(" ")[1];
-  const decoded = Buffer.from(base64, "base64").toString("utf-8");
-  const colon = decoded.indexOf(":");
-  const u = decoded.slice(0, colon);
-  const p = decoded.slice(colon + 1);
-
-  if (users.some((entry) => entry.user === u && entry.pass === p)) {
-    return NextResponse.next();
-  }
-
-  return unauthorized();
+  return supabaseResponse;
 }
 
 export const config = {
-  matcher: ["/((?!_next|favicon.ico).*)"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
 };
