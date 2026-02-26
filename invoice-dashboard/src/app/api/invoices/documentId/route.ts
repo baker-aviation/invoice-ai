@@ -10,10 +10,9 @@ function mustBase() {
 
 export async function GET(
   _req: Request,
-  ctx: { params: { documentId: string } } | { params: Promise<{ documentId: string }> }
+  { params }: { params: Promise<{ documentId: string }> }
 ) {
-  const params = "then" in (ctx as any).params ? await (ctx as any).params : (ctx as any).params;
-  const { documentId } = params;
+  const { documentId } = await params;
 
   const base = mustBase();
 
