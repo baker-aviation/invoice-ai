@@ -522,8 +522,6 @@ def _classify_notam(msg: str) -> str:
         return "NOTAM_RUNWAY"
     if re.search(r"\bTWY\b|TAXIWAY", m):
         return "NOTAM_TAXIWAY"
-    if re.search(r"\bNAV\b|NAVAID|VOR|DME|ILS|VORTAC|NDB|GPS", m):
-        return "NOTAM_NAVAID"
     if re.search(r"TFR|TEMPORARY FLIGHT", m):
         return "NOTAM_TFR"
     if re.search(r"\bAD\b|AERODROME|AIRPORT", m):
