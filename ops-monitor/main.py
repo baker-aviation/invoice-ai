@@ -139,7 +139,7 @@ def healthz():
 
 @app.get("/api/flights")
 def get_flights(
-    lookahead_hours: int = Query(48, ge=1, le=168),
+    lookahead_hours: int = Query(120, ge=1, le=168),
     include_alerts: bool = Query(True),
 ):
     """
@@ -197,7 +197,7 @@ def acknowledge_alert(alert_id: str):
 
 
 @app.post("/jobs/sync_schedule")
-def sync_schedule(lookahead_hours: int = Query(72, ge=1, le=168)):
+def sync_schedule(lookahead_hours: int = Query(120, ge=1, le=168)):
     """
     Fetch the JetInsight ICS feed and upsert upcoming flights into Supabase.
     """
@@ -410,7 +410,7 @@ def _find_flight_for_alert(supa, alert: Dict) -> Optional[str]:
 
 
 @app.post("/jobs/check_notams")
-def check_notams(lookahead_hours: int = Query(24, ge=1, le=72)):
+def check_notams(lookahead_hours: int = Query(120, ge=1, le=168)):
     """
     For each upcoming flight, query the FAA NOTAM API for departure and arrival
     airports and store relevant NOTAMs as ops_alerts.
