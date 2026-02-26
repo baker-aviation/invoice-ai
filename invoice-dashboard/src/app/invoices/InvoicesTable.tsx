@@ -17,10 +17,64 @@ function fmtTime(s: any): string {
   return d.toISOString().slice(0, 16).replace("T", " ");
 }
 
+// ── Auto-categorization ─────────────────────────────────────────────────────
+// If the DB has a `category` field, use it. Otherwise infer from vendor name.
+
+type InvoiceCategory = "FBO/Fuel" | "Maintenance/Parts" | "Lease/Utilities" | "Other";
+
+const FBO_KEYWORDS    = ["fbo", "fuel", "avfuel", "signature", "jet aviation", "million air", "atlantic", "sheltair", "wilson air", "world fuel", "avjet"];
+const MAINT_KEYWORDS  = ["maintenance", "maint", "avionics", "parts", "repair", "overhaul", "aog", "mx", "inspection", "mechanic", "technician", "service center", "jet support"];
+const LEASE_KEYWORDS  = ["lease", "rent", "hangar", "utilities", "management fee", "charter management", "management"];
+
+function inferCategory(inv: any): InvoiceCategory {
+  if (inv.category) return inv.category as InvoiceCategory;
+  const hay = [inv.vendor_name, inv.doc_type, ...(inv.line_items?.map((l: any) => l.description) ?? [])]
+    .join(" ")
+    .toLowerCase();
+  if (FBO_KEYWORDS.some((k) => hay.includes(k)))   return "FBO/Fuel";
+  if (MAINT_KEYWORDS.some((k) => hay.includes(k)))  return "Maintenance/Parts";
+  if (LEASE_KEYWORDS.some((k) => hay.includes(k)))  return "Lease/Utilities";
+  return "Other";
+}
+
+const CATEGORY_COLORS: Record<InvoiceCategory, string> = {
+  "FBO/Fuel":          "bg-blue-100 text-blue-700",
+  "Maintenance/Parts": "bg-amber-100 text-amber-700",
+  "Lease/Utilities":   "bg-purple-100 text-purple-700",
+  "Other":             "bg-gray-100 text-gray-600",
+};
+
+function CategoryBadge({ inv }: { inv: any }) {
+  const cat = inferCategory(inv);
+  return (
+    <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${CATEGORY_COLORS[cat]}`}>
+      {cat}
+    </span>
+  );
+}
+
+// ── Overdue detection ───────────────────────────────────────────────────────
+// An invoice is overdue if invoice_date is > 30 days ago and status is not paid.
+
+function isOverdue(inv: any): boolean {
+  if (inv.status === "paid") return false;
+  const dateStr = inv.invoice_date ?? inv.created_at;
+  if (!dateStr) return false;
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return false;
+  const now = new Date();
+  const diffDays = (now.getTime() - d.getTime()) / (1000 * 60 * 60 * 24);
+  return diffDays > 30;
+}
+
+const ALL_CATEGORIES: string[] = ["ALL", "FBO/Fuel", "Maintenance/Parts", "Lease/Utilities", "Other"];
+
 export default function InvoicesTable({ initialInvoices }: { initialInvoices: any[] }) {
   const [q, setQ] = useState("");
   const [airport, setAirport] = useState("ALL");
   const [vendor, setVendor] = useState("ALL");
+  const [category, setCategory] = useState("ALL");
+  const [showOverdueOnly, setShowOverdueOnly] = useState(false);
   const [page, setPage] = useState(0);
 
   const airports = useMemo(() => {
@@ -41,6 +95,8 @@ export default function InvoicesTable({ initialInvoices }: { initialInvoices: an
     return ["ALL", ...Array.from(set).sort((a, b) => a.localeCompare(b))];
   }, [initialInvoices]);
 
+  const overdueCount = useMemo(() => initialInvoices.filter(isOverdue).length, [initialInvoices]);
+
   const filtered = useMemo(() => {
     const query = q.toLowerCase().trim();
 
@@ -50,6 +106,8 @@ export default function InvoicesTable({ initialInvoices }: { initialInvoices: an
 
       if (airport !== "ALL" && invAirport !== airport) return false;
       if (vendor !== "ALL" && invVendor !== vendor) return false;
+      if (category !== "ALL" && inferCategory(inv) !== category) return false;
+      if (showOverdueOnly && !isOverdue(inv)) return false;
 
       if (!query) return true;
 
@@ -66,7 +124,7 @@ export default function InvoicesTable({ initialInvoices }: { initialInvoices: an
 
       return haystack.includes(query);
     });
-  }, [initialInvoices, q, airport, vendor]);
+  }, [initialInvoices, q, airport, vendor, category, showOverdueOnly]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const paged = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
@@ -75,11 +133,30 @@ export default function InvoicesTable({ initialInvoices }: { initialInvoices: an
     setQ("");
     setAirport("ALL");
     setVendor("ALL");
+    setCategory("ALL");
+    setShowOverdueOnly(false);
     setPage(0);
   };
 
   return (
     <div className="p-6 space-y-4">
+      {/* Overdue alert banner */}
+      {overdueCount > 0 && (
+        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-2 text-sm text-red-700">
+            <span className="font-semibold">⚠ {overdueCount} overdue invoice{overdueCount !== 1 ? "s" : ""}</span>
+            <span className="text-red-500">(unpaid &gt; 30 days)</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => { setShowOverdueOnly(true); setPage(0); }}
+            className="text-xs font-medium text-red-700 border border-red-300 rounded-lg px-3 py-1.5 hover:bg-red-100"
+          >
+            Show overdue only
+          </button>
+        </div>
+      )}
+
       <div className="flex flex-wrap items-center gap-3">
         <input
           value={q}
@@ -94,9 +171,7 @@ export default function InvoicesTable({ initialInvoices }: { initialInvoices: an
           className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm"
         >
           {airports.map((a) => (
-            <option key={a} value={a}>
-              {a === "ALL" ? "All airports" : a}
-            </option>
+            <option key={a} value={a}>{a === "ALL" ? "All airports" : a}</option>
           ))}
         </select>
 
@@ -106,11 +181,29 @@ export default function InvoicesTable({ initialInvoices }: { initialInvoices: an
           className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm max-w-[320px]"
         >
           {vendors.map((v) => (
-            <option key={v} value={v}>
-              {v === "ALL" ? "All vendors" : v}
-            </option>
+            <option key={v} value={v}>{v === "ALL" ? "All vendors" : v}</option>
           ))}
         </select>
+
+        <select
+          value={category}
+          onChange={(e) => { setCategory(e.target.value); setPage(0); }}
+          className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm"
+        >
+          {ALL_CATEGORIES.map((c) => (
+            <option key={c} value={c}>{c === "ALL" ? "All categories" : c}</option>
+          ))}
+        </select>
+
+        <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={showOverdueOnly}
+            onChange={(e) => { setShowOverdueOnly(e.target.checked); setPage(0); }}
+            className="rounded"
+          />
+          Overdue only
+        </label>
 
         <button
           onClick={clear}
@@ -129,6 +222,7 @@ export default function InvoicesTable({ initialInvoices }: { initialInvoices: an
               <tr>
                 <th className="px-4 py-3 font-medium">Created</th>
                 <th className="px-4 py-3 font-medium">Vendor</th>
+                <th className="px-4 py-3 font-medium">Category</th>
                 <th className="px-4 py-3 font-medium">Airport</th>
                 <th className="px-4 py-3 font-medium">Tail</th>
                 <th className="px-4 py-3 font-medium">Invoice #</th>
@@ -138,31 +232,44 @@ export default function InvoicesTable({ initialInvoices }: { initialInvoices: an
             </thead>
 
             <tbody>
-              {paged.map((inv) => (
-                <tr key={inv.id ?? inv.document_id} className="border-t hover:bg-gray-50">
-                  <td className="px-4 py-3 whitespace-nowrap">{fmtTime(inv.created_at)}</td>
-                  <td className="px-4 py-3">{inv.vendor_name ?? "—"}</td>
-                  <td className="px-4 py-3">{inv.airport_code ?? "—"}</td>
-                  <td className="px-4 py-3">{inv.tail_number ?? "—"}</td>
-                  <td className="px-4 py-3">{inv.invoice_number ?? "—"}</td>
-                  <td className="px-4 py-3">
-                    {inv.total ?? "—"} {inv.currency ?? ""}
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    {inv.document_id ? (
-                      <Link href={`/invoices/${inv.document_id}`} className="text-blue-600 hover:underline">
-                        View →
-                      </Link>
-                    ) : (
-                      "—"
-                    )}
-                  </td>
-                </tr>
-              ))}
+              {paged.map((inv) => {
+                const overdue = isOverdue(inv);
+                return (
+                  <tr key={inv.id ?? inv.document_id} className={`border-t hover:bg-gray-50 ${overdue ? "bg-red-50" : ""}`}>
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      {fmtTime(inv.created_at)}
+                      {overdue && (
+                        <span className="ml-1.5 text-xs font-semibold text-red-600 bg-red-100 rounded px-1 py-0.5">
+                          Overdue
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3">{inv.vendor_name ?? "—"}</td>
+                    <td className="px-4 py-3">
+                      <CategoryBadge inv={inv} />
+                    </td>
+                    <td className="px-4 py-3">{inv.airport_code ?? "—"}</td>
+                    <td className="px-4 py-3">{inv.tail_number ?? "—"}</td>
+                    <td className="px-4 py-3">{inv.invoice_number ?? "—"}</td>
+                    <td className="px-4 py-3">
+                      {inv.total ?? "—"} {inv.currency ?? ""}
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      {inv.document_id ? (
+                        <Link href={`/invoices/${inv.document_id}`} className="text-blue-600 hover:underline">
+                          View →
+                        </Link>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
 
               {paged.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-4 py-10 text-center text-gray-500">
+                  <td colSpan={8} className="px-4 py-10 text-center text-gray-500">
                     No invoices found.
                   </td>
                 </tr>

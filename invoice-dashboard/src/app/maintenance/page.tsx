@@ -14,11 +14,11 @@ export default async function MaintenancePage() {
 
   return (
     <>
-      <Topbar title="Maintenance Positioning" />
+      <Topbar title="AOG Van Action Plan" />
       <AutoRefresh intervalSeconds={300} />
       <div className="p-6 space-y-2">
         <p className="text-sm text-gray-500">
-          7-day aircraft positioning from JetInsight · 16 AOG vans · live tracking via Samsara
+          7-day aircraft positioning from JetInsight · AOG vans · live tracking via Samsara · Priority: overnight service
         </p>
         <VanPositioningClient initialFlights={flightData.flights} />
       </div>

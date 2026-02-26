@@ -774,6 +774,73 @@ function VanLiveLocations() {
 }
 
 // ---------------------------------------------------------------------------
+// 3-hour radius constant (~300 km at highway speed)
+// ---------------------------------------------------------------------------
+
+const THREE_HOUR_RADIUS_KM = 300;
+
+const haversineKmClient = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+};
+
+// ---------------------------------------------------------------------------
+// Out-of-range alert banner
+// ---------------------------------------------------------------------------
+
+function OutOfRangeAlerts({ vans }: { vans: VanAssignment[] }) {
+  const outOfRange = vans.flatMap((van) => {
+    const color = VAN_COLORS[(van.vanId - 1) % VAN_COLORS.length];
+    return van.aircraft
+      .filter((ac) => haversineKmClient(van.lat, van.lon, ac.lat, ac.lon) > THREE_HOUR_RADIUS_KM)
+      .map((ac) => ({
+        vanId: van.vanId,
+        color,
+        tail: ac.tail,
+        airport: ac.airport,
+        distKm: Math.round(haversineKmClient(van.lat, van.lon, ac.lat, ac.lon)),
+      }));
+  });
+
+  if (outOfRange.length === 0) return null;
+
+  return (
+    <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 space-y-2">
+      <div className="flex items-center gap-2 text-sm font-semibold text-red-700">
+        ⚠ {outOfRange.length} aircraft outside 3-hour van range
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {outOfRange.map(({ vanId, color, tail, airport, distKm }) => (
+          <div
+            key={`${vanId}-${tail}`}
+            className="flex items-center gap-1.5 bg-white border border-red-200 rounded-lg px-2.5 py-1.5 text-xs"
+          >
+            <span
+              className="inline-block w-3 h-3 rounded-full flex-shrink-0"
+              style={{ background: color }}
+            />
+            <span className="font-semibold">Van {vanId}</span>
+            <span className="text-gray-400">→</span>
+            <span className="font-mono font-semibold">{tail}</span>
+            <span className="text-gray-500">@ {airport}</span>
+            <span className="text-red-600 font-semibold">
+              ~{Math.round(distKm / (THREE_HOUR_RADIUS_KM / 3))}h away
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main client component
 // ---------------------------------------------------------------------------
 
@@ -807,6 +874,9 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
 
       {/* ── Stats ── */}
       <StatsBar positions={positions} vans={vans} flightCount={flightsForDay.length} />
+
+      {/* ── Out-of-range alerts ── */}
+      <OutOfRangeAlerts vans={vans} />
 
       {/* ── Tab bar ── */}
       <div className="flex bg-gray-100 rounded-xl p-1 gap-1 w-fit">
@@ -908,6 +978,7 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
                     <th className="px-4 py-3">Status</th>
                     <th className="px-4 py-3 hidden lg:table-cell">Trip</th>
                     <th className="px-4 py-3">Van</th>
+                    <th className="px-4 py-3">Range</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
@@ -916,12 +987,14 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
                       v.aircraft.some((a) => a.tail === p.tail && a.tripId === p.tripId),
                     );
                     const color = van ? VAN_COLORS[(van.vanId - 1) % VAN_COLORS.length] : "#9ca3af";
+                    const distKm = van ? Math.round(haversineKmClient(van.lat, van.lon, p.lat, p.lon)) : null;
+                    const outOfRange = distKm !== null && distKm > THREE_HOUR_RADIUS_KM;
                     return (
                       <tr
                         key={p.tail + p.tripId}
                         className={`hover:bg-gray-50 ${
                           selectedVan !== null && van?.vanId !== selectedVan ? "opacity-30" : ""
-                        }`}
+                        } ${outOfRange ? "bg-red-50" : ""}`}
                       >
                         <td className="px-4 py-2.5 font-mono font-semibold">{p.tail}</td>
                         <td className="px-4 py-2.5 font-medium">{p.airport}</td>
@@ -939,6 +1012,15 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
                             </span>
                           ) : (
                             <span className="text-gray-300 text-xs">—</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-2.5 text-xs">
+                          {distKm !== null ? (
+                            <span className={outOfRange ? "text-red-600 font-semibold" : "text-gray-400"}>
+                              {outOfRange ? "⚠ " : ""}{distKm} km
+                            </span>
+                          ) : (
+                            <span className="text-gray-300">—</span>
                           )}
                         </td>
                       </tr>

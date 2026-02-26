@@ -24,6 +24,26 @@ function hasSkillbridge(j: any): boolean {
   return haystack.includes("skillbridge") || haystack.includes("skill bridge");
 }
 
+// Check CE-750/Citation X via boolean flag OR type_ratings array
+function hasCitationX(j: any): boolean {
+  if (j.has_citation_x === true) return true;
+  const ratings: string[] = Array.isArray(j.type_ratings) ? j.type_ratings : [];
+  return ratings.some((r) => {
+    const u = r.toLowerCase();
+    return u.includes("ce-750") || u.includes("ce750") || u.includes("citation x") || u.includes("citation-x");
+  });
+}
+
+// Check CL-300/Challenger via boolean flag OR type_ratings array
+function hasChallenger(j: any): boolean {
+  if (j.has_challenger_300_type_rating === true) return true;
+  const ratings: string[] = Array.isArray(j.type_ratings) ? j.type_ratings : [];
+  return ratings.some((r) => {
+    const u = r.toLowerCase();
+    return u.includes("cl-300") || u.includes("cl300") || u.includes("challenger 300") || u.includes("challenger-300");
+  });
+}
+
 export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
   const [q, setQ] = useState("");
   const [category, setCategory] = useState("ALL");
@@ -61,11 +81,11 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
       if (category !== "ALL" && jCategory !== category) return false;
       if (softGate !== "ALL" && jSoft !== softGate) return false;
 
-      if (citation === "YES" && j.has_citation_x !== true) return false;
-      if (citation === "NO" && j.has_citation_x === true) return false;
+      if (citation === "YES" && !hasCitationX(j)) return false;
+      if (citation === "NO" && hasCitationX(j)) return false;
 
-      if (challenger === "YES" && j.has_challenger_300_type_rating !== true) return false;
-      if (challenger === "NO" && j.has_challenger_300_type_rating === true) return false;
+      if (challenger === "YES" && !hasChallenger(j)) return false;
+      if (challenger === "NO" && hasChallenger(j)) return false;
 
       if (skillbridge === "YES" && !hasSkillbridge(j)) return false;
       if (skillbridge === "NO" && hasSkillbridge(j)) return false;
@@ -211,8 +231,8 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
                   <td className="px-4 py-3">{j.pic_time_hours ?? "—"}</td>
                   <td className="px-4 py-3">{j.soft_gate_pic_status ?? "—"}</td>
                   <td className="px-4 py-3 text-xs text-gray-600">
-                    {j.has_citation_x ? <span className="mr-1">CE-750</span> : null}
-                    {j.has_challenger_300_type_rating ? <span className="mr-1">CL-300</span> : null}
+                    {hasCitationX(j) ? <span className="mr-1 font-medium">CE-750</span> : null}
+                    {hasChallenger(j) ? <span className="mr-1 font-medium">CL-300</span> : null}
                     {hasSkillbridge(j) ? <span className="mr-1 text-blue-600">SB</span> : null}
                   </td>
 

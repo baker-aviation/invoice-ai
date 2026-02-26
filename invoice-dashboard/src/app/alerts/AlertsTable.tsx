@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/Badge";
 
 type AlertRow = {
@@ -36,7 +36,11 @@ type ShareState = "idle" | "loading" | "success" | "error";
 
 const PAGE_SIZE = 25;
 
-export default function AlertsTable({ initialAlerts }: { initialAlerts: AlertRow[] }) {
+export default function AlertsTable() {
+  const [alerts, setAlerts] = useState<AlertRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
   const [airport, setAirport] = useState<string>("all");
   const [vendor, setVendor] = useState<string>("all");
   const [q, setQ] = useState<string>("");
@@ -45,28 +49,41 @@ export default function AlertsTable({ initialAlerts }: { initialAlerts: AlertRow
   const [page, setPage] = useState(0);
   const [shareStates, setShareStates] = useState<Record<string, ShareState>>({});
 
+  useEffect(() => {
+    fetch("/api/alerts?limit=200")
+      .then((r) => r.json())
+      .then((data) => {
+        setAlerts(data.alerts ?? []);
+        setLoading(false);
+      })
+      .catch((e) => {
+        setError(String(e?.message ?? e));
+        setLoading(false);
+      });
+  }, []);
+
   const airports = useMemo(() => {
     const set = new Set<string>();
-    for (const a of initialAlerts) {
+    for (const a of alerts) {
       const code = norm(a.airport_code).toUpperCase();
       if (code) set.add(code);
     }
     return Array.from(set).sort((a, b) => a.localeCompare(b));
-  }, [initialAlerts]);
+  }, [alerts]);
 
   const vendors = useMemo(() => {
     const set = new Set<string>();
-    for (const a of initialAlerts) {
+    for (const a of alerts) {
       const v = norm(a.vendor);
       if (v) set.add(v);
     }
     return Array.from(set).sort((a, b) => a.localeCompare(b));
-  }, [initialAlerts]);
+  }, [alerts]);
 
   const filtered = useMemo(() => {
     const qn = q.trim().toLowerCase();
 
-    return initialAlerts.filter((a) => {
+    return alerts.filter((a) => {
       if (airport !== "all") {
         const ac = norm(a.airport_code).toUpperCase();
         if (ac !== airport) return false;
@@ -96,7 +113,7 @@ export default function AlertsTable({ initialAlerts }: { initialAlerts: AlertRow
 
       return true;
     });
-  }, [initialAlerts, airport, vendor, q]);
+  }, [alerts, airport, vendor, q]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const paged = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
@@ -181,9 +198,7 @@ export default function AlertsTable({ initialAlerts }: { initialAlerts: AlertRow
               >
                 <option value="all">All</option>
                 {airports.map((a) => (
-                  <option key={a} value={a}>
-                    {a}
-                  </option>
+                  <option key={a} value={a}>{a}</option>
                 ))}
               </select>
             </div>
@@ -197,9 +212,7 @@ export default function AlertsTable({ initialAlerts }: { initialAlerts: AlertRow
               >
                 <option value="all">All</option>
                 {vendors.map((v) => (
-                  <option key={v} value={v}>
-                    {v}
-                  </option>
+                  <option key={v} value={v}>{v}</option>
                 ))}
               </select>
             </div>
@@ -224,95 +237,112 @@ export default function AlertsTable({ initialAlerts }: { initialAlerts: AlertRow
               Clear
             </button>
 
-            <div className="text-xs text-gray-500">
-              Showing <span className="font-medium text-gray-900">{filtered.length}</span> of{" "}
-              <span className="font-medium text-gray-900">{initialAlerts.length}</span>
-            </div>
+            {!loading && (
+              <div className="text-xs text-gray-500">
+                Showing <span className="font-medium text-gray-900">{filtered.length}</span> of{" "}
+                <span className="font-medium text-gray-900">{alerts.length}</span>
+              </div>
+            )}
           </div>
         </div>
       </div>
 
-      {/* Table */}
-      <div className="rounded-xl border bg-white overflow-hidden shadow-sm">
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-sm">
-            <thead className="bg-gray-100 text-left text-gray-700">
-              <tr>
-                <th className="px-4 py-3 font-medium">Time</th>
-                <th className="px-4 py-3 font-medium">Rule</th>
-                <th className="px-4 py-3 font-medium">Vendor</th>
-                <th className="px-4 py-3 font-medium">Airport</th>
-                <th className="px-4 py-3 font-medium">Tail</th>
-                <th className="px-4 py-3 font-medium">Fee</th>
-                <th className="px-4 py-3 font-medium">Status</th>
-                <th className="px-4 py-3"></th>
-              </tr>
-            </thead>
+      {/* Loading / error states */}
+      {loading && (
+        <div className="rounded-xl border bg-white shadow-sm px-6 py-12 text-center text-gray-400 animate-pulse">
+          Loading alerts…
+        </div>
+      )}
 
-            <tbody>
-              {paged.map((a) => {
-                const shareState = shareStates[a.id] ?? "idle";
-                return (
-                  <tr key={a.id} className="border-t hover:bg-gray-50 transition">
-                    <td className="px-4 py-3 whitespace-nowrap">{fmtTime(a.created_at)}</td>
-                    <td className="px-4 py-3 font-medium">{a.rule_name ?? "—"}</td>
-                    <td className="px-4 py-3">{a.vendor ?? "—"}</td>
-                    <td className="px-4 py-3">{a.airport_code ?? "—"}</td>
-                    <td className="px-4 py-3">{a.tail ?? "—"}</td>
-                    <td className="px-4 py-3">
-                      {a.fee_name ?? "—"}{" "}
-                      {a.fee_amount != null ? (
-                        <span className="font-medium">
-                          • {a.fee_amount} {a.currency ?? ""}
-                        </span>
-                      ) : null}
-                    </td>
-                    <td className="px-4 py-3 space-x-2 whitespace-nowrap">
-                      <Badge>{a.status ?? "—"}</Badge>
-                      <Badge variant={String(a.slack_status).toLowerCase() === "sent" ? "success" : "warning"}>
-                        slack: {a.slack_status ?? "—"}
-                      </Badge>
-                    </td>
-                    <td className="px-4 py-3 text-right whitespace-nowrap">
-                      <div className="flex items-center justify-end gap-3">
-                        <button
-                          type="button"
-                          onClick={() => shareOne(a.id)}
-                          disabled={shareState === "loading"}
-                          title="Share this alert to Slack"
-                          className={`text-xs px-2 py-1 rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
-                            shareState === "success"
-                              ? "border-green-300 text-green-700 bg-green-50"
-                              : shareState === "error"
-                              ? "border-red-300 text-red-600 bg-red-50"
-                              : "border-gray-300 text-gray-600 hover:bg-gray-50"
-                          }`}
-                        >
-                          {shareState === "loading" ? "…" : shareState === "success" ? "Sent" : shareState === "error" ? "Error" : "Share"}
-                        </button>
-                        <Link className="text-blue-600 hover:underline" href={`/invoices/${a.document_id}`}>
-                          View →
-                        </Link>
-                      </div>
+      {error && (
+        <div className="rounded-xl border border-red-200 bg-red-50 px-6 py-4 text-sm text-red-700">
+          Error loading alerts: {error}
+        </div>
+      )}
+
+      {/* Table */}
+      {!loading && !error && (
+        <div className="rounded-xl border bg-white overflow-hidden shadow-sm">
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead className="bg-gray-100 text-left text-gray-700">
+                <tr>
+                  <th className="px-4 py-3 font-medium">Time</th>
+                  <th className="px-4 py-3 font-medium">Rule</th>
+                  <th className="px-4 py-3 font-medium">Vendor</th>
+                  <th className="px-4 py-3 font-medium">Airport</th>
+                  <th className="px-4 py-3 font-medium">Tail</th>
+                  <th className="px-4 py-3 font-medium">Fee</th>
+                  <th className="px-4 py-3 font-medium">Status</th>
+                  <th className="px-4 py-3"></th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {paged.map((a) => {
+                  const shareState = shareStates[a.id] ?? "idle";
+                  return (
+                    <tr key={a.id} className="border-t hover:bg-gray-50 transition">
+                      <td className="px-4 py-3 whitespace-nowrap">{fmtTime(a.created_at)}</td>
+                      <td className="px-4 py-3 font-medium">{a.rule_name ?? "—"}</td>
+                      <td className="px-4 py-3">{a.vendor ?? "—"}</td>
+                      <td className="px-4 py-3">{a.airport_code ?? "—"}</td>
+                      <td className="px-4 py-3">{a.tail ?? "—"}</td>
+                      <td className="px-4 py-3">
+                        {a.fee_name ?? "—"}{" "}
+                        {a.fee_amount != null ? (
+                          <span className="font-medium">
+                            • {a.fee_amount} {a.currency ?? ""}
+                          </span>
+                        ) : null}
+                      </td>
+                      <td className="px-4 py-3 space-x-2 whitespace-nowrap">
+                        <Badge>{a.status ?? "—"}</Badge>
+                        <Badge variant={String(a.slack_status).toLowerCase() === "sent" ? "success" : "warning"}>
+                          slack: {a.slack_status ?? "—"}
+                        </Badge>
+                      </td>
+                      <td className="px-4 py-3 text-right whitespace-nowrap">
+                        <div className="flex items-center justify-end gap-3">
+                          <button
+                            type="button"
+                            onClick={() => shareOne(a.id)}
+                            disabled={shareState === "loading"}
+                            title="Share this alert to Slack"
+                            className={`text-xs px-2 py-1 rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                              shareState === "success"
+                                ? "border-green-300 text-green-700 bg-green-50"
+                                : shareState === "error"
+                                ? "border-red-300 text-red-600 bg-red-50"
+                                : "border-gray-300 text-gray-600 hover:bg-gray-50"
+                            }`}
+                          >
+                            {shareState === "loading" ? "…" : shareState === "success" ? "Sent" : shareState === "error" ? "Error" : "Share"}
+                          </button>
+                          <Link className="text-blue-600 hover:underline" href={`/invoices/${a.document_id}`}>
+                            View →
+                          </Link>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+
+                {filtered.length === 0 && (
+                  <tr>
+                    <td colSpan={8} className="px-4 py-10 text-center text-gray-500">
+                      No alerts found.
                     </td>
                   </tr>
-                );
-              })}
-
-              {filtered.length === 0 && (
-                <tr>
-                  <td colSpan={8} className="px-4 py-10 text-center text-gray-500">
-                    No alerts found.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Pagination */}
-      {totalPages > 1 && (
+      {!loading && !error && totalPages > 1 && (
         <div className="flex items-center justify-between">
           <button
             type="button"
@@ -336,7 +366,11 @@ export default function AlertsTable({ initialAlerts }: { initialAlerts: AlertRow
         </div>
       )}
 
-      <div className="text-xs text-gray-500">Showing {filtered.length} alerts across {totalPages} page{totalPages === 1 ? "" : "s"}.</div>
+      {!loading && !error && (
+        <div className="text-xs text-gray-500">
+          Showing {filtered.length} alerts across {totalPages} page{totalPages === 1 ? "" : "s"}.
+        </div>
+      )}
     </div>
   );
 }
