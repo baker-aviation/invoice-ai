@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState } from "react";
 import type { Flight, OpsAlert } from "@/lib/opsApi";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -396,7 +396,6 @@ function NotamTab({ flights }: { flights: Flight[] }) {
 // ─── Main board ───────────────────────────────────────────────────────────────
 
 export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] }) {
-  const [tab, setTab] = useState<"schedule" | "notams">("schedule");
   const now = new Date();
 
   const criticalCount = initialFlights.filter((f) =>
@@ -405,16 +404,6 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
   const warningCount = initialFlights.filter((f) =>
     f.alerts?.some((a) => a.severity === "warning") && !f.alerts?.some((a) => a.severity === "critical")
   ).length;
-
-  const notamCount = useMemo(() => {
-    const seen = new Set<string>();
-    for (const f of initialFlights) {
-      for (const a of f.alerts ?? []) {
-        if (a.alert_type.startsWith("NOTAM")) seen.add(a.id);
-      }
-    }
-    return seen.size;
-  }, [initialFlights]);
 
   return (
     <div className="p-6 space-y-5">
@@ -443,53 +432,18 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
         </div>
       </div>
 
-      {/* Tabs */}
-      <div className="flex gap-1 border-b">
-        <button
-          type="button"
-          onClick={() => setTab("schedule")}
-          className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${
-            tab === "schedule"
-              ? "bg-white border border-b-white text-gray-900 -mb-px"
-              : "text-gray-500 hover:text-gray-700"
-          }`}
-        >
-          Schedule
-        </button>
-        <button
-          type="button"
-          onClick={() => setTab("notams")}
-          className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-colors flex items-center gap-1.5 ${
-            tab === "notams"
-              ? "bg-white border border-b-white text-gray-900 -mb-px"
-              : "text-gray-500 hover:text-gray-700"
-          }`}
-        >
-          NOTAMs
-          {notamCount > 0 && (
-            <span className="bg-amber-100 text-amber-700 text-xs font-semibold px-1.5 py-0.5 rounded-full">
-              {notamCount}
-            </span>
-          )}
-        </button>
-      </div>
-
-      {/* Tab content */}
-      {tab === "schedule" && (
-        initialFlights.length === 0 ? (
-          <div className="rounded-xl border bg-white shadow-sm px-6 py-12 text-center text-gray-400">
-            No flights scheduled in the next 48 hours.
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {initialFlights.map((f) => (
-              <FlightCard key={f.id} flight={f} />
-            ))}
-          </div>
-        )
+      {/* Schedule */}
+      {initialFlights.length === 0 ? (
+        <div className="rounded-xl border bg-white shadow-sm px-6 py-12 text-center text-gray-400">
+          No flights scheduled in the next 48 hours.
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {initialFlights.map((f) => (
+            <FlightCard key={f.id} flight={f} />
+          ))}
+        </div>
       )}
-
-      {tab === "notams" && <NotamTab flights={initialFlights} />}
     </div>
   );
 }

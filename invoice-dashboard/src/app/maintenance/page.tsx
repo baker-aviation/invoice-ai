@@ -18,7 +18,7 @@ export default async function MaintenancePage() {
       <AutoRefresh intervalSeconds={300} />
       <div className="p-6 space-y-2">
         <p className="text-sm text-gray-500">
-          7-day aircraft positioning from JetInsight · 16 maintenance vans · van live tracking coming soon via Samsara
+          7-day aircraft positioning from JetInsight · 16 AOG vans · live tracking via Samsara
         </p>
         <VanPositioningClient initialFlights={flightData.flights} />
       </div>

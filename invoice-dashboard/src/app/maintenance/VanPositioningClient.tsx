@@ -587,7 +587,7 @@ function NotamTab({ flights }: { flights: Flight[] }) {
 }
 
 // ---------------------------------------------------------------------------
-// Samsara live van locations
+// Samsara live van locations — split into AOG Vans and Pilot Crew Cars
 // ---------------------------------------------------------------------------
 
 type SamsaraVan = {
@@ -601,11 +601,41 @@ type SamsaraVan = {
   gps_time: string | null;
 };
 
+/** Vehicles whose name contains "VAN", "AOG", "OG", or "TRAN" are AOG support vans. */
+function isAogVehicle(name: string): boolean {
+  const u = (name || "").toUpperCase();
+  return u.includes("VAN") || u.includes("AOG") || u.includes(" OG") || u.includes("TRAN");
+}
+
+function VehicleRow({ v }: { v: SamsaraVan }) {
+  return (
+    <div className="flex items-center gap-4 px-4 py-3">
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-medium text-gray-800">{v.name || v.id}</div>
+        <div className="text-xs text-gray-500 truncate mt-0.5">
+          {v.address || (v.lat != null ? `${v.lat.toFixed(4)}, ${v.lon?.toFixed(4)}` : "No location")}
+        </div>
+      </div>
+      <div className="text-right shrink-0 space-y-0.5">
+        {v.speed_mph != null && (
+          <div className="text-sm font-semibold text-gray-700">
+            {Math.round(v.speed_mph)} mph
+          </div>
+        )}
+        {v.gps_time && (
+          <div className="text-xs text-gray-400">{fmtTime(v.gps_time)}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function VanLiveLocations() {
   const [vans, setVans]           = useState<SamsaraVan[]>([]);
   const [loading, setLoading]     = useState(true);
   const [error, setError]         = useState<string | null>(null);
   const [lastFetch, setLastFetch] = useState<Date | null>(null);
+  const [vehicleTab, setVehicleTab] = useState<"aog" | "crew">("aog");
 
   async function load() {
     setLoading(true);
@@ -664,17 +694,23 @@ function VanLiveLocations() {
     );
   }
 
+  const aogVans  = vans.filter((v) => isAogVehicle(v.name));
+  const crewCars = vans.filter((v) => !isAogVehicle(v.name));
+
+  const displayed = vehicleTab === "aog" ? aogVans : crewCars;
+
   return (
     <div className="rounded-xl border bg-white shadow-sm overflow-hidden">
+      {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b">
         <div className="text-sm font-semibold text-gray-800">
-          🚐 Van Live Locations
+          🚐 Live Vehicle Locations
           <span className="ml-2 text-xs font-normal text-gray-400">via Samsara</span>
         </div>
         <div className="flex items-center gap-3">
           {lastFetch && (
             <span className="text-xs text-gray-400">
-              Updated {lastFetch.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} UTC
+              Updated {lastFetch.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
             </span>
           )}
           <button
@@ -686,28 +722,53 @@ function VanLiveLocations() {
           </button>
         </div>
       </div>
-      <div className="divide-y">
-        {vans.map((v) => (
-          <div key={v.id} className="flex items-center gap-4 px-4 py-3">
-            <div className="min-w-0 flex-1">
-              <div className="text-sm font-medium text-gray-800">{v.name || v.id}</div>
-              <div className="text-xs text-gray-500 truncate mt-0.5">
-                {v.address || (v.lat != null ? `${v.lat.toFixed(4)}, ${v.lon?.toFixed(4)}` : "No location")}
-              </div>
-            </div>
-            <div className="text-right shrink-0 space-y-0.5">
-              {v.speed_mph != null && (
-                <div className="text-sm font-semibold text-gray-700">
-                  {Math.round(v.speed_mph)} mph
-                </div>
-              )}
-              {v.gps_time && (
-                <div className="text-xs text-gray-400">{fmtTime(v.gps_time)}</div>
-              )}
-            </div>
-          </div>
-        ))}
+
+      {/* Sub-tabs */}
+      <div className="flex gap-0 border-b">
+        <button
+          type="button"
+          onClick={() => setVehicleTab("aog")}
+          className={`flex-1 py-2 text-sm font-medium transition-colors flex items-center justify-center gap-2 ${
+            vehicleTab === "aog"
+              ? "bg-slate-800 text-white"
+              : "bg-gray-50 text-gray-600 hover:bg-gray-100"
+          }`}
+        >
+          AOG Vans
+          <span className={`text-xs font-bold px-1.5 py-0.5 rounded-full ${
+            vehicleTab === "aog" ? "bg-white/20 text-white" : "bg-gray-200 text-gray-700"
+          }`}>
+            {aogVans.length}
+          </span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setVehicleTab("crew")}
+          className={`flex-1 py-2 text-sm font-medium transition-colors flex items-center justify-center gap-2 border-l ${
+            vehicleTab === "crew"
+              ? "bg-slate-800 text-white"
+              : "bg-gray-50 text-gray-600 hover:bg-gray-100"
+          }`}
+        >
+          Pilot Crew Cars
+          <span className={`text-xs font-bold px-1.5 py-0.5 rounded-full ${
+            vehicleTab === "crew" ? "bg-white/20 text-white" : "bg-gray-200 text-gray-700"
+          }`}>
+            {crewCars.length}
+          </span>
+        </button>
       </div>
+
+      {/* Vehicle list */}
+      {displayed.length === 0 ? (
+        <div className="px-4 py-6 text-sm text-gray-400 text-center">
+          No {vehicleTab === "aog" ? "AOG vans" : "pilot crew cars"} found in Samsara.
+        </div>
+      ) : (
+        <div className="divide-y">
+          {displayed.map((v) => <VehicleRow key={v.id} v={v} />)}
+        </div>
+      )}
     </div>
   );
 }
@@ -719,7 +780,7 @@ function VanLiveLocations() {
 export default function VanPositioningClient({ initialFlights }: { initialFlights: Flight[] }) {
   const dates = useMemo(() => getDateRange(7), []);
   const [dayIdx, setDayIdx] = useState(0);
-  const [activeTab, setActiveTab] = useState<"map" | "schedule" | "notams">("map");
+  const [activeTab, setActiveTab] = useState<"map" | "schedule">("map");
   const [viewMode, setViewMode] = useState<"map" | "list">("map");
   const [selectedVan, setSelectedVan] = useState<number | null>(null);
 
@@ -734,17 +795,6 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
     () => initialFlights.filter((f) => f.scheduled_departure.startsWith(selectedDate)),
     [initialFlights, selectedDate],
   );
-
-  // Total unique NOTAM alert count across all flights
-  const allNotamCount = useMemo(() => {
-    const seen = new Set<string>();
-    for (const f of initialFlights) {
-      for (const a of f.alerts ?? []) {
-        if (a.alert_type.startsWith("NOTAM")) seen.add(a.id);
-      }
-    }
-    return seen.size;
-  }, [initialFlights]);
 
   return (
     <div className="space-y-5">
@@ -767,13 +817,6 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
           Schedule{flightsForDay.length > 0 && (
             <span className="ml-1.5 bg-blue-100 text-blue-700 rounded-full px-1.5 py-0.5 text-xs">
               {flightsForDay.length}
-            </span>
-          )}
-        </TabBtn>
-        <TabBtn active={activeTab === "notams"} onClick={() => setActiveTab("notams")}>
-          NOTAMs{allNotamCount > 0 && (
-            <span className="ml-1.5 bg-red-100 text-red-700 rounded-full px-1.5 py-0.5 text-xs">
-              {allNotamCount}
             </span>
           )}
         </TabBtn>
@@ -910,9 +953,6 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
 
       {/* ── Schedule tab ── */}
       {activeTab === "schedule" && <ScheduleTab flights={flightsForDay} date={selectedDate} />}
-
-      {/* ── NOTAMs tab ── */}
-      {activeTab === "notams" && <NotamTab flights={initialFlights} />}
     </div>
   );
 }

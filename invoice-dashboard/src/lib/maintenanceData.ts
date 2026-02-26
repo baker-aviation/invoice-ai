@@ -256,15 +256,17 @@ const haversineKm = (lat1: number, lon1: number, lat2: number, lon2: number): nu
 };
 
 /**
- * Simple greedy k-means-style van placement.
+ * Greedy k-means-style van placement with per-van capacity cap.
  *
- * 1. Start with 16 cluster seeds (aircraft at unique airports, spread geographically).
- * 2. Iterate: assign each aircraft to its nearest van, then re-center each van.
- * 3. Return the final assignments.
+ * 1. Start with numVans cluster seeds spread geographically across aircraft positions.
+ * 2. Iterate k-means to converge cluster centers.
+ * 3. Final assignment respects maxPerVan (default 4): aircraft are assigned to the
+ *    nearest van that still has capacity, overflow spills to the next nearest.
  */
 export function assignVans(
   positions: AircraftOvernightPosition[],
-  numVans = 16
+  numVans = 16,
+  maxPerVan = 4
 ): VanAssignment[] {
   const known = positions.filter((p) => p.isKnown && p.lat !== 0);
   if (known.length === 0) return [];
@@ -328,16 +330,33 @@ export function assignVans(
     }
   }
 
-  // Final assignment
+  // Final assignment — respects maxPerVan cap
+  // Process aircraft sorted by distance to their nearest center so closest matches go first
+  const sortedKnown = [...known].sort((a, b) => {
+    const dA = Math.min(...centers.map((c) => haversineKm(a.lat, a.lon, c.lat, c.lon)));
+    const dB = Math.min(...centers.map((c) => haversineKm(b.lat, b.lon, c.lat, c.lon)));
+    return dA - dB;
+  });
+
   const finalClusters: AircraftOvernightPosition[][] = Array.from({ length: numVans }, () => []);
-  for (const ac of known) {
-    let bestIdx = 0;
-    let bestDist = Infinity;
-    for (let i = 0; i < centers.length; i++) {
-      const d = haversineKm(ac.lat, ac.lon, centers[i].lat, centers[i].lon);
-      if (d < bestDist) { bestDist = d; bestIdx = i; }
+  for (const ac of sortedKnown) {
+    // Rank vans by distance to this aircraft
+    const ranked = centers
+      .map((c, i) => ({ i, d: haversineKm(ac.lat, ac.lon, c.lat, c.lon) }))
+      .sort((a, b) => a.d - b.d);
+
+    let assigned = false;
+    for (const { i } of ranked) {
+      if (finalClusters[i].length < maxPerVan) {
+        finalClusters[i].push(ac);
+        assigned = true;
+        break;
+      }
     }
-    finalClusters[bestIdx].push(ac);
+    // All vans at capacity — overflow to nearest
+    if (!assigned) {
+      finalClusters[ranked[0].i].push(ac);
+    }
   }
 
   // Build region labels from state/geography
