@@ -552,7 +552,7 @@ def _run_check_notams(lookahead_hours: int) -> dict:
                 print(f"NOTAM fetch error {icao}: {repr(e)}", flush=True)
                 notams_by_airport[icao] = []
 
-    alerts_created = 0
+    alerts_to_insert = []
     for flight in flights:
         fid = flight["id"]
         for icao in [flight.get("departure_icao"), flight.get("arrival_icao")]:
@@ -571,7 +571,7 @@ def _run_check_notams(lookahead_hours: int) -> dict:
                 if not _is_relevant_notam_msg(msg):
                     continue
                 notam_id = notam_data.get("id", "") or notam_data.get("number", "")
-                alert = {
+                alerts_to_insert.append({
                     "flight_id": fid,
                     "alert_type": _classify_notam(msg),
                     "severity": _notam_severity(msg),
@@ -581,17 +581,21 @@ def _run_check_notams(lookahead_hours: int) -> dict:
                     "source_message_id": f"nms-{notam_id}-{fid}",
                     "raw_data": json.dumps(feature),
                     "created_at": _utc_now(),
-                }
-                try:
-                    res = (
-                        supa.table(OPS_ALERTS_TABLE)
-                        .upsert(alert, on_conflict="source_message_id", ignore_duplicates=True)
-                        .execute()
-                    )
-                    if res.data:
-                        alerts_created += 1
-                except Exception as e:
-                    print(f"NOTAM alert insert error: {repr(e)}", flush=True)
+                })
+
+    alerts_created = 0
+    if alerts_to_insert:
+        print(f"check_notams: upserting {len(alerts_to_insert)} alerts in bulk", flush=True)
+        try:
+            # Supabase upsert accepts a list — one round-trip for all rows
+            res = (
+                supa.table(OPS_ALERTS_TABLE)
+                .upsert(alerts_to_insert, on_conflict="source_message_id", ignore_duplicates=True)
+                .execute()
+            )
+            alerts_created = len(res.data) if res.data else 0
+        except Exception as e:
+            print(f"NOTAM bulk upsert error: {repr(e)}", flush=True)
 
     print(
         f"check_notams complete: flights={len(flights)} airports={len(airports)} alerts_created={alerts_created}",
