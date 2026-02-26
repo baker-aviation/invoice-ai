@@ -166,6 +166,36 @@ def healthz():
     return {"ok": True, "service": "invoice-ingest", "ts": _utc_now()}
 
 
+@app.get("/debug/env")
+def debug_env():
+    """Return key env var presence and a test Supabase upsert to diagnose schema issues."""
+    gcs_bucket = os.getenv("GCS_BUCKET")
+    result = {"GCS_BUCKET_set": bool(gcs_bucket), "GCS_BUCKET_value": gcs_bucket}
+    try:
+        supa = sb()
+        test_doc = {
+            "status": "uploaded",
+            "gcs_bucket": "test-bucket",
+            "gcs_path": "test/debug/probe.pdf",
+            "storage_bucket": "test-bucket",
+            "storage_path": "test/debug/probe.pdf",
+            "attachment_filename": "probe.pdf",
+            "created_at": _utc_now(),
+            "source": "debug",
+            "source_mailbox": "debug@test.com",
+            "source_message_id": "debug-probe",
+        }
+        r = supa.table(DOCS_TABLE).upsert(test_doc, on_conflict="gcs_bucket,gcs_path", ignore_duplicates=True).execute()
+        result["supabase_upsert"] = "ok"
+        result["supabase_data"] = r.data
+        # clean up test row
+        supa.table(DOCS_TABLE).delete().eq("gcs_path", "test/debug/probe.pdf").execute()
+    except Exception as e:
+        result["supabase_error"] = repr(e)
+        result["supabase_detail"] = getattr(e, "message", None) or str(e)
+    return result
+
+
 # -------------------------
 # Mailbox Pull
 # -------------------------
