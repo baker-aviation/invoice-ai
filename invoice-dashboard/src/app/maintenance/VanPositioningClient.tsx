@@ -2,11 +2,12 @@
 
 import dynamic from "next/dynamic";
 import { useState, useMemo } from "react";
-import type { Flight, OpsAlert } from "@/lib/opsApi";
+import type { Flight } from "@/lib/opsApi";
 import {
   computeOvernightPositions,
   assignVans,
   getDateRange,
+  FIXED_VAN_ZONES,
   VanAssignment,
   AircraftOvernightPosition,
 } from "@/lib/maintenanceData";
@@ -78,21 +79,6 @@ function fmtDuration(dep: string, arr: string | null): string {
   const m = Math.floor((diff % 3600000) / 60000);
   return `${h}h ${m}m`;
 }
-
-function severityClasses(severity: string) {
-  if (severity === "critical") return "bg-red-100 text-red-800 border border-red-200";
-  if (severity === "warning")  return "bg-amber-100 text-amber-800 border border-amber-200";
-  return "bg-blue-100 text-blue-700 border border-blue-200";
-}
-
-const NOTAM_TYPE_LABELS: Record<string, string> = {
-  EDCT: "EDCT",
-  NOTAM_RUNWAY: "RWY",
-  NOTAM_TAXIWAY: "TWY",
-  NOTAM_TFR: "TFR",
-  NOTAM_AERODROME: "AD",
-  NOTAM_OTHER: "NOTAM",
-};
 
 // ---------------------------------------------------------------------------
 // Day strip
@@ -264,264 +250,126 @@ function AirportCluster({ van, color }: { van: VanAssignment; color: string }) {
 }
 
 // ---------------------------------------------------------------------------
-// Schedule tab
+// Schedule tab — per-van plan view
+// Shows each van's assigned aircraft, when they land, and done-for-day status.
 // ---------------------------------------------------------------------------
 
-function AlertRow({ alert }: { alert: OpsAlert }) {
-  const [expanded, setExpanded] = useState(false);
-  return (
-    <div className="border rounded-lg overflow-hidden text-sm">
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        className="w-full flex items-start gap-2 px-3 py-2 text-left hover:bg-gray-50 transition-colors"
-      >
-        <div className="flex items-center gap-2 flex-wrap min-w-0">
-          <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${severityClasses(alert.severity)}`}>
-            {alert.severity === "critical" ? "⚠ " : ""}{alert.severity}
-          </span>
-          <span className="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-mono font-medium bg-slate-100 text-slate-700">
-            {NOTAM_TYPE_LABELS[alert.alert_type] ?? alert.alert_type}
-          </span>
-          {alert.airport_icao && (
-            <span className="font-mono font-semibold text-gray-800 text-xs">{alert.airport_icao}</span>
-          )}
-          {alert.edct_time && (
-            <span className="text-gray-700 text-xs">EDCT <span className="font-semibold">{alert.edct_time}</span></span>
-          )}
-          {!alert.edct_time && alert.subject && (
-            <span className="text-gray-600 text-xs truncate max-w-xs">{alert.subject}</span>
-          )}
-        </div>
-        <span className="ml-auto text-gray-400 shrink-0 text-xs">{expanded ? "▲" : "▼"}</span>
-      </button>
-      {expanded && (
-        <div className="px-3 pb-3 pt-1 bg-gray-50 border-t text-xs text-gray-700 space-y-1">
-          {alert.subject && <p><span className="font-medium">Subject:</span> {alert.subject}</p>}
-          {alert.body && (
-            <pre className="whitespace-pre-wrap font-sans text-xs bg-white border rounded p-2 max-h-40 overflow-y-auto">
-              {alert.body}
-            </pre>
-          )}
-          <p className="text-gray-400">Received {fmtTime(alert.created_at)}</p>
-        </div>
-      )}
-    </div>
-  );
-}
+function VanScheduleCard({
+  van,
+  color,
+  flights,
+}: {
+  van: VanAssignment;
+  color: string;
+  flights: Flight[];
+}) {
+  const [expanded, setExpanded] = useState(true);
+  const now = new Date();
 
-function ScheduleFlightCard({ flight }: { flight: Flight }) {
-  const alerts = flight.alerts ?? [];
-  const hasCritical = alerts.some((a) => a.severity === "critical");
-  const hasWarning  = alerts.some((a) => a.severity === "warning");
+  const items = van.aircraft.map((ac) => {
+    // Find flight arriving at this aircraft's overnight airport on today/selected date
+    const arrFlight = flights.find(
+      (f) =>
+        f.tail_number === ac.tail &&
+        (f.arrival_icao === ac.airport ||
+          f.arrival_icao === "K" + ac.airport ||
+          f.arrival_icao?.replace(/^K/, "") === ac.airport)
+    ) ?? null;
 
-  const borderColor = hasCritical ? "border-red-300" : hasWarning ? "border-amber-300" : "border-gray-200";
-  const headerBg    = hasCritical ? "bg-red-50"     : hasWarning ? "bg-amber-50"     : "bg-white";
+    const arrTime = arrFlight?.scheduled_arrival ? new Date(arrFlight.scheduled_arrival) : null;
+    const doneForDay = arrTime !== null && arrTime < now;
+    const enRoute = arrTime !== null && arrTime >= now;
 
-  return (
-    <div className={`rounded-xl border-2 ${borderColor} overflow-hidden shadow-sm`}>
-      <div className={`${headerBg} px-5 py-4 flex items-center justify-between gap-4`}>
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2 text-xl font-bold font-mono tracking-wide">
-            <span>{flight.departure_icao ?? "????"}</span>
-            <span className="text-gray-400 text-base">→</span>
-            <span>{flight.arrival_icao ?? "????"}</span>
-          </div>
-          <div className="text-sm text-gray-600 space-y-0.5">
-            <div className="font-medium">{fmtTime(flight.scheduled_departure)}</div>
-            {flight.scheduled_arrival && (
-              <div className="text-gray-400 text-xs">
-                → {fmtTime(flight.scheduled_arrival)}{" "}
-                <span className="text-gray-400">({fmtDuration(flight.scheduled_departure, flight.scheduled_arrival)})</span>
-              </div>
-            )}
-          </div>
-        </div>
-        <div className="flex items-center gap-3 shrink-0">
-          {flight.tail_number && (
-            <span className="font-mono text-sm font-semibold text-gray-700 bg-gray-100 rounded px-2 py-1">
-              {flight.tail_number}
-            </span>
-          )}
-          {alerts.length > 0 ? (
-            <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${
-              hasCritical ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"
-            }`}>
-              {alerts.length} alert{alerts.length !== 1 ? "s" : ""}
-            </span>
-          ) : (
-            <span className="text-xs font-medium text-green-700 bg-green-100 px-2.5 py-1 rounded-full">Clear</span>
-          )}
-        </div>
-      </div>
-      {alerts.length > 0 && (
-        <div className="px-5 py-3 space-y-2 bg-white">
-          {alerts.map((a) => <AlertRow key={a.id} alert={a} />)}
-        </div>
-      )}
-    </div>
-  );
-}
+    return { ac, arrFlight, arrTime, doneForDay, enRoute };
+  });
 
-function ScheduleTab({ flights, date }: { flights: Flight[]; date: string }) {
-  if (flights.length === 0) {
-    return (
-      <div className="rounded-xl border bg-white px-6 py-12 text-center text-gray-400">
-        No flights on schedule for {fmtLongDate(date)}.
-      </div>
-    );
-  }
-  return (
-    <div className="space-y-3">
-      <div className="text-sm text-gray-500">
-        {flights.length} flight{flights.length !== 1 ? "s" : ""} scheduled · {fmtLongDate(date)}
-      </div>
-      {flights.map((f) => <ScheduleFlightCard key={f.id} flight={f} />)}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// NOTAM tab
-// ---------------------------------------------------------------------------
-
-function NotamItemRow({ alert }: { alert: OpsAlert }) {
-  const [expanded, setExpanded] = useState(false);
-  return (
-    <div className="border rounded-lg overflow-hidden">
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-gray-50 text-sm"
-      >
-        <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${severityClasses(alert.severity)}`}>
-          {alert.severity === "critical" ? "⚠ " : ""}{alert.severity}
-        </span>
-        <span className="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-mono bg-slate-100 text-slate-700">
-          {NOTAM_TYPE_LABELS[alert.alert_type] ?? alert.alert_type}
-        </span>
-        <span className="text-xs text-gray-600 truncate">{alert.subject || "—"}</span>
-        <span className="ml-auto text-gray-400 shrink-0 text-xs">{expanded ? "▲" : "▼"}</span>
-      </button>
-      {expanded && alert.body && (
-        <div className="px-3 pb-3 pt-1 bg-gray-50 border-t">
-          <pre className="whitespace-pre-wrap font-sans text-xs text-gray-700 bg-white border rounded p-2 max-h-48 overflow-y-auto">
-            {alert.body}
-          </pre>
-          <p className="text-xs text-gray-400 mt-1">Received {fmtTime(alert.created_at)}</p>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function AirportNotamCard({ airport, alerts }: { airport: string; alerts: OpsAlert[] }) {
-  const [open, setOpen] = useState(true);
-  const critical = alerts.filter((a) => a.severity === "critical").length;
-  const warning  = alerts.filter((a) => a.severity === "warning").length;
+  const doneCount = items.filter((i) => i.doneForDay).length;
 
   return (
     <div className="border rounded-xl overflow-hidden bg-white shadow-sm">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-50"
+      <div
+        className="flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-gray-50"
+        onClick={() => setExpanded((v) => !v)}
       >
         <div className="flex items-center gap-3">
-          <span className="font-mono font-bold text-base text-slate-800">{airport}</span>
-          <div className="flex gap-1">
-            {critical > 0 && (
-              <span className="bg-red-100 text-red-700 text-xs font-semibold px-2 py-0.5 rounded-full">
-                ⚠ {critical} critical
-              </span>
-            )}
-            {warning > 0 && (
-              <span className="bg-amber-100 text-amber-700 text-xs font-semibold px-2 py-0.5 rounded-full">
-                {warning} warning{warning !== 1 ? "s" : ""}
-              </span>
-            )}
+          <div
+            className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0"
+            style={{ background: color }}
+          >
+            V{van.vanId}
+          </div>
+          <div>
+            <div className="font-semibold text-sm">{van.region}</div>
+            <div className="text-xs text-gray-500">
+              Base: <span className="font-medium">{van.homeAirport}</span>
+            </div>
           </div>
         </div>
-        <span className="text-gray-400 text-sm">{open ? "▲" : "▼"}</span>
-      </button>
-      {open && (
-        <div className="border-t px-4 py-3 space-y-2">
-          {alerts.map((a) => <NotamItemRow key={a.id} alert={a} />)}
+        <div className="flex items-center gap-3">
+          <span className="text-xs bg-slate-100 text-slate-700 rounded-full px-2 py-0.5 font-medium">
+            {van.aircraft.length} aircraft
+          </span>
+          {doneCount > 0 && (
+            <span className="text-xs bg-green-100 text-green-700 rounded-full px-2 py-0.5 font-medium">
+              {doneCount} done
+            </span>
+          )}
+          <span className="text-gray-400 text-sm">{expanded ? "▲" : "▼"}</span>
         </div>
-      )}
-    </div>
-  );
-}
-
-// Live NOTAM lookup (aviationweather.gov, no auth required)
-function NotamSearch() {
-  const [query, setQuery]   = useState("");
-  const [loading, setLoading] = useState(false);
-  const [results, setResults] = useState<{ text: string; notamNumber?: string; startDate?: string; endDate?: string }[]>([]);
-  const [error, setError]   = useState<string | null>(null);
-  const [searched, setSearched] = useState(false);
-
-  async function handleSearch() {
-    const icao = query.trim().toUpperCase();
-    if (!icao) return;
-    setLoading(true);
-    setError(null);
-    setSearched(true);
-    try {
-      const res = await fetch(`/api/notams?airports=${icao}`);
-      const data = await res.json();
-      if (!data.ok) throw new Error(data.error || "Lookup failed");
-      setResults(data.notams || []);
-    } catch (e: unknown) {
-      setError(String(e));
-      setResults([]);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  return (
-    <div className="border rounded-xl bg-white shadow-sm p-4 space-y-3">
-      <div className="flex gap-2">
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value.toUpperCase())}
-          onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-          placeholder="ICAO (e.g. KTEB, KOPF)"
-          maxLength={4}
-          className="flex-1 border rounded-lg px-3 py-2 text-sm font-mono uppercase focus:outline-none focus:ring-2 focus:ring-slate-300"
-        />
-        <button
-          onClick={handleSearch}
-          disabled={loading || !query.trim()}
-          className="px-4 py-2 bg-slate-800 text-white rounded-lg text-sm font-medium disabled:opacity-50 hover:bg-slate-700"
-        >
-          {loading ? "…" : "Search"}
-        </button>
       </div>
 
-      {error && (
-        <div className="text-xs text-red-600 bg-red-50 border border-red-100 rounded px-3 py-2">{error}</div>
-      )}
-
-      {searched && !loading && !error && results.length === 0 && (
-        <div className="text-xs text-gray-400 text-center py-3">No NOTAMs found for {query}.</div>
-      )}
-
-      {results.length > 0 && (
-        <div className="space-y-2 max-h-80 overflow-y-auto">
-          {results.map((n, idx) => (
-            <div key={idx} className="border rounded-lg p-3 text-xs space-y-1">
-              {n.notamNumber && (
-                <div className="flex items-center gap-2">
-                  <span className="font-mono font-semibold text-slate-700">{n.notamNumber}</span>
-                  {n.startDate && <span className="text-gray-400">{n.startDate}</span>}
-                  {n.endDate && <span className="text-gray-400">→ {n.endDate}</span>}
+      {expanded && (
+        <div className="border-t divide-y">
+          {items.map(({ ac, arrFlight, arrTime, doneForDay, enRoute }) => (
+            <div key={ac.tail + ac.tripId} className="px-4 py-3 flex items-start justify-between gap-4">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: color }} />
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono font-semibold text-sm">{ac.tail}</span>
+                    {arrFlight && (
+                      <span className="text-xs text-gray-500 font-mono">
+                        {arrFlight.departure_icao ?? "?"} → {arrFlight.arrival_icao ?? ac.airport}
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-xs text-gray-500 mt-0.5">
+                    Overnight: <span className="font-medium">{ac.airport}</span>
+                    {" · "}{ac.city}{ac.state ? `, ${ac.state}` : ""}
+                  </div>
                 </div>
-              )}
-              <pre className="whitespace-pre-wrap font-sans text-gray-700 bg-gray-50 rounded p-2 text-xs">
-                {n.text || "No text available"}
-              </pre>
+              </div>
+              <div className="text-right shrink-0 space-y-1">
+                {arrTime ? (
+                  <div className="text-xs font-medium text-gray-700">
+                    {arrTime.toLocaleString("en-US", {
+                      month: "short",
+                      day: "numeric",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                      hour12: false,
+                      timeZone: "UTC",
+                    })} UTC
+                  </div>
+                ) : (
+                  <div className="text-xs text-gray-400">No arrival time</div>
+                )}
+                {doneForDay && (
+                  <span className="inline-block text-xs font-semibold bg-green-100 text-green-700 rounded-full px-2 py-0.5">
+                    ✓ Done
+                  </span>
+                )}
+                {enRoute && (
+                  <span className="inline-block text-xs font-semibold bg-blue-100 text-blue-700 rounded-full px-2 py-0.5">
+                    En-route
+                  </span>
+                )}
+                {!arrTime && (
+                  <span className="inline-block text-xs text-gray-400 rounded-full px-2 py-0.5 border">
+                    No flight data
+                  </span>
+                )}
+              </div>
             </div>
           ))}
         </div>
@@ -530,61 +378,71 @@ function NotamSearch() {
   );
 }
 
-function NotamTab({ flights }: { flights: Flight[] }) {
-  const notamsByAirport = useMemo(() => {
-    const seen = new Set<string>();
-    const byAirport: Record<string, OpsAlert[]> = {};
-    for (const f of flights) {
-      for (const a of f.alerts ?? []) {
-        if (!a.alert_type.startsWith("NOTAM")) continue;
-        if (seen.has(a.id)) continue;
-        seen.add(a.id);
-        const key = a.airport_icao || "Unknown";
-        (byAirport[key] = byAirport[key] ?? []).push(a);
-      }
-    }
-    return byAirport;
-  }, [flights]);
+function ScheduleTab({
+  vans,
+  flights,
+  date,
+}: {
+  vans: VanAssignment[];
+  flights: Flight[];
+  date: string;
+}) {
+  if (vans.length === 0) {
+    return (
+      <div className="rounded-xl border bg-white px-6 py-12 text-center text-gray-400">
+        No van assignments for {fmtLongDate(date)}.
+      </div>
+    );
+  }
 
-  const entries = Object.entries(notamsByAirport).sort(([, a], [, b]) => {
-    // Sort critical airports first
-    const aCrit = a.some((x) => x.severity === "critical") ? 1 : 0;
-    const bCrit = b.some((x) => x.severity === "critical") ? 1 : 0;
-    return bCrit - aCrit;
-  });
+  // Show all 8 fixed zones (even if no aircraft assigned — shows undeployed zones)
+  const allZoneIds = FIXED_VAN_ZONES.map((z) => z.vanId);
+  const vanMap = new Map(vans.map((v) => [v.vanId, v]));
 
   return (
-    <div className="space-y-6">
-      {/* NOTAMs from ops pipeline */}
-      <div>
-        <div className="text-sm font-semibold text-gray-700 mb-1">Active NOTAMs from scheduled flights</div>
-        <div className="text-xs text-gray-400 mb-3">
-          Populated by ops-monitor every 30 min via FAA NOTAM API · linked to upcoming flight airports
-        </div>
-        {entries.length > 0 ? (
-          <div className="space-y-3">
-            {entries.map(([airport, alerts]) => (
-              <AirportNotamCard key={airport} airport={airport} alerts={alerts} />
-            ))}
-          </div>
-        ) : (
-          <div className="rounded-xl border bg-white px-6 py-8 text-center text-gray-400 text-sm">
-            No active NOTAMs in pipeline data.
-          </div>
-        )}
+    <div className="space-y-3">
+      <div className="text-sm text-gray-500 mb-1">
+        Van plan for {fmtLongDate(date)} · {vans.length} of {FIXED_VAN_ZONES.length} zones active
       </div>
+      {allZoneIds.map((zoneId) => {
+        const zone = FIXED_VAN_ZONES.find((z) => z.vanId === zoneId)!;
+        const van = vanMap.get(zoneId);
+        const color = VAN_COLORS[(zoneId - 1) % VAN_COLORS.length];
 
-      {/* Live airport lookup */}
-      <div>
-        <div className="text-sm font-semibold text-gray-700 mb-1">Live Airport NOTAM Lookup</div>
-        <div className="text-xs text-gray-400 mb-3">
-          Powered by aviationweather.gov · no authentication required · any ICAO
-        </div>
-        <NotamSearch />
-      </div>
+        if (!van) {
+          return (
+            <div
+              key={zoneId}
+              className="border rounded-xl bg-gray-50 px-4 py-3 flex items-center gap-3 opacity-60"
+            >
+              <div
+                className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0"
+                style={{ background: color }}
+              >
+                V{zoneId}
+              </div>
+              <div>
+                <div className="font-semibold text-sm text-gray-600">{zone.name}</div>
+                <div className="text-xs text-gray-400">No aircraft in range · Base: {zone.homeAirport}</div>
+              </div>
+            </div>
+          );
+        }
+
+        return (
+          <VanScheduleCard
+            key={zoneId}
+            van={van}
+            color={color}
+            flights={flights}
+          />
+        );
+      })}
     </div>
   );
 }
+
+// NOTAM tab removed — schedule view now shows per-van aircraft plans
 
 // ---------------------------------------------------------------------------
 // Samsara live van locations — split into AOG Vans and Pilot Crew Cars
@@ -612,6 +470,8 @@ function VehicleRow({ v }: { v: SamsaraVan }) {
     <div className="flex items-center gap-4 px-4 py-3">
       <div className="min-w-0 flex-1">
         <div className="text-sm font-medium text-gray-800">{v.name || v.id}</div>
+        {/* Tracker ID shown as sublabel — replace with Samsara label field once available */}
+        <div className="text-xs text-gray-400 font-mono">{v.id}</div>
         <div className="text-xs text-gray-500 truncate mt-0.5">
           {v.address || (v.lat != null ? `${v.lat.toFixed(4)}, ${v.lon?.toFixed(4)}` : "No location")}
         </div>
@@ -630,12 +490,164 @@ function VehicleRow({ v }: { v: SamsaraVan }) {
   );
 }
 
-function VanLiveLocations() {
+// ---------------------------------------------------------------------------
+// Crew Cars tab — live locations + oil change tracker
+// Oil change dates stored in localStorage until migrated to Supabase.
+// ---------------------------------------------------------------------------
+
+type OilChangeRecord = {
+  vehicleId: string;
+  lastChangedDate: string;   // YYYY-MM-DD
+  mileage?: string;
+  notes?: string;
+};
+
+function OilChangeTracker({ vehicles }: { vehicles: SamsaraVan[] }) {
+  const [records, setRecords] = useState<Record<string, OilChangeRecord>>({});
+  const [editing, setEditing] = useState<string | null>(null);
+  const [form, setForm] = useState({ date: "", mileage: "", notes: "" });
+
+  // Load from localStorage on mount
+  useMemo(() => {
+    try {
+      const saved = localStorage.getItem("oil_change_records");
+      if (saved) setRecords(JSON.parse(saved));
+    } catch {}
+  }, []);
+
+  function save(vehicleId: string) {
+    const updated = {
+      ...records,
+      [vehicleId]: { vehicleId, lastChangedDate: form.date, mileage: form.mileage, notes: form.notes },
+    };
+    setRecords(updated);
+    try { localStorage.setItem("oil_change_records", JSON.stringify(updated)); } catch {}
+    setEditing(null);
+  }
+
+  function startEdit(v: SamsaraVan) {
+    const existing = records[v.id];
+    setForm({
+      date: existing?.lastChangedDate ?? "",
+      mileage: existing?.mileage ?? "",
+      notes: existing?.notes ?? "",
+    });
+    setEditing(v.id);
+  }
+
+  const today = new Date();
+
+  return (
+    <div className="border rounded-xl bg-white shadow-sm overflow-hidden">
+      <div className="px-4 py-3 border-b bg-gray-50 flex items-center gap-2">
+        <span className="text-sm font-semibold text-gray-800">🔧 Oil Change Tracker</span>
+        <span className="text-xs text-gray-400 ml-1">· Stored locally — update when completed</span>
+      </div>
+      {vehicles.length === 0 ? (
+        <div className="px-4 py-6 text-sm text-gray-400 text-center">No crew cars in Samsara.</div>
+      ) : (
+        <div className="divide-y">
+          {vehicles.map((v) => {
+            const rec = records[v.id];
+            const daysSince = rec?.lastChangedDate
+              ? Math.floor((today.getTime() - new Date(rec.lastChangedDate + "T12:00:00").getTime()) / 86400000)
+              : null;
+            const overdue = daysSince !== null && daysSince > 90;
+
+            return (
+              <div key={v.id} className={`px-4 py-3 ${overdue ? "bg-red-50" : ""}`}>
+                {editing === v.id ? (
+                  <div className="space-y-2">
+                    <div className="text-sm font-medium">{v.name}</div>
+                    <div className="flex flex-wrap gap-2">
+                      <div className="flex flex-col gap-1">
+                        <label className="text-xs text-gray-500">Date</label>
+                        <input
+                          type="date"
+                          value={form.date}
+                          onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))}
+                          className="border rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-slate-300"
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <label className="text-xs text-gray-500">Mileage</label>
+                        <input
+                          type="text"
+                          placeholder="e.g. 45,200"
+                          value={form.mileage}
+                          onChange={(e) => setForm((f) => ({ ...f, mileage: e.target.value }))}
+                          className="border rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-slate-300 w-32"
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <label className="text-xs text-gray-500">Notes</label>
+                        <input
+                          type="text"
+                          placeholder="Optional"
+                          value={form.notes}
+                          onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
+                          className="border rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-slate-300 w-40"
+                        />
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => save(v.id)}
+                        disabled={!form.date}
+                        className="px-3 py-1.5 bg-slate-800 text-white rounded-lg text-xs font-medium disabled:opacity-50 hover:bg-slate-700"
+                      >
+                        Save
+                      </button>
+                      <button
+                        onClick={() => setEditing(null)}
+                        className="px-3 py-1.5 border rounded-lg text-xs font-medium text-gray-600 hover:bg-gray-50"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <div className="text-sm font-medium text-gray-800">{v.name}</div>
+                      <div className="text-xs text-gray-400 font-mono">{v.id}</div>
+                      {rec ? (
+                        <div className={`text-xs mt-0.5 ${overdue ? "text-red-600 font-semibold" : "text-gray-500"}`}>
+                          Last oil change: {rec.lastChangedDate}
+                          {rec.mileage && ` · ${rec.mileage} mi`}
+                          {daysSince !== null && (
+                            <span className={overdue ? " text-red-600" : " text-gray-400"}>
+                              {" "}({daysSince} days ago{overdue ? " — overdue" : ""})
+                            </span>
+                          )}
+                          {rec.notes && <span className="text-gray-400"> · {rec.notes}</span>}
+                        </div>
+                      ) : (
+                        <div className="text-xs text-gray-400 mt-0.5">No oil change recorded</div>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => startEdit(v)}
+                      className="px-3 py-1.5 border rounded-lg text-xs font-medium text-gray-700 hover:bg-gray-50 shrink-0"
+                    >
+                      {rec ? "Update" : "Add Record"}
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CrewCarsTab() {
   const [vans, setVans]           = useState<SamsaraVan[]>([]);
   const [loading, setLoading]     = useState(true);
   const [error, setError]         = useState<string | null>(null);
   const [lastFetch, setLastFetch] = useState<Date | null>(null);
-  const [vehicleTab, setVehicleTab] = useState<"aog" | "crew">("aog");
 
   async function load() {
     setLoading(true);
@@ -653,7 +665,88 @@ function VanLiveLocations() {
     }
   }
 
-  useMemo(() => { load(); }, []); // run once on mount
+  useMemo(() => { load(); }, []);
+  useMemo(() => {
+    const id = setInterval(load, 60_000);
+    return () => clearInterval(id);
+  }, []);
+
+  const crewCars = vans.filter((v) => !isAogVehicle(v.name));
+
+  if (loading && vans.length === 0) {
+    return <div className="rounded-xl border bg-white shadow-sm px-5 py-4 text-sm text-gray-400 animate-pulse">Loading crew car locations…</div>;
+  }
+
+  if (error) {
+    const unconfigured = error.includes("not configured") || error.includes("503");
+    return (
+      <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 px-5 py-4">
+        <div className="text-sm font-semibold text-gray-700">Crew Car Live Tracking</div>
+        <div className="text-xs text-gray-500 mt-0.5">
+          {unconfigured ? "Add SAMSARA_API_KEY to ops-monitor secrets to enable live locations." : `Samsara error: ${error}`}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Live locations */}
+      <div className="rounded-xl border bg-white shadow-sm overflow-hidden">
+        <div className="flex items-center justify-between px-4 py-3 border-b">
+          <div className="text-sm font-semibold text-gray-800">
+            🚗 Pilot Crew Cars
+            <span className="ml-2 text-xs font-normal text-gray-400">via Samsara · {crewCars.length} vehicles</span>
+          </div>
+          <div className="flex items-center gap-3">
+            {lastFetch && (
+              <span className="text-xs text-gray-400">
+                Updated {lastFetch.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+              </span>
+            )}
+            <button onClick={load} disabled={loading} className="text-xs text-blue-600 hover:underline disabled:opacity-50">
+              {loading ? "Refreshing…" : "Refresh"}
+            </button>
+          </div>
+        </div>
+        {crewCars.length === 0 ? (
+          <div className="px-4 py-6 text-sm text-gray-400 text-center">No crew cars found in Samsara.</div>
+        ) : (
+          <div className="divide-y">
+            {crewCars.map((v) => <VehicleRow key={v.id} v={v} />)}
+          </div>
+        )}
+      </div>
+
+      {/* Oil change tracker */}
+      <OilChangeTracker vehicles={crewCars} />
+    </div>
+  );
+}
+
+function VanLiveLocations() {
+  const [vans, setVans]           = useState<SamsaraVan[]>([]);
+  const [loading, setLoading]     = useState(true);
+  const [error, setError]         = useState<string | null>(null);
+  const [lastFetch, setLastFetch] = useState<Date | null>(null);
+
+  async function load() {
+    setLoading(true);
+    setError(null);
+    try {
+      const res  = await fetch("/api/vans", { cache: "no-store" });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setVans(data.vans ?? []);
+      setLastFetch(new Date());
+    } catch (e: unknown) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useMemo(() => { load(); }, []);
   useMemo(() => {
     const id = setInterval(load, 60_000);
     return () => clearInterval(id);
@@ -671,41 +764,33 @@ function VanLiveLocations() {
     const unconfigured = error.includes("not configured") || error.includes("503");
     return (
       <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 px-5 py-4 flex items-center gap-4">
-        <div className="w-9 h-9 rounded-full bg-white border flex items-center justify-center text-lg shrink-0">
-          🚐
-        </div>
+        <div className="w-9 h-9 rounded-full bg-white border flex items-center justify-center text-lg shrink-0">🚐</div>
         <div>
           <div className="text-sm font-semibold text-gray-700">Van Live Tracking</div>
           <div className="text-xs text-gray-500 mt-0.5">
-            {unconfigured
-              ? "Add SAMSARA_API_KEY to ops-monitor secrets to enable live locations."
-              : `Samsara error: ${error}`}
+            {unconfigured ? "Add SAMSARA_API_KEY to ops-monitor secrets to enable live locations." : `Samsara error: ${error}`}
           </div>
         </div>
       </div>
     );
   }
 
-  if (vans.length === 0) {
+  const aogVans = vans.filter((v) => isAogVehicle(v.name));
+
+  if (aogVans.length === 0) {
     return (
       <div className="rounded-xl border bg-white shadow-sm px-5 py-4 text-sm text-gray-400">
-        No vehicles found in Samsara.
+        No AOG vans found in Samsara.
       </div>
     );
   }
 
-  const aogVans  = vans.filter((v) => isAogVehicle(v.name));
-  const crewCars = vans.filter((v) => !isAogVehicle(v.name));
-
-  const displayed = vehicleTab === "aog" ? aogVans : crewCars;
-
   return (
     <div className="rounded-xl border bg-white shadow-sm overflow-hidden">
-      {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b">
         <div className="text-sm font-semibold text-gray-800">
-          🚐 Live Vehicle Locations
-          <span className="ml-2 text-xs font-normal text-gray-400">via Samsara</span>
+          🚐 AOG Van Live Locations
+          <span className="ml-2 text-xs font-normal text-gray-400">via Samsara · {aogVans.length} vans</span>
         </div>
         <div className="flex items-center gap-3">
           {lastFetch && (
@@ -713,62 +798,14 @@ function VanLiveLocations() {
               Updated {lastFetch.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
             </span>
           )}
-          <button
-            onClick={load}
-            disabled={loading}
-            className="text-xs text-blue-600 hover:underline disabled:opacity-50"
-          >
+          <button onClick={load} disabled={loading} className="text-xs text-blue-600 hover:underline disabled:opacity-50">
             {loading ? "Refreshing…" : "Refresh"}
           </button>
         </div>
       </div>
-
-      {/* Sub-tabs */}
-      <div className="flex gap-0 border-b">
-        <button
-          type="button"
-          onClick={() => setVehicleTab("aog")}
-          className={`flex-1 py-2 text-sm font-medium transition-colors flex items-center justify-center gap-2 ${
-            vehicleTab === "aog"
-              ? "bg-slate-800 text-white"
-              : "bg-gray-50 text-gray-600 hover:bg-gray-100"
-          }`}
-        >
-          AOG Vans
-          <span className={`text-xs font-bold px-1.5 py-0.5 rounded-full ${
-            vehicleTab === "aog" ? "bg-white/20 text-white" : "bg-gray-200 text-gray-700"
-          }`}>
-            {aogVans.length}
-          </span>
-        </button>
-        <button
-          type="button"
-          onClick={() => setVehicleTab("crew")}
-          className={`flex-1 py-2 text-sm font-medium transition-colors flex items-center justify-center gap-2 border-l ${
-            vehicleTab === "crew"
-              ? "bg-slate-800 text-white"
-              : "bg-gray-50 text-gray-600 hover:bg-gray-100"
-          }`}
-        >
-          Pilot Crew Cars
-          <span className={`text-xs font-bold px-1.5 py-0.5 rounded-full ${
-            vehicleTab === "crew" ? "bg-white/20 text-white" : "bg-gray-200 text-gray-700"
-          }`}>
-            {crewCars.length}
-          </span>
-        </button>
+      <div className="divide-y">
+        {aogVans.map((v) => <VehicleRow key={v.id} v={v} />)}
       </div>
-
-      {/* Vehicle list */}
-      {displayed.length === 0 ? (
-        <div className="px-4 py-6 text-sm text-gray-400 text-center">
-          No {vehicleTab === "aog" ? "AOG vans" : "pilot crew cars"} found in Samsara.
-        </div>
-      ) : (
-        <div className="divide-y">
-          {displayed.map((v) => <VehicleRow key={v.id} v={v} />)}
-        </div>
-      )}
     </div>
   );
 }
@@ -847,19 +884,21 @@ function OutOfRangeAlerts({ vans }: { vans: VanAssignment[] }) {
 export default function VanPositioningClient({ initialFlights }: { initialFlights: Flight[] }) {
   const dates = useMemo(() => getDateRange(7), []);
   const [dayIdx, setDayIdx] = useState(0);
-  const [activeTab, setActiveTab] = useState<"map" | "schedule">("map");
+  const [activeTab, setActiveTab] = useState<"map" | "schedule" | "crew">("map");
   const [viewMode, setViewMode] = useState<"map" | "list">("map");
   const [selectedVan, setSelectedVan] = useState<number | null>(null);
 
   const selectedDate = dates[dayIdx];
 
   const positions = useMemo(() => computeOvernightPositions(selectedDate), [selectedDate]);
-  const vans       = useMemo(() => assignVans(positions, 16), [positions]);
+  const vans       = useMemo(() => assignVans(positions), [positions]);
   const displayedVans = selectedVan === null ? vans : vans.filter((v) => v.vanId === selectedVan);
 
-  // Flights departing on the selected date (UTC date prefix match)
+  // Flights arriving on the selected date (for schedule tab)
   const flightsForDay = useMemo(
-    () => initialFlights.filter((f) => f.scheduled_departure.startsWith(selectedDate)),
+    () => initialFlights.filter((f) =>
+      (f.scheduled_arrival ?? f.scheduled_departure).startsWith(selectedDate)
+    ),
     [initialFlights, selectedDate],
   );
 
@@ -884,11 +923,15 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
           Van Map
         </TabBtn>
         <TabBtn active={activeTab === "schedule"} onClick={() => setActiveTab("schedule")}>
-          Schedule{flightsForDay.length > 0 && (
+          Schedule
+          {vans.length > 0 && (
             <span className="ml-1.5 bg-blue-100 text-blue-700 rounded-full px-1.5 py-0.5 text-xs">
-              {flightsForDay.length}
+              {vans.length}
             </span>
           )}
+        </TabBtn>
+        <TabBtn active={activeTab === "crew"} onClick={() => setActiveTab("crew")}>
+          Crew Cars
         </TabBtn>
       </div>
 
@@ -1034,7 +1077,12 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
       )}
 
       {/* ── Schedule tab ── */}
-      {activeTab === "schedule" && <ScheduleTab flights={flightsForDay} date={selectedDate} />}
+      {activeTab === "schedule" && (
+        <ScheduleTab vans={vans} flights={flightsForDay} date={selectedDate} />
+      )}
+
+      {/* ── Crew Cars tab ── */}
+      {activeTab === "crew" && <CrewCarsTab />}
     </div>
   );
 }

@@ -10,6 +10,46 @@
 import { getAirportInfo } from "./airportCoords";
 
 // ---------------------------------------------------------------------------
+// Contiguous 48 states — used to exclude offshore / international aircraft
+// from van assignment. Vans stay in the lower 48 only.
+// ---------------------------------------------------------------------------
+
+const CONTIGUOUS_48 = new Set([
+  "AL","AZ","AR","CA","CO","CT","DE","FL","GA","ID","IL","IN","IA","KS","KY",
+  "LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY",
+  "NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT","VA","WA",
+  "WV","WI","WY",
+]);
+
+export function isContiguous48(state: string): boolean {
+  return CONTIGUOUS_48.has(state);
+}
+
+// ---------------------------------------------------------------------------
+// Fixed van zones — replaces dynamic k-means clustering so vans stay in
+// the same geographic area. 8 home bases per ops requirements.
+// ---------------------------------------------------------------------------
+
+export type VanZone = {
+  vanId: number;
+  name: string;
+  homeAirport: string;
+  lat: number;
+  lon: number;
+};
+
+export const FIXED_VAN_ZONES: VanZone[] = [
+  { vanId: 1, name: "North FL",       homeAirport: "JAX", lat: 30.4943, lon: -81.6879 },
+  { vanId: 2, name: "South FL East",  homeAirport: "PBI", lat: 26.6832, lon: -80.0956 },
+  { vanId: 3, name: "South FL West",  homeAirport: "FMY", lat: 26.5866, lon: -81.8633 },
+  { vanId: 4, name: "NY/NJ – TEB",    homeAirport: "TEB", lat: 40.8501, lon: -74.0608 },
+  { vanId: 5, name: "NY/NJ – HPN",    homeAirport: "HPN", lat: 41.0670, lon: -73.7076 },
+  { vanId: 6, name: "Bedford MA",     homeAirport: "BED", lat: 42.4700, lon: -71.2890 },
+  { vanId: 7, name: "LA Area",        homeAirport: "VNY", lat: 34.2098, lon: -118.4899 },
+  { vanId: 8, name: "SFO Area",       homeAirport: "SFO", lat: 37.6213, lon: -122.3790 },
+];
+
+// ---------------------------------------------------------------------------
 // Raw trip data (from JetInsight export, 2026-02-25)
 // ---------------------------------------------------------------------------
 
@@ -240,10 +280,16 @@ export function computeOvernightPositions(date: string): AircraftOvernightPositi
 }
 
 // ---------------------------------------------------------------------------
-// Step 2: Assign 16 vans to overnight aircraft clusters
+// Step 2: Assign vans to aircraft using fixed geographic zones.
+//
+// Rules:
+//  - Only aircraft at contiguous 48-state airports are eligible (no offshore/intl).
+//  - Each van has a fixed home zone (see FIXED_VAN_ZONES above).
+//  - Aircraft are assigned to the nearest van zone, up to maxPerVan cap.
+//  - Aircraft that can't be covered are skipped (it's OK to miss some).
 // ---------------------------------------------------------------------------
 
-const haversineKm = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
+export const haversineKm = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
   const R = 6371;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
   const dLon = ((lon2 - lon1) * Math.PI) / 180;
@@ -255,138 +301,58 @@ const haversineKm = (lat1: number, lon1: number, lat2: number, lon2: number): nu
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 };
 
-/**
- * Greedy k-means-style van placement with per-van capacity cap.
- *
- * 1. Start with numVans cluster seeds spread geographically across aircraft positions.
- * 2. Iterate k-means to converge cluster centers.
- * 3. Final assignment respects maxPerVan (default 4): aircraft are assigned to the
- *    nearest van that still has capacity, overflow spills to the next nearest.
- */
 export function assignVans(
   positions: AircraftOvernightPosition[],
-  numVans = 16,
+  _numVans = 8,   // kept for API compat, ignored — use FIXED_VAN_ZONES
   maxPerVan = 4
 ): VanAssignment[] {
-  const known = positions.filter((p) => p.isKnown && p.lat !== 0);
-  if (known.length === 0) return [];
+  // Only assign vans to aircraft in the contiguous 48 states
+  const eligible = positions.filter(
+    (p) => p.isKnown && p.lat !== 0 && isContiguous48(p.state)
+  );
+  if (eligible.length === 0) return [];
 
-  // Deduplicate airports — pick one aircraft per unique airport as seed
-  const uniqueAirports = Array.from(new Map(known.map((p) => [p.airport, p])).values());
-
-  // Seed: take up to numVans most geographically spread airports
-  // Simple approach: pick first, then always pick the point furthest from existing seeds
-  const seeds: { lat: number; lon: number; airport: string }[] = [];
-
-  // Start with the first airport
-  seeds.push(uniqueAirports[0]);
-  while (seeds.length < Math.min(numVans, uniqueAirports.length)) {
-    let maxMinDist = -1;
-    let farthest = uniqueAirports[0];
-    for (const apt of uniqueAirports) {
-      if (seeds.some((s) => s.airport === apt.airport)) continue;
-      const minDist = Math.min(...seeds.map((s) => haversineKm(s.lat, s.lon, apt.lat, apt.lon)));
-      if (minDist > maxMinDist) {
-        maxMinDist = minDist;
-        farthest = apt;
-      }
-    }
-    seeds.push(farthest);
-  }
-
-  // Fill remaining vans with copies of the closest seed if we have fewer airports than vans
-  let centers = seeds.map((s) => ({ lat: s.lat, lon: s.lon, airport: s.airport }));
-  while (centers.length < numVans) {
-    centers.push({ ...centers[0] });
-  }
-
-  // k-means iterations
-  for (let iter = 0; iter < 10; iter++) {
-    // Assign each aircraft to nearest center
-    const clusters: AircraftOvernightPosition[][] = Array.from({ length: numVans }, () => []);
-    for (const ac of known) {
-      let bestIdx = 0;
-      let bestDist = Infinity;
-      for (let i = 0; i < centers.length; i++) {
-        const d = haversineKm(ac.lat, ac.lon, centers[i].lat, centers[i].lon);
-        if (d < bestDist) { bestDist = d; bestIdx = i; }
-      }
-      clusters[bestIdx].push(ac);
-    }
-
-    // Re-center each van to the mean position of its cluster
-    for (let i = 0; i < numVans; i++) {
-      if (clusters[i].length === 0) continue;
-      const latMean = clusters[i].reduce((s, a) => s + a.lat, 0) / clusters[i].length;
-      const lonMean = clusters[i].reduce((s, a) => s + a.lon, 0) / clusters[i].length;
-      // Snap to the nearest actual aircraft position (vans must be at a real airport)
-      let nearest = clusters[i][0];
-      let nearestDist = Infinity;
-      for (const ac of clusters[i]) {
-        const d = haversineKm(latMean, lonMean, ac.lat, ac.lon);
-        if (d < nearestDist) { nearestDist = d; nearest = ac; }
-      }
-      centers[i] = { lat: nearest.lat, lon: nearest.lon, airport: nearest.airport };
-    }
-  }
-
-  // Final assignment — respects maxPerVan cap
-  // Process aircraft sorted by distance to their nearest center so closest matches go first
-  const sortedKnown = [...known].sort((a, b) => {
-    const dA = Math.min(...centers.map((c) => haversineKm(a.lat, a.lon, c.lat, c.lon)));
-    const dB = Math.min(...centers.map((c) => haversineKm(b.lat, b.lon, c.lat, c.lon)));
+  // Sort aircraft by distance to nearest zone so closest assignments go first
+  const sorted = [...eligible].sort((a, b) => {
+    const dA = Math.min(...FIXED_VAN_ZONES.map((z) => haversineKm(a.lat, a.lon, z.lat, z.lon)));
+    const dB = Math.min(...FIXED_VAN_ZONES.map((z) => haversineKm(b.lat, b.lon, z.lat, z.lon)));
     return dA - dB;
   });
 
-  const finalClusters: AircraftOvernightPosition[][] = Array.from({ length: numVans }, () => []);
-  for (const ac of sortedKnown) {
-    // Rank vans by distance to this aircraft
-    const ranked = centers
-      .map((c, i) => ({ i, d: haversineKm(ac.lat, ac.lon, c.lat, c.lon) }))
+  const clusters: AircraftOvernightPosition[][] = FIXED_VAN_ZONES.map(() => []);
+
+  for (const ac of sorted) {
+    // Rank zones by distance
+    const ranked = FIXED_VAN_ZONES
+      .map((z, i) => ({ i, d: haversineKm(ac.lat, ac.lon, z.lat, z.lon) }))
       .sort((a, b) => a.d - b.d);
 
-    let assigned = false;
     for (const { i } of ranked) {
-      if (finalClusters[i].length < maxPerVan) {
-        finalClusters[i].push(ac);
-        assigned = true;
+      if (clusters[i].length < maxPerVan) {
+        clusters[i].push(ac);
         break;
       }
     }
-    // All vans at capacity — overflow to nearest
-    if (!assigned) {
-      finalClusters[ranked[0].i].push(ac);
-    }
+    // If all zones at cap, skip this aircraft (prioritize coverage, don't overflow)
   }
 
-  // Build region labels from state/geography
-  const regionLabel = (lat: number, lon: number): string => {
-    if (lon > -80) return "Southeast / Caribbean";
-    if (lon > -90 && lat > 38) return "Northeast";
-    if (lon > -90 && lat <= 38) return "Southeast";
-    if (lon > -100 && lat > 40) return "Midwest";
-    if (lon > -100 && lat <= 40) return "South Central";
-    if (lon > -115) return "Mountain / West";
-    return "West Coast";
-  };
-
-  return centers
-    .map((c, i) => {
-      const aircraft = finalClusters[i];
+  return FIXED_VAN_ZONES
+    .map((zone, i) => {
+      const aircraft = clusters[i];
       const maxDist = aircraft.length > 0
-        ? Math.max(...aircraft.map((a) => haversineKm(c.lat, c.lon, a.lat, a.lon)))
+        ? Math.max(...aircraft.map((a) => haversineKm(zone.lat, zone.lon, a.lat, a.lon)))
         : 50;
       return {
-        vanId: i + 1,
-        homeAirport: c.airport,
-        lat: c.lat,
-        lon: c.lon,
+        vanId: zone.vanId,
+        homeAirport: zone.homeAirport,
+        lat: zone.lat,
+        lon: zone.lon,
         coverageRadius: Math.max(maxDist, 50),
         aircraft,
-        region: regionLabel(c.lat, c.lon),
+        region: zone.name,
       };
     })
-    .filter((v) => v.aircraft.length > 0)  // hide empty vans
+    .filter((v) => v.aircraft.length > 0)
     .sort((a, b) => b.aircraft.length - a.aircraft.length);
 }
 

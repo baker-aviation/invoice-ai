@@ -236,42 +236,62 @@ function DayRow({ dateStr, flights, defaultOpen }: { dateStr: string; flights: F
 
 // ─── Main board ───────────────────────────────────────────────────────────────
 
+// Temporary filter: show only runway + airport closures and EDCTs while FAA API key is pending.
+// Remove ALERT_TYPES_SHOWN once the full NOTAM feed is operational.
+const ALERT_TYPES_SHOWN = new Set(["NOTAM_RUNWAY", "NOTAM_AERODROME", "EDCT"]);
+
+function filterAlerts(flights: Flight[]): Flight[] {
+  return flights.map((f) => ({
+    ...f,
+    alerts: (f.alerts ?? []).filter((a) => ALERT_TYPES_SHOWN.has(a.alert_type)),
+  }));
+}
+
 export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] }) {
   const now = new Date();
+
+  // Apply alert type filter
+  const flights = useMemo(() => filterAlerts(initialFlights), [initialFlights]);
 
   // Group flights by UTC date
   const byDay = useMemo(() => {
     const map = new Map<string, Flight[]>();
-    for (const f of initialFlights) {
+    for (const f of flights) {
       const day = f.scheduled_departure.slice(0, 10); // YYYY-MM-DD
       const arr = map.get(day) ?? [];
       arr.push(f);
       map.set(day, arr);
     }
-    // Sort by date
     return Array.from(map.entries())
       .sort(([a], [b]) => a.localeCompare(b))
-      .map(([date, flights]) => ({
+      .map(([date, dayFlights]) => ({
         date,
-        flights: flights.sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure)),
+        flights: dayFlights.sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure)),
       }));
-  }, [initialFlights]);
+  }, [flights]);
 
-  const totalAlerts = initialFlights.reduce((n, f) => n + (f.alerts?.length ?? 0), 0);
-  const criticalCount = initialFlights.filter((f) =>
-    f.alerts?.some((a) => a.severity === "critical")
-  ).length;
-  const warningCount = initialFlights.filter((f) =>
+  const totalAlerts = flights.reduce((n, f) => n + (f.alerts?.length ?? 0), 0);
+  const criticalCount = flights.filter((f) => f.alerts?.some((a) => a.severity === "critical")).length;
+  const warningCount  = flights.filter((f) =>
     f.alerts?.some((a) => a.severity === "warning") && !f.alerts?.some((a) => a.severity === "critical")
   ).length;
 
   return (
     <div className="p-6 space-y-5">
+      {/* Temporary filter banner */}
+      <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 flex items-center gap-3 text-sm">
+        <span className="text-amber-600 font-semibold shrink-0">⚠ Filtered view</span>
+        <span className="text-amber-800">
+          Showing only <strong>runway closures</strong>, <strong>airport closures</strong>, and <strong>EDCTs</strong> while FAA NOTAM API key is pending.
+          TFR, taxiway, and other NOTAMs are hidden.
+        </span>
+      </div>
+
       {/* Summary bar */}
       <div className="rounded-xl border bg-white shadow-sm px-5 py-4 flex items-center gap-6 flex-wrap">
         <div>
           <div className="text-xs text-gray-500">Flights — 7 days</div>
-          <div className="text-2xl font-bold">{initialFlights.length}</div>
+          <div className="text-2xl font-bold">{flights.length}</div>
         </div>
         <div className="w-px h-10 bg-gray-200" />
         <div>
@@ -289,7 +309,7 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
         </div>
         <div className="w-px h-10 bg-gray-200" />
         <div>
-          <div className="text-xs text-gray-500">Total alerts</div>
+          <div className="text-xs text-gray-500">Filtered alerts</div>
           <div className={`text-2xl font-bold ${totalAlerts > 0 ? "text-slate-700" : "text-gray-400"}`}>
             {totalAlerts}
           </div>
@@ -306,12 +326,12 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
         </div>
       ) : (
         <div className="space-y-3">
-          {byDay.map(({ date, flights }, idx) => (
+          {byDay.map(({ date, flights: dayFlights }, idx) => (
             <DayRow
               key={date}
               dateStr={date}
-              flights={flights}
-              defaultOpen={idx === 0} // today expanded by default
+              flights={dayFlights}
+              defaultOpen={idx === 0}
             />
           ))}
         </div>
