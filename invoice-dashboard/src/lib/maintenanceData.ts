@@ -371,6 +371,22 @@ export function assignVans(
     .sort((a, b) => b.aircraft.length - a.aircraft.length);
 }
 
-// Pre-compute for today and tomorrow
+// Pre-compute for today and tomorrow (kept for backward-compat)
 export const TODAY = "2026-02-25";
 export const TOMORROW = "2026-02-26";
+
+/**
+ * Returns an array of YYYY-MM-DD strings starting from today (local date),
+ * going `days` days forward.
+ */
+export function getDateRange(days = 7): string[] {
+  const today = new Date();
+  return Array.from({ length: days }, (_, i) => {
+    const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() + i);
+    return [
+      d.getFullYear(),
+      String(d.getMonth() + 1).padStart(2, "0"),
+      String(d.getDate()).padStart(2, "0"),
+    ].join("-");
+  });
+}

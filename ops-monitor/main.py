@@ -193,6 +193,29 @@ def acknowledge_alert(alert_id: str):
     return {"ok": True}
 
 
+@app.get("/api/notams")
+def get_notams(airports: str = Query(..., description="Comma-separated ICAO codes")):
+    """
+    Return active NOTAM alerts from ops_alerts for the given airports.
+    These are NOTAMs already fetched by check_notams (FAA NOTAM API).
+    """
+    icaos = [a.strip().upper() for a in airports.split(",") if a.strip()]
+    if not icaos:
+        return {"ok": True, "notams": []}
+    supa = sb()
+    res = (
+        supa.table(OPS_ALERTS_TABLE)
+        .select("*")
+        .in_("airport_icao", icaos)
+        .like("alert_type", "NOTAM%")
+        .is_("acknowledged_at", "null")
+        .order("created_at", desc=True)
+        .limit(100)
+        .execute()
+    )
+    return {"ok": True, "notams": res.data or [], "airports": icaos}
+
+
 # ─── Job: sync_schedule ───────────────────────────────────────────────────────
 
 
