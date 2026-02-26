@@ -260,11 +260,11 @@ def pull_mailbox(
                     "source_message_id": msg_id,
                 }
 
-                # Upsert on gcs_path so re-ingesting the same PDF is a no-op
-                # instead of a PGRST204 duplicate-key error.
+                # Upsert on (gcs_bucket, gcs_path) unique constraint so
+                # re-ingesting the same PDF is a no-op.
                 result = (
                     supa.table(DOCS_TABLE)
-                    .upsert(doc, on_conflict="gcs_path", ignore_duplicates=True)
+                    .upsert(doc, on_conflict="gcs_bucket,gcs_path", ignore_duplicates=True)
                     .execute()
                 )
                 if result.data:
