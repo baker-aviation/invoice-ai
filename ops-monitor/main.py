@@ -72,39 +72,56 @@ def _to_aware(dt) -> Optional[datetime]:
     return datetime(dt.year, dt.month, dt.day, tzinfo=timezone.utc)
 
 
+def _faa_to_icao(code: str) -> str:
+    """
+    Convert a 3-letter FAA airport code to a 4-letter ICAO code.
+    Most US airports are K + FAA code. Canadian airports start with C.
+    If the code is already 4 letters, return as-is.
+    """
+    code = code.upper().strip()
+    if len(code) == 4:
+        return code
+    if len(code) == 3:
+        # Canadian airports typically already come as 4-letter (CYYZ etc.)
+        # US domestic: prepend K
+        return "K" + code
+    return code
+
+
 def _parse_flight_fields(component) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """
-    Extract (departure_icao, arrival_icao, tail_number) from a VEVENT.
-    JetInsight puts the route in SUMMARY like "N789BA: KVNY → KLAX"
-    and may include key/value pairs in DESCRIPTION.
+    Extract (departure_icao, arrival_icao, tail_number) from a JetInsight VEVENT.
+
+    JetInsight SUMMARY format:
+        [N998CX] The Early Way (SDM - SNA) - Positioning flight
+    LOCATION field contains the departure airport (3-letter FAA code).
+    Times are always UTC (Z suffix).
     """
     summary = str(component.get("SUMMARY", ""))
     description = str(component.get("DESCRIPTION", ""))
-    location = str(component.get("LOCATION", ""))
-    combined = f"{summary} {description} {location}"
+    location = str(component.get("LOCATION", "")).strip().upper()
 
-    # Tail number  e.g. N789BA, N12345, N5AB
+    # ── Tail number: prefer [NXXXXX] bracket format ──────────────────────────
     tail = None
-    tail_m = re.search(r"\b(N\d{1,5}[A-Z]{0,2})\b", combined)
-    if tail_m:
-        tail = tail_m.group(1).upper()
+    bracket_m = re.search(r"\[([A-Z0-9]{3,8})\]", summary)
+    if bracket_m:
+        tail = bracket_m.group(1).upper()
+    else:
+        # Fallback: bare N-number anywhere in summary/description
+        bare_m = re.search(r"\b(N\d{1,5}[A-Z]{0,2})\b", f"{summary} {description}")
+        if bare_m:
+            tail = bare_m.group(1).upper()
 
-    # ICAO pair e.g. KVNY → KLAS  or  KVNY-KLAS  or  KVNY/KLAS
+    # ── Airport pair: (SDM - SNA) or (KSDM - KSNA) in summary ───────────────
     dep_icao = arr_icao = None
-    icao_m = re.search(r"\b([A-Z]{4})\s*[→\->/]\s*([A-Z]{4})\b", combined)
-    if icao_m:
-        dep_icao = icao_m.group(1)
-        arr_icao = icao_m.group(2)
+    paren_m = re.search(r"\(([A-Z]{3,4})\s*[-–]\s*([A-Z]{3,4})\)", summary)
+    if paren_m:
+        dep_icao = _faa_to_icao(paren_m.group(1))
+        arr_icao = _faa_to_icao(paren_m.group(2))
 
-    # Fallback: look for labelled fields in description
-    if not dep_icao:
-        m = re.search(r"(?:Origin|Departure|From|DEP)\s*[:\-]\s*([A-Z]{3,4})", description, re.I)
-        if m:
-            dep_icao = m.group(1).upper()
-    if not arr_icao:
-        m = re.search(r"(?:Dest(?:ination)?|Arrival|To|ARR)\s*[:\-]\s*([A-Z]{3,4})", description, re.I)
-        if m:
-            arr_icao = m.group(1).upper()
+    # ── Fallback: LOCATION field → departure ─────────────────────────────────
+    if not dep_icao and location and re.match(r"^[A-Z]{3,4}$", location):
+        dep_icao = _faa_to_icao(location)
 
     return dep_icao, arr_icao, tail
 
