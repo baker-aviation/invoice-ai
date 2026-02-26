@@ -28,7 +28,7 @@ MS_CLIENT_SECRET = os.getenv("MS_CLIENT_SECRET")
 FLIGHTS_TABLE = "flights"
 OPS_ALERTS_TABLE = "ops_alerts"
 
-FAA_NOTAM_BASE = "https://external-api.faa.gov/notamSearch/api/v1"
+FAA_NOTAM_BASE = "https://external-api.faa.gov/notamapi/v1"
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -502,12 +502,14 @@ def _fetch_notams(icao: str) -> List[Dict]:
         "client_secret": FAA_CLIENT_SECRET,
     }
     r = requests.get(
-        f"{FAA_NOTAM_BASE}/notas/search",
+        f"{FAA_NOTAM_BASE}/notams",
         headers=headers,
         params={"icaoLocation": icao, "pageSize": 50, "pageNum": 1},
         timeout=15,
     )
-    r.raise_for_status()
+    if not r.ok or not r.text:
+        print(f"NOTAM API {icao}: status={r.status_code} body={r.text[:200]!r}", flush=True)
+        r.raise_for_status()
     return r.json().get("items", [])
 
 
