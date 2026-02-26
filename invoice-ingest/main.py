@@ -208,6 +208,7 @@ def pull_mailbox(
     ingested = 0
     skipped = 0
     errors = 0
+    error_samples: list = []
 
     for msg in messages:
         msg_id = msg["id"]
@@ -274,7 +275,9 @@ def pull_mailbox(
 
             except Exception as e:
                 errors += 1
-                print(f"pull_mailbox error msg_id={msg_id} att={name}: {repr(e)}", flush=True)
+                err_detail = getattr(e, "message", None) or getattr(e, "details", None) or str(e)
+                error_samples.append({"att": name, "error": repr(e), "detail": err_detail})
+                print(f"pull_mailbox error msg_id={msg_id} att={name}: {repr(e)} | detail={err_detail}", flush=True)
 
     return {
         "ok": True,
@@ -284,6 +287,7 @@ def pull_mailbox(
         "ingested": ingested,
         "skipped": skipped,
         "errors": errors,
+        "error_samples": error_samples[:3],
     }
 
 
