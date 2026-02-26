@@ -313,9 +313,10 @@ Rules:
     Citation III, Citation V, Citation Sovereign, Citation Latitude, Citation Excel, Citation Mustang,
     C550, C560, C650, C680, etc.) — those are different aircraft. Do NOT infer from generic "Cessna"
     or "Citation" mentions without the specific X/CE-750/C750 designation.
-  - has_challenger_300: true ONLY if the resume explicitly lists "Challenger 300" or "CL-300" as a
-    TYPE RATING. Do NOT set true for "Challenger 350" (different type), generic "Challenger" without
-    a model number, or other Bombardier/Canadair variants (CRJ, Global, Learjet, etc.).
+  - has_challenger_300: true if the resume explicitly lists "Challenger 300", "Challenger 350",
+    "CL-300", or "CL-350" as a TYPE RATING. The 300 and 350 share the same type certificate.
+    Do NOT set true for generic "Challenger" without a model number, or other Bombardier/Canadair
+    variants (CRJ, Global, Learjet, etc.).
   - ratings: list only the specific type rating codes/names explicitly mentioned (e.g. CE-750, CL-300).
     Normalize to standard format. Do not infer or guess ratings not clearly stated.
   - raw_snippet: the exact small text snippet from the resume where type ratings appear.
