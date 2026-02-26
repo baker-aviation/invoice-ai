@@ -626,8 +626,55 @@ def check_notams(lookahead_hours: int = Query(120, ge=1, le=168)):
     if not FAA_CLIENT_ID or not FAA_CLIENT_SECRET:
         raise HTTPException(400, "FAA_CLIENT_ID / FAA_CLIENT_SECRET not configured for NMS API")
 
-    stats = _run_check_notams(lookahead_hours)
+    # Hard 90s wall-clock limit so Cloud Run's 300s request timeout is never hit.
+    # _run_check_notams has its own internal 60s cap on FAA fetches; this outer
+    # wrapper catches anything else that might stall (DNS hang, token fetch, etc.).
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(_run_check_notams, lookahead_hours)
+    executor.shutdown(wait=False)
+    try:
+        stats = future.result(timeout=90)
+    except FuturesTimeoutError:
+        print("check_notams: 90s hard deadline exceeded", flush=True)
+        return {"ok": True, "timeout": True, "alerts_created": 0}
     return {"ok": True, **stats}
+
+
+@app.get("/debug/connectivity")
+def debug_connectivity():
+    """Test DNS + TCP reachability for external hosts from inside Cloud Run."""
+    import socket
+
+    hosts = [
+        ("api-nms.aim.faa.gov", 443),
+        ("graph.microsoft.com", 443),
+        ("login.microsoftonline.com", 443),
+    ]
+
+    def _probe(host: str, port: int) -> dict:
+        try:
+            # getaddrinfo is not covered by socket.settimeout — run in its own thread
+            addrs = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+            ip = addrs[0][4][0]
+        except Exception as e:
+            return {"dns": False, "tcp": False, "error": repr(e)}
+        try:
+            sock = socket.create_connection((ip, port), timeout=5)
+            sock.close()
+            return {"dns": True, "tcp": True, "ip": ip}
+        except Exception as e:
+            return {"dns": True, "tcp": False, "ip": ip, "error": repr(e)}
+
+    results = {}
+    pool = ThreadPoolExecutor(max_workers=len(hosts))
+    futures = {host: pool.submit(_probe, host, port) for host, port in hosts}
+    for host, fut in futures.items():
+        try:
+            results[host] = fut.result(timeout=10)
+        except FuturesTimeoutError:
+            results[host] = {"dns": False, "tcp": False, "error": "probe timed out after 10s (likely DNS hang)"}
+    pool.shutdown(wait=False)
+    return results
 
 
 def _fetch_notams(icao: str, token: str) -> List[Dict]:
