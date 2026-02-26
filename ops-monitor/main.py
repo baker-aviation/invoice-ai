@@ -7,7 +7,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 from icalendar import Calendar
 
 from supa import sb
@@ -504,15 +504,8 @@ def _find_flight_for_alert(supa, alert: Dict) -> Optional[str]:
 # ─── Job: check_notams ────────────────────────────────────────────────────────
 
 
-@app.post("/jobs/check_notams")
-def check_notams(lookahead_hours: int = Query(120, ge=1, le=168)):
-    """
-    For each upcoming flight, query the FAA NOTAM API for departure and arrival
-    airports and store relevant NOTAMs as ops_alerts.
-    """
-    if not FAA_CLIENT_ID or not FAA_CLIENT_SECRET:
-        raise HTTPException(400, "FAA_CLIENT_ID / FAA_CLIENT_SECRET not configured for NMS API")
-
+def _run_check_notams(lookahead_hours: int):
+    """Background worker — called by check_notams after returning 202."""
     supa = sb()
     now = datetime.now(timezone.utc)
     cutoff = now + timedelta(hours=lookahead_hours)
@@ -526,7 +519,8 @@ def check_notams(lookahead_hours: int = Query(120, ge=1, le=168)):
     )
     flights = flights_res.data or []
     if not flights:
-        return {"ok": True, "flights_checked": 0, "alerts_created": 0}
+        print("check_notams: no upcoming flights, nothing to check", flush=True)
+        return
 
     # Collect unique airports
     airports: set = set()
@@ -589,12 +583,24 @@ def check_notams(lookahead_hours: int = Query(120, ge=1, le=168)):
                 except Exception as e:
                     print(f"NOTAM alert insert error: {repr(e)}", flush=True)
 
-    return {
-        "ok": True,
-        "flights_checked": len(flights),
-        "airports_checked": len(airports),
-        "alerts_created": alerts_created,
-    }
+    print(
+        f"check_notams complete: flights={len(flights)} airports={len(airports)} alerts_created={alerts_created}",
+        flush=True,
+    )
+
+
+@app.post("/jobs/check_notams")
+def check_notams(background_tasks: BackgroundTasks, lookahead_hours: int = Query(120, ge=1, le=168)):
+    """
+    For each upcoming flight, query the FAA NOTAM API for departure and arrival
+    airports and store relevant NOTAMs as ops_alerts.
+    Runs in the background so the request returns immediately.
+    """
+    if not FAA_CLIENT_ID or not FAA_CLIENT_SECRET:
+        raise HTTPException(400, "FAA_CLIENT_ID / FAA_CLIENT_SECRET not configured for NMS API")
+
+    background_tasks.add_task(_run_check_notams, lookahead_hours)
+    return {"ok": True, "status": "queued"}
 
 
 def _fetch_notams(icao: str) -> List[Dict]:
