@@ -19,8 +19,7 @@ gcloud run deploy "${SERVICE_NAME}" \
   --timeout 300 \
   --max-instances 3 \
   --set-env-vars "FOREFLIGHT_MAILBOX=ForeFlight@baker-aviation.com" \
-  --set-secrets "SUPABASE_URL=SUPABASE_URL:latest,SUPABASE_SERVICE_ROLE_KEY=SUPABASE_SERVICE_ROLE_KEY:latest,MS_TENANT_ID=MS_TENANT_ID:latest,MS_CLIENT_ID=MS_CLIENT_ID:latest,MS_CLIENT_SECRET=MS_CLIENT_SECRET:latest,JETINSIGHT_ICS_URL=JETINSIGHT_ICS_URL:latest,FAA_CLIENT_ID=FAA_CLIENT_ID:latest,FAA_CLIENT_SECRET=FAA_CLIENT_SECRET:latest" \
-  --update-annotations "run.googleapis.com/startup-cpu-boost=true"
+  --set-secrets "SUPABASE_URL=SUPABASE_URL:latest,SUPABASE_SERVICE_ROLE_KEY=SUPABASE_SERVICE_ROLE_KEY:latest,MS_TENANT_ID=MS_TENANT_ID:latest,MS_CLIENT_ID=MS_CLIENT_ID:latest,MS_CLIENT_SECRET=MS_CLIENT_SECRET:latest,JETINSIGHT_ICS_URL=JETINSIGHT_ICS_URL:latest,FAA_CLIENT_ID=FAA_CLIENT_ID:latest,FAA_CLIENT_SECRET=FAA_CLIENT_SECRET:latest"
 
 echo "✅ Deployment complete."
 echo ""
