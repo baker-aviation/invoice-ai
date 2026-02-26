@@ -280,14 +280,24 @@ export function computeOvernightPositions(date: string): AircraftOvernightPositi
 }
 
 // ---------------------------------------------------------------------------
-// Step 2: Assign vans to aircraft using fixed geographic zones.
+// Step 2: Assign vans to aircraft.
 //
-// Rules:
-//  - Only aircraft at contiguous 48-state airports are eligible (no offshore/intl).
-//  - Each van has a fixed home zone (see FIXED_VAN_ZONES above).
-//  - Aircraft are assigned to the nearest van zone, up to maxPerVan cap.
-//  - Aircraft that can't be covered are skipped (it's OK to miss some).
+// Phase 1 — Fixed zones (V1-V8):
+//   Each aircraft within MAX_ZONE_DISTANCE_KM of a fixed zone home base is
+//   assigned there (nearest zone first, capped at maxPerVan).
+//
+// Phase 2 — Overflow vans (V9-V16):
+//   Aircraft not covered by any fixed zone are grouped geographically into
+//   up to 8 additional "flex vans" that position themselves near the work.
+//
+// 48-states rule: offshore / international aircraft are excluded entirely.
 // ---------------------------------------------------------------------------
+
+const MAX_ZONE_DISTANCE_KM = 700;   // ~6-7 hour drive — max reach for a fixed zone van
+const MAX_TOTAL_VANS       = 16;
+const OVERFLOW_START_ID    = FIXED_VAN_ZONES.length + 1; // 9
+const MAX_OVERFLOW_VANS    = MAX_TOTAL_VANS - FIXED_VAN_ZONES.length; // 8
+const OVERFLOW_GROUP_KM    = 450;   // max radius to merge unassigned aircraft into one overflow van
 
 export const haversineKm = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
   const R = 6371;
@@ -301,9 +311,19 @@ export const haversineKm = (lat1: number, lon1: number, lat2: number, lon2: numb
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 };
 
+function overflowRegionLabel(lat: number, lon: number): string {
+  if (lat > 45) return "Pacific NW";
+  if (lon > -80 && lat > 35) return "Mid-Atlantic";
+  if (lon > -80 && lat <= 35) return "Southeast";
+  if (lon > -95 && lat > 40) return "Midwest";
+  if (lon > -95 && lat <= 40) return "South Central";
+  if (lon > -115) return "Mountain West";
+  return "West Coast";
+}
+
 export function assignVans(
   positions: AircraftOvernightPosition[],
-  _numVans = 8,   // kept for API compat, ignored — use FIXED_VAN_ZONES
+  _numVans = MAX_TOTAL_VANS, // ignored, kept for API compat
   maxPerVan = 4
 ): VanAssignment[] {
   // Only assign vans to aircraft in the contiguous 48 states
@@ -312,48 +332,103 @@ export function assignVans(
   );
   if (eligible.length === 0) return [];
 
-  // Sort aircraft by distance to nearest zone so closest assignments go first
+  // Sort aircraft so closest-to-a-zone goes first (ensures nearest aircraft win slots)
   const sorted = [...eligible].sort((a, b) => {
     const dA = Math.min(...FIXED_VAN_ZONES.map((z) => haversineKm(a.lat, a.lon, z.lat, z.lon)));
     const dB = Math.min(...FIXED_VAN_ZONES.map((z) => haversineKm(b.lat, b.lon, z.lat, z.lon)));
     return dA - dB;
   });
 
-  const clusters: AircraftOvernightPosition[][] = FIXED_VAN_ZONES.map(() => []);
+  // ── Phase 1: assign to fixed zones (only within MAX_ZONE_DISTANCE_KM) ──
+  const fixedClusters: AircraftOvernightPosition[][] = FIXED_VAN_ZONES.map(() => []);
+  const unassigned: AircraftOvernightPosition[] = [];
 
   for (const ac of sorted) {
-    // Rank zones by distance
     const ranked = FIXED_VAN_ZONES
       .map((z, i) => ({ i, d: haversineKm(ac.lat, ac.lon, z.lat, z.lon) }))
       .sort((a, b) => a.d - b.d);
 
-    for (const { i } of ranked) {
-      if (clusters[i].length < maxPerVan) {
-        clusters[i].push(ac);
+    if (ranked[0].d > MAX_ZONE_DISTANCE_KM) {
+      // Too far from every fixed zone — goes to overflow
+      unassigned.push(ac);
+      continue;
+    }
+
+    let placed = false;
+    for (const { i, d } of ranked) {
+      if (d > MAX_ZONE_DISTANCE_KM) break; // stop checking once beyond cutoff
+      if (fixedClusters[i].length < maxPerVan) {
+        fixedClusters[i].push(ac);
+        placed = true;
         break;
       }
     }
-    // If all zones at cap, skip this aircraft (prioritize coverage, don't overflow)
+    if (!placed) {
+      // All nearby zones at cap — overflow
+      unassigned.push(ac);
+    }
   }
 
-  return FIXED_VAN_ZONES
-    .map((zone, i) => {
-      const aircraft = clusters[i];
-      const maxDist = aircraft.length > 0
-        ? Math.max(...aircraft.map((a) => haversineKm(zone.lat, zone.lon, a.lat, a.lon)))
-        : 50;
-      return {
-        vanId: zone.vanId,
-        homeAirport: zone.homeAirport,
-        lat: zone.lat,
-        lon: zone.lon,
-        coverageRadius: Math.max(maxDist, 50),
-        aircraft,
-        region: zone.name,
-      };
-    })
-    .filter((v) => v.aircraft.length > 0)
-    .sort((a, b) => b.aircraft.length - a.aircraft.length);
+  // ── Phase 2: overflow vans (V9-V16) — greedy nearest-center grouping ──
+  type OverflowVan = { lat: number; lon: number; airport: string; aircraft: AircraftOvernightPosition[] };
+  const overflowVans: OverflowVan[] = [];
+
+  for (const ac of unassigned) {
+    // Find an existing overflow van close enough with capacity
+    let bestIdx = -1;
+    let bestDist = OVERFLOW_GROUP_KM;
+    for (let i = 0; i < overflowVans.length; i++) {
+      const d = haversineKm(ac.lat, ac.lon, overflowVans[i].lat, overflowVans[i].lon);
+      if (d < bestDist && overflowVans[i].aircraft.length < maxPerVan) {
+        bestDist = d;
+        bestIdx = i;
+      }
+    }
+
+    if (bestIdx >= 0) {
+      overflowVans[bestIdx].aircraft.push(ac);
+      // Re-center overflow van to centroid of its aircraft
+      const ov = overflowVans[bestIdx];
+      ov.lat = ov.aircraft.reduce((s, a) => s + a.lat, 0) / ov.aircraft.length;
+      ov.lon = ov.aircraft.reduce((s, a) => s + a.lon, 0) / ov.aircraft.length;
+    } else if (overflowVans.length < MAX_OVERFLOW_VANS) {
+      overflowVans.push({ lat: ac.lat, lon: ac.lon, airport: ac.airport, aircraft: [ac] });
+    }
+    // If no slot anywhere, skip (OK to miss some)
+  }
+
+  // ── Build result ──
+  const result: VanAssignment[] = [];
+
+  FIXED_VAN_ZONES.forEach((zone, i) => {
+    const aircraft = fixedClusters[i];
+    if (aircraft.length === 0) return;
+    const maxDist = Math.max(...aircraft.map((a) => haversineKm(zone.lat, zone.lon, a.lat, a.lon)));
+    result.push({
+      vanId: zone.vanId,
+      homeAirport: zone.homeAirport,
+      lat: zone.lat,
+      lon: zone.lon,
+      coverageRadius: Math.max(maxDist, 50),
+      aircraft,
+      region: zone.name,
+    });
+  });
+
+  overflowVans.forEach((ov, i) => {
+    const maxDist = Math.max(...ov.aircraft.map((a) => haversineKm(ov.lat, ov.lon, a.lat, a.lon)));
+    result.push({
+      vanId: OVERFLOW_START_ID + i,
+      homeAirport: ov.airport,
+      lat: ov.lat,
+      lon: ov.lon,
+      coverageRadius: Math.max(maxDist, 50),
+      aircraft: ov.aircraft,
+      region: `${overflowRegionLabel(ov.lat, ov.lon)} (Flex)`,
+    });
+  });
+
+  return result.sort((a, b) => b.aircraft.length - a.aircraft.length);
 }
 
 // Pre-compute for today and tomorrow (kept for backward-compat)

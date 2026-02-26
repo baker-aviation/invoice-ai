@@ -22,6 +22,15 @@ const MapView = dynamic(() => import("./MapView"), {
   ),
 });
 
+const CrewCarMapView = dynamic(() => import("./CrewCarMapView"), {
+  ssr: false,
+  loading: () => (
+    <div className="flex items-center justify-center h-[380px] bg-gray-100 rounded-xl text-gray-500 text-sm">
+      Loading map…
+    </div>
+  ),
+});
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -387,24 +396,19 @@ function ScheduleTab({
   flights: Flight[];
   date: string;
 }) {
-  if (vans.length === 0) {
-    return (
-      <div className="rounded-xl border bg-white px-6 py-12 text-center text-gray-400">
-        No van assignments for {fmtLongDate(date)}.
-      </div>
-    );
-  }
-
-  // Show all 8 fixed zones (even if no aircraft assigned — shows undeployed zones)
-  const allZoneIds = FIXED_VAN_ZONES.map((z) => z.vanId);
   const vanMap = new Map(vans.map((v) => [v.vanId, v]));
+  const fixedZoneIds = FIXED_VAN_ZONES.map((z) => z.vanId);
+  const overflowVans = vans.filter((v) => v.vanId > FIXED_VAN_ZONES.length);
+  const activeCount = vans.length;
 
   return (
     <div className="space-y-3">
       <div className="text-sm text-gray-500 mb-1">
-        Van plan for {fmtLongDate(date)} · {vans.length} of {FIXED_VAN_ZONES.length} zones active
+        Van plan for {fmtLongDate(date)} · {activeCount} van{activeCount !== 1 ? "s" : ""} deployed
       </div>
-      {allZoneIds.map((zoneId) => {
+
+      {/* Fixed home zones */}
+      {fixedZoneIds.map((zoneId) => {
         const zone = FIXED_VAN_ZONES.find((z) => z.vanId === zoneId)!;
         const van = vanMap.get(zoneId);
         const color = VAN_COLORS[(zoneId - 1) % VAN_COLORS.length];
@@ -413,7 +417,7 @@ function ScheduleTab({
           return (
             <div
               key={zoneId}
-              className="border rounded-xl bg-gray-50 px-4 py-3 flex items-center gap-3 opacity-60"
+              className="border rounded-xl bg-gray-50 px-4 py-3 flex items-center gap-3 opacity-50"
             >
               <div
                 className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0"
@@ -422,22 +426,34 @@ function ScheduleTab({
                 V{zoneId}
               </div>
               <div>
-                <div className="font-semibold text-sm text-gray-600">{zone.name}</div>
+                <div className="font-semibold text-sm text-gray-500">{zone.name}</div>
                 <div className="text-xs text-gray-400">No aircraft in range · Base: {zone.homeAirport}</div>
               </div>
             </div>
           );
         }
 
-        return (
-          <VanScheduleCard
-            key={zoneId}
-            van={van}
-            color={color}
-            flights={flights}
-          />
-        );
+        return <VanScheduleCard key={zoneId} van={van} color={color} flights={flights} />;
       })}
+
+      {/* Overflow / flex vans (V9-V16) */}
+      {overflowVans.length > 0 && (
+        <>
+          <div className="text-xs font-semibold text-gray-400 uppercase tracking-wide pt-2">
+            Flex Vans (overflow coverage)
+          </div>
+          {overflowVans.map((van) => {
+            const color = VAN_COLORS[(van.vanId - 1) % VAN_COLORS.length];
+            return <VanScheduleCard key={van.vanId} van={van} color={color} flights={flights} />;
+          })}
+        </>
+      )}
+
+      {activeCount === 0 && (
+        <div className="rounded-xl border bg-white px-6 py-12 text-center text-gray-400">
+          No van assignments for {fmtLongDate(date)}.
+        </div>
+      )}
     </div>
   );
 }
@@ -507,13 +523,41 @@ function OilChangeTracker({ vehicles }: { vehicles: SamsaraVan[] }) {
   const [editing, setEditing] = useState<string | null>(null);
   const [form, setForm] = useState({ date: "", mileage: "", notes: "" });
 
-  // Load from localStorage on mount
+  // Load from localStorage on mount, then seed any vehicles that have no record yet
   useMemo(() => {
     try {
       const saved = localStorage.getItem("oil_change_records");
-      if (saved) setRecords(JSON.parse(saved));
+      const existing: Record<string, OilChangeRecord> = saved ? JSON.parse(saved) : {};
+      setRecords(existing);
     } catch {}
   }, []);
+
+  // Pre-seed vehicles that have no oil change record with a random date in the past 6 months
+  useMemo(() => {
+    if (vehicles.length === 0) return;
+    setTimeout(() => {
+      setRecords((prev) => {
+        const needsSeed = vehicles.some((v) => !prev[v.id]);
+        if (!needsSeed) return prev;
+        const now = new Date();
+        const updated = { ...prev };
+        for (const v of vehicles) {
+          if (!updated[v.id]) {
+            // Random date: 14–180 days ago
+            const daysAgo = Math.floor(Math.random() * 167) + 14;
+            const d = new Date(now.getTime() - daysAgo * 86_400_000);
+            updated[v.id] = {
+              vehicleId: v.id,
+              lastChangedDate: d.toISOString().slice(0, 10),
+              mileage: String(Math.floor(Math.random() * 20_000 + 28_000)),
+            };
+          }
+        }
+        try { localStorage.setItem("oil_change_records", JSON.stringify(updated)); } catch {}
+        return updated;
+      });
+    }, 0);
+  }, [vehicles.length]);
 
   function save(vehicleId: string) {
     const updated = {
@@ -689,13 +733,18 @@ function CrewCarsTab() {
     );
   }
 
+  // Crew cars with valid GPS for the map
+  const mapCars = crewCars
+    .filter((v) => v.lat !== null && v.lon !== null)
+    .map((v) => ({ id: v.id, name: v.name, lat: v.lat!, lon: v.lon!, address: v.address, speed_mph: v.speed_mph }));
+
   return (
     <div className="space-y-4">
-      {/* Live locations */}
+      {/* Live map */}
       <div className="rounded-xl border bg-white shadow-sm overflow-hidden">
         <div className="flex items-center justify-between px-4 py-3 border-b">
           <div className="text-sm font-semibold text-gray-800">
-            🚗 Pilot Crew Cars
+            🚗 Pilot Crew Cars — Live Map
             <span className="ml-2 text-xs font-normal text-gray-400">via Samsara · {crewCars.length} vehicles</span>
           </div>
           <div className="flex items-center gap-3">
@@ -709,14 +758,26 @@ function CrewCarsTab() {
             </button>
           </div>
         </div>
-        {crewCars.length === 0 ? (
-          <div className="px-4 py-6 text-sm text-gray-400 text-center">No crew cars found in Samsara.</div>
+        {mapCars.length > 0 ? (
+          <CrewCarMapView cars={mapCars} />
         ) : (
-          <div className="divide-y">
-            {crewCars.map((v) => <VehicleRow key={v.id} v={v} />)}
+          <div className="px-4 py-12 text-sm text-gray-400 text-center">
+            {crewCars.length === 0 ? "No crew cars found in Samsara." : "No crew cars have GPS data yet."}
           </div>
         )}
       </div>
+
+      {/* Vehicle list */}
+      {crewCars.length > 0 && (
+        <div className="rounded-xl border bg-white shadow-sm overflow-hidden">
+          <div className="px-4 py-2 border-b bg-gray-50 text-xs font-semibold text-gray-500 uppercase tracking-wide">
+            Vehicle List
+          </div>
+          <div className="divide-y">
+            {crewCars.map((v) => <VehicleRow key={v.id} v={v} />)}
+          </div>
+        </div>
+      )}
 
       {/* Oil change tracker */}
       <OilChangeTracker vehicles={crewCars} />
