@@ -631,10 +631,10 @@ def _fetch_notams(icao: str) -> List[Dict]:
 
 def _is_relevant_notam_msg(msg: str) -> bool:
     m = msg.upper()
-    # Runway or taxiway closures
-    if re.search(r"(RWY|RUNWAY|TWY|TAXIWAY).{0,60}(CLSD|CLOSED)", m):
+    # Runway closures
+    if re.search(r"(RWY|RUNWAY).{0,60}(CLSD|CLOSED)", m):
         return True
-    if re.search(r"(CLSD|CLOSED).{0,60}(RWY|RUNWAY|TWY|TAXIWAY)", m):
+    if re.search(r"(CLSD|CLOSED).{0,60}(RWY|RUNWAY)", m):
         return True
     # Airport/aerodrome closure
     if re.search(r"(\bAD\b|AERODROME|AIRPORT).{0,30}(CLSD|CLOSED)", m):
@@ -656,8 +656,6 @@ def _classify_notam(msg: str) -> str:
         return "NOTAM_PPR"
     if re.search(r"\bRWY\b|RUNWAY", m):
         return "NOTAM_RUNWAY"
-    if re.search(r"\bTWY\b|TAXIWAY", m):
-        return "NOTAM_TAXIWAY"
     if re.search(r"TFR|TEMPORARY FLIGHT", m):
         return "NOTAM_TFR"
     if re.search(r"\bAD\b|AERODROME|AIRPORT", m):
