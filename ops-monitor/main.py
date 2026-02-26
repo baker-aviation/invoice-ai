@@ -2,6 +2,7 @@
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -423,13 +424,17 @@ def check_notams(lookahead_hours: int = Query(24, ge=1, le=72)):
         if f.get("arrival_icao"):
             airports.add(f["arrival_icao"])
 
+    # Fetch all airports in parallel — one request per ICAO (FAA API limitation)
     notams_by_airport: Dict[str, List] = {}
-    for icao in airports:
-        try:
-            notams_by_airport[icao] = _fetch_notams(icao)
-        except Exception as e:
-            print(f"NOTAM fetch error {icao}: {repr(e)}", flush=True)
-            notams_by_airport[icao] = []
+    with ThreadPoolExecutor(max_workers=min(len(airports), 8)) as pool:
+        future_to_icao = {pool.submit(_fetch_notams, icao): icao for icao in airports}
+        for future in as_completed(future_to_icao):
+            icao = future_to_icao[future]
+            try:
+                notams_by_airport[icao] = future.result()
+            except Exception as e:
+                print(f"NOTAM fetch error {icao}: {repr(e)}", flush=True)
+                notams_by_airport[icao] = []
 
     alerts_created = 0
     for flight in flights:
