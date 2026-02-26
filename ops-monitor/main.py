@@ -637,6 +637,9 @@ def check_notams(lookahead_hours: int = Query(120, ge=1, le=168)):
     except FuturesTimeoutError:
         print("check_notams: 90s hard deadline exceeded", flush=True)
         return {"ok": True, "timeout": True, "alerts_created": 0}
+    except Exception as e:
+        print(f"check_notams exception: {repr(e)}", flush=True)
+        raise HTTPException(500, detail=str(e))
     return {"ok": True, **stats}
 
 
@@ -675,6 +678,21 @@ def debug_connectivity():
             results[host] = {"dns": False, "tcp": False, "error": "probe timed out after 10s (likely DNS hang)"}
     pool.shutdown(wait=False)
     return results
+
+
+@app.get("/debug/notam_token")
+def debug_notam_token():
+    """Test FAA NMS token fetch in isolation — returns token expiry or the exact error."""
+    if not FAA_CLIENT_ID or not FAA_CLIENT_SECRET:
+        return {"ok": False, "error": "FAA_CLIENT_ID or FAA_CLIENT_SECRET not set"}
+    try:
+        # Force a fresh fetch (bypass cache) so we always hit the network
+        _nms_token_cache["token"] = None
+        token = _get_nms_token()
+        expires_in = int(_nms_token_cache["expires_at"] - _time.time())
+        return {"ok": True, "token_prefix": token[:8] + "...", "expires_in_s": expires_in}
+    except Exception as e:
+        return {"ok": False, "error": repr(e)}
 
 
 def _fetch_notams(icao: str, token: str) -> List[Dict]:
