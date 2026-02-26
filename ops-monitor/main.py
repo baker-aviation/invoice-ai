@@ -542,26 +542,28 @@ def _run_check_notams(lookahead_hours: int) -> dict:
     # Pre-fetch the token once so all workers share it rather than racing.
     token = _get_nms_token()
     # 60s wall-clock budget for all parallel NOTAM fetches.
-    # as_completed(timeout=60) raises FuturesTimeoutError if any future is still
-    # pending after 60s — this is the only way to escape a hung socket since
-    # future.result() inside the loop only runs on already-completed futures.
+    # IMPORTANT: do NOT use `with ThreadPoolExecutor() as pool` here — the context
+    # manager calls shutdown(wait=True) on exit, which blocks indefinitely on any
+    # stuck socket thread even after as_completed(timeout=60) raises. We call
+    # shutdown(wait=False) ourselves so hung threads are abandoned, not awaited.
     notams_by_airport: Dict[str, List] = {}
-    with ThreadPoolExecutor(max_workers=min(len(airports), 20)) as pool:
-        future_to_icao = {pool.submit(_fetch_notams, icao, token): icao for icao in airports}
-        try:
-            for future in as_completed(future_to_icao, timeout=60):
-                icao = future_to_icao[future]
-                try:
-                    notams_by_airport[icao] = future.result()
-                except Exception as e:
-                    print(f"NOTAM fetch error {icao}: {repr(e)}", flush=True)
-                    notams_by_airport[icao] = []
-        except FuturesTimeoutError:
-            # Some airport requests are still in-flight after 60s — record what we have
-            remaining = [icao for f, icao in future_to_icao.items() if f not in notams_by_airport]
-            print(f"NOTAM fetch 60s budget exceeded; skipped airports: {remaining}", flush=True)
-            for icao in remaining:
-                notams_by_airport.setdefault(icao, [])
+    pool = ThreadPoolExecutor(max_workers=min(len(airports), 20))
+    future_to_icao = {pool.submit(_fetch_notams, icao, token): icao for icao in airports}
+    try:
+        for future in as_completed(future_to_icao, timeout=60):
+            icao = future_to_icao[future]
+            try:
+                notams_by_airport[icao] = future.result()
+            except Exception as e:
+                print(f"NOTAM fetch error {icao}: {repr(e)}", flush=True)
+                notams_by_airport[icao] = []
+    except FuturesTimeoutError:
+        remaining = [icao for f, icao in future_to_icao.items() if icao not in notams_by_airport]
+        print(f"NOTAM fetch 60s budget exceeded; skipped airports: {remaining}", flush=True)
+        for icao in remaining:
+            notams_by_airport.setdefault(icao, [])
+    finally:
+        pool.shutdown(wait=False)  # abandon any still-running socket threads
 
     alerts_to_insert = []
     for flight in flights:
