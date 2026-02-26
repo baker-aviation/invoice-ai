@@ -507,9 +507,8 @@ def _fetch_notams(icao: str) -> List[Dict]:
         params={"icaoLocation": icao, "pageSize": 50, "pageNum": 1},
         timeout=15,
     )
-    if not r.ok or not r.text:
-        print(f"NOTAM API {icao}: status={r.status_code} body={r.text[:200]!r}", flush=True)
-        r.raise_for_status()
+    print(f"NOTAM API {icao}: status={r.status_code} body={r.text[:300]!r}", flush=True)
+    r.raise_for_status()
     return r.json().get("items", [])
 
 
