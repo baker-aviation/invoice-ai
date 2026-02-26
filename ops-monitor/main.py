@@ -513,7 +513,7 @@ def _fetch_notams(icao: str) -> List[Dict]:
 
 def _is_relevant_notam(notam: Dict) -> bool:
     msg = (notam.get("coreNOTAMData", {}).get("notam", {}).get("traditionalMessage") or "").upper()
-    return bool(re.search(r"CLSD|CLOSED|U/S|OUT OF SERVICE|TFR|HAZARD|UNLIT|WORK IN PROG", msg))
+    return bool(re.search(r"CLSD|CLOSED|U/S|OTS|OUT OF SERVICE|TFR|HAZARD|UNLIT|WORK IN PROG", msg))
 
 
 def _classify_notam(msg: str) -> str:
@@ -522,6 +522,8 @@ def _classify_notam(msg: str) -> str:
         return "NOTAM_RUNWAY"
     if re.search(r"\bTWY\b|TAXIWAY", m):
         return "NOTAM_TAXIWAY"
+    if re.search(r"\bNAV\b|NAVAID|VOR|DME|ILS|VORTAC|NDB|GPS", m):
+        return "NOTAM_NAVAID"
     if re.search(r"TFR|TEMPORARY FLIGHT", m):
         return "NOTAM_TFR"
     if re.search(r"\bAD\b|AERODROME|AIRPORT", m):
