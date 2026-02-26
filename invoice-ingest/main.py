@@ -260,9 +260,17 @@ def pull_mailbox(
                     "source_message_id": msg_id,
                 }
 
-                # If your schema has different column names, adjust here.
-                supa.table(DOCS_TABLE).insert(doc).execute()
-                ingested += 1
+                # Upsert on gcs_path so re-ingesting the same PDF is a no-op
+                # instead of a PGRST204 duplicate-key error.
+                result = (
+                    supa.table(DOCS_TABLE)
+                    .upsert(doc, on_conflict="gcs_path", ignore_duplicates=True)
+                    .execute()
+                )
+                if result.data:
+                    ingested += 1
+                else:
+                    skipped += 1  # already existed
 
             except Exception as e:
                 errors += 1
