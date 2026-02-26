@@ -357,6 +357,7 @@ def _parse_pdf_to_invoice_json(pdf_bytes: bytes) -> Dict[str, Any]:
     # Replace this with your real parsing logic.
     # For now we store a minimal shape.
     return {
+        "doc_type": "other",
         "vendor_name": None,
         "invoice_number": None,
         "invoice_date": None,
@@ -404,9 +405,18 @@ def parse_document(document_id: str):
 
     # parse
     inv = _parse_pdf_to_invoice_json(pdf_bytes)
+
+    # source_invoice_id is NOT NULL in parsed_invoices — fall back through
+    # invoice_number → document_id so the insert never violates the constraint.
+    src_id = (inv.get("invoice_number") or document_id)
+    src_id = str(src_id).strip() if src_id else document_id
+
     inv_row = {
         "document_id": document_id,
         **inv,
+        "source_invoice_id": src_id,
+        "invoice_key": src_id,
+        "dedupe_key": src_id,
         "created_at": _utc_now(),
     }
 
