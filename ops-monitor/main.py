@@ -3,7 +3,7 @@ import json
 import os
 import re
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -62,7 +62,7 @@ def _get_nms_token() -> str:
             NMS_AUTH_URL,
             data={"grant_type": "client_credentials"},
             auth=(FAA_CLIENT_ID, FAA_CLIENT_SECRET),
-            timeout=15,
+            timeout=(5, 10),  # (connect, read) — prevents indefinite hang
         )
         r.raise_for_status()
         data = r.json()
@@ -541,16 +541,27 @@ def _run_check_notams(lookahead_hours: int) -> dict:
     # Fetch all airports in parallel — one request per ICAO (FAA API limitation).
     # Pre-fetch the token once so all workers share it rather than racing.
     token = _get_nms_token()
+    # 60s wall-clock budget for all parallel NOTAM fetches.
+    # as_completed(timeout=60) raises FuturesTimeoutError if any future is still
+    # pending after 60s — this is the only way to escape a hung socket since
+    # future.result() inside the loop only runs on already-completed futures.
     notams_by_airport: Dict[str, List] = {}
     with ThreadPoolExecutor(max_workers=min(len(airports), 20)) as pool:
         future_to_icao = {pool.submit(_fetch_notams, icao, token): icao for icao in airports}
-        for future in as_completed(future_to_icao):
-            icao = future_to_icao[future]
-            try:
-                notams_by_airport[icao] = future.result()
-            except Exception as e:
-                print(f"NOTAM fetch error {icao}: {repr(e)}", flush=True)
-                notams_by_airport[icao] = []
+        try:
+            for future in as_completed(future_to_icao, timeout=60):
+                icao = future_to_icao[future]
+                try:
+                    notams_by_airport[icao] = future.result()
+                except Exception as e:
+                    print(f"NOTAM fetch error {icao}: {repr(e)}", flush=True)
+                    notams_by_airport[icao] = []
+        except FuturesTimeoutError:
+            # Some airport requests are still in-flight after 60s — record what we have
+            remaining = [icao for f, icao in future_to_icao.items() if f not in notams_by_airport]
+            print(f"NOTAM fetch 60s budget exceeded; skipped airports: {remaining}", flush=True)
+            for icao in remaining:
+                notams_by_airport.setdefault(icao, [])
 
     alerts_to_insert = []
     for flight in flights:
@@ -627,7 +638,7 @@ def _fetch_notams(icao: str, token: str) -> List[Dict]:
             "nmsResponseFormat": "GEOJSON",
         },
         params={"location": icao, "classification": "DOMESTIC"},
-        timeout=10,
+        timeout=(5, 10),  # (connect, read) — prevents indefinite hang
     )
     print(f"NMS NOTAM {icao}: status={r.status_code} body={r.text[:200]!r}", flush=True)
     if r.status_code == 429:
