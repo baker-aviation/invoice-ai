@@ -1,0 +1,6 @@
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+requests>=2.31.0
+supabase==2.7.4
+icalendar==5.0.12
+python-dateutil==2.9.0

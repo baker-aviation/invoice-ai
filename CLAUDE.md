@@ -23,12 +23,18 @@ A second pipeline handles job applications (resumes) from email.
 | `invoice-alerts/` | `invoice-alerts` | Creates alert rows, flushes to Slack |
 | `job-ingest/` | `job-ingest` | Pulls job application emails → GCS + Supabase |
 | `job-parse/` | `job-parse` | Parses resumes via OpenAI |
+| `ops-monitor/` | `ops-monitor` | Flight schedule sync, EDCT email pull, NOTAM checks |
 
 ## Invoice pipeline (automated via Cloud Scheduler, every 15 min)
 1. `invoice-ingest POST /jobs/pull_mailbox` — Outlook → GCS + Supabase (status=uploaded)
 2. `invoice-ingest POST /jobs/parse_next` — uploaded → parsed
 3. `invoice-alerts POST /jobs/run_alerts_next` — parsed → alert rows
 4. `invoice-alerts POST /jobs/flush_alerts` — alerts → Slack (**currently PAUSED** — repeat alert bug TBD)
+
+## Ops monitor pipeline (every 5–30 min)
+1. `ops-monitor POST /jobs/sync_schedule` — JetInsight ICS → `flights` table (every 30 min)
+2. `ops-monitor POST /jobs/pull_edct` — ForeFlight@baker-aviation.com → `ops_alerts` (every 5 min)
+3. `ops-monitor POST /jobs/check_notams` — FAA NOTAM API → `ops_alerts` (every 30 min)
 
 ## Job applications pipeline (hourly)
 1. `job-ingest POST /jobs/pull_applicants` — Outlook → GCS + Supabase
@@ -50,6 +56,7 @@ cd ~/src/invoice-ai && bash scripts/deploy-alerts.sh
 ```bash
 bash scripts/deploy-ingest.sh
 bash scripts/deploy-parser.sh
+bash scripts/deploy-ops.sh
 ```
 
 ### Manage Cloud Scheduler
@@ -60,6 +67,7 @@ gcloud scheduler jobs run invoice-pull-mailbox --project invoice-ai-487621 --loc
 
 ## Frontend routes
 - `/` — Home dashboard (card links to each section)
+- `/ops` — Operations: flight schedule + EDCT/NOTAM alerts
 - `/invoices` — Invoice list
 - `/invoices/[document_id]` — Invoice detail + PDF link
 - `/alerts` — Fee alerts table (pagination, Send to Slack button)
@@ -70,10 +78,12 @@ gcloud scheduler jobs run invoice-pull-mailbox --project invoice-ai-487621 --loc
 Frontend (`.env.local`):
 - `INVOICE_API_BASE_URL` — invoice-alerts Cloud Run URL
 - `JOB_API_BASE_URL` — job-parse Cloud Run URL
+- `OPS_API_BASE_URL` — ops-monitor Cloud Run URL
 
 Backend secrets in GCP Secret Manager: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`,
 `SLACK_WEBHOOK_URL`, `MS_TENANT_ID`, `MS_CLIENT_ID`, `MS_CLIENT_SECRET`,
-`OUTLOOK_SHARED_MAILBOX`, `GCS_BUCKET`, `OPENAI_API_KEY`
+`OUTLOOK_SHARED_MAILBOX`, `GCS_BUCKET`, `OPENAI_API_KEY`,
+`JETINSIGHT_ICS_URL`, `FAA_CLIENT_ID`, `FAA_CLIENT_SECRET`
 
 ## Active branch
 `claude/check-gcs-github-push-gqC1E`
