@@ -21,6 +21,13 @@ SAMSARA_API_KEY = os.getenv("SAMSARA_API_KEY")
 FAA_CLIENT_ID = os.getenv("FAA_CLIENT_ID")
 FAA_CLIENT_SECRET = os.getenv("FAA_CLIENT_SECRET")
 
+# FAA NMS API (replaces legacy external-api.faa.gov)
+# Prod:    https://api-nms.aim.faa.gov
+# Staging: https://api-staging.cgifederal-aim.com
+NMS_BASE_URL = os.getenv("NMS_BASE_URL", "https://api-nms.aim.faa.gov")
+NMS_AUTH_URL = f"{NMS_BASE_URL}/v1/auth/token"
+NMS_API_BASE = f"{NMS_BASE_URL}/nmsapi"
+
 FOREFLIGHT_MAILBOX = os.getenv("FOREFLIGHT_MAILBOX", "ForeFlight@baker-aviation.com")
 MS_TENANT_ID = os.getenv("MS_TENANT_ID")
 MS_CLIENT_ID = os.getenv("MS_CLIENT_ID")
@@ -29,7 +36,35 @@ MS_CLIENT_SECRET = os.getenv("MS_CLIENT_SECRET")
 FLIGHTS_TABLE = "flights"
 OPS_ALERTS_TABLE = "ops_alerts"
 
-FAA_NOTAM_BASE = "https://external-api.faa.gov/notamapi/v1"
+# ─── NMS bearer token cache (module-level, refreshed when expired) ────────────
+
+import time as _time
+
+_nms_token_cache: Dict[str, Any] = {"token": None, "expires_at": 0.0}
+
+
+def _get_nms_token() -> str:
+    """Fetch (or return cached) NMS bearer token using client_credentials flow."""
+    now = _time.time()
+    if _nms_token_cache["token"] and now < _nms_token_cache["expires_at"] - 60:
+        return _nms_token_cache["token"]
+    if not FAA_CLIENT_ID or not FAA_CLIENT_SECRET:
+        raise RuntimeError("FAA_CLIENT_ID / FAA_CLIENT_SECRET not configured")
+    r = requests.post(
+        NMS_AUTH_URL,
+        data={"grant_type": "client_credentials"},
+        auth=(FAA_CLIENT_ID, FAA_CLIENT_SECRET),
+        timeout=15,
+    )
+    r.raise_for_status()
+    data = r.json()
+    token = data["access_token"]
+    expires_in = int(data.get("expires_in", 1799))
+    _nms_token_cache["token"] = token
+    _nms_token_cache["expires_at"] = now + expires_in
+    print(f"NMS token refreshed, expires in {expires_in}s", flush=True)
+    return token
+
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -476,7 +511,7 @@ def check_notams(lookahead_hours: int = Query(120, ge=1, le=168)):
     airports and store relevant NOTAMs as ops_alerts.
     """
     if not FAA_CLIENT_ID or not FAA_CLIENT_SECRET:
-        raise HTTPException(400, "FAA_CLIENT_ID / FAA_CLIENT_SECRET not configured")
+        raise HTTPException(400, "FAA_CLIENT_ID / FAA_CLIENT_SECRET not configured for NMS API")
 
     supa = sb()
     now = datetime.now(timezone.utc)
@@ -519,22 +554,28 @@ def check_notams(lookahead_hours: int = Query(120, ge=1, le=168)):
         for icao in [flight.get("departure_icao"), flight.get("arrival_icao")]:
             if not icao:
                 continue
-            for notam in notams_by_airport.get(icao, []):
-                if not _is_relevant_notam(notam):
+            for feature in notams_by_airport.get(icao, []):
+                # NMS GeoJSON structure: feature.properties.coreNOTAMData.notam
+                notam_data = (
+                    feature.get("properties", {})
+                    .get("coreNOTAMData", {})
+                    .get("notam", {})
+                )
+                if not notam_data:
                     continue
-                notam_data = notam.get("coreNOTAMData", {}).get("notam", {})
-                notam_id = notam_data.get("id") or notam_data.get("number", "")
-                msg = notam_data.get("traditionalMessage", "") or ""
-
+                msg = notam_data.get("text", "") or ""
+                if not _is_relevant_notam_msg(msg):
+                    continue
+                notam_id = notam_data.get("id", "") or notam_data.get("number", "")
                 alert = {
                     "flight_id": fid,
                     "alert_type": _classify_notam(msg),
                     "severity": _notam_severity(msg),
-                    "airport_icao": icao,
+                    "airport_icao": notam_data.get("icaoLocation") or icao,
                     "subject": notam_data.get("number", "")[:500],
                     "body": msg[:2000],
-                    "source_message_id": f"notam-{notam_id}-{fid}",
-                    "raw_data": json.dumps(notam),
+                    "source_message_id": f"nms-{notam_id}-{fid}",
+                    "raw_data": json.dumps(feature),
                     "created_at": _utc_now(),
                 }
                 try:
@@ -557,24 +598,27 @@ def check_notams(lookahead_hours: int = Query(120, ge=1, le=168)):
 
 
 def _fetch_notams(icao: str) -> List[Dict]:
-    headers = {
-        "client_id": FAA_CLIENT_ID,
-        "client_secret": FAA_CLIENT_SECRET,
-    }
+    """Return list of GeoJSON feature dicts from the NMS API for a given ICAO."""
+    token = _get_nms_token()
     r = requests.get(
-        f"{FAA_NOTAM_BASE}/notams",
-        headers=headers,
-        params={"icaoLocation": icao, "pageSize": 50, "pageNum": 1},
-        timeout=15,
+        f"{NMS_API_BASE}/v1/notams",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "nmsResponseFormat": "GEOJSON",
+        },
+        params={"location": icao, "classification": "DOMESTIC"},
+        timeout=20,
     )
-    print(f"NOTAM API {icao}: status={r.status_code} body={r.text[:300]!r}", flush=True)
+    print(f"NMS NOTAM {icao}: status={r.status_code} body={r.text[:300]!r}", flush=True)
     r.raise_for_status()
-    return r.json().get("items", [])
+    return r.json().get("data", {}).get("geojson", [])
 
 
-def _is_relevant_notam(notam: Dict) -> bool:
-    msg = (notam.get("coreNOTAMData", {}).get("notam", {}).get("traditionalMessage") or "").upper()
-    return bool(re.search(r"CLSD|CLOSED|U/S|OTS|OUT OF SERVICE|TFR|HAZARD|UNLIT|WORK IN PROG", msg))
+def _is_relevant_notam_msg(msg: str) -> bool:
+    return bool(re.search(
+        r"CLSD|CLOSED|U/S|OTS|OUT OF SERVICE|TFR|HAZARD|UNLIT|WORK IN PROG",
+        msg.upper(),
+    ))
 
 
 def _classify_notam(msg: str) -> str:
