@@ -17,6 +17,7 @@ app = FastAPI()
 # ─── Config ───────────────────────────────────────────────────────────────────
 
 ICS_URL = os.getenv("JETINSIGHT_ICS_URL")
+SAMSARA_API_KEY = os.getenv("SAMSARA_API_KEY")
 FAA_CLIENT_ID = os.getenv("FAA_CLIENT_ID")
 FAA_CLIENT_SECRET = os.getenv("FAA_CLIENT_SECRET")
 
@@ -132,6 +133,42 @@ def _parse_flight_fields(component) -> Tuple[Optional[str], Optional[str], Optio
 @app.get("/healthz")
 def healthz():
     return {"ok": True, "service": "ops-monitor", "ts": _utc_now()}
+
+
+# ─── GET /api/vans  (Samsara live vehicle locations) ──────────────────────────
+
+@app.get("/api/vans")
+def get_vans():
+    if not SAMSARA_API_KEY:
+        raise HTTPException(status_code=503, detail="SAMSARA_API_KEY not configured")
+
+    try:
+        r = requests.get(
+            "https://api.samsara.com/fleet/vehicles/stats",
+            headers={"Authorization": f"Bearer {SAMSARA_API_KEY}"},
+            params={"types": "gps"},
+            timeout=10,
+        )
+        r.raise_for_status()
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Samsara API error: {e}")
+
+    raw = r.json().get("data") or []
+    vans: List[Dict[str, Any]] = []
+    for v in raw:
+        gps = v.get("gps") or {}
+        vans.append({
+            "id": v.get("id"),
+            "name": v.get("name"),
+            "lat": gps.get("latitude"),
+            "lon": gps.get("longitude"),
+            "speed_mph": gps.get("speedMilesPerHour"),
+            "heading": gps.get("headingDegrees"),
+            "address": (gps.get("reverseGeo") or {}).get("formattedLocation"),
+            "gps_time": gps.get("time"),
+        })
+
+    return {"ok": True, "vans": vans, "count": len(vans)}
 
 
 # ─── GET /api/flights  (called by dashboard) ──────────────────────────────────

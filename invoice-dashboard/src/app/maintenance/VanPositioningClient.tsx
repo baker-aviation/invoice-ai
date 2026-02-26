@@ -587,21 +587,126 @@ function NotamTab({ flights }: { flights: Flight[] }) {
 }
 
 // ---------------------------------------------------------------------------
-// Samsara van location stub
+// Samsara live van locations
 // ---------------------------------------------------------------------------
 
-function SamsaraStub() {
-  return (
-    <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 px-5 py-4 flex items-center gap-4">
-      <div className="w-10 h-10 rounded-full bg-white border flex items-center justify-center text-lg flex-shrink-0">
-        🚐
+type SamsaraVan = {
+  id: string;
+  name: string;
+  lat: number | null;
+  lon: number | null;
+  speed_mph: number | null;
+  heading: number | null;
+  address: string | null;
+  gps_time: string | null;
+};
+
+function VanLiveLocations() {
+  const [vans, setVans]           = useState<SamsaraVan[]>([]);
+  const [loading, setLoading]     = useState(true);
+  const [error, setError]         = useState<string | null>(null);
+  const [lastFetch, setLastFetch] = useState<Date | null>(null);
+
+  async function load() {
+    setLoading(true);
+    setError(null);
+    try {
+      const res  = await fetch("/api/vans", { cache: "no-store" });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setVans(data.vans ?? []);
+      setLastFetch(new Date());
+    } catch (e: unknown) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useMemo(() => { load(); }, []); // run once on mount
+  useMemo(() => {
+    const id = setInterval(load, 60_000);
+    return () => clearInterval(id);
+  }, []);
+
+  if (loading && vans.length === 0) {
+    return (
+      <div className="rounded-xl border bg-white shadow-sm px-5 py-4 text-sm text-gray-400 animate-pulse">
+        Loading van locations…
       </div>
-      <div>
-        <div className="text-sm font-semibold text-gray-700">Van Live Tracking — Coming Soon</div>
-        <div className="text-xs text-gray-500 mt-0.5">
-          Samsara telematics integration ready · awaiting API key · endpoint:{" "}
-          <span className="font-mono">GET /fleet/vehicles/stats/feed?types=gps</span>
+    );
+  }
+
+  if (error) {
+    const unconfigured = error.includes("not configured") || error.includes("503");
+    return (
+      <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 px-5 py-4 flex items-center gap-4">
+        <div className="w-9 h-9 rounded-full bg-white border flex items-center justify-center text-lg shrink-0">
+          🚐
         </div>
+        <div>
+          <div className="text-sm font-semibold text-gray-700">Van Live Tracking</div>
+          <div className="text-xs text-gray-500 mt-0.5">
+            {unconfigured
+              ? "Add SAMSARA_API_KEY to ops-monitor secrets to enable live locations."
+              : `Samsara error: ${error}`}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (vans.length === 0) {
+    return (
+      <div className="rounded-xl border bg-white shadow-sm px-5 py-4 text-sm text-gray-400">
+        No vehicles found in Samsara.
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-xl border bg-white shadow-sm overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-3 border-b">
+        <div className="text-sm font-semibold text-gray-800">
+          🚐 Van Live Locations
+          <span className="ml-2 text-xs font-normal text-gray-400">via Samsara</span>
+        </div>
+        <div className="flex items-center gap-3">
+          {lastFetch && (
+            <span className="text-xs text-gray-400">
+              Updated {lastFetch.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} UTC
+            </span>
+          )}
+          <button
+            onClick={load}
+            disabled={loading}
+            className="text-xs text-blue-600 hover:underline disabled:opacity-50"
+          >
+            {loading ? "Refreshing…" : "Refresh"}
+          </button>
+        </div>
+      </div>
+      <div className="divide-y">
+        {vans.map((v) => (
+          <div key={v.id} className="flex items-center gap-4 px-4 py-3">
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium text-gray-800">{v.name || v.id}</div>
+              <div className="text-xs text-gray-500 truncate mt-0.5">
+                {v.address || (v.lat != null ? `${v.lat.toFixed(4)}, ${v.lon?.toFixed(4)}` : "No location")}
+              </div>
+            </div>
+            <div className="text-right shrink-0 space-y-0.5">
+              {v.speed_mph != null && (
+                <div className="text-sm font-semibold text-gray-700">
+                  {Math.round(v.speed_mph)} mph
+                </div>
+              )}
+              {v.gps_time && (
+                <div className="text-xs text-gray-400">{fmtTime(v.gps_time)}</div>
+              )}
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -741,8 +846,8 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
             </div>
           )}
 
-          {/* Samsara stub */}
-          <SamsaraStub />
+          {/* Samsara live locations */}
+          <VanLiveLocations />
 
           {/* Full aircraft table */}
           <div>
