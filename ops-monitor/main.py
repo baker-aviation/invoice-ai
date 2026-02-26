@@ -600,18 +600,27 @@ def check_notams(lookahead_hours: int = Query(120, ge=1, le=168)):
 def _fetch_notams(icao: str) -> List[Dict]:
     """Return list of GeoJSON feature dicts from the NMS API for a given ICAO."""
     token = _get_nms_token()
-    r = requests.get(
-        f"{NMS_API_BASE}/v1/notams",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "nmsResponseFormat": "GEOJSON",
-        },
-        params={"location": icao, "classification": "DOMESTIC"},
-        timeout=20,
-    )
-    print(f"NMS NOTAM {icao}: status={r.status_code} body={r.text[:300]!r}", flush=True)
+    for attempt in range(4):
+        r = requests.get(
+            f"{NMS_API_BASE}/v1/notams",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "nmsResponseFormat": "GEOJSON",
+            },
+            params={"location": icao, "classification": "DOMESTIC"},
+            timeout=20,
+        )
+        print(f"NMS NOTAM {icao}: status={r.status_code} body={r.text[:300]!r}", flush=True)
+        if r.status_code == 429:
+            wait = 2 ** attempt  # 1s, 2s, 4s, 8s
+            print(f"NMS rate limit {icao}, retrying in {wait}s (attempt {attempt + 1})", flush=True)
+            _time.sleep(wait)
+            continue
+        r.raise_for_status()
+        return r.json().get("data", {}).get("geojson", [])
+    # All retries exhausted
     r.raise_for_status()
-    return r.json().get("data", {}).get("geojson", [])
+    return []
 
 
 def _is_relevant_notam_msg(msg: str) -> bool:
