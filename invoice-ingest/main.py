@@ -163,7 +163,28 @@ def _claim_documents_for_parse(limit: int, status: str) -> List[Dict[str, Any]]:
 
 @app.get("/healthz")
 def healthz():
-    return {"ok": True, "service": "invoice-ingest", "ts": _utc_now()}
+    gcs_bucket = os.getenv("GCS_BUCKET")
+    try:
+        supa = sb()
+        test_doc = {
+            "status": "uploaded", "gcs_bucket": "dbg", "gcs_path": "dbg/probe.pdf",
+            "storage_bucket": "dbg", "storage_path": "dbg/probe.pdf",
+            "attachment_filename": "probe.pdf", "created_at": _utc_now(),
+            "source": "debug", "source_mailbox": "dbg@test.com", "source_message_id": "dbg",
+        }
+        r = supa.table(DOCS_TABLE).upsert(test_doc, on_conflict="gcs_bucket,gcs_path", ignore_duplicates=True).execute()
+        supa.table(DOCS_TABLE).delete().eq("gcs_path", "dbg/probe.pdf").execute()
+        supa_ok = True
+        supa_err = None
+    except Exception as e:
+        supa_ok = False
+        supa_err = repr(e)
+    return {
+        "ok": True, "service": "invoice-ingest", "ts": _utc_now(),
+        "GCS_BUCKET": gcs_bucket or "(not set)",
+        "supabase_upsert_ok": supa_ok,
+        "supabase_error": supa_err,
+    }
 
 
 @app.get("/debug/env")
