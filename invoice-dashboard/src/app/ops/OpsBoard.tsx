@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import type { Flight, OpsAlert } from "@/lib/opsApi";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
