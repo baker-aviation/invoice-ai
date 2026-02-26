@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Topbar } from "@/components/Topbar";
 import { Badge } from "@/components/Badge";
 import { fetchJobDetail } from "@/lib/jobApi";
+import FileViewer from "./FileViewer";
 
 function fmtDate(s: any) {
   return String(s ?? "").replace("T", " ").replace("+00:00", "Z");
@@ -120,27 +121,13 @@ export default async function JobDetailPage({
             {files.length === 0 ? (
               <div className="text-sm text-gray-500 mt-2">No files found.</div>
             ) : (
-              <div className="mt-3 space-y-2">
+              <div className="mt-3 space-y-4">
                 {files.map((f: any) => (
-                  <div key={f.id} className="flex items-center justify-between gap-3 text-sm">
-                    <div className="min-w-0">
-                      <div className="font-medium truncate">{f.filename ?? "file"}</div>
-                      <div className="text-xs text-gray-500">
-                        {f.content_type ?? "—"}
-                        {typeof f.size_bytes === "number" ? ` • ${f.size_bytes} bytes` : ""}
-                        {f.created_at ? ` • ${fmtDate(f.created_at)}` : ""}
-                      </div>
-                    </div>
-
-                    <a
-                      href={`${jobBase}/api/files/${f.id}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-blue-600 hover:underline whitespace-nowrap"
-                    >
-                      Open →
-                    </a>
-                  </div>
+                  <FileViewer
+                    key={f.id}
+                    file={f}
+                    downloadUrl={`${jobBase}/api/files/${f.id}`}
+                  />
                 ))}
               </div>
             )}

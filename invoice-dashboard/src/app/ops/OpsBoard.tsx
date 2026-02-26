@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import type { Flight, OpsAlert } from "@/lib/opsApi";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -9,14 +9,16 @@ function fmtTime(s: string | null | undefined): string {
   if (!s) return "—";
   const d = new Date(s);
   if (isNaN(d.getTime())) return s;
-  return d.toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-    timeZoneName: "short",
-  });
+  return (
+    d.toLocaleString("en-US", {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+      timeZone: "UTC",
+    }) + " UTC"
+  );
 }
 
 function fmtDuration(dep: string, arr: string | null): string {
@@ -28,17 +30,26 @@ function fmtDuration(dep: string, arr: string | null): string {
   return `${h}h ${m}m`;
 }
 
+function severityClasses(severity: string) {
+  if (severity === "critical") return "bg-red-100 text-red-800 border border-red-200";
+  if (severity === "warning")  return "bg-amber-100 text-amber-800 border border-amber-200";
+  return "bg-blue-100 text-blue-700 border border-blue-200";
+}
+
+const NOTAM_TYPE_LABELS: Record<string, string> = {
+  EDCT: "EDCT",
+  NOTAM_RUNWAY: "RWY",
+  NOTAM_TAXIWAY: "TWY",
+  NOTAM_TFR: "TFR",
+  NOTAM_AERODROME: "AD",
+  NOTAM_OTHER: "NOTAM",
+};
+
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
 function SeverityBadge({ severity }: { severity: string }) {
-  const classes =
-    severity === "critical"
-      ? "bg-red-100 text-red-800 border border-red-200"
-      : severity === "warning"
-      ? "bg-amber-100 text-amber-800 border border-amber-200"
-      : "bg-blue-100 text-blue-700 border border-blue-200";
   return (
-    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${classes}`}>
+    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${severityClasses(severity)}`}>
       {severity === "critical" ? "⚠ " : ""}
       {severity}
     </span>
@@ -183,16 +194,227 @@ function FlightCard({ flight }: { flight: Flight }) {
   );
 }
 
+// ─── NOTAM tab components ─────────────────────────────────────────────────────
+
+function NotamItemRow({ alert }: { alert: OpsAlert }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className="border rounded-lg overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-gray-50 text-sm"
+      >
+        <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${severityClasses(alert.severity)}`}>
+          {alert.severity === "critical" ? "⚠ " : ""}{alert.severity}
+        </span>
+        <span className="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-mono bg-slate-100 text-slate-700">
+          {NOTAM_TYPE_LABELS[alert.alert_type] ?? alert.alert_type}
+        </span>
+        <span className="text-xs text-gray-600 truncate">{alert.subject || "—"}</span>
+        <span className="ml-auto text-gray-400 shrink-0 text-xs">{expanded ? "▲" : "▼"}</span>
+      </button>
+      {expanded && alert.body && (
+        <div className="px-3 pb-3 pt-1 bg-gray-50 border-t">
+          <pre className="whitespace-pre-wrap font-sans text-xs text-gray-700 bg-white border rounded p-2 max-h-48 overflow-y-auto">
+            {alert.body}
+          </pre>
+          <p className="text-xs text-gray-400 mt-1">Received {fmtTime(alert.created_at)}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AirportNotamCard({ airport, alerts }: { airport: string; alerts: OpsAlert[] }) {
+  const [open, setOpen] = useState(true);
+  const critical = alerts.filter((a) => a.severity === "critical").length;
+  const warning  = alerts.filter((a) => a.severity === "warning").length;
+
+  return (
+    <div className="border rounded-xl overflow-hidden bg-white shadow-sm">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-50"
+      >
+        <div className="flex items-center gap-3">
+          <span className="font-mono font-bold text-base text-slate-800">{airport}</span>
+          <div className="flex gap-1">
+            {critical > 0 && (
+              <span className="bg-red-100 text-red-700 text-xs font-semibold px-2 py-0.5 rounded-full">
+                ⚠ {critical} critical
+              </span>
+            )}
+            {warning > 0 && (
+              <span className="bg-amber-100 text-amber-700 text-xs font-semibold px-2 py-0.5 rounded-full">
+                {warning} warning{warning !== 1 ? "s" : ""}
+              </span>
+            )}
+          </div>
+        </div>
+        <span className="text-gray-400 text-sm">{open ? "▲" : "▼"}</span>
+      </button>
+      {open && (
+        <div className="border-t px-4 py-3 space-y-2">
+          {alerts.map((a) => <NotamItemRow key={a.id} alert={a} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NotamSearch() {
+  const [query, setQuery]   = useState("");
+  const [loading, setLoading] = useState(false);
+  const [results, setResults] = useState<{ text: string; notamNumber?: string; startDate?: string; endDate?: string }[]>([]);
+  const [error, setError]   = useState<string | null>(null);
+  const [searched, setSearched] = useState(false);
+
+  async function handleSearch() {
+    const icao = query.trim().toUpperCase();
+    if (!icao) return;
+    setLoading(true);
+    setError(null);
+    setSearched(true);
+    try {
+      const res = await fetch(`/api/notams?airports=${icao}`);
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || "Lookup failed");
+      setResults(data.notams || []);
+    } catch (e: unknown) {
+      setError(String(e));
+      setResults([]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="border rounded-xl bg-white shadow-sm p-4 space-y-3">
+      <div className="flex gap-2">
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value.toUpperCase())}
+          onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+          placeholder="ICAO (e.g. KTEB, KOPF)"
+          maxLength={4}
+          className="flex-1 border rounded-lg px-3 py-2 text-sm font-mono uppercase focus:outline-none focus:ring-2 focus:ring-slate-300"
+        />
+        <button
+          onClick={handleSearch}
+          disabled={loading || !query.trim()}
+          className="px-4 py-2 bg-slate-800 text-white rounded-lg text-sm font-medium disabled:opacity-50 hover:bg-slate-700"
+        >
+          {loading ? "…" : "Search"}
+        </button>
+      </div>
+
+      {error && (
+        <div className="text-xs text-red-600 bg-red-50 border border-red-100 rounded px-3 py-2">{error}</div>
+      )}
+
+      {searched && !loading && !error && results.length === 0 && (
+        <div className="text-xs text-gray-400 text-center py-3">No NOTAMs found for {query}.</div>
+      )}
+
+      {results.length > 0 && (
+        <div className="space-y-2 max-h-80 overflow-y-auto">
+          {results.map((n, idx) => (
+            <div key={idx} className="border rounded-lg p-3 text-xs space-y-1">
+              {n.notamNumber && (
+                <div className="flex items-center gap-2">
+                  <span className="font-mono font-semibold text-slate-700">{n.notamNumber}</span>
+                  {n.startDate && <span className="text-gray-400">{n.startDate}</span>}
+                  {n.endDate && <span className="text-gray-400">→ {n.endDate}</span>}
+                </div>
+              )}
+              <pre className="whitespace-pre-wrap font-sans text-gray-700 bg-gray-50 rounded p-2 text-xs">
+                {n.text || "No text available"}
+              </pre>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NotamTab({ flights }: { flights: Flight[] }) {
+  const notamsByAirport = useMemo(() => {
+    const seen = new Set<string>();
+    const byAirport: Record<string, OpsAlert[]> = {};
+    for (const f of flights) {
+      for (const a of f.alerts ?? []) {
+        if (!a.alert_type.startsWith("NOTAM")) continue;
+        if (seen.has(a.id)) continue;
+        seen.add(a.id);
+        const key = a.airport_icao || "Unknown";
+        (byAirport[key] = byAirport[key] ?? []).push(a);
+      }
+    }
+    return byAirport;
+  }, [flights]);
+
+  const entries = Object.entries(notamsByAirport).sort(([, a], [, b]) => {
+    const aCrit = a.some((x) => x.severity === "critical") ? 1 : 0;
+    const bCrit = b.some((x) => x.severity === "critical") ? 1 : 0;
+    return bCrit - aCrit;
+  });
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <div className="text-sm font-semibold text-gray-700 mb-1">Active NOTAMs from scheduled flights</div>
+        <div className="text-xs text-gray-400 mb-3">
+          Populated by ops-monitor every 30 min via FAA NOTAM API · linked to upcoming flight airports
+        </div>
+        {entries.length > 0 ? (
+          <div className="space-y-3">
+            {entries.map(([airport, alerts]) => (
+              <AirportNotamCard key={airport} airport={airport} alerts={alerts} />
+            ))}
+          </div>
+        ) : (
+          <div className="rounded-xl border bg-white px-6 py-8 text-center text-gray-400 text-sm">
+            No active NOTAMs in pipeline data.
+          </div>
+        )}
+      </div>
+
+      <div>
+        <div className="text-sm font-semibold text-gray-700 mb-1">Live Airport NOTAM Lookup</div>
+        <div className="text-xs text-gray-400 mb-3">
+          Powered by aviationweather.gov · no authentication required · any ICAO
+        </div>
+        <NotamSearch />
+      </div>
+    </div>
+  );
+}
+
 // ─── Main board ───────────────────────────────────────────────────────────────
 
 export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] }) {
+  const [tab, setTab] = useState<"schedule" | "notams">("schedule");
   const now = new Date();
+
   const criticalCount = initialFlights.filter((f) =>
     f.alerts?.some((a) => a.severity === "critical")
   ).length;
   const warningCount = initialFlights.filter((f) =>
     f.alerts?.some((a) => a.severity === "warning") && !f.alerts?.some((a) => a.severity === "critical")
   ).length;
+
+  const notamCount = useMemo(() => {
+    const seen = new Set<string>();
+    for (const f of initialFlights) {
+      for (const a of f.alerts ?? []) {
+        if (a.alert_type.startsWith("NOTAM")) seen.add(a.id);
+      }
+    }
+    return seen.size;
+  }, [initialFlights]);
 
   return (
     <div className="p-6 space-y-5">
@@ -217,22 +439,57 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
           </div>
         </div>
         <div className="ml-auto text-xs text-gray-400">
-          Updated {now.toLocaleTimeString()}
+          Updated {now.toLocaleTimeString()} UTC
         </div>
       </div>
 
-      {/* Flight cards */}
-      {initialFlights.length === 0 ? (
-        <div className="rounded-xl border bg-white shadow-sm px-6 py-12 text-center text-gray-400">
-          No flights scheduled in the next 48 hours.
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {initialFlights.map((f) => (
-            <FlightCard key={f.id} flight={f} />
-          ))}
-        </div>
+      {/* Tabs */}
+      <div className="flex gap-1 border-b">
+        <button
+          type="button"
+          onClick={() => setTab("schedule")}
+          className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${
+            tab === "schedule"
+              ? "bg-white border border-b-white text-gray-900 -mb-px"
+              : "text-gray-500 hover:text-gray-700"
+          }`}
+        >
+          Schedule
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab("notams")}
+          className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-colors flex items-center gap-1.5 ${
+            tab === "notams"
+              ? "bg-white border border-b-white text-gray-900 -mb-px"
+              : "text-gray-500 hover:text-gray-700"
+          }`}
+        >
+          NOTAMs
+          {notamCount > 0 && (
+            <span className="bg-amber-100 text-amber-700 text-xs font-semibold px-1.5 py-0.5 rounded-full">
+              {notamCount}
+            </span>
+          )}
+        </button>
+      </div>
+
+      {/* Tab content */}
+      {tab === "schedule" && (
+        initialFlights.length === 0 ? (
+          <div className="rounded-xl border bg-white shadow-sm px-6 py-12 text-center text-gray-400">
+            No flights scheduled in the next 48 hours.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {initialFlights.map((f) => (
+              <FlightCard key={f.id} flight={f} />
+            ))}
+          </div>
+        )
       )}
+
+      {tab === "notams" && <NotamTab flights={initialFlights} />}
     </div>
   );
 }

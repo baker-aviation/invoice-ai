@@ -308,10 +308,17 @@ Rules:
   - If not present, return null.
 
 - type_ratings:
-  - has_citation_x true if you see "Citation X" OR "CE-750" OR "C750"
-  - has_challenger_300 true if you see "Challenger 300" OR "CL-300"
-  - ratings should include normalized aircraft codes if obvious (CE-750, CL-300, etc)
-  - raw_snippet should include the exact small snippet where ratings appear if found
+  - has_citation_x: true ONLY if the resume explicitly lists "Citation X", "CE-750", "CE750", or "C750"
+    as a TYPE RATING held by the applicant. Do NOT set true for other Citation variants (Citation II,
+    Citation III, Citation V, Citation Sovereign, Citation Latitude, Citation Excel, Citation Mustang,
+    C550, C560, C650, C680, etc.) — those are different aircraft. Do NOT infer from generic "Cessna"
+    or "Citation" mentions without the specific X/CE-750/C750 designation.
+  - has_challenger_300: true ONLY if the resume explicitly lists "Challenger 300" or "CL-300" as a
+    TYPE RATING. Do NOT set true for "Challenger 350" (different type), generic "Challenger" without
+    a model number, or other Bombardier/Canadair variants (CRJ, Global, Learjet, etc.).
+  - ratings: list only the specific type rating codes/names explicitly mentioned (e.g. CE-750, CL-300).
+    Normalize to standard format. Do not infer or guess ratings not clearly stated.
+  - raw_snippet: the exact small text snippet from the resume where type ratings appear.
 
 - notes:
   - short summary focused on TT, PIC, turbine, SIC, and aircraft type ratings.

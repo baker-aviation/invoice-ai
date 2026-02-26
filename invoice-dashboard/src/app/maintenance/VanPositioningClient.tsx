@@ -58,14 +58,16 @@ function fmtTime(s: string | null | undefined): string {
   if (!s) return "—";
   const d = new Date(s);
   if (isNaN(d.getTime())) return s;
-  return d.toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-    timeZoneName: "short",
-  });
+  return (
+    d.toLocaleString("en-US", {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+      timeZone: "UTC",
+    }) + " UTC"
+  );
 }
 
 function fmtDuration(dep: string, arr: string | null): string {
