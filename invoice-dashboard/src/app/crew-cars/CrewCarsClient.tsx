@@ -139,6 +139,20 @@ function OilChangeTracker({ vehicles }: { vehicles: SamsaraVan[] }) {
 
   const today = new Date();
 
+  // Sort vehicles: most days since last oil change first (overdue at top), no record at bottom
+  const sortedVehicles = [...vehicles].sort((a, b) => {
+    const daysA = records[a.id]?.lastChangedDate
+      ? Math.floor((today.getTime() - new Date(records[a.id].lastChangedDate + "T12:00:00").getTime()) / 86400000)
+      : null;
+    const daysB = records[b.id]?.lastChangedDate
+      ? Math.floor((today.getTime() - new Date(records[b.id].lastChangedDate + "T12:00:00").getTime()) / 86400000)
+      : null;
+    if (daysA === null && daysB === null) return 0;
+    if (daysA === null) return 1;
+    if (daysB === null) return -1;
+    return daysB - daysA;
+  });
+
   return (
     <div className="border rounded-xl bg-white shadow-sm overflow-hidden">
       <div className="px-4 py-3 border-b bg-gray-50 flex items-center gap-2">
@@ -149,7 +163,7 @@ function OilChangeTracker({ vehicles }: { vehicles: SamsaraVan[] }) {
         <div className="px-4 py-6 text-sm text-gray-400 text-center">No crew cars in Samsara.</div>
       ) : (
         <div className="divide-y">
-          {vehicles.map((v) => {
+          {sortedVehicles.map((v) => {
             const rec = records[v.id];
             const daysSince = rec?.lastChangedDate
               ? Math.floor((today.getTime() - new Date(rec.lastChangedDate + "T12:00:00").getTime()) / 86400000)
@@ -347,6 +361,9 @@ export default function CrewCarsClient() {
         )}
       </div>
 
+      {/* Oil change tracker — sorted by most overdue first */}
+      <OilChangeTracker vehicles={crewCars} />
+
       {/* Vehicle list */}
       {crewCars.length > 0 && (
         <div className="rounded-xl border bg-white shadow-sm overflow-hidden">
@@ -360,9 +377,6 @@ export default function CrewCarsClient() {
           </div>
         </div>
       )}
-
-      {/* Oil change tracker */}
-      <OilChangeTracker vehicles={crewCars} />
     </div>
   );
 }
