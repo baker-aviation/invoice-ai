@@ -277,10 +277,13 @@ def get_flights(
     now = datetime.now(timezone.utc)
     cutoff = now + timedelta(hours=lookahead_hours)
 
+    # Look back 12 hours so flights that departed earlier today (but haven't
+    # landed yet) still appear in the arrivals schedule.
+    lookback = now - timedelta(hours=12)
     res = (
         supa.table(FLIGHTS_TABLE)
         .select("*")
-        .gte("scheduled_departure", now.isoformat())
+        .gte("scheduled_departure", lookback.isoformat())
         .lte("scheduled_departure", cutoff.isoformat())
         .order("scheduled_departure", desc=False)
         .execute()

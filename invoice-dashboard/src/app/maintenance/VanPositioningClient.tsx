@@ -362,7 +362,13 @@ function VanScheduleCard({
       .slice(0, MAX_ARRIVALS_PER_VAN);
   }, [allFlights, zone, date, liveVanPos]);
 
-  const totalDistKm = items.reduce((sum, i) => sum + i.distKm, 0);
+  // Sequential route: base→stop1→stop2→… (not 4 separate round-trips from base)
+  const totalDistKm = items.reduce((sum, item, idx) => {
+    if (idx === 0) return item.distKm; // base → first airport
+    const prev = items[idx - 1];
+    if (!prev.airportInfo || !item.airportInfo) return sum + item.distKm;
+    return sum + Math.round(haversineKm(prev.airportInfo.lat, prev.airportInfo.lon, item.airportInfo.lat, item.airportInfo.lon));
+  }, 0);
   const totalDriveH = totalDistKm / 90;
   const overLimit = totalDriveH > 5;
 
