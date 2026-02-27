@@ -981,6 +981,11 @@ def _is_relevant_notam_msg(msg: str) -> bool:
         return True
     if re.search(r"(CLSD|CLOSED).{0,30}(\bAD\b|AERODROME|AIRPORT)", m):
         return True
+    # AD restricted (aerodrome/airport restrictions)
+    if re.search(r"(\bAD\b|AERODROME|AIRPORT).{0,30}(RSTD|RESTRICTED)", m):
+        return True
+    if re.search(r"(RSTD|RESTRICTED).{0,30}(\bAD\b|AERODROME|AIRPORT)", m):
+        return True
     # TFR
     if re.search(r"\bTFR\b|TEMPORARY FLIGHT RESTRICTION", m):
         return True
@@ -998,6 +1003,8 @@ def _classify_notam(msg: str) -> str:
         return "NOTAM_RUNWAY"
     if re.search(r"TFR|TEMPORARY FLIGHT", m):
         return "NOTAM_TFR"
+    if re.search(r"(\bAD\b|AERODROME|AIRPORT).{0,30}(RSTD|RESTRICTED)", m):
+        return "NOTAM_AD_RESTRICTED"
     if re.search(r"\bAD\b|AERODROME|AIRPORT", m):
         return "NOTAM_AERODROME"
     return "NOTAM_OTHER"
@@ -1008,5 +1015,7 @@ def _notam_severity(msg: str) -> str:
     if re.search(r"CLSD|CLOSED|STOP", m):
         return "critical"
     if re.search(r"TFR", m):
+        return "critical"
+    if re.search(r"(\bAD\b|AERODROME|AIRPORT).{0,30}(RSTD|RESTRICTED)", m):
         return "critical"
     return "warning"
