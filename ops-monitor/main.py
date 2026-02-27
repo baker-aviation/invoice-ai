@@ -392,52 +392,63 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
     now = datetime.now(timezone.utc)
     cutoff = now + timedelta(hours=lookahead_hours)
 
-    upserted = skipped = 0
+    upserted = skipped = errors = 0
 
     for component in all_components:
+        try:
+            uid = str(component.get("UID", "")).strip()
+            summary = str(component.get("SUMMARY", "")).strip()
+            if not uid:
+                skipped += 1
+                continue
 
-        uid = str(component.get("UID", "")).strip()
-        summary = str(component.get("SUMMARY", "")).strip()
-        if not uid:
-            skipped += 1
-            continue
+            dep_dt = _to_aware(component.get("DTSTART", {}).dt if component.get("DTSTART") else None)
+            arr_dt = _to_aware(component.get("DTEND", {}).dt if component.get("DTEND") else None)
 
-        dep_dt = _to_aware(component.get("DTSTART", {}).dt if component.get("DTSTART") else None)
-        arr_dt = _to_aware(component.get("DTEND", {}).dt if component.get("DTEND") else None)
+            if dep_dt is None:
+                skipped += 1
+                continue
 
-        if dep_dt is None:
-            skipped += 1
-            continue
+            # Only care about flights departing within the lookahead window
+            if dep_dt > cutoff or (arr_dt and arr_dt < now):
+                skipped += 1
+                continue
 
-        # Only care about flights departing within the lookahead window
-        if dep_dt > cutoff or (arr_dt and arr_dt < now):
-            skipped += 1
-            continue
+            dep_icao, arr_icao, tail = _parse_flight_fields(component)
 
-        dep_icao, arr_icao, tail = _parse_flight_fields(component)
+            # Build the upsert payload, omitting NULL fields so we never
+            # overwrite previously-good data when parsing fails on a
+            # slightly different summary format.
+            flight: Dict[str, Any] = {
+                "ics_uid": uid,
+                "scheduled_departure": dep_dt.isoformat(),
+                "summary": summary,
+                "updated_at": _utc_now(),
+            }
+            if tail is not None:
+                flight["tail_number"] = tail
+            if dep_icao is not None:
+                flight["departure_icao"] = dep_icao
+            if arr_icao is not None:
+                flight["arrival_icao"] = arr_icao
+            if arr_dt is not None:
+                flight["scheduled_arrival"] = arr_dt.isoformat()
 
-        flight = {
-            "ics_uid": uid,
-            "tail_number": tail,
-            "departure_icao": dep_icao,
-            "arrival_icao": arr_icao,
-            "scheduled_departure": dep_dt.isoformat(),
-            "scheduled_arrival": arr_dt.isoformat() if arr_dt else None,
-            "summary": summary,
-            "updated_at": _utc_now(),
-        }
+            result = (
+                supa.table(FLIGHTS_TABLE)
+                .upsert(flight, on_conflict="ics_uid")
+                .execute()
+            )
+            if result.data:
+                upserted += 1
+            else:
+                skipped += 1
+        except Exception as e:
+            errors += 1
+            print(f"sync_schedule event error uid={component.get('UID','?')}: {repr(e)}", flush=True)
 
-        result = (
-            supa.table(FLIGHTS_TABLE)
-            .upsert(flight, on_conflict="ics_uid")
-            .execute()
-        )
-        if result.data:
-            upserted += 1
-        else:
-            skipped += 1
-
-    return {"ok": True, "upserted": upserted, "skipped": skipped}
+    print(f"sync_schedule: upserted={upserted} skipped={skipped} errors={errors} from {len(all_components)} events", flush=True)
+    return {"ok": True, "upserted": upserted, "skipped": skipped, "errors": errors}
 
 
 # ─── Job: pull_edct ───────────────────────────────────────────────────────────
@@ -656,7 +667,8 @@ def _run_check_notams(lookahead_hours: int) -> dict:
                 )
                 if not notam_data:
                     continue
-                msg = notam_data.get("text", "") or ""
+                # NMS uses "text", legacy API uses "traditionalMessage"
+                msg = notam_data.get("text") or notam_data.get("traditionalMessage") or ""
                 if not _is_relevant_notam_msg(msg):
                     continue
                 notam_id = notam_data.get("id", "") or notam_data.get("number", "")
@@ -771,24 +783,113 @@ def debug_notam_token():
         return {"ok": False, "error": repr(e)}
 
 
+@app.get("/debug/notam_test")
+def debug_notam_test(airport: str = Query("KJFK")):
+    """End-to-end NOTAM test: NMS token → fetch NOTAMs for one airport → return raw results.
+    Also tries the legacy FAA API as a comparison. Use this to diagnose NOTAM failures."""
+    icao = airport.upper().strip()
+    result: Dict[str, Any] = {"airport": icao}
+
+    # --- NMS API test (direct, no fallback) ---
+    nms_result: Dict[str, Any] = {"ok": False}
+    try:
+        _nms_token_cache["token"] = None  # force fresh token
+        token = _get_nms_token()
+        nms_result["token_ok"] = True
+        nms_result["auth_url"] = NMS_AUTH_URL
+        nms_result["api_url"] = f"{NMS_API_BASE}/v1/notams"
+        r = requests.get(
+            f"{NMS_API_BASE}/v1/notams",
+            headers={"Authorization": f"Bearer {token}", "nmsResponseFormat": "GEOJSON"},
+            params={"location": icao, "classification": "DOMESTIC"},
+            timeout=(5, 10),
+        )
+        nms_result["status_code"] = r.status_code
+        nms_result["response_preview"] = r.text[:500]
+        if r.ok:
+            features = r.json().get("data", {}).get("geojson", [])
+            nms_result["ok"] = True
+            nms_result["count"] = len(features)
+            nms_result["sample"] = features[:2] if features else []
+    except Exception as e:
+        nms_result["error"] = repr(e)
+    result["nms"] = nms_result
+
+    # --- Legacy FAA API test (external-api.faa.gov) ---
+    legacy_result: Dict[str, Any] = {"ok": False}
+    try:
+        notams = _fetch_notams_legacy(icao)
+        legacy_result["ok"] = True
+        legacy_result["count"] = len(notams)
+        legacy_result["sample"] = notams[:2] if notams else []
+    except Exception as e:
+        legacy_result["error"] = repr(e)
+    result["legacy"] = legacy_result
+
+    return result
+
+
 def _fetch_notams(icao: str, token: str) -> List[Dict]:
     """Return list of GeoJSON feature dicts from the NMS API for a given ICAO.
-    Accepts a pre-fetched token so all workers share one auth call."""
-    r = requests.get(
-        f"{NMS_API_BASE}/v1/notams",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "nmsResponseFormat": "GEOJSON",
-        },
-        params={"location": icao, "classification": "DOMESTIC"},
-        timeout=(5, 10),  # (connect, read) — prevents indefinite hang
-    )
-    print(f"NMS NOTAM {icao}: status={r.status_code} body={r.text[:200]!r}", flush=True)
-    if r.status_code == 429:
-        print(f"NMS rate limit {icao}, skipping", flush=True)
+    Accepts a pre-fetched token so all workers share one auth call.
+    Falls back to the legacy FAA API if NMS fails."""
+    try:
+        r = requests.get(
+            f"{NMS_API_BASE}/v1/notams",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "nmsResponseFormat": "GEOJSON",
+            },
+            params={"location": icao, "classification": "DOMESTIC"},
+            timeout=(5, 10),
+        )
+        print(f"NMS NOTAM {icao}: status={r.status_code} body={r.text[:200]!r}", flush=True)
+        if r.status_code == 429:
+            print(f"NMS rate limit {icao}, skipping", flush=True)
+            return []
+        r.raise_for_status()
+        features = r.json().get("data", {}).get("geojson", [])
+        if features:
+            return features
+        # NMS returned empty — try legacy as fallback
+        print(f"NMS returned 0 features for {icao}, trying legacy API", flush=True)
+    except Exception as e:
+        print(f"NMS fetch failed for {icao}: {repr(e)}, trying legacy API", flush=True)
+
+    # Fallback: legacy FAA API (external-api.faa.gov)
+    try:
+        legacy = _fetch_notams_legacy(icao)
+        # Wrap legacy items in a structure compatible with the NMS GeoJSON
+        # parser used by _run_check_notams: feature.properties.coreNOTAMData.notam
+        return [
+            {
+                "properties": {
+                    "coreNOTAMData": item.get("coreNOTAMData", {}),
+                },
+            }
+            for item in legacy
+        ]
+    except Exception as e2:
+        print(f"Legacy FAA fetch also failed for {icao}: {repr(e2)}", flush=True)
         return []
+
+
+def _fetch_notams_legacy(icao: str) -> List[Dict]:
+    """Fetch NOTAMs from the legacy FAA API (external-api.faa.gov).
+    Uses client_id/client_secret as custom request headers per FAA docs."""
+    r = requests.get(
+        "https://external-api.faa.gov/notamapi/v1/notams",
+        headers={
+            "client_id": FAA_CLIENT_ID,
+            "client_secret": FAA_CLIENT_SECRET,
+            "Accept": "application/json",
+        },
+        params={"icaoLocation": icao, "pageSize": 50, "pageNum": 1},
+        timeout=(5, 10),
+    )
+    print(f"Legacy NOTAM {icao}: status={r.status_code} body={r.text[:200]!r}", flush=True)
     r.raise_for_status()
-    return r.json().get("data", {}).get("geojson", [])
+    return r.json().get("items", [])
 
 
 def _is_relevant_notam_msg(msg: str) -> bool:
