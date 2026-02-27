@@ -538,13 +538,14 @@ function isAogVehicle(name: string): boolean {
 /**
  * Try to extract a zone ID from a Samsara vehicle name.
  * "AOG Van 1" → 1, "Baker Van 4 TEB" → 4, "Van2" → 2.
+ * Supports IDs 1–16 (8 fixed zones + 8 overflow vans).
  * Returns null if no number found or number is out of range.
  */
 function samsaraNameToZoneId(name: string): number | null {
   const m = name.match(/\b(\d+)\b/);
   if (!m) return null;
   const id = parseInt(m[1]);
-  return id >= 1 && id <= FIXED_VAN_ZONES.length ? id : null;
+  return id >= 1 && id <= 16 ? id : null;
 }
 
 function VehicleRow({ v, diag }: { v: SamsaraVan; diag?: VehicleDiag }) {
