@@ -27,16 +27,13 @@ echo "✅ Deployment complete."
 echo ""
 
 # Auto-trigger ICS sync so flights table is populated immediately.
+# Use the stable hrzd5jf3da URL — the project-number URL can be slow on cold start.
 echo "Seeding flights table via sync_schedule…"
-OPS_URL=$(gcloud run services describe "${SERVICE_NAME}" \
-  --project "${PROJECT_ID}" --region "${REGION}" \
-  --format "value(status.url)" 2>/dev/null || true)
-if [ -n "$OPS_URL" ]; then
-  result=$(curl -s -X POST "${OPS_URL}/jobs/sync_schedule" --max-time 90 || true)
-  echo "  sync_schedule: ${result}"
-else
-  echo "  WARN: could not determine service URL — run sync_schedule manually"
-fi
+STABLE_URL="https://ops-monitor-hrzd5jf3da-uc.a.run.app"
+# Wait briefly for new revision to become ready after deploy
+sleep 10
+result=$(curl -s -X POST "${STABLE_URL}/jobs/sync_schedule" --max-time 180 || true)
+echo "  sync_schedule: ${result}"
 
 echo ""
 echo "Next steps:"
