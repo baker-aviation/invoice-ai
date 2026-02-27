@@ -295,8 +295,34 @@ function fmtTimeUntil(iso: string): string {
   return h === 0 ? `in ${m}m` : `in ${h}h ${m}m`;
 }
 
-/** Max one-way driving radius for schedule arrivals (≈3.3h drive). */
-const SCHEDULE_ARRIVAL_RADIUS_KM = 300;
+/** Max one-way driving radius for schedule arrivals (≈2.2h drive). */
+const SCHEDULE_ARRIVAL_RADIUS_KM = 200;
+
+/**
+ * Greedy nearest-neighbor sort: reorders items so the van visits the closest
+ * airport first, then the closest remaining, etc.  Minimises total drive vs.
+ * the default arrival-time order which can zigzag across the region.
+ */
+function greedySort(items: VanFlightItem[], startLat: number, startLon: number): VanFlightItem[] {
+  if (items.length <= 1) return items;
+  const remaining = [...items];
+  const result: VanFlightItem[] = [];
+  let curLat = startLat, curLon = startLon;
+  while (remaining.length > 0) {
+    let bestIdx = 0, bestDist = Infinity;
+    for (let i = 0; i < remaining.length; i++) {
+      const info = remaining[i].airportInfo;
+      if (!info) { bestIdx = i; break; }
+      const d = haversineKm(curLat, curLon, info.lat, info.lon);
+      if (d < bestDist) { bestDist = d; bestIdx = i; }
+    }
+    const chosen = remaining.splice(bestIdx, 1)[0];
+    result.push(chosen);
+    curLat = chosen.airportInfo?.lat ?? curLat;
+    curLon = chosen.airportInfo?.lon ?? curLon;
+  }
+  return result;
+}
 
 type VanFlightItem = {
   arrFlight: Flight;
@@ -341,7 +367,7 @@ function VanScheduleCard({
       return haversineKm(zone.lat, zone.lon, info.lat, info.lon) <= SCHEDULE_ARRIVAL_RADIUS_KM;
     });
 
-    return arrivalsToday.map((arr) => {
+    const rawItems = arrivalsToday.map((arr) => {
       const iata = arr.arrival_icao!.replace(/^K/, "");
       const info = getAirportInfo(iata);
       const distKm = info ? Math.round(haversineKm(baseLat, baseLon, info.lat, info.lon)) : 0;
@@ -373,10 +399,14 @@ function VanScheduleCard({
         return !nextDep.scheduled_departure.startsWith(date); // revenue next day — ok
         // revenue same day → drop (plane flying soon, no van dispatch)
       })
+      // Sort by arrival time first so we cap at MAX_ARRIVALS by earliest arrivals
       .sort((a, b) =>
         (a.arrFlight.scheduled_arrival ?? "").localeCompare(b.arrFlight.scheduled_arrival ?? ""),
       )
       .slice(0, MAX_ARRIVALS_PER_VAN);
+
+    // Greedy nearest-neighbor sort to minimise total drive (avoids zigzag routes)
+    return greedySort(rawItems, baseLat, baseLon);
   }, [allFlights, zone, date, liveVanPos]);
 
   // Sequential route: base→stop1→stop2→… (not 4 separate round-trips from base)

@@ -20,7 +20,7 @@ gcloud run deploy "${SERVICE_NAME}" \
   --max-instances 3 \
   --cpu-boost \
   --startup-probe=initialDelaySeconds=30,timeoutSeconds=10,failureThreshold=5 \
-  --set-env-vars "FOREFLIGHT_MAILBOX=ForeFlight@baker-aviation.com" \
+  --set-env-vars "FOREFLIGHT_MAILBOX=ForeFlight@baker-aviation.com,NMS_BASE_URL=https://api-staging.cgifederal-aim.com,NMS_AUTH_URL=https://api-sit.cgifederal-aim.com/v1/auth/token" \
   --set-secrets "SUPABASE_URL=SUPABASE_URL:latest,SUPABASE_SERVICE_ROLE_KEY=SUPABASE_SERVICE_ROLE_KEY:latest,MS_TENANT_ID=MS_TENANT_ID:latest,MS_CLIENT_ID=MS_CLIENT_ID:latest,MS_CLIENT_SECRET=MS_CLIENT_SECRET:latest,JETINSIGHT_ICS_URLS=JETINSIGHT_ICS_URLS:latest,FAA_CLIENT_ID=FAA_CLIENT_ID:latest,FAA_CLIENT_SECRET=FAA_CLIENT_SECRET:latest,SAMSARA_API_KEY=SAMSARA_API_KEY:latest"
 
 echo "✅ Deployment complete."

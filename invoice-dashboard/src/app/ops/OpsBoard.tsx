@@ -458,15 +458,15 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
       <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 flex items-center gap-3 text-sm">
         <span className="text-amber-600 font-semibold shrink-0">⚠ Filtered view</span>
         <span className="text-amber-800">
-          Showing only <strong>runway closures</strong>, <strong>airport closures</strong>, and <strong>EDCTs</strong> while FAA NOTAM API key is pending.
-          TFR, taxiway, and other NOTAMs are hidden.
+          Showing only <strong>runway closures</strong>, <strong>airport closures</strong>, and <strong>EDCTs</strong>.
+          TFR, taxiway, and other NOTAMs are hidden until NOTAM feed is validated.
         </span>
       </div>
 
       {/* Summary bar */}
       <div className="rounded-xl border bg-white shadow-sm px-5 py-4 flex items-center gap-6 flex-wrap">
         <div>
-          <div className="text-xs text-gray-500">Flights — 7 days</div>
+          <div className="text-xs text-gray-500">Flights — 30 days</div>
           <div className="text-2xl font-bold">{flights.length}</div>
         </div>
         <div className="w-px h-10 bg-gray-200" />
@@ -491,7 +491,7 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
           </div>
         </div>
         <div className="ml-auto text-xs text-gray-400">
-          Updated {now.toLocaleTimeString()} · next 7 days
+          Updated {now.toLocaleTimeString()} · next 30 days
         </div>
       </div>
 

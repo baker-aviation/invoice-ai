@@ -6,7 +6,7 @@ import { fetchFlights } from "@/lib/opsApi";
 import VanPositioningClient from "./VanPositioningClient";
 
 export default async function MaintenancePage() {
-  const flightData = await fetchFlights({ lookahead_hours: 168 }).catch(() => ({
+  const flightData = await fetchFlights({ lookahead_hours: 720 }).catch(() => ({
     ok: false,
     flights: [],
     count: 0,
