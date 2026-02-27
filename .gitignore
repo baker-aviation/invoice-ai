@@ -13,6 +13,7 @@ secrets.json
 # Logs / temp
 *.log
 tmp/
+ics_urls.txt
 
 # Don’t commit local data / fixtures (adjust if you truly want these in git)
 invoice-parser/outlook_receipts/
