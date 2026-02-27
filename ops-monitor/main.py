@@ -355,12 +355,24 @@ def get_notams(airports: str = Query(..., description="Comma-separated ICAO code
 # ─── Job: sync_schedule ───────────────────────────────────────────────────────
 
 
-def _fetch_ics_events(url: str) -> list:
-    """Fetch one ICS feed and return its VEVENT components."""
+def _fetch_ics_events(url: str, cutoff_past: datetime = None) -> list:
+    """Fetch one ICS feed and return its VEVENT components.
+    If cutoff_past is given, skip events that ended before that time."""
     r = requests.get(url, timeout=30)
     r.raise_for_status()
     cal = Calendar.from_ical(r.content)
-    return [c for c in cal.walk() if c.name == "VEVENT"]
+    events = [c for c in cal.walk() if c.name == "VEVENT"]
+    if cutoff_past is None:
+        return events
+    # Pre-filter: skip events that ended before cutoff_past
+    filtered = []
+    for c in events:
+        end = c.get("DTEND")
+        start = c.get("DTSTART")
+        dt = _to_aware((end or start).dt) if (end or start) else None
+        if dt is None or dt >= cutoff_past:
+            filtered.append(c)
+    return filtered
 
 
 @app.post("/jobs/sync_schedule")
@@ -375,13 +387,17 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
     if not ICS_URLS:
         raise HTTPException(400, "JETINSIGHT_ICS_URLS not configured")
 
+    supa = sb()
+    now = datetime.now(timezone.utc)
+    cutoff = now + timedelta(hours=lookahead_hours)
+
     print(f"sync_schedule: starting, {len(ICS_URLS)} feeds, lookahead={lookahead_hours}h", flush=True)
 
-    # Fetch all feeds in parallel (cap workers at 8 to stay within memory)
+    # Fetch all feeds in parallel, pre-filtering to only future events
     all_components: list = []
     feed_results: dict = {}
     pool = ThreadPoolExecutor(max_workers=min(len(ICS_URLS), 8))
-    future_to_url = {pool.submit(_fetch_ics_events, url): url for url in ICS_URLS}
+    future_to_url = {pool.submit(_fetch_ics_events, url, now): url for url in ICS_URLS}
     try:
         for future in as_completed(future_to_url, timeout=60):
             url = future_to_url[future]
@@ -398,15 +414,13 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
         pool.shutdown(wait=False)
 
     t_fetch = _time.monotonic() - t0
-    print(f"sync_schedule: fetch phase done in {t_fetch:.1f}s, {len(all_components)} events from {len(feed_results)}/{len(ICS_URLS)} feeds", flush=True)
-
-    supa = sb()
-    now = datetime.now(timezone.utc)
-    cutoff = now + timedelta(hours=lookahead_hours)
+    print(f"sync_schedule: fetch phase done in {t_fetch:.1f}s, {len(all_components)} future events from {len(feed_results)}/{len(ICS_URLS)} feeds", flush=True)
 
     upserted = skipped = errors = 0
 
-    for i, component in enumerate(all_components):
+    # Build batch of flights to upsert
+    batch: List[Dict[str, Any]] = []
+    for component in all_components:
         try:
             uid = str(component.get("UID", "")).strip()
             summary = str(component.get("SUMMARY", "")).strip()
@@ -421,16 +435,12 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
                 skipped += 1
                 continue
 
-            # Only care about flights departing within the lookahead window
-            if dep_dt > cutoff or (arr_dt and arr_dt < now):
+            if dep_dt > cutoff:
                 skipped += 1
                 continue
 
             dep_icao, arr_icao, tail = _parse_flight_fields(component)
 
-            # Build the upsert payload, omitting NULL fields so we never
-            # overwrite previously-good data when parsing fails on a
-            # slightly different summary format.
             flight: Dict[str, Any] = {
                 "ics_uid": uid,
                 "scheduled_departure": dep_dt.isoformat(),
@@ -446,24 +456,27 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
             if arr_dt is not None:
                 flight["scheduled_arrival"] = arr_dt.isoformat()
 
-            result = (
-                supa.table(FLIGHTS_TABLE)
-                .upsert(flight, on_conflict="ics_uid")
-                .execute()
-            )
-            if result.data:
-                upserted += 1
-            else:
-                skipped += 1
-
-            if (i + 1) % 50 == 0:
-                print(f"sync_schedule: upsert progress {i+1}/{len(all_components)}", flush=True)
+            batch.append(flight)
         except Exception as e:
             errors += 1
-            print(f"sync_schedule event error uid={component.get('UID','?')}: {repr(e)}", flush=True)
+            print(f"sync_schedule parse error uid={component.get('UID','?')}: {repr(e)}", flush=True)
+
+    t_parse = _time.monotonic() - t0
+    print(f"sync_schedule: parsed {len(batch)} flights to upsert, {skipped} skipped in {t_parse:.1f}s", flush=True)
+
+    # Bulk upsert in chunks of 50
+    CHUNK = 50
+    for i in range(0, len(batch), CHUNK):
+        chunk = batch[i:i + CHUNK]
+        try:
+            supa.table(FLIGHTS_TABLE).upsert(chunk, on_conflict="ics_uid").execute()
+            upserted += len(chunk)
+        except Exception as e:
+            errors += len(chunk)
+            print(f"sync_schedule bulk upsert error chunk {i}: {repr(e)}", flush=True)
 
     t_total = _time.monotonic() - t0
-    print(f"sync_schedule: done in {t_total:.1f}s — upserted={upserted} skipped={skipped} errors={errors} from {len(all_components)} events", flush=True)
+    print(f"sync_schedule: done in {t_total:.1f}s — upserted={upserted} skipped={skipped} errors={errors}", flush=True)
     return {"ok": True, "upserted": upserted, "skipped": skipped, "errors": errors, "fetch_secs": round(t_fetch, 1), "total_secs": round(t_total, 1)}
 
 
