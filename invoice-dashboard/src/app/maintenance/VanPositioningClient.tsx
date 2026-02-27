@@ -945,11 +945,25 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
         const celVans = aogSamsaraVans.filter((v) => diagData.get(v.id)?.check_engine_on === true);
         if (celVans.length === 0) return null;
         return (
-          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 flex items-center gap-3">
-            <span className="text-sm font-semibold text-red-700">
-              ⚠ Check Engine — {celVans.length} van{celVans.length !== 1 ? "s" : ""}
-            </span>
-            <span className="text-xs text-red-600">{celVans.map((v) => v.name).join(", ")}</span>
+          <div className="rounded-xl border-2 border-red-300 bg-red-50 px-5 py-4 shadow-sm">
+            <div className="flex items-center gap-3 mb-2">
+              <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center text-xl shrink-0">⚠</div>
+              <div>
+                <div className="text-base font-bold text-red-800">
+                  Vehicles with Check Engine Lights
+                </div>
+                <div className="text-sm text-red-600 font-semibold">
+                  {celVans.length} vehicle{celVans.length !== 1 ? "s" : ""} need{celVans.length === 1 ? "s" : ""} service
+                </div>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2 ml-[52px]">
+              {celVans.map((v) => (
+                <span key={v.id} className="inline-flex items-center gap-1.5 bg-white border border-red-200 rounded-lg px-3 py-1.5 text-xs font-medium text-red-700">
+                  {v.name}
+                </span>
+              ))}
+            </div>
           </div>
         );
       })()}
