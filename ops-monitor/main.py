@@ -294,20 +294,24 @@ def get_flights(
     flights = res.data or []
 
     if include_alerts and flights:
-        flight_ids = [f["id"] for f in flights]
-        alerts_res = (
-            supa.table(OPS_ALERTS_TABLE)
-            .select("*")
-            .in_("flight_id", flight_ids)
-            .is_("acknowledged_at", "null")
-            .order("created_at", desc=False)
-            .execute()
-        )
+        flight_id_set = {f["id"] for f in flights}
         alerts_by_flight: Dict[str, List] = {}
-        for a in (alerts_res.data or []):
-            fid = a.get("flight_id")
-            if fid:
-                alerts_by_flight.setdefault(fid, []).append(a)
+        try:
+            # Fetch all unacknowledged alerts and filter in Python to avoid
+            # URL-length limits from large .in_() lists with many flight UUIDs.
+            alerts_res = (
+                supa.table(OPS_ALERTS_TABLE)
+                .select("*")
+                .is_("acknowledged_at", "null")
+                .order("created_at", desc=False)
+                .execute()
+            )
+            for a in (alerts_res.data or []):
+                fid = a.get("flight_id")
+                if fid and fid in flight_id_set:
+                    alerts_by_flight.setdefault(fid, []).append(a)
+        except Exception as e:
+            print(f"get_flights: ops_alerts query failed: {repr(e)}", flush=True)
 
         for f in flights:
             f["alerts"] = alerts_by_flight.get(f["id"], [])
