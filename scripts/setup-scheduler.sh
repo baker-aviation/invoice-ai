@@ -108,6 +108,37 @@ upsert_job "job-parse-hourly" "0 * * * *" \
   --description "Parse job applications with OpenAI extraction"
 
 echo ""
+echo "── Ops monitor pipeline"
+
+# Dynamically fetch the real ops-monitor URL.
+# The project-number URL (e.g. 116257952438.us-central1.run.app) returns GFE 404;
+# the hashed URL from `services describe` is the only one that works.
+OPS_URL=$(gcloud run services describe ops-monitor \
+  --project "$PROJECT_ID" --region "$REGION" \
+  --format "value(status.url)" 2>/dev/null || true)
+
+if [ -z "$OPS_URL" ]; then
+  echo "  WARN: could not determine ops-monitor URL — deploy it first, then re-run this script"
+else
+  echo "  ops-monitor URL: $OPS_URL"
+
+  # Sync JetInsight ICS feed → flights table (every 30 min)
+  upsert_job "ops-sync-schedule" "*/30 * * * *" \
+    "${OPS_URL}/jobs/sync_schedule" \
+    --description "Sync JetInsight ICS feed into flights table"
+
+  # Pull ForeFlight EDCT / ground-delay emails (every 5 min)
+  upsert_job "ops-pull-edct" "*/5 * * * *" \
+    "${OPS_URL}/jobs/pull_edct" \
+    --description "Pull EDCT and ground delay emails from ForeFlight mailbox"
+
+  # Check FAA NOTAMs for upcoming flight airports (every 30 min)
+  upsert_job "ops-check-notams" "*/30 * * * *" \
+    "${OPS_URL}/jobs/check_notams" \
+    --description "Check FAA NOTAM API for upcoming flight airports"
+fi
+
+echo ""
 echo "✅ Done. Jobs created/updated in project: $PROJECT_ID"
 echo ""
 echo "View all jobs:"
