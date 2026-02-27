@@ -731,6 +731,29 @@ def check_notams(lookahead_hours: int = Query(720, ge=1, le=720)):
     return {"ok": True, **stats}
 
 
+@app.get("/debug/ics_status")
+def debug_ics_status():
+    """Show how many ICS URLs are loaded and try fetching the first one."""
+    result: Dict[str, Any] = {"urls_loaded": len(ICS_URLS)}
+    if not ICS_URLS:
+        result["error"] = "JETINSIGHT_ICS_URLS env var is empty or not set"
+        return result
+    # Show truncated URLs for debugging (hide query-string tokens)
+    result["urls_preview"] = [u.split("?")[0] for u in ICS_URLS]
+    # Try fetching the first feed as a smoke test
+    try:
+        r = requests.get(ICS_URLS[0], timeout=15)
+        result["first_feed_status"] = r.status_code
+        result["first_feed_bytes"] = len(r.content)
+        if r.status_code == 200:
+            cal = Calendar.from_ical(r.content)
+            events = [c for c in cal.walk() if c.name == "VEVENT"]
+            result["first_feed_events"] = len(events)
+    except Exception as e:
+        result["first_feed_error"] = repr(e)
+    return result
+
+
 @app.get("/debug/connectivity")
 def debug_connectivity():
     """Test DNS + TCP reachability for external hosts from inside Cloud Run."""
