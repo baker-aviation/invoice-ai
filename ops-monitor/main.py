@@ -291,6 +291,7 @@ def get_flights(
         .gte("scheduled_departure", lookback.isoformat())
         .lte("scheduled_departure", cutoff.isoformat())
         .order("scheduled_departure", desc=False)
+        .limit(10000)
         .execute()
     )
     flights = res.data or []
@@ -602,6 +603,7 @@ def _run_check_notams(lookahead_hours: int) -> dict:
         .select("*")
         .gte("scheduled_departure", now.isoformat())
         .lte("scheduled_departure", cutoff.isoformat())
+        .limit(10000)
         .execute()
     )
     flights = flights_res.data or []
