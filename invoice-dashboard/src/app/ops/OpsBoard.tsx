@@ -153,6 +153,21 @@ function fmtNotamDate(iso: string | null, humanFallback: string | null): string 
 
 function AlertDetail({ alert }: { alert: OpsAlert }) {
   const [open, setOpen] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
+  const [acking, setAcking] = useState(false);
+
+  if (dismissed) return null;
+
+  async function handleAcknowledge(e: React.MouseEvent) {
+    e.stopPropagation();
+    setAcking(true);
+    try {
+      await fetch(`/api/ops/alerts/${alert.id}/acknowledge`, { method: "POST" });
+      setDismissed(true);
+    } catch {
+      setAcking(false);
+    }
+  }
   const isNotam = alert.alert_type.startsWith("NOTAM");
   const notamTimes = isNotam ? parseNotamTimes(alert.body) : null;
   const notamRaw   = isNotam ? parseNotamRawData(alert.raw_data) : null;
@@ -193,7 +208,17 @@ function AlertDetail({ alert }: { alert: OpsAlert }) {
             <span className="text-gray-600 text-xs truncate max-w-xs">{alert.subject}</span>
           )}
         </div>
-        <span className="ml-auto text-gray-400 shrink-0 text-xs">{open ? "▲" : "▼"}</span>
+        <div className="ml-auto flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={handleAcknowledge}
+            disabled={acking}
+            className="text-xs font-medium text-gray-500 hover:text-green-700 hover:bg-green-50 border border-gray-200 hover:border-green-300 rounded px-2 py-0.5 transition-colors disabled:opacity-50"
+          >
+            {acking ? "Saving…" : "Mark Reviewed"}
+          </button>
+          <span className="text-gray-400 text-xs">{open ? "▲" : "▼"}</span>
+        </div>
       </button>
       {open && (
         <div className="px-3 pb-3 pt-2 bg-gray-50 border-t text-xs text-gray-700 space-y-2">
@@ -374,18 +399,35 @@ function DayRow({ dateStr, flights, defaultOpen }: { dateStr: string; flights: F
 // Remove ALERT_TYPES_SHOWN once the full NOTAM feed is operational.
 const ALERT_TYPES_SHOWN = new Set(["NOTAM_RUNWAY", "NOTAM_AERODROME", "EDCT"]);
 
-function filterAlerts(flights: Flight[]): Flight[] {
+const FIVE_HOURS_MS = 5 * 60 * 60 * 1000;
+
+/** Alert is within ±5h of the relevant flight time (dep or arr depending on airport). */
+function alertIsInWindow(alert: OpsAlert, flight: Flight, nowMs: number): boolean {
+  const ap = alert.airport_icao;
+  if (!ap) return true;
+  if (ap === flight.departure_icao) {
+    return Math.abs(new Date(flight.scheduled_departure).getTime() - nowMs) <= FIVE_HOURS_MS;
+  }
+  if (ap === flight.arrival_icao && flight.scheduled_arrival) {
+    return Math.abs(new Date(flight.scheduled_arrival).getTime() - nowMs) <= FIVE_HOURS_MS;
+  }
+  return true;
+}
+
+function filterAlerts(flights: Flight[], nowMs: number): Flight[] {
   return flights.map((f) => ({
     ...f,
-    alerts: (f.alerts ?? []).filter((a) => ALERT_TYPES_SHOWN.has(a.alert_type)),
+    alerts: (f.alerts ?? []).filter(
+      (a) => ALERT_TYPES_SHOWN.has(a.alert_type) && alertIsInWindow(a, f, nowMs),
+    ),
   }));
 }
 
 export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] }) {
   const now = new Date();
 
-  // Apply alert type filter
-  const flights = useMemo(() => filterAlerts(initialFlights), [initialFlights]);
+  // Apply alert type filter + 5-hour window filter
+  const flights = useMemo(() => filterAlerts(initialFlights, now.getTime()), [initialFlights]);
 
   // Group flights by UTC date
   const byDay = useMemo(() => {
@@ -424,7 +466,7 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
       {/* Summary bar */}
       <div className="rounded-xl border bg-white shadow-sm px-5 py-4 flex items-center gap-6 flex-wrap">
         <div>
-          <div className="text-xs text-gray-500">Flights — 7 days</div>
+          <div className="text-xs text-gray-500">Flights — 30 days</div>
           <div className="text-2xl font-bold">{flights.length}</div>
         </div>
         <div className="w-px h-10 bg-gray-200" />
@@ -449,14 +491,14 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
           </div>
         </div>
         <div className="ml-auto text-xs text-gray-400">
-          Updated {now.toLocaleTimeString()} · next 7 days
+          Updated {now.toLocaleTimeString()} · next 30 days
         </div>
       </div>
 
       {/* 7-day rows */}
       {byDay.length === 0 ? (
         <div className="rounded-xl border bg-white shadow-sm px-6 py-12 text-center text-gray-400">
-          No flights scheduled in the next 7 days.
+          No flights scheduled in the next 30 days.
         </div>
       ) : (
         <div className="space-y-3">

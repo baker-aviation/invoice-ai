@@ -267,7 +267,7 @@ def get_vans_diagnostics():
 
 @app.get("/api/flights")
 def get_flights(
-    lookahead_hours: int = Query(120, ge=1, le=168),
+    lookahead_hours: int = Query(720, ge=1, le=720),
     include_alerts: bool = Query(True),
 ):
     """

@@ -6,7 +6,7 @@ import { fetchFlights } from "@/lib/opsApi";
 import OpsBoard from "./OpsBoard";
 
 export default async function OpsPage() {
-  const data = await fetchFlights({ lookahead_hours: 168 }).catch(() => ({
+  const data = await fetchFlights({ lookahead_hours: 720 }).catch(() => ({
     ok: false,
     flights: [],
     count: 0,
