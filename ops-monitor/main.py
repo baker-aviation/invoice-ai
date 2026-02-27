@@ -25,9 +25,9 @@ SAMSARA_API_KEY = os.getenv("SAMSARA_API_KEY")
 FAA_CLIENT_ID = os.getenv("FAA_CLIENT_ID")
 FAA_CLIENT_SECRET = os.getenv("FAA_CLIENT_SECRET")
 
-# FAA NMS API (production)
-NMS_AUTH_URL = "https://api-nms.aim.faa.gov/v1/auth/token"
-NMS_API_BASE = "https://api-nms.aim.faa.gov/nmsapi"
+# FAA NMS API (staging / pre-prod — cgifederal-aim.com)
+NMS_AUTH_URL = "https://api-staging.cgifederal-aim.com/v1/auth/token"
+NMS_API_BASE = "https://api-staging.cgifederal-aim.com/nmsapi"
 
 FOREFLIGHT_MAILBOX = os.getenv("FOREFLIGHT_MAILBOX", "ForeFlight@baker-aviation.com")
 MS_TENANT_ID = os.getenv("MS_TENANT_ID")
@@ -737,7 +737,7 @@ def debug_connectivity():
     import socket
 
     hosts = [
-        ("api-nms.aim.faa.gov", 443),
+        ("api-staging.cgifederal-aim.com", 443),
         ("graph.microsoft.com", 443),
         ("login.microsoftonline.com", 443),
     ]
