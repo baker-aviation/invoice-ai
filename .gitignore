@@ -10,6 +10,7 @@ env/
 *.key
 secrets.json
 gcloud-sa-key.json
+.gcloud-config/
 
 # Logs / temp
 *.log

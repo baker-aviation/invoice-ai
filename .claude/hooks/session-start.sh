@@ -6,19 +6,19 @@ if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then
   exit 0
 fi
 
-# Key lives inside the repo dir — the only storage that persists across
-# container restarts in both the Claude Code session and the user terminal.
-SA_KEY="$CLAUDE_PROJECT_DIR/gcloud-sa-key.json"
+# Point gcloud's config dir into the repo — the only storage that persists
+# across container restarts.  Credentials stored here survive session restarts
+# without any manual re-auth.
+GCLOUD_CFG="$CLAUDE_PROJECT_DIR/.gcloud-config"
+export CLOUDSDK_CONFIG="$GCLOUD_CFG"
+echo "export CLOUDSDK_CONFIG=$GCLOUD_CFG" >> "$CLAUDE_ENV_FILE"
 
-# Activate gcloud service account credentials.
-if [ -f "$SA_KEY" ]; then
-  gcloud auth activate-service-account --key-file="$SA_KEY" --quiet
-  # Also set ADC so Python SDKs (google-cloud-storage, etc.) pick it up
-  echo "export GOOGLE_APPLICATION_CREDENTIALS=$SA_KEY" >> "$CLAUDE_ENV_FILE"
-  echo "gcloud: credentials activated from $SA_KEY"
+if gcloud auth list --filter="status:ACTIVE" --format="value(account)" 2>/dev/null | grep -q .; then
+  echo "gcloud: credentials active ($(gcloud config get-value account 2>/dev/null))"
 else
-  echo "WARNING: $SA_KEY not found — gcloud will not be authenticated this session."
-  echo "One-time setup: copy gcloud-sa-key.json into the repo root (it is gitignored)."
+  echo "WARNING: no active gcloud credentials found in $GCLOUD_CFG"
+  echo "One-time setup — run this in the Claude Code terminal:"
+  echo "  CLOUDSDK_CONFIG=$GCLOUD_CFG gcloud auth login"
 fi
 
 # Ensure dashboard node_modules are up to date
