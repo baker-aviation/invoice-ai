@@ -44,7 +44,7 @@ A second pipeline handles job applications (resumes) from email.
 
 ### View dashboard locally
 ```bash
-cd ~/src/invoice-ai && git pull --rebase origin claude/check-gcs-github-push-gqC1E && cd invoice-dashboard && npm run dev
+cd ~/src/invoice-ai && git stash && git pull --rebase origin claude/check-gcs-github-push-gqC1E && cd invoice-dashboard && npm run dev
 ```
 
 ### Deploy alerts service (after backend changes)
