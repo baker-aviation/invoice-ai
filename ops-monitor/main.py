@@ -369,24 +369,36 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
     Fetch all per-aircraft JetInsight ICS feeds in parallel and upsert
     upcoming flights into Supabase.
     """
+    import time as _time
+    t0 = _time.monotonic()
+
     if not ICS_URLS:
         raise HTTPException(400, "JETINSIGHT_ICS_URLS not configured")
 
-    # Fetch all feeds in parallel
+    print(f"sync_schedule: starting, {len(ICS_URLS)} feeds, lookahead={lookahead_hours}h", flush=True)
+
+    # Fetch all feeds in parallel (cap workers at 8 to stay within memory)
     all_components: list = []
-    pool = ThreadPoolExecutor(max_workers=min(len(ICS_URLS), 20))
+    feed_results: dict = {}
+    pool = ThreadPoolExecutor(max_workers=min(len(ICS_URLS), 8))
     future_to_url = {pool.submit(_fetch_ics_events, url): url for url in ICS_URLS}
     try:
         for future in as_completed(future_to_url, timeout=60):
             url = future_to_url[future]
             try:
-                all_components.extend(future.result())
+                events = future.result()
+                all_components.extend(events)
+                feed_results[url[-12:]] = len(events)
             except Exception as e:
+                feed_results[url[-12:]] = f"ERR:{repr(e)[:60]}"
                 print(f"ICS fetch error {url[:80]}: {repr(e)}", flush=True)
     except FuturesTimeoutError:
         print("ICS fetch 60s budget exceeded; some feeds may be missing", flush=True)
     finally:
         pool.shutdown(wait=False)
+
+    t_fetch = _time.monotonic() - t0
+    print(f"sync_schedule: fetch phase done in {t_fetch:.1f}s, {len(all_components)} events from {len(feed_results)}/{len(ICS_URLS)} feeds", flush=True)
 
     supa = sb()
     now = datetime.now(timezone.utc)
@@ -394,7 +406,7 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
 
     upserted = skipped = errors = 0
 
-    for component in all_components:
+    for i, component in enumerate(all_components):
         try:
             uid = str(component.get("UID", "")).strip()
             summary = str(component.get("SUMMARY", "")).strip()
@@ -443,12 +455,16 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
                 upserted += 1
             else:
                 skipped += 1
+
+            if (i + 1) % 50 == 0:
+                print(f"sync_schedule: upsert progress {i+1}/{len(all_components)}", flush=True)
         except Exception as e:
             errors += 1
             print(f"sync_schedule event error uid={component.get('UID','?')}: {repr(e)}", flush=True)
 
-    print(f"sync_schedule: upserted={upserted} skipped={skipped} errors={errors} from {len(all_components)} events", flush=True)
-    return {"ok": True, "upserted": upserted, "skipped": skipped, "errors": errors}
+    t_total = _time.monotonic() - t0
+    print(f"sync_schedule: done in {t_total:.1f}s — upserted={upserted} skipped={skipped} errors={errors} from {len(all_components)} events", flush=True)
+    return {"ok": True, "upserted": upserted, "skipped": skipped, "errors": errors, "fetch_secs": round(t_fetch, 1), "total_secs": round(t_total, 1)}
 
 
 # ─── Job: pull_edct ───────────────────────────────────────────────────────────
@@ -752,6 +768,44 @@ def debug_ics_status():
     except Exception as e:
         result["first_feed_error"] = repr(e)
     return result
+
+
+@app.get("/debug/sync_test")
+def debug_sync_test():
+    """Fetch first 3 ICS feeds sequentially and report timing per feed."""
+    import time as _time
+    results = []
+    for url in ICS_URLS[:3]:
+        t0 = _time.monotonic()
+        try:
+            r = requests.get(url, timeout=15)
+            elapsed = round(_time.monotonic() - t0, 2)
+            cal = Calendar.from_ical(r.content)
+            events = [c for c in cal.walk() if c.name == "VEVENT"]
+            results.append({
+                "url_tail": url[-12:],
+                "status": r.status_code,
+                "bytes": len(r.content),
+                "events": len(events),
+                "secs": elapsed,
+            })
+        except Exception as e:
+            elapsed = round(_time.monotonic() - t0, 2)
+            results.append({"url_tail": url[-12:], "error": repr(e)[:100], "secs": elapsed})
+
+    # Also test Supabase connectivity
+    supa_ok = False
+    try:
+        t0 = _time.monotonic()
+        supa = sb()
+        supa.table(FLIGHTS_TABLE).select("ics_uid").limit(1).execute()
+        supa_secs = round(_time.monotonic() - t0, 2)
+        supa_ok = True
+    except Exception as e:
+        supa_secs = round(_time.monotonic() - t0, 2)
+        supa_ok = repr(e)[:100]
+
+    return {"feeds": results, "supabase_ok": supa_ok, "supabase_secs": supa_secs}
 
 
 @app.get("/debug/connectivity")

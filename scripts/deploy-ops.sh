@@ -26,14 +26,13 @@ gcloud run deploy "${SERVICE_NAME}" \
 echo "✅ Deployment complete."
 echo ""
 
-# Auto-trigger ICS sync so flights table is populated immediately.
-# Use the stable hrzd5jf3da URL — the project-number URL can be slow on cold start.
-echo "Seeding flights table via sync_schedule…"
+# Quick smoke test — use lightweight debug endpoint instead of full sync
+# (full sync_schedule can be slow with 35 feeds)
 STABLE_URL="https://ops-monitor-hrzd5jf3da-uc.a.run.app"
-# Wait briefly for new revision to become ready after deploy
 sleep 10
-result=$(curl -s -X POST "${STABLE_URL}/jobs/sync_schedule" --max-time 180 || true)
-echo "  sync_schedule: ${result}"
+echo "Running sync_test smoke check…"
+result=$(curl -s "${STABLE_URL}/debug/sync_test" --max-time 30 || true)
+echo "  sync_test: ${result}"
 
 echo ""
 echo "Next steps:"
