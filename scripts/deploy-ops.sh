@@ -21,6 +21,7 @@ gcloud run deploy "${SERVICE_NAME}" \
   --cpu-boost \
   --startup-probe="" \
   --set-env-vars "FOREFLIGHT_MAILBOX=ForeFlight@baker-aviation.com" \
+  --remove-env-vars "NMS_BASE_URL,NMS_AUTH_URL" \
   --set-secrets "SUPABASE_URL=SUPABASE_URL:latest,SUPABASE_SERVICE_ROLE_KEY=SUPABASE_SERVICE_ROLE_KEY:latest,MS_TENANT_ID=MS_TENANT_ID:latest,MS_CLIENT_ID=MS_CLIENT_ID:latest,MS_CLIENT_SECRET=MS_CLIENT_SECRET:latest,JETINSIGHT_ICS_URLS=JETINSIGHT_ICS_URLS:latest,FAA_CLIENT_ID=FAA_CLIENT_ID:latest,FAA_CLIENT_SECRET=FAA_CLIENT_SECRET:latest,SAMSARA_API_KEY=SAMSARA_API_KEY:latest"
 
 echo "✅ Deployment complete."
