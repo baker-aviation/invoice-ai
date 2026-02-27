@@ -66,10 +66,39 @@ const ALERT_TYPE_LABELS: Record<string, string> = {
   NOTAM_OTHER: "NOTAM",
 };
 
+// ─── NOTAM active-time parser ─────────────────────────────────────────────────
+// Extracts effective FROM / TO from NOTAM body text.
+// Supports ICAO 10-digit format (YYMMDDHHMM) from B)/C) fields and
+// common text patterns.
+
+function parseNotamTimes(body: string | null): { from: string | null; to: string | null } {
+  if (!body) return { from: null, to: null };
+
+  function icaoToIso(t: string): string {
+    // YYMMDDHHMM → YYYY-MM-DD HH:MMZ
+    const yr = "20" + t.slice(0, 2);
+    const mo = t.slice(2, 4);
+    const dy = t.slice(4, 6);
+    const hr = t.slice(6, 8);
+    const mn = t.slice(8, 10);
+    return `${yr}-${mo}-${dy} ${hr}:${mn}Z`;
+  }
+
+  const fromM = body.match(/\bB\)\s*(\d{10})\b/);
+  const toM   = body.match(/\bC\)\s*(\d{10}|PERM)\b/);
+
+  return {
+    from: fromM ? icaoToIso(fromM[1]) : null,
+    to:   toM   ? (toM[1] === "PERM" ? "PERM" : icaoToIso(toM[1])) : null,
+  };
+}
+
 // ─── Alert row (expandable) ───────────────────────────────────────────────────
 
 function AlertDetail({ alert }: { alert: OpsAlert }) {
   const [open, setOpen] = useState(false);
+  const notamTimes = alert.alert_type.startsWith("NOTAM") ? parseNotamTimes(alert.body) : null;
+
   return (
     <div className="border rounded-lg overflow-hidden text-sm">
       <button
@@ -95,6 +124,13 @@ function AlertDetail({ alert }: { alert: OpsAlert }) {
               )}
             </span>
           )}
+          {/* NOTAM active window — shown inline before expanding */}
+          {notamTimes?.from && (
+            <span className="text-xs text-gray-600 font-mono bg-gray-100 rounded px-1.5 py-0.5">
+              {notamTimes.from}
+              {notamTimes.to && <> → {notamTimes.to}</>}
+            </span>
+          )}
           {!alert.edct_time && alert.subject && (
             <span className="text-gray-600 text-xs truncate max-w-xs">{alert.subject}</span>
           )}
@@ -103,6 +139,15 @@ function AlertDetail({ alert }: { alert: OpsAlert }) {
       </button>
       {open && (
         <div className="px-3 pb-3 pt-1 bg-gray-50 border-t text-xs text-gray-700 space-y-1">
+          {notamTimes?.from && (
+            <p>
+              <span className="font-medium">Active:</span>{" "}
+              <span className="font-mono">{notamTimes.from}</span>
+              {notamTimes.to && (
+                <> → <span className="font-mono">{notamTimes.to}</span></>
+              )}
+            </p>
+          )}
           {alert.subject && <p><span className="font-medium">Subject:</span> {alert.subject}</p>}
           {alert.body && (
             <pre className="whitespace-pre-wrap font-sans text-xs bg-white border rounded p-2 max-h-40 overflow-y-auto">

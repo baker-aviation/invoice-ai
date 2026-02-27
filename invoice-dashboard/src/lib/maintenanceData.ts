@@ -431,6 +431,11 @@ export function assignVans(
   return result.sort((a, b) => b.aircraft.length - a.aircraft.length);
 }
 
+/** Look up a single trip by ID (used for fallback when no ICS flight data is available). */
+export function getTripById(tripId: string): Trip | null {
+  return TRIPS.find((t) => t.tripId === tripId) ?? null;
+}
+
 // Pre-compute for today and tomorrow (kept for backward-compat)
 export const TODAY = "2026-02-25";
 export const TOMORROW = "2026-02-26";

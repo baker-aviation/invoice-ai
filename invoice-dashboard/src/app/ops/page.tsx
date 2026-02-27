@@ -15,7 +15,7 @@ export default async function OpsPage() {
   return (
     <>
       <Topbar title="Operations" />
-      <AutoRefresh intervalSeconds={120} />
+      <AutoRefresh intervalSeconds={240} />
       <OpsBoard initialFlights={data.flights} />
     </>
   );

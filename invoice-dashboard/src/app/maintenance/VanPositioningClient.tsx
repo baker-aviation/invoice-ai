@@ -7,6 +7,8 @@ import {
   computeOvernightPositions,
   assignVans,
   getDateRange,
+  getTripById,
+  haversineKm,
   FIXED_VAN_ZONES,
   VanAssignment,
   AircraftOvernightPosition,
@@ -263,6 +265,22 @@ function AirportCluster({ van, color }: { van: VanAssignment; color: string }) {
 // Shows each van's assigned aircraft, when they land, and done-for-day status.
 // ---------------------------------------------------------------------------
 
+/** Format km → driving time string, assuming 90 km/h average. */
+function fmtDriveTime(distKm: number): string {
+  const totalMins = Math.round(distKm / 90 * 60);
+  const h = Math.floor(totalMins / 60);
+  const m = totalMins % 60;
+  if (h === 0) return `${m}m drive`;
+  return m === 0 ? `${h}h drive` : `${h}h ${m}m drive`;
+}
+
+/** Format YYYY-MM-DD trip end date for display. */
+function fmtTripDate(dateStr: string): string {
+  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const [, mo, dy] = dateStr.split("-");
+  return `${months[parseInt(mo) - 1]} ${parseInt(dy)}`;
+}
+
 function VanScheduleCard({
   van,
   color,
@@ -276,7 +294,9 @@ function VanScheduleCard({
   const now = new Date();
 
   const items = van.aircraft.map((ac) => {
-    // Find flight arriving at this aircraft's overnight airport on today/selected date
+    const distKm = Math.round(haversineKm(van.lat, van.lon, ac.lat, ac.lon));
+
+    // Try to find live flight data from ops-monitor
     const arrFlight = flights.find(
       (f) =>
         f.tail_number === ac.tail &&
@@ -285,11 +305,14 @@ function VanScheduleCard({
           f.arrival_icao?.replace(/^K/, "") === ac.airport)
     ) ?? null;
 
+    // Fallback: use TRIPS data for the trip end date
+    const trip = arrFlight ? null : getTripById(ac.tripId);
+
     const arrTime = arrFlight?.scheduled_arrival ? new Date(arrFlight.scheduled_arrival) : null;
     const doneForDay = arrTime !== null && arrTime < now;
     const enRoute = arrTime !== null && arrTime >= now;
 
-    return { ac, arrFlight, arrTime, doneForDay, enRoute };
+    return { ac, arrFlight, trip, arrTime, doneForDay, enRoute, distKm };
   });
 
   const doneCount = items.filter((i) => i.doneForDay).length;
@@ -329,22 +352,27 @@ function VanScheduleCard({
 
       {expanded && (
         <div className="border-t divide-y">
-          {items.map(({ ac, arrFlight, arrTime, doneForDay, enRoute }) => (
+          {items.map(({ ac, arrFlight, trip, arrTime, doneForDay, enRoute, distKm }) => (
             <div key={ac.tail + ac.tripId} className="px-4 py-3 flex items-start justify-between gap-4">
               <div className="flex items-center gap-3 min-w-0">
                 <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: color }} />
                 <div className="min-w-0">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-mono font-semibold text-sm">{ac.tail}</span>
-                    {arrFlight && (
+                    {arrFlight ? (
                       <span className="text-xs text-gray-500 font-mono">
                         {arrFlight.departure_icao ?? "?"} → {arrFlight.arrival_icao ?? ac.airport}
                       </span>
-                    )}
+                    ) : trip ? (
+                      <span className="text-xs text-gray-500 font-mono">
+                        {trip.from} → {trip.to}
+                      </span>
+                    ) : null}
                   </div>
                   <div className="text-xs text-gray-500 mt-0.5">
                     Overnight: <span className="font-medium">{ac.airport}</span>
                     {" · "}{ac.city}{ac.state ? `, ${ac.state}` : ""}
+                    {" · "}<span className="text-gray-400">{fmtDriveTime(distKm)}</span>
                   </div>
                 </div>
               </div>
@@ -360,9 +388,12 @@ function VanScheduleCard({
                       timeZone: "UTC",
                     })} UTC
                   </div>
-                ) : (
-                  <div className="text-xs text-gray-400">No arrival time</div>
-                )}
+                ) : trip ? (
+                  /* Fallback: show trip end date from TRIPS data */
+                  <div className="text-xs text-gray-600 font-medium">
+                    Trip ends {fmtTripDate(trip.tripEnd)}
+                  </div>
+                ) : null}
                 {doneForDay && (
                   <span className="inline-block text-xs font-semibold bg-green-100 text-green-700 rounded-full px-2 py-0.5">
                     ✓ Done
@@ -373,9 +404,9 @@ function VanScheduleCard({
                     En-route
                   </span>
                 )}
-                {!arrTime && (
+                {!arrTime && !trip && (
                   <span className="inline-block text-xs text-gray-400 rounded-full px-2 py-0.5 border">
-                    No flight data
+                    No schedule data
                   </span>
                 )}
               </div>
@@ -809,7 +840,7 @@ function VanLiveLocations() {
 
   useMemo(() => { load(); }, []);
   useMemo(() => {
-    const id = setInterval(load, 60_000);
+    const id = setInterval(load, 240_000);
     return () => clearInterval(id);
   }, []);
 
@@ -945,7 +976,7 @@ function OutOfRangeAlerts({ vans }: { vans: VanAssignment[] }) {
 export default function VanPositioningClient({ initialFlights }: { initialFlights: Flight[] }) {
   const dates = useMemo(() => getDateRange(7), []);
   const [dayIdx, setDayIdx] = useState(0);
-  const [activeTab, setActiveTab] = useState<"map" | "schedule" | "crew">("map");
+  const [activeTab, setActiveTab] = useState<"map" | "schedule">("map");
   const [viewMode, setViewMode] = useState<"map" | "list">("map");
   const [selectedVan, setSelectedVan] = useState<number | null>(null);
 
@@ -990,9 +1021,6 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
               {vans.length}
             </span>
           )}
-        </TabBtn>
-        <TabBtn active={activeTab === "crew"} onClick={() => setActiveTab("crew")}>
-          Crew Cars
         </TabBtn>
       </div>
 
@@ -1141,9 +1169,6 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
       {activeTab === "schedule" && (
         <ScheduleTab vans={vans} flights={flightsForDay} date={selectedDate} />
       )}
-
-      {/* ── Crew Cars tab ── */}
-      {activeTab === "crew" && <CrewCarsTab />}
     </div>
   );
 }
