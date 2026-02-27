@@ -301,21 +301,27 @@ def get_flights(
         return {"ok": False, "flights": [], "count": 0, "error": f"flights query failed: {e}"}
 
     if include_alerts and flights:
-        flight_id_set = {f["id"] for f in flights}
+        flight_ids = [f["id"] for f in flights]
         alerts_by_flight: Dict[str, List] = {}
         try:
-            # Fetch all unacknowledged alerts and filter in Python to avoid
-            # URL-length limits from large .in_() lists with many flight UUIDs.
-            alerts_res = (
-                supa.table(OPS_ALERTS_TABLE)
-                .select("*")
-                .is_("acknowledged_at", "null")
-                .order("created_at", desc=False)
-                .execute()
-            )
-            for a in (alerts_res.data or []):
+            # Fetch alerts only for the flights in our window, in batches
+            # to avoid URL-length limits from large .in_() lists.
+            BATCH = 50
+            all_alerts: List = []
+            for i in range(0, len(flight_ids), BATCH):
+                batch_ids = flight_ids[i : i + BATCH]
+                alerts_res = (
+                    supa.table(OPS_ALERTS_TABLE)
+                    .select("id,flight_id,alert_type,severity,airport_icao,departure_icao,arrival_icao,tail_number,subject,body,edct_time,original_departure_time,acknowledged_at,created_at,raw_data")
+                    .in_("flight_id", batch_ids)
+                    .is_("acknowledged_at", "null")
+                    .order("created_at", desc=False)
+                    .execute()
+                )
+                all_alerts.extend(alerts_res.data or [])
+            for a in all_alerts:
                 fid = a.get("flight_id")
-                if fid and fid in flight_id_set:
+                if fid:
                     alerts_by_flight.setdefault(fid, []).append(a)
         except Exception as e:
             print(f"get_flights: ops_alerts query failed: {repr(e)}", flush=True)
