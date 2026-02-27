@@ -175,8 +175,10 @@ function TabBtn({
   return (
     <button
       onClick={onClick}
-      className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-        active ? "bg-white shadow text-slate-800" : "text-gray-500 hover:text-gray-700"
+      className={`px-6 py-2.5 rounded-xl text-sm font-semibold transition-all ${
+        active
+          ? "bg-blue-600 text-white shadow-md"
+          : "bg-white text-gray-600 border border-gray-200 hover:border-blue-300 hover:text-blue-600 shadow-sm"
       }`}
     >
       {children}
@@ -956,14 +958,16 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
       <OutOfRangeAlerts vans={vans} />
 
       {/* ── Tab bar ── */}
-      <div className="flex bg-gray-100 rounded-xl p-1 gap-1 w-fit">
+      <div className="flex gap-3">
         <TabBtn active={activeTab === "map"} onClick={() => setActiveTab("map")}>
           Van Map
         </TabBtn>
         <TabBtn active={activeTab === "schedule"} onClick={() => setActiveTab("schedule")}>
           Schedule
           {vans.length > 0 && (
-            <span className="ml-1.5 bg-blue-100 text-blue-700 rounded-full px-1.5 py-0.5 text-xs">
+            <span className={`ml-1.5 rounded-full px-1.5 py-0.5 text-xs font-bold ${
+              activeTab === "schedule" ? "bg-blue-500 text-white" : "bg-blue-100 text-blue-700"
+            }`}>
               {vans.length}
             </span>
           )}
