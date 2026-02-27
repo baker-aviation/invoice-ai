@@ -466,7 +466,7 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
       {/* Summary bar */}
       <div className="rounded-xl border bg-white shadow-sm px-5 py-4 flex items-center gap-6 flex-wrap">
         <div>
-          <div className="text-xs text-gray-500">Flights — 30 days</div>
+          <div className="text-xs text-gray-500">Flights — 7 days</div>
           <div className="text-2xl font-bold">{flights.length}</div>
         </div>
         <div className="w-px h-10 bg-gray-200" />
