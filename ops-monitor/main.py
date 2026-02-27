@@ -25,14 +25,9 @@ SAMSARA_API_KEY = os.getenv("SAMSARA_API_KEY")
 FAA_CLIENT_ID = os.getenv("FAA_CLIENT_ID")
 FAA_CLIENT_SECRET = os.getenv("FAA_CLIENT_SECRET")
 
-# FAA NMS API
-# The auth host and API host can differ between environments — set independently.
-# Staging auth:  https://api-sit.cgifederal-aim.com/v1/auth/token
-# Staging API:   https://api-staging.cgifederal-aim.com/nmsapi
-# Prod auth/API: https://api-nms.aim.faa.gov
-NMS_BASE_URL  = os.getenv("NMS_BASE_URL",  "https://api-nms.aim.faa.gov")
-NMS_AUTH_URL  = os.getenv("NMS_AUTH_URL",  "https://api-nms.aim.faa.gov/v1/auth/token")
-NMS_API_BASE  = f"{NMS_BASE_URL}/nmsapi"
+# FAA NMS API (production)
+NMS_AUTH_URL = "https://api-nms.aim.faa.gov/v1/auth/token"
+NMS_API_BASE = "https://api-nms.aim.faa.gov/nmsapi"
 
 FOREFLIGHT_MAILBOX = os.getenv("FOREFLIGHT_MAILBOX", "ForeFlight@baker-aviation.com")
 MS_TENANT_ID = os.getenv("MS_TENANT_ID")
