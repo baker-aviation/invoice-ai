@@ -273,23 +273,32 @@ def get_flights(
     """
     Return upcoming flights and their ops alerts for the dashboard.
     """
-    supa = sb()
+    try:
+        supa = sb()
+    except Exception as e:
+        print(f"get_flights: Supabase connection failed: {repr(e)}", flush=True)
+        return {"ok": False, "flights": [], "count": 0, "error": f"Supabase connection failed: {e}"}
+
     now = datetime.now(timezone.utc)
     cutoff = now + timedelta(hours=lookahead_hours)
 
     # Look back 12 hours so flights that departed earlier today (but haven't
     # landed yet) still appear in the arrivals schedule.
     lookback = now - timedelta(hours=12)
-    res = (
-        supa.table(FLIGHTS_TABLE)
-        .select("*")
-        .gte("scheduled_departure", lookback.isoformat())
-        .lte("scheduled_departure", cutoff.isoformat())
-        .order("scheduled_departure", desc=False)
-        .limit(10000)
-        .execute()
-    )
-    flights = res.data or []
+    try:
+        res = (
+            supa.table(FLIGHTS_TABLE)
+            .select("*")
+            .gte("scheduled_departure", lookback.isoformat())
+            .lte("scheduled_departure", cutoff.isoformat())
+            .order("scheduled_departure", desc=False)
+            .limit(10000)
+            .execute()
+        )
+        flights = res.data or []
+    except Exception as e:
+        print(f"get_flights: flights query failed: {repr(e)}", flush=True)
+        return {"ok": False, "flights": [], "count": 0, "error": f"flights query failed: {e}"}
 
     if include_alerts and flights:
         flight_id_set = {f["id"] for f in flights}
