@@ -37,6 +37,31 @@ MS_CLIENT_SECRET = os.getenv("MS_CLIENT_SECRET")
 FLIGHTS_TABLE = "flights"
 OPS_ALERTS_TABLE = "ops_alerts"
 
+
+def _extract_notam_dates(raw_data) -> Optional[Dict[str, Optional[str]]]:
+    """Pull effective start/end/issued dates from the FAA NMS GeoJSON raw_data.
+
+    Returns a small dict with just the date strings (not the full GeoJSON),
+    or None if parsing fails.
+    """
+    try:
+        feature = json.loads(raw_data) if isinstance(raw_data, str) else raw_data
+        notam = feature.get("properties", {}).get("coreNOTAMData", {}).get("notam")
+        if not notam:
+            return None
+        return {
+            "effective_start": notam.get("effectiveStart"),
+            "effective_end": notam.get("effectiveEnd"),
+            "issued": notam.get("issued"),
+            "status": notam.get("status"),
+            "start_date_utc": notam.get("startDate"),
+            "end_date_utc": notam.get("endDate"),
+            "issue_date_utc": notam.get("issueDate"),
+        }
+    except Exception:
+        return None
+
+
 # ─── NMS bearer token cache (module-level, refreshed when expired) ────────────
 
 import time as _time
@@ -312,7 +337,7 @@ def get_flights(
                 batch_ids = flight_ids[i : i + BATCH]
                 alerts_res = (
                     supa.table(OPS_ALERTS_TABLE)
-                    .select("id,flight_id,alert_type,severity,airport_icao,departure_icao,arrival_icao,tail_number,subject,body,edct_time,original_departure_time,acknowledged_at,created_at")
+                    .select("id,flight_id,alert_type,severity,airport_icao,departure_icao,arrival_icao,tail_number,subject,body,edct_time,original_departure_time,acknowledged_at,created_at,raw_data")
                     .in_("flight_id", batch_ids)
                     .is_("acknowledged_at", "null")
                     .order("created_at", desc=False)
@@ -320,6 +345,11 @@ def get_flights(
                 )
                 all_alerts.extend(alerts_res.data or [])
             for a in all_alerts:
+                # Extract NOTAM effective dates from raw_data, then drop
+                # the heavy GeoJSON blob to keep the response small.
+                rd = a.pop("raw_data", None)
+                if rd and a.get("alert_type", "").startswith("NOTAM"):
+                    a["notam_dates"] = _extract_notam_dates(rd)
                 fid = a.get("flight_id")
                 if fid:
                     alerts_by_flight.setdefault(fid, []).append(a)

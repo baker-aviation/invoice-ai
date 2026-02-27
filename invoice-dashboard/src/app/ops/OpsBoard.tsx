@@ -170,7 +170,7 @@ function AlertDetail({ alert }: { alert: OpsAlert }) {
   }
   const isNotam = alert.alert_type.startsWith("NOTAM");
   const notamTimes = isNotam ? parseNotamTimes(alert.body) : null;
-  const notamRaw   = isNotam ? parseNotamRawData(alert.raw_data) : null;
+  const nd = isNotam ? alert.notam_dates : null;
 
   return (
     <div className="border rounded-lg overflow-hidden text-sm">
@@ -198,10 +198,12 @@ function AlertDetail({ alert }: { alert: OpsAlert }) {
             </span>
           )}
           {/* NOTAM active window — shown inline before expanding */}
-          {notamTimes?.from && (
+          {(nd?.effective_start || nd?.start_date_utc || notamTimes?.from) && (
             <span className="text-xs text-gray-600 font-mono bg-gray-100 rounded px-1.5 py-0.5">
-              {notamTimes.from}
-              {notamTimes.to && <> → {notamTimes.to}</>}
+              {fmtNotamDate(nd?.effective_start ?? null, nd?.start_date_utc ?? notamTimes?.from ?? null)}
+              {(nd?.effective_end || nd?.end_date_utc || notamTimes?.to) && (
+                <> → {notamTimes?.to === "PERM" ? "PERM" : fmtNotamDate(nd?.effective_end ?? null, nd?.end_date_utc ?? notamTimes?.to ?? null)}</>
+              )}
             </span>
           )}
           {!alert.edct_time && alert.subject && (
@@ -223,39 +225,39 @@ function AlertDetail({ alert }: { alert: OpsAlert }) {
       {open && (
         <div className="px-3 pb-3 pt-2 bg-gray-50 border-t text-xs text-gray-700 space-y-2">
           {/* Structured NOTAM date fields */}
-          {isNotam && (notamRaw?.issued || notamRaw?.effectiveStart || notamTimes?.from) && (
+          {isNotam && (nd?.issued || nd?.effective_start || notamTimes?.from) && (
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-x-4 gap-y-1 bg-white border rounded p-2">
-              {(notamRaw?.issued || notamRaw?.issueDateUtc) && (
+              {(nd?.issued || nd?.issue_date_utc) && (
                 <div>
                   <span className="text-gray-400 block">Issue Date</span>
                   <span className="font-mono font-medium">
-                    {fmtNotamDate(notamRaw.issued, notamRaw.issueDateUtc)}
+                    {fmtNotamDate(nd.issued, nd.issue_date_utc)}
                   </span>
                 </div>
               )}
-              {(notamRaw?.effectiveStart || notamRaw?.startDateUtc || notamTimes?.from) && (
+              {(nd?.effective_start || nd?.start_date_utc || notamTimes?.from) && (
                 <div>
                   <span className="text-gray-400 block">Start Date UTC</span>
                   <span className="font-mono font-medium text-amber-700">
-                    {fmtNotamDate(notamRaw?.effectiveStart ?? null, notamRaw?.startDateUtc ?? notamTimes?.from ?? null)}
+                    {fmtNotamDate(nd?.effective_start ?? null, nd?.start_date_utc ?? notamTimes?.from ?? null)}
                   </span>
                 </div>
               )}
-              {(notamRaw?.effectiveEnd || notamRaw?.endDateUtc || notamTimes?.to) && (
+              {(nd?.effective_end || nd?.end_date_utc || notamTimes?.to) && (
                 <div>
                   <span className="text-gray-400 block">End Date UTC</span>
                   <span className="font-mono font-medium text-amber-700">
                     {notamTimes?.to === "PERM"
                       ? "PERM"
-                      : fmtNotamDate(notamRaw?.effectiveEnd ?? null, notamRaw?.endDateUtc ?? notamTimes?.to ?? null)}
+                      : fmtNotamDate(nd?.effective_end ?? null, nd?.end_date_utc ?? notamTimes?.to ?? null)}
                   </span>
                 </div>
               )}
-              {notamRaw?.status && (
+              {nd?.status && (
                 <div>
                   <span className="text-gray-400 block">Status</span>
-                  <span className={`font-medium ${notamRaw.status === "Active" ? "text-green-700" : "text-gray-600"}`}>
-                    {notamRaw.status}
+                  <span className={`font-medium ${nd.status === "Active" ? "text-green-700" : "text-gray-600"}`}>
+                    {nd.status}
                   </span>
                 </div>
               )}

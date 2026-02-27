@@ -5,6 +5,16 @@ function mustBase(): string {
   return BASE.replace(/\/$/, "");
 }
 
+export type NotamDates = {
+  effective_start: string | null;
+  effective_end: string | null;
+  issued: string | null;
+  status: string | null;
+  start_date_utc: string | null;
+  end_date_utc: string | null;
+  issue_date_utc: string | null;
+};
+
 export type OpsAlert = {
   id: string;
   flight_id: string | null;
@@ -20,9 +30,8 @@ export type OpsAlert = {
   original_departure_time: string | null;
   acknowledged_at: string | null;
   created_at: string;
-  // FAA NMS GeoJSON feature — present for NOTAM_* alerts
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  raw_data: Record<string, any> | null;
+  // Extracted NOTAM effective dates (backend strips the heavy raw_data GeoJSON)
+  notam_dates: NotamDates | null;
 };
 
 export type Flight = {
