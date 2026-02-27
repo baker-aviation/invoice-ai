@@ -299,35 +299,42 @@ type VanFlightItem = {
   distKm:     number;
 };
 
+const MAX_ARRIVALS_PER_VAN = 4;
+
 function VanScheduleCard({
   zone,
   color,
   allFlights,
   date,
+  liveVanPos,
 }: {
   zone: (typeof FIXED_VAN_ZONES)[number];
   color: string;
   allFlights: Flight[];
   date: string;
+  liveVanPos?: { lat: number; lon: number };
 }) {
   const [expanded, setExpanded] = useState(true);
   const now = new Date();
 
-  // Arrivals near this zone's home base on the selected date
+  // Use live GPS as starting point if available, else fixed home base
   const items = useMemo<VanFlightItem[]>(() => {
+    const baseLat = liveVanPos?.lat ?? zone.lat;
+    const baseLon = liveVanPos?.lon ?? zone.lon;
+
     const arrivalsToday = allFlights.filter((f) => {
       if (!f.arrival_icao || !f.scheduled_arrival) return false;
       if (!f.scheduled_arrival.startsWith(date)) return false;
       const iata = f.arrival_icao.replace(/^K/, "");
       const info = getAirportInfo(iata);
       if (!info || !isContiguous48(info.state)) return false;
-      return haversineKm(zone.lat, zone.lon, info.lat, info.lon) <= SCHEDULE_ARRIVAL_RADIUS_KM;
+      return haversineKm(baseLat, baseLon, info.lat, info.lon) <= SCHEDULE_ARRIVAL_RADIUS_KM;
     });
 
     return arrivalsToday.map((arr) => {
       const iata = arr.arrival_icao!.replace(/^K/, "");
       const info = getAirportInfo(iata);
-      const distKm = info ? Math.round(haversineKm(zone.lat, zone.lon, info.lat, info.lon)) : 0;
+      const distKm = info ? Math.round(haversineKm(baseLat, baseLon, info.lat, info.lon)) : 0;
 
       // Find the next departure of this tail from the same airport after it lands
       const nextDep = allFlights
@@ -348,10 +355,12 @@ function VanScheduleCard({
         airportInfo: info,
         distKm,
       };
-    }).sort((a, b) =>
-      (a.arrFlight.scheduled_arrival ?? "").localeCompare(b.arrFlight.scheduled_arrival ?? ""),
-    );
-  }, [allFlights, zone, date]);
+    })
+      .sort((a, b) =>
+        (a.arrFlight.scheduled_arrival ?? "").localeCompare(b.arrFlight.scheduled_arrival ?? ""),
+      )
+      .slice(0, MAX_ARRIVALS_PER_VAN);
+  }, [allFlights, zone, date, liveVanPos]);
 
   const totalDistKm = items.reduce((sum, i) => sum + i.distKm, 0);
   const totalDriveH = totalDistKm / 90;
@@ -436,8 +445,8 @@ function VanScheduleCard({
                           Lands {fmtUtcHM(arrFlight.scheduled_arrival!)}
                         </div>
                       )}
-                      <span className={`inline-block text-xs font-semibold rounded-full px-2 py-0.5 ${hasLanded ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-700"}`}>
-                        {hasLanded ? "✓ Landed" : "En-route"}
+                      <span className={`inline-block text-xs font-semibold rounded-full px-2 py-0.5 ${hasLanded ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-600"}`}>
+                        {hasLanded ? "~Landed" : "Scheduled"}
                       </span>
                       {doneForDay && (
                         <div>
@@ -461,14 +470,23 @@ function VanScheduleCard({
 function ScheduleTab({
   allFlights,
   date,
+  liveVanPositions,
 }: {
   allFlights: Flight[];
   date: string;
+  liveVanPositions: Map<number, { lat: number; lon: number }>;
 }) {
+  const hasLive = liveVanPositions.size > 0;
   return (
     <div className="space-y-3">
       <div className="text-sm text-gray-500 mb-1">
-        Arrivals plan for {fmtLongDate(date)} · aircraft landing within 300 km of each home base
+        Arrivals plan for {fmtLongDate(date)} · up to {MAX_ARRIVALS_PER_VAN} aircraft per van · 5 h drive limit
+        {hasLive && (
+          <span className="ml-2 inline-flex items-center gap-1 text-xs text-green-600 font-medium">
+            <span className="w-1.5 h-1.5 rounded-full bg-green-500 inline-block" />
+            distances from live GPS
+          </span>
+        )}
       </div>
       {FIXED_VAN_ZONES.map((zone) => {
         const color = VAN_COLORS[(zone.vanId - 1) % VAN_COLORS.length];
@@ -479,6 +497,7 @@ function ScheduleTab({
             color={color}
             allFlights={allFlights}
             date={date}
+            liveVanPos={liveVanPositions.get(zone.vanId)}
           />
         );
       })}
@@ -501,66 +520,106 @@ type SamsaraVan = {
   gps_time: string | null;
 };
 
+type VehicleDiag = {
+  id: string;
+  name: string;
+  odometer_miles: number | null;
+  check_engine_on: boolean | null;
+  diag_time: string | null;
+};
+
 /** Vehicles whose name contains "VAN", "AOG", "OG", or "TRAN" are AOG support vans. */
 function isAogVehicle(name: string): boolean {
   const u = (name || "").toUpperCase();
   return u.includes("VAN") || u.includes("AOG") || u.includes(" OG") || u.includes("TRAN");
 }
 
-function VehicleRow({ v }: { v: SamsaraVan }) {
+/**
+ * Try to extract a zone ID from a Samsara vehicle name.
+ * "AOG Van 1" → 1, "Baker Van 4 TEB" → 4, "Van2" → 2.
+ * Returns null if no number found or number is out of range.
+ */
+function samsaraNameToZoneId(name: string): number | null {
+  const m = name.match(/\b(\d+)\b/);
+  if (!m) return null;
+  const id = parseInt(m[1]);
+  return id >= 1 && id <= FIXED_VAN_ZONES.length ? id : null;
+}
+
+function VehicleRow({ v, diag }: { v: SamsaraVan; diag?: VehicleDiag }) {
+  const [expanded, setExpanded] = useState(false);
+  const celOn = diag?.check_engine_on === true;
+
   return (
-    <div className="flex items-center gap-4 px-4 py-3">
-      <div className="min-w-0 flex-1">
-        <div className="text-sm font-medium text-gray-800">{v.name || v.id}</div>
-        {/* Tracker ID shown as sublabel — replace with Samsara label field once available */}
-        <div className="text-xs text-gray-400 font-mono">{v.id}</div>
-        <div className="text-xs text-gray-500 truncate mt-0.5">
-          {v.address || (v.lat != null ? `${v.lat.toFixed(4)}, ${v.lon?.toFixed(4)}` : "No location")}
+    <div>
+      <div
+        className="flex items-center gap-4 px-4 py-3 cursor-pointer hover:bg-gray-50"
+        onClick={() => setExpanded((e) => !e)}
+      >
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-sm font-medium text-gray-800">{v.name || v.id}</span>
+            {celOn && (
+              <span className="text-xs bg-red-100 text-red-700 font-semibold px-2 py-0.5 rounded-full">
+                ⚠ Check Engine
+              </span>
+            )}
+          </div>
+          <div className="text-xs text-gray-400 font-mono">{v.id}</div>
+          <div className="text-xs text-gray-500 truncate mt-0.5">
+            {v.address || (v.lat != null ? `${v.lat.toFixed(4)}, ${v.lon?.toFixed(4)}` : "No location")}
+          </div>
+        </div>
+        <div className="text-right shrink-0 space-y-0.5">
+          {v.speed_mph != null && (
+            <div className="text-sm font-semibold text-gray-700">{Math.round(v.speed_mph)} mph</div>
+          )}
+          {v.gps_time && <div className="text-xs text-gray-400">{fmtTime(v.gps_time)}</div>}
+          <div className="text-xs text-gray-400">{expanded ? "▲ Status" : "▼ Status"}</div>
         </div>
       </div>
-      <div className="text-right shrink-0 space-y-0.5">
-        {v.speed_mph != null && (
-          <div className="text-sm font-semibold text-gray-700">
-            {Math.round(v.speed_mph)} mph
-          </div>
-        )}
-        {v.gps_time && (
-          <div className="text-xs text-gray-400">{fmtTime(v.gps_time)}</div>
-        )}
-      </div>
+
+      {expanded && (
+        <div className="px-4 pb-3 pt-1 bg-gray-50 border-t text-xs space-y-1.5">
+          {diag ? (
+            <>
+              {diag.odometer_miles !== null && (
+                <div className="text-gray-600">
+                  Odometer: <span className="font-semibold">{diag.odometer_miles.toLocaleString()} mi</span>
+                </div>
+              )}
+              <div className={diag.check_engine_on === true ? "text-red-600 font-semibold" : diag.check_engine_on === false ? "text-green-600" : "text-gray-400"}>
+                Check engine: {diag.check_engine_on === true ? "⚠ ON" : diag.check_engine_on === false ? "✓ Off" : "No data"}
+              </div>
+              {diag.diag_time && (
+                <div className="text-gray-400">Diag as of {fmtTime(diag.diag_time)}</div>
+              )}
+            </>
+          ) : (
+            <div className="text-gray-400">No diagnostic data available.</div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
 
-function VanLiveLocations() {
-  const [vans, setVans]           = useState<SamsaraVan[]>([]);
-  const [loading, setLoading]     = useState(true);
-  const [error, setError]         = useState<string | null>(null);
-  const [lastFetch, setLastFetch] = useState<Date | null>(null);
-
-  async function load() {
-    setLoading(true);
-    setError(null);
-    try {
-      const res  = await fetch("/api/vans", { cache: "no-store" });
-      const data = await res.json();
-      if (!data.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      setVans(data.vans ?? []);
-      setLastFetch(new Date());
-    } catch (e: unknown) {
-      setError(String(e));
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useMemo(() => { load(); }, []);
-  useMemo(() => {
-    const id = setInterval(load, 240_000);
-    return () => clearInterval(id);
-  }, []);
-
+function VanLiveLocations({
+  vans,
+  loading,
+  error,
+  lastFetch,
+  onRefresh,
+  diags,
+}: {
+  vans: SamsaraVan[];
+  loading: boolean;
+  error: string | null;
+  lastFetch: Date | null;
+  onRefresh: () => void;
+  diags: Map<string, VehicleDiag>;
+}) {
   if (loading && vans.length === 0) {
     return (
       <div className="rounded-xl border bg-white shadow-sm px-5 py-4 text-sm text-gray-400 animate-pulse">
@@ -584,9 +643,7 @@ function VanLiveLocations() {
     );
   }
 
-  const aogVans = vans.filter((v) => isAogVehicle(v.name));
-
-  if (aogVans.length === 0) {
+  if (vans.length === 0) {
     return (
       <div className="rounded-xl border bg-white shadow-sm px-5 py-4 text-sm text-gray-400">
         No AOG vans found in Samsara.
@@ -594,12 +651,26 @@ function VanLiveLocations() {
     );
   }
 
+  const celAlerts = vans.filter((v) => diags.get(v.id)?.check_engine_on === true);
+
   return (
     <div className="rounded-xl border bg-white shadow-sm overflow-hidden">
+      {/* Global alert bar — only when check engine lights are active */}
+      {celAlerts.length > 0 && (
+        <div className="bg-red-50 border-b border-red-200 px-4 py-2.5 flex items-center gap-3">
+          <span className="text-sm font-semibold text-red-700">
+            ⚠ Check Engine Light — {celAlerts.length} van{celAlerts.length !== 1 ? "s" : ""}
+          </span>
+          <span className="text-xs text-red-600">
+            {celAlerts.map((v) => v.name).join(", ")}
+          </span>
+        </div>
+      )}
+
       <div className="flex items-center justify-between px-4 py-3 border-b">
         <div className="text-sm font-semibold text-gray-800">
           🚐 AOG Van Live Locations
-          <span className="ml-2 text-xs font-normal text-gray-400">via Samsara · {aogVans.length} vans</span>
+          <span className="ml-2 text-xs font-normal text-gray-400">via Samsara · {vans.length} vans · click for status</span>
         </div>
         <div className="flex items-center gap-3">
           {lastFetch && (
@@ -607,13 +678,13 @@ function VanLiveLocations() {
               Updated {lastFetch.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
             </span>
           )}
-          <button onClick={load} disabled={loading} className="text-xs text-blue-600 hover:underline disabled:opacity-50">
+          <button onClick={onRefresh} disabled={loading} className="text-xs text-blue-600 hover:underline disabled:opacity-50">
             {loading ? "Refreshing…" : "Refresh"}
           </button>
         </div>
       </div>
       <div className="divide-y">
-        {aogVans.map((v) => <VehicleRow key={v.id} v={v} />)}
+        {vans.map((v) => <VehicleRow key={v.id} v={v} diag={diags.get(v.id)} />)}
       </div>
     </div>
   );
@@ -703,13 +774,76 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
   const vans       = useMemo(() => assignVans(positions), [positions]);
   const displayedVans = selectedVan === null ? vans : vans.filter((v) => v.vanId === selectedVan);
 
-  // Flights arriving on the selected date (for schedule tab)
+  // Flights arriving on the selected date (for stats bar)
   const flightsForDay = useMemo(
     () => initialFlights.filter((f) =>
       (f.scheduled_arrival ?? f.scheduled_departure).startsWith(selectedDate)
     ),
     [initialFlights, selectedDate],
   );
+
+  // ── Samsara live van data (lifted so map + schedule can both use it) ──
+  const [samsaraVans, setSamsaraVans]         = useState<SamsaraVan[]>([]);
+  const [samsaraLoading, setSamsaraLoading]   = useState(true);
+  const [samsaraError, setSamsaraError]       = useState<string | null>(null);
+  const [samsaraLastFetch, setSamsaraLastFetch] = useState<Date | null>(null);
+
+  async function loadSamsara() {
+    setSamsaraLoading(true);
+    setSamsaraError(null);
+    try {
+      const res  = await fetch("/api/vans", { cache: "no-store" });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setSamsaraVans(data.vans ?? []);
+      setSamsaraLastFetch(new Date());
+    } catch (e: unknown) {
+      setSamsaraError(String(e));
+    } finally {
+      setSamsaraLoading(false);
+    }
+  }
+
+  useMemo(() => { loadSamsara(); }, []);
+  useMemo(() => {
+    const id = setInterval(loadSamsara, 240_000);
+    return () => clearInterval(id);
+  }, []);
+
+  const aogSamsaraVans = useMemo(
+    () => samsaraVans.filter((v) => isAogVehicle(v.name)),
+    [samsaraVans],
+  );
+
+  /** Zone ID → current GPS position (from Samsara). Empty map if no signal. */
+  const liveVanPositions = useMemo<Map<number, { lat: number; lon: number }>>(() => {
+    const map = new Map<number, { lat: number; lon: number }>();
+    for (const v of aogSamsaraVans) {
+      if (v.lat === null || v.lon === null) continue;
+      const zoneId = samsaraNameToZoneId(v.name);
+      if (zoneId !== null) map.set(zoneId, { lat: v.lat, lon: v.lon });
+    }
+    return map;
+  }, [aogSamsaraVans]);
+
+  // ── Samsara diagnostics (odometer + check engine light) ──
+  const [diagData, setDiagData] = useState<Map<string, VehicleDiag>>(new Map());
+
+  useMemo(() => {
+    async function loadDiags() {
+      try {
+        const res = await fetch("/api/vans/diagnostics", { cache: "no-store" });
+        const data = await res.json();
+        if (!data.ok) return;
+        const map = new Map<string, VehicleDiag>();
+        for (const v of (data.vehicles ?? [])) map.set(v.id, v);
+        setDiagData(map);
+      } catch {}
+    }
+    loadDiags();
+    const id = setInterval(loadDiags, 300_000); // refresh every 5 min
+    return () => clearInterval(id);
+  }, []);
 
   return (
     <div className="space-y-5">
@@ -791,7 +925,7 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
 
           {viewMode === "map" ? (
             <div className="rounded-xl overflow-hidden border shadow-sm">
-              <MapView vans={displayedVans} colors={VAN_COLORS} />
+              <MapView vans={displayedVans} colors={VAN_COLORS} liveVanPositions={liveVanPositions} />
             </div>
           ) : (
             <div className="space-y-3">
@@ -809,7 +943,14 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
           )}
 
           {/* Samsara live locations */}
-          <VanLiveLocations />
+          <VanLiveLocations
+            vans={aogSamsaraVans}
+            loading={samsaraLoading}
+            error={samsaraError}
+            lastFetch={samsaraLastFetch}
+            onRefresh={loadSamsara}
+            diags={diagData}
+          />
 
           {/* Full aircraft table */}
           <div>
@@ -884,7 +1025,7 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
 
       {/* ── Schedule tab ── */}
       {activeTab === "schedule" && (
-        <ScheduleTab allFlights={initialFlights} date={selectedDate} />
+        <ScheduleTab allFlights={initialFlights} date={selectedDate} liveVanPositions={liveVanPositions} />
       )}
     </div>
   );

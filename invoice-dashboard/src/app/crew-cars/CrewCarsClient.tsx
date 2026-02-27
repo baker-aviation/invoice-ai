@@ -32,6 +32,14 @@ type OilChangeRecord = {
   notes?: string;
 };
 
+type VehicleDiag = {
+  id: string;
+  name: string;
+  odometer_miles: number | null;
+  check_engine_on: boolean | null;
+  diag_time: string | null;
+};
+
 function isAogVehicle(name: string): boolean {
   const u = (name || "").toUpperCase();
   return u.includes("VAN") || u.includes("AOG") || u.includes(" OG") || u.includes("TRAN");
@@ -55,31 +63,70 @@ function fmtTime(s: string | null | undefined): string {
 
 // ─── Vehicle row ─────────────────────────────────────────────────────────────
 
-function VehicleRow({ v }: { v: SamsaraVan }) {
+function VehicleRow({ v, diag }: { v: SamsaraVan; diag?: VehicleDiag }) {
+  const [expanded, setExpanded] = useState(false);
+  const celOn = diag?.check_engine_on === true;
+
   return (
-    <div className="flex items-center gap-4 px-4 py-3">
-      <div className="min-w-0 flex-1">
-        <div className="text-sm font-medium text-gray-800">{v.name || v.id}</div>
-        <div className="text-xs text-gray-400 font-mono">{v.id}</div>
-        <div className="text-xs text-gray-500 truncate mt-0.5">
-          {v.address || (v.lat != null ? `${v.lat.toFixed(4)}, ${v.lon?.toFixed(4)}` : "No location")}
+    <div>
+      <div
+        className="flex items-center gap-4 px-4 py-3 cursor-pointer hover:bg-gray-50"
+        onClick={() => setExpanded((e) => !e)}
+      >
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-sm font-medium text-gray-800">{v.name || v.id}</span>
+            {celOn && (
+              <span className="text-xs bg-red-100 text-red-700 font-semibold px-2 py-0.5 rounded-full">
+                ⚠ Check Engine
+              </span>
+            )}
+          </div>
+          <div className="text-xs text-gray-400 font-mono">{v.id}</div>
+          <div className="text-xs text-gray-500 truncate mt-0.5">
+            {v.address || (v.lat != null ? `${v.lat.toFixed(4)}, ${v.lon?.toFixed(4)}` : "No location")}
+          </div>
+        </div>
+        <div className="text-right shrink-0 space-y-0.5">
+          {v.speed_mph != null && (
+            <div className="text-sm font-semibold text-gray-700">{Math.round(v.speed_mph)} mph</div>
+          )}
+          {v.gps_time && <div className="text-xs text-gray-400">{fmtTime(v.gps_time)}</div>}
+          {diag?.odometer_miles != null && (
+            <div className="text-xs text-gray-500">{diag.odometer_miles.toLocaleString()} mi</div>
+          )}
+          <div className="text-xs text-gray-400">{expanded ? "▲" : "▼"}</div>
         </div>
       </div>
-      <div className="text-right shrink-0 space-y-0.5">
-        {v.speed_mph != null && (
-          <div className="text-sm font-semibold text-gray-700">{Math.round(v.speed_mph)} mph</div>
-        )}
-        {v.gps_time && (
-          <div className="text-xs text-gray-400">{fmtTime(v.gps_time)}</div>
-        )}
-      </div>
+
+      {expanded && (
+        <div className="px-4 pb-3 pt-1 bg-gray-50 border-t text-xs space-y-1.5">
+          {diag ? (
+            <>
+              {diag.odometer_miles !== null && (
+                <div className="text-gray-600">
+                  Odometer: <span className="font-semibold">{diag.odometer_miles.toLocaleString()} mi</span>
+                </div>
+              )}
+              <div className={diag.check_engine_on === true ? "text-red-600 font-semibold" : diag.check_engine_on === false ? "text-green-600" : "text-gray-400"}>
+                Check engine: {diag.check_engine_on === true ? "⚠ ON — schedule service" : diag.check_engine_on === false ? "✓ Off" : "No data"}
+              </div>
+              {diag.diag_time && (
+                <div className="text-gray-400">Diag as of {fmtTime(diag.diag_time)}</div>
+              )}
+            </>
+          ) : (
+            <div className="text-gray-400">No diagnostic data available.</div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
 // ─── Oil change tracker ───────────────────────────────────────────────────────
 
-function OilChangeTracker({ vehicles }: { vehicles: SamsaraVan[] }) {
+function OilChangeTracker({ vehicles, diags }: { vehicles: SamsaraVan[]; diags: Map<string, VehicleDiag> }) {
   const [records, setRecords] = useState<Record<string, OilChangeRecord>>({});
   const [editing, setEditing] = useState<string | null>(null);
   const [form, setForm] = useState({ date: "", mileage: "", notes: "" });
@@ -165,13 +212,24 @@ function OilChangeTracker({ vehicles }: { vehicles: SamsaraVan[] }) {
         <div className="divide-y">
           {sortedVehicles.map((v) => {
             const rec = records[v.id];
+            const diag = diags.get(v.id);
             const daysSince = rec?.lastChangedDate
               ? Math.floor((today.getTime() - new Date(rec.lastChangedDate + "T12:00:00").getTime()) / 86400000)
               : null;
             const overdue = daysSince !== null && daysSince > 90;
 
+            // Live miles since last oil change (only if both odometer and last-change mileage are known)
+            const lastChangeMi = rec?.mileage ? parseInt(rec.mileage.replace(/,/g, "")) : null;
+            const milesSince = diag?.odometer_miles != null && lastChangeMi != null
+              ? diag.odometer_miles - lastChangeMi
+              : null;
+            const mileDue = milesSince !== null && milesSince >= 5000;
+            const mileSoon = milesSince !== null && milesSince >= 4000 && milesSince < 5000;
+
+            const anyAlert = overdue || mileDue || diag?.check_engine_on === true;
+
             return (
-              <div key={v.id} className={`px-4 py-3 ${overdue ? "bg-red-50" : ""}`}>
+              <div key={v.id} className={`px-4 py-3 ${anyAlert ? "bg-red-50" : ""}`}>
                 {editing === v.id ? (
                   <div className="space-y-2">
                     <div className="text-sm font-medium">{v.name}</div>
@@ -186,13 +244,13 @@ function OilChangeTracker({ vehicles }: { vehicles: SamsaraVan[] }) {
                         />
                       </div>
                       <div className="flex flex-col gap-1">
-                        <label className="text-xs text-gray-500">Mileage</label>
+                        <label className="text-xs text-gray-500">Mileage at change</label>
                         <input
                           type="text"
-                          placeholder="e.g. 45,200"
+                          placeholder={diag?.odometer_miles != null ? `Current: ${diag.odometer_miles.toLocaleString()}` : "e.g. 45,200"}
                           value={form.mileage}
                           onChange={(e) => setForm((f) => ({ ...f, mileage: e.target.value }))}
-                          className="border rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-slate-300 w-32"
+                          className="border rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-slate-300 w-36"
                         />
                       </div>
                       <div className="flex flex-col gap-1">
@@ -224,22 +282,44 @@ function OilChangeTracker({ vehicles }: { vehicles: SamsaraVan[] }) {
                   </div>
                 ) : (
                   <div className="flex items-center justify-between gap-4">
-                    <div>
-                      <div className="text-sm font-medium text-gray-800">{v.name}</div>
-                      <div className="text-xs text-gray-400 font-mono">{v.id}</div>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-sm font-medium text-gray-800">{v.name}</span>
+                        {diag?.check_engine_on === true && (
+                          <span className="text-xs bg-red-100 text-red-700 font-semibold px-2 py-0.5 rounded-full">⚠ Check Engine</span>
+                        )}
+                        {mileDue && (
+                          <span className="text-xs bg-red-100 text-red-700 font-semibold px-2 py-0.5 rounded-full">Oil Due</span>
+                        )}
+                        {mileSoon && (
+                          <span className="text-xs bg-yellow-100 text-yellow-700 font-semibold px-2 py-0.5 rounded-full">Oil Soon</span>
+                        )}
+                      </div>
                       {rec ? (
                         <div className={`text-xs mt-0.5 ${overdue ? "text-red-600 font-semibold" : "text-gray-500"}`}>
-                          Last oil change: {rec.lastChangedDate}
-                          {rec.mileage && ` · ${rec.mileage} mi`}
+                          Last change: {rec.lastChangedDate}
+                          {rec.mileage && ` @ ${rec.mileage} mi`}
                           {daysSince !== null && (
                             <span className={overdue ? " text-red-600" : " text-gray-400"}>
-                              {" "}({daysSince} days ago{overdue ? " — overdue" : ""})
+                              {" "}({daysSince}d ago{overdue ? " — overdue" : ""})
                             </span>
                           )}
                           {rec.notes && <span className="text-gray-400"> · {rec.notes}</span>}
                         </div>
                       ) : (
                         <div className="text-xs text-gray-400 mt-0.5">No oil change recorded</div>
+                      )}
+                      {/* Live odometer vs last-change mileage */}
+                      {diag?.odometer_miles != null && (
+                        <div className={`text-xs mt-0.5 ${mileDue ? "text-red-600 font-semibold" : mileSoon ? "text-yellow-600" : "text-gray-500"}`}>
+                          Now: {diag.odometer_miles.toLocaleString()} mi
+                          {milesSince !== null && (
+                            <span>
+                              {" · "}{milesSince >= 0 ? "+" : ""}{milesSince.toLocaleString()} mi since change
+                              {mileDue ? " — oil due" : mileSoon ? " — change soon" : ""}
+                            </span>
+                          )}
+                        </div>
                       )}
                     </div>
                     <button
@@ -282,6 +362,24 @@ export default function CrewCarsClient() {
       setLoading(false);
     }
   }
+
+  // Diagnostics: odometer + check engine light
+  const [diagData, setDiagData] = useState<Map<string, VehicleDiag>>(new Map());
+  useMemo(() => {
+    async function loadDiags() {
+      try {
+        const res = await fetch("/api/vans/diagnostics", { cache: "no-store" });
+        const data = await res.json();
+        if (!data.ok) return;
+        const map = new Map<string, VehicleDiag>();
+        for (const v of (data.vehicles ?? [])) map.set(v.id, v);
+        setDiagData(map);
+      } catch {}
+    }
+    loadDiags();
+    const id = setInterval(loadDiags, 300_000);
+    return () => clearInterval(id);
+  }, []);
 
   useMemo(() => { load(); }, []);
   useMemo(() => {
@@ -361,8 +459,8 @@ export default function CrewCarsClient() {
         )}
       </div>
 
-      {/* Oil change tracker — sorted by most overdue first */}
-      <OilChangeTracker vehicles={crewCars} />
+      {/* Oil change tracker — sorted by most overdue first, with live odometer */}
+      <OilChangeTracker vehicles={crewCars} diags={diagData} />
 
       {/* Vehicle list */}
       {crewCars.length > 0 && (
@@ -372,7 +470,7 @@ export default function CrewCarsClient() {
           </div>
           <div className="divide-y">
             {crewCars.map((v) => (
-              <VehicleRow key={v.id} v={v} />
+              <VehicleRow key={v.id} v={v} diag={diagData.get(v.id)} />
             ))}
           </div>
         </div>

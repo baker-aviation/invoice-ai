@@ -214,6 +214,44 @@ def get_vans():
     return {"ok": True, "vans": vans, "count": len(vans)}
 
 
+# ─── GET /api/vans/diagnostics  (Samsara odometer + check engine light) ───────
+
+
+@app.get("/api/vans/diagnostics")
+def get_vans_diagnostics():
+    if not SAMSARA_API_KEY:
+        raise HTTPException(status_code=503, detail="SAMSARA_API_KEY not configured")
+
+    try:
+        r = requests.get(
+            "https://api.samsara.com/fleet/vehicles/stats",
+            headers={"Authorization": f"Bearer {SAMSARA_API_KEY}"},
+            params={"types": "obdOdometerMeters,checkEngineLightIsOn"},
+            timeout=10,
+        )
+        r.raise_for_status()
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Samsara API error: {e}")
+
+    raw = r.json().get("data") or []
+    vehicles: List[Dict[str, Any]] = []
+    for v in raw:
+        odo = v.get("obdOdometerMeters") or {}
+        cel = v.get("checkEngineLightIsOn") or {}
+        odo_meters = odo.get("value")
+        check_engine = cel.get("value")
+        vehicles.append({
+            "id": v.get("id"),
+            "name": v.get("name"),
+            # Convert meters → whole miles for display
+            "odometer_miles": round(odo_meters / 1609.344) if odo_meters is not None else None,
+            "check_engine_on": check_engine,
+            "diag_time": odo.get("time") or cel.get("time"),
+        })
+
+    return {"ok": True, "vehicles": vehicles, "count": len(vehicles)}
+
+
 # ─── GET /api/flights  (called by dashboard) ──────────────────────────────────
 
 
