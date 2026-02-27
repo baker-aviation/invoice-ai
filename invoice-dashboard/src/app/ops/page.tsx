@@ -7,7 +7,7 @@ import OpsBoard from "./OpsBoard";
 
 export default async function OpsPage() {
   let error: string | null = null;
-  const data = await fetchFlights({ lookahead_hours: 168 }).catch((e) => {
+  const data = await fetchFlights({ lookahead_hours: 720 }).catch((e) => {
     error = String(e);
     return { ok: false, flights: [] as any[], count: 0, error: null as string | null };
   });

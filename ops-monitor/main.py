@@ -39,13 +39,20 @@ OPS_ALERTS_TABLE = "ops_alerts"
 
 
 def _extract_notam_dates(raw_data) -> Optional[Dict[str, Optional[str]]]:
-    """Pull effective start/end/issued dates from the FAA NMS GeoJSON raw_data.
+    """Pull effective start/end/issued dates from raw_data.
 
-    Returns a small dict with just the date strings (not the full GeoJSON),
-    or None if parsing fails.
+    Handles two formats:
+    1. **Compact** (new): ``{"notam_dates": {...}}`` — already extracted.
+    2. **Full GeoJSON** (legacy): ``{properties: {coreNOTAMData: {notam: {...}}}}``
+
+    Returns a small dict with just the date strings, or None if parsing fails.
     """
     try:
         feature = json.loads(raw_data) if isinstance(raw_data, str) else raw_data
+        # New compact format — stored by check_notams after 2025-02-27
+        if "notam_dates" in feature:
+            return feature["notam_dates"]
+        # Legacy full GeoJSON format
         notam = feature.get("properties", {}).get("coreNOTAMData", {}).get("notam")
         if not notam:
             return None
@@ -329,24 +336,41 @@ def get_flights(
         flight_ids = [f["id"] for f in flights]
         alerts_by_flight: Dict[str, List] = {}
         try:
-            # Fetch alerts only for the flights in our window, in batches
-            # to avoid URL-length limits from large .in_() lists.
-            BATCH = 50
-            all_alerts: List = []
-            for i in range(0, len(flight_ids), BATCH):
-                batch_ids = flight_ids[i : i + BATCH]
-                alerts_res = (
-                    supa.table(OPS_ALERTS_TABLE)
+            # Fetch alerts in parallel batches of 200 to keep URL lengths
+            # reasonable while minimising round-trips for large windows.
+            BATCH = 200
+            batches = [flight_ids[i : i + BATCH] for i in range(0, len(flight_ids), BATCH)]
+
+            def _fetch_alert_batch(batch_ids: List[str]) -> List:
+                client = sb()
+                return (
+                    client.table(OPS_ALERTS_TABLE)
                     .select("id,flight_id,alert_type,severity,airport_icao,departure_icao,arrival_icao,tail_number,subject,body,edct_time,original_departure_time,acknowledged_at,created_at,raw_data")
                     .in_("flight_id", batch_ids)
                     .is_("acknowledged_at", "null")
                     .order("created_at", desc=False)
                     .execute()
-                )
-                all_alerts.extend(alerts_res.data or [])
+                ).data or []
+
+            all_alerts: List = []
+            if len(batches) <= 1:
+                # Single batch — no thread overhead
+                for b in batches:
+                    all_alerts.extend(_fetch_alert_batch(b))
+            else:
+                pool = ThreadPoolExecutor(max_workers=min(len(batches), 8))
+                futures = {pool.submit(_fetch_alert_batch, b): b for b in batches}
+                try:
+                    for future in as_completed(futures, timeout=30):
+                        all_alerts.extend(future.result())
+                except FuturesTimeoutError:
+                    print("get_flights: alert batch 30s budget exceeded", flush=True)
+                finally:
+                    pool.shutdown(wait=False)
+
             for a in all_alerts:
                 # Extract NOTAM effective dates from raw_data, then drop
-                # the heavy GeoJSON blob to keep the response small.
+                # the heavy blob to keep the response small.
                 rd = a.pop("raw_data", None)
                 if rd and a.get("alert_type", "").startswith("NOTAM"):
                     a["notam_dates"] = _extract_notam_dates(rd)
@@ -746,6 +770,9 @@ def _run_check_notams(lookahead_hours: int) -> dict:
                 if not _is_relevant_notam_msg(msg):
                     continue
                 notam_id = notam_data.get("id", "") or notam_data.get("number", "")
+                # Store only the extracted NOTAM dates in raw_data
+                # (not the full GeoJSON feature) to keep the DB lean.
+                notam_dates = _extract_notam_dates(feature)
                 alerts_to_insert.append({
                     "flight_id": fid,
                     "alert_type": _classify_notam(msg),
@@ -754,7 +781,7 @@ def _run_check_notams(lookahead_hours: int) -> dict:
                     "subject": notam_data.get("number", "")[:500],
                     "body": msg[:2000],
                     "source_message_id": f"nms-{notam_id}-{fid}",
-                    "raw_data": json.dumps(feature),
+                    "raw_data": json.dumps({"notam_dates": notam_dates}) if notam_dates else None,
                     "created_at": _utc_now(),
                 })
 
@@ -1031,8 +1058,14 @@ def _is_relevant_notam_msg(msg: str) -> bool:
     m = msg.upper()
     # Runway closures
     if re.search(r"(RWY|RUNWAY).{0,60}(CLSD|CLOSED)", m):
+        # Exclude equipment / lighting NOTAMs that mention RWY but aren't
+        # actual runway closures (ILS, PAPI, ALS, LGT, TWY, APRON, windcone).
+        if _is_noise_notam(m):
+            return False
         return True
     if re.search(r"(CLSD|CLOSED).{0,60}(RWY|RUNWAY)", m):
+        if _is_noise_notam(m):
+            return False
         return True
     # Airport/aerodrome closure
     if re.search(r"(\bAD\b|AERODROME|AIRPORT).{0,30}(CLSD|CLOSED)", m):
@@ -1051,6 +1084,20 @@ def _is_relevant_notam_msg(msg: str) -> bool:
     if re.search(r"\bPPR\b|PRIOR PERMISSION REQUIRED", m):
         return True
     return False
+
+
+# Terms that indicate a RWY NOTAM is about equipment / lighting, not an
+# actual runway closure.  Checked against the upper-cased message text.
+_NOISE_TERMS = re.compile(
+    r"\bILS\b|\bPAPI\b|\bALS\b|\bLGT\b|\bLIGHT\b|\bTWY\b|\bTAXIWAY\b"
+    r"|\bAPRON\b|\bWINDCONE\b|\bWIND\s*CONE\b"
+)
+
+
+def _is_noise_notam(msg_upper: str) -> bool:
+    """Return True if the NOTAM is about equipment/lighting rather than an
+    actual runway or airport closure worth alerting on."""
+    return bool(_NOISE_TERMS.search(msg_upper))
 
 
 def _classify_notam(msg: str) -> str:
