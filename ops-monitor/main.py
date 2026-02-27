@@ -30,8 +30,8 @@ FAA_CLIENT_SECRET = os.getenv("FAA_CLIENT_SECRET")
 # Staging auth:  https://api-sit.cgifederal-aim.com/v1/auth/token
 # Staging API:   https://api-staging.cgifederal-aim.com/nmsapi
 # Prod auth/API: https://api-nms.aim.faa.gov
-NMS_BASE_URL  = os.getenv("NMS_BASE_URL",  "https://api-staging.cgifederal-aim.com")
-NMS_AUTH_URL  = os.getenv("NMS_AUTH_URL",  "https://api-sit.cgifederal-aim.com/v1/auth/token")
+NMS_BASE_URL  = os.getenv("NMS_BASE_URL",  "https://api-nms.aim.faa.gov")
+NMS_AUTH_URL  = os.getenv("NMS_AUTH_URL",  "https://api-nms.aim.faa.gov/v1/auth/token")
 NMS_API_BASE  = f"{NMS_BASE_URL}/nmsapi"
 
 FOREFLIGHT_MAILBOX = os.getenv("FOREFLIGHT_MAILBOX", "ForeFlight@baker-aviation.com")
