@@ -37,6 +37,7 @@ type VehicleDiag = {
   name: string;
   odometer_miles: number | null;
   check_engine_on: boolean | null;
+  fault_codes: string[];
   diag_time: string | null;
 };
 
@@ -110,6 +111,9 @@ function VehicleRow({ v, diag }: { v: SamsaraVan; diag?: VehicleDiag }) {
               )}
               <div className={diag.check_engine_on === true ? "text-red-600 font-semibold" : diag.check_engine_on === false ? "text-green-600" : "text-gray-400"}>
                 Check engine: {diag.check_engine_on === true ? "⚠ ON — schedule service" : diag.check_engine_on === false ? "✓ Off" : "No data"}
+                {diag.fault_codes.length > 0 && (
+                  <span className="ml-1 font-mono">— {diag.fault_codes.join(", ")}</span>
+                )}
               </div>
               {diag.diag_time && (
                 <div className="text-gray-400">Diag as of {fmtTime(diag.diag_time)}</div>

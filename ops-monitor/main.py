@@ -226,7 +226,7 @@ def get_vans_diagnostics():
         r = requests.get(
             "https://api.samsara.com/fleet/vehicles/stats",
             headers={"Authorization": f"Bearer {SAMSARA_API_KEY}"},
-            params={"types": "obdOdometerMeters,checkEngineLightIsOn"},
+            params={"types": "obdOdometerMeters,faultCodes"},
             timeout=10,
         )
         r.raise_for_status()
@@ -237,16 +237,26 @@ def get_vans_diagnostics():
     vehicles: List[Dict[str, Any]] = []
     for v in raw:
         odo = v.get("obdOdometerMeters") or {}
-        cel = v.get("checkEngineLightIsOn") or {}
+        fc  = v.get("faultCodes") or {}
+
         odo_meters = odo.get("value")
-        check_engine = cel.get("value")
+
+        # faultCodes.value structure varies by gateway — handle both dict and list
+        fc_val = fc.get("value") or {}
+        if isinstance(fc_val, dict):
+            active = fc_val.get("activeCodes") or fc_val.get("activeDtcIds") or []
+        elif isinstance(fc_val, list):
+            active = fc_val
+        else:
+            active = []
+
         vehicles.append({
-            "id": v.get("id"),
-            "name": v.get("name"),
-            # Convert meters → whole miles for display
-            "odometer_miles": round(odo_meters / 1609.344) if odo_meters is not None else None,
-            "check_engine_on": check_engine,
-            "diag_time": odo.get("time") or cel.get("time"),
+            "id":              v.get("id"),
+            "name":            v.get("name"),
+            "odometer_miles":  round(odo_meters / 1609.344) if odo_meters is not None else None,
+            "check_engine_on": bool(active),
+            "fault_codes":     active,
+            "diag_time":       odo.get("time") or fc.get("time"),
         })
 
     return {"ok": True, "vehicles": vehicles, "count": len(vehicles)}
