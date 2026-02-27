@@ -17,7 +17,10 @@ app = FastAPI()
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 
-ICS_URL = os.getenv("JETINSIGHT_ICS_URL")
+# Support multiple per-aircraft ICS URLs stored as newline-separated list in
+# JETINSIGHT_ICS_URLS, falling back to the legacy single-URL JETINSIGHT_ICS_URL.
+_raw_ics = os.getenv("JETINSIGHT_ICS_URLS") or os.getenv("JETINSIGHT_ICS_URL") or ""
+ICS_URLS: list[str] = [u.strip() for u in _raw_ics.splitlines() if u.strip()]
 SAMSARA_API_KEY = os.getenv("SAMSARA_API_KEY")
 FAA_CLIENT_ID = os.getenv("FAA_CLIENT_ID")
 FAA_CLIENT_SECRET = os.getenv("FAA_CLIENT_SECRET")
@@ -267,7 +270,7 @@ def get_vans_diagnostics():
 
 @app.get("/api/flights")
 def get_flights(
-    lookahead_hours: int = Query(720, ge=1, le=720),
+    lookahead_hours: int = Query(720, ge=1, le=744),
     include_alerts: bool = Query(True),
 ):
     """
@@ -350,27 +353,46 @@ def get_notams(airports: str = Query(..., description="Comma-separated ICAO code
 # ─── Job: sync_schedule ───────────────────────────────────────────────────────
 
 
-@app.post("/jobs/sync_schedule")
-def sync_schedule(lookahead_hours: int = Query(120, ge=1, le=168)):
-    """
-    Fetch the JetInsight ICS feed and upsert upcoming flights into Supabase.
-    """
-    if not ICS_URL:
-        raise HTTPException(400, "JETINSIGHT_ICS_URL not configured")
-
-    r = requests.get(ICS_URL, timeout=30)
+def _fetch_ics_events(url: str) -> list:
+    """Fetch one ICS feed and return its VEVENT components."""
+    r = requests.get(url, timeout=30)
     r.raise_for_status()
-
     cal = Calendar.from_ical(r.content)
+    return [c for c in cal.walk() if c.name == "VEVENT"]
+
+
+@app.post("/jobs/sync_schedule")
+def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
+    """
+    Fetch all per-aircraft JetInsight ICS feeds in parallel and upsert
+    upcoming flights into Supabase.
+    """
+    if not ICS_URLS:
+        raise HTTPException(400, "JETINSIGHT_ICS_URLS not configured")
+
+    # Fetch all feeds in parallel
+    all_components: list = []
+    pool = ThreadPoolExecutor(max_workers=min(len(ICS_URLS), 20))
+    future_to_url = {pool.submit(_fetch_ics_events, url): url for url in ICS_URLS}
+    try:
+        for future in as_completed(future_to_url, timeout=60):
+            url = future_to_url[future]
+            try:
+                all_components.extend(future.result())
+            except Exception as e:
+                print(f"ICS fetch error {url[:80]}: {repr(e)}", flush=True)
+    except FuturesTimeoutError:
+        print("ICS fetch 60s budget exceeded; some feeds may be missing", flush=True)
+    finally:
+        pool.shutdown(wait=False)
+
     supa = sb()
     now = datetime.now(timezone.utc)
     cutoff = now + timedelta(hours=lookahead_hours)
 
     upserted = skipped = 0
 
-    for component in cal.walk():
-        if component.name != "VEVENT":
-            continue
+    for component in all_components:
 
         uid = str(component.get("UID", "")).strip()
         summary = str(component.get("SUMMARY", "")).strip()
@@ -669,7 +691,7 @@ def _run_check_notams(lookahead_hours: int) -> dict:
 
 
 @app.post("/jobs/check_notams")
-def check_notams(lookahead_hours: int = Query(120, ge=1, le=168)):
+def check_notams(lookahead_hours: int = Query(720, ge=1, le=720)):
     """
     For each upcoming flight, query the FAA NOTAM API for departure and arrival
     airports and store relevant NOTAMs as ops_alerts.

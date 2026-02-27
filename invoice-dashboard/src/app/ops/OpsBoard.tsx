@@ -466,7 +466,7 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
       {/* Summary bar */}
       <div className="rounded-xl border bg-white shadow-sm px-5 py-4 flex items-center gap-6 flex-wrap">
         <div>
-          <div className="text-xs text-gray-500">Flights — 5 days</div>
+          <div className="text-xs text-gray-500">Flights — 30 days</div>
           <div className="text-2xl font-bold">{flights.length}</div>
         </div>
         <div className="w-px h-10 bg-gray-200" />
@@ -491,14 +491,14 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
           </div>
         </div>
         <div className="ml-auto text-xs text-gray-400">
-          Updated {now.toLocaleTimeString()} · next 5 days
+          Updated {now.toLocaleTimeString()} · next 30 days
         </div>
       </div>
 
       {/* 7-day rows */}
       {byDay.length === 0 ? (
         <div className="rounded-xl border bg-white shadow-sm px-6 py-12 text-center text-gray-400">
-          No flights scheduled in the next 5 days.
+          No flights scheduled in the next 30 days.
         </div>
       ) : (
         <div className="space-y-3">
