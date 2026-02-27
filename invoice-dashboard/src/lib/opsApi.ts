@@ -52,6 +52,9 @@ export async function fetchFlights(params: {
   url.searchParams.set("include_alerts", "true");
 
   const res = await fetch(url.toString(), { cache: "no-store" });
-  if (!res.ok) throw new Error(`fetchFlights failed: ${res.status}`);
+  if (!res.ok) {
+    const body = await res.text().catch(() => "(no body)");
+    throw new Error(`fetchFlights failed: ${res.status} from ${url.toString()} — ${body.slice(0, 300)}`);
+  }
   return res.json();
 }
