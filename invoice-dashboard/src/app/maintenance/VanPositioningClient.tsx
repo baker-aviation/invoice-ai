@@ -286,6 +286,15 @@ function isPositioningFlight(f: Flight): boolean {
   return !!(f.summary?.toLowerCase().includes("positioning"));
 }
 
+/** "in 2h 15m" or "in 45m" until a future ISO timestamp. Returns "" if in the past. */
+function fmtTimeUntil(iso: string): string {
+  const diff = new Date(iso).getTime() - Date.now();
+  if (diff <= 0) return "";
+  const h = Math.floor(diff / 3600000);
+  const m = Math.floor((diff % 3600000) / 60000);
+  return h === 0 ? `in ${m}m` : `in ${h}h ${m}m`;
+}
+
 /** Max one-way driving radius for schedule arrivals (≈3.3h drive). */
 const SCHEDULE_ARRIVAL_RADIUS_KM = 300;
 
@@ -317,7 +326,7 @@ function VanScheduleCard({
   const [expanded, setExpanded] = useState(true);
   const now = new Date();
 
-  // Use live GPS as starting point if available, else fixed home base
+  // Always use home base for zone assignment (live GPS is for distance display only)
   const items = useMemo<VanFlightItem[]>(() => {
     const baseLat = liveVanPos?.lat ?? zone.lat;
     const baseLon = liveVanPos?.lon ?? zone.lon;
@@ -328,7 +337,8 @@ function VanScheduleCard({
       const iata = f.arrival_icao.replace(/^K/, "");
       const info = getAirportInfo(iata);
       if (!info || !isContiguous48(info.state)) return false;
-      return haversineKm(baseLat, baseLon, info.lat, info.lon) <= SCHEDULE_ARRIVAL_RADIUS_KM;
+      // Filter by home zone — live GPS only affects displayed drive distances
+      return haversineKm(zone.lat, zone.lon, info.lat, info.lon) <= SCHEDULE_ARRIVAL_RADIUS_KM;
     });
 
     return arrivalsToday.map((arr) => {
@@ -356,6 +366,13 @@ function VanScheduleCard({
         distKm,
       };
     })
+      // No AOG van needed if the plane is flying a revenue leg same day
+      .filter(({ nextDep }) => {
+        if (!nextDep) return true; // done for day — van needed
+        if (isPositioningFlight(nextDep)) return true; // repo next — van can fit
+        return !nextDep.scheduled_departure.startsWith(date); // revenue next day — ok
+        // revenue same day → drop (plane flying soon, no van dispatch)
+      })
       .sort((a, b) =>
         (a.arrFlight.scheduled_arrival ?? "").localeCompare(b.arrFlight.scheduled_arrival ?? ""),
       )
@@ -438,7 +455,7 @@ function VanScheduleCard({
                         {nextDep && (
                           <div className="text-xs mt-1 font-medium">
                             <span className={nextIsRepo ? "text-purple-700" : "text-blue-700"}>
-                              Flying again {fmtUtcHM(nextDep.scheduled_departure)} → {nextDep.arrival_icao?.replace(/^K/, "") ?? "?"}
+                              Flying again {fmtTimeUntil(nextDep.scheduled_departure) && `${fmtTimeUntil(nextDep.scheduled_departure)} · `}{fmtUtcHM(nextDep.scheduled_departure)} → {nextDep.arrival_icao?.replace(/^K/, "") ?? "?"}
                             </span>
                             {nextIsRepo && <span className="ml-1 text-xs text-purple-400">(repo)</span>}
                           </div>
