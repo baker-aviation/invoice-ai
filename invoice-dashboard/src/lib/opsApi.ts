@@ -49,7 +49,7 @@ export async function fetchFlights(params: {
   const base = mustBase();
   const url = new URL(`${base}/api/flights`);
   url.searchParams.set("lookahead_hours", String(params.lookahead_hours ?? 720));
-  url.searchParams.set("include_alerts", "true");
+  url.searchParams.set("include_alerts", "false");
 
   const res = await fetch(url.toString(), { cache: "no-store" });
   if (!res.ok) {
