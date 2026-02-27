@@ -312,7 +312,7 @@ def get_flights(
                 batch_ids = flight_ids[i : i + BATCH]
                 alerts_res = (
                     supa.table(OPS_ALERTS_TABLE)
-                    .select("id,flight_id,alert_type,severity,airport_icao,departure_icao,arrival_icao,tail_number,subject,body,edct_time,original_departure_time,acknowledged_at,created_at,raw_data")
+                    .select("id,flight_id,alert_type,severity,airport_icao,departure_icao,arrival_icao,tail_number,subject,body,edct_time,original_departure_time,acknowledged_at,created_at")
                     .in_("flight_id", batch_ids)
                     .is_("acknowledged_at", "null")
                     .order("created_at", desc=False)
