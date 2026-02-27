@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef } from "react";
 import type { Flight } from "@/lib/opsApi";
 import {
   computeOvernightPositions,
@@ -819,13 +819,36 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
     [samsaraVans],
   );
 
-  /** Zone ID → current GPS position (from Samsara). Empty map if no signal. */
+  /** Zone ID → last known GPS position (persists across refreshes if signal lost). */
+  const lastKnownGpsRef = useRef<Map<number, { lat: number; lon: number }>>(new Map());
+
   const liveVanPositions = useMemo<Map<number, { lat: number; lon: number }>>(() => {
-    const map = new Map<number, { lat: number; lon: number }>();
+    // Update cache with any fresh positions
     for (const v of aogSamsaraVans) {
       if (v.lat === null || v.lon === null) continue;
       const zoneId = samsaraNameToZoneId(v.name);
-      if (zoneId !== null) map.set(zoneId, { lat: v.lat, lon: v.lon });
+      if (zoneId !== null) lastKnownGpsRef.current.set(zoneId, { lat: v.lat, lon: v.lon });
+    }
+    // Return a snapshot: live position, or last known if currently null
+    const map = new Map<number, { lat: number; lon: number }>();
+    for (const v of aogSamsaraVans) {
+      const zoneId = samsaraNameToZoneId(v.name);
+      if (zoneId === null) continue;
+      const pos = (v.lat !== null && v.lon !== null)
+        ? { lat: v.lat, lon: v.lon }
+        : lastKnownGpsRef.current.get(zoneId) ?? null;
+      if (pos) map.set(zoneId, pos);
+    }
+    return map;
+  }, [aogSamsaraVans]);
+
+  /** Zone ID → true if the position is a fresh live reading right now. */
+  const liveVanIsLive = useMemo<Map<number, boolean>>(() => {
+    const map = new Map<number, boolean>();
+    for (const v of aogSamsaraVans) {
+      const zoneId = samsaraNameToZoneId(v.name);
+      if (zoneId === null) continue;
+      map.set(zoneId, v.lat !== null && v.lon !== null);
     }
     return map;
   }, [aogSamsaraVans]);
@@ -860,6 +883,20 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
 
       {/* ── Stats ── */}
       <StatsBar positions={positions} vans={vans} flightCount={flightsForDay.length} />
+
+      {/* ── Check engine overview ── */}
+      {(() => {
+        const celVans = aogSamsaraVans.filter((v) => diagData.get(v.id)?.check_engine_on === true);
+        if (celVans.length === 0) return null;
+        return (
+          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 flex items-center gap-3">
+            <span className="text-sm font-semibold text-red-700">
+              ⚠ Check Engine — {celVans.length} van{celVans.length !== 1 ? "s" : ""}
+            </span>
+            <span className="text-xs text-red-600">{celVans.map((v) => v.name).join(", ")}</span>
+          </div>
+        );
+      })()}
 
       {/* ── Out-of-range alerts ── */}
       <OutOfRangeAlerts vans={vans} />
@@ -929,7 +966,7 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
 
           {viewMode === "map" ? (
             <div className="rounded-xl overflow-hidden border shadow-sm">
-              <MapView vans={displayedVans} colors={VAN_COLORS} liveVanPositions={liveVanPositions} />
+              <MapView vans={displayedVans} colors={VAN_COLORS} liveVanPositions={liveVanPositions} liveVanIsLive={liveVanIsLive} />
             </div>
           ) : (
             <div className="space-y-3">

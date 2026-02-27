@@ -22,8 +22,10 @@ type LivePos = { lat: number; lon: number };
 type Props = {
   vans: VanAssignment[];
   colors: string[];
-  /** Zone ID → current GPS position from Samsara. Empty map if unavailable. */
+  /** Zone ID → best available GPS position (live or last known). Empty map if unavailable. */
   liveVanPositions: Map<number, LivePos>;
+  /** Zone ID → whether the position is a live reading (true) or last-known cache (false). */
+  liveVanIsLive?: Map<number, boolean>;
 };
 
 function vanDivIcon(color: string, vanId: number): L.DivIcon {
@@ -63,7 +65,7 @@ function planeDivIcon(color: string): L.DivIcon {
   });
 }
 
-export default function MapView({ vans, colors, liveVanPositions }: Props) {
+export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive }: Props) {
   // Collect unique airport overnight positions → de-duplicate so one icon per airport per van
   const aircraftByAirport = new Map<
     string,
@@ -116,9 +118,10 @@ export default function MapView({ vans, colors, liveVanPositions }: Props) {
       {/* Van markers (🚐) — live GPS when available */}
       {vans.map((van) => {
         const color = colors[(van.vanId - 1) % colors.length];
-        const livePos = liveVanPositions.get(van.vanId);
-        const pos = livePos ?? { lat: van.lat, lon: van.lon };
-        const isLive = livePos !== undefined;
+        const cachedPos = liveVanPositions.get(van.vanId);
+        const pos = cachedPos ?? { lat: van.lat, lon: van.lon };
+        const isLive = liveVanIsLive ? liveVanIsLive.get(van.vanId) === true : cachedPos !== undefined;
+        const isLastKnown = cachedPos !== undefined && !isLive;
         return (
           <Marker
             key={`van-${van.vanId}`}
@@ -138,8 +141,12 @@ export default function MapView({ vans, colors, liveVanPositions }: Props) {
                   <div className="text-xs text-green-600 font-medium">
                     ● Live GPS: {pos.lat.toFixed(4)}, {pos.lon.toFixed(4)}
                   </div>
+                ) : isLastKnown ? (
+                  <div className="text-xs text-amber-600 font-medium">
+                    ◐ Last known GPS: {pos.lat.toFixed(4)}, {pos.lon.toFixed(4)}
+                  </div>
                 ) : (
-                  <div className="text-xs text-gray-400">No live GPS — showing home base</div>
+                  <div className="text-xs text-gray-400">No GPS — showing home base</div>
                 )}
                 <div className="text-xs text-gray-500">3-hr radius ≈ 300 km shown</div>
                 {van.aircraft.length > 0 && (

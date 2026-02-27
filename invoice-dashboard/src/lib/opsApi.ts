@@ -20,6 +20,9 @@ export type OpsAlert = {
   original_departure_time: string | null;
   acknowledged_at: string | null;
   created_at: string;
+  // FAA NMS GeoJSON feature — present for NOTAM_* alerts
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  raw_data: Record<string, any> | null;
 };
 
 export type Flight = {

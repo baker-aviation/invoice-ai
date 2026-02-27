@@ -66,38 +66,96 @@ const ALERT_TYPE_LABELS: Record<string, string> = {
   NOTAM_OTHER: "NOTAM",
 };
 
-// ─── NOTAM active-time parser ─────────────────────────────────────────────────
-// Extracts effective FROM / TO from NOTAM body text.
-// Supports ICAO 10-digit format (YYMMDDHHMM) from B)/C) fields and
-// common text patterns.
+// ─── NOTAM helpers ────────────────────────────────────────────────────────────
 
+function icaoToIso(t: string): string {
+  // YYMMDDHHMM → YYYY-MM-DD HH:MMZ
+  const yr = "20" + t.slice(0, 2);
+  const mo = t.slice(2, 4);
+  const dy = t.slice(4, 6);
+  const hr = t.slice(6, 8);
+  const mn = t.slice(8, 10);
+  return `${yr}-${mo}-${dy} ${hr}:${mn}Z`;
+}
+
+// Extracts effective FROM / TO from NOTAM body text.
+// Handles ICAO B)/C) field format and domestic YYMMDDHHMM-YYMMDDHHMM format.
 function parseNotamTimes(body: string | null): { from: string | null; to: string | null } {
   if (!body) return { from: null, to: null };
 
-  function icaoToIso(t: string): string {
-    // YYMMDDHHMM → YYYY-MM-DD HH:MMZ
-    const yr = "20" + t.slice(0, 2);
-    const mo = t.slice(2, 4);
-    const dy = t.slice(4, 6);
-    const hr = t.slice(6, 8);
-    const mn = t.slice(8, 10);
-    return `${yr}-${mo}-${dy} ${hr}:${mn}Z`;
-  }
-
+  // ICAO format: B) YYMMDDHHMM C) YYMMDDHHMM
   const fromM = body.match(/\bB\)\s*(\d{10})\b/);
   const toM   = body.match(/\bC\)\s*(\d{10}|PERM)\b/);
+  if (fromM) {
+    return {
+      from: icaoToIso(fromM[1]),
+      to:   toM ? (toM[1] === "PERM" ? "PERM" : icaoToIso(toM[1])) : null,
+    };
+  }
 
-  return {
-    from: fromM ? icaoToIso(fromM[1]) : null,
-    to:   toM   ? (toM[1] === "PERM" ? "PERM" : icaoToIso(toM[1])) : null,
-  };
+  // Domestic format: YYMMDDHHMM-YYMMDDHHMM at end of text
+  const domM = body.match(/\b(\d{10})-(\d{10})\b/);
+  if (domM) {
+    return { from: icaoToIso(domM[1]), to: icaoToIso(domM[2]) };
+  }
+
+  return { from: null, to: null };
+}
+
+// Extract structured fields from the FAA NMS raw_data GeoJSON feature.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function parseNotamRawData(rawData: Record<string, any> | null): {
+  effectiveStart: string | null;
+  effectiveEnd: string | null;
+  issued: string | null;
+  status: string | null;
+  startDateUtc: string | null;
+  endDateUtc: string | null;
+  issueDateUtc: string | null;
+} {
+  const empty = { effectiveStart: null, effectiveEnd: null, issued: null, status: null, startDateUtc: null, endDateUtc: null, issueDateUtc: null };
+  if (!rawData) return empty;
+  try {
+    // Handle double-encoded JSON (stored as string inside JSONB)
+    const feature = typeof rawData === "string" ? JSON.parse(rawData) : rawData;
+    const notam = feature?.properties?.coreNOTAMData?.notam;
+    if (!notam) return empty;
+    return {
+      effectiveStart: notam.effectiveStart ?? null,
+      effectiveEnd:   notam.effectiveEnd   ?? null,
+      issued:         notam.issued         ?? null,
+      status:         notam.status         ?? null,
+      // Human-readable UTC strings from FAA (e.g. "03/05/2026 0801")
+      startDateUtc:   notam.startDate      ?? null,
+      endDateUtc:     notam.endDate        ?? null,
+      issueDateUtc:   notam.issueDate      ?? null,
+    };
+  } catch {
+    return empty;
+  }
+}
+
+function fmtNotamDate(iso: string | null, humanFallback: string | null): string | null {
+  if (iso) {
+    const d = new Date(iso);
+    if (!isNaN(d.getTime())) {
+      return d.toLocaleString("en-US", {
+        month: "short", day: "numeric", year: "numeric",
+        hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC",
+      }) + " UTC";
+    }
+  }
+  if (humanFallback) return humanFallback + " UTC";
+  return null;
 }
 
 // ─── Alert row (expandable) ───────────────────────────────────────────────────
 
 function AlertDetail({ alert }: { alert: OpsAlert }) {
   const [open, setOpen] = useState(false);
-  const notamTimes = alert.alert_type.startsWith("NOTAM") ? parseNotamTimes(alert.body) : null;
+  const isNotam = alert.alert_type.startsWith("NOTAM");
+  const notamTimes = isNotam ? parseNotamTimes(alert.body) : null;
+  const notamRaw   = isNotam ? parseNotamRawData(alert.raw_data) : null;
 
   return (
     <div className="border rounded-lg overflow-hidden text-sm">
@@ -138,19 +196,50 @@ function AlertDetail({ alert }: { alert: OpsAlert }) {
         <span className="ml-auto text-gray-400 shrink-0 text-xs">{open ? "▲" : "▼"}</span>
       </button>
       {open && (
-        <div className="px-3 pb-3 pt-1 bg-gray-50 border-t text-xs text-gray-700 space-y-1">
-          {notamTimes?.from && (
-            <p>
-              <span className="font-medium">Active:</span>{" "}
-              <span className="font-mono">{notamTimes.from}</span>
-              {notamTimes.to && (
-                <> → <span className="font-mono">{notamTimes.to}</span></>
+        <div className="px-3 pb-3 pt-2 bg-gray-50 border-t text-xs text-gray-700 space-y-2">
+          {/* Structured NOTAM date fields */}
+          {isNotam && (notamRaw?.issued || notamRaw?.effectiveStart || notamTimes?.from) && (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-x-4 gap-y-1 bg-white border rounded p-2">
+              {(notamRaw?.issued || notamRaw?.issueDateUtc) && (
+                <div>
+                  <span className="text-gray-400 block">Issue Date</span>
+                  <span className="font-mono font-medium">
+                    {fmtNotamDate(notamRaw.issued, notamRaw.issueDateUtc)}
+                  </span>
+                </div>
               )}
-            </p>
+              {(notamRaw?.effectiveStart || notamRaw?.startDateUtc || notamTimes?.from) && (
+                <div>
+                  <span className="text-gray-400 block">Start Date UTC</span>
+                  <span className="font-mono font-medium text-amber-700">
+                    {fmtNotamDate(notamRaw?.effectiveStart ?? null, notamRaw?.startDateUtc ?? notamTimes?.from ?? null)}
+                  </span>
+                </div>
+              )}
+              {(notamRaw?.effectiveEnd || notamRaw?.endDateUtc || notamTimes?.to) && (
+                <div>
+                  <span className="text-gray-400 block">End Date UTC</span>
+                  <span className="font-mono font-medium text-amber-700">
+                    {notamTimes?.to === "PERM"
+                      ? "PERM"
+                      : fmtNotamDate(notamRaw?.effectiveEnd ?? null, notamRaw?.endDateUtc ?? notamTimes?.to ?? null)}
+                  </span>
+                </div>
+              )}
+              {notamRaw?.status && (
+                <div>
+                  <span className="text-gray-400 block">Status</span>
+                  <span className={`font-medium ${notamRaw.status === "Active" ? "text-green-700" : "text-gray-600"}`}>
+                    {notamRaw.status}
+                  </span>
+                </div>
+              )}
+            </div>
           )}
-          {alert.subject && <p><span className="font-medium">Subject:</span> {alert.subject}</p>}
+
+          {alert.subject && <p><span className="font-medium">NOTAM #:</span> {alert.subject}</p>}
           {alert.body && (
-            <pre className="whitespace-pre-wrap font-sans text-xs bg-white border rounded p-2 max-h-40 overflow-y-auto">
+            <pre className="whitespace-pre-wrap font-sans text-xs bg-white border rounded p-2 max-h-48 overflow-y-auto">
               {alert.body}
             </pre>
           )}

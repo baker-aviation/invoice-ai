@@ -392,6 +392,7 @@ export default function CrewCarsClient() {
   }, []);
 
   const crewCars = vans.filter((v) => !isAogVehicle(v.name));
+  const celVehicles = crewCars.filter((v) => diagData.get(v.id)?.check_engine_on === true);
 
   if (loading && vans.length === 0) {
     return (
@@ -428,6 +429,16 @@ export default function CrewCarsClient() {
 
   return (
     <div className="space-y-4">
+      {/* Check engine overview */}
+      {celVehicles.length > 0 && (
+        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 flex items-center gap-3">
+          <span className="text-sm font-semibold text-red-700">
+            ⚠ Check Engine — {celVehicles.length} vehicle{celVehicles.length !== 1 ? "s" : ""}
+          </span>
+          <span className="text-xs text-red-600">{celVehicles.map((v) => v.name).join(", ")}</span>
+        </div>
+      )}
+
       {/* Live map */}
       <div className="rounded-xl border bg-white shadow-sm overflow-hidden">
         <div className="flex items-center justify-between px-4 py-3 border-b">
