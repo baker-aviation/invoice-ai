@@ -270,6 +270,12 @@ function AlertCard({ alert, onAck }: { alert: OpsAlert; onAck: (id: string) => v
               {alert.body}
             </pre>
           )}
+          {/* TODO: remove debug line */}
+          {isNotam && (
+            <p className="text-[10px] text-gray-400 font-mono">
+              DBG: nd={nd ? JSON.stringify(nd).slice(0, 100) : "null"} | raw={alert._debug_raw ?? "?"}
+            </p>
+          )}
         </div>
       )}
     </div>
