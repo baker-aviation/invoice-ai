@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, isAuthed, isRateLimited } from "@/lib/api-auth";
+import { cloudRunFetch } from "@/lib/cloud-run-fetch";
 
 const BASE = process.env.INVOICE_API_BASE_URL;
 
@@ -38,7 +39,7 @@ export async function GET(req: NextRequest) {
   if (!searchParams.has("limit")) upstream.searchParams.set("limit", "200");
 
   try {
-    const res = await fetch(upstream.toString(), { cache: "no-store" });
+    const res = await cloudRunFetch(upstream.toString(), { cache: "no-store" });
     const data = await res.json().catch(() => ({}));
     return NextResponse.json(data, { status: res.ok ? 200 : res.status });
   } catch {

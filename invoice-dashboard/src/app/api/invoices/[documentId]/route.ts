@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, isAuthed, isRateLimited } from "@/lib/api-auth";
+import { cloudRunFetch } from "@/lib/cloud-run-fetch";
 
 const INVOICE_BASE = process.env.INVOICE_API_BASE_URL;
 
@@ -29,7 +30,7 @@ export async function GET(
   const url = `${base}/api/invoices/${encodeURIComponent(documentId)}/file`;
 
   // Do NOT auto-follow; we want the Location header
-  const res = await fetch(url, { redirect: "manual", cache: "no-store" });
+  const res = await cloudRunFetch(url, { redirect: "manual", cache: "no-store" });
 
   const location = res.headers.get("location");
   if (res.status >= 300 && res.status < 400 && location) {

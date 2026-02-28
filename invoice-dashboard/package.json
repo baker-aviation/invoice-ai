@@ -13,6 +13,7 @@
     "@supabase/ssr": "^0.8.0",
     "@supabase/supabase-js": "^2.98.0",
     "@types/leaflet": "^1.9.21",
+    "google-auth-library": "^10.6.1",
     "leaflet": "^1.9.4",
     "next": "16.1.6",
     "react": "19.2.3",

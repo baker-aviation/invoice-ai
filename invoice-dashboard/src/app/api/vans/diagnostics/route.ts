@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin, isAuthed, isRateLimited } from "@/lib/api-auth";
+import { cloudRunFetch } from "@/lib/cloud-run-fetch";
 
 export async function GET(req: NextRequest) {
   // Diagnostics = admin-only
@@ -16,7 +17,7 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const res = await fetch(`${base}/api/vans/diagnostics`, { cache: "no-store" });
+    const res = await cloudRunFetch(`${base}/api/vans/diagnostics`, { cache: "no-store" });
     const data = await res.json();
     return NextResponse.json(data, { status: res.status });
   } catch {

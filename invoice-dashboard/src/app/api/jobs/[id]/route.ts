@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, isAuthed, isRateLimited } from "@/lib/api-auth";
+import { cloudRunFetch } from "@/lib/cloud-run-fetch";
 
 const BASE = process.env.JOB_API_BASE_URL;
 
@@ -29,7 +30,7 @@ export async function GET(
   const url = `${base}/api/jobs/${encodeURIComponent(id)}`;
 
   try {
-    const res = await fetch(url, {
+    const res = await cloudRunFetch(url, {
       cache: "no-store",
       headers: { Accept: "application/json" },
     });

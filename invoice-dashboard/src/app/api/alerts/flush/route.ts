@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin, isAuthed, isRateLimited } from "@/lib/api-auth";
+import { cloudRunFetch } from "@/lib/cloud-run-fetch";
 
 const BASE = process.env.INVOICE_API_BASE_URL;
 
@@ -18,7 +19,7 @@ export async function POST(req: NextRequest) {
   const url = `${BASE.replace(/\/$/, "")}/jobs/flush_alerts`;
 
   try {
-    const res = await fetch(url, { method: "POST", cache: "no-store" });
+    const res = await cloudRunFetch(url, { method: "POST", cache: "no-store" });
     const data = await res.json().catch(() => ({}));
     return NextResponse.json(data, { status: res.ok ? 200 : res.status });
   } catch {
