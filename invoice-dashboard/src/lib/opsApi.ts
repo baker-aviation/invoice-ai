@@ -66,11 +66,19 @@ function isNoiseNotam(alert: { alert_type: string; body: string | null }): boole
 // Extract NOTAM dates from raw_data JSON (matches backend logic)
 // ---------------------------------------------------------------------------
 
-function extractNotamDates(rawData: Record<string, unknown> | null): NotamDates | null {
+function extractNotamDates(rawData: unknown): NotamDates | null {
   if (!rawData) return null;
 
+  // Supabase may return jsonb as a string — parse it first
+  let obj: Record<string, unknown>;
+  try {
+    obj = typeof rawData === "string" ? JSON.parse(rawData) : (rawData as Record<string, unknown>);
+  } catch {
+    return null;
+  }
+
   // Compact format (current): {"notam_dates": {...}}
-  const nd = rawData.notam_dates as Record<string, unknown> | undefined;
+  const nd = obj.notam_dates as Record<string, unknown> | undefined;
   if (nd) {
     return {
       effective_start: (nd.effective_start as string) ?? null,
@@ -83,10 +91,10 @@ function extractNotamDates(rawData: Record<string, unknown> | null): NotamDates 
     };
   }
 
-  // Legacy GeoJSON format: {properties: {coreNOTAMData: {notam: {...}}}}
-  const notam = (
-    (rawData.properties as Record<string, unknown>)?.coreNOTAMData as Record<string, unknown>
-  )?.notam as Record<string, unknown> | undefined;
+  // Legacy GeoJSON: {properties: {coreNOTAMData: {notam: {...}}}}
+  // Also handles {properties: {coreNOTAMData: {notamEvent: {notam: {...}}}}}
+  const core = (obj.properties as Record<string, unknown>)?.coreNOTAMData as Record<string, unknown> | undefined;
+  const notam = (core?.notam ?? (core?.notamEvent as Record<string, unknown>)?.notam) as Record<string, unknown> | undefined;
   if (!notam) return null;
   return {
     effective_start: (notam.effectiveStart as string) ?? null,
@@ -167,7 +175,7 @@ export async function fetchFlights(params: {
         original_departure_time: row.original_departure_time as string | null,
         acknowledged_at: row.acknowledged_at as string | null,
         created_at: row.created_at as string,
-        notam_dates: extractNotamDates(row.raw_data as Record<string, unknown> | null),
+        notam_dates: extractNotamDates(row.raw_data),
         _debug_raw: row.raw_data == null ? "NULL" : `${typeof row.raw_data}:${JSON.stringify(row.raw_data)?.slice(0, 80)}`,
       };
 
