@@ -344,12 +344,14 @@ function VanScheduleCard({
   allFlights,
   date,
   liveVanPos,
+  liveAddress,
 }: {
   zone: (typeof FIXED_VAN_ZONES)[number];
   color: string;
   allFlights: Flight[];
   date: string;
   liveVanPos?: { lat: number; lon: number };
+  liveAddress?: string | null;
 }) {
   const [expanded, setExpanded] = useState(true);
   const now = new Date();
@@ -439,6 +441,16 @@ function VanScheduleCard({
             <div className="text-xs text-gray-500">
               Base: <span className="font-medium">{zone.homeAirport}</span>
             </div>
+            {liveAddress ? (
+              <div className="text-xs text-green-600 mt-0.5 flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-green-500 inline-block flex-shrink-0" />
+                {liveAddress}
+              </div>
+            ) : liveVanPos ? (
+              <div className="text-xs text-gray-400 mt-0.5">
+                GPS: {liveVanPos.lat.toFixed(3)}, {liveVanPos.lon.toFixed(3)}
+              </div>
+            ) : null}
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap justify-end">
@@ -526,10 +538,12 @@ function ScheduleTab({
   allFlights,
   date,
   liveVanPositions,
+  liveVanAddresses,
 }: {
   allFlights: Flight[];
   date: string;
   liveVanPositions: Map<number, { lat: number; lon: number }>;
+  liveVanAddresses: Map<number, string | null>;
 }) {
   const hasLive = liveVanPositions.size > 0;
   return (
@@ -553,6 +567,7 @@ function ScheduleTab({
             allFlights={allFlights}
             date={date}
             liveVanPos={liveVanPositions.get(zone.vanId)}
+            liveAddress={liveVanAddresses.get(zone.vanId)}
           />
         );
       })}
@@ -860,6 +875,17 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
       const zoneId = samsaraNameToZoneId(v.name);
       if (zoneId === null) continue;
       map.set(zoneId, v.lat !== null && v.lon !== null);
+    }
+    return map;
+  }, [aogSamsaraVans]);
+
+  /** Zone ID → current street address from Samsara GPS. */
+  const liveVanAddresses = useMemo<Map<number, string | null>>(() => {
+    const map = new Map<number, string | null>();
+    for (const v of aogSamsaraVans) {
+      const zoneId = samsaraNameToZoneId(v.name);
+      if (zoneId === null) continue;
+      map.set(zoneId, v.address ?? null);
     }
     return map;
   }, [aogSamsaraVans]);
@@ -1200,7 +1226,7 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
 
       {/* ── Schedule tab ── */}
       {activeTab === "schedule" && (
-        <ScheduleTab allFlights={initialFlights} date={selectedDate} liveVanPositions={liveVanPositions} />
+        <ScheduleTab allFlights={initialFlights} date={selectedDate} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} />
       )}
     </div>
   );
