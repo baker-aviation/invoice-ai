@@ -444,11 +444,11 @@ function VanScheduleCard({
             {liveAddress ? (
               <div className="text-xs text-green-600 mt-0.5 flex items-center gap-1">
                 <span className="w-1.5 h-1.5 rounded-full bg-green-500 inline-block flex-shrink-0" />
-                {liveAddress}
+                <span className="font-medium text-gray-500">Van Location:</span> {liveAddress}
               </div>
             ) : liveVanPos ? (
-              <div className="text-xs text-gray-400 mt-0.5">
-                GPS: {liveVanPos.lat.toFixed(3)}, {liveVanPos.lon.toFixed(3)}
+              <div className="text-xs text-gray-400 mt-0.5 flex items-center gap-1">
+                <span className="font-medium text-gray-500">Van Location:</span> {liveVanPos.lat.toFixed(3)}, {liveVanPos.lon.toFixed(3)}
               </div>
             ) : null}
           </div>
@@ -847,6 +847,8 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
 
   /** Zone ID → last known GPS position (persists across refreshes if signal lost). */
   const lastKnownGpsRef = useRef<Map<number, { lat: number; lon: number }>>(new Map());
+  /** Zone ID → last known street address (persists across refreshes if signal lost). */
+  const lastKnownAddressRef = useRef<Map<number, string>>(new Map());
 
   const liveVanPositions = useMemo<Map<number, { lat: number; lon: number }>>(() => {
     // Update cache with any fresh positions
@@ -879,13 +881,21 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
     return map;
   }, [aogSamsaraVans]);
 
-  /** Zone ID → current street address from Samsara GPS. */
+  /** Zone ID → street address (live, or last known if signal lost). */
   const liveVanAddresses = useMemo<Map<number, string | null>>(() => {
+    // Cache any fresh addresses
+    for (const v of aogSamsaraVans) {
+      if (!v.address) continue;
+      const zoneId = samsaraNameToZoneId(v.name);
+      if (zoneId !== null) lastKnownAddressRef.current.set(zoneId, v.address);
+    }
+    // Return live address, or fall back to last known
     const map = new Map<number, string | null>();
     for (const v of aogSamsaraVans) {
       const zoneId = samsaraNameToZoneId(v.name);
       if (zoneId === null) continue;
-      map.set(zoneId, v.address ?? null);
+      const addr = v.address ?? lastKnownAddressRef.current.get(zoneId) ?? null;
+      map.set(zoneId, addr);
     }
     return map;
   }, [aogSamsaraVans]);
