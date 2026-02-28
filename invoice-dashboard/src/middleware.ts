@@ -2,9 +2,9 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
 export async function middleware(request: NextRequest) {
-  // /api/agents handles its own auth (requireAdmin on POST, public GET)
-  // Skip middleware Supabase check to avoid double-auth
-  if (request.nextUrl.pathname.startsWith("/api/agents")) {
+  // Public routes that handle their own auth or need no auth
+  const publicApiPaths = ["/api/agents", "/api/vans/health", "/api/vans/diagnostics"];
+  if (publicApiPaths.some((p) => request.nextUrl.pathname.startsWith(p))) {
     return NextResponse.next();
   }
 
