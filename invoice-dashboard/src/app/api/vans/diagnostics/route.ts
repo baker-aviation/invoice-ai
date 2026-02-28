@@ -40,8 +40,9 @@ export async function GET(req: NextRequest) {
     );
     if (!res.ok) {
       const body = await res.text().catch(() => "");
+      console.error(`[vans/diagnostics] Samsara API error: HTTP ${res.status} — ${body.slice(0, 300)}`);
       return NextResponse.json(
-        { error: `Samsara API error: HTTP ${res.status}`, detail: body.slice(0, 300) },
+        { error: "Samsara API error" },
         { status: 502 },
       );
     }
@@ -76,8 +77,9 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({ ok: true, vehicles, count: vehicles.length });
   } catch (err) {
+    console.error("[vans/diagnostics] Samsara API unreachable:", err);
     return NextResponse.json(
-      { error: "Samsara API unreachable", detail: String(err) },
+      { error: "Samsara API unreachable" },
       { status: 502 },
     );
   }

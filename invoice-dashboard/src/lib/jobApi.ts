@@ -67,18 +67,22 @@ function mustBase(): string {
   return BASE.replace(/\/$/, "");
 }
 
-export async function fetchJobDetail(applicationId: string | number): Promise<JobDetailResponse> {
-  const base = mustBase();
-  const urlStr = `${base}/api/jobs/${applicationId}`;
+const SAFE_ID_RE = /^[a-zA-Z0-9_-]+$/;
 
-  const res = await fetch(urlStr, {
+export async function fetchJobDetail(applicationId: string | number): Promise<JobDetailResponse> {
+  const id = String(applicationId);
+  if (!SAFE_ID_RE.test(id)) {
+    throw new Error("Invalid application ID");
+  }
+  const base = mustBase();
+
+  const res = await fetch(`${base}/api/jobs/${encodeURIComponent(id)}`, {
     cache: "no-store",
     headers: { Accept: "application/json" },
   });
 
   if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`fetchJobDetail failed: ${res.status} url=${urlStr} body=${body.slice(0, 800)}`);
+    throw new Error(`fetchJobDetail failed: ${res.status}`);
   }
   return res.json();
 }

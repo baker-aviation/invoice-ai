@@ -78,9 +78,14 @@ function mustBase(): string {
   return BASE.replace(/\/$/, "");
 }
 
+const SAFE_ID_RE = /^[a-zA-Z0-9_-]+$/;
+
 export async function fetchInvoiceDetail(documentId: string): Promise<InvoiceDetailResponse> {
+  if (!SAFE_ID_RE.test(documentId)) {
+    throw new Error("Invalid document ID");
+  }
   const base = mustBase();
-  const res = await fetch(`${base}/api/invoices/${documentId}`, { cache: "no-store" });
+  const res = await fetch(`${base}/api/invoices/${encodeURIComponent(documentId)}`, { cache: "no-store" });
   if (!res.ok) throw new Error(`fetchInvoiceDetail failed: ${res.status}`);
   return res.json();
 }

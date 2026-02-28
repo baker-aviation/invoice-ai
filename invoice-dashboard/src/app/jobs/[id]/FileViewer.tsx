@@ -79,6 +79,7 @@ export default function FileViewer({
             className="w-full"
             style={{ height: "720px" }}
             title={file.filename ?? "file"}
+            sandbox="allow-scripts allow-same-origin"
           />
         </div>
       )}

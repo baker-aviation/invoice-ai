@@ -169,58 +169,26 @@ def _claim_documents_for_parse(limit: int, status: str) -> List[Dict[str, Any]]:
 
 @app.get("/healthz")
 def healthz():
-    gcs_bucket = os.getenv("GCS_BUCKET")
     try:
         supa = sb()
-        test_doc = {
-            "status": "uploaded", "gcs_bucket": "dbg", "gcs_path": "dbg/probe.pdf",
-            "storage_bucket": "dbg", "storage_path": "dbg/probe.pdf",
-            "attachment_filename": "probe.pdf", "created_at": _utc_now(),
-            "source": "debug", "source_mailbox": "dbg@test.com", "source_message_id": "dbg",
-        }
-        r = supa.table(DOCS_TABLE).upsert(test_doc, on_conflict="gcs_bucket,gcs_path", ignore_duplicates=True).execute()
-        supa.table(DOCS_TABLE).delete().eq("gcs_path", "dbg/probe.pdf").execute()
+        supa.table(DOCS_TABLE).select("id").limit(1).execute()
         supa_ok = True
-        supa_err = None
-    except Exception as e:
+    except Exception:
         supa_ok = False
-        supa_err = repr(e)
     return {
-        "ok": True, "service": "invoice-ingest", "ts": _utc_now(),
-        "GCS_BUCKET": gcs_bucket or "(not set)",
-        "supabase_upsert_ok": supa_ok,
-        "supabase_error": supa_err,
+        "ok": supa_ok, "service": "invoice-ingest", "ts": _utc_now(),
+        "supabase_ok": supa_ok,
     }
 
 
-@app.get("/debug/env")
-def debug_env():
-    """Return key env var presence and a test Supabase upsert to diagnose schema issues."""
-    gcs_bucket = os.getenv("GCS_BUCKET")
-    result = {"GCS_BUCKET_set": bool(gcs_bucket), "GCS_BUCKET_value": gcs_bucket}
-    try:
-        supa = sb()
-        test_doc = {
-            "status": "uploaded",
-            "gcs_bucket": "test-bucket",
-            "gcs_path": "test/debug/probe.pdf",
-            "storage_bucket": "test-bucket",
-            "storage_path": "test/debug/probe.pdf",
-            "attachment_filename": "probe.pdf",
-            "created_at": _utc_now(),
-            "source": "debug",
-            "source_mailbox": "debug@test.com",
-            "source_message_id": "debug-probe",
+if os.getenv("DEBUG_ENDPOINTS", "").lower() in ("1", "true", "yes"):
+    @app.get("/debug/env")
+    def debug_env():
+        """Return key env var presence (only available when DEBUG_ENDPOINTS=1)."""
+        return {
+            "GCS_BUCKET_set": bool(os.getenv("GCS_BUCKET")),
+            "SUPABASE_URL_set": bool(os.getenv("SUPABASE_URL")),
         }
-        r = supa.table(DOCS_TABLE).upsert(test_doc, on_conflict="gcs_bucket,gcs_path", ignore_duplicates=True).execute()
-        result["supabase_upsert"] = "ok"
-        result["supabase_data"] = r.data
-        # clean up test row
-        supa.table(DOCS_TABLE).delete().eq("gcs_path", "test/debug/probe.pdf").execute()
-    except Exception as e:
-        result["supabase_error"] = repr(e)
-        result["supabase_detail"] = getattr(e, "message", None) or str(e)
-    return result
 
 
 # -------------------------
