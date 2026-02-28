@@ -1042,14 +1042,23 @@ function isAogVehicle(name: string): boolean {
 
 /**
  * Try to extract a zone ID from a Samsara vehicle name.
- * "AOG Van 1" → 1, "Baker Van 4 TEB" → 4, "Van2" → 2.
+ * "AOG Van 1" → 1, "Baker Van 4 TEB" → 4, "Van2" → 2,
+ * "2019 Ford Transit - AOG Van 3" → 3.
  * Supports IDs 1–16 (8 fixed zones + 8 overflow vans).
  * Returns null if no number found or number is out of range.
  */
 function samsaraNameToZoneId(name: string): number | null {
-  const m = name.match(/\b(\d+)\b/);
-  if (!m) return null;
-  const id = parseInt(m[1]);
+  // Prefer the number directly after a van-related keyword:
+  // "Van 3", "AOG 5", "AOG Van 3", "V3", "OG 2", "Transit Van3"
+  const kwMatch = name.match(/(?:van|aog|og|v)\s*(\d+)/i);
+  if (kwMatch) {
+    const id = parseInt(kwMatch[1]);
+    if (id >= 1 && id <= 16) return id;
+  }
+  // Fallback: last number in the name (avoids year prefixes like "2019")
+  const allNums = [...name.matchAll(/\b(\d+)\b/g)];
+  if (allNums.length === 0) return null;
+  const id = parseInt(allNums[allNums.length - 1][1]);
   return id >= 1 && id <= 16 ? id : null;
 }
 
@@ -1278,10 +1287,17 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
     return () => clearInterval(id);
   }, []);
 
-  const aogSamsaraVans = useMemo(
-    () => samsaraVans.filter((v) => isAogVehicle(v.name)),
-    [samsaraVans],
-  );
+  const aogSamsaraVans = useMemo(() => {
+    const aog = samsaraVans.filter((v) => isAogVehicle(v.name));
+    if (samsaraVans.length > 0) {
+      const matched = aog.map((v) => ({ name: v.name, zoneId: samsaraNameToZoneId(v.name) }));
+      const skipped = samsaraVans.filter((v) => !isAogVehicle(v.name)).map((v) => v.name);
+      console.log("[AOG Vans] Samsara vehicles:", samsaraVans.length, "total,", aog.length, "AOG");
+      console.table(matched);
+      if (skipped.length) console.log("[AOG Vans] Non-AOG vehicles skipped:", skipped);
+    }
+    return aog;
+  }, [samsaraVans]);
 
   /** Zone ID → last known GPS position (persists across refreshes if signal lost). */
   const lastKnownGpsRef = useRef<Map<number, { lat: number; lon: number }>>(new Map());
