@@ -1,36 +1,51 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireAuth, isAuthed, isRateLimited } from "@/lib/api-auth";
 
 const BASE = process.env.JOB_API_BASE_URL;
 
-function mustBase(): string {
-  if (!BASE) throw new Error("Missing JOB_API_BASE_URL");
-  return BASE.replace(/\/$/, "");
-}
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const { id } = await params;
+  const auth = await requireAuth(req);
+  if (!isAuthed(auth)) return auth.error;
 
-  const base = mustBase();
-  const url = `${base}/api/jobs/${id}`;
-
-  const res = await fetch(url, {
-    cache: "no-store",
-    headers: { Accept: "application/json" },
-  });
-
-  const text = await res.text();
-
-  if (!res.ok) {
-    return new NextResponse(text || "Upstream error", { status: res.status });
+  if (isRateLimited(auth.userId)) {
+    return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
   }
 
-  // if upstream returned JSON, pass it through
+  if (!BASE) {
+    return NextResponse.json({ error: "Service unavailable" }, { status: 503 });
+  }
+
+  const { id } = await params;
+  if (!UUID_RE.test(id)) {
+    return NextResponse.json({ error: "Invalid job ID" }, { status: 400 });
+  }
+
+  const base = BASE.replace(/\/$/, "");
+  const url = `${base}/api/jobs/${encodeURIComponent(id)}`;
+
   try {
-    return NextResponse.json(JSON.parse(text));
+    const res = await fetch(url, {
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+    });
+
+    const text = await res.text();
+
+    if (!res.ok) {
+      return NextResponse.json({ error: "Not found" }, { status: res.status });
+    }
+
+    try {
+      return NextResponse.json(JSON.parse(text));
+    } catch {
+      return new NextResponse(text, { status: 200 });
+    }
   } catch {
-    return new NextResponse(text, { status: 200 });
+    return NextResponse.json({ error: "Upstream unavailable" }, { status: 502 });
   }
 }

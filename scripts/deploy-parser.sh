@@ -15,7 +15,7 @@ gcloud run deploy "${SERVICE_NAME}" \
   --region "${REGION}" \
   --source "${SOURCE_DIR}" \
   --platform managed \
-  --allow-unauthenticated \
+  --no-allow-unauthenticated \
   --cpu 1 \
   --memory 512Mi \
   --set-secrets "OPENAI_API_KEY=OPENAI_API_KEY:latest,SUPABASE_URL=SUPABASE_URL:latest,SUPABASE_SERVICE_ROLE_KEY=SUPABASE_SERVICE_ROLE_KEY:latest"

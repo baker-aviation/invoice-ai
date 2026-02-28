@@ -13,7 +13,7 @@ gcloud run deploy "${SERVICE_NAME}" \
   --region "${REGION}" \
   --source "${SOURCE_DIR}" \
   --platform managed \
-  --allow-unauthenticated \
+  --no-allow-unauthenticated \
   --cpu 1 \
   --memory 2Gi \
   --timeout 300 \

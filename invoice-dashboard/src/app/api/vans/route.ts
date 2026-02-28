@@ -1,16 +1,24 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { requireAuth, isAuthed, isRateLimited } from "@/lib/api-auth";
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const auth = await requireAuth(req);
+  if (!isAuthed(auth)) return auth.error;
+
+  if (isRateLimited(auth.userId)) {
+    return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
+  }
+
   const base = process.env.OPS_API_BASE_URL?.replace(/\/$/, "");
   if (!base) {
-    return NextResponse.json({ ok: false, error: "OPS_API_BASE_URL not set" }, { status: 503 });
+    return NextResponse.json({ error: "Service unavailable" }, { status: 503 });
   }
 
   try {
     const res = await fetch(`${base}/api/vans`, { cache: "no-store" });
     const data = await res.json();
     return NextResponse.json(data, { status: res.status });
-  } catch (err: unknown) {
-    return NextResponse.json({ ok: false, error: String(err) }, { status: 502 });
+  } catch {
+    return NextResponse.json({ error: "Upstream unavailable" }, { status: 502 });
   }
 }
