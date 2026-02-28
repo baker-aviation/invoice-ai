@@ -223,11 +223,14 @@ def get_vans():
     if not SAMSARA_API_KEY:
         raise HTTPException(status_code=503, detail="SAMSARA_API_KEY not configured")
 
+    headers = {"Authorization": f"Bearer {SAMSARA_API_KEY}"}
+
+    # Use /fleet/vehicles/locations — it always includes reverseGeo addresses
+    # (the /fleet/vehicles/stats?types=gps endpoint only sporadically includes them)
     try:
         r = requests.get(
-            "https://api.samsara.com/fleet/vehicles/stats",
-            headers={"Authorization": f"Bearer {SAMSARA_API_KEY}"},
-            params={"types": "gps"},
+            "https://api.samsara.com/fleet/vehicles/locations",
+            headers=headers,
             timeout=10,
         )
         r.raise_for_status()
@@ -238,16 +241,16 @@ def get_vans():
     raw = r.json().get("data") or []
     vans: List[Dict[str, Any]] = []
     for v in raw:
-        gps = v.get("gps") or {}
+        loc = v.get("location") or {}
         vans.append({
             "id": v.get("id"),
             "name": v.get("name"),
-            "lat": gps.get("latitude"),
-            "lon": gps.get("longitude"),
-            "speed_mph": gps.get("speedMilesPerHour"),
-            "heading": gps.get("headingDegrees"),
-            "address": (gps.get("reverseGeo") or {}).get("formattedLocation"),
-            "gps_time": gps.get("time"),
+            "lat": loc.get("latitude"),
+            "lon": loc.get("longitude"),
+            "speed_mph": loc.get("speedMilesPerHour"),
+            "heading": loc.get("headingDegrees"),
+            "address": (loc.get("reverseGeo") or {}).get("formattedLocation"),
+            "gps_time": loc.get("time"),
         })
 
     return {"ok": True, "vans": vans, "count": len(vans)}
