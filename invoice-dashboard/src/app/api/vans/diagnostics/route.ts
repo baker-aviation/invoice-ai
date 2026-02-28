@@ -1,6 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin, isAuthed, isRateLimited } from "@/lib/api-auth";
-import { cloudRunFetch } from "@/lib/cloud-run-fetch";
+
+// Call Samsara API directly (avoids Cloud Run IAM auth issues)
+const SAMSARA_BASE = "https://api.samsara.com";
+
+interface SamsaraFaultValue {
+  activeCodes?: unknown[];
+  activeDtcIds?: unknown[];
+}
+
+interface SamsaraVehicleDiag {
+  id?: string;
+  name?: string;
+  obdOdometerMeters?: { value?: number; time?: string };
+  faultCodes?: { value?: SamsaraFaultValue | unknown[]; time?: string };
+}
 
 export async function GET(req: NextRequest) {
   // Diagnostics = admin-only
@@ -11,28 +25,59 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
   }
 
-  const base = process.env.OPS_API_BASE_URL?.replace(/\/$/, "");
-  if (!base) {
-    return NextResponse.json({ error: "Service unavailable" }, { status: 503 });
+  const apiKey = process.env.SAMSARA_API_KEY;
+  if (!apiKey) {
+    return NextResponse.json(
+      { error: "SAMSARA_API_KEY not configured" },
+      { status: 503 },
+    );
   }
 
   try {
-    const res = await cloudRunFetch(`${base}/api/vans/diagnostics`, { cache: "no-store" });
-    const text = await res.text();
-    let data: unknown;
-    try {
-      data = JSON.parse(text);
-    } catch {
-      const cleaned = text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300);
+    const res = await fetch(
+      `${SAMSARA_BASE}/fleet/vehicles/stats?types=obdOdometerMeters,faultCodes`,
+      { headers: { Authorization: `Bearer ${apiKey}` }, cache: "no-store" },
+    );
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
       return NextResponse.json(
-        { error: `Upstream HTTP ${res.status}: ${cleaned || "(empty body)"}` },
+        { error: `Samsara API error: HTTP ${res.status}`, detail: body.slice(0, 300) },
         { status: 502 },
       );
     }
-    return NextResponse.json(data, { status: res.ok ? 200 : res.status });
+    const json = await res.json();
+    const raw = (json.data ?? []) as SamsaraVehicleDiag[];
+
+    const vehicles = raw.map((v) => {
+      const odo = v.obdOdometerMeters ?? {};
+      const fc = v.faultCodes ?? {};
+      const odoMeters = odo.value;
+
+      // faultCodes.value structure varies by gateway — handle both dict and list
+      const fcVal = fc.value;
+      let active: unknown[] = [];
+      if (Array.isArray(fcVal)) {
+        active = fcVal;
+      } else if (fcVal && typeof fcVal === "object") {
+        const fv = fcVal as SamsaraFaultValue;
+        active = fv.activeCodes ?? fv.activeDtcIds ?? [];
+      }
+
+      return {
+        id: v.id ?? null,
+        name: v.name ?? null,
+        odometer_miles:
+          odoMeters != null ? Math.round(odoMeters / 1609.344) : null,
+        check_engine_on: active.length > 0,
+        fault_codes: active,
+        diag_time: odo.time ?? fc.time ?? null,
+      };
+    });
+
+    return NextResponse.json({ ok: true, vehicles, count: vehicles.length });
   } catch (err) {
     return NextResponse.json(
-      { error: "Upstream unavailable", detail: String(err) },
+      { error: "Samsara API unreachable", detail: String(err) },
       { status: 502 },
     );
   }

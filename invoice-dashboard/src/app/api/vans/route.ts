@@ -1,6 +1,28 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, isAuthed, isRateLimited } from "@/lib/api-auth";
-import { cloudRunFetch } from "@/lib/cloud-run-fetch";
+
+// Call Samsara API directly (avoids Cloud Run IAM auth issues)
+const SAMSARA_BASE = "https://api.samsara.com";
+
+interface SamsaraGps {
+  latitude?: number;
+  longitude?: number;
+  speedMilesPerHour?: number;
+  headingDegrees?: number;
+  reverseGeo?: { formattedLocation?: string };
+  time?: string;
+}
+
+interface SamsaraVehicleStat {
+  id?: string;
+  name?: string;
+  gps?: SamsaraGps;
+}
+
+interface SamsaraLocation {
+  id?: string;
+  location?: { reverseGeo?: { formattedLocation?: string } };
+}
 
 export async function GET(req: NextRequest) {
   const auth = await requireAuth(req);
@@ -10,41 +32,74 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
   }
 
-  const base = process.env.OPS_API_BASE_URL?.replace(/\/$/, "");
-  if (!base) {
-    return NextResponse.json({ error: "Service unavailable" }, { status: 503 });
+  const apiKey = process.env.SAMSARA_API_KEY;
+  if (!apiKey) {
+    return NextResponse.json(
+      { error: "SAMSARA_API_KEY not configured" },
+      { status: 503 },
+    );
   }
 
-  // Debug: identify which SA key is being used
-  const saRaw = process.env.GCP_SA_KEY;
-  let saEmail = "(no GCP_SA_KEY)";
-  if (saRaw) {
-    try {
-      const json = saRaw.trimStart().startsWith("{")
-        ? saRaw
-        : Buffer.from(saRaw, "base64").toString("utf-8");
-      saEmail = JSON.parse(json).client_email ?? "(no client_email)";
-    } catch { saEmail = "(parse error)"; }
-  }
+  const headers = { Authorization: `Bearer ${apiKey}` };
 
+  // Primary: GPS stats
+  let statsData: SamsaraVehicleStat[];
   try {
-    const res = await cloudRunFetch(`${base}/api/vans`, { cache: "no-store" });
-    const text = await res.text();
-    let data: unknown;
-    try {
-      data = JSON.parse(text);
-    } catch {
-      const cleaned = text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300);
+    const res = await fetch(
+      `${SAMSARA_BASE}/fleet/vehicles/stats?types=gps`,
+      { headers, cache: "no-store" },
+    );
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
       return NextResponse.json(
-        { error: `Upstream HTTP ${res.status}: ${cleaned || "(empty body)"}`, debug: { sa: saEmail, target: base } },
+        { error: `Samsara API error: HTTP ${res.status}`, detail: body.slice(0, 300) },
         { status: 502 },
       );
     }
-    return NextResponse.json(data, { status: res.ok ? 200 : res.status });
+    const json = await res.json();
+    statsData = (json.data ?? []) as SamsaraVehicleStat[];
   } catch (err) {
     return NextResponse.json(
-      { error: "Upstream unavailable", detail: String(err), debug: { sa: saEmail, target: base } },
+      { error: "Samsara API unreachable", detail: String(err) },
       { status: 502 },
     );
   }
+
+  // Supplementary: vehicle locations for reverse-geocoded addresses
+  const addrById = new Map<string, string>();
+  try {
+    const res2 = await fetch(
+      `${SAMSARA_BASE}/fleet/vehicles/locations`,
+      { headers, cache: "no-store" },
+    );
+    if (res2.ok) {
+      const json2 = await res2.json();
+      for (const v of (json2.data ?? []) as SamsaraLocation[]) {
+        const addr = v.location?.reverseGeo?.formattedLocation;
+        if (addr && v.id) addrById.set(v.id, addr);
+      }
+    }
+  } catch {
+    // Non-fatal — fall back to stats reverseGeo
+  }
+
+  // Build response
+  const vans = statsData.map((v) => {
+    const gps = v.gps ?? {};
+    const vid = v.id ?? "";
+    const address =
+      addrById.get(vid) ?? gps.reverseGeo?.formattedLocation ?? null;
+    return {
+      id: vid,
+      name: v.name ?? null,
+      lat: gps.latitude ?? null,
+      lon: gps.longitude ?? null,
+      speed_mph: gps.speedMilesPerHour ?? null,
+      heading: gps.headingDegrees ?? null,
+      address,
+      gps_time: gps.time ?? null,
+    };
+  });
+
+  return NextResponse.json({ ok: true, vans, count: vans.length });
 }
