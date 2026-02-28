@@ -26,7 +26,6 @@ export type OpsAlert = {
   acknowledged_at: string | null;
   created_at: string;
   notam_dates: NotamDates | null;
-  _debug_raw?: string; // TODO: remove after debugging
 };
 
 export type Flight = {
@@ -155,11 +154,6 @@ export async function fetchFlights(params: {
       // Filter noise NOTAMs
       if (isNoiseNotam(row as { alert_type: string; body: string | null })) continue;
 
-      // Debug: log raw_data shape for first few NOTAM alerts
-      if ((row.alert_type as string).startsWith("NOTAM")) {
-        console.log(`[NOTAM DEBUG] id=${row.id} type=${typeof row.raw_data} raw_data=${JSON.stringify(row.raw_data)?.slice(0, 200)}`);
-      }
-
       const alert: OpsAlert = {
         id: row.id as string,
         flight_id: row.flight_id as string | null,
@@ -176,7 +170,6 @@ export async function fetchFlights(params: {
         acknowledged_at: row.acknowledged_at as string | null,
         created_at: row.created_at as string,
         notam_dates: extractNotamDates(row.raw_data),
-        _debug_raw: row.raw_data == null ? "NULL" : `${typeof row.raw_data}:${JSON.stringify(row.raw_data)?.slice(0, 80)}`,
       };
 
       const fid = alert.flight_id ?? "";
