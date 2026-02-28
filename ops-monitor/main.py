@@ -225,32 +225,52 @@ def get_vans():
 
     headers = {"Authorization": f"Bearer {SAMSARA_API_KEY}"}
 
-    # Use /fleet/vehicles/locations — it always includes reverseGeo addresses
-    # (the /fleet/vehicles/stats?types=gps endpoint only sporadically includes them)
+    # Primary: GPS stats (always works)
     try:
         r = requests.get(
-            "https://api.samsara.com/fleet/vehicles/locations",
+            "https://api.samsara.com/fleet/vehicles/stats",
             headers=headers,
+            params={"types": "gps"},
             timeout=10,
         )
         r.raise_for_status()
     except requests.RequestException as e:
-        print(f"Samsara API error (locations): {e}", flush=True)
+        print(f"Samsara API error (stats): {e}", flush=True)
         raise HTTPException(status_code=502, detail="Samsara API error")
+
+    # Supplementary: vehicle locations for reliable reverse-geocoded addresses
+    addr_by_id: Dict[str, str] = {}
+    try:
+        r2 = requests.get(
+            "https://api.samsara.com/fleet/vehicles/locations",
+            headers=headers,
+            timeout=10,
+        )
+        r2.raise_for_status()
+        for v2 in r2.json().get("data") or []:
+            loc = v2.get("location") or {}
+            addr = (loc.get("reverseGeo") or {}).get("formattedLocation")
+            if addr and v2.get("id"):
+                addr_by_id[v2["id"]] = addr
+    except Exception as e:
+        print(f"Samsara locations supplement failed (non-fatal): {e}", flush=True)
 
     raw = r.json().get("data") or []
     vans: List[Dict[str, Any]] = []
     for v in raw:
-        loc = v.get("location") or {}
+        gps = v.get("gps") or {}
+        vid = v.get("id")
+        # Prefer address from locations endpoint; fall back to stats reverseGeo
+        address = addr_by_id.get(vid) or (gps.get("reverseGeo") or {}).get("formattedLocation")
         vans.append({
-            "id": v.get("id"),
+            "id": vid,
             "name": v.get("name"),
-            "lat": loc.get("latitude"),
-            "lon": loc.get("longitude"),
-            "speed_mph": loc.get("speedMilesPerHour"),
-            "heading": loc.get("headingDegrees"),
-            "address": (loc.get("reverseGeo") or {}).get("formattedLocation"),
-            "gps_time": loc.get("time"),
+            "lat": gps.get("latitude"),
+            "lon": gps.get("longitude"),
+            "speed_mph": gps.get("speedMilesPerHour"),
+            "heading": gps.get("headingDegrees"),
+            "address": address,
+            "gps_time": gps.get("time"),
         })
 
     return {"ok": True, "vans": vans, "count": len(vans)}
