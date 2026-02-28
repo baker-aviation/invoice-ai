@@ -692,11 +692,16 @@ def parse_application(application_id: int = Query(..., ge=1)):
     bucket = _gcs_bucket()
 
     files = _fetch_files_for_application(supa, application_id)
+    print(f"PARSE app={application_id} found {len(files) if files else 0} file rows", flush=True)
     if not files:
         raise HTTPException(
             status_code=404,
             detail=f"No files found for application_id={application_id}",
         )
+
+    # Log every file row for debugging
+    for i, f in enumerate(files):
+        print(f"  FILE[{i}] id={f.get('id')} fn={f.get('filename')} ct={f.get('content_type')} gcs_key={f.get('gcs_key')}", flush=True)
 
     chunks: List[str] = []
     total_chars = 0
@@ -707,6 +712,7 @@ def parse_application(application_id: int = Query(..., ge=1)):
         content_type = f.get("content_type") or ""
         gcs_key = f.get("gcs_key")
         if not gcs_key:
+            print(f"  SKIP app={application_id} file={filename} — no gcs_key", flush=True)
             continue
 
         ext = _guess_ext(filename, content_type)
@@ -758,7 +764,7 @@ def parse_application(application_id: int = Query(..., ge=1)):
     if not chunks:
         raise HTTPException(
             status_code=422,
-            detail="No parseable text found in files (pdf/docx/txt).",
+            detail="No parseable text found in files (pdf/docx/txt/image).",
         )
 
     combined_text = _strip_nulls("\n".join(chunks)) or "\n".join(chunks)
