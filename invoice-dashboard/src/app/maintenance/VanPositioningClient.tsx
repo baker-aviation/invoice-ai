@@ -502,6 +502,7 @@ function VanScheduleCard({
   items,
   liveVanPos,
   liveAddress,
+  samsaraVanName,
   isDropTarget,
   hasOverrides,
   onDragStart,
@@ -515,6 +516,7 @@ function VanScheduleCard({
   items: VanFlightItem[];
   liveVanPos?: { lat: number; lon: number };
   liveAddress?: string | null;
+  samsaraVanName?: string | null;
   isDropTarget: boolean;
   hasOverrides: boolean;
   onDragStart: (e: React.DragEvent, flightId: string, fromVanId: number) => void;
@@ -551,7 +553,12 @@ function VanScheduleCard({
             V{zone.vanId}
           </div>
           <div>
-            <div className="font-semibold text-sm">{zone.name}</div>
+            <div className="font-semibold text-sm">
+              {zone.name}
+              {samsaraVanName && (
+                <span className="ml-1.5 text-xs font-normal text-blue-600">({samsaraVanName})</span>
+              )}
+            </div>
             <div className="text-xs text-gray-500">
               Base: <span className="font-medium">{zone.homeAirport}</span>
             </div>
@@ -690,11 +697,13 @@ function ScheduleTab({
   date,
   liveVanPositions,
   liveVanAddresses,
+  vanZoneNames,
 }: {
   allFlights: Flight[];
   date: string;
   liveVanPositions: Map<number, { lat: number; lon: number }>;
   liveVanAddresses: Map<number, string | null>;
+  vanZoneNames: Map<number, string>;
 }) {
   const hasLive = liveVanPositions.size > 0;
 
@@ -995,6 +1004,7 @@ function ScheduleTab({
               items={finalItemsByVan.get(zone.vanId) ?? []}
               liveVanPos={liveVanPositions.get(zone.vanId)}
               liveAddress={liveVanAddresses.get(zone.vanId)}
+              samsaraVanName={vanZoneNames.get(zone.vanId)}
               isDropTarget={dropTargetVan === zone.vanId}
               hasOverrides={editedVans.has(zone.vanId)}
               onDragStart={handleDragStart}
@@ -1041,25 +1051,42 @@ function isAogVehicle(name: string): boolean {
 }
 
 /**
- * Try to extract a zone ID from a Samsara vehicle name.
- * "AOG Van 1" → 1, "Baker Van 4 TEB" → 4, "Van2" → 2,
- * "2019 Ford Transit - AOG Van 3" → 3.
- * Supports IDs 1–16 (8 fixed zones + 8 overflow vans).
- * Returns null if no number found or number is out of range.
+ * Match AOG Samsara vans to FIXED_VAN_ZONES by GPS proximity.
+ * Returns a Map<zoneId, SamsaraVan> — one van per zone, closest wins.
+ * Handles the case where multiple vans are near the same zone by doing
+ * a greedy assignment (sort all van↔zone pairs by distance, assign each
+ * van/zone at most once).
  */
-function samsaraNameToZoneId(name: string): number | null {
-  // Prefer the number directly after a van-related keyword:
-  // "Van 3", "AOG 5", "AOG Van 3", "V3", "OG 2", "Transit Van3"
-  const kwMatch = name.match(/(?:van|aog|og|v)\s*(\d+)/i);
-  if (kwMatch) {
-    const id = parseInt(kwMatch[1]);
-    if (id >= 1 && id <= 16) return id;
+function matchVansToZones(
+  vans: SamsaraVan[],
+): Map<number, SamsaraVan> {
+  const withGps = vans.filter((v) => v.lat !== null && v.lon !== null);
+  if (withGps.length === 0) return new Map();
+
+  // Build all (van, zone, distance) pairs
+  const pairs: { van: SamsaraVan; zoneId: number; dist: number }[] = [];
+  for (const van of withGps) {
+    for (const zone of FIXED_VAN_ZONES) {
+      pairs.push({
+        van,
+        zoneId: zone.vanId,
+        dist: haversineKm(van.lat!, van.lon!, zone.lat, zone.lon),
+      });
+    }
   }
-  // Fallback: last number in the name (avoids year prefixes like "2019")
-  const allNums = [...name.matchAll(/\b(\d+)\b/g)];
-  if (allNums.length === 0) return null;
-  const id = parseInt(allNums[allNums.length - 1][1]);
-  return id >= 1 && id <= 16 ? id : null;
+  // Sort by distance ascending — closest pairs first
+  pairs.sort((a, b) => a.dist - b.dist);
+
+  const result = new Map<number, SamsaraVan>();
+  const usedVans = new Set<string>(); // van IDs already assigned
+  for (const { van, zoneId, dist } of pairs) {
+    if (result.has(zoneId)) continue;  // zone already has a van
+    if (usedVans.has(van.id)) continue; // van already assigned
+    if (dist > 1500) continue;          // ignore vans > 1500 km from any zone
+    result.set(zoneId, van);
+    usedVans.add(van.id);
+  }
+  return result;
 }
 
 function VehicleRow({ v, diag }: { v: SamsaraVan; diag?: VehicleDiag }) {
@@ -1287,17 +1314,35 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
     return () => clearInterval(id);
   }, []);
 
-  const aogSamsaraVans = useMemo(() => {
-    const aog = samsaraVans.filter((v) => isAogVehicle(v.name));
-    if (samsaraVans.length > 0) {
-      const matched = aog.map((v) => ({ name: v.name, zoneId: samsaraNameToZoneId(v.name) }));
-      const skipped = samsaraVans.filter((v) => !isAogVehicle(v.name)).map((v) => v.name);
-      console.log("[AOG Vans] Samsara vehicles:", samsaraVans.length, "total,", aog.length, "AOG");
-      console.table(matched);
-      if (skipped.length) console.log("[AOG Vans] Non-AOG vehicles skipped:", skipped);
+  const aogSamsaraVans = useMemo(
+    () => samsaraVans.filter((v) => isAogVehicle(v.name)),
+    [samsaraVans],
+  );
+
+  /** GPS-proximity match: zone ID → Samsara van (closest van per zone). */
+  const vanZoneMatch = useMemo(() => {
+    const match = matchVansToZones(aogSamsaraVans);
+    // Debug: log the GPS-based matching results
+    if (aogSamsaraVans.length > 0) {
+      const rows = FIXED_VAN_ZONES.map((z) => {
+        const v = match.get(z.vanId);
+        return {
+          zone: `V${z.vanId} ${z.name}`,
+          samsaraVan: v?.name ?? "—",
+          dist: v ? `${Math.round(haversineKm(v.lat!, v.lon!, z.lat, z.lon))} km` : "—",
+        };
+      });
+      console.log("[AOG Vans] GPS-based zone matching:");
+      console.table(rows);
+      const unmatched = aogSamsaraVans.filter(
+        (v) => ![...match.values()].some((m) => m.id === v.id)
+      );
+      if (unmatched.length) {
+        console.log("[AOG Vans] Unmatched AOG vehicles:", unmatched.map((v) => v.name));
+      }
     }
-    return aog;
-  }, [samsaraVans]);
+    return match;
+  }, [aogSamsaraVans]);
 
   /** Zone ID → last known GPS position (persists across refreshes if signal lost). */
   const lastKnownGpsRef = useRef<Map<number, { lat: number; lon: number }>>(new Map());
@@ -1305,54 +1350,55 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
   const lastKnownAddressRef = useRef<Map<number, string>>(new Map());
 
   const liveVanPositions = useMemo<Map<number, { lat: number; lon: number }>>(() => {
-    // Update cache with any fresh positions
-    for (const v of aogSamsaraVans) {
-      if (v.lat === null || v.lon === null) continue;
-      const zoneId = samsaraNameToZoneId(v.name);
-      if (zoneId !== null) lastKnownGpsRef.current.set(zoneId, { lat: v.lat, lon: v.lon });
+    // Update cache with fresh positions from matched vans
+    for (const [zoneId, v] of vanZoneMatch) {
+      if (v.lat !== null && v.lon !== null) {
+        lastKnownGpsRef.current.set(zoneId, { lat: v.lat, lon: v.lon });
+      }
     }
-    // Return a snapshot: live position, or last known if currently null
+    // Return live position, or last known if currently null
     const map = new Map<number, { lat: number; lon: number }>();
-    for (const v of aogSamsaraVans) {
-      const zoneId = samsaraNameToZoneId(v.name);
-      if (zoneId === null) continue;
+    for (const [zoneId, v] of vanZoneMatch) {
       const pos = (v.lat !== null && v.lon !== null)
         ? { lat: v.lat, lon: v.lon }
         : lastKnownGpsRef.current.get(zoneId) ?? null;
       if (pos) map.set(zoneId, pos);
     }
     return map;
-  }, [aogSamsaraVans]);
+  }, [vanZoneMatch]);
 
   /** Zone ID → true if the position is a fresh live reading right now. */
   const liveVanIsLive = useMemo<Map<number, boolean>>(() => {
     const map = new Map<number, boolean>();
-    for (const v of aogSamsaraVans) {
-      const zoneId = samsaraNameToZoneId(v.name);
-      if (zoneId === null) continue;
+    for (const [zoneId, v] of vanZoneMatch) {
       map.set(zoneId, v.lat !== null && v.lon !== null);
     }
     return map;
-  }, [aogSamsaraVans]);
+  }, [vanZoneMatch]);
 
   /** Zone ID → street address (live, or last known if signal lost). */
   const liveVanAddresses = useMemo<Map<number, string | null>>(() => {
-    // Cache any fresh addresses
-    for (const v of aogSamsaraVans) {
-      if (!v.address) continue;
-      const zoneId = samsaraNameToZoneId(v.name);
-      if (zoneId !== null) lastKnownAddressRef.current.set(zoneId, v.address);
+    // Cache fresh addresses
+    for (const [zoneId, v] of vanZoneMatch) {
+      if (v.address) lastKnownAddressRef.current.set(zoneId, v.address);
     }
-    // Return live address, or fall back to last known
+    // Return live, or fall back to last known
     const map = new Map<number, string | null>();
-    for (const v of aogSamsaraVans) {
-      const zoneId = samsaraNameToZoneId(v.name);
-      if (zoneId === null) continue;
+    for (const [zoneId, v] of vanZoneMatch) {
       const addr = v.address ?? lastKnownAddressRef.current.get(zoneId) ?? null;
       map.set(zoneId, addr);
     }
     return map;
-  }, [aogSamsaraVans]);
+  }, [vanZoneMatch]);
+
+  /** Zone ID → Samsara van display name (for schedule cards). */
+  const vanZoneNames = useMemo<Map<number, string>>(() => {
+    const map = new Map<number, string>();
+    for (const [zoneId, v] of vanZoneMatch) {
+      if (v.name) map.set(zoneId, v.name);
+    }
+    return map;
+  }, [vanZoneMatch]);
 
   // ── Samsara diagnostics (odometer + check engine light) ──
   const [diagData, setDiagData] = useState<Map<string, VehicleDiag>>(new Map());
@@ -1690,7 +1736,7 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
 
       {/* ── Schedule tab ── */}
       {activeTab === "schedule" && (
-        <ScheduleTab allFlights={initialFlights} date={selectedDate} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} />
+        <ScheduleTab allFlights={initialFlights} date={selectedDate} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} />
       )}
     </div>
   );
