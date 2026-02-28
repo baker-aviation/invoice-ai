@@ -18,8 +18,11 @@
         "name": "next"
       }
     ],
+    "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@agents/*": ["../agents/*"],
+      "@anthropic-ai/sdk": ["./node_modules/@anthropic-ai/sdk"]
     }
   },
   "include": [
@@ -28,7 +31,8 @@
     "**/*.tsx",
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts",
-    "**/*.mts"
+    "**/*.mts",
+    "../agents/**/*.ts"
   ],
   "exclude": ["node_modules"]
 }

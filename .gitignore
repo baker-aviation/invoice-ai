@@ -6,6 +6,8 @@ env/
 
 # Secrets / local config
 .env
+.env.local
+.env*.local
 *.pem
 *.key
 secrets.json
