@@ -11,7 +11,7 @@ export function Sidebar() {
   return (
     <aside className="hidden md:flex md:w-64 md:flex-col md:border-r md:bg-white">
       <div className="px-5 py-4 border-b">
-        <div className="text-lg font-semibold">Invoice AI</div>
+        <div className="text-lg font-semibold">Baker Database</div>
         <div className="text-sm text-gray-500">Internal dashboard</div>
       </div>
 
