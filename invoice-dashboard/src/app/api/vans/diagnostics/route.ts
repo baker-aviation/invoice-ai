@@ -23,8 +23,9 @@ export async function GET(req: NextRequest) {
     try {
       data = JSON.parse(text);
     } catch {
+      const cleaned = text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300);
       return NextResponse.json(
-        { error: "Upstream returned non-JSON", status: res.status, body: text.slice(0, 500) },
+        { error: `Upstream HTTP ${res.status}: ${cleaned || "(empty body)"}` },
         { status: 502 },
       );
     }

@@ -23,8 +23,9 @@ export async function GET(req: NextRequest) {
       data = JSON.parse(text);
     } catch {
       // Cloud Run returned non-JSON (HTML error page, container crash, etc.)
+      const cleaned = text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300);
       return NextResponse.json(
-        { error: "Upstream returned non-JSON", status: res.status, body: text.slice(0, 500) },
+        { error: `Upstream HTTP ${res.status}: ${cleaned || "(empty body)"}` },
         { status: 502 },
       );
     }
