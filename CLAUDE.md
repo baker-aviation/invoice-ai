@@ -131,6 +131,12 @@ Backend secrets in GCP Secret Manager: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KE
 `OUTLOOK_SHARED_MAILBOX`, `GCS_BUCKET`, `OPENAI_API_KEY`,
 `JETINSIGHT_ICS_URL`, `FAA_CLIENT_ID`, `FAA_CLIENT_SECRET`
 
+## Deployment policy
+
+- **Frontend (Vercel)**: Pushes to `dev` auto-deploy to `baker-ai-dev.vercel.app`. Pushes to `main` deploy to production (`baker-ai-gamma.vercel.app`). **Always push to `dev` first** — never push directly to `main` unless explicitly told to.
+- **Backend (Cloud Run)**: **Do NOT deploy backend services unless explicitly asked.** Deploy scripts exist in `scripts/` but should only be run when the user says "deploy" or "ship it". Code changes to Python services are safe to commit and push — they don't auto-deploy.
+- **Branch workflow**: Develop on feature branches → merge to `dev` → test on dev URL → merge to `main` only when approved.
+
 ## Active branch
 `claude/check-gcs-github-push-gqC1E`
 
