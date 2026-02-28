@@ -1,9 +1,4 @@
-const BASE = process.env.OPS_API_BASE_URL;
-
-function mustBase(): string {
-  if (!BASE) throw new Error("Missing OPS_API_BASE_URL in .env.local");
-  return BASE.replace(/\/$/, "");
-}
+import { createServiceClient } from "@/lib/supabase/service";
 
 export type NotamDates = {
   effective_start: string | null;
@@ -18,8 +13,8 @@ export type NotamDates = {
 export type OpsAlert = {
   id: string;
   flight_id: string | null;
-  alert_type: string;       // EDCT | NOTAM_RUNWAY | NOTAM_TAXIWAY | NOTAM_TFR | NOTAM_AERODROME | NOTAM_OTHER
-  severity: string;         // critical | warning | info
+  alert_type: string;
+  severity: string;
   airport_icao: string | null;
   departure_icao: string | null;
   arrival_icao: string | null;
@@ -30,7 +25,6 @@ export type OpsAlert = {
   original_departure_time: string | null;
   acknowledged_at: string | null;
   created_at: string;
-  // Extracted NOTAM effective dates (backend strips the heavy raw_data GeoJSON)
   notam_dates: NotamDates | null;
 };
 
@@ -52,18 +46,123 @@ export type FlightsResponse = {
   count: number;
 };
 
+// ---------------------------------------------------------------------------
+// NOTAM noise filter — matches backend logic in ops-monitor/main.py
+// ---------------------------------------------------------------------------
+
+const NOISE_PATTERNS = [
+  /RWY\s+\d+[LRC]?\/\d+[LRC]?\s+(CLSD|CLOSED)/i,
+  /TWY\s+\w+\s+(CLSD|CLOSED)/i,
+];
+
+function isNoiseNotam(alert: { alert_type: string; body: string | null }): boolean {
+  if (alert.alert_type !== "NOTAM_RUNWAY" && alert.alert_type !== "NOTAM_TAXIWAY") return false;
+  if (!alert.body) return false;
+  return NOISE_PATTERNS.some((p) => p.test(alert.body!));
+}
+
+// ---------------------------------------------------------------------------
+// Extract NOTAM dates from raw_data JSON (matches backend logic)
+// ---------------------------------------------------------------------------
+
+function extractNotamDates(rawData: Record<string, unknown> | null): NotamDates | null {
+  if (!rawData) return null;
+  const props = (rawData.properties ?? {}) as Record<string, unknown>;
+  return {
+    effective_start: (props.effectiveStart as string) ?? null,
+    effective_end: (props.effectiveEnd as string) ?? null,
+    issued: (props.issued as string) ?? null,
+    status: (props.status as string) ?? null,
+    start_date_utc: (props.startDate as string) ?? null,
+    end_date_utc: (props.endDate as string) ?? null,
+    issue_date_utc: (props.issueDate as string) ?? null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Flights — direct Supabase queries to flights + ops_alerts
+// ---------------------------------------------------------------------------
+
+const ALERT_COLUMNS =
+  "id, flight_id, alert_type, severity, airport_icao, departure_icao, arrival_icao, tail_number, subject, body, edct_time, original_departure_time, acknowledged_at, created_at, raw_data";
+
 export async function fetchFlights(params: {
   lookahead_hours?: number;
 } = {}): Promise<FlightsResponse> {
-  const base = mustBase();
-  const url = new URL(`${base}/api/flights`);
-  url.searchParams.set("lookahead_hours", String(params.lookahead_hours ?? 720));
-  url.searchParams.set("include_alerts", "true");
+  const supa = createServiceClient();
+  const lookahead = params.lookahead_hours ?? 720;
 
-  const res = await fetch(url.toString(), { cache: "no-store" });
-  if (!res.ok) {
-    const body = await res.text().catch(() => "(no body)");
-    throw new Error(`fetchFlights failed: ${res.status} from ${url.toString()} — ${body.slice(0, 300)}`);
+  const now = new Date();
+  const past = new Date(now.getTime() - 12 * 60 * 60 * 1000).toISOString();
+  const future = new Date(now.getTime() + lookahead * 60 * 60 * 1000).toISOString();
+
+  // Fetch flights in the time window
+  const { data: flightRows, error: flightErr } = await supa
+    .from("flights")
+    .select("id, ics_uid, tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, summary")
+    .gte("scheduled_departure", past)
+    .lte("scheduled_departure", future)
+    .order("scheduled_departure", { ascending: true });
+
+  if (flightErr) throw new Error(`fetchFlights failed: ${flightErr.message}`);
+  if (!flightRows || flightRows.length === 0) {
+    return { ok: true, flights: [], count: 0 };
   }
-  return res.json();
+
+  // Fetch unacknowledged alerts for these flights (batch by 200)
+  const flightIds = flightRows.map((f) => f.id as string);
+  const alertsByFlight = new Map<string, OpsAlert[]>();
+
+  for (let i = 0; i < flightIds.length; i += 200) {
+    const batch = flightIds.slice(i, i + 200);
+    const { data: alertRows, error: alertErr } = await supa
+      .from("ops_alerts")
+      .select(ALERT_COLUMNS)
+      .in("flight_id", batch)
+      .is("acknowledged_at", null);
+
+    if (alertErr) throw new Error(`fetchFlights alerts failed: ${alertErr.message}`);
+
+    for (const row of alertRows ?? []) {
+      // Filter noise NOTAMs
+      if (isNoiseNotam(row as { alert_type: string; body: string | null })) continue;
+
+      const alert: OpsAlert = {
+        id: row.id as string,
+        flight_id: row.flight_id as string | null,
+        alert_type: row.alert_type as string,
+        severity: row.severity as string,
+        airport_icao: row.airport_icao as string | null,
+        departure_icao: row.departure_icao as string | null,
+        arrival_icao: row.arrival_icao as string | null,
+        tail_number: row.tail_number as string | null,
+        subject: row.subject as string | null,
+        body: row.body as string | null,
+        edct_time: row.edct_time as string | null,
+        original_departure_time: row.original_departure_time as string | null,
+        acknowledged_at: row.acknowledged_at as string | null,
+        created_at: row.created_at as string,
+        notam_dates: extractNotamDates(row.raw_data as Record<string, unknown> | null),
+      };
+
+      const fid = alert.flight_id ?? "";
+      if (!alertsByFlight.has(fid)) alertsByFlight.set(fid, []);
+      alertsByFlight.get(fid)!.push(alert);
+    }
+  }
+
+  // Assemble flights with nested alerts
+  const flights: Flight[] = flightRows.map((f) => ({
+    id: f.id as string,
+    ics_uid: f.ics_uid as string,
+    tail_number: f.tail_number as string | null,
+    departure_icao: f.departure_icao as string | null,
+    arrival_icao: f.arrival_icao as string | null,
+    scheduled_departure: f.scheduled_departure as string,
+    scheduled_arrival: f.scheduled_arrival as string | null,
+    summary: f.summary as string | null,
+    alerts: alertsByFlight.get(f.id as string) ?? [],
+  }));
+
+  return { ok: true, flights, count: flights.length };
 }

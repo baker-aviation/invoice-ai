@@ -1,22 +1,12 @@
-import { JobDetailResponse, JobsListResponse } from "@/lib/types";
+import { createServiceClient } from "@/lib/supabase/service";
+import type { JobDetailResponse, JobRow, JobsListResponse } from "@/lib/types";
 
-const BASE = process.env.JOB_API_BASE_URL;
+// ---------------------------------------------------------------------------
+// Jobs list — direct Supabase query to job_application_parse
+// ---------------------------------------------------------------------------
 
-function mustBase(): string {
-  if (!BASE) throw new Error("Missing JOB_API_BASE_URL in .env.local");
-  return BASE.replace(/\/$/, "");
-}
-
-async function throwHttpError(res: Response, url: string, label: string): Promise<never> {
-  let body = "";
-  try {
-    body = await res.text();
-  } catch {
-    body = "";
-  }
-  const snippet = body ? body.slice(0, 800) : "(empty body)";
-  throw new Error(`${label} failed: ${res.status} url=${url} body=${snippet}`);
-}
+const JOB_COLUMNS =
+  "id, application_id, created_at, updated_at, category, employment_type, candidate_name, email, phone, location, total_time_hours, turbine_time_hours, pic_time_hours, sic_time_hours, has_citation_x, has_challenger_300_type_rating, type_ratings, soft_gate_pic_met, soft_gate_pic_status, needs_review, notes, model";
 
 export async function fetchJobs(
   params: {
@@ -26,39 +16,55 @@ export async function fetchJobs(
     employment_type?: string;
     needs_review?: "true" | "false";
     soft_gate_pic_met?: "true" | "false";
-
-    // ✅ NEW
     has_citation_x?: "true" | "false";
-
-    // already supported
     has_challenger_300_type_rating?: "true" | "false";
-  } = {}
+  } = {},
 ): Promise<JobsListResponse> {
-  const base = mustBase();
-  const url = new URL(`${base}/api/jobs`);
+  const supa = createServiceClient();
+  const limit = params.limit ?? 200;
 
-  url.searchParams.set("limit", String(params.limit ?? 100));
-  if (params.q) url.searchParams.set("q", params.q);
-  if (params.category) url.searchParams.set("category", params.category);
-  if (params.employment_type) url.searchParams.set("employment_type", params.employment_type);
-  if (params.needs_review) url.searchParams.set("needs_review", params.needs_review);
-  if (params.soft_gate_pic_met) url.searchParams.set("soft_gate_pic_met", params.soft_gate_pic_met);
+  let query = supa
+    .from("job_application_parse")
+    .select(JOB_COLUMNS)
+    .order("created_at", { ascending: false })
+    .limit(limit);
 
-  // ✅ NEW
-  if (params.has_citation_x) url.searchParams.set("has_citation_x", params.has_citation_x);
-
+  if (params.category) query = query.eq("category", params.category);
+  if (params.employment_type) query = query.eq("employment_type", params.employment_type);
+  if (params.needs_review) query = query.eq("needs_review", params.needs_review === "true");
+  if (params.soft_gate_pic_met) query = query.eq("soft_gate_pic_met", params.soft_gate_pic_met === "true");
+  if (params.has_citation_x) query = query.eq("has_citation_x", params.has_citation_x === "true");
   if (params.has_challenger_300_type_rating) {
-    url.searchParams.set("has_challenger_300_type_rating", params.has_challenger_300_type_rating);
+    query = query.eq("has_challenger_300_type_rating", params.has_challenger_300_type_rating === "true");
   }
 
-  const urlStr = url.toString();
-  const res = await fetch(urlStr, {
-    cache: "no-store",
-    headers: { Accept: "application/json" },
-  });
+  const { data, error } = await query;
+  if (error) throw new Error(`fetchJobs failed: ${error.message}`);
 
-  if (!res.ok) return throwHttpError(res, urlStr, "fetchJobs");
-  return res.json();
+  let jobs = (data ?? []) as JobRow[];
+
+  // Text search (matches backend behavior)
+  if (params.q) {
+    const qLower = params.q.toLowerCase();
+    jobs = jobs.filter((j) =>
+      [j.candidate_name, j.email, j.phone, j.location, j.category, j.employment_type, j.soft_gate_pic_status, j.notes]
+        .filter(Boolean)
+        .some((f) => String(f).toLowerCase().includes(qLower)),
+    );
+  }
+
+  return { ok: true, count: jobs.length, jobs };
+}
+
+// ---------------------------------------------------------------------------
+// Job detail — still proxies to Cloud Run (needs signed file URLs from GCS)
+// ---------------------------------------------------------------------------
+
+const BASE = process.env.JOB_API_BASE_URL;
+
+function mustBase(): string {
+  if (!BASE) throw new Error("Missing JOB_API_BASE_URL in .env.local");
+  return BASE.replace(/\/$/, "");
 }
 
 export async function fetchJobDetail(applicationId: string | number): Promise<JobDetailResponse> {
@@ -70,6 +76,9 @@ export async function fetchJobDetail(applicationId: string | number): Promise<Jo
     headers: { Accept: "application/json" },
   });
 
-  if (!res.ok) return throwHttpError(res, urlStr, "fetchJobDetail");
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`fetchJobDetail failed: ${res.status} url=${urlStr} body=${body.slice(0, 800)}`);
+  }
   return res.json();
 }

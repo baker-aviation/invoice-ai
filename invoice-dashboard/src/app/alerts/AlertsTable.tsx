@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Badge } from "@/components/Badge";
 
 type AlertRow = {
@@ -36,10 +36,8 @@ type ShareState = "idle" | "loading" | "success" | "error";
 
 const PAGE_SIZE = 25;
 
-export default function AlertsTable() {
-  const [alerts, setAlerts] = useState<AlertRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+export default function AlertsTable({ initialAlerts }: { initialAlerts: AlertRow[] }) {
+  const [alerts] = useState<AlertRow[]>(initialAlerts);
 
   const [airport, setAirport] = useState<string>("all");
   const [vendor, setVendor] = useState<string>("all");
@@ -48,19 +46,6 @@ export default function AlertsTable() {
   const [flushMsg, setFlushMsg] = useState<string>("");
   const [page, setPage] = useState(0);
   const [shareStates, setShareStates] = useState<Record<string, ShareState>>({});
-
-  useEffect(() => {
-    fetch("/api/alerts?limit=200")
-      .then((r) => r.json())
-      .then((data) => {
-        setAlerts(data.alerts ?? []);
-        setLoading(false);
-      })
-      .catch((e) => {
-        setError(String(e?.message ?? e));
-        setLoading(false);
-      });
-  }, []);
 
   const airports = useMemo(() => {
     const set = new Set<string>();
@@ -237,31 +222,16 @@ export default function AlertsTable() {
               Clear
             </button>
 
-            {!loading && (
-              <div className="text-xs text-gray-500">
-                Showing <span className="font-medium text-gray-900">{filtered.length}</span> of{" "}
-                <span className="font-medium text-gray-900">{alerts.length}</span>
-              </div>
-            )}
+            <div className="text-xs text-gray-500">
+              Showing <span className="font-medium text-gray-900">{filtered.length}</span> of{" "}
+              <span className="font-medium text-gray-900">{alerts.length}</span>
+            </div>
           </div>
         </div>
       </div>
 
-      {/* Loading / error states */}
-      {loading && (
-        <div className="rounded-xl border bg-white shadow-sm px-6 py-12 text-center text-gray-400 animate-pulse">
-          Loading alerts…
-        </div>
-      )}
-
-      {error && (
-        <div className="rounded-xl border border-red-200 bg-red-50 px-6 py-4 text-sm text-red-700">
-          Error loading alerts: {error}
-        </div>
-      )}
-
       {/* Table */}
-      {!loading && !error && (
+      {(
         <div className="rounded-xl border bg-white overflow-hidden shadow-sm">
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
@@ -342,7 +312,7 @@ export default function AlertsTable() {
       )}
 
       {/* Pagination */}
-      {!loading && !error && totalPages > 1 && (
+      {totalPages > 1 && (
         <div className="flex items-center justify-between">
           <button
             type="button"
@@ -366,7 +336,7 @@ export default function AlertsTable() {
         </div>
       )}
 
-      {!loading && !error && (
+      {(
         <div className="text-xs text-gray-500">
           Showing {filtered.length} alerts across {totalPages} page{totalPages === 1 ? "" : "s"}.
         </div>
