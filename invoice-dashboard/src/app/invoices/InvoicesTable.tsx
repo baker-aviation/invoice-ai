@@ -27,6 +27,7 @@ const DOC_TYPE_MAP: Record<string, InvoiceCategory> = {
   fuel_release:  "FBO/Fuel",
   fbo_fee:       "FBO/Fuel",
   maintenance:   "Maintenance/Parts",
+  parts:         "Maintenance/Parts",
   lease_utility: "Lease/Utilities",
 };
 

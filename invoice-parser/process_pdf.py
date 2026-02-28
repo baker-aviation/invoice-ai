@@ -432,17 +432,44 @@ def classify_doc_type(raw: dict) -> str:
     ]):
         return "lease_utility"
 
+    # Parts / supplies invoices (before fbo_fee to avoid "handling" false positive)
+    if any(k in text for k in [
+        "parts order",
+        "part number",
+        "p/n ",
+        "part no",
+        "assembly",
+        "civil aircraft",
+        "aircraft parts",
+        "aircraft supplies",
+        "aviall",
+        "heico",
+        "honeywell",
+        "textron aviation parts",
+        "shipping and handling",
+        "ship to",
+        "qty shipped",
+        "back order",
+        "unit of measure",
+        "packing slip",
+        "bill of material",
+    ]):
+        return "parts"
+
     if any(k in text for k in [
         "hangar",
         "parking",
-        "handling",
-        "ramp",
+        "ground handling",
+        "ramp handling",
+        "ramp fee",
         "facility fee",
         "gpu",
         "lav",
         "de-ice",
         "catering",
-        "landing fee"
+        "landing fee",
+        "into-plane",
+        "overnight fee",
     ]):
         return "fbo_fee"
 
