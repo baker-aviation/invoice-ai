@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useState, useMemo, useRef, useCallback } from "react";
+import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import type { Flight } from "@/lib/opsApi";
 import {
   computeOvernightPositions,
@@ -1146,7 +1146,7 @@ function VanLiveLocations({
         <div>
           <div className="text-sm font-semibold text-gray-700">Van Live Tracking</div>
           <div className="text-xs text-gray-500 mt-0.5">
-            {unconfigured ? "Add SAMSARA_API_KEY to ops-monitor secrets to enable live locations." : `Samsara error: ${error}`}
+            {unconfigured ? "Add SAMSARA_API_KEY to Vercel environment variables to enable live locations." : `Samsara error: ${error}`}
           </div>
         </div>
       </div>
@@ -1272,8 +1272,8 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
     }
   }
 
-  useMemo(() => { loadSamsara(); }, []);
-  useMemo(() => {
+  useEffect(() => { loadSamsara(); }, []);
+  useEffect(() => {
     const id = setInterval(loadSamsara, 240_000);
     return () => clearInterval(id);
   }, []);
@@ -1341,7 +1341,7 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
   // ── Samsara diagnostics (odometer + check engine light) ──
   const [diagData, setDiagData] = useState<Map<string, VehicleDiag>>(new Map());
 
-  useMemo(() => {
+  useEffect(() => {
     async function loadDiags() {
       try {
         const res = await fetch("/api/vans/diagnostics", { cache: "no-store" });
