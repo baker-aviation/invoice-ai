@@ -42,13 +42,23 @@ export async function signGcsUrl(
   const storage = getStorage();
   if (!storage) return null;
 
+  // Detect content type from file extension
+  const ext = path.split(".").pop()?.toLowerCase();
+  const contentType =
+    ext === "pdf" ? "application/pdf"
+    : ext === "docx" ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    : ext === "doc" ? "application/msword"
+    : "application/octet-stream";
+
+  const filename = path.split("/").pop() ?? "file";
+
   try {
     const [url] = await storage.bucket(bucket).file(path).getSignedUrl({
       version: "v4",
       action: "read",
       expires: Date.now() + expiresMinutes * 60 * 1000,
-      responseType: "application/pdf",
-      responseDisposition: 'inline; filename="invoice.pdf"',
+      responseType: contentType,
+      responseDisposition: `inline; filename="${filename}"`,
     });
     return url;
   } catch {

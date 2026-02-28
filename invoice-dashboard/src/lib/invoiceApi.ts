@@ -1,4 +1,5 @@
 import { createServiceClient } from "@/lib/supabase/service";
+import { signGcsUrl } from "@/lib/gcs";
 import type { AlertRow, AlertsResponse, InvoiceDetailResponse, InvoiceListItem, InvoiceListResponse } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
@@ -91,15 +92,20 @@ export async function fetchInvoiceDetail(documentId: string): Promise<InvoiceDet
   if (error) throw new Error(`fetchInvoiceDetail failed: ${error.message}`);
   if (!data) throw new Error("Invoice not found");
 
-  // Check if a PDF exists in GCS for this document
+  // Look up GCS location and generate a signed URL for inline viewing
   const { data: doc } = await supa
     .from("documents")
     .select("gcs_bucket, gcs_path")
     .eq("id", documentId)
     .maybeSingle();
 
-  // Point to our internal API route which handles GCS signing or Cloud Run proxy
-  const signed_pdf_url = doc?.gcs_path ? `/api/invoices/${documentId}` : null;
+  let signed_pdf_url: string | null = null;
+  if (doc?.gcs_bucket && doc?.gcs_path) {
+    // Try direct GCS signing (works in iframes — no redirect)
+    signed_pdf_url = await signGcsUrl(doc.gcs_bucket, doc.gcs_path);
+    // Fallback: internal API route (opens in new tab via redirect)
+    if (!signed_pdf_url) signed_pdf_url = `/api/invoices/${documentId}`;
+  }
 
   return { ok: true, invoice: data, signed_pdf_url };
 }
