@@ -7,8 +7,8 @@ import { GoogleAuth } from "google-auth-library";
  * Uses a GCP service account to generate an OIDC ID token, then sends
  * it as a Bearer token in the Authorization header.
  *
- * Env vars:
- *   GCP_SA_KEY — base64-encoded JSON key for the service account
+ * Env vars (pick one):
+ *   GCP_SA_KEY — base64-encoded OR raw JSON key for the service account
  *               (omit if running on GCP with default credentials)
  */
 
@@ -17,11 +17,13 @@ let _auth: GoogleAuth | null = null;
 function getAuth(): GoogleAuth {
   if (_auth) return _auth;
 
-  const b64 = process.env.GCP_SA_KEY;
-  if (b64) {
-    const credentials = JSON.parse(
-      Buffer.from(b64, "base64").toString("utf-8"),
-    );
+  const raw = process.env.GCP_SA_KEY;
+  if (raw) {
+    // Accept both raw JSON (starts with "{") and base64-encoded JSON
+    const json = raw.trimStart().startsWith("{")
+      ? raw
+      : Buffer.from(raw, "base64").toString("utf-8");
+    const credentials = JSON.parse(json);
     _auth = new GoogleAuth({ credentials });
   } else {
     // Fall back to application default credentials (works on GCP)
