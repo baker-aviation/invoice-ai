@@ -197,21 +197,6 @@ function AlertCard({ alert, onAck }: { alert: OpsAlert; onAck: (id: string) => v
             )}
           </span>
         )}
-        {isNotam && (nd?.issued || nd?.issue_date_utc) && (
-          <span className="text-xs text-gray-500 bg-white/80 rounded px-1.5 py-0.5">
-            <span className="text-gray-400">Issued </span>
-            <span className="font-mono">{fmtNotamDate(nd?.issued ?? null, nd?.issue_date_utc ?? null)}</span>
-          </span>
-        )}
-        {(nd?.effective_start || nd?.start_date_utc || notamTimes?.from) && (
-          <span className="text-xs text-gray-600 bg-white/80 rounded px-1.5 py-0.5">
-            <span className="text-gray-400">Eff </span>
-            <span className="font-mono">{fmtNotamDate(nd?.effective_start ?? null, nd?.start_date_utc ?? notamTimes?.from ?? null)}</span>
-            {(nd?.effective_end || nd?.end_date_utc || notamTimes?.to) && (
-              <span className="font-mono"> → {notamTimes?.to === "PERM" ? "PERM" : fmtNotamDate(nd?.effective_end ?? null, nd?.end_date_utc ?? notamTimes?.to ?? null)}</span>
-            )}
-          </span>
-        )}
         <div className="ml-auto flex items-center gap-1.5 shrink-0">
           <button
             type="button"
