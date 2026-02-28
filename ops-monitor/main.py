@@ -10,10 +10,16 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 from fastapi import FastAPI, HTTPException, Query
 from icalendar import Calendar
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from supa import sb
 
 app = FastAPI()
+limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 
@@ -226,7 +232,8 @@ def get_vans():
         )
         r.raise_for_status()
     except requests.RequestException as e:
-        raise HTTPException(status_code=502, detail=f"Samsara API error: {e}")
+        print(f"Samsara API error (locations): {e}", flush=True)
+        raise HTTPException(status_code=502, detail="Samsara API error")
 
     raw = r.json().get("data") or []
     vans: List[Dict[str, Any]] = []
@@ -263,7 +270,8 @@ def get_vans_diagnostics():
         )
         r.raise_for_status()
     except requests.RequestException as e:
-        raise HTTPException(status_code=502, detail=f"Samsara API error: {e}")
+        print(f"Samsara API error (diagnostics): {e}", flush=True)
+        raise HTTPException(status_code=502, detail="Samsara API error")
 
     raw = r.json().get("data") or []
     vehicles: List[Dict[str, Any]] = []
@@ -832,7 +840,7 @@ def check_notams(lookahead_hours: int = Query(720, ge=1, le=720)):
         return {"ok": True, "timeout": True, "alerts_created": 0}
     except Exception as e:
         print(f"check_notams exception: {repr(e)}", flush=True)
-        raise HTTPException(500, detail=str(e))
+        raise HTTPException(500, detail="check_notams failed")
     return {"ok": True, **stats}
 
 

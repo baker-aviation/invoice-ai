@@ -84,8 +84,8 @@ export async function POST(req: NextRequest) {
     });
     return NextResponse.json(response);
   } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : String(e);
-    return NextResponse.json({ error: message }, { status: 502 });
+    console.error("Agent execution failed:", e);
+    return NextResponse.json({ error: "Agent execution failed" }, { status: 502 });
   }
 }
 

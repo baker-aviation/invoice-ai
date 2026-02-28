@@ -7,6 +7,9 @@ from pathlib import Path
 from google.cloud import storage
 
 from fastapi import FastAPI, HTTPException, Query
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from supabase import create_client
 from dotenv import load_dotenv
 
@@ -27,6 +30,9 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 supa = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 app = FastAPI(title="invoice-parser", version=os.environ.get("APP_VERSION", "0.2.0"))
+limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
 def run_cmd(cmd):
@@ -141,7 +147,8 @@ def parse_document(document_id: str):
             # if Supabase update fails, still raise the original error
             pass
 
-        raise HTTPException(status_code=500, detail=err)
+        print(f"parse_document error: {err}", flush=True)
+        raise HTTPException(status_code=500, detail="parse_document failed")
 
 
 @app.post("/jobs/parse_next")

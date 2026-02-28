@@ -20,7 +20,18 @@ export async function GET(req: NextRequest) {
   const { searchParams } = req.nextUrl;
   const upstream = new URL(`${BASE.replace(/\/$/, "")}/api/alerts`);
   for (const [k, v] of searchParams.entries()) {
-    if (ALLOWED_PARAMS.has(k)) {
+    if (!ALLOWED_PARAMS.has(k)) continue;
+    if (k === "limit") {
+      const n = parseInt(v, 10);
+      if (isNaN(n) || n < 1) continue;
+      upstream.searchParams.set(k, String(Math.min(n, 500)));
+    } else if (k === "offset") {
+      const n = parseInt(v, 10);
+      if (isNaN(n) || n < 0) continue;
+      upstream.searchParams.set(k, String(n));
+    } else if (k === "q" && v.length > 200) {
+      upstream.searchParams.set(k, v.slice(0, 200));
+    } else {
       upstream.searchParams.set(k, v);
     }
   }

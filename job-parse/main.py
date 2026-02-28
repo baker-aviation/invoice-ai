@@ -6,6 +6,9 @@ from typing import Any, Dict, List, Optional
 import requests
 from fastapi import FastAPI, HTTPException, Query
 from google.cloud import storage
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from supabase import create_client, Client
 from supa import safe_select_many, safe_select_one
 
@@ -16,6 +19,9 @@ from starlette.responses import RedirectResponse
 from datetime import datetime, timedelta, timezone
 
 app = FastAPI()
+limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # -------------------------
 # ENV / Config
@@ -591,7 +597,8 @@ def parse_application(application_id: int = Query(..., ge=1)):
     try:
         extracted = _openai_extract(combined_text)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"OpenAI extraction failed: {e}")
+        print(f"OpenAI extraction failed: {e}", flush=True)
+        raise HTTPException(status_code=500, detail="OpenAI extraction failed")
 
     # sanitize + compute soft gate
     extracted = _sanitize_for_db(extracted)
@@ -601,7 +608,8 @@ def parse_application(application_id: int = Query(..., ge=1)):
     try:
         _upsert_parse_row(supa, application_id, extracted)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Supabase upsert failed: {e}")
+        print(f"Supabase upsert failed: {e}", flush=True)
+        raise HTTPException(status_code=500, detail="Supabase upsert failed")
 
     return {
         "ok": True,

@@ -29,10 +29,17 @@ from google.auth.transport.requests import Request as AuthRequest
 from google.cloud import storage
 from google.oauth2 import service_account
 
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
+
 from rules import rule_matches
 from supa import safe_insert, safe_select_many, safe_select_one, safe_update, safe_update_where
 
 app = FastAPI()
+limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # ---------------------------------------------------------------------
 # Config
@@ -1089,7 +1096,8 @@ def send_alert(alert_id: str) -> Dict[str, Any]:
             return {"ok": True, "sent": True, "alert_id": alert_id}
         else:
             safe_update(ALERTS_TABLE, alert_id, {"slack_status": "error", "slack_error": json.dumps(slack_res)[:1000]})
-            raise HTTPException(status_code=502, detail=f"Slack error: {slack_res}")
+            print(f"Slack API error for alert {alert_id}: {slack_res}", flush=True)
+            raise HTTPException(status_code=502, detail="Slack delivery failed")
 
     except HTTPException:
         raise

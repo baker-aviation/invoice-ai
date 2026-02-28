@@ -3,3 +3,4 @@ uvicorn[standard]==0.29.0
 requests==2.32.3
 google-cloud-storage==2.16.0
 supabase==2.4.6
+slowapi==0.1.9

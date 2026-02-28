@@ -5,3 +5,4 @@ google-cloud-storage
 supabase
 pypdf
 python-docx
+slowapi==0.1.9

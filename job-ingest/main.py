@@ -7,10 +7,16 @@ from typing import Any, Dict, List, Optional
 import requests
 from fastapi import FastAPI, HTTPException, Query
 from google.cloud import storage
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from supa import sb
 
 app = FastAPI()
+limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # -------------------------
 # Config
@@ -300,7 +306,8 @@ def pull_applicants(
         try:
             app_id = _safe_insert_application(supa, app_row)
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Supabase insert failed: {e}")
+            print(f"Supabase insert failed: {e}", flush=True)
+            raise HTTPException(status_code=500, detail="Supabase insert failed")
 
         uploaded_files: List[Dict[str, Any]] = []
 
