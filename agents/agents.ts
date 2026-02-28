@@ -1,6 +1,6 @@
 import type { AgentConfig, AgentRole } from "./types";
 
-const MODEL = "claude-sonnet-4-20250514";
+const MODEL = "claude-sonnet-4-6";
 
 /**
  * Environment variable names for each agent's system prompt.
