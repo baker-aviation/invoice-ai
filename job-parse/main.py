@@ -12,7 +12,9 @@ from slowapi.util import get_remote_address
 from supabase import create_client, Client
 from supa import safe_select_many, safe_select_one
 
+import base64
 from pypdf import PdfReader
+import fitz  # PyMuPDF — renders PDF pages to images for OCR fallback
 from docx import Document
 from starlette.responses import RedirectResponse
 
@@ -46,6 +48,7 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 # Parsing limits
 MAX_CHARS_PER_FILE = int(os.getenv("MAX_CHARS_PER_FILE", "120000"))
 MAX_TOTAL_CHARS = int(os.getenv("MAX_TOTAL_CHARS", "180000"))
+MAX_OCR_PAGES = int(os.getenv("MAX_OCR_PAGES", "5"))
 
 # Soft gate PIC thresholds (your rule)
 PIC_SOFT_GATE_TT = float(os.getenv("PIC_SOFT_GATE_TT", "3000"))
@@ -169,6 +172,90 @@ def _extract_text_pdf(data: bytes) -> str:
         if t.strip():
             parts.append(t)
     return "\n\n".join(parts).strip()
+
+
+def _ocr_pdf_via_vision(data: bytes) -> str:
+    """
+    Fallback for scanned/image-based PDFs: render pages to PNG with PyMuPDF,
+    then send to OpenAI vision API to extract text.
+    """
+    api_key = OPENAI_API_KEY
+    if not api_key:
+        return ""
+
+    try:
+        doc = fitz.open(stream=data, filetype="pdf")
+    except Exception as e:
+        print(f"OCR: fitz.open failed: {e}", flush=True)
+        return ""
+
+    page_count = min(len(doc), MAX_OCR_PAGES)
+    if page_count == 0:
+        doc.close()
+        return ""
+
+    # Render pages to base64 PNGs
+    images: List[Dict[str, Any]] = []
+    for i in range(page_count):
+        try:
+            page = doc[i]
+            # 2x zoom for readable OCR (144 DPI)
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+            png_bytes = pix.tobytes("png")
+            b64 = base64.b64encode(png_bytes).decode("ascii")
+            images.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/png;base64,{b64}",
+                    "detail": "high",
+                },
+            })
+        except Exception as e:
+            print(f"OCR: page {i} render failed: {e}", flush=True)
+    doc.close()
+
+    if not images:
+        return ""
+
+    print(f"OCR: sending {len(images)} page(s) to vision API", flush=True)
+
+    # Build the message content: instruction text + page images
+    content: List[Dict[str, Any]] = [
+        {"type": "input_text", "text": (
+            "Extract ALL text from this scanned document. "
+            "Preserve the original layout, headings, and structure as much as possible. "
+            "Return only the extracted text, no commentary."
+        )},
+    ]
+    content.extend(images)
+
+    payload = {
+        "model": OPENAI_MODEL,
+        "input": [{"role": "user", "content": content}],
+    }
+
+    try:
+        r = requests.post(
+            "https://api.openai.com/v1/responses",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=120,
+        )
+        if r.status_code >= 400:
+            print(f"OCR: OpenAI vision error {r.status_code}: {(r.text or '')[:500]}", flush=True)
+            return ""
+
+        resp_json = r.json()
+        text_out = resp_json["output"][0]["content"][0]["text"]
+        text_out = (_strip_nulls(text_out) or "").strip()
+        print(f"OCR: extracted {len(text_out)} chars", flush=True)
+        return text_out
+    except Exception as e:
+        print(f"OCR: vision request failed: {e}", flush=True)
+        return ""
 
 
 def _extract_text_docx(data: bytes) -> str:
@@ -567,6 +654,10 @@ def parse_application(application_id: int = Query(..., ge=1)):
 
         if ext == "pdf":
             text = _extract_text_pdf(blob_bytes)
+            # Fallback: scanned/image PDFs — use OpenAI vision OCR
+            if not text.strip():
+                print(f"PDF text extraction empty for {filename}, trying vision OCR...", flush=True)
+                text = _ocr_pdf_via_vision(blob_bytes)
         elif ext == "docx":
             text = _extract_text_docx(blob_bytes)
         else:
