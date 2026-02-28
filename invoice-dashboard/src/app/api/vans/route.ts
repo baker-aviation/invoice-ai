@@ -17,9 +17,22 @@ export async function GET(req: NextRequest) {
 
   try {
     const res = await cloudRunFetch(`${base}/api/vans`, { cache: "no-store" });
-    const data = await res.json();
-    return NextResponse.json(data, { status: res.status });
-  } catch {
-    return NextResponse.json({ error: "Upstream unavailable" }, { status: 502 });
+    const text = await res.text();
+    let data: unknown;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      // Cloud Run returned non-JSON (HTML error page, container crash, etc.)
+      return NextResponse.json(
+        { error: "Upstream returned non-JSON", status: res.status, body: text.slice(0, 500) },
+        { status: 502 },
+      );
+    }
+    return NextResponse.json(data, { status: res.ok ? 200 : res.status });
+  } catch (err) {
+    return NextResponse.json(
+      { error: "Upstream unavailable", detail: String(err) },
+      { status: 502 },
+    );
   }
 }

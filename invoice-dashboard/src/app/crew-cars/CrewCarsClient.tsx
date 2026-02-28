@@ -357,7 +357,7 @@ export default function CrewCarsClient() {
     try {
       const res  = await fetch("/api/vans", { cache: "no-store" });
       const data = await res.json();
-      if (!data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      if (!data.ok) throw new Error(data.detail || data.error || `HTTP ${res.status}`);
       setVans(data.vans ?? []);
       setLastFetch(new Date());
     } catch (e: unknown) {
