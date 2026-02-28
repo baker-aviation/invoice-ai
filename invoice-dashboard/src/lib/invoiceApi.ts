@@ -110,6 +110,29 @@ export async function fetchAlerts(params: {
   const { data, error } = await query;
   if (error) throw new Error(`fetchAlerts failed: ${error.message}`);
 
+  // Collect document_ids that need fallback lookups
+  const docIds = new Set<string>();
+  for (const row of data ?? []) {
+    if (row.document_id) docIds.add(row.document_id as string);
+  }
+
+  // Batch-fetch parsed_invoices for fallback vendor/tail/airport
+  const invoiceLookup = new Map<string, { vendor_name: string | null; tail_number: string | null; airport_code: string | null }>();
+  if (docIds.size > 0) {
+    const { data: invoiceRows } = await supa
+      .from("parsed_invoices")
+      .select("document_id, vendor_name, tail_number, airport_code")
+      .in("document_id", [...docIds]);
+
+    for (const inv of invoiceRows ?? []) {
+      invoiceLookup.set(inv.document_id as string, {
+        vendor_name: inv.vendor_name as string | null,
+        tail_number: inv.tail_number as string | null,
+        airport_code: inv.airport_code as string | null,
+      });
+    }
+  }
+
   let alerts: AlertRow[] = [];
   for (const row of data ?? []) {
     const mp = (row.match_payload ?? {}) as Record<string, unknown>;
@@ -122,6 +145,9 @@ export async function fetchAlerts(params: {
     // Only include actionable alerts (has fee name + positive amount)
     if (!feeName || !feeAmount || feeAmount <= 0) continue;
 
+    // Fallback to parsed_invoices for vendor/tail/airport
+    const fallback = invoiceLookup.get(row.document_id as string);
+
     alerts.push({
       id: row.id as string,
       created_at: row.created_at as string,
@@ -129,9 +155,9 @@ export async function fetchAlerts(params: {
       rule_name: (mp.rule_name as string | undefined) ?? "",
       status: row.status as string | null,
       slack_status: row.slack_status as string | null,
-      vendor: (mp.vendor as string | undefined) ?? null,
-      tail: (mp.tail as string | undefined) ?? null,
-      airport_code: (mp.airport_code as string | undefined) ?? null,
+      vendor: (mp.vendor as string | undefined) || fallback?.vendor_name || null,
+      tail: (mp.tail as string | undefined) || fallback?.tail_number || null,
+      airport_code: (mp.airport_code as string | undefined) || fallback?.airport_code || null,
       fee_name: feeName,
       fee_amount: feeAmount,
       currency: (mp.currency as string | undefined) ?? null,
