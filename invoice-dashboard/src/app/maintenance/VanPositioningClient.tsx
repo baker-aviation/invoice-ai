@@ -772,51 +772,6 @@ const haversineKmClient = (lat1: number, lon1: number, lat2: number, lon2: numbe
 // Out-of-range alert banner
 // ---------------------------------------------------------------------------
 
-function OutOfRangeAlerts({ vans }: { vans: VanAssignment[] }) {
-  const outOfRange = vans.flatMap((van) => {
-    const color = VAN_COLORS[(van.vanId - 1) % VAN_COLORS.length];
-    return van.aircraft
-      .filter((ac) => haversineKmClient(van.lat, van.lon, ac.lat, ac.lon) > THREE_HOUR_RADIUS_KM)
-      .map((ac) => ({
-        vanId: van.vanId,
-        color,
-        tail: ac.tail,
-        airport: ac.airport,
-        distKm: Math.round(haversineKmClient(van.lat, van.lon, ac.lat, ac.lon)),
-      }));
-  });
-
-  if (outOfRange.length === 0) return null;
-
-  return (
-    <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 space-y-2">
-      <div className="flex items-center gap-2 text-sm font-semibold text-red-700">
-        ⚠ {outOfRange.length} aircraft outside 3-hour van range
-      </div>
-      <div className="flex flex-wrap gap-2">
-        {outOfRange.map(({ vanId, color, tail, airport, distKm }) => (
-          <div
-            key={`${vanId}-${tail}`}
-            className="flex items-center gap-1.5 bg-white border border-red-200 rounded-lg px-2.5 py-1.5 text-xs"
-          >
-            <span
-              className="inline-block w-3 h-3 rounded-full flex-shrink-0"
-              style={{ background: color }}
-            />
-            <span className="font-semibold">Van {vanId}</span>
-            <span className="text-gray-400">→</span>
-            <span className="font-mono font-semibold">{tail}</span>
-            <span className="text-gray-500">@ {airport}</span>
-            <span className="text-red-600 font-semibold">
-              ~{Math.round(distKm / (THREE_HOUR_RADIUS_KM / 3))}h away
-            </span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Main client component
 // ---------------------------------------------------------------------------
@@ -940,36 +895,82 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
       {/* ── Stats ── */}
       <StatsBar positions={positions} vans={vans} flightCount={flightsForDay.length} />
 
-      {/* ── Check engine overview ── */}
+      {/* ── AOG Status ── */}
       {(() => {
         const celVans = aogSamsaraVans.filter((v) => diagData.get(v.id)?.check_engine_on === true);
-        if (celVans.length === 0) return null;
+        const outOfRange = vans.flatMap((van) => {
+          const color = VAN_COLORS[(van.vanId - 1) % VAN_COLORS.length];
+          return van.aircraft
+            .filter((ac) => haversineKmClient(van.lat, van.lon, ac.lat, ac.lon) > THREE_HOUR_RADIUS_KM)
+            .map((ac) => ({
+              vanId: van.vanId,
+              color,
+              tail: ac.tail,
+              airport: ac.airport,
+              distKm: Math.round(haversineKmClient(van.lat, van.lon, ac.lat, ac.lon)),
+            }));
+        });
+        const hasAlerts = celVans.length > 0 || outOfRange.length > 0;
+
         return (
-          <div className="rounded-xl border-2 border-red-300 bg-red-50 px-5 py-4 shadow-sm">
-            <div className="flex items-center gap-3 mb-2">
-              <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center text-xl shrink-0">⚠</div>
-              <div>
-                <div className="text-base font-bold text-red-800">
-                  Vehicles with Check Engine Lights
+          <div className={`rounded-xl border-2 px-5 py-4 shadow-sm ${
+            hasAlerts ? "border-red-300 bg-red-50" : "border-green-300 bg-green-50"
+          }`}>
+            <div className="flex items-center gap-3">
+              <div className={`w-10 h-10 rounded-full flex items-center justify-center text-xl shrink-0 ${
+                hasAlerts ? "bg-red-100" : "bg-green-100"
+              }`}>
+                {hasAlerts ? "⚠" : "✓"}
+              </div>
+              <div className="flex-1">
+                <div className={`text-base font-bold ${hasAlerts ? "text-red-800" : "text-green-800"}`}>
+                  AOG Status
                 </div>
-                <div className="text-sm text-red-600 font-semibold">
-                  {celVans.length} vehicle{celVans.length !== 1 ? "s" : ""} need{celVans.length === 1 ? "s" : ""} service
-                </div>
+                {hasAlerts ? (
+                  <div className="text-sm text-red-600 font-semibold">
+                    {[
+                      celVans.length > 0 && `${celVans.length} check engine light${celVans.length !== 1 ? "s" : ""}`,
+                      outOfRange.length > 0 && `${outOfRange.length} aircraft outside 3-hour range`,
+                    ].filter(Boolean).join(" · ")}
+                  </div>
+                ) : (
+                  <div className="text-sm text-green-700 font-medium">
+                    All {aogSamsaraVans.length} vans clear — no alerts
+                  </div>
+                )}
               </div>
             </div>
-            <div className="flex flex-wrap gap-2 ml-[52px]">
-              {celVans.map((v) => (
-                <span key={v.id} className="inline-flex items-center gap-1.5 bg-white border border-red-200 rounded-lg px-3 py-1.5 text-xs font-medium text-red-700">
-                  {v.name}
-                </span>
-              ))}
-            </div>
+            {/* Detail pills when alerts exist */}
+            {hasAlerts && (
+              <div className="flex flex-wrap gap-2 mt-3 ml-[52px]">
+                {celVans.map((v) => (
+                  <span key={`cel-${v.id}`} className="inline-flex items-center gap-1.5 bg-white border border-red-200 rounded-lg px-3 py-1.5 text-xs font-medium text-red-700">
+                    {v.name} — Check Engine
+                  </span>
+                ))}
+                {outOfRange.map(({ vanId, color, tail, airport, distKm }) => (
+                  <div
+                    key={`oor-${vanId}-${tail}`}
+                    className="flex items-center gap-1.5 bg-white border border-red-200 rounded-lg px-2.5 py-1.5 text-xs"
+                  >
+                    <span
+                      className="inline-block w-3 h-3 rounded-full flex-shrink-0"
+                      style={{ background: color }}
+                    />
+                    <span className="font-semibold">Van {vanId}</span>
+                    <span className="text-gray-400">&rarr;</span>
+                    <span className="font-mono font-semibold">{tail}</span>
+                    <span className="text-gray-500">@ {airport}</span>
+                    <span className="text-red-600 font-semibold">
+                      ~{Math.round(distKm / (THREE_HOUR_RADIUS_KM / 3))}h
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         );
       })()}
-
-      {/* ── Out-of-range alerts ── */}
-      <OutOfRangeAlerts vans={vans} />
 
       {/* ── Tab bar ── */}
       <div className="flex gap-3">

@@ -394,6 +394,30 @@ export default function CrewCarsClient() {
   const crewCars = vans.filter((v) => !isAogVehicle(v.name));
   const celVehicles = crewCars.filter((v) => diagData.get(v.id)?.check_engine_on === true);
 
+  // Oil change overdue count (read localStorage to compute at parent level)
+  const oilOverdueVehicles = useMemo(() => {
+    try {
+      const saved = localStorage.getItem("oil_change_records");
+      if (!saved) return [];
+      const recs: Record<string, OilChangeRecord> = JSON.parse(saved);
+      const today = new Date();
+      return crewCars.filter((v) => {
+        const rec = recs[v.id];
+        if (!rec?.lastChangedDate) return false;
+        const daysSince = Math.floor(
+          (today.getTime() - new Date(rec.lastChangedDate + "T12:00:00").getTime()) / 86400000,
+        );
+        if (daysSince > 90) return true;
+        const lastMi = rec.mileage ? parseInt(rec.mileage.replace(/,/g, "")) : null;
+        const diag = diagData.get(v.id);
+        if (diag?.odometer_miles != null && lastMi != null && diag.odometer_miles - lastMi >= 5000) return true;
+        return false;
+      });
+    } catch { return []; }
+  }, [crewCars, diagData]);
+
+  const hasAlerts = celVehicles.length > 0 || oilOverdueVehicles.length > 0;
+
   if (loading && vans.length === 0) {
     return (
       <div className="rounded-xl border bg-white shadow-sm px-5 py-4 text-sm text-gray-400 animate-pulse">
@@ -429,29 +453,52 @@ export default function CrewCarsClient() {
 
   return (
     <div className="space-y-4">
-      {/* Check engine overview */}
-      {celVehicles.length > 0 && (
-        <div className="rounded-xl border-2 border-red-300 bg-red-50 px-5 py-4 shadow-sm">
-          <div className="flex items-center gap-3 mb-2">
-            <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center text-xl shrink-0">⚠</div>
-            <div>
-              <div className="text-base font-bold text-red-800">
-                Vehicles with Check Engine Lights
-              </div>
-              <div className="text-sm text-red-600 font-semibold">
-                {celVehicles.length} vehicle{celVehicles.length !== 1 ? "s" : ""} need{celVehicles.length === 1 ? "s" : ""} service
-              </div>
-            </div>
+      {/* Crew Car Status */}
+      <div className={`rounded-xl border-2 px-5 py-4 shadow-sm ${
+        hasAlerts
+          ? "border-red-300 bg-red-50"
+          : "border-green-300 bg-green-50"
+      }`}>
+        <div className="flex items-center gap-3">
+          <div className={`w-10 h-10 rounded-full flex items-center justify-center text-xl shrink-0 ${
+            hasAlerts ? "bg-red-100" : "bg-green-100"
+          }`}>
+            {hasAlerts ? "⚠" : "✓"}
           </div>
-          <div className="flex flex-wrap gap-2 ml-[52px]">
+          <div className="flex-1">
+            <div className={`text-base font-bold ${hasAlerts ? "text-red-800" : "text-green-800"}`}>
+              Crew Car Status
+            </div>
+            {hasAlerts ? (
+              <div className="text-sm text-red-600 font-semibold">
+                {[
+                  celVehicles.length > 0 && `${celVehicles.length} check engine light${celVehicles.length !== 1 ? "s" : ""}`,
+                  oilOverdueVehicles.length > 0 && `${oilOverdueVehicles.length} oil change${oilOverdueVehicles.length !== 1 ? "s" : ""} overdue`,
+                ].filter(Boolean).join(" · ")}
+              </div>
+            ) : (
+              <div className="text-sm text-green-700 font-medium">
+                All {crewCars.length} vehicles clear — no alerts
+              </div>
+            )}
+          </div>
+        </div>
+        {/* List affected vehicles when there are alerts */}
+        {hasAlerts && (
+          <div className="flex flex-wrap gap-2 mt-3 ml-[52px]">
             {celVehicles.map((v) => (
-              <span key={v.id} className="inline-flex items-center gap-1.5 bg-white border border-red-200 rounded-lg px-3 py-1.5 text-xs font-medium text-red-700">
-                {v.name}
+              <span key={`cel-${v.id}`} className="inline-flex items-center gap-1.5 bg-white border border-red-200 rounded-lg px-3 py-1.5 text-xs font-medium text-red-700">
+                {v.name} — Check Engine
+              </span>
+            ))}
+            {oilOverdueVehicles.filter((v) => !celVehicles.some((c) => c.id === v.id)).map((v) => (
+              <span key={`oil-${v.id}`} className="inline-flex items-center gap-1.5 bg-white border border-yellow-200 rounded-lg px-3 py-1.5 text-xs font-medium text-yellow-700">
+                {v.name} — Oil Overdue
               </span>
             ))}
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       {/* Live map */}
       <div className="rounded-xl border bg-white shadow-sm overflow-hidden">
