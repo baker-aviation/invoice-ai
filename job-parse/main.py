@@ -234,7 +234,11 @@ def _openai_extract(resume_text: str) -> Dict[str, Any]:
         "properties": {
             "category": {
                 "type": "string",
-                "enum": ["pilot_sic", "pilot_pic", "dispatcher", "sales", "other"],
+                "enum": [
+                    "pilot_pic", "pilot_sic", "dispatcher",
+                    "maintenance", "sales", "hr", "admin",
+                    "management", "line_service", "other",
+                ],
             },
             "employment_type": {
                 "type": "string",
@@ -302,7 +306,14 @@ Rules:
 - category:
   - pilot_pic if applicant clearly indicates PIC time OR captain experience.
   - pilot_sic if applicant indicates SIC / First Officer time but PIC not clearly stated.
-  - dispatcher / sales / other as appropriate.
+  - dispatcher if dispatch or flight-following role.
+  - maintenance if A&P mechanic, avionics tech, or any aircraft maintenance role.
+  - sales if sales, business development, or charter sales.
+  - hr if human resources, recruiting, or talent acquisition.
+  - admin if administrative, office, or executive assistant role.
+  - management if operations manager, director, chief pilot, or similar leadership.
+  - line_service if line service, FBO ramp, fueling, or ground handling.
+  - other if none of the above clearly fits.
 
 - employment_type:
   - hourly if applicant explicitly mentions hourly rate, day rate, contract rate, or similar.

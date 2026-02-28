@@ -5,6 +5,62 @@ import { useMemo, useState } from "react";
 
 const PAGE_SIZE = 25;
 
+// ---------------------------------------------------------------------------
+// Display labels & colors
+// ---------------------------------------------------------------------------
+
+const CATEGORY_LABELS: Record<string, string> = {
+  pilot_pic: "Pilot — PIC",
+  pilot_sic: "Pilot — SIC",
+  dispatcher: "Dispatcher",
+  maintenance: "Maintenance",
+  sales: "Sales",
+  hr: "HR",
+  admin: "Admin",
+  management: "Management",
+  line_service: "Line Service",
+  other: "Other",
+};
+
+const CATEGORY_COLORS: Record<string, string> = {
+  pilot_pic: "bg-emerald-100 text-emerald-800",
+  pilot_sic: "bg-sky-100 text-sky-800",
+  dispatcher: "bg-violet-100 text-violet-800",
+  maintenance: "bg-amber-100 text-amber-800",
+  sales: "bg-pink-100 text-pink-800",
+  hr: "bg-indigo-100 text-indigo-800",
+  admin: "bg-slate-100 text-slate-700",
+  management: "bg-orange-100 text-orange-800",
+  line_service: "bg-teal-100 text-teal-800",
+  other: "bg-gray-100 text-gray-600",
+};
+
+const RATING_LABELS: Record<string, string> = {
+  "CE-750": "CE-750 Citation X",
+  "CL-300": "CL-300 Challenger 300",
+  "CL-350": "CL-350 Challenger 350",
+};
+
+function categoryLabel(raw: string): string {
+  return CATEGORY_LABELS[raw] ?? raw;
+}
+
+function categoryBadgeClass(raw: string): string {
+  return CATEGORY_COLORS[raw] ?? "bg-gray-100 text-gray-600";
+}
+
+function ratingLabel(code: string): string {
+  const upper = code.toUpperCase();
+  for (const [key, label] of Object.entries(RATING_LABELS)) {
+    if (upper.includes(key)) return label;
+  }
+  return code;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
 function normalize(v: any) {
   return String(v ?? "").trim();
 }
@@ -141,7 +197,7 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
         >
           {categories.map((c) => (
             <option key={c} value={c}>
-              {c === "ALL" ? "All categories" : c}
+              {c === "ALL" ? "All categories" : categoryLabel(c)}
             </option>
           ))}
         </select>
@@ -163,9 +219,9 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
           onChange={(e) => { setCitation(e.target.value); setPage(0); }}
           className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm"
         >
-          <option value="ALL">Citation X: all</option>
-          <option value="YES">Citation X: yes</option>
-          <option value="NO">Citation X: no</option>
+          <option value="ALL">CE-750 Citation X: all</option>
+          <option value="YES">CE-750 Citation X: yes</option>
+          <option value="NO">CE-750 Citation X: no</option>
         </select>
 
         <select
@@ -173,9 +229,9 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
           onChange={(e) => { setChallenger(e.target.value); setPage(0); }}
           className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm"
         >
-          <option value="ALL">CL-300: all</option>
-          <option value="YES">CL-300: yes</option>
-          <option value="NO">CL-300: no</option>
+          <option value="ALL">CL-300 Challenger: all</option>
+          <option value="YES">CL-300 Challenger: yes</option>
+          <option value="NO">CL-300 Challenger: no</option>
         </select>
 
         <select
@@ -225,15 +281,35 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
                     <div className="text-xs text-gray-500">{j.email ?? "—"}</div>
                   </td>
 
-                  <td className="px-4 py-3">{j.category ?? "—"}</td>
+                  <td className="px-4 py-3">
+                    {j.category ? (
+                      <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${categoryBadgeClass(j.category)}`}>
+                        {categoryLabel(j.category)}
+                      </span>
+                    ) : "—"}
+                  </td>
                   <td className="px-4 py-3">{j.location ?? "—"}</td>
                   <td className="px-4 py-3">{j.total_time_hours ?? "—"}</td>
                   <td className="px-4 py-3">{j.pic_time_hours ?? "—"}</td>
                   <td className="px-4 py-3">{j.soft_gate_pic_status ?? "—"}</td>
-                  <td className="px-4 py-3 text-xs text-gray-600">
-                    {hasCitationX(j) ? <span className="mr-1 font-medium">CE-750</span> : null}
-                    {hasChallenger(j) ? <span className="mr-1 font-medium">CL-300</span> : null}
-                    {hasSkillbridge(j) ? <span className="mr-1 text-blue-600">SB</span> : null}
+                  <td className="px-4 py-3 text-xs">
+                    <div className="flex flex-wrap gap-1">
+                      {hasCitationX(j) ? (
+                        <span className="inline-block rounded-full bg-emerald-50 text-emerald-700 px-2 py-0.5 font-medium">
+                          CE-750 Citation X
+                        </span>
+                      ) : null}
+                      {hasChallenger(j) ? (
+                        <span className="inline-block rounded-full bg-blue-50 text-blue-700 px-2 py-0.5 font-medium">
+                          CL-300 Challenger
+                        </span>
+                      ) : null}
+                      {hasSkillbridge(j) ? (
+                        <span className="inline-block rounded-full bg-purple-50 text-purple-700 px-2 py-0.5 font-medium">
+                          SkillBridge
+                        </span>
+                      ) : null}
+                    </div>
                   </td>
 
                   <td className="px-4 py-3 text-right">

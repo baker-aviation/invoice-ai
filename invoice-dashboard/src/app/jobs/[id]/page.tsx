@@ -8,6 +8,39 @@ function fmtDate(s: any) {
   return String(s ?? "").replace("T", " ").replace("+00:00", "Z");
 }
 
+const CATEGORY_LABELS: Record<string, string> = {
+  pilot_pic: "Pilot — PIC",
+  pilot_sic: "Pilot — SIC",
+  dispatcher: "Dispatcher",
+  maintenance: "Maintenance",
+  sales: "Sales",
+  hr: "HR",
+  admin: "Admin",
+  management: "Management",
+  line_service: "Line Service",
+  other: "Other",
+};
+
+const RATING_LABELS: Record<string, string> = {
+  "CE-750": "CE-750 (Citation X)",
+  "CE750": "CE-750 (Citation X)",
+  "C750": "C750 (Citation X)",
+  "CL-300": "CL-300 (Challenger 300)",
+  "CL-350": "CL-350 (Challenger 350)",
+};
+
+function categoryLabel(raw: string | null): string {
+  if (!raw) return "—";
+  return CATEGORY_LABELS[raw] ?? raw;
+}
+
+function ratingLabel(code: string): string {
+  for (const [key, label] of Object.entries(RATING_LABELS)) {
+    if (code.toUpperCase().includes(key.toUpperCase())) return label;
+  }
+  return code;
+}
+
 function mustJobBase(): string {
   const base = process.env.JOB_API_BASE_URL;
   if (!base) throw new Error("Missing JOB_API_BASE_URL in .env.local");
@@ -74,7 +107,7 @@ export default async function JobDetailPage({
 
             <div className="mt-4 grid gap-2 md:grid-cols-4 text-sm">
               <div>
-                <span className="text-gray-500">Category:</span> {job?.category ?? "—"}
+                <span className="text-gray-500">Category:</span> {categoryLabel(job?.category)}
               </div>
               <div>
                 <span className="text-gray-500">Employment:</span> {job?.employment_type ?? "—"}
@@ -102,7 +135,7 @@ export default async function JobDetailPage({
               <div className="md:col-span-4">
                 <span className="text-gray-500">Type ratings:</span>{" "}
                 {Array.isArray(job?.type_ratings) && job.type_ratings.length
-                  ? job.type_ratings.join(", ")
+                  ? job.type_ratings.map(ratingLabel).join(", ")
                   : "—"}
               </div>
 
