@@ -258,6 +258,69 @@ def _ocr_pdf_via_vision(data: bytes) -> str:
         return ""
 
 
+def _ocr_image_via_vision(data: bytes, content_type: str) -> str:
+    """
+    OCR a standalone image file (JPEG, PNG, etc.) via OpenAI vision API.
+    """
+    api_key = OPENAI_API_KEY
+    if not api_key:
+        return ""
+
+    # Map content type to data URI media type
+    ct = (content_type or "").lower()
+    if "png" in ct:
+        media = "image/png"
+    elif "webp" in ct:
+        media = "image/webp"
+    elif "gif" in ct:
+        media = "image/gif"
+    else:
+        media = "image/jpeg"  # default for jpg/bmp/tiff/unknown
+
+    b64 = base64.b64encode(data).decode("ascii")
+    print(f"OCR image: sending {len(data)} bytes as {media} to vision API", flush=True)
+
+    content: List[Dict[str, Any]] = [
+        {"type": "input_text", "text": (
+            "Extract ALL text from this scanned document image. "
+            "Preserve the original layout, headings, and structure as much as possible. "
+            "Return only the extracted text, no commentary."
+        )},
+        {
+            "type": "image_url",
+            "image_url": {"url": f"data:{media};base64,{b64}", "detail": "high"},
+        },
+    ]
+
+    payload = {
+        "model": OPENAI_MODEL,
+        "input": [{"role": "user", "content": content}],
+    }
+
+    try:
+        r = requests.post(
+            "https://api.openai.com/v1/responses",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=120,
+        )
+        if r.status_code >= 400:
+            print(f"OCR image: OpenAI vision error {r.status_code}: {(r.text or '')[:500]}", flush=True)
+            return ""
+
+        resp_json = r.json()
+        text_out = resp_json["output"][0]["content"][0]["text"]
+        text_out = (_strip_nulls(text_out) or "").strip()
+        print(f"OCR image: extracted {len(text_out)} chars", flush=True)
+        return text_out
+    except Exception as e:
+        print(f"OCR image: vision request failed: {e}", flush=True)
+        return ""
+
+
 def _extract_text_docx(data: bytes) -> str:
     doc = Document(io.BytesIO(data))
     parts: List[str] = []
@@ -277,6 +340,10 @@ def _guess_ext(filename: str, content_type: str) -> str:
         return "docx"
     if fn.endswith(".txt") or "text/plain" in ct:
         return "txt"
+    if any(fn.endswith(e) for e in (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tiff", ".tif")):
+        return "image"
+    if any(t in ct for t in ("image/jpeg", "image/png", "image/webp", "image/gif", "image/bmp", "image/tiff")):
+        return "image"
     return "unknown"
 
 
@@ -643,13 +710,15 @@ def parse_application(application_id: int = Query(..., ge=1)):
             continue
 
         ext = _guess_ext(filename, content_type)
-        if ext not in ("pdf", "docx", "txt"):
-            # skip images and unknown types for now
+        print(f"PARSE app={application_id} file={filename} ct={content_type} ext={ext}", flush=True)
+        if ext not in ("pdf", "docx", "txt", "image"):
+            print(f"  -> skipping unsupported type", flush=True)
             continue
 
         try:
             blob_bytes = _download_gcs_bytes(bucket, gcs_key)
-        except Exception:
+        except Exception as e:
+            print(f"  -> GCS download failed: {e}", flush=True)
             continue
 
         if ext == "pdf":
@@ -658,6 +727,8 @@ def parse_application(application_id: int = Query(..., ge=1)):
             if not text.strip():
                 print(f"PDF text extraction empty for {filename}, trying vision OCR...", flush=True)
                 text = _ocr_pdf_via_vision(blob_bytes)
+        elif ext == "image":
+            text = _ocr_image_via_vision(blob_bytes, content_type)
         elif ext == "docx":
             text = _extract_text_docx(blob_bytes)
         else:
