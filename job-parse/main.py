@@ -20,7 +20,10 @@ from starlette.responses import RedirectResponse
 
 from datetime import datetime, timedelta, timezone
 
+from auth_middleware import add_auth_middleware
+
 app = FastAPI()
+add_auth_middleware(app)
 limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
@@ -109,7 +112,7 @@ def _download_gcs_bytes(bucket: storage.Bucket, gcs_key: str) -> bytes:
     return blob.download_as_bytes()
 
 
-def _get_gcs_signed_url(bucket_name: str, gcs_key: str, expires_seconds: int = 604800) -> Optional[str]:
+def _get_gcs_signed_url(bucket_name: str, gcs_key: str, expires_seconds: int = 7200) -> Optional[str]:
     """
     Generate a V4 signed URL for a GCS object.
     Works locally and on Cloud Run. On Cloud Run, we often need to use the
@@ -673,7 +676,7 @@ def api_file_redirect(file_id: int):
     signed_url = _get_gcs_signed_url(
         f.get("gcs_bucket") or "",
         f.get("gcs_key") or "",
-        expires_seconds=604800,
+        expires_seconds=7200,  # 2 hours
     )
     if not signed_url:
         raise HTTPException(status_code=500, detail="could not sign url")
