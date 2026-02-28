@@ -369,6 +369,10 @@ def get_flights(
                     pool.shutdown(wait=False)
 
             for a in all_alerts:
+                # Filter out legacy noise RWY NOTAMs already in the DB
+                if a.get("alert_type") == "NOTAM_RUNWAY" and a.get("body"):
+                    if _is_noise_notam(a["body"].upper()):
+                        continue
                 # Extract NOTAM effective dates from raw_data, then drop
                 # the heavy blob to keep the response small.
                 rd = a.pop("raw_data", None)
