@@ -20,7 +20,7 @@ function fmtTime(s: any): string {
 // ── Auto-categorization ─────────────────────────────────────────────────────
 // Map doc_type from the backend classifier first; fall back to keyword heuristic.
 
-type InvoiceCategory = "FBO/Fuel" | "Maintenance/Parts" | "Lease/Utilities" | "Other";
+type InvoiceCategory = "FBO/Fuel" | "Maintenance/Parts" | "Lease/Utilities" | "Pilot Training" | "Pilot Operations" | "Other";
 
 // Direct mapping from backend doc_type values → frontend categories
 const DOC_TYPE_MAP: Record<string, InvoiceCategory> = {
@@ -31,21 +31,40 @@ const DOC_TYPE_MAP: Record<string, InvoiceCategory> = {
   lease_utility: "Lease/Utilities",
 };
 
+// Vendor name overrides — checked before doc_type or keyword fallback
+const VENDOR_CATEGORY_OVERRIDES: [RegExp, InvoiceCategory][] = [
+  [/modern aviation/i,  "FBO/Fuel"],
+  [/evo fuel/i,         "FBO/Fuel"],
+  [/flight\s*safety/i,  "Pilot Training"],
+  [/bombardier/i,       "Pilot Operations"],
+  [/foreflight/i,       "Pilot Operations"],
+];
+
 // Keyword fallback for invoices with doc_type="other" or legacy rows
 const FBO_KEYWORDS    = ["fbo", "fuel", "avfuel", "signature", "jet aviation", "million air", "atlantic", "sheltair", "wilson air", "world fuel", "avjet", "handling", "gpu", "lav", "de-ice", "catering", "landing fee", "ramp"];
 const MAINT_KEYWORDS  = ["maintenance", "maint", "avionics", "parts", "repair", "overhaul", "aog", "mx ", "inspection", "mechanic", "technician", "service center", "jet support", "duncan", "standardaero", "west star", "elliott", "turbine", "propeller", "engine shop", "work order", "component", "mro"];
 const LEASE_KEYWORDS  = ["lease", "rent", "hangar rent", "utilities", "management fee", "charter management", "aircraft management", "insurance", "property"];
+const PILOT_TRAINING_KEYWORDS  = ["type rating", "training", "simulator", "recurrent", "initial type"];
+const PILOT_OPS_KEYWORDS       = ["flight planning", "charts", "navigation", "pilot supply", "headset", "kneeboard"];
 
 function inferCategory(inv: any): InvoiceCategory {
   // 1. Use explicit category if the DB ever provides one
   if (inv.category) return inv.category as InvoiceCategory;
-  // 2. Map from backend doc_type
+  // 2. Vendor name overrides — takes priority over doc_type
+  const vn = (inv.vendor_name ?? "").trim();
+  if (vn) {
+    const match = VENDOR_CATEGORY_OVERRIDES.find(([re]) => re.test(vn));
+    if (match) return match[1];
+  }
+  // 3. Map from backend doc_type
   const mapped = inv.doc_type ? DOC_TYPE_MAP[inv.doc_type] : undefined;
   if (mapped) return mapped;
-  // 3. Keyword fallback for doc_type="other" or missing
+  // 4. Keyword fallback for doc_type="other" or missing
   const hay = [inv.vendor_name, inv.doc_type, ...(inv.line_items?.map((l: any) => l.description) ?? [])]
     .join(" ")
     .toLowerCase();
+  if (PILOT_TRAINING_KEYWORDS.some((k) => hay.includes(k))) return "Pilot Training";
+  if (PILOT_OPS_KEYWORDS.some((k) => hay.includes(k)))      return "Pilot Operations";
   if (MAINT_KEYWORDS.some((k) => hay.includes(k)))  return "Maintenance/Parts";
   if (LEASE_KEYWORDS.some((k) => hay.includes(k)))  return "Lease/Utilities";
   if (FBO_KEYWORDS.some((k) => hay.includes(k)))    return "FBO/Fuel";
@@ -56,6 +75,8 @@ const CATEGORY_COLORS: Record<InvoiceCategory, string> = {
   "FBO/Fuel":          "bg-blue-100 text-blue-700",
   "Maintenance/Parts": "bg-amber-100 text-amber-700",
   "Lease/Utilities":   "bg-purple-100 text-purple-700",
+  "Pilot Training":    "bg-green-100 text-green-700",
+  "Pilot Operations":  "bg-teal-100 text-teal-700",
   "Other":             "bg-gray-100 text-gray-600",
 };
 
@@ -82,7 +103,7 @@ function isOverdue(inv: any): boolean {
   return diffDays > 30;
 }
 
-const ALL_CATEGORIES: string[] = ["ALL", "FBO/Fuel", "Maintenance/Parts", "Lease/Utilities", "Other"];
+const ALL_CATEGORIES: string[] = ["ALL", "FBO/Fuel", "Maintenance/Parts", "Lease/Utilities", "Pilot Training", "Pilot Operations", "Other"];
 
 export default function InvoicesTable({ initialInvoices }: { initialInvoices: any[] }) {
   const [q, setQ] = useState("");
