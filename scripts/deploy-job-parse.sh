@@ -8,6 +8,12 @@ SOURCE_DIR="${SOURCE_DIR:-./job-parse}"
 
 echo "Deploying ${SERVICE_NAME} from ${SOURCE_DIR} to ${REGION} (project: ${PROJECT_ID})..."
 
+# Clear GCS_BUCKET if it was previously set as a plain env var (can't mix types)
+gcloud run services update "${SERVICE_NAME}" \
+  --project "${PROJECT_ID}" \
+  --region "${REGION}" \
+  --remove-env-vars GCS_BUCKET 2>/dev/null || true
+
 gcloud run deploy "${SERVICE_NAME}" \
   --project "${PROJECT_ID}" \
   --region "${REGION}" \
