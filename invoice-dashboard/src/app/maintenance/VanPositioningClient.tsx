@@ -402,7 +402,22 @@ function VanScheduleCard({
         if (isPositioningFlight(nextDep)) return true; // repo next — van can fit
         return !nextDep.scheduled_departure.startsWith(date); // revenue next day — ok
         // revenue same day → drop (plane flying soon, no van dispatch)
-      })
+      });
+
+    // Deduplicate by tail — keep only the last arrival per aircraft per day
+    // (where it ends up overnight is what matters for van dispatch)
+    const byTail = new Map<string, VanFlightItem>();
+    for (const item of rawItems) {
+      const tail = item.arrFlight.tail_number ?? "";
+      const existing = byTail.get(tail);
+      if (
+        !existing ||
+        (item.arrFlight.scheduled_arrival ?? "") > (existing.arrFlight.scheduled_arrival ?? "")
+      ) {
+        byTail.set(tail, item);
+      }
+    }
+    const dedupedItems = Array.from(byTail.values())
       // Sort by arrival time first so we cap at MAX_ARRIVALS by earliest arrivals
       .sort((a, b) =>
         (a.arrFlight.scheduled_arrival ?? "").localeCompare(b.arrFlight.scheduled_arrival ?? ""),
@@ -410,7 +425,7 @@ function VanScheduleCard({
       .slice(0, MAX_ARRIVALS_PER_VAN);
 
     // Greedy nearest-neighbor sort to minimise total drive (avoids zigzag routes)
-    return greedySort(rawItems, baseLat, baseLon);
+    return greedySort(dedupedItems, baseLat, baseLon);
   }, [allFlights, zone, date, liveVanPos]);
 
   // Sequential route: base→stop1→stop2→… (not 4 separate round-trips from base)
