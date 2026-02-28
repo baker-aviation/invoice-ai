@@ -15,6 +15,18 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Service unavailable" }, { status: 503 });
   }
 
+  // Debug: identify which SA key is being used
+  const saRaw = process.env.GCP_SA_KEY;
+  let saEmail = "(no GCP_SA_KEY)";
+  if (saRaw) {
+    try {
+      const json = saRaw.trimStart().startsWith("{")
+        ? saRaw
+        : Buffer.from(saRaw, "base64").toString("utf-8");
+      saEmail = JSON.parse(json).client_email ?? "(no client_email)";
+    } catch { saEmail = "(parse error)"; }
+  }
+
   try {
     const res = await cloudRunFetch(`${base}/api/vans`, { cache: "no-store" });
     const text = await res.text();
@@ -22,17 +34,16 @@ export async function GET(req: NextRequest) {
     try {
       data = JSON.parse(text);
     } catch {
-      // Cloud Run returned non-JSON (HTML error page, container crash, etc.)
       const cleaned = text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300);
       return NextResponse.json(
-        { error: `Upstream HTTP ${res.status}: ${cleaned || "(empty body)"}` },
+        { error: `Upstream HTTP ${res.status}: ${cleaned || "(empty body)"}`, debug: { sa: saEmail, target: base } },
         { status: 502 },
       );
     }
     return NextResponse.json(data, { status: res.ok ? 200 : res.status });
   } catch (err) {
     return NextResponse.json(
-      { error: "Upstream unavailable", detail: String(err) },
+      { error: "Upstream unavailable", detail: String(err), debug: { sa: saEmail, target: base } },
       { status: 502 },
     );
   }

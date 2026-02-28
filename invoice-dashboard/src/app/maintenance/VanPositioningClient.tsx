@@ -1259,7 +1259,10 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
     try {
       const res  = await fetch("/api/vans", { cache: "no-store" });
       const data = await res.json();
-      if (!data.ok) throw new Error(data.detail || data.error || `HTTP ${res.status}`);
+      if (!data.ok) {
+        const dbg = data.debug ? ` [SA: ${data.debug.sa}, target: ${data.debug.target}]` : "";
+        throw new Error((data.detail || data.error || `HTTP ${res.status}`) + dbg);
+      }
       setSamsaraVans(data.vans ?? []);
       setSamsaraLastFetch(new Date());
     } catch (e: unknown) {
