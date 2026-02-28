@@ -895,9 +895,9 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
       {/* ── Stats ── */}
       <StatsBar positions={positions} vans={vans} flightCount={flightsForDay.length} />
 
-      {/* ── AOG Status ── */}
+      {/* ── AOG Status — aircraft coverage ── */}
       {(() => {
-        const celVans = aogSamsaraVans.filter((v) => diagData.get(v.id)?.check_engine_on === true);
+        // Aircraft assigned to a van but outside 3-hour driving range
         const outOfRange = vans.flatMap((van) => {
           const color = VAN_COLORS[(van.vanId - 1) % VAN_COLORS.length];
           return van.aircraft
@@ -910,7 +910,90 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
               distKm: Math.round(haversineKmClient(van.lat, van.lon, ac.lat, ac.lon)),
             }));
         });
-        const hasAlerts = celVans.length > 0 || outOfRange.length > 0;
+
+        // Aircraft overnighting but not assigned to any van at all
+        const coveredTails = new Set(vans.flatMap((v) => v.aircraft.map((ac) => ac.tail)));
+        const uncovered = positions.filter((p) => !coveredTails.has(p.tail));
+
+        const totalIssues = outOfRange.length + uncovered.length;
+        const totalCovered = positions.length - uncovered.length;
+        const hasAlerts = totalIssues > 0;
+
+        return (
+          <div className={`rounded-xl border-2 px-5 py-4 shadow-sm ${
+            hasAlerts
+              ? uncovered.length > 0 ? "border-red-300 bg-red-50" : "border-yellow-300 bg-yellow-50"
+              : "border-green-300 bg-green-50"
+          }`}>
+            <div className="flex items-center gap-3">
+              <div className={`w-10 h-10 rounded-full flex items-center justify-center text-xl shrink-0 ${
+                hasAlerts
+                  ? uncovered.length > 0 ? "bg-red-100" : "bg-yellow-100"
+                  : "bg-green-100"
+              }`}>
+                {hasAlerts ? "⚠" : "✓"}
+              </div>
+              <div className="flex-1">
+                <div className={`text-base font-bold ${
+                  hasAlerts
+                    ? uncovered.length > 0 ? "text-red-800" : "text-yellow-800"
+                    : "text-green-800"
+                }`}>
+                  AOG Status
+                </div>
+                {hasAlerts ? (
+                  <div className={`text-sm font-semibold ${uncovered.length > 0 ? "text-red-600" : "text-yellow-700"}`}>
+                    {[
+                      uncovered.length > 0 && `${uncovered.length} aircraft not covered`,
+                      outOfRange.length > 0 && `${outOfRange.length} aircraft outside 3-hour range`,
+                    ].filter(Boolean).join(" · ")}
+                    {" · "}{totalCovered}/{positions.length} covered
+                  </div>
+                ) : (
+                  <div className="text-sm text-green-700 font-medium">
+                    All {positions.length} aircraft covered by {vans.length} vans
+                  </div>
+                )}
+              </div>
+            </div>
+            {/* Detail pills */}
+            {hasAlerts && (
+              <div className="flex flex-wrap gap-2 mt-3 ml-[52px]">
+                {uncovered.map((ac) => (
+                  <span key={`unc-${ac.tail}`} className="inline-flex items-center gap-1.5 bg-white border border-red-200 rounded-lg px-3 py-1.5 text-xs font-medium text-red-700">
+                    <span className="font-mono font-semibold">{ac.tail}</span>
+                    <span className="text-gray-500">@ {ac.airport}</span>
+                    <span className="text-red-600">— No Van</span>
+                  </span>
+                ))}
+                {outOfRange.map(({ vanId, color, tail, airport, distKm }) => (
+                  <div
+                    key={`oor-${vanId}-${tail}`}
+                    className="flex items-center gap-1.5 bg-white border border-yellow-200 rounded-lg px-2.5 py-1.5 text-xs"
+                  >
+                    <span
+                      className="inline-block w-3 h-3 rounded-full flex-shrink-0"
+                      style={{ background: color }}
+                    />
+                    <span className="font-semibold">Van {vanId}</span>
+                    <span className="text-gray-400">&rarr;</span>
+                    <span className="font-mono font-semibold">{tail}</span>
+                    <span className="text-gray-500">@ {airport}</span>
+                    <span className="text-yellow-700 font-semibold">
+                      ~{Math.round(distKm / (THREE_HOUR_RADIUS_KM / 3))}h
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* ── Van Status — vehicle health ── */}
+      {(() => {
+        const celVans = aogSamsaraVans.filter((v) => diagData.get(v.id)?.check_engine_on === true);
+        const hasAlerts = celVans.length > 0;
 
         return (
           <div className={`rounded-xl border-2 px-5 py-4 shadow-sm ${
@@ -924,14 +1007,11 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
               </div>
               <div className="flex-1">
                 <div className={`text-base font-bold ${hasAlerts ? "text-red-800" : "text-green-800"}`}>
-                  AOG Status
+                  Van Status
                 </div>
                 {hasAlerts ? (
                   <div className="text-sm text-red-600 font-semibold">
-                    {[
-                      celVans.length > 0 && `${celVans.length} check engine light${celVans.length !== 1 ? "s" : ""}`,
-                      outOfRange.length > 0 && `${outOfRange.length} aircraft outside 3-hour range`,
-                    ].filter(Boolean).join(" · ")}
+                    {celVans.length} check engine light{celVans.length !== 1 ? "s" : ""}
                   </div>
                 ) : (
                   <div className="text-sm text-green-700 font-medium">
@@ -940,31 +1020,12 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
                 )}
               </div>
             </div>
-            {/* Detail pills when alerts exist */}
             {hasAlerts && (
               <div className="flex flex-wrap gap-2 mt-3 ml-[52px]">
                 {celVans.map((v) => (
                   <span key={`cel-${v.id}`} className="inline-flex items-center gap-1.5 bg-white border border-red-200 rounded-lg px-3 py-1.5 text-xs font-medium text-red-700">
                     {v.name} — Check Engine
                   </span>
-                ))}
-                {outOfRange.map(({ vanId, color, tail, airport, distKm }) => (
-                  <div
-                    key={`oor-${vanId}-${tail}`}
-                    className="flex items-center gap-1.5 bg-white border border-red-200 rounded-lg px-2.5 py-1.5 text-xs"
-                  >
-                    <span
-                      className="inline-block w-3 h-3 rounded-full flex-shrink-0"
-                      style={{ background: color }}
-                    />
-                    <span className="font-semibold">Van {vanId}</span>
-                    <span className="text-gray-400">&rarr;</span>
-                    <span className="font-mono font-semibold">{tail}</span>
-                    <span className="text-gray-500">@ {airport}</span>
-                    <span className="text-red-600 font-semibold">
-                      ~{Math.round(distKm / (THREE_HOUR_RADIUS_KM / 3))}h
-                    </span>
-                  </div>
                 ))}
               </div>
             )}
