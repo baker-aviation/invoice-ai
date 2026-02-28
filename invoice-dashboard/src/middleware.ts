@@ -2,10 +2,9 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
 export async function middleware(request: NextRequest) {
-  // GET /api/agents returns public metadata (no secrets) — skip auth
-  if (
-    request.nextUrl.pathname.startsWith("/api/agents")
-  ) {
+  // /api/agents handles its own auth (requireAdmin on POST, public GET)
+  // Skip middleware Supabase check to avoid double-auth
+  if (request.nextUrl.pathname.startsWith("/api/agents")) {
     return NextResponse.next();
   }
 
