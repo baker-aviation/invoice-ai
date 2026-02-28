@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useState, useMemo, useRef } from "react";
+import { useState, useMemo, useRef, useCallback } from "react";
 import type { Flight } from "@/lib/opsApi";
 import {
   computeOvernightPositions,
@@ -338,53 +338,42 @@ type VanFlightItem = {
 
 const MAX_ARRIVALS_PER_VAN = 4;
 
-function VanScheduleCard({
-  zone,
-  color,
-  allFlights,
-  date,
-  liveVanPos,
-  liveAddress,
-}: {
-  zone: (typeof FIXED_VAN_ZONES)[number];
-  color: string;
-  allFlights: Flight[];
-  date: string;
-  liveVanPos?: { lat: number; lon: number };
-  liveAddress?: string | null;
-}) {
-  const [expanded, setExpanded] = useState(true);
-  const now = new Date();
+// ---------------------------------------------------------------------------
+// Compute schedule items for a single zone (extracted so ScheduleTab can
+// centrally compute items for all zones and manage drag-and-drop overrides)
+// ---------------------------------------------------------------------------
 
-  // Always use home base for zone assignment (live GPS is for distance display only)
-  const items = useMemo<VanFlightItem[]>(() => {
-    const baseLat = liveVanPos?.lat ?? zone.lat;
-    const baseLon = liveVanPos?.lon ?? zone.lon;
+function computeZoneItems(
+  zone: (typeof FIXED_VAN_ZONES)[number],
+  allFlights: Flight[],
+  date: string,
+  baseLat: number,
+  baseLon: number,
+): VanFlightItem[] {
+  const arrivalsToday = allFlights.filter((f) => {
+    if (!f.arrival_icao || !f.scheduled_arrival) return false;
+    if (!f.scheduled_arrival.startsWith(date)) return false;
+    const iata = f.arrival_icao.replace(/^K/, "");
+    const info = getAirportInfo(iata);
+    if (!info || !isContiguous48(info.state)) return false;
+    return haversineKm(zone.lat, zone.lon, info.lat, info.lon) <= SCHEDULE_ARRIVAL_RADIUS_KM;
+  });
 
-    const arrivalsToday = allFlights.filter((f) => {
-      if (!f.arrival_icao || !f.scheduled_arrival) return false;
-      if (!f.scheduled_arrival.startsWith(date)) return false;
-      const iata = f.arrival_icao.replace(/^K/, "");
-      const info = getAirportInfo(iata);
-      if (!info || !isContiguous48(info.state)) return false;
-      // Filter by home zone — live GPS only affects displayed drive distances
-      return haversineKm(zone.lat, zone.lon, info.lat, info.lon) <= SCHEDULE_ARRIVAL_RADIUS_KM;
-    });
-
-    const rawItems = arrivalsToday.map((arr) => {
+  const rawItems = arrivalsToday
+    .map((arr) => {
       const iata = arr.arrival_icao!.replace(/^K/, "");
       const info = getAirportInfo(iata);
       const distKm = info ? Math.round(haversineKm(baseLat, baseLon, info.lat, info.lon)) : 0;
 
-      // Find the next departure of this tail from the same airport after it lands
-      const nextDep = allFlights
-        .filter(
-          (f) =>
-            f.tail_number === arr.tail_number &&
-            f.departure_icao === arr.arrival_icao &&
-            f.scheduled_departure > (arr.scheduled_arrival ?? ""),
-        )
-        .sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure))[0] ?? null;
+      const nextDep =
+        allFlights
+          .filter(
+            (f) =>
+              f.tail_number === arr.tail_number &&
+              f.departure_icao === arr.arrival_icao &&
+              f.scheduled_departure > (arr.scheduled_arrival ?? ""),
+          )
+          .sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure))[0] ?? null;
 
       return {
         arrFlight: arr,
@@ -396,50 +385,97 @@ function VanScheduleCard({
         distKm,
       };
     })
-      // No AOG van needed if the plane is flying a revenue leg same day
-      .filter(({ nextDep }) => {
-        if (!nextDep) return true; // done for day — van needed
-        if (isPositioningFlight(nextDep)) return true; // repo next — van can fit
-        return !nextDep.scheduled_departure.startsWith(date); // revenue next day — ok
-        // revenue same day → drop (plane flying soon, no van dispatch)
-      });
+    .filter(({ nextDep }) => {
+      if (!nextDep) return true;
+      if (isPositioningFlight(nextDep)) return true;
+      return !nextDep.scheduled_departure.startsWith(date);
+    });
 
-    // Deduplicate by tail — keep only the last arrival per aircraft per day
-    // (where it ends up overnight is what matters for van dispatch)
-    const byTail = new Map<string, VanFlightItem>();
-    for (const item of rawItems) {
-      const tail = item.arrFlight.tail_number ?? "";
-      const existing = byTail.get(tail);
-      if (
-        !existing ||
-        (item.arrFlight.scheduled_arrival ?? "") > (existing.arrFlight.scheduled_arrival ?? "")
-      ) {
-        byTail.set(tail, item);
-      }
+  // Deduplicate by tail — keep only the last arrival per aircraft per day
+  const byTail = new Map<string, VanFlightItem>();
+  for (const item of rawItems) {
+    const tail = item.arrFlight.tail_number ?? "";
+    const existing = byTail.get(tail);
+    if (
+      !existing ||
+      (item.arrFlight.scheduled_arrival ?? "") > (existing.arrFlight.scheduled_arrival ?? "")
+    ) {
+      byTail.set(tail, item);
     }
-    const dedupedItems = Array.from(byTail.values())
-      // Sort by arrival time first so we cap at MAX_ARRIVALS by earliest arrivals
-      .sort((a, b) =>
-        (a.arrFlight.scheduled_arrival ?? "").localeCompare(b.arrFlight.scheduled_arrival ?? ""),
-      )
-      .slice(0, MAX_ARRIVALS_PER_VAN);
+  }
 
-    // Greedy nearest-neighbor sort to minimise total drive (avoids zigzag routes)
-    return greedySort(dedupedItems, baseLat, baseLon);
-  }, [allFlights, zone, date, liveVanPos]);
+  return Array.from(byTail.values())
+    .sort((a, b) =>
+      (a.arrFlight.scheduled_arrival ?? "").localeCompare(b.arrFlight.scheduled_arrival ?? ""),
+    )
+    .slice(0, MAX_ARRIVALS_PER_VAN);
+}
 
-  // Sequential route: base→stop1→stop2→… (not 4 separate round-trips from base)
-  const totalDistKm = items.reduce((sum, item, idx) => {
-    if (idx === 0) return item.distKm; // base → first airport
+/** Recalculate distKm for items relative to a van's base position. */
+function recalcDist(items: VanFlightItem[], baseLat: number, baseLon: number): VanFlightItem[] {
+  return items.map((item) => ({
+    ...item,
+    distKm: item.airportInfo
+      ? Math.round(haversineKm(baseLat, baseLon, item.airportInfo.lat, item.airportInfo.lon))
+      : 0,
+  }));
+}
+
+/** Compute sequential route distance (base→stop1→stop2→…). */
+function routeDistKm(items: VanFlightItem[]): number {
+  return items.reduce((sum, item, idx) => {
+    if (idx === 0) return item.distKm;
     const prev = items[idx - 1];
     if (!prev.airportInfo || !item.airportInfo) return sum + item.distKm;
     return sum + Math.round(haversineKm(prev.airportInfo.lat, prev.airportInfo.lon, item.airportInfo.lat, item.airportInfo.lon));
   }, 0);
+}
+
+// ---------------------------------------------------------------------------
+// VanScheduleCard — now receives items as props (no internal computation)
+// ---------------------------------------------------------------------------
+
+function VanScheduleCard({
+  zone,
+  color,
+  items,
+  liveVanPos,
+  liveAddress,
+  isDropTarget,
+  hasOverrides,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  onDragLeave,
+}: {
+  zone: (typeof FIXED_VAN_ZONES)[number];
+  color: string;
+  items: VanFlightItem[];
+  liveVanPos?: { lat: number; lon: number };
+  liveAddress?: string | null;
+  isDropTarget: boolean;
+  hasOverrides: boolean;
+  onDragStart: (e: React.DragEvent, flightId: string, fromVanId: number) => void;
+  onDragOver: (e: React.DragEvent) => void;
+  onDrop: (e: React.DragEvent, toVanId: number) => void;
+  onDragLeave: (e: React.DragEvent) => void;
+}) {
+  const [expanded, setExpanded] = useState(true);
+  const now = new Date();
+
+  const totalDistKm = routeDistKm(items);
   const totalDriveH = totalDistKm / 90;
   const overLimit = totalDriveH > 5;
 
   return (
-    <div className="border rounded-xl overflow-hidden bg-white shadow-sm">
+    <div
+      className={`border rounded-xl overflow-hidden bg-white shadow-sm transition-all ${
+        isDropTarget ? "ring-2 ring-blue-400 border-blue-300 bg-blue-50/30" : ""
+      }`}
+      onDragOver={onDragOver}
+      onDrop={(e) => onDrop(e, zone.vanId)}
+      onDragLeave={onDragLeave}
+    >
       <div
         className="flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-gray-50"
         onClick={() => setExpanded((v) => !v)}
@@ -469,6 +505,11 @@ function VanScheduleCard({
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap justify-end">
+          {hasOverrides && (
+            <span className="text-xs rounded-full px-2 py-0.5 font-medium bg-amber-100 text-amber-700">
+              Edited
+            </span>
+          )}
           {items.length > 0 && (
             <span className={`text-xs rounded-full px-2 py-0.5 font-medium ${overLimit ? "bg-red-100 text-red-700" : "bg-slate-100 text-slate-600"}`}>
               {fmtDriveTime(totalDistKm)}{overLimit ? " ⚠" : ""}
@@ -484,7 +525,9 @@ function VanScheduleCard({
       {expanded && (
         <div className="border-t">
           {items.length === 0 ? (
-            <div className="px-4 py-6 text-sm text-gray-400 text-center">No arrivals in area today.</div>
+            <div className={`px-4 py-6 text-sm text-center ${isDropTarget ? "text-blue-500 font-medium" : "text-gray-400"}`}>
+              {isDropTarget ? "Drop aircraft here" : "No arrivals in area today."}
+            </div>
           ) : (
             <div className="divide-y">
               {items.map(({ arrFlight, nextDep, isRepo, nextIsRepo, airport, airportInfo, distKm }) => {
@@ -492,9 +535,19 @@ function VanScheduleCard({
                 const hasLanded = arrTime !== null && arrTime < now;
                 const doneForDay = !nextDep;
                 return (
-                  <div key={arrFlight.id} className="px-4 py-3 flex items-start justify-between gap-4">
+                  <div
+                    key={arrFlight.id}
+                    draggable
+                    onDragStart={(e) => onDragStart(e, arrFlight.id, zone.vanId)}
+                    className="px-4 py-3 flex items-start justify-between gap-4 cursor-grab active:cursor-grabbing hover:bg-gray-50/50"
+                  >
                     <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-2.5 h-2.5 rounded-full flex-shrink-0 mt-1" style={{ background: color }} />
+                      <div className="flex flex-col items-center gap-0.5 flex-shrink-0 mt-1">
+                        <div className="w-2.5 h-2.5 rounded-full" style={{ background: color }} />
+                        <svg className="w-3 h-3 text-gray-300" fill="none" viewBox="0 0 12 12" stroke="currentColor" strokeWidth={2}>
+                          <path d="M2 4h8M2 8h8" />
+                        </svg>
+                      </div>
                       <div className="min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="font-mono font-semibold text-sm">{arrFlight.tail_number ?? "—"}</span>
@@ -543,11 +596,20 @@ function VanScheduleCard({
               })}
             </div>
           )}
+          {isDropTarget && items.length > 0 && (
+            <div className="px-4 py-2 text-xs text-blue-500 font-medium text-center bg-blue-50/50 border-t border-dashed border-blue-200">
+              Drop aircraft here
+            </div>
+          )}
         </div>
       )}
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// ScheduleTab — manages centralized items + drag-and-drop override state
+// ---------------------------------------------------------------------------
 
 function ScheduleTab({
   allFlights,
@@ -561,29 +623,176 @@ function ScheduleTab({
   liveVanAddresses: Map<number, string | null>;
 }) {
   const hasLive = liveVanPositions.size > 0;
+
+  // Manual overrides: flightId → target vanId
+  const [overrides, setOverrides] = useState<Map<string, number>>(new Map());
+  // Reset overrides when date changes
+  const prevDateRef = useRef(date);
+  if (prevDateRef.current !== date) {
+    prevDateRef.current = date;
+    if (overrides.size > 0) setOverrides(new Map());
+  }
+
+  // DnD visual state
+  const [dropTargetVan, setDropTargetVan] = useState<number | null>(null);
+  const dragCounterRef = useRef(0);
+
+  // Compute base items for every zone
+  const baseItemsByVan = useMemo(() => {
+    const map = new Map<number, VanFlightItem[]>();
+    for (const zone of FIXED_VAN_ZONES) {
+      const baseLat = liveVanPositions.get(zone.vanId)?.lat ?? zone.lat;
+      const baseLon = liveVanPositions.get(zone.vanId)?.lon ?? zone.lon;
+      map.set(zone.vanId, computeZoneItems(zone, allFlights, date, baseLat, baseLon));
+    }
+    return map;
+  }, [allFlights, date, liveVanPositions]);
+
+  // Apply overrides → final items per van (with recalculated distances + greedy sort)
+  const finalItemsByVan = useMemo(() => {
+    // Deep-copy base items
+    const result = new Map<number, VanFlightItem[]>();
+    for (const [vanId, items] of baseItemsByVan) {
+      result.set(vanId, [...items]);
+    }
+
+    // Move overridden flights
+    for (const [flightId, targetVanId] of overrides) {
+      // Remove from whichever van currently holds it
+      for (const [vanId, items] of result) {
+        const idx = items.findIndex((item) => item.arrFlight.id === flightId);
+        if (idx !== -1) {
+          const [removed] = items.splice(idx, 1);
+          // Add to target (skip if already there)
+          if (vanId !== targetVanId) {
+            const target = result.get(targetVanId) ?? [];
+            target.push(removed);
+            result.set(targetVanId, target);
+          } else {
+            // Override points to current van — put it back
+            items.splice(idx, 0, removed);
+          }
+          break;
+        }
+      }
+    }
+
+    // Recalculate distances + greedy sort for each van
+    for (const zone of FIXED_VAN_ZONES) {
+      const items = result.get(zone.vanId) ?? [];
+      const baseLat = liveVanPositions.get(zone.vanId)?.lat ?? zone.lat;
+      const baseLon = liveVanPositions.get(zone.vanId)?.lon ?? zone.lon;
+      const sorted = greedySort(recalcDist(items, baseLat, baseLon), baseLat, baseLon);
+      result.set(zone.vanId, sorted);
+    }
+
+    return result;
+  }, [baseItemsByVan, overrides, liveVanPositions]);
+
+  // Track which vans have been manually edited
+  const editedVans = useMemo(() => {
+    const set = new Set<number>();
+    for (const targetVanId of overrides.values()) set.add(targetVanId);
+    // Also mark source vans (vans that lost an item)
+    for (const [flightId] of overrides) {
+      for (const [vanId, items] of baseItemsByVan) {
+        if (items.some((item) => item.arrFlight.id === flightId)) {
+          set.add(vanId);
+          break;
+        }
+      }
+    }
+    return set;
+  }, [overrides, baseItemsByVan]);
+
+  // ── Drag-and-drop handlers ──
+  const handleDragStart = useCallback((e: React.DragEvent, flightId: string, fromVanId: number) => {
+    e.dataTransfer.setData("text/plain", JSON.stringify({ flightId, fromVanId }));
+    e.dataTransfer.effectAllowed = "move";
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent, toVanId: number) => {
+    e.preventDefault();
+    dragCounterRef.current = 0;
+    setDropTargetVan(null);
+
+    try {
+      const { flightId, fromVanId } = JSON.parse(e.dataTransfer.getData("text/plain"));
+      if (fromVanId === toVanId) return;
+      setOverrides((prev) => {
+        const next = new Map(prev);
+        next.set(flightId, toVanId);
+        return next;
+      });
+    } catch { /* ignore bad data */ }
+  }, []);
+
+  const handleDragEnterZone = useCallback((vanId: number) => {
+    dragCounterRef.current++;
+    setDropTargetVan(vanId);
+  }, []);
+
+  const handleDragLeaveZone = useCallback(() => {
+    dragCounterRef.current--;
+    if (dragCounterRef.current <= 0) {
+      dragCounterRef.current = 0;
+      setDropTargetVan(null);
+    }
+  }, []);
+
   return (
     <div className="space-y-3">
-      <div className="text-sm text-gray-500 mb-1">
-        Arrivals plan for {fmtLongDate(date)} · up to {MAX_ARRIVALS_PER_VAN} aircraft per van · 5 h drive limit
-        {hasLive && (
-          <span className="ml-2 inline-flex items-center gap-1 text-xs text-green-600 font-medium">
-            <span className="w-1.5 h-1.5 rounded-full bg-green-500 inline-block" />
-            distances from live GPS
-          </span>
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="text-sm text-gray-500">
+          Arrivals plan for {fmtLongDate(date)} · up to {MAX_ARRIVALS_PER_VAN} aircraft per van · 5 h drive limit
+          {hasLive && (
+            <span className="ml-2 inline-flex items-center gap-1 text-xs text-green-600 font-medium">
+              <span className="w-1.5 h-1.5 rounded-full bg-green-500 inline-block" />
+              distances from live GPS
+            </span>
+          )}
+        </div>
+        {overrides.size > 0 && (
+          <button
+            onClick={() => setOverrides(new Map())}
+            className="text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5 hover:bg-amber-100 transition-colors"
+          >
+            Reset all edits ({overrides.size})
+          </button>
         )}
       </div>
+      {overrides.size > 0 && (
+        <div className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 flex items-center gap-2">
+          <span className="font-semibold">Drag &amp; drop active</span> — {overrides.size} aircraft manually reassigned. Distances and route order updated.
+        </div>
+      )}
       {FIXED_VAN_ZONES.map((zone) => {
         const color = VAN_COLORS[(zone.vanId - 1) % VAN_COLORS.length];
         return (
-          <VanScheduleCard
+          <div
             key={zone.vanId}
-            zone={zone}
-            color={color}
-            allFlights={allFlights}
-            date={date}
-            liveVanPos={liveVanPositions.get(zone.vanId)}
-            liveAddress={liveVanAddresses.get(zone.vanId)}
-          />
+            onDragEnter={() => handleDragEnterZone(zone.vanId)}
+            onDragLeave={() => handleDragLeaveZone()}
+          >
+            <VanScheduleCard
+              zone={zone}
+              color={color}
+              items={finalItemsByVan.get(zone.vanId) ?? []}
+              liveVanPos={liveVanPositions.get(zone.vanId)}
+              liveAddress={liveVanAddresses.get(zone.vanId)}
+              isDropTarget={dropTargetVan === zone.vanId}
+              hasOverrides={editedVans.has(zone.vanId)}
+              onDragStart={handleDragStart}
+              onDragOver={handleDragOver}
+              onDrop={handleDrop}
+              onDragLeave={() => handleDragLeaveZone()}
+            />
+          </div>
         );
       })}
     </div>
