@@ -57,15 +57,8 @@ export async function fetchJobs(
 }
 
 // ---------------------------------------------------------------------------
-// Job detail — still proxies to Cloud Run (needs signed file URLs from GCS)
+// Job detail — direct Supabase query + optional Cloud Run for signed file URLs
 // ---------------------------------------------------------------------------
-
-const BASE = process.env.JOB_API_BASE_URL;
-
-function mustBase(): string {
-  if (!BASE) throw new Error("Missing JOB_API_BASE_URL in .env.local");
-  return BASE.replace(/\/$/, "");
-}
 
 const SAFE_ID_RE = /^[a-zA-Z0-9_-]+$/;
 
@@ -74,15 +67,56 @@ export async function fetchJobDetail(applicationId: string | number): Promise<Jo
   if (!SAFE_ID_RE.test(id)) {
     throw new Error("Invalid application ID");
   }
-  const base = mustBase();
 
-  const res = await fetch(`${base}/api/jobs/${encodeURIComponent(id)}`, {
-    cache: "no-store",
-    headers: { Accept: "application/json" },
-  });
+  const supa = createServiceClient();
 
-  if (!res.ok) {
-    throw new Error(`fetchJobDetail failed: ${res.status}`);
+  // Fetch job parse data
+  const { data: job, error: jobErr } = await supa
+    .from("job_application_parse")
+    .select(JOB_COLUMNS)
+    .eq("application_id", Number(id))
+    .limit(1)
+    .maybeSingle();
+
+  if (jobErr) throw new Error(`fetchJobDetail failed: ${jobErr.message}`);
+  if (!job) throw new Error("Job application not found");
+
+  // Fetch file metadata from Supabase
+  const { data: fileRows } = await supa
+    .from("job_application_files")
+    .select("id, filename, content_type, size_bytes, created_at")
+    .eq("application_id", Number(id))
+    .order("created_at", { ascending: true });
+
+  // Try Cloud Run for signed file URLs (best-effort)
+  let files: any[] = (fileRows ?? []).map((f) => ({
+    id: f.id,
+    filename: f.filename,
+    content_type: f.content_type,
+    size_bytes: f.size_bytes,
+    created_at: f.created_at,
+    signed_url: null,
+  }));
+
+  const base = process.env.JOB_API_BASE_URL?.replace(/\/$/, "");
+  if (base) {
+    try {
+      const res = await fetch(`${base}/api/jobs/${encodeURIComponent(id)}`, {
+        cache: "no-store",
+        headers: { Accept: "application/json" },
+        signal: AbortSignal.timeout(5000),
+      });
+      if (res.ok) {
+        const body = await res.json();
+        // Use Cloud Run files which have signed URLs
+        if (Array.isArray(body.files) && body.files.length > 0) {
+          files = body.files;
+        }
+      }
+    } catch {
+      // Cloud Run unavailable — continue with file metadata only
+    }
   }
-  return res.json();
+
+  return { ok: true, job: job as JobRow, files };
 }
