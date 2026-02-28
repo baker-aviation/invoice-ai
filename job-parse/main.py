@@ -686,6 +686,64 @@ def health():
     return {"ok": True}
 
 
+@app.get("/debug/application/{application_id}")
+def debug_application(application_id: int):
+    """
+    Diagnostic endpoint: show file rows, GCS blob status, and detected
+    file types for a given application_id — without actually parsing.
+    """
+    supa = _supa()
+    bucket = _gcs_bucket()
+
+    files = _fetch_files_for_application(supa, application_id)
+    file_details: List[Dict[str, Any]] = []
+
+    for f in files:
+        filename = f.get("filename") or ""
+        content_type = f.get("content_type") or ""
+        gcs_key = f.get("gcs_key") or ""
+        ext = _guess_ext(filename, content_type)
+
+        # Check GCS blob existence + size
+        gcs_exists = False
+        gcs_size = None
+        if gcs_key:
+            try:
+                blob = bucket.blob(gcs_key)
+                gcs_exists = blob.exists()
+                if gcs_exists:
+                    blob.reload()
+                    gcs_size = blob.size
+            except Exception as e:
+                gcs_exists = f"error: {e}"
+
+        file_details.append({
+            "file_id": f.get("id"),
+            "filename": filename,
+            "content_type": content_type,
+            "detected_ext": ext,
+            "gcs_key": gcs_key,
+            "gcs_exists": gcs_exists,
+            "gcs_size_bytes": gcs_size,
+            "db_size_bytes": f.get("size_bytes"),
+        })
+
+    # Also check the application row itself
+    app_row = safe_select_one(
+        APPS_TABLE,
+        "id, mailbox, role_bucket, subject, received_at, created_at, source_message_id",
+        eq={"id": application_id},
+    )
+
+    return {
+        "ok": True,
+        "application_id": application_id,
+        "application": app_row,
+        "file_count": len(files),
+        "files": file_details,
+    }
+
+
 @app.post("/jobs/parse_application")
 def parse_application(application_id: int = Query(..., ge=1)):
     supa = _supa()
