@@ -41,11 +41,6 @@ function ratingLabel(code: string): string {
   return code;
 }
 
-function jobBase(): string | null {
-  const base = process.env.JOB_API_BASE_URL;
-  return base ? base.replace(/\/$/, "") : null;
-}
-
 export default async function JobDetailPage({
   params,
 }: {
@@ -63,7 +58,6 @@ export default async function JobDetailPage({
     const data = await fetchJobDetail(applicationId);
     const job = data.job;
     const files = data.files ?? [];
-    const jBase = jobBase();
 
     return (
       <>
@@ -158,7 +152,7 @@ export default async function JobDetailPage({
                   <FileViewer
                     key={f.id}
                     file={f}
-                    downloadUrl={f.signed_url ?? (jBase ? `${jBase}/api/files/${f.id}` : null)}
+                    downloadUrl={f.signed_url ?? null}
                   />
                 ))}
               </div>

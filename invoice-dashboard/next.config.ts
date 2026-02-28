@@ -12,7 +12,7 @@ const securityHeaders = [
       "default-src 'self'",
       "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
       "style-src 'self' 'unsafe-inline'",
-      "img-src 'self' data: blob: https://storage.googleapis.com",
+      "img-src 'self' data: blob: https://storage.googleapis.com https://*.tile.openstreetmap.org",
       "font-src 'self'",
       "connect-src 'self' https://*.supabase.co https://api.samsara.com",
       "frame-src 'self' https://view.officeapps.live.com https://storage.googleapis.com",

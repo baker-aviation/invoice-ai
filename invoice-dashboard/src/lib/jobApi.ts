@@ -57,7 +57,8 @@ export async function fetchJobs(
 }
 
 // ---------------------------------------------------------------------------
-// Job detail — direct Supabase query + optional Cloud Run for signed file URLs
+// Job detail — direct Supabase query
+// File URLs point to internal API route (handles GCS signing + Cloud Run)
 // ---------------------------------------------------------------------------
 
 const SAFE_ID_RE = /^[a-zA-Z0-9_-]+$/;
@@ -88,35 +89,15 @@ export async function fetchJobDetail(applicationId: string | number): Promise<Jo
     .eq("application_id", Number(id))
     .order("created_at", { ascending: true });
 
-  // Try Cloud Run for signed file URLs (best-effort)
-  let files: any[] = (fileRows ?? []).map((f) => ({
+  // Point file URLs to internal API route which handles GCS signing
+  const files = (fileRows ?? []).map((f) => ({
     id: f.id,
     filename: f.filename,
     content_type: f.content_type,
     size_bytes: f.size_bytes,
     created_at: f.created_at,
-    signed_url: null,
+    signed_url: `/api/files/${f.id}`,
   }));
-
-  const base = process.env.JOB_API_BASE_URL?.replace(/\/$/, "");
-  if (base) {
-    try {
-      const res = await fetch(`${base}/api/jobs/${encodeURIComponent(id)}`, {
-        cache: "no-store",
-        headers: { Accept: "application/json" },
-        signal: AbortSignal.timeout(5000),
-      });
-      if (res.ok) {
-        const body = await res.json();
-        // Use Cloud Run files which have signed URLs
-        if (Array.isArray(body.files) && body.files.length > 0) {
-          files = body.files;
-        }
-      }
-    } catch {
-      // Cloud Run unavailable — continue with file metadata only
-    }
-  }
 
   return { ok: true, job: job as JobRow, files };
 }

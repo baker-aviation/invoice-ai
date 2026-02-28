@@ -68,7 +68,8 @@ export async function fetchInvoices(params: {
 }
 
 // ---------------------------------------------------------------------------
-// Invoice detail — direct Supabase query + optional Cloud Run for signed URL
+// Invoice detail — direct Supabase query
+// PDF URL points to internal API route (handles GCS signing + Cloud Run)
 // ---------------------------------------------------------------------------
 
 const SAFE_ID_RE = /^[a-zA-Z0-9_-]+$/;
@@ -90,23 +91,15 @@ export async function fetchInvoiceDetail(documentId: string): Promise<InvoiceDet
   if (error) throw new Error(`fetchInvoiceDetail failed: ${error.message}`);
   if (!data) throw new Error("Invoice not found");
 
-  // Try Cloud Run for signed PDF URL (best-effort)
-  let signed_pdf_url: string | null = null;
-  const base = process.env.INVOICE_API_BASE_URL?.replace(/\/$/, "");
-  if (base) {
-    try {
-      const res = await fetch(`${base}/api/invoices/${encodeURIComponent(documentId)}`, {
-        cache: "no-store",
-        signal: AbortSignal.timeout(5000),
-      });
-      if (res.ok) {
-        const body = await res.json();
-        signed_pdf_url = body.signed_pdf_url ?? null;
-      }
-    } catch {
-      // Cloud Run unavailable — continue without PDF URL
-    }
-  }
+  // Check if a PDF exists in GCS for this document
+  const { data: doc } = await supa
+    .from("documents")
+    .select("gcs_bucket, gcs_path")
+    .eq("id", documentId)
+    .maybeSingle();
+
+  // Point to our internal API route which handles GCS signing or Cloud Run proxy
+  const signed_pdf_url = doc?.gcs_path ? `/api/invoices/${documentId}` : null;
 
   return { ok: true, invoice: data, signed_pdf_url };
 }
