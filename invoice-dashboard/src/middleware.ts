@@ -2,6 +2,14 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
 export async function middleware(request: NextRequest) {
+  // GET /api/agents returns public metadata (no secrets) — skip auth
+  if (
+    request.nextUrl.pathname === "/api/agents" &&
+    request.method === "GET"
+  ) {
+    return NextResponse.next();
+  }
+
   let supabaseResponse = NextResponse.next({ request });
 
   const supabase = createServerClient(
