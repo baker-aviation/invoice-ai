@@ -373,6 +373,65 @@ def classify_doc_type(raw: dict) -> str:
     ]):
         return "fuel_release"
 
+    # Maintenance / parts / MRO invoices
+    if any(k in text for k in [
+        "maintenance",
+        "repair",
+        "overhaul",
+        "inspection",
+        "avionics",
+        "airframe",
+        "engine shop",
+        "work order",
+        "work performed",
+        "squawk",
+        "discrepancy",
+        "service bulletin",
+        "parts order",
+        "component",
+        "aog",
+        " mro",
+        " mx ",
+        "annual inspection",
+        "progressive inspection",
+        "100 hour",
+        "100-hour",
+        "phase inspection",
+        "hot section",
+        "turbine",
+        "propeller",
+        "landing gear",
+        "hydraulic",
+        "sheet metal",
+        "interior refurb",
+        "paint",
+        "warranty claim",
+        "core return",
+        "exchange unit",
+        "rotable",
+    ]):
+        return "maintenance"
+
+    # Lease / rent / management / utility invoices
+    if any(k in text for k in [
+        "lease",
+        "rent",
+        "monthly rent",
+        "hangar rent",
+        "office rent",
+        "utilities",
+        "electric",
+        "water bill",
+        "management fee",
+        "charter management",
+        "aircraft management",
+        "property",
+        "insurance premium",
+        "hull insurance",
+        "liability insurance",
+    ]):
+        return "lease_utility"
+
     if any(k in text for k in [
         "hangar",
         "parking",
