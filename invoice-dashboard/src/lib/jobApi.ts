@@ -6,8 +6,42 @@ import type { JobDetailResponse, JobRow, JobsListResponse } from "@/lib/types";
 // Jobs list — direct Supabase query to job_application_parse
 // ---------------------------------------------------------------------------
 
-const JOB_COLUMNS =
+const JOB_COLUMNS_WITH_STAGE =
   "id, application_id, created_at, updated_at, pipeline_stage, category, employment_type, candidate_name, email, phone, location, total_time_hours, turbine_time_hours, pic_time_hours, sic_time_hours, has_citation_x, has_challenger_300_type_rating, type_ratings, soft_gate_pic_met, soft_gate_pic_status, needs_review, notes, model";
+
+const JOB_COLUMNS_BASE =
+  "id, application_id, created_at, updated_at, category, employment_type, candidate_name, email, phone, location, total_time_hours, turbine_time_hours, pic_time_hours, sic_time_hours, has_citation_x, has_challenger_300_type_rating, type_ratings, soft_gate_pic_met, soft_gate_pic_status, needs_review, notes, model";
+
+async function queryJobs(
+  supa: ReturnType<typeof createServiceClient>,
+  columns: string,
+  params: {
+    limit?: number;
+    category?: string;
+    employment_type?: string;
+    needs_review?: "true" | "false";
+    soft_gate_pic_met?: "true" | "false";
+    has_citation_x?: "true" | "false";
+    has_challenger_300_type_rating?: "true" | "false";
+  },
+) {
+  let query = supa
+    .from("job_application_parse")
+    .select(columns)
+    .order("created_at", { ascending: false })
+    .limit(params.limit ?? 200);
+
+  if (params.category) query = query.eq("category", params.category);
+  if (params.employment_type) query = query.eq("employment_type", params.employment_type);
+  if (params.needs_review) query = query.eq("needs_review", params.needs_review === "true");
+  if (params.soft_gate_pic_met) query = query.eq("soft_gate_pic_met", params.soft_gate_pic_met === "true");
+  if (params.has_citation_x) query = query.eq("has_citation_x", params.has_citation_x === "true");
+  if (params.has_challenger_300_type_rating) {
+    query = query.eq("has_challenger_300_type_rating", params.has_challenger_300_type_rating === "true");
+  }
+
+  return query;
+}
 
 export async function fetchJobs(
   params: {
@@ -22,27 +56,20 @@ export async function fetchJobs(
   } = {},
 ): Promise<JobsListResponse> {
   const supa = createServiceClient();
-  const limit = params.limit ?? 200;
 
-  let query = supa
-    .from("job_application_parse")
-    .select(JOB_COLUMNS)
-    .order("created_at", { ascending: false })
-    .limit(limit);
-
-  if (params.category) query = query.eq("category", params.category);
-  if (params.employment_type) query = query.eq("employment_type", params.employment_type);
-  if (params.needs_review) query = query.eq("needs_review", params.needs_review === "true");
-  if (params.soft_gate_pic_met) query = query.eq("soft_gate_pic_met", params.soft_gate_pic_met === "true");
-  if (params.has_citation_x) query = query.eq("has_citation_x", params.has_citation_x === "true");
-  if (params.has_challenger_300_type_rating) {
-    query = query.eq("has_challenger_300_type_rating", params.has_challenger_300_type_rating === "true");
+  // Try with pipeline_stage column; fall back if migration hasn't run yet
+  let { data, error } = await queryJobs(supa, JOB_COLUMNS_WITH_STAGE, params);
+  if (error) {
+    const retry = await queryJobs(supa, JOB_COLUMNS_BASE, params);
+    data = retry.data;
+    error = retry.error;
   }
-
-  const { data, error } = await query;
   if (error) throw new Error(`fetchJobs failed: ${error.message}`);
 
-  let jobs = (data ?? []) as JobRow[];
+  let jobs = (data ?? []).map((row: any) => ({
+    ...row,
+    pipeline_stage: row.pipeline_stage ?? "new",
+  })) as JobRow[];
 
   // Text search (matches backend behavior)
   if (params.q) {
@@ -72,16 +99,33 @@ export async function fetchJobDetail(applicationId: string | number): Promise<Jo
 
   const supa = createServiceClient();
 
-  // Fetch job parse data
-  const { data: job, error: jobErr } = await supa
+  // Fetch job parse data — try with pipeline_stage, fall back if column missing
+  let jobRow: any = null;
+  let jobErr: any = null;
+
+  const first = await supa
     .from("job_application_parse")
-    .select(JOB_COLUMNS)
+    .select(JOB_COLUMNS_WITH_STAGE)
     .eq("application_id", Number(id))
     .limit(1)
     .maybeSingle();
 
+  if (first.error) {
+    const retry = await supa
+      .from("job_application_parse")
+      .select(JOB_COLUMNS_BASE)
+      .eq("application_id", Number(id))
+      .limit(1)
+      .maybeSingle();
+    jobRow = retry.data;
+    jobErr = retry.error;
+  } else {
+    jobRow = first.data;
+  }
+
   if (jobErr) throw new Error(`fetchJobDetail failed: ${jobErr.message}`);
-  if (!job) throw new Error("Job application not found");
+  if (!jobRow) throw new Error("Job application not found");
+  if (!jobRow.pipeline_stage) jobRow.pipeline_stage = "new";
 
   // Fetch file metadata from Supabase (include GCS location for signing)
   const { data: fileRows } = await supa
@@ -110,5 +154,5 @@ export async function fetchJobDetail(applicationId: string | number): Promise<Jo
     }),
   );
 
-  return { ok: true, job: job as JobRow, files };
+  return { ok: true, job: jobRow as JobRow, files };
 }
