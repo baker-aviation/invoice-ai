@@ -23,7 +23,7 @@ export type InvoiceListResponse = {
 
 export type InvoiceDetailResponse = {
   ok: boolean;
-  invoice: any; // full parsed row
+  invoices: any[]; // all parsed invoice rows for this document
   signed_pdf_url: string | null;
 };
 

@@ -886,8 +886,10 @@ def extract_one_pdf(
     pdf_path: str,
     model: str,
     rescue: bool,
+    pdf_text: Optional[str] = None,
 ) -> Dict[str, Any]:
-    pdf_text = read_pdf_text(pdf_path)
+    if pdf_text is None:
+        pdf_text = read_pdf_text(pdf_path)
 
     # 1) First pass extraction
     data1 = llm_extract_json(
@@ -970,6 +972,8 @@ def main() -> None:
     ap.add_argument("--out_dir", default=None, help="If set and PDF contains multiple invoices, write one JSON per invoice here")
     ap.add_argument("--manifest", default=None, help="Optional path to write split manifest JSON (statement mode)")
 
+    ap.add_argument("--text_file", default=None, help="Pre-extracted text file (alternative to --pdf)")
+
     ap.add_argument("--schema", default="schemas/invoice.schema.json")
     ap.add_argument("--out", default="/tmp/invoice.json")
     ap.add_argument("--model", default="gpt-4o-mini")
@@ -1006,8 +1010,16 @@ def main() -> None:
         print(f"Wrote {args.out}")
         return
 
+    # Text file mode: pre-extracted text (used by text-based statement splitting)
+    if args.text_file:
+        text_content = Path(args.text_file).read_text(encoding="utf-8")
+        data = extract_one_pdf(client, schema_bundle, args.text_file, args.model, args.rescue, pdf_text=text_content)
+        write_json(args.out, data)
+        print(f"Wrote {args.out}")
+        return
+
     if not args.pdf:
-        raise SystemExit("Normal mode requires --pdf (or use repair mode flags)")
+        raise SystemExit("Normal mode requires --pdf, --text_file, or repair mode flags")
 
     if args.out_dir:
         pages_text = read_pdf_pages_text(args.pdf)

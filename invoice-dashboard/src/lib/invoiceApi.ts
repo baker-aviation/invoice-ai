@@ -89,21 +89,23 @@ export async function fetchInvoiceDetail(documentId: string): Promise<InvoiceDet
     .from("parsed_invoices")
     .select("*")
     .eq("document_id", documentId)
-    .maybeSingle();
+    .order("source_invoice_id", { ascending: true });
 
   if (error) throw new Error(`fetchInvoiceDetail failed: ${error.message}`);
-  if (!data) throw new Error("fetchInvoiceDetail failed: 404");
+  if (!data || data.length === 0) throw new Error("fetchInvoiceDetail failed: 404");
 
-  // Parse line_items from JSON string if needed
-  let lineItems = data.line_items;
-  if (typeof lineItems === "string") {
-    try {
-      lineItems = JSON.parse(lineItems);
-    } catch {
-      lineItems = [];
+  // Parse line_items for each invoice row
+  const invoices = data.map((row: any) => {
+    let lineItems = row.line_items;
+    if (typeof lineItems === "string") {
+      try {
+        lineItems = JSON.parse(lineItems);
+      } catch {
+        lineItems = [];
+      }
     }
-  }
-  const invoice = { ...data, line_items: Array.isArray(lineItems) ? lineItems : [] };
+    return { ...row, line_items: Array.isArray(lineItems) ? lineItems : [] };
+  });
 
   // Try to get signed PDF URL from Cloud Run (non-blocking — page loads even if this fails)
   let signedPdfUrl: string | null = null;
@@ -127,7 +129,7 @@ export async function fetchInvoiceDetail(documentId: string): Promise<InvoiceDet
     signedPdfUrl = `/api/invoices/${documentId}/pdf`;
   }
 
-  return { ok: true, invoice, signed_pdf_url: signedPdfUrl };
+  return { ok: true, invoices, signed_pdf_url: signedPdfUrl };
 }
 
 // ---------------------------------------------------------------------------
