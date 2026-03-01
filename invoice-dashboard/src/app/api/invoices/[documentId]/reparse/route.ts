@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cloudRunFetch } from "@/lib/cloud-run-fetch";
+import { createServiceClient } from "@/lib/supabase/service";
 
 /**
  * POST /api/invoices/{documentId}/reparse
  *
- * Triggers a re-parse of the invoice by calling the parser Cloud Run service.
- * Clears old parsed data and re-runs extraction with latest prompt/categories.
+ * Clears old parsed data via Supabase, then triggers parse_document
+ * on the parser Cloud Run service (which is already deployed).
  */
 
 const PARSER_BASE =
@@ -30,11 +31,54 @@ export async function POST(
   }
 
   try {
-    const url = `${PARSER_BASE.replace(/\/$/, "")}/jobs/reparse?document_id=${encodeURIComponent(documentId)}`;
+    const supa = createServiceClient();
+
+    // Verify document exists
+    const { data: doc } = await supa
+      .from("documents")
+      .select("id")
+      .eq("id", documentId)
+      .single();
+
+    if (!doc) {
+      return NextResponse.json(
+        { error: "Document not found" },
+        { status: 404 },
+      );
+    }
+
+    // Clean up old parsed data
+    const { data: parsedInvoices } = await supa
+      .from("parsed_invoices")
+      .select("id")
+      .eq("document_id", documentId);
+
+    const piIds = (parsedInvoices ?? []).map((r) => r.id);
+
+    if (piIds.length > 0) {
+      for (const piId of piIds) {
+        await supa
+          .from("parsed_line_items")
+          .delete()
+          .eq("parsed_invoice_id", piId);
+      }
+    }
+
+    await supa.from("parsed_invoices").delete().eq("document_id", documentId);
+    await supa.from("invoice_alerts").delete().eq("document_id", documentId);
+
+    // Reset document status so parse_document will process it
+    await supa
+      .from("documents")
+      .update({ status: "uploaded", parse_error: null })
+      .eq("id", documentId);
+
+    // Call the already-deployed /jobs/parse_document endpoint
+    const url = `${PARSER_BASE.replace(/\/$/, "")}/jobs/parse_document?document_id=${encodeURIComponent(documentId)}`;
     const res = await cloudRunFetch(url, {
       method: "POST",
       cache: "no-store",
-      signal: AbortSignal.timeout(60_000), // parsing can take a while
+      signal: AbortSignal.timeout(60_000),
     });
 
     if (!res.ok) {
@@ -46,7 +90,7 @@ export async function POST(
     }
 
     const body = await res.json();
-    return NextResponse.json({ ok: true, ...body });
+    return NextResponse.json({ ok: true, ...body, reparse: true });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("reparse proxy error:", msg);
