@@ -561,9 +561,45 @@ Rules:
         )
 
 
+def _validate_type_ratings(result: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Post-processing guard: cross-check has_citation_x and has_challenger_300
+    against the actual extracted ratings list.  GPT-4.1-mini sometimes sets
+    the boolean true for similar-sounding but different Cessna types
+    (CE-525, CE-560XL, etc.).
+    """
+    tr = result.get("type_ratings") or {}
+    ratings = [r.lower() for r in (tr.get("ratings") or [])]
+    joined = " ".join(ratings)
+
+    # Citation X must match CE-750, CE750, C750, or "citation x"
+    citation_x_present = any(
+        tok in joined
+        for tok in ("ce-750", "ce750", "c750", "citation x")
+    )
+    if tr.get("has_citation_x") and not citation_x_present:
+        print(f"VALIDATE: overriding has_citation_x → false (ratings: {ratings})", flush=True)
+        tr["has_citation_x"] = False
+
+    # Challenger 300/350 must match CL-300, CL300, CL-350, CL350, or "challenger 300/350"
+    challenger_present = any(
+        tok in joined
+        for tok in ("cl-300", "cl300", "cl-350", "cl350", "challenger 300", "challenger 350")
+    )
+    if tr.get("has_challenger_300") and not challenger_present:
+        print(f"VALIDATE: overriding has_challenger_300 → false (ratings: {ratings})", flush=True)
+        tr["has_challenger_300"] = False
+
+    result["type_ratings"] = tr
+    return result
+
+
 def _upsert_parse_row(supa: Client, application_id: int, result: Dict[str, Any]) -> None:
     # sanitize again (cheap insurance)
     result = _sanitize_for_db(result)
+
+    # Validate type rating booleans against actual ratings list
+    result = _validate_type_ratings(result)
 
     candidate = result.get("candidate") or {}
     pm = result.get("pilot_metrics") or {}

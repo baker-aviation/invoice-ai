@@ -74,12 +74,13 @@ function hasSkillbridge(j: any): boolean {
 }
 
 function hasCitationX(j: any): boolean {
-  if (j.has_citation_x === true) return true;
   const ratings: string[] = Array.isArray(j.type_ratings) ? j.type_ratings : [];
-  return ratings.some((r) => {
+  const inRatings = ratings.some((r) => {
     const u = r.toLowerCase();
-    return u.includes("ce-750") || u.includes("ce750") || u.includes("citation x") || u.includes("citation-x");
+    return u.includes("ce-750") || u.includes("ce750") || u.includes("c750") || u.includes("citation x") || u.includes("citation-x");
   });
+  // Trust the boolean only when corroborated by the ratings list (GPT sometimes mis-flags other Citation variants)
+  return inRatings || (j.has_citation_x === true && ratings.length === 0);
 }
 
 function hasChallenger(j: any): boolean {
@@ -309,7 +310,8 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
 
             <tbody className="divide-y divide-gray-100">
               {paged.map((j) => {
-                const gate = picGateShort(j.soft_gate_pic_status, j.soft_gate_pic_met);
+                const isPilot = j.category === "pilot_pic" || j.category === "pilot_sic";
+                const gate = isPilot ? picGateShort(j.soft_gate_pic_status, j.soft_gate_pic_met) : null;
                 return (
                   <tr key={j.id ?? j.application_id} className="hover:bg-gray-50/60 transition-colors">
                     <td className="px-4 py-2.5">

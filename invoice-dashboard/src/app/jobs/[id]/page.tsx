@@ -58,6 +58,7 @@ export default async function JobDetailPage({
     const data = await fetchJobDetail(applicationId);
     const job = data.job;
     const files = data.files ?? [];
+    const isPilot = job?.category === "pilot_pic" || job?.category === "pilot_sic";
 
     return (
       <>
@@ -82,23 +83,25 @@ export default async function JobDetailPage({
 
               <div className="flex items-center gap-2">
                 {job?.needs_review ? <Badge variant="warning">review</Badge> : <Badge>ok</Badge>}
-                {job?.soft_gate_pic_status ? (
-                  <Badge
-                    variant={
-                      job.soft_gate_pic_status.toLowerCase().startsWith("meets")
-                        ? "default"
-                        : job.soft_gate_pic_status.toLowerCase().startsWith("close")
-                        ? "warning"
-                        : "danger"
-                    }
-                  >
-                    PIC gate: {job.soft_gate_pic_status}
-                  </Badge>
-                ) : job?.soft_gate_pic_met === true ? (
-                  <Badge variant="default">PIC gate: Met</Badge>
-                ) : job?.soft_gate_pic_met === false ? (
-                  <Badge variant="danger">PIC gate: Not met</Badge>
-                ) : null}
+                {isPilot && (
+                  job?.soft_gate_pic_status ? (
+                    <Badge
+                      variant={
+                        job.soft_gate_pic_status.toLowerCase().startsWith("meets")
+                          ? "default"
+                          : job.soft_gate_pic_status.toLowerCase().startsWith("close")
+                          ? "warning"
+                          : "danger"
+                      }
+                    >
+                      PIC gate: {job.soft_gate_pic_status}
+                    </Badge>
+                  ) : job?.soft_gate_pic_met === true ? (
+                    <Badge variant="default">PIC gate: Met</Badge>
+                  ) : job?.soft_gate_pic_met === false ? (
+                    <Badge variant="danger">PIC gate: Not met</Badge>
+                  ) : null
+                )}
               </div>
             </div>
 
@@ -116,25 +119,29 @@ export default async function JobDetailPage({
                 <span className="text-gray-500">Model:</span> {job?.model ?? "—"}
               </div>
 
-              <div>
-                <span className="text-gray-500">Total time:</span> {job?.total_time_hours ?? "—"}
-              </div>
-              <div>
-                <span className="text-gray-500">PIC:</span> {job?.pic_time_hours ?? "—"}
-              </div>
-              <div>
-                <span className="text-gray-500">Turbine:</span> {job?.turbine_time_hours ?? "—"}
-              </div>
-              <div>
-                <span className="text-gray-500">SIC:</span> {job?.sic_time_hours ?? "—"}
-              </div>
+              {isPilot && (
+                <>
+                  <div>
+                    <span className="text-gray-500">Total time:</span> {job?.total_time_hours ?? "—"}
+                  </div>
+                  <div>
+                    <span className="text-gray-500">PIC:</span> {job?.pic_time_hours ?? "—"}
+                  </div>
+                  <div>
+                    <span className="text-gray-500">Turbine:</span> {job?.turbine_time_hours ?? "—"}
+                  </div>
+                  <div>
+                    <span className="text-gray-500">SIC:</span> {job?.sic_time_hours ?? "—"}
+                  </div>
 
-              <div className="md:col-span-4">
-                <span className="text-gray-500">Type ratings:</span>{" "}
-                {Array.isArray(job?.type_ratings) && job.type_ratings.length
-                  ? job.type_ratings.map(ratingLabel).join(", ")
-                  : "—"}
-              </div>
+                  <div className="md:col-span-4">
+                    <span className="text-gray-500">Type ratings:</span>{" "}
+                    {Array.isArray(job?.type_ratings) && job.type_ratings.length
+                      ? job.type_ratings.map(ratingLabel).join(", ")
+                      : "—"}
+                  </div>
+                </>
+              )}
 
               {job?.notes ? (
                 <div className="md:col-span-4">
