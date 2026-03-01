@@ -1,15 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/service";
+import { cloudRunFetch } from "@/lib/cloud-run-fetch";
 import { GoogleAuth } from "google-auth-library";
 
 /**
- * Direct PDF proxy — fetches from GCS using service account credentials.
- * Bypasses Cloud Run entirely so PDFs work even if invoice-alerts is down.
- *
  * GET /api/invoices/{documentId}/pdf
+ *
+ * Serves the invoice PDF. Tries multiple strategies:
+ * 1. Get a signed URL from invoice-alerts Cloud Run → redirect
+ * 2. Direct GCS fetch using service account credentials → stream bytes
  */
 
 const SAFE_ID_RE = /^[a-f0-9-]{36}$/;
+
+const ALERTS_BASE = process.env.INVOICE_API_BASE_URL;
 
 let _auth: GoogleAuth | null = null;
 
@@ -43,7 +47,7 @@ export async function GET(
     return NextResponse.json({ error: "Invalid document ID" }, { status: 400 });
   }
 
-  // 1. Look up GCS path from documents table
+  // Look up GCS path from documents table
   const supa = createServiceClient();
   const { data: doc, error } = await supa
     .from("documents")
@@ -60,7 +64,41 @@ export async function GET(
     return NextResponse.json({ error: "No GCS path for document" }, { status: 404 });
   }
 
-  // 2. Fetch PDF from GCS using service account
+  // Strategy 1: Get signed URL from invoice-alerts Cloud Run service
+  if (ALERTS_BASE) {
+    try {
+      const url = `${ALERTS_BASE.replace(/\/$/, "")}/api/invoices/${documentId}/pdf-url`;
+      const res = await cloudRunFetch(url, {
+        cache: "no-store",
+        signal: AbortSignal.timeout(5000),
+      });
+      if (res.ok) {
+        const body = await res.json();
+        const signedUrl = body.signed_pdf_url;
+        if (signedUrl) {
+          // Fetch the PDF via the signed URL and stream it back
+          // (avoids CORS / mixed-content issues with redirects in iframes)
+          const pdfRes = await fetch(signedUrl, { cache: "no-store" });
+          if (pdfRes.ok) {
+            const pdfBytes = await pdfRes.arrayBuffer();
+            const filename = gcs_path.split("/").pop() || "invoice.pdf";
+            return new NextResponse(pdfBytes, {
+              status: 200,
+              headers: {
+                "Content-Type": "application/pdf",
+                "Content-Disposition": `inline; filename="${filename}"`,
+                "Cache-Control": "private, max-age=3600",
+              },
+            });
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("PDF signed-url strategy failed, trying direct GCS:", e);
+    }
+  }
+
+  // Strategy 2: Direct GCS fetch using service account
   try {
     const auth = getAuth();
     const client = await auth.getClient();
@@ -80,18 +118,19 @@ export async function GET(
 
     if (!gcsRes.ok) {
       return NextResponse.json(
-        { error: `GCS returned ${gcsRes.status}` },
+        { error: `GCS returned ${gcsRes.status}`, hint: "Ensure the service account has Storage Object Viewer role on the bucket" },
         { status: 502 },
       );
     }
 
     const pdfBytes = await gcsRes.arrayBuffer();
+    const filename = gcs_path.split("/").pop() || "invoice.pdf";
 
     return new NextResponse(pdfBytes, {
       status: 200,
       headers: {
         "Content-Type": "application/pdf",
-        "Content-Disposition": 'inline; filename="invoice.pdf"',
+        "Content-Disposition": `inline; filename="${filename}"`,
         "Cache-Control": "private, max-age=3600",
       },
     });
