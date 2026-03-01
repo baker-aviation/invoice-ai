@@ -73,14 +73,14 @@ export async function fetchInvoices(params: {
 // for signed PDF URL)
 // ---------------------------------------------------------------------------
 
-function getAlertsBase(): string | undefined {
-  if (process.env.INVOICE_API_BASE_URL) return process.env.INVOICE_API_BASE_URL;
+function getSignedUrlBase(): string | undefined {
   const parser = process.env.PARSER_API_BASE_URL ?? process.env.INVOICE_PARSER_URL;
-  if (parser) return parser.replace(/invoice-parser/, "invoice-alerts");
+  if (parser) return parser;
+  if (process.env.INVOICE_API_BASE_URL) return process.env.INVOICE_API_BASE_URL;
   return undefined;
 }
 
-const BASE = getAlertsBase();
+const BASE = getSignedUrlBase();
 
 export async function fetchInvoiceDetail(documentId: string): Promise<InvoiceDetailResponse> {
   const supa = createServiceClient();

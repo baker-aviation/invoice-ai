@@ -14,18 +14,18 @@ import { GoogleAuth } from "google-auth-library";
 const SAFE_ID_RE = /^[a-f0-9-]{36}$/;
 
 /**
- * Resolve the invoice-alerts Cloud Run base URL.
- * Prefers INVOICE_API_BASE_URL; if unset, derives from PARSER_API_BASE_URL
- * (same GCP project → same hash, just swap the service name).
+ * Resolve the Cloud Run base URL for signed PDF URLs.
+ * Prefers PARSER_API_BASE_URL (the Vercel SA can invoke the parser).
+ * Falls back to INVOICE_API_BASE_URL (alerts service) if set.
  */
-function getAlertsBase(): string | undefined {
-  if (process.env.INVOICE_API_BASE_URL) return process.env.INVOICE_API_BASE_URL;
+function getSignedUrlBase(): string | undefined {
   const parser = process.env.PARSER_API_BASE_URL ?? process.env.INVOICE_PARSER_URL;
-  if (parser) return parser.replace(/invoice-parser/, "invoice-alerts");
+  if (parser) return parser;
+  if (process.env.INVOICE_API_BASE_URL) return process.env.INVOICE_API_BASE_URL;
   return undefined;
 }
 
-const ALERTS_BASE = getAlertsBase();
+const SIGNED_URL_BASE = getSignedUrlBase();
 
 let _auth: GoogleAuth | null = null;
 
@@ -78,9 +78,9 @@ export async function GET(
 
   // Strategy 1: Get signed URL from invoice-alerts Cloud Run service
   let strategy1Reason = "";
-  if (ALERTS_BASE) {
+  if (SIGNED_URL_BASE) {
     try {
-      const url = `${ALERTS_BASE.replace(/\/$/, "")}/api/invoices/${documentId}/pdf-url`;
+      const url = `${SIGNED_URL_BASE.replace(/\/$/, "")}/api/invoices/${documentId}/pdf-url`;
       console.log(`[pdf] Strategy 1: calling ${url}`);
       const res = await cloudRunFetch(url, {
         cache: "no-store",
@@ -119,7 +119,7 @@ export async function GET(
       console.warn("[pdf] Strategy 1 error:", e);
     }
   } else {
-    strategy1Reason = "No ALERTS_BASE — INVOICE_API_BASE_URL and PARSER_API_BASE_URL both unset";
+    strategy1Reason = "No SIGNED_URL_BASE — INVOICE_API_BASE_URL and PARSER_API_BASE_URL both unset";
     console.warn(`[pdf] ${strategy1Reason}`);
   }
 
@@ -148,7 +148,7 @@ export async function GET(
           hint: "Ensure the service account has Storage Object Viewer role on the bucket",
           debug: {
             strategy1_failure: strategy1Reason || "unknown",
-            alerts_base: ALERTS_BASE ?? null,
+            signed_url_base: SIGNED_URL_BASE ?? null,
             has_invoice_api_url: !!process.env.INVOICE_API_BASE_URL,
             has_parser_url: !!(process.env.PARSER_API_BASE_URL ?? process.env.INVOICE_PARSER_URL),
             has_gcp_sa_key: !!process.env.GCP_SA_KEY,
