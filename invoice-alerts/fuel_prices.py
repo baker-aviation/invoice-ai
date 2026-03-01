@@ -29,7 +29,9 @@ PRICE_INCREASE_PCT = 0.04  # 4%
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 _FUEL_RE = re.compile(
-    r"\bjet\s*a\b|\bjet\s*fuel\b|\bjet\s*a[-\u2011]1\b|\bavgas\b|\b100\s*ll\b",
+    r"\bjet\s*a\b|\bjet\s*fuel\b|\bjet\s*a[-\u2011]1\b|\bavgas\b|\b100\s*ll\b"
+    r"|\baviation\s+fuel\b|\bavtur\b|\bjet\s*a[-\u2011]?1\b"
+    r"|\bfuel\s+release\b|\bfuel\s+purchase\b|\bfuel\s+uplift\b",
     re.IGNORECASE,
 )
 
@@ -250,6 +252,93 @@ def store_fuel_price(
             log.info("fuel_prices duplicate for document_id=%s", data.get("document_id"))
             return None
         raise
+
+
+# ── Audit / diagnostics ──────────────────────────────────────────────────────
+
+
+def audit_fuel_extraction(invoice: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Diagnose why an invoice does or doesn't yield a fuel price.
+
+    Returns a dict with:
+      - document_id, vendor_name, doc_type
+      - reason: why it was rejected (or "ok" if extraction succeeded)
+      - fuel_candidates: list of lines that matched the fuel regex
+      - sample_lines: first 5 line item descriptions for context
+    """
+    doc_id = invoice.get("document_id")
+    vendor = invoice.get("vendor_name") or invoice.get("vendor_normalized")
+    doc_type = invoice.get("doc_type")
+    line_items = _parse_line_items(invoice.get("line_items"))
+
+    base: Dict[str, Any] = {
+        "document_id": doc_id,
+        "vendor_name": vendor,
+        "doc_type": doc_type,
+        "line_count": len(line_items),
+    }
+
+    if not line_items:
+        base["reason"] = "no_line_items"
+        base["sample_lines"] = []
+        return base
+
+    # Show first 5 line descriptions for context
+    base["sample_lines"] = [
+        str(li.get("description") or li.get("name") or "")[:80]
+        for li in line_items[:5]
+    ]
+
+    # Find all fuel-matching lines with diagnostic info
+    candidates: List[Dict[str, Any]] = []
+    for li in line_items:
+        desc = str(li.get("description") or li.get("name") or "")
+        if not _is_fuel_line(desc):
+            continue
+        qty = _to_float(li.get("quantity"))
+        unit_price = _to_float(li.get("unit_price"))
+        is_tax = _is_fuel_tax_or_fee(desc)
+        candidates.append({
+            "description": desc[:100],
+            "qty": qty,
+            "unit_price": unit_price,
+            "total": _to_float(li.get("total")),
+            "is_tax_fee": is_tax,
+            "reject_reason": (
+                "tax_fee" if is_tax else
+                "no_qty" if not qty else
+                "low_qty" if qty < MIN_GALLONS else
+                "no_unit_price" if not unit_price or unit_price <= 0 else
+                "low_price" if unit_price < MIN_FUEL_PRICE else
+                None
+            ),
+        })
+
+    base["fuel_candidates"] = candidates
+
+    if not candidates:
+        base["reason"] = "no_fuel_match"
+        return base
+
+    # Check if all candidates were rejected
+    usable = [c for c in candidates if c["reject_reason"] is None]
+    if not usable:
+        # Summarise the most common rejection
+        reasons = [c["reject_reason"] for c in candidates]
+        if all(r == "tax_fee" for r in reasons):
+            base["reason"] = "tax_only"
+        elif any(r in ("no_qty", "low_qty") for r in reasons):
+            base["reason"] = "qty_issue"
+        elif any(r in ("no_unit_price", "low_price") for r in reasons):
+            base["reason"] = "price_issue"
+        else:
+            base["reason"] = "all_rejected"
+        return base
+
+    # Extraction would succeed
+    base["reason"] = "ok"
+    return base
 
 
 # ── Slack payload ────────────────────────────────────────────────────────────

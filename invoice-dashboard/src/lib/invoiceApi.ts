@@ -1,4 +1,5 @@
 import { createServiceClient } from "@/lib/supabase/service";
+import { cloudRunFetch } from "@/lib/cloud-run-fetch";
 import type { AlertRow, AlertsResponse, FuelPriceRow, FuelPricesResponse, InvoiceDetailResponse, InvoiceListItem, InvoiceListResponse } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
@@ -101,7 +102,7 @@ export async function fetchInvoiceDetail(documentId: string): Promise<InvoiceDet
   let signedPdfUrl: string | null = null;
   if (BASE) {
     try {
-      const res = await fetch(`${BASE.replace(/\/$/, "")}/api/invoices/${documentId}/pdf-url`, {
+      const res = await cloudRunFetch(`${BASE.replace(/\/$/, "")}/api/invoices/${documentId}/pdf-url`, {
         cache: "no-store",
         signal: AbortSignal.timeout(5000),
       });
@@ -110,7 +111,7 @@ export async function fetchInvoiceDetail(documentId: string): Promise<InvoiceDet
         signedPdfUrl = body.signed_pdf_url ?? null;
       }
     } catch {
-      // Cloud Run unavailable — page still renders, just no PDF link
+      // Cloud Run unavailable or no GCP_SA_KEY — page still renders, just no PDF link
     }
   }
 

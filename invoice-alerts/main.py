@@ -40,6 +40,7 @@ from fuel_prices import (
     check_price_increase,
     store_fuel_price,
     build_fuel_price_slack_payload,
+    audit_fuel_extraction,
     FUEL_PRICES_TABLE,
 )
 
@@ -1604,6 +1605,42 @@ def backfill_fuel_prices(limit: int = 50) -> Dict[str, Any]:
         if DEBUG_ERRORS:
             raise HTTPException(status_code=500, detail=f"backfill failed: {repr(e)}")
         raise HTTPException(status_code=500, detail="backfill_fuel_prices failed")
+
+
+@app.get("/debug/fuel_audit")
+def debug_fuel_audit(limit: int = 50) -> Dict[str, Any]:
+    """
+    Diagnose why invoices fail fuel price extraction.
+    Returns a breakdown by rejection reason with sample invoices for each.
+    """
+    try:
+        limit = max(1, min(int(limit), 200))
+        rows = safe_select_many(
+            PARSED_TABLE,
+            _FUEL_INVOICE_COLS,
+            order="created_at",
+            desc=True,
+            limit=limit,
+        ) or []
+
+        audits: List[Dict[str, Any]] = []
+        by_reason: Dict[str, int] = {}
+
+        for inv in rows:
+            inv["line_items"] = _parse_line_items(inv.get("line_items"))
+            result = audit_fuel_extraction(inv)
+            reason = result.get("reason", "unknown")
+            by_reason[reason] = by_reason.get(reason, 0) + 1
+            audits.append(result)
+
+        return {
+            "ok": True,
+            "total_scanned": len(rows),
+            "summary": by_reason,
+            "audits": audits[:100],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"fuel_audit failed: {repr(e)}")
 
 
 @app.get("/api/fuel-prices")
