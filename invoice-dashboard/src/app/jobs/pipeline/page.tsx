@@ -2,12 +2,12 @@ export const dynamic = "force-dynamic";
 
 import { Topbar } from "@/components/Topbar";
 import { fetchJobs } from "@/lib/jobApi";
-import JobsTable from "./JobsTable";
-import JobsNav from "./JobsNav";
 import { AutoRefresh } from "@/components/AutoRefresh";
+import JobsNav from "../JobsNav";
+import PipelineBoard from "./PipelineBoard";
 
-export default async function JobsPage() {
-  const data = await fetchJobs({ limit: 200 });
+export default async function PipelinePage() {
+  const data = await fetchJobs({ limit: 500 });
   const jobs = data.jobs ?? [];
 
   return (
@@ -15,7 +15,7 @@ export default async function JobsPage() {
       <Topbar title="Jobs" />
       <JobsNav />
       <AutoRefresh intervalSeconds={120} />
-      <JobsTable initialJobs={jobs} />
+      <PipelineBoard initialJobs={jobs} />
     </>
   );
 }

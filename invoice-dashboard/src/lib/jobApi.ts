@@ -7,7 +7,7 @@ import type { JobDetailResponse, JobRow, JobsListResponse } from "@/lib/types";
 // ---------------------------------------------------------------------------
 
 const JOB_COLUMNS =
-  "id, application_id, created_at, updated_at, category, employment_type, candidate_name, email, phone, location, total_time_hours, turbine_time_hours, pic_time_hours, sic_time_hours, has_citation_x, has_challenger_300_type_rating, type_ratings, soft_gate_pic_met, soft_gate_pic_status, needs_review, notes, model";
+  "id, application_id, created_at, updated_at, pipeline_stage, category, employment_type, candidate_name, email, phone, location, total_time_hours, turbine_time_hours, pic_time_hours, sic_time_hours, has_citation_x, has_challenger_300_type_rating, type_ratings, soft_gate_pic_met, soft_gate_pic_status, needs_review, notes, model";
 
 export async function fetchJobs(
   params: {

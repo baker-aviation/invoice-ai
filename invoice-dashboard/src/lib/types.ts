@@ -51,11 +51,16 @@ export type AlertsResponse = {
    Jobs
 ========================= */
 
+export const PIPELINE_STAGES = ["new", "screening", "interview", "offer", "hired", "rejected"] as const;
+export type PipelineStage = (typeof PIPELINE_STAGES)[number];
+
 export type JobRow = {
   id: number;
   application_id: number;
   created_at: string | null;
   updated_at: string | null;
+
+  pipeline_stage: PipelineStage;
 
   category: string | null;
   employment_type: string | null;
