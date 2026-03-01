@@ -202,6 +202,59 @@ def split_text_into_sections(text: str) -> List[Tuple[str, str]]:
 
 
 # ---------------------------
+# Airport-based sub-splitting for consolidated fuel statements
+# ---------------------------
+
+# Matches lines like "OSU1 JET FUEL ...", "MSN IP ...", "STS FSII ..."
+_AIRPORT_FUEL_RE = re.compile(
+    r"^([A-Z0-9]{3,4})\s+"
+    r"(?:JET[\s-]*(?:FUEL|A)|AVGAS|100LL|FUEL\b|IP\b|FSII|FLOW[\s-]*FEE|INTO[\s-]*PLANE)",
+    re.I | re.M,
+)
+
+
+def _subsplit_by_airport(section_text: str, parent_id: str) -> List[Tuple[str, str]]:
+    """
+    Sub-split a text section by airport/station code for consolidated
+    fuel statements (Avfuel, World Fuel).  Each airport stop becomes its
+    own section so the parser creates a separate invoice per stop.
+
+    Returns list of (composite_id, text_section) tuples.
+    Returns empty list if fewer than 2 distinct airports found.
+    """
+    matches: List[Tuple[int, str]] = []
+    for m in _AIRPORT_FUEL_RE.finditer(section_text or ""):
+        code = m.group(1).upper()
+        line_start = section_text.rfind("\n", 0, m.start())
+        line_start = 0 if line_start < 0 else line_start + 1
+        matches.append((line_start, code))
+
+    if not matches:
+        return []
+
+    matches.sort(key=lambda x: x[0])
+
+    # Deduplicate consecutive same-airport matches (group them)
+    deduped: List[Tuple[int, str]] = [matches[0]]
+    for pos, code in matches[1:]:
+        if code != deduped[-1][1]:
+            deduped.append((pos, code))
+
+    unique_codes = set(code for _, code in deduped)
+    if len(unique_codes) < 2:
+        return []
+
+    sections: List[Tuple[str, str]] = []
+    for i, (pos, code) in enumerate(deduped):
+        end_pos = deduped[i + 1][0] if i + 1 < len(deduped) else len(section_text)
+        chunk = section_text[pos:end_pos].strip()
+        if chunk:
+            sections.append((f"{parent_id}_{code}", chunk))
+
+    return sections
+
+
+# ---------------------------
 # Date normalization
 # ---------------------------
 
@@ -431,6 +484,17 @@ def _clean_vendor_name(v: Optional[str]) -> Optional[str]:
 
 def classify_doc_type(raw: dict) -> str:
     text = str(raw).lower()
+
+    # Known FBO / fuel vendors — check FIRST so that fuel invoices with
+    # generic keywords like "parts" or "inspection" in OCR noise or
+    # address fields still classify correctly as FBO.
+    if any(k in text for k in [
+        "avfuel", "world fuel", "sheltair", "atlantic aviation",
+        "signature flight", "million air", "jet aviation",
+        "wilson air", "ross aviation", "clay lacy", "cutter aviation",
+        "pentastar", "xjet", "priester", "azorra",
+    ]):
+        return "fbo_fee"
 
     if any(k in text for k in [
         "fuel release",
@@ -783,6 +847,26 @@ def process_one_pdf(
     text_sections: List[Tuple[str, str]] = []
     if not did_split and len(invoice_ids) >= 2:
         text_sections = split_text_into_sections(text)
+
+    # Expand text sections with airport-based sub-splits (handles
+    # consolidated fuel statements where one invoice covers multiple stops).
+    if text_sections:
+        expanded: List[Tuple[str, str]] = []
+        for inv_id, section_text in text_sections:
+            sub = _subsplit_by_airport(section_text, inv_id)
+            if sub:
+                expanded.extend(sub)
+            else:
+                expanded.append((inv_id, section_text))
+        text_sections = expanded
+
+    # Airport-based splitting as a standalone fallback: when neither PDF
+    # nor text-section splitting produced multiple sections, check for
+    # multi-airport fuel patterns in the full text.
+    if not did_split and len(text_sections) < 2:
+        airport_sections = _subsplit_by_airport(text, pdf_path.stem)
+        if len(airport_sections) >= 2:
+            text_sections = airport_sections
 
     try:
         if did_split:

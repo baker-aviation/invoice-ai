@@ -5,6 +5,7 @@ import { Badge } from "@/components/Badge";
 import { inferCategory, CATEGORY_COLORS } from "@/lib/invoiceCategory";
 import ReparseButton from "./ReparseButton";
 import PdfViewer from "./PdfViewer";
+import { AutoRefresh } from "@/components/AutoRefresh";
 
 export default async function InvoiceDetailPage({
   params,
@@ -13,7 +14,32 @@ export default async function InvoiceDetailPage({
 }) {
   const { document_id } = await params;
 
-  const data = await fetchInvoiceDetail(document_id);
+  let data: Awaited<ReturnType<typeof fetchInvoiceDetail>>;
+  try {
+    data = await fetchInvoiceDetail(document_id);
+  } catch {
+    // No parsed invoices yet (likely mid-reparse) — show a processing state
+    return (
+      <>
+        <Topbar title="Invoice detail" />
+        <AutoRefresh intervalSeconds={8} />
+        <div className="p-6 space-y-4">
+          <div className="flex items-center gap-3">
+            <Link href="/invoices" className="rounded-md border px-3 py-2 text-sm">
+              ← Back to Invoices
+            </Link>
+            <ReparseButton documentId={document_id} />
+            <span className="text-xs text-gray-400 ml-auto">document_id: {document_id}</span>
+          </div>
+          <div className="rounded-xl border border-amber-200 bg-amber-50 p-6 text-center text-amber-800">
+            <div className="text-lg font-semibold mb-1">Re-parsing in progress…</div>
+            <div className="text-sm">This page will refresh automatically when parsing is complete.</div>
+          </div>
+        </div>
+      </>
+    );
+  }
+
   const invoices = data.invoices;
   const isStatement = invoices.length > 1;
 

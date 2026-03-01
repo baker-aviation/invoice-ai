@@ -26,6 +26,10 @@ const LEASE_KEYWORDS = ["lease", "rent", "hangar rent", "utilities", "management
 const PILOT_OPS_KEYWORDS = ["prod support", "product support", "training", "simulator", "type rating", "jeppesen", "foreflight", "charts", "bombardier", "gulfstream", "dassault", "pilot supplies", "crew supplies", "smart parts"];
 const SUBS_KEYWORDS = ["starlink", "subscription", "monthly service", "recurring", "satcom", "internet service", "connectivity", "wifi", "software license"];
 
+// Known FBO/fuel vendor names — checked before keyword fallback so that
+// fuel invoices with stray maintenance-like words still classify correctly.
+const KNOWN_FBO_VENDORS = ["avfuel", "world fuel", "sheltair", "atlantic aviation", "signature flight", "million air", "jet aviation", "wilson air", "ross aviation", "clay lacy", "cutter aviation", "pentastar", "xjet", "priester", "azorra"];
+
 export function inferCategory(inv: {
   category?: string;
   doc_type?: string | null;
@@ -37,7 +41,10 @@ export function inferCategory(inv: {
   // 2. Map from backend doc_type
   const mapped = inv.doc_type ? DOC_TYPE_MAP[inv.doc_type] : undefined;
   if (mapped) return mapped;
-  // 3. Keyword fallback for doc_type="other" or missing
+  // 3. Known FBO vendor name — takes priority over keyword matching
+  const vn = (inv.vendor_name ?? "").toLowerCase();
+  if (KNOWN_FBO_VENDORS.some((k) => vn.includes(k))) return "FBO/Fuel";
+  // 4. Keyword fallback for doc_type="other" or missing
   const hay = [inv.vendor_name, inv.doc_type, ...(inv.line_items?.map((l) => l.description) ?? [])]
     .join(" ")
     .toLowerCase();
