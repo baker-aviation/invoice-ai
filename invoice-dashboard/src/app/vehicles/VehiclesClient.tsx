@@ -57,11 +57,6 @@ const MAINTENANCE_TYPES: { key: MaintenanceType; label: string; icon: string; in
 
 const STORAGE_KEY = "vehicle_maintenance_records";
 
-function isAogVehicle(name: string): boolean {
-  const u = (name || "").toUpperCase();
-  return u.includes("VAN") || u.includes("AOG") || u.includes(" OG") || u.includes("TRAN");
-}
-
 function fmtTime(s: string | null | undefined): string {
   if (!s) return "—";
   const d = new Date(s);
@@ -688,9 +683,9 @@ export default function VehiclesClient() {
     return () => clearInterval(id);
   }, []);
 
-  const crewCars = vans.filter((v) => !isAogVehicle(v.name));
-  const celVehicles = crewCars.filter((v) => diagData.get(v.id)?.check_engine_on === true);
-  const lowFuelVehicles = crewCars.filter((v) => {
+  const allVehicles = vans;
+  const celVehicles = allVehicles.filter((v) => diagData.get(v.id)?.check_engine_on === true);
+  const lowFuelVehicles = allVehicles.filter((v) => {
     const fp = diagData.get(v.id)?.fuel_percent;
     return fp != null && fp <= 15;
   });
@@ -719,7 +714,7 @@ export default function VehiclesClient() {
     );
   }
 
-  const mapCars = crewCars
+  const mapCars = allVehicles
     .filter((v) => v.lat !== null && v.lon !== null)
     .map((v) => ({
       id: v.id,
@@ -763,7 +758,7 @@ export default function VehiclesClient() {
               </div>
             ) : (
               <div className="text-sm text-green-700 font-medium">
-                All {crewCars.length} vehicles clear — no alerts
+                All {allVehicles.length} vehicles clear — no alerts
               </div>
             )}
           </div>
@@ -796,7 +791,7 @@ export default function VehiclesClient() {
           <div className="text-sm font-semibold text-gray-800">
             Live Map
             <span className="ml-2 text-xs font-normal text-gray-400">
-              via Samsara · {crewCars.length} vehicles
+              via Samsara · {allVehicles.length} vehicles
             </span>
           </div>
           <div className="flex items-center gap-3">
@@ -818,16 +813,16 @@ export default function VehiclesClient() {
           <CrewCarMapView cars={mapCars} />
         ) : (
           <div className="px-4 py-12 text-sm text-gray-400 text-center">
-            {crewCars.length === 0 ? "No vehicles found in Samsara." : "No vehicles have GPS data yet."}
+            {allVehicles.length === 0 ? "No vehicles found in Samsara." : "No vehicles have GPS data yet."}
           </div>
         )}
       </div>
 
       {/* Vehicle Fleet Table */}
-      <VehicleFleetTable vehicles={crewCars} diags={diagData} />
+      <VehicleFleetTable vehicles={allVehicles} diags={diagData} />
 
       {/* Preventive Maintenance Schedule */}
-      <MaintenanceSchedule vehicles={crewCars} diags={diagData} />
+      <MaintenanceSchedule vehicles={allVehicles} diags={diagData} />
     </div>
   );
 }
