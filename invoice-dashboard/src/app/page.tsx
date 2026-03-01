@@ -178,6 +178,12 @@ export default async function HomePage() {
               title="Tanker Planner"
               subtitle="Optimize fuel tankering"
             />
+
+            <StatCard
+              href="/fees"
+              title="Fee Comparison"
+              subtitle="Highest fees by category and airport"
+            />
           </div>
         </div>
       </div>
