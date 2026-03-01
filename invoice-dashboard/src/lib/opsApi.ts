@@ -67,15 +67,23 @@ function isNoiseNotam(alert: { alert_type: string; body: string | null }): boole
 
 function extractNotamDates(rawData: Record<string, unknown> | null): NotamDates | null {
   if (!rawData) return null;
+
+  // Current format: raw_data = {"notam_dates": {effective_start, ...}}
+  const nd = (rawData.notam_dates ?? {}) as Record<string, unknown>;
+
+  // Legacy format: raw_data = {properties: {coreNOTAMData: {notam: {effectiveStart, ...}}}}
   const props = (rawData.properties ?? {}) as Record<string, unknown>;
+  const core = (props.coreNOTAMData ?? {}) as Record<string, unknown>;
+  const notam = (core.notam ?? {}) as Record<string, unknown>;
+
   return {
-    effective_start: (props.effectiveStart as string) ?? null,
-    effective_end: (props.effectiveEnd as string) ?? null,
-    issued: (props.issued as string) ?? null,
-    status: (props.status as string) ?? null,
-    start_date_utc: (props.startDate as string) ?? null,
-    end_date_utc: (props.endDate as string) ?? null,
-    issue_date_utc: (props.issueDate as string) ?? null,
+    effective_start: (nd.effective_start as string) ?? (notam.effectiveStart as string) ?? null,
+    effective_end: (nd.effective_end as string) ?? (notam.effectiveEnd as string) ?? null,
+    issued: (nd.issued as string) ?? (notam.issued as string) ?? null,
+    status: (nd.status as string) ?? (notam.status as string) ?? null,
+    start_date_utc: (nd.start_date_utc as string) ?? (notam.startDate as string) ?? null,
+    end_date_utc: (nd.end_date_utc as string) ?? (notam.endDate as string) ?? null,
+    issue_date_utc: (nd.issue_date_utc as string) ?? (notam.issueDate as string) ?? null,
   };
 }
 
