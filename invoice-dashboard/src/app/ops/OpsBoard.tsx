@@ -180,10 +180,10 @@ function getLocalTimeStr(utcIso: string, icao: string | null): string {
   });
 }
 
-function isAfterHours(arrivalUtc: string | null, arrivalIcao: string | null): boolean {
-  if (!arrivalUtc) return false;
-  const hour = getLocalHour(arrivalUtc, arrivalIcao);
-  return hour >= 20; // 8 PM or later
+function isAfterHours(utcIso: string | null, icao: string | null): boolean {
+  if (!utcIso) return false;
+  const hour = getLocalHour(utcIso, icao);
+  return hour >= 20 || hour < 7; // 8 PM – 7 AM local
 }
 
 // ─── Client-side alert types ─────────────────────────────────────────────────
@@ -231,7 +231,7 @@ const FILTER_OPTIONS: { key: AlertFilter; label: string; description: string }[]
   { key: "EDCT", label: "EDCT", description: "Ground delays" },
   { key: "KJAC", label: "KJAC", description: "Jackson Hole alerts" },
   { key: "KSNA", label: "KSNA", description: "John Wayne alerts" },
-  { key: "LATE", label: "After 8PM", description: "Arrivals after 8 PM local" },
+  { key: "LATE", label: "After Hrs", description: "Departures or arrivals 8 PM – 7 AM local" },
 ];
 
 // ─── Time horizons ───────────────────────────────────────────────────────────
@@ -593,16 +593,29 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
         }
       }
 
-      // Check after-hours arrival
-      if (isAfterHours(f.scheduled_arrival, f.arrival_icao)) {
-        const localTime = getLocalTimeStr(f.scheduled_arrival!, f.arrival_icao);
+      // Check after-hours departure (8 PM – 7 AM local at departure airport)
+      if (isAfterHours(f.scheduled_departure, f.departure_icao)) {
+        const localTime = getLocalTimeStr(f.scheduled_departure, f.departure_icao);
         alerts.push({
-          key: `afterhours-${f.id}`,
+          key: `afterhours-dep-${f.id}`,
           flightId: f.id,
           type: "AFTER_HOURS",
           label: "LATE",
           severity: "warning",
-          message: `Landing at ${localTime} local (${f.arrival_icao ?? "????"}) — after 8:00 PM`,
+          message: `Departing ${f.departure_icao ?? "????"} at ${localTime} local — outside 7 AM – 8 PM`,
+        });
+      }
+
+      // Check after-hours arrival (8 PM – 7 AM local at arrival airport)
+      if (isAfterHours(f.scheduled_arrival, f.arrival_icao)) {
+        const localTime = getLocalTimeStr(f.scheduled_arrival!, f.arrival_icao);
+        alerts.push({
+          key: `afterhours-arr-${f.id}`,
+          flightId: f.id,
+          type: "AFTER_HOURS",
+          label: "LATE",
+          severity: "warning",
+          message: `Landing ${f.arrival_icao ?? "????"} at ${localTime} local — outside 7 AM – 8 PM`,
         });
       }
 
@@ -648,9 +661,12 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
     if (activeFilter === "KSNA") {
       return timeFiltered.filter((f) => f.departure_icao === "KSNA" || f.arrival_icao === "KSNA");
     }
-    // After-hours filter
+    // After-hours filter (departure or arrival between 8 PM – 7 AM local)
     if (activeFilter === "LATE") {
-      return timeFiltered.filter((f) => isAfterHours(f.scheduled_arrival, f.arrival_icao));
+      return timeFiltered.filter((f) =>
+        isAfterHours(f.scheduled_departure, f.departure_icao) ||
+        isAfterHours(f.scheduled_arrival, f.arrival_icao)
+      );
     }
 
     const typeMap: Record<string, string[]> = {
