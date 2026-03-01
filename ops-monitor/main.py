@@ -977,6 +977,33 @@ def debug_sync_test():
     return {"feeds": results, "supabase_ok": supa_ok, "supabase_secs": supa_secs}
 
 
+@app.get("/debug/ics_fields")
+def debug_ics_fields(count: int = Query(5, ge=1, le=20)):
+    """Dump ALL raw ICS properties from the first N VEVENTs to see what JetInsight sends."""
+    if not ICS_URLS:
+        return {"error": "No ICS URLs configured"}
+    try:
+        r = requests.get(ICS_URLS[0], timeout=15)
+        r.raise_for_status()
+        cal = Calendar.from_ical(r.content)
+        events = [c for c in cal.walk() if c.name == "VEVENT"]
+        samples = []
+        for ev in events[:count]:
+            props = {}
+            for key in ev:
+                val = ev[key]
+                if hasattr(val, "dt"):
+                    props[key] = str(val.dt)
+                elif isinstance(val, list):
+                    props[key] = [str(v) for v in val]
+                else:
+                    props[key] = str(val)
+            samples.append(props)
+        return {"total_events": len(events), "samples": samples}
+    except Exception as e:
+        return {"error": repr(e)}
+
+
 @app.get("/debug/connectivity")
 def debug_connectivity():
     """Test DNS + TCP reachability for external hosts from inside Cloud Run."""
