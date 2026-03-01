@@ -11,7 +11,8 @@ const NAV = [
   { href: "/alerts", label: "Alerts", exact: false },
   { href: "/jobs", label: "Jobs", exact: false },
   { href: "/maintenance", label: "AOG Vans", exact: false },
-  { href: "/crew-cars", label: "Crew Cars", exact: false },
+  { href: "/vehicles", label: "Vehicles", exact: false },
+  { href: "/fees", label: "Fees", exact: false },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -28,7 +29,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900">
       <header className="bg-slate-900 text-white shadow-md">
-        <div className="mx-auto max-w-6xl px-6 py-3 flex items-center justify-between">
+        <div className="mx-auto max-w-7xl px-6 py-3 flex items-center justify-between">
           <Link href="/" className="font-bold text-white hover:text-slate-200 tracking-tight">
             Baker Aviation
           </Link>
@@ -60,7 +61,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       </header>
 
-      <main className="mx-auto max-w-6xl px-6 py-6">{children}</main>
+      <main className="mx-auto max-w-7xl px-6 py-6">{children}</main>
     </div>
   );
 }

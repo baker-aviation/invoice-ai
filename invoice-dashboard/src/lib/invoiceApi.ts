@@ -1,4 +1,5 @@
 import { createServiceClient } from "@/lib/supabase/service";
+import { signGcsUrl } from "@/lib/gcs";
 import type { AlertRow, AlertsResponse, InvoiceDetailResponse, InvoiceListItem, InvoiceListResponse } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
@@ -68,21 +69,45 @@ export async function fetchInvoices(params: {
 }
 
 // ---------------------------------------------------------------------------
-// Invoice detail — still proxies to Cloud Run (needs signed PDF URL from GCS)
+// Invoice detail — direct Supabase query
+// PDF URL points to internal API route (handles GCS signing + Cloud Run)
 // ---------------------------------------------------------------------------
 
-const BASE = process.env.INVOICE_API_BASE_URL;
-
-function mustBase(): string {
-  if (!BASE) throw new Error("Missing INVOICE_API_BASE_URL in .env.local");
-  return BASE.replace(/\/$/, "");
-}
+const SAFE_ID_RE = /^[a-zA-Z0-9_-]+$/;
 
 export async function fetchInvoiceDetail(documentId: string): Promise<InvoiceDetailResponse> {
-  const base = mustBase();
-  const res = await fetch(`${base}/api/invoices/${documentId}`, { cache: "no-store" });
-  if (!res.ok) throw new Error(`fetchInvoiceDetail failed: ${res.status}`);
-  return res.json();
+  if (!SAFE_ID_RE.test(documentId)) {
+    throw new Error("Invalid document ID");
+  }
+
+  const supa = createServiceClient();
+
+  const { data, error } = await supa
+    .from("parsed_invoices")
+    .select(INVOICE_COLUMNS)
+    .eq("document_id", documentId)
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw new Error(`fetchInvoiceDetail failed: ${error.message}`);
+  if (!data) throw new Error("Invoice not found");
+
+  // Look up GCS location and generate a signed URL for inline viewing
+  const { data: doc } = await supa
+    .from("documents")
+    .select("gcs_bucket, gcs_path")
+    .eq("id", documentId)
+    .maybeSingle();
+
+  let signed_pdf_url: string | null = null;
+  if (doc?.gcs_bucket && doc?.gcs_path) {
+    // Try direct GCS signing (works in iframes — no redirect)
+    signed_pdf_url = await signGcsUrl(doc.gcs_bucket, doc.gcs_path);
+    // Fallback: internal API route (opens in new tab via redirect)
+    if (!signed_pdf_url) signed_pdf_url = `/api/invoices/${documentId}`;
+  }
+
+  return { ok: true, invoice: data, signed_pdf_url };
 }
 
 // ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 
 const CrewCarMapView = dynamic(() => import("../maintenance/CrewCarMapView"), {
   ssr: false,
@@ -369,7 +369,7 @@ export default function CrewCarsClient() {
 
   // Diagnostics: odometer + check engine light
   const [diagData, setDiagData] = useState<Map<string, VehicleDiag>>(new Map());
-  useMemo(() => {
+  useEffect(() => {
     async function loadDiags() {
       try {
         const res = await fetch("/api/vans/diagnostics", { cache: "no-store" });
@@ -385,8 +385,8 @@ export default function CrewCarsClient() {
     return () => clearInterval(id);
   }, []);
 
-  useMemo(() => { load(); }, []);
-  useMemo(() => {
+  useEffect(() => { load(); }, []);
+  useEffect(() => {
     const id = setInterval(load, 240_000);
     return () => clearInterval(id);
   }, []);

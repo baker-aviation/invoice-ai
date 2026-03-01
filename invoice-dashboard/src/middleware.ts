@@ -2,9 +2,26 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
 export async function middleware(request: NextRequest) {
-  // /api/agents handles its own auth (requireAdmin on POST, public GET)
-  // Skip middleware Supabase check to avoid double-auth
-  if (request.nextUrl.pathname.startsWith("/api/agents")) {
+  // CSRF: reject cross-origin state-changing requests
+  if (request.method === "POST" || request.method === "PUT" || request.method === "DELETE") {
+    const origin = request.headers.get("origin");
+    const host = request.headers.get("host");
+    if (origin && host) {
+      try {
+        const originHost = new URL(origin).host;
+        if (originHost !== host) {
+          return NextResponse.json({ error: "Forbidden: cross-origin request" }, { status: 403 });
+        }
+      } catch {
+        return NextResponse.json({ error: "Forbidden: invalid origin" }, { status: 403 });
+      }
+    }
+  }
+
+  // Public routes that handle their own auth or need no auth
+  // Use exact match to prevent prefix bypass on future sub-routes
+  const publicApiPaths = ["/api/agents", "/api/vans/health"];
+  if (publicApiPaths.some((p) => request.nextUrl.pathname === p)) {
     return NextResponse.next();
   }
 

@@ -4,9 +4,9 @@ import msal
 from datetime import datetime, timedelta
 
 # ===== CONFIG =====
-CLIENT_ID = "YOUR_CLIENT_ID"
-CLIENT_SECRET = "YOUR_CLIENT_SECRET"
-TENANT_ID = "YOUR_TENANT_ID"
+CLIENT_ID = os.getenv("MS_CLIENT_ID", "")
+CLIENT_SECRET = os.getenv("MS_CLIENT_SECRET", "")
+TENANT_ID = os.getenv("MS_TENANT_ID", "")
 
 SAVE_DIR = "./outlook_receipts"
 os.makedirs(SAVE_DIR, exist_ok=True)

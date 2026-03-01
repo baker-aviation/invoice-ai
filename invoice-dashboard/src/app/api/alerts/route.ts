@@ -32,6 +32,14 @@ export async function GET(req: NextRequest) {
       upstream.searchParams.set(k, String(n));
     } else if (k === "q" && v.length > 200) {
       upstream.searchParams.set(k, v.slice(0, 200));
+    } else if (k === "status" || k === "slack_status") {
+      // Validate enum-like fields
+      if (/^[a-zA-Z_]{1,30}$/.test(v)) {
+        upstream.searchParams.set(k, v);
+      }
+    } else if (k === "vendor") {
+      // Cap vendor length and strip control chars
+      upstream.searchParams.set(k, v.slice(0, 100).replace(/[^\w\s.&'-]/g, ""));
     } else {
       upstream.searchParams.set(k, v);
     }

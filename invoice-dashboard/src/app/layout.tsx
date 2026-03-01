@@ -4,7 +4,7 @@ import "leaflet/dist/leaflet.css";
 import { AppShell } from "@/components/AppShell";
 
 export const metadata: Metadata = {
-  title: "Invoice AI Dashboard",
+  title: "Baker Database",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
