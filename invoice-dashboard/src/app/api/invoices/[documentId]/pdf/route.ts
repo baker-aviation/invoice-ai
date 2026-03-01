@@ -77,6 +77,7 @@ export async function GET(
   }
 
   // Strategy 1: Get signed URL from invoice-alerts Cloud Run service
+  let strategy1Reason = "";
   if (ALERTS_BASE) {
     try {
       const url = `${ALERTS_BASE.replace(/\/$/, "")}/api/invoices/${documentId}/pdf-url`;
@@ -86,16 +87,19 @@ export async function GET(
         signal: AbortSignal.timeout(5000),
       });
       if (!res.ok) {
-        console.warn(`[pdf] Cloud Run returned ${res.status} ${res.statusText}`);
+        strategy1Reason = `Cloud Run returned ${res.status} ${res.statusText}`;
+        console.warn(`[pdf] ${strategy1Reason}`);
       } else {
         const body = await res.json();
         const signedUrl = body.signed_pdf_url;
         if (!signedUrl) {
-          console.warn(`[pdf] Cloud Run returned ok but signed_pdf_url is null`);
+          strategy1Reason = `Cloud Run returned 200 but signed_pdf_url is null (body: ${JSON.stringify(body)})`;
+          console.warn(`[pdf] ${strategy1Reason}`);
         } else {
           const pdfRes = await fetch(signedUrl, { cache: "no-store" });
           if (!pdfRes.ok) {
-            console.warn(`[pdf] Signed URL fetch failed: ${pdfRes.status}`);
+            strategy1Reason = `Signed URL fetch returned ${pdfRes.status}`;
+            console.warn(`[pdf] ${strategy1Reason}`);
           } else {
             const pdfBytes = await pdfRes.arrayBuffer();
             const filename = gcs_path.split("/").pop() || "invoice.pdf";
@@ -111,10 +115,12 @@ export async function GET(
         }
       }
     } catch (e) {
+      strategy1Reason = `Exception: ${e instanceof Error ? e.message : String(e)}`;
       console.warn("[pdf] Strategy 1 error:", e);
     }
   } else {
-    console.warn("[pdf] No ALERTS_BASE — INVOICE_API_BASE_URL and PARSER_API_BASE_URL both unset");
+    strategy1Reason = "No ALERTS_BASE — INVOICE_API_BASE_URL and PARSER_API_BASE_URL both unset";
+    console.warn(`[pdf] ${strategy1Reason}`);
   }
 
   // Strategy 2: Direct GCS fetch using service account
@@ -141,6 +147,7 @@ export async function GET(
           error: `GCS returned ${gcsRes.status}`,
           hint: "Ensure the service account has Storage Object Viewer role on the bucket",
           debug: {
+            strategy1_failure: strategy1Reason || "unknown",
             alerts_base: ALERTS_BASE ?? null,
             has_invoice_api_url: !!process.env.INVOICE_API_BASE_URL,
             has_parser_url: !!(process.env.PARSER_API_BASE_URL ?? process.env.INVOICE_PARSER_URL),
