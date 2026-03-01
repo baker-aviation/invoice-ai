@@ -80,18 +80,23 @@ export async function GET(
   if (ALERTS_BASE) {
     try {
       const url = `${ALERTS_BASE.replace(/\/$/, "")}/api/invoices/${documentId}/pdf-url`;
+      console.log(`[pdf] Strategy 1: calling ${url}`);
       const res = await cloudRunFetch(url, {
         cache: "no-store",
         signal: AbortSignal.timeout(5000),
       });
-      if (res.ok) {
+      if (!res.ok) {
+        console.warn(`[pdf] Cloud Run returned ${res.status} ${res.statusText}`);
+      } else {
         const body = await res.json();
         const signedUrl = body.signed_pdf_url;
-        if (signedUrl) {
-          // Fetch the PDF via the signed URL and stream it back
-          // (avoids CORS / mixed-content issues with redirects in iframes)
+        if (!signedUrl) {
+          console.warn(`[pdf] Cloud Run returned ok but signed_pdf_url is null`);
+        } else {
           const pdfRes = await fetch(signedUrl, { cache: "no-store" });
-          if (pdfRes.ok) {
+          if (!pdfRes.ok) {
+            console.warn(`[pdf] Signed URL fetch failed: ${pdfRes.status}`);
+          } else {
             const pdfBytes = await pdfRes.arrayBuffer();
             const filename = gcs_path.split("/").pop() || "invoice.pdf";
             return new NextResponse(pdfBytes, {
@@ -106,8 +111,10 @@ export async function GET(
         }
       }
     } catch (e) {
-      console.warn("PDF signed-url strategy failed, trying direct GCS:", e);
+      console.warn("[pdf] Strategy 1 error:", e);
     }
+  } else {
+    console.warn("[pdf] No ALERTS_BASE — INVOICE_API_BASE_URL and PARSER_API_BASE_URL both unset");
   }
 
   // Strategy 2: Direct GCS fetch using service account
@@ -130,7 +137,16 @@ export async function GET(
 
     if (!gcsRes.ok) {
       return NextResponse.json(
-        { error: `GCS returned ${gcsRes.status}`, hint: "Ensure the service account has Storage Object Viewer role on the bucket" },
+        {
+          error: `GCS returned ${gcsRes.status}`,
+          hint: "Ensure the service account has Storage Object Viewer role on the bucket",
+          debug: {
+            alerts_base: ALERTS_BASE ?? null,
+            has_invoice_api_url: !!process.env.INVOICE_API_BASE_URL,
+            has_parser_url: !!(process.env.PARSER_API_BASE_URL ?? process.env.INVOICE_PARSER_URL),
+            has_gcp_sa_key: !!process.env.GCP_SA_KEY,
+          },
+        },
         { status: 502 },
       );
     }

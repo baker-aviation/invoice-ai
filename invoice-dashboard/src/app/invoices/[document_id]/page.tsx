@@ -2,6 +2,7 @@ import Link from "next/link";
 import { fetchInvoiceDetail } from "@/lib/invoiceApi";
 import { Topbar } from "@/components/Topbar";
 import { Badge } from "@/components/Badge";
+import { inferCategory, CATEGORY_COLORS } from "@/lib/invoiceCategory";
 import ReparseButton from "./ReparseButton";
 import PdfViewer from "./PdfViewer";
 
@@ -42,7 +43,12 @@ export default async function InvoiceDetailPage({
           <div className="mt-4 grid gap-2 md:grid-cols-4 text-sm">
             <div><span className="text-gray-500">Airport:</span> {invoice.airport_code ?? "—"}</div>
             <div><span className="text-gray-500">Tail:</span> {invoice.tail_number ?? "—"}</div>
-            <div><span className="text-gray-500">Doc type:</span> {invoice.doc_type ?? "—"}</div>
+            <div>
+              <span className="text-gray-500">Category:</span>{" "}
+              {(() => { const cat = inferCategory(invoice); return (
+                <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${CATEGORY_COLORS[cat]}`}>{cat}</span>
+              ); })()}
+            </div>
             <div className="text-right md:text-left">
               <span className="text-gray-500">Total:</span>{" "}
               <span className="font-medium">{invoice.total ?? "—"} {invoice.currency ?? ""}</span>

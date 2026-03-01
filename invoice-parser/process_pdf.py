@@ -515,6 +515,8 @@ def classify_doc_type(raw: dict) -> str:
         "into-plane",
         "overnight fee",
         "jet a",
+        "jet-a",
+        "jeta",
         "avgas",
         "100ll",
         "fuel surcharge",
@@ -524,6 +526,10 @@ def classify_doc_type(raw: dict) -> str:
         "into plane",
         "fbo",
         "fixed base",
+        "fuel flowage",
+        "flowage fee",
+        "prist",
+        "fsii",
         # Known FBO vendors
         "sheltair",
         "atlantic aviation",
@@ -536,6 +542,10 @@ def classify_doc_type(raw: dict) -> str:
         "pentastar",
         "cutter aviation",
         "clay lacy",
+        "azorra",
+        "world fuel",
+        "avfuel",
+        "wilson air",
     ]):
         return "fbo_fee"
 
