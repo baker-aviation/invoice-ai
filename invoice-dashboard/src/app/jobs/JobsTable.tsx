@@ -91,12 +91,17 @@ function hasChallenger(j: any): boolean {
   });
 }
 
-function picGateShort(status: string | null): { label: string; cls: string } | null {
-  if (!status) return null;
-  const s = status.toLowerCase();
-  if (s.startsWith("meets")) return { label: "Met", cls: "text-emerald-700 bg-emerald-50 border-emerald-200" };
-  if (s.startsWith("close") || s.includes("near")) return { label: "Close", cls: "text-amber-700 bg-amber-50 border-amber-200" };
-  return { label: "Not met", cls: "text-gray-500 bg-gray-50 border-gray-200" };
+function picGateShort(status: string | null, met: boolean | null | undefined): { label: string; cls: string } | null {
+  if (status) {
+    const s = status.toLowerCase();
+    if (s.startsWith("meets")) return { label: "Met", cls: "text-emerald-700 bg-emerald-50 border-emerald-200" };
+    if (s.startsWith("close") || s.includes("near")) return { label: "Close", cls: "text-amber-700 bg-amber-50 border-amber-200" };
+    return { label: "Not met", cls: "text-gray-500 bg-gray-50 border-gray-200" };
+  }
+  // Fallback: use the boolean soft_gate_pic_met for older rows without a status string
+  if (met === true) return { label: "Met", cls: "text-emerald-700 bg-emerald-50 border-emerald-200" };
+  if (met === false) return { label: "Not met", cls: "text-gray-500 bg-gray-50 border-gray-200" };
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -304,7 +309,7 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
 
             <tbody className="divide-y divide-gray-100">
               {paged.map((j) => {
-                const gate = picGateShort(j.soft_gate_pic_status);
+                const gate = picGateShort(j.soft_gate_pic_status, j.soft_gate_pic_met);
                 return (
                   <tr key={j.id ?? j.application_id} className="hover:bg-gray-50/60 transition-colors">
                     <td className="px-4 py-2.5">

@@ -85,15 +85,19 @@ export default async function JobDetailPage({
                 {job?.soft_gate_pic_status ? (
                   <Badge
                     variant={
-                      job.soft_gate_pic_status === "pass"
+                      job.soft_gate_pic_status.toLowerCase().startsWith("meets")
                         ? "default"
-                        : job.soft_gate_pic_status === "missing_time"
+                        : job.soft_gate_pic_status.toLowerCase().startsWith("close")
                         ? "warning"
                         : "danger"
                     }
                   >
-                    soft gate {job.soft_gate_pic_status}
+                    PIC gate: {job.soft_gate_pic_status}
                   </Badge>
+                ) : job?.soft_gate_pic_met === true ? (
+                  <Badge variant="default">PIC gate: Met</Badge>
+                ) : job?.soft_gate_pic_met === false ? (
+                  <Badge variant="danger">PIC gate: Not met</Badge>
                 ) : null}
               </div>
             </div>

@@ -370,6 +370,29 @@ def _compute_soft_gate_pic_met(result: Dict[str, Any]) -> Optional[bool]:
     return None
 
 
+def _compute_soft_gate_pic_status(result: Dict[str, Any]) -> Optional[str]:
+    """
+    Human-readable PIC gate status string.
+    The frontend picGateShort() checks:
+      - starts with "meets" → Met
+      - starts with "close" or contains "near" → Close
+      - anything else → Not met
+    """
+    pm = result.get("pilot_metrics") or {}
+    tt = pm.get("total_time_hours")
+    pic = pm.get("pic_time_hours")
+    if not isinstance(tt, (int, float)) or not isinstance(pic, (int, float)):
+        return None
+    tt_ok = tt >= PIC_SOFT_GATE_TT
+    pic_ok = pic >= PIC_SOFT_GATE_PIC
+    if tt_ok and pic_ok:
+        return "Meets requirements"
+    # "Close" if both are at least 75% of the threshold
+    if tt >= PIC_SOFT_GATE_TT * 0.75 and pic >= PIC_SOFT_GATE_PIC * 0.75:
+        return "Close — near minimums"
+    return "Does not meet minimums"
+
+
 def _openai_extract(resume_text: str) -> Dict[str, Any]:
     """
     Uses OpenAI Responses API with strict JSON schema.
@@ -550,6 +573,10 @@ def _upsert_parse_row(supa: Client, application_id: int, result: Dict[str, Any])
     if soft_gate_pic_met is None:
         soft_gate_pic_met = _compute_soft_gate_pic_met(result)
 
+    soft_gate_pic_status = result.get("soft_gate_pic_status")
+    if soft_gate_pic_status is None:
+        soft_gate_pic_status = _compute_soft_gate_pic_status(result)
+
     row = {
         "application_id": application_id,
 
@@ -574,6 +601,10 @@ def _upsert_parse_row(supa: Client, application_id: int, result: Dict[str, Any])
         "has_challenger_300_type_rating": tr.get("has_challenger_300"),
         "type_ratings": tr.get("ratings") or [],
         "type_ratings_raw": tr.get("raw_snippet"),
+
+        # soft gate
+        "soft_gate_pic_met": soft_gate_pic_met,
+        "soft_gate_pic_status": soft_gate_pic_status,
 
         # misc
         "notes": result.get("notes"),
