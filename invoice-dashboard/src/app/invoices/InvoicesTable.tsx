@@ -20,21 +20,25 @@ function fmtTime(s: any): string {
 // ── Auto-categorization ─────────────────────────────────────────────────────
 // Map doc_type from the backend classifier first; fall back to keyword heuristic.
 
-type InvoiceCategory = "FBO/Fuel" | "Maintenance/Parts" | "Lease/Utilities" | "Other";
+type InvoiceCategory = "FBO/Fuel" | "Maintenance/Parts" | "Lease/Utilities" | "Pilot Operations" | "Subscriptions" | "Other";
 
 // Direct mapping from backend doc_type values → frontend categories
 const DOC_TYPE_MAP: Record<string, InvoiceCategory> = {
-  fuel_release:  "FBO/Fuel",
-  fbo_fee:       "FBO/Fuel",
-  maintenance:   "Maintenance/Parts",
-  parts:         "Maintenance/Parts",
-  lease_utility: "Lease/Utilities",
+  fuel_release:     "FBO/Fuel",
+  fbo_fee:          "FBO/Fuel",
+  maintenance:      "Maintenance/Parts",
+  parts:            "Maintenance/Parts",
+  lease_utility:    "Lease/Utilities",
+  pilot_operations: "Pilot Operations",
+  subscriptions:    "Subscriptions",
 };
 
 // Keyword fallback for invoices with doc_type="other" or legacy rows
-const FBO_KEYWORDS    = ["fbo", "fuel", "avfuel", "signature", "jet aviation", "million air", "atlantic", "sheltair", "wilson air", "world fuel", "avjet", "handling", "gpu", "lav", "de-ice", "catering", "landing fee", "ramp"];
+const FBO_KEYWORDS    = ["fbo", "fuel", "avfuel", "signature", "jet aviation", "million air", "atlantic", "sheltair", "wilson air", "world fuel", "avjet", "handling", "gpu", "lav", "de-ice", "catering", "landing fee", "ramp", "jet a", "avgas", "gallons", "fueling"];
 const MAINT_KEYWORDS  = ["maintenance", "maint", "avionics", "parts", "repair", "overhaul", "aog", "mx ", "inspection", "mechanic", "technician", "service center", "jet support", "duncan", "standardaero", "west star", "elliott", "turbine", "propeller", "engine shop", "work order", "component", "mro"];
 const LEASE_KEYWORDS  = ["lease", "rent", "hangar rent", "utilities", "management fee", "charter management", "aircraft management", "insurance", "property"];
+const PILOT_OPS_KEYWORDS = ["prod support", "product support", "training", "simulator", "type rating", "jeppesen", "foreflight", "charts", "bombardier", "gulfstream", "dassault", "pilot supplies", "crew supplies", "smart parts"];
+const SUBS_KEYWORDS   = ["starlink", "subscription", "monthly service", "recurring", "satcom", "internet service", "connectivity", "wifi", "software license"];
 
 function inferCategory(inv: any): InvoiceCategory {
   // 1. Use explicit category if the DB ever provides one
@@ -46,9 +50,11 @@ function inferCategory(inv: any): InvoiceCategory {
   const hay = [inv.vendor_name, inv.doc_type, ...(inv.line_items?.map((l: any) => l.description) ?? [])]
     .join(" ")
     .toLowerCase();
-  if (MAINT_KEYWORDS.some((k) => hay.includes(k)))  return "Maintenance/Parts";
-  if (LEASE_KEYWORDS.some((k) => hay.includes(k)))  return "Lease/Utilities";
-  if (FBO_KEYWORDS.some((k) => hay.includes(k)))    return "FBO/Fuel";
+  if (SUBS_KEYWORDS.some((k) => hay.includes(k)))      return "Subscriptions";
+  if (PILOT_OPS_KEYWORDS.some((k) => hay.includes(k))) return "Pilot Operations";
+  if (MAINT_KEYWORDS.some((k) => hay.includes(k)))     return "Maintenance/Parts";
+  if (LEASE_KEYWORDS.some((k) => hay.includes(k)))     return "Lease/Utilities";
+  if (FBO_KEYWORDS.some((k) => hay.includes(k)))       return "FBO/Fuel";
   return "Other";
 }
 
@@ -56,6 +62,8 @@ const CATEGORY_COLORS: Record<InvoiceCategory, string> = {
   "FBO/Fuel":          "bg-blue-100 text-blue-700",
   "Maintenance/Parts": "bg-amber-100 text-amber-700",
   "Lease/Utilities":   "bg-purple-100 text-purple-700",
+  "Pilot Operations":  "bg-teal-100 text-teal-700",
+  "Subscriptions":     "bg-indigo-100 text-indigo-700",
   "Other":             "bg-gray-100 text-gray-600",
 };
 
@@ -82,7 +90,7 @@ function isOverdue(inv: any): boolean {
   return diffDays > 30;
 }
 
-const ALL_CATEGORIES: string[] = ["ALL", "FBO/Fuel", "Maintenance/Parts", "Lease/Utilities", "Other"];
+const ALL_CATEGORIES: string[] = ["ALL", "FBO/Fuel", "Maintenance/Parts", "Lease/Utilities", "Pilot Operations", "Subscriptions", "Other"];
 
 export default function InvoicesTable({ initialInvoices }: { initialInvoices: any[] }) {
   const [q, setQ] = useState("");

@@ -111,8 +111,13 @@ export async function fetchInvoiceDetail(documentId: string): Promise<InvoiceDet
         signedPdfUrl = body.signed_pdf_url ?? null;
       }
     } catch {
-      // Cloud Run unavailable or no GCP_SA_KEY — page still renders, just no PDF link
+      // Cloud Run unavailable or no GCP_SA_KEY — fall through to proxy
     }
+  }
+
+  // Fallback: use direct GCS proxy route (bypasses Cloud Run)
+  if (!signedPdfUrl) {
+    signedPdfUrl = `/api/invoices/${documentId}/pdf`;
   }
 
   return { ok: true, invoice, signed_pdf_url: signedPdfUrl };

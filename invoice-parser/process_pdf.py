@@ -432,6 +432,50 @@ def classify_doc_type(raw: dict) -> str:
     ]):
         return "lease_utility"
 
+    # Subscriptions / recurring services
+    if any(k in text for k in [
+        "starlink",
+        "subscription",
+        "monthly service",
+        "recurring charge",
+        "satcom",
+        "internet service",
+        "connectivity",
+        "wifi service",
+        "streaming",
+        "software license",
+        "annual license",
+        "renewal",
+    ]):
+        return "subscriptions"
+
+    # Pilot operations / training / OEM support
+    if any(k in text for k in [
+        "prod support",
+        "product support",
+        "pilot supplies",
+        "training",
+        "simulator",
+        "recurrent training",
+        "type rating",
+        "initial training",
+        "charts",
+        "jeppesen",
+        "foreflight",
+        "navigation data",
+        "crew supplies",
+        "flight planning",
+        "dispatch",
+        "oem support",
+        "smart parts",
+        "bombardier",
+        "gulfstream",
+        "dassault",
+        "embraer",
+        "textron support",
+    ]):
+        return "pilot_operations"
+
     # Parts / supplies invoices (before fbo_fee to avoid "handling" false positive)
     if any(k in text for k in [
         "parts order",
@@ -470,6 +514,16 @@ def classify_doc_type(raw: dict) -> str:
         "landing fee",
         "into-plane",
         "overnight fee",
+        "jet a",
+        "avgas",
+        "100ll",
+        "fuel surcharge",
+        "fueling",
+        "defueling",
+        "gallons",
+        "into plane",
+        "fbo",
+        "fixed base",
     ]):
         return "fbo_fee"
 
