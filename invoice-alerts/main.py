@@ -35,6 +35,13 @@ from slowapi.util import get_remote_address
 
 from rules import rule_matches
 from supa import safe_insert, safe_select_many, safe_select_one, safe_update, safe_update_where
+from fuel_prices import (
+    extract_fuel_price,
+    check_price_increase,
+    store_fuel_price,
+    build_fuel_price_slack_payload,
+    FUEL_PRICES_TABLE,
+)
 
 app = FastAPI()
 limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
@@ -1388,3 +1395,242 @@ def api_alerts(
 
     out = sorted(out, key=lambda x: str(x.get("created_at") or ""), reverse=True)[:limit]
     return {"ok": True, "count": len(out), "alerts": out}
+
+
+# ---------------------------------------------------------------------
+# Fuel price tracking
+# ---------------------------------------------------------------------
+
+_FUEL_INVOICE_COLS = (
+    "id, document_id, vendor_name, vendor_normalized, airport_code, "
+    "tail_number, currency, total, doc_type, line_items, "
+    "invoice_date, invoice_number, created_at"
+)
+
+
+def _process_fuel_price(invoice: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Extract fuel price from an invoice, check for increase, store, and
+    optionally post to Slack.  Returns a summary dict or None.
+    """
+    invoice["line_items"] = _parse_line_items(invoice.get("line_items"))
+
+    data = extract_fuel_price(invoice)
+    if not data:
+        return None
+
+    doc_id = data["document_id"]
+
+    # Check for price increase BEFORE storing (so comparison is clean)
+    increase = None
+    if data.get("airport_code"):
+        increase = check_price_increase(
+            data["airport_code"],
+            data["effective_price_per_gallon"],
+            document_id=doc_id,
+        )
+
+    stored = store_fuel_price(data, increase)
+    if stored is None:
+        return {"document_id": doc_id, "status": "duplicate"}
+
+    # If price increase detected, post to Slack immediately
+    slack_result = None
+    if increase and SLACK_WEBHOOK_URL:
+        signed_url = None
+        try:
+            doc = _fetch_document_row(doc_id)
+            if doc:
+                bucket = doc.get("gcs_bucket") or doc.get("storage_bucket") or ""
+                path = doc.get("gcs_path") or doc.get("storage_path") or ""
+                if bucket and path:
+                    signed_url = _get_gcs_signed_url(bucket, path)
+        except Exception:
+            pass
+
+        payload = build_fuel_price_slack_payload(
+            airport_code=data["airport_code"] or "???",
+            vendor_name=data.get("vendor_name"),
+            new_price=data["effective_price_per_gallon"],
+            previous_price=increase["previous_price"],
+            pct_change=increase["price_change_pct"],
+            base_price=data["base_price_per_gallon"],
+            gallons=data["gallons"],
+            invoice_date=data.get("invoice_date"),
+            tail_number=data.get("tail_number"),
+            document_id=doc_id,
+            signed_pdf_url=signed_url,
+        )
+        slack_result = _slack_post(payload)
+        _record_event("fuel_price_increase_alert", doc_id, {
+            "airport_code": data["airport_code"],
+            "new_price": data["effective_price_per_gallon"],
+            "previous_price": increase["previous_price"],
+            "pct_change": increase["price_change_pct"],
+            "slack_result": slack_result,
+        })
+
+    return {
+        "document_id": doc_id,
+        "status": "stored",
+        "airport_code": data.get("airport_code"),
+        "vendor": data.get("vendor_name"),
+        "base_price": data["base_price_per_gallon"],
+        "effective_price": data["effective_price_per_gallon"],
+        "gallons": data["gallons"],
+        "increase": increase,
+        "slack_sent": slack_result is not None,
+    }
+
+
+@app.post("/jobs/extract_fuel_prices_next")
+def extract_fuel_prices_next(
+    limit: int = 10,
+    lookback_minutes: int = 240,
+) -> Dict[str, Any]:
+    """
+    Extract fuel prices from recently parsed invoices.
+    Designed to run on a Cloud Scheduler cadence after run_alerts_next.
+    """
+    try:
+        limit = max(1, min(int(limit), 100))
+        since = datetime.now(timezone.utc) - timedelta(minutes=lookback_minutes)
+        since_iso = since.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        rows = safe_select_many(
+            PARSED_TABLE,
+            _FUEL_INVOICE_COLS,
+            gte={"created_at": since_iso},
+            order="created_at",
+            desc=True,
+            limit=max(limit, 100),
+        ) or []
+
+        processed = 0
+        results: List[Dict[str, Any]] = []
+
+        for inv in rows:
+            if processed >= limit:
+                break
+            doc_id = inv.get("document_id")
+            if not doc_id:
+                continue
+
+            result = _process_fuel_price(inv)
+            if result:
+                results.append(result)
+            processed += 1
+
+        return {"ok": True, "processed": processed, "fuel_prices": results}
+
+    except Exception as e:
+        _record_event("extract_fuel_prices_next_error", "n/a", {"error": repr(e)})
+        if DEBUG_ERRORS:
+            raise HTTPException(status_code=500, detail=f"extract_fuel_prices_next failed: {repr(e)}")
+        raise HTTPException(status_code=500, detail="extract_fuel_prices_next failed")
+
+
+@app.post("/jobs/backfill_fuel_prices")
+def backfill_fuel_prices(limit: int = 50) -> Dict[str, Any]:
+    """
+    Backfill fuel prices from ALL parsed invoices.
+    Skips documents that already have a fuel_prices row (via UNIQUE constraint).
+    Safe to run multiple times.
+    """
+    try:
+        limit = max(1, min(int(limit), 500))
+
+        rows = safe_select_many(
+            PARSED_TABLE,
+            _FUEL_INVOICE_COLS,
+            order="created_at",
+            desc=True,
+            limit=limit,
+        ) or []
+
+        stored = 0
+        skipped = 0
+        no_fuel = 0
+        increases = 0
+        results: List[Dict[str, Any]] = []
+
+        for inv in rows:
+            doc_id = inv.get("document_id")
+            if not doc_id:
+                continue
+
+            result = _process_fuel_price(inv)
+            if result is None:
+                no_fuel += 1
+            elif result.get("status") == "duplicate":
+                skipped += 1
+            else:
+                stored += 1
+                if result.get("increase"):
+                    increases += 1
+                results.append(result)
+
+        return {
+            "ok": True,
+            "total_scanned": len(rows),
+            "stored": stored,
+            "skipped_duplicate": skipped,
+            "no_fuel_line": no_fuel,
+            "increases_detected": increases,
+            "results": results[:50],
+        }
+
+    except Exception as e:
+        _record_event("backfill_fuel_prices_error", "n/a", {"error": repr(e)})
+        if DEBUG_ERRORS:
+            raise HTTPException(status_code=500, detail=f"backfill failed: {repr(e)}")
+        raise HTTPException(status_code=500, detail="backfill_fuel_prices failed")
+
+
+@app.get("/api/fuel-prices")
+def api_fuel_prices(
+    limit: int = Query(100, ge=1, le=500),
+    airport: Optional[str] = None,
+    vendor: Optional[str] = None,
+    q: Optional[str] = None,
+) -> Dict[str, Any]:
+    """List fuel price records, newest first."""
+    try:
+        eq: Dict[str, Any] = {}
+        if airport:
+            eq["airport_code"] = airport.strip().upper()
+
+        rows = safe_select_many(
+            FUEL_PRICES_TABLE,
+            "id, document_id, airport_code, vendor_name, "
+            "base_price_per_gallon, effective_price_per_gallon, "
+            "gallons, fuel_total, invoice_date, tail_number, currency, "
+            "price_change_pct, previous_price, alert_sent, created_at",
+            eq=eq if eq else None,
+            order="invoice_date",
+            desc=True,
+            limit=limit,
+        ) or []
+
+        # Optional text search
+        if q:
+            ql = q.strip().lower()
+            rows = [
+                r for r in rows
+                if ql in " ".join(
+                    str(r.get(f) or "") for f in
+                    ("airport_code", "vendor_name", "tail_number", "document_id")
+                ).lower()
+            ]
+
+        # Optional vendor filter (ilike)
+        if vendor:
+            vl = vendor.strip().lower()
+            rows = [r for r in rows if vl in (str(r.get("vendor_name") or "")).lower()]
+
+        return {"ok": True, "count": len(rows), "fuel_prices": rows}
+
+    except Exception as e:
+        if DEBUG_ERRORS:
+            _record_event("api_fuel_prices_error", "n/a", {"error": repr(e)})
+        return {"ok": True, "count": 0, "fuel_prices": []}

@@ -9,6 +9,7 @@ const NAV = [
   { href: "/ops", label: "Ops", exact: false },
   { href: "/invoices", label: "Invoices", exact: false },
   { href: "/alerts", label: "Alerts", exact: false },
+  { href: "/fuel-prices", label: "Fuel Prices", exact: false },
   { href: "/jobs", label: "Jobs", exact: false },
   { href: "/maintenance", label: "AOG Vans", exact: false },
   { href: "/crew-cars", label: "Crew Cars", exact: false },

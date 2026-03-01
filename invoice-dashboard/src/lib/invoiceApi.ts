@@ -1,5 +1,5 @@
 import { createServiceClient } from "@/lib/supabase/service";
-import type { AlertRow, AlertsResponse, InvoiceDetailResponse, InvoiceListItem, InvoiceListResponse } from "@/lib/types";
+import type { AlertRow, AlertsResponse, FuelPriceRow, FuelPricesResponse, InvoiceDetailResponse, InvoiceListItem, InvoiceListResponse } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
 // Invoices — direct Supabase query to parsed_invoices
@@ -175,4 +175,62 @@ export async function fetchAlerts(params: {
   }
 
   return { ok: true, count: alerts.length, alerts };
+}
+
+// ---------------------------------------------------------------------------
+// Fuel Prices — direct Supabase query to fuel_prices
+// ---------------------------------------------------------------------------
+
+const FUEL_PRICE_COLUMNS =
+  "id, document_id, airport_code, vendor_name, base_price_per_gallon, effective_price_per_gallon, gallons, fuel_total, invoice_date, tail_number, currency, price_change_pct, previous_price, alert_sent, created_at";
+
+export async function fetchFuelPrices(params: {
+  limit?: number;
+  q?: string;
+  airport?: string;
+  vendor?: string;
+} = {}): Promise<FuelPricesResponse> {
+  const supa = createServiceClient();
+  const limit = params.limit ?? 200;
+
+  let query = supa
+    .from("fuel_prices")
+    .select(FUEL_PRICE_COLUMNS)
+    .order("invoice_date", { ascending: false })
+    .limit(limit);
+
+  if (params.airport) query = query.ilike("airport_code", `%${params.airport}%`);
+  if (params.vendor) query = query.ilike("vendor_name", `%${params.vendor}%`);
+
+  const { data, error } = await query;
+  if (error) throw new Error(`fetchFuelPrices failed: ${error.message}`);
+
+  let fuelPrices: FuelPriceRow[] = (data ?? []).map((row) => ({
+    id: row.id as string,
+    document_id: row.document_id as string,
+    airport_code: row.airport_code as string | null,
+    vendor_name: row.vendor_name as string | null,
+    base_price_per_gallon: row.base_price_per_gallon as number | null,
+    effective_price_per_gallon: row.effective_price_per_gallon as number | null,
+    gallons: row.gallons as number | null,
+    fuel_total: row.fuel_total as number | null,
+    invoice_date: row.invoice_date as string | null,
+    tail_number: row.tail_number as string | null,
+    currency: row.currency as string | null,
+    price_change_pct: row.price_change_pct as number | null,
+    previous_price: row.previous_price as number | null,
+    alert_sent: row.alert_sent as boolean | null,
+    created_at: row.created_at as string,
+  }));
+
+  if (params.q) {
+    const qLower = params.q.toLowerCase();
+    fuelPrices = fuelPrices.filter((fp) =>
+      [fp.airport_code, fp.vendor_name, fp.tail_number, fp.document_id]
+        .filter(Boolean)
+        .some((f) => String(f).toLowerCase().includes(qLower)),
+    );
+  }
+
+  return { ok: true, count: fuelPrices.length, fuel_prices: fuelPrices };
 }

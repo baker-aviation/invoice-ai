@@ -48,6 +48,34 @@ export type AlertsResponse = {
   alerts: AlertRow[];
 };
 /* =========================
+   Fuel Prices
+========================= */
+
+export type FuelPriceRow = {
+  id: string;
+  document_id: string;
+  airport_code: string | null;
+  vendor_name: string | null;
+  base_price_per_gallon: number | null;
+  effective_price_per_gallon: number | null;
+  gallons: number | null;
+  fuel_total: number | null;
+  invoice_date: string | null;
+  tail_number: string | null;
+  currency: string | null;
+  price_change_pct: number | null;
+  previous_price: number | null;
+  alert_sent: boolean | null;
+  created_at: string;
+};
+
+export type FuelPricesResponse = {
+  ok: boolean;
+  count: number;
+  fuel_prices: FuelPriceRow[];
+};
+
+/* =========================
    Jobs
 ========================= */
 
