@@ -68,21 +68,53 @@ export async function fetchInvoices(params: {
 }
 
 // ---------------------------------------------------------------------------
-// Invoice detail — still proxies to Cloud Run (needs signed PDF URL from GCS)
+// Invoice detail — direct Supabase query (with optional Cloud Run fallback
+// for signed PDF URL)
 // ---------------------------------------------------------------------------
 
 const BASE = process.env.INVOICE_API_BASE_URL;
 
-function mustBase(): string {
-  if (!BASE) throw new Error("Missing INVOICE_API_BASE_URL in .env.local");
-  return BASE.replace(/\/$/, "");
-}
-
 export async function fetchInvoiceDetail(documentId: string): Promise<InvoiceDetailResponse> {
-  const base = mustBase();
-  const res = await fetch(`${base}/api/invoices/${documentId}`, { cache: "no-store" });
-  if (!res.ok) throw new Error(`fetchInvoiceDetail failed: ${res.status}`);
-  return res.json();
+  const supa = createServiceClient();
+
+  const { data, error } = await supa
+    .from("parsed_invoices")
+    .select("*")
+    .eq("document_id", documentId)
+    .maybeSingle();
+
+  if (error) throw new Error(`fetchInvoiceDetail failed: ${error.message}`);
+  if (!data) throw new Error("fetchInvoiceDetail failed: 404");
+
+  // Parse line_items from JSON string if needed
+  let lineItems = data.line_items;
+  if (typeof lineItems === "string") {
+    try {
+      lineItems = JSON.parse(lineItems);
+    } catch {
+      lineItems = [];
+    }
+  }
+  const invoice = { ...data, line_items: Array.isArray(lineItems) ? lineItems : [] };
+
+  // Try to get signed PDF URL from Cloud Run (non-blocking — page loads even if this fails)
+  let signedPdfUrl: string | null = null;
+  if (BASE) {
+    try {
+      const res = await fetch(`${BASE.replace(/\/$/, "")}/api/invoices/${documentId}/pdf-url`, {
+        cache: "no-store",
+        signal: AbortSignal.timeout(5000),
+      });
+      if (res.ok) {
+        const body = await res.json();
+        signedPdfUrl = body.signed_pdf_url ?? null;
+      }
+    } catch {
+      // Cloud Run unavailable — page still renders, just no PDF link
+    }
+  }
+
+  return { ok: true, invoice, signed_pdf_url: signedPdfUrl };
 }
 
 // ---------------------------------------------------------------------------
@@ -182,7 +214,7 @@ export async function fetchAlerts(params: {
 // ---------------------------------------------------------------------------
 
 const FUEL_PRICE_COLUMNS =
-  "id, document_id, airport_code, vendor_name, base_price_per_gallon, effective_price_per_gallon, gallons, fuel_total, invoice_date, tail_number, currency, price_change_pct, previous_price, alert_sent, created_at";
+  "id, document_id, airport_code, vendor_name, base_price_per_gallon, effective_price_per_gallon, gallons, fuel_total, invoice_date, tail_number, currency, price_change_pct, previous_price, previous_document_id, alert_sent, created_at";
 
 export async function fetchFuelPrices(params: {
   limit?: number;
@@ -219,6 +251,7 @@ export async function fetchFuelPrices(params: {
     currency: row.currency as string | null,
     price_change_pct: row.price_change_pct as number | null,
     previous_price: row.previous_price as number | null,
+    previous_document_id: row.previous_document_id as string | null,
     alert_sent: row.alert_sent as boolean | null,
     created_at: row.created_at as string,
   }));

@@ -127,6 +127,7 @@ export default function FuelPricesTable({
               <th className="px-4 py-3 text-right">Gallons</th>
               <th className="px-4 py-3 text-right">Fuel Total</th>
               <th className="px-4 py-3 text-right">Change</th>
+              <th className="px-4 py-3 text-center">Invoices</th>
             </tr>
           </thead>
           <tbody className="divide-y">
@@ -161,15 +162,35 @@ export default function FuelPricesTable({
                     ) : row.price_change_pct != null ? (
                       <span className="text-gray-400 text-xs">{fmtPct(row.price_change_pct)}</span>
                     ) : (
-                      <span className="text-gray-300 text-xs">\u2014</span>
+                      <span className="text-gray-300 text-xs">{"\u2014"}</span>
                     )}
+                  </td>
+                  <td className="px-4 py-2.5 whitespace-nowrap text-center">
+                    <span className="inline-flex gap-2 text-xs">
+                      <Link
+                        href={`/invoices/${row.document_id}`}
+                        className="text-blue-600 hover:text-blue-800 underline"
+                        title="View this invoice"
+                      >
+                        New
+                      </Link>
+                      {row.previous_document_id ? (
+                        <Link
+                          href={`/invoices/${row.previous_document_id}`}
+                          className="text-gray-500 hover:text-gray-700 underline"
+                          title="View baseline invoice"
+                        >
+                          Baseline
+                        </Link>
+                      ) : null}
+                    </span>
                   </td>
                 </tr>
               );
             })}
             {pageRows.length === 0 && (
               <tr>
-                <td colSpan={9} className="px-4 py-8 text-center text-gray-400">
+                <td colSpan={10} className="px-4 py-8 text-center text-gray-400">
                   No fuel price records found.
                 </td>
               </tr>

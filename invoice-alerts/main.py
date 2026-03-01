@@ -1233,6 +1233,18 @@ def api_invoice_detail(document_id: str) -> Dict[str, Any]:
     return {"ok": True, "invoice": invoice, "signed_pdf_url": signed_pdf_url}
 
 
+@app.get("/api/invoices/{document_id}/pdf-url")
+def api_invoice_pdf_url(document_id: str) -> Dict[str, Any]:
+    """Returns only the signed PDF URL for a document (lightweight endpoint)."""
+    doc = _fetch_document_row(document_id)
+    signed_pdf_url = None
+    if doc:
+        signed_pdf_url = _get_gcs_signed_url(
+            doc.get("gcs_bucket") or "", doc.get("gcs_path") or ""
+        )
+    return {"ok": True, "signed_pdf_url": signed_pdf_url}
+
+
 # ---------------------------------------------------------------------
 # API: Alerts (ACTIONABLE ONLY, HARDENED)
 # ---------------------------------------------------------------------
@@ -1420,6 +1432,13 @@ def _process_fuel_price(invoice: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
 
     doc_id = data["document_id"]
+
+    # If airport_code is still missing, try to infer it from vendor name / filename
+    if not data.get("airport_code"):
+        doc = _fetch_document_row(doc_id)
+        inferred = _infer_airport_code(invoice, doc)
+        if inferred:
+            data["airport_code"] = inferred
 
     # Check for price increase BEFORE storing (so comparison is clean)
     increase = None

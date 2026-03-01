@@ -65,6 +65,7 @@ export type FuelPriceRow = {
   currency: string | null;
   price_change_pct: number | null;
   previous_price: number | null;
+  previous_document_id: string | null;
   alert_sent: boolean | null;
   created_at: string;
 };

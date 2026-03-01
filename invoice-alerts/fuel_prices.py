@@ -33,9 +33,27 @@ _FUEL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Lines that match the fuel regex but are taxes/fees/surcharges, not the
+# primary fuel purchase.  These have small per-gallon unit prices ($0.02–$0.50)
+# which should NOT be treated as the base fuel price.
+_FUEL_TAX_RE = re.compile(
+    r"\btax\b|\bexcise\b|\bsurcharg|\bfee\b|\bflowage\b"
+    r"|\binto[\s-]?plane\b|\bfacility\b|\bthroughput\b"
+    r"|\bsegment\b|\bassessment\b|\bstate\b|\bfederal\b|\bcounty\b",
+    re.IGNORECASE,
+)
+
+# Minimum realistic fuel unit price — jet fuel never costs less than $1/gal
+MIN_FUEL_PRICE = 1.0
+
 
 def _is_fuel_line(desc: str) -> bool:
     return bool(_FUEL_RE.search(desc or ""))
+
+
+def _is_fuel_tax_or_fee(desc: str) -> bool:
+    """Return True if the line looks like a per-gallon tax/fee, not the fuel itself."""
+    return bool(_FUEL_TAX_RE.search(desc or ""))
 
 
 def _to_float(v: Any) -> Optional[float]:
@@ -78,15 +96,32 @@ def extract_fuel_price(invoice: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
 
     # Step 1: find the primary fuel line
+    # Prefer lines that are NOT taxes/fees and have a realistic unit price (>=$1/gal).
+    # Fall back to any fuel line with unit_price > 0 if no good candidate found.
     fuel_line = None
+    fallback_fuel_line = None
     for li in line_items:
         desc = str(li.get("description") or li.get("name") or "")
-        if _is_fuel_line(desc):
-            qty = _to_float(li.get("quantity"))
-            unit_price = _to_float(li.get("unit_price"))
-            if qty and qty >= MIN_GALLONS and unit_price and unit_price > 0:
-                fuel_line = li
-                break
+        if not _is_fuel_line(desc):
+            continue
+        qty = _to_float(li.get("quantity"))
+        unit_price = _to_float(li.get("unit_price"))
+        if not qty or qty < MIN_GALLONS or not unit_price or unit_price <= 0:
+            continue
+
+        # Skip tax/fee/surcharge lines for the primary fuel line
+        if _is_fuel_tax_or_fee(desc):
+            continue
+
+        # Prefer realistic prices (>= $1/gal); keep a fallback just in case
+        if unit_price >= MIN_FUEL_PRICE:
+            fuel_line = li
+            break
+        elif not fallback_fuel_line:
+            fallback_fuel_line = li
+
+    if not fuel_line:
+        fuel_line = fallback_fuel_line
 
     if not fuel_line:
         return None
@@ -173,6 +208,7 @@ def check_price_increase(
             "previous_price": round(prev_price, 5),
             "previous_date": prev.get("invoice_date"),
             "previous_vendor": prev.get("vendor_name"),
+            "previous_document_id": prev.get("document_id"),
             "price_change_pct": round(pct_change * 100, 2),
             "price_change_amount": round(effective_price - prev_price, 5),
         }
@@ -203,6 +239,7 @@ def store_fuel_price(
         "associated_line_items": json.dumps(data.get("associated_line_items", [])),
         "price_change_pct": increase["price_change_pct"] if increase else None,
         "previous_price": increase["previous_price"] if increase else None,
+        "previous_document_id": increase.get("previous_document_id") if increase else None,
         "alert_sent": bool(increase),
     }
 
