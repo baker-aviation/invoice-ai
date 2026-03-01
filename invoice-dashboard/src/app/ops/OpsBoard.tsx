@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import type { Flight, OpsAlert } from "@/lib/opsApi";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -113,9 +113,112 @@ function fmtNotamDate(iso: string | null, humanFallback: string | null): string 
   return null;
 }
 
+// ─── Restricted Airport Alerts ───────────────────────────────────────────────
+
+const RESTRICTED_AIRPORTS: Record<string, { label: string; severity: string; message: string }> = {
+  KJAC: {
+    label: "KJAC",
+    severity: "warning",
+    message: "Jackson Hole — Noise-sensitive airport, voluntary curfew 10PM–7AM, terrain-limited approaches",
+  },
+  KSNA: {
+    label: "KSNA",
+    severity: "warning",
+    message: "John Wayne — Mandatory noise abatement departure procedures, curfew 11PM–7AM",
+  },
+};
+
+// ─── Airport Timezones (for after-hours detection) ───────────────────────────
+
+const AIRPORT_TZ: Record<string, string> = {
+  // Eastern
+  KTEB: "America/New_York", KJFK: "America/New_York", KLGA: "America/New_York",
+  KPBI: "America/New_York", KFLL: "America/New_York", KMIA: "America/New_York",
+  KBCT: "America/New_York", KOPF: "America/New_York", KSWF: "America/New_York",
+  KHPN: "America/New_York", KBED: "America/New_York", KBOS: "America/New_York",
+  KDCA: "America/New_York", KIAD: "America/New_York", KBWI: "America/New_York",
+  KATL: "America/New_York", KCLT: "America/New_York", KRDU: "America/New_York",
+  KPDK: "America/New_York", KAGS: "America/New_York", KJAX: "America/New_York",
+  KPNS: "America/New_York", KECP: "America/New_York",
+  // Central
+  KDAL: "America/Chicago", KDFW: "America/Chicago", KHOU: "America/Chicago",
+  KIAH: "America/Chicago", KAUS: "America/Chicago", KSAT: "America/Chicago",
+  KADS: "America/Chicago", KFTW: "America/Chicago", KAFW: "America/Chicago",
+  KSGR: "America/Chicago", KNEW: "America/Chicago", KMSY: "America/Chicago",
+  KORD: "America/Chicago", KMDW: "America/Chicago", KMCI: "America/Chicago",
+  KMEM: "America/Chicago", KBNA: "America/Chicago", KLIT: "America/Chicago",
+  KOKC: "America/Chicago", KTUL: "America/Chicago", KCRP: "America/Chicago",
+  KGGG: "America/Chicago", KACT: "America/Chicago", KTYR: "America/Chicago",
+  KLRD: "America/Chicago", KMFE: "America/Chicago",
+  // Mountain
+  KDEN: "America/Denver", KJAC: "America/Denver", KASE: "America/Denver",
+  KEGE: "America/Denver", KGUC: "America/Denver", KABQ: "America/Denver",
+  KSLC: "America/Denver", KBOI: "America/Denver", KMTJ: "America/Denver",
+  KRIL: "America/Denver", KHDN: "America/Denver", KBIL: "America/Denver",
+  // Arizona (no DST)
+  KPHX: "America/Phoenix", KSDL: "America/Phoenix", KTUS: "America/Phoenix",
+  KDVT: "America/Phoenix", KIWA: "America/Phoenix",
+  // Pacific
+  KSNA: "America/Los_Angeles", KLAX: "America/Los_Angeles", KVNY: "America/Los_Angeles",
+  KSFO: "America/Los_Angeles", KOAK: "America/Los_Angeles", KSJC: "America/Los_Angeles",
+  KLAS: "America/Los_Angeles", KSAN: "America/Los_Angeles", KPSP: "America/Los_Angeles",
+  KSEA: "America/Los_Angeles", KPDX: "America/Los_Angeles", KBUR: "America/Los_Angeles",
+  KCMA: "America/Los_Angeles", KTRM: "America/Los_Angeles", KCRQ: "America/Los_Angeles",
+};
+
+function getLocalHour(utcIso: string, icao: string | null): number {
+  const tz = AIRPORT_TZ[icao ?? ""] ?? "America/Chicago";
+  const d = new Date(utcIso);
+  return parseInt(d.toLocaleString("en-US", { hour: "numeric", hour12: false, timeZone: tz }));
+}
+
+function getLocalTimeStr(utcIso: string, icao: string | null): string {
+  const tz = AIRPORT_TZ[icao ?? ""] ?? "America/Chicago";
+  const d = new Date(utcIso);
+  return d.toLocaleString("en-US", {
+    hour: "numeric", minute: "2-digit", hour12: true, timeZone: tz,
+  });
+}
+
+function isAfterHours(arrivalUtc: string | null, arrivalIcao: string | null): boolean {
+  if (!arrivalUtc) return false;
+  const hour = getLocalHour(arrivalUtc, arrivalIcao);
+  return hour >= 20; // 8 PM or later
+}
+
+// ─── Client-side alert types ─────────────────────────────────────────────────
+
+type ClientAlert = {
+  key: string;
+  flightId: string;
+  type: string;
+  label: string;
+  severity: string;
+  message: string;
+};
+
+// ─── localStorage dismiss for client alerts ──────────────────────────────────
+
+const DISMISSED_KEY = "ops-dismissed-client-alerts";
+
+function loadDismissed(): Set<string> {
+  if (typeof window === "undefined") return new Set();
+  try {
+    const raw = localStorage.getItem(DISMISSED_KEY);
+    return raw ? new Set(JSON.parse(raw) as string[]) : new Set();
+  } catch { return new Set(); }
+}
+
+function saveDismissed(dismissed: Set<string>): void {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(DISMISSED_KEY, JSON.stringify([...dismissed]));
+  } catch { /* ignore */ }
+}
+
 // ─── Filter categories ───────────────────────────────────────────────────────
 
-type AlertFilter = "ALL" | "ALERTS_ONLY" | "CRITICAL" | "RWY" | "AD" | "TFR" | "PPR" | "EDCT";
+type AlertFilter = "ALL" | "ALERTS_ONLY" | "CRITICAL" | "RWY" | "AD" | "TFR" | "PPR" | "EDCT" | "KJAC" | "KSNA" | "LATE";
 
 const FILTER_OPTIONS: { key: AlertFilter; label: string; description: string }[] = [
   { key: "ALL", label: "All Flights", description: "Every scheduled flight" },
@@ -126,6 +229,9 @@ const FILTER_OPTIONS: { key: AlertFilter; label: string; description: string }[]
   { key: "TFR", label: "TFR", description: "TFRs" },
   { key: "PPR", label: "PPR", description: "Prior permission" },
   { key: "EDCT", label: "EDCT", description: "Ground delays" },
+  { key: "KJAC", label: "KJAC", description: "Jackson Hole alerts" },
+  { key: "KSNA", label: "KSNA", description: "John Wayne alerts" },
+  { key: "LATE", label: "After 8PM", description: "Arrivals after 8 PM local" },
 ];
 
 // ─── Time horizons ───────────────────────────────────────────────────────────
@@ -146,7 +252,7 @@ const ALERT_TYPES_SHOWN = new Set([
   "NOTAM_TFR", "NOTAM_PPR", "EDCT",
 ]);
 
-// ─── Alert inline card ───────────────────────────────────────────────────────
+// ─── Alert inline card (server-side NOTAM/EDCT alerts) ──────────────────────
 
 function AlertCard({ alert, onAck }: { alert: OpsAlert; onAck: (id: string) => void }) {
   const [expanded, setExpanded] = useState(false);
@@ -197,6 +303,7 @@ function AlertCard({ alert, onAck }: { alert: OpsAlert; onAck: (id: string) => v
             )}
           </span>
         )}
+        {/* ── NOTAM effective times (inline) ── */}
         {(nd?.effective_start || nd?.start_date_utc || notamTimes?.from) && (
           <span className="text-xs text-gray-600 font-mono bg-white/80 rounded px-1.5 py-0.5">
             {fmtNotamDate(nd?.effective_start ?? null, nd?.start_date_utc ?? notamTimes?.from ?? null)}
@@ -217,6 +324,7 @@ function AlertCard({ alert, onAck }: { alert: OpsAlert; onAck: (id: string) => v
           <span className="text-gray-400 text-xs">{expanded ? "▲" : "▼"}</span>
         </div>
       </button>
+      {/* ── NOTAM expanded details (issued, effective from/to, status) ── */}
       {expanded && (
         <div className="px-3 pb-2.5 pt-1 text-xs text-gray-700 space-y-1.5 border-t border-gray-200/60">
           {isNotam && (nd?.issued || nd?.effective_start || notamTimes?.from) && (
@@ -236,6 +344,14 @@ function AlertCard({ alert, onAck }: { alert: OpsAlert; onAck: (id: string) => v
                     {notamTimes?.to === "PERM"
                       ? "PERM"
                       : fmtNotamDate(nd?.effective_end ?? null, nd?.end_date_utc ?? notamTimes?.to ?? null)}
+                  </span>
+                </div>
+              )}
+              {nd?.issued && (
+                <div>
+                  <span className="text-gray-400">Issued: </span>
+                  <span className="font-mono font-medium text-gray-600">
+                    {fmtNotamDate(nd.issued, null)}
                   </span>
                 </div>
               )}
@@ -261,14 +377,81 @@ function AlertCard({ alert, onAck }: { alert: OpsAlert; onAck: (id: string) => v
   );
 }
 
+// ─── Client alert card (KJAC/KSNA/after-hours — localStorage dismiss) ───────
+
+function ClientAlertCard({ alert, onDismiss }: { alert: ClientAlert; onDismiss: (key: string) => void }) {
+  const [dismissing, setDismissing] = useState(false);
+
+  function handleDismiss(e: React.MouseEvent) {
+    e.stopPropagation();
+    setDismissing(true);
+    onDismiss(alert.key);
+  }
+
+  const isLate = alert.type === "AFTER_HOURS";
+
+  return (
+    <div
+      className={`rounded-lg border text-sm ${
+        isLate
+          ? "border-purple-200 bg-purple-50/60"
+          : "border-blue-200 bg-blue-50/60"
+      }`}
+    >
+      <div className="px-3 py-2 flex items-center gap-2">
+        <span className={`w-2 h-2 rounded-full shrink-0 ${isLate ? "bg-purple-500" : "bg-blue-500"}`} />
+        <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-mono font-semibold ${
+          isLate
+            ? "bg-purple-100 text-purple-800 border border-purple-200"
+            : "bg-blue-100 text-blue-800 border border-blue-200"
+        }`}>
+          {alert.label}
+        </span>
+        <span className="text-xs text-gray-700">{alert.message}</span>
+        <div className="ml-auto shrink-0">
+          <button
+            type="button"
+            onClick={handleDismiss}
+            disabled={dismissing}
+            className="text-xs text-gray-500 hover:text-green-700 hover:bg-green-50 border border-gray-200 hover:border-green-300 rounded px-1.5 py-0.5 transition-colors disabled:opacity-50"
+          >
+            {dismissing ? "..." : "Dismiss"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Flight card ──────────────────────────────────────────────────────────────
 
-function FlightCard({ flight, ackedIds, onAck }: { flight: Flight; ackedIds: Set<string>; onAck: (id: string) => void }) {
+function FlightCard({
+  flight, ackedIds, onAck, clientAlerts, dismissedClientAlerts, onDismissClient,
+}: {
+  flight: Flight;
+  ackedIds: Set<string>;
+  onAck: (id: string) => void;
+  clientAlerts: ClientAlert[];
+  dismissedClientAlerts: Set<string>;
+  onDismissClient: (key: string) => void;
+}) {
   const alerts = (flight.alerts ?? []).filter((a) => !ackedIds.has(a.id));
+  const activeClientAlerts = clientAlerts.filter((ca) => !dismissedClientAlerts.has(ca.key));
   const hasCritical = alerts.some((a) => a.severity === "critical");
   const hasWarning = alerts.some((a) => a.severity === "warning");
+  const hasLate = activeClientAlerts.some((ca) => ca.type === "AFTER_HOURS");
+  const hasAirport = activeClientAlerts.some((ca) => ca.type.startsWith("AIRPORT_"));
+  const totalAlertCount = alerts.length + activeClientAlerts.length;
 
-  const borderColor = hasCritical ? "border-red-300" : hasWarning ? "border-amber-300" : "border-gray-200";
+  const borderColor = hasCritical
+    ? "border-red-300"
+    : hasWarning
+    ? "border-amber-300"
+    : hasLate
+    ? "border-purple-300"
+    : hasAirport
+    ? "border-blue-300"
+    : "border-gray-200";
 
   return (
     <div className={`rounded-xl border ${borderColor} bg-white shadow-sm overflow-hidden`}>
@@ -296,21 +479,27 @@ function FlightCard({ flight, ackedIds, onAck }: { flight: Flight; ackedIds: Set
               {flight.tail_number}
             </span>
           )}
-          {alerts.length > 0 ? (
+          {totalAlertCount > 0 ? (
             <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
-              hasCritical ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"
+              hasCritical ? "bg-red-100 text-red-700"
+                : hasWarning ? "bg-amber-100 text-amber-700"
+                : hasLate ? "bg-purple-100 text-purple-700"
+                : "bg-blue-100 text-blue-700"
             }`}>
-              {alerts.length}
+              {totalAlertCount}
             </span>
           ) : (
             <span className="text-xs font-medium text-green-700 bg-green-50 px-2 py-0.5 rounded-full">Clear</span>
           )}
         </div>
       </div>
-      {/* Alerts */}
-      {alerts.length > 0 && (
+      {/* Alerts (server + client) */}
+      {totalAlertCount > 0 && (
         <div className="px-3 pb-3 space-y-1.5">
           {alerts.map((a) => <AlertCard key={a.id} alert={a} onAck={onAck} />)}
+          {activeClientAlerts.map((ca) => (
+            <ClientAlertCard key={ca.key} alert={ca} onDismiss={onDismissClient} />
+          ))}
         </div>
       )}
     </div>
@@ -359,13 +548,70 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
   const [activeFilter, setActiveFilter] = useState<AlertFilter>("ALL");
   const [activeRange, setActiveRange] = useState<TimeRange>("7D");
   const [ackedIds, setAckedIds] = useState<Set<string>>(new Set());
+  const [dismissedClientAlerts, setDismissedClientAlerts] = useState<Set<string>>(new Set());
+
+  // Load dismissed client alerts from localStorage on mount
+  useEffect(() => {
+    setDismissedClientAlerts(loadDismissed());
+  }, []);
 
   const handleAck = useCallback((id: string) => {
     setAckedIds((prev) => new Set(prev).add(id));
   }, []);
 
+  const handleDismissClient = useCallback((key: string) => {
+    setDismissedClientAlerts((prev) => {
+      const next = new Set(prev).add(key);
+      saveDismissed(next);
+      return next;
+    });
+  }, []);
+
   // Apply alert type filtering
   const withFilteredAlerts = useMemo(() => filterAlerts(initialFlights), [initialFlights]);
+
+  // Generate client-side alerts (KJAC/KSNA + after-hours)
+  const clientAlertsByFlight = useMemo(() => {
+    const map = new Map<string, ClientAlert[]>();
+    for (const f of withFilteredAlerts) {
+      const alerts: ClientAlert[] = [];
+
+      // Check departure and arrival against restricted airports
+      const seen = new Set<string>();
+      for (const icao of [f.departure_icao, f.arrival_icao]) {
+        if (icao && RESTRICTED_AIRPORTS[icao] && !seen.has(icao)) {
+          seen.add(icao);
+          const ra = RESTRICTED_AIRPORTS[icao];
+          alerts.push({
+            key: `airport-${icao}-${f.id}`,
+            flightId: f.id,
+            type: `AIRPORT_${icao}`,
+            label: ra.label,
+            severity: ra.severity,
+            message: ra.message,
+          });
+        }
+      }
+
+      // Check after-hours arrival
+      if (isAfterHours(f.scheduled_arrival, f.arrival_icao)) {
+        const localTime = getLocalTimeStr(f.scheduled_arrival!, f.arrival_icao);
+        alerts.push({
+          key: `afterhours-${f.id}`,
+          flightId: f.id,
+          type: "AFTER_HOURS",
+          label: "LATE",
+          severity: "warning",
+          message: `Landing at ${localTime} local (${f.arrival_icao ?? "????"}) — after 8:00 PM`,
+        });
+      }
+
+      if (alerts.length > 0) {
+        map.set(f.id, alerts);
+      }
+    }
+    return map;
+  }, [withFilteredAlerts]);
 
   // Apply time range
   const cutoff = useMemo(() => {
@@ -385,8 +631,27 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
   // Apply category filter
   const filtered = useMemo(() => {
     if (activeFilter === "ALL") return timeFiltered;
-    if (activeFilter === "ALERTS_ONLY") return timeFiltered.filter((f) => (f.alerts?.length ?? 0) > 0);
+    if (activeFilter === "ALERTS_ONLY") {
+      return timeFiltered.filter((f) => {
+        const hasServerAlerts = (f.alerts?.length ?? 0) > 0;
+        const ca = clientAlertsByFlight.get(f.id) ?? [];
+        const hasActiveClientAlerts = ca.some((c) => !dismissedClientAlerts.has(c.key));
+        return hasServerAlerts || hasActiveClientAlerts;
+      });
+    }
     if (activeFilter === "CRITICAL") return timeFiltered.filter((f) => f.alerts?.some((a) => a.severity === "critical"));
+
+    // KJAC/KSNA filters
+    if (activeFilter === "KJAC") {
+      return timeFiltered.filter((f) => f.departure_icao === "KJAC" || f.arrival_icao === "KJAC");
+    }
+    if (activeFilter === "KSNA") {
+      return timeFiltered.filter((f) => f.departure_icao === "KSNA" || f.arrival_icao === "KSNA");
+    }
+    // After-hours filter
+    if (activeFilter === "LATE") {
+      return timeFiltered.filter((f) => isAfterHours(f.scheduled_arrival, f.arrival_icao));
+    }
 
     const typeMap: Record<string, string[]> = {
       RWY: ["NOTAM_RUNWAY"],
@@ -397,7 +662,7 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
     };
     const types = typeMap[activeFilter] ?? [];
     return timeFiltered.filter((f) => f.alerts?.some((a) => types.includes(a.alert_type)));
-  }, [timeFiltered, activeFilter]);
+  }, [timeFiltered, activeFilter, clientAlertsByFlight, dismissedClientAlerts]);
 
   // Group by day
   const byDay = useMemo(() => {
@@ -427,8 +692,12 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
 
   // Alert counts per category (for pill badges)
   const alertCounts = useMemo(() => {
-    const counts: Record<string, number> = { ALERTS_ONLY: 0, CRITICAL: 0, RWY: 0, AD: 0, TFR: 0, PPR: 0, EDCT: 0 };
+    const counts: Record<string, number> = {
+      ALERTS_ONLY: 0, CRITICAL: 0, RWY: 0, AD: 0, TFR: 0, PPR: 0, EDCT: 0,
+      KJAC: 0, KSNA: 0, LATE: 0,
+    };
     for (const f of timeFiltered) {
+      // Server alerts
       for (const a of f.alerts ?? []) {
         if (ackedIds.has(a.id)) continue;
         counts.ALERTS_ONLY++;
@@ -439,9 +708,19 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
         if (a.alert_type === "NOTAM_PPR") counts.PPR++;
         if (a.alert_type === "EDCT") counts.EDCT++;
       }
+
+      // Client alerts (KJAC/KSNA/LATE)
+      const ca = clientAlertsByFlight.get(f.id) ?? [];
+      for (const c of ca) {
+        if (dismissedClientAlerts.has(c.key)) continue;
+        counts.ALERTS_ONLY++;
+        if (c.type === "AIRPORT_KJAC") counts.KJAC++;
+        if (c.type === "AIRPORT_KSNA") counts.KSNA++;
+        if (c.type === "AFTER_HOURS") counts.LATE++;
+      }
     }
     return counts;
-  }, [timeFiltered, ackedIds]);
+  }, [timeFiltered, ackedIds, clientAlertsByFlight, dismissedClientAlerts]);
 
   return (
     <div className="p-4 sm:p-6 space-y-4 bg-gray-50 min-h-screen">
@@ -512,6 +791,10 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
                   isActive
                     ? opt.key === "CRITICAL"
                       ? "bg-red-100 text-red-800 border-red-300"
+                      : opt.key === "LATE"
+                      ? "bg-purple-100 text-purple-800 border-purple-300"
+                      : opt.key === "KJAC" || opt.key === "KSNA"
+                      ? "bg-blue-100 text-blue-800 border-blue-300"
                       : "bg-slate-800 text-white border-slate-800"
                     : "bg-white text-gray-600 border-gray-200 hover:border-gray-400 hover:bg-gray-50"
                 }`}
@@ -520,8 +803,14 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
                 {count !== null && count > 0 && (
                   <span className={`inline-flex items-center justify-center min-w-[16px] h-4 px-1 text-[10px] font-bold rounded-full ${
                     isActive
-                      ? opt.key === "CRITICAL" ? "bg-red-200 text-red-900" : "bg-white/30 text-white"
-                      : opt.key === "CRITICAL" ? "bg-red-100 text-red-700" : "bg-gray-100 text-gray-600"
+                      ? opt.key === "CRITICAL" ? "bg-red-200 text-red-900"
+                        : opt.key === "LATE" ? "bg-purple-200 text-purple-900"
+                        : opt.key === "KJAC" || opt.key === "KSNA" ? "bg-blue-200 text-blue-900"
+                        : "bg-white/30 text-white"
+                      : opt.key === "CRITICAL" ? "bg-red-100 text-red-700"
+                        : opt.key === "LATE" ? "bg-purple-100 text-purple-700"
+                        : opt.key === "KJAC" || opt.key === "KSNA" ? "bg-blue-100 text-blue-700"
+                        : "bg-gray-100 text-gray-600"
                   }`}>
                     {count}
                   </span>
@@ -560,7 +849,15 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
                 />
                 <div className="grid gap-2 pt-2">
                   {dayFlights.map((f) => (
-                    <FlightCard key={f.id} flight={f} ackedIds={ackedIds} onAck={handleAck} />
+                    <FlightCard
+                      key={f.id}
+                      flight={f}
+                      ackedIds={ackedIds}
+                      onAck={handleAck}
+                      clientAlerts={clientAlertsByFlight.get(f.id) ?? []}
+                      dismissedClientAlerts={dismissedClientAlerts}
+                      onDismissClient={handleDismissClient}
+                    />
                   ))}
                 </div>
               </div>
