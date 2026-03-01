@@ -37,6 +37,7 @@ export type Flight = {
   scheduled_departure: string;
   scheduled_arrival: string | null;
   summary: string | null;
+  flight_type: string | null;
   alerts: OpsAlert[];
 };
 
@@ -67,15 +68,23 @@ function isNoiseNotam(alert: { alert_type: string; body: string | null }): boole
 
 function extractNotamDates(rawData: Record<string, unknown> | null): NotamDates | null {
   if (!rawData) return null;
+
+  // Current format: raw_data = {"notam_dates": {effective_start, ...}}
+  const nd = (rawData.notam_dates ?? {}) as Record<string, unknown>;
+
+  // Legacy format: raw_data = {properties: {coreNOTAMData: {notam: {effectiveStart, ...}}}}
   const props = (rawData.properties ?? {}) as Record<string, unknown>;
+  const core = (props.coreNOTAMData ?? {}) as Record<string, unknown>;
+  const notam = (core.notam ?? {}) as Record<string, unknown>;
+
   return {
-    effective_start: (props.effectiveStart as string) ?? null,
-    effective_end: (props.effectiveEnd as string) ?? null,
-    issued: (props.issued as string) ?? null,
-    status: (props.status as string) ?? null,
-    start_date_utc: (props.startDate as string) ?? null,
-    end_date_utc: (props.endDate as string) ?? null,
-    issue_date_utc: (props.issueDate as string) ?? null,
+    effective_start: (nd.effective_start as string) ?? (notam.effectiveStart as string) ?? null,
+    effective_end: (nd.effective_end as string) ?? (notam.effectiveEnd as string) ?? null,
+    issued: (nd.issued as string) ?? (notam.issued as string) ?? null,
+    status: (nd.status as string) ?? (notam.status as string) ?? null,
+    start_date_utc: (nd.start_date_utc as string) ?? (notam.startDate as string) ?? null,
+    end_date_utc: (nd.end_date_utc as string) ?? (notam.endDate as string) ?? null,
+    issue_date_utc: (nd.issue_date_utc as string) ?? (notam.issueDate as string) ?? null,
   };
 }
 
@@ -99,7 +108,7 @@ export async function fetchFlights(params: {
   // Fetch flights in the time window
   const { data: flightRows, error: flightErr } = await supa
     .from("flights")
-    .select("id, ics_uid, tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, summary")
+    .select("id, ics_uid, tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, summary, flight_type")
     .gte("scheduled_departure", past)
     .lte("scheduled_departure", future)
     .order("scheduled_departure", { ascending: true });
@@ -151,6 +160,35 @@ export async function fetchFlights(params: {
     }
   }
 
+  // Fetch orphan EDCT alerts (no flight_id) so they still show up
+  const { data: orphanRows } = await supa
+    .from("ops_alerts")
+    .select(ALERT_COLUMNS)
+    .eq("alert_type", "EDCT")
+    .is("flight_id", null)
+    .is("acknowledged_at", null)
+    .gte("created_at", past)
+    .order("created_at", { ascending: false })
+    .limit(50);
+
+  const orphanAlerts: OpsAlert[] = (orphanRows ?? []).map((row) => ({
+    id: row.id as string,
+    flight_id: null,
+    alert_type: row.alert_type as string,
+    severity: row.severity as string,
+    airport_icao: row.airport_icao as string | null,
+    departure_icao: row.departure_icao as string | null,
+    arrival_icao: row.arrival_icao as string | null,
+    tail_number: row.tail_number as string | null,
+    subject: row.subject as string | null,
+    body: row.body as string | null,
+    edct_time: row.edct_time as string | null,
+    original_departure_time: row.original_departure_time as string | null,
+    acknowledged_at: row.acknowledged_at as string | null,
+    created_at: row.created_at as string,
+    notam_dates: extractNotamDates(row.raw_data as Record<string, unknown> | null),
+  }));
+
   // Assemble flights with nested alerts
   const flights: Flight[] = flightRows.map((f) => ({
     id: f.id as string,
@@ -161,8 +199,25 @@ export async function fetchFlights(params: {
     scheduled_departure: f.scheduled_departure as string,
     scheduled_arrival: f.scheduled_arrival as string | null,
     summary: f.summary as string | null,
+    flight_type: f.flight_type as string | null,
     alerts: alertsByFlight.get(f.id as string) ?? [],
   }));
+
+  // Add synthetic flight entries for orphan EDCT alerts
+  for (const alert of orphanAlerts) {
+    flights.push({
+      id: `edct-orphan-${alert.id}`,
+      ics_uid: "",
+      tail_number: alert.tail_number,
+      departure_icao: alert.departure_icao,
+      arrival_icao: alert.arrival_icao,
+      scheduled_departure: alert.created_at,
+      scheduled_arrival: null,
+      summary: alert.subject,
+      flight_type: null,
+      alerts: [alert],
+    });
+  }
 
   return { ok: true, flights, count: flights.length };
 }

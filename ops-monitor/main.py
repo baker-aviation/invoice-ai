@@ -47,9 +47,10 @@ OPS_ALERTS_TABLE = "ops_alerts"
 def _extract_notam_dates(raw_data) -> Optional[Dict[str, Optional[str]]]:
     """Pull effective start/end/issued dates from raw_data.
 
-    Handles two formats:
+    Handles three formats:
     1. **Compact** (new): ``{"notam_dates": {...}}`` — already extracted.
-    2. **Full GeoJSON** (legacy): ``{properties: {coreNOTAMData: {notam: {...}}}}``
+    2. **Full GeoJSON**: ``{properties: {coreNOTAMData: {notam: {...}}}}``
+    3. **GeoJSON variant**: dates at ``coreNOTAMData`` level, not inside ``notam``
 
     Returns a small dict with just the date strings, or None if parsing fails.
     """
@@ -58,21 +59,39 @@ def _extract_notam_dates(raw_data) -> Optional[Dict[str, Optional[str]]]:
         # New compact format — stored by check_notams after 2025-02-27
         if "notam_dates" in feature:
             return feature["notam_dates"]
-        # Legacy full GeoJSON format
-        notam = feature.get("properties", {}).get("coreNOTAMData", {}).get("notam")
-        if not notam:
-            return None
-        return {
-            "effective_start": notam.get("effectiveStart"),
-            "effective_end": notam.get("effectiveEnd"),
-            "issued": notam.get("issued"),
-            "status": notam.get("status"),
-            "start_date_utc": notam.get("startDate"),
-            "end_date_utc": notam.get("endDate"),
-            "issue_date_utc": notam.get("issueDate"),
-        }
+        # GeoJSON: check both coreNOTAMData.notam and coreNOTAMData itself
+        core = feature.get("properties", {}).get("coreNOTAMData", {})
+        notam = core.get("notam") or {}
+        return _pick_dates(notam, core)
     except Exception:
         return None
+
+
+def _pick_dates(*sources: dict) -> Optional[Dict[str, Optional[str]]]:
+    """Extract NOTAM date fields from one or more dicts (first non-None wins).
+
+    Checks camelCase (NMS/legacy) and snake_case field name variants."""
+    def _first(*keys):
+        for src in sources:
+            for k in keys:
+                v = src.get(k)
+                if v:
+                    return v
+        return None
+
+    result = {
+        "effective_start": _first("effectiveStart", "effective_start"),
+        "effective_end": _first("effectiveEnd", "effective_end"),
+        "issued": _first("issued", "issue_date", "issueDate"),
+        "status": _first("status"),
+        "start_date_utc": _first("startDate", "start_date_utc", "startDateTime"),
+        "end_date_utc": _first("endDate", "end_date_utc", "endDateTime"),
+        "issue_date_utc": _first("issueDate", "issue_date_utc", "issuedDateTime"),
+    }
+    # Return None only if every value is None (no dates found at all)
+    if all(v is None for v in result.values()):
+        return None
+    return result
 
 
 # ─── NMS bearer token cache (module-level, refreshed when expired) ────────────
@@ -170,9 +189,9 @@ def _faa_to_icao(code: str) -> str:
     return code
 
 
-def _parse_flight_fields(component) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+def _parse_flight_fields(component) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
     """
-    Extract (departure_icao, arrival_icao, tail_number) from a JetInsight VEVENT.
+    Extract (departure_icao, arrival_icao, tail_number, flight_type) from a JetInsight VEVENT.
 
     JetInsight SUMMARY format:
         [N998CX] The Early Way (SDM - SNA) - Positioning flight
@@ -205,7 +224,26 @@ def _parse_flight_fields(component) -> Tuple[Optional[str], Optional[str], Optio
     if not dep_icao and location and re.match(r"^[A-Z]{3,4}$", location):
         dep_icao = _faa_to_icao(location)
 
-    return dep_icao, arr_icao, tail
+    # ── Flight type: extract from CATEGORIES property or SUMMARY suffix ──────
+    flight_type = None
+    # Try CATEGORIES ICS property first
+    categories = component.get("CATEGORIES")
+    if categories:
+        cat_str = str(categories) if not isinstance(categories, list) else str(categories[0])
+        cat_str = cat_str.strip()
+        if cat_str:
+            flight_type = cat_str
+
+    # Fallback: parse from SUMMARY — text after the last " - " following the airport pair
+    if not flight_type:
+        # Match everything after the last " - " that follows the (XXX - XXX) airport pair
+        type_m = re.search(r"\([A-Z]{3,4}\s*[-–]\s*[A-Z]{3,4}\)\s*[-–]\s*(.+)$", summary)
+        if type_m:
+            raw = type_m.group(1).strip()
+            # Normalize: strip trailing "flight" if present (e.g. "Positioning flight" → "Positioning")
+            flight_type = re.sub(r"\s+flights?\s*$", "", raw, flags=re.IGNORECASE).strip() or None
+
+    return dep_icao, arr_icao, tail, flight_type
 
 
 # ─── Health ───────────────────────────────────────────────────────────────────
@@ -543,7 +581,7 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
                 skipped += 1
                 continue
 
-            dep_icao, arr_icao, tail = _parse_flight_fields(component)
+            dep_icao, arr_icao, tail, flight_type = _parse_flight_fields(component)
 
             flight: Dict[str, Any] = {
                 "ics_uid": uid,
@@ -559,6 +597,8 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
                 flight["arrival_icao"] = arr_icao
             if arr_dt is not None:
                 flight["scheduled_arrival"] = arr_dt.isoformat()
+            if flight_type is not None:
+                flight["flight_type"] = flight_type
 
             batch.append(flight)
         except Exception as e:
@@ -648,6 +688,44 @@ def pull_edct(
     return {"ok": True, "ingested": ingested, "skipped": skipped, "errors": errors}
 
 
+_TZ_OFFSETS = {
+    "EST": "-0500", "EDT": "-0400", "CST": "-0600", "CDT": "-0500",
+    "MST": "-0700", "MDT": "-0600", "PST": "-0800", "PDT": "-0700",
+    "UTC": "+0000", "Z": "+0000", "GMT": "+0000",
+}
+
+
+def _normalize_edct_time(raw: str) -> str:
+    """
+    Normalize various EDCT time formats to ISO-8601 UTC string.
+    Handles: "1845Z", "02/26/2026 1845Z", "2026-02-26T18:45",
+             "Sun Mar 01 07:34 EST 2026" (ForeFlight format).
+    Returns the original string if parsing fails.
+    """
+    # ForeFlight: "Sun Mar 01 07:34 EST 2026"
+    m = re.match(
+        r"[A-Z][a-z]{2}\s+([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d{1,2}):(\d{2})\s+([A-Z]{2,4})\s+(\d{4})",
+        raw,
+    )
+    if m:
+        mon, day, hour, minute, tz_name, year = m.groups()
+        try:
+            from datetime import datetime as _dt
+            dt = _dt.strptime(f"{mon} {day} {year} {hour}:{minute}", "%b %d %Y %H:%M")
+            tz_off = _TZ_OFFSETS.get(tz_name.upper())
+            if tz_off:
+                # Convert to UTC
+                sign = 1 if tz_off[0] == "+" else -1
+                off_h, off_m = int(tz_off[1:3]), int(tz_off[3:5])
+                dt = dt - timedelta(hours=sign * off_h, minutes=sign * off_m)
+            return dt.strftime("%Y-%m-%dT%H:%MZ")
+        except Exception:
+            return raw
+
+    # Already in a usable format
+    return raw
+
+
 def _parse_edct_email(subject: str, body: str, msg_id: str) -> Dict[str, Any]:
     """
     Parse a ForeFlight EDCT / ground delay email.
@@ -669,23 +747,34 @@ def _parse_edct_email(subject: str, body: str, msg_id: str) -> Dict[str, Any]:
         tail = tail_m.group(1).upper()
 
     # EDCT time  e.g. "EDCT: 1845Z" or "EDCT 02/26/2026 1845Z"
+    #            or ForeFlight: "EDCT: Sun Mar 01 07:34 EST 2026"
     edct_time = None
     edct_m = re.search(
-        r"EDCT\s*[:\-]?\s*(\d{2}/\d{2}/\d{4}\s+\d{4}Z|\d{4}Z|\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2})",
+        r"EDCT\s*[:\-]?\s*("
+        r"\d{2}/\d{2}/\d{4}\s+\d{4}Z"          # 02/26/2026 1845Z
+        r"|\d{4}Z"                               # 1845Z
+        r"|\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}"   # 2026-02-26T18:45
+        r"|[A-Z][a-z]{2}\s+[A-Z][a-z]{2}\s+\d{1,2}\s+\d{1,2}:\d{2}\s+[A-Z]{2,4}\s+\d{4}"  # Sun Mar 01 07:34 EST 2026
+        r")",
         body, re.I,
     )
     if edct_m:
-        edct_time = edct_m.group(1).strip()
+        raw_edct = edct_m.group(1).strip()
+        edct_time = _normalize_edct_time(raw_edct)
 
     # Original / proposed departure
     orig_dep = None
     orig_m = re.search(
-        r"(?:Original|Proposed|Filed|Scheduled)\s+(?:Departure|Dep)\s*[:\-]?\s*"
-        r"(\d{2}/\d{2}/\d{4}\s+\d{4}Z|\d{4}Z|\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2})",
+        r"(?:Original|Proposed|Filed|Scheduled)\s+(?:Departure|Dep)\s*[:\-]?\s*("
+        r"\d{2}/\d{2}/\d{4}\s+\d{4}Z"
+        r"|\d{4}Z"
+        r"|\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}"
+        r"|[A-Z][a-z]{2}\s+[A-Z][a-z]{2}\s+\d{1,2}\s+\d{1,2}:\d{2}\s+[A-Z]{2,4}\s+\d{4}"
+        r")",
         body, re.I,
     )
     if orig_m:
-        orig_dep = orig_m.group(1).strip()
+        orig_dep = _normalize_edct_time(orig_m.group(1).strip())
 
     # Severity: ground stop = critical, otherwise warning
     severity = "critical" if re.search(r"Ground Stop|STOP", subject, re.I) else "warning"
@@ -792,12 +881,12 @@ def _run_check_notams(lookahead_hours: int) -> dict:
             if not icao:
                 continue
             for feature in notams_by_airport.get(icao, []):
-                # NMS GeoJSON structure: feature.properties.coreNOTAMData.notam
-                notam_data = (
+                # NMS GeoJSON: feature.properties.coreNOTAMData.notam
+                core_data = (
                     feature.get("properties", {})
                     .get("coreNOTAMData", {})
-                    .get("notam", {})
                 )
+                notam_data = core_data.get("notam", {})
                 if not notam_data:
                     continue
                 # NMS uses "text", legacy API uses "traditionalMessage"
@@ -805,9 +894,9 @@ def _run_check_notams(lookahead_hours: int) -> dict:
                 if not _is_relevant_notam_msg(msg):
                     continue
                 notam_id = notam_data.get("id", "") or notam_data.get("number", "")
-                # Store only the extracted NOTAM dates in raw_data
-                # (not the full GeoJSON feature) to keep the DB lean.
-                notam_dates = _extract_notam_dates(feature)
+                # Extract dates from notam_data AND coreNOTAMData (dates may
+                # live at either level depending on the FAA API version).
+                notam_dates = _pick_dates(notam_data, core_data)
                 alerts_to_insert.append({
                     "flight_id": fid,
                     "alert_type": _classify_notam(msg),
@@ -824,10 +913,13 @@ def _run_check_notams(lookahead_hours: int) -> dict:
     if alerts_to_insert:
         print(f"check_notams: upserting {len(alerts_to_insert)} alerts in bulk", flush=True)
         try:
-            # Supabase upsert accepts a list — one round-trip for all rows
+            # Supabase upsert accepts a list — one round-trip for all rows.
+            # Do NOT use ignore_duplicates — we need to UPDATE raw_data on
+            # existing rows so NOTAM dates are backfilled if they were
+            # previously stored as null.
             res = (
                 supa.table(OPS_ALERTS_TABLE)
-                .upsert(alerts_to_insert, on_conflict="source_message_id", ignore_duplicates=True)
+                .upsert(alerts_to_insert, on_conflict="source_message_id")
                 .execute()
             )
             alerts_created = len(res.data) if res.data else 0
@@ -928,6 +1020,33 @@ def debug_sync_test():
     return {"feeds": results, "supabase_ok": supa_ok, "supabase_secs": supa_secs}
 
 
+@app.get("/debug/ics_fields")
+def debug_ics_fields(count: int = Query(5, ge=1, le=20)):
+    """Dump ALL raw ICS properties from the first N VEVENTs to see what JetInsight sends."""
+    if not ICS_URLS:
+        return {"error": "No ICS URLs configured"}
+    try:
+        r = requests.get(ICS_URLS[0], timeout=15)
+        r.raise_for_status()
+        cal = Calendar.from_ical(r.content)
+        events = [c for c in cal.walk() if c.name == "VEVENT"]
+        samples = []
+        for ev in events[:count]:
+            props = {}
+            for key in ev:
+                val = ev[key]
+                if hasattr(val, "dt"):
+                    props[key] = str(val.dt)
+                elif isinstance(val, list):
+                    props[key] = [str(v) for v in val]
+                else:
+                    props[key] = str(val)
+            samples.append(props)
+        return {"total_events": len(events), "samples": samples}
+    except Exception as e:
+        return {"error": repr(e)}
+
+
 @app.get("/debug/connectivity")
 def debug_connectivity():
     """Test DNS + TCP reachability for external hosts from inside Cloud Run."""
@@ -1008,6 +1127,14 @@ def debug_notam_test(airport: str = Query("KJFK")):
             nms_result["ok"] = True
             nms_result["count"] = len(features)
             nms_result["sample"] = features[:2] if features else []
+            # Show what _pick_dates extracts from the first feature
+            if features:
+                f0 = features[0]
+                core = f0.get("properties", {}).get("coreNOTAMData", {})
+                notam = core.get("notam", {})
+                nms_result["date_keys_in_notam"] = [k for k in notam if "date" in k.lower() or "start" in k.lower() or "end" in k.lower() or "issued" in k.lower() or "effective" in k.lower() or "status" in k.lower()]
+                nms_result["date_keys_in_coreNOTAMData"] = [k for k in core if "date" in k.lower() or "start" in k.lower() or "end" in k.lower() or "issued" in k.lower() or "effective" in k.lower() or "status" in k.lower()]
+                nms_result["extracted_dates"] = _pick_dates(notam, core)
     except Exception as e:
         nms_result["error"] = repr(e)
     result["nms"] = nms_result

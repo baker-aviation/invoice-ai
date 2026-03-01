@@ -18,7 +18,7 @@ gcloud run deploy "${SERVICE_NAME}" \
   --memory 512Mi \
   --timeout 300 \
   --max-instances 3 \
-  --set-env-vars "PARSER_BASE_URL=https://invoice-parser-116257952438.us-central1.run.app" \
+  --set-env-vars "PARSER_BASE_URL=${PARSER_BASE_URL:-https://invoice-parser-hrzd5jf3da-uc.a.run.app}" \
   --set-secrets "SUPABASE_URL=SUPABASE_URL:latest,SUPABASE_SERVICE_ROLE_KEY=SUPABASE_SERVICE_ROLE_KEY:latest,MS_TENANT_ID=MS_TENANT_ID:latest,MS_CLIENT_ID=MS_CLIENT_ID:latest,MS_CLIENT_SECRET=MS_CLIENT_SECRET:latest,OUTLOOK_SHARED_MAILBOX=OUTLOOK_SHARED_MAILBOX:latest,GCS_BUCKET=GCS_BUCKET:latest" \
   --update-annotations "run.googleapis.com/startup-cpu-boost=true"
 

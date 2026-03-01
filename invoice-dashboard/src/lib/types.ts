@@ -23,7 +23,7 @@ export type InvoiceListResponse = {
 
 export type InvoiceDetailResponse = {
   ok: boolean;
-  invoice: any; // full parsed row
+  invoices: any[]; // all parsed invoice rows for this document
   signed_pdf_url: string | null;
 };
 
@@ -47,6 +47,35 @@ export type AlertsResponse = {
   count: number;
   alerts: AlertRow[];
 };
+/* =========================
+   Fuel Prices
+========================= */
+
+export type FuelPriceRow = {
+  id: string;
+  document_id: string;
+  airport_code: string | null;
+  vendor_name: string | null;
+  base_price_per_gallon: number | null;
+  effective_price_per_gallon: number | null;
+  gallons: number | null;
+  fuel_total: number | null;
+  invoice_date: string | null;
+  tail_number: string | null;
+  currency: string | null;
+  price_change_pct: number | null;
+  previous_price: number | null;
+  previous_document_id: string | null;
+  alert_sent: boolean | null;
+  created_at: string;
+};
+
+export type FuelPricesResponse = {
+  ok: boolean;
+  count: number;
+  fuel_prices: FuelPriceRow[];
+};
+
 /* =========================
    Jobs
 ========================= */

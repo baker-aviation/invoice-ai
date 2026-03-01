@@ -563,6 +563,100 @@ def normalize_extraction(data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ============================================================
+# Airport code inference (deterministic post-processing)
+# ============================================================
+
+# Pattern: "Vendor Name - EGE" or "Vendor Name – KVNY"
+_VENDOR_AIRPORT_RE = re.compile(r"(?:-|–|—)\s*([A-Z0-9]{3,4})\s*$")
+
+# Known FBO / vendor name fragments → airport codes
+_KNOWN_VENDOR_AIRPORTS: Dict[str, str] = {
+    "fontainebleau aviation": "KOPF",
+    "banyan air service": "KFXE",
+    "sheltair fll": "KFLL",
+    "sheltair fxe": "KFXE",
+    "million air yip": "KYIP",
+    "wilson air center": "KMEM",
+}
+
+# Common airport codes to validate against (US GA airports)
+_VALID_AIRPORT_CODES = {
+    "EGE", "VNY", "KVNY", "KOPF", "KBCT", "BCT", "TEB", "KTEB",
+    "SDL", "KSDL", "FXE", "KFXE", "OPF", "KOPF", "FLL", "KFLL",
+    "MIA", "KMIA", "LAS", "KLAS", "LAX", "KLAX", "SFO", "KSFO",
+    "DEN", "KDEN", "DAL", "KDAL", "ADS", "KADS", "FTW", "KFTW",
+    "AFW", "KAFW", "HOU", "KHOU", "IAH", "KIAH", "AUS", "KAUS",
+    "SAT", "KSAT", "ASE", "KASE", "PBI", "KPBI", "SUA", "KSUA",
+    "TMB", "KTMB", "BED", "KBED", "HPN", "KHPN", "MMU", "KMMU",
+    "SNA", "KSNA", "CRQ", "KCRQ", "MKC", "KMKC", "OJC", "KOJC",
+    "PDK", "KPDK", "FTY", "KFTY", "APA", "KAPA", "BJC", "KBJC",
+    "DVT", "KDVT", "IWA", "KIWA", "CHD", "KCHD", "FFZ", "KFFZ",
+    "LNK", "KLNK", "OMA", "KOMA", "MSP", "KMSP", "ORD", "KORD",
+    "MDW", "KMDW", "PWK", "KPWK", "DPA", "KDPA", "JFK", "KJFK",
+    "LGA", "KLGA", "ISP", "KISP", "HWD", "KHWD", "SQL", "KSQL",
+    "RHV", "KRHV", "SMO", "KSMO", "BUR", "KBUR", "ONT", "KONT",
+    "SBD", "KSBD", "RIV", "KRIV", "PSP", "KPSP", "SEA", "KSEA",
+    "BFI", "KBFI", "PAE", "KPAE", "RNO", "KRNO", "LBB", "KLBB",
+    "ATL", "KATL", "BNA", "KBNA", "MEM", "KMEM", "JAN", "KJAN",
+    "SJC", "KSJC", "OAK", "KOAK",
+}
+
+
+def infer_airport_code(data: Dict[str, Any], pdf_text: str) -> Dict[str, Any]:
+    """
+    If airport_code is missing, try to infer it from vendor name or PDF text.
+    """
+    existing = (data.get("airport_code") or "").strip()
+    if existing:
+        return data
+
+    # 1. Check vendor name for "Vendor - XXX" pattern
+    vendor = data.get("vendor", {})
+    vendor_name = ""
+    if isinstance(vendor, dict):
+        vendor_name = (vendor.get("name") or "").strip()
+    elif isinstance(vendor, str):
+        vendor_name = vendor.strip()
+
+    if vendor_name:
+        m = _VENDOR_AIRPORT_RE.search(vendor_name.upper())
+        if m:
+            code = m.group(1)
+            if code in _VALID_AIRPORT_CODES or len(code) in (3, 4):
+                data["airport_code"] = code
+                return data
+
+    # 2. Check known vendor name → airport mapping
+    vn_lower = vendor_name.lower()
+    for pattern, code in _KNOWN_VENDOR_AIRPORTS.items():
+        if pattern in vn_lower:
+            data["airport_code"] = code
+            return data
+
+    # 3. Scan PDF text for airport codes near location keywords
+    text_upper = (pdf_text or "").upper()
+    for label in ["AIRPORT:", "LOCATION:", "BASE:", "FBO:", "STATION:"]:
+        idx = text_upper.find(label)
+        if idx >= 0:
+            # Look in the 40 chars after the label
+            snippet = text_upper[idx:idx + 60]
+            codes = re.findall(r"\b([A-Z]{3,4})\b", snippet)
+            for c in codes:
+                if c in _VALID_AIRPORT_CODES:
+                    data["airport_code"] = c
+                    return data
+
+    # 4. Look for "K + 3-letter code" pattern anywhere (ICAO format)
+    icao_matches = re.findall(r"\b(K[A-Z]{3})\b", text_upper)
+    for c in icao_matches:
+        if c in _VALID_AIRPORT_CODES:
+            data["airport_code"] = c
+            return data
+
+    return data
+
+
+# ============================================================
 # Prompt Builders
 # ============================================================
 
@@ -588,6 +682,22 @@ def build_normal_messages(pdf_text: str) -> List[dict]:
         "Fuel rows:\n"
         "- Use the extended TOTAL amount shown for the fuel row.\n"
         "- Do not truncate large totals.\n"
+        "- For fuel lines (Jet A, Avgas, etc.), ALWAYS extract both quantity (gallons) AND unit_price (per-gallon rate) when shown ANYWHERE on the document.\n"
+        "- On consolidated fuel statements (World Fuel, Avfuel), the per-gallon price may appear in a 'Price', 'Rate', 'Contract Price', or 'Unit Cost' column — extract it as unit_price.\n"
+        "- If a fuel line shows gallons and a dollar total but no explicit per-gallon rate, set unit_price to null (do NOT compute it).\n"
+        "\n"
+        "Airport code:\n"
+        "- Extract the ICAO or FAA airport identifier (3-4 uppercase letters/digits, e.g. KVNY, KBCT, TEB, EGE).\n"
+        "- Look for it in the header, 'Location', 'Base', 'FBO', 'Airport', or address fields.\n"
+        "- FBO invoices often show the airport in the vendor address or near the vendor name.\n"
+        "- If the vendor name contains a dash followed by a 3-4 letter code (e.g. 'Signature Flight Support - EGE'), that IS the airport code.\n"
+        "- If not explicitly labeled, look for 3-4 character codes near city/state references.\n"
+        "- Common examples: Eagle/Vail = EGE, Van Nuys = VNY/KVNY, Boca Raton = BCT/KBCT, Teterboro = TEB.\n"
+        "- ALWAYS set this field when ANY airport reference is visible. Do NOT leave it null if you can determine the airport.\n"
+        "\n"
+        "Vendor name:\n"
+        "- Use the primary vendor/company name, not a parent company or billing entity.\n"
+        "- For subscription services (Starlink, ForeFlight, etc.), use the service name as vendor.\n"
         "\n"
         "Multi-stop documents:\n"
         "- Some invoices contain multiple date/location sections.\n"
@@ -776,8 +886,10 @@ def extract_one_pdf(
     pdf_path: str,
     model: str,
     rescue: bool,
+    pdf_text: Optional[str] = None,
 ) -> Dict[str, Any]:
-    pdf_text = read_pdf_text(pdf_path)
+    if pdf_text is None:
+        pdf_text = read_pdf_text(pdf_path)
 
     # 1) First pass extraction
     data1 = llm_extract_json(
@@ -837,6 +949,10 @@ def extract_one_pdf(
     # Final normalization (dates, arrays, invoice_number guards)
     data = normalize_extraction(data)
     data = add_detected_keywords_warnings(data, pdf_text)
+
+    # 4) Infer airport code if LLM missed it
+    data = infer_airport_code(data, pdf_text)
+
     return data
 
 
@@ -855,6 +971,8 @@ def main() -> None:
 
     ap.add_argument("--out_dir", default=None, help="If set and PDF contains multiple invoices, write one JSON per invoice here")
     ap.add_argument("--manifest", default=None, help="Optional path to write split manifest JSON (statement mode)")
+
+    ap.add_argument("--text_file", default=None, help="Pre-extracted text file (alternative to --pdf)")
 
     ap.add_argument("--schema", default="schemas/invoice.schema.json")
     ap.add_argument("--out", default="/tmp/invoice.json")
@@ -892,8 +1010,16 @@ def main() -> None:
         print(f"Wrote {args.out}")
         return
 
+    # Text file mode: pre-extracted text (used by text-based statement splitting)
+    if args.text_file:
+        text_content = Path(args.text_file).read_text(encoding="utf-8")
+        data = extract_one_pdf(client, schema_bundle, args.text_file, args.model, args.rescue, pdf_text=text_content)
+        write_json(args.out, data)
+        print(f"Wrote {args.out}")
+        return
+
     if not args.pdf:
-        raise SystemExit("Normal mode requires --pdf (or use repair mode flags)")
+        raise SystemExit("Normal mode requires --pdf, --text_file, or repair mode flags")
 
     if args.out_dir:
         pages_text = read_pdf_pages_text(args.pdf)

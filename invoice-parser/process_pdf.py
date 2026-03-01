@@ -124,13 +124,81 @@ def detect_invoice_ids(text: str) -> List[str]:
 
 def maybe_statement_gate(text: str, invoice_ids: List[str]) -> Tuple[bool, int]:
     page_count = text.count("--- PAGE")
-    maybe_statement = (page_count >= 2) and (
-        len(invoice_ids) >= 2
-        or "Ref Number" in (text or "")
+    # Relax: allow even single-page docs if multiple invoice IDs detected
+    has_multi_ids = len(invoice_ids) >= 2
+    has_multi_pages = page_count >= 2
+    has_statement_markers = (
+        "Ref Number" in (text or "")
         or bool(re.search(r"\bCredit Memo\b", text or "", re.I))
         or bool(re.search(r"\bInvoice\b", text or "", re.I))
     )
+    maybe_statement = has_multi_ids or (has_multi_pages and has_statement_markers)
     return maybe_statement, page_count
+
+
+# ---------------------------
+# Text-based statement splitting (handles multi-invoice-per-page)
+# ---------------------------
+
+_SECTION_BOUNDARY_PATTERNS = [
+    re.compile(r"\bRef Number\s+([A-Z0-9][A-Z0-9-]*)\b", re.I),
+    re.compile(r"\bInvoice\s+(?:No\.?|#|Number)\s*:?\s*([A-Z0-9][A-Z0-9-]{2,})\b", re.I),
+    re.compile(r"\bCredit Memo\s+(?:No\.?|#|Number)\s*:?\s*([A-Z0-9][A-Z0-9-]{2,})\b", re.I),
+    re.compile(r"\b(INV\d{6,})\b", re.I),
+]
+
+# IDs that are clearly not invoice numbers
+_BAD_SECTION_ID = re.compile(
+    r"^(?:PAGE|DATE|CUSTOMER|TOTAL|USD|AMOUNT|NUMBER|THE|AND|FOR|TAX|NET)$", re.I
+)
+
+
+def split_text_into_sections(text: str) -> List[Tuple[str, str]]:
+    """
+    Split extracted PDF text into invoice sections by detecting invoice ID
+    boundaries. Works even when multiple invoices share a single page.
+
+    Returns list of (invoice_id, text_section) tuples.
+    Returns empty list if fewer than 2 distinct invoices found.
+    """
+    matches: List[Tuple[int, str]] = []
+    for pat in _SECTION_BOUNDARY_PATTERNS:
+        for m in pat.finditer(text or ""):
+            inv_id = (m.group(1) if m.groups() else m.group(0)).strip()
+            if not inv_id or len(inv_id) < 3:
+                continue
+            if _BAD_SECTION_ID.match(inv_id):
+                continue
+            # Find start of the line containing this match
+            line_start = text.rfind("\n", 0, m.start())
+            line_start = 0 if line_start < 0 else line_start + 1
+            matches.append((line_start, inv_id))
+
+    if not matches:
+        return []
+
+    # Sort by position in text
+    matches.sort(key=lambda x: x[0])
+
+    # Deduplicate: merge consecutive matches with the same invoice ID
+    # (handles multi-page invoices where the same ID appears on each page)
+    deduped: List[Tuple[int, str]] = [matches[0]]
+    for pos, inv_id in matches[1:]:
+        if inv_id != deduped[-1][1]:
+            deduped.append((pos, inv_id))
+
+    if len(deduped) < 2:
+        return []
+
+    # Split text at boundaries
+    sections: List[Tuple[str, str]] = []
+    for i, (pos, inv_id) in enumerate(deduped):
+        end_pos = deduped[i + 1][0] if i + 1 < len(deduped) else len(text)
+        section_text = text[pos:end_pos].strip()
+        if section_text:
+            sections.append((inv_id, section_text))
+
+    return sections
 
 
 # ---------------------------
@@ -432,6 +500,50 @@ def classify_doc_type(raw: dict) -> str:
     ]):
         return "lease_utility"
 
+    # Subscriptions / recurring services
+    if any(k in text for k in [
+        "starlink",
+        "subscription",
+        "monthly service",
+        "recurring charge",
+        "satcom",
+        "internet service",
+        "connectivity",
+        "wifi service",
+        "streaming",
+        "software license",
+        "annual license",
+        "renewal",
+    ]):
+        return "subscriptions"
+
+    # Pilot operations / training / OEM support
+    if any(k in text for k in [
+        "prod support",
+        "product support",
+        "pilot supplies",
+        "training",
+        "simulator",
+        "recurrent training",
+        "type rating",
+        "initial training",
+        "charts",
+        "jeppesen",
+        "foreflight",
+        "navigation data",
+        "crew supplies",
+        "flight planning",
+        "dispatch",
+        "oem support",
+        "smart parts",
+        "bombardier",
+        "gulfstream",
+        "dassault",
+        "embraer",
+        "textron support",
+    ]):
+        return "pilot_operations"
+
     # Parts / supplies invoices (before fbo_fee to avoid "handling" false positive)
     if any(k in text for k in [
         "parts order",
@@ -470,6 +582,38 @@ def classify_doc_type(raw: dict) -> str:
         "landing fee",
         "into-plane",
         "overnight fee",
+        "jet a",
+        "jet-a",
+        "jeta",
+        "avgas",
+        "100ll",
+        "fuel surcharge",
+        "fueling",
+        "defueling",
+        "gallons",
+        "into plane",
+        "fbo",
+        "fixed base",
+        "fuel flowage",
+        "flowage fee",
+        "prist",
+        "fsii",
+        # Known FBO vendors
+        "sheltair",
+        "atlantic aviation",
+        "signature flight",
+        "million air",
+        "jet aviation",
+        "xjet",
+        "priester",
+        "ross aviation",
+        "pentastar",
+        "cutter aviation",
+        "clay lacy",
+        "azorra",
+        "world fuel",
+        "avfuel",
+        "wilson air",
     ]):
         return "fbo_fee"
 
@@ -634,6 +778,12 @@ def process_one_pdf(
             })
             did_split = False
 
+    # Text-based splitting fallback: when PDF page-split fails but multiple
+    # invoice IDs are detected, split by text boundaries instead.
+    text_sections: List[Tuple[str, str]] = []
+    if not did_split and len(invoice_ids) >= 2:
+        text_sections = split_text_into_sections(text)
+
     try:
         if did_split:
             mode = "statement"
@@ -726,6 +876,119 @@ def process_one_pdf(
                     "invoice_id": part_pdf.stem,
                     "json": str(out_json),
                     "pdf": str(part_pdf),
+                    "validation": v,
+                    "parsed_invoice_id": parsed_invoice_id,
+                    "source_invoice_id": source_invoice_id,
+                    "business_duplicate_of": dup_of,
+                    "soft_duplicates": soft_dupes[:3],
+                })
+
+                if parsed_invoice_id and (not v.get("validation_pass")):
+                    supa.insert_invoice_error({
+                        "document_id": document_id,
+                        "parsed_invoice_id": parsed_invoice_id,
+                        "stage": "validate",
+                        "error_code": "VALIDATION_FAILED",
+                        "message": "Invoice failed validation",
+                        "details": v,
+                    })
+
+        elif len(text_sections) >= 2:
+            # ----------------------------------------------------------
+            # Text-based statement splitting: extract each invoice section
+            # independently using the pre-extracted text. This handles
+            # multi-invoice-per-page PDFs (e.g. World Fuel consolidated
+            # statements) that page-level splitting cannot split.
+            # ----------------------------------------------------------
+            mode = "statement"
+            for inv_id, section_text in text_sections:
+                safe_id = re.sub(r"[^A-Za-z0-9._-]+", "_", inv_id or "UNKNOWN")
+                text_file = out_dir / f"section_{safe_id}.txt"
+                text_file.write_text(section_text, encoding="utf-8")
+                out_json = out_dir / f"{safe_id}.json"
+
+                cmd = [
+                    "python3", "extract_invoice.py",
+                    "--text_file", str(text_file),
+                    "--out", str(out_json),
+                    "--schema", schema,
+                    "--model", model,
+                ]
+                if rescue:
+                    cmd.insert(2, "--rescue")
+                run(cmd)
+
+                raw = load_json_file(out_json)
+                raw["invoice_date"] = normalize_date_to_iso(raw.get("invoice_date"))
+                raw = scrub_obj(raw)
+                out_json.write_text(json.dumps(raw, indent=2), encoding="utf-8")
+
+                v = validate_json(out_json)
+                v = scrub_obj(v)
+
+                source_invoice_id = inv_id
+
+                inv_row, li_rows = normalize_rows(
+                    raw,
+                    document_id=document_id,
+                    parser_version=parser_version,
+                    model=model,
+                    validation=v,
+                    source_invoice_id=source_invoice_id,
+                )
+
+                inv_row = scrub_obj(inv_row)
+                li_rows = scrub_obj(li_rows)
+
+                _clear_latest_for_logical_invoice(
+                    supa,
+                    document_id=document_id,
+                    source_invoice_id=str(inv_row.get("source_invoice_id") or source_invoice_id),
+                )
+
+                parsed_invoice_id: Optional[str] = None
+                soft_dupes: List[Dict[str, Any]] = []
+                dup_of: Optional[str] = None
+
+                try:
+                    inv = supa.upsert_parsed_invoice(inv_row)
+                    parsed_invoice_id = inv["id"]
+
+                    for r in li_rows:
+                        r["parsed_invoice_id"] = parsed_invoice_id
+                    supa.replace_line_items(parsed_invoice_id, li_rows)
+
+                except DuplicateInvoiceError:
+                    existing = None
+                    try:
+                        existing = supa.find_existing_business_unique(
+                            vendor_name=str(inv_row.get("vendor_name") or ""),
+                            invoice_number=str(inv_row.get("invoice_number") or ""),
+                            total_amount=float(inv_row.get("total_amount") or inv_row.get("total") or 0),
+                        )
+                    except Exception:
+                        existing = None
+
+                    if existing:
+                        parsed_invoice_id = existing.get("id")
+                        dup_of = parsed_invoice_id
+
+                try:
+                    soft_dupes = supa.find_soft_duplicate(
+                        vendor_name=inv_row.get("vendor_name"),
+                        invoice_date=inv_row.get("invoice_date"),
+                        invoice_number=inv_row.get("invoice_number"),
+                        total=float(inv_row.get("total") or 0) if inv_row.get("total") is not None else None,
+                    )
+                    if parsed_invoice_id:
+                        soft_dupes = [d for d in soft_dupes if d.get("id") != parsed_invoice_id]
+                except Exception:
+                    soft_dupes = []
+
+                outputs.append({
+                    "invoice_id": inv_id,
+                    "json": str(out_json),
+                    "source_text": str(text_file),
                     "validation": v,
                     "parsed_invoice_id": parsed_invoice_id,
                     "source_invoice_id": source_invoice_id,

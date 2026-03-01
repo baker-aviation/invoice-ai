@@ -1,5 +1,6 @@
 import { createServiceClient } from "@/lib/supabase/service";
-import type { AlertRow, AlertsResponse, InvoiceDetailResponse, InvoiceListItem, InvoiceListResponse } from "@/lib/types";
+import { cloudRunFetch } from "@/lib/cloud-run-fetch";
+import type { AlertRow, AlertsResponse, FuelPriceRow, FuelPricesResponse, InvoiceDetailResponse, InvoiceListItem, InvoiceListResponse } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
 // Invoices — direct Supabase query to parsed_invoices
@@ -68,21 +69,67 @@ export async function fetchInvoices(params: {
 }
 
 // ---------------------------------------------------------------------------
-// Invoice detail — still proxies to Cloud Run (needs signed PDF URL from GCS)
+// Invoice detail — direct Supabase query (with optional Cloud Run fallback
+// for signed PDF URL)
 // ---------------------------------------------------------------------------
 
-const BASE = process.env.INVOICE_API_BASE_URL;
-
-function mustBase(): string {
-  if (!BASE) throw new Error("Missing INVOICE_API_BASE_URL in .env.local");
-  return BASE.replace(/\/$/, "");
+function getSignedUrlBase(): string | undefined {
+  const parser = process.env.PARSER_API_BASE_URL ?? process.env.INVOICE_PARSER_URL;
+  if (parser) return parser;
+  if (process.env.INVOICE_API_BASE_URL) return process.env.INVOICE_API_BASE_URL;
+  return undefined;
 }
 
+const BASE = getSignedUrlBase();
+
 export async function fetchInvoiceDetail(documentId: string): Promise<InvoiceDetailResponse> {
-  const base = mustBase();
-  const res = await fetch(`${base}/api/invoices/${documentId}`, { cache: "no-store" });
-  if (!res.ok) throw new Error(`fetchInvoiceDetail failed: ${res.status}`);
-  return res.json();
+  const supa = createServiceClient();
+
+  const { data, error } = await supa
+    .from("parsed_invoices")
+    .select("*")
+    .eq("document_id", documentId)
+    .order("source_invoice_id", { ascending: true });
+
+  if (error) throw new Error(`fetchInvoiceDetail failed: ${error.message}`);
+  if (!data || data.length === 0) throw new Error("fetchInvoiceDetail failed: 404");
+
+  // Parse line_items for each invoice row
+  const invoices = data.map((row: any) => {
+    let lineItems = row.line_items;
+    if (typeof lineItems === "string") {
+      try {
+        lineItems = JSON.parse(lineItems);
+      } catch {
+        lineItems = [];
+      }
+    }
+    return { ...row, line_items: Array.isArray(lineItems) ? lineItems : [] };
+  });
+
+  // Try to get signed PDF URL from Cloud Run (non-blocking — page loads even if this fails)
+  let signedPdfUrl: string | null = null;
+  if (BASE) {
+    try {
+      const res = await cloudRunFetch(`${BASE.replace(/\/$/, "")}/api/invoices/${documentId}/pdf-url`, {
+        cache: "no-store",
+        signal: AbortSignal.timeout(5000),
+      });
+      if (res.ok) {
+        const body = await res.json();
+        signedPdfUrl = body.signed_pdf_url ?? null;
+      }
+    } catch {
+      // Cloud Run unavailable or no GCP_SA_KEY — fall through to proxy
+    }
+  }
+
+  // Fallback: use direct GCS proxy route (bypasses Cloud Run)
+  if (!signedPdfUrl) {
+    signedPdfUrl = `/api/invoices/${documentId}/pdf`;
+  }
+
+  return { ok: true, invoices, signed_pdf_url: signedPdfUrl };
 }
 
 // ---------------------------------------------------------------------------
@@ -175,4 +222,63 @@ export async function fetchAlerts(params: {
   }
 
   return { ok: true, count: alerts.length, alerts };
+}
+
+// ---------------------------------------------------------------------------
+// Fuel Prices — direct Supabase query to fuel_prices
+// ---------------------------------------------------------------------------
+
+const FUEL_PRICE_COLUMNS =
+  "id, document_id, airport_code, vendor_name, base_price_per_gallon, effective_price_per_gallon, gallons, fuel_total, invoice_date, tail_number, currency, price_change_pct, previous_price, previous_document_id, alert_sent, created_at";
+
+export async function fetchFuelPrices(params: {
+  limit?: number;
+  q?: string;
+  airport?: string;
+  vendor?: string;
+} = {}): Promise<FuelPricesResponse> {
+  const supa = createServiceClient();
+  const limit = params.limit ?? 200;
+
+  let query = supa
+    .from("fuel_prices")
+    .select(FUEL_PRICE_COLUMNS)
+    .order("invoice_date", { ascending: false })
+    .limit(limit);
+
+  if (params.airport) query = query.ilike("airport_code", `%${params.airport}%`);
+  if (params.vendor) query = query.ilike("vendor_name", `%${params.vendor}%`);
+
+  const { data, error } = await query;
+  if (error) throw new Error(`fetchFuelPrices failed: ${error.message}`);
+
+  let fuelPrices: FuelPriceRow[] = (data ?? []).map((row) => ({
+    id: row.id as string,
+    document_id: row.document_id as string,
+    airport_code: row.airport_code as string | null,
+    vendor_name: row.vendor_name as string | null,
+    base_price_per_gallon: row.base_price_per_gallon as number | null,
+    effective_price_per_gallon: row.effective_price_per_gallon as number | null,
+    gallons: row.gallons as number | null,
+    fuel_total: row.fuel_total as number | null,
+    invoice_date: row.invoice_date as string | null,
+    tail_number: row.tail_number as string | null,
+    currency: row.currency as string | null,
+    price_change_pct: row.price_change_pct as number | null,
+    previous_price: row.previous_price as number | null,
+    previous_document_id: row.previous_document_id as string | null,
+    alert_sent: row.alert_sent as boolean | null,
+    created_at: row.created_at as string,
+  }));
+
+  if (params.q) {
+    const qLower = params.q.toLowerCase();
+    fuelPrices = fuelPrices.filter((fp) =>
+      [fp.airport_code, fp.vendor_name, fp.tail_number, fp.document_id]
+        .filter(Boolean)
+        .some((f) => String(f).toLowerCase().includes(qLower)),
+    );
+  }
+
+  return { ok: true, count: fuelPrices.length, fuel_prices: fuelPrices };
 }
