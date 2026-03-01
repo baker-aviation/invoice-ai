@@ -1039,6 +1039,51 @@ def parse_backlog(
     }
 
 
+@app.post("/jobs/reparse_all")
+def reparse_all(limit: int = Query(100, ge=1, le=500)):
+    """
+    Re-parse ALL already-parsed applications (up to `limit`).
+    Calls parse_application() which upserts, so it overwrites existing rows
+    with fresh OpenAI extraction + new validation/gate logic.
+    """
+    supa = _supa()
+
+    rows = safe_select_many(
+        PARSE_TABLE, "application_id", limit=int(limit),
+    ) or []
+
+    aids = [int(r["application_id"]) for r in rows if r.get("application_id") is not None]
+    print(f"REPARSE: {len(aids)} applications to reparse", flush=True)
+
+    results: List[Dict[str, Any]] = []
+    ok_n = 0
+    fail_n = 0
+
+    for aid in aids:
+        try:
+            out = parse_application(application_id=aid)
+            extracted = out.get("extracted") or {}
+            results.append({
+                "application_id": aid,
+                "status": "reparsed",
+                "category": extracted.get("category"),
+                "soft_gate_pic_met": extracted.get("soft_gate_pic_met"),
+                "has_citation_x": (extracted.get("type_ratings") or {}).get("has_citation_x"),
+            })
+            ok_n += 1
+        except HTTPException as e:
+            results.append({"application_id": aid, "status": "failed", "error": str(e.detail)})
+            fail_n += 1
+
+    return {
+        "ok": True,
+        "total": len(aids),
+        "reparsed": ok_n,
+        "failed": fail_n,
+        "results": results,
+    }
+
+
 # ---------------------------------------------------------------------
 # API: Jobs (Dashboard)
 # ---------------------------------------------------------------------
