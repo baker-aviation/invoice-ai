@@ -48,6 +48,10 @@ _FUEL_TAX_RE = re.compile(
 # Minimum realistic fuel unit price — jet fuel never costs less than $1/gal
 MIN_FUEL_PRICE = 1.0
 
+# Sanity range for inferred prices (total/qty fallback)
+MIN_INFERRED_PRICE = 3.0   # below $3/gal is almost certainly a fee, not fuel
+MAX_INFERRED_PRICE = 12.0  # above $12/gal is unrealistic for Jet A
+
 
 def _is_fuel_line(desc: str) -> bool:
     return bool(_FUEL_RE.search(desc or ""))
@@ -100,30 +104,45 @@ def extract_fuel_price(invoice: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     # Step 1: find the primary fuel line
     # Prefer lines that are NOT taxes/fees and have a realistic unit price (>=$1/gal).
     # Fall back to any fuel line with unit_price > 0 if no good candidate found.
+    # Final fallback: infer unit_price from total/qty if result is in $3-$12/gal range.
     fuel_line = None
     fallback_fuel_line = None
+    inferred_fuel_line = None  # fuel line where we can compute price from total/qty
     for li in line_items:
         desc = str(li.get("description") or li.get("name") or "")
         if not _is_fuel_line(desc):
             continue
         qty = _to_float(li.get("quantity"))
-        unit_price = _to_float(li.get("unit_price"))
-        if not qty or qty < MIN_GALLONS or not unit_price or unit_price <= 0:
+        if not qty or qty < MIN_GALLONS:
             continue
 
         # Skip tax/fee/surcharge lines for the primary fuel line
         if _is_fuel_tax_or_fee(desc):
             continue
 
-        # Prefer realistic prices (>= $1/gal); keep a fallback just in case
-        if unit_price >= MIN_FUEL_PRICE:
-            fuel_line = li
-            break
-        elif not fallback_fuel_line:
-            fallback_fuel_line = li
+        unit_price = _to_float(li.get("unit_price"))
+
+        if unit_price and unit_price > 0:
+            # Has explicit unit_price
+            if unit_price >= MIN_FUEL_PRICE:
+                fuel_line = li
+                break
+            elif not fallback_fuel_line:
+                fallback_fuel_line = li
+        elif not inferred_fuel_line:
+            # No unit_price — try to infer from total/qty
+            total = _to_float(li.get("total"))
+            if total and total > 0:
+                computed = total / qty
+                if MIN_INFERRED_PRICE <= computed <= MAX_INFERRED_PRICE:
+                    # Realistic fuel price — use it
+                    li = {**li, "unit_price": round(computed, 5)}
+                    inferred_fuel_line = li
 
     if not fuel_line:
         fuel_line = fallback_fuel_line
+    if not fuel_line:
+        fuel_line = inferred_fuel_line
 
     if not fuel_line:
         return None
@@ -313,6 +332,13 @@ def audit_fuel_extraction(invoice: Dict[str, Any]) -> Dict[str, Any]:
                 "low_price" if unit_price < MIN_FUEL_PRICE else
                 None
             ),
+            "inferred_price": (
+                round(total / qty, 4)
+                if (not unit_price or unit_price <= 0)
+                and qty and qty >= MIN_GALLONS
+                and total and total > 0
+                else None
+            ),
         })
 
     base["fuel_candidates"] = candidates
@@ -330,7 +356,15 @@ def audit_fuel_extraction(invoice: Dict[str, Any]) -> Dict[str, Any]:
             base["reason"] = "tax_only"
         elif any(r in ("no_qty", "low_qty") for r in reasons):
             base["reason"] = "qty_issue"
-        elif any(r in ("no_unit_price", "low_price") for r in reasons):
+        elif any(r == "no_unit_price" for r in reasons):
+            # Distinguish: has qty but no price at all = fuel release
+            no_price_cands = [c for c in candidates if c["reject_reason"] == "no_unit_price"]
+            has_any_total = any(c.get("inferred_price") is not None for c in no_price_cands)
+            if has_any_total:
+                base["reason"] = "price_issue"  # has total, just outside sanity range
+            else:
+                base["reason"] = "fuel_release_no_price"  # qty only, no $ at all
+        elif any(r == "low_price" for r in reasons):
             base["reason"] = "price_issue"
         else:
             base["reason"] = "all_rejected"
