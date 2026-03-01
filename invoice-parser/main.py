@@ -151,6 +151,63 @@ def parse_document(document_id: str):
         raise HTTPException(status_code=500, detail="parse_document failed")
 
 
+@app.post("/jobs/reparse")
+def reparse_document(document_id: str):
+    """
+    Re-parse a specific document: clears old parsed data and runs extraction again.
+    Used to fix categorization, airport codes, or other extraction issues.
+    """
+    # Verify document exists
+    doc_res = (
+        supa.table(DOCUMENTS_TABLE)
+        .select("id,gcs_bucket,gcs_path,status")
+        .eq("id", document_id)
+        .limit(1)
+        .execute()
+    )
+    if not doc_res.data:
+        raise HTTPException(status_code=404, detail=f"Document not found: {document_id}")
+
+    # Delete existing parsed data for this document
+    try:
+        # Get parsed_invoice IDs to clean up line items
+        pi_res = (
+            supa.table("parsed_invoices")
+            .select("id")
+            .eq("document_id", document_id)
+            .execute()
+        )
+        pi_ids = [r["id"] for r in (pi_res.data or []) if r.get("id")]
+
+        # Delete line items
+        if pi_ids:
+            for pi_id in pi_ids:
+                supa.table("parsed_line_items").delete().eq(
+                    "parsed_invoice_id", pi_id
+                ).execute()
+
+        # Delete parsed invoices
+        supa.table("parsed_invoices").delete().eq(
+            "document_id", document_id
+        ).execute()
+
+        # Delete old alerts for this document
+        supa.table("invoice_alerts").delete().eq(
+            "document_id", document_id
+        ).execute()
+    except Exception as e:
+        print(f"reparse cleanup warning: {e}", flush=True)
+
+    # Reset document status to uploaded so parse_document picks it up
+    supa.table(DOCUMENTS_TABLE).update(
+        {"status": "uploaded", "parse_error": None}
+    ).eq("id", document_id).execute()
+
+    # Run parse
+    result = parse_document(document_id=document_id)
+    return {"ok": True, "document_id": document_id, "reparse": True}
+
+
 @app.post("/jobs/parse_next")
 def parse_next(
     limit: int = Query(10, ge=1, le=50),

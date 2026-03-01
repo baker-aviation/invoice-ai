@@ -2,6 +2,7 @@ import Link from "next/link";
 import { fetchInvoiceDetail } from "@/lib/invoiceApi";
 import { Topbar } from "@/components/Topbar";
 import { Badge } from "@/components/Badge";
+import ReparseButton from "./ReparseButton";
 
 export default async function InvoiceDetailPage({
   params,
@@ -64,6 +65,8 @@ export default async function InvoiceDetailPage({
             <Link href="/invoices" className="rounded-md border px-3 py-2 text-sm">
               ← Back to Invoices
             </Link>
+
+            <ReparseButton documentId={document_id} />
           </div>
         </div>
 
