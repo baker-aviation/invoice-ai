@@ -75,6 +75,19 @@ const CATEGORY_COLORS: Record<string, string> = {
   other: "bg-gray-100 text-gray-600 border-gray-200",
 };
 
+const CATEGORY_OPTIONS = [
+  { value: "pilot_pic", label: "Pilot — PIC" },
+  { value: "pilot_sic", label: "Pilot — SIC" },
+  { value: "dispatcher", label: "Dispatcher" },
+  { value: "maintenance", label: "Maintenance" },
+  { value: "sales", label: "Sales" },
+  { value: "hr", label: "HR" },
+  { value: "admin", label: "Admin" },
+  { value: "management", label: "Management" },
+  { value: "line_service", label: "Line Service" },
+  { value: "other", label: "Other" },
+];
+
 function fmtHours(v: number | null): string {
   if (v == null) return "";
   return v.toLocaleString("en-US", { maximumFractionDigits: 0 });
@@ -85,6 +98,246 @@ function fmtDate(s: string | null): string {
   const d = new Date(s);
   if (isNaN(d.getTime())) return s.slice(0, 10);
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+// ---------------------------------------------------------------------------
+// Add Candidate Modal
+// ---------------------------------------------------------------------------
+
+function AddCandidateModal({
+  onClose,
+  onCreated,
+}: {
+  onClose: () => void;
+  onCreated: (job: JobRow) => void;
+}) {
+  const [form, setForm] = useState({
+    candidate_name: "",
+    email: "",
+    phone: "",
+    location: "",
+    category: "",
+    notes: "",
+    total_time_hours: "",
+    pic_time_hours: "",
+  });
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  const isPilot = form.category === "pilot_pic" || form.category === "pilot_sic";
+
+  function set(field: string, value: string) {
+    setForm((prev) => ({ ...prev, [field]: value }));
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!form.candidate_name.trim()) {
+      setError("Name is required");
+      return;
+    }
+
+    setSubmitting(true);
+    setError("");
+
+    try {
+      const payload: Record<string, any> = {
+        candidate_name: form.candidate_name.trim(),
+        email: form.email.trim() || null,
+        phone: form.phone.trim() || null,
+        location: form.location.trim() || null,
+        category: form.category || null,
+        notes: form.notes.trim() || null,
+        pipeline_stage: "new",
+      };
+      if (isPilot) {
+        if (form.total_time_hours) payload.total_time_hours = Number(form.total_time_hours);
+        if (form.pic_time_hours) payload.pic_time_hours = Number(form.pic_time_hours);
+      }
+
+      const res = await fetch("/api/jobs/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setError(data.error ?? "Failed to create candidate");
+        setSubmitting(false);
+        return;
+      }
+
+      const data = await res.json();
+
+      // Build a local JobRow for optimistic UI
+      const newJob: JobRow = {
+        id: data.id,
+        application_id: data.application_id,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        pipeline_stage: "new",
+        category: form.category || null,
+        employment_type: null,
+        candidate_name: form.candidate_name.trim(),
+        email: form.email.trim() || null,
+        phone: form.phone.trim() || null,
+        location: form.location.trim() || null,
+        total_time_hours: isPilot && form.total_time_hours ? Number(form.total_time_hours) : null,
+        turbine_time_hours: null,
+        pic_time_hours: isPilot && form.pic_time_hours ? Number(form.pic_time_hours) : null,
+        sic_time_hours: null,
+        has_citation_x: null,
+        has_challenger_300_type_rating: null,
+        type_ratings: null,
+        soft_gate_pic_met: null,
+        soft_gate_pic_status: null,
+        needs_review: false,
+        notes: form.notes.trim() || null,
+        model: "manual",
+      };
+
+      onCreated(newJob);
+      onClose();
+    } catch {
+      setError("Network error");
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
+      <div
+        className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4 p-5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-base font-semibold text-gray-900">Add Candidate</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-gray-400 hover:text-gray-600 text-lg leading-none"
+          >
+            &times;
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Name *</label>
+            <input
+              value={form.candidate_name}
+              onChange={(e) => set("candidate_name", e.target.value)}
+              className="w-full rounded-lg border border-gray-200 px-3 py-1.5 text-sm outline-none focus:border-gray-400"
+              autoFocus
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Email</label>
+              <input
+                type="email"
+                value={form.email}
+                onChange={(e) => set("email", e.target.value)}
+                className="w-full rounded-lg border border-gray-200 px-3 py-1.5 text-sm outline-none focus:border-gray-400"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Phone</label>
+              <input
+                value={form.phone}
+                onChange={(e) => set("phone", e.target.value)}
+                className="w-full rounded-lg border border-gray-200 px-3 py-1.5 text-sm outline-none focus:border-gray-400"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Category</label>
+              <select
+                value={form.category}
+                onChange={(e) => set("category", e.target.value)}
+                className="w-full rounded-lg border border-gray-200 px-3 py-1.5 text-sm outline-none focus:border-gray-400 bg-white"
+              >
+                <option value="">Select...</option>
+                {CATEGORY_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Location</label>
+              <input
+                value={form.location}
+                onChange={(e) => set("location", e.target.value)}
+                className="w-full rounded-lg border border-gray-200 px-3 py-1.5 text-sm outline-none focus:border-gray-400"
+              />
+            </div>
+          </div>
+
+          {isPilot && (
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Total Time (hrs)</label>
+                <input
+                  type="number"
+                  value={form.total_time_hours}
+                  onChange={(e) => set("total_time_hours", e.target.value)}
+                  className="w-full rounded-lg border border-gray-200 px-3 py-1.5 text-sm outline-none focus:border-gray-400"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">PIC Time (hrs)</label>
+                <input
+                  type="number"
+                  value={form.pic_time_hours}
+                  onChange={(e) => set("pic_time_hours", e.target.value)}
+                  className="w-full rounded-lg border border-gray-200 px-3 py-1.5 text-sm outline-none focus:border-gray-400"
+                />
+              </div>
+            </div>
+          )}
+
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Notes</label>
+            <textarea
+              value={form.notes}
+              onChange={(e) => set("notes", e.target.value)}
+              rows={2}
+              className="w-full rounded-lg border border-gray-200 px-3 py-1.5 text-sm outline-none focus:border-gray-400 resize-none"
+            />
+          </div>
+
+          {error && (
+            <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+              {error}
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2 pt-1">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-3 py-1.5 text-sm text-gray-600 hover:text-gray-800 rounded-lg hover:bg-gray-100 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={submitting}
+              className="px-4 py-1.5 text-sm font-medium text-white bg-slate-800 rounded-lg hover:bg-slate-700 disabled:opacity-50 transition-colors"
+            >
+              {submitting ? "Adding..." : "Add Candidate"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -189,6 +442,7 @@ export default function PipelineBoard({
   const [dropTarget, setDropTarget] = useState<PipelineStage | null>(null);
   const [saving, setSaving] = useState<Set<number>>(new Set());
   const [search, setSearch] = useState("");
+  const [showAddModal, setShowAddModal] = useState(false);
 
   // Track pending API calls so we can dedup
   const pendingRef = useRef(new Set<string>());
@@ -314,9 +568,13 @@ export default function PipelineBoard({
     setDropTarget(null);
   }, []);
 
+  const handleCreated = useCallback((newJob: JobRow) => {
+    setJobs((prev) => [newJob, ...prev]);
+  }, []);
+
   return (
     <div className="p-4 sm:p-6 bg-gray-50 min-h-screen">
-      {/* Search */}
+      {/* Toolbar */}
       <div className="mb-4 flex items-center gap-3">
         <input
           value={search}
@@ -324,6 +582,16 @@ export default function PipelineBoard({
           placeholder="Search candidates..."
           className="max-w-xs rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm outline-none focus:border-gray-400 transition-colors"
         />
+        <button
+          type="button"
+          onClick={() => setShowAddModal(true)}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white bg-slate-800 rounded-lg hover:bg-slate-700 transition-colors"
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+            <path d="M8 3v10M3 8h10" />
+          </svg>
+          Add Candidate
+        </button>
         {saving.size > 0 && (
           <span className="text-xs text-gray-400 animate-pulse">Saving...</span>
         )}
@@ -384,6 +652,14 @@ export default function PipelineBoard({
           );
         })}
       </div>
+
+      {/* Add Candidate Modal */}
+      {showAddModal && (
+        <AddCandidateModal
+          onClose={() => setShowAddModal(false)}
+          onCreated={handleCreated}
+        />
+      )}
     </div>
   );
 }
