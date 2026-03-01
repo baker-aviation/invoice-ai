@@ -13,7 +13,19 @@ import { GoogleAuth } from "google-auth-library";
 
 const SAFE_ID_RE = /^[a-f0-9-]{36}$/;
 
-const ALERTS_BASE = process.env.INVOICE_API_BASE_URL;
+/**
+ * Resolve the invoice-alerts Cloud Run base URL.
+ * Prefers INVOICE_API_BASE_URL; if unset, derives from PARSER_API_BASE_URL
+ * (same GCP project → same hash, just swap the service name).
+ */
+function getAlertsBase(): string | undefined {
+  if (process.env.INVOICE_API_BASE_URL) return process.env.INVOICE_API_BASE_URL;
+  const parser = process.env.PARSER_API_BASE_URL ?? process.env.INVOICE_PARSER_URL;
+  if (parser) return parser.replace(/invoice-parser/, "invoice-alerts");
+  return undefined;
+}
+
+const ALERTS_BASE = getAlertsBase();
 
 let _auth: GoogleAuth | null = null;
 

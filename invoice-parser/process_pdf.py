@@ -524,6 +524,18 @@ def classify_doc_type(raw: dict) -> str:
         "into plane",
         "fbo",
         "fixed base",
+        # Known FBO vendors
+        "sheltair",
+        "atlantic aviation",
+        "signature flight",
+        "million air",
+        "jet aviation",
+        "xjet",
+        "priester",
+        "ross aviation",
+        "pentastar",
+        "cutter aviation",
+        "clay lacy",
     ]):
         return "fbo_fee"
 
