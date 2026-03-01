@@ -151,6 +151,35 @@ export async function fetchFlights(params: {
     }
   }
 
+  // Fetch orphan EDCT alerts (no flight_id) so they still show up
+  const { data: orphanRows } = await supa
+    .from("ops_alerts")
+    .select(ALERT_COLUMNS)
+    .eq("alert_type", "EDCT")
+    .is("flight_id", null)
+    .is("acknowledged_at", null)
+    .gte("created_at", past)
+    .order("created_at", { ascending: false })
+    .limit(50);
+
+  const orphanAlerts: OpsAlert[] = (orphanRows ?? []).map((row) => ({
+    id: row.id as string,
+    flight_id: null,
+    alert_type: row.alert_type as string,
+    severity: row.severity as string,
+    airport_icao: row.airport_icao as string | null,
+    departure_icao: row.departure_icao as string | null,
+    arrival_icao: row.arrival_icao as string | null,
+    tail_number: row.tail_number as string | null,
+    subject: row.subject as string | null,
+    body: row.body as string | null,
+    edct_time: row.edct_time as string | null,
+    original_departure_time: row.original_departure_time as string | null,
+    acknowledged_at: row.acknowledged_at as string | null,
+    created_at: row.created_at as string,
+    notam_dates: extractNotamDates(row.raw_data as Record<string, unknown> | null),
+  }));
+
   // Assemble flights with nested alerts
   const flights: Flight[] = flightRows.map((f) => ({
     id: f.id as string,
@@ -163,6 +192,21 @@ export async function fetchFlights(params: {
     summary: f.summary as string | null,
     alerts: alertsByFlight.get(f.id as string) ?? [],
   }));
+
+  // Add synthetic flight entries for orphan EDCT alerts
+  for (const alert of orphanAlerts) {
+    flights.push({
+      id: `edct-orphan-${alert.id}`,
+      ics_uid: "",
+      tail_number: alert.tail_number,
+      departure_icao: alert.departure_icao,
+      arrival_icao: alert.arrival_icao,
+      scheduled_departure: alert.created_at,
+      scheduled_arrival: null,
+      summary: alert.subject,
+      alerts: [alert],
+    });
+  }
 
   return { ok: true, flights, count: flights.length };
 }

@@ -648,6 +648,44 @@ def pull_edct(
     return {"ok": True, "ingested": ingested, "skipped": skipped, "errors": errors}
 
 
+_TZ_OFFSETS = {
+    "EST": "-0500", "EDT": "-0400", "CST": "-0600", "CDT": "-0500",
+    "MST": "-0700", "MDT": "-0600", "PST": "-0800", "PDT": "-0700",
+    "UTC": "+0000", "Z": "+0000", "GMT": "+0000",
+}
+
+
+def _normalize_edct_time(raw: str) -> str:
+    """
+    Normalize various EDCT time formats to ISO-8601 UTC string.
+    Handles: "1845Z", "02/26/2026 1845Z", "2026-02-26T18:45",
+             "Sun Mar 01 07:34 EST 2026" (ForeFlight format).
+    Returns the original string if parsing fails.
+    """
+    # ForeFlight: "Sun Mar 01 07:34 EST 2026"
+    m = re.match(
+        r"[A-Z][a-z]{2}\s+([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d{1,2}):(\d{2})\s+([A-Z]{2,4})\s+(\d{4})",
+        raw,
+    )
+    if m:
+        mon, day, hour, minute, tz_name, year = m.groups()
+        try:
+            from datetime import datetime as _dt
+            dt = _dt.strptime(f"{mon} {day} {year} {hour}:{minute}", "%b %d %Y %H:%M")
+            tz_off = _TZ_OFFSETS.get(tz_name.upper())
+            if tz_off:
+                # Convert to UTC
+                sign = 1 if tz_off[0] == "+" else -1
+                off_h, off_m = int(tz_off[1:3]), int(tz_off[3:5])
+                dt = dt - timedelta(hours=sign * off_h, minutes=sign * off_m)
+            return dt.strftime("%Y-%m-%dT%H:%MZ")
+        except Exception:
+            return raw
+
+    # Already in a usable format
+    return raw
+
+
 def _parse_edct_email(subject: str, body: str, msg_id: str) -> Dict[str, Any]:
     """
     Parse a ForeFlight EDCT / ground delay email.
@@ -669,23 +707,34 @@ def _parse_edct_email(subject: str, body: str, msg_id: str) -> Dict[str, Any]:
         tail = tail_m.group(1).upper()
 
     # EDCT time  e.g. "EDCT: 1845Z" or "EDCT 02/26/2026 1845Z"
+    #            or ForeFlight: "EDCT: Sun Mar 01 07:34 EST 2026"
     edct_time = None
     edct_m = re.search(
-        r"EDCT\s*[:\-]?\s*(\d{2}/\d{2}/\d{4}\s+\d{4}Z|\d{4}Z|\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2})",
+        r"EDCT\s*[:\-]?\s*("
+        r"\d{2}/\d{2}/\d{4}\s+\d{4}Z"          # 02/26/2026 1845Z
+        r"|\d{4}Z"                               # 1845Z
+        r"|\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}"   # 2026-02-26T18:45
+        r"|[A-Z][a-z]{2}\s+[A-Z][a-z]{2}\s+\d{1,2}\s+\d{1,2}:\d{2}\s+[A-Z]{2,4}\s+\d{4}"  # Sun Mar 01 07:34 EST 2026
+        r")",
         body, re.I,
     )
     if edct_m:
-        edct_time = edct_m.group(1).strip()
+        raw_edct = edct_m.group(1).strip()
+        edct_time = _normalize_edct_time(raw_edct)
 
     # Original / proposed departure
     orig_dep = None
     orig_m = re.search(
-        r"(?:Original|Proposed|Filed|Scheduled)\s+(?:Departure|Dep)\s*[:\-]?\s*"
-        r"(\d{2}/\d{2}/\d{4}\s+\d{4}Z|\d{4}Z|\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2})",
+        r"(?:Original|Proposed|Filed|Scheduled)\s+(?:Departure|Dep)\s*[:\-]?\s*("
+        r"\d{2}/\d{2}/\d{4}\s+\d{4}Z"
+        r"|\d{4}Z"
+        r"|\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}"
+        r"|[A-Z][a-z]{2}\s+[A-Z][a-z]{2}\s+\d{1,2}\s+\d{1,2}:\d{2}\s+[A-Z]{2,4}\s+\d{4}"
+        r")",
         body, re.I,
     )
     if orig_m:
-        orig_dep = orig_m.group(1).strip()
+        orig_dep = _normalize_edct_time(orig_m.group(1).strip())
 
     # Severity: ground stop = critical, otherwise warning
     severity = "critical" if re.search(r"Ground Stop|STOP", subject, re.I) else "warning"
