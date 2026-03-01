@@ -66,25 +66,46 @@ function isNoiseNotam(alert: { alert_type: string; body: string | null }): boole
 // Extract NOTAM dates from raw_data JSON (matches backend logic)
 // ---------------------------------------------------------------------------
 
-function extractNotamDates(rawData: Record<string, unknown> | null): NotamDates | null {
+function extractNotamDates(rawData: Record<string, unknown> | string | null): NotamDates | null {
   if (!rawData) return null;
 
+  // Handle double-encoded JSON string (backend used json.dumps before passing
+  // to Supabase, which serialised it again → stored as a JSONB string scalar).
+  let data: Record<string, unknown>;
+  if (typeof rawData === "string") {
+    try { data = JSON.parse(rawData) as Record<string, unknown>; }
+    catch { return null; }
+  } else {
+    data = rawData;
+  }
+
   // Current format: raw_data = {"notam_dates": {effective_start, ...}}
-  const nd = (rawData.notam_dates ?? {}) as Record<string, unknown>;
+  const nd = (data.notam_dates ?? {}) as Record<string, unknown>;
 
   // Legacy format: raw_data = {properties: {coreNOTAMData: {notam: {effectiveStart, ...}}}}
-  const props = (rawData.properties ?? {}) as Record<string, unknown>;
+  const props = (data.properties ?? {}) as Record<string, unknown>;
   const core = (props.coreNOTAMData ?? {}) as Record<string, unknown>;
   const notam = (core.notam ?? {}) as Record<string, unknown>;
 
+  // Check both camelCase and snake_case field names at multiple levels
+  const pick = (...keys: string[]): string | null => {
+    for (const src of [nd, notam, core, data]) {
+      for (const k of keys) {
+        const v = src[k];
+        if (typeof v === "string" && v) return v;
+      }
+    }
+    return null;
+  };
+
   return {
-    effective_start: (nd.effective_start as string) ?? (notam.effectiveStart as string) ?? null,
-    effective_end: (nd.effective_end as string) ?? (notam.effectiveEnd as string) ?? null,
-    issued: (nd.issued as string) ?? (notam.issued as string) ?? null,
-    status: (nd.status as string) ?? (notam.status as string) ?? null,
-    start_date_utc: (nd.start_date_utc as string) ?? (notam.startDate as string) ?? null,
-    end_date_utc: (nd.end_date_utc as string) ?? (notam.endDate as string) ?? null,
-    issue_date_utc: (nd.issue_date_utc as string) ?? (notam.issueDate as string) ?? null,
+    effective_start: pick("effective_start", "effectiveStart"),
+    effective_end: pick("effective_end", "effectiveEnd"),
+    issued: pick("issued", "issue_date", "issueDate"),
+    status: pick("status"),
+    start_date_utc: pick("start_date_utc", "startDate", "startDateTime"),
+    end_date_utc: pick("end_date_utc", "endDate", "endDateTime"),
+    issue_date_utc: pick("issue_date_utc", "issueDate", "issuedDateTime"),
   };
 }
 
@@ -151,7 +172,7 @@ export async function fetchFlights(params: {
         original_departure_time: row.original_departure_time as string | null,
         acknowledged_at: row.acknowledged_at as string | null,
         created_at: row.created_at as string,
-        notam_dates: extractNotamDates(row.raw_data as Record<string, unknown> | null),
+        notam_dates: extractNotamDates(row.raw_data as Record<string, unknown> | string | null),
       };
 
       const fid = alert.flight_id ?? "";
@@ -186,7 +207,7 @@ export async function fetchFlights(params: {
     original_departure_time: row.original_departure_time as string | null,
     acknowledged_at: row.acknowledged_at as string | null,
     created_at: row.created_at as string,
-    notam_dates: extractNotamDates(row.raw_data as Record<string, unknown> | null),
+    notam_dates: extractNotamDates(row.raw_data as Record<string, unknown> | string | null),
   }));
 
   // Assemble flights with nested alerts
