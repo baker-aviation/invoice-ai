@@ -1,4 +1,5 @@
 import { createServiceClient } from "@/lib/supabase/service";
+import { signGcsUrl } from "@/lib/gcs";
 import type { JobDetailResponse, JobRow, JobsListResponse } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
@@ -57,28 +58,57 @@ export async function fetchJobs(
 }
 
 // ---------------------------------------------------------------------------
-// Job detail — still proxies to Cloud Run (needs signed file URLs from GCS)
+// Job detail — direct Supabase query
+// File URLs point to internal API route (handles GCS signing + Cloud Run)
 // ---------------------------------------------------------------------------
 
-const BASE = process.env.JOB_API_BASE_URL;
-
-function mustBase(): string {
-  if (!BASE) throw new Error("Missing JOB_API_BASE_URL in .env.local");
-  return BASE.replace(/\/$/, "");
-}
+const SAFE_ID_RE = /^[a-zA-Z0-9_-]+$/;
 
 export async function fetchJobDetail(applicationId: string | number): Promise<JobDetailResponse> {
-  const base = mustBase();
-  const urlStr = `${base}/api/jobs/${applicationId}`;
-
-  const res = await fetch(urlStr, {
-    cache: "no-store",
-    headers: { Accept: "application/json" },
-  });
-
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`fetchJobDetail failed: ${res.status} url=${urlStr} body=${body.slice(0, 800)}`);
+  const id = String(applicationId);
+  if (!SAFE_ID_RE.test(id)) {
+    throw new Error("Invalid application ID");
   }
-  return res.json();
+
+  const supa = createServiceClient();
+
+  // Fetch job parse data
+  const { data: job, error: jobErr } = await supa
+    .from("job_application_parse")
+    .select(JOB_COLUMNS)
+    .eq("application_id", Number(id))
+    .limit(1)
+    .maybeSingle();
+
+  if (jobErr) throw new Error(`fetchJobDetail failed: ${jobErr.message}`);
+  if (!job) throw new Error("Job application not found");
+
+  // Fetch file metadata from Supabase (include GCS location for signing)
+  const { data: fileRows } = await supa
+    .from("job_application_files")
+    .select("id, filename, content_type, size_bytes, created_at, gcs_bucket, gcs_key")
+    .eq("application_id", Number(id))
+    .order("created_at", { ascending: true });
+
+  // Sign URLs server-side so they work in iframes (no redirect)
+  const files = await Promise.all(
+    (fileRows ?? []).map(async (f) => {
+      let signed_url: string | null = null;
+      if (f.gcs_bucket && f.gcs_key) {
+        signed_url = await signGcsUrl(f.gcs_bucket as string, f.gcs_key as string);
+      }
+      // Fallback to internal API route
+      if (!signed_url) signed_url = `/api/files/${f.id}`;
+      return {
+        id: f.id,
+        filename: f.filename,
+        content_type: f.content_type,
+        size_bytes: f.size_bytes,
+        created_at: f.created_at,
+        signed_url,
+      };
+    }),
+  );
+
+  return { ok: true, job: job as JobRow, files };
 }

@@ -35,8 +35,10 @@ from slowapi.util import get_remote_address
 
 from rules import rule_matches
 from supa import safe_insert, safe_select_many, safe_select_one, safe_update, safe_update_where
+from auth_middleware import add_auth_middleware
 
 app = FastAPI()
+add_auth_middleware(app)
 limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
@@ -60,8 +62,8 @@ SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")
 # Debug
 DEBUG_ERRORS = os.getenv("DEBUG_ERRORS", "0").strip().lower() in ("1", "true", "yes")
 
-# Signed URL settings (48 hours default)
-SIGNED_URL_EXP_MINUTES = int(os.getenv("SIGNED_URL_EXP_MINUTES", "2880"))
+# Signed URL settings (2 hours default — short-lived to limit exposure if leaked)
+SIGNED_URL_EXP_MINUTES = int(os.getenv("SIGNED_URL_EXP_MINUTES", "120"))
 
 # Optional override; otherwise auto-detect from metadata
 SIGNING_SERVICE_ACCOUNT_EMAIL = os.getenv("SIGNING_SERVICE_ACCOUNT_EMAIL", "").strip()

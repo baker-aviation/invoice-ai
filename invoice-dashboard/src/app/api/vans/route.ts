@@ -21,7 +21,13 @@ interface SamsaraVehicleStat {
 
 interface SamsaraLocation {
   id?: string;
-  location?: { reverseGeo?: { formattedLocation?: string } };
+  name?: string;
+  location?: {
+    latitude?: number;
+    longitude?: number;
+    reverseGeo?: { formattedLocation?: string };
+    time?: string;
+  };
 }
 
 export async function GET(req: NextRequest) {
@@ -34,39 +40,43 @@ export async function GET(req: NextRequest) {
 
   const apiKey = process.env.SAMSARA_API_KEY;
   if (!apiKey) {
+    console.error("[/api/vans] SAMSARA_API_KEY not set in environment");
     return NextResponse.json(
       { error: "SAMSARA_API_KEY not configured" },
       { status: 503 },
     );
   }
 
-  const headers = { Authorization: `Bearer ${apiKey}` };
+  const headers = { Authorization: `Bearer ${apiKey}`, Accept: "application/json" };
 
   // Primary: GPS stats
   let statsData: SamsaraVehicleStat[];
   try {
-    const res = await fetch(
-      `${SAMSARA_BASE}/fleet/vehicles/stats?types=gps`,
-      { headers, cache: "no-store" },
-    );
+    const url = `${SAMSARA_BASE}/fleet/vehicles/stats?types=gps`;
+    console.log(`[/api/vans] Fetching ${url}`);
+    const res = await fetch(url, { headers, cache: "no-store" });
     if (!res.ok) {
       const body = await res.text().catch(() => "");
+      console.error(`[/api/vans] Samsara stats error: HTTP ${res.status} — ${body.slice(0, 500)}`);
       return NextResponse.json(
-        { error: `Samsara API error: HTTP ${res.status}`, detail: body.slice(0, 300) },
+        { error: "Samsara API error" },
         { status: 502 },
       );
     }
     const json = await res.json();
     statsData = (json.data ?? []) as SamsaraVehicleStat[];
+    console.log(`[/api/vans] Samsara returned ${statsData.length} vehicles from stats`);
   } catch (err) {
+    console.error(`[/api/vans] Samsara fetch failed:`, err);
     return NextResponse.json(
-      { error: "Samsara API unreachable", detail: String(err) },
+      { error: "Samsara API unreachable" },
       { status: 502 },
     );
   }
 
   // Supplementary: vehicle locations for reverse-geocoded addresses
-  const addrById = new Map<string, string>();
+  // Also used as fallback for GPS data if stats endpoint returns sparse data
+  const locationById = new Map<string, SamsaraLocation["location"]>();
   try {
     const res2 = await fetch(
       `${SAMSARA_BASE}/fleet/vehicles/locations`,
@@ -75,29 +85,39 @@ export async function GET(req: NextRequest) {
     if (res2.ok) {
       const json2 = await res2.json();
       for (const v of (json2.data ?? []) as SamsaraLocation[]) {
-        const addr = v.location?.reverseGeo?.formattedLocation;
-        if (addr && v.id) addrById.set(v.id, addr);
+        if (v.id && v.location) locationById.set(v.id, v.location);
       }
+      console.log(`[/api/vans] Samsara returned ${locationById.size} vehicles from locations`);
+    } else {
+      console.warn(`[/api/vans] Samsara locations returned HTTP ${res2.status}`);
     }
-  } catch {
-    // Non-fatal — fall back to stats reverseGeo
+  } catch (err) {
+    console.warn(`[/api/vans] Samsara locations fetch failed (non-fatal):`, err);
   }
 
-  // Build response
+  // Build response — merge stats GPS with locations fallback
   const vans = statsData.map((v) => {
     const gps = v.gps ?? {};
     const vid = v.id ?? "";
+    const loc = locationById.get(vid);
+
+    // Use stats GPS first, fall back to locations endpoint
+    const lat = gps.latitude ?? loc?.latitude ?? null;
+    const lon = gps.longitude ?? loc?.longitude ?? null;
     const address =
-      addrById.get(vid) ?? gps.reverseGeo?.formattedLocation ?? null;
+      loc?.reverseGeo?.formattedLocation ??
+      gps.reverseGeo?.formattedLocation ??
+      null;
+
     return {
       id: vid,
       name: v.name ?? null,
-      lat: gps.latitude ?? null,
-      lon: gps.longitude ?? null,
+      lat,
+      lon,
       speed_mph: gps.speedMilesPerHour ?? null,
       heading: gps.headingDegrees ?? null,
       address,
-      gps_time: gps.time ?? null,
+      gps_time: gps.time ?? loc?.time ?? null,
     };
   });
 

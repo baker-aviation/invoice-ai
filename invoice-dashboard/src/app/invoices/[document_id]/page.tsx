@@ -2,6 +2,7 @@ import Link from "next/link";
 import { fetchInvoiceDetail } from "@/lib/invoiceApi";
 import { Topbar } from "@/components/Topbar";
 import { Badge } from "@/components/Badge";
+import { PdfViewer } from "@/components/PdfViewer";
 
 export default async function InvoiceDetailPage({
   params,
@@ -47,25 +48,18 @@ export default async function InvoiceDetailPage({
             </div>
           </div>
 
-          <div className="mt-4 flex gap-3">
-            {data.signed_pdf_url ? (
-              <a
-                href={data.signed_pdf_url}
-                target="_blank"
-                rel="noreferrer"
-                className="rounded-md bg-black px-3 py-2 text-sm font-medium text-white"
-              >
-                Open PDF
-              </a>
-            ) : (
-              <span className="text-sm text-gray-500">No PDF URL</span>
-            )}
-
-            <Link href="/invoices" className="rounded-md border px-3 py-2 text-sm">
-              ← Back to Invoices
+          <div className="mt-4 flex gap-3 items-center">
+            <Link href="/invoices" className="rounded-md border px-3 py-1.5 text-sm hover:bg-gray-50">
+              ← Back
             </Link>
           </div>
         </div>
+
+        {data.signed_pdf_url ? (
+          <div className="rounded-xl border bg-white p-4 shadow-sm">
+            <PdfViewer url={data.signed_pdf_url} label="View Invoice PDF" />
+          </div>
+        ) : null}
 
         <div className="rounded-xl border bg-white p-4 shadow-sm">
           <div className="font-semibold mb-3">Line items</div>

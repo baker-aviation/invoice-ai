@@ -41,12 +41,6 @@ function ratingLabel(code: string): string {
   return code;
 }
 
-function mustJobBase(): string {
-  const base = process.env.JOB_API_BASE_URL;
-  if (!base) throw new Error("Missing JOB_API_BASE_URL in .env.local");
-  return base.replace(/\/$/, "");
-}
-
 export default async function JobDetailPage({
   params,
 }: {
@@ -64,7 +58,6 @@ export default async function JobDetailPage({
     const data = await fetchJobDetail(applicationId);
     const job = data.job;
     const files = data.files ?? [];
-    const jobBase = mustJobBase();
 
     return (
       <>
@@ -159,7 +152,7 @@ export default async function JobDetailPage({
                   <FileViewer
                     key={f.id}
                     file={f}
-                    downloadUrl={`${jobBase}/api/files/${f.id}`}
+                    downloadUrl={f.signed_url ?? null}
                   />
                 ))}
               </div>

@@ -29,7 +29,10 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 
 supa = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+from auth_middleware import add_auth_middleware
+
 app = FastAPI(title="invoice-parser", version=os.environ.get("APP_VERSION", "0.2.0"))
+add_auth_middleware(app)
 limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)

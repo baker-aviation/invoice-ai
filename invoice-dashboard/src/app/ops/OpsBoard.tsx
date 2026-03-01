@@ -197,14 +197,6 @@ function AlertCard({ alert, onAck }: { alert: OpsAlert; onAck: (id: string) => v
             )}
           </span>
         )}
-        {(nd?.effective_start || nd?.start_date_utc || notamTimes?.from) && (
-          <span className="text-xs text-gray-600 font-mono bg-white/80 rounded px-1.5 py-0.5">
-            {fmtNotamDate(nd?.effective_start ?? null, nd?.start_date_utc ?? notamTimes?.from ?? null)}
-            {(nd?.effective_end || nd?.end_date_utc || notamTimes?.to) && (
-              <> → {notamTimes?.to === "PERM" ? "PERM" : fmtNotamDate(nd?.effective_end ?? null, nd?.end_date_utc ?? notamTimes?.to ?? null)}</>
-            )}
-          </span>
-        )}
         <div className="ml-auto flex items-center gap-1.5 shrink-0">
           <button
             type="button"
@@ -219,11 +211,19 @@ function AlertCard({ alert, onAck }: { alert: OpsAlert; onAck: (id: string) => v
       </button>
       {expanded && (
         <div className="px-3 pb-2.5 pt-1 text-xs text-gray-700 space-y-1.5 border-t border-gray-200/60">
-          {isNotam && (nd?.issued || nd?.effective_start || notamTimes?.from) && (
-            <div className="flex gap-4 bg-white border rounded p-2 text-xs">
+          {isNotam && (nd?.issued || nd?.issue_date_utc || nd?.effective_start || notamTimes?.from) && (
+            <div className="flex gap-4 flex-wrap bg-white border rounded p-2 text-xs">
+              {(nd?.issued || nd?.issue_date_utc) && (
+                <div>
+                  <span className="text-gray-400">Issued: </span>
+                  <span className="font-mono font-medium text-gray-700">
+                    {fmtNotamDate(nd?.issued ?? null, nd?.issue_date_utc ?? null)}
+                  </span>
+                </div>
+              )}
               {(nd?.effective_start || nd?.start_date_utc || notamTimes?.from) && (
                 <div>
-                  <span className="text-gray-400">From: </span>
+                  <span className="text-gray-400">Effective: </span>
                   <span className="font-mono font-medium text-amber-700">
                     {fmtNotamDate(nd?.effective_start ?? null, nd?.start_date_utc ?? notamTimes?.from ?? null)}
                   </span>
@@ -231,7 +231,7 @@ function AlertCard({ alert, onAck }: { alert: OpsAlert; onAck: (id: string) => v
               )}
               {(nd?.effective_end || nd?.end_date_utc || notamTimes?.to) && (
                 <div>
-                  <span className="text-gray-400">To: </span>
+                  <span className="text-gray-400">Expires: </span>
                   <span className="font-mono font-medium text-amber-700">
                     {notamTimes?.to === "PERM"
                       ? "PERM"

@@ -5,6 +5,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY supa.py .
+COPY auth_middleware.py .
 COPY main.py .
 # cache-bust: 2026-02-26-fix-source-invoice-id
 
