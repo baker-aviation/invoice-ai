@@ -637,11 +637,14 @@ function MaintenanceSchedule({
 
 // ─── Main client component ────────────────────────────────────────────────────
 
+type ActiveTab = "fleet" | "maintenance";
+
 export default function VehiclesClient() {
   const [vans, setVans] = useState<SamsaraVan[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastFetch, setLastFetch] = useState<Date | null>(null);
+  const [activeTab, setActiveTab] = useState<ActiveTab>("fleet");
 
   async function load() {
     setLoading(true);
@@ -818,11 +821,33 @@ export default function VehiclesClient() {
         )}
       </div>
 
-      {/* Vehicle Fleet Table */}
-      <VehicleFleetTable vehicles={allVehicles} diags={diagData} />
+      {/* Tab switcher */}
+      <div className="flex gap-1 border-b border-gray-200">
+        {([
+          { key: "fleet" as const, label: "Fleet Status" },
+          { key: "maintenance" as const, label: "Preventive Maintenance" },
+        ]).map((tab) => (
+          <button
+            key={tab.key}
+            onClick={() => setActiveTab(tab.key)}
+            className={`px-5 py-2.5 text-sm font-semibold transition-colors border-b-2 -mb-px ${
+              activeTab === tab.key
+                ? "border-slate-800 text-slate-900"
+                : "border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300"
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
 
-      {/* Preventive Maintenance Schedule */}
-      <MaintenanceSchedule vehicles={allVehicles} diags={diagData} />
+      {/* Tab content */}
+      {activeTab === "fleet" && (
+        <VehicleFleetTable vehicles={allVehicles} diags={diagData} />
+      )}
+      {activeTab === "maintenance" && (
+        <MaintenanceSchedule vehicles={allVehicles} diags={diagData} />
+      )}
     </div>
   );
 }
