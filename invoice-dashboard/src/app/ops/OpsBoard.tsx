@@ -86,6 +86,7 @@ function icaoToIso(t: string): string {
 
 function parseNotamTimes(body: string | null): { from: string | null; to: string | null } {
   if (!body) return { from: null, to: null };
+  // ICAO format: B) 2603011400 C) 2603151800
   const fromM = body.match(/\bB\)\s*(\d{10})\b/);
   const toM = body.match(/\bC\)\s*(\d{10}|PERM)\b/);
   if (fromM) {
@@ -94,8 +95,21 @@ function parseNotamTimes(body: string | null): { from: string | null; to: string
       to: toM ? (toM[1] === "PERM" ? "PERM" : icaoToIso(toM[1])) : null,
     };
   }
+  // Domestic format: 2603011400-2603151800
   const domM = body.match(/\b(\d{10})-(\d{10})\b/);
   if (domM) return { from: icaoToIso(domM[1]), to: icaoToIso(domM[2]) };
+  // WEF/TIL format: WEF 2603011400 TIL 2603151800
+  const wefM = body.match(/WEF\s+(\d{10})/);
+  if (wefM) {
+    const tilM = body.match(/TIL\s+(\d{10}|PERM)/);
+    return {
+      from: icaoToIso(wefM[1]),
+      to: tilM ? (tilM[1] === "PERM" ? "PERM" : icaoToIso(tilM[1])) : null,
+    };
+  }
+  // Space-separated 10-digit pairs (e.g. "2603011400 2603151800")
+  const spaceM = body.match(/\b(\d{10})\s+(\d{10})\b/);
+  if (spaceM) return { from: icaoToIso(spaceM[1]), to: icaoToIso(spaceM[2]) };
   return { from: null, to: null };
 }
 

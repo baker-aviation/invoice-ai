@@ -47,9 +47,10 @@ OPS_ALERTS_TABLE = "ops_alerts"
 def _extract_notam_dates(raw_data) -> Optional[Dict[str, Optional[str]]]:
     """Pull effective start/end/issued dates from raw_data.
 
-    Handles two formats:
+    Handles three formats:
     1. **Compact** (new): ``{"notam_dates": {...}}`` — already extracted.
-    2. **Full GeoJSON** (legacy): ``{properties: {coreNOTAMData: {notam: {...}}}}``
+    2. **Full GeoJSON**: ``{properties: {coreNOTAMData: {notam: {...}}}}``
+    3. **GeoJSON variant**: dates at ``coreNOTAMData`` level, not inside ``notam``
 
     Returns a small dict with just the date strings, or None if parsing fails.
     """
@@ -58,21 +59,39 @@ def _extract_notam_dates(raw_data) -> Optional[Dict[str, Optional[str]]]:
         # New compact format — stored by check_notams after 2025-02-27
         if "notam_dates" in feature:
             return feature["notam_dates"]
-        # Legacy full GeoJSON format
-        notam = feature.get("properties", {}).get("coreNOTAMData", {}).get("notam")
-        if not notam:
-            return None
-        return {
-            "effective_start": notam.get("effectiveStart"),
-            "effective_end": notam.get("effectiveEnd"),
-            "issued": notam.get("issued"),
-            "status": notam.get("status"),
-            "start_date_utc": notam.get("startDate"),
-            "end_date_utc": notam.get("endDate"),
-            "issue_date_utc": notam.get("issueDate"),
-        }
+        # GeoJSON: check both coreNOTAMData.notam and coreNOTAMData itself
+        core = feature.get("properties", {}).get("coreNOTAMData", {})
+        notam = core.get("notam") or {}
+        return _pick_dates(notam, core)
     except Exception:
         return None
+
+
+def _pick_dates(*sources: dict) -> Optional[Dict[str, Optional[str]]]:
+    """Extract NOTAM date fields from one or more dicts (first non-None wins).
+
+    Checks camelCase (NMS/legacy) and snake_case field name variants."""
+    def _first(*keys):
+        for src in sources:
+            for k in keys:
+                v = src.get(k)
+                if v:
+                    return v
+        return None
+
+    result = {
+        "effective_start": _first("effectiveStart", "effective_start"),
+        "effective_end": _first("effectiveEnd", "effective_end"),
+        "issued": _first("issued", "issue_date", "issueDate"),
+        "status": _first("status"),
+        "start_date_utc": _first("startDate", "start_date_utc", "startDateTime"),
+        "end_date_utc": _first("endDate", "end_date_utc", "endDateTime"),
+        "issue_date_utc": _first("issueDate", "issue_date_utc", "issuedDateTime"),
+    }
+    # Return None only if every value is None (no dates found at all)
+    if all(v is None for v in result.values()):
+        return None
+    return result
 
 
 # ─── NMS bearer token cache (module-level, refreshed when expired) ────────────
@@ -862,12 +881,12 @@ def _run_check_notams(lookahead_hours: int) -> dict:
             if not icao:
                 continue
             for feature in notams_by_airport.get(icao, []):
-                # NMS GeoJSON structure: feature.properties.coreNOTAMData.notam
-                notam_data = (
+                # NMS GeoJSON: feature.properties.coreNOTAMData.notam
+                core_data = (
                     feature.get("properties", {})
                     .get("coreNOTAMData", {})
-                    .get("notam", {})
                 )
+                notam_data = core_data.get("notam", {})
                 if not notam_data:
                     continue
                 # NMS uses "text", legacy API uses "traditionalMessage"
@@ -875,9 +894,9 @@ def _run_check_notams(lookahead_hours: int) -> dict:
                 if not _is_relevant_notam_msg(msg):
                     continue
                 notam_id = notam_data.get("id", "") or notam_data.get("number", "")
-                # Store only the extracted NOTAM dates in raw_data
-                # (not the full GeoJSON feature) to keep the DB lean.
-                notam_dates = _extract_notam_dates(feature)
+                # Extract dates from notam_data AND coreNOTAMData (dates may
+                # live at either level depending on the FAA API version).
+                notam_dates = _pick_dates(notam_data, core_data)
                 alerts_to_insert.append({
                     "flight_id": fid,
                     "alert_type": _classify_notam(msg),
@@ -894,10 +913,13 @@ def _run_check_notams(lookahead_hours: int) -> dict:
     if alerts_to_insert:
         print(f"check_notams: upserting {len(alerts_to_insert)} alerts in bulk", flush=True)
         try:
-            # Supabase upsert accepts a list — one round-trip for all rows
+            # Supabase upsert accepts a list — one round-trip for all rows.
+            # Do NOT use ignore_duplicates — we need to UPDATE raw_data on
+            # existing rows so NOTAM dates are backfilled if they were
+            # previously stored as null.
             res = (
                 supa.table(OPS_ALERTS_TABLE)
-                .upsert(alerts_to_insert, on_conflict="source_message_id", ignore_duplicates=True)
+                .upsert(alerts_to_insert, on_conflict="source_message_id")
                 .execute()
             )
             alerts_created = len(res.data) if res.data else 0
@@ -1105,6 +1127,14 @@ def debug_notam_test(airport: str = Query("KJFK")):
             nms_result["ok"] = True
             nms_result["count"] = len(features)
             nms_result["sample"] = features[:2] if features else []
+            # Show what _pick_dates extracts from the first feature
+            if features:
+                f0 = features[0]
+                core = f0.get("properties", {}).get("coreNOTAMData", {})
+                notam = core.get("notam", {})
+                nms_result["date_keys_in_notam"] = [k for k in notam if "date" in k.lower() or "start" in k.lower() or "end" in k.lower() or "issued" in k.lower() or "effective" in k.lower() or "status" in k.lower()]
+                nms_result["date_keys_in_coreNOTAMData"] = [k for k in core if "date" in k.lower() or "start" in k.lower() or "end" in k.lower() or "issued" in k.lower() or "effective" in k.lower() or "status" in k.lower()]
+                nms_result["extracted_dates"] = _pick_dates(notam, core)
     except Exception as e:
         nms_result["error"] = repr(e)
     result["nms"] = nms_result
