@@ -37,6 +37,7 @@ export type Flight = {
   scheduled_departure: string;
   scheduled_arrival: string | null;
   summary: string | null;
+  flight_type: string | null;
   alerts: OpsAlert[];
 };
 
@@ -107,7 +108,7 @@ export async function fetchFlights(params: {
   // Fetch flights in the time window
   const { data: flightRows, error: flightErr } = await supa
     .from("flights")
-    .select("id, ics_uid, tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, summary")
+    .select("id, ics_uid, tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, summary, flight_type")
     .gte("scheduled_departure", past)
     .lte("scheduled_departure", future)
     .order("scheduled_departure", { ascending: true });
@@ -198,6 +199,7 @@ export async function fetchFlights(params: {
     scheduled_departure: f.scheduled_departure as string,
     scheduled_arrival: f.scheduled_arrival as string | null,
     summary: f.summary as string | null,
+    flight_type: f.flight_type as string | null,
     alerts: alertsByFlight.get(f.id as string) ?? [],
   }));
 
@@ -212,6 +214,7 @@ export async function fetchFlights(params: {
       scheduled_departure: alert.created_at,
       scheduled_arrival: null,
       summary: alert.subject,
+      flight_type: null,
       alerts: [alert],
     });
   }

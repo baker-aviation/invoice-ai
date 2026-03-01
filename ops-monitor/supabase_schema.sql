@@ -9,9 +9,13 @@ create table if not exists flights (
   scheduled_departure  timestamptz,
   scheduled_arrival    timestamptz,
   summary              text,
+  flight_type          text,           -- Revenue | Positioning | Owner | Maintenance | Training | Ferry/Cargo | etc.
   updated_at           timestamptz default now(),
   created_at           timestamptz default now()
 );
+
+-- Migration: add flight_type to existing tables
+-- alter table flights add column if not exists flight_type text;
 
 create index if not exists flights_scheduled_departure_idx on flights (scheduled_departure);
 create index if not exists flights_airports_idx on flights (departure_icao, arrival_icao);

@@ -186,6 +186,27 @@ function isAfterHours(utcIso: string | null, icao: string | null): boolean {
   return hour >= 20 || hour < 7; // 8 PM – 7 AM local
 }
 
+// ─── Flight type badge colors (matching JetInsight categories) ───────────────
+
+const FLIGHT_TYPE_COLORS: Record<string, string> = {
+  Revenue:        "bg-green-100 text-green-800",
+  Owner:          "bg-blue-100 text-blue-800",
+  Positioning:    "bg-yellow-100 text-yellow-800",
+  Maintenance:    "bg-orange-100 text-orange-800",
+  Training:       "bg-purple-100 text-purple-800",
+  "Ferry/Cargo":  "bg-cyan-100 text-cyan-800",
+  "Time off":     "bg-gray-100 text-gray-600",
+  Assignment:     "bg-indigo-100 text-indigo-800",
+  Transient:      "bg-teal-100 text-teal-800",
+  "Needs pos":    "bg-rose-100 text-rose-800",
+  "Crew conflict":"bg-red-100 text-red-800",
+  Other:          "bg-gray-100 text-gray-700",
+};
+
+function flightTypeBadge(flightType: string): string {
+  return FLIGHT_TYPE_COLORS[flightType] ?? "bg-gray-100 text-gray-700";
+}
+
 // ─── Client-side alert types ─────────────────────────────────────────────────
 
 type ClientAlert = {
@@ -474,6 +495,11 @@ function FlightCard({
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          {flight.flight_type && (
+            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${flightTypeBadge(flight.flight_type)}`}>
+              {flight.flight_type}
+            </span>
+          )}
           {flight.tail_number && (
             <span className="font-mono text-xs font-semibold text-gray-700 bg-gray-100 rounded px-2 py-1">
               {flight.tail_number}

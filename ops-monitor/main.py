@@ -170,9 +170,9 @@ def _faa_to_icao(code: str) -> str:
     return code
 
 
-def _parse_flight_fields(component) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+def _parse_flight_fields(component) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
     """
-    Extract (departure_icao, arrival_icao, tail_number) from a JetInsight VEVENT.
+    Extract (departure_icao, arrival_icao, tail_number, flight_type) from a JetInsight VEVENT.
 
     JetInsight SUMMARY format:
         [N998CX] The Early Way (SDM - SNA) - Positioning flight
@@ -205,7 +205,26 @@ def _parse_flight_fields(component) -> Tuple[Optional[str], Optional[str], Optio
     if not dep_icao and location and re.match(r"^[A-Z]{3,4}$", location):
         dep_icao = _faa_to_icao(location)
 
-    return dep_icao, arr_icao, tail
+    # ── Flight type: extract from CATEGORIES property or SUMMARY suffix ──────
+    flight_type = None
+    # Try CATEGORIES ICS property first
+    categories = component.get("CATEGORIES")
+    if categories:
+        cat_str = str(categories) if not isinstance(categories, list) else str(categories[0])
+        cat_str = cat_str.strip()
+        if cat_str:
+            flight_type = cat_str
+
+    # Fallback: parse from SUMMARY — text after the last " - " following the airport pair
+    if not flight_type:
+        # Match everything after the last " - " that follows the (XXX - XXX) airport pair
+        type_m = re.search(r"\([A-Z]{3,4}\s*[-–]\s*[A-Z]{3,4}\)\s*[-–]\s*(.+)$", summary)
+        if type_m:
+            raw = type_m.group(1).strip()
+            # Normalize: strip trailing "flight" if present (e.g. "Positioning flight" → "Positioning")
+            flight_type = re.sub(r"\s+flights?\s*$", "", raw, flags=re.IGNORECASE).strip() or None
+
+    return dep_icao, arr_icao, tail, flight_type
 
 
 # ─── Health ───────────────────────────────────────────────────────────────────
@@ -543,7 +562,7 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
                 skipped += 1
                 continue
 
-            dep_icao, arr_icao, tail = _parse_flight_fields(component)
+            dep_icao, arr_icao, tail, flight_type = _parse_flight_fields(component)
 
             flight: Dict[str, Any] = {
                 "ics_uid": uid,
@@ -559,6 +578,8 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
                 flight["arrival_icao"] = arr_icao
             if arr_dt is not None:
                 flight["scheduled_arrival"] = arr_dt.isoformat()
+            if flight_type is not None:
+                flight["flight_type"] = flight_type
 
             batch.append(flight)
         except Exception as e:
