@@ -259,10 +259,12 @@ def _parse_flight_fields(component) -> Tuple[Optional[str], Optional[str], Optio
             raw = pre_m.group(1).strip().rstrip("-–").strip()
             flight_type = re.sub(r"\s+flights?\s*$", "", raw, flags=re.IGNORECASE).strip() or None
 
-    # Fallback 3: check DESCRIPTION for common flight type keywords
+    # Fallback 3: check SUMMARY + DESCRIPTION for common flight type keywords
     if not flight_type:
-        for keyword in ("Revenue", "Owner", "Positioning", "Maintenance", "Training", "Ferry", "Cargo"):
-            if re.search(rf"\b{keyword}\b", description, re.IGNORECASE):
+        combined = f"{summary} {description}"
+        for keyword in ("Revenue", "Owner", "Positioning", "Maintenance", "Training", "Ferry", "Cargo",
+                        "Needs pos", "Crew conflict", "Time off", "Assignment", "Transient"):
+            if re.search(rf"\b{re.escape(keyword)}\b", combined, re.IGNORECASE):
                 flight_type = keyword
                 break
 

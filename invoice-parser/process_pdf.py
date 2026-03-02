@@ -869,18 +869,21 @@ def process_one_pdf(
             })
             did_split = False
 
-    # Text-based splitting fallback: when PDF page-split fails but multiple
-    # invoice IDs are detected, split by text boundaries instead.
+    # Avfuel activity invoice splitting (highest priority for tabular format):
+    # handles tabular multi-invoice PDFs where each receipt is a row in a table
+    # (not a separate section with headers). Must run BEFORE generic text-based
+    # splitting, which would incorrectly split on "Invoice" / "Ref Number"
+    # keywords in the header, producing garbage sections.
     text_sections: List[Tuple[str, str]] = []
-    if not did_split and len(invoice_ids) >= 2:
-        text_sections = split_text_into_sections(text)
-
-    # Avfuel activity invoice splitting: handles tabular multi-invoice PDFs
-    # where each receipt is a row in a table (not a separate section with headers).
-    if not did_split and not text_sections:
+    if not did_split:
         avfuel_sections = split_avfuel_activity_invoice(text)
         if avfuel_sections:
             text_sections = avfuel_sections
+
+    # Text-based splitting fallback: when PDF page-split fails but multiple
+    # invoice IDs are detected, split by text boundaries instead.
+    if not did_split and not text_sections and len(invoice_ids) >= 2:
+        text_sections = split_text_into_sections(text)
 
     try:
         if did_split:

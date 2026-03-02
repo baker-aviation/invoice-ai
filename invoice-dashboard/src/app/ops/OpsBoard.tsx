@@ -247,6 +247,38 @@ function flightTypeBadge(flightType: string): string {
   return FLIGHT_TYPE_COLORS[flightType] ?? "bg-gray-100 text-gray-700";
 }
 
+// Client-side fallback: infer flight_type from the ICS summary when the
+// backend didn't extract one (e.g. flights synced before parser update).
+const FLIGHT_TYPE_KEYWORDS = [
+  "Revenue", "Owner", "Positioning", "Maintenance", "Training",
+  "Ferry", "Cargo", "Needs pos", "Crew conflict", "Time off",
+  "Assignment", "Transient",
+];
+
+function inferFlightType(flight: Flight): string | null {
+  if (flight.flight_type) return flight.flight_type;
+  const text = flight.summary ?? "";
+  // Pattern 1: text after airport pair — "(SDM - SNA) - Positioning"
+  const afterPair = text.match(/\([A-Z]{3,4}\s*[-–]\s*[A-Z]{3,4}\)\s*[-–]\s*(.+)$/);
+  if (afterPair) {
+    const raw = afterPair[1].replace(/\s+flights?\s*$/i, "").trim();
+    if (raw) return raw;
+  }
+  // Pattern 2: text before bracket — "Revenue - [N123] ..."
+  const preBracket = text.match(/^([A-Za-z][A-Za-z /]+?)\s*[-–]?\s*\[/);
+  if (preBracket) {
+    const raw = preBracket[1].replace(/[-–]\s*$/, "").replace(/\s+flights?\s*$/i, "").trim();
+    if (raw) return raw;
+  }
+  // Pattern 3: keyword search
+  for (const kw of FLIGHT_TYPE_KEYWORDS) {
+    if (new RegExp(`\\b${kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(text)) {
+      return kw;
+    }
+  }
+  return null;
+}
+
 // ─── Client-side alert types ─────────────────────────────────────────────────
 
 type ClientAlert = {
@@ -548,11 +580,14 @@ function FlightCard({
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          {flight.flight_type && (
-            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${flightTypeBadge(flight.flight_type)}`}>
-              {flight.flight_type}
-            </span>
-          )}
+          {(() => {
+            const ft = inferFlightType(flight);
+            return ft ? (
+              <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${flightTypeBadge(ft)}`}>
+                {ft}
+              </span>
+            ) : null;
+          })()}
           {flight.tail_number && (
             <span className="font-mono text-xs font-semibold text-gray-700 bg-gray-100 rounded px-2 py-1">
               {flight.tail_number}
