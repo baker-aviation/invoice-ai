@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useRef, useState, type ChangeEvent } from "react";
 import type { JobRow, PipelineStage } from "@/lib/types";
 import { PIPELINE_STAGES } from "@/lib/types";
 
@@ -129,13 +129,26 @@ function AddCandidateModal({
     total_time_hours: "",
     pic_time_hours: "",
   });
+  const [resumeFile, setResumeFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [parseStatus, setParseStatus] = useState<"idle" | "uploading" | "parsing" | "done" | "error">("idle");
   const [error, setError] = useState("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const isPilot = form.category === "pilot_pic" || form.category === "pilot_sic";
 
   function set(field: string, value: string) {
     setForm((prev) => ({ ...prev, [field]: value }));
+  }
+
+  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0] ?? null;
+    if (file && file.size > 10 * 1024 * 1024) {
+      setError("File too large (max 10 MB)");
+      return;
+    }
+    setResumeFile(file);
+    setError("");
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -177,11 +190,12 @@ function AddCandidateModal({
       }
 
       const data = await res.json();
+      const applicationId = data.application_id;
 
       // Build a local JobRow for optimistic UI
       const newJob: JobRow = {
         id: data.id,
-        application_id: data.application_id,
+        application_id: applicationId,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
         pipeline_stage: "new",
@@ -206,6 +220,39 @@ function AddCandidateModal({
       };
 
       onCreated(newJob);
+
+      // If a resume file was attached, upload it and trigger parsing
+      if (resumeFile && applicationId) {
+        setParseStatus("uploading");
+
+        const fd = new FormData();
+        fd.append("file", resumeFile);
+        fd.append("application_id", String(applicationId));
+
+        const uploadRes = await fetch("/api/jobs/upload-resume", {
+          method: "POST",
+          body: fd,
+        });
+
+        if (uploadRes.ok) {
+          setParseStatus("parsing");
+
+          // Trigger auto-parse (fire and forget — don't block on it)
+          fetch(`/api/jobs/${applicationId}/parse`, { method: "POST" })
+            .then(() => setParseStatus("done"))
+            .catch(() => setParseStatus("error"));
+
+          // Close the modal after a brief delay so user sees the parsing status
+          setTimeout(() => onClose(), 1500);
+          return;
+        } else {
+          // Upload failed but candidate was created — still close
+          setParseStatus("error");
+          setTimeout(() => onClose(), 1500);
+          return;
+        }
+      }
+
       onClose();
     } catch {
       setError("Network error");
@@ -230,6 +277,32 @@ function AddCandidateModal({
           </button>
         </div>
 
+        {/* Parse status overlay */}
+        {parseStatus !== "idle" && (
+          <div className="mb-3">
+            {parseStatus === "uploading" && (
+              <div className="text-xs text-blue-600 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 animate-pulse">
+                Uploading resume...
+              </div>
+            )}
+            {parseStatus === "parsing" && (
+              <div className="text-xs text-violet-600 bg-violet-50 border border-violet-200 rounded-lg px-3 py-2 animate-pulse">
+                Parsing resume with AI... (candidate created, this runs in background)
+              </div>
+            )}
+            {parseStatus === "done" && (
+              <div className="text-xs text-green-600 bg-green-50 border border-green-200 rounded-lg px-3 py-2">
+                Resume parsed successfully! Candidate data will update shortly.
+              </div>
+            )}
+            {parseStatus === "error" && (
+              <div className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                Resume upload/parse had an issue — candidate was still created. You can re-parse from the detail page.
+              </div>
+            )}
+          </div>
+        )}
+
         <form onSubmit={handleSubmit} className="space-y-3">
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">Name *</label>
@@ -239,6 +312,53 @@ function AddCandidateModal({
               className="w-full rounded-lg border border-gray-200 px-3 py-1.5 text-sm outline-none focus:border-gray-400"
               autoFocus
             />
+          </div>
+
+          {/* Resume upload */}
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Resume (PDF, DOCX, or image)</label>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.webp,.txt"
+              onChange={handleFileChange}
+              className="hidden"
+            />
+            <div
+              onClick={() => fileInputRef.current?.click()}
+              className={`w-full rounded-lg border-2 border-dashed px-3 py-3 text-sm cursor-pointer transition-colors ${
+                resumeFile
+                  ? "border-green-300 bg-green-50"
+                  : "border-gray-200 hover:border-gray-400 bg-gray-50"
+              }`}
+            >
+              {resumeFile ? (
+                <div className="flex items-center gap-2">
+                  <svg className="w-4 h-4 text-green-600 shrink-0" fill="none" viewBox="0 0 16 16" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                    <path d="M4 8l3 3 5-6" />
+                  </svg>
+                  <span className="text-green-700 font-medium truncate">{resumeFile.name}</span>
+                  <span className="text-gray-400 text-xs shrink-0">
+                    ({(resumeFile.size / 1024).toFixed(0)} KB)
+                  </span>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setResumeFile(null);
+                      if (fileInputRef.current) fileInputRef.current.value = "";
+                    }}
+                    className="ml-auto text-gray-400 hover:text-red-500 text-xs"
+                  >
+                    Remove
+                  </button>
+                </div>
+              ) : (
+                <div className="text-gray-400 text-center">
+                  Click to upload resume — will auto-parse with AI
+                </div>
+              )}
+            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
@@ -339,7 +459,9 @@ function AddCandidateModal({
               disabled={submitting}
               className="px-4 py-1.5 text-sm font-medium text-white bg-slate-800 rounded-lg hover:bg-slate-700 disabled:opacity-50 transition-colors"
             >
-              {submitting ? "Adding..." : "Add Candidate"}
+              {submitting
+                ? resumeFile ? "Creating & uploading..." : "Adding..."
+                : resumeFile ? "Add & Parse Resume" : "Add Candidate"}
             </button>
           </div>
         </form>
