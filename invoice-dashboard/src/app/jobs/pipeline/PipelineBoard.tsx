@@ -23,10 +23,15 @@ const STAGE_META: Record<
     color: "border-blue-200",
     headerColor: "bg-blue-100 text-blue-700",
   },
-  phone_screen: {
-    label: "Phone Screen",
+  info_session: {
+    label: "Info Session",
     color: "border-cyan-200",
     headerColor: "bg-cyan-100 text-cyan-700",
+  },
+  prd_faa_review: {
+    label: "PRD / FAA Review",
+    color: "border-orange-200",
+    headerColor: "bg-orange-100 text-orange-700",
   },
   interview: {
     label: "Interview",
@@ -42,11 +47,6 @@ const STAGE_META: Record<
     label: "Hired",
     color: "border-emerald-200",
     headerColor: "bg-emerald-100 text-emerald-700",
-  },
-  rejected: {
-    label: "Rejected",
-    color: "border-red-200",
-    headerColor: "bg-red-100 text-red-700",
   },
 };
 

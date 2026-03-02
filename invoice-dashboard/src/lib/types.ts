@@ -84,13 +84,13 @@ export type FuelPricesResponse = {
 export type HiringStage =
   | "new"
   | "screening"
-  | "phone_screen"
+  | "info_session"
+  | "prd_faa_review"
   | "interview"
   | "offer"
-  | "hired"
-  | "rejected";
+  | "hired";
 
-export const PIPELINE_STAGES = ["new", "screening", "phone_screen", "interview", "offer", "hired", "rejected"] as const;
+export const PIPELINE_STAGES = ["new", "screening", "info_session", "prd_faa_review", "interview", "offer", "hired"] as const;
 export type PipelineStage = (typeof PIPELINE_STAGES)[number];
 
 export type JobRow = {

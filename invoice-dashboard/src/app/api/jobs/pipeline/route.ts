@@ -6,11 +6,11 @@ import type { HiringStage } from "@/lib/types";
 const VALID_STAGES: HiringStage[] = [
   "new",
   "screening",
-  "phone_screen",
+  "info_session",
+  "prd_faa_review",
   "interview",
   "offer",
   "hired",
-  "rejected",
 ];
 
 /** PATCH — move a candidate to a new hiring stage */

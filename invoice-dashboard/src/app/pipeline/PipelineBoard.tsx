@@ -11,11 +11,11 @@ import type { HiringStage, JobRow } from "@/lib/types";
 const STAGES: { key: HiringStage; label: string; color: string }[] = [
   { key: "new", label: "New", color: "bg-gray-100 border-gray-300" },
   { key: "screening", label: "Screening", color: "bg-blue-50 border-blue-300" },
-  { key: "phone_screen", label: "Phone Screen", color: "bg-indigo-50 border-indigo-300" },
+  { key: "info_session", label: "Info Session", color: "bg-cyan-50 border-cyan-300" },
+  { key: "prd_faa_review", label: "PRD / FAA Review", color: "bg-orange-50 border-orange-300" },
   { key: "interview", label: "Interview", color: "bg-violet-50 border-violet-300" },
   { key: "offer", label: "Offer", color: "bg-amber-50 border-amber-300" },
   { key: "hired", label: "Hired", color: "bg-emerald-50 border-emerald-300" },
-  { key: "rejected", label: "Rejected", color: "bg-red-50 border-red-300" },
 ];
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -47,7 +47,6 @@ export default function PipelineBoard({ initialJobs }: { initialJobs: JobRow[] }
   const [jobs, setJobs] = useState<JobRow[]>(initialJobs);
   const [moving, setMoving] = useState<number | null>(null);
   const [showCreate, setShowCreate] = useState(false);
-  const [showRejected, setShowRejected] = useState(false);
   const [q, setQ] = useState("");
 
   // Group jobs by stage
@@ -64,11 +63,11 @@ export default function PipelineBoard({ initialJobs }: { initialJobs: JobRow[] }
     const map: Record<HiringStage, JobRow[]> = {
       new: [],
       screening: [],
-      phone_screen: [],
+      info_session: [],
+      prd_faa_review: [],
       interview: [],
       offer: [],
       hired: [],
-      rejected: [],
     };
     for (const j of filtered) {
       const stage = (j.hiring_stage ?? "new") as HiringStage;
@@ -133,8 +132,6 @@ export default function PipelineBoard({ initialJobs }: { initialJobs: JobRow[] }
     [],
   );
 
-  const visibleStages = showRejected ? STAGES : STAGES.filter((s) => s.key !== "rejected");
-
   return (
     <div className="p-4 space-y-4">
       {/* Toolbar */}
@@ -151,12 +148,6 @@ export default function PipelineBoard({ initialJobs }: { initialJobs: JobRow[] }
         >
           + New Candidate
         </button>
-        <button
-          onClick={() => setShowRejected((v) => !v)}
-          className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm hover:bg-gray-50"
-        >
-          {showRejected ? "Hide" : "Show"} Rejected ({grouped.rejected.length})
-        </button>
         <div className="text-xs text-gray-500">{jobs.length} total</div>
       </div>
 
@@ -167,7 +158,7 @@ export default function PipelineBoard({ initialJobs }: { initialJobs: JobRow[] }
 
       {/* Kanban columns */}
       <div className="flex gap-3 overflow-x-auto pb-4" style={{ minHeight: "70vh" }}>
-        {visibleStages.map((stage) => (
+        {STAGES.map((stage) => (
           <div
             key={stage.key}
             className={`flex-shrink-0 w-64 rounded-xl border-2 ${stage.color} p-3 flex flex-col`}
@@ -223,10 +214,10 @@ function CandidateCard({
   const catLabel = CATEGORY_LABELS[job.category ?? ""] ?? job.category ?? "";
   const catColor = CATEGORY_COLORS[job.category ?? ""] ?? "bg-gray-100 text-gray-600";
 
-  // Determine stage movement options: forward + reject
+  // Determine stage movement options: forward + backward
   const currentIdx = stages.findIndex((s) => s.key === currentStage);
   const moveOptions = stages.filter(
-    (s, i) => s.key !== currentStage && (i === currentIdx + 1 || i === currentIdx - 1 || s.key === "rejected"),
+    (s, i) => s.key !== currentStage && (i === currentIdx + 1 || i === currentIdx - 1),
   );
 
   return (
@@ -287,11 +278,7 @@ function CandidateCard({
                 setExpanded(false);
               }}
               disabled={moving}
-              className={`rounded px-2 py-0.5 text-[10px] border hover:shadow-sm disabled:opacity-40 ${
-                s.key === "rejected"
-                  ? "border-red-300 text-red-700 bg-red-50"
-                  : "border-gray-300 text-gray-700 bg-gray-50"
-              }`}
+              className="rounded px-2 py-0.5 text-[10px] border border-gray-300 text-gray-700 bg-gray-50 hover:shadow-sm disabled:opacity-40"
             >
               {s.label}
             </button>
