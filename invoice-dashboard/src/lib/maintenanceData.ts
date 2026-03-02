@@ -348,19 +348,23 @@ export function assignVans(
   );
   if (eligible.length === 0) return [];
 
+  // Filter out zones with no GPS position (lat/lon = 0)
+  const activeZones = zones.filter((z) => z.lat !== 0 && z.lon !== 0);
+  if (activeZones.length === 0) return [];
+
   // Sort aircraft so closest-to-a-zone goes first (ensures nearest aircraft win slots)
   const sorted = [...eligible].sort((a, b) => {
-    const dA = Math.min(...zones.map((z) => haversineKm(a.lat, a.lon, z.lat, z.lon)));
-    const dB = Math.min(...zones.map((z) => haversineKm(b.lat, b.lon, z.lat, z.lon)));
+    const dA = Math.min(...activeZones.map((z) => haversineKm(a.lat, a.lon, z.lat, z.lon)));
+    const dB = Math.min(...activeZones.map((z) => haversineKm(b.lat, b.lon, z.lat, z.lon)));
     return dA - dB;
   });
 
   // ── Phase 1: assign to zones (only within MAX_ZONE_DISTANCE_KM) ──
-  const clusters: AircraftOvernightPosition[][] = zones.map(() => []);
+  const clusters: AircraftOvernightPosition[][] = activeZones.map(() => []);
   const unassigned: AircraftOvernightPosition[] = [];
 
   for (const ac of sorted) {
-    const ranked = zones
+    const ranked = activeZones
       .map((z, i) => ({ i, d: haversineKm(ac.lat, ac.lon, z.lat, z.lon) }))
       .sort((a, b) => a.d - b.d);
 
@@ -384,7 +388,7 @@ export function assignVans(
   }
 
   // ── Phase 2: overflow vans — greedy nearest-center grouping ──
-  const maxOverflow = Math.max(0, MAX_TOTAL_VANS - zones.length);
+  const maxOverflow = Math.max(0, MAX_TOTAL_VANS - activeZones.length);
   type OverflowVan = { lat: number; lon: number; airport: string; aircraft: AircraftOvernightPosition[] };
   const overflowVans: OverflowVan[] = [];
 
@@ -412,7 +416,7 @@ export function assignVans(
   // ── Build result ──
   const result: VanAssignment[] = [];
 
-  zones.forEach((zone, i) => {
+  activeZones.forEach((zone, i) => {
     const aircraft = clusters[i];
     if (aircraft.length === 0) return;
     const maxDist = Math.max(...aircraft.map((a) => haversineKm(zone.lat, zone.lon, a.lat, a.lon)));
@@ -430,7 +434,7 @@ export function assignVans(
   overflowVans.forEach((ov, i) => {
     const maxDist = Math.max(...ov.aircraft.map((a) => haversineKm(ov.lat, ov.lon, a.lat, a.lon)));
     result.push({
-      vanId: zones.length + 1 + i,
+      vanId: activeZones.length + 1 + i,
       homeAirport: ov.airport,
       lat: ov.lat,
       lon: ov.lon,
@@ -534,11 +538,15 @@ export function computeOvernightPositionsFromFlights(
 
     if (!airport) continue;
 
-    const info = getAirportInfo(airport);
+    // Strip ICAO "K" prefix for US airports (KLGB → LGB) so getAirportInfo can match
+    const iata = (airport.startsWith("K") && airport.length === 4)
+      ? airport.slice(1)
+      : airport;
+    const info = getAirportInfo(iata);
     results.push({
       tail,
-      airport,
-      airportName: info?.name ?? airport,
+      airport: iata, // use IATA code for consistency
+      airportName: info?.name ?? iata,
       city: info?.city ?? "Unknown",
       state: info?.state ?? "",
       lat: info?.lat ?? 0,

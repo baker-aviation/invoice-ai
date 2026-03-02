@@ -1303,6 +1303,8 @@ type VehicleDiag = {
 /** Vehicles whose name contains "VAN", "AOG", "OG", or "TRAN" are AOG support vans. */
 function isAogVehicle(name: string): boolean {
   const u = (name || "").toUpperCase();
+  // Exclude cleaning/detail vans — not AOG service vehicles
+  if (u.includes("CLEAN") || u.includes("DETAIL")) return false;
   return u.includes("VAN") || u.includes("AOG") || u.includes(" OG") || u.includes("TRAN");
 }
 
