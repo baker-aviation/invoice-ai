@@ -10,10 +10,12 @@ import {
   getDateRange,
   isContiguous48,
   haversineKm,
+  findNearestAirport,
   FIXED_VAN_ZONES,
   VanAssignment,
   AircraftOvernightPosition,
 } from "@/lib/maintenanceData";
+import type { VanZone } from "@/lib/maintenanceData";
 import { getAirportInfo } from "@/lib/airportCoords";
 
 // Leaflet requires SSR to be disabled
@@ -134,10 +136,12 @@ function StatsBar({
   positions,
   vans,
   flightCount,
+  totalVans,
 }: {
   positions: AircraftOvernightPosition[];
   vans: VanAssignment[];
   flightCount: number;
+  totalVans: number;
 }) {
   const covered = vans.flatMap((v) => v.aircraft).length;
   const airports = new Set(positions.map((p) => p.airport)).size;
@@ -148,7 +152,7 @@ function StatsBar({
       {[
         { label: "Aircraft Positioned", value: covered },
         { label: "Airports Covered",    value: airports },
-        { label: "Vans Deployed",        value: `${vansCovering}/16` },
+        { label: "Vans Deployed",        value: `${vansCovering}/${totalVans}` },
         { label: "Flights This Day",     value: flightCount },
       ].map(({ label, value }) => (
         <div key={label} className="bg-white border rounded-xl px-4 py-3 shadow-sm">
@@ -284,8 +288,10 @@ function fmtUtcHM(iso: string): string {
   );
 }
 
-/** True if the flight summary indicates a positioning / ferry / repo leg. */
+/** True if the flight is a positioning / ferry / repo leg (not revenue). */
 function isPositioningFlight(f: Flight): boolean {
+  const ft = inferFlightType(f);
+  if (ft === "Positioning" || ft === "Ferry" || ft === "Needs pos") return true;
   return !!(f.summary?.toLowerCase().includes("positioning"));
 }
 
@@ -330,8 +336,8 @@ function fmtTimeUntil(iso: string): string {
   return h === 0 ? `in ${m}m` : `in ${h}h ${m}m`;
 }
 
-/** Max one-way driving radius for schedule arrivals (≈2.2h drive). */
-const SCHEDULE_ARRIVAL_RADIUS_KM = 200;
+/** Max one-way driving radius for initial arrival pool (~5.5h drive at 90 km/h). */
+const SCHEDULE_ARRIVAL_RADIUS_KM = 500;
 
 /**
  * Greedy nearest-neighbor sort: reorders items so the van visits the closest
@@ -369,7 +375,17 @@ type VanFlightItem = {
   distKm:     number;
 };
 
-const MAX_ARRIVALS_PER_VAN = 4;
+/**
+ * Van scheduling rules:
+ *  - Max 5 hours total drive time per van per day
+ *  - If total drive time < 4 hours: up to 10 aircraft
+ *  - If total drive time >= 4 hours: up to 5 aircraft
+ */
+const MAX_AIRCRAFT_SHORT_DRIVE = 10;  // drive < 4h
+const MAX_AIRCRAFT_LONG_DRIVE  = 5;   // drive >= 4h
+const MAX_DRIVE_HOURS          = 5;   // hard cap
+const LONG_DRIVE_THRESHOLD_H   = 4;   // hours threshold for reduced limit
+const AVG_SPEED_KMH            = 90;  // average driving speed
 
 // ---------------------------------------------------------------------------
 // Compute schedule items for a single zone (extracted so ScheduleTab can
@@ -377,7 +393,7 @@ const MAX_ARRIVALS_PER_VAN = 4;
 // ---------------------------------------------------------------------------
 
 function computeZoneItems(
-  zone: (typeof FIXED_VAN_ZONES)[number],
+  zone: VanZone,
   allFlights: Flight[],
   date: string,
   baseLat: number,
@@ -389,7 +405,7 @@ function computeZoneItems(
     const iata = f.arrival_icao.replace(/^K/, "");
     const info = getAirportInfo(iata);
     if (!info || !isContiguous48(info.state)) return false;
-    return haversineKm(zone.lat, zone.lon, info.lat, info.lon) <= SCHEDULE_ARRIVAL_RADIUS_KM;
+    return haversineKm(baseLat, baseLon, info.lat, info.lon) <= SCHEDULE_ARRIVAL_RADIUS_KM;
   });
 
   const rawItems = arrivalsToday
@@ -437,11 +453,43 @@ function computeZoneItems(
     }
   }
 
-  return Array.from(byTail.values())
-    .sort((a, b) =>
-      (a.arrFlight.scheduled_arrival ?? "").localeCompare(b.arrFlight.scheduled_arrival ?? ""),
-    )
-    .slice(0, MAX_ARRIVALS_PER_VAN);
+  // Greedy nearest-neighbor with drive-time limits:
+  //   - Max 5h total drive
+  //   - If cumulative drive < 4h → up to 10 aircraft
+  //   - If cumulative drive >= 4h → up to 5 aircraft
+  const candidates = greedySort(
+    Array.from(byTail.values()),
+    baseLat,
+    baseLon,
+  );
+
+  const selected: VanFlightItem[] = [];
+  let totalDriveKm = 0;
+  let curLat = baseLat;
+  let curLon = baseLon;
+
+  for (const item of candidates) {
+    if (!item.airportInfo) continue;
+    const legKm = haversineKm(curLat, curLon, item.airportInfo.lat, item.airportInfo.lon);
+    const newTotalKm = totalDriveKm + legKm;
+    const newDriveH = newTotalKm / AVG_SPEED_KMH;
+
+    // Hard cap: 5 hours total drive
+    if (newDriveH > MAX_DRIVE_HOURS) break;
+
+    // If adding this would push past 4h, cap aircraft at 5
+    if (newDriveH >= LONG_DRIVE_THRESHOLD_H && selected.length >= MAX_AIRCRAFT_LONG_DRIVE) break;
+
+    // Hard cap: 10 aircraft max
+    if (selected.length >= MAX_AIRCRAFT_SHORT_DRIVE) break;
+
+    selected.push(item);
+    totalDriveKm = newTotalKm;
+    curLat = item.airportInfo.lat;
+    curLon = item.airportInfo.lon;
+  }
+
+  return selected;
 }
 
 /**
@@ -697,7 +745,7 @@ function VanScheduleCard({
   onDragLeave,
   onRemove,
 }: {
-  zone: (typeof FIXED_VAN_ZONES)[number];
+  zone: VanZone;
   color: string;
   items: VanFlightItem[];
   date: string;
@@ -900,12 +948,14 @@ function VanScheduleCard({
 function ScheduleTab({
   allFlights,
   date,
+  zones,
   liveVanPositions,
   liveVanAddresses,
   vanZoneNames,
 }: {
   allFlights: Flight[];
   date: string;
+  zones: VanZone[];
   liveVanPositions: Map<number, { lat: number; lon: number }>;
   liveVanAddresses: Map<number, string | null>;
   vanZoneNames: Map<number, string>;
@@ -932,13 +982,13 @@ function ScheduleTab({
   // Compute base items for every zone
   const baseItemsByVan = useMemo(() => {
     const map = new Map<number, VanFlightItem[]>();
-    for (const zone of FIXED_VAN_ZONES) {
+    for (const zone of zones) {
       const baseLat = liveVanPositions.get(zone.vanId)?.lat ?? zone.lat;
       const baseLon = liveVanPositions.get(zone.vanId)?.lon ?? zone.lon;
       map.set(zone.vanId, computeZoneItems(zone, allFlights, date, baseLat, baseLon));
     }
     return map;
-  }, [allFlights, date, liveVanPositions]);
+  }, [allFlights, date, liveVanPositions, zones]);
 
   // All arrivals today (no zone filter) — used for the uncovered pool
   const allDayArrivals = useMemo(
@@ -988,7 +1038,7 @@ function ScheduleTab({
     }
 
     // Recalculate distances + greedy sort for each van
-    for (const zone of FIXED_VAN_ZONES) {
+    for (const zone of zones) {
       const items = result.get(zone.vanId) ?? [];
       const baseLat = liveVanPositions.get(zone.vanId)?.lat ?? zone.lat;
       const baseLon = liveVanPositions.get(zone.vanId)?.lon ?? zone.lon;
@@ -997,7 +1047,7 @@ function ScheduleTab({
     }
 
     return result;
-  }, [baseItemsByVan, overrides, removals, liveVanPositions, allDayArrivals]);
+  }, [baseItemsByVan, overrides, removals, liveVanPositions, allDayArrivals, zones]);
 
   // Uncovered aircraft: arrivals today not assigned to any van
   const uncoveredItems = useMemo(() => {
@@ -1091,7 +1141,7 @@ function ScheduleTab({
     <div className="space-y-3">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="text-sm text-gray-500">
-          Arrivals plan for {fmtLongDate(date)} · up to {MAX_ARRIVALS_PER_VAN} aircraft per van · 5 h drive limit
+          Arrivals plan for {fmtLongDate(date)} · up to {MAX_AIRCRAFT_SHORT_DRIVE} aircraft per van · {MAX_DRIVE_HOURS}h drive limit
           {hasLive && (
             <span className="ml-2 inline-flex items-center gap-1 text-xs text-green-600 font-medium">
               <span className="w-1.5 h-1.5 rounded-full bg-green-500 inline-block" />
@@ -1195,7 +1245,7 @@ function ScheduleTab({
         </div>
       )}
 
-      {FIXED_VAN_ZONES.map((zone) => {
+      {zones.map((zone) => {
         const color = VAN_COLORS[(zone.vanId - 1) % VAN_COLORS.length];
         return (
           <div
@@ -1254,45 +1304,6 @@ type VehicleDiag = {
 function isAogVehicle(name: string): boolean {
   const u = (name || "").toUpperCase();
   return u.includes("VAN") || u.includes("AOG") || u.includes(" OG") || u.includes("TRAN");
-}
-
-/**
- * Match AOG Samsara vans to FIXED_VAN_ZONES by GPS proximity.
- * Returns a Map<zoneId, SamsaraVan> — one van per zone, closest wins.
- * Handles the case where multiple vans are near the same zone by doing
- * a greedy assignment (sort all van↔zone pairs by distance, assign each
- * van/zone at most once).
- */
-function matchVansToZones(
-  vans: SamsaraVan[],
-): Map<number, SamsaraVan> {
-  const withGps = vans.filter((v) => v.lat !== null && v.lon !== null);
-  if (withGps.length === 0) return new Map();
-
-  // Build all (van, zone, distance) pairs
-  const pairs: { van: SamsaraVan; zoneId: number; dist: number }[] = [];
-  for (const van of withGps) {
-    for (const zone of FIXED_VAN_ZONES) {
-      pairs.push({
-        van,
-        zoneId: zone.vanId,
-        dist: haversineKm(van.lat!, van.lon!, zone.lat, zone.lon),
-      });
-    }
-  }
-  // Sort by distance ascending — closest pairs first
-  pairs.sort((a, b) => a.dist - b.dist);
-
-  const result = new Map<number, SamsaraVan>();
-  const usedVans = new Set<string>(); // van IDs already assigned
-  for (const { van, zoneId, dist } of pairs) {
-    if (result.has(zoneId)) continue;  // zone already has a van
-    if (usedVans.has(van.id)) continue; // van already assigned
-    if (dist > 1500) continue;          // ignore vans > 1500 km from any zone
-    result.set(zoneId, van);
-    usedVans.add(van.id);
-  }
-  return result;
 }
 
 function VehicleRow({ v, diag }: { v: SamsaraVan; diag?: VehicleDiag }) {
@@ -1485,8 +1496,6 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
     }
     return computeOvernightPositions(selectedDate);
   }, [initialFlights, selectedDate]);
-  const vans       = useMemo(() => assignVans(positions), [positions]);
-  const displayedVans = selectedVan === null ? vans : vans.filter((v) => v.vanId === selectedVan);
 
   // Filter flights to active types only (Charter/Revenue, Positioning, Owner)
   const activeFlights = useMemo(
@@ -1583,86 +1592,82 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
     [samsaraVans],
   );
 
-  /** GPS-proximity match: zone ID → Samsara van (closest van per zone). */
-  const vanZoneMatch = useMemo(() => {
-    const match = matchVansToZones(aogSamsaraVans);
-    // Debug: log the GPS-based matching results
-    if (aogSamsaraVans.length > 0) {
-      const rows = FIXED_VAN_ZONES.map((z) => {
-        const v = match.get(z.vanId);
-        return {
-          zone: `V${z.vanId} ${z.name}`,
-          samsaraVan: v?.name ?? "—",
-          dist: v ? `${Math.round(haversineKm(v.lat!, v.lon!, z.lat, z.lon))} km` : "—",
-        };
-      });
-      console.log("[AOG Vans] GPS-based zone matching:");
-      console.table(rows);
-      const unmatched = aogSamsaraVans.filter(
-        (v) => ![...match.values()].some((m) => m.id === v.id)
-      );
-      if (unmatched.length) {
-        console.log("[AOG Vans] Unmatched AOG vehicles:", unmatched.map((v) => v.name));
-      }
-    }
-    return match;
-  }, [aogSamsaraVans]);
+  // ── Build dynamic zones from Samsara AOG vans ──
+  // Each Samsara AOG van becomes its own zone. Falls back to 8 fixed zones
+  // if Samsara data isn't available yet.
+  const sortedAogVans = useMemo(
+    () => [...aogSamsaraVans].sort((a, b) => (a.name || "").localeCompare(b.name || "")),
+    [aogSamsaraVans],
+  );
+
+  const dynamicZones = useMemo<VanZone[]>(() => {
+    if (sortedAogVans.length === 0) return FIXED_VAN_ZONES;
+    return sortedAogVans.map((v, i) => {
+      const nearest = (v.lat != null && v.lon != null) ? findNearestAirport(v.lat, v.lon) : null;
+      return {
+        vanId: i + 1,
+        name: v.name || `AOG Van ${i + 1}`,
+        homeAirport: nearest?.code ?? "???",
+        lat: v.lat ?? 0,
+        lon: v.lon ?? 0,
+      };
+    });
+  }, [sortedAogVans]);
+
+  // ── Van assignment (must come after dynamicZones) ──
+  const vans       = useMemo(() => assignVans(positions, dynamicZones), [positions, dynamicZones]);
+  const displayedVans = selectedVan === null ? vans : vans.filter((v) => v.vanId === selectedVan);
 
   /** Zone ID → last known GPS position (persists across refreshes if signal lost). */
   const lastKnownGpsRef = useRef<Map<number, { lat: number; lon: number }>>(new Map());
-  /** Zone ID → last known street address (persists across refreshes if signal lost). */
+  /** Zone ID → last known street address. */
   const lastKnownAddressRef = useRef<Map<number, string>>(new Map());
 
+  /** Zone ID → live GPS position (from Samsara van). */
   const liveVanPositions = useMemo<Map<number, { lat: number; lon: number }>>(() => {
-    // Update cache with fresh positions from matched vans
-    for (const [zoneId, v] of vanZoneMatch) {
-      if (v.lat !== null && v.lon !== null) {
-        lastKnownGpsRef.current.set(zoneId, { lat: v.lat, lon: v.lon });
-      }
-    }
-    // Return live position, or last known if currently null
     const map = new Map<number, { lat: number; lon: number }>();
-    for (const [zoneId, v] of vanZoneMatch) {
-      const pos = (v.lat !== null && v.lon !== null)
-        ? { lat: v.lat, lon: v.lon }
-        : lastKnownGpsRef.current.get(zoneId) ?? null;
-      if (pos) map.set(zoneId, pos);
-    }
+    sortedAogVans.forEach((v, i) => {
+      const zoneId = i + 1;
+      if (v.lat !== null && v.lon !== null) {
+        const pos = { lat: v.lat, lon: v.lon };
+        lastKnownGpsRef.current.set(zoneId, pos);
+        map.set(zoneId, pos);
+      } else {
+        const cached = lastKnownGpsRef.current.get(zoneId);
+        if (cached) map.set(zoneId, cached);
+      }
+    });
     return map;
-  }, [vanZoneMatch]);
+  }, [sortedAogVans]);
 
-  /** Zone ID → true if the position is a fresh live reading right now. */
+  /** Zone ID → true if the position is a fresh live reading. */
   const liveVanIsLive = useMemo<Map<number, boolean>>(() => {
     const map = new Map<number, boolean>();
-    for (const [zoneId, v] of vanZoneMatch) {
-      map.set(zoneId, v.lat !== null && v.lon !== null);
-    }
+    sortedAogVans.forEach((v, i) => {
+      map.set(i + 1, v.lat !== null && v.lon !== null);
+    });
     return map;
-  }, [vanZoneMatch]);
+  }, [sortedAogVans]);
 
-  /** Zone ID → street address (live, or last known if signal lost). */
+  /** Zone ID → street address (live, or last known). */
   const liveVanAddresses = useMemo<Map<number, string | null>>(() => {
-    // Cache fresh addresses
-    for (const [zoneId, v] of vanZoneMatch) {
-      if (v.address) lastKnownAddressRef.current.set(zoneId, v.address);
-    }
-    // Return live, or fall back to last known
     const map = new Map<number, string | null>();
-    for (const [zoneId, v] of vanZoneMatch) {
-      const addr = v.address ?? lastKnownAddressRef.current.get(zoneId) ?? null;
-      map.set(zoneId, addr);
-    }
+    sortedAogVans.forEach((v, i) => {
+      const zoneId = i + 1;
+      if (v.address) lastKnownAddressRef.current.set(zoneId, v.address);
+      map.set(zoneId, v.address ?? lastKnownAddressRef.current.get(zoneId) ?? null);
+    });
     return map;
-  }, [vanZoneMatch]);
+  }, [sortedAogVans]);
 
   /** Zone ID → Samsara van display name (for schedule cards). */
   const vanZoneNames = useMemo<Map<number, string>>(() => {
     const map = new Map<number, string>();
-    for (const [zoneId, v] of vanZoneMatch) {
-      if (v.name) map.set(zoneId, v.name);
-    }
+    sortedAogVans.forEach((v, i) => {
+      if (v.name) map.set(i + 1, v.name);
+    });
     return map;
-  }, [vanZoneMatch]);
+  }, [sortedAogVans]);
 
   // ── Samsara diagnostics (odometer + check engine light) ──
   const [diagData, setDiagData] = useState<Map<string, VehicleDiag>>(new Map());
@@ -1693,7 +1698,7 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
       />
 
       {/* ── Stats ── */}
-      <StatsBar positions={positions} vans={vans} flightCount={flightsForDay.length} />
+      <StatsBar positions={positions} vans={vans} flightCount={flightsForDay.length} totalVans={dynamicZones.length} />
 
       {/* ── AOG Status — aircraft coverage ── */}
       {(() => {
@@ -2000,7 +2005,7 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
 
       {/* ── Schedule tab ── */}
       {activeTab === "schedule" && (
-        <ScheduleTab allFlights={activeFlights} date={selectedDate} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} />
+        <ScheduleTab allFlights={activeFlights} date={selectedDate} zones={dynamicZones} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} />
       )}
 
       {/* ── Idle & Maintenance Aircraft ── */}

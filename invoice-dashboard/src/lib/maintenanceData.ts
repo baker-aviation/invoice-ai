@@ -7,7 +7,7 @@
  *  3. Runs a greedy van-assignment algorithm to position 16 vans
  */
 
-import { getAirportInfo } from "./airportCoords";
+import { getAirportInfo, getAllAirports } from "./airportCoords";
 
 // ---------------------------------------------------------------------------
 // Contiguous 48 states — used to exclude offshore / international aircraft
@@ -23,6 +23,22 @@ const CONTIGUOUS_48 = new Set([
 
 export function isContiguous48(state: string): boolean {
   return CONTIGUOUS_48.has(state);
+}
+
+/**
+ * Find the nearest known airport to a given lat/lon.
+ * Uses the 113-airport database from airportCoords.
+ */
+export function findNearestAirport(lat: number, lon: number): { code: string; name: string; dist: number } | null {
+  const airports = getAllAirports();
+  let best: { code: string; name: string; dist: number } | null = null;
+  for (const apt of airports) {
+    const d = haversineKm(lat, lon, apt.lat, apt.lon);
+    if (!best || d < best.dist) {
+      best = { code: apt.code, name: apt.name, dist: d };
+    }
+  }
+  return best;
 }
 
 // ---------------------------------------------------------------------------
@@ -323,8 +339,8 @@ function overflowRegionLabel(lat: number, lon: number): string {
 
 export function assignVans(
   positions: AircraftOvernightPosition[],
-  _numVans = MAX_TOTAL_VANS, // ignored, kept for API compat
-  maxPerVan = 4
+  zones: VanZone[] = FIXED_VAN_ZONES,
+  maxPerVan = 10
 ): VanAssignment[] {
   // Only assign vans to aircraft in the contiguous 48 states
   const eligible = positions.filter(
@@ -334,47 +350,45 @@ export function assignVans(
 
   // Sort aircraft so closest-to-a-zone goes first (ensures nearest aircraft win slots)
   const sorted = [...eligible].sort((a, b) => {
-    const dA = Math.min(...FIXED_VAN_ZONES.map((z) => haversineKm(a.lat, a.lon, z.lat, z.lon)));
-    const dB = Math.min(...FIXED_VAN_ZONES.map((z) => haversineKm(b.lat, b.lon, z.lat, z.lon)));
+    const dA = Math.min(...zones.map((z) => haversineKm(a.lat, a.lon, z.lat, z.lon)));
+    const dB = Math.min(...zones.map((z) => haversineKm(b.lat, b.lon, z.lat, z.lon)));
     return dA - dB;
   });
 
-  // ── Phase 1: assign to fixed zones (only within MAX_ZONE_DISTANCE_KM) ──
-  const fixedClusters: AircraftOvernightPosition[][] = FIXED_VAN_ZONES.map(() => []);
+  // ── Phase 1: assign to zones (only within MAX_ZONE_DISTANCE_KM) ──
+  const clusters: AircraftOvernightPosition[][] = zones.map(() => []);
   const unassigned: AircraftOvernightPosition[] = [];
 
   for (const ac of sorted) {
-    const ranked = FIXED_VAN_ZONES
+    const ranked = zones
       .map((z, i) => ({ i, d: haversineKm(ac.lat, ac.lon, z.lat, z.lon) }))
       .sort((a, b) => a.d - b.d);
 
     if (ranked[0].d > MAX_ZONE_DISTANCE_KM) {
-      // Too far from every fixed zone — goes to overflow
       unassigned.push(ac);
       continue;
     }
 
     let placed = false;
     for (const { i, d } of ranked) {
-      if (d > MAX_ZONE_DISTANCE_KM) break; // stop checking once beyond cutoff
-      if (fixedClusters[i].length < maxPerVan) {
-        fixedClusters[i].push(ac);
+      if (d > MAX_ZONE_DISTANCE_KM) break;
+      if (clusters[i].length < maxPerVan) {
+        clusters[i].push(ac);
         placed = true;
         break;
       }
     }
     if (!placed) {
-      // All nearby zones at cap — overflow
       unassigned.push(ac);
     }
   }
 
-  // ── Phase 2: overflow vans (V9-V16) — greedy nearest-center grouping ──
+  // ── Phase 2: overflow vans — greedy nearest-center grouping ──
+  const maxOverflow = Math.max(0, MAX_TOTAL_VANS - zones.length);
   type OverflowVan = { lat: number; lon: number; airport: string; aircraft: AircraftOvernightPosition[] };
   const overflowVans: OverflowVan[] = [];
 
   for (const ac of unassigned) {
-    // Find an existing overflow van close enough with capacity
     let bestIdx = -1;
     let bestDist = OVERFLOW_GROUP_KM;
     for (let i = 0; i < overflowVans.length; i++) {
@@ -387,21 +401,19 @@ export function assignVans(
 
     if (bestIdx >= 0) {
       overflowVans[bestIdx].aircraft.push(ac);
-      // Re-center overflow van to centroid of its aircraft
       const ov = overflowVans[bestIdx];
       ov.lat = ov.aircraft.reduce((s, a) => s + a.lat, 0) / ov.aircraft.length;
       ov.lon = ov.aircraft.reduce((s, a) => s + a.lon, 0) / ov.aircraft.length;
-    } else if (overflowVans.length < MAX_OVERFLOW_VANS) {
+    } else if (overflowVans.length < maxOverflow) {
       overflowVans.push({ lat: ac.lat, lon: ac.lon, airport: ac.airport, aircraft: [ac] });
     }
-    // If no slot anywhere, skip (OK to miss some)
   }
 
   // ── Build result ──
   const result: VanAssignment[] = [];
 
-  FIXED_VAN_ZONES.forEach((zone, i) => {
-    const aircraft = fixedClusters[i];
+  zones.forEach((zone, i) => {
+    const aircraft = clusters[i];
     if (aircraft.length === 0) return;
     const maxDist = Math.max(...aircraft.map((a) => haversineKm(zone.lat, zone.lon, a.lat, a.lon)));
     result.push({
@@ -418,7 +430,7 @@ export function assignVans(
   overflowVans.forEach((ov, i) => {
     const maxDist = Math.max(...ov.aircraft.map((a) => haversineKm(ov.lat, ov.lon, a.lat, a.lon)));
     result.push({
-      vanId: OVERFLOW_START_ID + i,
+      vanId: zones.length + 1 + i,
       homeAirport: ov.airport,
       lat: ov.lat,
       lon: ov.lon,
