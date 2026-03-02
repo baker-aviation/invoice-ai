@@ -979,7 +979,8 @@ function ScheduleTab({
   const [dropTargetVan, setDropTargetVan] = useState<number | null>(null);
   const dragCounterRef = useRef(0);
 
-  // Compute base items for every zone
+  // Compute base items for every zone, then deduplicate across zones
+  // so each aircraft tail only appears in ONE van (the closest one).
   const baseItemsByVan = useMemo(() => {
     const map = new Map<number, VanFlightItem[]>();
     for (const zone of zones) {
@@ -987,6 +988,31 @@ function ScheduleTab({
       const baseLon = liveVanPositions.get(zone.vanId)?.lon ?? zone.lon;
       map.set(zone.vanId, computeZoneItems(zone, allFlights, date, baseLat, baseLon));
     }
+
+    // Cross-zone deduplication: if the same tail appears in multiple vans,
+    // keep it only in the van where it's closest (smallest distKm).
+    const tailBestVan = new Map<string, { vanId: number; distKm: number }>();
+    for (const [vanId, items] of map) {
+      for (const item of items) {
+        const tail = item.arrFlight.tail_number ?? "";
+        if (!tail) continue;
+        const existing = tailBestVan.get(tail);
+        if (!existing || item.distKm < existing.distKm) {
+          tailBestVan.set(tail, { vanId, distKm: item.distKm });
+        }
+      }
+    }
+    // Remove duplicates — keep each tail only in its best van
+    for (const [vanId, items] of map) {
+      map.set(
+        vanId,
+        items.filter((item) => {
+          const tail = item.arrFlight.tail_number ?? "";
+          return tailBestVan.get(tail)?.vanId === vanId;
+        }),
+      );
+    }
+
     return map;
   }, [allFlights, date, liveVanPositions, zones]);
 
@@ -1277,6 +1303,277 @@ function ScheduleTab({
 }
 
 // ---------------------------------------------------------------------------
+// FlightScheduleTab — raw flight data per aircraft for the selected day
+// ---------------------------------------------------------------------------
+
+function FlightScheduleTab({
+  allFlights,
+  date,
+}: {
+  allFlights: Flight[];
+  date: string;
+}) {
+  const [search, setSearch] = useState("");
+  const [expandAll, setExpandAll] = useState(true);
+
+  // Get all flights for the selected date (departure OR arrival on that day)
+  const dayFlights = useMemo(() => {
+    return allFlights.filter((f) => {
+      const depDate = f.scheduled_departure?.slice(0, 10);
+      const arrDate = f.scheduled_arrival?.slice(0, 10);
+      return depDate === date || arrDate === date;
+    });
+  }, [allFlights, date]);
+
+  // Group by tail number
+  const byTail = useMemo(() => {
+    const map = new Map<string, Flight[]>();
+    for (const f of dayFlights) {
+      const tail = f.tail_number ?? "Unknown";
+      const arr = map.get(tail) ?? [];
+      arr.push(f);
+      map.set(tail, arr);
+    }
+    // Sort legs within each tail by departure time
+    for (const legs of map.values()) {
+      legs.sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure));
+    }
+    // Sort tails alphabetically
+    return new Map([...map.entries()].sort(([a], [b]) => a.localeCompare(b)));
+  }, [dayFlights]);
+
+  // Filter by search
+  const filtered = useMemo(() => {
+    if (!search) return byTail;
+    const q = search.toLowerCase();
+    const result = new Map<string, Flight[]>();
+    for (const [tail, legs] of byTail) {
+      if (
+        tail.toLowerCase().includes(q) ||
+        legs.some(
+          (f) =>
+            f.departure_icao?.toLowerCase().includes(q) ||
+            f.arrival_icao?.toLowerCase().includes(q) ||
+            f.summary?.toLowerCase().includes(q) ||
+            inferFlightType(f)?.toLowerCase().includes(q),
+        )
+      ) {
+        result.set(tail, legs);
+      }
+    }
+    return result;
+  }, [byTail, search]);
+
+  const totalLegs = dayFlights.length;
+  const totalAircraft = byTail.size;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="text-sm text-gray-500">
+          Flight schedule for {fmtLongDate(date)} · {totalAircraft} aircraft · {totalLegs} legs
+        </div>
+        <div className="flex items-center gap-2">
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search tails, airports..."
+            className="max-w-xs rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm outline-none focus:border-gray-400"
+          />
+          <button
+            onClick={() => setExpandAll((v) => !v)}
+            className="text-xs text-blue-600 hover:underline whitespace-nowrap"
+          >
+            {expandAll ? "Collapse All" : "Expand All"}
+          </button>
+        </div>
+      </div>
+
+      {filtered.size === 0 ? (
+        <div className="bg-white border rounded-xl px-4 py-8 text-center text-gray-400 text-sm">
+          {search ? "No matching aircraft" : "No flights scheduled for this day"}
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {Array.from(filtered.entries()).map(([tail, legs]) => (
+            <FlightScheduleAircraft
+              key={tail}
+              tail={tail}
+              legs={legs}
+              date={date}
+              defaultExpanded={expandAll}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FlightScheduleAircraft({
+  tail,
+  legs,
+  date,
+  defaultExpanded,
+}: {
+  tail: string;
+  legs: Flight[];
+  date: string;
+  defaultExpanded: boolean;
+}) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
+
+  // Sync with parent toggle
+  useEffect(() => {
+    setExpanded(defaultExpanded);
+  }, [defaultExpanded]);
+
+  // Determine overnight airport (last arrival on this date)
+  const lastArrival = [...legs]
+    .filter((f) => f.scheduled_arrival?.startsWith(date))
+    .sort((a, b) => (b.scheduled_arrival ?? "").localeCompare(a.scheduled_arrival ?? ""))[0];
+  const overnightApt = lastArrival?.arrival_icao?.replace(/^K/, "") ?? null;
+
+  // First departure
+  const firstDep = legs[0];
+  const firstDepApt = firstDep?.departure_icao?.replace(/^K/, "") ?? null;
+
+  // All unique airports touched
+  const airports = new Set<string>();
+  for (const f of legs) {
+    if (f.departure_icao) airports.add(f.departure_icao.replace(/^K/, ""));
+    if (f.arrival_icao) airports.add(f.arrival_icao.replace(/^K/, ""));
+  }
+
+  return (
+    <div className="bg-white border rounded-xl overflow-hidden shadow-sm">
+      <div
+        className="flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-gray-50"
+        onClick={() => setExpanded((v) => !v)}
+      >
+        <div className="flex items-center gap-3">
+          <span className="font-mono font-bold text-sm text-gray-800">{tail}</span>
+          <span className="text-xs bg-slate-100 text-slate-600 rounded-full px-2 py-0.5 font-medium">
+            {legs.length} leg{legs.length !== 1 ? "s" : ""}
+          </span>
+          {firstDepApt && overnightApt && (
+            <span className="text-xs text-gray-500 font-mono">
+              {firstDepApt} → … → {overnightApt}
+            </span>
+          )}
+          {overnightApt && (
+            <span className="text-xs bg-blue-50 text-blue-700 border border-blue-200 rounded px-1.5 py-0.5">
+              Overnight: {overnightApt}
+            </span>
+          )}
+        </div>
+        <span className="text-gray-400 text-sm">{expanded ? "▲" : "▼"}</span>
+      </div>
+
+      {expanded && (
+        <div className="border-t">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="bg-gray-50 text-left text-gray-500 uppercase tracking-wide">
+                <th className="px-4 py-2 w-12">#</th>
+                <th className="px-4 py-2">Route</th>
+                <th className="px-4 py-2">Type</th>
+                <th className="px-4 py-2">Depart</th>
+                <th className="px-4 py-2">Arrive</th>
+                <th className="px-4 py-2">Duration</th>
+                <th className="px-4 py-2 hidden md:table-cell">Status</th>
+                <th className="px-4 py-2 hidden lg:table-cell">Summary</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {legs.map((leg, idx) => {
+                const dep = leg.departure_icao?.replace(/^K/, "") ?? "?";
+                const arr = leg.arrival_icao?.replace(/^K/, "") ?? "?";
+                const ft = inferFlightType(leg);
+                const depInfo = getAirportInfo(dep);
+                const arrInfo = getAirportInfo(arr);
+                const isLastArrival = leg.id === lastArrival?.id;
+                const depOnDate = leg.scheduled_departure?.startsWith(date);
+                const arrOnDate = leg.scheduled_arrival?.startsWith(date);
+
+                return (
+                  <tr
+                    key={leg.id}
+                    className={`hover:bg-gray-50 ${isLastArrival ? "bg-blue-50/50" : ""} ${
+                      !depOnDate && !arrOnDate ? "opacity-50" : ""
+                    }`}
+                  >
+                    <td className="px-4 py-2 text-gray-400">{idx + 1}</td>
+                    <td className="px-4 py-2">
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-mono font-semibold text-gray-700">{dep}</span>
+                        <span className="text-gray-400">→</span>
+                        <span className="font-mono font-semibold text-gray-700">{arr}</span>
+                      </div>
+                      <div className="text-gray-400 mt-0.5">
+                        {depInfo ? `${depInfo.city}` : ""} → {arrInfo ? `${arrInfo.city}` : ""}
+                      </div>
+                    </td>
+                    <td className="px-4 py-2">
+                      {ft ? (
+                        <span
+                          className={`rounded px-1.5 py-0.5 text-xs font-medium ${
+                            ft === "Positioning" || ft === "Ferry" || ft === "Needs pos"
+                              ? "bg-purple-100 text-purple-700"
+                              : ft === "Maintenance"
+                              ? "bg-orange-100 text-orange-700"
+                              : ft === "Owner"
+                              ? "bg-amber-100 text-amber-700"
+                              : "bg-green-100 text-green-700"
+                          }`}
+                        >
+                          {ft}
+                        </span>
+                      ) : (
+                        <span className="text-gray-300">—</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2 text-gray-600">
+                      {fmtUtcHM(leg.scheduled_departure)}
+                      {!depOnDate && (
+                        <div className="text-gray-400">{leg.scheduled_departure.slice(0, 10)}</div>
+                      )}
+                    </td>
+                    <td className="px-4 py-2 text-gray-600">
+                      {leg.scheduled_arrival ? fmtUtcHM(leg.scheduled_arrival) : "—"}
+                      {leg.scheduled_arrival && !arrOnDate && (
+                        <div className="text-gray-400">{leg.scheduled_arrival.slice(0, 10)}</div>
+                      )}
+                    </td>
+                    <td className="px-4 py-2 text-gray-400">
+                      {leg.scheduled_arrival
+                        ? fmtDuration(leg.scheduled_departure, leg.scheduled_arrival)
+                        : "—"}
+                    </td>
+                    <td className="px-4 py-2 hidden md:table-cell">
+                      {(() => {
+                        const arrTime = leg.scheduled_arrival ? new Date(leg.scheduled_arrival) : null;
+                        const hasLanded = arrTime !== null && arrTime < new Date();
+                        return hasLanded
+                          ? <span className="text-xs font-medium text-green-700 bg-green-100 rounded-full px-2 py-0.5">Landed</span>
+                          : <span className="text-xs font-medium text-slate-600 bg-slate-100 rounded-full px-2 py-0.5">Scheduled</span>;
+                      })()}
+                    </td>
+                    <td className="px-4 py-2 hidden lg:table-cell text-gray-400 max-w-[200px] truncate">
+                      {leg.summary ?? "—"}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Samsara live van locations — AOG Vans only
 // ---------------------------------------------------------------------------
 
@@ -1484,7 +1781,7 @@ const haversineKmClient = (lat1: number, lon1: number, lat2: number, lon2: numbe
 export default function VanPositioningClient({ initialFlights }: { initialFlights: Flight[] }) {
   const dates = useMemo(() => getDateRange(7), []); // 7-day window
   const [dayIdx, setDayIdx] = useState(0);
-  const [activeTab, setActiveTab] = useState<"map" | "schedule">("map");
+  const [activeTab, setActiveTab] = useState<"map" | "schedule" | "flights">("map");
   const [viewMode, setViewMode] = useState<"map" | "list">("map");
   const [selectedVan, setSelectedVan] = useState<number | null>(null);
 
@@ -1846,6 +2143,16 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
             </span>
           )}
         </TabBtn>
+        <TabBtn active={activeTab === "flights"} onClick={() => setActiveTab("flights")}>
+          Flight Schedule
+          {flightsForDay.length > 0 && (
+            <span className={`ml-1.5 rounded-full px-1.5 py-0.5 text-xs font-bold ${
+              activeTab === "flights" ? "bg-blue-500 text-white" : "bg-blue-100 text-blue-700"
+            }`}>
+              {flightsForDay.length}
+            </span>
+          )}
+        </TabBtn>
       </div>
 
       {/* ── Van Map tab ── */}
@@ -1999,6 +2306,11 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
       {/* ── Schedule tab ── */}
       {activeTab === "schedule" && (
         <ScheduleTab allFlights={initialFlights} date={selectedDate} zones={dynamicZones} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} />
+      )}
+
+      {/* ── Flight Schedule tab ── */}
+      {activeTab === "flights" && (
+        <FlightScheduleTab allFlights={initialFlights} date={selectedDate} />
       )}
 
       {/* ── Unassigned Aircraft — all legs for the day ── */}
