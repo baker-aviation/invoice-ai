@@ -190,6 +190,29 @@ def safe_insert(
     return data[0]
 
 
+def safe_upsert(
+    table: str,
+    row: Dict[str, Any],
+    *,
+    on_conflict: str = "document_id",
+) -> Optional[Dict[str, Any]]:
+    """INSERT … ON CONFLICT (on_conflict) DO UPDATE.
+
+    Uses PostgREST merge-duplicates so re-parsed invoices update in place
+    instead of silently being skipped as duplicates.
+    """
+    url = f"{REST_BASE}/{table}"
+    headers = dict(_DEFAULT_HEADERS)
+    headers["Prefer"] = "return=representation,resolution=merge-duplicates"
+    params: Dict[str, str] = {"on_conflict": on_conflict}
+    r = _request_with_retry("POST", url, headers=headers, params=params, json_body=row)
+    _raise_for_status(r)
+    data = r.json() or []
+    if not data:
+        return None
+    return data[0]
+
+
 def safe_update(
     table: str,
     row_id: str,

@@ -15,8 +15,10 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from supa import sb
+from auth_middleware import add_auth_middleware
 
 app = FastAPI()
+add_auth_middleware(app)
 limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
@@ -31,9 +33,9 @@ SAMSARA_API_KEY = os.getenv("SAMSARA_API_KEY")
 FAA_CLIENT_ID = os.getenv("FAA_CLIENT_ID")
 FAA_CLIENT_SECRET = os.getenv("FAA_CLIENT_SECRET")
 
-# FAA NMS API (staging / pre-prod — cgifederal-aim.com)
-NMS_AUTH_URL = "https://api-staging.cgifederal-aim.com/v1/auth/token"
-NMS_API_BASE = "https://api-staging.cgifederal-aim.com/nmsapi"
+# FAA NMS API (production)
+NMS_AUTH_URL = "https://api-nms.aim.faa.gov/v1/auth/token"
+NMS_API_BASE = "https://api-nms.aim.faa.gov/nmsapi"
 
 FOREFLIGHT_MAILBOX = os.getenv("FOREFLIGHT_MAILBOX", "ForeFlight@baker-aviation.com")
 MS_TENANT_ID = os.getenv("MS_TENANT_ID")
@@ -226,22 +228,47 @@ def _parse_flight_fields(component) -> Tuple[Optional[str], Optional[str], Optio
 
     # ── Flight type: extract from CATEGORIES property or SUMMARY suffix ──────
     flight_type = None
-    # Try CATEGORIES ICS property first
+    # Try CATEGORIES ICS property first (icalendar vCategory is list-like)
     categories = component.get("CATEGORIES")
-    if categories:
-        cat_str = str(categories) if not isinstance(categories, list) else str(categories[0])
-        cat_str = cat_str.strip()
-        if cat_str:
-            flight_type = cat_str
+    if categories is not None:
+        try:
+            # vCategory.to_ical() returns bytes like b"Revenue" — most reliable
+            if hasattr(categories, "to_ical"):
+                raw_cat = categories.to_ical()
+                cat_str = raw_cat.decode("utf-8", errors="replace") if isinstance(raw_cat, bytes) else str(raw_cat)
+            elif isinstance(categories, (list, tuple)) and len(categories) > 0:
+                cat_str = str(categories[0])
+            else:
+                cat_str = str(categories)
+            # Take first category if comma-separated (e.g. "Revenue,Business")
+            cat_str = cat_str.split(",")[0].strip()
+            if cat_str:
+                flight_type = cat_str
+        except Exception:
+            pass
 
-    # Fallback: parse from SUMMARY — text after the last " - " following the airport pair
+    # Fallback 1: text after the airport pair — "(SDM - SNA) - Positioning flight"
     if not flight_type:
-        # Match everything after the last " - " that follows the (XXX - XXX) airport pair
         type_m = re.search(r"\([A-Z]{3,4}\s*[-–]\s*[A-Z]{3,4}\)\s*[-–]\s*(.+)$", summary)
         if type_m:
             raw = type_m.group(1).strip()
-            # Normalize: strip trailing "flight" if present (e.g. "Positioning flight" → "Positioning")
             flight_type = re.sub(r"\s+flights?\s*$", "", raw, flags=re.IGNORECASE).strip() or None
+
+    # Fallback 2: text before the bracket — "Revenue - [N123] ..." or "Revenue [N123] ..."
+    if not flight_type:
+        pre_m = re.match(r"^([A-Za-z][A-Za-z /]+?)\s*[-–]?\s*\[", summary)
+        if pre_m:
+            raw = pre_m.group(1).strip().rstrip("-–").strip()
+            flight_type = re.sub(r"\s+flights?\s*$", "", raw, flags=re.IGNORECASE).strip() or None
+
+    # Fallback 3: check SUMMARY + DESCRIPTION for common flight type keywords
+    if not flight_type:
+        combined = f"{summary} {description}"
+        for keyword in ("Revenue", "Owner", "Positioning", "Maintenance", "Training", "Ferry", "Cargo",
+                        "Needs pos", "Crew conflict", "Time off", "Assignment", "Transient"):
+            if re.search(rf"\b{re.escape(keyword)}\b", combined, re.IGNORECASE):
+                flight_type = keyword
+                break
 
     return dep_icao, arr_icao, tail, flight_type
 
@@ -583,6 +610,11 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
 
             dep_icao, arr_icao, tail, flight_type = _parse_flight_fields(component)
 
+            # Debug: log first 3 events so we can verify flight_type extraction
+            if upserted + skipped + errors < 3:
+                raw_cat = component.get("CATEGORIES")
+                print(f"sync_schedule DEBUG event: summary={summary!r}, categories={raw_cat!r}, flight_type={flight_type!r}", flush=True)
+
             flight: Dict[str, Any] = {
                 "ics_uid": uid,
                 "scheduled_departure": dep_dt.isoformat(),
@@ -629,8 +661,8 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
 
 @app.post("/jobs/pull_edct")
 def pull_edct(
-    lookback_minutes: int = Query(60, ge=1, le=1440),
-    max_messages: int = Query(50, ge=1, le=200),
+    lookback_minutes: int = Query(360, ge=1, le=1440),
+    max_messages: int = Query(100, ge=1, le=200),
 ):
     """
     Pull EDCT / ground delay emails from the ForeFlight mailbox and store alerts.
@@ -905,7 +937,7 @@ def _run_check_notams(lookahead_hours: int) -> dict:
                     "subject": notam_data.get("number", "")[:500],
                     "body": msg[:2000],
                     "source_message_id": f"nms-{notam_id}-{fid}",
-                    "raw_data": json.dumps({"notam_dates": notam_dates}) if notam_dates else None,
+                    "raw_data": {"notam_dates": notam_dates} if notam_dates else None,
                     "created_at": _utc_now(),
                 })
 

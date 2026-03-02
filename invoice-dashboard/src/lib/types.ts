@@ -67,6 +67,7 @@ export type FuelPriceRow = {
   previous_price: number | null;
   previous_document_id: string | null;
   alert_sent: boolean | null;
+  data_source: string | null; // 'invoice' | 'jetinsight'
   created_at: string;
 };
 
@@ -80,11 +81,26 @@ export type FuelPricesResponse = {
    Jobs
 ========================= */
 
+export type HiringStage =
+  | "new"
+  | "screening"
+  | "info_session"
+  | "prd_faa_review"
+  | "interview"
+  | "offer"
+  | "hired";
+
+export const PIPELINE_STAGES = ["new", "screening", "info_session", "prd_faa_review", "interview", "offer", "hired"] as const;
+export type PipelineStage = (typeof PIPELINE_STAGES)[number];
+
 export type JobRow = {
   id: number;
   application_id: number;
   created_at: string | null;
   updated_at: string | null;
+
+  hiring_stage?: HiringStage;
+  pipeline_stage?: PipelineStage;
 
   category: string | null;
   employment_type: string | null;

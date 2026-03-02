@@ -36,7 +36,7 @@ type ShareState = "idle" | "loading" | "success" | "error";
 
 const PAGE_SIZE = 25;
 
-export default function AlertsTable({ initialAlerts }: { initialAlerts: AlertRow[] }) {
+export default function AlertsTable({ initialAlerts, pdfUrls = {} }: { initialAlerts: AlertRow[]; pdfUrls?: Record<string, string> }) {
   const [alerts] = useState<AlertRow[]>(initialAlerts);
 
   const [airport, setAirport] = useState<string>("all");
@@ -46,6 +46,7 @@ export default function AlertsTable({ initialAlerts }: { initialAlerts: AlertRow
   const [flushMsg, setFlushMsg] = useState<string>("");
   const [page, setPage] = useState(0);
   const [shareStates, setShareStates] = useState<Record<string, ShareState>>({});
+  const [previewId, setPreviewId] = useState<string | null>(null);
 
   const airports = useMemo(() => {
     const set = new Set<string>();
@@ -251,50 +252,85 @@ export default function AlertsTable({ initialAlerts }: { initialAlerts: AlertRow
               <tbody>
                 {paged.map((a) => {
                   const shareState = shareStates[a.id] ?? "idle";
+                  const pdfUrl = a.document_id ? pdfUrls[a.document_id] : null;
+                  const isPreview = previewId === a.id;
                   return (
-                    <tr key={a.id} className="border-t hover:bg-gray-50 transition">
-                      <td className="px-4 py-3 whitespace-nowrap">{fmtTime(a.created_at)}</td>
-                      <td className="px-4 py-3 font-medium">{a.rule_name ?? "—"}</td>
-                      <td className="px-4 py-3">{a.vendor ?? "—"}</td>
-                      <td className="px-4 py-3">{a.airport_code ?? "—"}</td>
-                      <td className="px-4 py-3">{a.tail ?? "—"}</td>
-                      <td className="px-4 py-3">
-                        {a.fee_name ?? "—"}{" "}
-                        {a.fee_amount != null ? (
-                          <span className="font-medium">
-                            • {a.fee_amount} {a.currency ?? ""}
-                          </span>
-                        ) : null}
-                      </td>
-                      <td className="px-4 py-3 space-x-2 whitespace-nowrap">
-                        <Badge>{a.status ?? "—"}</Badge>
-                        <Badge variant={String(a.slack_status).toLowerCase() === "sent" ? "success" : "warning"}>
-                          slack: {a.slack_status ?? "—"}
-                        </Badge>
-                      </td>
-                      <td className="px-4 py-3 text-right whitespace-nowrap">
-                        <div className="flex items-center justify-end gap-3">
-                          <button
-                            type="button"
-                            onClick={() => shareOne(a.id)}
-                            disabled={shareState === "loading"}
-                            title="Share this alert to Slack"
-                            className={`text-xs px-2 py-1 rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
-                              shareState === "success"
-                                ? "border-green-300 text-green-700 bg-green-50"
-                                : shareState === "error"
-                                ? "border-red-300 text-red-600 bg-red-50"
-                                : "border-gray-300 text-gray-600 hover:bg-gray-50"
-                            }`}
-                          >
-                            {shareState === "loading" ? "…" : shareState === "success" ? "Sent" : shareState === "error" ? "Error" : "Share"}
-                          </button>
-                          <Link className="text-blue-600 hover:underline" href={`/invoices/${a.document_id}`}>
-                            View →
-                          </Link>
-                        </div>
-                      </td>
-                    </tr>
+                    <>
+                      <tr key={a.id} className="border-t hover:bg-gray-50 transition">
+                        <td className="px-4 py-3 whitespace-nowrap">{fmtTime(a.created_at)}</td>
+                        <td className="px-4 py-3 font-medium">{a.rule_name ?? "—"}</td>
+                        <td className="px-4 py-3">{a.vendor ?? "—"}</td>
+                        <td className="px-4 py-3">{a.airport_code ?? "—"}</td>
+                        <td className="px-4 py-3">{a.tail ?? "—"}</td>
+                        <td className="px-4 py-3">
+                          {a.fee_name ?? "—"}{" "}
+                          {a.fee_amount != null ? (
+                            <span className="font-medium">
+                              • {a.fee_amount} {a.currency ?? ""}
+                            </span>
+                          ) : null}
+                        </td>
+                        <td className="px-4 py-3 space-x-2 whitespace-nowrap">
+                          <Badge>{a.status ?? "—"}</Badge>
+                          <Badge variant={String(a.slack_status).toLowerCase() === "sent" ? "success" : "warning"}>
+                            slack: {a.slack_status ?? "—"}
+                          </Badge>
+                        </td>
+                        <td className="px-4 py-3 text-right whitespace-nowrap">
+                          <div className="flex items-center justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => shareOne(a.id)}
+                              disabled={shareState === "loading"}
+                              title="Share this alert to Slack"
+                              className={`text-xs px-2 py-1 rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                                shareState === "success"
+                                  ? "border-green-300 text-green-700 bg-green-50"
+                                  : shareState === "error"
+                                  ? "border-red-300 text-red-600 bg-red-50"
+                                  : "border-gray-300 text-gray-600 hover:bg-gray-50"
+                              }`}
+                            >
+                              {shareState === "loading" ? "…" : shareState === "success" ? "Sent" : shareState === "error" ? "Error" : "Share"}
+                            </button>
+                            {pdfUrl && (
+                              <button
+                                type="button"
+                                onClick={() => setPreviewId(isPreview ? null : a.id)}
+                                className={`text-xs px-2 py-1 rounded border transition-colors ${
+                                  isPreview ? "border-blue-300 text-blue-700 bg-blue-50" : "border-gray-300 text-gray-600 hover:bg-gray-50"
+                                }`}
+                              >
+                                {isPreview ? "Hide" : "PDF"}
+                              </button>
+                            )}
+                            <Link className="text-xs text-blue-600 hover:underline" href={`/invoices/${a.document_id}`}>
+                              Detail
+                            </Link>
+                          </div>
+                        </td>
+                      </tr>
+                      {isPreview && pdfUrl && (
+                        <tr key={`${a.id}-preview`}>
+                          <td colSpan={8} className="p-0">
+                            <div className="border-t bg-gray-50 p-3">
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="text-xs text-gray-500">Invoice PDF — {a.vendor}</span>
+                                <a href={pdfUrl} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline">
+                                  Open in new tab
+                                </a>
+                              </div>
+                              <iframe
+                                src={pdfUrl}
+                                className="w-full rounded border"
+                                style={{ height: "600px" }}
+                                title={`Invoice ${a.document_id}`}
+                              />
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </>
                   );
                 })}
 

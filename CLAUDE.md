@@ -1,5 +1,12 @@
 # Invoice AI — Project Context
 
+## CRITICAL: Production Deploy Rules
+- **NEVER push to `main`, merge into `main`, or trigger production deploys (Vercel, Cloud Run) without explicit user permission.**
+- `main` branch = production. Pushing to `main` triggers a Vercel deploy automatically.
+- `bash scripts/deploy-*.sh` deploys to Cloud Run production.
+- Always develop on feature branches. Only suggest merging to `main` or deploying when the user explicitly asks.
+- If the user asks "how do I deploy", explain the steps but **do not run them** — wait for the user to confirm.
+
 ## What this is
 Internal dashboard for Baker Aviation. Processes invoice PDFs from Outlook email,
 parses them with AI, generates fee alerts, and displays everything in a Next.js dashboard.
@@ -130,6 +137,12 @@ Backend secrets in GCP Secret Manager: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KE
 `SLACK_WEBHOOK_URL`, `MS_TENANT_ID`, `MS_CLIENT_ID`, `MS_CLIENT_SECRET`,
 `OUTLOOK_SHARED_MAILBOX`, `GCS_BUCKET`, `OPENAI_API_KEY`,
 `JETINSIGHT_ICS_URL`, `FAA_CLIENT_ID`, `FAA_CLIENT_SECRET`
+
+## Deployment policy
+
+- **Frontend (Vercel)**: Pushes to `dev` auto-deploy to `baker-ai-dev.vercel.app`. Pushes to `main` deploy to production (`baker-ai-gamma.vercel.app`). **Always push to `dev` first** — never push directly to `main` unless explicitly told to.
+- **Backend (Cloud Run)**: **Do NOT deploy backend services unless explicitly asked.** Deploy scripts exist in `scripts/` but should only be run when the user says "deploy" or "ship it". Code changes to Python services are safe to commit and push — they don't auto-deploy.
+- **Branch workflow**: Develop on feature branches → merge to `dev` → test on dev URL → merge to `main` only when approved.
 
 ## Active branch
 `claude/check-gcs-github-push-gqC1E`
