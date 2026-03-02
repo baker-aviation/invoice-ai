@@ -662,6 +662,7 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
   const [activeFilter, setActiveFilter] = useState<AlertFilter>("ALL");
   const [notamSub, setNotamSub] = useState<NotamSubFilter>("ALL_NOTAMS");
   const [pprSub, setPprSub] = useState<PprSubFilter>("ALL_PPR");
+  const [flightTypeFilter, setFlightTypeFilter] = useState<string | null>(null);
   const [activeRange, setActiveRange] = useState<TimeRange>("7D");
   const [ackedIds, setAckedIds] = useState<Set<string>>(new Set());
   const [dismissedClientAlerts, setDismissedClientAlerts] = useState<Set<string>>(new Set());
@@ -763,8 +764,8 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
     });
   }, [withFilteredAlerts, cutoff, lookback]);
 
-  // Apply category filter
-  const filtered = useMemo(() => {
+  // Apply alert category filter
+  const alertFiltered = useMemo(() => {
     if (activeFilter === "ALL") return timeFiltered;
 
     // NOTAMs filter with sub-toggle
@@ -809,6 +810,25 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
 
     return timeFiltered;
   }, [timeFiltered, activeFilter, notamSub, pprSub]);
+
+  // Apply flight type filter on top of alert filter
+  const filtered = useMemo(() => {
+    if (!flightTypeFilter) return alertFiltered;
+    return alertFiltered.filter((f) => inferFlightType(f) === flightTypeFilter);
+  }, [alertFiltered, flightTypeFilter]);
+
+  // Flight type counts (computed from time-filtered flights for pill badges)
+  const flightTypeCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const f of timeFiltered) {
+      const ft = inferFlightType(f);
+      if (ft) counts.set(ft, (counts.get(ft) ?? 0) + 1);
+    }
+    // Sort by count descending
+    return Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([type, count]) => ({ type, count }));
+  }, [timeFiltered]);
 
   // Group by day
   const byDay = useMemo(() => {
@@ -1081,12 +1101,57 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
             </div>
           </div>
         )}
+
+        {/* Flight type filter pills */}
+        {flightTypeCounts.length > 0 && (
+          <div className="flex items-center gap-1.5 flex-wrap pl-1">
+            <span className="text-xs text-gray-400 mr-0.5">Type:</span>
+            <button
+              type="button"
+              onClick={() => setFlightTypeFilter(null)}
+              className={`px-2.5 py-1 text-xs font-medium rounded-full border transition-colors ${
+                !flightTypeFilter
+                  ? "bg-slate-800 text-white border-slate-800"
+                  : "bg-white text-gray-600 border-gray-200 hover:border-gray-400 hover:bg-gray-50"
+              }`}
+            >
+              All
+            </button>
+            {flightTypeCounts.map(({ type, count }) => {
+              const isActive = flightTypeFilter === type;
+              const colors = FLIGHT_TYPE_COLORS[type];
+              return (
+                <button
+                  key={type}
+                  type="button"
+                  onClick={() => setFlightTypeFilter(isActive ? null : type)}
+                  className={`inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-full border transition-colors ${
+                    isActive
+                      ? colors
+                        ? `${colors} border-current`
+                        : "bg-slate-800 text-white border-slate-800"
+                      : "bg-white text-gray-600 border-gray-200 hover:border-gray-400 hover:bg-gray-50"
+                  }`}
+                >
+                  {type}
+                  <span className={`inline-flex items-center justify-center min-w-[16px] h-4 px-1 text-[10px] font-bold rounded-full ${
+                    isActive
+                      ? "bg-white/30 text-inherit"
+                      : "bg-gray-100 text-gray-600"
+                  }`}>
+                    {count}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Flight cards by day */}
       {filtered.length === 0 ? (
         <div className="rounded-xl border bg-white shadow-sm px-6 py-12 text-center text-gray-400">
-          {activeFilter !== "ALL"
+          {(activeFilter !== "ALL" || flightTypeFilter)
             ? "No flights match the current filter."
             : `No flights scheduled in the selected time range.`}
         </div>
