@@ -226,22 +226,45 @@ def _parse_flight_fields(component) -> Tuple[Optional[str], Optional[str], Optio
 
     # ── Flight type: extract from CATEGORIES property or SUMMARY suffix ──────
     flight_type = None
-    # Try CATEGORIES ICS property first
+    # Try CATEGORIES ICS property first (icalendar vCategory is list-like)
     categories = component.get("CATEGORIES")
-    if categories:
-        cat_str = str(categories) if not isinstance(categories, list) else str(categories[0])
-        cat_str = cat_str.strip()
-        if cat_str:
-            flight_type = cat_str
+    if categories is not None:
+        try:
+            # vCategory.to_ical() returns bytes like b"Revenue" — most reliable
+            if hasattr(categories, "to_ical"):
+                raw_cat = categories.to_ical()
+                cat_str = raw_cat.decode("utf-8", errors="replace") if isinstance(raw_cat, bytes) else str(raw_cat)
+            elif isinstance(categories, (list, tuple)) and len(categories) > 0:
+                cat_str = str(categories[0])
+            else:
+                cat_str = str(categories)
+            # Take first category if comma-separated (e.g. "Revenue,Business")
+            cat_str = cat_str.split(",")[0].strip()
+            if cat_str:
+                flight_type = cat_str
+        except Exception:
+            pass
 
-    # Fallback: parse from SUMMARY — text after the last " - " following the airport pair
+    # Fallback 1: text after the airport pair — "(SDM - SNA) - Positioning flight"
     if not flight_type:
-        # Match everything after the last " - " that follows the (XXX - XXX) airport pair
         type_m = re.search(r"\([A-Z]{3,4}\s*[-–]\s*[A-Z]{3,4}\)\s*[-–]\s*(.+)$", summary)
         if type_m:
             raw = type_m.group(1).strip()
-            # Normalize: strip trailing "flight" if present (e.g. "Positioning flight" → "Positioning")
             flight_type = re.sub(r"\s+flights?\s*$", "", raw, flags=re.IGNORECASE).strip() or None
+
+    # Fallback 2: text before the bracket — "Revenue - [N123] ..." or "Revenue [N123] ..."
+    if not flight_type:
+        pre_m = re.match(r"^([A-Za-z][A-Za-z /]+?)\s*[-–]?\s*\[", summary)
+        if pre_m:
+            raw = pre_m.group(1).strip().rstrip("-–").strip()
+            flight_type = re.sub(r"\s+flights?\s*$", "", raw, flags=re.IGNORECASE).strip() or None
+
+    # Fallback 3: check DESCRIPTION for common flight type keywords
+    if not flight_type:
+        for keyword in ("Revenue", "Owner", "Positioning", "Maintenance", "Training", "Ferry", "Cargo"):
+            if re.search(rf"\b{keyword}\b", description, re.IGNORECASE):
+                flight_type = keyword
+                break
 
     return dep_icao, arr_icao, tail, flight_type
 
@@ -582,6 +605,11 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
                 continue
 
             dep_icao, arr_icao, tail, flight_type = _parse_flight_fields(component)
+
+            # Debug: log first 3 events so we can verify flight_type extraction
+            if upserted + skipped + errors < 3:
+                raw_cat = component.get("CATEGORIES")
+                print(f"sync_schedule DEBUG event: summary={summary!r}, categories={raw_cat!r}, flight_type={flight_type!r}", flush=True)
 
             flight: Dict[str, Any] = {
                 "ics_uid": uid,
