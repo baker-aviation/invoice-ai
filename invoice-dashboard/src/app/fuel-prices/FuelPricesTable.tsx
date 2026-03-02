@@ -181,6 +181,29 @@ export default function FuelPricesTable({
   // Comparison data
   const comparisons = useMemo(() => buildComparisons(initialPrices), [initialPrices]);
 
+  // Airport+Vendor average lookup for All Records view
+  // Key: "AIRPORT|VENDOR" → { avg, count, min, max }
+  const fboAvgLookup = useMemo(() => {
+    const buckets = new Map<string, number[]>();
+    for (const r of initialPrices) {
+      if (!r.airport_code || !r.vendor_name || r.effective_price_per_gallon == null) continue;
+      const key = `${r.airport_code}|${r.vendor_name}`;
+      if (!buckets.has(key)) buckets.set(key, []);
+      buckets.get(key)!.push(r.effective_price_per_gallon);
+    }
+    const lookup = new Map<string, { avg: number; count: number; min: number; max: number }>();
+    for (const [key, prices] of buckets) {
+      const avg = prices.reduce((a, b) => a + b, 0) / prices.length;
+      lookup.set(key, {
+        avg: Math.round(avg * 10000) / 10000,
+        count: prices.length,
+        min: Math.min(...prices),
+        max: Math.max(...prices),
+      });
+    }
+    return lookup;
+  }, [initialPrices]);
+
   const filtered = useMemo(() => {
     let rows = initialPrices;
     if (sourceFilter !== "all") {
@@ -449,31 +472,47 @@ export default function FuelPricesTable({
 
       {/* ─── All Records View ─────────────────────────────────────────── */}
       {viewMode === "all" && (
-        <div className="rounded-xl border bg-white overflow-hidden shadow-sm">
+        <div className="rounded-xl border bg-white overflow-hidden shadow-sm overflow-x-auto">
           <table className="min-w-full text-sm">
             <thead>
               <tr className="bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                 <th className="px-4 py-3">Date</th>
                 <th className="px-4 py-3">Airport</th>
-                <th className="px-4 py-3">Vendor</th>
+                <th className="px-4 py-3">Vendor / FBO</th>
                 <th className="px-4 py-3">Tail</th>
-                <th className="px-4 py-3 text-right">Base $/gal</th>
                 <th className="px-4 py-3 text-right">Effective $/gal</th>
+                <th className="px-4 py-3 text-right">
+                  <span title="Average effective $/gal for this airport + vendor across all records">FBO Avg</span>
+                </th>
+                <th className="px-4 py-3 text-right">
+                  <span title="How this row's price compares to the airport+vendor average">vs Avg</span>
+                </th>
                 <th className="px-4 py-3 text-right">Gallons</th>
                 <th className="px-4 py-3 text-right">Fuel Total</th>
-                <th className="px-4 py-3 text-right">Change</th>
                 <th className="px-4 py-3 text-center">Source</th>
-                <th className="px-4 py-3 text-center">Invoices</th>
+                <th className="px-4 py-3 text-center">Invoice</th>
               </tr>
             </thead>
             <tbody className="divide-y">
               {pageRows.map((row) => {
-                const hasIncrease = row.price_change_pct != null && row.price_change_pct > 0;
                 const isJetInsight = (row.data_source ?? "invoice") === "jetinsight";
+                const fboKey = row.airport_code && row.vendor_name
+                  ? `${row.airport_code}|${row.vendor_name}` : null;
+                const fboStats = fboKey ? fboAvgLookup.get(fboKey) : null;
+                const price = row.effective_price_per_gallon;
+                let vsAvgPct: number | null = null;
+                if (price != null && fboStats && fboStats.count > 1) {
+                  vsAvgPct = ((price - fboStats.avg) / fboStats.avg) * 100;
+                  vsAvgPct = Math.round(vsAvgPct * 10) / 10;
+                }
+                const overpriced = vsAvgPct != null && vsAvgPct > 5;
+                const underpriced = vsAvgPct != null && vsAvgPct < -5;
                 return (
                   <tr
                     key={row.id}
-                    className={`hover:bg-gray-50 ${hasIncrease ? "bg-red-50" : isJetInsight ? "bg-emerald-50/40" : ""}`}
+                    className={`hover:bg-gray-50 ${
+                      overpriced ? "bg-red-50/60" : underpriced ? "bg-green-50/60" : isJetInsight ? "bg-emerald-50/40" : ""
+                    }`}
                   >
                     <td className="px-4 py-2.5 whitespace-nowrap">{fmtDate(row.invoice_date)}</td>
                     <td className="px-4 py-2.5 whitespace-nowrap font-medium">{row.airport_code || "\u2014"}</td>
@@ -481,26 +520,33 @@ export default function FuelPricesTable({
                       {row.vendor_name || "\u2014"}
                     </td>
                     <td className="px-4 py-2.5 whitespace-nowrap">{row.tail_number || "\u2014"}</td>
-                    <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono">
-                      {fmt$(row.base_price_per_gallon)}
-                    </td>
                     <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono font-medium">
-                      {fmt$(row.effective_price_per_gallon)}
+                      {fmt$(price)}
+                    </td>
+                    <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono text-gray-500">
+                      {fboStats ? (
+                        <span title={`${fboStats.count} records | range: ${fmt$(fboStats.min)} – ${fmt$(fboStats.max)}`}>
+                          {fmt$(fboStats.avg)}
+                          <span className="text-[10px] text-gray-400 ml-1">({fboStats.count})</span>
+                        </span>
+                      ) : (
+                        <span className="text-gray-300">{"\u2014"}</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2.5 whitespace-nowrap text-right">
+                      {vsAvgPct != null ? (
+                        <Badge variant={overpriced ? "danger" : underpriced ? "success" : "default"}>
+                          {vsAvgPct >= 0 ? "+" : ""}{vsAvgPct}%
+                        </Badge>
+                      ) : (
+                        <span className="text-gray-300 text-xs">{"\u2014"}</span>
+                      )}
                     </td>
                     <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono">
                       {row.gallons != null ? Number(row.gallons).toFixed(0) : "\u2014"}
                     </td>
                     <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono">
                       {fmt$(row.fuel_total, 2)}
-                    </td>
-                    <td className="px-4 py-2.5 whitespace-nowrap text-right">
-                      {hasIncrease ? (
-                        <Badge variant="danger">{fmtPct(row.price_change_pct)}</Badge>
-                      ) : row.price_change_pct != null ? (
-                        <span className="text-gray-400 text-xs">{fmtPct(row.price_change_pct)}</span>
-                      ) : (
-                        <span className="text-gray-300 text-xs">{"\u2014"}</span>
-                      )}
                     </td>
                     <td className="px-4 py-2.5 whitespace-nowrap text-center">
                       {sourceBadge(row.data_source)}
@@ -515,7 +561,7 @@ export default function FuelPricesTable({
                             className="text-blue-600 hover:text-blue-800 underline"
                             title="View this invoice"
                           >
-                            New
+                            View
                           </Link>
                           {row.previous_document_id ? (
                             <Link
