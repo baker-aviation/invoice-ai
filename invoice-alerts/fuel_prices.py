@@ -258,6 +258,7 @@ def store_fuel_price(
         "tail_number": data.get("tail_number"),
         "currency": data.get("currency", "USD"),
         "associated_line_items": json.dumps(data.get("associated_line_items", [])),
+        "data_source": data.get("data_source", "invoice"),
         "price_change_pct": increase["price_change_pct"] if increase else None,
         "previous_price": increase["previous_price"] if increase else None,
         "previous_document_id": increase.get("previous_document_id") if increase else None,

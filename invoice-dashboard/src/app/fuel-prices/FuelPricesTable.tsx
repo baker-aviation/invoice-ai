@@ -31,6 +31,24 @@ function fmtDate(d: string | null | undefined): string {
   }
 }
 
+// ─── Data source labels & colors ─────────────────────────────────────────────
+
+type SourceFilter = "all" | "invoice" | "jetinsight";
+
+const SOURCE_BADGE: Record<string, { label: string; classes: string }> = {
+  invoice:    { label: "Invoice",    classes: "bg-blue-100 text-blue-800" },
+  jetinsight: { label: "JetInsight", classes: "bg-emerald-100 text-emerald-800" },
+};
+
+function sourceBadge(source: string | null) {
+  const s = SOURCE_BADGE[source ?? "invoice"] ?? SOURCE_BADGE.invoice;
+  return (
+    <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${s.classes}`}>
+      {s.label}
+    </span>
+  );
+}
+
 export default function FuelPricesTable({
   initialPrices,
 }: {
@@ -40,6 +58,7 @@ export default function FuelPricesTable({
   const [search, setSearch] = useState("");
   const [airportFilter, setAirportFilter] = useState("");
   const [vendorFilter, setVendorFilter] = useState("");
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
 
   // Unique airports and vendors for filter dropdowns
   const airports = useMemo(() => {
@@ -58,8 +77,21 @@ export default function FuelPricesTable({
     return [...set].sort();
   }, [initialPrices]);
 
+  // Source counts
+  const sourceCounts = useMemo(() => {
+    const counts = { invoice: 0, jetinsight: 0 };
+    for (const r of initialPrices) {
+      const src = (r.data_source ?? "invoice") as keyof typeof counts;
+      if (src in counts) counts[src]++;
+    }
+    return counts;
+  }, [initialPrices]);
+
   const filtered = useMemo(() => {
     let rows = initialPrices;
+    if (sourceFilter !== "all") {
+      rows = rows.filter((r) => (r.data_source ?? "invoice") === sourceFilter);
+    }
     if (airportFilter) rows = rows.filter((r) => r.airport_code === airportFilter);
     if (vendorFilter) rows = rows.filter((r) => r.vendor_name === vendorFilter);
     if (search) {
@@ -71,13 +103,52 @@ export default function FuelPricesTable({
       );
     }
     return rows;
-  }, [initialPrices, airportFilter, vendorFilter, search]);
+  }, [initialPrices, sourceFilter, airportFilter, vendorFilter, search]);
 
   const pageRows = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
 
+  const hasBothSources = sourceCounts.invoice > 0 && sourceCounts.jetinsight > 0;
+  const hasJetInsight = sourceCounts.jetinsight > 0;
+
   return (
     <div className="space-y-4">
+      {/* Source filter pills */}
+      {(hasBothSources || hasJetInsight) && (
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs text-gray-400 mr-0.5">Source:</span>
+          {(["all", "invoice", "jetinsight"] as const).map((key) => {
+            const isActive = sourceFilter === key;
+            const count = key === "all" ? initialPrices.length : sourceCounts[key];
+            if (key !== "all" && count === 0) return null;
+            const label = key === "all" ? "All" : key === "invoice" ? "Invoices" : "JetInsight";
+            return (
+              <button
+                key={key}
+                type="button"
+                onClick={() => { setSourceFilter(key); setPage(0); }}
+                className={`inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-full border transition-colors ${
+                  isActive
+                    ? key === "jetinsight"
+                      ? "bg-emerald-100 text-emerald-800 border-emerald-300"
+                      : key === "invoice"
+                      ? "bg-blue-100 text-blue-800 border-blue-300"
+                      : "bg-slate-800 text-white border-slate-800"
+                    : "bg-white text-gray-600 border-gray-200 hover:border-gray-400 hover:bg-gray-50"
+                }`}
+              >
+                {label}
+                <span className={`inline-flex items-center justify-center min-w-[16px] h-4 px-1 text-[10px] font-bold rounded-full ${
+                  isActive ? "bg-white/30 text-inherit" : "bg-gray-100 text-gray-600"
+                }`}>
+                  {count}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-3">
         <select
@@ -127,16 +198,18 @@ export default function FuelPricesTable({
               <th className="px-4 py-3 text-right">Gallons</th>
               <th className="px-4 py-3 text-right">Fuel Total</th>
               <th className="px-4 py-3 text-right">Change</th>
+              <th className="px-4 py-3 text-center">Source</th>
               <th className="px-4 py-3 text-center">Invoices</th>
             </tr>
           </thead>
           <tbody className="divide-y">
             {pageRows.map((row) => {
               const hasIncrease = row.price_change_pct != null && row.price_change_pct > 0;
+              const isJetInsight = (row.data_source ?? "invoice") === "jetinsight";
               return (
                 <tr
                   key={row.id}
-                  className={`hover:bg-gray-50 ${hasIncrease ? "bg-red-50" : ""}`}
+                  className={`hover:bg-gray-50 ${hasIncrease ? "bg-red-50" : isJetInsight ? "bg-emerald-50/40" : ""}`}
                 >
                   <td className="px-4 py-2.5 whitespace-nowrap">{fmtDate(row.invoice_date)}</td>
                   <td className="px-4 py-2.5 whitespace-nowrap font-medium">{row.airport_code || "\u2014"}</td>
@@ -166,31 +239,38 @@ export default function FuelPricesTable({
                     )}
                   </td>
                   <td className="px-4 py-2.5 whitespace-nowrap text-center">
-                    <span className="inline-flex gap-2 text-xs">
-                      <Link
-                        href={`/invoices/${row.document_id}`}
-                        className="text-blue-600 hover:text-blue-800 underline"
-                        title="View this invoice"
-                      >
-                        New
-                      </Link>
-                      {row.previous_document_id ? (
+                    {sourceBadge(row.data_source)}
+                  </td>
+                  <td className="px-4 py-2.5 whitespace-nowrap text-center">
+                    {isJetInsight ? (
+                      <span className="text-xs text-gray-400">{"\u2014"}</span>
+                    ) : (
+                      <span className="inline-flex gap-2 text-xs">
                         <Link
-                          href={`/invoices/${row.previous_document_id}`}
-                          className="text-gray-500 hover:text-gray-700 underline"
-                          title="View baseline invoice"
+                          href={`/invoices/${row.document_id}`}
+                          className="text-blue-600 hover:text-blue-800 underline"
+                          title="View this invoice"
                         >
-                          Baseline
+                          New
                         </Link>
-                      ) : null}
-                    </span>
+                        {row.previous_document_id ? (
+                          <Link
+                            href={`/invoices/${row.previous_document_id}`}
+                            className="text-gray-500 hover:text-gray-700 underline"
+                            title="View baseline invoice"
+                          >
+                            Baseline
+                          </Link>
+                        ) : null}
+                      </span>
+                    )}
                   </td>
                 </tr>
               );
             })}
             {pageRows.length === 0 && (
               <tr>
-                <td colSpan={10} className="px-4 py-8 text-center text-gray-400">
+                <td colSpan={11} className="px-4 py-8 text-center text-gray-400">
                   No fuel price records found.
                 </td>
               </tr>
