@@ -57,6 +57,7 @@ const STAGE_META: Record<
 const CATEGORY_LABELS: Record<string, string> = {
   pilot_pic: "PIC",
   pilot_sic: "SIC",
+  skillbridge: "SkillBridge",
   dispatcher: "Dispatch",
   maintenance: "Mx",
   sales: "Sales",
@@ -70,6 +71,7 @@ const CATEGORY_LABELS: Record<string, string> = {
 const CATEGORY_COLORS: Record<string, string> = {
   pilot_pic: "bg-emerald-100 text-emerald-800 border-emerald-200",
   pilot_sic: "bg-sky-100 text-sky-800 border-sky-200",
+  skillbridge: "bg-cyan-100 text-cyan-800 border-cyan-200",
   dispatcher: "bg-violet-100 text-violet-800 border-violet-200",
   maintenance: "bg-amber-100 text-amber-800 border-amber-200",
   sales: "bg-pink-100 text-pink-800 border-pink-200",
@@ -83,6 +85,7 @@ const CATEGORY_COLORS: Record<string, string> = {
 const CATEGORY_OPTIONS = [
   { value: "pilot_pic", label: "Pilot — PIC" },
   { value: "pilot_sic", label: "Pilot — SIC" },
+  { value: "skillbridge", label: "SkillBridge" },
   { value: "dispatcher", label: "Dispatcher" },
   { value: "maintenance", label: "Maintenance" },
   { value: "sales", label: "Sales" },

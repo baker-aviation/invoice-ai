@@ -288,6 +288,38 @@ function isPositioningFlight(f: Flight): boolean {
   return !!(f.summary?.toLowerCase().includes("positioning"));
 }
 
+// Flight type keywords matching OpsBoard logic
+const FLIGHT_TYPE_KEYWORDS = [
+  "Revenue", "Owner", "Positioning", "Maintenance", "Training",
+  "Ferry", "Cargo", "Needs pos", "Crew conflict", "Time off",
+  "Assignment", "Transient",
+];
+
+/** Infer flight type from flight_type field or summary text */
+function inferFlightType(flight: Flight): string | null {
+  if (flight.flight_type) return flight.flight_type;
+  const text = flight.summary ?? "";
+  const afterPair = text.match(/\([A-Z]{3,4}\s*[-–]\s*[A-Z]{3,4}\)\s*[-–]\s*(.+)$/);
+  if (afterPair) {
+    const raw = afterPair[1].replace(/\s+flights?\s*$/i, "").trim();
+    if (raw) return raw;
+  }
+  const preBracket = text.match(/^([A-Za-z][A-Za-z /]+?)\s*[-–]?\s*\[/);
+  if (preBracket) {
+    const raw = preBracket[1].replace(/[-–]\s*$/, "").replace(/\s+flights?\s*$/i, "").trim();
+    if (raw) return raw;
+  }
+  for (const kw of FLIGHT_TYPE_KEYWORDS) {
+    if (new RegExp(`\\b${kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(text)) {
+      return kw;
+    }
+  }
+  return null;
+}
+
+/** Categories that matter for AOG van scheduling */
+const AOG_ACTIVE_TYPES = new Set(["Revenue", "Owner", "Positioning"]);
+
 /** "in 2h 15m" or "in 45m" until a future ISO timestamp. Returns "" if in the past. */
 function fmtTimeUntil(iso: string): string {
   const diff = new Date(iso).getTime() - Date.now();
@@ -493,6 +525,158 @@ function routeDistKm(items: VanFlightItem[]): number {
 }
 
 // ---------------------------------------------------------------------------
+// Slack share modal for a van's schedule
+// ---------------------------------------------------------------------------
+
+type SlackChannel = { id: string; name: string };
+type SlackShareState = "idle" | "loading-channels" | "picking" | "sending" | "success" | "error";
+
+function SlackShareModal({
+  vanName,
+  vanId,
+  homeAirport,
+  date,
+  items,
+  onClose,
+}: {
+  vanName: string;
+  vanId: number;
+  homeAirport: string;
+  date: string;
+  items: VanFlightItem[];
+  onClose: () => void;
+}) {
+  const [state, setState] = useState<SlackShareState>("loading-channels");
+  const [channels, setChannels] = useState<SlackChannel[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+
+  useEffect(() => {
+    async function loadChannels() {
+      try {
+        const res = await fetch("/api/vans/share-slack");
+        const data = await res.json();
+        if (!data.ok) {
+          setError(data.error ?? "Failed to load channels");
+          setState("error");
+          return;
+        }
+        setChannels(data.channels);
+        setState("picking");
+      } catch (e) {
+        setError(String(e));
+        setState("error");
+      }
+    }
+    loadChannels();
+  }, []);
+
+  async function handleShare(channel: SlackChannel) {
+    setState("sending");
+    try {
+      const payload = {
+        channel: channel.id,
+        vanName,
+        vanId,
+        homeAirport,
+        date,
+        items: items.map((item) => ({
+          tail: item.arrFlight.tail_number ?? "—",
+          route: `${item.arrFlight.departure_icao?.replace(/^K/, "") ?? "?"} → ${item.airport}`,
+          arrivalTime: item.arrFlight.scheduled_arrival ? fmtUtcHM(item.arrFlight.scheduled_arrival) : "—",
+          status: item.arrFlight.scheduled_arrival && new Date(item.arrFlight.scheduled_arrival) < new Date() ? "~Landed" : "Scheduled",
+          nextDep: item.nextDep ? `Flying again ${fmtUtcHM(item.nextDep.scheduled_departure)} → ${item.nextDep.arrival_icao?.replace(/^K/, "") ?? "?"}` : undefined,
+          driveTime: item.distKm > 0 ? fmtDriveTime(item.distKm) : undefined,
+        })),
+      };
+      const res = await fetch("/api/vans/share-slack", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setState("success");
+        setTimeout(onClose, 1500);
+      } else {
+        setError(data.error ?? "Failed to share");
+        setState("error");
+      }
+    } catch (e) {
+      setError(String(e));
+      setState("error");
+    }
+  }
+
+  const filtered = channels.filter((c) =>
+    c.name.toLowerCase().includes(search.toLowerCase())
+  );
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
+      <div
+        className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4 overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-4 py-3 border-b flex items-center justify-between">
+          <div className="font-semibold text-sm">Share to Slack — {vanName}</div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-700 text-lg leading-none">&times;</button>
+        </div>
+
+        {state === "loading-channels" && (
+          <div className="px-4 py-8 text-center text-sm text-gray-400 animate-pulse">Loading Slack channels...</div>
+        )}
+
+        {state === "error" && (
+          <div className="px-4 py-6 text-center space-y-2">
+            <div className="text-sm text-red-600">{error}</div>
+            <button onClick={onClose} className="text-xs text-gray-500 hover:underline">Close</button>
+          </div>
+        )}
+
+        {state === "picking" && (
+          <div className="max-h-80 overflow-y-auto">
+            <div className="px-4 py-2 sticky top-0 bg-white border-b">
+              <input
+                type="text"
+                placeholder="Search channels..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="w-full text-sm border rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-300"
+              />
+            </div>
+            {filtered.length === 0 ? (
+              <div className="px-4 py-6 text-sm text-gray-400 text-center">No channels found</div>
+            ) : (
+              <div className="divide-y">
+                {filtered.map((ch) => (
+                  <button
+                    key={ch.id}
+                    onClick={() => handleShare(ch)}
+                    className="w-full px-4 py-2.5 text-left text-sm hover:bg-blue-50 transition-colors flex items-center gap-2"
+                  >
+                    <span className="text-gray-400">#</span>
+                    <span className="font-medium text-gray-700">{ch.name}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {state === "sending" && (
+          <div className="px-4 py-8 text-center text-sm text-gray-400 animate-pulse">Sending to Slack...</div>
+        )}
+
+        {state === "success" && (
+          <div className="px-4 py-8 text-center text-sm text-green-600 font-medium">Shared successfully!</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // VanScheduleCard — now receives items as props (no internal computation)
 // ---------------------------------------------------------------------------
 
@@ -500,6 +684,7 @@ function VanScheduleCard({
   zone,
   color,
   items,
+  date,
   liveVanPos,
   liveAddress,
   samsaraVanName,
@@ -514,6 +699,7 @@ function VanScheduleCard({
   zone: (typeof FIXED_VAN_ZONES)[number];
   color: string;
   items: VanFlightItem[];
+  date: string;
   liveVanPos?: { lat: number; lon: number };
   liveAddress?: string | null;
   samsaraVanName?: string | null;
@@ -526,6 +712,7 @@ function VanScheduleCard({
   onRemove: (flightId: string) => void;  // delete aircraft from this van
 }) {
   const [expanded, setExpanded] = useState(true);
+  const [showSlackModal, setShowSlackModal] = useState(false);
   const now = new Date();
 
   const totalDistKm = routeDistKm(items);
@@ -541,6 +728,16 @@ function VanScheduleCard({
       onDrop={(e) => onDrop(e, zone.vanId)}
       onDragLeave={onDragLeave}
     >
+      {showSlackModal && (
+        <SlackShareModal
+          vanName={samsaraVanName ?? zone.name}
+          vanId={zone.vanId}
+          homeAirport={zone.homeAirport}
+          date={date}
+          items={items}
+          onClose={() => setShowSlackModal(false)}
+        />
+      )}
       <div
         className="flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-gray-50"
         onClick={() => setExpanded((v) => !v)}
@@ -575,6 +772,13 @@ function VanScheduleCard({
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap justify-end">
+          <button
+            onClick={(e) => { e.stopPropagation(); setShowSlackModal(true); }}
+            className="text-xs text-gray-500 hover:text-purple-700 hover:bg-purple-50 border border-gray-200 hover:border-purple-300 rounded-lg px-2 py-1 transition-colors font-medium"
+            title="Share to Slack"
+          >
+            Share to Slack
+          </button>
           {hasOverrides && (
             <span className="text-xs rounded-full px-2 py-0.5 font-medium bg-amber-100 text-amber-700">
               Edited
@@ -1002,6 +1206,7 @@ function ScheduleTab({
               zone={zone}
               color={color}
               items={finalItemsByVan.get(zone.vanId) ?? []}
+              date={date}
               liveVanPos={liveVanPositions.get(zone.vanId)}
               liveAddress={liveVanAddresses.get(zone.vanId)}
               samsaraVanName={vanZoneNames.get(zone.vanId)}
@@ -1263,7 +1468,7 @@ const haversineKmClient = (lat1: number, lon1: number, lat2: number, lon2: numbe
 // ---------------------------------------------------------------------------
 
 export default function VanPositioningClient({ initialFlights }: { initialFlights: Flight[] }) {
-  const dates = useMemo(() => getDateRange(7), []);
+  const dates = useMemo(() => getDateRange(3), []); // 36h window ≈ 3 days
   const [dayIdx, setDayIdx] = useState(0);
   const [activeTab, setActiveTab] = useState<"map" | "schedule">("map");
   const [viewMode, setViewMode] = useState<"map" | "list">("map");
@@ -1275,12 +1480,63 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
   const vans       = useMemo(() => assignVans(positions), [positions]);
   const displayedVans = selectedVan === null ? vans : vans.filter((v) => v.vanId === selectedVan);
 
-  // Flights arriving on the selected date (for stats bar)
+  // Filter flights to active types only (Charter/Revenue, Positioning, Owner)
+  const activeFlights = useMemo(
+    () => initialFlights.filter((f) => {
+      const ft = inferFlightType(f);
+      return ft !== null && AOG_ACTIVE_TYPES.has(ft);
+    }),
+    [initialFlights],
+  );
+
+  // Maintenance flights (for idle/maintenance section)
+  const maintenanceFlights = useMemo(
+    () => initialFlights.filter((f) => {
+      const ft = inferFlightType(f);
+      return ft === "Maintenance";
+    }),
+    [initialFlights],
+  );
+
+  // Collect all tail numbers that have active flights in the 36h window
+  const activeTails = useMemo(() => {
+    const tails = new Set<string>();
+    for (const f of activeFlights) {
+      if (f.tail_number) tails.add(f.tail_number);
+    }
+    return tails;
+  }, [activeFlights]);
+
+  // Maintenance tails
+  const maintenanceTails = useMemo(() => {
+    const tails = new Set<string>();
+    for (const f of maintenanceFlights) {
+      if (f.tail_number) tails.add(f.tail_number);
+    }
+    return tails;
+  }, [maintenanceFlights]);
+
+  // All tails from positions (fleet)
+  const allTails = useMemo(() => positions.map((p) => p.tail), [positions]);
+
+  // Idle aircraft: tails in the fleet but NOT in activeFlights and NOT in maintenance
+  const idleAircraft = useMemo(
+    () => positions.filter((p) => !activeTails.has(p.tail) && !maintenanceTails.has(p.tail)),
+    [positions, activeTails, maintenanceTails],
+  );
+
+  // Maintenance aircraft: tails with maintenance flights
+  const maintenanceAircraft = useMemo(
+    () => positions.filter((p) => maintenanceTails.has(p.tail)),
+    [positions, maintenanceTails],
+  );
+
+  // Flights arriving on the selected date (for stats bar) — only active types
   const flightsForDay = useMemo(
-    () => initialFlights.filter((f) =>
+    () => activeFlights.filter((f) =>
       (f.scheduled_arrival ?? f.scheduled_departure).startsWith(selectedDate)
     ),
-    [initialFlights, selectedDate],
+    [activeFlights, selectedDate],
   );
 
   // ── Samsara live van data (lifted so map + schedule can both use it) ──
@@ -1736,7 +1992,60 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
 
       {/* ── Schedule tab ── */}
       {activeTab === "schedule" && (
-        <ScheduleTab allFlights={initialFlights} date={selectedDate} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} />
+        <ScheduleTab allFlights={activeFlights} date={selectedDate} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} />
+      )}
+
+      {/* ── Idle & Maintenance Aircraft ── */}
+      {(idleAircraft.length > 0 || maintenanceAircraft.length > 0) && (
+        <div className="space-y-4">
+          {maintenanceAircraft.length > 0 && (
+            <div className="rounded-xl border-2 border-orange-200 bg-orange-50/50 overflow-hidden">
+              <div className="px-4 py-3 border-b border-orange-200 bg-orange-100/50">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-bold text-orange-800">Maintenance</span>
+                  <span className="text-xs bg-orange-200 text-orange-700 rounded-full px-2 py-0.5 font-semibold">
+                    {maintenanceAircraft.length}
+                  </span>
+                </div>
+                <p className="text-xs text-orange-600 mt-0.5">Aircraft currently in maintenance — excluded from van scheduling</p>
+              </div>
+              <div className="divide-y divide-orange-100">
+                {maintenanceAircraft.map((ac) => (
+                  <div key={ac.tail} className="px-4 py-2.5 flex items-center gap-4">
+                    <span className="font-mono font-semibold text-sm text-gray-800">{ac.tail}</span>
+                    <span className="text-xs text-gray-500">{ac.airport}</span>
+                    <span className="text-xs text-gray-400">{ac.airportName}</span>
+                    <span className="text-xs bg-orange-100 text-orange-700 rounded px-1.5 py-0.5">Maintenance</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {idleAircraft.length > 0 && (
+            <div className="rounded-xl border-2 border-gray-200 bg-gray-50/50 overflow-hidden">
+              <div className="px-4 py-3 border-b border-gray-200 bg-gray-100/50">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-bold text-gray-700">Nothing Scheduled</span>
+                  <span className="text-xs bg-gray-200 text-gray-600 rounded-full px-2 py-0.5 font-semibold">
+                    {idleAircraft.length}
+                  </span>
+                </div>
+                <p className="text-xs text-gray-500 mt-0.5">No charter, positioning, or owner flights within 36 hours</p>
+              </div>
+              <div className="divide-y divide-gray-100">
+                {idleAircraft.map((ac) => (
+                  <div key={ac.tail} className="px-4 py-2.5 flex items-center gap-4">
+                    <span className="font-mono font-semibold text-sm text-gray-800">{ac.tail}</span>
+                    <span className="text-xs text-gray-500">{ac.airport}</span>
+                    <span className="text-xs text-gray-400">{ac.airportName}</span>
+                    <span className="text-xs bg-gray-100 text-gray-500 rounded px-1.5 py-0.5">Idle</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );

@@ -415,9 +415,9 @@ def _openai_extract(resume_text: str) -> Dict[str, Any]:
             "category": {
                 "type": "string",
                 "enum": [
-                    "pilot_pic", "pilot_sic", "dispatcher",
-                    "maintenance", "sales", "hr", "admin",
-                    "management", "line_service", "other",
+                    "pilot_pic", "pilot_sic", "skillbridge",
+                    "dispatcher", "maintenance", "sales", "hr",
+                    "admin", "management", "line_service", "other",
                 ],
             },
             "employment_type": {
@@ -486,6 +486,7 @@ Rules:
 - category:
   - pilot_pic if applicant clearly indicates PIC time OR captain experience.
   - pilot_sic if applicant indicates SIC / First Officer time but PIC not clearly stated.
+  - skillbridge if applicant mentions SkillBridge, DOD SkillBridge, military transition program, or is applying through a military-to-civilian aviation transition program.
   - dispatcher if dispatch or flight-following role.
   - maintenance if A&P mechanic, avionics tech, or any aircraft maintenance role.
   - sales if sales, business development, or charter sales.
