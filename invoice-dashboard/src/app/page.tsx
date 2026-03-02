@@ -50,6 +50,12 @@ export default function HomePage() {
             />
 
             <CardLink
+              href="/pipeline"
+              title="Hiring Pipeline"
+              subtitle="Track candidates through hiring stages"
+            />
+
+            <CardLink
               href="/maintenance"
               title="Maintenance"
               subtitle="Van positioning · overnight aircraft locations"
