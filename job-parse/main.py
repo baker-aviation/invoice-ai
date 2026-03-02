@@ -20,7 +20,10 @@ from starlette.responses import RedirectResponse
 
 from datetime import datetime, timedelta, timezone
 
+from auth_middleware import add_auth_middleware
+
 app = FastAPI()
+add_auth_middleware(app)
 limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
@@ -109,7 +112,7 @@ def _download_gcs_bytes(bucket: storage.Bucket, gcs_key: str) -> bytes:
     return blob.download_as_bytes()
 
 
-def _get_gcs_signed_url(bucket_name: str, gcs_key: str, expires_seconds: int = 604800) -> Optional[str]:
+def _get_gcs_signed_url(bucket_name: str, gcs_key: str, expires_seconds: int = 7200) -> Optional[str]:
     """
     Generate a V4 signed URL for a GCS object.
     Works locally and on Cloud Run. On Cloud Run, we often need to use the
@@ -367,6 +370,29 @@ def _compute_soft_gate_pic_met(result: Dict[str, Any]) -> Optional[bool]:
     return None
 
 
+def _compute_soft_gate_pic_status(result: Dict[str, Any]) -> Optional[str]:
+    """
+    Human-readable PIC gate status string.
+    The frontend picGateShort() checks:
+      - starts with "meets" → Met
+      - starts with "close" or contains "near" → Close
+      - anything else → Not met
+    """
+    pm = result.get("pilot_metrics") or {}
+    tt = pm.get("total_time_hours")
+    pic = pm.get("pic_time_hours")
+    if not isinstance(tt, (int, float)) or not isinstance(pic, (int, float)):
+        return None
+    tt_ok = tt >= PIC_SOFT_GATE_TT
+    pic_ok = pic >= PIC_SOFT_GATE_PIC
+    if tt_ok and pic_ok:
+        return "Meets requirements"
+    # "Close" if both are at least 75% of the threshold
+    if tt >= PIC_SOFT_GATE_TT * 0.75 and pic >= PIC_SOFT_GATE_PIC * 0.75:
+        return "Close — near minimums"
+    return "Does not meet minimums"
+
+
 def _openai_extract(resume_text: str) -> Dict[str, Any]:
     """
     Uses OpenAI Responses API with strict JSON schema.
@@ -535,9 +561,45 @@ Rules:
         )
 
 
+def _validate_type_ratings(result: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Post-processing guard: cross-check has_citation_x and has_challenger_300
+    against the actual extracted ratings list.  GPT-4.1-mini sometimes sets
+    the boolean true for similar-sounding but different Cessna types
+    (CE-525, CE-560XL, etc.).
+    """
+    tr = result.get("type_ratings") or {}
+    ratings = [r.lower() for r in (tr.get("ratings") or [])]
+    joined = " ".join(ratings)
+
+    # Citation X must match CE-750, CE750, C750, or "citation x"
+    citation_x_present = any(
+        tok in joined
+        for tok in ("ce-750", "ce750", "c750", "citation x")
+    )
+    if tr.get("has_citation_x") and not citation_x_present:
+        print(f"VALIDATE: overriding has_citation_x → false (ratings: {ratings})", flush=True)
+        tr["has_citation_x"] = False
+
+    # Challenger 300/350 must match CL-300, CL300, CL-350, CL350, or "challenger 300/350"
+    challenger_present = any(
+        tok in joined
+        for tok in ("cl-300", "cl300", "cl-350", "cl350", "challenger 300", "challenger 350")
+    )
+    if tr.get("has_challenger_300") and not challenger_present:
+        print(f"VALIDATE: overriding has_challenger_300 → false (ratings: {ratings})", flush=True)
+        tr["has_challenger_300"] = False
+
+    result["type_ratings"] = tr
+    return result
+
+
 def _upsert_parse_row(supa: Client, application_id: int, result: Dict[str, Any]) -> None:
     # sanitize again (cheap insurance)
     result = _sanitize_for_db(result)
+
+    # Validate type rating booleans against actual ratings list
+    result = _validate_type_ratings(result)
 
     candidate = result.get("candidate") or {}
     pm = result.get("pilot_metrics") or {}
@@ -546,6 +608,10 @@ def _upsert_parse_row(supa: Client, application_id: int, result: Dict[str, Any])
     soft_gate_pic_met = result.get("soft_gate_pic_met")
     if soft_gate_pic_met is None:
         soft_gate_pic_met = _compute_soft_gate_pic_met(result)
+
+    soft_gate_pic_status = result.get("soft_gate_pic_status")
+    if soft_gate_pic_status is None:
+        soft_gate_pic_status = _compute_soft_gate_pic_status(result)
 
     row = {
         "application_id": application_id,
@@ -571,6 +637,10 @@ def _upsert_parse_row(supa: Client, application_id: int, result: Dict[str, Any])
         "has_challenger_300_type_rating": tr.get("has_challenger_300"),
         "type_ratings": tr.get("ratings") or [],
         "type_ratings_raw": tr.get("raw_snippet"),
+
+        # soft gate
+        "soft_gate_pic_met": soft_gate_pic_met,
+        "soft_gate_pic_status": soft_gate_pic_status,
 
         # misc
         "notes": result.get("notes"),
@@ -673,7 +743,7 @@ def api_file_redirect(file_id: int):
     signed_url = _get_gcs_signed_url(
         f.get("gcs_bucket") or "",
         f.get("gcs_key") or "",
-        expires_seconds=604800,
+        expires_seconds=7200,  # 2 hours
     )
     if not signed_url:
         raise HTTPException(status_code=500, detail="could not sign url")
@@ -965,6 +1035,51 @@ def parse_backlog(
         "attempted": len(to_parse),
         "parsed": parsed_n,
         "failed": failed_n,
+        "results": results,
+    }
+
+
+@app.post("/jobs/reparse_all")
+def reparse_all(limit: int = Query(100, ge=1, le=500)):
+    """
+    Re-parse ALL already-parsed applications (up to `limit`).
+    Calls parse_application() which upserts, so it overwrites existing rows
+    with fresh OpenAI extraction + new validation/gate logic.
+    """
+    supa = _supa()
+
+    rows = safe_select_many(
+        PARSE_TABLE, "application_id", limit=int(limit),
+    ) or []
+
+    aids = [int(r["application_id"]) for r in rows if r.get("application_id") is not None]
+    print(f"REPARSE: {len(aids)} applications to reparse", flush=True)
+
+    results: List[Dict[str, Any]] = []
+    ok_n = 0
+    fail_n = 0
+
+    for aid in aids:
+        try:
+            out = parse_application(application_id=aid)
+            extracted = out.get("extracted") or {}
+            results.append({
+                "application_id": aid,
+                "status": "reparsed",
+                "category": extracted.get("category"),
+                "soft_gate_pic_met": extracted.get("soft_gate_pic_met"),
+                "has_citation_x": (extracted.get("type_ratings") or {}).get("has_citation_x"),
+            })
+            ok_n += 1
+        except HTTPException as e:
+            results.append({"application_id": aid, "status": "failed", "error": str(e.detail)})
+            fail_n += 1
+
+    return {
+        "ok": True,
+        "total": len(aids),
+        "reparsed": ok_n,
+        "failed": fail_n,
         "results": results,
     }
 

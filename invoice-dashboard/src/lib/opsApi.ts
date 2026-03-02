@@ -66,25 +66,37 @@ function isNoiseNotam(alert: { alert_type: string; body: string | null }): boole
 // Extract NOTAM dates from raw_data JSON (matches backend logic)
 // ---------------------------------------------------------------------------
 
-function extractNotamDates(rawData: Record<string, unknown> | null): NotamDates | null {
+function extractNotamDates(rawData: unknown): NotamDates | null {
   if (!rawData) return null;
 
-  // Current format: raw_data = {"notam_dates": {effective_start, ...}}
-  const nd = (rawData.notam_dates ?? {}) as Record<string, unknown>;
+  // Supabase may return jsonb as a string — parse it first
+  let obj: Record<string, unknown>;
+  try {
+    obj = typeof rawData === "string" ? JSON.parse(rawData) : (rawData as Record<string, unknown>);
+  } catch {
+    return null;
+  }
 
-  // Legacy format: raw_data = {properties: {coreNOTAMData: {notam: {effectiveStart, ...}}}}
-  const props = (rawData.properties ?? {}) as Record<string, unknown>;
-  const core = (props.coreNOTAMData ?? {}) as Record<string, unknown>;
-  const notam = (core.notam ?? {}) as Record<string, unknown>;
+  // Compact format (current): {"notam_dates": {...}}
+  const nd = obj.notam_dates as Record<string, unknown> | undefined;
 
+  // Legacy GeoJSON: {properties: {coreNOTAMData: {notam: {...}}}}
+  // Also handles {properties: {coreNOTAMData: {notamEvent: {notam: {...}}}}}
+  const core = (obj.properties as Record<string, unknown>)?.coreNOTAMData as Record<string, unknown> | undefined;
+  const notam = (core?.notam ?? (core?.notamEvent as Record<string, unknown>)?.notam) as Record<string, unknown> | undefined;
+
+  // If neither format found, bail out
+  if (!nd && !notam) return null;
+
+  // Merge both formats — compact takes precedence over legacy
   return {
-    effective_start: (nd.effective_start as string) ?? (notam.effectiveStart as string) ?? null,
-    effective_end: (nd.effective_end as string) ?? (notam.effectiveEnd as string) ?? null,
-    issued: (nd.issued as string) ?? (notam.issued as string) ?? null,
-    status: (nd.status as string) ?? (notam.status as string) ?? null,
-    start_date_utc: (nd.start_date_utc as string) ?? (notam.startDate as string) ?? null,
-    end_date_utc: (nd.end_date_utc as string) ?? (notam.endDate as string) ?? null,
-    issue_date_utc: (nd.issue_date_utc as string) ?? (notam.issueDate as string) ?? null,
+    effective_start: (nd?.effective_start as string) ?? (notam?.effectiveStart as string) ?? null,
+    effective_end: (nd?.effective_end as string) ?? (notam?.effectiveEnd as string) ?? null,
+    issued: (nd?.issued as string) ?? (notam?.issued as string) ?? null,
+    status: (nd?.status as string) ?? (notam?.status as string) ?? null,
+    start_date_utc: (nd?.start_date_utc as string) ?? (notam?.startDate as string) ?? null,
+    end_date_utc: (nd?.end_date_utc as string) ?? (notam?.endDate as string) ?? null,
+    issue_date_utc: (nd?.issue_date_utc as string) ?? (notam?.issueDate as string) ?? null,
   };
 }
 
@@ -151,7 +163,7 @@ export async function fetchFlights(params: {
         original_departure_time: row.original_departure_time as string | null,
         acknowledged_at: row.acknowledged_at as string | null,
         created_at: row.created_at as string,
-        notam_dates: extractNotamDates(row.raw_data as Record<string, unknown> | null),
+        notam_dates: extractNotamDates(row.raw_data),
       };
 
       const fid = alert.flight_id ?? "";

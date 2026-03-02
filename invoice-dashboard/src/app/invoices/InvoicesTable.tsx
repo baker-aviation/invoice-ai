@@ -43,7 +43,7 @@ function isOverdue(inv: any): boolean {
   return diffDays > 30;
 }
 
-const ALL_CATEGORIES: string[] = ["ALL", "FBO/Fuel", "Maintenance/Parts", "Lease/Utilities", "Pilot Operations", "Subscriptions", "Other"];
+const ALL_CATEGORIES: string[] = ["ALL", "FBO/Fuel", "Maintenance/Parts", "Lease/Utilities", "Pilot Training", "Pilot Operations", "Subscriptions", "Other"];
 
 export default function InvoicesTable({ initialInvoices }: { initialInvoices: any[] }) {
   const [q, setQ] = useState("");

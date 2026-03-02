@@ -90,6 +90,9 @@ export type HiringStage =
   | "hired"
   | "rejected";
 
+export const PIPELINE_STAGES = ["new", "screening", "phone_screen", "interview", "offer", "hired", "rejected"] as const;
+export type PipelineStage = (typeof PIPELINE_STAGES)[number];
+
 export type JobRow = {
   id: number;
   application_id: number;
@@ -97,6 +100,7 @@ export type JobRow = {
   updated_at: string | null;
 
   hiring_stage: HiringStage;
+  pipeline_stage: PipelineStage;
 
   category: string | null;
   employment_type: string | null;

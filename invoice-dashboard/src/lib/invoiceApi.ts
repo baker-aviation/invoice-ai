@@ -1,5 +1,6 @@
 import { createServiceClient } from "@/lib/supabase/service";
 import { cloudRunFetch } from "@/lib/cloud-run-fetch";
+import { signGcsUrl } from "@/lib/gcs";
 import type { AlertRow, AlertsResponse, FuelPriceRow, FuelPricesResponse, InvoiceDetailResponse, InvoiceListItem, InvoiceListResponse } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
@@ -70,8 +71,10 @@ export async function fetchInvoices(params: {
 
 // ---------------------------------------------------------------------------
 // Invoice detail — direct Supabase query (with optional Cloud Run fallback
-// for signed PDF URL)
+// for signed PDF URL, plus direct GCS signing)
 // ---------------------------------------------------------------------------
+
+const SAFE_ID_RE = /^[a-zA-Z0-9_-]+$/;
 
 function getSignedUrlBase(): string | undefined {
   const parser = process.env.PARSER_API_BASE_URL ?? process.env.INVOICE_PARSER_URL;
@@ -83,6 +86,10 @@ function getSignedUrlBase(): string | undefined {
 const BASE = getSignedUrlBase();
 
 export async function fetchInvoiceDetail(documentId: string): Promise<InvoiceDetailResponse> {
+  if (!SAFE_ID_RE.test(documentId)) {
+    throw new Error("Invalid document ID");
+  }
+
   const supa = createServiceClient();
 
   const { data, error } = await supa
@@ -120,11 +127,24 @@ export async function fetchInvoiceDetail(documentId: string): Promise<InvoiceDet
         signedPdfUrl = body.signed_pdf_url ?? null;
       }
     } catch {
-      // Cloud Run unavailable or no GCP_SA_KEY — fall through to proxy
+      // Cloud Run unavailable or no GCP_SA_KEY — fall through to GCS signing
     }
   }
 
-  // Fallback: use direct GCS proxy route (bypasses Cloud Run)
+  // Fallback: try direct GCS signing (works in iframes — no redirect)
+  if (!signedPdfUrl) {
+    const { data: doc } = await supa
+      .from("documents")
+      .select("gcs_bucket, gcs_path")
+      .eq("id", documentId)
+      .maybeSingle();
+
+    if (doc?.gcs_bucket && doc?.gcs_path) {
+      signedPdfUrl = await signGcsUrl(doc.gcs_bucket, doc.gcs_path);
+    }
+  }
+
+  // Final fallback: use direct GCS proxy route (bypasses Cloud Run)
   if (!signedPdfUrl) {
     signedPdfUrl = `/api/invoices/${documentId}/pdf`;
   }

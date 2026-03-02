@@ -23,15 +23,15 @@ export default function FileViewer({
   downloadUrl,
 }: {
   file: any;
-  downloadUrl: string;
+  downloadUrl: string | null;
 }) {
   const [open, setOpen] = useState(false);
 
-  const canViewInline = isPdf(file) || (isDocx(file) && !!file.signed_url);
+  const canViewInline = !!downloadUrl && (isPdf(file) || (isDocx(file) && !!file.signed_url));
 
   // PDF: embed directly via the redirect URL (browser renders natively)
   // DOCX: use Microsoft Office online viewer with the signed GCS URL
-  const viewerSrc = isPdf(file)
+  const viewerSrc = isPdf(file) && downloadUrl
     ? downloadUrl
     : isDocx(file) && file.signed_url
     ? `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(file.signed_url)}`
@@ -60,14 +60,18 @@ export default function FileViewer({
               {open ? "Hide" : "View inline"}
             </button>
           )}
-          <a
-            href={downloadUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="text-blue-600 hover:underline whitespace-nowrap text-xs"
-          >
-            Open →
-          </a>
+          {downloadUrl ? (
+            <a
+              href={downloadUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="text-blue-600 hover:underline whitespace-nowrap text-xs"
+            >
+              Open →
+            </a>
+          ) : (
+            <span className="text-xs text-gray-400">No download URL</span>
+          )}
         </div>
       </div>
 
@@ -79,6 +83,7 @@ export default function FileViewer({
             className="w-full"
             style={{ height: "720px" }}
             title={file.filename ?? "file"}
+            sandbox="allow-scripts allow-same-origin"
           />
         </div>
       )}

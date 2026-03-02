@@ -10,35 +10,29 @@ const PAGE_SIZE = 25;
 // ---------------------------------------------------------------------------
 
 const CATEGORY_LABELS: Record<string, string> = {
-  pilot_pic: "Pilot — PIC",
-  pilot_sic: "Pilot — SIC",
-  dispatcher: "Dispatcher",
-  maintenance: "Maintenance",
+  pilot_pic: "PIC",
+  pilot_sic: "SIC",
+  dispatcher: "Dispatch",
+  maintenance: "Mx",
   sales: "Sales",
   hr: "HR",
   admin: "Admin",
-  management: "Management",
-  line_service: "Line Service",
+  management: "Mgmt",
+  line_service: "Line",
   other: "Other",
 };
 
 const CATEGORY_COLORS: Record<string, string> = {
-  pilot_pic: "bg-emerald-100 text-emerald-800",
-  pilot_sic: "bg-sky-100 text-sky-800",
-  dispatcher: "bg-violet-100 text-violet-800",
-  maintenance: "bg-amber-100 text-amber-800",
-  sales: "bg-pink-100 text-pink-800",
-  hr: "bg-indigo-100 text-indigo-800",
-  admin: "bg-slate-100 text-slate-700",
-  management: "bg-orange-100 text-orange-800",
-  line_service: "bg-teal-100 text-teal-800",
-  other: "bg-gray-100 text-gray-600",
-};
-
-const RATING_LABELS: Record<string, string> = {
-  "CE-750": "CE-750 Citation X",
-  "CL-300": "CL-300 Challenger 300",
-  "CL-350": "CL-350 Challenger 350",
+  pilot_pic: "bg-emerald-100 text-emerald-800 border-emerald-200",
+  pilot_sic: "bg-sky-100 text-sky-800 border-sky-200",
+  dispatcher: "bg-violet-100 text-violet-800 border-violet-200",
+  maintenance: "bg-amber-100 text-amber-800 border-amber-200",
+  sales: "bg-pink-100 text-pink-800 border-pink-200",
+  hr: "bg-indigo-100 text-indigo-800 border-indigo-200",
+  admin: "bg-slate-100 text-slate-700 border-slate-200",
+  management: "bg-orange-100 text-orange-800 border-orange-200",
+  line_service: "bg-teal-100 text-teal-800 border-teal-200",
+  other: "bg-gray-100 text-gray-600 border-gray-200",
 };
 
 function categoryLabel(raw: string): string {
@@ -46,15 +40,7 @@ function categoryLabel(raw: string): string {
 }
 
 function categoryBadgeClass(raw: string): string {
-  return CATEGORY_COLORS[raw] ?? "bg-gray-100 text-gray-600";
-}
-
-function ratingLabel(code: string): string {
-  const upper = code.toUpperCase();
-  for (const [key, label] of Object.entries(RATING_LABELS)) {
-    if (upper.includes(key)) return label;
-  }
-  return code;
+  return CATEGORY_COLORS[raw] ?? "bg-gray-100 text-gray-600 border-gray-200";
 }
 
 // ---------------------------------------------------------------------------
@@ -65,12 +51,19 @@ function normalize(v: any) {
   return String(v ?? "").trim();
 }
 
-function fmtTime(s: any): string {
+function fmtDate(s: any): string {
   const t = normalize(s);
   if (!t) return "—";
   const d = new Date(t);
-  if (isNaN(d.getTime())) return t.replace("T", " ").slice(0, 16);
-  return d.toISOString().slice(0, 16).replace("T", " ");
+  if (isNaN(d.getTime())) return t.slice(0, 10);
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "2-digit" });
+}
+
+function fmtHours(v: any): string {
+  if (v == null) return "—";
+  const n = Number(v);
+  if (isNaN(n)) return String(v);
+  return n.toLocaleString("en-US", { maximumFractionDigits: 0 });
 }
 
 function hasSkillbridge(j: any): boolean {
@@ -80,17 +73,16 @@ function hasSkillbridge(j: any): boolean {
   return haystack.includes("skillbridge") || haystack.includes("skill bridge");
 }
 
-// Check CE-750/Citation X via boolean flag OR type_ratings array
 function hasCitationX(j: any): boolean {
-  if (j.has_citation_x === true) return true;
   const ratings: string[] = Array.isArray(j.type_ratings) ? j.type_ratings : [];
-  return ratings.some((r) => {
+  const inRatings = ratings.some((r) => {
     const u = r.toLowerCase();
-    return u.includes("ce-750") || u.includes("ce750") || u.includes("citation x") || u.includes("citation-x");
+    return u.includes("ce-750") || u.includes("ce750") || u.includes("c750") || u.includes("citation x") || u.includes("citation-x");
   });
+  // Trust the boolean only when corroborated by the ratings list (GPT sometimes mis-flags other Citation variants)
+  return inRatings || (j.has_citation_x === true && ratings.length === 0);
 }
 
-// Check CL-300/Challenger via boolean flag OR type_ratings array
 function hasChallenger(j: any): boolean {
   if (j.has_challenger_300_type_rating === true) return true;
   const ratings: string[] = Array.isArray(j.type_ratings) ? j.type_ratings : [];
@@ -99,6 +91,83 @@ function hasChallenger(j: any): boolean {
     return u.includes("cl-300") || u.includes("cl300") || u.includes("challenger 300") || u.includes("challenger-300");
   });
 }
+
+function picGateShort(status: string | null, met: boolean | null | undefined): { label: string; cls: string } | null {
+  if (status) {
+    const s = status.toLowerCase();
+    if (s.startsWith("meets")) return { label: "Met", cls: "text-emerald-700 bg-emerald-50 border-emerald-200" };
+    if (s.startsWith("close") || s.includes("near")) return { label: "Close", cls: "text-amber-700 bg-amber-50 border-amber-200" };
+    return { label: "Not met", cls: "text-gray-500 bg-gray-50 border-gray-200" };
+  }
+  // Fallback: use the boolean soft_gate_pic_met for older rows without a status string
+  if (met === true) return { label: "Met", cls: "text-emerald-700 bg-emerald-50 border-emerald-200" };
+  if (met === false) return { label: "Not met", cls: "text-gray-500 bg-gray-50 border-gray-200" };
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Filter pill component
+// ---------------------------------------------------------------------------
+
+type FilterOption = { key: string; label: string; count?: number };
+
+function FilterPills({ options, value, onChange }: { options: FilterOption[]; value: string; onChange: (v: string) => void }) {
+  return (
+    <div className="flex items-center gap-1 flex-wrap">
+      {options.map((opt) => {
+        const active = value === opt.key;
+        return (
+          <button
+            key={opt.key}
+            type="button"
+            onClick={() => onChange(opt.key)}
+            className={`inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-full border transition-colors ${
+              active
+                ? "bg-slate-800 text-white border-slate-800"
+                : "bg-white text-gray-600 border-gray-200 hover:border-gray-400 hover:bg-gray-50"
+            }`}
+          >
+            {opt.label}
+            {opt.count !== undefined && opt.count > 0 && (
+              <span className={`text-[10px] font-bold ${active ? "text-white/70" : "text-gray-400"}`}>
+                {opt.count}
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Toggle pill (Yes/No filter)
+// ---------------------------------------------------------------------------
+
+function TogglePill({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
+  return (
+    <button
+      type="button"
+      onClick={() => onChange(value === "ALL" ? "YES" : value === "YES" ? "NO" : "ALL")}
+      className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-full border transition-colors ${
+        value === "YES"
+          ? "bg-emerald-50 text-emerald-700 border-emerald-300"
+          : value === "NO"
+            ? "bg-red-50 text-red-600 border-red-200"
+            : "bg-white text-gray-500 border-gray-200 hover:border-gray-400"
+      }`}
+    >
+      {label}
+      {value !== "ALL" && (
+        <span className="font-bold">{value === "YES" ? "Y" : "N"}</span>
+      )}
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main table
+// ---------------------------------------------------------------------------
 
 export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
   const [q, setQ] = useState("");
@@ -109,22 +178,18 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
   const [skillbridge, setSkillbridge] = useState("ALL");
   const [page, setPage] = useState(0);
 
-  const categories = useMemo(() => {
-    const set = new Set<string>();
+  const categoryOptions: FilterOption[] = useMemo(() => {
+    const counts = new Map<string, number>();
     for (const j of initialJobs) {
       const c = normalize(j.category);
-      if (c) set.add(c);
+      if (c) counts.set(c, (counts.get(c) ?? 0) + 1);
     }
-    return ["ALL", ...Array.from(set).sort((a, b) => a.localeCompare(b))];
-  }, [initialJobs]);
-
-  const softGates = useMemo(() => {
-    const set = new Set<string>();
-    for (const j of initialJobs) {
-      const s = normalize(j.soft_gate_pic_status);
-      if (s) set.add(s);
-    }
-    return ["ALL", ...Array.from(set).sort((a, b) => a.localeCompare(b))];
+    return [
+      { key: "ALL", label: "All", count: initialJobs.length },
+      ...Array.from(counts.entries())
+        .sort((a, b) => b[1] - a[1])
+        .map(([k, v]) => ({ key: k, label: categoryLabel(k), count: v })),
+    ];
   }, [initialJobs]);
 
   const filtered = useMemo(() => {
@@ -135,7 +200,8 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
       const jSoft = normalize(j.soft_gate_pic_status);
 
       if (category !== "ALL" && jCategory !== category) return false;
-      if (softGate !== "ALL" && jSoft !== softGate) return false;
+      if (softGate === "MET" && !jSoft.toLowerCase().startsWith("meets")) return false;
+      if (softGate === "NOT_MET" && jSoft.toLowerCase().startsWith("meets")) return false;
 
       if (citation === "YES" && !hasCitationX(j)) return false;
       if (citation === "NO" && hasCitationX(j)) return false;
@@ -170,6 +236,8 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const paged = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
 
+  const hasActiveFilters = category !== "ALL" || softGate !== "ALL" || citation !== "ALL" || challenger !== "ALL" || skillbridge !== "ALL" || q !== "";
+
   const clear = () => {
     setQ("");
     setCategory("ALL");
@@ -181,153 +249,154 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
   };
 
   return (
-    <div className="p-6 space-y-4">
-      <div className="flex flex-wrap items-center gap-3">
-        <input
-          value={q}
-          onChange={(e) => { setQ(e.target.value); setPage(0); }}
-          placeholder="Search name, email, location, type rating…"
-          className="w-full max-w-xl rounded-xl border bg-white px-4 py-2 text-sm shadow-sm outline-none"
-        />
+    <div className="p-4 sm:p-6 space-y-3 bg-gray-50 min-h-screen">
+      {/* Filters */}
+      <div className="rounded-xl border bg-white shadow-sm p-3 space-y-2.5">
+        <div className="flex items-center gap-2">
+          <input
+            value={q}
+            onChange={(e) => { setQ(e.target.value); setPage(0); }}
+            placeholder="Search name, email, location, rating..."
+            className="flex-1 max-w-md rounded-lg border border-gray-200 bg-gray-50 px-3 py-1.5 text-sm outline-none focus:border-gray-400 focus:bg-white transition-colors"
+          />
+          <span className="text-xs text-gray-400 tabular-nums">{filtered.length} results</span>
+          {hasActiveFilters && (
+            <button onClick={clear} className="text-xs text-gray-500 hover:text-gray-800 underline">
+              Reset
+            </button>
+          )}
+        </div>
 
-        <select
-          value={category}
-          onChange={(e) => { setCategory(e.target.value); setPage(0); }}
-          className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm"
-        >
-          {categories.map((c) => (
-            <option key={c} value={c}>
-              {c === "ALL" ? "All categories" : categoryLabel(c)}
-            </option>
-          ))}
-        </select>
-
-        <select
-          value={softGate}
-          onChange={(e) => { setSoftGate(e.target.value); setPage(0); }}
-          className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm max-w-[240px]"
-        >
-          {softGates.map((s) => (
-            <option key={s} value={s}>
-              {s === "ALL" ? "All PIC gates" : s}
-            </option>
-          ))}
-        </select>
-
-        <select
-          value={citation}
-          onChange={(e) => { setCitation(e.target.value); setPage(0); }}
-          className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm"
-        >
-          <option value="ALL">CE-750 Citation X: all</option>
-          <option value="YES">CE-750 Citation X: yes</option>
-          <option value="NO">CE-750 Citation X: no</option>
-        </select>
-
-        <select
-          value={challenger}
-          onChange={(e) => { setChallenger(e.target.value); setPage(0); }}
-          className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm"
-        >
-          <option value="ALL">CL-300 Challenger: all</option>
-          <option value="YES">CL-300 Challenger: yes</option>
-          <option value="NO">CL-300 Challenger: no</option>
-        </select>
-
-        <select
-          value={skillbridge}
-          onChange={(e) => { setSkillbridge(e.target.value); setPage(0); }}
-          className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm"
-        >
-          <option value="ALL">SkillBridge: all</option>
-          <option value="YES">SkillBridge: yes</option>
-          <option value="NO">SkillBridge: no</option>
-        </select>
-
-        <button
-          onClick={clear}
-          className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm hover:bg-gray-50"
-        >
-          Clear
-        </button>
-
-        <div className="text-xs text-gray-500">{filtered.length} shown</div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <FilterPills
+            options={categoryOptions}
+            value={category}
+            onChange={(v) => { setCategory(v); setPage(0); }}
+          />
+          <div className="w-px h-5 bg-gray-200" />
+          <FilterPills
+            options={[
+              { key: "ALL", label: "PIC Gate" },
+              { key: "MET", label: "Met" },
+              { key: "NOT_MET", label: "Not met" },
+            ]}
+            value={softGate}
+            onChange={(v) => { setSoftGate(v); setPage(0); }}
+          />
+          <div className="w-px h-5 bg-gray-200" />
+          <TogglePill label="CE-750" value={citation} onChange={(v) => { setCitation(v); setPage(0); }} />
+          <TogglePill label="CL-300" value={challenger} onChange={(v) => { setChallenger(v); setPage(0); }} />
+          <TogglePill label="SkillBridge" value={skillbridge} onChange={(v) => { setSkillbridge(v); setPage(0); }} />
+        </div>
       </div>
 
+      {/* Table */}
       <div className="rounded-xl border bg-white overflow-hidden shadow-sm">
         <div className="overflow-x-auto">
           <table className="min-w-full text-sm">
-            <thead className="bg-gray-100 text-left text-gray-700">
-              <tr>
-                <th className="px-4 py-3 font-medium">Created</th>
-                <th className="px-4 py-3 font-medium">Candidate</th>
-                <th className="px-4 py-3 font-medium">Category</th>
-                <th className="px-4 py-3 font-medium">Location</th>
-                <th className="px-4 py-3 font-medium">TT</th>
-                <th className="px-4 py-3 font-medium">PIC</th>
-                <th className="px-4 py-3 font-medium">PIC Gate</th>
-                <th className="px-4 py-3 font-medium">Ratings</th>
-                <th className="px-4 py-3"></th>
+            <thead>
+              <tr className="border-b bg-gray-50/80 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="px-4 py-2.5">Candidate</th>
+                <th className="px-4 py-2.5">Category</th>
+                <th className="px-4 py-2.5">Location</th>
+                <th className="px-4 py-2.5 text-right">TT</th>
+                <th className="px-4 py-2.5 text-right">PIC</th>
+                <th className="px-4 py-2.5">PIC Gate</th>
+                <th className="px-4 py-2.5">Ratings</th>
+                <th className="px-4 py-2.5 text-right">Date</th>
+                <th className="px-4 py-2.5 w-10"></th>
               </tr>
             </thead>
 
-            <tbody>
-              {paged.map((j) => (
-                <tr key={j.id ?? j.application_id} className="border-t hover:bg-gray-50">
-                  <td className="px-4 py-3 whitespace-nowrap">{fmtTime(j.created_at)}</td>
+            <tbody className="divide-y divide-gray-100">
+              {paged.map((j) => {
+                const isPilot = j.category === "pilot_pic" || j.category === "pilot_sic";
+                const gate = isPilot ? picGateShort(j.soft_gate_pic_status, j.soft_gate_pic_met) : null;
+                return (
+                  <tr key={j.id ?? j.application_id} className="hover:bg-gray-50/60 transition-colors">
+                    <td className="px-4 py-2.5">
+                      <div className="font-medium text-gray-900 truncate max-w-[200px]">{j.candidate_name ?? "—"}</div>
+                      {j.email && <div className="text-xs text-gray-400 truncate max-w-[200px]">{j.email}</div>}
+                    </td>
 
-                  <td className="px-4 py-3">
-                    <div className="font-medium">{j.candidate_name ?? "—"}</div>
-                    <div className="text-xs text-gray-500">{j.email ?? "—"}</div>
-                  </td>
+                    <td className="px-4 py-2.5">
+                      {j.category ? (
+                        <span className={`inline-block rounded-full border px-2 py-0.5 text-[11px] font-semibold ${categoryBadgeClass(j.category)}`}>
+                          {categoryLabel(j.category)}
+                        </span>
+                      ) : (
+                        <span className="text-gray-300">—</span>
+                      )}
+                    </td>
 
-                  <td className="px-4 py-3">
-                    {j.category ? (
-                      <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${categoryBadgeClass(j.category)}`}>
-                        {categoryLabel(j.category)}
-                      </span>
-                    ) : "—"}
-                  </td>
-                  <td className="px-4 py-3">{j.location ?? "—"}</td>
-                  <td className="px-4 py-3">{j.total_time_hours ?? "—"}</td>
-                  <td className="px-4 py-3">{j.pic_time_hours ?? "—"}</td>
-                  <td className="px-4 py-3">{j.soft_gate_pic_status ?? "—"}</td>
-                  <td className="px-4 py-3 text-xs">
-                    <div className="flex flex-wrap gap-1">
-                      {hasCitationX(j) ? (
-                        <span className="inline-block rounded-full bg-emerald-50 text-emerald-700 px-2 py-0.5 font-medium">
-                          CE-750 Citation X
-                        </span>
-                      ) : null}
-                      {hasChallenger(j) ? (
-                        <span className="inline-block rounded-full bg-blue-50 text-blue-700 px-2 py-0.5 font-medium">
-                          CL-300 Challenger
-                        </span>
-                      ) : null}
-                      {hasSkillbridge(j) ? (
-                        <span className="inline-block rounded-full bg-purple-50 text-purple-700 px-2 py-0.5 font-medium">
-                          SkillBridge
-                        </span>
-                      ) : null}
-                    </div>
-                  </td>
+                    <td className="px-4 py-2.5 text-gray-600 truncate max-w-[160px]">
+                      {j.location ?? <span className="text-gray-300">—</span>}
+                    </td>
 
-                  <td className="px-4 py-3 text-right">
-                    {j.application_id ? (
-                      <Link href={`/jobs/${j.application_id}`} className="text-blue-600 hover:underline">
-                        View →
-                      </Link>
-                    ) : (
-                      <span className="text-gray-400">—</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
+                    <td className="px-4 py-2.5 text-right font-mono text-gray-700 tabular-nums">
+                      {fmtHours(j.total_time_hours)}
+                    </td>
+
+                    <td className="px-4 py-2.5 text-right font-mono text-gray-700 tabular-nums">
+                      {fmtHours(j.pic_time_hours)}
+                    </td>
+
+                    <td className="px-4 py-2.5">
+                      {gate ? (
+                        <span className={`inline-block rounded-full border px-2 py-0.5 text-[11px] font-semibold ${gate.cls}`}
+                          title={j.soft_gate_pic_status ?? ""}
+                        >
+                          {gate.label}
+                        </span>
+                      ) : (
+                        <span className="text-gray-300">—</span>
+                      )}
+                    </td>
+
+                    <td className="px-4 py-2.5">
+                      <div className="flex flex-wrap gap-1">
+                        {hasCitationX(j) && (
+                          <span className="inline-block rounded border border-emerald-200 bg-emerald-50 text-emerald-700 px-1.5 py-0.5 text-[10px] font-semibold">
+                            CE-750
+                          </span>
+                        )}
+                        {hasChallenger(j) && (
+                          <span className="inline-block rounded border border-blue-200 bg-blue-50 text-blue-700 px-1.5 py-0.5 text-[10px] font-semibold">
+                            CL-300
+                          </span>
+                        )}
+                        {hasSkillbridge(j) && (
+                          <span className="inline-block rounded border border-purple-200 bg-purple-50 text-purple-700 px-1.5 py-0.5 text-[10px] font-semibold">
+                            SB
+                          </span>
+                        )}
+                      </div>
+                    </td>
+
+                    <td className="px-4 py-2.5 text-right text-xs text-gray-400 whitespace-nowrap">
+                      {fmtDate(j.created_at)}
+                    </td>
+
+                    <td className="px-2 py-2.5 text-right">
+                      {j.application_id ? (
+                        <Link
+                          href={`/jobs/${j.application_id}`}
+                          className="inline-flex items-center justify-center w-7 h-7 rounded-md text-gray-400 hover:text-blue-600 hover:bg-blue-50 transition-colors"
+                        >
+                          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M6 3l5 5-5 5" />
+                          </svg>
+                        </Link>
+                      ) : null}
+                    </td>
+                  </tr>
+                );
+              })}
 
               {paged.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="px-4 py-10 text-center text-gray-500">
-                    No jobs found.
+                  <td colSpan={9} className="px-4 py-12 text-center text-gray-400">
+                    No candidates match the current filters.
                   </td>
                 </tr>
               )}
@@ -336,33 +405,30 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
         </div>
       </div>
 
+      {/* Pagination */}
       {totalPages > 1 && (
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-center gap-2">
           <button
             type="button"
             onClick={() => setPage((p) => Math.max(0, p - 1))}
             disabled={page === 0}
-            className="h-9 rounded-lg border px-4 text-sm hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+            className="h-8 rounded-lg border bg-white px-3 text-xs font-medium hover:bg-gray-50 disabled:opacity-30 disabled:cursor-not-allowed"
           >
-            ← Previous
+            Prev
           </button>
-          <span className="text-xs text-gray-500">
-            Page {page + 1} of {totalPages}
+          <span className="text-xs text-gray-400 tabular-nums px-2">
+            {page + 1} / {totalPages}
           </span>
           <button
             type="button"
             onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
             disabled={page >= totalPages - 1}
-            className="h-9 rounded-lg border px-4 text-sm hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+            className="h-8 rounded-lg border bg-white px-3 text-xs font-medium hover:bg-gray-50 disabled:opacity-30 disabled:cursor-not-allowed"
           >
-            Next →
+            Next
           </button>
         </div>
       )}
-
-      <div className="text-xs text-gray-500">
-        Showing {filtered.length} job{filtered.length === 1 ? "" : "s"} across {totalPages} page{totalPages === 1 ? "" : "s"}.
-      </div>
     </div>
   );
 }
