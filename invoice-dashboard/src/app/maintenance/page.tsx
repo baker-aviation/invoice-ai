@@ -6,7 +6,7 @@ import { fetchFlights } from "@/lib/opsApi";
 import VanPositioningClient from "./VanPositioningClient";
 
 export default async function MaintenancePage() {
-  const flightData = await fetchFlights({ lookahead_hours: 36 }).catch(() => ({
+  const flightData = await fetchFlights({ lookahead_hours: 168 }).catch(() => ({
     ok: false,
     flights: [],
     count: 0,
@@ -18,7 +18,7 @@ export default async function MaintenancePage() {
       <AutoRefresh intervalSeconds={240} />
       <div className="p-6 space-y-2">
         <p className="text-sm text-gray-500">
-          36-hour aircraft positioning from JetInsight · AOG vans · live tracking via Samsara · Priority: overnight service
+          7-day aircraft positioning from JetInsight · AOG vans · live tracking via Samsara · Priority: overnight service
         </p>
         <VanPositioningClient initialFlights={flightData.flights} />
       </div>

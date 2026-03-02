@@ -49,23 +49,34 @@ export async function GET(req: NextRequest) {
 
   const headers = { Authorization: `Bearer ${apiKey}`, Accept: "application/json" };
 
-  // Primary: GPS stats
-  let statsData: SamsaraVehicleStat[];
+  // Primary: GPS stats — paginate to ensure we get ALL vehicles
+  const statsData: SamsaraVehicleStat[] = [];
   try {
-    const url = `${SAMSARA_BASE}/fleet/vehicles/stats?types=gps`;
-    console.log(`[/api/vans] Fetching ${url}`);
-    const res = await fetch(url, { headers, cache: "no-store" });
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      console.error(`[/api/vans] Samsara stats error: HTTP ${res.status} — ${body.slice(0, 500)}`);
-      return NextResponse.json(
-        { error: `Samsara API error: HTTP ${res.status}`, detail: body.slice(0, 500) },
-        { status: 502 },
-      );
+    const statsBase = `${SAMSARA_BASE}/fleet/vehicles/stats?types=gps&limit=200`;
+    let statsUrl: string | null = statsBase;
+    let page = 0;
+    while (statsUrl) {
+      console.log(`[/api/vans] Fetching stats page ${page}: ${statsUrl}`);
+      const resp: Response = await fetch(statsUrl, { headers, cache: "no-store" });
+      if (!resp.ok) {
+        const errBody = await resp.text().catch(() => "");
+        console.error(`[/api/vans] Samsara stats error: HTTP ${resp.status} — ${errBody.slice(0, 500)}`);
+        return NextResponse.json(
+          { error: `Samsara API error: HTTP ${resp.status}`, detail: errBody.slice(0, 500) },
+          { status: 502 },
+        );
+      }
+      const payload: { data?: SamsaraVehicleStat[]; pagination?: { hasNextPage?: boolean; endCursor?: string } } = await resp.json();
+      statsData.push(...(payload.data ?? []));
+      if (payload.pagination?.hasNextPage && payload.pagination?.endCursor) {
+        statsUrl = `${statsBase}&after=${encodeURIComponent(payload.pagination.endCursor)}`;
+      } else {
+        statsUrl = null;
+      }
+      page++;
+      if (page > 10) break; // safety limit
     }
-    const json = await res.json();
-    statsData = (json.data ?? []) as SamsaraVehicleStat[];
-    console.log(`[/api/vans] Samsara returned ${statsData.length} vehicles from stats`);
+    console.log(`[/api/vans] Samsara returned ${statsData.length} vehicles from stats (${page} page(s))`);
   } catch (err) {
     console.error(`[/api/vans] Samsara fetch failed:`, err);
     return NextResponse.json(
@@ -78,19 +89,26 @@ export async function GET(req: NextRequest) {
   // Also used as fallback for GPS data if stats endpoint returns sparse data
   const locationById = new Map<string, SamsaraLocation["location"]>();
   try {
-    const res2 = await fetch(
-      `${SAMSARA_BASE}/fleet/vehicles/locations`,
-      { headers, cache: "no-store" },
-    );
-    if (res2.ok) {
-      const json2 = await res2.json();
-      for (const v of (json2.data ?? []) as SamsaraLocation[]) {
-        if (v.id && v.location) locationById.set(v.id, v.location);
+    const locBase = `${SAMSARA_BASE}/fleet/vehicles/locations?limit=200`;
+    let locUrl: string | null = locBase;
+    while (locUrl) {
+      const resp2: Response = await fetch(locUrl, { headers, cache: "no-store" });
+      if (resp2.ok) {
+        const payload2: { data?: SamsaraLocation[]; pagination?: { hasNextPage?: boolean; endCursor?: string } } = await resp2.json();
+        for (const v of (payload2.data ?? [])) {
+          if (v.id && v.location) locationById.set(v.id, v.location);
+        }
+        if (payload2.pagination?.hasNextPage && payload2.pagination?.endCursor) {
+          locUrl = `${locBase}&after=${encodeURIComponent(payload2.pagination.endCursor)}`;
+        } else {
+          locUrl = null;
+        }
+      } else {
+        console.warn(`[/api/vans] Samsara locations returned HTTP ${resp2.status}`);
+        locUrl = null;
       }
-      console.log(`[/api/vans] Samsara returned ${locationById.size} vehicles from locations`);
-    } else {
-      console.warn(`[/api/vans] Samsara locations returned HTTP ${res2.status}`);
     }
+    console.log(`[/api/vans] Samsara returned ${locationById.size} vehicles from locations`);
   } catch (err) {
     console.warn(`[/api/vans] Samsara locations fetch failed (non-fatal):`, err);
   }

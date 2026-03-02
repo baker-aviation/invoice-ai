@@ -908,17 +908,17 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
     return counts;
   }, [timeFiltered, ackedIds, clientAlertsByFlight, dismissedClientAlerts]);
 
-  // EDCT alerts for status box: unacknowledged, future or within last 5 hours
+  // EDCT alerts for status box: unacknowledged, future or within last 24 hours
   const edctAlerts = useMemo(() => {
-    const fiveHoursAgo = new Date(now.getTime() - 5 * 3600000);
+    const lookback = new Date(now.getTime() - 24 * 3600000);
     const results: { alert: OpsAlert; flight: Flight | null }[] = [];
     for (const f of withFilteredAlerts) {
       for (const a of f.alerts ?? []) {
         if (a.alert_type !== "EDCT") continue;
         if (ackedIds.has(a.id)) continue;
-        // Show if flight departs in the future or within last 5 hours
+        // Show if flight departs in the future or within last 24 hours
         const depTime = new Date(f.scheduled_departure);
-        if (depTime >= fiveHoursAgo) {
+        if (depTime >= lookback) {
           results.push({ alert: a, flight: f });
         }
       }
@@ -934,16 +934,39 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
 
   return (
     <div className="p-4 sm:p-6 space-y-4 bg-gray-50 min-h-screen">
-      {/* EDCT Status Box */}
-      {edctAlerts.length > 0 && (
-        <div className="rounded-xl border-2 border-orange-300 bg-orange-50 shadow-sm overflow-hidden">
-          <div className="px-4 py-2.5 bg-orange-100 border-b border-orange-200 flex items-center gap-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-orange-500 animate-pulse" />
-            <span className="text-sm font-bold text-orange-900">EDCT / Ground Delays</span>
-            <span className="text-xs font-semibold bg-orange-200 text-orange-800 rounded-full px-2 py-0.5">
-              {edctAlerts.length}
-            </span>
-          </div>
+      {/* EDCT Status Box — always visible */}
+      <div className={`rounded-xl border-2 shadow-sm overflow-hidden ${
+        edctAlerts.length > 0
+          ? "border-orange-300 bg-orange-50"
+          : "border-green-300 bg-green-50"
+      }`}>
+        <div className={`px-4 py-2.5 border-b flex items-center gap-2 ${
+          edctAlerts.length > 0
+            ? "bg-orange-100 border-orange-200"
+            : "bg-green-100 border-green-200"
+        }`}>
+          {edctAlerts.length > 0 ? (
+            <>
+              <span className="w-2.5 h-2.5 rounded-full bg-orange-500 animate-pulse" />
+              <span className="text-sm font-bold text-orange-900">EDCT / Ground Delays</span>
+              <span className="text-xs font-semibold bg-orange-200 text-orange-800 rounded-full px-2 py-0.5">
+                {edctAlerts.length}
+              </span>
+            </>
+          ) : (
+            <>
+              <span className="w-2.5 h-2.5 rounded-full bg-green-500" />
+              <span className="text-sm font-bold text-green-900">EDCT / Ground Delays</span>
+              <span className="text-xs font-semibold bg-green-200 text-green-800 rounded-full px-2 py-0.5">
+                Clear
+              </span>
+            </>
+          )}
+          <span className="ml-auto text-xs text-gray-400">
+            Checked every 5 min via ForeFlight
+          </span>
+        </div>
+        {edctAlerts.length > 0 ? (
           <div className="p-3 space-y-2">
             {edctAlerts.map(({ alert, flight }) => (
               <div key={alert.id} className="flex items-center gap-3 bg-white rounded-lg border border-orange-200 px-3 py-2 text-sm">
@@ -977,8 +1000,12 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
               </div>
             ))}
           </div>
-        </div>
-      )}
+        ) : (
+          <div className="px-4 py-3 text-sm text-green-700">
+            No active EDCT delays or ground stops
+          </div>
+        )}
+      </div>
 
       {/* Summary bar */}
       <div className="rounded-xl border bg-white shadow-sm px-5 py-4 flex items-center gap-6 flex-wrap">
