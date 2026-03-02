@@ -243,7 +243,7 @@ export async function fetchFuelPrices(params: {
   let query = supa
     .from("fuel_prices")
     .select(FUEL_PRICE_COLUMNS)
-    .order("invoice_date", { ascending: false })
+    .order("invoice_date", { ascending: false, nullsFirst: false })
     .limit(limit);
 
   if (params.airport) query = query.ilike("airport_code", `%${params.airport}%`);
