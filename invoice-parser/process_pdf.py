@@ -120,6 +120,20 @@ def detect_invoice_ids(text: str) -> List[str]:
                 ids.add(m.group(1))
             else:
                 ids.add(m.group(0))
+
+    # For Avfuel activity invoices, also detect receipt numbers (7-9 digit
+    # integers at the start of table rows) so they appear in detected_invoice_ids.
+    if is_avfuel_activity_invoice(text or ""):
+        master_ref = None
+        m_ref = _MASTER_REF_RE.search(text or "")
+        if m_ref:
+            master_ref = m_ref.group(1)
+        for m in _RECEIPT_LINE_RE.finditer(text or ""):
+            receipt_no = m.group(1)
+            if master_ref and receipt_no == master_ref:
+                continue
+            ids.add(receipt_no)
+
     return sorted(ids)
 
 def maybe_statement_gate(text: str, invoice_ids: List[str]) -> Tuple[bool, int]:
@@ -151,6 +165,83 @@ _SECTION_BOUNDARY_PATTERNS = [
 _BAD_SECTION_ID = re.compile(
     r"^(?:PAGE|DATE|CUSTOMER|TOTAL|USD|AMOUNT|NUMBER|THE|AND|FOR|TAX|NET)$", re.I
 )
+
+
+
+# ---------------------------
+# Avfuel activity invoice splitting (tabular multi-invoice)
+# ---------------------------
+
+_AVFUEL_ACTIVITY_RE = re.compile(r"ACTIVITY\s+INVOICE", re.I)
+_AVFUEL_VENDOR_RE = re.compile(r"AVFUEL", re.I)
+
+# Receipt numbers: 7-9 digit integers at the start of a line (after optional whitespace).
+# Avfuel receipt numbers are typically 8 digits (e.g. 24135600).
+_RECEIPT_LINE_RE = re.compile(r"^\s{0,20}(\d{7,9})\b", re.MULTILINE)
+
+# Master REF NO line — we skip this to avoid creating a section for the header ref
+_MASTER_REF_RE = re.compile(r"REF\s+(?:NO|NUMBER)\s*:?\s*(\d+)", re.I)
+
+
+def is_avfuel_activity_invoice(text: str) -> bool:
+    """Detect Avfuel activity invoice format."""
+    return bool(_AVFUEL_ACTIVITY_RE.search(text) and _AVFUEL_VENDOR_RE.search(text))
+
+
+def split_avfuel_activity_invoice(text: str) -> List[Tuple[str, str]]:
+    """
+    Split an Avfuel Activity Invoice into per-receipt text sections.
+    Each receipt row in the table becomes its own section, prefixed with
+    the document header context so the LLM can extract vendor/customer info.
+
+    Returns list of (receipt_number, text_section) tuples.
+    Returns empty list if not an Avfuel activity invoice or < 2 receipts found.
+    """
+    if not is_avfuel_activity_invoice(text):
+        return []
+
+    # Find the master REF NO so we can exclude it from receipt matches
+    master_ref = None
+    m_ref = _MASTER_REF_RE.search(text)
+    if m_ref:
+        master_ref = m_ref.group(1)
+
+    # Find all receipt number positions
+    matches = []
+    for m in _RECEIPT_LINE_RE.finditer(text):
+        receipt_no = m.group(1)
+        # Skip if this is the master REF NO
+        if master_ref and receipt_no == master_ref:
+            continue
+        matches.append((m.start(), receipt_no))
+
+    if len(matches) < 2:
+        return []
+
+    # Extract header context (everything before the first receipt row).
+    # This includes vendor name, customer, period, column headers, etc.
+    header = text[:matches[0][0]].strip()
+
+    # Split text at each receipt boundary
+    sections: List[Tuple[str, str]] = []
+    for i, (pos, receipt_no) in enumerate(matches):
+        end = matches[i + 1][0] if i + 1 < len(matches) else len(text)
+        receipt_text = text[pos:end].strip()
+
+        # Skip if the receipt text looks like a TOTAL/summary line
+        if re.match(r"^\s*\d+\s*$", receipt_text):
+            continue
+
+        # Build synthetic section: header context + this receipt's data
+        section = (
+            f"{header}\n\n"
+            f"--- SINGLE RECEIPT FROM ACTIVITY INVOICE ---\n"
+            f"Receipt Number: {receipt_no}\n"
+            f"{receipt_text}\n"
+        )
+        sections.append((receipt_no, section))
+
+    return sections if len(sections) >= 2 else []
 
 
 def split_text_into_sections(text: str) -> List[Tuple[str, str]]:
@@ -783,6 +874,13 @@ def process_one_pdf(
     text_sections: List[Tuple[str, str]] = []
     if not did_split and len(invoice_ids) >= 2:
         text_sections = split_text_into_sections(text)
+
+    # Avfuel activity invoice splitting: handles tabular multi-invoice PDFs
+    # where each receipt is a row in a table (not a separate section with headers).
+    if not did_split and not text_sections:
+        avfuel_sections = split_avfuel_activity_invoice(text)
+        if avfuel_sections:
+            text_sections = avfuel_sections
 
     try:
         if did_split:
