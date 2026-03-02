@@ -327,6 +327,16 @@ function inferFlightType(flight: Flight): string | null {
 /** Categories that matter for AOG van scheduling */
 const AOG_ACTIVE_TYPES = new Set(["Revenue", "Owner", "Positioning"]);
 
+/**
+ * Filter out "parking" / placeholder ICS entries where departure == arrival
+ * (e.g. "Aircraft away from home base" entries from JetInsight).
+ * These aren't real flights and should be excluded from scheduling and display.
+ */
+function isRealFlight(f: Flight): boolean {
+  if (!f.departure_icao || !f.arrival_icao) return true; // keep flights with missing data
+  return f.departure_icao !== f.arrival_icao;
+}
+
 /** "in 2h 15m" or "in 45m" until a future ISO timestamp. Returns "" if in the past. */
 function fmtTimeUntil(iso: string): string {
   const diff = new Date(iso).getTime() - Date.now();
@@ -1787,32 +1797,38 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
 
   const selectedDate = dates[dayIdx];
 
+  // Filter out "parking" placeholder entries (departure == arrival, e.g. ADS→ADS)
+  const flights = useMemo(
+    () => initialFlights.filter(isRealFlight),
+    [initialFlights],
+  );
+
   // Use live JetInsight flight data for overnight positions; fall back to hardcoded TRIPS if no live data
   const positions = useMemo(() => {
-    if (initialFlights.length > 0) {
-      const live = computeOvernightPositionsFromFlights(initialFlights, selectedDate);
+    if (flights.length > 0) {
+      const live = computeOvernightPositionsFromFlights(flights, selectedDate);
       if (live.length > 0) return live;
     }
     return computeOvernightPositions(selectedDate);
-  }, [initialFlights, selectedDate]);
+  }, [flights, selectedDate]);
 
   // Maintenance flights (for idle/maintenance section)
   const maintenanceFlights = useMemo(
-    () => initialFlights.filter((f) => {
+    () => flights.filter((f) => {
       const ft = inferFlightType(f);
       return ft === "Maintenance";
     }),
-    [initialFlights],
+    [flights],
   );
 
   // Collect all tail numbers that have any flights in the window
   const activeTails = useMemo(() => {
     const tails = new Set<string>();
-    for (const f of initialFlights) {
+    for (const f of flights) {
       if (f.tail_number) tails.add(f.tail_number);
     }
     return tails;
-  }, [initialFlights]);
+  }, [flights]);
 
   // Maintenance tails
   const maintenanceTails = useMemo(() => {
@@ -1840,10 +1856,10 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
 
   // ALL flights on the selected date (for stats bar)
   const flightsForDay = useMemo(
-    () => initialFlights.filter((f) =>
+    () => flights.filter((f) =>
       (f.scheduled_arrival ?? f.scheduled_departure).startsWith(selectedDate)
     ),
-    [initialFlights, selectedDate],
+    [flights, selectedDate],
   );
 
   // ── Samsara live van data (lifted so map + schedule can both use it) ──
@@ -1905,7 +1921,7 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
   }, [sortedAogVans]);
 
   // ── Van assignment (must come after dynamicZones) ──
-  const vans       = useMemo(() => assignVans(positions, dynamicZones, 10, initialFlights, selectedDate), [positions, dynamicZones, initialFlights, selectedDate]);
+  const vans       = useMemo(() => assignVans(positions, dynamicZones, 10, flights, selectedDate), [positions, dynamicZones, flights, selectedDate]);
   const displayedVans = selectedVan === null ? vans : vans.filter((v) => v.vanId === selectedVan);
 
   /** Zone ID → last known GPS position (persists across refreshes if signal lost). */
@@ -2305,12 +2321,12 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
 
       {/* ── Schedule tab ── */}
       {activeTab === "schedule" && (
-        <ScheduleTab allFlights={initialFlights} date={selectedDate} zones={dynamicZones} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} />
+        <ScheduleTab allFlights={flights} date={selectedDate} zones={dynamicZones} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} />
       )}
 
       {/* ── Flight Schedule tab ── */}
       {activeTab === "flights" && (
-        <FlightScheduleTab allFlights={initialFlights} date={selectedDate} />
+        <FlightScheduleTab allFlights={flights} date={selectedDate} />
       )}
 
       {/* ── Unassigned Aircraft — all legs for the day ── */}
@@ -2324,7 +2340,7 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
 
         // Get all legs for each unassigned aircraft across the 7-day window
         const unassignedWithLegs = unassignedPositions.map((pos) => {
-          const legs = initialFlights
+          const legs = flights
             .filter((f) => f.tail_number === pos.tail)
             .sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure));
           // Group legs by date
