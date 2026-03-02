@@ -1,12 +1,12 @@
 import { createServiceClient } from "@/lib/supabase/service";
-import type { JobDetailResponse, JobRow, JobsListResponse } from "@/lib/types";
+import type { HiringStage, JobDetailResponse, JobRow, JobsListResponse } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
 // Jobs list — direct Supabase query to job_application_parse
 // ---------------------------------------------------------------------------
 
 const JOB_COLUMNS =
-  "id, application_id, created_at, updated_at, category, employment_type, candidate_name, email, phone, location, total_time_hours, turbine_time_hours, pic_time_hours, sic_time_hours, has_citation_x, has_challenger_300_type_rating, type_ratings, soft_gate_pic_met, soft_gate_pic_status, needs_review, notes, model";
+  "id, application_id, created_at, updated_at, hiring_stage, category, employment_type, candidate_name, email, phone, location, total_time_hours, turbine_time_hours, pic_time_hours, sic_time_hours, has_citation_x, has_challenger_300_type_rating, type_ratings, soft_gate_pic_met, soft_gate_pic_status, needs_review, notes, model";
 
 export async function fetchJobs(
   params: {
@@ -66,6 +66,60 @@ function mustBase(): string {
   if (!BASE) throw new Error("Missing JOB_API_BASE_URL in .env.local");
   return BASE.replace(/\/$/, "");
 }
+
+// ---------------------------------------------------------------------------
+// Update hiring stage
+// ---------------------------------------------------------------------------
+
+export async function updateHiringStage(
+  id: number,
+  stage: HiringStage,
+): Promise<void> {
+  const supa = createServiceClient();
+  const { error } = await supa
+    .from("job_application_parse")
+    .update({ hiring_stage: stage, updated_at: new Date().toISOString() })
+    .eq("id", id);
+  if (error) throw new Error(`updateHiringStage failed: ${error.message}`);
+}
+
+// ---------------------------------------------------------------------------
+// Create a manual candidate (no email/parse pipeline needed)
+// ---------------------------------------------------------------------------
+
+export async function createCandidate(fields: {
+  candidate_name: string;
+  email?: string;
+  phone?: string;
+  location?: string;
+  category?: string;
+  notes?: string;
+  hiring_stage?: HiringStage;
+}): Promise<JobRow> {
+  const supa = createServiceClient();
+  const now = new Date().toISOString();
+  const { data, error } = await supa
+    .from("job_application_parse")
+    .insert({
+      candidate_name: fields.candidate_name,
+      email: fields.email || null,
+      phone: fields.phone || null,
+      location: fields.location || null,
+      category: fields.category || null,
+      notes: fields.notes || null,
+      hiring_stage: fields.hiring_stage ?? "new",
+      created_at: now,
+      updated_at: now,
+    })
+    .select(JOB_COLUMNS)
+    .single();
+  if (error) throw new Error(`createCandidate failed: ${error.message}`);
+  return data as JobRow;
+}
+
+// ---------------------------------------------------------------------------
+// Job detail — still proxies to Cloud Run (needs signed file URLs from GCS)
+// ---------------------------------------------------------------------------
 
 export async function fetchJobDetail(applicationId: string | number): Promise<JobDetailResponse> {
   const base = mustBase();

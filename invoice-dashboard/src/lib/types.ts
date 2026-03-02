@@ -81,11 +81,22 @@ export type FuelPricesResponse = {
    Jobs
 ========================= */
 
+export type HiringStage =
+  | "new"
+  | "screening"
+  | "phone_screen"
+  | "interview"
+  | "offer"
+  | "hired"
+  | "rejected";
+
 export type JobRow = {
   id: number;
   application_id: number;
   created_at: string | null;
   updated_at: string | null;
+
+  hiring_stage: HiringStage;
 
   category: string | null;
   employment_type: string | null;

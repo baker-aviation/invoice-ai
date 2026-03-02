@@ -88,7 +88,13 @@ upsert_job "invoice-run-alerts-next" "*/15 * * * *" \
   "${ALERTS_URL}/jobs/run_alerts_next?limit=10&lookback_minutes=30" \
   --description "Generate alert rows from newly parsed invoices"
 
-# Step 4: flush pending alerts to Slack — kept PAUSED by default to avoid repeat alerts.
+# Step 4: extract fuel prices from parsed invoices (also runs inline in run_alerts,
+#         but this catches any previously-parsed invoices that were missed)
+upsert_job "invoice-extract-fuel-prices" "*/15 * * * *" \
+  "${ALERTS_URL}/jobs/extract_fuel_prices_next?limit=20&lookback_minutes=60" \
+  --description "Extract fuel prices from recently parsed invoices"
+
+# Step 5: flush pending alerts to Slack — kept PAUSED by default to avoid repeat alerts.
 # Resume manually once dedup is confirmed: gcloud scheduler jobs resume invoice-alerts-flush ...
 upsert_job "invoice-alerts-flush" "*/15 * * * *" \
   "${ALERTS_URL}/jobs/flush_alerts?limit=25" \
