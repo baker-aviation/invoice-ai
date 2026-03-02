@@ -78,7 +78,7 @@ export async function POST(
     const res = await cloudRunFetch(url, {
       method: "POST",
       cache: "no-store",
-      signal: AbortSignal.timeout(60_000),
+      signal: AbortSignal.timeout(180_000),
     });
 
     if (!res.ok) {
