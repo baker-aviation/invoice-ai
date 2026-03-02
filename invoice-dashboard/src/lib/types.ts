@@ -99,8 +99,8 @@ export type JobRow = {
   created_at: string | null;
   updated_at: string | null;
 
-  hiring_stage: HiringStage;
-  pipeline_stage: PipelineStage;
+  hiring_stage?: HiringStage;
+  pipeline_stage?: PipelineStage;
 
   category: string | null;
   employment_type: string | null;
