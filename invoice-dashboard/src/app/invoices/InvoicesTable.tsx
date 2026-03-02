@@ -53,6 +53,22 @@ export default function InvoicesTable({ initialInvoices }: { initialInvoices: an
   const [showOverdueOnly, setShowOverdueOnly] = useState(false);
   const [page, setPage] = useState(0);
 
+  // Multi-invoice document info: for each document_id, compute count + combined total
+  const docInfo = useMemo(() => {
+    const map = new Map<string, { count: number; combinedTotal: number; ids: string[] }>();
+    for (const inv of initialInvoices) {
+      const docId = inv.document_id;
+      if (!docId) continue;
+      if (!map.has(docId)) map.set(docId, { count: 0, combinedTotal: 0, ids: [] });
+      const entry = map.get(docId)!;
+      entry.count++;
+      const t = typeof inv.total === "number" ? inv.total : parseFloat(String(inv.total)) || 0;
+      entry.combinedTotal += t;
+      entry.ids.push(inv.id);
+    }
+    return map;
+  }, [initialInvoices]);
+
   const airports = useMemo(() => {
     const set = new Set<string>();
     for (const inv of initialInvoices) {
@@ -226,9 +242,30 @@ export default function InvoicesTable({ initialInvoices }: { initialInvoices: an
                     </td>
                     <td className="px-4 py-3">{inv.airport_code ?? "—"}</td>
                     <td className="px-4 py-3">{inv.tail_number ?? "—"}</td>
-                    <td className="px-4 py-3">{inv.invoice_number ?? "—"}</td>
                     <td className="px-4 py-3">
-                      {inv.total ?? "—"} {inv.currency ?? ""}
+                      {inv.invoice_number ?? "—"}
+                      {(() => {
+                        const info = docInfo.get(inv.document_id);
+                        if (!info || info.count <= 1) return null;
+                        const idx = info.ids.indexOf(inv.id) + 1;
+                        return (
+                          <span className="ml-1.5 text-xs bg-blue-100 text-blue-700 rounded px-1.5 py-0.5 whitespace-nowrap">
+                            {idx} of {info.count}
+                          </span>
+                        );
+                      })()}
+                    </td>
+                    <td className="px-4 py-3">
+                      <div>{inv.total ?? "—"} {inv.currency ?? ""}</div>
+                      {(() => {
+                        const info = docInfo.get(inv.document_id);
+                        if (!info || info.count <= 1) return null;
+                        return (
+                          <div className="text-xs text-gray-400 mt-0.5">
+                            {info.count} invoices &middot; {info.combinedTotal.toLocaleString("en-US", { style: "currency", currency: inv.currency || "USD" })} total
+                          </div>
+                        );
+                      })()}
                     </td>
                     <td className="px-4 py-3 text-right">
                       {inv.document_id ? (

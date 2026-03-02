@@ -1,5 +1,12 @@
 # Invoice AI — Project Context
 
+## CRITICAL: Production Deploy Rules
+- **NEVER push to `main`, merge into `main`, or trigger production deploys (Vercel, Cloud Run) without explicit user permission.**
+- `main` branch = production. Pushing to `main` triggers a Vercel deploy automatically.
+- `bash scripts/deploy-*.sh` deploys to Cloud Run production.
+- Always develop on feature branches. Only suggest merging to `main` or deploying when the user explicitly asks.
+- If the user asks "how do I deploy", explain the steps but **do not run them** — wait for the user to confirm.
+
 ## What this is
 Internal dashboard for Baker Aviation. Processes invoice PDFs from Outlook email,
 parses them with AI, generates fee alerts, and displays everything in a Next.js dashboard.

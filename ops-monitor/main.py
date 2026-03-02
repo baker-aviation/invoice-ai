@@ -937,7 +937,7 @@ def _run_check_notams(lookahead_hours: int) -> dict:
                     "subject": notam_data.get("number", "")[:500],
                     "body": msg[:2000],
                     "source_message_id": f"nms-{notam_id}-{fid}",
-                    "raw_data": json.dumps({"notam_dates": notam_dates}) if notam_dates else None,
+                    "raw_data": {"notam_dates": notam_dates} if notam_dates else None,
                     "created_at": _utc_now(),
                 })
 

@@ -73,24 +73,20 @@ export async function POST(
       .update({ status: "uploaded", parse_error: null })
       .eq("id", documentId);
 
-    // Call the already-deployed /jobs/parse_document endpoint
+    // Fire-and-forget: trigger the parser without waiting for it to finish.
+    // Parsing can take 30-120s (OpenAI extraction + validation) which exceeds
+    // Vercel's serverless timeout. The document status goes uploaded → processing
+    // → done, and the frontend polls until it completes.
     const url = `${PARSER_BASE.replace(/\/$/, "")}/jobs/parse_document?document_id=${encodeURIComponent(documentId)}`;
-    const res = await cloudRunFetch(url, {
+    cloudRunFetch(url, {
       method: "POST",
       cache: "no-store",
       signal: AbortSignal.timeout(180_000),
-    });
+    }).catch((e) =>
+      console.error("reparse background call failed:", e),
+    );
 
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      return NextResponse.json(
-        { error: `Parser returned ${res.status}`, detail: text },
-        { status: 502 },
-      );
-    }
-
-    const body = await res.json();
-    return NextResponse.json({ ok: true, ...body, reparse: true });
+    return NextResponse.json({ ok: true, reparse: true, status: "started" });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("reparse proxy error:", msg);
