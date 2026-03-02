@@ -5,6 +5,7 @@ import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import type { Flight } from "@/lib/opsApi";
 import {
   computeOvernightPositions,
+  computeOvernightPositionsFromFlights,
   assignVans,
   getDateRange,
   isContiguous48,
@@ -1468,7 +1469,7 @@ const haversineKmClient = (lat1: number, lon1: number, lat2: number, lon2: numbe
 // ---------------------------------------------------------------------------
 
 export default function VanPositioningClient({ initialFlights }: { initialFlights: Flight[] }) {
-  const dates = useMemo(() => getDateRange(3), []); // 36h window ≈ 3 days
+  const dates = useMemo(() => getDateRange(7), []); // 7-day window
   const [dayIdx, setDayIdx] = useState(0);
   const [activeTab, setActiveTab] = useState<"map" | "schedule">("map");
   const [viewMode, setViewMode] = useState<"map" | "list">("map");
@@ -1476,7 +1477,14 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
 
   const selectedDate = dates[dayIdx];
 
-  const positions = useMemo(() => computeOvernightPositions(selectedDate), [selectedDate]);
+  // Use live JetInsight flight data for overnight positions; fall back to hardcoded TRIPS if no live data
+  const positions = useMemo(() => {
+    if (initialFlights.length > 0) {
+      const live = computeOvernightPositionsFromFlights(initialFlights, selectedDate);
+      if (live.length > 0) return live;
+    }
+    return computeOvernightPositions(selectedDate);
+  }, [initialFlights, selectedDate]);
   const vans       = useMemo(() => assignVans(positions), [positions]);
   const displayedVans = selectedVan === null ? vans : vans.filter((v) => v.vanId === selectedVan);
 

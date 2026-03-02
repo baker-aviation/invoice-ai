@@ -181,14 +181,15 @@ export async function fetchFlights(params: {
     }
   }
 
-  // Fetch orphan EDCT alerts (no flight_id) so they still show up
+  // Fetch orphan EDCT alerts (no flight_id) so they still show up — look back 48h
+  const edctPast = new Date(now.getTime() - 48 * 60 * 60 * 1000).toISOString();
   const { data: orphanRows } = await supa
     .from("ops_alerts")
     .select(ALERT_COLUMNS)
     .eq("alert_type", "EDCT")
     .is("flight_id", null)
     .is("acknowledged_at", null)
-    .gte("created_at", past)
+    .gte("created_at", edctPast)
     .order("created_at", { ascending: false })
     .limit(50);
 

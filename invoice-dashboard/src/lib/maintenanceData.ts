@@ -440,6 +440,106 @@ export function getTripById(tripId: string): Trip | null {
 export const TODAY = "2026-02-25";
 export const TOMORROW = "2026-02-26";
 
+// ---------------------------------------------------------------------------
+// Step 1b: Compute overnight positions from live Supabase flight data
+// ---------------------------------------------------------------------------
+
+type LiveFlight = {
+  id: string;
+  tail_number: string | null;
+  departure_icao: string | null;
+  arrival_icao: string | null;
+  scheduled_departure: string;
+  scheduled_arrival: string | null;
+  flight_type: string | null;
+};
+
+/**
+ * Compute overnight aircraft positions from live JetInsight flight data.
+ *
+ * For each tail, find the last flight landing on or before `date` to determine
+ * where the aircraft overnights. Falls back to departure airport for in-progress flights.
+ */
+export function computeOvernightPositionsFromFlights(
+  flights: LiveFlight[],
+  date: string,
+): AircraftOvernightPosition[] {
+  // Group by tail
+  const byTail = new Map<string, LiveFlight[]>();
+  for (const f of flights) {
+    if (!f.tail_number) continue;
+    const arr = byTail.get(f.tail_number) ?? [];
+    arr.push(f);
+    byTail.set(f.tail_number, arr);
+  }
+
+  const results: AircraftOvernightPosition[] = [];
+
+  for (const [tail, tailFlights] of byTail) {
+    // Extract date portion from scheduled times
+    const withDates = tailFlights.map((f) => ({
+      ...f,
+      depDate: f.scheduled_departure.slice(0, 10),
+      arrDate: (f.scheduled_arrival ?? f.scheduled_departure).slice(0, 10),
+    }));
+
+    // Sort by arrival date desc, then departure desc
+    const sorted = [...withDates].sort((a, b) => {
+      if (b.arrDate !== a.arrDate) return b.arrDate.localeCompare(a.arrDate);
+      return b.depDate.localeCompare(a.depDate);
+    });
+
+    // 1. Flights arriving on this date — aircraft is at arrival airport
+    const arrivingToday = sorted.filter((f) => f.arrDate === date);
+    // 2. Flights spanning this date (departed before, arrives after)
+    const spanning = sorted.filter((f) => f.depDate <= date && f.arrDate > date);
+    // 3. Most recent flight that ended before this date
+    const past = sorted.filter((f) => f.arrDate < date);
+
+    let airport: string;
+    let flightId: string;
+    let flightType: string;
+
+    if (arrivingToday.length > 0) {
+      const best = arrivingToday[0];
+      airport = best.arrival_icao ?? best.departure_icao ?? "";
+      flightId = best.id;
+      flightType = best.flight_type ?? "Unknown";
+    } else if (spanning.length > 0) {
+      const best = spanning[0];
+      // In-progress: use departure airport as best guess
+      airport = best.departure_icao ?? "";
+      flightId = best.id;
+      flightType = best.flight_type ?? "Unknown";
+    } else if (past.length > 0) {
+      const best = past[0];
+      airport = best.arrival_icao ?? best.departure_icao ?? "";
+      flightId = best.id;
+      flightType = best.flight_type ?? "Unknown";
+    } else {
+      continue;
+    }
+
+    if (!airport) continue;
+
+    const info = getAirportInfo(airport);
+    results.push({
+      tail,
+      airport,
+      airportName: info?.name ?? airport,
+      city: info?.city ?? "Unknown",
+      state: info?.state ?? "",
+      lat: info?.lat ?? 0,
+      lon: info?.lon ?? 0,
+      tripId: flightId,
+      tripStatus: flightType,
+      isKnown: info !== null,
+    });
+  }
+
+  return results.sort((a, b) => a.tail.localeCompare(b.tail));
+}
+
 /**
  * Returns an array of YYYY-MM-DD strings starting from today (local date),
  * going `days` days forward.
