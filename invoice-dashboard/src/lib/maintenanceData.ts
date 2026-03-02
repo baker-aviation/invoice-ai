@@ -55,14 +55,22 @@ export type VanZone = {
 };
 
 export const FIXED_VAN_ZONES: VanZone[] = [
-  { vanId: 1, name: "North FL",       homeAirport: "JAX", lat: 30.4943, lon: -81.6879 },
-  { vanId: 2, name: "South FL East",  homeAirport: "PBI", lat: 26.6832, lon: -80.0956 },
-  { vanId: 3, name: "South FL West",  homeAirport: "FMY", lat: 26.5866, lon: -81.8633 },
-  { vanId: 4, name: "NY/NJ – TEB",    homeAirport: "TEB", lat: 40.8501, lon: -74.0608 },
-  { vanId: 5, name: "NY/NJ – HPN",    homeAirport: "HPN", lat: 41.0670, lon: -73.7076 },
-  { vanId: 6, name: "Bedford MA",     homeAirport: "BED", lat: 42.4700, lon: -71.2890 },
-  { vanId: 7, name: "LA Area",        homeAirport: "VNY", lat: 34.2098, lon: -118.4899 },
-  { vanId: 8, name: "SFO Area",       homeAirport: "SFO", lat: 37.6213, lon: -122.3790 },
+  { vanId: 1,  name: "North FL",       homeAirport: "JAX", lat: 30.4943, lon: -81.6879 },
+  { vanId: 2,  name: "South FL East",  homeAirport: "PBI", lat: 26.6832, lon: -80.0956 },
+  { vanId: 3,  name: "South FL West",  homeAirport: "FMY", lat: 26.5866, lon: -81.8633 },
+  { vanId: 4,  name: "NY/NJ – TEB",    homeAirport: "TEB", lat: 40.8501, lon: -74.0608 },
+  { vanId: 5,  name: "NY/NJ – HPN",    homeAirport: "HPN", lat: 41.0670, lon: -73.7076 },
+  { vanId: 6,  name: "Bedford MA",     homeAirport: "BED", lat: 42.4700, lon: -71.2890 },
+  { vanId: 7,  name: "LA Area",        homeAirport: "VNY", lat: 34.2098, lon: -118.4899 },
+  { vanId: 8,  name: "SFO Area",       homeAirport: "SFO", lat: 37.6213, lon: -122.3790 },
+  { vanId: 9,  name: "Opa-locka FL",   homeAirport: "OPF", lat: 25.9075, lon: -80.2783 },
+  { vanId: 10, name: "Dallas TX",      homeAirport: "DAL", lat: 32.8471, lon: -96.8518 },
+  { vanId: 11, name: "Houston TX",     homeAirport: "IAH", lat: 29.9902, lon: -95.3368 },
+  { vanId: 12, name: "Denver CO",      homeAirport: "APA", lat: 39.5701, lon: -104.8493 },
+  { vanId: 13, name: "Atlanta GA",     homeAirport: "PDK", lat: 33.8756, lon: -84.3020 },
+  { vanId: 14, name: "Chicago IL",     homeAirport: "PWK", lat: 42.1142, lon: -87.9015 },
+  { vanId: 15, name: "DC Area",        homeAirport: "IAD", lat: 38.9445, lon: -77.4558 },
+  { vanId: 16, name: "Pacific NW",     homeAirport: "BFI", lat: 47.5300, lon: -122.3020 },
 ];
 
 // ---------------------------------------------------------------------------
@@ -340,13 +348,16 @@ function overflowRegionLabel(lat: number, lon: number): string {
 export function assignVans(
   positions: AircraftOvernightPosition[],
   zones: VanZone[] = FIXED_VAN_ZONES,
-  maxPerVan = 10
+  maxPerVan = 10,
+  /** Optional: live flight data for intermediate-airport matching */
+  flights?: { tail_number: string | null; departure_icao: string | null; arrival_icao: string | null; scheduled_departure: string; scheduled_arrival: string | null }[],
+  /** Date string (YYYY-MM-DD) for intermediate-airport matching */
+  date?: string,
 ): VanAssignment[] {
   // Only assign vans to aircraft in the contiguous 48 states
   const eligible = positions.filter(
     (p) => p.isKnown && p.lat !== 0 && isContiguous48(p.state)
   );
-  if (eligible.length === 0) return [];
 
   // Filter out zones with no GPS position (lat/lon = 0)
   const activeZones = zones.filter((z) => z.lat !== 0 && z.lon !== 0);
@@ -359,7 +370,7 @@ export function assignVans(
     return dA - dB;
   });
 
-  // ── Phase 1: assign to zones (only within MAX_ZONE_DISTANCE_KM) ──
+  // ── Phase 1: assign based on overnight position (priority: where the aircraft sleeps) ──
   const clusters: AircraftOvernightPosition[][] = activeZones.map(() => []);
   const unassigned: AircraftOvernightPosition[] = [];
 
@@ -387,12 +398,62 @@ export function assignVans(
     }
   }
 
-  // ── Phase 2: overflow vans — greedy nearest-center grouping ──
+  // ── Phase 2: intermediate airports — for aircraft whose overnight is out of range,
+  //    check if any of their day's legs pass through airports near a van ──
+  const stillUnassigned: AircraftOvernightPosition[] = [];
+
+  if (flights && date && unassigned.length > 0) {
+    for (const ac of unassigned) {
+      // Find all flights for this tail on the given date
+      const tailFlights = flights.filter((f) =>
+        f.tail_number === ac.tail &&
+        (f.scheduled_departure.startsWith(date) ||
+         (f.scheduled_arrival ?? "").startsWith(date)),
+      );
+
+      // Collect all intermediate airports this aircraft touches today
+      const intermediateAirports: { lat: number; lon: number }[] = [];
+      for (const f of tailFlights) {
+        for (const code of [f.departure_icao, f.arrival_icao]) {
+          if (!code) continue;
+          const iata = code.startsWith("K") && code.length === 4 ? code.slice(1) : code;
+          const info = getAirportInfo(iata);
+          if (info && isContiguous48(info.state)) {
+            intermediateAirports.push({ lat: info.lat, lon: info.lon });
+          }
+        }
+      }
+
+      // Try to assign based on any intermediate airport being within range of a van
+      let placed = false;
+      for (const apt of intermediateAirports) {
+        const ranked = activeZones
+          .map((z, i) => ({ i, d: haversineKm(apt.lat, apt.lon, z.lat, z.lon) }))
+          .sort((a, b) => a.d - b.d);
+
+        for (const { i, d } of ranked) {
+          if (d > MAX_ZONE_DISTANCE_KM) break;
+          if (clusters[i].length < maxPerVan) {
+            clusters[i].push(ac);
+            placed = true;
+            break;
+          }
+        }
+        if (placed) break;
+      }
+
+      if (!placed) stillUnassigned.push(ac);
+    }
+  } else {
+    stillUnassigned.push(...unassigned);
+  }
+
+  // ── Phase 3: overflow — group remaining aircraft geographically ──
   const maxOverflow = Math.max(0, MAX_TOTAL_VANS - activeZones.length);
   type OverflowVan = { lat: number; lon: number; airport: string; aircraft: AircraftOvernightPosition[] };
   const overflowVans: OverflowVan[] = [];
 
-  for (const ac of unassigned) {
+  for (const ac of stillUnassigned) {
     let bestIdx = -1;
     let bestDist = OVERFLOW_GROUP_KM;
     for (let i = 0; i < overflowVans.length; i++) {
@@ -413,13 +474,14 @@ export function assignVans(
     }
   }
 
-  // ── Build result ──
+  // ── Build result — include ALL zones (even with 0 aircraft) ──
   const result: VanAssignment[] = [];
 
   activeZones.forEach((zone, i) => {
     const aircraft = clusters[i];
-    if (aircraft.length === 0) return;
-    const maxDist = Math.max(...aircraft.map((a) => haversineKm(zone.lat, zone.lon, a.lat, a.lon)));
+    const maxDist = aircraft.length > 0
+      ? Math.max(...aircraft.map((a) => haversineKm(zone.lat, zone.lon, a.lat, a.lon)))
+      : 0;
     result.push({
       vanId: zone.vanId,
       homeAirport: zone.homeAirport,
@@ -444,6 +506,7 @@ export function assignVans(
     });
   });
 
+  // Sort: vans with aircraft first, then empty vans
   return result.sort((a, b) => b.aircraft.length - a.aircraft.length);
 }
 

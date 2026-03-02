@@ -118,12 +118,14 @@ const ALERT_COLUMNS =
 
 export async function fetchFlights(params: {
   lookahead_hours?: number;
+  lookback_hours?: number;
 } = {}): Promise<FlightsResponse> {
   const supa = createServiceClient();
   const lookahead = params.lookahead_hours ?? 720;
+  const lookback = params.lookback_hours ?? 12;
 
   const now = new Date();
-  const past = new Date(now.getTime() - 12 * 60 * 60 * 1000).toISOString();
+  const past = new Date(now.getTime() - lookback * 60 * 60 * 1000).toISOString();
   const future = new Date(now.getTime() + lookahead * 60 * 60 * 1000).toISOString();
 
   // Fetch flights in the time window

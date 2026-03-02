@@ -1499,15 +1499,6 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
     return computeOvernightPositions(selectedDate);
   }, [initialFlights, selectedDate]);
 
-  // Filter flights to active types only (Charter/Revenue, Positioning, Owner)
-  const activeFlights = useMemo(
-    () => initialFlights.filter((f) => {
-      const ft = inferFlightType(f);
-      return ft !== null && AOG_ACTIVE_TYPES.has(ft);
-    }),
-    [initialFlights],
-  );
-
   // Maintenance flights (for idle/maintenance section)
   const maintenanceFlights = useMemo(
     () => initialFlights.filter((f) => {
@@ -1517,14 +1508,14 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
     [initialFlights],
   );
 
-  // Collect all tail numbers that have active flights in the 36h window
+  // Collect all tail numbers that have any flights in the window
   const activeTails = useMemo(() => {
     const tails = new Set<string>();
-    for (const f of activeFlights) {
+    for (const f of initialFlights) {
       if (f.tail_number) tails.add(f.tail_number);
     }
     return tails;
-  }, [activeFlights]);
+  }, [initialFlights]);
 
   // Maintenance tails
   const maintenanceTails = useMemo(() => {
@@ -1538,7 +1529,7 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
   // All tails from positions (fleet)
   const allTails = useMemo(() => positions.map((p) => p.tail), [positions]);
 
-  // Idle aircraft: tails in the fleet but NOT in activeFlights and NOT in maintenance
+  // Idle aircraft: tails in the fleet but NOT in any flights and NOT in maintenance
   const idleAircraft = useMemo(
     () => positions.filter((p) => !activeTails.has(p.tail) && !maintenanceTails.has(p.tail)),
     [positions, activeTails, maintenanceTails],
@@ -1550,12 +1541,12 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
     [positions, maintenanceTails],
   );
 
-  // Flights arriving on the selected date (for stats bar) — only active types
+  // ALL flights on the selected date (for stats bar)
   const flightsForDay = useMemo(
-    () => activeFlights.filter((f) =>
+    () => initialFlights.filter((f) =>
       (f.scheduled_arrival ?? f.scheduled_departure).startsWith(selectedDate)
     ),
-    [activeFlights, selectedDate],
+    [initialFlights, selectedDate],
   );
 
   // ── Samsara live van data (lifted so map + schedule can both use it) ──
@@ -1617,7 +1608,7 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
   }, [sortedAogVans]);
 
   // ── Van assignment (must come after dynamicZones) ──
-  const vans       = useMemo(() => assignVans(positions, dynamicZones), [positions, dynamicZones]);
+  const vans       = useMemo(() => assignVans(positions, dynamicZones, 10, initialFlights, selectedDate), [positions, dynamicZones, initialFlights, selectedDate]);
   const displayedVans = selectedVan === null ? vans : vans.filter((v) => v.vanId === selectedVan);
 
   /** Zone ID → last known GPS position (persists across refreshes if signal lost). */
@@ -2007,8 +1998,118 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
 
       {/* ── Schedule tab ── */}
       {activeTab === "schedule" && (
-        <ScheduleTab allFlights={activeFlights} date={selectedDate} zones={dynamicZones} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} />
+        <ScheduleTab allFlights={initialFlights} date={selectedDate} zones={dynamicZones} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} />
       )}
+
+      {/* ── Unassigned Aircraft — all legs for the day ── */}
+      {(() => {
+        const coveredTails = new Set(vans.flatMap((v) => v.aircraft.map((ac) => ac.tail)));
+        const unassignedPositions = positions.filter(
+          (p) => !coveredTails.has(p.tail) && !maintenanceTails.has(p.tail),
+        );
+
+        if (unassignedPositions.length === 0) return null;
+
+        // Get all legs for each unassigned aircraft across the 7-day window
+        const unassignedWithLegs = unassignedPositions.map((pos) => {
+          const legs = initialFlights
+            .filter((f) => f.tail_number === pos.tail)
+            .sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure));
+          // Group legs by date
+          const legsByDate = new Map<string, Flight[]>();
+          for (const leg of legs) {
+            const depDate = leg.scheduled_departure.slice(0, 10);
+            const arr = legsByDate.get(depDate) ?? [];
+            arr.push(leg);
+            legsByDate.set(depDate, arr);
+          }
+          return { pos, legs, legsByDate };
+        });
+
+        return (
+          <div className="rounded-xl border-2 border-dashed border-red-200 bg-red-50/30 overflow-hidden">
+            <div className="px-4 py-3 border-b border-red-200 bg-red-50">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-bold text-red-800">Unassigned Aircraft</span>
+                <span className="text-xs bg-red-200 text-red-700 rounded-full px-2 py-0.5 font-semibold">
+                  {unassignedPositions.length}
+                </span>
+              </div>
+              <p className="text-xs text-red-600 mt-0.5">
+                Not covered by any AOG van — drag into a van in Schedule tab, or review legs below
+              </p>
+            </div>
+            <div className="divide-y divide-red-100">
+              {unassignedWithLegs.map(({ pos, legsByDate }) => (
+                <div key={pos.tail} className="px-4 py-3">
+                  <div className="flex items-center gap-3 mb-2">
+                    <span className="font-mono font-bold text-sm text-gray-800">{pos.tail}</span>
+                    <span className="text-xs text-gray-500">
+                      Overnight: {pos.airport} · {pos.airportName}
+                    </span>
+                    <span className="text-xs bg-red-100 text-red-600 rounded px-1.5 py-0.5">No Van</span>
+                  </div>
+                  {legsByDate.size > 0 ? (
+                    <div className="ml-4 space-y-2">
+                      {Array.from(legsByDate.entries()).map(([date, dayLegs]) => (
+                        <div key={date}>
+                          <div className="text-xs font-semibold text-gray-500 mb-1">
+                            {fmtLongDate(date)}
+                          </div>
+                          <div className="space-y-1">
+                            {dayLegs.map((leg, idx) => {
+                              const dep = leg.departure_icao?.replace(/^K/, "") ?? "?";
+                              const arr = leg.arrival_icao?.replace(/^K/, "") ?? "?";
+                              const ft = inferFlightType(leg);
+                              const isLast = idx === dayLegs.length - 1;
+                              return (
+                                <div
+                                  key={leg.id}
+                                  className={`flex items-center gap-2 text-xs py-1 px-2 rounded ${
+                                    isLast ? "bg-blue-50 border border-blue-100" : "bg-gray-50"
+                                  }`}
+                                >
+                                  <span className="text-gray-400 w-12 shrink-0">Leg {idx + 1}</span>
+                                  <span className="font-mono font-medium text-gray-700">{dep} → {arr}</span>
+                                  {ft && (
+                                    <span className={`rounded px-1.5 py-0.5 text-xs ${
+                                      ft === "Positioning" || ft === "Ferry"
+                                        ? "bg-purple-100 text-purple-700"
+                                        : ft === "Maintenance"
+                                        ? "bg-orange-100 text-orange-700"
+                                        : "bg-green-100 text-green-700"
+                                    }`}>
+                                      {ft}
+                                    </span>
+                                  )}
+                                  <span className="text-gray-400">
+                                    {fmtUtcHM(leg.scheduled_departure)}
+                                    {leg.scheduled_arrival && ` – ${fmtUtcHM(leg.scheduled_arrival)}`}
+                                  </span>
+                                  {leg.scheduled_arrival && (
+                                    <span className="text-gray-300">
+                                      {fmtDuration(leg.scheduled_departure, leg.scheduled_arrival)}
+                                    </span>
+                                  )}
+                                  {isLast && date === selectedDate && (
+                                    <span className="text-blue-600 font-medium ml-auto">Overnight</span>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="ml-4 text-xs text-gray-400">No scheduled legs in window</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── Idle & Maintenance Aircraft ── */}
       {(idleAircraft.length > 0 || maintenanceAircraft.length > 0) && (
@@ -2046,7 +2147,7 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
                     {idleAircraft.length}
                   </span>
                 </div>
-                <p className="text-xs text-gray-500 mt-0.5">No charter, positioning, or owner flights within 36 hours</p>
+                <p className="text-xs text-gray-500 mt-0.5">No flights in the 7-day window</p>
               </div>
               <div className="divide-y divide-gray-100">
                 {idleAircraft.map((ac) => (
