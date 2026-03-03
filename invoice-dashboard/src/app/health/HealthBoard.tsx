@@ -1,0 +1,155 @@
+"use client";
+
+import { useEffect, useState, useCallback } from "react";
+
+type PipelineCheck = {
+  name: string;
+  description: string;
+  lastActivity: string | null;
+  status: "ok" | "warning" | "error" | "unknown";
+  staleMins: number;
+  thresholdMins: number;
+};
+
+type HealthData = {
+  overall: "ok" | "warning" | "error" | "unknown";
+  checked_at: string;
+  pipelines: PipelineCheck[];
+  error?: string;
+};
+
+const STATUS_STYLES = {
+  ok: { dot: "bg-emerald-500", bg: "bg-emerald-50 border-emerald-200", text: "text-emerald-700", label: "Healthy" },
+  warning: { dot: "bg-amber-500", bg: "bg-amber-50 border-amber-200", text: "text-amber-700", label: "Stale" },
+  error: { dot: "bg-red-500", bg: "bg-red-50 border-red-200", text: "text-red-700", label: "Down" },
+  unknown: { dot: "bg-gray-400", bg: "bg-gray-50 border-gray-200", text: "text-gray-500", label: "No data" },
+};
+
+function formatAge(mins: number): string {
+  if (mins < 0) return "—";
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ${mins % 60}m ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ${hours % 24}h ago`;
+}
+
+function formatTimestamp(iso: string | null): string {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+export function HealthBoard() {
+  const [data, setData] = useState<HealthData | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const fetchHealth = useCallback(async () => {
+    try {
+      const res = await fetch("/api/health", { cache: "no-store" });
+      const json: HealthData = await res.json();
+      setData(json);
+    } catch {
+      setData({ overall: "error", checked_at: new Date().toISOString(), pipelines: [], error: "Failed to fetch" });
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchHealth();
+    const id = setInterval(fetchHealth, 60_000); // refresh every 60s
+    return () => clearInterval(id);
+  }, [fetchHealth]);
+
+  if (loading) {
+    return (
+      <div className="p-6">
+        <div className="max-w-4xl mx-auto">
+          <div className="animate-pulse space-y-3">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div key={i} className="h-16 bg-gray-100 rounded-lg" />
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!data) return null;
+
+  const overallStyle = STATUS_STYLES[data.overall];
+  const okCount = data.pipelines.filter((p) => p.status === "ok").length;
+
+  return (
+    <div className="p-4 sm:p-6">
+      <div className="max-w-4xl mx-auto space-y-4">
+        {/* Overall status banner */}
+        <div className={`rounded-xl border p-4 flex items-center justify-between ${overallStyle.bg}`}>
+          <div className="flex items-center gap-3">
+            <div className={`h-3 w-3 rounded-full ${overallStyle.dot} ${data.overall === "ok" ? "" : "animate-pulse"}`} />
+            <div>
+              <div className={`font-semibold ${overallStyle.text}`}>
+                {data.overall === "ok"
+                  ? "All systems operational"
+                  : data.overall === "warning"
+                    ? "Some pipelines are stale"
+                    : data.overall === "error"
+                      ? "Pipeline issues detected"
+                      : "Health unknown"}
+              </div>
+              <div className="text-xs text-gray-500 mt-0.5">
+                {okCount}/{data.pipelines.length} pipelines healthy
+              </div>
+            </div>
+          </div>
+          <div className="text-xs text-gray-400">
+            Checked {formatTimestamp(data.checked_at)}
+          </div>
+        </div>
+
+        {data.error && (
+          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+            {data.error}
+          </div>
+        )}
+
+        {/* Pipeline cards */}
+        <div className="space-y-2">
+          {data.pipelines.map((p) => {
+            const style = STATUS_STYLES[p.status];
+            return (
+              <div key={p.name} className="rounded-lg border bg-white p-4 flex items-center justify-between shadow-sm">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className={`h-2.5 w-2.5 rounded-full flex-shrink-0 ${style.dot}`} />
+                  <div className="min-w-0">
+                    <div className="font-medium text-sm text-gray-900">{p.name}</div>
+                    <div className="text-xs text-gray-400 truncate">{p.description}</div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-4 flex-shrink-0 ml-4">
+                  <div className="text-right">
+                    <div className="text-sm font-medium tabular-nums text-gray-700">
+                      {formatAge(p.staleMins)}
+                    </div>
+                    <div className="text-[11px] text-gray-400">
+                      {formatTimestamp(p.lastActivity)}
+                    </div>
+                  </div>
+                  <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${style.bg} ${style.text}`}>
+                    {style.label}
+                  </span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
