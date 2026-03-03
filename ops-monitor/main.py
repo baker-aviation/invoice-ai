@@ -638,7 +638,7 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
     t_parse = _time.monotonic() - t0
     print(f"sync_schedule: parsed {len(batch)} flights to upsert, {skipped} skipped in {t_parse:.1f}s", flush=True)
 
-    # Bulk upsert in chunks of 50
+    # Bulk upsert in chunks of 50, with row-level fallback on failure
     CHUNK = 50
     for i in range(0, len(batch), CHUNK):
         chunk = batch[i:i + CHUNK]
@@ -646,8 +646,15 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
             supa.table(FLIGHTS_TABLE).upsert(chunk, on_conflict="ics_uid").execute()
             upserted += len(chunk)
         except Exception as e:
-            errors += len(chunk)
             print(f"sync_schedule bulk upsert error chunk {i}: {repr(e)}", flush=True)
+            # Fallback: upsert row-by-row to salvage good rows
+            for row in chunk:
+                try:
+                    supa.table(FLIGHTS_TABLE).upsert(row, on_conflict="ics_uid").execute()
+                    upserted += 1
+                except Exception as row_err:
+                    errors += 1
+                    print(f"sync_schedule row upsert error uid={row.get('ics_uid','?')}: {repr(row_err)}", flush=True)
 
     # ── Cleanup: remove non-flight entries already in the DB ─────────────
     cleaned = 0
