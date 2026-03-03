@@ -14,6 +14,7 @@ const NAV = [
   { href: "/maintenance", label: "AOG Vans", exact: false },
   { href: "/vehicles", label: "Vehicles", exact: false },
   { href: "/fees", label: "Fees", exact: false },
+  { href: "/health", label: "Health", exact: false },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
