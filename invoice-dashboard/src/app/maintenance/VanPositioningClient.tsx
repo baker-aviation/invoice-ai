@@ -1006,69 +1006,54 @@ function VanScheduleCard({
                     key={arrFlight.id}
                     draggable
                     onDragStart={(e) => onDragStart(e, arrFlight.id, zone.vanId)}
-                    className="px-4 py-3 cursor-grab active:cursor-grabbing hover:bg-gray-50/50"
+                    className="px-4 py-2 cursor-grab active:cursor-grabbing hover:bg-gray-50/50"
                   >
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="flex items-center gap-3 min-w-0">
-                        <div className="flex flex-col items-center gap-0.5 flex-shrink-0 mt-1">
+                    <div className="flex items-center justify-between gap-3">
+                      {/* Left: color dot + tail + route + badges */}
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="flex items-center gap-1.5 flex-shrink-0">
                           <div className="w-2.5 h-2.5 rounded-full" style={{ background: color }} />
                           <svg className="w-3 h-3 text-gray-300" fill="none" viewBox="0 0 12 12" stroke="currentColor" strokeWidth={2}>
                             <path d="M2 4h8M2 8h8" />
                           </svg>
                         </div>
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="font-mono font-semibold text-sm">{arrFlight.tail_number ?? "—"}</span>
-                            <span className="text-xs text-gray-500 font-mono">
-                              {arrFlight.departure_icao?.replace(/^K/, "") ?? "?"} → {airport}
-                            </span>
-                            {inferFlightType(arrFlight) === "Maintenance" ? (
-                              <span className="text-xs bg-orange-100 text-orange-700 rounded px-1.5 py-0.5">Maintenance</span>
-                            ) : isRepo ? (
-                              <span className="text-xs bg-purple-100 text-purple-700 rounded px-1.5 py-0.5">Positioning</span>
-                            ) : (
-                              <span className="text-xs bg-green-100 text-green-700 rounded px-1.5 py-0.5">Revenue</span>
-                            )}
-                          </div>
-                          <div className="text-xs text-gray-500 mt-0.5">
-                            {airport}{airportInfo ? ` · ${airportInfo.city}, ${airportInfo.state}` : ""}
-                            {" · "}<span className="text-gray-400">{fmtDriveTime(distKm)}</span>
-                          </div>
-                        </div>
+                        <span className="font-mono font-semibold text-sm">{arrFlight.tail_number ?? "—"}</span>
+                        <span className="text-xs text-gray-500 font-mono">
+                          {arrFlight.departure_icao?.replace(/^K/, "") ?? "?"} → {airport}
+                        </span>
+                        {inferFlightType(arrFlight) === "Maintenance" ? (
+                          <span className="text-xs bg-orange-100 text-orange-700 rounded px-1.5 py-0.5">Maintenance</span>
+                        ) : isRepo ? (
+                          <span className="text-xs bg-purple-100 text-purple-700 rounded px-1.5 py-0.5">Positioning</span>
+                        ) : (
+                          <span className="text-xs bg-green-100 text-green-700 rounded px-1.5 py-0.5">Revenue</span>
+                        )}
+                        {isQuickturn && (
+                          <span className="text-xs font-semibold bg-amber-100 text-amber-700 rounded-full px-2 py-0.5">Quickturn</span>
+                        )}
+                        {doneForDay && (
+                          <span className="text-xs font-semibold bg-green-100 text-green-700 rounded-full px-2 py-0.5">Done for day</span>
+                        )}
+                        {hasMaintenance && (
+                          <span className="text-xs font-semibold bg-orange-100 text-orange-700 rounded-full px-2 py-0.5">Maint</span>
+                        )}
                       </div>
-                      <div className="flex items-start gap-2 shrink-0">
-                        <div className="text-right space-y-1 min-w-[90px]">
+                      {/* Right: times + status + remove */}
+                      <div className="flex items-center gap-2 shrink-0">
+                        <div className="text-right text-xs whitespace-nowrap">
                           {arrFlight.scheduled_departure && (
-                            <div className="text-xs text-gray-400">
-                              Departs {fmtUtcHM(arrFlight.scheduled_departure)}
-                            </div>
+                            <span className="text-gray-400">{fmtUtcHM(arrFlight.scheduled_departure)}</span>
                           )}
                           {arrTime && (
-                            <div className="text-xs font-medium text-gray-700">
-                              Lands {fmtUtcHM(arrFlight.scheduled_arrival!)}
-                            </div>
-                          )}
-                          <span className={`inline-block text-xs font-semibold rounded-full px-2 py-0.5 ${hasLanded ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-600"}`}>
-                            {hasLanded ? "~Landed" : "Scheduled"}
-                          </span>
-                          {isQuickturn && (
-                            <div>
-                              <span className="inline-block text-xs font-semibold bg-amber-100 text-amber-700 rounded-full px-2 py-0.5">
-                                Quickturn
-                              </span>
-                            </div>
-                          )}
-                          {doneForDay && (
-                            <div>
-                              <span className="inline-block text-xs font-semibold bg-green-100 text-green-700 rounded-full px-2 py-0.5">
-                                Done for day
-                              </span>
-                            </div>
+                            <span className="text-gray-400">{" → "}<span className="font-medium text-gray-700">{fmtUtcHM(arrFlight.scheduled_arrival!)}</span></span>
                           )}
                         </div>
+                        <span className={`text-xs font-semibold rounded-full px-2 py-0.5 ${hasLanded ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-600"}`}>
+                          {hasLanded ? "~Landed" : "Scheduled"}
+                        </span>
                         <button
                           onClick={(e) => { e.stopPropagation(); onRemove(arrFlight.id); }}
-                          className="mt-0.5 p-1 rounded-md text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors"
+                          className="p-1 rounded-md text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors"
                           title="Remove from this van"
                         >
                           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 14 14" stroke="currentColor" strokeWidth={2}>
@@ -1077,32 +1062,28 @@ function VanScheduleCard({
                         </button>
                       </div>
                     </div>
-                    {/* Flying again — shown right below arrival leg */}
-                    {nextDep && (
-                      <div className="ml-8 mt-0.5 text-xs font-medium">
-                        <span className={nextIsRepo ? "text-purple-700" : "text-blue-700"}>
-                          Flying again {fmtTimeUntil(nextDep.scheduled_departure) && `${fmtTimeUntil(nextDep.scheduled_departure)} · `}{fmtUtcHM(nextDep.scheduled_departure)} → {nextDep.arrival_icao?.replace(/^K/, "") ?? "?"}
-                        </span>
-                        {nextIsRepo && <span className="ml-1 text-xs text-purple-400">(repo)</span>}
-                      </div>
-                    )}
-                    {/* Maintenance scheduled alert */}
-                    {hasMaintenance && (
-                      <div className="ml-8 mt-0.5">
-                        <span className="inline-block text-xs font-semibold bg-orange-100 text-orange-700 rounded-full px-2 py-0.5">
-                          Maintenance Scheduled
-                        </span>
-                      </div>
-                    )}
-                    {/* Day's legs — other scheduled legs for this aircraft */}
+                    {/* Sub-info line: airport city + drive time + flying again */}
+                    <div className="ml-8 mt-0.5 flex items-center gap-2 text-xs text-gray-400 flex-wrap">
+                      <span>{airport}{airportInfo ? ` · ${airportInfo.city}, ${airportInfo.state}` : ""} · {fmtDriveTime(distKm)}</span>
+                      {nextDep && (
+                        <>
+                          <span className="text-gray-300">|</span>
+                          <span className={nextIsRepo ? "text-purple-600 font-medium" : "text-blue-600 font-medium"}>
+                            Flying again {fmtTimeUntil(nextDep.scheduled_departure) && `${fmtTimeUntil(nextDep.scheduled_departure)} · `}{fmtUtcHM(nextDep.scheduled_departure)} → {nextDep.arrival_icao?.replace(/^K/, "") ?? "?"}
+                            {nextIsRepo && <span className="text-purple-400 font-normal"> (repo)</span>}
+                          </span>
+                        </>
+                      )}
+                    </div>
+                    {/* Day's other legs for this aircraft */}
                     {extraLegs.length > 0 && (
-                      <div className="ml-8 mt-1.5 space-y-0.5 border-l-2 pl-3" style={{ borderColor: color + "40" }}>
+                      <div className="ml-8 mt-1 space-y-0 border-l-2 pl-3" style={{ borderColor: color + "40" }}>
                         {extraLegs.map((f) => {
                           const ft = inferFlightType(f);
                           const dep = f.departure_icao?.replace(/^K/, "") ?? "?";
                           const arrIcao = f.arrival_icao?.replace(/^K/, "") ?? "?";
                           return (
-                            <div key={f.id} className="flex items-center gap-2 text-xs text-gray-400 py-0.5">
+                            <div key={f.id} className="flex items-center gap-2 text-xs text-gray-400 py-px">
                               <span className="font-mono text-gray-500">{dep} → {arrIcao}</span>
                               <span>{fmtUtcHM(f.scheduled_departure)}{f.scheduled_arrival ? ` – ${fmtUtcHM(f.scheduled_arrival)}` : ""}</span>
                               {ft && (
@@ -1454,10 +1435,10 @@ function ScheduleTab({
                     key={tailKey}
                     draggable
                     onDragStart={(e) => handleDragStart(e, primaryItem.arrFlight.id, 0)}
-                    className="px-4 py-2.5 cursor-grab active:cursor-grabbing hover:bg-red-50/50"
+                    className="px-4 py-2 cursor-grab active:cursor-grabbing hover:bg-red-50/50"
                   >
                     {/* Header: tail number + badges + assign dropdown */}
-                    <div className="flex items-center justify-between gap-4 mb-1.5">
+                    <div className="flex items-center justify-between gap-4 mb-1">
                       <div className="flex items-center gap-2 flex-wrap">
                         <div className="w-2.5 h-2.5 rounded-full bg-red-300 flex-shrink-0" />
                         <span className="font-mono font-semibold text-sm">{tail ?? "—"}</span>
@@ -1506,8 +1487,8 @@ function ScheduleTab({
                         ))}
                       </select>
                     </div>
-                    {/* All legs listed in chronological order */}
-                    <div className="ml-5 space-y-0.5">
+                    {/* All legs + flying again */}
+                    <div className="ml-5 space-y-0">
                       {allLegs.map((f) => {
                         const ft = inferFlightType(f);
                         const cat = getFilterCategory(ft);
@@ -1515,7 +1496,7 @@ function ScheduleTab({
                         const arrIcao = f.arrival_icao?.replace(/^K/, "") ?? "?";
                         const isMaint = dep === arrIcao;
                         return (
-                          <div key={f.id} className="flex items-center gap-2 text-xs text-gray-600 py-0.5">
+                          <div key={f.id} className="flex items-center gap-2 text-xs text-gray-600 py-px">
                             <span className="font-mono">{dep} → {arrIcao}</span>
                             <span>{fmtUtcHM(f.scheduled_departure)}{f.scheduled_arrival ? ` – ${fmtUtcHM(f.scheduled_arrival)}` : ""}</span>
                             {ft && (
@@ -1532,16 +1513,15 @@ function ScheduleTab({
                           </div>
                         );
                       })}
+                      {nextDep && (
+                        <div className="flex items-center gap-2 text-xs py-px">
+                          <span className={nextIsRepo ? "text-purple-600 font-medium" : "text-blue-600 font-medium"}>
+                            Flying again {fmtTimeUntil(nextDep.scheduled_departure) && `${fmtTimeUntil(nextDep.scheduled_departure)} · `}{fmtUtcHM(nextDep.scheduled_departure)} → {nextDep.arrival_icao?.replace(/^K/, "") ?? "?"}
+                          </span>
+                          {nextIsRepo && <span className="text-purple-400">(repo)</span>}
+                        </div>
+                      )}
                     </div>
-                    {/* Flying again — after the last leg */}
-                    {nextDep && (
-                      <div className="ml-5 mt-0.5 text-xs font-medium">
-                        <span className={nextIsRepo ? "text-purple-700" : "text-blue-700"}>
-                          Flying again {fmtTimeUntil(nextDep.scheduled_departure) && `${fmtTimeUntil(nextDep.scheduled_departure)} · `}{fmtUtcHM(nextDep.scheduled_departure)} → {nextDep.arrival_icao?.replace(/^K/, "") ?? "?"}
-                        </span>
-                        {nextIsRepo && <span className="ml-1 text-xs text-purple-400">(repo)</span>}
-                      </div>
-                    )}
                   </div>
                 );
               })}
