@@ -951,9 +951,21 @@ def parse_next(limit: int = Query(10, ge=1, le=50)):
             results.append(
                 {"application_id": aid, "status": "failed", "error": str(e.detail)}
             )
+        except Exception as e:
+            print(f"PARSE app={aid} unexpected error: {e}", flush=True)
+            results.append(
+                {"application_id": aid, "status": "failed", "error": str(e)}
+            )
 
     parsed = sum(1 for r in results if r.get("status") == "parsed")
-    log_pipeline_run("job-parse", items=parsed, message=f"attempted={len(apps)} parsed={parsed}")
+    failed = [r for r in results if r.get("status") == "failed"]
+    fail_summary = "; ".join(
+        f"app {r['application_id']}: {r.get('error', 'unknown')}" for r in failed[:5]
+    )
+    msg = f"attempted={len(apps)} parsed={parsed}"
+    if fail_summary:
+        msg += f" failures=[{fail_summary}]"
+    log_pipeline_run("job-parse", items=parsed, message=msg)
     return {"ok": True, "attempted": len(apps), "results": results}
 
 
