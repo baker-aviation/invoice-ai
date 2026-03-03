@@ -213,7 +213,7 @@ export async function fetchFlights(params: {
   }));
 
   // Assemble flights with nested alerts
-  const flights: Flight[] = flightRows.map((f) => ({
+  const allFlights: Flight[] = flightRows.map((f) => ({
     id: f.id as string,
     ics_uid: f.ics_uid as string,
     tail_number: f.tail_number as string | null,
@@ -225,6 +225,24 @@ export async function fetchFlights(params: {
     flight_type: f.flight_type as string | null,
     alerts: alertsByFlight.get(f.id as string) ?? [],
   }));
+
+  // Deduplicate cross-feed flights: same tail+route+departure = same flight.
+  // Keep the first (by scheduled_departure sort order) and merge alerts.
+  const seen = new Map<string, number>();
+  const flights: Flight[] = [];
+  for (const f of allFlights) {
+    if (f.tail_number && f.departure_icao && f.arrival_icao) {
+      const sig = `${f.tail_number}|${f.departure_icao}|${f.arrival_icao}|${f.scheduled_departure}`;
+      const existing = seen.get(sig);
+      if (existing !== undefined) {
+        // Merge alerts from the duplicate into the kept flight
+        flights[existing].alerts.push(...f.alerts);
+        continue;
+      }
+      seen.set(sig, flights.length);
+    }
+    flights.push(f);
+  }
 
   // Add synthetic flight entries for orphan EDCT alerts
   for (const alert of orphanAlerts) {
