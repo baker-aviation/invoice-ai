@@ -69,7 +69,7 @@ export async function GET(req: NextRequest) {
   } catch (err) {
     console.error(`[/api/vans] Samsara fetch failed:`, err);
     return NextResponse.json(
-      { error: "Samsara API unreachable", detail: String(err) },
+      { error: "Samsara API unreachable" },
       { status: 502 },
     );
   }

@@ -27,8 +27,11 @@ export default function ReparseButton({ documentId }: { documentId: string }) {
       }
 
       setState("done");
-      setMsg("Re-parsed successfully. Refreshing...");
-      setTimeout(() => window.location.reload(), 1500);
+      setMsg("Re-parse started. Refreshing…");
+      // The page will auto-refresh via AutoRefresh (every 8s) while
+      // in the "processing" state. Do one reload after a short delay
+      // to show the processing banner immediately.
+      setTimeout(() => window.location.reload(), 2000);
     } catch (e: unknown) {
       setMsg(e instanceof Error ? e.message : "Network error");
       setState("error");
@@ -40,10 +43,10 @@ export default function ReparseButton({ documentId }: { documentId: string }) {
       <button
         type="button"
         onClick={handleReparse}
-        disabled={state === "loading"}
+        disabled={state === "loading" || state === "done"}
         className="rounded-md border border-gray-300 px-3 py-2 text-sm hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
       >
-        {state === "loading" ? "Re-parsing..." : "Re-parse"}
+        {state === "loading" ? "Starting…" : state === "done" ? "Re-parsing…" : "Re-parse"}
       </button>
       {msg && (
         <span className={`text-xs ${state === "error" ? "text-red-600" : "text-green-600"}`}>

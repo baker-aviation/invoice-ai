@@ -15,8 +15,10 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from supa import sb
+from auth_middleware import add_auth_middleware
 
 app = FastAPI()
+add_auth_middleware(app)
 limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
@@ -31,9 +33,18 @@ SAMSARA_API_KEY = os.getenv("SAMSARA_API_KEY")
 FAA_CLIENT_ID = os.getenv("FAA_CLIENT_ID")
 FAA_CLIENT_SECRET = os.getenv("FAA_CLIENT_SECRET")
 
-# FAA NMS API (staging / pre-prod — cgifederal-aim.com)
-NMS_AUTH_URL = "https://api-staging.cgifederal-aim.com/v1/auth/token"
-NMS_API_BASE = "https://api-staging.cgifederal-aim.com/nmsapi"
+# JetInsight ICS events with these flight types are scheduling/admin notes,
+# not actual aircraft movements.  Skip them during sync.
+_SKIP_FLIGHT_TYPES = {
+    "Aircraft away from home base",
+    "Aircraft needs repositioning",
+}
+# SUMMARY keywords that indicate a non-flight entry regardless of flight_type.
+_SKIP_SUMMARY_KEYWORDS = {"NOT FLYING"}
+
+# FAA NMS API (production)
+NMS_AUTH_URL = "https://api-nms.aim.faa.gov/v1/auth/token"
+NMS_API_BASE = "https://api-nms.aim.faa.gov/nmsapi"
 
 FOREFLIGHT_MAILBOX = os.getenv("FOREFLIGHT_MAILBOX", "ForeFlight@baker-aviation.com")
 MS_TENANT_ID = os.getenv("MS_TENANT_ID")
@@ -226,22 +237,47 @@ def _parse_flight_fields(component) -> Tuple[Optional[str], Optional[str], Optio
 
     # ── Flight type: extract from CATEGORIES property or SUMMARY suffix ──────
     flight_type = None
-    # Try CATEGORIES ICS property first
+    # Try CATEGORIES ICS property first (icalendar vCategory is list-like)
     categories = component.get("CATEGORIES")
-    if categories:
-        cat_str = str(categories) if not isinstance(categories, list) else str(categories[0])
-        cat_str = cat_str.strip()
-        if cat_str:
-            flight_type = cat_str
+    if categories is not None:
+        try:
+            # vCategory.to_ical() returns bytes like b"Revenue" — most reliable
+            if hasattr(categories, "to_ical"):
+                raw_cat = categories.to_ical()
+                cat_str = raw_cat.decode("utf-8", errors="replace") if isinstance(raw_cat, bytes) else str(raw_cat)
+            elif isinstance(categories, (list, tuple)) and len(categories) > 0:
+                cat_str = str(categories[0])
+            else:
+                cat_str = str(categories)
+            # Take first category if comma-separated (e.g. "Revenue,Business")
+            cat_str = cat_str.split(",")[0].strip()
+            if cat_str:
+                flight_type = cat_str
+        except Exception:
+            pass
 
-    # Fallback: parse from SUMMARY — text after the last " - " following the airport pair
+    # Fallback 1: text after the airport pair — "(SDM - SNA) - Positioning flight"
     if not flight_type:
-        # Match everything after the last " - " that follows the (XXX - XXX) airport pair
         type_m = re.search(r"\([A-Z]{3,4}\s*[-–]\s*[A-Z]{3,4}\)\s*[-–]\s*(.+)$", summary)
         if type_m:
             raw = type_m.group(1).strip()
-            # Normalize: strip trailing "flight" if present (e.g. "Positioning flight" → "Positioning")
             flight_type = re.sub(r"\s+flights?\s*$", "", raw, flags=re.IGNORECASE).strip() or None
+
+    # Fallback 2: text before the bracket — "Revenue - [N123] ..." or "Revenue [N123] ..."
+    if not flight_type:
+        pre_m = re.match(r"^([A-Za-z][A-Za-z /]+?)\s*[-–]?\s*\[", summary)
+        if pre_m:
+            raw = pre_m.group(1).strip().rstrip("-–").strip()
+            flight_type = re.sub(r"\s+flights?\s*$", "", raw, flags=re.IGNORECASE).strip() or None
+
+    # Fallback 3: check SUMMARY + DESCRIPTION for common flight type keywords
+    if not flight_type:
+        combined = f"{summary} {description}"
+        for keyword in ("Revenue", "Owner", "Positioning", "Maintenance", "Training", "Ferry", "Cargo",
+                        "Needs pos", "Crew conflict", "Time off", "Assignment", "Transient"):
+            if re.search(rf"\b{re.escape(keyword)}\b", combined, re.IGNORECASE):
+                flight_type = keyword
+                break
 
     return dep_icao, arr_icao, tail, flight_type
 
@@ -583,6 +619,25 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
 
             dep_icao, arr_icao, tail, flight_type = _parse_flight_fields(component)
 
+            # Debug: log first 3 events so we can verify flight_type extraction
+            if upserted + skipped + errors < 3:
+                raw_cat = component.get("CATEGORIES")
+                print(f"sync_schedule DEBUG event: summary={summary!r}, categories={raw_cat!r}, flight_type={flight_type!r}", flush=True)
+
+            # ── Filter out non-flight scheduling entries ──────────────────
+            # 1. Same departure/arrival = not an aircraft movement
+            if dep_icao and arr_icao and dep_icao == arr_icao:
+                skipped += 1
+                continue
+            # 2. Administrative flight types (home-base notes, repo requests)
+            if flight_type in _SKIP_FLIGHT_TYPES:
+                skipped += 1
+                continue
+            # 3. SUMMARY contains explicit non-flight keywords
+            if any(kw in summary.upper() for kw in _SKIP_SUMMARY_KEYWORDS):
+                skipped += 1
+                continue
+
             flight: Dict[str, Any] = {
                 "ics_uid": uid,
                 "scheduled_departure": dep_dt.isoformat(),
@@ -605,10 +660,17 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
             errors += 1
             print(f"sync_schedule parse error uid={component.get('UID','?')}: {repr(e)}", flush=True)
 
+    # Deduplicate by ics_uid — same flight can appear in multiple feeds.
+    # Keep the last occurrence (typically the most recently updated).
+    seen_uids: Dict[str, int] = {}
+    for idx, flight in enumerate(batch):
+        seen_uids[flight["ics_uid"]] = idx
+    batch = [batch[i] for i in sorted(seen_uids.values())]
+
     t_parse = _time.monotonic() - t0
     print(f"sync_schedule: parsed {len(batch)} flights to upsert, {skipped} skipped in {t_parse:.1f}s", flush=True)
 
-    # Bulk upsert in chunks of 50
+    # Bulk upsert in chunks of 50, with row-level fallback on failure
     CHUNK = 50
     for i in range(0, len(batch), CHUNK):
         chunk = batch[i:i + CHUNK]
@@ -616,12 +678,49 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
             supa.table(FLIGHTS_TABLE).upsert(chunk, on_conflict="ics_uid").execute()
             upserted += len(chunk)
         except Exception as e:
-            errors += len(chunk)
             print(f"sync_schedule bulk upsert error chunk {i}: {repr(e)}", flush=True)
+            # Fallback: upsert row-by-row to salvage good rows
+            for row in chunk:
+                try:
+                    supa.table(FLIGHTS_TABLE).upsert(row, on_conflict="ics_uid").execute()
+                    upserted += 1
+                except Exception as row_err:
+                    errors += 1
+                    print(f"sync_schedule row upsert error uid={row.get('ics_uid','?')}: {repr(row_err)}", flush=True)
+
+    # ── Cleanup: remove non-flight entries already in the DB ─────────────
+    cleaned = 0
+    try:
+        # 1. Delete by known non-flight types
+        for skip_type in _SKIP_FLIGHT_TYPES:
+            res = supa.table(FLIGHTS_TABLE).delete().eq("flight_type", skip_type).execute()
+            cleaned += len(res.data or [])
+        # 2. Delete same-departure/arrival rows (Supabase client can't compare
+        #    two columns, so fetch then delete by ID)
+        dup_res = supa.table(FLIGHTS_TABLE).select("id, departure_icao, arrival_icao").limit(10000).execute()
+        dup_ids = [
+            r["id"] for r in (dup_res.data or [])
+            if r.get("departure_icao") and r.get("arrival_icao")
+            and r["departure_icao"] == r["arrival_icao"]
+        ]
+        for i in range(0, len(dup_ids), 50):
+            chunk_ids = dup_ids[i:i + 50]
+            supa.table(FLIGHTS_TABLE).delete().in_("id", chunk_ids).execute()
+            cleaned += len(chunk_ids)
+        # 3. Delete rows whose summary contains non-flight keywords
+        for kw in _SKIP_SUMMARY_KEYWORDS:
+            kw_res = supa.table(FLIGHTS_TABLE).select("id, summary").ilike("summary", f"%{kw}%").execute()
+            kw_ids = [r["id"] for r in (kw_res.data or [])]
+            for i in range(0, len(kw_ids), 50):
+                chunk_ids = kw_ids[i:i + 50]
+                supa.table(FLIGHTS_TABLE).delete().in_("id", chunk_ids).execute()
+                cleaned += len(chunk_ids)
+    except Exception as e:
+        print(f"sync_schedule cleanup error: {repr(e)}", flush=True)
 
     t_total = _time.monotonic() - t0
-    print(f"sync_schedule: done in {t_total:.1f}s — upserted={upserted} skipped={skipped} errors={errors}", flush=True)
-    return {"ok": True, "upserted": upserted, "skipped": skipped, "errors": errors, "fetch_secs": round(t_fetch, 1), "total_secs": round(t_total, 1)}
+    print(f"sync_schedule: done in {t_total:.1f}s — upserted={upserted} skipped={skipped} errors={errors} cleaned={cleaned}", flush=True)
+    return {"ok": True, "upserted": upserted, "skipped": skipped, "errors": errors, "cleaned": cleaned, "fetch_secs": round(t_fetch, 1), "total_secs": round(t_total, 1)}
 
 
 # ─── Job: pull_edct ───────────────────────────────────────────────────────────
@@ -905,7 +1004,7 @@ def _run_check_notams(lookahead_hours: int) -> dict:
                     "subject": notam_data.get("number", "")[:500],
                     "body": msg[:2000],
                     "source_message_id": f"nms-{notam_id}-{fid}",
-                    "raw_data": json.dumps({"notam_dates": notam_dates}) if notam_dates else None,
+                    "raw_data": {"notam_dates": notam_dates} if notam_dates else None,
                     "created_at": _utc_now(),
                 })
 

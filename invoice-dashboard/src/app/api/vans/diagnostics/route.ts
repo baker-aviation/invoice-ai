@@ -14,6 +14,7 @@ interface SamsaraVehicleDiag {
   name?: string;
   obdOdometerMeters?: { value?: number; time?: string };
   faultCodes?: { value?: SamsaraFaultValue | unknown[]; time?: string };
+  fuelPercents?: { value?: number; time?: string };
 }
 
 export async function GET(req: NextRequest) {
@@ -35,13 +36,14 @@ export async function GET(req: NextRequest) {
 
   try {
     const res = await fetch(
-      `${SAMSARA_BASE}/fleet/vehicles/stats?types=obdOdometerMeters,faultCodes`,
+      `${SAMSARA_BASE}/fleet/vehicles/stats?types=obdOdometerMeters,faultCodes,fuelPercents`,
       { headers: { Authorization: `Bearer ${apiKey}` }, cache: "no-store" },
     );
     if (!res.ok) {
       const body = await res.text().catch(() => "");
+      console.error(`[vans/diagnostics] Samsara API error: HTTP ${res.status} — ${body.slice(0, 300)}`);
       return NextResponse.json(
-        { error: `Samsara API error: HTTP ${res.status}`, detail: body.slice(0, 300) },
+        { error: "Samsara API error" },
         { status: 502 },
       );
     }
@@ -51,6 +53,7 @@ export async function GET(req: NextRequest) {
     const vehicles = raw.map((v) => {
       const odo = v.obdOdometerMeters ?? {};
       const fc = v.faultCodes ?? {};
+      const fp = v.fuelPercents ?? {};
       const odoMeters = odo.value;
 
       // faultCodes.value structure varies by gateway — handle both dict and list
@@ -70,14 +73,16 @@ export async function GET(req: NextRequest) {
           odoMeters != null ? Math.round(odoMeters / 1609.344) : null,
         check_engine_on: active.length > 0,
         fault_codes: active,
+        fuel_percent: fp.value ?? null,
         diag_time: odo.time ?? fc.time ?? null,
       };
     });
 
     return NextResponse.json({ ok: true, vehicles, count: vehicles.length });
   } catch (err) {
+    console.error("[vans/diagnostics] Samsara API unreachable:", err);
     return NextResponse.json(
-      { error: "Samsara API unreachable", detail: String(err) },
+      { error: "Samsara API unreachable" },
       { status: 502 },
     );
   }

@@ -153,7 +153,12 @@ const AIRPORT_TZ: Record<string, string> = {
   KDCA: "America/New_York", KIAD: "America/New_York", KBWI: "America/New_York",
   KATL: "America/New_York", KCLT: "America/New_York", KRDU: "America/New_York",
   KPDK: "America/New_York", KAGS: "America/New_York", KJAX: "America/New_York",
-  KPNS: "America/New_York", KECP: "America/New_York",
+  KPNS: "America/New_York", KECP: "America/New_York", KPHL: "America/New_York",
+  KTPA: "America/New_York", KTTN: "America/New_York", KBUF: "America/New_York",
+  KMMU: "America/New_York", KEWR: "America/New_York", KMCO: "America/New_York",
+  KFRG: "America/New_York", KYIP: "America/New_York", KROC: "America/New_York",
+  KCLE: "America/New_York", KIND: "America/New_York", KILM: "America/New_York",
+  KBGR: "America/New_York",
   // Central
   KDAL: "America/Chicago", KDFW: "America/Chicago", KHOU: "America/Chicago",
   KIAH: "America/Chicago", KAUS: "America/Chicago", KSAT: "America/Chicago",
@@ -163,12 +168,15 @@ const AIRPORT_TZ: Record<string, string> = {
   KMEM: "America/Chicago", KBNA: "America/Chicago", KLIT: "America/Chicago",
   KOKC: "America/Chicago", KTUL: "America/Chicago", KCRP: "America/Chicago",
   KGGG: "America/Chicago", KACT: "America/Chicago", KTYR: "America/Chicago",
-  KLRD: "America/Chicago", KMFE: "America/Chicago",
+  KLRD: "America/Chicago", KMFE: "America/Chicago", KSUS: "America/Chicago",
+  KPWK: "America/Chicago", KOMA: "America/Chicago", KSTL: "America/Chicago",
+  KJAN: "America/Chicago",
   // Mountain
   KDEN: "America/Denver", KJAC: "America/Denver", KASE: "America/Denver",
   KEGE: "America/Denver", KGUC: "America/Denver", KABQ: "America/Denver",
   KSLC: "America/Denver", KBOI: "America/Denver", KMTJ: "America/Denver",
   KRIL: "America/Denver", KHDN: "America/Denver", KBIL: "America/Denver",
+  KAPA: "America/Denver", KMSO: "America/Denver",
   // Arizona (no DST)
   KPHX: "America/Phoenix", KSDL: "America/Phoenix", KTUS: "America/Phoenix",
   KDVT: "America/Phoenix", KIWA: "America/Phoenix",
@@ -178,6 +186,7 @@ const AIRPORT_TZ: Record<string, string> = {
   KLAS: "America/Los_Angeles", KSAN: "America/Los_Angeles", KPSP: "America/Los_Angeles",
   KSEA: "America/Los_Angeles", KPDX: "America/Los_Angeles", KBUR: "America/Los_Angeles",
   KCMA: "America/Los_Angeles", KTRM: "America/Los_Angeles", KCRQ: "America/Los_Angeles",
+  KNUQ: "America/Los_Angeles", KBFI: "America/Los_Angeles", KLGB: "America/Los_Angeles",
 };
 
 function getLocalHour(utcIso: string, icao: string | null): number {
@@ -194,8 +203,25 @@ function getLocalTimeStr(utcIso: string, icao: string | null): string {
   });
 }
 
+// ─── 24/7 airports (excluded from after-hours filter) ────────────────────────
+
+const AIRPORTS_24_7 = new Set([
+  "KTEB", "KOPF", "KPBI", "KVNY", "KSFO", "KIAD", "KHPN", "KBOS", "KPHL",
+  "KBWI", "KFLL", "KSDL", "KTPA", "KSUS", "KAUS", "KDAL", "KHOU", "KJAX",
+  "KMIA", "KPDX", "KLAS", "KFTW", "KSAT", "KPWK", "KLAX", "KTTN", "KRDU",
+  "KBCT", "KBUF", "KOAK", "KSLC", "KMMU", "KAPA", "KOMA", "KSTL", "KMDW",
+  "KILM", "KJFK", "KEWR", "KLGA", "KMCO", "KNUQ", "KFRG", "KBUR", "KYIP",
+  "KROC", "KBFI", "KCLE", "KABQ", "KJAN", "KPDK", "KBNA", "KLGB", "KIND",
+  "KSAT", "KMSO", "KBGR",
+]);
+
+// ─── Baker PPR airports ──────────────────────────────────────────────────────
+
+const BAKER_PPR_AIRPORTS = new Set(["KNUQ", "KSAN", "KLAS", "KSNA", "KJAC", "KMKY"]);
+
 function isAfterHours(utcIso: string | null, icao: string | null): boolean {
   if (!utcIso) return false;
+  if (icao && AIRPORTS_24_7.has(icao)) return false; // 24/7 airport — never after-hours
   const hour = getLocalHour(utcIso, icao);
   return hour >= 20 || hour < 7; // 8 PM – 7 AM local
 }
@@ -219,6 +245,38 @@ const FLIGHT_TYPE_COLORS: Record<string, string> = {
 
 function flightTypeBadge(flightType: string): string {
   return FLIGHT_TYPE_COLORS[flightType] ?? "bg-gray-100 text-gray-700";
+}
+
+// Client-side fallback: infer flight_type from the ICS summary when the
+// backend didn't extract one (e.g. flights synced before parser update).
+const FLIGHT_TYPE_KEYWORDS = [
+  "Revenue", "Owner", "Positioning", "Maintenance", "Training",
+  "Ferry", "Cargo", "Needs pos", "Crew conflict", "Time off",
+  "Assignment", "Transient",
+];
+
+function inferFlightType(flight: Flight): string | null {
+  if (flight.flight_type) return flight.flight_type;
+  const text = flight.summary ?? "";
+  // Pattern 1: text after airport pair — "(SDM - SNA) - Positioning"
+  const afterPair = text.match(/\([A-Z]{3,4}\s*[-–]\s*[A-Z]{3,4}\)\s*[-–]\s*(.+)$/);
+  if (afterPair) {
+    const raw = afterPair[1].replace(/\s+flights?\s*$/i, "").trim();
+    if (raw) return raw;
+  }
+  // Pattern 2: text before bracket — "Revenue - [N123] ..."
+  const preBracket = text.match(/^([A-Za-z][A-Za-z /]+?)\s*[-–]?\s*\[/);
+  if (preBracket) {
+    const raw = preBracket[1].replace(/[-–]\s*$/, "").replace(/\s+flights?\s*$/i, "").trim();
+    if (raw) return raw;
+  }
+  // Pattern 3: keyword search
+  for (const kw of FLIGHT_TYPE_KEYWORDS) {
+    if (new RegExp(`\\b${kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(text)) {
+      return kw;
+    }
+  }
+  return null;
 }
 
 // ─── Client-side alert types ─────────────────────────────────────────────────
@@ -253,20 +311,33 @@ function saveDismissed(dismissed: Set<string>): void {
 
 // ─── Filter categories ───────────────────────────────────────────────────────
 
-type AlertFilter = "ALL" | "ALERTS_ONLY" | "CRITICAL" | "RWY" | "AD" | "TFR" | "PPR" | "EDCT" | "KJAC" | "KSNA" | "LATE";
+type AlertFilter = "ALL" | "NOTAMS" | "PPR" | "LATE";
 
 const FILTER_OPTIONS: { key: AlertFilter; label: string; description: string }[] = [
   { key: "ALL", label: "All Flights", description: "Every scheduled flight" },
-  { key: "ALERTS_ONLY", label: "Alerts Only", description: "Flights with alerts" },
-  { key: "CRITICAL", label: "Critical", description: "Critical severity" },
-  { key: "RWY", label: "RWY", description: "Runway closures" },
-  { key: "AD", label: "AD", description: "Airport/aerodrome" },
-  { key: "TFR", label: "TFR", description: "TFRs" },
-  { key: "PPR", label: "PPR", description: "Prior permission" },
-  { key: "EDCT", label: "EDCT", description: "Ground delays" },
-  { key: "KJAC", label: "KJAC", description: "Jackson Hole alerts" },
-  { key: "KSNA", label: "KSNA", description: "John Wayne alerts" },
-  { key: "LATE", label: "After Hrs", description: "Departures or arrivals 8 PM – 7 AM local" },
+  { key: "NOTAMS", label: "NOTAMs", description: "Flights with active NOTAMs" },
+  { key: "PPR", label: "PPRs", description: "Prior permission required" },
+  { key: "LATE", label: "After Hrs", description: "Departures or arrivals 8 PM – 7 AM local (excl. 24/7 airports)" },
+];
+
+// NOTAM sub-filter types
+type NotamSubFilter = "ALL_NOTAMS" | "RWY" | "AD" | "TFR" | "PPR_NOTAM";
+
+const NOTAM_SUB_OPTIONS: { key: NotamSubFilter; label: string }[] = [
+  { key: "ALL_NOTAMS", label: "All" },
+  { key: "RWY", label: "RWY" },
+  { key: "AD", label: "AD" },
+  { key: "TFR", label: "TFR" },
+  { key: "PPR_NOTAM", label: "PPR" },
+];
+
+// PPR sub-filter types
+type PprSubFilter = "ALL_PPR" | "NOTAM_PPR" | "BAKER_PPR";
+
+const PPR_SUB_OPTIONS: { key: PprSubFilter; label: string }[] = [
+  { key: "ALL_PPR", label: "All" },
+  { key: "NOTAM_PPR", label: "NOTAM" },
+  { key: "BAKER_PPR", label: "Baker PPR List" },
 ];
 
 // ─── Time horizons ───────────────────────────────────────────────────────────
@@ -362,11 +433,19 @@ function AlertCard({ alert, onAck }: { alert: OpsAlert; onAck: (id: string) => v
       {/* ── NOTAM expanded details (issued, effective from/to, status) ── */}
       {expanded && (
         <div className="px-3 pb-2.5 pt-1 text-xs text-gray-700 space-y-1.5 border-t border-gray-200/60">
-          {isNotam && (nd?.issued || nd?.effective_start || notamTimes?.from) && (
-            <div className="flex gap-4 bg-white border rounded p-2 text-xs">
+          {isNotam && (nd?.issued || nd?.issue_date_utc || nd?.effective_start || notamTimes?.from) && (
+            <div className="flex gap-4 flex-wrap bg-white border rounded p-2 text-xs">
+              {(nd?.issued || nd?.issue_date_utc) && (
+                <div>
+                  <span className="text-gray-400">Issued: </span>
+                  <span className="font-mono font-medium text-gray-700">
+                    {fmtNotamDate(nd?.issued ?? null, nd?.issue_date_utc ?? null)}
+                  </span>
+                </div>
+              )}
               {(nd?.effective_start || nd?.start_date_utc || notamTimes?.from) && (
                 <div>
-                  <span className="text-gray-400">From: </span>
+                  <span className="text-gray-400">Effective: </span>
                   <span className="font-mono font-medium text-amber-700">
                     {fmtNotamDate(nd?.effective_start ?? null, nd?.start_date_utc ?? notamTimes?.from ?? null)}
                   </span>
@@ -374,7 +453,7 @@ function AlertCard({ alert, onAck }: { alert: OpsAlert; onAck: (id: string) => v
               )}
               {(nd?.effective_end || nd?.end_date_utc || notamTimes?.to) && (
                 <div>
-                  <span className="text-gray-400">To: </span>
+                  <span className="text-gray-400">Expires: </span>
                   <span className="font-mono font-medium text-amber-700">
                     {notamTimes?.to === "PERM"
                       ? "PERM"
@@ -509,11 +588,14 @@ function FlightCard({
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          {flight.flight_type && (
-            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${flightTypeBadge(flight.flight_type)}`}>
-              {flight.flight_type}
-            </span>
-          )}
+          {(() => {
+            const ft = inferFlightType(flight);
+            return ft ? (
+              <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${flightTypeBadge(ft)}`}>
+                {ft}
+              </span>
+            ) : null;
+          })()}
           {flight.tail_number && (
             <span className="font-mono text-xs font-semibold text-gray-700 bg-gray-100 rounded px-2 py-1">
               {flight.tail_number}
@@ -586,6 +668,10 @@ function filterAlerts(flights: Flight[]): Flight[] {
 export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] }) {
   const now = useMemo(() => new Date(), []);
   const [activeFilter, setActiveFilter] = useState<AlertFilter>("ALL");
+  const [notamSub, setNotamSub] = useState<NotamSubFilter>("ALL_NOTAMS");
+  const [pprSub, setPprSub] = useState<PprSubFilter>("ALL_PPR");
+  const [flightTypeFilter, setFlightTypeFilter] = useState<Set<string>>(new Set(["Revenue", "Positioning"]));
+  const [showAllTypes, setShowAllTypes] = useState(false);
   const [activeRange, setActiveRange] = useState<TimeRange>("7D");
   const [ackedIds, setAckedIds] = useState<Set<string>>(new Set());
   const [dismissedClientAlerts, setDismissedClientAlerts] = useState<Set<string>>(new Set());
@@ -597,6 +683,12 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
 
   const handleAck = useCallback((id: string) => {
     setAckedIds((prev) => new Set(prev).add(id));
+  }, []);
+
+  // Acknowledge + server call (for EDCT status box dismiss buttons)
+  const handleAckWithApi = useCallback((id: string) => {
+    setAckedIds((prev) => new Set(prev).add(id));
+    fetch(`/api/ops/alerts/${id}/acknowledge`, { method: "POST" }).catch(() => {});
   }, []);
 
   const handleDismissClient = useCallback((key: string) => {
@@ -681,27 +773,43 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
     });
   }, [withFilteredAlerts, cutoff, lookback]);
 
-  // Apply category filter
-  const filtered = useMemo(() => {
+  // Apply alert category filter
+  const alertFiltered = useMemo(() => {
     if (activeFilter === "ALL") return timeFiltered;
-    if (activeFilter === "ALERTS_ONLY") {
-      return timeFiltered.filter((f) => {
-        const hasServerAlerts = (f.alerts?.length ?? 0) > 0;
-        const ca = clientAlertsByFlight.get(f.id) ?? [];
-        const hasActiveClientAlerts = ca.some((c) => !dismissedClientAlerts.has(c.key));
-        return hasServerAlerts || hasActiveClientAlerts;
-      });
-    }
-    if (activeFilter === "CRITICAL") return timeFiltered.filter((f) => f.alerts?.some((a) => a.severity === "critical"));
 
-    // KJAC/KSNA filters
-    if (activeFilter === "KJAC") {
-      return timeFiltered.filter((f) => f.departure_icao === "KJAC" || f.arrival_icao === "KJAC");
+    // NOTAMs filter with sub-toggle
+    if (activeFilter === "NOTAMS") {
+      const notamTypeMap: Record<NotamSubFilter, string[]> = {
+        ALL_NOTAMS: ["NOTAM_RUNWAY", "NOTAM_AERODROME", "NOTAM_AD_RESTRICTED", "NOTAM_TFR", "NOTAM_PPR", "NOTAM_OTHER"],
+        RWY: ["NOTAM_RUNWAY"],
+        AD: ["NOTAM_AERODROME", "NOTAM_AD_RESTRICTED"],
+        TFR: ["NOTAM_TFR"],
+        PPR_NOTAM: ["NOTAM_PPR"],
+      };
+      const types = notamTypeMap[notamSub];
+      return timeFiltered.filter((f) => f.alerts?.some((a) => types.includes(a.alert_type)));
     }
-    if (activeFilter === "KSNA") {
-      return timeFiltered.filter((f) => f.departure_icao === "KSNA" || f.arrival_icao === "KSNA");
+
+    // PPR filter with sub-toggle
+    if (activeFilter === "PPR") {
+      if (pprSub === "NOTAM_PPR") {
+        return timeFiltered.filter((f) => f.alerts?.some((a) => a.alert_type === "NOTAM_PPR"));
+      }
+      if (pprSub === "BAKER_PPR") {
+        return timeFiltered.filter((f) =>
+          (f.departure_icao && BAKER_PPR_AIRPORTS.has(f.departure_icao)) ||
+          (f.arrival_icao && BAKER_PPR_AIRPORTS.has(f.arrival_icao))
+        );
+      }
+      // ALL_PPR: NOTAM PPRs + Baker PPR airports
+      return timeFiltered.filter((f) =>
+        f.alerts?.some((a) => a.alert_type === "NOTAM_PPR") ||
+        (f.departure_icao && BAKER_PPR_AIRPORTS.has(f.departure_icao)) ||
+        (f.arrival_icao && BAKER_PPR_AIRPORTS.has(f.arrival_icao))
+      );
     }
-    // After-hours filter (departure or arrival between 8 PM – 7 AM local)
+
+    // After-hours filter (departure or arrival between 8 PM – 7 AM local, excl. 24/7 airports)
     if (activeFilter === "LATE") {
       return timeFiltered.filter((f) =>
         isAfterHours(f.scheduled_departure, f.departure_icao) ||
@@ -709,16 +817,30 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
       );
     }
 
-    const typeMap: Record<string, string[]> = {
-      RWY: ["NOTAM_RUNWAY"],
-      AD: ["NOTAM_AERODROME", "NOTAM_AD_RESTRICTED"],
-      TFR: ["NOTAM_TFR"],
-      PPR: ["NOTAM_PPR"],
-      EDCT: ["EDCT"],
-    };
-    const types = typeMap[activeFilter] ?? [];
-    return timeFiltered.filter((f) => f.alerts?.some((a) => types.includes(a.alert_type)));
-  }, [timeFiltered, activeFilter, clientAlertsByFlight, dismissedClientAlerts]);
+    return timeFiltered;
+  }, [timeFiltered, activeFilter, notamSub, pprSub]);
+
+  // Apply flight type filter on top of alert filter
+  const filtered = useMemo(() => {
+    if (showAllTypes || flightTypeFilter.size === 0) return alertFiltered;
+    return alertFiltered.filter((f) => {
+      const ft = inferFlightType(f);
+      return ft !== null && flightTypeFilter.has(ft);
+    });
+  }, [alertFiltered, flightTypeFilter, showAllTypes]);
+
+  // Flight type counts (computed from time-filtered flights for pill badges)
+  const flightTypeCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const f of timeFiltered) {
+      const ft = inferFlightType(f);
+      if (ft) counts.set(ft, (counts.get(ft) ?? 0) + 1);
+    }
+    // Sort by count descending
+    return Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([type, count]) => ({ type, count }));
+  }, [timeFiltered]);
 
   // Group by day
   const byDay = useMemo(() => {
@@ -748,38 +870,116 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
 
   // Alert counts per category (for pill badges)
   const alertCounts = useMemo(() => {
-    const counts: Record<string, number> = {
-      ALERTS_ONLY: 0, CRITICAL: 0, RWY: 0, AD: 0, TFR: 0, PPR: 0, EDCT: 0,
-      KJAC: 0, KSNA: 0, LATE: 0,
-    };
+    const counts: Record<string, number> = { NOTAMS: 0, PPR: 0, LATE: 0 };
+    const flightsCounted = { NOTAMS: new Set<string>(), PPR: new Set<string>(), LATE: new Set<string>() };
     for (const f of timeFiltered) {
-      // Server alerts
+      // Server alerts — count flights with NOTAM alerts
       for (const a of f.alerts ?? []) {
         if (ackedIds.has(a.id)) continue;
-        counts.ALERTS_ONLY++;
-        if (a.severity === "critical") counts.CRITICAL++;
-        if (a.alert_type === "NOTAM_RUNWAY") counts.RWY++;
-        if (a.alert_type === "NOTAM_AERODROME" || a.alert_type === "NOTAM_AD_RESTRICTED") counts.AD++;
-        if (a.alert_type === "NOTAM_TFR") counts.TFR++;
-        if (a.alert_type === "NOTAM_PPR") counts.PPR++;
-        if (a.alert_type === "EDCT") counts.EDCT++;
+        if (a.alert_type.startsWith("NOTAM") && !flightsCounted.NOTAMS.has(f.id)) {
+          counts.NOTAMS++;
+          flightsCounted.NOTAMS.add(f.id);
+        }
+        if (a.alert_type === "NOTAM_PPR" && !flightsCounted.PPR.has(f.id)) {
+          counts.PPR++;
+          flightsCounted.PPR.add(f.id);
+        }
       }
 
-      // Client alerts (KJAC/KSNA/LATE)
+      // Baker PPR airports (also count under PPR if not already counted)
+      if (!flightsCounted.PPR.has(f.id)) {
+        if ((f.departure_icao && BAKER_PPR_AIRPORTS.has(f.departure_icao)) ||
+            (f.arrival_icao && BAKER_PPR_AIRPORTS.has(f.arrival_icao))) {
+          counts.PPR++;
+          flightsCounted.PPR.add(f.id);
+        }
+      }
+
+      // Client alerts (LATE)
       const ca = clientAlertsByFlight.get(f.id) ?? [];
       for (const c of ca) {
         if (dismissedClientAlerts.has(c.key)) continue;
-        counts.ALERTS_ONLY++;
-        if (c.type === "AIRPORT_KJAC") counts.KJAC++;
-        if (c.type === "AIRPORT_KSNA") counts.KSNA++;
-        if (c.type === "AFTER_HOURS") counts.LATE++;
+        if (c.type === "AFTER_HOURS" && !flightsCounted.LATE.has(f.id)) {
+          counts.LATE++;
+          flightsCounted.LATE.add(f.id);
+        }
       }
     }
     return counts;
   }, [timeFiltered, ackedIds, clientAlertsByFlight, dismissedClientAlerts]);
 
+  // EDCT alerts for status box: unacknowledged, future or within last 5 hours
+  const edctAlerts = useMemo(() => {
+    const fiveHoursAgo = new Date(now.getTime() - 5 * 3600000);
+    const results: { alert: OpsAlert; flight: Flight | null }[] = [];
+    for (const f of withFilteredAlerts) {
+      for (const a of f.alerts ?? []) {
+        if (a.alert_type !== "EDCT") continue;
+        if (ackedIds.has(a.id)) continue;
+        // Show if flight departs in the future or within last 5 hours
+        const depTime = new Date(f.scheduled_departure);
+        if (depTime >= fiveHoursAgo) {
+          results.push({ alert: a, flight: f });
+        }
+      }
+    }
+    // Sort by departure time ascending
+    results.sort((a, b) => {
+      const tA = a.flight?.scheduled_departure ?? a.alert.created_at;
+      const tB = b.flight?.scheduled_departure ?? b.alert.created_at;
+      return tA.localeCompare(tB);
+    });
+    return results;
+  }, [withFilteredAlerts, ackedIds, now]);
+
   return (
     <div className="p-4 sm:p-6 space-y-4 bg-gray-50 min-h-screen">
+      {/* EDCT Status Box */}
+      {edctAlerts.length > 0 && (
+        <div className="rounded-xl border-2 border-orange-300 bg-orange-50 shadow-sm overflow-hidden">
+          <div className="px-4 py-2.5 bg-orange-100 border-b border-orange-200 flex items-center gap-2">
+            <span className="w-2.5 h-2.5 rounded-full bg-orange-500 animate-pulse" />
+            <span className="text-sm font-bold text-orange-900">EDCT / Ground Delays</span>
+            <span className="text-xs font-semibold bg-orange-200 text-orange-800 rounded-full px-2 py-0.5">
+              {edctAlerts.length}
+            </span>
+          </div>
+          <div className="p-3 space-y-2">
+            {edctAlerts.map(({ alert, flight }) => (
+              <div key={alert.id} className="flex items-center gap-3 bg-white rounded-lg border border-orange-200 px-3 py-2 text-sm">
+                <span className={`w-2 h-2 rounded-full shrink-0 ${alert.severity === "critical" ? "bg-red-500" : "bg-orange-500"}`} />
+                {flight && (
+                  <span className="font-mono font-bold text-gray-800 text-xs">
+                    {flight.departure_icao ?? "????"} → {flight.arrival_icao ?? "????"}
+                  </span>
+                )}
+                {flight?.tail_number && (
+                  <span className="font-mono text-xs text-gray-600 bg-gray-100 rounded px-1.5 py-0.5">{flight.tail_number}</span>
+                )}
+                <span className="text-orange-800 text-xs font-semibold">
+                  EDCT {alert.edct_time ?? "—"}
+                  {alert.original_departure_time && (
+                    <span className="text-gray-500 font-normal"> (was {alert.original_departure_time})</span>
+                  )}
+                </span>
+                {flight && (
+                  <span className="text-xs text-gray-500">
+                    Dep {fmtTime(flight.scheduled_departure)}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => handleAckWithApi(alert.id)}
+                  className="ml-auto text-xs text-gray-500 hover:text-green-700 hover:bg-green-50 border border-gray-200 hover:border-green-300 rounded px-1.5 py-0.5 transition-colors"
+                >
+                  Dismiss
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Summary bar */}
       <div className="rounded-xl border bg-white shadow-sm px-5 py-4 flex items-center gap-6 flex-wrap">
         <div>
@@ -813,74 +1013,168 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
       </div>
 
       {/* Time range tabs + filter pills */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
-        {/* Time range tabs */}
-        <div className="flex rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm">
-          {TIME_RANGES.map((r) => (
-            <button
-              key={r.key}
-              type="button"
-              onClick={() => setActiveRange(r.key)}
-              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                activeRange === r.key
-                  ? "bg-slate-800 text-white shadow-sm"
-                  : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
-              }`}
-            >
-              {r.label}
-            </button>
-          ))}
-        </div>
-
-        {/* Filter pills */}
-        <div className="flex items-center gap-1.5 flex-wrap">
-          {FILTER_OPTIONS.map((opt) => {
-            const count = opt.key === "ALL" ? null : alertCounts[opt.key] ?? 0;
-            const isActive = activeFilter === opt.key;
-            return (
+      <div className="flex flex-col gap-3">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
+          {/* Time range tabs */}
+          <div className="flex rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm">
+            {TIME_RANGES.map((r) => (
               <button
-                key={opt.key}
+                key={r.key}
                 type="button"
-                onClick={() => setActiveFilter(opt.key)}
-                title={opt.description}
-                className={`inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-full border transition-colors ${
-                  isActive
-                    ? opt.key === "CRITICAL"
-                      ? "bg-red-100 text-red-800 border-red-300"
-                      : opt.key === "LATE"
-                      ? "bg-purple-100 text-purple-800 border-purple-300"
-                      : opt.key === "KJAC" || opt.key === "KSNA"
-                      ? "bg-blue-100 text-blue-800 border-blue-300"
-                      : "bg-slate-800 text-white border-slate-800"
-                    : "bg-white text-gray-600 border-gray-200 hover:border-gray-400 hover:bg-gray-50"
+                onClick={() => setActiveRange(r.key)}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                  activeRange === r.key
+                    ? "bg-slate-800 text-white shadow-sm"
+                    : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
                 }`}
               >
-                {opt.label}
-                {count !== null && count > 0 && (
+                {r.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Filter pills */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {FILTER_OPTIONS.map((opt) => {
+              const count = opt.key === "ALL" ? null : alertCounts[opt.key] ?? 0;
+              const isActive = activeFilter === opt.key;
+              return (
+                <button
+                  key={opt.key}
+                  type="button"
+                  onClick={() => setActiveFilter(opt.key)}
+                  title={opt.description}
+                  className={`inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-full border transition-colors ${
+                    isActive
+                      ? opt.key === "LATE"
+                        ? "bg-purple-100 text-purple-800 border-purple-300"
+                        : "bg-slate-800 text-white border-slate-800"
+                      : "bg-white text-gray-600 border-gray-200 hover:border-gray-400 hover:bg-gray-50"
+                  }`}
+                >
+                  {opt.label}
+                  {count !== null && count > 0 && (
+                    <span className={`inline-flex items-center justify-center min-w-[16px] h-4 px-1 text-[10px] font-bold rounded-full ${
+                      isActive
+                        ? opt.key === "LATE" ? "bg-purple-200 text-purple-900" : "bg-white/30 text-white"
+                        : opt.key === "LATE" ? "bg-purple-100 text-purple-700" : "bg-gray-100 text-gray-600"
+                    }`}>
+                      {count}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Sub-toggle for NOTAMs */}
+        {activeFilter === "NOTAMS" && (
+          <div className="flex items-center gap-1 pl-1">
+            <span className="text-xs text-gray-400 mr-1">Type:</span>
+            <div className="flex rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm">
+              {NOTAM_SUB_OPTIONS.map((opt) => (
+                <button
+                  key={opt.key}
+                  type="button"
+                  onClick={() => setNotamSub(opt.key)}
+                  className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+                    notamSub === opt.key
+                      ? "bg-amber-600 text-white shadow-sm"
+                      : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Sub-toggle for PPRs */}
+        {activeFilter === "PPR" && (
+          <div className="flex items-center gap-1 pl-1">
+            <span className="text-xs text-gray-400 mr-1">Source:</span>
+            <div className="flex rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm">
+              {PPR_SUB_OPTIONS.map((opt) => (
+                <button
+                  key={opt.key}
+                  type="button"
+                  onClick={() => setPprSub(opt.key)}
+                  className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+                    pprSub === opt.key
+                      ? "bg-amber-600 text-white shadow-sm"
+                      : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Flight type filter pills */}
+        {flightTypeCounts.length > 0 && (
+          <div className="flex items-center gap-1.5 flex-wrap pl-1">
+            <span className="text-xs text-gray-400 mr-0.5">Type:</span>
+            <button
+              type="button"
+              onClick={() => { setShowAllTypes(true); setFlightTypeFilter(new Set()); }}
+              className={`px-2.5 py-1 text-xs font-medium rounded-full border transition-colors ${
+                showAllTypes
+                  ? "bg-slate-800 text-white border-slate-800"
+                  : "bg-white text-gray-600 border-gray-200 hover:border-gray-400 hover:bg-gray-50"
+              }`}
+            >
+              All
+            </button>
+            {flightTypeCounts.map(({ type, count }) => {
+              const isActive = !showAllTypes && flightTypeFilter.has(type);
+              const colors = FLIGHT_TYPE_COLORS[type];
+              return (
+                <button
+                  key={type}
+                  type="button"
+                  onClick={() => {
+                    setShowAllTypes(false);
+                    setFlightTypeFilter((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(type)) {
+                        next.delete(type);
+                      } else {
+                        next.add(type);
+                      }
+                      return next;
+                    });
+                  }}
+                  className={`inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-full border transition-colors ${
+                    isActive
+                      ? colors
+                        ? `${colors} border-current`
+                        : "bg-slate-800 text-white border-slate-800"
+                      : "bg-white text-gray-600 border-gray-200 hover:border-gray-400 hover:bg-gray-50"
+                  }`}
+                >
+                  {type}
                   <span className={`inline-flex items-center justify-center min-w-[16px] h-4 px-1 text-[10px] font-bold rounded-full ${
                     isActive
-                      ? opt.key === "CRITICAL" ? "bg-red-200 text-red-900"
-                        : opt.key === "LATE" ? "bg-purple-200 text-purple-900"
-                        : opt.key === "KJAC" || opt.key === "KSNA" ? "bg-blue-200 text-blue-900"
-                        : "bg-white/30 text-white"
-                      : opt.key === "CRITICAL" ? "bg-red-100 text-red-700"
-                        : opt.key === "LATE" ? "bg-purple-100 text-purple-700"
-                        : opt.key === "KJAC" || opt.key === "KSNA" ? "bg-blue-100 text-blue-700"
-                        : "bg-gray-100 text-gray-600"
+                      ? "bg-white/30 text-inherit"
+                      : "bg-gray-100 text-gray-600"
                   }`}>
                     {count}
                   </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Flight cards by day */}
       {filtered.length === 0 ? (
         <div className="rounded-xl border bg-white shadow-sm px-6 py-12 text-center text-gray-400">
-          {activeFilter !== "ALL"
+          {(activeFilter !== "ALL" || !showAllTypes)
             ? "No flights match the current filter."
             : `No flights scheduled in the selected time range.`}
         </div>
