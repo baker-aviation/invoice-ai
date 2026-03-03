@@ -318,7 +318,7 @@ function inferFlightType(flight: Flight): string | null {
 }
 
 /** Categories that matter for AOG van scheduling */
-const AOG_ACTIVE_TYPES = new Set(["Revenue", "Owner", "Positioning"]);
+const AOG_ACTIVE_TYPES = new Set(["Revenue", "Owner", "Positioning", "Charter"]);
 
 /** "in 2h 15m" or "in 45m" until a future ISO timestamp. Returns "" if in the past. */
 function fmtTimeUntil(iso: string): string {
@@ -417,21 +417,27 @@ function computeZoneItems(
         distKm,
       };
     })
-    .filter(({ nextDep }) => {
+    .filter(({ arrFlight, nextDep }) => {
       if (!nextDep) return true;
+      // Transit filter: if aircraft arrives and departs same day with < 2h
+      // ground time, it's just passing through — skip it
+      if (nextDep.scheduled_departure.startsWith(date)) {
+        const arrMs = new Date(arrFlight.scheduled_arrival ?? "").getTime();
+        const depMs = new Date(nextDep.scheduled_departure).getTime();
+        const groundHours = (depMs - arrMs) / 3_600_000;
+        if (groundHours < 2 && !isPositioningFlight(nextDep)) return false;
+      }
       if (isPositioningFlight(nextDep)) return true;
       return !nextDep.scheduled_departure.startsWith(date);
     });
 
-  // Deduplicate by tail — keep only the last arrival per aircraft per day
+  // Deduplicate by tail — prefer the arrival closest to the van's home base
+  // so the van sees the most operationally relevant leg, not a distant transit
   const byTail = new Map<string, VanFlightItem>();
   for (const item of rawItems) {
     const tail = item.arrFlight.tail_number ?? "";
     const existing = byTail.get(tail);
-    if (
-      !existing ||
-      (item.arrFlight.scheduled_arrival ?? "") > (existing.arrFlight.scheduled_arrival ?? "")
-    ) {
+    if (!existing || item.distKm < existing.distKm) {
       byTail.set(tail, item);
     }
   }
@@ -480,13 +486,20 @@ function computeAllDayArrivals(allFlights: Flight[], date: string): VanFlightIte
         distKm: 0, // no van base yet
       };
     })
-    .filter(({ nextDep }) => {
+    .filter(({ arrFlight, nextDep }) => {
       if (!nextDep) return true;
+      // Transit filter: short ground time + same-day revenue dep = just passing through
+      if (nextDep.scheduled_departure.startsWith(date)) {
+        const arrMs = new Date(arrFlight.scheduled_arrival ?? "").getTime();
+        const depMs = new Date(nextDep.scheduled_departure).getTime();
+        const groundHours = (depMs - arrMs) / 3_600_000;
+        if (groundHours < 2 && !isPositioningFlight(nextDep)) return false;
+      }
       if (isPositioningFlight(nextDep)) return true;
       return !nextDep.scheduled_departure.startsWith(date);
     });
 
-  // Deduplicate by tail — keep last arrival
+  // Deduplicate by tail — keep last arrival (no van base for uncovered pool)
   const byTail = new Map<string, VanFlightItem>();
   for (const item of rawItems) {
     const tail = item.arrFlight.tail_number ?? "";
