@@ -56,10 +56,10 @@ function computePositionsFromFlights(
     // 2. Flights departing on this date (use arrival airport if it exists, else departure)
     // 3. Most recent past flight (use arrival airport)
     const arrivingToday = sorted.filter(
-      (f) => f.scheduled_arrival?.startsWith(date),
+      (f) => isOnEtDate(f.scheduled_arrival, date),
     );
     const departingToday = sorted.filter(
-      (f) => f.scheduled_departure.startsWith(date),
+      (f) => isOnEtDate(f.scheduled_departure, date),
     );
     const pastFlights = sorted.filter(
       (f) => f.scheduled_departure <= dateEnd,
@@ -129,6 +129,23 @@ function fmtShortDate(d: string) {
   return `${months[parseInt(parts[1]) - 1]} ${parseInt(parts[2])}`;
 }
 
+// ---------------------------------------------------------------------------
+// Timezone helpers — display all times in Eastern Time to match JetInsight
+// ---------------------------------------------------------------------------
+
+const DISPLAY_TZ = "America/New_York";
+
+/** Convert a UTC ISO string to an ET date string (YYYY-MM-DD). */
+function utcToEtDate(utcIso: string): string {
+  return new Date(utcIso).toLocaleDateString("en-CA", { timeZone: DISPLAY_TZ });
+}
+
+/** Check if a UTC ISO string falls on a given ET date (YYYY-MM-DD). */
+function isOnEtDate(utcIso: string | null | undefined, etDate: string): boolean {
+  if (!utcIso) return false;
+  return utcToEtDate(utcIso) === etDate;
+}
+
 function fmtLongDate(d: string) {
   const dt = new Date(d + "T12:00:00");
   return dt.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
@@ -145,8 +162,8 @@ function fmtTime(s: string | null | undefined): string {
       hour: "2-digit",
       minute: "2-digit",
       hour12: false,
-      timeZone: "UTC",
-    }) + " UTC"
+      timeZone: DISPLAY_TZ,
+    }) + " ET"
   );
 }
 
@@ -344,7 +361,7 @@ function fmtDriveTime(distKm: number): string {
   return m === 0 ? `${h}h drive` : `${h}h ${m}m drive`;
 }
 
-/** Format a UTC ISO timestamp to "HH:MM UTC". */
+/** Format a UTC ISO timestamp to "HH:MM ET". */
 function fmtUtcHM(iso: string): string {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return "—";
@@ -353,8 +370,8 @@ function fmtUtcHM(iso: string): string {
       hour: "2-digit",
       minute: "2-digit",
       hour12: false,
-      timeZone: "UTC",
-    }) + " UTC"
+      timeZone: DISPLAY_TZ,
+    }) + " ET"
   );
 }
 
@@ -484,7 +501,7 @@ function computeZoneItems(
 ): VanFlightItem[] {
   const arrivalsToday = allFlights.filter((f) => {
     if (!f.arrival_icao || !f.scheduled_arrival) return false;
-    if (!f.scheduled_arrival.startsWith(date)) return false;
+    if (!isOnEtDate(f.scheduled_arrival, date)) return false;
     const iata = f.arrival_icao.replace(/^K/, "");
     const info = getAirportInfo(iata);
     if (!info || !isContiguous48(info.state)) return false;
@@ -520,7 +537,7 @@ function computeZoneItems(
     .filter(({ nextDep }) => {
       if (!nextDep) return true;
       if (isPositioningFlight(nextDep)) return true;
-      return !nextDep.scheduled_departure.startsWith(date);
+      return !isOnEtDate(nextDep.scheduled_departure, date);
     });
 
   // Deduplicate by tail — keep only the last arrival per aircraft per day
@@ -551,7 +568,7 @@ function computeZoneItems(
 function computeAllDayArrivals(allFlights: Flight[], date: string): VanFlightItem[] {
   const arrivalsToday = allFlights.filter((f) => {
     if (!f.arrival_icao || !f.scheduled_arrival) return false;
-    if (!f.scheduled_arrival.startsWith(date)) return false;
+    if (!isOnEtDate(f.scheduled_arrival, date)) return false;
     const iata = f.arrival_icao.replace(/^K/, "");
     const info = getAirportInfo(iata);
     return !!(info && isContiguous48(info.state));
@@ -584,7 +601,7 @@ function computeAllDayArrivals(allFlights: Flight[], date: string): VanFlightIte
     .filter(({ nextDep }) => {
       if (!nextDep) return true;
       if (isPositioningFlight(nextDep)) return true;
-      return !nextDep.scheduled_departure.startsWith(date);
+      return !isOnEtDate(nextDep.scheduled_departure, date);
     });
 
   // Deduplicate by tail — keep last arrival
@@ -917,7 +934,7 @@ function VanScheduleCard({
                   ? allFlights.filter((f) => {
                       if (f.tail_number !== arrFlight.tail_number) return false;
                       if (f.id === arrFlight.id || f.id === nextDep?.id) return false;
-                      if (!f.scheduled_departure.startsWith(date) && !f.scheduled_arrival?.startsWith(date)) return false;
+                      if (!isOnEtDate(f.scheduled_departure, date) && !isOnEtDate(f.scheduled_arrival, date)) return false;
                       const ft = inferFlightType(f);
                       const cat = getFilterCategory(ft);
                       return cat === "positioning" || cat === "charter";
@@ -1300,7 +1317,7 @@ function ScheduleTab({
           const extras = allFlights.filter((f) => {
             if (f.tail_number !== tail) return false;
             if (primaryIds.has(f.id)) return false;
-            if (!f.scheduled_departure.startsWith(date) && !f.scheduled_arrival?.startsWith(date)) return false;
+            if (!isOnEtDate(f.scheduled_departure, date) && !isOnEtDate(f.scheduled_arrival, date)) return false;
             const ft = inferFlightType(f);
             const cat = getFilterCategory(ft);
             return cat === "positioning" || cat === "charter";
@@ -1728,18 +1745,19 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
   );
 
   // Flights arriving on the selected date (for stats bar) — only active types
+  // Use ET date matching so evening flights show on the correct day
   const flightsForDay = useMemo(
     () => activeFlights.filter((f) =>
-      (f.scheduled_arrival ?? f.scheduled_departure).startsWith(selectedDate)
+      isOnEtDate(f.scheduled_arrival ?? f.scheduled_departure, selectedDate)
     ),
     [activeFlights, selectedDate],
   );
 
   // ALL flights for the selected date (for the Flight Schedule tab)
-  // Exclude scheduling notes (non-flight types)
+  // Exclude scheduling notes (non-flight types). Use ET dates.
   const allFlightsForDay = useMemo(
     () => activeFlights
-      .filter((f) => f.scheduled_departure.startsWith(selectedDate))
+      .filter((f) => isOnEtDate(f.scheduled_departure, selectedDate))
       .sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure)),
     [activeFlights, selectedDate],
   );
