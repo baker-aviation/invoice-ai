@@ -289,10 +289,31 @@ export default function SettingsPage() {
         </div>
       )}
 
-      <p className="mt-4 text-xs text-gray-400">
-        The ops-monitor service reads enabled sources on each sync cycle (every 30 min).
-        Changes take effect on the next sync — no redeploy needed.
-      </p>
+      {/* Seed + info */}
+      <div className="mt-6 flex items-center gap-4 flex-wrap">
+        <button
+          type="button"
+          onClick={async () => {
+            if (!confirm("Import ICS URLs from the ops-monitor environment variable into this table?")) return;
+            setError(null);
+            try {
+              const res = await fetch("/api/admin/ics-sources/seed", { method: "POST" });
+              const data = await res.json();
+              if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+              await fetchSources();
+              alert(`Seeded ${data.seeded} new source(s), ${data.skipped} already existed.`);
+            } catch (err) {
+              setError(err instanceof Error ? err.message : "Seed failed");
+            }
+          }}
+          className="text-xs border border-gray-300 rounded-md px-3 py-1.5 text-gray-600 hover:bg-gray-50 hover:border-gray-400 transition-colors"
+        >
+          Import from env var
+        </button>
+        <p className="text-xs text-gray-400">
+          Changes take effect on the next ops-monitor sync (every 30 min) — no redeploy needed.
+        </p>
+      </div>
     </div>
   );
 }

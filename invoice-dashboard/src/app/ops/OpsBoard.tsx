@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useMemo, useCallback, useEffect } from "react";
+import Link from "next/link";
 import type { Flight, OpsAlert } from "@/lib/opsApi";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -574,9 +575,17 @@ function FlightCard({
       <div className="px-4 py-3 flex items-center justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">
           <div className="flex items-center gap-1.5 text-base font-bold font-mono tracking-wide shrink-0">
-            <span>{flight.departure_icao ?? "????"}</span>
+            {flight.departure_icao ? (
+              <Link href={`/ops/airport/${flight.departure_icao}`} className="hover:text-blue-700 hover:underline transition-colors">
+                {flight.departure_icao}
+              </Link>
+            ) : <span>????</span>}
             <span className="text-gray-400 text-sm">→</span>
-            <span>{flight.arrival_icao ?? "????"}</span>
+            {flight.arrival_icao ? (
+              <Link href={`/ops/airport/${flight.arrival_icao}`} className="hover:text-blue-700 hover:underline transition-colors">
+                {flight.arrival_icao}
+              </Link>
+            ) : <span>????</span>}
           </div>
           <div className="text-xs text-gray-600 truncate">
             <span className="font-medium">{fmtTime(flight.scheduled_departure)}</span>

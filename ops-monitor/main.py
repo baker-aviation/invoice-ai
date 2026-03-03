@@ -45,6 +45,28 @@ def _load_ics_urls() -> list[str]:
     return list(_ENV_ICS_URLS)
 
 
+def _seed_ics_sources_from_env() -> Dict[str, Any]:
+    """Insert env-var ICS URLs into ics_sources table (skips duplicates)."""
+    if not _ENV_ICS_URLS:
+        return {"seeded": 0, "skipped": 0, "message": "No env var URLs to seed"}
+    supa = sb()
+    existing = supa.table("ics_sources").select("url").execute()
+    existing_urls = {r["url"] for r in (existing.data or [])}
+    seeded = 0
+    skipped = 0
+    for i, url in enumerate(_ENV_ICS_URLS):
+        if url in existing_urls:
+            skipped += 1
+            continue
+        supa.table("ics_sources").insert({
+            "label": f"Aircraft {i + 1}",
+            "url": url,
+            "enabled": True,
+        }).execute()
+        seeded += 1
+    return {"seeded": seeded, "skipped": skipped, "total_env": len(_ENV_ICS_URLS)}
+
+
 def _update_ics_sync_status(supa, url: str, ok: bool) -> None:
     """Update last_sync_at/last_sync_ok for an ICS source by URL."""
     try:
@@ -1186,6 +1208,17 @@ def check_notams(lookahead_hours: int = Query(720, ge=1, le=720)):
         raise HTTPException(500, detail="check_notams failed")
     log_pipeline_run("notam-check", items=stats.get("alerts_created", 0), message=f"flights={stats.get('flights_checked', 0)} airports={stats.get('airports_checked', 0)}")
     return {"ok": True, **stats}
+
+
+@app.post("/jobs/seed_ics_sources")
+def seed_ics_sources():
+    """Seed the ics_sources table from JETINSIGHT_ICS_URLS env var.
+    Skips any URLs already in the table. Safe to call multiple times."""
+    try:
+        result = _seed_ics_sources_from_env()
+        return {"ok": True, **result}
+    except Exception as e:
+        raise HTTPException(500, detail=f"Seed failed: {repr(e)}")
 
 
 @app.get("/debug/ics_status")
