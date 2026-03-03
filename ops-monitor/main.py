@@ -628,6 +628,13 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
             errors += 1
             print(f"sync_schedule parse error uid={component.get('UID','?')}: {repr(e)}", flush=True)
 
+    # Deduplicate by ics_uid — same flight can appear in multiple feeds.
+    # Keep the last occurrence (typically the most recently updated).
+    seen_uids: Dict[str, int] = {}
+    for idx, flight in enumerate(batch):
+        seen_uids[flight["ics_uid"]] = idx
+    batch = [batch[i] for i in sorted(seen_uids.values())]
+
     t_parse = _time.monotonic() - t0
     print(f"sync_schedule: parsed {len(batch)} flights to upsert, {skipped} skipped in {t_parse:.1f}s", flush=True)
 
