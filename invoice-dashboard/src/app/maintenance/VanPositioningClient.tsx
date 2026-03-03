@@ -1354,35 +1354,57 @@ function ScheduleTab({
                       </div>
                     </div>
                     {/* Compact legs for the day */}
-                    {legs.length > 0 ? (
-                      <div className="ml-8 mt-1.5 flex flex-wrap items-center gap-x-1 gap-y-1">
-                        {legs.map((leg, idx) => {
-                          const dep = leg.departure_icao?.replace(/^K/, "") ?? "?";
-                          const arr = leg.arrival_icao?.replace(/^K/, "") ?? "?";
-                          const ft = inferFlightType(leg);
-                          const isPos = ft === "Positioning" || ft === "Ferry";
-                          const arrTime = leg.scheduled_arrival ? new Date(leg.scheduled_arrival) : null;
-                          const hasLanded = arrTime !== null && arrTime < new Date();
-                          return (
-                            <span key={leg.id} className="inline-flex items-center gap-1 text-xs">
-                              {idx > 0 && <span className="text-gray-300 mx-0.5">·</span>}
-                              <span className={`font-mono font-medium ${hasLanded ? "text-gray-400" : "text-gray-700"}`}>
-                                {dep}→{arr}
-                              </span>
-                              <span className={`rounded px-1 py-0.5 text-[10px] font-medium ${
-                                isPos ? "bg-purple-100 text-purple-600" : "bg-green-100 text-green-600"
-                              }`}>
-                                {ft === "Owner" ? "Rev" : isPos ? "Pos" : "Rev"}
-                              </span>
-                              <span className="text-gray-400">{fmtUtcHM(leg.scheduled_departure)}</span>
-                              {hasLanded && <span className="text-gray-400">✓</span>}
-                            </span>
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      <div className="ml-8 mt-1 text-xs text-gray-400 italic">Nothing scheduled</div>
-                    )}
+                    {(() => {
+                      const now = new Date();
+                      // Find next upcoming departure for this tail across all flights
+                      const nextDep = allFlights
+                        .filter((f) => f.tail_number === tail && f.scheduled_departure && new Date(f.scheduled_departure) > now)
+                        .sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure))[0];
+                      const hoursUntilNext = nextDep ? (new Date(nextDep.scheduled_departure).getTime() - now.getTime()) / 3600000 : Infinity;
+                      const allLegsLanded = legs.length > 0 && legs.every((l) => {
+                        const at = l.scheduled_arrival ? new Date(l.scheduled_arrival) : null;
+                        return at !== null && at < now;
+                      });
+                      const doneForDay = (legs.length === 0 || allLegsLanded) && hoursUntilNext >= 8;
+
+                      if (legs.length === 0 && doneForDay) {
+                        return <div className="ml-8 mt-1 text-xs text-gray-400 italic">Nothing scheduled</div>;
+                      }
+                      return (
+                        <>
+                          {legs.length > 0 && (
+                            <div className="ml-8 mt-1.5 flex flex-wrap items-center gap-x-1 gap-y-1">
+                              {legs.map((leg, idx) => {
+                                const dep = leg.departure_icao?.replace(/^K/, "") ?? "?";
+                                const arr = leg.arrival_icao?.replace(/^K/, "") ?? "?";
+                                const ft = inferFlightType(leg);
+                                const isPos = ft === "Positioning" || ft === "Ferry";
+                                const arrTime = leg.scheduled_arrival ? new Date(leg.scheduled_arrival) : null;
+                                const hasLanded = arrTime !== null && arrTime < now;
+                                return (
+                                  <span key={leg.id} className="inline-flex items-center gap-1 text-xs">
+                                    {idx > 0 && <span className="text-gray-300 mx-0.5">·</span>}
+                                    <span className={`font-mono font-medium ${hasLanded ? "text-gray-400" : "text-gray-700"}`}>
+                                      {dep}→{arr}
+                                    </span>
+                                    <span className={`rounded px-1 py-0.5 text-[10px] font-medium ${
+                                      isPos ? "bg-purple-100 text-purple-600" : "bg-green-100 text-green-600"
+                                    }`}>
+                                      {ft === "Owner" ? "Rev" : isPos ? "Pos" : "Rev"}
+                                    </span>
+                                    <span className="text-gray-400">{fmtUtcHM(leg.scheduled_departure)}</span>
+                                    {hasLanded && <span className="text-gray-400">✓</span>}
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          )}
+                          {doneForDay && (
+                            <div className="ml-8 mt-1 text-xs text-green-600 font-medium">Done for the day</div>
+                          )}
+                        </>
+                      );
+                    })()}
                   </div>
                 );
               })}
