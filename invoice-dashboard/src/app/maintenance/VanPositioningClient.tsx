@@ -393,7 +393,7 @@ function inferFlightType(flight: Flight): string | null {
 }
 
 /** Categories that matter for AOG van scheduling */
-const AOG_ACTIVE_TYPES = new Set(["Revenue", "Owner", "Positioning"]);
+const AOG_ACTIVE_TYPES = new Set(["Revenue", "Owner", "Positioning", "Maintenance"]);
 
 /** "in 2h 15m" or "in 45m" until a future ISO timestamp. Returns "" if in the past. */
 function fmtTimeUntil(iso: string): string {
@@ -903,7 +903,9 @@ function VanScheduleCard({
                           <span className="text-xs text-gray-500 font-mono">
                             {arrFlight.departure_icao?.replace(/^K/, "") ?? "?"} → {airport}
                           </span>
-                          {isRepo ? (
+                          {inferFlightType(arrFlight) === "Maintenance" ? (
+                            <span className="text-xs bg-orange-100 text-orange-700 rounded px-1.5 py-0.5">Maintenance</span>
+                          ) : isRepo ? (
                             <span className="text-xs bg-purple-100 text-purple-700 rounded px-1.5 py-0.5">Positioning</span>
                           ) : (
                             <span className="text-xs bg-green-100 text-green-700 rounded px-1.5 py-0.5">Revenue</span>
@@ -1564,48 +1566,6 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
     [initialFlights],
   );
 
-  // Maintenance flights (for idle/maintenance section)
-  const maintenanceFlights = useMemo(
-    () => initialFlights.filter((f) => {
-      const ft = inferFlightType(f);
-      return ft === "Maintenance";
-    }),
-    [initialFlights],
-  );
-
-  // Collect all tail numbers that have active flights in the 36h window
-  const activeTails = useMemo(() => {
-    const tails = new Set<string>();
-    for (const f of activeFlights) {
-      if (f.tail_number) tails.add(f.tail_number);
-    }
-    return tails;
-  }, [activeFlights]);
-
-  // Maintenance tails
-  const maintenanceTails = useMemo(() => {
-    const tails = new Set<string>();
-    for (const f of maintenanceFlights) {
-      if (f.tail_number) tails.add(f.tail_number);
-    }
-    return tails;
-  }, [maintenanceFlights]);
-
-  // All tails from positions (fleet)
-  const allTails = useMemo(() => positions.map((p) => p.tail), [positions]);
-
-  // Idle aircraft: tails in the fleet but NOT in activeFlights and NOT in maintenance
-  const idleAircraft = useMemo(
-    () => positions.filter((p) => !activeTails.has(p.tail) && !maintenanceTails.has(p.tail)),
-    [positions, activeTails, maintenanceTails],
-  );
-
-  // Maintenance aircraft: tails with maintenance flights
-  const maintenanceAircraft = useMemo(
-    () => positions.filter((p) => maintenanceTails.has(p.tail)),
-    [positions, maintenanceTails],
-  );
-
   // Flights arriving on the selected date (for stats bar) — only active types
   const flightsForDay = useMemo(
     () => activeFlights.filter((f) =>
@@ -1614,10 +1574,20 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
     [activeFlights, selectedDate],
   );
 
-  // ALL flights for the selected date (all types — for the Flight Schedule tab)
+  // ALL flights for the selected date (for the Flight Schedule tab)
+  // Hide admin/scheduling entries that aren't actual flights
+  const HIDDEN_FLIGHT_TYPES = new Set([
+    "Aircraft away from home base",
+    "Aircraft needs repositioning",
+  ]);
   const allFlightsForDay = useMemo(
     () => initialFlights
-      .filter((f) => f.scheduled_departure.startsWith(selectedDate))
+      .filter((f) => {
+        if (!f.scheduled_departure.startsWith(selectedDate)) return false;
+        const ft = inferFlightType(f);
+        if (ft && HIDDEN_FLIGHT_TYPES.has(ft)) return false;
+        return true;
+      })
       .sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure)),
     [initialFlights, selectedDate],
   );
@@ -1769,54 +1739,6 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
 
       {/* ── Stats ── */}
       <StatsBar positions={positions} vans={vans} flightCount={flightsForDay.length} />
-
-      {/* ── Unassigned Aircraft — not covered by any van ── */}
-      {(() => {
-        const coveredTails = new Set(vans.flatMap((v) => v.aircraft.map((ac) => ac.tail)));
-        const uncovered = positions.filter((p) => !coveredTails.has(p.tail));
-        const totalCovered = positions.length - uncovered.length;
-
-        return (
-          <div className={`rounded-xl border-2 px-5 py-4 shadow-sm ${
-            uncovered.length > 0 ? "border-red-300 bg-red-50" : "border-green-300 bg-green-50"
-          }`}>
-            <div className="flex items-center gap-3">
-              <div className={`w-10 h-10 rounded-full flex items-center justify-center text-xl shrink-0 ${
-                uncovered.length > 0 ? "bg-red-100" : "bg-green-100"
-              }`}>
-                {uncovered.length > 0 ? "!" : "✓"}
-              </div>
-              <div className="flex-1">
-                <div className={`text-base font-bold ${
-                  uncovered.length > 0 ? "text-red-800" : "text-green-800"
-                }`}>
-                  Unassigned Aircraft
-                </div>
-                {uncovered.length > 0 ? (
-                  <div className="text-sm font-semibold text-red-600">
-                    {uncovered.length} aircraft not covered by any van · {totalCovered}/{positions.length} assigned
-                  </div>
-                ) : (
-                  <div className="text-sm text-green-700 font-medium">
-                    All {positions.length} aircraft assigned to vans
-                  </div>
-                )}
-              </div>
-            </div>
-            {uncovered.length > 0 && (
-              <div className="flex flex-wrap gap-2 mt-3 ml-[52px]">
-                {uncovered.map((ac) => (
-                  <span key={`unc-${ac.tail}`} className="inline-flex items-center gap-1.5 bg-white border border-red-200 rounded-lg px-3 py-1.5 text-xs font-medium text-red-700">
-                    <span className="font-mono font-semibold">{ac.tail}</span>
-                    <span className="text-gray-500">@ {ac.airport}</span>
-                    <span className="text-red-600">— No Van</span>
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-        );
-      })()}
 
       {/* ── Van Status — vehicle health ── */}
       {(() => {
@@ -2108,58 +2030,6 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
         </div>
       )}
 
-      {/* ── Idle & Maintenance Aircraft ── */}
-      {(idleAircraft.length > 0 || maintenanceAircraft.length > 0) && (
-        <div className="space-y-4">
-          {maintenanceAircraft.length > 0 && (
-            <div className="rounded-xl border-2 border-orange-200 bg-orange-50/50 overflow-hidden">
-              <div className="px-4 py-3 border-b border-orange-200 bg-orange-100/50">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-bold text-orange-800">Maintenance</span>
-                  <span className="text-xs bg-orange-200 text-orange-700 rounded-full px-2 py-0.5 font-semibold">
-                    {maintenanceAircraft.length}
-                  </span>
-                </div>
-                <p className="text-xs text-orange-600 mt-0.5">Aircraft currently in maintenance — excluded from van scheduling</p>
-              </div>
-              <div className="divide-y divide-orange-100">
-                {maintenanceAircraft.map((ac) => (
-                  <div key={ac.tail} className="px-4 py-2.5 flex items-center gap-4">
-                    <span className="font-mono font-semibold text-sm text-gray-800">{ac.tail}</span>
-                    <span className="text-xs text-gray-500">{ac.airport}</span>
-                    <span className="text-xs text-gray-400">{ac.airportName}</span>
-                    <span className="text-xs bg-orange-100 text-orange-700 rounded px-1.5 py-0.5">Maintenance</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {idleAircraft.length > 0 && (
-            <div className="rounded-xl border-2 border-gray-200 bg-gray-50/50 overflow-hidden">
-              <div className="px-4 py-3 border-b border-gray-200 bg-gray-100/50">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-bold text-gray-700">Nothing Scheduled</span>
-                  <span className="text-xs bg-gray-200 text-gray-600 rounded-full px-2 py-0.5 font-semibold">
-                    {idleAircraft.length}
-                  </span>
-                </div>
-                <p className="text-xs text-gray-500 mt-0.5">No charter, positioning, or owner flights within 36 hours</p>
-              </div>
-              <div className="divide-y divide-gray-100">
-                {idleAircraft.map((ac) => (
-                  <div key={ac.tail} className="px-4 py-2.5 flex items-center gap-4">
-                    <span className="font-mono font-semibold text-sm text-gray-800">{ac.tail}</span>
-                    <span className="text-xs text-gray-500">{ac.airport}</span>
-                    <span className="text-xs text-gray-400">{ac.airportName}</span>
-                    <span className="text-xs bg-gray-100 text-gray-500 rounded px-1.5 py-0.5">Idle</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
     </div>
   );
 }
