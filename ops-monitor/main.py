@@ -31,6 +31,15 @@ SAMSARA_API_KEY = os.getenv("SAMSARA_API_KEY")
 FAA_CLIENT_ID = os.getenv("FAA_CLIENT_ID")
 FAA_CLIENT_SECRET = os.getenv("FAA_CLIENT_SECRET")
 
+# JetInsight ICS events with these flight types are scheduling/admin notes,
+# not actual aircraft movements.  Skip them during sync.
+_SKIP_FLIGHT_TYPES = {
+    "Aircraft away from home base",
+    "Aircraft needs repositioning",
+}
+# SUMMARY keywords that indicate a non-flight entry regardless of flight_type.
+_SKIP_SUMMARY_KEYWORDS = {"NOT FLYING"}
+
 # FAA NMS API (staging / pre-prod — cgifederal-aim.com)
 NMS_AUTH_URL = "https://api-staging.cgifederal-aim.com/v1/auth/token"
 NMS_API_BASE = "https://api-staging.cgifederal-aim.com/nmsapi"
@@ -583,6 +592,20 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
 
             dep_icao, arr_icao, tail, flight_type = _parse_flight_fields(component)
 
+            # ── Filter out non-flight scheduling entries ──────────────────
+            # 1. Same departure/arrival = not an aircraft movement
+            if dep_icao and arr_icao and dep_icao == arr_icao:
+                skipped += 1
+                continue
+            # 2. Administrative flight types (home-base notes, repo requests)
+            if flight_type in _SKIP_FLIGHT_TYPES:
+                skipped += 1
+                continue
+            # 3. SUMMARY contains explicit non-flight keywords
+            if any(kw in summary.upper() for kw in _SKIP_SUMMARY_KEYWORDS):
+                skipped += 1
+                continue
+
             flight: Dict[str, Any] = {
                 "ics_uid": uid,
                 "scheduled_departure": dep_dt.isoformat(),
@@ -619,9 +642,39 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
             errors += len(chunk)
             print(f"sync_schedule bulk upsert error chunk {i}: {repr(e)}", flush=True)
 
+    # ── Cleanup: remove non-flight entries already in the DB ─────────────
+    cleaned = 0
+    try:
+        # 1. Delete by known non-flight types
+        for skip_type in _SKIP_FLIGHT_TYPES:
+            res = supa.table(FLIGHTS_TABLE).delete().eq("flight_type", skip_type).execute()
+            cleaned += len(res.data or [])
+        # 2. Delete same-departure/arrival rows (Supabase client can't compare
+        #    two columns, so fetch then delete by ID)
+        dup_res = supa.table(FLIGHTS_TABLE).select("id, departure_icao, arrival_icao").limit(10000).execute()
+        dup_ids = [
+            r["id"] for r in (dup_res.data or [])
+            if r.get("departure_icao") and r.get("arrival_icao")
+            and r["departure_icao"] == r["arrival_icao"]
+        ]
+        for i in range(0, len(dup_ids), 50):
+            chunk_ids = dup_ids[i:i + 50]
+            supa.table(FLIGHTS_TABLE).delete().in_("id", chunk_ids).execute()
+            cleaned += len(chunk_ids)
+        # 3. Delete rows whose summary contains non-flight keywords
+        for kw in _SKIP_SUMMARY_KEYWORDS:
+            kw_res = supa.table(FLIGHTS_TABLE).select("id, summary").ilike("summary", f"%{kw}%").execute()
+            kw_ids = [r["id"] for r in (kw_res.data or [])]
+            for i in range(0, len(kw_ids), 50):
+                chunk_ids = kw_ids[i:i + 50]
+                supa.table(FLIGHTS_TABLE).delete().in_("id", chunk_ids).execute()
+                cleaned += len(chunk_ids)
+    except Exception as e:
+        print(f"sync_schedule cleanup error: {repr(e)}", flush=True)
+
     t_total = _time.monotonic() - t0
-    print(f"sync_schedule: done in {t_total:.1f}s — upserted={upserted} skipped={skipped} errors={errors}", flush=True)
-    return {"ok": True, "upserted": upserted, "skipped": skipped, "errors": errors, "fetch_secs": round(t_fetch, 1), "total_secs": round(t_total, 1)}
+    print(f"sync_schedule: done in {t_total:.1f}s — upserted={upserted} skipped={skipped} errors={errors} cleaned={cleaned}", flush=True)
+    return {"ok": True, "upserted": upserted, "skipped": skipped, "errors": errors, "cleaned": cleaned, "fetch_secs": round(t_fetch, 1), "total_secs": round(t_total, 1)}
 
 
 # ─── Job: pull_edct ───────────────────────────────────────────────────────────
