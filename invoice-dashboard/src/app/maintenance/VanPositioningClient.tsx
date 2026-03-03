@@ -618,6 +618,19 @@ function computeAllDayArrivals(allFlights: Flight[], date: string): VanFlightIte
     }
   }
 
+  // Second pass: remove tailless duplicates that match a tailed flight on same route+time
+  const tailedSigs = new Set<string>();
+  for (const item of byTail.values()) {
+    if (!item.arrFlight.tail_number) continue;
+    const sig = `${item.arrFlight.departure_icao}|${item.arrFlight.arrival_icao}|${item.arrFlight.scheduled_departure}|${item.arrFlight.scheduled_arrival ?? ""}`;
+    tailedSigs.add(sig);
+  }
+  for (const [key, item] of byTail) {
+    if (item.arrFlight.tail_number) continue;
+    const sig = `${item.arrFlight.departure_icao}|${item.arrFlight.arrival_icao}|${item.arrFlight.scheduled_departure}|${item.arrFlight.scheduled_arrival ?? ""}`;
+    if (tailedSigs.has(sig)) byTail.delete(key);
+  }
+
   return Array.from(byTail.values()).sort((a, b) =>
     (a.arrFlight.scheduled_arrival ?? "").localeCompare(b.arrFlight.scheduled_arrival ?? ""),
   );
@@ -973,14 +986,6 @@ function VanScheduleCard({
                             {airport}{airportInfo ? ` · ${airportInfo.city}, ${airportInfo.state}` : ""}
                             {" · "}<span className="text-gray-400">{fmtDriveTime(distKm)}</span>
                           </div>
-                          {nextDep && (
-                            <div className="text-xs mt-1 font-medium">
-                              <span className={nextIsRepo ? "text-purple-700" : "text-blue-700"}>
-                                Flying again {fmtTimeUntil(nextDep.scheduled_departure) && `${fmtTimeUntil(nextDep.scheduled_departure)} · `}{fmtUtcHM(nextDep.scheduled_departure)} → {nextDep.arrival_icao?.replace(/^K/, "") ?? "?"}
-                              </span>
-                              {nextIsRepo && <span className="ml-1 text-xs text-purple-400">(repo)</span>}
-                            </div>
-                          )}
                         </div>
                       </div>
                       <div className="flex items-start gap-2 shrink-0">
@@ -1012,7 +1017,7 @@ function VanScheduleCard({
                         </button>
                       </div>
                     </div>
-                    {/* Secondary positioning/charter legs — smaller display */}
+                    {/* Day's legs — positioning/charter legs for this aircraft */}
                     {extraLegs.length > 0 && (
                       <div className="ml-8 mt-1.5 space-y-0.5 border-l-2 pl-3" style={{ borderColor: color + "40" }}>
                         {extraLegs.map((f) => {
@@ -1022,7 +1027,7 @@ function VanScheduleCard({
                           return (
                             <div key={f.id} className="flex items-center gap-2 text-xs text-gray-400 py-0.5">
                               <span className="font-mono text-gray-500">{dep} → {arrIcao}</span>
-                              <span>{fmtUtcHM(f.scheduled_departure)}</span>
+                              <span>{fmtUtcHM(f.scheduled_departure)}{f.scheduled_arrival ? ` – ${fmtUtcHM(f.scheduled_arrival)}` : ""}</span>
                               {ft && (
                                 <span className={`rounded px-1 py-0.5 text-[10px] font-medium ${
                                   getFilterCategory(ft) === "positioning" ? "bg-purple-50 text-purple-500"
@@ -1035,6 +1040,15 @@ function VanScheduleCard({
                             </div>
                           );
                         })}
+                      </div>
+                    )}
+                    {/* Flying again — shown after all legs */}
+                    {nextDep && (
+                      <div className="ml-8 mt-1 text-xs font-medium">
+                        <span className={nextIsRepo ? "text-purple-700" : "text-blue-700"}>
+                          Flying again {fmtTimeUntil(nextDep.scheduled_departure) && `${fmtTimeUntil(nextDep.scheduled_departure)} · `}{fmtUtcHM(nextDep.scheduled_departure)} → {nextDep.arrival_icao?.replace(/^K/, "") ?? "?"}
+                        </span>
+                        {nextIsRepo && <span className="ml-1 text-xs text-purple-400">(repo)</span>}
                       </div>
                     )}
                   </div>
@@ -1394,13 +1408,6 @@ function ScheduleTab({
                               <div className="text-xs text-gray-500 mt-0.5">
                                 {airport}{airportInfo ? ` · ${airportInfo.city}, ${airportInfo.state}` : ""}
                               </div>
-                              {nextDep && (
-                                <div className="text-xs mt-1 font-medium">
-                                  <span className={nextIsRepo ? "text-purple-700" : "text-blue-700"}>
-                                    Flying again {fmtTimeUntil(nextDep.scheduled_departure) && `${fmtTimeUntil(nextDep.scheduled_departure)} · `}{fmtUtcHM(nextDep.scheduled_departure)} → {nextDep.arrival_icao?.replace(/^K/, "") ?? "?"}
-                                  </span>
-                                </div>
-                              )}
                             </div>
                           </div>
                           <div className="flex items-center gap-2 shrink-0">
@@ -1440,7 +1447,7 @@ function ScheduleTab({
                         </div>
                       );
                     })}
-                    {/* Additional positioning/charter legs for this aircraft */}
+                    {/* Day's legs for this aircraft */}
                     {extraLegs.length > 0 && (
                       <div className="ml-8 mt-1 space-y-0.5 border-l-2 border-red-200 pl-3">
                         {extraLegs.map((f) => {
@@ -1450,7 +1457,7 @@ function ScheduleTab({
                           return (
                             <div key={f.id} className="flex items-center gap-2 text-xs text-gray-500 py-0.5">
                               <span className="font-mono">{dep} → {arr}</span>
-                              <span>{fmtUtcHM(f.scheduled_departure)}</span>
+                              <span>{fmtUtcHM(f.scheduled_departure)}{f.scheduled_arrival ? ` – ${fmtUtcHM(f.scheduled_arrival)}` : ""}</span>
                               {ft && (
                                 <span className={`rounded px-1 py-0.5 text-[10px] font-medium ${
                                   getFilterCategory(ft) === "positioning" ? "bg-purple-50 text-purple-600"
@@ -1465,6 +1472,19 @@ function ScheduleTab({
                         })}
                       </div>
                     )}
+                    {/* Flying again — shown after all legs */}
+                    {(() => {
+                      const lastItem = items[items.length - 1];
+                      if (!lastItem?.nextDep) return null;
+                      const { nextDep, nextIsRepo } = lastItem;
+                      return (
+                        <div className="ml-8 mt-1 text-xs font-medium">
+                          <span className={nextIsRepo ? "text-purple-700" : "text-blue-700"}>
+                            Flying again {fmtTimeUntil(nextDep.scheduled_departure) && `${fmtTimeUntil(nextDep.scheduled_departure)} · `}{fmtUtcHM(nextDep.scheduled_departure)} → {nextDep.arrival_icao?.replace(/^K/, "") ?? "?"}
+                          </span>
+                        </div>
+                      );
+                    })()}
                   </div>
                 );
               })}
