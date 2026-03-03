@@ -691,6 +691,33 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
     # ── Cleanup: remove non-flight entries already in the DB ─────────────
     cleaned = 0
     try:
+        # 0. Purge stale flights: delete DB rows whose ics_uid is no longer in
+        #    the fresh ICS data.  This handles legs that JetInsight removed or
+        #    replaced (new UID).  Scoped to flights departing between now and
+        #    the lookahead cutoff so we don't touch historical rows.
+        fresh_uids = {f["ics_uid"] for f in batch}
+        if fresh_uids:
+            # Fetch all ics_uids currently in the DB within the sync window
+            window_start = now.isoformat()
+            window_end = cutoff.isoformat()
+            db_rows = (
+                supa.table(FLIGHTS_TABLE)
+                .select("id, ics_uid")
+                .gte("scheduled_departure", window_start)
+                .lte("scheduled_departure", window_end)
+                .limit(10000)
+                .execute()
+            )
+            stale_ids = [
+                r["id"] for r in (db_rows.data or [])
+                if r.get("ics_uid") and r["ics_uid"] not in fresh_uids
+            ]
+            for i in range(0, len(stale_ids), 50):
+                chunk_ids = stale_ids[i:i + 50]
+                supa.table(FLIGHTS_TABLE).delete().in_("id", chunk_ids).execute()
+                cleaned += len(chunk_ids)
+            if stale_ids:
+                print(f"sync_schedule: purged {len(stale_ids)} stale flights from DB", flush=True)
         # 1. Delete by known non-flight types
         for skip_type in _SKIP_FLIGHT_TYPES:
             res = supa.table(FLIGHTS_TABLE).delete().eq("flight_type", skip_type).execute()
