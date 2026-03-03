@@ -41,15 +41,24 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  // Fetch all channels the bot can see (public + private).
-  // For private channels, the bot must be invited to the channel first.
-  // Requires `channels:read` + `groups:read` scopes on the Slack bot.
+  // Fetch channels the bot can see. Try public + private first; if the bot
+  // doesn't have `groups:read` scope, fall back to public-only.
   try {
-    const res = await fetch("https://slack.com/api/conversations.list?types=public_channel,private_channel&exclude_archived=true&limit=200", {
+    let res = await fetch("https://slack.com/api/conversations.list?types=public_channel,private_channel&exclude_archived=true&limit=200", {
       headers: { Authorization: `Bearer ${token}` },
       cache: "no-store",
     });
-    const data = await res.json();
+    let data = await res.json();
+
+    // Fall back to public-only if we hit a missing_scope error (no groups:read)
+    if (!data.ok && data.error === "missing_scope") {
+      res = await fetch("https://slack.com/api/conversations.list?types=public_channel&exclude_archived=true&limit=200", {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      });
+      data = await res.json();
+    }
+
     if (!data.ok) {
       return NextResponse.json({ ok: false, channels: [], error: data.error });
     }

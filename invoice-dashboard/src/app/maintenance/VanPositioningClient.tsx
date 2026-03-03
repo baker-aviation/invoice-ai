@@ -601,7 +601,7 @@ function routeDistKm(items: VanFlightItem[]): number {
 // Slack share modal for a van's schedule
 // ---------------------------------------------------------------------------
 
-type SlackChannel = { id: string; name: string };
+type SlackChannel = { id: string; name: string; is_private?: boolean };
 type SlackShareState = "idle" | "loading-channels" | "picking" | "sending" | "success" | "error";
 
 function SlackShareModal({
@@ -728,7 +728,7 @@ function SlackShareModal({
                     onClick={() => handleShare(ch)}
                     className="w-full px-4 py-2.5 text-left text-sm hover:bg-blue-50 transition-colors flex items-center gap-2"
                   >
-                    <span className="text-gray-400">#</span>
+                    <span className="text-gray-400">{ch.is_private ? "🔒" : "#"}</span>
                     <span className="font-medium text-gray-700">{ch.name}</span>
                   </button>
                 ))}
