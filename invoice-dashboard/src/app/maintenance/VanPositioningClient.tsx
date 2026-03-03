@@ -743,14 +743,23 @@ function SlackShareModal({
         vanId,
         homeAirport,
         date,
-        items: items.map((item) => ({
-          tail: item.arrFlight.tail_number ?? "—",
-          route: `${item.arrFlight.departure_icao?.replace(/^K/, "") ?? "?"} → ${item.airport}`,
-          arrivalTime: item.arrFlight.scheduled_arrival ? fmtUtcHM(item.arrFlight.scheduled_arrival) : "—",
-          status: item.arrFlight.scheduled_arrival && new Date(item.arrFlight.scheduled_arrival) < new Date() ? "~Landed" : "Scheduled",
-          nextDep: item.nextDep ? `Flying again ${fmtUtcHM(item.nextDep.scheduled_departure)} → ${item.nextDep.arrival_icao?.replace(/^K/, "") ?? "?"}` : undefined,
-          driveTime: item.distKm > 0 ? fmtDriveTime(item.distKm) : undefined,
-        })),
+        items: items.map((item) => {
+          const arrMs = item.arrFlight.scheduled_arrival ? new Date(item.arrFlight.scheduled_arrival).getTime() : null;
+          const gapMs = item.nextDep && arrMs
+            ? new Date(item.nextDep.scheduled_departure).getTime() - arrMs : Infinity;
+          const turnLabel = !item.nextDep || gapMs >= 6 * 3600000
+            ? "Done for day"
+            : gapMs < 2 * 3600000 ? "Quickturn" : undefined;
+          return {
+            tail: item.arrFlight.tail_number ?? "—",
+            route: `${item.arrFlight.departure_icao?.replace(/^K/, "") ?? "?"} → ${item.airport}`,
+            arrivalTime: item.arrFlight.scheduled_arrival ? fmtUtcHM(item.arrFlight.scheduled_arrival) : "—",
+            status: item.arrFlight.scheduled_arrival && new Date(item.arrFlight.scheduled_arrival) < new Date() ? "~Landed" : "Scheduled",
+            nextDep: item.nextDep ? `Flying again ${fmtUtcHM(item.nextDep.scheduled_departure)} → ${item.nextDep.arrival_icao?.replace(/^K/, "") ?? "?"}` : undefined,
+            turnStatus: turnLabel,
+            driveTime: item.distKm > 0 ? fmtDriveTime(item.distKm) : undefined,
+          };
+        }),
       };
       const res = await fetch("/api/vans/share-slack", {
         method: "POST",
@@ -969,7 +978,11 @@ function VanScheduleCard({
               {items.map(({ arrFlight, nextDep, isRepo, nextIsRepo, airport, airportInfo, distKm }) => {
                 const arrTime = arrFlight.scheduled_arrival ? new Date(arrFlight.scheduled_arrival) : null;
                 const hasLanded = arrTime !== null && arrTime < now;
-                const doneForDay = !nextDep;
+                const groundMs = nextDep && arrTime
+                  ? new Date(nextDep.scheduled_departure).getTime() - arrTime.getTime()
+                  : Infinity;
+                const doneForDay = !nextDep || groundMs >= 6 * 3600000;
+                const isQuickturn = !!nextDep && groundMs < 2 * 3600000;
                 // Find additional legs for this aircraft (positioning/charter/maintenance)
                 const extraLegs = (allFlights && arrFlight.tail_number)
                   ? allFlights.filter((f) => {
@@ -1038,6 +1051,13 @@ function VanScheduleCard({
                           <span className={`inline-block text-xs font-semibold rounded-full px-2 py-0.5 ${hasLanded ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-600"}`}>
                             {hasLanded ? "~Landed" : "Scheduled"}
                           </span>
+                          {isQuickturn && (
+                            <div>
+                              <span className="inline-block text-xs font-semibold bg-amber-100 text-amber-700 rounded-full px-2 py-0.5">
+                                Quickturn
+                              </span>
+                            </div>
+                          )}
                           {doneForDay && (
                             <div>
                               <span className="inline-block text-xs font-semibold bg-green-100 text-green-700 rounded-full px-2 py-0.5">
@@ -1057,21 +1077,21 @@ function VanScheduleCard({
                         </button>
                       </div>
                     </div>
-                    {/* Maintenance scheduled alert */}
-                    {hasMaintenance && (
-                      <div className="ml-8 mt-1">
-                        <span className="inline-block text-xs font-semibold bg-orange-100 text-orange-700 rounded-full px-2 py-0.5">
-                          Maintenance Scheduled
-                        </span>
-                      </div>
-                    )}
-                    {/* Flying again — shown above other scheduled legs */}
+                    {/* Flying again — shown right below arrival leg */}
                     {nextDep && (
-                      <div className="ml-8 mt-1 text-xs font-medium">
+                      <div className="ml-8 mt-0.5 text-xs font-medium">
                         <span className={nextIsRepo ? "text-purple-700" : "text-blue-700"}>
                           Flying again {fmtTimeUntil(nextDep.scheduled_departure) && `${fmtTimeUntil(nextDep.scheduled_departure)} · `}{fmtUtcHM(nextDep.scheduled_departure)} → {nextDep.arrival_icao?.replace(/^K/, "") ?? "?"}
                         </span>
                         {nextIsRepo && <span className="ml-1 text-xs text-purple-400">(repo)</span>}
+                      </div>
+                    )}
+                    {/* Maintenance scheduled alert */}
+                    {hasMaintenance && (
+                      <div className="ml-8 mt-0.5">
+                        <span className="inline-block text-xs font-semibold bg-orange-100 text-orange-700 rounded-full px-2 py-0.5">
+                          Maintenance Scheduled
+                        </span>
                       </div>
                     )}
                     {/* Day's legs — other scheduled legs for this aircraft */}
@@ -1423,6 +1443,12 @@ function ScheduleTab({
                 const lastItem = items[items.length - 1];
                 const nextDep = lastItem?.nextDep ?? null;
                 const nextIsRepo = lastItem?.nextIsRepo ?? false;
+                const lastArrTime = lastItem?.arrFlight.scheduled_arrival
+                  ? new Date(lastItem.arrFlight.scheduled_arrival).getTime() : null;
+                const uncovGroundMs = nextDep && lastArrTime
+                  ? new Date(nextDep.scheduled_departure).getTime() - lastArrTime : Infinity;
+                const uncovDoneForDay = !nextDep || uncovGroundMs >= 6 * 3600000;
+                const uncovQuickturn = !!nextDep && uncovGroundMs < 2 * 3600000;
                 return (
                   <div
                     key={tailKey}
@@ -1439,6 +1465,16 @@ function ScheduleTab({
                         {hasMaintenance && (
                           <span className="text-xs bg-orange-100 text-orange-700 rounded-full px-2 py-0.5 font-semibold">
                             Maintenance Scheduled
+                          </span>
+                        )}
+                        {uncovQuickturn && (
+                          <span className="text-xs bg-amber-100 text-amber-700 rounded-full px-2 py-0.5 font-semibold">
+                            Quickturn
+                          </span>
+                        )}
+                        {uncovDoneForDay && (
+                          <span className="text-xs bg-green-100 text-green-700 rounded-full px-2 py-0.5 font-semibold">
+                            Done for day
                           </span>
                         )}
                       </div>
@@ -1499,7 +1535,7 @@ function ScheduleTab({
                     </div>
                     {/* Flying again — after the last leg */}
                     {nextDep && (
-                      <div className="ml-5 mt-1 text-xs font-medium">
+                      <div className="ml-5 mt-0.5 text-xs font-medium">
                         <span className={nextIsRepo ? "text-purple-700" : "text-blue-700"}>
                           Flying again {fmtTimeUntil(nextDep.scheduled_departure) && `${fmtTimeUntil(nextDep.scheduled_departure)} · `}{fmtUtcHM(nextDep.scheduled_departure)} → {nextDep.arrival_icao?.replace(/^K/, "") ?? "?"}
                         </span>
