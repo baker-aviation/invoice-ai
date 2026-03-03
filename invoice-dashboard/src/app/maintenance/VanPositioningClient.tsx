@@ -983,15 +983,12 @@ function VanScheduleCard({
                   : Infinity;
                 const doneForDay = !nextDep || groundMs >= 6 * 3600000;
                 const isQuickturn = !!nextDep && groundMs < 2 * 3600000;
-                // Find additional legs for this aircraft (positioning/charter/maintenance)
+                // Find ALL same-day legs for this aircraft (full itinerary)
                 const extraLegs = (allFlights && arrFlight.tail_number)
                   ? allFlights.filter((f) => {
                       if (f.tail_number !== arrFlight.tail_number) return false;
-                      if (f.id === arrFlight.id || f.id === nextDep?.id) return false;
-                      if (!isOnEtDate(f.scheduled_departure, date) && !isOnEtDate(f.scheduled_arrival, date)) return false;
-                      const ft = inferFlightType(f);
-                      const cat = getFilterCategory(ft);
-                      return cat === "positioning" || cat === "charter" || cat === "maintenance";
+                      if (f.id === arrFlight.id) return false;
+                      return isOnEtDate(f.scheduled_departure, date) || isOnEtDate(f.scheduled_arrival, date);
                     }).sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure))
                   : [];
                 // Check if this aircraft has a maintenance event scheduled
@@ -1080,22 +1077,26 @@ function VanScheduleCard({
                       <div className="ml-8 mt-1 space-y-0 border-l-2 pl-3" style={{ borderColor: color + "40" }}>
                         {extraLegs.map((f) => {
                           const ft = inferFlightType(f);
+                          const cat = getFilterCategory(ft);
                           const dep = f.departure_icao?.replace(/^K/, "") ?? "?";
                           const arrIcao = f.arrival_icao?.replace(/^K/, "") ?? "?";
+                          const isNext = nextDep && f.id === nextDep.id;
                           return (
-                            <div key={f.id} className="flex items-center gap-2 text-xs text-gray-400 py-px">
+                            <div key={f.id} className={`flex items-center gap-2 text-xs py-px ${isNext ? "text-gray-500" : "text-gray-400"}`}>
                               <span className="font-mono text-gray-500">{dep} → {arrIcao}</span>
                               <span>{fmtUtcHM(f.scheduled_departure)}{f.scheduled_arrival ? ` – ${fmtUtcHM(f.scheduled_arrival)}` : ""}</span>
                               {ft && (
                                 <span className={`rounded px-1 py-0.5 text-[10px] font-medium ${
-                                  getFilterCategory(ft) === "positioning" ? "bg-purple-50 text-purple-500"
-                                  : getFilterCategory(ft) === "charter" ? "bg-green-50 text-green-500"
-                                  : getFilterCategory(ft) === "maintenance" ? "bg-orange-50 text-orange-500"
+                                  cat === "positioning" ? "bg-purple-50 text-purple-500"
+                                  : cat === "charter" ? "bg-green-50 text-green-500"
+                                  : cat === "maintenance" ? "bg-orange-50 text-orange-500"
+                                  : ft === "Owner" ? "bg-blue-50 text-blue-500"
                                   : "bg-gray-50 text-gray-400"
                                 }`}>
                                   {ft}
                                 </span>
                               )}
+                              {isNext && <span className="text-blue-500 font-medium">← next</span>}
                             </div>
                           );
                         })}
