@@ -1,0 +1,298 @@
+"use client";
+
+import { useState, useEffect, useCallback } from "react";
+
+type IcsSource = {
+  id: number;
+  label: string;
+  url: string;
+  enabled: boolean;
+  last_sync_at: string | null;
+  last_sync_ok: boolean | null;
+  created_at: string;
+};
+
+export default function SettingsPage() {
+  const [sources, setSources] = useState<IcsSource[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // New source form
+  const [newLabel, setNewLabel] = useState("");
+  const [newUrl, setNewUrl] = useState("");
+  const [adding, setAdding] = useState(false);
+
+  // Edit state
+  const [editId, setEditId] = useState<number | null>(null);
+  const [editLabel, setEditLabel] = useState("");
+  const [editUrl, setEditUrl] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const fetchSources = useCallback(async () => {
+    try {
+      const res = await fetch("/api/admin/ics-sources");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setSources(data.sources ?? []);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchSources();
+  }, [fetchSources]);
+
+  async function handleAdd(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newLabel.trim() || !newUrl.trim()) return;
+    setAdding(true);
+    try {
+      const res = await fetch("/api/admin/ics-sources", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label: newLabel.trim(), url: newUrl.trim() }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error ?? `HTTP ${res.status}`);
+      }
+      setNewLabel("");
+      setNewUrl("");
+      await fetchSources();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to add");
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  async function handleToggle(source: IcsSource) {
+    try {
+      const res = await fetch("/api/admin/ics-sources", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: source.id, enabled: !source.enabled }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await fetchSources();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update");
+    }
+  }
+
+  async function handleSaveEdit() {
+    if (editId === null || !editLabel.trim() || !editUrl.trim()) return;
+    setSaving(true);
+    try {
+      const res = await fetch("/api/admin/ics-sources", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: editId, label: editLabel.trim(), url: editUrl.trim() }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setEditId(null);
+      await fetchSources();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDelete(id: number) {
+    if (!confirm("Remove this ICS source? The URL will be deleted.")) return;
+    try {
+      const res = await fetch("/api/admin/ics-sources", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await fetchSources();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete");
+    }
+  }
+
+  function startEdit(source: IcsSource) {
+    setEditId(source.id);
+    setEditLabel(source.label);
+    setEditUrl(source.url);
+  }
+
+  function fmtDate(iso: string | null): string {
+    if (!iso) return "Never";
+    const d = new Date(iso);
+    return d.toLocaleString("en-US", {
+      month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+      hour12: false, timeZone: "UTC",
+    }) + "Z";
+  }
+
+  return (
+    <div>
+      <p className="text-sm text-gray-500 mb-6">
+        Manage JetInsight ICS calendar feeds. Each URL syncs flight schedules
+        into the ops dashboard every 30 minutes. Add a new aircraft by pasting
+        its ICS URL below.
+      </p>
+
+      {error && (
+        <div className="mb-4 px-4 py-2 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+          {error}
+          <button onClick={() => setError(null)} className="ml-2 text-red-400 hover:text-red-600">&times;</button>
+        </div>
+      )}
+
+      {/* Add new source */}
+      <form onSubmit={handleAdd} className="mb-6 flex flex-col sm:flex-row gap-2">
+        <input
+          type="text"
+          value={newLabel}
+          onChange={(e) => setNewLabel(e.target.value)}
+          placeholder="Label (e.g. N936BA)"
+          className="border border-gray-300 rounded-md px-3 py-2 text-sm w-40 focus:outline-none focus:ring-2 focus:ring-slate-500"
+        />
+        <input
+          type="url"
+          value={newUrl}
+          onChange={(e) => setNewUrl(e.target.value)}
+          placeholder="ICS URL"
+          className="border border-gray-300 rounded-md px-3 py-2 text-sm flex-1 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-slate-500"
+        />
+        <button
+          type="submit"
+          disabled={adding || !newLabel.trim() || !newUrl.trim()}
+          className="bg-slate-900 text-white rounded-md px-5 py-2 text-sm font-medium hover:bg-slate-700 disabled:opacity-50 whitespace-nowrap"
+        >
+          {adding ? "Adding…" : "Add Source"}
+        </button>
+      </form>
+
+      {/* Sources table */}
+      {loading ? (
+        <div className="text-sm text-gray-400 py-8 text-center">Loading…</div>
+      ) : sources.length === 0 ? (
+        <div className="text-sm text-gray-400 py-8 text-center border border-dashed border-gray-300 rounded-lg">
+          No ICS sources configured. Add one above to start syncing flights.
+        </div>
+      ) : (
+        <div className="border border-gray-200 rounded-lg overflow-hidden">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="text-left px-4 py-2 font-medium text-gray-600 w-8">On</th>
+                <th className="text-left px-4 py-2 font-medium text-gray-600">Label</th>
+                <th className="text-left px-4 py-2 font-medium text-gray-600">URL</th>
+                <th className="text-left px-4 py-2 font-medium text-gray-600 w-28">Last Sync</th>
+                <th className="text-right px-4 py-2 font-medium text-gray-600 w-24">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sources.map((s) => (
+                <tr key={s.id} className={`border-t border-gray-100 ${!s.enabled ? "opacity-50" : ""}`}>
+                  <td className="px-4 py-2">
+                    <button
+                      type="button"
+                      onClick={() => handleToggle(s)}
+                      className={`w-8 h-5 rounded-full relative transition-colors ${
+                        s.enabled ? "bg-green-500" : "bg-gray-300"
+                      }`}
+                    >
+                      <span
+                        className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${
+                          s.enabled ? "left-3.5" : "left-0.5"
+                        }`}
+                      />
+                    </button>
+                  </td>
+                  <td className="px-4 py-2">
+                    {editId === s.id ? (
+                      <input
+                        type="text"
+                        value={editLabel}
+                        onChange={(e) => setEditLabel(e.target.value)}
+                        className="border border-gray-300 rounded px-2 py-1 text-sm w-32 focus:outline-none focus:ring-2 focus:ring-slate-500"
+                      />
+                    ) : (
+                      <span className="font-mono font-semibold text-gray-800">{s.label}</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-2">
+                    {editId === s.id ? (
+                      <input
+                        type="url"
+                        value={editUrl}
+                        onChange={(e) => setEditUrl(e.target.value)}
+                        className="border border-gray-300 rounded px-2 py-1 text-xs font-mono w-full focus:outline-none focus:ring-2 focus:ring-slate-500"
+                      />
+                    ) : (
+                      <span className="text-xs text-gray-500 font-mono truncate block max-w-[300px]" title={s.url}>
+                        {s.url.split("?")[0]}
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-4 py-2">
+                    <div className="flex items-center gap-1.5">
+                      {s.last_sync_ok === true && <span className="w-2 h-2 rounded-full bg-green-500" />}
+                      {s.last_sync_ok === false && <span className="w-2 h-2 rounded-full bg-red-500" />}
+                      {s.last_sync_ok === null && <span className="w-2 h-2 rounded-full bg-gray-300" />}
+                      <span className="text-xs text-gray-500">{fmtDate(s.last_sync_at)}</span>
+                    </div>
+                  </td>
+                  <td className="px-4 py-2 text-right">
+                    {editId === s.id ? (
+                      <div className="flex items-center justify-end gap-1">
+                        <button
+                          type="button"
+                          onClick={handleSaveEdit}
+                          disabled={saving}
+                          className="text-xs text-green-700 hover:text-green-900 font-medium px-2 py-1 rounded hover:bg-green-50"
+                        >
+                          {saving ? "…" : "Save"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditId(null)}
+                          className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1 rounded hover:bg-gray-50"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-end gap-1">
+                        <button
+                          type="button"
+                          onClick={() => startEdit(s)}
+                          className="text-xs text-gray-500 hover:text-slate-800 px-2 py-1 rounded hover:bg-gray-50"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDelete(s.id)}
+                          className="text-xs text-gray-400 hover:text-red-600 px-2 py-1 rounded hover:bg-red-50"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <p className="mt-4 text-xs text-gray-400">
+        The ops-monitor service reads enabled sources on each sync cycle (every 30 min).
+        Changes take effect on the next sync — no redeploy needed.
+      </p>
+    </div>
+  );
+}

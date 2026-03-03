@@ -983,12 +983,13 @@ function VanScheduleCard({
                   : Infinity;
                 const doneForDay = !nextDep || groundMs >= 6 * 3600000;
                 const isQuickturn = !!nextDep && groundMs < 2 * 3600000;
-                // Find ALL same-day legs for this aircraft (full itinerary)
+                // Find same-day legs for this aircraft (exclude "other" type)
                 const extraLegs = (allFlights && arrFlight.tail_number)
                   ? allFlights.filter((f) => {
                       if (f.tail_number !== arrFlight.tail_number) return false;
                       if (f.id === arrFlight.id) return false;
-                      return isOnEtDate(f.scheduled_departure, date) || isOnEtDate(f.scheduled_arrival, date);
+                      if (!(isOnEtDate(f.scheduled_departure, date) || isOnEtDate(f.scheduled_arrival, date))) return false;
+                      return getFilterCategory(inferFlightType(f)) !== "other";
                     }).sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure))
                   : [];
                 // Check if this aircraft has a maintenance event scheduled
@@ -2278,9 +2279,9 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
           return true;
         });
 
-        // Apply flight type category filter
+        // Apply flight type category filter ("all" excludes "other" by default)
         const filtered = schedTypeFilter === "all"
-          ? deduped
+          ? deduped.filter((f) => getFilterCategory(inferFlightType(f)) !== "other")
           : deduped.filter((f) => getFilterCategory(inferFlightType(f)) === schedTypeFilter);
 
         // Compute counts per category (from deduped, not filtered)

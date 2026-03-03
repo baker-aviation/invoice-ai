@@ -34,7 +34,6 @@ export default function InvitePage() {
 
   return (
     <div className="max-w-xl">
-      <h1 className="text-2xl font-bold text-slate-900 mb-2">Invite Users</h1>
       <p className="text-sm text-gray-500 mb-6">
         Enter email addresses (one per line or comma-separated). Each person
         will receive an invite link to set their own password.

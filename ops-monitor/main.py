@@ -25,10 +25,35 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 
-# Support multiple per-aircraft ICS URLs stored as newline-separated list in
-# JETINSIGHT_ICS_URLS, falling back to the legacy single-URL JETINSIGHT_ICS_URL.
+# ICS URLs: prefer database (ics_sources table), fall back to env vars.
 _raw_ics = os.getenv("JETINSIGHT_ICS_URLS") or os.getenv("JETINSIGHT_ICS_URL") or ""
-ICS_URLS: list[str] = [u.strip() for u in _raw_ics.splitlines() if u.strip()]
+_ENV_ICS_URLS: list[str] = [u.strip() for u in _raw_ics.splitlines() if u.strip()]
+# Legacy global kept for debug endpoints that reference it at module level.
+ICS_URLS: list[str] = list(_ENV_ICS_URLS)
+
+
+def _load_ics_urls() -> list[str]:
+    """Load enabled ICS URLs from the ics_sources table, falling back to env."""
+    try:
+        supa = sb()
+        rows = supa.table("ics_sources").select("id,url").eq("enabled", True).execute()
+        db_urls = [r["url"] for r in (rows.data or []) if r.get("url")]
+        if db_urls:
+            return db_urls
+    except Exception as e:
+        print(f"[_load_ics_urls] DB read failed, using env fallback: {e}", flush=True)
+    return list(_ENV_ICS_URLS)
+
+
+def _update_ics_sync_status(supa, url: str, ok: bool) -> None:
+    """Update last_sync_at/last_sync_ok for an ICS source by URL."""
+    try:
+        supa.table("ics_sources").update({
+            "last_sync_at": datetime.now(timezone.utc).isoformat(),
+            "last_sync_ok": ok,
+        }).eq("url", url).execute()
+    except Exception:
+        pass  # non-critical
 SAMSARA_API_KEY = os.getenv("SAMSARA_API_KEY")
 FAA_CLIENT_ID = os.getenv("FAA_CLIENT_ID")
 FAA_CLIENT_SECRET = os.getenv("FAA_CLIENT_SECRET")
@@ -562,20 +587,22 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
     import time as _time
     t0 = _time.monotonic()
 
-    if not ICS_URLS:
-        raise HTTPException(400, "JETINSIGHT_ICS_URLS not configured")
+    # Load ICS URLs from database (with env var fallback)
+    ics_urls = _load_ics_urls()
+    if not ics_urls:
+        raise HTTPException(400, "No ICS sources configured (check admin settings or JETINSIGHT_ICS_URLS env)")
 
     supa = sb()
     now = datetime.now(timezone.utc)
     cutoff = now + timedelta(hours=lookahead_hours)
 
-    print(f"sync_schedule: starting, {len(ICS_URLS)} feeds, lookahead={lookahead_hours}h", flush=True)
+    print(f"sync_schedule: starting, {len(ics_urls)} feeds, lookahead={lookahead_hours}h", flush=True)
 
     # Fetch all feeds in parallel, pre-filtering to only future events
     all_components: list = []
     feed_results: dict = {}
-    pool = ThreadPoolExecutor(max_workers=min(len(ICS_URLS), 8))
-    future_to_url = {pool.submit(_fetch_ics_events, url, now): url for url in ICS_URLS}
+    pool = ThreadPoolExecutor(max_workers=min(len(ics_urls), 8))
+    future_to_url = {pool.submit(_fetch_ics_events, url, now): url for url in ics_urls}
     try:
         for future in as_completed(future_to_url, timeout=60):
             url = future_to_url[future]
@@ -583,16 +610,18 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
                 events = future.result()
                 all_components.extend(events)
                 feed_results[url[-12:]] = len(events)
+                _update_ics_sync_status(supa, url, True)
             except Exception as e:
                 feed_results[url[-12:]] = f"ERR:{repr(e)[:60]}"
                 print(f"ICS fetch error {url[:80]}: {repr(e)}", flush=True)
+                _update_ics_sync_status(supa, url, False)
     except FuturesTimeoutError:
         print("ICS fetch 60s budget exceeded; some feeds may be missing", flush=True)
     finally:
         pool.shutdown(wait=False)
 
     t_fetch = _time.monotonic() - t0
-    print(f"sync_schedule: fetch phase done in {t_fetch:.1f}s, {len(all_components)} future events from {len(feed_results)}/{len(ICS_URLS)} feeds", flush=True)
+    print(f"sync_schedule: fetch phase done in {t_fetch:.1f}s, {len(all_components)} future events from {len(feed_results)}/{len(ics_urls)} feeds", flush=True)
 
     upserted = skipped = errors = 0
 
