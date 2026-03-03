@@ -885,10 +885,7 @@ function VanScheduleCard({
           </div>
           <div>
             <div className="font-semibold text-sm">
-              {zone.name}
-              {samsaraVanName && (
-                <span className="ml-1.5 text-xs font-normal text-blue-600">({samsaraVanName})</span>
-              )}
+              {(samsaraVanName && parseVanDisplayName(samsaraVanName)) || zone.name}
             </div>
             <div className="text-xs text-gray-500">
               Base: <span className="font-medium">{zone.homeAirport}</span>
@@ -990,6 +987,11 @@ function VanScheduleCard({
                       </div>
                       <div className="flex items-start gap-2 shrink-0">
                         <div className="text-right space-y-1 min-w-[90px]">
+                          {arrFlight.scheduled_departure && (
+                            <div className="text-xs text-gray-400">
+                              Departs {fmtUtcHM(arrFlight.scheduled_departure)}
+                            </div>
+                          )}
                           {arrTime && (
                             <div className="text-xs font-medium text-gray-700">
                               Lands {fmtUtcHM(arrFlight.scheduled_arrival!)}
@@ -1411,11 +1413,18 @@ function ScheduleTab({
                             </div>
                           </div>
                           <div className="flex items-center gap-2 shrink-0">
-                            {arrTime && (
-                              <div className="text-xs font-medium text-gray-700 text-right min-w-[70px]">
-                                Lands {fmtUtcHM(arrFlight.scheduled_arrival!)}
-                              </div>
-                            )}
+                            <div className="text-right min-w-[70px]">
+                              {arrFlight.scheduled_departure && (
+                                <div className="text-xs text-gray-400">
+                                  Departs {fmtUtcHM(arrFlight.scheduled_departure)}
+                                </div>
+                              )}
+                              {arrTime && (
+                                <div className="text-xs font-medium text-gray-700">
+                                  Lands {fmtUtcHM(arrFlight.scheduled_arrival!)}
+                                </div>
+                              )}
+                            </div>
                             <select
                               className="text-xs border border-red-200 rounded-lg px-2 py-1.5 bg-white text-red-700 font-medium cursor-pointer hover:border-red-400 focus:outline-none focus:ring-2 focus:ring-red-300 appearance-none"
                               style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 5l3 3 3-3' fill='none' stroke='%23b91c1c' stroke-width='1.5'/%3E%3C/svg%3E\")", backgroundRepeat: "no-repeat", backgroundPosition: "right 6px center", paddingRight: "22px" }}
@@ -1553,6 +1562,54 @@ type VehicleDiag = {
 function isAogVehicle(name: string): boolean {
   const u = (name || "").toUpperCase();
   return u.includes("VAN") || u.includes("AOG") || u.includes(" OG") || u.includes("TRAN");
+}
+
+const US_STATE_NAMES: Record<string, string> = {
+  AL:"Alabama",AK:"Alaska",AZ:"Arizona",AR:"Arkansas",CA:"California",
+  CO:"Colorado",CT:"Connecticut",DE:"Delaware",FL:"Florida",GA:"Georgia",
+  HI:"Hawaii",ID:"Idaho",IL:"Illinois",IN:"Indiana",IA:"Iowa",KS:"Kansas",
+  KY:"Kentucky",LA:"Louisiana",ME:"Maine",MD:"Maryland",MA:"Massachusetts",
+  MI:"Michigan",MN:"Minnesota",MS:"Mississippi",MO:"Missouri",MT:"Montana",
+  NE:"Nebraska",NV:"Nevada",NH:"New Hampshire",NJ:"New Jersey",NM:"New Mexico",
+  NY:"New York",NC:"North Carolina",ND:"North Dakota",OH:"Ohio",OK:"Oklahoma",
+  OR:"Oregon",PA:"Pennsylvania",RI:"Rhode Island",SC:"South Carolina",
+  SD:"South Dakota",TN:"Tennessee",TX:"Texas",UT:"Utah",VT:"Vermont",
+  VA:"Virginia",WA:"Washington",WV:"West Virginia",WI:"Wisconsin",WY:"Wyoming",
+};
+
+/**
+ * Parse a Samsara vehicle name like "aog-fl-pbi-van" into a readable label.
+ * Extracts state (→ full name) and optional city/airport code.
+ * Returns null if the name can't be parsed.
+ */
+function parseVanDisplayName(samsaraName: string): string | null {
+  if (!samsaraName) return null;
+  // Normalise: lowercase, split on dashes/spaces/underscores
+  const parts = samsaraName.toLowerCase().replace(/[_\s]+/g, "-").split("-").filter(Boolean);
+  // Remove noise words
+  const noise = new Set(["aog", "van", "og", "tran", "transit", "vehicle"]);
+  const meaningful = parts.filter((p) => !noise.has(p));
+  if (meaningful.length === 0) return null;
+
+  // Try to find a 2-letter US state code
+  let state: string | null = null;
+  let city: string | null = null;
+  for (const p of meaningful) {
+    const upper = p.toUpperCase();
+    if (p.length === 2 && US_STATE_NAMES[upper]) {
+      state = US_STATE_NAMES[upper];
+    } else if (p.length >= 2 && p.length <= 4) {
+      city = upper; // likely airport code or city abbreviation
+    } else {
+      // Longer token — capitalise as city name
+      city = p.charAt(0).toUpperCase() + p.slice(1);
+    }
+  }
+
+  if (state && city) return `${state} – ${city}`;
+  if (state) return state;
+  if (city) return city;
+  return null;
 }
 
 /**
