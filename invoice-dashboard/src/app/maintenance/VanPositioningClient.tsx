@@ -337,8 +337,8 @@ function isRealFlight(f: Flight): boolean {
   return f.departure_icao !== f.arrival_icao;
 }
 
-/** Flight types to display — Revenue and Positioning legs only */
-const DISPLAY_FLIGHT_TYPES = new Set(["Revenue", "Owner", "Positioning"]);
+/** Flight types to display — Revenue, Positioning, and Ferry legs */
+const DISPLAY_FLIGHT_TYPES = new Set(["Revenue", "Owner", "Positioning", "Ferry"]);
 
 /** "Needs pos" / "Aircraft needs repositioning" are placeholders, not real legs */
 const PLACEHOLDER_TYPES = new Set(["Needs pos"]);
@@ -1289,11 +1289,13 @@ function ScheduleTab({
         for (const item of uncoveredItems) {
           const tail = item.arrFlight.tail_number ?? "Unknown";
           if (!tailMap.has(tail)) {
-            // Get all operational legs for this tail on this date
+            // Get all legs for this tail on this date (broad filter: exclude only placeholders)
             const dayLegs = allFlights
               .filter((f) => {
                 if (f.tail_number !== tail) return false;
-                if (!isOperationalLeg(f)) return false;
+                if (!f.departure_icao || !f.arrival_icao) return false;
+                const ft = inferFlightType(f);
+                if (ft && PLACEHOLDER_TYPES.has(ft)) return false;
                 const depDate = f.scheduled_departure?.slice(0, 10);
                 const arrDate = f.scheduled_arrival?.slice(0, 10);
                 return depDate === date || arrDate === date;
@@ -1352,7 +1354,7 @@ function ScheduleTab({
                       </div>
                     </div>
                     {/* Compact legs for the day */}
-                    {legs.length > 0 && (
+                    {legs.length > 0 ? (
                       <div className="ml-8 mt-1.5 flex flex-wrap items-center gap-x-1 gap-y-1">
                         {legs.map((leg, idx) => {
                           const dep = leg.departure_icao?.replace(/^K/, "") ?? "?";
@@ -1378,6 +1380,8 @@ function ScheduleTab({
                           );
                         })}
                       </div>
+                    ) : (
+                      <div className="ml-8 mt-1 text-xs text-gray-400 italic">Nothing scheduled</div>
                     )}
                   </div>
                 );
