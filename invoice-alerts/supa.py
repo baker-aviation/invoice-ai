@@ -255,6 +255,27 @@ def safe_update_where(
     return len(data)
 
 
+def log_pipeline_run(
+    pipeline: str,
+    *,
+    status: str = "ok",
+    message: str = "",
+    items: int = 0,
+    duration_ms: Optional[int] = None,
+):
+    """Log a row to pipeline_runs for health monitoring. Fire-and-forget."""
+    try:
+        safe_insert("pipeline_runs", {
+            "pipeline": pipeline,
+            "status": status,
+            "message": message,
+            "items": items,
+            "duration_ms": duration_ms,
+        })
+    except Exception as e:
+        print(f"[log_pipeline_run] {pipeline}: {e}", flush=True)
+
+
 def safe_update_where_returning(
     table: str,
     patch: Dict[str, Any],

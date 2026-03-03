@@ -190,6 +190,12 @@ export default async function HomePage() {
               title="Fee Comparison"
               subtitle="Highest fees by category and airport"
             />
+
+            <StatCard
+              href="/health"
+              title="System Health"
+              subtitle="Pipeline status and uptime checks"
+            />
           </div>
         </div>
       </div>

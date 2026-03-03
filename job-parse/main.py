@@ -10,7 +10,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from supabase import create_client, Client
-from supa import safe_select_many, safe_select_one
+from supa import safe_select_many, safe_select_one, log_pipeline_run
 
 import base64
 from pypdf import PdfReader
@@ -951,7 +951,21 @@ def parse_next(limit: int = Query(10, ge=1, le=50)):
             results.append(
                 {"application_id": aid, "status": "failed", "error": str(e.detail)}
             )
+        except Exception as e:
+            print(f"PARSE app={aid} unexpected error: {e}", flush=True)
+            results.append(
+                {"application_id": aid, "status": "failed", "error": str(e)}
+            )
 
+    parsed = sum(1 for r in results if r.get("status") == "parsed")
+    failed = [r for r in results if r.get("status") == "failed"]
+    fail_summary = "; ".join(
+        f"app {r['application_id']}: {r.get('error', 'unknown')}" for r in failed[:5]
+    )
+    msg = f"attempted={len(apps)} parsed={parsed}"
+    if fail_summary:
+        msg += f" failures=[{fail_summary}]"
+    log_pipeline_run("job-parse", items=parsed, message=msg)
     return {"ok": True, "attempted": len(apps), "results": results}
 
 

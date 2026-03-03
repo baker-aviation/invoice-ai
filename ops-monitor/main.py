@@ -14,7 +14,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from supa import sb
+from supa import sb, log_pipeline_run
 from auth_middleware import add_auth_middleware
 
 app = FastAPI()
@@ -619,10 +619,12 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
 
             dep_icao, arr_icao, tail, flight_type = _parse_flight_fields(component)
 
-            # Debug: log first 3 events so we can verify flight_type extraction
-            if upserted + skipped + errors < 3:
+            # Debug: log first 5 events and any with null flight_type despite
+            # having a summary that should parse (helps diagnose extraction bugs)
+            _event_count = upserted + skipped + errors
+            if _event_count < 5 or (flight_type is None and _event_count < 50):
                 raw_cat = component.get("CATEGORIES")
-                print(f"sync_schedule DEBUG event: summary={summary!r}, categories={raw_cat!r}, flight_type={flight_type!r}", flush=True)
+                print(f"sync_schedule DEBUG event #{_event_count}: summary={summary!r}, categories={raw_cat!r}, flight_type={flight_type!r}", flush=True)
 
             # ── Filter out non-flight scheduling entries ──────────────────
             # 1. Same departure/arrival = not an aircraft movement
@@ -643,29 +645,50 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
                 "scheduled_departure": dep_dt.isoformat(),
                 "summary": summary,
                 "updated_at": _utc_now(),
+                # Always include all columns so batch upserts don't
+                # nullify existing values on rows with missing keys.
+                "tail_number": tail,
+                "departure_icao": dep_icao,
+                "arrival_icao": arr_icao,
+                "scheduled_arrival": arr_dt.isoformat() if arr_dt else None,
+                "flight_type": flight_type,
             }
-            if tail is not None:
-                flight["tail_number"] = tail
-            if dep_icao is not None:
-                flight["departure_icao"] = dep_icao
-            if arr_icao is not None:
-                flight["arrival_icao"] = arr_icao
-            if arr_dt is not None:
-                flight["scheduled_arrival"] = arr_dt.isoformat()
-            if flight_type is not None:
-                flight["flight_type"] = flight_type
 
             batch.append(flight)
         except Exception as e:
             errors += 1
             print(f"sync_schedule parse error uid={component.get('UID','?')}: {repr(e)}", flush=True)
 
-    # Deduplicate by ics_uid — same flight can appear in multiple feeds.
+    # Deduplicate by ics_uid — same UID can appear in multiple feeds.
     # Keep the last occurrence (typically the most recently updated).
     seen_uids: Dict[str, int] = {}
     for idx, flight in enumerate(batch):
         seen_uids[flight["ics_uid"]] = idx
     batch = [batch[i] for i in sorted(seen_uids.values())]
+
+    # Cross-feed dedup: same physical flight can appear in different per-aircraft
+    # feeds with different ics_uids. Deduplicate by flight identity
+    # (tail, dep_icao, arr_icao, scheduled_departure). Keep first occurrence;
+    # collect extra ics_uids to clean from DB.
+    cross_dup_uids: List[str] = []
+    seen_identity: Dict[str, int] = {}
+    deduped_batch: List[Dict[str, Any]] = []
+    for flight in batch:
+        identity = (
+            flight.get("tail_number", ""),
+            flight.get("departure_icao", ""),
+            flight.get("arrival_icao", ""),
+            flight.get("scheduled_departure", ""),
+        )
+        key = "|".join(identity)
+        if key in seen_identity:
+            cross_dup_uids.append(flight["ics_uid"])
+        else:
+            seen_identity[key] = len(deduped_batch)
+            deduped_batch.append(flight)
+    if cross_dup_uids:
+        print(f"sync_schedule: removed {len(cross_dup_uids)} cross-feed duplicates", flush=True)
+    batch = deduped_batch
 
     t_parse = _time.monotonic() - t0
     print(f"sync_schedule: parsed {len(batch)} flights to upsert, {skipped} skipped in {t_parse:.1f}s", flush=True)
@@ -687,6 +710,16 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
                 except Exception as row_err:
                     errors += 1
                     print(f"sync_schedule row upsert error uid={row.get('ics_uid','?')}: {repr(row_err)}", flush=True)
+
+    # ── Clean cross-feed dups from DB ────────────────────────────────────
+    if cross_dup_uids:
+        try:
+            for i in range(0, len(cross_dup_uids), 50):
+                chunk_uids = cross_dup_uids[i:i + 50]
+                supa.table(FLIGHTS_TABLE).delete().in_("ics_uid", chunk_uids).execute()
+            print(f"sync_schedule: deleted {len(cross_dup_uids)} cross-feed dup rows from DB", flush=True)
+        except Exception as e:
+            print(f"sync_schedule: cross-feed dup cleanup error: {repr(e)}", flush=True)
 
     # ── Cleanup: remove non-flight entries already in the DB ─────────────
     cleaned = 0
@@ -720,6 +753,7 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
 
     t_total = _time.monotonic() - t0
     print(f"sync_schedule: done in {t_total:.1f}s — upserted={upserted} skipped={skipped} errors={errors} cleaned={cleaned}", flush=True)
+    log_pipeline_run("flight-sync", items=upserted, duration_ms=int(t_total * 1000), message=f"upserted={upserted} skipped={skipped}")
     return {"ok": True, "upserted": upserted, "skipped": skipped, "errors": errors, "cleaned": cleaned, "fetch_secs": round(t_fetch, 1), "total_secs": round(t_total, 1)}
 
 
@@ -784,6 +818,7 @@ def pull_edct(
             errors += 1
             print(f"pull_edct error msg_id={msg_id}: {repr(e)}", flush=True)
 
+    log_pipeline_run("edct-pull", items=ingested, message=f"ingested={ingested} skipped={skipped}")
     return {"ok": True, "ingested": ingested, "skipped": skipped, "errors": errors}
 
 
@@ -1051,10 +1086,13 @@ def check_notams(lookahead_hours: int = Query(720, ge=1, le=720)):
         stats = future.result(timeout=90)
     except FuturesTimeoutError:
         print("check_notams: 90s hard deadline exceeded", flush=True)
+        log_pipeline_run("notam-check", status="error", message="90s timeout")
         return {"ok": True, "timeout": True, "alerts_created": 0}
     except Exception as e:
         print(f"check_notams exception: {repr(e)}", flush=True)
+        log_pipeline_run("notam-check", status="error", message=str(e)[:200])
         raise HTTPException(500, detail="check_notams failed")
+    log_pipeline_run("notam-check", items=stats.get("alerts_created", 0), message=f"flights={stats.get('flights_checked', 0)} airports={stats.get('airports_checked', 0)}")
     return {"ok": True, **stats}
 
 
