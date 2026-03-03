@@ -917,7 +917,7 @@ def parse_application(application_id: int = Query(..., ge=1)):
         _upsert_parse_row(supa, application_id, extracted)
     except Exception as e:
         print(f"Supabase upsert failed: {e}", flush=True)
-        raise HTTPException(status_code=500, detail="Supabase upsert failed")
+        raise HTTPException(status_code=500, detail=f"Supabase upsert failed: {e}")
 
     return {
         "ok": True,
