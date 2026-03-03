@@ -402,6 +402,24 @@ const NON_FLIGHT_TYPES = new Set([
   "Aircraft needs repositioning",
 ]);
 
+/** Map flight types to user-facing filter categories. */
+function getFilterCategory(ft: string | null): string {
+  if (!ft) return "other";
+  const lower = ft.toLowerCase();
+  if (lower === "revenue" || lower === "owner" || lower === "charter") return "charter";
+  if (lower === "positioning" || lower === "ferry" || lower.includes("ferry") || lower === "transient") return "positioning";
+  if (lower === "maintenance") return "maintenance";
+  return "other";
+}
+
+const SCHED_FILTERS: { key: string; label: string }[] = [
+  { key: "all", label: "All" },
+  { key: "charter", label: "Charter" },
+  { key: "positioning", label: "Positioning" },
+  { key: "maintenance", label: "Maintenance" },
+  { key: "other", label: "Other" },
+];
+
 /** "in 2h 15m" or "in 45m" until a future ISO timestamp. Returns "" if in the past. */
 function fmtTimeUntil(iso: string): string {
   const diff = new Date(iso).getTime() - Date.now();
@@ -769,6 +787,7 @@ function VanScheduleCard({
   color,
   items,
   date,
+  allFlights,
   liveVanPos,
   liveAddress,
   samsaraVanName,
@@ -784,6 +803,7 @@ function VanScheduleCard({
   color: string;
   items: VanFlightItem[];
   date: string;
+  allFlights?: Flight[];
   liveVanPos?: { lat: number; lon: number };
   liveAddress?: string | null;
   samsaraVanName?: string | null;
@@ -892,76 +912,114 @@ function VanScheduleCard({
                 const arrTime = arrFlight.scheduled_arrival ? new Date(arrFlight.scheduled_arrival) : null;
                 const hasLanded = arrTime !== null && arrTime < now;
                 const doneForDay = !nextDep;
+                // Find additional positioning/charter legs for this aircraft
+                const extraLegs = (allFlights && arrFlight.tail_number)
+                  ? allFlights.filter((f) => {
+                      if (f.tail_number !== arrFlight.tail_number) return false;
+                      if (f.id === arrFlight.id || f.id === nextDep?.id) return false;
+                      if (!f.scheduled_departure.startsWith(date) && !f.scheduled_arrival?.startsWith(date)) return false;
+                      const ft = inferFlightType(f);
+                      const cat = getFilterCategory(ft);
+                      return cat === "positioning" || cat === "charter";
+                    }).sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure))
+                  : [];
                 return (
                   <div
                     key={arrFlight.id}
                     draggable
                     onDragStart={(e) => onDragStart(e, arrFlight.id, zone.vanId)}
-                    className="px-4 py-3 flex items-start justify-between gap-4 cursor-grab active:cursor-grabbing hover:bg-gray-50/50"
+                    className="px-4 py-3 cursor-grab active:cursor-grabbing hover:bg-gray-50/50"
                   >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="flex flex-col items-center gap-0.5 flex-shrink-0 mt-1">
-                        <div className="w-2.5 h-2.5 rounded-full" style={{ background: color }} />
-                        <svg className="w-3 h-3 text-gray-300" fill="none" viewBox="0 0 12 12" stroke="currentColor" strokeWidth={2}>
-                          <path d="M2 4h8M2 8h8" />
-                        </svg>
-                      </div>
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-mono font-semibold text-sm">{arrFlight.tail_number ?? "—"}</span>
-                          <span className="text-xs text-gray-500 font-mono">
-                            {arrFlight.departure_icao?.replace(/^K/, "") ?? "?"} → {airport}
-                          </span>
-                          {inferFlightType(arrFlight) === "Maintenance" ? (
-                            <span className="text-xs bg-orange-100 text-orange-700 rounded px-1.5 py-0.5">Maintenance</span>
-                          ) : isRepo ? (
-                            <span className="text-xs bg-purple-100 text-purple-700 rounded px-1.5 py-0.5">Positioning</span>
-                          ) : (
-                            <span className="text-xs bg-green-100 text-green-700 rounded px-1.5 py-0.5">Revenue</span>
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="flex flex-col items-center gap-0.5 flex-shrink-0 mt-1">
+                          <div className="w-2.5 h-2.5 rounded-full" style={{ background: color }} />
+                          <svg className="w-3 h-3 text-gray-300" fill="none" viewBox="0 0 12 12" stroke="currentColor" strokeWidth={2}>
+                            <path d="M2 4h8M2 8h8" />
+                          </svg>
+                        </div>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-mono font-semibold text-sm">{arrFlight.tail_number ?? "—"}</span>
+                            <span className="text-xs text-gray-500 font-mono">
+                              {arrFlight.departure_icao?.replace(/^K/, "") ?? "?"} → {airport}
+                            </span>
+                            {inferFlightType(arrFlight) === "Maintenance" ? (
+                              <span className="text-xs bg-orange-100 text-orange-700 rounded px-1.5 py-0.5">Maintenance</span>
+                            ) : isRepo ? (
+                              <span className="text-xs bg-purple-100 text-purple-700 rounded px-1.5 py-0.5">Positioning</span>
+                            ) : (
+                              <span className="text-xs bg-green-100 text-green-700 rounded px-1.5 py-0.5">Revenue</span>
+                            )}
+                          </div>
+                          <div className="text-xs text-gray-500 mt-0.5">
+                            {airport}{airportInfo ? ` · ${airportInfo.city}, ${airportInfo.state}` : ""}
+                            {" · "}<span className="text-gray-400">{fmtDriveTime(distKm)}</span>
+                          </div>
+                          {nextDep && (
+                            <div className="text-xs mt-1 font-medium">
+                              <span className={nextIsRepo ? "text-purple-700" : "text-blue-700"}>
+                                Flying again {fmtTimeUntil(nextDep.scheduled_departure) && `${fmtTimeUntil(nextDep.scheduled_departure)} · `}{fmtUtcHM(nextDep.scheduled_departure)} → {nextDep.arrival_icao?.replace(/^K/, "") ?? "?"}
+                              </span>
+                              {nextIsRepo && <span className="ml-1 text-xs text-purple-400">(repo)</span>}
+                            </div>
                           )}
                         </div>
-                        <div className="text-xs text-gray-500 mt-0.5">
-                          {airport}{airportInfo ? ` · ${airportInfo.city}, ${airportInfo.state}` : ""}
-                          {" · "}<span className="text-gray-400">{fmtDriveTime(distKm)}</span>
+                      </div>
+                      <div className="flex items-start gap-2 shrink-0">
+                        <div className="text-right space-y-1 min-w-[90px]">
+                          {arrTime && (
+                            <div className="text-xs font-medium text-gray-700">
+                              Lands {fmtUtcHM(arrFlight.scheduled_arrival!)}
+                            </div>
+                          )}
+                          <span className={`inline-block text-xs font-semibold rounded-full px-2 py-0.5 ${hasLanded ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-600"}`}>
+                            {hasLanded ? "~Landed" : "Scheduled"}
+                          </span>
+                          {doneForDay && (
+                            <div>
+                              <span className="inline-block text-xs font-semibold bg-green-100 text-green-700 rounded-full px-2 py-0.5">
+                                Done for day
+                              </span>
+                            </div>
+                          )}
                         </div>
-                        {nextDep && (
-                          <div className="text-xs mt-1 font-medium">
-                            <span className={nextIsRepo ? "text-purple-700" : "text-blue-700"}>
-                              Flying again {fmtTimeUntil(nextDep.scheduled_departure) && `${fmtTimeUntil(nextDep.scheduled_departure)} · `}{fmtUtcHM(nextDep.scheduled_departure)} → {nextDep.arrival_icao?.replace(/^K/, "") ?? "?"}
-                            </span>
-                            {nextIsRepo && <span className="ml-1 text-xs text-purple-400">(repo)</span>}
-                          </div>
-                        )}
+                        <button
+                          onClick={(e) => { e.stopPropagation(); onRemove(arrFlight.id); }}
+                          className="mt-0.5 p-1 rounded-md text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors"
+                          title="Remove from this van"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 14 14" stroke="currentColor" strokeWidth={2}>
+                            <path d="M3 3l8 8M11 3l-8 8" />
+                          </svg>
+                        </button>
                       </div>
                     </div>
-                    <div className="flex items-start gap-2 shrink-0">
-                      <div className="text-right space-y-1 min-w-[90px]">
-                        {arrTime && (
-                          <div className="text-xs font-medium text-gray-700">
-                            Lands {fmtUtcHM(arrFlight.scheduled_arrival!)}
-                          </div>
-                        )}
-                        <span className={`inline-block text-xs font-semibold rounded-full px-2 py-0.5 ${hasLanded ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-600"}`}>
-                          {hasLanded ? "~Landed" : "Scheduled"}
-                        </span>
-                        {doneForDay && (
-                          <div>
-                            <span className="inline-block text-xs font-semibold bg-green-100 text-green-700 rounded-full px-2 py-0.5">
-                              Done for day
-                            </span>
-                          </div>
-                        )}
+                    {/* Secondary positioning/charter legs — smaller display */}
+                    {extraLegs.length > 0 && (
+                      <div className="ml-8 mt-1.5 space-y-0.5 border-l-2 pl-3" style={{ borderColor: color + "40" }}>
+                        {extraLegs.map((f) => {
+                          const ft = inferFlightType(f);
+                          const dep = f.departure_icao?.replace(/^K/, "") ?? "?";
+                          const arrIcao = f.arrival_icao?.replace(/^K/, "") ?? "?";
+                          return (
+                            <div key={f.id} className="flex items-center gap-2 text-xs text-gray-400 py-0.5">
+                              <span className="font-mono text-gray-500">{dep} → {arrIcao}</span>
+                              <span>{fmtUtcHM(f.scheduled_departure)}</span>
+                              {ft && (
+                                <span className={`rounded px-1 py-0.5 text-[10px] font-medium ${
+                                  getFilterCategory(ft) === "positioning" ? "bg-purple-50 text-purple-500"
+                                  : getFilterCategory(ft) === "charter" ? "bg-green-50 text-green-500"
+                                  : "bg-gray-50 text-gray-400"
+                                }`}>
+                                  {ft}
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); onRemove(arrFlight.id); }}
-                        className="mt-0.5 p-1 rounded-md text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors"
-                        title="Remove from this van"
-                      >
-                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 14 14" stroke="currentColor" strokeWidth={2}>
-                          <path d="M3 3l8 8M11 3l-8 8" />
-                        </svg>
-                      </button>
-                    </div>
+                    )}
                   </div>
                 );
               })}
@@ -1225,79 +1283,151 @@ function ScheduleTab({
       )}
 
       {/* ── Unassigned aircraft pool (draggable into vans) ── */}
-      {uncoveredItems.length > 0 && (
-        <div className="border-2 border-dashed border-red-200 rounded-xl bg-red-50/50 overflow-hidden">
-          <div className="px-4 py-3 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <div className="w-6 h-6 rounded-full bg-red-100 flex items-center justify-center text-xs">
-                !
-              </div>
-              <div>
-                <div className="text-sm font-semibold text-red-800">
-                  Unassigned Aircraft
+      {uncoveredItems.length > 0 && (() => {
+        // Group uncovered items by tail, then look up ALL positioning/charter legs per tail
+        const uncoveredByTail = new Map<string, VanFlightItem[]>();
+        for (const item of uncoveredItems) {
+          const key = item.arrFlight.tail_number || "_no_tail";
+          const arr = uncoveredByTail.get(key) ?? [];
+          arr.push(item);
+          uncoveredByTail.set(key, arr);
+        }
+        // Find additional positioning/charter legs from allFlights for each tail
+        const additionalLegsByTail = new Map<string, Flight[]>();
+        for (const tail of uncoveredByTail.keys()) {
+          if (tail === "_no_tail") continue;
+          const primaryIds = new Set((uncoveredByTail.get(tail) ?? []).map((i) => i.arrFlight.id));
+          const extras = allFlights.filter((f) => {
+            if (f.tail_number !== tail) return false;
+            if (primaryIds.has(f.id)) return false;
+            if (!f.scheduled_departure.startsWith(date) && !f.scheduled_arrival?.startsWith(date)) return false;
+            const ft = inferFlightType(f);
+            const cat = getFilterCategory(ft);
+            return cat === "positioning" || cat === "charter";
+          });
+          if (extras.length > 0) {
+            additionalLegsByTail.set(tail, extras.sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure)));
+          }
+        }
+
+        const uncoveredTails = Array.from(uncoveredByTail.keys());
+
+        return (
+          <div className="border-2 border-dashed border-red-200 rounded-xl bg-red-50/50 overflow-hidden">
+            <div className="px-4 py-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="w-6 h-6 rounded-full bg-red-100 flex items-center justify-center text-xs">
+                  !
                 </div>
-                <div className="text-xs text-red-600">
-                  {uncoveredItems.length} aircraft not covered by any van — drag into a van to assign
+                <div>
+                  <div className="text-sm font-semibold text-red-800">
+                    Unassigned Aircraft
+                  </div>
+                  <div className="text-xs text-red-600">
+                    {uncoveredTails.filter((t) => t !== "_no_tail").length} aircraft not covered by any van — drag into a van to assign
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
-          <div className="border-t border-red-200 divide-y divide-red-100">
-            {uncoveredItems.map((item) => {
-              const { arrFlight, nextDep, isRepo, nextIsRepo, airport, airportInfo } = item;
-              const arrTime = arrFlight.scheduled_arrival ? new Date(arrFlight.scheduled_arrival) : null;
-              return (
-                <div
-                  key={arrFlight.id}
-                  draggable
-                  onDragStart={(e) => handleDragStart(e, arrFlight.id, 0)}
-                  className="px-4 py-2.5 flex items-start justify-between gap-4 cursor-grab active:cursor-grabbing hover:bg-red-50"
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="flex flex-col items-center gap-0.5 flex-shrink-0 mt-1">
-                      <div className="w-2.5 h-2.5 rounded-full bg-red-300" />
-                      <svg className="w-3 h-3 text-red-300" fill="none" viewBox="0 0 12 12" stroke="currentColor" strokeWidth={2}>
-                        <path d="M2 4h8M2 8h8" />
-                      </svg>
-                    </div>
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-mono font-semibold text-sm">{arrFlight.tail_number ?? "—"}</span>
-                        <span className="text-xs text-gray-500 font-mono">
-                          {arrFlight.departure_icao?.replace(/^K/, "") ?? "?"} → {airport}
-                        </span>
-                        {isRepo ? (
-                          <span className="text-xs bg-purple-100 text-purple-700 rounded px-1.5 py-0.5">Positioning</span>
-                        ) : (
-                          <span className="text-xs bg-green-100 text-green-700 rounded px-1.5 py-0.5">Revenue</span>
-                        )}
-                        <span className="text-xs bg-red-100 text-red-600 rounded px-1.5 py-0.5">No Van</span>
-                      </div>
-                      <div className="text-xs text-gray-500 mt-0.5">
-                        {airport}{airportInfo ? ` · ${airportInfo.city}, ${airportInfo.state}` : ""}
-                      </div>
-                      {nextDep && (
-                        <div className="text-xs mt-1 font-medium">
-                          <span className={nextIsRepo ? "text-purple-700" : "text-blue-700"}>
-                            Flying again {fmtTimeUntil(nextDep.scheduled_departure) && `${fmtTimeUntil(nextDep.scheduled_departure)} · `}{fmtUtcHM(nextDep.scheduled_departure)} → {nextDep.arrival_icao?.replace(/^K/, "") ?? "?"}
-                          </span>
+            <div className="border-t border-red-200 divide-y divide-red-100">
+              {uncoveredTails.map((tailKey) => {
+                const items = uncoveredByTail.get(tailKey) ?? [];
+                const extraLegs = additionalLegsByTail.get(tailKey) ?? [];
+                const tail = items[0].arrFlight.tail_number;
+                return (
+                  <div key={tailKey} className="px-4 py-2.5">
+                    {/* Primary arrival items */}
+                    {items.map((item) => {
+                      const { arrFlight, nextDep, isRepo, nextIsRepo, airport, airportInfo } = item;
+                      const arrTime = arrFlight.scheduled_arrival ? new Date(arrFlight.scheduled_arrival) : null;
+                      const ft = inferFlightType(arrFlight);
+                      const ftCat = getFilterCategory(ft);
+                      return (
+                        <div
+                          key={arrFlight.id}
+                          draggable
+                          onDragStart={(e) => handleDragStart(e, arrFlight.id, 0)}
+                          className="flex items-start justify-between gap-4 cursor-grab active:cursor-grabbing hover:bg-red-50 py-1"
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="flex flex-col items-center gap-0.5 flex-shrink-0 mt-1">
+                              <div className="w-2.5 h-2.5 rounded-full bg-red-300" />
+                              <svg className="w-3 h-3 text-red-300" fill="none" viewBox="0 0 12 12" stroke="currentColor" strokeWidth={2}>
+                                <path d="M2 4h8M2 8h8" />
+                              </svg>
+                            </div>
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-mono font-semibold text-sm">{tail ?? "—"}</span>
+                                <span className="text-xs text-gray-500 font-mono">
+                                  {arrFlight.departure_icao?.replace(/^K/, "") ?? "?"} → {airport}
+                                </span>
+                                {ft && (
+                                  <span className={`text-xs rounded px-1.5 py-0.5 font-medium ${
+                                    ftCat === "charter" ? "bg-green-100 text-green-700"
+                                    : ftCat === "positioning" ? "bg-purple-100 text-purple-700"
+                                    : ftCat === "maintenance" ? "bg-orange-100 text-orange-700"
+                                    : "bg-gray-100 text-gray-600"
+                                  }`}>
+                                    {ft}
+                                  </span>
+                                )}
+                                <span className="text-xs bg-red-100 text-red-600 rounded px-1.5 py-0.5">No Van</span>
+                              </div>
+                              <div className="text-xs text-gray-500 mt-0.5">
+                                {airport}{airportInfo ? ` · ${airportInfo.city}, ${airportInfo.state}` : ""}
+                              </div>
+                              {nextDep && (
+                                <div className="text-xs mt-1 font-medium">
+                                  <span className={nextIsRepo ? "text-purple-700" : "text-blue-700"}>
+                                    Flying again {fmtTimeUntil(nextDep.scheduled_departure) && `${fmtTimeUntil(nextDep.scheduled_departure)} · `}{fmtUtcHM(nextDep.scheduled_departure)} → {nextDep.arrival_icao?.replace(/^K/, "") ?? "?"}
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                          <div className="text-right shrink-0 min-w-[90px]">
+                            {arrTime && (
+                              <div className="text-xs font-medium text-gray-700">
+                                Lands {fmtUtcHM(arrFlight.scheduled_arrival!)}
+                              </div>
+                            )}
+                          </div>
                         </div>
-                      )}
-                    </div>
-                  </div>
-                  <div className="text-right shrink-0 min-w-[90px]">
-                    {arrTime && (
-                      <div className="text-xs font-medium text-gray-700">
-                        Lands {fmtUtcHM(arrFlight.scheduled_arrival!)}
+                      );
+                    })}
+                    {/* Additional positioning/charter legs for this aircraft */}
+                    {extraLegs.length > 0 && (
+                      <div className="ml-8 mt-1 space-y-0.5 border-l-2 border-red-200 pl-3">
+                        {extraLegs.map((f) => {
+                          const ft = inferFlightType(f);
+                          const dep = f.departure_icao?.replace(/^K/, "") ?? "?";
+                          const arr = f.arrival_icao?.replace(/^K/, "") ?? "?";
+                          return (
+                            <div key={f.id} className="flex items-center gap-2 text-xs text-gray-500 py-0.5">
+                              <span className="font-mono">{dep} → {arr}</span>
+                              <span>{fmtUtcHM(f.scheduled_departure)}</span>
+                              {ft && (
+                                <span className={`rounded px-1 py-0.5 text-[10px] font-medium ${
+                                  getFilterCategory(ft) === "positioning" ? "bg-purple-50 text-purple-600"
+                                  : getFilterCategory(ft) === "charter" ? "bg-green-50 text-green-600"
+                                  : "bg-gray-50 text-gray-500"
+                                }`}>
+                                  {ft}
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
                   </div>
-                </div>
-              );
-            })}
+                );
+              })}
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {FIXED_VAN_ZONES.map((zone) => {
         const color = VAN_COLORS[(zone.vanId - 1) % VAN_COLORS.length];
@@ -1312,6 +1442,7 @@ function ScheduleTab({
               color={color}
               items={finalItemsByVan.get(zone.vanId) ?? []}
               date={date}
+              allFlights={allFlights}
               liveVanPos={liveVanPositions.get(zone.vanId)}
               liveAddress={liveVanAddresses.get(zone.vanId)}
               samsaraVanName={vanZoneNames.get(zone.vanId)}
@@ -1578,6 +1709,7 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
   const [activeTab, setActiveTab] = useState<"map" | "schedule" | "flights">("map");
   const [viewMode, setViewMode] = useState<"map" | "list">("map");
   const [selectedVan, setSelectedVan] = useState<number | null>(null);
+  const [schedTypeFilter, setSchedTypeFilter] = useState<string>("all");
 
   const selectedDate = dates[dayIdx];
 
@@ -1985,10 +2117,31 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
 
       {/* ── Flight Schedule tab — grouped by aircraft ── */}
       {activeTab === "flights" && (() => {
-        // Group flights by tail number
+        // Dedup flights by route + time (prevents duplicate ICS entries)
+        const seen = new Set<string>();
+        const deduped = allFlightsForDay.filter((f) => {
+          const dk = `${f.departure_icao}|${f.arrival_icao}|${f.scheduled_departure}|${f.scheduled_arrival ?? ""}`;
+          if (seen.has(dk)) return false;
+          seen.add(dk);
+          return true;
+        });
+
+        // Apply flight type category filter
+        const filtered = schedTypeFilter === "all"
+          ? deduped
+          : deduped.filter((f) => getFilterCategory(inferFlightType(f)) === schedTypeFilter);
+
+        // Compute counts per category (from deduped, not filtered)
+        const catCounts: Record<string, number> = { charter: 0, positioning: 0, maintenance: 0, other: 0 };
+        for (const f of deduped) {
+          const cat = getFilterCategory(inferFlightType(f));
+          catCounts[cat] = (catCounts[cat] ?? 0) + 1;
+        }
+
+        // Group flights by tail number (merge all no-tail flights into one group)
         const byTail = new Map<string, Flight[]>();
-        for (const f of allFlightsForDay) {
-          const key = f.tail_number || `_no_tail_${f.id}`;
+        for (const f of filtered) {
+          const key = f.tail_number || "_no_tail";
           const arr = byTail.get(key) ?? [];
           arr.push(f);
           byTail.set(key, arr);
@@ -1997,21 +2150,57 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
         for (const legs of byTail.values()) {
           legs.sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure));
         }
-        // Sort aircraft groups by first departure
-        const groups = Array.from(byTail.entries()).sort((a, b) =>
-          a[1][0].scheduled_departure.localeCompare(b[1][0].scheduled_departure),
-        );
-        const uniqueTails = groups.filter(([key]) => !key.startsWith("_no_tail_")).length;
-        const totalLegs = allFlightsForDay.length;
+        // Sort aircraft groups: tailed first by first departure, no-tail last
+        const groups = Array.from(byTail.entries()).sort((a, b) => {
+          if (a[0] === "_no_tail") return 1;
+          if (b[0] === "_no_tail") return -1;
+          return a[1][0].scheduled_departure.localeCompare(b[1][0].scheduled_departure);
+        });
+        const uniqueTails = groups.filter(([key]) => key !== "_no_tail").length;
+        const totalLegs = filtered.length;
 
         return (
           <div className="space-y-3">
             <div className="text-sm text-gray-500">
               {fmtLongDate(selectedDate)} · {uniqueTails} aircraft · {totalLegs} legs
             </div>
+
+            {/* Flight type filter pills */}
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {SCHED_FILTERS.map(({ key, label }) => {
+                const isActive = schedTypeFilter === key;
+                const count = key === "all" ? deduped.length : catCounts[key] ?? 0;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setSchedTypeFilter(key)}
+                    className={`inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded-full border transition-colors ${
+                      isActive
+                        ? key === "charter" ? "bg-green-700 text-white border-green-700"
+                        : key === "positioning" ? "bg-purple-700 text-white border-purple-700"
+                        : key === "maintenance" ? "bg-orange-600 text-white border-orange-600"
+                        : key === "other" ? "bg-gray-700 text-white border-gray-700"
+                        : "bg-slate-800 text-white border-slate-800"
+                        : "bg-white text-gray-600 border-gray-200 hover:border-gray-400 hover:bg-gray-50"
+                    }`}
+                  >
+                    {label}
+                    {count > 0 && (
+                      <span className={`inline-flex items-center justify-center min-w-[16px] h-4 px-1 text-[10px] font-bold rounded-full ${
+                        isActive ? "bg-white/30 text-white" : "bg-gray-100 text-gray-600"
+                      }`}>
+                        {count}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+
             {groups.length === 0 ? (
               <div className="bg-white border rounded-xl px-6 py-8 text-center text-sm text-gray-400">
-                No flights scheduled for this date.
+                No flights match the current filter.
               </div>
             ) : (
               <div className="space-y-3">
