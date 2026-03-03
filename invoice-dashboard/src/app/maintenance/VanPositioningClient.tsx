@@ -392,8 +392,15 @@ function inferFlightType(flight: Flight): string | null {
   return null;
 }
 
-/** Categories that matter for AOG van scheduling */
-const AOG_ACTIVE_TYPES = new Set(["Revenue", "Owner", "Positioning", "Maintenance"]);
+/** Flight types that are scheduling notes, NOT real aircraft movements. */
+const NON_FLIGHT_TYPES = new Set([
+  "Time off",
+  "Assignment",
+  "Needs pos",
+  "Crew conflict",
+  "Aircraft away from home base",
+  "Aircraft needs repositioning",
+]);
 
 /** "in 2h 15m" or "in 45m" until a future ISO timestamp. Returns "" if in the past. */
 function fmtTimeUntil(iso: string): string {
@@ -499,15 +506,16 @@ function computeZoneItems(
     });
 
   // Deduplicate by tail — keep only the last arrival per aircraft per day
+  // Use flight ID as key for flights with no tail number to avoid collapsing them
   const byTail = new Map<string, VanFlightItem>();
   for (const item of rawItems) {
-    const tail = item.arrFlight.tail_number ?? "";
-    const existing = byTail.get(tail);
+    const key = item.arrFlight.tail_number || `_no_tail_${item.arrFlight.id}`;
+    const existing = byTail.get(key);
     if (
       !existing ||
       (item.arrFlight.scheduled_arrival ?? "") > (existing.arrFlight.scheduled_arrival ?? "")
     ) {
-      byTail.set(tail, item);
+      byTail.set(key, item);
     }
   }
 
@@ -562,15 +570,16 @@ function computeAllDayArrivals(allFlights: Flight[], date: string): VanFlightIte
     });
 
   // Deduplicate by tail — keep last arrival
+  // Use flight ID as key for flights with no tail number to avoid collapsing them
   const byTail = new Map<string, VanFlightItem>();
   for (const item of rawItems) {
-    const tail = item.arrFlight.tail_number ?? "";
-    const existing = byTail.get(tail);
+    const key = item.arrFlight.tail_number || `_no_tail_${item.arrFlight.id}`;
+    const existing = byTail.get(key);
     if (
       !existing ||
       (item.arrFlight.scheduled_arrival ?? "") > (existing.arrFlight.scheduled_arrival ?? "")
     ) {
-      byTail.set(tail, item);
+      byTail.set(key, item);
     }
   }
 
@@ -1005,13 +1014,32 @@ function ScheduleTab({
   const [dropTargetVan, setDropTargetVan] = useState<number | null>(null);
   const dragCounterRef = useRef(0);
 
-  // Compute base items for every zone
+  // Compute base items for every zone, then deduplicate across zones
+  // so each aircraft only appears in the closest van's card.
   const baseItemsByVan = useMemo(() => {
-    const map = new Map<number, VanFlightItem[]>();
+    const raw = new Map<number, VanFlightItem[]>();
     for (const zone of FIXED_VAN_ZONES) {
       const baseLat = liveVanPositions.get(zone.vanId)?.lat ?? zone.lat;
       const baseLon = liveVanPositions.get(zone.vanId)?.lon ?? zone.lon;
-      map.set(zone.vanId, computeZoneItems(zone, allFlights, date, baseLat, baseLon));
+      raw.set(zone.vanId, computeZoneItems(zone, allFlights, date, baseLat, baseLon));
+    }
+    // Deduplicate: if an aircraft appears in multiple zones, keep only the closest
+    const claimedFlights = new Set<string>();
+    // Build a list of (vanId, flightId, distance) for all assignments
+    const assignments: { vanId: number; flightId: string; distKm: number; item: VanFlightItem }[] = [];
+    for (const [vanId, items] of raw) {
+      for (const item of items) {
+        assignments.push({ vanId, flightId: item.arrFlight.id, distKm: item.distKm, item });
+      }
+    }
+    // Sort by distance so closest van wins
+    assignments.sort((a, b) => a.distKm - b.distKm);
+    const map = new Map<number, VanFlightItem[]>();
+    for (const zone of FIXED_VAN_ZONES) map.set(zone.vanId, []);
+    for (const { vanId, flightId, item } of assignments) {
+      if (claimedFlights.has(flightId)) continue;
+      claimedFlights.add(flightId);
+      map.get(vanId)!.push(item);
     }
     return map;
   }, [allFlights, date, liveVanPositions]);
@@ -1557,11 +1585,12 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
   const vans       = useMemo(() => assignVans(positions), [positions]);
   const displayedVans = selectedVan === null ? vans : vans.filter((v) => v.vanId === selectedVan);
 
-  // Filter flights to active types only (Charter/Revenue, Positioning, Owner)
+  // Filter flights to real aircraft movements (exclude scheduling notes)
   const activeFlights = useMemo(
     () => initialFlights.filter((f) => {
       const ft = inferFlightType(f);
-      return ft !== null && AOG_ACTIVE_TYPES.has(ft);
+      if (!ft) return true; // include flights with unknown type
+      return !NON_FLIGHT_TYPES.has(ft);
     }),
     [initialFlights],
   );
@@ -1575,21 +1604,12 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
   );
 
   // ALL flights for the selected date (for the Flight Schedule tab)
-  // Hide admin/scheduling entries that aren't actual flights
-  const HIDDEN_FLIGHT_TYPES = new Set([
-    "Aircraft away from home base",
-    "Aircraft needs repositioning",
-  ]);
+  // Exclude scheduling notes (non-flight types)
   const allFlightsForDay = useMemo(
-    () => initialFlights
-      .filter((f) => {
-        if (!f.scheduled_departure.startsWith(selectedDate)) return false;
-        const ft = inferFlightType(f);
-        if (ft && HIDDEN_FLIGHT_TYPES.has(ft)) return false;
-        return true;
-      })
+    () => activeFlights
+      .filter((f) => f.scheduled_departure.startsWith(selectedDate))
       .sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure)),
-    [initialFlights, selectedDate],
+    [activeFlights, selectedDate],
   );
 
   // ── Samsara live van data (lifted so map + schedule can both use it) ──
@@ -1963,72 +1983,93 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
         <ScheduleTab allFlights={activeFlights} date={selectedDate} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} />
       )}
 
-      {/* ── Flight Schedule tab ── */}
-      {activeTab === "flights" && (
-        <div className="space-y-3">
-          <div className="text-sm text-gray-500">
-            All flights for {fmtLongDate(selectedDate)} · {allFlightsForDay.length} flights
+      {/* ── Flight Schedule tab — grouped by aircraft ── */}
+      {activeTab === "flights" && (() => {
+        // Group flights by tail number
+        const byTail = new Map<string, Flight[]>();
+        for (const f of allFlightsForDay) {
+          const key = f.tail_number || `_no_tail_${f.id}`;
+          const arr = byTail.get(key) ?? [];
+          arr.push(f);
+          byTail.set(key, arr);
+        }
+        // Sort each aircraft's legs by departure time
+        for (const legs of byTail.values()) {
+          legs.sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure));
+        }
+        // Sort aircraft groups by first departure
+        const groups = Array.from(byTail.entries()).sort((a, b) =>
+          a[1][0].scheduled_departure.localeCompare(b[1][0].scheduled_departure),
+        );
+        const uniqueTails = groups.filter(([key]) => !key.startsWith("_no_tail_")).length;
+        const totalLegs = allFlightsForDay.length;
+
+        return (
+          <div className="space-y-3">
+            <div className="text-sm text-gray-500">
+              {fmtLongDate(selectedDate)} · {uniqueTails} aircraft · {totalLegs} legs
+            </div>
+            {groups.length === 0 ? (
+              <div className="bg-white border rounded-xl px-6 py-8 text-center text-sm text-gray-400">
+                No flights scheduled for this date.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {groups.map(([key, legs]) => {
+                  const tail = legs[0].tail_number;
+                  return (
+                    <div key={key} className="bg-white border rounded-xl overflow-hidden shadow-sm">
+                      <div className="px-4 py-2.5 border-b bg-gray-50 flex items-center gap-3">
+                        <span className="font-mono font-bold text-sm">
+                          {tail ?? <span className="text-gray-400">No tail</span>}
+                        </span>
+                        <span className="text-xs text-gray-400">{legs.length} leg{legs.length !== 1 ? "s" : ""}</span>
+                      </div>
+                      <div className="divide-y">
+                        {legs.map((f) => {
+                          const ft = inferFlightType(f);
+                          const dep = f.departure_icao?.replace(/^K/, "") ?? "?";
+                          const arr = f.arrival_icao?.replace(/^K/, "") ?? "?";
+                          return (
+                            <div key={f.id} className="px-4 py-2.5 flex items-center gap-4 flex-wrap">
+                              <div className="flex items-center gap-2 min-w-[140px]">
+                                <span className="font-mono text-sm text-gray-700">{dep}</span>
+                                <span className="text-gray-400">&rarr;</span>
+                                <span className="font-mono text-sm text-gray-700">{arr}</span>
+                              </div>
+                              <div className="text-xs text-gray-600 min-w-[80px]">
+                                {fmtTime(f.scheduled_departure)}
+                              </div>
+                              <div className="text-xs text-gray-500 hidden sm:block min-w-[80px]">
+                                Arr {fmtTime(f.scheduled_arrival)}
+                              </div>
+                              <div className="text-xs text-gray-400 hidden md:block min-w-[50px]">
+                                {f.scheduled_arrival ? fmtDuration(f.scheduled_departure, f.scheduled_arrival) : "—"}
+                              </div>
+                              {ft && (
+                                <span className={`text-xs rounded px-1.5 py-0.5 font-medium ${
+                                  ft === "Revenue" || ft === "Owner" ? "bg-green-100 text-green-700" :
+                                  ft === "Positioning" || ft === "Ferry" || ft === "Ferry / Cargo" ? "bg-purple-100 text-purple-700" :
+                                  ft === "Maintenance" ? "bg-orange-100 text-orange-700" :
+                                  ft === "Training" ? "bg-blue-100 text-blue-700" :
+                                  ft === "Transient" ? "bg-yellow-100 text-yellow-700" :
+                                  "bg-gray-100 text-gray-600"
+                                }`}>
+                                  {ft}
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
-          {allFlightsForDay.length === 0 ? (
-            <div className="bg-white border rounded-xl px-6 py-8 text-center text-sm text-gray-400">
-              No flights scheduled for this date.
-            </div>
-          ) : (
-            <div className="bg-white border rounded-xl overflow-hidden shadow-sm">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b bg-gray-50 text-left text-xs text-gray-500 uppercase tracking-wide">
-                    <th className="px-4 py-3">Tail</th>
-                    <th className="px-4 py-3">Route</th>
-                    <th className="px-4 py-3">Departure</th>
-                    <th className="px-4 py-3 hidden sm:table-cell">Arrival</th>
-                    <th className="px-4 py-3 hidden md:table-cell">Duration</th>
-                    <th className="px-4 py-3">Type</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y">
-                  {allFlightsForDay.map((f) => {
-                    const ft = inferFlightType(f);
-                    const dep = f.departure_icao?.replace(/^K/, "") ?? "?";
-                    const arr = f.arrival_icao?.replace(/^K/, "") ?? "?";
-                    return (
-                      <tr key={f.id} className="hover:bg-gray-50">
-                        <td className="px-4 py-2.5 font-mono font-semibold">
-                          {f.tail_number ?? <span className="text-gray-300">No tail</span>}
-                        </td>
-                        <td className="px-4 py-2.5">
-                          <span className="font-mono text-gray-700">{dep}</span>
-                          <span className="text-gray-400 mx-1">&rarr;</span>
-                          <span className="font-mono text-gray-700">{arr}</span>
-                        </td>
-                        <td className="px-4 py-2.5 text-gray-600">{fmtTime(f.scheduled_departure)}</td>
-                        <td className="px-4 py-2.5 text-gray-600 hidden sm:table-cell">{fmtTime(f.scheduled_arrival)}</td>
-                        <td className="px-4 py-2.5 text-gray-400 hidden md:table-cell">
-                          {f.scheduled_arrival ? fmtDuration(f.scheduled_departure, f.scheduled_arrival) : "—"}
-                        </td>
-                        <td className="px-4 py-2.5">
-                          {ft ? (
-                            <span className={`inline-block text-xs rounded px-1.5 py-0.5 font-medium ${
-                              ft === "Revenue" || ft === "Owner" ? "bg-green-100 text-green-700" :
-                              ft === "Positioning" || ft === "Ferry" ? "bg-purple-100 text-purple-700" :
-                              ft === "Maintenance" ? "bg-orange-100 text-orange-700" :
-                              "bg-gray-100 text-gray-600"
-                            }`}>
-                              {ft}
-                            </span>
-                          ) : (
-                            <span className="text-gray-300 text-xs">—</span>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
+        );
+      })()}
 
     </div>
   );
