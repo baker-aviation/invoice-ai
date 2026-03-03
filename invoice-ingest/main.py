@@ -12,7 +12,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from supa import sb
+from supa import sb, log_pipeline_run
 from auth_middleware import add_auth_middleware
 
 app = FastAPI()
@@ -306,6 +306,7 @@ def pull_mailbox(
                 error_samples.append({"att": name, "error": repr(e), "detail": err_detail})
                 print(f"pull_mailbox error msg_id={msg_id} att={name}: {repr(e)} | detail={err_detail}", flush=True)
 
+    log_pipeline_run("invoice-ingest", items=ingested, message=f"messages={len(messages)} ingested={ingested} skipped={skipped}")
     return {
         "ok": True,
         "mailbox": mailbox,
@@ -395,6 +396,7 @@ def parse_next(limit: int = 5, status: str = "uploaded"):
             except Exception:
                 pass
 
+    log_pipeline_run("invoice-parse", items=parsed, message=f"claimed={claimed} parsed={parsed} failed={failed}")
     return {
         "requested": limit,
         "status_filter": status,

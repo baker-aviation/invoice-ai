@@ -34,7 +34,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from rules import rule_matches
-from supa import safe_insert, safe_select_many, safe_select_one, safe_update, safe_update_where
+from supa import safe_insert, safe_select_many, safe_select_one, safe_update, safe_update_where, log_pipeline_run
 from fuel_prices import (
     extract_fuel_price,
     check_price_increase,
@@ -806,12 +806,15 @@ def run_alerts_next(limit: int = 5, lookback_minutes: int = 240) -> Dict[str, An
             if ran >= limit:
                 break
 
+        alerts_created = sum(r.get("alerts_created", 0) for r in results if isinstance(r, dict))
+        log_pipeline_run("alert-generation", items=alerts_created, message=f"ran={ran} alerts={alerts_created}")
         return {"ok": True, "ran": ran, "results": results}
 
     except HTTPException:
         raise
     except Exception as e:
         _record_event("run_alerts_next_error", "n/a", {"error": repr(e)})
+        log_pipeline_run("alert-generation", status="error", message=str(e)[:200])
         if DEBUG_ERRORS:
             raise HTTPException(status_code=500, detail=f"run_alerts_next failed: {repr(e)}")
         raise HTTPException(status_code=500, detail="run_alerts_next failed")
@@ -1022,6 +1025,7 @@ def flush_alerts(limit: int = 25) -> Dict[str, Any]:
                     processed.append({"id": alert_id, "document_id": document_id, "slack_status": "error"})
                 _record_event("alert_slack_error", document_id, {"alert_id": alert_id, "slack_result": slack_res})
 
+        log_pipeline_run("slack-flush", items=sent, message=f"sent={sent} errored={errored} skipped={skipped}")
         return {
             "ok": True,
             "limit": limit,
@@ -1035,6 +1039,7 @@ def flush_alerts(limit: int = 25) -> Dict[str, Any]:
         raise
     except Exception as e:
         _record_event("flush_alerts_error", "n/a", {"error": repr(e)})
+        log_pipeline_run("slack-flush", status="error", message=str(e)[:200])
         if DEBUG_ERRORS:
             raise HTTPException(status_code=500, detail=f"flush_alerts failed: {repr(e)}")
         raise HTTPException(status_code=500, detail="flush_alerts failed")
@@ -1559,10 +1564,12 @@ def extract_fuel_prices_next(
                 results.append(result)
             processed += 1
 
+        log_pipeline_run("fuel-price-extract", items=len(results), message=f"processed={processed} extracted={len(results)}")
         return {"ok": True, "processed": processed, "fuel_prices": results}
 
     except Exception as e:
         _record_event("extract_fuel_prices_next_error", "n/a", {"error": repr(e)})
+        log_pipeline_run("fuel-price-extract", status="error", message=str(e)[:200])
         if DEBUG_ERRORS:
             raise HTTPException(status_code=500, detail=f"extract_fuel_prices_next failed: {repr(e)}")
         raise HTTPException(status_code=500, detail="extract_fuel_prices_next failed")

@@ -101,6 +101,27 @@ def safe_select_one(
     return data[0]
 
 
+def log_pipeline_run(
+    pipeline: str,
+    *,
+    status: str = "ok",
+    message: str = "",
+    items: int = 0,
+    duration_ms: Optional[int] = None,
+):
+    """Log a row to pipeline_runs for health monitoring. Fire-and-forget."""
+    try:
+        _client().table("pipeline_runs").insert({
+            "pipeline": pipeline,
+            "status": status,
+            "message": message,
+            "items": items,
+            "duration_ms": duration_ms,
+        }).execute()
+    except Exception as e:
+        print(f"[log_pipeline_run] {pipeline}: {e}", flush=True)
+
+
 def safe_select_many(
     table: str,
     columns: str = "*",

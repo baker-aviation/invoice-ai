@@ -17,6 +17,7 @@ gcloud-sa-key.json
 # Logs / temp
 *.log
 tmp/
+supabase/.temp/
 ics_urls.txt
 scripts/setup_ics_secret.sh
 

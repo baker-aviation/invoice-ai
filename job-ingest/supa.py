@@ -15,3 +15,24 @@ def sb() -> Client:
         key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
         _supabase = create_client(url, key)
     return _supabase
+
+
+def log_pipeline_run(
+    pipeline: str,
+    *,
+    status: str = "ok",
+    message: str = "",
+    items: int = 0,
+    duration_ms: int | None = None,
+):
+    """Log a row to pipeline_runs for health monitoring. Fire-and-forget."""
+    try:
+        sb().table("pipeline_runs").insert({
+            "pipeline": pipeline,
+            "status": status,
+            "message": message,
+            "items": items,
+            "duration_ms": duration_ms,
+        }).execute()
+    except Exception as e:
+        print(f"[log_pipeline_run] {pipeline}: {e}", flush=True)
