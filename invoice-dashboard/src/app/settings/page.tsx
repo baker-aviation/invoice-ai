@@ -1,7 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 type AircraftConfig = {
   tail_number: string;
@@ -10,8 +14,28 @@ type AircraftConfig = {
   notes: string | null;
 };
 
+type UserRow = {
+  id: string;
+  email: string;
+  role: string;
+  created_at: string;
+  last_sign_in_at: string | null;
+  allowed_tabs: string[];
+};
+
+const ALL_TABS = [
+  { key: "ops", label: "Ops" },
+  { key: "invoices", label: "Invoices" },
+  { key: "alerts", label: "Alerts" },
+  { key: "jobs", label: "Jobs" },
+  { key: "maintenance", label: "AOG Vans" },
+  { key: "vehicles", label: "Vehicles" },
+  { key: "fuel-prices", label: "Fuel Prices" },
+  { key: "fees", label: "Fees" },
+];
+
 // ---------------------------------------------------------------------------
-// Add / Edit Aircraft Modal
+// Aircraft Modal (reused from before)
 // ---------------------------------------------------------------------------
 
 function AircraftModal({
@@ -135,10 +159,150 @@ function AircraftModal({
 }
 
 // ---------------------------------------------------------------------------
-// Main Settings Page
+// User Tab Access Modal
 // ---------------------------------------------------------------------------
 
-export default function SettingsPage() {
+function UserTabModal({
+  user,
+  onClose,
+  onSaved,
+}: {
+  user: UserRow;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [tabs, setTabs] = useState<Set<string>>(new Set(user.allowed_tabs));
+  const [role, setRole] = useState(user.role);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function handleSave() {
+    setSaving(true);
+    setError("");
+
+    const res = await fetch("/api/admin/users", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        user_id: user.id,
+        role,
+        allowed_tabs: Array.from(tabs),
+      }),
+    });
+
+    const data = await res.json();
+    if (!res.ok) {
+      setError(data.error ?? "Failed to save");
+      setSaving(false);
+      return;
+    }
+
+    onSaved();
+    onClose();
+  }
+
+  function toggleTab(key: string) {
+    setTabs((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  function selectAll() {
+    setTabs(new Set(ALL_TABS.map((t) => t.key)));
+  }
+
+  function selectNone() {
+    setTabs(new Set());
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4 p-5" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-base font-semibold text-gray-900">Edit User Access</h2>
+            <p className="text-xs text-gray-500">{user.email}</p>
+          </div>
+          <button type="button" onClick={onClose} className="text-gray-400 hover:text-gray-600 text-lg">&times;</button>
+        </div>
+
+        <div className="space-y-4">
+          {/* Role */}
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1.5">Role</label>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setRole("user")}
+                className={`px-3 py-1.5 text-xs rounded-lg border font-medium ${
+                  role === "user" ? "bg-slate-800 text-white border-slate-800" : "border-gray-200 text-gray-600 hover:bg-gray-50"
+                }`}
+              >
+                User
+              </button>
+              <button
+                onClick={() => setRole("admin")}
+                className={`px-3 py-1.5 text-xs rounded-lg border font-medium ${
+                  role === "admin" ? "bg-slate-800 text-white border-slate-800" : "border-gray-200 text-gray-600 hover:bg-gray-50"
+                }`}
+              >
+                Admin
+              </button>
+            </div>
+          </div>
+
+          {/* Tab access */}
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-xs font-medium text-gray-600">Allowed Tabs</label>
+              <div className="flex gap-2">
+                <button onClick={selectAll} className="text-[10px] text-blue-600 hover:underline">All</button>
+                <button onClick={selectNone} className="text-[10px] text-blue-600 hover:underline">None</button>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-1.5">
+              {ALL_TABS.map((tab) => (
+                <label
+                  key={tab.key}
+                  className={`flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer text-xs ${
+                    tabs.has(tab.key) ? "bg-blue-50 border-blue-200 text-blue-800" : "border-gray-100 text-gray-500 hover:bg-gray-50"
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={tabs.has(tab.key)}
+                    onChange={() => toggleTab(tab.key)}
+                    className="rounded border-gray-300"
+                  />
+                  {tab.label}
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {error && (
+            <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</div>
+          )}
+
+          <div className="flex justify-end gap-2 pt-1">
+            <button onClick={onClose} className="px-3 py-1.5 text-sm text-gray-600 hover:text-gray-800 rounded-lg hover:bg-gray-100">Cancel</button>
+            <button onClick={handleSave} disabled={saving} className="px-4 py-1.5 text-sm font-medium text-white bg-slate-800 rounded-lg hover:bg-slate-700 disabled:opacity-50">
+              {saving ? "Saving..." : "Save"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Admin Aircraft Section
+// ---------------------------------------------------------------------------
+
+function AircraftSection() {
   const [aircraft, setAircraft] = useState<AircraftConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -157,8 +321,8 @@ export default function SettingsPage() {
       if (!res.ok) throw new Error(data.error ?? "Failed to load");
       setAircraft(data.aircraft ?? []);
       setSource(data.source ?? "");
-    } catch (e: any) {
-      setError(e.message ?? "Failed to load aircraft");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to load aircraft");
     } finally {
       setLoading(false);
     }
@@ -170,12 +334,8 @@ export default function SettingsPage() {
     if (!confirm(`Remove ${tail} from the fleet?`)) return;
     setDeleting(tail);
     try {
-      const res = await fetch(`/api/settings/aircraft?tail_number=${encodeURIComponent(tail)}`, {
-        method: "DELETE",
-      });
-      if (res.ok) {
-        setAircraft((prev) => prev.filter((a) => a.tail_number !== tail));
-      }
+      const res = await fetch(`/api/settings/aircraft?tail_number=${encodeURIComponent(tail)}`, { method: "DELETE" });
+      if (res.ok) setAircraft((prev) => prev.filter((a) => a.tail_number !== tail));
     } finally {
       setDeleting(null);
     }
@@ -192,37 +352,33 @@ export default function SettingsPage() {
   const withoutUrl = aircraft.filter((a) => !a.ics_url);
 
   return (
-    <div className="p-4 sm:p-6 max-w-4xl mx-auto">
-      <div className="flex items-center gap-3 mb-1">
-        <Link href="/" className="text-gray-400 hover:text-gray-600 text-sm">&larr; Home</Link>
-      </div>
-      <h1 className="text-2xl font-bold text-slate-900 mb-1">Settings</h1>
-      <p className="text-sm text-gray-500 mb-6">Manage fleet aircraft and JetInsight ICS feed URLs</p>
+    <div>
+      <h2 className="text-lg font-semibold text-slate-900 mb-3">Fleet & ICS URLs</h2>
 
-      {/* Stats bar */}
-      <div className="grid grid-cols-3 gap-4 mb-6">
-        <div className="bg-white rounded-xl border p-4">
-          <div className="text-2xl font-bold text-slate-800">{aircraft.length}</div>
-          <div className="text-xs text-gray-500">Total Aircraft</div>
+      {/* Stats */}
+      <div className="grid grid-cols-3 gap-3 mb-4">
+        <div className="bg-white rounded-xl border p-3">
+          <div className="text-xl font-bold text-slate-800">{aircraft.length}</div>
+          <div className="text-[10px] text-gray-500">Total Aircraft</div>
         </div>
-        <div className="bg-white rounded-xl border p-4">
-          <div className="text-2xl font-bold text-green-600">{withUrl.length}</div>
-          <div className="text-xs text-gray-500">With ICS URL</div>
+        <div className="bg-white rounded-xl border p-3">
+          <div className="text-xl font-bold text-green-600">{withUrl.length}</div>
+          <div className="text-[10px] text-gray-500">With ICS URL</div>
         </div>
-        <div className="bg-white rounded-xl border p-4">
-          <div className="text-2xl font-bold text-amber-600">{withoutUrl.length}</div>
-          <div className="text-xs text-gray-500">Missing ICS URL</div>
+        <div className="bg-white rounded-xl border p-3">
+          <div className="text-xl font-bold text-amber-600">{withoutUrl.length}</div>
+          <div className="text-[10px] text-gray-500">Missing ICS URL</div>
         </div>
       </div>
 
       {source === "flights_fallback" && (
         <div className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
-          Showing aircraft from flights table (read-only). Create the <code className="font-mono bg-amber-100 px-1 rounded">aircraft_config</code> table in Supabase to enable editing. Check the browser console for setup SQL.
+          Showing aircraft from flights table (read-only). Create the <code className="font-mono bg-amber-100 px-1 rounded">aircraft_config</code> table to enable editing.
         </div>
       )}
 
       {/* Toolbar */}
-      <div className="flex items-center gap-3 mb-4">
+      <div className="flex items-center gap-3 mb-3">
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -233,86 +389,60 @@ export default function SettingsPage() {
           onClick={() => { setEditTarget(undefined); setShowModal(true); }}
           className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white bg-slate-800 rounded-lg hover:bg-slate-700"
         >
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-            <path d="M8 3v10M3 8h10" />
-          </svg>
-          Add Aircraft
+          + Add Aircraft
         </button>
-        <button
-          onClick={loadAircraft}
-          disabled={loading}
-          className="text-xs text-blue-600 hover:underline disabled:opacity-50"
-        >
+        <button onClick={loadAircraft} disabled={loading} className="text-xs text-blue-600 hover:underline disabled:opacity-50">
           {loading ? "Loading..." : "Refresh"}
         </button>
       </div>
 
       {error && (
-        <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mb-4">{error}</div>
+        <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mb-3">{error}</div>
       )}
 
-      {/* Aircraft table */}
+      {/* Table */}
       <div className="bg-white border rounded-xl overflow-hidden shadow-sm">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b bg-gray-50 text-left text-xs text-gray-500 uppercase tracking-wide">
-              <th className="px-4 py-3">Tail Number</th>
-              <th className="px-4 py-3">JetInsight ICS URL</th>
-              <th className="px-4 py-3 hidden sm:table-cell">Status</th>
-              <th className="px-4 py-3 hidden md:table-cell">Notes</th>
-              <th className="px-4 py-3 w-24">Actions</th>
+              <th className="px-4 py-2.5">Tail</th>
+              <th className="px-4 py-2.5">JetInsight ICS URL</th>
+              <th className="px-4 py-2.5 hidden sm:table-cell">Status</th>
+              <th className="px-4 py-2.5 hidden md:table-cell">Notes</th>
+              <th className="px-4 py-2.5 w-24">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y">
             {loading && aircraft.length === 0 ? (
-              <tr>
-                <td colSpan={5} className="px-4 py-8 text-center text-gray-400 animate-pulse">Loading aircraft...</td>
-              </tr>
+              <tr><td colSpan={5} className="px-4 py-6 text-center text-gray-400 animate-pulse">Loading...</td></tr>
             ) : filtered.length === 0 ? (
-              <tr>
-                <td colSpan={5} className="px-4 py-8 text-center text-gray-400">
-                  {search ? "No matching aircraft" : "No aircraft configured yet"}
-                </td>
-              </tr>
+              <tr><td colSpan={5} className="px-4 py-6 text-center text-gray-400">{search ? "No match" : "No aircraft configured"}</td></tr>
             ) : (
               filtered.map((ac) => (
                 <tr key={ac.tail_number} className="hover:bg-gray-50">
-                  <td className="px-4 py-3 font-mono font-semibold text-gray-800">{ac.tail_number}</td>
-                  <td className="px-4 py-3">
+                  <td className="px-4 py-2.5 font-mono font-semibold text-gray-800">{ac.tail_number}</td>
+                  <td className="px-4 py-2.5">
                     {ac.ics_url ? (
                       <span className="text-xs text-green-700 bg-green-50 border border-green-200 rounded px-2 py-0.5 font-mono truncate max-w-[300px] inline-block">
                         {ac.ics_url.length > 50 ? ac.ics_url.slice(0, 50) + "..." : ac.ics_url}
                       </span>
                     ) : (
-                      <span className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded px-2 py-0.5">
-                        Not configured
-                      </span>
+                      <span className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded px-2 py-0.5">Not configured</span>
                     )}
                   </td>
-                  <td className="px-4 py-3 hidden sm:table-cell">
+                  <td className="px-4 py-2.5 hidden sm:table-cell">
                     {ac.active ? (
                       <span className="text-xs text-green-700 bg-green-50 rounded-full px-2 py-0.5 font-medium">Active</span>
                     ) : (
                       <span className="text-xs text-gray-500 bg-gray-100 rounded-full px-2 py-0.5">Inactive</span>
                     )}
                   </td>
-                  <td className="px-4 py-3 hidden md:table-cell text-xs text-gray-500 max-w-[200px] truncate">
-                    {ac.notes ?? "—"}
-                  </td>
-                  <td className="px-4 py-3">
+                  <td className="px-4 py-2.5 hidden md:table-cell text-xs text-gray-500 max-w-[200px] truncate">{ac.notes ?? "—"}</td>
+                  <td className="px-4 py-2.5">
                     <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => { setEditTarget(ac); setShowModal(true); }}
-                        className="text-xs text-blue-600 hover:underline"
-                      >
-                        Edit
-                      </button>
+                      <button onClick={() => { setEditTarget(ac); setShowModal(true); }} className="text-xs text-blue-600 hover:underline">Edit</button>
                       {source !== "flights_fallback" && (
-                        <button
-                          onClick={() => handleDelete(ac.tail_number)}
-                          disabled={deleting === ac.tail_number}
-                          className="text-xs text-red-500 hover:underline disabled:opacity-50 ml-2"
-                        >
+                        <button onClick={() => handleDelete(ac.tail_number)} disabled={deleting === ac.tail_number} className="text-xs text-red-500 hover:underline disabled:opacity-50 ml-2">
                           {deleting === ac.tail_number ? "..." : "Remove"}
                         </button>
                       )}
@@ -325,19 +455,284 @@ export default function SettingsPage() {
         </table>
       </div>
 
-      {/* Info note */}
-      <div className="mt-6 text-xs text-gray-400 space-y-1">
-        <p>ICS URLs are used by the ops-monitor service to sync flight schedules from JetInsight every 30 minutes.</p>
-        <p>Adding a new aircraft here prepares it for schedule sync. The ICS URL can be obtained from JetInsight&apos;s calendar export for each aircraft.</p>
+      <div className="mt-4 text-xs text-gray-400">
+        ICS URLs sync flight schedules from JetInsight every 30 minutes via the ops-monitor service.
       </div>
 
-      {/* Modal */}
       {showModal && (
         <AircraftModal
           initial={editTarget}
           onClose={() => { setShowModal(false); setEditTarget(undefined); }}
           onSaved={loadAircraft}
         />
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Admin User Management Section
+// ---------------------------------------------------------------------------
+
+function UserManagementSection() {
+  const [users, setUsers] = useState<UserRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [editUser, setEditUser] = useState<UserRow | null>(null);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviting, setInviting] = useState(false);
+  const [inviteMsg, setInviteMsg] = useState("");
+
+  const loadUsers = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch("/api/admin/users");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Failed to load");
+      setUsers(data.users ?? []);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to load users");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadUsers(); }, [loadUsers]);
+
+  async function handleInvite() {
+    if (!inviteEmail.trim()) return;
+    setInviting(true);
+    setInviteMsg("");
+    try {
+      const res = await fetch("/api/admin/invite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ emails: [inviteEmail.trim()] }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Failed to invite");
+      setInviteMsg(`Invite sent to ${inviteEmail}`);
+      setInviteEmail("");
+    } catch (e: unknown) {
+      setInviteMsg(e instanceof Error ? e.message : "Failed to send invite");
+    } finally {
+      setInviting(false);
+    }
+  }
+
+  return (
+    <div>
+      <h2 className="text-lg font-semibold text-slate-900 mb-3">User Management</h2>
+      <p className="text-xs text-gray-500 mb-4">Control which tabs each user can access. Click a user to edit their permissions.</p>
+
+      {/* Invite */}
+      <div className="flex items-center gap-2 mb-4">
+        <input
+          value={inviteEmail}
+          onChange={(e) => setInviteEmail(e.target.value)}
+          placeholder="Invite by email..."
+          className="max-w-xs rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm outline-none focus:border-gray-400"
+          onKeyDown={(e) => e.key === "Enter" && handleInvite()}
+        />
+        <button
+          onClick={handleInvite}
+          disabled={inviting || !inviteEmail.trim()}
+          className="px-3 py-1.5 text-sm font-medium text-white bg-slate-800 rounded-lg hover:bg-slate-700 disabled:opacity-50"
+        >
+          {inviting ? "Sending..." : "Invite"}
+        </button>
+        {inviteMsg && <span className="text-xs text-gray-500">{inviteMsg}</span>}
+      </div>
+
+      {error && (
+        <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mb-3">{error}</div>
+      )}
+
+      <div className="bg-white border rounded-xl overflow-hidden shadow-sm">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b bg-gray-50 text-left text-xs text-gray-500 uppercase tracking-wide">
+              <th className="px-4 py-2.5">Email</th>
+              <th className="px-4 py-2.5">Role</th>
+              <th className="px-4 py-2.5">Allowed Tabs</th>
+              <th className="px-4 py-2.5 hidden md:table-cell">Last Sign In</th>
+              <th className="px-4 py-2.5 w-16">Edit</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y">
+            {loading ? (
+              <tr><td colSpan={5} className="px-4 py-6 text-center text-gray-400 animate-pulse">Loading...</td></tr>
+            ) : users.length === 0 ? (
+              <tr><td colSpan={5} className="px-4 py-6 text-center text-gray-400">No users found</td></tr>
+            ) : (
+              users.map((u) => (
+                <tr key={u.id} className="hover:bg-gray-50">
+                  <td className="px-4 py-2.5 text-gray-800 text-xs">{u.email}</td>
+                  <td className="px-4 py-2.5">
+                    {u.role === "admin" ? (
+                      <span className="text-xs bg-purple-100 text-purple-700 rounded-full px-2 py-0.5 font-medium">Admin</span>
+                    ) : (
+                      <span className="text-xs bg-gray-100 text-gray-500 rounded-full px-2 py-0.5">User</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <div className="flex flex-wrap gap-1">
+                      {u.allowed_tabs.length === ALL_TABS.length ? (
+                        <span className="text-xs text-green-600">All tabs</span>
+                      ) : u.allowed_tabs.length === 0 ? (
+                        <span className="text-xs text-red-500">No tabs</span>
+                      ) : (
+                        u.allowed_tabs.slice(0, 4).map((t) => (
+                          <span key={t} className="text-[10px] bg-blue-50 text-blue-600 rounded px-1.5 py-0.5">
+                            {ALL_TABS.find((at) => at.key === t)?.label ?? t}
+                          </span>
+                        ))
+                      )}
+                      {u.allowed_tabs.length > 4 && (
+                        <span className="text-[10px] text-gray-400">+{u.allowed_tabs.length - 4}</span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-4 py-2.5 hidden md:table-cell text-xs text-gray-400">
+                    {u.last_sign_in_at ? new Date(u.last_sign_in_at).toLocaleDateString() : "Never"}
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <button onClick={() => setEditUser(u)} className="text-xs text-blue-600 hover:underline">Edit</button>
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {editUser && (
+        <UserTabModal
+          user={editUser}
+          onClose={() => setEditUser(null)}
+          onSaved={() => { setEditUser(null); loadUsers(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main Settings Page
+// ---------------------------------------------------------------------------
+
+export default function SettingsPage() {
+  const [activeSection, setActiveSection] = useState<"admin" | "user">("admin");
+  const [currentRole, setCurrentRole] = useState<string | null>(null);
+  const [bootstrapMsg, setBootstrapMsg] = useState("");
+  const [bootstrapping, setBootstrapping] = useState(false);
+
+  // Fetch the current user's role
+  useEffect(() => {
+    fetch("/api/user/settings")
+      .then((r) => r.json())
+      .then((data) => setCurrentRole(data.role ?? "user"))
+      .catch(() => setCurrentRole("user"));
+  }, []);
+
+  const isAdmin = currentRole === "admin";
+
+  async function handleBootstrap() {
+    setBootstrapping(true);
+    setBootstrapMsg("");
+    try {
+      const res = await fetch("/api/admin/bootstrap", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Failed");
+      setBootstrapMsg(data.message ?? "Success! Refresh the page.");
+      setCurrentRole("admin");
+    } catch (e: unknown) {
+      setBootstrapMsg(e instanceof Error ? e.message : "Failed");
+    } finally {
+      setBootstrapping(false);
+    }
+  }
+
+  return (
+    <div className="p-4 sm:p-6 max-w-5xl mx-auto">
+      <div className="flex items-center gap-3 mb-1">
+        <Link href="/" className="text-gray-400 hover:text-gray-600 text-sm">&larr; Home</Link>
+      </div>
+      <h1 className="text-2xl font-bold text-slate-900 mb-1">Settings</h1>
+      <p className="text-sm text-gray-500 mb-4">
+        {isAdmin ? "Admin settings — manage fleet, ICS URLs, and user access" : "User settings"}
+      </p>
+
+      {/* Tab bar */}
+      {isAdmin && (
+        <div className="flex gap-1 mb-6 border-b">
+          <button
+            onClick={() => setActiveSection("admin")}
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+              activeSection === "admin"
+                ? "border-slate-800 text-slate-900"
+                : "border-transparent text-gray-400 hover:text-gray-600"
+            }`}
+          >
+            Admin Settings
+          </button>
+          <button
+            onClick={() => setActiveSection("user")}
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+              activeSection === "user"
+                ? "border-slate-800 text-slate-900"
+                : "border-transparent text-gray-400 hover:text-gray-600"
+            }`}
+          >
+            User Settings
+          </button>
+        </div>
+      )}
+
+      {/* Not admin — show bootstrap option or basic settings */}
+      {!isAdmin && currentRole !== null && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-6">
+          <p className="text-sm text-amber-800 font-medium mb-2">Admin access required</p>
+          <p className="text-xs text-amber-700 mb-3">
+            Aircraft configuration and user management require admin privileges.
+            If you are the first admin, you can bootstrap your account below.
+          </p>
+          <button
+            onClick={handleBootstrap}
+            disabled={bootstrapping}
+            className="px-3 py-1.5 text-xs font-medium text-white bg-amber-600 rounded-lg hover:bg-amber-700 disabled:opacity-50"
+          >
+            {bootstrapping ? "Promoting..." : "Promote me to Admin"}
+          </button>
+          {bootstrapMsg && <p className="text-xs text-amber-700 mt-2">{bootstrapMsg}</p>}
+        </div>
+      )}
+
+      {/* Admin sections */}
+      {isAdmin && activeSection === "admin" && (
+        <div className="space-y-10">
+          <AircraftSection />
+          <hr className="border-gray-200" />
+          <UserManagementSection />
+        </div>
+      )}
+
+      {/* User settings (placeholder for now) */}
+      {(activeSection === "user" || !isAdmin) && currentRole !== null && (
+        <div className="bg-white border rounded-xl p-6">
+          <h2 className="text-lg font-semibold text-slate-900 mb-2">Your Settings</h2>
+          <p className="text-sm text-gray-500 mb-4">
+            Role: <span className={`font-medium ${isAdmin ? "text-purple-700" : "text-gray-700"}`}>{currentRole}</span>
+          </p>
+          <p className="text-xs text-gray-400">
+            Personal preferences and notification settings coming soon.
+          </p>
+        </div>
       )}
     </div>
   );

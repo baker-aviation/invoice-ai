@@ -5,7 +5,7 @@ import { requireAuth, isAuthed, isRateLimited } from "@/lib/api-auth";
  * POST /api/vans/share-slack
  *
  * Shares a van's daily schedule to a Slack channel.
- * Requires SLACK_BOT_TOKEN env var (xoxb-...) with chat:write scope.
+ * Requires SLACK_BOT_TOKEN env var (xoxb-...) with chat:write, channels:read, groups:read scopes.
  *
  * Body: { channel: string, vanName: string, date: string, items: VanSlackItem[] }
  */
@@ -41,9 +41,11 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  // Fetch public channels the bot can post to
+  // Fetch all channels the bot can see (public + private).
+  // For private channels, the bot must be invited to the channel first.
+  // Requires `channels:read` + `groups:read` scopes on the Slack bot.
   try {
-    const res = await fetch("https://slack.com/api/conversations.list?types=public_channel&exclude_archived=true&limit=200", {
+    const res = await fetch("https://slack.com/api/conversations.list?types=public_channel,private_channel&exclude_archived=true&limit=200", {
       headers: { Authorization: `Bearer ${token}` },
       cache: "no-store",
     });
@@ -51,9 +53,10 @@ export async function GET(req: NextRequest) {
     if (!data.ok) {
       return NextResponse.json({ ok: false, channels: [], error: data.error });
     }
-    const channels = (data.channels ?? []).map((c: { id: string; name: string }) => ({
+    const channels = (data.channels ?? []).map((c: { id: string; name: string; is_private?: boolean }) => ({
       id: c.id,
       name: c.name,
+      is_private: c.is_private ?? false,
     }));
     return NextResponse.json({ ok: true, channels });
   } catch (err) {
