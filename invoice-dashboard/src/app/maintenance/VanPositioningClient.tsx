@@ -4,7 +4,6 @@ import dynamic from "next/dynamic";
 import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import type { Flight } from "@/lib/opsApi";
 import {
-  computeOvernightPositions,
   assignVans,
   getDateRange,
   isContiguous48,
@@ -25,6 +24,82 @@ const MapView = dynamic(() => import("./MapView"), {
   ),
 });
 
+
+// ---------------------------------------------------------------------------
+// Compute overnight positions from live API flights
+// ---------------------------------------------------------------------------
+
+function computePositionsFromFlights(
+  flights: Flight[],
+  date: string,
+): AircraftOvernightPosition[] {
+  // Group flights by tail number
+  const byTail = new Map<string, Flight[]>();
+  for (const f of flights) {
+    if (!f.tail_number) continue;
+    const arr = byTail.get(f.tail_number) ?? [];
+    arr.push(f);
+    byTail.set(f.tail_number, arr);
+  }
+
+  const results: AircraftOvernightPosition[] = [];
+  const dateEnd = date + "T23:59:59";
+
+  for (const [tail, tailFlights] of byTail) {
+    // Sort by scheduled_departure descending
+    const sorted = [...tailFlights].sort((a, b) =>
+      b.scheduled_departure.localeCompare(a.scheduled_departure),
+    );
+
+    // Find the best flight to determine where this aircraft is on `date`:
+    // 1. Flights arriving on this date (use arrival airport)
+    // 2. Flights departing on this date (use arrival airport if it exists, else departure)
+    // 3. Most recent past flight (use arrival airport)
+    const arrivingToday = sorted.filter(
+      (f) => f.scheduled_arrival?.startsWith(date),
+    );
+    const departingToday = sorted.filter(
+      (f) => f.scheduled_departure.startsWith(date),
+    );
+    const pastFlights = sorted.filter(
+      (f) => f.scheduled_departure <= dateEnd,
+    );
+
+    let airport: string | null = null;
+
+    if (arrivingToday.length > 0) {
+      // Last arrival on this date
+      const last = arrivingToday[arrivingToday.length - 1];
+      airport = last.arrival_icao?.replace(/^K/, "") ?? null;
+    } else if (departingToday.length > 0) {
+      // Departing today — aircraft is at the arrival airport (or departure if no arrival)
+      const last = departingToday[departingToday.length - 1];
+      airport = (last.arrival_icao ?? last.departure_icao)?.replace(/^K/, "") ?? null;
+    } else if (pastFlights.length > 0) {
+      // Most recent past flight
+      const last = pastFlights[0];
+      airport = (last.arrival_icao ?? last.departure_icao)?.replace(/^K/, "") ?? null;
+    }
+
+    if (!airport) continue;
+
+    const info = getAirportInfo(airport);
+    results.push({
+      tail,
+      airport,
+      airportName: info?.name ?? airport,
+      city: info?.city ?? "Unknown",
+      state: info?.state ?? "",
+      lat: info?.lat ?? 0,
+      lon: info?.lon ?? 0,
+      tripId: sorted[0].id,
+      tripStatus: "Active",
+      isKnown: info !== null,
+    });
+  }
+
+  return results.sort((a, b) => a.tail.localeCompare(b.tail));
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -1470,13 +1545,13 @@ const haversineKmClient = (lat1: number, lon1: number, lat2: number, lon2: numbe
 export default function VanPositioningClient({ initialFlights }: { initialFlights: Flight[] }) {
   const dates = useMemo(() => getDateRange(3), []); // 36h window ≈ 3 days
   const [dayIdx, setDayIdx] = useState(0);
-  const [activeTab, setActiveTab] = useState<"map" | "schedule">("map");
+  const [activeTab, setActiveTab] = useState<"map" | "schedule" | "flights">("map");
   const [viewMode, setViewMode] = useState<"map" | "list">("map");
   const [selectedVan, setSelectedVan] = useState<number | null>(null);
 
   const selectedDate = dates[dayIdx];
 
-  const positions = useMemo(() => computeOvernightPositions(selectedDate), [selectedDate]);
+  const positions = useMemo(() => computePositionsFromFlights(initialFlights, selectedDate), [initialFlights, selectedDate]);
   const vans       = useMemo(() => assignVans(positions), [positions]);
   const displayedVans = selectedVan === null ? vans : vans.filter((v) => v.vanId === selectedVan);
 
@@ -1537,6 +1612,14 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
       (f.scheduled_arrival ?? f.scheduled_departure).startsWith(selectedDate)
     ),
     [activeFlights, selectedDate],
+  );
+
+  // ALL flights for the selected date (all types — for the Flight Schedule tab)
+  const allFlightsForDay = useMemo(
+    () => initialFlights
+      .filter((f) => f.scheduled_departure.startsWith(selectedDate))
+      .sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure)),
+    [initialFlights, selectedDate],
   );
 
   // ── Samsara live van data (lifted so map + schedule can both use it) ──
@@ -1687,69 +1770,40 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
       {/* ── Stats ── */}
       <StatsBar positions={positions} vans={vans} flightCount={flightsForDay.length} />
 
-      {/* ── AOG Status — aircraft coverage ── */}
+      {/* ── Unassigned Aircraft — not covered by any van ── */}
       {(() => {
-        // Aircraft assigned to a van but outside 3-hour driving range
-        const outOfRange = vans.flatMap((van) => {
-          const color = VAN_COLORS[(van.vanId - 1) % VAN_COLORS.length];
-          return van.aircraft
-            .filter((ac) => haversineKmClient(van.lat, van.lon, ac.lat, ac.lon) > THREE_HOUR_RADIUS_KM)
-            .map((ac) => ({
-              vanId: van.vanId,
-              color,
-              tail: ac.tail,
-              airport: ac.airport,
-              distKm: Math.round(haversineKmClient(van.lat, van.lon, ac.lat, ac.lon)),
-            }));
-        });
-
-        // Aircraft overnighting but not assigned to any van at all
         const coveredTails = new Set(vans.flatMap((v) => v.aircraft.map((ac) => ac.tail)));
         const uncovered = positions.filter((p) => !coveredTails.has(p.tail));
-
-        const totalIssues = outOfRange.length + uncovered.length;
         const totalCovered = positions.length - uncovered.length;
-        const hasAlerts = totalIssues > 0;
 
         return (
           <div className={`rounded-xl border-2 px-5 py-4 shadow-sm ${
-            hasAlerts
-              ? uncovered.length > 0 ? "border-red-300 bg-red-50" : "border-yellow-300 bg-yellow-50"
-              : "border-green-300 bg-green-50"
+            uncovered.length > 0 ? "border-red-300 bg-red-50" : "border-green-300 bg-green-50"
           }`}>
             <div className="flex items-center gap-3">
               <div className={`w-10 h-10 rounded-full flex items-center justify-center text-xl shrink-0 ${
-                hasAlerts
-                  ? uncovered.length > 0 ? "bg-red-100" : "bg-yellow-100"
-                  : "bg-green-100"
+                uncovered.length > 0 ? "bg-red-100" : "bg-green-100"
               }`}>
-                {hasAlerts ? "⚠" : "✓"}
+                {uncovered.length > 0 ? "!" : "✓"}
               </div>
               <div className="flex-1">
                 <div className={`text-base font-bold ${
-                  hasAlerts
-                    ? uncovered.length > 0 ? "text-red-800" : "text-yellow-800"
-                    : "text-green-800"
+                  uncovered.length > 0 ? "text-red-800" : "text-green-800"
                 }`}>
-                  AOG Status
+                  Unassigned Aircraft
                 </div>
-                {hasAlerts ? (
-                  <div className={`text-sm font-semibold ${uncovered.length > 0 ? "text-red-600" : "text-yellow-700"}`}>
-                    {[
-                      uncovered.length > 0 && `${uncovered.length} aircraft not covered`,
-                      outOfRange.length > 0 && `${outOfRange.length} aircraft outside 3-hour range`,
-                    ].filter(Boolean).join(" · ")}
-                    {" · "}{totalCovered}/{positions.length} covered
+                {uncovered.length > 0 ? (
+                  <div className="text-sm font-semibold text-red-600">
+                    {uncovered.length} aircraft not covered by any van · {totalCovered}/{positions.length} assigned
                   </div>
                 ) : (
                   <div className="text-sm text-green-700 font-medium">
-                    All {positions.length} aircraft covered by {vans.length} vans
+                    All {positions.length} aircraft assigned to vans
                   </div>
                 )}
               </div>
             </div>
-            {/* Detail pills */}
-            {hasAlerts && (
+            {uncovered.length > 0 && (
               <div className="flex flex-wrap gap-2 mt-3 ml-[52px]">
                 {uncovered.map((ac) => (
                   <span key={`unc-${ac.tail}`} className="inline-flex items-center gap-1.5 bg-white border border-red-200 rounded-lg px-3 py-1.5 text-xs font-medium text-red-700">
@@ -1757,24 +1811,6 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
                     <span className="text-gray-500">@ {ac.airport}</span>
                     <span className="text-red-600">— No Van</span>
                   </span>
-                ))}
-                {outOfRange.map(({ vanId, color, tail, airport, distKm }) => (
-                  <div
-                    key={`oor-${vanId}-${tail}`}
-                    className="flex items-center gap-1.5 bg-white border border-yellow-200 rounded-lg px-2.5 py-1.5 text-xs"
-                  >
-                    <span
-                      className="inline-block w-3 h-3 rounded-full flex-shrink-0"
-                      style={{ background: color }}
-                    />
-                    <span className="font-semibold">Van {vanId}</span>
-                    <span className="text-gray-400">&rarr;</span>
-                    <span className="font-mono font-semibold">{tail}</span>
-                    <span className="text-gray-500">@ {airport}</span>
-                    <span className="text-yellow-700 font-semibold">
-                      ~{Math.round(distKm / (THREE_HOUR_RADIUS_KM / 3))}h
-                    </span>
-                  </div>
                 ))}
               </div>
             )}
@@ -1837,6 +1873,16 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
               activeTab === "schedule" ? "bg-blue-500 text-white" : "bg-blue-100 text-blue-700"
             }`}>
               {vans.length}
+            </span>
+          )}
+        </TabBtn>
+        <TabBtn active={activeTab === "flights"} onClick={() => setActiveTab("flights")}>
+          Flight Schedule
+          {flightsForDay.length > 0 && (
+            <span className={`ml-1.5 rounded-full px-1.5 py-0.5 text-xs font-bold ${
+              activeTab === "flights" ? "bg-blue-500 text-white" : "bg-blue-100 text-blue-700"
+            }`}>
+              {flightsForDay.length}
             </span>
           )}
         </TabBtn>
@@ -1993,6 +2039,73 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
       {/* ── Schedule tab ── */}
       {activeTab === "schedule" && (
         <ScheduleTab allFlights={activeFlights} date={selectedDate} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} />
+      )}
+
+      {/* ── Flight Schedule tab ── */}
+      {activeTab === "flights" && (
+        <div className="space-y-3">
+          <div className="text-sm text-gray-500">
+            All flights for {fmtLongDate(selectedDate)} · {allFlightsForDay.length} flights
+          </div>
+          {allFlightsForDay.length === 0 ? (
+            <div className="bg-white border rounded-xl px-6 py-8 text-center text-sm text-gray-400">
+              No flights scheduled for this date.
+            </div>
+          ) : (
+            <div className="bg-white border rounded-xl overflow-hidden shadow-sm">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b bg-gray-50 text-left text-xs text-gray-500 uppercase tracking-wide">
+                    <th className="px-4 py-3">Tail</th>
+                    <th className="px-4 py-3">Route</th>
+                    <th className="px-4 py-3">Departure</th>
+                    <th className="px-4 py-3 hidden sm:table-cell">Arrival</th>
+                    <th className="px-4 py-3 hidden md:table-cell">Duration</th>
+                    <th className="px-4 py-3">Type</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {allFlightsForDay.map((f) => {
+                    const ft = inferFlightType(f);
+                    const dep = f.departure_icao?.replace(/^K/, "") ?? "?";
+                    const arr = f.arrival_icao?.replace(/^K/, "") ?? "?";
+                    return (
+                      <tr key={f.id} className="hover:bg-gray-50">
+                        <td className="px-4 py-2.5 font-mono font-semibold">
+                          {f.tail_number ?? <span className="text-gray-300">No tail</span>}
+                        </td>
+                        <td className="px-4 py-2.5">
+                          <span className="font-mono text-gray-700">{dep}</span>
+                          <span className="text-gray-400 mx-1">&rarr;</span>
+                          <span className="font-mono text-gray-700">{arr}</span>
+                        </td>
+                        <td className="px-4 py-2.5 text-gray-600">{fmtTime(f.scheduled_departure)}</td>
+                        <td className="px-4 py-2.5 text-gray-600 hidden sm:table-cell">{fmtTime(f.scheduled_arrival)}</td>
+                        <td className="px-4 py-2.5 text-gray-400 hidden md:table-cell">
+                          {f.scheduled_arrival ? fmtDuration(f.scheduled_departure, f.scheduled_arrival) : "—"}
+                        </td>
+                        <td className="px-4 py-2.5">
+                          {ft ? (
+                            <span className={`inline-block text-xs rounded px-1.5 py-0.5 font-medium ${
+                              ft === "Revenue" || ft === "Owner" ? "bg-green-100 text-green-700" :
+                              ft === "Positioning" || ft === "Ferry" ? "bg-purple-100 text-purple-700" :
+                              ft === "Maintenance" ? "bg-orange-100 text-orange-700" :
+                              "bg-gray-100 text-gray-600"
+                            }`}>
+                              {ft}
+                            </span>
+                          ) : (
+                            <span className="text-gray-300 text-xs">—</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       )}
 
       {/* ── Idle & Maintenance Aircraft ── */}
