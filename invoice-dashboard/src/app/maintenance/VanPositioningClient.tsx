@@ -1403,12 +1403,39 @@ function ScheduleTab({
                               )}
                             </div>
                           </div>
-                          <div className="text-right shrink-0 min-w-[90px]">
+                          <div className="flex items-center gap-2 shrink-0">
                             {arrTime && (
-                              <div className="text-xs font-medium text-gray-700">
+                              <div className="text-xs font-medium text-gray-700 text-right min-w-[70px]">
                                 Lands {fmtUtcHM(arrFlight.scheduled_arrival!)}
                               </div>
                             )}
+                            <select
+                              className="text-xs border border-red-200 rounded-lg px-2 py-1.5 bg-white text-red-700 font-medium cursor-pointer hover:border-red-400 focus:outline-none focus:ring-2 focus:ring-red-300 appearance-none"
+                              style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 5l3 3 3-3' fill='none' stroke='%23b91c1c' stroke-width='1.5'/%3E%3C/svg%3E\")", backgroundRepeat: "no-repeat", backgroundPosition: "right 6px center", paddingRight: "22px" }}
+                              value=""
+                              onChange={(e) => {
+                                const vanId = Number(e.target.value);
+                                if (!vanId) return;
+                                setRemovals((prev) => {
+                                  if (!prev.has(arrFlight.id)) return prev;
+                                  const next = new Set(prev);
+                                  next.delete(arrFlight.id);
+                                  return next;
+                                });
+                                setOverrides((prev) => {
+                                  const next = new Map(prev);
+                                  next.set(arrFlight.id, vanId);
+                                  return next;
+                                });
+                              }}
+                            >
+                              <option value="">Assign…</option>
+                              {FIXED_VAN_ZONES.map((z) => (
+                                <option key={z.vanId} value={z.vanId}>
+                                  V{z.vanId} – {z.name}
+                                </option>
+                              ))}
+                            </select>
                           </div>
                         </div>
                       );
