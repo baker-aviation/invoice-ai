@@ -43,8 +43,10 @@ from fuel_prices import (
     audit_fuel_extraction,
     FUEL_PRICES_TABLE,
 )
+from auth_middleware import add_auth_middleware
 
 app = FastAPI()
+add_auth_middleware(app)
 limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
@@ -68,8 +70,8 @@ SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")
 # Debug
 DEBUG_ERRORS = os.getenv("DEBUG_ERRORS", "0").strip().lower() in ("1", "true", "yes")
 
-# Signed URL settings (48 hours default)
-SIGNED_URL_EXP_MINUTES = int(os.getenv("SIGNED_URL_EXP_MINUTES", "2880"))
+# Signed URL settings (2 hours default — short-lived to limit exposure if leaked)
+SIGNED_URL_EXP_MINUTES = int(os.getenv("SIGNED_URL_EXP_MINUTES", "120"))
 
 # Optional override; otherwise auto-detect from metadata
 SIGNING_SERVICE_ACCOUNT_EMAIL = os.getenv("SIGNING_SERVICE_ACCOUNT_EMAIL", "").strip()
@@ -474,7 +476,8 @@ def _fetch_invoice(document_id: str) -> Dict[str, Any]:
         PARSED_TABLE,
         "id, vendor_name, vendor_normalized, airport_code, doc_type, "
         "tail_number, currency, total, handling_fee, service_fee, surcharge, "
-        "risk_score, review_required, line_items",
+        "risk_score, review_required, line_items, "
+        "invoice_date, invoice_number",
         eq={"document_id": document_id},
     )
     if not invoice:
@@ -739,12 +742,27 @@ def run_alerts(document_id: str) -> Dict[str, Any]:
             parsed_invoice_id=invoice.get("id"),
         )
 
+        # --- Fuel price extraction (piggybacks on the same invoice fetch) ---
+        fuel_result = None
+        try:
+            inv_for_fuel = {**invoice, "document_id": document_id}
+            fuel_result = _process_fuel_price(inv_for_fuel)
+        except Exception as fuel_err:
+            # Never let fuel extraction failure break the alerts pipeline
+            _record_event(
+                "fuel_extraction_error",
+                document_id,
+                {"error": repr(fuel_err)},
+                parsed_invoice_id=invoice.get("id"),
+            )
+
         return {
             "ok": True,
             "document_id": document_id,
             "matched_alerts": matched_alerts,
             "evaluated_rules": evaluated,
             "matched_rules": matched_rules if DEBUG_ERRORS else None,
+            "fuel_price": fuel_result,
         }
 
     except HTTPException:
@@ -1452,7 +1470,7 @@ def _process_fuel_price(invoice: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     stored = store_fuel_price(data, increase)
     if stored is None:
-        return {"document_id": doc_id, "status": "duplicate"}
+        return {"document_id": doc_id, "status": "upsert_failed"}
 
     # If price increase detected, post to Slack immediately
     slack_result = None

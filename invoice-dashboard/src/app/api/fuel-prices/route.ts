@@ -10,7 +10,7 @@ export async function GET(req: NextRequest) {
   }
 
   const { searchParams } = req.nextUrl;
-  const limit = Math.min(Number(searchParams.get("limit") ?? 200), 500);
+  const limit = Math.min(Number(searchParams.get("limit") ?? 200), 3000);
   const airport = searchParams.get("airport") ?? undefined;
   const vendor = searchParams.get("vendor") ?? undefined;
   const q = searchParams.get("q") ?? undefined;

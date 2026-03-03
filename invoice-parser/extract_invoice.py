@@ -703,6 +703,14 @@ def build_normal_messages(pdf_text: str) -> List[dict]:
         "- Some invoices contain multiple date/location sections.\n"
         "- Extract billable rows across ALL sections, not just the first.\n"
         "- Do not stop at the first 'TOTAL' line.\n"
+        "\n"
+        "Avfuel activity invoice receipts:\n"
+        "- If the text contains 'ACTIVITY INVOICE' and a 'Receipt Number', this is a SINGLE receipt extracted from an Avfuel activity statement.\n"
+        "- The vendor is 'Avfuel Corporation'.\n"
+        "- Use the Receipt Number as invoice_number.\n"
+        "- The receipt row contains: FBO/location (with airport code), tail number, date, product, gallons, price per gallon, and amount.\n"
+        "- The FBO name in the receipt row often includes an airport code (e.g. 'Sheltair FLL' means airport_code = FLL).\n"
+        "- Extract the fuel line item with proper quantity (gallons), unit_price (per gallon), and total (amount).\n"
     )
     user = f"Extract the invoice fields from this document text:\n\nDOCUMENT TEXT:\n{pdf_text}"
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]

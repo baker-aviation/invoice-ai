@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireAuth, isAuthed, isRateLimited } from "@/lib/api-auth";
+import { requireAdmin, isAuthed, isRateLimited } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -8,7 +8,7 @@ export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const auth = await requireAuth(req);
+  const auth = await requireAdmin(req);
   if (!isAuthed(auth)) return auth.error;
 
   if (isRateLimited(auth.userId)) {
@@ -22,15 +22,17 @@ export async function POST(
 
   try {
     const supa = createServiceClient();
-    await supa
+    const { data } = await supa
       .from("ops_alerts")
       .update({ acknowledged_at: new Date().toISOString() })
-      .eq("id", id);
+      .eq("id", id)
+      .select("id");
+    if (!data || data.length === 0) {
+      return NextResponse.json({ error: "Alert not found" }, { status: 404 });
+    }
     return NextResponse.json({ ok: true });
   } catch (err) {
-    return NextResponse.json(
-      { error: "Database error", detail: String(err) },
-      { status: 500 },
-    );
+    console.error("[ops/acknowledge] Database error:", err);
+    return NextResponse.json({ error: "Database error" }, { status: 500 });
   }
 }

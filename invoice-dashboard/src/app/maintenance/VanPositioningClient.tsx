@@ -5,14 +5,17 @@ import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import type { Flight } from "@/lib/opsApi";
 import {
   computeOvernightPositions,
+  computeOvernightPositionsFromFlights,
   assignVans,
   getDateRange,
   isContiguous48,
   haversineKm,
+  findNearestAirport,
   FIXED_VAN_ZONES,
   VanAssignment,
   AircraftOvernightPosition,
 } from "@/lib/maintenanceData";
+import type { VanZone } from "@/lib/maintenanceData";
 import { getAirportInfo } from "@/lib/airportCoords";
 
 // Leaflet requires SSR to be disabled
@@ -133,10 +136,12 @@ function StatsBar({
   positions,
   vans,
   flightCount,
+  totalVans,
 }: {
   positions: AircraftOvernightPosition[];
   vans: VanAssignment[];
   flightCount: number;
+  totalVans: number;
 }) {
   const covered = vans.flatMap((v) => v.aircraft).length;
   const airports = new Set(positions.map((p) => p.airport)).size;
@@ -147,7 +152,7 @@ function StatsBar({
       {[
         { label: "Aircraft Positioned", value: covered },
         { label: "Airports Covered",    value: airports },
-        { label: "Vans Deployed",        value: `${vansCovering}/16` },
+        { label: "Vans Deployed",        value: `${vansCovering}/${totalVans}` },
         { label: "Flights This Day",     value: flightCount },
       ].map(({ label, value }) => (
         <div key={label} className="bg-white border rounded-xl px-4 py-3 shadow-sm">
@@ -283,9 +288,67 @@ function fmtUtcHM(iso: string): string {
   );
 }
 
-/** True if the flight summary indicates a positioning / ferry / repo leg. */
+/** True if the flight is a positioning / ferry / repo leg (not revenue). */
 function isPositioningFlight(f: Flight): boolean {
+  const ft = inferFlightType(f);
+  if (ft === "Positioning" || ft === "Ferry" || ft === "Needs pos") return true;
   return !!(f.summary?.toLowerCase().includes("positioning"));
+}
+
+// Flight type keywords matching OpsBoard logic
+const FLIGHT_TYPE_KEYWORDS = [
+  "Revenue", "Owner", "Positioning", "Maintenance", "Training",
+  "Ferry", "Cargo", "Needs pos", "Crew conflict", "Time off",
+  "Assignment", "Transient",
+];
+
+/** Infer flight type from flight_type field or summary text */
+function inferFlightType(flight: Flight): string | null {
+  if (flight.flight_type) return flight.flight_type;
+  const text = flight.summary ?? "";
+  const afterPair = text.match(/\([A-Z]{3,4}\s*[-–]\s*[A-Z]{3,4}\)\s*[-–]\s*(.+)$/);
+  if (afterPair) {
+    const raw = afterPair[1].replace(/\s+flights?\s*$/i, "").trim();
+    if (raw) return raw;
+  }
+  const preBracket = text.match(/^([A-Za-z][A-Za-z /]+?)\s*[-–]?\s*\[/);
+  if (preBracket) {
+    const raw = preBracket[1].replace(/[-–]\s*$/, "").replace(/\s+flights?\s*$/i, "").trim();
+    if (raw) return raw;
+  }
+  for (const kw of FLIGHT_TYPE_KEYWORDS) {
+    if (new RegExp(`\\b${kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(text)) {
+      return kw;
+    }
+  }
+  return null;
+}
+
+/** Categories that matter for AOG van scheduling */
+const AOG_ACTIVE_TYPES = new Set(["Revenue", "Owner", "Positioning"]);
+
+/**
+ * Filter out "parking" / placeholder ICS entries where departure == arrival
+ * (e.g. "Aircraft away from home base" entries from JetInsight).
+ * These aren't real flights and should be excluded from scheduling and display.
+ */
+function isRealFlight(f: Flight): boolean {
+  if (!f.departure_icao || !f.arrival_icao) return true; // keep flights with missing data
+  return f.departure_icao !== f.arrival_icao;
+}
+
+/** Flight types to display — Revenue, Positioning, and Ferry legs */
+const DISPLAY_FLIGHT_TYPES = new Set(["Revenue", "Owner", "Positioning", "Ferry"]);
+
+/** "Needs pos" / "Aircraft needs repositioning" are placeholders, not real legs */
+const PLACEHOLDER_TYPES = new Set(["Needs pos"]);
+
+/** Is this a displayable operational leg (Revenue/Positioning, not a placeholder)? */
+function isOperationalLeg(f: Flight): boolean {
+  const ft = inferFlightType(f);
+  if (!ft) return false;
+  if (PLACEHOLDER_TYPES.has(ft)) return false;
+  return DISPLAY_FLIGHT_TYPES.has(ft);
 }
 
 /** "in 2h 15m" or "in 45m" until a future ISO timestamp. Returns "" if in the past. */
@@ -297,8 +360,8 @@ function fmtTimeUntil(iso: string): string {
   return h === 0 ? `in ${m}m` : `in ${h}h ${m}m`;
 }
 
-/** Max one-way driving radius for schedule arrivals (≈2.2h drive). */
-const SCHEDULE_ARRIVAL_RADIUS_KM = 200;
+/** Max one-way driving radius for initial arrival pool (~5.5h drive at 90 km/h). */
+const SCHEDULE_ARRIVAL_RADIUS_KM = 500;
 
 /**
  * Greedy nearest-neighbor sort: reorders items so the van visits the closest
@@ -336,7 +399,17 @@ type VanFlightItem = {
   distKm:     number;
 };
 
-const MAX_ARRIVALS_PER_VAN = 4;
+/**
+ * Van scheduling rules:
+ *  - Max 5 hours total drive time per van per day
+ *  - If total drive time < 4 hours: up to 10 aircraft
+ *  - If total drive time >= 4 hours: up to 5 aircraft
+ */
+const MAX_AIRCRAFT_SHORT_DRIVE = 10;  // drive < 4h
+const MAX_AIRCRAFT_LONG_DRIVE  = 5;   // drive >= 4h
+const MAX_DRIVE_HOURS          = 5;   // hard cap
+const LONG_DRIVE_THRESHOLD_H   = 4;   // hours threshold for reduced limit
+const AVG_SPEED_KMH            = 90;  // average driving speed
 
 // ---------------------------------------------------------------------------
 // Compute schedule items for a single zone (extracted so ScheduleTab can
@@ -344,7 +417,7 @@ const MAX_ARRIVALS_PER_VAN = 4;
 // ---------------------------------------------------------------------------
 
 function computeZoneItems(
-  zone: (typeof FIXED_VAN_ZONES)[number],
+  zone: VanZone,
   allFlights: Flight[],
   date: string,
   baseLat: number,
@@ -356,7 +429,7 @@ function computeZoneItems(
     const iata = f.arrival_icao.replace(/^K/, "");
     const info = getAirportInfo(iata);
     if (!info || !isContiguous48(info.state)) return false;
-    return haversineKm(zone.lat, zone.lon, info.lat, info.lon) <= SCHEDULE_ARRIVAL_RADIUS_KM;
+    return haversineKm(baseLat, baseLon, info.lat, info.lon) <= SCHEDULE_ARRIVAL_RADIUS_KM;
   });
 
   const rawItems = arrivalsToday
@@ -404,11 +477,43 @@ function computeZoneItems(
     }
   }
 
-  return Array.from(byTail.values())
-    .sort((a, b) =>
-      (a.arrFlight.scheduled_arrival ?? "").localeCompare(b.arrFlight.scheduled_arrival ?? ""),
-    )
-    .slice(0, MAX_ARRIVALS_PER_VAN);
+  // Greedy nearest-neighbor with drive-time limits:
+  //   - Max 5h total drive
+  //   - If cumulative drive < 4h → up to 10 aircraft
+  //   - If cumulative drive >= 4h → up to 5 aircraft
+  const candidates = greedySort(
+    Array.from(byTail.values()),
+    baseLat,
+    baseLon,
+  );
+
+  const selected: VanFlightItem[] = [];
+  let totalDriveKm = 0;
+  let curLat = baseLat;
+  let curLon = baseLon;
+
+  for (const item of candidates) {
+    if (!item.airportInfo) continue;
+    const legKm = haversineKm(curLat, curLon, item.airportInfo.lat, item.airportInfo.lon);
+    const newTotalKm = totalDriveKm + legKm;
+    const newDriveH = newTotalKm / AVG_SPEED_KMH;
+
+    // Hard cap: 5 hours total drive
+    if (newDriveH > MAX_DRIVE_HOURS) break;
+
+    // If adding this would push past 4h, cap aircraft at 5
+    if (newDriveH >= LONG_DRIVE_THRESHOLD_H && selected.length >= MAX_AIRCRAFT_LONG_DRIVE) break;
+
+    // Hard cap: 10 aircraft max
+    if (selected.length >= MAX_AIRCRAFT_SHORT_DRIVE) break;
+
+    selected.push(item);
+    totalDriveKm = newTotalKm;
+    curLat = item.airportInfo.lat;
+    curLon = item.airportInfo.lon;
+  }
+
+  return selected;
 }
 
 /**
@@ -493,6 +598,158 @@ function routeDistKm(items: VanFlightItem[]): number {
 }
 
 // ---------------------------------------------------------------------------
+// Slack share modal for a van's schedule
+// ---------------------------------------------------------------------------
+
+type SlackChannel = { id: string; name: string; is_private?: boolean };
+type SlackShareState = "idle" | "loading-channels" | "picking" | "sending" | "success" | "error";
+
+function SlackShareModal({
+  vanName,
+  vanId,
+  homeAirport,
+  date,
+  items,
+  onClose,
+}: {
+  vanName: string;
+  vanId: number;
+  homeAirport: string;
+  date: string;
+  items: VanFlightItem[];
+  onClose: () => void;
+}) {
+  const [state, setState] = useState<SlackShareState>("loading-channels");
+  const [channels, setChannels] = useState<SlackChannel[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+
+  useEffect(() => {
+    async function loadChannels() {
+      try {
+        const res = await fetch("/api/vans/share-slack");
+        const data = await res.json();
+        if (!data.ok) {
+          setError(data.error ?? "Failed to load channels");
+          setState("error");
+          return;
+        }
+        setChannels(data.channels);
+        setState("picking");
+      } catch (e) {
+        setError(String(e));
+        setState("error");
+      }
+    }
+    loadChannels();
+  }, []);
+
+  async function handleShare(channel: SlackChannel) {
+    setState("sending");
+    try {
+      const payload = {
+        channel: channel.id,
+        vanName,
+        vanId,
+        homeAirport,
+        date,
+        items: items.map((item) => ({
+          tail: item.arrFlight.tail_number ?? "—",
+          route: `${item.arrFlight.departure_icao?.replace(/^K/, "") ?? "?"} → ${item.airport}`,
+          arrivalTime: item.arrFlight.scheduled_arrival ? fmtUtcHM(item.arrFlight.scheduled_arrival) : "—",
+          status: item.arrFlight.scheduled_arrival && new Date(item.arrFlight.scheduled_arrival) < new Date() ? "~Landed" : "Scheduled",
+          nextDep: item.nextDep ? `Flying again ${fmtUtcHM(item.nextDep.scheduled_departure)} → ${item.nextDep.arrival_icao?.replace(/^K/, "") ?? "?"}` : undefined,
+          driveTime: item.distKm > 0 ? fmtDriveTime(item.distKm) : undefined,
+        })),
+      };
+      const res = await fetch("/api/vans/share-slack", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setState("success");
+        setTimeout(onClose, 1500);
+      } else {
+        setError(data.error ?? "Failed to share");
+        setState("error");
+      }
+    } catch (e) {
+      setError(String(e));
+      setState("error");
+    }
+  }
+
+  const filtered = channels.filter((c) =>
+    c.name.toLowerCase().includes(search.toLowerCase())
+  );
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
+      <div
+        className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4 overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-4 py-3 border-b flex items-center justify-between">
+          <div className="font-semibold text-sm">Share to Slack — {vanName}</div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-700 text-lg leading-none">&times;</button>
+        </div>
+
+        {state === "loading-channels" && (
+          <div className="px-4 py-8 text-center text-sm text-gray-400 animate-pulse">Loading Slack channels...</div>
+        )}
+
+        {state === "error" && (
+          <div className="px-4 py-6 text-center space-y-2">
+            <div className="text-sm text-red-600">{error}</div>
+            <button onClick={onClose} className="text-xs text-gray-500 hover:underline">Close</button>
+          </div>
+        )}
+
+        {state === "picking" && (
+          <div className="max-h-80 overflow-y-auto">
+            <div className="px-4 py-2 sticky top-0 bg-white border-b">
+              <input
+                type="text"
+                placeholder="Search channels..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="w-full text-sm border rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-300"
+              />
+            </div>
+            {filtered.length === 0 ? (
+              <div className="px-4 py-6 text-sm text-gray-400 text-center">No channels found</div>
+            ) : (
+              <div className="divide-y">
+                {filtered.map((ch) => (
+                  <button
+                    key={ch.id}
+                    onClick={() => handleShare(ch)}
+                    className="w-full px-4 py-2.5 text-left text-sm hover:bg-blue-50 transition-colors flex items-center gap-2"
+                  >
+                    <span className="text-gray-400">{ch.is_private ? "🔒" : "#"}</span>
+                    <span className="font-medium text-gray-700">{ch.name}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {state === "sending" && (
+          <div className="px-4 py-8 text-center text-sm text-gray-400 animate-pulse">Sending to Slack...</div>
+        )}
+
+        {state === "success" && (
+          <div className="px-4 py-8 text-center text-sm text-green-600 font-medium">Shared successfully!</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // VanScheduleCard — now receives items as props (no internal computation)
 // ---------------------------------------------------------------------------
 
@@ -500,6 +757,7 @@ function VanScheduleCard({
   zone,
   color,
   items,
+  date,
   liveVanPos,
   liveAddress,
   samsaraVanName,
@@ -511,9 +769,10 @@ function VanScheduleCard({
   onDragLeave,
   onRemove,
 }: {
-  zone: (typeof FIXED_VAN_ZONES)[number];
+  zone: VanZone;
   color: string;
   items: VanFlightItem[];
+  date: string;
   liveVanPos?: { lat: number; lon: number };
   liveAddress?: string | null;
   samsaraVanName?: string | null;
@@ -526,6 +785,7 @@ function VanScheduleCard({
   onRemove: (flightId: string) => void;  // delete aircraft from this van
 }) {
   const [expanded, setExpanded] = useState(true);
+  const [showSlackModal, setShowSlackModal] = useState(false);
   const now = new Date();
 
   const totalDistKm = routeDistKm(items);
@@ -541,6 +801,16 @@ function VanScheduleCard({
       onDrop={(e) => onDrop(e, zone.vanId)}
       onDragLeave={onDragLeave}
     >
+      {showSlackModal && (
+        <SlackShareModal
+          vanName={samsaraVanName ?? zone.name}
+          vanId={zone.vanId}
+          homeAirport={zone.homeAirport}
+          date={date}
+          items={items}
+          onClose={() => setShowSlackModal(false)}
+        />
+      )}
       <div
         className="flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-gray-50"
         onClick={() => setExpanded((v) => !v)}
@@ -575,6 +845,13 @@ function VanScheduleCard({
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap justify-end">
+          <button
+            onClick={(e) => { e.stopPropagation(); setShowSlackModal(true); }}
+            className="text-xs text-gray-500 hover:text-purple-700 hover:bg-purple-50 border border-gray-200 hover:border-purple-300 rounded-lg px-2 py-1 transition-colors font-medium"
+            title="Share to Slack"
+          >
+            Share to Slack
+          </button>
           {hasOverrides && (
             <span className="text-xs rounded-full px-2 py-0.5 font-medium bg-amber-100 text-amber-700">
               Edited
@@ -695,15 +972,19 @@ function VanScheduleCard({
 function ScheduleTab({
   allFlights,
   date,
+  zones,
   liveVanPositions,
   liveVanAddresses,
   vanZoneNames,
+  overnightPositions,
 }: {
   allFlights: Flight[];
   date: string;
+  zones: VanZone[];
   liveVanPositions: Map<number, { lat: number; lon: number }>;
   liveVanAddresses: Map<number, string | null>;
   vanZoneNames: Map<number, string>;
+  overnightPositions: AircraftOvernightPosition[];
 }) {
   const hasLive = liveVanPositions.size > 0;
 
@@ -724,16 +1005,42 @@ function ScheduleTab({
   const [dropTargetVan, setDropTargetVan] = useState<number | null>(null);
   const dragCounterRef = useRef(0);
 
-  // Compute base items for every zone
+  // Compute base items for every zone, then deduplicate across zones
+  // so each aircraft tail only appears in ONE van (the closest one).
   const baseItemsByVan = useMemo(() => {
     const map = new Map<number, VanFlightItem[]>();
-    for (const zone of FIXED_VAN_ZONES) {
+    for (const zone of zones) {
       const baseLat = liveVanPositions.get(zone.vanId)?.lat ?? zone.lat;
       const baseLon = liveVanPositions.get(zone.vanId)?.lon ?? zone.lon;
       map.set(zone.vanId, computeZoneItems(zone, allFlights, date, baseLat, baseLon));
     }
+
+    // Cross-zone deduplication: if the same tail appears in multiple vans,
+    // keep it only in the van where it's closest (smallest distKm).
+    const tailBestVan = new Map<string, { vanId: number; distKm: number }>();
+    for (const [vanId, items] of map) {
+      for (const item of items) {
+        const tail = item.arrFlight.tail_number ?? "";
+        if (!tail) continue;
+        const existing = tailBestVan.get(tail);
+        if (!existing || item.distKm < existing.distKm) {
+          tailBestVan.set(tail, { vanId, distKm: item.distKm });
+        }
+      }
+    }
+    // Remove duplicates — keep each tail only in its best van
+    for (const [vanId, items] of map) {
+      map.set(
+        vanId,
+        items.filter((item) => {
+          const tail = item.arrFlight.tail_number ?? "";
+          return tailBestVan.get(tail)?.vanId === vanId;
+        }),
+      );
+    }
+
     return map;
-  }, [allFlights, date, liveVanPositions]);
+  }, [allFlights, date, liveVanPositions, zones]);
 
   // All arrivals today (no zone filter) — used for the uncovered pool
   const allDayArrivals = useMemo(
@@ -771,9 +1078,35 @@ function ScheduleTab({
         }
       }
 
-      // Flight came from uncovered pool — find it in allDayArrivals
+      // Flight came from uncovered pool — find it in allDayArrivals or overnight positions
       if (!found) {
-        const item = allDayArrivals.find((a) => a.arrFlight.id === flightId);
+        let item = allDayArrivals.find((a) => a.arrFlight.id === flightId);
+        if (!item && flightId.startsWith("overnight-")) {
+          const tail = flightId.replace("overnight-", "");
+          const pos = overnightPositions.find((p) => p.tail === tail);
+          if (pos) {
+            item = {
+              arrFlight: {
+                id: flightId,
+                ics_uid: "",
+                tail_number: pos.tail,
+                departure_icao: null,
+                arrival_icao: pos.airport.length <= 4 ? (pos.airport.length === 3 ? `K${pos.airport}` : pos.airport) : null,
+                scheduled_departure: "",
+                scheduled_arrival: null,
+                summary: null,
+                flight_type: null,
+                alerts: [],
+              },
+              nextDep: null,
+              isRepo: false,
+              nextIsRepo: false,
+              airport: pos.airport,
+              airportInfo: getAirportInfo(pos.airport),
+              distKm: 0,
+            };
+          }
+        }
         if (item) {
           const target = result.get(targetVanId) ?? [];
           target.push(item);
@@ -783,7 +1116,7 @@ function ScheduleTab({
     }
 
     // Recalculate distances + greedy sort for each van
-    for (const zone of FIXED_VAN_ZONES) {
+    for (const zone of zones) {
       const items = result.get(zone.vanId) ?? [];
       const baseLat = liveVanPositions.get(zone.vanId)?.lat ?? zone.lat;
       const baseLon = liveVanPositions.get(zone.vanId)?.lon ?? zone.lon;
@@ -792,16 +1125,50 @@ function ScheduleTab({
     }
 
     return result;
-  }, [baseItemsByVan, overrides, removals, liveVanPositions, allDayArrivals]);
+  }, [baseItemsByVan, overrides, removals, liveVanPositions, allDayArrivals, zones, overnightPositions]);
 
   // Uncovered aircraft: arrivals today not assigned to any van
+  // PLUS overnight-positioned aircraft whose tails aren't in any van schedule
   const uncoveredItems = useMemo(() => {
     const assignedIds = new Set<string>();
+    const assignedTails = new Set<string>();
     for (const items of finalItemsByVan.values()) {
-      for (const item of items) assignedIds.add(item.arrFlight.id);
+      for (const item of items) {
+        assignedIds.add(item.arrFlight.id);
+        if (item.arrFlight.tail_number) assignedTails.add(item.arrFlight.tail_number);
+      }
     }
-    return allDayArrivals.filter((item) => !assignedIds.has(item.arrFlight.id));
-  }, [allDayArrivals, finalItemsByVan]);
+    const fromArrivals = allDayArrivals.filter((item) => !assignedIds.has(item.arrFlight.id));
+
+    // Tails already in uncovered arrivals — don't duplicate
+    const uncoveredArrivalTails = new Set(fromArrivals.map((item) => item.arrFlight.tail_number).filter(Boolean));
+
+    // Overnight aircraft not in any van and not already showing from arrivals
+    const overnightUncovered = overnightPositions
+      .filter((p) => !assignedTails.has(p.tail) && !uncoveredArrivalTails.has(p.tail))
+      .map((p): VanFlightItem => ({
+        arrFlight: {
+          id: `overnight-${p.tail}`,
+          ics_uid: "",
+          tail_number: p.tail,
+          departure_icao: null,
+          arrival_icao: p.airport.length <= 4 ? (p.airport.length === 3 ? `K${p.airport}` : p.airport) : null,
+          scheduled_departure: "",
+          scheduled_arrival: null,
+          summary: null,
+          flight_type: null,
+          alerts: [],
+        },
+        nextDep: null,
+        isRepo: false,
+        nextIsRepo: false,
+        airport: p.airport,
+        airportInfo: getAirportInfo(p.airport),
+        distKm: 0,
+      }));
+
+    return [...fromArrivals, ...overnightUncovered];
+  }, [allDayArrivals, finalItemsByVan, overnightPositions]);
 
   // Track which vans have been manually edited
   const editedVans = useMemo(() => {
@@ -886,7 +1253,7 @@ function ScheduleTab({
     <div className="space-y-3">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="text-sm text-gray-500">
-          Arrivals plan for {fmtLongDate(date)} · up to {MAX_ARRIVALS_PER_VAN} aircraft per van · 5 h drive limit
+          Arrivals plan for {fmtLongDate(date)} · up to {MAX_AIRCRAFT_SHORT_DRIVE} aircraft per van · {MAX_DRIVE_HOURS}h drive limit
           {hasLive && (
             <span className="ml-2 inline-flex items-center gap-1 text-xs text-green-600 font-medium">
               <span className="w-1.5 h-1.5 rounded-full bg-green-500 inline-block" />
@@ -916,81 +1283,137 @@ function ScheduleTab({
       )}
 
       {/* ── Unassigned aircraft pool (draggable into vans) ── */}
-      {uncoveredItems.length > 0 && (
-        <div className="border-2 border-dashed border-red-200 rounded-xl bg-red-50/50 overflow-hidden">
-          <div className="px-4 py-3 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <div className="w-6 h-6 rounded-full bg-red-100 flex items-center justify-center text-xs">
-                !
-              </div>
-              <div>
-                <div className="text-sm font-semibold text-red-800">
-                  Unassigned Aircraft
+      {uncoveredItems.length > 0 && (() => {
+        // Group uncovered items by tail number, collect day legs per tail
+        const tailMap = new Map<string, { items: typeof uncoveredItems; legs: Flight[] }>();
+        for (const item of uncoveredItems) {
+          const tail = item.arrFlight.tail_number ?? "Unknown";
+          if (!tailMap.has(tail)) {
+            // Get all legs for this tail on this date (broad filter: exclude only placeholders)
+            const dayLegs = allFlights
+              .filter((f) => {
+                if (f.tail_number !== tail) return false;
+                if (!f.departure_icao || !f.arrival_icao) return false;
+                const ft = inferFlightType(f);
+                if (ft && PLACEHOLDER_TYPES.has(ft)) return false;
+                const depDate = f.scheduled_departure?.slice(0, 10);
+                const arrDate = f.scheduled_arrival?.slice(0, 10);
+                return depDate === date || arrDate === date;
+              })
+              .sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure));
+            tailMap.set(tail, { items: [], legs: dayLegs });
+          }
+          tailMap.get(tail)!.items.push(item);
+        }
+
+        return (
+          <div className="border-2 border-dashed border-red-200 rounded-xl bg-red-50/50 overflow-hidden">
+            <div className="px-4 py-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="w-6 h-6 rounded-full bg-red-100 flex items-center justify-center text-xs">
+                  !
                 </div>
-                <div className="text-xs text-red-600">
-                  {uncoveredItems.length} aircraft not covered by any van — drag into a van to assign
+                <div>
+                  <div className="text-sm font-semibold text-red-800">
+                    Unassigned Aircraft
+                  </div>
+                  <div className="text-xs text-red-600">
+                    {tailMap.size} aircraft not covered by any van — drag into a van to assign
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
-          <div className="border-t border-red-200 divide-y divide-red-100">
-            {uncoveredItems.map((item) => {
-              const { arrFlight, nextDep, isRepo, nextIsRepo, airport, airportInfo } = item;
-              const arrTime = arrFlight.scheduled_arrival ? new Date(arrFlight.scheduled_arrival) : null;
-              return (
-                <div
-                  key={arrFlight.id}
-                  draggable
-                  onDragStart={(e) => handleDragStart(e, arrFlight.id, 0)}
-                  className="px-4 py-2.5 flex items-start justify-between gap-4 cursor-grab active:cursor-grabbing hover:bg-red-50"
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="flex flex-col items-center gap-0.5 flex-shrink-0 mt-1">
-                      <div className="w-2.5 h-2.5 rounded-full bg-red-300" />
-                      <svg className="w-3 h-3 text-red-300" fill="none" viewBox="0 0 12 12" stroke="currentColor" strokeWidth={2}>
-                        <path d="M2 4h8M2 8h8" />
-                      </svg>
-                    </div>
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-mono font-semibold text-sm">{arrFlight.tail_number ?? "—"}</span>
-                        <span className="text-xs text-gray-500 font-mono">
-                          {arrFlight.departure_icao?.replace(/^K/, "") ?? "?"} → {airport}
-                        </span>
-                        {isRepo ? (
-                          <span className="text-xs bg-purple-100 text-purple-700 rounded px-1.5 py-0.5">Positioning</span>
-                        ) : (
-                          <span className="text-xs bg-green-100 text-green-700 rounded px-1.5 py-0.5">Revenue</span>
-                        )}
-                        <span className="text-xs bg-red-100 text-red-600 rounded px-1.5 py-0.5">No Van</span>
-                      </div>
-                      <div className="text-xs text-gray-500 mt-0.5">
-                        {airport}{airportInfo ? ` · ${airportInfo.city}, ${airportInfo.state}` : ""}
-                      </div>
-                      {nextDep && (
-                        <div className="text-xs mt-1 font-medium">
-                          <span className={nextIsRepo ? "text-purple-700" : "text-blue-700"}>
-                            Flying again {fmtTimeUntil(nextDep.scheduled_departure) && `${fmtTimeUntil(nextDep.scheduled_departure)} · `}{fmtUtcHM(nextDep.scheduled_departure)} → {nextDep.arrival_icao?.replace(/^K/, "") ?? "?"}
-                          </span>
+            <div className="border-t border-red-200 divide-y divide-red-100">
+              {Array.from(tailMap.entries()).map(([tail, { items, legs }]) => {
+                const firstItem = items[0];
+                const { airport, airportInfo } = firstItem;
+                return (
+                  <div
+                    key={tail}
+                    draggable
+                    onDragStart={(e) => handleDragStart(e, firstItem.arrFlight.id, 0)}
+                    className="px-4 py-2.5 cursor-grab active:cursor-grabbing hover:bg-red-50"
+                  >
+                    <div className="flex items-center justify-between gap-4">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="flex flex-col items-center gap-0.5 flex-shrink-0">
+                          <div className="w-2.5 h-2.5 rounded-full bg-red-300" />
+                          <svg className="w-3 h-3 text-red-300" fill="none" viewBox="0 0 12 12" stroke="currentColor" strokeWidth={2}>
+                            <path d="M2 4h8M2 8h8" />
+                          </svg>
                         </div>
-                      )}
-                    </div>
-                  </div>
-                  <div className="text-right shrink-0 min-w-[90px]">
-                    {arrTime && (
-                      <div className="text-xs font-medium text-gray-700">
-                        Lands {fmtUtcHM(arrFlight.scheduled_arrival!)}
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-mono font-semibold text-sm">{tail}</span>
+                            <span className="text-xs text-gray-500">
+                              {airport}{airportInfo ? ` · ${airportInfo.city}` : ""}
+                            </span>
+                            <span className="text-xs bg-red-100 text-red-600 rounded px-1.5 py-0.5">No Van</span>
+                          </div>
+                        </div>
                       </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
+                    </div>
+                    {/* Compact legs for the day */}
+                    {(() => {
+                      const now = new Date();
+                      // Find next upcoming departure for this tail across all flights
+                      const nextDep = allFlights
+                        .filter((f) => f.tail_number === tail && f.scheduled_departure && new Date(f.scheduled_departure) > now)
+                        .sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure))[0];
+                      const hoursUntilNext = nextDep ? (new Date(nextDep.scheduled_departure).getTime() - now.getTime()) / 3600000 : Infinity;
+                      const allLegsLanded = legs.length > 0 && legs.every((l) => {
+                        const at = l.scheduled_arrival ? new Date(l.scheduled_arrival) : null;
+                        return at !== null && at < now;
+                      });
+                      const doneForDay = (legs.length === 0 || allLegsLanded) && hoursUntilNext >= 8;
 
-      {FIXED_VAN_ZONES.map((zone) => {
+                      if (legs.length === 0 && doneForDay) {
+                        return <div className="ml-8 mt-1 text-xs text-gray-400 italic">Nothing scheduled</div>;
+                      }
+                      return (
+                        <>
+                          {legs.length > 0 && (
+                            <div className="ml-8 mt-1.5 flex flex-wrap items-center gap-x-1 gap-y-1">
+                              {legs.map((leg, idx) => {
+                                const dep = leg.departure_icao?.replace(/^K/, "") ?? "?";
+                                const arr = leg.arrival_icao?.replace(/^K/, "") ?? "?";
+                                const ft = inferFlightType(leg);
+                                const isPos = ft === "Positioning" || ft === "Ferry";
+                                const arrTime = leg.scheduled_arrival ? new Date(leg.scheduled_arrival) : null;
+                                const hasLanded = arrTime !== null && arrTime < now;
+                                return (
+                                  <span key={leg.id} className="inline-flex items-center gap-1 text-xs">
+                                    {idx > 0 && <span className="text-gray-300 mx-0.5">·</span>}
+                                    <span className={`font-mono font-medium ${hasLanded ? "text-gray-400" : "text-gray-700"}`}>
+                                      {dep}→{arr}
+                                    </span>
+                                    <span className={`rounded px-1 py-0.5 text-[10px] font-medium ${
+                                      isPos ? "bg-purple-100 text-purple-600" : "bg-green-100 text-green-600"
+                                    }`}>
+                                      {ft === "Owner" ? "Rev" : isPos ? "Pos" : "Rev"}
+                                    </span>
+                                    <span className="text-gray-400">{fmtUtcHM(leg.scheduled_departure)}</span>
+                                    {hasLanded && <span className="text-gray-400">✓</span>}
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          )}
+                          {doneForDay && (
+                            <div className="ml-8 mt-1 text-xs text-green-600 font-medium">Done for the day</div>
+                          )}
+                        </>
+                      );
+                    })()}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
+
+      {zones.map((zone) => {
         const color = VAN_COLORS[(zone.vanId - 1) % VAN_COLORS.length];
         return (
           <div
@@ -1002,6 +1425,7 @@ function ScheduleTab({
               zone={zone}
               color={color}
               items={finalItemsByVan.get(zone.vanId) ?? []}
+              date={date}
               liveVanPos={liveVanPositions.get(zone.vanId)}
               liveAddress={liveVanAddresses.get(zone.vanId)}
               samsaraVanName={vanZoneNames.get(zone.vanId)}
@@ -1016,6 +1440,278 @@ function ScheduleTab({
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// FlightScheduleTab — raw flight data per aircraft for the selected day
+// ---------------------------------------------------------------------------
+
+function FlightScheduleTab({
+  allFlights,
+  date,
+}: {
+  allFlights: Flight[];
+  date: string;
+}) {
+  const [search, setSearch] = useState("");
+  const [expandAll, setExpandAll] = useState(true);
+
+  // Get operational flights for the selected date (Revenue/Positioning only, no placeholders)
+  const dayFlights = useMemo(() => {
+    return allFlights.filter((f) => {
+      if (!isOperationalLeg(f)) return false;
+      const depDate = f.scheduled_departure?.slice(0, 10);
+      const arrDate = f.scheduled_arrival?.slice(0, 10);
+      return depDate === date || arrDate === date;
+    });
+  }, [allFlights, date]);
+
+  // Group by tail number
+  const byTail = useMemo(() => {
+    const map = new Map<string, Flight[]>();
+    for (const f of dayFlights) {
+      const tail = f.tail_number ?? "Unknown";
+      const arr = map.get(tail) ?? [];
+      arr.push(f);
+      map.set(tail, arr);
+    }
+    // Sort legs within each tail by departure time
+    for (const legs of map.values()) {
+      legs.sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure));
+    }
+    // Sort tails alphabetically
+    return new Map([...map.entries()].sort(([a], [b]) => a.localeCompare(b)));
+  }, [dayFlights]);
+
+  // Filter by search
+  const filtered = useMemo(() => {
+    if (!search) return byTail;
+    const q = search.toLowerCase();
+    const result = new Map<string, Flight[]>();
+    for (const [tail, legs] of byTail) {
+      if (
+        tail.toLowerCase().includes(q) ||
+        legs.some(
+          (f) =>
+            f.departure_icao?.toLowerCase().includes(q) ||
+            f.arrival_icao?.toLowerCase().includes(q) ||
+            f.summary?.toLowerCase().includes(q) ||
+            inferFlightType(f)?.toLowerCase().includes(q),
+        )
+      ) {
+        result.set(tail, legs);
+      }
+    }
+    return result;
+  }, [byTail, search]);
+
+  const totalLegs = dayFlights.length;
+  const totalAircraft = byTail.size;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="text-sm text-gray-500">
+          Flight schedule for {fmtLongDate(date)} · {totalAircraft} aircraft · {totalLegs} legs
+        </div>
+        <div className="flex items-center gap-2">
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search tails, airports..."
+            className="max-w-xs rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm outline-none focus:border-gray-400"
+          />
+          <button
+            onClick={() => setExpandAll((v) => !v)}
+            className="text-xs text-blue-600 hover:underline whitespace-nowrap"
+          >
+            {expandAll ? "Collapse All" : "Expand All"}
+          </button>
+        </div>
+      </div>
+
+      {filtered.size === 0 ? (
+        <div className="bg-white border rounded-xl px-4 py-8 text-center text-gray-400 text-sm">
+          {search ? "No matching aircraft" : "No flights scheduled for this day"}
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {Array.from(filtered.entries()).map(([tail, legs]) => (
+            <FlightScheduleAircraft
+              key={tail}
+              tail={tail}
+              legs={legs}
+              date={date}
+              defaultExpanded={expandAll}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FlightScheduleAircraft({
+  tail,
+  legs,
+  date,
+  defaultExpanded,
+}: {
+  tail: string;
+  legs: Flight[];
+  date: string;
+  defaultExpanded: boolean;
+}) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
+
+  // Sync with parent toggle
+  useEffect(() => {
+    setExpanded(defaultExpanded);
+  }, [defaultExpanded]);
+
+  // Determine overnight airport (last arrival on this date)
+  const lastArrival = [...legs]
+    .filter((f) => f.scheduled_arrival?.startsWith(date))
+    .sort((a, b) => (b.scheduled_arrival ?? "").localeCompare(a.scheduled_arrival ?? ""))[0];
+  const overnightApt = lastArrival?.arrival_icao?.replace(/^K/, "") ?? null;
+
+  // First departure
+  const firstDep = legs[0];
+  const firstDepApt = firstDep?.departure_icao?.replace(/^K/, "") ?? null;
+
+  // All unique airports touched
+  const airports = new Set<string>();
+  for (const f of legs) {
+    if (f.departure_icao) airports.add(f.departure_icao.replace(/^K/, ""));
+    if (f.arrival_icao) airports.add(f.arrival_icao.replace(/^K/, ""));
+  }
+
+  return (
+    <div className="bg-white border rounded-xl overflow-hidden shadow-sm">
+      <div
+        className="flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-gray-50"
+        onClick={() => setExpanded((v) => !v)}
+      >
+        <div className="flex items-center gap-3">
+          <span className="font-mono font-bold text-sm text-gray-800">{tail}</span>
+          <span className="text-xs bg-slate-100 text-slate-600 rounded-full px-2 py-0.5 font-medium">
+            {legs.length} leg{legs.length !== 1 ? "s" : ""}
+          </span>
+          {firstDepApt && overnightApt && (
+            <span className="text-xs text-gray-500 font-mono">
+              {firstDepApt} → … → {overnightApt}
+            </span>
+          )}
+          {overnightApt && (
+            <span className="text-xs bg-blue-50 text-blue-700 border border-blue-200 rounded px-1.5 py-0.5">
+              Overnight: {overnightApt}
+            </span>
+          )}
+        </div>
+        <span className="text-gray-400 text-sm">{expanded ? "▲" : "▼"}</span>
+      </div>
+
+      {expanded && (
+        <div className="border-t">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="bg-gray-50 text-left text-gray-500 uppercase tracking-wide">
+                <th className="px-4 py-2 w-12">#</th>
+                <th className="px-4 py-2">Route</th>
+                <th className="px-4 py-2">Type</th>
+                <th className="px-4 py-2">Depart</th>
+                <th className="px-4 py-2">Arrive</th>
+                <th className="px-4 py-2">Duration</th>
+                <th className="px-4 py-2 hidden md:table-cell">Status</th>
+                <th className="px-4 py-2 hidden lg:table-cell">Summary</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {legs.map((leg, idx) => {
+                const dep = leg.departure_icao?.replace(/^K/, "") ?? "?";
+                const arr = leg.arrival_icao?.replace(/^K/, "") ?? "?";
+                const ft = inferFlightType(leg);
+                const depInfo = getAirportInfo(dep);
+                const arrInfo = getAirportInfo(arr);
+                const isLastArrival = leg.id === lastArrival?.id;
+                const depOnDate = leg.scheduled_departure?.startsWith(date);
+                const arrOnDate = leg.scheduled_arrival?.startsWith(date);
+
+                return (
+                  <tr
+                    key={leg.id}
+                    className={`hover:bg-gray-50 ${isLastArrival ? "bg-blue-50/50" : ""} ${
+                      !depOnDate && !arrOnDate ? "opacity-50" : ""
+                    }`}
+                  >
+                    <td className="px-4 py-2 text-gray-400">{idx + 1}</td>
+                    <td className="px-4 py-2">
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-mono font-semibold text-gray-700">{dep}</span>
+                        <span className="text-gray-400">→</span>
+                        <span className="font-mono font-semibold text-gray-700">{arr}</span>
+                      </div>
+                      <div className="text-gray-400 mt-0.5">
+                        {depInfo ? `${depInfo.city}` : ""} → {arrInfo ? `${arrInfo.city}` : ""}
+                      </div>
+                    </td>
+                    <td className="px-4 py-2">
+                      {ft ? (
+                        <span
+                          className={`rounded px-1.5 py-0.5 text-xs font-medium ${
+                            ft === "Positioning" || ft === "Ferry" || ft === "Needs pos"
+                              ? "bg-purple-100 text-purple-700"
+                              : ft === "Maintenance"
+                              ? "bg-orange-100 text-orange-700"
+                              : ft === "Owner"
+                              ? "bg-amber-100 text-amber-700"
+                              : "bg-green-100 text-green-700"
+                          }`}
+                        >
+                          {ft}
+                        </span>
+                      ) : (
+                        <span className="text-gray-300">—</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2 text-gray-600">
+                      {fmtUtcHM(leg.scheduled_departure)}
+                      {!depOnDate && (
+                        <div className="text-gray-400">{leg.scheduled_departure.slice(0, 10)}</div>
+                      )}
+                    </td>
+                    <td className="px-4 py-2 text-gray-600">
+                      {leg.scheduled_arrival ? fmtUtcHM(leg.scheduled_arrival) : "—"}
+                      {leg.scheduled_arrival && !arrOnDate && (
+                        <div className="text-gray-400">{leg.scheduled_arrival.slice(0, 10)}</div>
+                      )}
+                    </td>
+                    <td className="px-4 py-2 text-gray-400">
+                      {leg.scheduled_arrival
+                        ? fmtDuration(leg.scheduled_departure, leg.scheduled_arrival)
+                        : "—"}
+                    </td>
+                    <td className="px-4 py-2 hidden md:table-cell">
+                      {(() => {
+                        const arrTime = leg.scheduled_arrival ? new Date(leg.scheduled_arrival) : null;
+                        const hasLanded = arrTime !== null && arrTime < new Date();
+                        return hasLanded
+                          ? <span className="text-xs font-medium text-green-700 bg-green-100 rounded-full px-2 py-0.5">Landed</span>
+                          : <span className="text-xs font-medium text-slate-600 bg-slate-100 rounded-full px-2 py-0.5">Scheduled</span>;
+                      })()}
+                    </td>
+                    <td className="px-4 py-2 hidden lg:table-cell text-gray-400 max-w-[200px] truncate">
+                      {leg.summary ?? "—"}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
@@ -1047,46 +1743,9 @@ type VehicleDiag = {
 /** Vehicles whose name contains "VAN", "AOG", "OG", or "TRAN" are AOG support vans. */
 function isAogVehicle(name: string): boolean {
   const u = (name || "").toUpperCase();
+  // Exclude cleaning/detail vans — not AOG service vehicles
+  if (u.includes("CLEAN") || u.includes("DETAIL")) return false;
   return u.includes("VAN") || u.includes("AOG") || u.includes(" OG") || u.includes("TRAN");
-}
-
-/**
- * Match AOG Samsara vans to FIXED_VAN_ZONES by GPS proximity.
- * Returns a Map<zoneId, SamsaraVan> — one van per zone, closest wins.
- * Handles the case where multiple vans are near the same zone by doing
- * a greedy assignment (sort all van↔zone pairs by distance, assign each
- * van/zone at most once).
- */
-function matchVansToZones(
-  vans: SamsaraVan[],
-): Map<number, SamsaraVan> {
-  const withGps = vans.filter((v) => v.lat !== null && v.lon !== null);
-  if (withGps.length === 0) return new Map();
-
-  // Build all (van, zone, distance) pairs
-  const pairs: { van: SamsaraVan; zoneId: number; dist: number }[] = [];
-  for (const van of withGps) {
-    for (const zone of FIXED_VAN_ZONES) {
-      pairs.push({
-        van,
-        zoneId: zone.vanId,
-        dist: haversineKm(van.lat!, van.lon!, zone.lat, zone.lon),
-      });
-    }
-  }
-  // Sort by distance ascending — closest pairs first
-  pairs.sort((a, b) => a.dist - b.dist);
-
-  const result = new Map<number, SamsaraVan>();
-  const usedVans = new Set<string>(); // van IDs already assigned
-  for (const { van, zoneId, dist } of pairs) {
-    if (result.has(zoneId)) continue;  // zone already has a van
-    if (usedVans.has(van.id)) continue; // van already assigned
-    if (dist > 1500) continue;          // ignore vans > 1500 km from any zone
-    result.set(zoneId, van);
-    usedVans.add(van.id);
-  }
-  return result;
 }
 
 function VehicleRow({ v, diag }: { v: SamsaraVan; diag?: VehicleDiag }) {
@@ -1263,24 +1922,77 @@ const haversineKmClient = (lat1: number, lon1: number, lat2: number, lon2: numbe
 // ---------------------------------------------------------------------------
 
 export default function VanPositioningClient({ initialFlights }: { initialFlights: Flight[] }) {
-  const dates = useMemo(() => getDateRange(7), []);
+  const dates = useMemo(() => getDateRange(7), []); // 7-day window
   const [dayIdx, setDayIdx] = useState(0);
-  const [activeTab, setActiveTab] = useState<"map" | "schedule">("map");
+  const [activeTab, setActiveTab] = useState<"map" | "schedule" | "flights">("map");
   const [viewMode, setViewMode] = useState<"map" | "list">("map");
   const [selectedVan, setSelectedVan] = useState<number | null>(null);
 
   const selectedDate = dates[dayIdx];
 
-  const positions = useMemo(() => computeOvernightPositions(selectedDate), [selectedDate]);
-  const vans       = useMemo(() => assignVans(positions), [positions]);
-  const displayedVans = selectedVan === null ? vans : vans.filter((v) => v.vanId === selectedVan);
+  // Filter out "parking" placeholder entries (departure == arrival, e.g. ADS→ADS)
+  const flights = useMemo(
+    () => initialFlights.filter(isRealFlight),
+    [initialFlights],
+  );
 
-  // Flights arriving on the selected date (for stats bar)
+  // Use live JetInsight flight data for overnight positions; fall back to hardcoded TRIPS if no live data
+  const positions = useMemo(() => {
+    if (flights.length > 0) {
+      const live = computeOvernightPositionsFromFlights(flights, selectedDate);
+      if (live.length > 0) return live;
+    }
+    return computeOvernightPositions(selectedDate);
+  }, [flights, selectedDate]);
+
+  // Maintenance flights (for idle/maintenance section)
+  const maintenanceFlights = useMemo(
+    () => flights.filter((f) => {
+      const ft = inferFlightType(f);
+      return ft === "Maintenance";
+    }),
+    [flights],
+  );
+
+  // Collect all tail numbers that have any flights in the window
+  const activeTails = useMemo(() => {
+    const tails = new Set<string>();
+    for (const f of flights) {
+      if (f.tail_number) tails.add(f.tail_number);
+    }
+    return tails;
+  }, [flights]);
+
+  // Maintenance tails
+  const maintenanceTails = useMemo(() => {
+    const tails = new Set<string>();
+    for (const f of maintenanceFlights) {
+      if (f.tail_number) tails.add(f.tail_number);
+    }
+    return tails;
+  }, [maintenanceFlights]);
+
+  // All tails from positions (fleet)
+  const allTails = useMemo(() => positions.map((p) => p.tail), [positions]);
+
+  // Idle aircraft: tails in the fleet but NOT in any flights and NOT in maintenance
+  const idleAircraft = useMemo(
+    () => positions.filter((p) => !activeTails.has(p.tail) && !maintenanceTails.has(p.tail)),
+    [positions, activeTails, maintenanceTails],
+  );
+
+  // Maintenance aircraft: tails with maintenance flights
+  const maintenanceAircraft = useMemo(
+    () => positions.filter((p) => maintenanceTails.has(p.tail)),
+    [positions, maintenanceTails],
+  );
+
+  // ALL flights on the selected date (for stats bar)
   const flightsForDay = useMemo(
-    () => initialFlights.filter((f) =>
+    () => flights.filter((f) =>
       (f.scheduled_arrival ?? f.scheduled_departure).startsWith(selectedDate)
     ),
-    [initialFlights, selectedDate],
+    [flights, selectedDate],
   );
 
   // ── Samsara live van data (lifted so map + schedule can both use it) ──
@@ -1319,86 +2031,82 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
     [samsaraVans],
   );
 
-  /** GPS-proximity match: zone ID → Samsara van (closest van per zone). */
-  const vanZoneMatch = useMemo(() => {
-    const match = matchVansToZones(aogSamsaraVans);
-    // Debug: log the GPS-based matching results
-    if (aogSamsaraVans.length > 0) {
-      const rows = FIXED_VAN_ZONES.map((z) => {
-        const v = match.get(z.vanId);
-        return {
-          zone: `V${z.vanId} ${z.name}`,
-          samsaraVan: v?.name ?? "—",
-          dist: v ? `${Math.round(haversineKm(v.lat!, v.lon!, z.lat, z.lon))} km` : "—",
-        };
-      });
-      console.log("[AOG Vans] GPS-based zone matching:");
-      console.table(rows);
-      const unmatched = aogSamsaraVans.filter(
-        (v) => ![...match.values()].some((m) => m.id === v.id)
-      );
-      if (unmatched.length) {
-        console.log("[AOG Vans] Unmatched AOG vehicles:", unmatched.map((v) => v.name));
-      }
-    }
-    return match;
-  }, [aogSamsaraVans]);
+  // ── Build dynamic zones from Samsara AOG vans ──
+  // Each Samsara AOG van becomes its own zone. Falls back to 8 fixed zones
+  // if Samsara data isn't available yet.
+  const sortedAogVans = useMemo(
+    () => [...aogSamsaraVans].sort((a, b) => (a.name || "").localeCompare(b.name || "")),
+    [aogSamsaraVans],
+  );
+
+  const dynamicZones = useMemo<VanZone[]>(() => {
+    if (sortedAogVans.length === 0) return FIXED_VAN_ZONES;
+    return sortedAogVans.map((v, i) => {
+      const nearest = (v.lat != null && v.lon != null) ? findNearestAirport(v.lat, v.lon) : null;
+      return {
+        vanId: i + 1,
+        name: v.name || `AOG Van ${i + 1}`,
+        homeAirport: nearest?.code ?? "???",
+        lat: v.lat ?? 0,
+        lon: v.lon ?? 0,
+      };
+    });
+  }, [sortedAogVans]);
+
+  // ── Van assignment (must come after dynamicZones) ──
+  const vans       = useMemo(() => assignVans(positions, dynamicZones, 10, flights, selectedDate), [positions, dynamicZones, flights, selectedDate]);
+  const displayedVans = selectedVan === null ? vans : vans.filter((v) => v.vanId === selectedVan);
 
   /** Zone ID → last known GPS position (persists across refreshes if signal lost). */
   const lastKnownGpsRef = useRef<Map<number, { lat: number; lon: number }>>(new Map());
-  /** Zone ID → last known street address (persists across refreshes if signal lost). */
+  /** Zone ID → last known street address. */
   const lastKnownAddressRef = useRef<Map<number, string>>(new Map());
 
+  /** Zone ID → live GPS position (from Samsara van). */
   const liveVanPositions = useMemo<Map<number, { lat: number; lon: number }>>(() => {
-    // Update cache with fresh positions from matched vans
-    for (const [zoneId, v] of vanZoneMatch) {
-      if (v.lat !== null && v.lon !== null) {
-        lastKnownGpsRef.current.set(zoneId, { lat: v.lat, lon: v.lon });
-      }
-    }
-    // Return live position, or last known if currently null
     const map = new Map<number, { lat: number; lon: number }>();
-    for (const [zoneId, v] of vanZoneMatch) {
-      const pos = (v.lat !== null && v.lon !== null)
-        ? { lat: v.lat, lon: v.lon }
-        : lastKnownGpsRef.current.get(zoneId) ?? null;
-      if (pos) map.set(zoneId, pos);
-    }
+    sortedAogVans.forEach((v, i) => {
+      const zoneId = i + 1;
+      if (v.lat !== null && v.lon !== null) {
+        const pos = { lat: v.lat, lon: v.lon };
+        lastKnownGpsRef.current.set(zoneId, pos);
+        map.set(zoneId, pos);
+      } else {
+        const cached = lastKnownGpsRef.current.get(zoneId);
+        if (cached) map.set(zoneId, cached);
+      }
+    });
     return map;
-  }, [vanZoneMatch]);
+  }, [sortedAogVans]);
 
-  /** Zone ID → true if the position is a fresh live reading right now. */
+  /** Zone ID → true if the position is a fresh live reading. */
   const liveVanIsLive = useMemo<Map<number, boolean>>(() => {
     const map = new Map<number, boolean>();
-    for (const [zoneId, v] of vanZoneMatch) {
-      map.set(zoneId, v.lat !== null && v.lon !== null);
-    }
+    sortedAogVans.forEach((v, i) => {
+      map.set(i + 1, v.lat !== null && v.lon !== null);
+    });
     return map;
-  }, [vanZoneMatch]);
+  }, [sortedAogVans]);
 
-  /** Zone ID → street address (live, or last known if signal lost). */
+  /** Zone ID → street address (live, or last known). */
   const liveVanAddresses = useMemo<Map<number, string | null>>(() => {
-    // Cache fresh addresses
-    for (const [zoneId, v] of vanZoneMatch) {
-      if (v.address) lastKnownAddressRef.current.set(zoneId, v.address);
-    }
-    // Return live, or fall back to last known
     const map = new Map<number, string | null>();
-    for (const [zoneId, v] of vanZoneMatch) {
-      const addr = v.address ?? lastKnownAddressRef.current.get(zoneId) ?? null;
-      map.set(zoneId, addr);
-    }
+    sortedAogVans.forEach((v, i) => {
+      const zoneId = i + 1;
+      if (v.address) lastKnownAddressRef.current.set(zoneId, v.address);
+      map.set(zoneId, v.address ?? lastKnownAddressRef.current.get(zoneId) ?? null);
+    });
     return map;
-  }, [vanZoneMatch]);
+  }, [sortedAogVans]);
 
   /** Zone ID → Samsara van display name (for schedule cards). */
   const vanZoneNames = useMemo<Map<number, string>>(() => {
     const map = new Map<number, string>();
-    for (const [zoneId, v] of vanZoneMatch) {
-      if (v.name) map.set(zoneId, v.name);
-    }
+    sortedAogVans.forEach((v, i) => {
+      if (v.name) map.set(i + 1, v.name);
+    });
     return map;
-  }, [vanZoneMatch]);
+  }, [sortedAogVans]);
 
   // ── Samsara diagnostics (odometer + check engine light) ──
   const [diagData, setDiagData] = useState<Map<string, VehicleDiag>>(new Map());
@@ -1429,102 +2137,8 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
       />
 
       {/* ── Stats ── */}
-      <StatsBar positions={positions} vans={vans} flightCount={flightsForDay.length} />
+      <StatsBar positions={positions} vans={vans} flightCount={flightsForDay.length} totalVans={dynamicZones.length} />
 
-      {/* ── AOG Status — aircraft coverage ── */}
-      {(() => {
-        // Aircraft assigned to a van but outside 3-hour driving range
-        const outOfRange = vans.flatMap((van) => {
-          const color = VAN_COLORS[(van.vanId - 1) % VAN_COLORS.length];
-          return van.aircraft
-            .filter((ac) => haversineKmClient(van.lat, van.lon, ac.lat, ac.lon) > THREE_HOUR_RADIUS_KM)
-            .map((ac) => ({
-              vanId: van.vanId,
-              color,
-              tail: ac.tail,
-              airport: ac.airport,
-              distKm: Math.round(haversineKmClient(van.lat, van.lon, ac.lat, ac.lon)),
-            }));
-        });
-
-        // Aircraft overnighting but not assigned to any van at all
-        const coveredTails = new Set(vans.flatMap((v) => v.aircraft.map((ac) => ac.tail)));
-        const uncovered = positions.filter((p) => !coveredTails.has(p.tail));
-
-        const totalIssues = outOfRange.length + uncovered.length;
-        const totalCovered = positions.length - uncovered.length;
-        const hasAlerts = totalIssues > 0;
-
-        return (
-          <div className={`rounded-xl border-2 px-5 py-4 shadow-sm ${
-            hasAlerts
-              ? uncovered.length > 0 ? "border-red-300 bg-red-50" : "border-yellow-300 bg-yellow-50"
-              : "border-green-300 bg-green-50"
-          }`}>
-            <div className="flex items-center gap-3">
-              <div className={`w-10 h-10 rounded-full flex items-center justify-center text-xl shrink-0 ${
-                hasAlerts
-                  ? uncovered.length > 0 ? "bg-red-100" : "bg-yellow-100"
-                  : "bg-green-100"
-              }`}>
-                {hasAlerts ? "⚠" : "✓"}
-              </div>
-              <div className="flex-1">
-                <div className={`text-base font-bold ${
-                  hasAlerts
-                    ? uncovered.length > 0 ? "text-red-800" : "text-yellow-800"
-                    : "text-green-800"
-                }`}>
-                  AOG Status
-                </div>
-                {hasAlerts ? (
-                  <div className={`text-sm font-semibold ${uncovered.length > 0 ? "text-red-600" : "text-yellow-700"}`}>
-                    {[
-                      uncovered.length > 0 && `${uncovered.length} aircraft not covered`,
-                      outOfRange.length > 0 && `${outOfRange.length} aircraft outside 3-hour range`,
-                    ].filter(Boolean).join(" · ")}
-                    {" · "}{totalCovered}/{positions.length} covered
-                  </div>
-                ) : (
-                  <div className="text-sm text-green-700 font-medium">
-                    All {positions.length} aircraft covered by {vans.length} vans
-                  </div>
-                )}
-              </div>
-            </div>
-            {/* Detail pills */}
-            {hasAlerts && (
-              <div className="flex flex-wrap gap-2 mt-3 ml-[52px]">
-                {uncovered.map((ac) => (
-                  <span key={`unc-${ac.tail}`} className="inline-flex items-center gap-1.5 bg-white border border-red-200 rounded-lg px-3 py-1.5 text-xs font-medium text-red-700">
-                    <span className="font-mono font-semibold">{ac.tail}</span>
-                    <span className="text-gray-500">@ {ac.airport}</span>
-                    <span className="text-red-600">— No Van</span>
-                  </span>
-                ))}
-                {outOfRange.map(({ vanId, color, tail, airport, distKm }) => (
-                  <div
-                    key={`oor-${vanId}-${tail}`}
-                    className="flex items-center gap-1.5 bg-white border border-yellow-200 rounded-lg px-2.5 py-1.5 text-xs"
-                  >
-                    <span
-                      className="inline-block w-3 h-3 rounded-full flex-shrink-0"
-                      style={{ background: color }}
-                    />
-                    <span className="font-semibold">Van {vanId}</span>
-                    <span className="text-gray-400">&rarr;</span>
-                    <span className="font-mono font-semibold">{tail}</span>
-                    <span className="text-gray-500">@ {airport}</span>
-                    <span className="text-yellow-700 font-semibold">
-                      ~{Math.round(distKm / (THREE_HOUR_RADIUS_KM / 3))}h
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        );
-      })()}
 
       {/* ── Van Status — vehicle health ── */}
       {(() => {
@@ -1581,6 +2195,16 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
               activeTab === "schedule" ? "bg-blue-500 text-white" : "bg-blue-100 text-blue-700"
             }`}>
               {vans.length}
+            </span>
+          )}
+        </TabBtn>
+        <TabBtn active={activeTab === "flights"} onClick={() => setActiveTab("flights")}>
+          Flight Schedule
+          {flightsForDay.length > 0 && (
+            <span className={`ml-1.5 rounded-full px-1.5 py-0.5 text-xs font-bold ${
+              activeTab === "flights" ? "bg-blue-500 text-white" : "bg-blue-100 text-blue-700"
+            }`}>
+              {flightsForDay.length}
             </span>
           )}
         </TabBtn>
@@ -1736,7 +2360,67 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
 
       {/* ── Schedule tab ── */}
       {activeTab === "schedule" && (
-        <ScheduleTab allFlights={initialFlights} date={selectedDate} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} />
+        <ScheduleTab allFlights={flights} date={selectedDate} zones={dynamicZones} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} overnightPositions={positions} />
+      )}
+
+      {/* ── Flight Schedule tab ── */}
+      {activeTab === "flights" && (
+        <FlightScheduleTab allFlights={flights} date={selectedDate} />
+      )}
+
+      {/* Second "Unassigned Aircraft" table removed — the compact version in Schedule tab is preferred */}
+
+      {/* ── Idle & Maintenance Aircraft ── */}
+      {(idleAircraft.length > 0 || maintenanceAircraft.length > 0) && (
+        <div className="space-y-4">
+          {maintenanceAircraft.length > 0 && (
+            <div className="rounded-xl border-2 border-orange-200 bg-orange-50/50 overflow-hidden">
+              <div className="px-4 py-3 border-b border-orange-200 bg-orange-100/50">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-bold text-orange-800">Maintenance</span>
+                  <span className="text-xs bg-orange-200 text-orange-700 rounded-full px-2 py-0.5 font-semibold">
+                    {maintenanceAircraft.length}
+                  </span>
+                </div>
+                <p className="text-xs text-orange-600 mt-0.5">Aircraft currently in maintenance — excluded from van scheduling</p>
+              </div>
+              <div className="divide-y divide-orange-100">
+                {maintenanceAircraft.map((ac) => (
+                  <div key={ac.tail} className="px-4 py-2.5 flex items-center gap-4">
+                    <span className="font-mono font-semibold text-sm text-gray-800">{ac.tail}</span>
+                    <span className="text-xs text-gray-500">{ac.airport}</span>
+                    <span className="text-xs text-gray-400">{ac.airportName}</span>
+                    <span className="text-xs bg-orange-100 text-orange-700 rounded px-1.5 py-0.5">Maintenance</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {idleAircraft.length > 0 && (
+            <div className="rounded-xl border-2 border-gray-200 bg-gray-50/50 overflow-hidden">
+              <div className="px-4 py-3 border-b border-gray-200 bg-gray-100/50">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-bold text-gray-700">Nothing Scheduled</span>
+                  <span className="text-xs bg-gray-200 text-gray-600 rounded-full px-2 py-0.5 font-semibold">
+                    {idleAircraft.length}
+                  </span>
+                </div>
+                <p className="text-xs text-gray-500 mt-0.5">No flights in the 7-day window</p>
+              </div>
+              <div className="divide-y divide-gray-100">
+                {idleAircraft.map((ac) => (
+                  <div key={ac.tail} className="px-4 py-2.5 flex items-center gap-4">
+                    <span className="font-mono font-semibold text-sm text-gray-800">{ac.tail}</span>
+                    <span className="text-xs text-gray-500">{ac.airport}</span>
+                    <span className="text-xs text-gray-400">{ac.airportName}</span>
+                    <span className="text-xs bg-gray-100 text-gray-500 rounded px-1.5 py-0.5">Idle</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );

@@ -7,7 +7,7 @@
  *  3. Runs a greedy van-assignment algorithm to position 16 vans
  */
 
-import { getAirportInfo } from "./airportCoords";
+import { getAirportInfo, getAllAirports } from "./airportCoords";
 
 // ---------------------------------------------------------------------------
 // Contiguous 48 states — used to exclude offshore / international aircraft
@@ -25,6 +25,22 @@ export function isContiguous48(state: string): boolean {
   return CONTIGUOUS_48.has(state);
 }
 
+/**
+ * Find the nearest known airport to a given lat/lon.
+ * Uses the 113-airport database from airportCoords.
+ */
+export function findNearestAirport(lat: number, lon: number): { code: string; name: string; dist: number } | null {
+  const airports = getAllAirports();
+  let best: { code: string; name: string; dist: number } | null = null;
+  for (const apt of airports) {
+    const d = haversineKm(lat, lon, apt.lat, apt.lon);
+    if (!best || d < best.dist) {
+      best = { code: apt.code, name: apt.name, dist: d };
+    }
+  }
+  return best;
+}
+
 // ---------------------------------------------------------------------------
 // Fixed van zones — replaces dynamic k-means clustering so vans stay in
 // the same geographic area. 8 home bases per ops requirements.
@@ -39,14 +55,22 @@ export type VanZone = {
 };
 
 export const FIXED_VAN_ZONES: VanZone[] = [
-  { vanId: 1, name: "North FL",       homeAirport: "JAX", lat: 30.4943, lon: -81.6879 },
-  { vanId: 2, name: "South FL East",  homeAirport: "PBI", lat: 26.6832, lon: -80.0956 },
-  { vanId: 3, name: "South FL West",  homeAirport: "FMY", lat: 26.5866, lon: -81.8633 },
-  { vanId: 4, name: "NY/NJ – TEB",    homeAirport: "TEB", lat: 40.8501, lon: -74.0608 },
-  { vanId: 5, name: "NY/NJ – HPN",    homeAirport: "HPN", lat: 41.0670, lon: -73.7076 },
-  { vanId: 6, name: "Bedford MA",     homeAirport: "BED", lat: 42.4700, lon: -71.2890 },
-  { vanId: 7, name: "LA Area",        homeAirport: "VNY", lat: 34.2098, lon: -118.4899 },
-  { vanId: 8, name: "SFO Area",       homeAirport: "SFO", lat: 37.6213, lon: -122.3790 },
+  { vanId: 1,  name: "North FL",       homeAirport: "JAX", lat: 30.4943, lon: -81.6879 },
+  { vanId: 2,  name: "South FL East",  homeAirport: "PBI", lat: 26.6832, lon: -80.0956 },
+  { vanId: 3,  name: "South FL West",  homeAirport: "FMY", lat: 26.5866, lon: -81.8633 },
+  { vanId: 4,  name: "NY/NJ – TEB",    homeAirport: "TEB", lat: 40.8501, lon: -74.0608 },
+  { vanId: 5,  name: "NY/NJ – HPN",    homeAirport: "HPN", lat: 41.0670, lon: -73.7076 },
+  { vanId: 6,  name: "Bedford MA",     homeAirport: "BED", lat: 42.4700, lon: -71.2890 },
+  { vanId: 7,  name: "LA Area",        homeAirport: "VNY", lat: 34.2098, lon: -118.4899 },
+  { vanId: 8,  name: "SFO Area",       homeAirport: "SFO", lat: 37.6213, lon: -122.3790 },
+  { vanId: 9,  name: "Opa-locka FL",   homeAirport: "OPF", lat: 25.9075, lon: -80.2783 },
+  { vanId: 10, name: "Dallas TX",      homeAirport: "DAL", lat: 32.8471, lon: -96.8518 },
+  { vanId: 11, name: "Houston TX",     homeAirport: "IAH", lat: 29.9902, lon: -95.3368 },
+  { vanId: 12, name: "Denver CO",      homeAirport: "APA", lat: 39.5701, lon: -104.8493 },
+  { vanId: 13, name: "Atlanta GA",     homeAirport: "PDK", lat: 33.8756, lon: -84.3020 },
+  { vanId: 14, name: "Chicago IL",     homeAirport: "PWK", lat: 42.1142, lon: -87.9015 },
+  { vanId: 15, name: "DC Area",        homeAirport: "IAD", lat: 38.9445, lon: -77.4558 },
+  { vanId: 16, name: "Pacific NW",     homeAirport: "BFI", lat: 47.5300, lon: -122.3020 },
 ];
 
 // ---------------------------------------------------------------------------
@@ -323,58 +347,113 @@ function overflowRegionLabel(lat: number, lon: number): string {
 
 export function assignVans(
   positions: AircraftOvernightPosition[],
-  _numVans = MAX_TOTAL_VANS, // ignored, kept for API compat
-  maxPerVan = 4
+  zones: VanZone[] = FIXED_VAN_ZONES,
+  maxPerVan = 10,
+  /** Optional: live flight data for intermediate-airport matching */
+  flights?: { tail_number: string | null; departure_icao: string | null; arrival_icao: string | null; scheduled_departure: string; scheduled_arrival: string | null }[],
+  /** Date string (YYYY-MM-DD) for intermediate-airport matching */
+  date?: string,
 ): VanAssignment[] {
   // Only assign vans to aircraft in the contiguous 48 states
   const eligible = positions.filter(
     (p) => p.isKnown && p.lat !== 0 && isContiguous48(p.state)
   );
-  if (eligible.length === 0) return [];
+
+  // Filter out zones with no GPS position (lat/lon = 0)
+  const activeZones = zones.filter((z) => z.lat !== 0 && z.lon !== 0);
+  if (activeZones.length === 0) return [];
 
   // Sort aircraft so closest-to-a-zone goes first (ensures nearest aircraft win slots)
   const sorted = [...eligible].sort((a, b) => {
-    const dA = Math.min(...FIXED_VAN_ZONES.map((z) => haversineKm(a.lat, a.lon, z.lat, z.lon)));
-    const dB = Math.min(...FIXED_VAN_ZONES.map((z) => haversineKm(b.lat, b.lon, z.lat, z.lon)));
+    const dA = Math.min(...activeZones.map((z) => haversineKm(a.lat, a.lon, z.lat, z.lon)));
+    const dB = Math.min(...activeZones.map((z) => haversineKm(b.lat, b.lon, z.lat, z.lon)));
     return dA - dB;
   });
 
-  // ── Phase 1: assign to fixed zones (only within MAX_ZONE_DISTANCE_KM) ──
-  const fixedClusters: AircraftOvernightPosition[][] = FIXED_VAN_ZONES.map(() => []);
+  // ── Phase 1: assign based on overnight position (priority: where the aircraft sleeps) ──
+  const clusters: AircraftOvernightPosition[][] = activeZones.map(() => []);
   const unassigned: AircraftOvernightPosition[] = [];
 
   for (const ac of sorted) {
-    const ranked = FIXED_VAN_ZONES
+    const ranked = activeZones
       .map((z, i) => ({ i, d: haversineKm(ac.lat, ac.lon, z.lat, z.lon) }))
       .sort((a, b) => a.d - b.d);
 
     if (ranked[0].d > MAX_ZONE_DISTANCE_KM) {
-      // Too far from every fixed zone — goes to overflow
       unassigned.push(ac);
       continue;
     }
 
     let placed = false;
     for (const { i, d } of ranked) {
-      if (d > MAX_ZONE_DISTANCE_KM) break; // stop checking once beyond cutoff
-      if (fixedClusters[i].length < maxPerVan) {
-        fixedClusters[i].push(ac);
+      if (d > MAX_ZONE_DISTANCE_KM) break;
+      if (clusters[i].length < maxPerVan) {
+        clusters[i].push(ac);
         placed = true;
         break;
       }
     }
     if (!placed) {
-      // All nearby zones at cap — overflow
       unassigned.push(ac);
     }
   }
 
-  // ── Phase 2: overflow vans (V9-V16) — greedy nearest-center grouping ──
+  // ── Phase 2: intermediate airports — for aircraft whose overnight is out of range,
+  //    check if any of their day's legs pass through airports near a van ──
+  const stillUnassigned: AircraftOvernightPosition[] = [];
+
+  if (flights && date && unassigned.length > 0) {
+    for (const ac of unassigned) {
+      // Find all flights for this tail on the given date
+      const tailFlights = flights.filter((f) =>
+        f.tail_number === ac.tail &&
+        (f.scheduled_departure.startsWith(date) ||
+         (f.scheduled_arrival ?? "").startsWith(date)),
+      );
+
+      // Collect all intermediate airports this aircraft touches today
+      const intermediateAirports: { lat: number; lon: number }[] = [];
+      for (const f of tailFlights) {
+        for (const code of [f.departure_icao, f.arrival_icao]) {
+          if (!code) continue;
+          const iata = code.startsWith("K") && code.length === 4 ? code.slice(1) : code;
+          const info = getAirportInfo(iata);
+          if (info && isContiguous48(info.state)) {
+            intermediateAirports.push({ lat: info.lat, lon: info.lon });
+          }
+        }
+      }
+
+      // Try to assign based on any intermediate airport being within range of a van
+      let placed = false;
+      for (const apt of intermediateAirports) {
+        const ranked = activeZones
+          .map((z, i) => ({ i, d: haversineKm(apt.lat, apt.lon, z.lat, z.lon) }))
+          .sort((a, b) => a.d - b.d);
+
+        for (const { i, d } of ranked) {
+          if (d > MAX_ZONE_DISTANCE_KM) break;
+          if (clusters[i].length < maxPerVan) {
+            clusters[i].push(ac);
+            placed = true;
+            break;
+          }
+        }
+        if (placed) break;
+      }
+
+      if (!placed) stillUnassigned.push(ac);
+    }
+  } else {
+    stillUnassigned.push(...unassigned);
+  }
+
+  // ── Phase 3: overflow — group remaining aircraft geographically ──
+  const maxOverflow = Math.max(0, MAX_TOTAL_VANS - activeZones.length);
   type OverflowVan = { lat: number; lon: number; airport: string; aircraft: AircraftOvernightPosition[] };
   const overflowVans: OverflowVan[] = [];
 
-  for (const ac of unassigned) {
-    // Find an existing overflow van close enough with capacity
+  for (const ac of stillUnassigned) {
     let bestIdx = -1;
     let bestDist = OVERFLOW_GROUP_KM;
     for (let i = 0; i < overflowVans.length; i++) {
@@ -387,23 +466,22 @@ export function assignVans(
 
     if (bestIdx >= 0) {
       overflowVans[bestIdx].aircraft.push(ac);
-      // Re-center overflow van to centroid of its aircraft
       const ov = overflowVans[bestIdx];
       ov.lat = ov.aircraft.reduce((s, a) => s + a.lat, 0) / ov.aircraft.length;
       ov.lon = ov.aircraft.reduce((s, a) => s + a.lon, 0) / ov.aircraft.length;
-    } else if (overflowVans.length < MAX_OVERFLOW_VANS) {
+    } else if (overflowVans.length < maxOverflow) {
       overflowVans.push({ lat: ac.lat, lon: ac.lon, airport: ac.airport, aircraft: [ac] });
     }
-    // If no slot anywhere, skip (OK to miss some)
   }
 
-  // ── Build result ──
+  // ── Build result — include ALL zones (even with 0 aircraft) ──
   const result: VanAssignment[] = [];
 
-  FIXED_VAN_ZONES.forEach((zone, i) => {
-    const aircraft = fixedClusters[i];
-    if (aircraft.length === 0) return;
-    const maxDist = Math.max(...aircraft.map((a) => haversineKm(zone.lat, zone.lon, a.lat, a.lon)));
+  activeZones.forEach((zone, i) => {
+    const aircraft = clusters[i];
+    const maxDist = aircraft.length > 0
+      ? Math.max(...aircraft.map((a) => haversineKm(zone.lat, zone.lon, a.lat, a.lon)))
+      : 0;
     result.push({
       vanId: zone.vanId,
       homeAirport: zone.homeAirport,
@@ -418,7 +496,7 @@ export function assignVans(
   overflowVans.forEach((ov, i) => {
     const maxDist = Math.max(...ov.aircraft.map((a) => haversineKm(ov.lat, ov.lon, a.lat, a.lon)));
     result.push({
-      vanId: OVERFLOW_START_ID + i,
+      vanId: activeZones.length + 1 + i,
       homeAirport: ov.airport,
       lat: ov.lat,
       lon: ov.lon,
@@ -428,6 +506,7 @@ export function assignVans(
     });
   });
 
+  // Sort: vans with aircraft first, then empty vans
   return result.sort((a, b) => b.aircraft.length - a.aircraft.length);
 }
 
@@ -439,6 +518,110 @@ export function getTripById(tripId: string): Trip | null {
 // Pre-compute for today and tomorrow (kept for backward-compat)
 export const TODAY = "2026-02-25";
 export const TOMORROW = "2026-02-26";
+
+// ---------------------------------------------------------------------------
+// Step 1b: Compute overnight positions from live Supabase flight data
+// ---------------------------------------------------------------------------
+
+type LiveFlight = {
+  id: string;
+  tail_number: string | null;
+  departure_icao: string | null;
+  arrival_icao: string | null;
+  scheduled_departure: string;
+  scheduled_arrival: string | null;
+  flight_type: string | null;
+};
+
+/**
+ * Compute overnight aircraft positions from live JetInsight flight data.
+ *
+ * For each tail, find the last flight landing on or before `date` to determine
+ * where the aircraft overnights. Falls back to departure airport for in-progress flights.
+ */
+export function computeOvernightPositionsFromFlights(
+  flights: LiveFlight[],
+  date: string,
+): AircraftOvernightPosition[] {
+  // Group by tail
+  const byTail = new Map<string, LiveFlight[]>();
+  for (const f of flights) {
+    if (!f.tail_number) continue;
+    const arr = byTail.get(f.tail_number) ?? [];
+    arr.push(f);
+    byTail.set(f.tail_number, arr);
+  }
+
+  const results: AircraftOvernightPosition[] = [];
+
+  for (const [tail, tailFlights] of byTail) {
+    // Extract date portion from scheduled times
+    const withDates = tailFlights.map((f) => ({
+      ...f,
+      depDate: f.scheduled_departure.slice(0, 10),
+      arrDate: (f.scheduled_arrival ?? f.scheduled_departure).slice(0, 10),
+    }));
+
+    // Sort by arrival date desc, then departure desc
+    const sorted = [...withDates].sort((a, b) => {
+      if (b.arrDate !== a.arrDate) return b.arrDate.localeCompare(a.arrDate);
+      return b.depDate.localeCompare(a.depDate);
+    });
+
+    // 1. Flights arriving on this date — aircraft is at arrival airport
+    const arrivingToday = sorted.filter((f) => f.arrDate === date);
+    // 2. Flights spanning this date (departed before, arrives after)
+    const spanning = sorted.filter((f) => f.depDate <= date && f.arrDate > date);
+    // 3. Most recent flight that ended before this date
+    const past = sorted.filter((f) => f.arrDate < date);
+
+    let airport: string;
+    let flightId: string;
+    let flightType: string;
+
+    if (arrivingToday.length > 0) {
+      const best = arrivingToday[0];
+      airport = best.arrival_icao ?? best.departure_icao ?? "";
+      flightId = best.id;
+      flightType = best.flight_type ?? "Unknown";
+    } else if (spanning.length > 0) {
+      const best = spanning[0];
+      // In-progress: use departure airport as best guess
+      airport = best.departure_icao ?? "";
+      flightId = best.id;
+      flightType = best.flight_type ?? "Unknown";
+    } else if (past.length > 0) {
+      const best = past[0];
+      airport = best.arrival_icao ?? best.departure_icao ?? "";
+      flightId = best.id;
+      flightType = best.flight_type ?? "Unknown";
+    } else {
+      continue;
+    }
+
+    if (!airport) continue;
+
+    // Strip ICAO "K" prefix for US airports (KLGB → LGB) so getAirportInfo can match
+    const iata = (airport.startsWith("K") && airport.length === 4)
+      ? airport.slice(1)
+      : airport;
+    const info = getAirportInfo(iata);
+    results.push({
+      tail,
+      airport: iata, // use IATA code for consistency
+      airportName: info?.name ?? iata,
+      city: info?.city ?? "Unknown",
+      state: info?.state ?? "",
+      lat: info?.lat ?? 0,
+      lon: info?.lon ?? 0,
+      tripId: flightId,
+      tripStatus: flightType,
+      isKnown: info !== null,
+    });
+  }
+
+  return results.sort((a, b) => a.tail.localeCompare(b.tail));
+}
 
 /**
  * Returns an array of YYYY-MM-DD strings starting from today (local date),

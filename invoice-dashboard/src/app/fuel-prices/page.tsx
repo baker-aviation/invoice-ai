@@ -7,7 +7,7 @@ import { fetchFuelPrices } from "@/lib/invoiceApi";
 import FuelPricesTable from "./FuelPricesTable";
 
 export default async function FuelPricesPage() {
-  const data = await fetchFuelPrices({ limit: 300 });
+  const data = await fetchFuelPrices({ limit: 2500 });
   const fuelPrices = data.fuel_prices ?? [];
 
   return (

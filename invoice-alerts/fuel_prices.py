@@ -13,7 +13,7 @@ import logging
 import re
 from typing import Any, Dict, List, Optional
 
-from supa import safe_insert, safe_select_many, safe_select_one
+from supa import safe_insert, safe_select_many, safe_select_one, safe_upsert
 
 log = logging.getLogger(__name__)
 
@@ -244,7 +244,12 @@ def store_fuel_price(
     data: Dict[str, Any],
     increase: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Insert a fuel price record. Returns inserted row, or None on duplicate."""
+    """Upsert a fuel price record.
+
+    Uses ON CONFLICT (document_id) DO UPDATE so re-parsed invoices refresh
+    the fuel_prices row instead of being silently skipped.
+    Returns the upserted row, or None on unexpected failure.
+    """
     row = {
         "document_id": data["document_id"],
         "parsed_invoice_id": data.get("parsed_invoice_id"),
@@ -258,19 +263,14 @@ def store_fuel_price(
         "tail_number": data.get("tail_number"),
         "currency": data.get("currency", "USD"),
         "associated_line_items": json.dumps(data.get("associated_line_items", [])),
+        "data_source": data.get("data_source", "invoice"),
         "price_change_pct": increase["price_change_pct"] if increase else None,
         "previous_price": increase["previous_price"] if increase else None,
         "previous_document_id": increase.get("previous_document_id") if increase else None,
         "alert_sent": bool(increase),
     }
 
-    try:
-        return safe_insert(FUEL_PRICES_TABLE, row)
-    except Exception as e:
-        if "23505" in repr(e) or "duplicate" in repr(e).lower():
-            log.info("fuel_prices duplicate for document_id=%s", data.get("document_id"))
-            return None
-        raise
+    return safe_upsert(FUEL_PRICES_TABLE, row, on_conflict="document_id")
 
 
 # ── Audit / diagnostics ──────────────────────────────────────────────────────
