@@ -229,6 +229,7 @@ function isAfterHours(utcIso: string | null, icao: string | null): boolean {
 // ─── Flight type badge colors (matching JetInsight categories) ───────────────
 
 const FLIGHT_TYPE_COLORS: Record<string, string> = {
+  Charter:        "bg-green-100 text-green-800",
   Revenue:        "bg-green-100 text-green-800",
   Owner:          "bg-blue-100 text-blue-800",
   Positioning:    "bg-yellow-100 text-yellow-800",
@@ -250,7 +251,7 @@ function flightTypeBadge(flightType: string): string {
 // Client-side fallback: infer flight_type from the ICS summary when the
 // backend didn't extract one (e.g. flights synced before parser update).
 const FLIGHT_TYPE_KEYWORDS = [
-  "Revenue", "Owner", "Positioning", "Maintenance", "Training",
+  "Charter", "Revenue", "Owner", "Positioning", "Maintenance", "Training",
   "Ferry", "Cargo", "Needs pos", "Crew conflict", "Time off",
   "Assignment", "Transient",
 ];
@@ -670,7 +671,7 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
   const [activeFilter, setActiveFilter] = useState<AlertFilter>("ALL");
   const [notamSub, setNotamSub] = useState<NotamSubFilter>("ALL_NOTAMS");
   const [pprSub, setPprSub] = useState<PprSubFilter>("ALL_PPR");
-  const [flightTypeFilter, setFlightTypeFilter] = useState<Set<string>>(new Set(["Revenue", "Positioning"]));
+  const [flightTypeFilter, setFlightTypeFilter] = useState<Set<string>>(new Set(["Charter", "Revenue", "Positioning"]));
   const [showAllTypes, setShowAllTypes] = useState(false);
   const [activeRange, setActiveRange] = useState<TimeRange>("7D");
   const [ackedIds, setAckedIds] = useState<Set<string>>(new Set());

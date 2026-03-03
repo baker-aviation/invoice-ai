@@ -26,8 +26,8 @@ export function isContiguous48(state: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Fixed van zones — replaces dynamic k-means clustering so vans stay in
-// the same geographic area. 8 home bases per ops requirements.
+// Fixed van zones — 16 home bases covering major US private aviation hubs.
+// Samsara GPS matching assigns the closest physical van to each zone.
 // ---------------------------------------------------------------------------
 
 export type VanZone = {
@@ -39,14 +39,22 @@ export type VanZone = {
 };
 
 export const FIXED_VAN_ZONES: VanZone[] = [
-  { vanId: 1, name: "North FL",       homeAirport: "JAX", lat: 30.4943, lon: -81.6879 },
-  { vanId: 2, name: "South FL East",  homeAirport: "PBI", lat: 26.6832, lon: -80.0956 },
-  { vanId: 3, name: "South FL West",  homeAirport: "FMY", lat: 26.5866, lon: -81.8633 },
-  { vanId: 4, name: "NY/NJ – TEB",    homeAirport: "TEB", lat: 40.8501, lon: -74.0608 },
-  { vanId: 5, name: "NY/NJ – HPN",    homeAirport: "HPN", lat: 41.0670, lon: -73.7076 },
-  { vanId: 6, name: "Bedford MA",     homeAirport: "BED", lat: 42.4700, lon: -71.2890 },
-  { vanId: 7, name: "LA Area",        homeAirport: "VNY", lat: 34.2098, lon: -118.4899 },
-  { vanId: 8, name: "SFO Area",       homeAirport: "SFO", lat: 37.6213, lon: -122.3790 },
+  { vanId: 1,  name: "North FL",       homeAirport: "JAX", lat: 30.4943, lon: -81.6879 },
+  { vanId: 2,  name: "South FL East",  homeAirport: "PBI", lat: 26.6832, lon: -80.0956 },
+  { vanId: 3,  name: "South FL West",  homeAirport: "FMY", lat: 26.5866, lon: -81.8633 },
+  { vanId: 4,  name: "NY/NJ – TEB",    homeAirport: "TEB", lat: 40.8501, lon: -74.0608 },
+  { vanId: 5,  name: "NY/NJ – HPN",    homeAirport: "HPN", lat: 41.0670, lon: -73.7076 },
+  { vanId: 6,  name: "Bedford MA",     homeAirport: "BED", lat: 42.4700, lon: -71.2890 },
+  { vanId: 7,  name: "LA Area",        homeAirport: "VNY", lat: 34.2098, lon: -118.4899 },
+  { vanId: 8,  name: "SFO Area",       homeAirport: "SFO", lat: 37.6213, lon: -122.3790 },
+  { vanId: 9,  name: "Dallas/FW",      homeAirport: "ADS", lat: 32.9686, lon: -96.8364 },
+  { vanId: 10, name: "Houston",        homeAirport: "SGR", lat: 29.6222, lon: -95.6565 },
+  { vanId: 11, name: "Chicago",        homeAirport: "PWK", lat: 42.1142, lon: -87.9015 },
+  { vanId: 12, name: "Atlanta",        homeAirport: "PDK", lat: 33.8756, lon: -84.3020 },
+  { vanId: 13, name: "DC Area",        homeAirport: "IAD", lat: 38.9445, lon: -77.4558 },
+  { vanId: 14, name: "Denver",         homeAirport: "APA", lat: 39.5701, lon: -104.8493 },
+  { vanId: 15, name: "Scottsdale",     homeAirport: "SDL", lat: 33.6229, lon: -111.9105 },
+  { vanId: 16, name: "Seattle",        homeAirport: "BFI", lat: 47.5300, lon: -122.3019 },
 ];
 
 // ---------------------------------------------------------------------------
@@ -282,13 +290,12 @@ export function computeOvernightPositions(date: string): AircraftOvernightPositi
 // ---------------------------------------------------------------------------
 // Step 2: Assign vans to aircraft.
 //
-// Phase 1 — Fixed zones (V1-V8):
+// Phase 1 — Fixed zones (V1-V16):
 //   Each aircraft within MAX_ZONE_DISTANCE_KM of a fixed zone home base is
 //   assigned there (nearest zone first, capped at maxPerVan).
 //
-// Phase 2 — Overflow vans (V9-V16):
-//   Aircraft not covered by any fixed zone are grouped geographically into
-//   up to 8 additional "flex vans" that position themselves near the work.
+// Phase 2 — Overflow (unused with 16 fixed zones):
+//   Kept for backward compat; with 16 fixed zones MAX_OVERFLOW_VANS = 0.
 //
 // 48-states rule: offshore / international aircraft are excluded entirely.
 // ---------------------------------------------------------------------------

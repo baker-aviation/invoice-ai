@@ -666,29 +666,29 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
         seen_uids[flight["ics_uid"]] = idx
     batch = [batch[i] for i in sorted(seen_uids.values())]
 
-    # Cross-feed dedup: same physical flight can appear in different per-aircraft
-    # feeds with different ics_uids. Deduplicate by flight identity
-    # (tail, dep_icao, arr_icao, scheduled_departure). Keep first occurrence;
-    # collect extra ics_uids to clean from DB.
-    cross_dup_uids: List[str] = []
-    seen_identity: Dict[str, int] = {}
-    deduped_batch: List[Dict[str, Any]] = []
-    for flight in batch:
-        identity = (
-            flight.get("tail_number", ""),
-            flight.get("departure_icao", ""),
-            flight.get("arrival_icao", ""),
-            flight.get("scheduled_departure", ""),
-        )
-        key = "|".join(identity)
-        if key in seen_identity:
-            cross_dup_uids.append(flight["ics_uid"])
+    # Second dedup: same physical flight can appear across per-aircraft feeds
+    # with DIFFERENT UIDs.  Dedup by (tail, dep_icao, arr_icao, dep_time).
+    # Keep the first occurrence; the duplicate gets its ics_uid recorded for
+    # later cleanup from the DB.
+    pre_dedup = len(batch)
+    flight_sigs: Dict[str, int] = {}
+    dup_uids: List[str] = []
+    for idx, flight in enumerate(batch):
+        tail = flight.get("tail_number", "")
+        dep = flight.get("departure_icao", "")
+        arr = flight.get("arrival_icao", "")
+        dep_t = flight.get("scheduled_departure", "")
+        if tail and dep and arr and dep_t:
+            sig = f"{tail}|{dep}|{arr}|{dep_t}"
+            if sig in flight_sigs:
+                dup_uids.append(flight["ics_uid"])
+                continue
+            flight_sigs[sig] = idx
         else:
-            seen_identity[key] = len(deduped_batch)
-            deduped_batch.append(flight)
-    if cross_dup_uids:
-        print(f"sync_schedule: removed {len(cross_dup_uids)} cross-feed duplicates", flush=True)
-    batch = deduped_batch
+            flight_sigs[flight["ics_uid"]] = idx  # can't dedup, keep it
+    batch = [batch[i] for i in sorted(flight_sigs.values())]
+    if pre_dedup != len(batch):
+        print(f"sync_schedule: cross-feed dedup removed {pre_dedup - len(batch)} duplicate flights", flush=True)
 
     t_parse = _time.monotonic() - t0
     print(f"sync_schedule: parsed {len(batch)} flights to upsert, {skipped} skipped in {t_parse:.1f}s", flush=True)
@@ -712,18 +712,81 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
                     print(f"sync_schedule row upsert error uid={row.get('ics_uid','?')}: {repr(row_err)}", flush=True)
 
     # ── Clean cross-feed dups from DB ────────────────────────────────────
-    if cross_dup_uids:
+    if dup_uids:
         try:
-            for i in range(0, len(cross_dup_uids), 50):
-                chunk_uids = cross_dup_uids[i:i + 50]
+            for i in range(0, len(dup_uids), 50):
+                chunk_uids = dup_uids[i:i + 50]
                 supa.table(FLIGHTS_TABLE).delete().in_("ics_uid", chunk_uids).execute()
-            print(f"sync_schedule: deleted {len(cross_dup_uids)} cross-feed dup rows from DB", flush=True)
+            print(f"sync_schedule: deleted {len(dup_uids)} cross-feed dup rows from DB", flush=True)
         except Exception as e:
             print(f"sync_schedule: cross-feed dup cleanup error: {repr(e)}", flush=True)
 
     # ── Cleanup: remove non-flight entries already in the DB ─────────────
     cleaned = 0
     try:
+        # 0. Purge stale flights: delete DB rows whose ics_uid is no longer in
+        #    the fresh ICS data.  This handles legs that JetInsight removed or
+        #    replaced (new UID).  Scoped to flights departing between now and
+        #    the lookahead cutoff so we don't touch historical rows.
+        fresh_uids = {f["ics_uid"] for f in batch}
+        if fresh_uids:
+            # Fetch all ics_uids currently in the DB within the sync window
+            window_start = now.isoformat()
+            window_end = cutoff.isoformat()
+            db_rows = (
+                supa.table(FLIGHTS_TABLE)
+                .select("id, ics_uid")
+                .gte("scheduled_departure", window_start)
+                .lte("scheduled_departure", window_end)
+                .limit(10000)
+                .execute()
+            )
+            stale_ids = [
+                r["id"] for r in (db_rows.data or [])
+                if r.get("ics_uid") and r["ics_uid"] not in fresh_uids
+            ]
+            for i in range(0, len(stale_ids), 50):
+                chunk_ids = stale_ids[i:i + 50]
+                supa.table(FLIGHTS_TABLE).delete().in_("id", chunk_ids).execute()
+                cleaned += len(chunk_ids)
+            if stale_ids:
+                print(f"sync_schedule: purged {len(stale_ids)} stale flights from DB", flush=True)
+        # 0b. Delete cross-feed duplicates already in the DB — same
+        #     (tail, dep, arr, dep_time) but different ics_uid.
+        if dup_uids:
+            for i in range(0, len(dup_uids), 50):
+                chunk = dup_uids[i:i + 50]
+                supa.table(FLIGHTS_TABLE).delete().in_("ics_uid", chunk).execute()
+                cleaned += len(chunk)
+            print(f"sync_schedule: removed {len(dup_uids)} cross-feed dup flights from DB", flush=True)
+        # Also scan for existing cross-feed dups (from before this fix)
+        dup_scan = (
+            supa.table(FLIGHTS_TABLE)
+            .select("id, tail_number, departure_icao, arrival_icao, scheduled_departure")
+            .gte("scheduled_departure", now.isoformat())
+            .lte("scheduled_departure", cutoff.isoformat())
+            .limit(10000)
+            .execute()
+        )
+        sig_first: Dict[str, str] = {}  # sig → first id
+        dup_db_ids: List[str] = []
+        for r in (dup_scan.data or []):
+            t = r.get("tail_number") or ""
+            d = r.get("departure_icao") or ""
+            a = r.get("arrival_icao") or ""
+            dt = r.get("scheduled_departure") or ""
+            if t and d and a and dt:
+                sig = f"{t}|{d}|{a}|{dt}"
+                if sig in sig_first:
+                    dup_db_ids.append(r["id"])
+                else:
+                    sig_first[sig] = r["id"]
+        for i in range(0, len(dup_db_ids), 50):
+            chunk_ids = dup_db_ids[i:i + 50]
+            supa.table(FLIGHTS_TABLE).delete().in_("id", chunk_ids).execute()
+            cleaned += len(chunk_ids)
+        if dup_db_ids:
+            print(f"sync_schedule: cleaned {len(dup_db_ids)} existing cross-feed dups from DB", flush=True)
         # 1. Delete by known non-flight types
         for skip_type in _SKIP_FLIGHT_TYPES:
             res = supa.table(FLIGHTS_TABLE).delete().eq("flight_type", skip_type).execute()

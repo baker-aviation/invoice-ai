@@ -21,7 +21,7 @@ gcloud run deploy "${SERVICE_NAME}" \
   --platform managed \
   --no-allow-unauthenticated \
   --cpu 1 \
-  --memory 512Mi \
+  --memory 1Gi \
   --timeout 300 \
   --max-instances 3 \
   --set-secrets "SUPABASE_URL=SUPABASE_URL:latest,SUPABASE_SERVICE_ROLE_KEY=SUPABASE_SERVICE_ROLE_KEY:latest,GCS_BUCKET=GCS_BUCKET:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest" \
