@@ -11,7 +11,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from supa import sb
+from supa import sb, log_pipeline_run
 from auth_middleware import add_auth_middleware
 
 app = FastAPI()
@@ -387,6 +387,7 @@ def pull_applicants(
         processed += 1
         results.append({"message_id": mid, "application_id": app_id, "uploaded": uploaded_files})
 
+    log_pipeline_run("job-ingest", items=processed, message=f"matched={len(msgs)} processed={processed}")
     return {
         "ok": True,
         "mode": "inbox_readonly",

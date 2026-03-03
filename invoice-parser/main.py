@@ -36,6 +36,26 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 
 supa = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+def log_pipeline_run(
+    pipeline: str,
+    *,
+    status: str = "ok",
+    message: str = "",
+    items: int = 0,
+    duration_ms: int | None = None,
+):
+    """Log a row to pipeline_runs for health monitoring. Fire-and-forget."""
+    try:
+        supa.table("pipeline_runs").insert({
+            "pipeline": pipeline,
+            "status": status,
+            "message": message,
+            "items": items,
+            "duration_ms": duration_ms,
+        }).execute()
+    except Exception as e:
+        print(f"[log_pipeline_run] {pipeline}: {e}", flush=True)
+
 from auth_middleware import add_auth_middleware
 
 app = FastAPI(title="invoice-parser", version=os.environ.get("APP_VERSION", "0.2.0"))

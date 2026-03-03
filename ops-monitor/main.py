@@ -14,7 +14,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from supa import sb
+from supa import sb, log_pipeline_run
 from auth_middleware import add_auth_middleware
 
 app = FastAPI()
@@ -720,6 +720,7 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
 
     t_total = _time.monotonic() - t0
     print(f"sync_schedule: done in {t_total:.1f}s — upserted={upserted} skipped={skipped} errors={errors} cleaned={cleaned}", flush=True)
+    log_pipeline_run("flight-sync", items=upserted, duration_ms=int(t_total * 1000), message=f"upserted={upserted} skipped={skipped}")
     return {"ok": True, "upserted": upserted, "skipped": skipped, "errors": errors, "cleaned": cleaned, "fetch_secs": round(t_fetch, 1), "total_secs": round(t_total, 1)}
 
 
@@ -784,6 +785,7 @@ def pull_edct(
             errors += 1
             print(f"pull_edct error msg_id={msg_id}: {repr(e)}", flush=True)
 
+    log_pipeline_run("edct-pull", items=ingested, message=f"ingested={ingested} skipped={skipped}")
     return {"ok": True, "ingested": ingested, "skipped": skipped, "errors": errors}
 
 
@@ -1051,10 +1053,13 @@ def check_notams(lookahead_hours: int = Query(720, ge=1, le=720)):
         stats = future.result(timeout=90)
     except FuturesTimeoutError:
         print("check_notams: 90s hard deadline exceeded", flush=True)
+        log_pipeline_run("notam-check", status="error", message="90s timeout")
         return {"ok": True, "timeout": True, "alerts_created": 0}
     except Exception as e:
         print(f"check_notams exception: {repr(e)}", flush=True)
+        log_pipeline_run("notam-check", status="error", message=str(e)[:200])
         raise HTTPException(500, detail="check_notams failed")
+    log_pipeline_run("notam-check", items=stats.get("alerts_created", 0), message=f"flights={stats.get('flights_checked', 0)} airports={stats.get('airports_checked', 0)}")
     return {"ok": True, **stats}
 
 
