@@ -43,6 +43,7 @@ type VehicleDiag = {
 
 function isAogVehicle(name: string): boolean {
   const u = (name || "").toUpperCase();
+  if (u.includes("CLEANING")) return false;
   return u.includes("VAN") || u.includes("AOG") || u.includes(" OG") || u.includes("TRAN");
 }
 
