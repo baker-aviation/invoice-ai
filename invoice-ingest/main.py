@@ -322,92 +322,38 @@ def pull_mailbox(
 # Parse Document
 # -------------------------
 
-def _parse_pdf_to_invoice_json(pdf_bytes: bytes) -> Dict[str, Any]:
-    """
-    Placeholder for your parser.
-    If you already have a real parser function/module, call it here.
+PARSER_BASE_URL = os.getenv("PARSER_BASE_URL", "https://invoice-parser-hrzd5jf3da-uc.a.run.app")
 
-    Must return a dict matching your parsed_invoices columns expectations.
+
+def _parse_via_remote_service(document_id: str) -> Dict[str, Any]:
     """
-    # ---- IMPORTANT ----
-    # Replace this with your real parsing logic.
-    # For now we store a minimal shape.
-    return {
-        "doc_type": "other",
-        "vendor_name": None,
-        "invoice_number": None,
-        "invoice_date": None,
-        "currency": "USD",
-        "subtotal": None,
-        "tax": None,
-        "total": None,
-        "line_items": [],
-        "review_required": True,
-        "validation_pass": False,
-        "parser_version": os.getenv("PARSER_VERSION", "0.1.0"),
-    }
+    Call the invoice-parser Cloud Run service to parse a document.
+    The parser fetches the PDF from GCS itself and runs OpenAI extraction.
+    """
+    url = f"{PARSER_BASE_URL.rstrip('/')}/jobs/parse_document"
+    print(f"parse_via_remote: calling {url} for document_id={document_id}", flush=True)
+
+    # Use Google Cloud Run service-to-service auth
+    import google.auth.transport.requests
+    import google.auth
+    creds, _ = google.auth.default()
+    auth_req = google.auth.transport.requests.Request()
+    creds.refresh(auth_req)
+    headers = {"Authorization": f"Bearer {creds.token}"}
+
+    resp = requests.post(url, params={"document_id": document_id}, headers=headers, timeout=180)
+    resp.raise_for_status()
+    return resp.json()
 
 
 @app.post("/jobs/parse_document")
 def parse_document(document_id: str):
     """
-    Fetch document PDF from GCS, run parser, insert parsed_invoices row,
-    and mark document status as parsed (or needs_review).
+    Delegate parsing to the invoice-parser service.
+    The parser handles PDF download, OpenAI extraction, and Supabase writes.
     """
-    supa = sb()
-
-    # fetch doc row
-    doc_rows = (
-        supa.table(DOCS_TABLE)
-        .select("*")
-        .eq("id", document_id)
-        .limit(1)
-        .execute()
-        .data
-        or []
-    )
-    doc = doc_rows[0] if doc_rows else None
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
-
-    bucket, path = _doc_bucket_path(doc)
-    if not bucket or not path:
-        raise HTTPException(status_code=400, detail="Document missing storage path/bucket")
-
-    # download from GCS
-    client = storage.Client()
-    blob = client.bucket(bucket).blob(path)
-    pdf_bytes = blob.download_as_bytes()
-
-    # parse
-    inv = _parse_pdf_to_invoice_json(pdf_bytes)
-
-    # source_invoice_id is NOT NULL in parsed_invoices — fall back through
-    # invoice_number → document_id so the insert never violates the constraint.
-    src_id = (inv.get("invoice_number") or document_id)
-    src_id = str(src_id).strip() if src_id else document_id
-
-    inv_row = {
-        "document_id": document_id,
-        **inv,
-        "source_invoice_id": src_id,
-        "invoice_key": src_id,
-        "dedupe_key": src_id,
-        "created_at": _utc_now(),
-    }
-
-    # store parsed invoice
-    supa.table(PARSED_TABLE).insert(inv_row).execute()
-
-    # mark document status
-    new_status = "parsed"
-    try:
-        supa.table(DOCS_TABLE).update({"status": new_status, "parsed_at": _utc_now()}).eq("id", document_id).execute()
-    except Exception:
-        # ok if columns don't exist
-        pass
-
-    return {"ok": True, "document_id": document_id, "status": new_status}
+    result = _parse_via_remote_service(document_id)
+    return {"ok": True, "document_id": document_id, "result": result}
 
 
 # -------------------------
@@ -429,22 +375,16 @@ def parse_next(limit: int = 5, status: str = "uploaded"):
     claimed = 0
     parsed = 0
     failed = 0
-    skipped_missing_storage = 0
 
     for doc in candidates:
         did = doc.get("id")
         if not did:
             continue
 
-        bucket, path = _doc_bucket_path(doc)
-        if not bucket or not path:
-            skipped_missing_storage += 1
-            continue
-
         claimed += 1
 
         try:
-            r = parse_document(document_id=did)
+            r = _parse_via_remote_service(did)
             results.append({"document_id": did, "ok": True, "result": r})
             parsed += 1
         except Exception as e:
@@ -459,7 +399,6 @@ def parse_next(limit: int = 5, status: str = "uploaded"):
         "requested": limit,
         "status_filter": status,
         "candidates": len(candidates),
-        "skipped_missing_storage": skipped_missing_storage,
         "claimed": claimed,
         "parsed": parsed,
         "failed": failed,
