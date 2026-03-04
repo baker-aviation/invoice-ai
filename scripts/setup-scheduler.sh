@@ -54,28 +54,26 @@ upsert_job() {
 
   if gcloud scheduler jobs describe "$name" \
        --project "$PROJECT_ID" --location "$SCHEDULER_REGION" &>/dev/null; then
-    echo "  ↻ updating  $name"
-    gcloud scheduler jobs update http "$name" \
+    # gcloud update won't add OIDC auth to a job that was created without it.
+    # Delete + recreate to ensure auth config is applied cleanly.
+    echo "  ↻ replacing  $name"
+    gcloud scheduler jobs delete "$name" \
       --project "$PROJECT_ID" \
       --location "$SCHEDULER_REGION" \
-      --schedule "$schedule" \
-      --uri "$uri" \
-      --http-method POST \
-      --time-zone "$TIME_ZONE" \
-      --quiet \
-      "$@"
+      --quiet 2>/dev/null || true
   else
     echo "  + creating  $name"
-    gcloud scheduler jobs create http "$name" \
-      --project "$PROJECT_ID" \
-      --location "$SCHEDULER_REGION" \
-      --schedule "$schedule" \
-      --uri "$uri" \
-      --http-method POST \
-      --time-zone "$TIME_ZONE" \
-      --quiet \
-      "$@"
   fi
+
+  gcloud scheduler jobs create http "$name" \
+    --project "$PROJECT_ID" \
+    --location "$SCHEDULER_REGION" \
+    --schedule "$schedule" \
+    --uri "$uri" \
+    --http-method POST \
+    --time-zone "$TIME_ZONE" \
+    --quiet \
+    "$@"
 }
 
 echo ""
