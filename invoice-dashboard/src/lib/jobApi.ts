@@ -213,3 +213,40 @@ export async function fetchJobDetail(applicationId: string | number): Promise<Jo
 
   return { ok: true, job: jobRow as JobRow, files };
 }
+
+// ---------------------------------------------------------------------------
+// Linked LORs — files linked to this candidate's parse row
+// ---------------------------------------------------------------------------
+
+export async function fetchLinkedLors(parseId: number | null | undefined): Promise<any[]> {
+  if (!parseId) return [];
+
+  const supa = createServiceClient();
+
+  const { data: lorFiles } = await supa
+    .from("job_application_files")
+    .select("id, filename, content_type, size_bytes, created_at, gcs_bucket, gcs_key, file_category, linked_parse_id")
+    .eq("linked_parse_id", parseId)
+    .eq("file_category", "lor")
+    .order("created_at", { ascending: true });
+
+  if (!lorFiles || lorFiles.length === 0) return [];
+
+  return Promise.all(
+    lorFiles.map(async (f) => {
+      let signed_url: string | null = null;
+      if (f.gcs_bucket && f.gcs_key) {
+        signed_url = await signGcsUrl(f.gcs_bucket as string, f.gcs_key as string);
+      }
+      if (!signed_url) signed_url = `/api/files/${f.id}`;
+      return {
+        id: f.id,
+        filename: f.filename,
+        content_type: f.content_type,
+        size_bytes: f.size_bytes,
+        created_at: f.created_at,
+        signed_url,
+      };
+    }),
+  );
+}

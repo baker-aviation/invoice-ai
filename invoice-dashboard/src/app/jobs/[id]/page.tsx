@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { Topbar } from "@/components/Topbar";
 import { Badge } from "@/components/Badge";
-import { fetchJobDetail } from "@/lib/jobApi";
+import { fetchJobDetail, fetchLinkedLors } from "@/lib/jobApi";
 import FileViewer from "./FileViewer";
 
 function fmtDate(s: any) {
@@ -58,6 +58,7 @@ export default async function JobDetailPage({
     const data = await fetchJobDetail(applicationId);
     const job = data.job;
     const files = data.files ?? [];
+    const lors = await fetchLinkedLors(job?.id);
     const isPilot = job?.category === "pilot_pic" || job?.category === "pilot_sic";
 
     return (
@@ -169,6 +170,21 @@ export default async function JobDetailPage({
               </div>
             )}
           </div>
+
+          {lors.length > 0 && (
+            <div className="rounded-xl border bg-white p-4 shadow-sm">
+              <div className="text-sm font-semibold">Letters of Recommendation</div>
+              <div className="mt-3 space-y-4">
+                {lors.map((f: any) => (
+                  <FileViewer
+                    key={f.id}
+                    file={f}
+                    downloadUrl={f.signed_url ?? null}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </>
     );
