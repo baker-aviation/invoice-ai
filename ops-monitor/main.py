@@ -89,9 +89,9 @@ _SKIP_FLIGHT_TYPES = {
 # SUMMARY keywords that indicate a non-flight entry regardless of flight_type.
 _SKIP_SUMMARY_KEYWORDS = {"NOT FLYING"}
 
-# FAA NMS API (test environment — swap to production URL when available)
-NMS_AUTH_URL = "https://api-staging.cgifederal-aim.com/v1/auth/token"
-NMS_API_BASE = "https://api-staging.cgifederal-aim.com/nmsapi"
+# FAA NMS API (production)
+NMS_AUTH_URL = "https://api-nms.aim.faa.gov/v1/auth/token"
+NMS_API_BASE = "https://api-nms.aim.faa.gov/nmsapi"
 
 FOREFLIGHT_MAILBOX = os.getenv("FOREFLIGHT_MAILBOX", "ForeFlight@baker-aviation.com")
 MS_TENANT_ID = os.getenv("MS_TENANT_ID")
@@ -175,8 +175,11 @@ def _get_nms_token() -> str:
             raise RuntimeError("FAA_CLIENT_ID / FAA_CLIENT_SECRET not configured")
         r = requests.post(
             NMS_AUTH_URL,
-            data={"grant_type": "client_credentials"},
-            auth=(FAA_CLIENT_ID, FAA_CLIENT_SECRET),
+            data={
+                "grant_type": "client_credentials",
+                "client_id": FAA_CLIENT_ID,
+                "client_secret": FAA_CLIENT_SECRET,
+            },
             timeout=(5, 10),  # (connect, read) — prevents indefinite hang
         )
         r.raise_for_status()
@@ -1315,7 +1318,7 @@ def debug_connectivity():
     import socket
 
     hosts = [
-        ("api-staging.cgifederal-aim.com", 443),
+        ("api-nms.aim.faa.gov", 443),
         ("graph.microsoft.com", 443),
         ("login.microsoftonline.com", 443),
     ]
