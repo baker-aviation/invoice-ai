@@ -175,11 +175,8 @@ def _get_nms_token() -> str:
             raise RuntimeError("FAA_CLIENT_ID / FAA_CLIENT_SECRET not configured")
         r = requests.post(
             NMS_AUTH_URL,
-            data={
-                "grant_type": "client_credentials",
-                "client_id": FAA_CLIENT_ID,
-                "client_secret": FAA_CLIENT_SECRET,
-            },
+            data={"grant_type": "client_credentials"},
+            auth=(FAA_CLIENT_ID, FAA_CLIENT_SECRET),
             timeout=(5, 10),  # (connect, read) — prevents indefinite hang
         )
         r.raise_for_status()
