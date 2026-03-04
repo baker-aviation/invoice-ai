@@ -66,7 +66,7 @@ export function HealthBoard() {
   const [loading, setLoading] = useState(true);
   const [triggering, setTriggering] = useState<string | null>(null);
   const [triggerResult, setTriggerResult] = useState<{ name: string; ok: boolean; msg: string } | null>(null);
-  const resultTimer = useRef<ReturnType<typeof setTimeout>>();
+  const resultTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const fetchHealth = useCallback(async () => {
     try {
