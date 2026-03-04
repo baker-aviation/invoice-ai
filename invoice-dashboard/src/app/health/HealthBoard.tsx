@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 
 type PipelineCheck = {
   name: string;
@@ -47,9 +47,26 @@ function formatTimestamp(iso: string | null): string {
   });
 }
 
+// Map display names back to pipeline slugs for triggering
+const NAME_TO_SLUG: Record<string, string> = {
+  "Flight Sync": "flight-sync",
+  "EDCT Pull": "edct-pull",
+  "NOTAM Check": "notam-check",
+  "Invoice Ingest": "invoice-ingest",
+  "Invoice Parse": "invoice-parse",
+  "Alert Generation": "alert-generation",
+  "Slack Flush": "slack-flush",
+  "Fuel Price Extract": "fuel-price-extract",
+  "Job Ingest": "job-ingest",
+  "Job Parse": "job-parse",
+};
+
 export function HealthBoard() {
   const [data, setData] = useState<HealthData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [triggering, setTriggering] = useState<string | null>(null);
+  const [triggerResult, setTriggerResult] = useState<{ name: string; ok: boolean; msg: string } | null>(null);
+  const resultTimer = useRef<ReturnType<typeof setTimeout>>();
 
   const fetchHealth = useCallback(async () => {
     try {
@@ -62,6 +79,30 @@ export function HealthBoard() {
       setLoading(false);
     }
   }, []);
+
+  const triggerPipeline = useCallback(async (name: string) => {
+    const slug = NAME_TO_SLUG[name];
+    if (!slug) return;
+    setTriggering(name);
+    setTriggerResult(null);
+    try {
+      const res = await fetch("/api/health/trigger", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pipeline: slug }),
+      });
+      const ok = res.ok;
+      const msg = ok ? "Triggered" : `Error ${res.status}`;
+      setTriggerResult({ name, ok, msg });
+      if (ok) setTimeout(fetchHealth, 3000); // refresh after a few seconds
+    } catch {
+      setTriggerResult({ name, ok: false, msg: "Failed" });
+    } finally {
+      setTriggering(null);
+      clearTimeout(resultTimer.current);
+      resultTimer.current = setTimeout(() => setTriggerResult(null), 5000);
+    }
+  }, [fetchHealth]);
 
   useEffect(() => {
     fetchHealth();
@@ -136,7 +177,7 @@ export function HealthBoard() {
                     </div>
                   </div>
                 </div>
-                <div className="flex items-center gap-4 flex-shrink-0 ml-4">
+                <div className="flex items-center gap-3 flex-shrink-0 ml-4">
                   <div className="text-right">
                     <div className="text-sm font-medium tabular-nums text-gray-700">
                       {formatAge(p.staleMins)}
@@ -148,6 +189,25 @@ export function HealthBoard() {
                   <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${style.bg} ${style.text}`}>
                     {style.label}
                   </span>
+                  {NAME_TO_SLUG[p.name] && (
+                    <button
+                      onClick={() => triggerPipeline(p.name)}
+                      disabled={triggering === p.name}
+                      className={`text-xs font-medium px-2.5 py-1 rounded-lg border transition ${
+                        triggerResult?.name === p.name
+                          ? triggerResult.ok
+                            ? "bg-emerald-50 border-emerald-200 text-emerald-600"
+                            : "bg-red-50 border-red-200 text-red-600"
+                          : "bg-white border-gray-200 text-gray-500 hover:border-blue-400 hover:text-blue-600"
+                      } disabled:opacity-50`}
+                    >
+                      {triggering === p.name
+                        ? "Running…"
+                        : triggerResult?.name === p.name
+                          ? triggerResult.msg
+                          : "Run Now"}
+                    </button>
+                  )}
                 </div>
               </div>
             );
