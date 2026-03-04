@@ -2059,6 +2059,37 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
     return () => { cancelled = true; clearInterval(id); };
   }, []);
 
+  // ── FlightAware flight info (ETA, route, origin/destination) ──
+  type FlightInfoEntry = {
+    tail: string; ident: string; origin_icao: string | null; origin_name: string | null;
+    destination_icao: string | null; destination_name: string | null; status: string | null;
+    progress_percent: number | null; departure_time: string | null; arrival_time: string | null;
+    route_distance_nm: number | null; diverted: boolean;
+  };
+  const [flightInfoMap, setFlightInfoMap] = useState<Map<string, FlightInfoEntry>>(new Map());
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadFlightInfo() {
+      try {
+        const res = await fetch("/api/aircraft/flights", { cache: "no-store" });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        const map = new Map<string, FlightInfoEntry>();
+        for (const f of (data.flights ?? [])) {
+          map.set(f.tail, f);
+        }
+        setFlightInfoMap(map);
+      } catch {
+        // FlightAware is optional — fail silently
+      }
+    }
+    loadFlightInfo();
+    const id = setInterval(loadFlightInfo, 120_000); // refresh every 2 min
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+
   return (
     <div className="space-y-5">
       {/* ── 7-day date strip ── */}
@@ -2191,7 +2222,7 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
 
           {viewMode === "map" ? (
             <div className="rounded-xl overflow-hidden border shadow-sm">
-              <MapView vans={displayedVans} colors={VAN_COLORS} liveVanPositions={liveVanPositions} liveVanIsLive={liveVanIsLive} adsbAircraft={adsbAircraft} />
+              <MapView vans={displayedVans} colors={VAN_COLORS} liveVanPositions={liveVanPositions} liveVanIsLive={liveVanIsLive} adsbAircraft={adsbAircraft} flightInfo={flightInfoMap} />
             </div>
           ) : (
             <div className="space-y-3">
@@ -2208,18 +2239,27 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
             </div>
           )}
 
-          {/* ADS-B status */}
-          {adsbAircraft.length > 0 && (
-            <div className="flex items-center gap-2 text-xs text-gray-500 px-1">
-              <span className="inline-block w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
-              <span>
-                ADS-B: {adsbAircraft.filter((a) => !a.on_ground).length} airborne,{" "}
-                {adsbAircraft.filter((a) => a.on_ground).length} on ground
-                <span className="text-gray-400 ml-1">
-                  ({adsbAircraft.length} of {adsbAircraft.length} tracked)
-                </span>
-              </span>
-              {adsbLoading && <span className="text-gray-400">updating…</span>}
+          {/* ADS-B + FlightAware status */}
+          {(adsbAircraft.length > 0 || flightInfoMap.size > 0) && (
+            <div className="flex flex-col gap-1 text-xs text-gray-500 px-1">
+              {adsbAircraft.length > 0 && (
+                <div className="flex items-center gap-2">
+                  <span className="inline-block w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+                  <span>
+                    ADS-B: {adsbAircraft.filter((a) => !a.on_ground).length} airborne,{" "}
+                    {adsbAircraft.filter((a) => a.on_ground).length} on ground
+                  </span>
+                  {adsbLoading && <span className="text-gray-400">updating…</span>}
+                </div>
+              )}
+              {flightInfoMap.size > 0 && (
+                <div className="flex items-center gap-2">
+                  <span className="inline-block w-2 h-2 rounded-full bg-green-500" />
+                  <span>
+                    FlightAware: {flightInfoMap.size} flights with ETA data
+                  </span>
+                </div>
+              )}
             </div>
           )}
 

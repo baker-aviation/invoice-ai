@@ -1,0 +1,212 @@
+/**
+ * FlightAware AeroAPI v4 client
+ *
+ * Docs: https://www.flightaware.com/aeroapi/portal/documentation
+ * Base: https://aeroapi.flightaware.com/aeroapi/
+ * Auth: x-apikey header
+ */
+
+const BASE = "https://aeroapi.flightaware.com/aeroapi";
+
+function apiKey(): string {
+  const key = process.env.FLIGHTAWARE_API_KEY;
+  if (!key) throw new Error("FLIGHTAWARE_API_KEY not set");
+  return key;
+}
+
+function headers() {
+  return { "x-apikey": apiKey(), Accept: "application/json; charset=UTF-8" };
+}
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export type FaAirport = {
+  code: string | null;        // ICAO code (e.g. "KTEB")
+  code_iata: string | null;   // IATA code (e.g. "TEB")
+  code_icao: string | null;
+  code_lid: string | null;
+  name: string | null;
+  city: string | null;
+  state: string | null;
+};
+
+export type FaFlight = {
+  ident: string;              // e.g. "KOW102"
+  fa_flight_id: string;
+  operator: string | null;
+  registration: string | null; // tail number e.g. "N102VR"
+  aircraft_type: string | null;
+  origin: FaAirport | null;
+  destination: FaAirport | null;
+  // OOOI times (ISO 8601)
+  scheduled_out: string | null;
+  estimated_out: string | null;
+  actual_out: string | null;
+  scheduled_off: string | null;
+  estimated_off: string | null;
+  actual_off: string | null;
+  scheduled_on: string | null;
+  estimated_on: string | null;
+  actual_on: string | null;
+  scheduled_in: string | null;
+  estimated_in: string | null;
+  actual_in: string | null;
+  // Route
+  route: string | null;
+  route_distance: number | null; // nautical miles
+  filed_ete: number | null;      // filed enroute time (seconds)
+  filed_airspeed: number | null;
+  filed_altitude: number | null;
+  progress_percent: number | null;
+  status: string | null;         // e.g. "En Route", "Landed", "Scheduled"
+  departure_delay: number | null;
+  arrival_delay: number | null;
+  diverted: boolean;
+  cancelled: boolean;
+};
+
+// Simplified version for the dashboard
+export type FlightInfo = {
+  tail: string;
+  ident: string;
+  fa_flight_id: string;
+  origin_icao: string | null;
+  origin_name: string | null;
+  destination_icao: string | null;
+  destination_name: string | null;
+  status: string | null;
+  progress_percent: number | null;
+  // Times
+  departure_time: string | null;   // actual or estimated gate out
+  arrival_time: string | null;     // estimated runway on (ETA)
+  scheduled_arrival: string | null;
+  // Route
+  route: string | null;
+  route_distance_nm: number | null;
+  filed_altitude: number | null;
+  // Flags
+  diverted: boolean;
+  cancelled: boolean;
+};
+
+// ---------------------------------------------------------------------------
+// API calls
+// ---------------------------------------------------------------------------
+
+/**
+ * Get recent and upcoming flights for a registration (tail number).
+ * Returns the most recent / current / upcoming flights.
+ */
+export async function getFlightsByRegistration(
+  registration: string,
+): Promise<FaFlight[]> {
+  const url = `${BASE}/flights/${encodeURIComponent(registration)}`;
+  const res = await fetch(url, {
+    headers: headers(),
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!res.ok) {
+    if (res.status === 401) throw new Error("FlightAware: invalid API key");
+    if (res.status === 429) throw new Error("FlightAware: rate limited");
+    return [];
+  }
+  const data = await res.json();
+  return (data.flights ?? []) as FaFlight[];
+}
+
+/**
+ * For a list of tail numbers, find the current/most-recent flight for each
+ * and return simplified FlightInfo objects.
+ */
+export async function getActiveFlights(
+  tails: string[],
+): Promise<FlightInfo[]> {
+  const results: FlightInfo[] = [];
+
+  // Query in batches of 3 to stay well under rate limits
+  const BATCH = 3;
+  for (let i = 0; i < tails.length; i += BATCH) {
+    const batch = tails.slice(i, i + BATCH);
+    const batchResults = await Promise.all(
+      batch.map(async (tail) => {
+        try {
+          const flights = await getFlightsByRegistration(tail);
+          // Find the best flight: en route > recently departed > upcoming
+          const active = pickActiveFlight(flights);
+          if (!active) return null;
+          return toFlightInfo(tail, active);
+        } catch {
+          return null;
+        }
+      }),
+    );
+    for (const r of batchResults) {
+      if (r) results.push(r);
+    }
+    // Rate limit pause between batches
+    if (i + BATCH < tails.length) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+  }
+
+  return results;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function pickActiveFlight(flights: FaFlight[]): FaFlight | null {
+  if (!flights.length) return null;
+
+  // Prefer en-route flights
+  const enRoute = flights.find(
+    (f) =>
+      f.actual_off != null &&
+      f.actual_on == null &&
+      !f.cancelled,
+  );
+  if (enRoute) return enRoute;
+
+  // Then flights that departed recently (within 12 hours)
+  const now = Date.now();
+  const recent = flights.find((f) => {
+    const dep = f.actual_out ?? f.estimated_out ?? f.scheduled_out;
+    if (!dep) return false;
+    const depMs = new Date(dep).getTime();
+    return depMs > now - 12 * 3600_000 && !f.cancelled;
+  });
+  if (recent) return recent;
+
+  // Then upcoming scheduled flights
+  const upcoming = flights.find((f) => {
+    const dep = f.scheduled_out ?? f.estimated_out;
+    if (!dep) return false;
+    return new Date(dep).getTime() > now && !f.cancelled;
+  });
+  return upcoming ?? null;
+}
+
+function toFlightInfo(tail: string, f: FaFlight): FlightInfo {
+  return {
+    tail,
+    ident: f.ident,
+    fa_flight_id: f.fa_flight_id,
+    origin_icao: f.origin?.code_icao ?? f.origin?.code ?? null,
+    origin_name: f.origin?.name ?? null,
+    destination_icao: f.destination?.code_icao ?? f.destination?.code ?? null,
+    destination_name: f.destination?.name ?? null,
+    status: f.status,
+    progress_percent: f.progress_percent,
+    departure_time: f.actual_out ?? f.estimated_out ?? f.scheduled_out,
+    arrival_time: f.estimated_on ?? f.scheduled_on,
+    scheduled_arrival: f.scheduled_on,
+    route: f.route,
+    route_distance_nm: f.route_distance,
+    filed_altitude: f.filed_altitude,
+    diverted: f.diverted,
+    cancelled: f.cancelled,
+  };
+}
