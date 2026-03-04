@@ -4,6 +4,7 @@ import { requireAuth, isAuthed } from "@/lib/api-auth";
 import { TRIPS } from "@/lib/maintenanceData";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 30; // seconds — hex lookups for fleet can take 10-20s
 
 // Airplanes.live API — free, no API key, 1 req/sec rate limit
 const ADSB_API = "https://api.airplanes.live/v2";
@@ -161,10 +162,10 @@ export async function GET(req: NextRequest) {
   }
 
   // Phase 1: Try hex lookups in small batches (most reliable strategy).
-  // Pre-compute all ICAO hex codes and batch 3 at a time with delays.
+  // Pre-compute all ICAO hex codes and batch 5 at a time with delays.
   const positions: AircraftPosition[] = [];
   const foundTails = new Set<string>();
-  const BATCH = 3;
+  const BATCH = 5;
 
   // Build hex→tail map
   const hexMap = new Map<string, string>();
@@ -186,7 +187,7 @@ export async function GET(req: NextRequest) {
       if (r) { positions.push(r); foundTails.add(r.tail); }
     }
     if (i + BATCH < hexEntries.length) {
-      await new Promise((resolve) => setTimeout(resolve, 1100));
+      await new Promise((resolve) => setTimeout(resolve, 600));
     }
   }
 

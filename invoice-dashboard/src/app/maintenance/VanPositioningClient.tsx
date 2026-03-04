@@ -2045,11 +2045,15 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
       try {
         setAdsbLoading(true);
         const res = await fetch("/api/aircraft/positions", { cache: "no-store" });
-        if (!res.ok) return;
+        if (!res.ok) {
+          console.warn(`[ADS-B] /api/aircraft/positions returned ${res.status}`);
+          return;
+        }
         const data = await res.json();
+        console.log(`[ADS-B] ${data.count ?? 0}/${data.total_tails ?? "?"} aircraft found${data.cached ? " (cached)" : ""}`);
         if (!cancelled) setAdsbAircraft(data.aircraft ?? []);
-      } catch {
-        // Silently fail — ADS-B is optional
+      } catch (err) {
+        console.warn("[ADS-B] fetch failed:", err);
       } finally {
         if (!cancelled) setAdsbLoading(false);
       }
