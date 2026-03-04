@@ -694,7 +694,7 @@ def run_alerts(document_id: str) -> Dict[str, Any]:
                             is_actionable = bool(fee_name2) and fee_amount2 is not None and fee_amount2 > 0
 
                             existing_ss = (existing.get("slack_status") or "").strip().lower()
-                            _TERMINAL = {"sent", "ok", "success", "skipped", "error"}
+                            _TERMINAL = {"sent", "ok", "success", "skipped", "error", "sending"}
                             if existing_ss in _TERMINAL:
                                 # Already processed — don't re-queue or it will send again
                                 new_ss = existing_ss
