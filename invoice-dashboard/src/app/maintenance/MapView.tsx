@@ -8,6 +8,8 @@
  *
  * Aircraft markers (✈) — colored to match their assigned van — show the
  * OVERNIGHT position (where the plane will be at end of selected date).
+ *
+ * Live ADS-B markers (✈) — real-time aircraft positions from airplanes.live.
  */
 
 import L from "leaflet";
@@ -19,6 +21,19 @@ const THREE_HOUR_RADIUS_M = 300_000;
 
 type LivePos = { lat: number; lon: number };
 
+export type AdsbAircraft = {
+  tail: string;
+  lat: number;
+  lon: number;
+  alt_baro: number | null;
+  gs: number | null;
+  track: number | null;
+  on_ground: boolean;
+  squawk: string | null;
+  flight: string | null;
+  seen: number | null;
+};
+
 type Props = {
   vans: VanAssignment[];
   colors: string[];
@@ -26,6 +41,8 @@ type Props = {
   liveVanPositions: Map<number, LivePos>;
   /** Zone ID → whether the position is a live reading (true) or last-known cache (false). */
   liveVanIsLive?: Map<number, boolean>;
+  /** Live ADS-B aircraft positions from airplanes.live */
+  adsbAircraft?: AdsbAircraft[];
 };
 
 function vanDivIcon(color: string, vanId: number): L.DivIcon {
@@ -65,7 +82,32 @@ function planeDivIcon(color: string): L.DivIcon {
   });
 }
 
-export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive }: Props) {
+function adsbDivIcon(track: number | null, onGround: boolean): L.DivIcon {
+  const rotation = track != null ? track - 45 : -45; // ✈ emoji points NE, subtract 45
+  const color = onGround ? "#6b7280" : "#2563eb";
+  return L.divIcon({
+    html: `<div style="
+      color:${color};
+      font-size:18px;
+      line-height:1;
+      filter:drop-shadow(0 1px 4px rgba(0,0,0,0.5));
+      user-select:none;
+      transform:rotate(${rotation}deg);
+    ">✈</div>`,
+    className: "",
+    iconSize: [22, 22],
+    iconAnchor: [11, 11],
+    popupAnchor: [0, -14],
+  });
+}
+
+function fmtAlt(alt: number | null): string {
+  if (alt == null) return "—";
+  if (alt <= 0) return "GND";
+  return `FL${Math.round(alt / 100)}`;
+}
+
+export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive, adsbAircraft }: Props) {
   // Collect unique airport overnight positions → de-duplicate so one icon per airport per van
   const aircraftByAirport = new Map<
     string,
@@ -82,6 +124,9 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive 
       aircraftByAirport.get(key)!.tails.push(ac.tail);
     }
   }
+
+  // Build set of tails that have live ADS-B data (to dim/hide static overnight markers)
+  const adsbTails = new Set((adsbAircraft ?? []).map((a) => a.tail));
 
   return (
     <MapContainer
@@ -166,32 +211,80 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive 
       })}
 
       {/* Aircraft markers (✈) — overnight positions, colored to van */}
-      {Array.from(aircraftByAirport.entries()).map(([key, info]) => (
+      {/* Skip tails that have live ADS-B data (live position takes priority) */}
+      {Array.from(aircraftByAirport.entries()).map(([key, info]) => {
+        // Filter out tails with live ADS-B positions
+        const staticTails = info.tails.filter((t) => !adsbTails.has(t));
+        if (staticTails.length === 0) return null;
+        return (
+          <Marker
+            key={`plane-${key}`}
+            position={[info.lat, info.lon]}
+            icon={planeDivIcon(info.color)}
+          >
+            <Popup>
+              <div className="text-sm space-y-1">
+                <div className="font-bold" style={{ color: info.color }}>
+                  ✈ {staticTails.join(", ")}
+                </div>
+                <div className="text-gray-500 text-xs">
+                  Overnight: {key.split("-")[0]} · Van {info.vanId} coverage
+                </div>
+                <div className="pt-1">
+                  {staticTails.map((t) => (
+                    <div key={t} className="font-mono text-xs">{t}</div>
+                  ))}
+                </div>
+              </div>
+            </Popup>
+            {staticTails.length > 1 && (
+              <Tooltip direction="top" offset={[0, -8]}>
+                <span className="text-xs font-semibold">{staticTails.length} aircraft</span>
+              </Tooltip>
+            )}
+          </Marker>
+        );
+      })}
+
+      {/* Live ADS-B aircraft markers — real-time positions */}
+      {(adsbAircraft ?? []).map((ac) => (
         <Marker
-          key={`plane-${key}`}
-          position={[info.lat, info.lon]}
-          icon={planeDivIcon(info.color)}
+          key={`adsb-${ac.tail}`}
+          position={[ac.lat, ac.lon]}
+          icon={adsbDivIcon(ac.track, ac.on_ground)}
+          zIndexOffset={2000}
         >
+          <Tooltip permanent direction="top" offset={[0, -14]} className="van-label-tooltip">
+            <span style={{ fontWeight: 700, fontSize: "10px", color: ac.on_ground ? "#6b7280" : "#2563eb" }}>
+              {ac.tail}
+            </span>
+          </Tooltip>
           <Popup>
             <div className="text-sm space-y-1">
-              <div className="font-bold" style={{ color: info.color }}>
-                ✈ {info.tails.join(", ")}
+              <div className="font-bold text-blue-700">✈ {ac.tail}</div>
+              {ac.flight && <div className="text-xs text-gray-500">Callsign: {ac.flight}</div>}
+              <div className="text-xs">
+                {ac.on_ground ? (
+                  <span className="text-gray-500 font-medium">On Ground</span>
+                ) : (
+                  <span className="text-blue-600 font-medium">Airborne · {fmtAlt(ac.alt_baro)}</span>
+                )}
               </div>
-              <div className="text-gray-500 text-xs">
-                Overnight: {key.split("-")[0]} · Van {info.vanId} coverage
+              {ac.gs != null && (
+                <div className="text-xs text-gray-600">
+                  GS: {Math.round(ac.gs)} kts · HDG: {ac.track != null ? `${Math.round(ac.track)}°` : "—"}
+                </div>
+              )}
+              <div className="text-xs text-gray-400">
+                {ac.lat.toFixed(4)}, {ac.lon.toFixed(4)}
               </div>
-              <div className="pt-1">
-                {info.tails.map((t) => (
-                  <div key={t} className="font-mono text-xs">{t}</div>
-                ))}
-              </div>
+              {ac.seen != null && (
+                <div className="text-xs text-gray-400">
+                  Last seen: {ac.seen < 60 ? `${ac.seen}s ago` : `${Math.round(ac.seen / 60)}m ago`}
+                </div>
+              )}
             </div>
           </Popup>
-          {info.tails.length > 1 && (
-            <Tooltip direction="top" offset={[0, -8]}>
-              <span className="text-xs font-semibold">{info.tails.length} aircraft</span>
-            </Tooltip>
-          )}
         </Marker>
       ))}
     </MapContainer>

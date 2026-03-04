@@ -2033,6 +2033,32 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
     return () => clearInterval(id);
   }, []);
 
+  // ── ADS-B live aircraft positions (airplanes.live) ──
+  const [adsbAircraft, setAdsbAircraft] = useState<
+    { tail: string; lat: number; lon: number; alt_baro: number | null; gs: number | null; track: number | null; on_ground: boolean; squawk: string | null; flight: string | null; seen: number | null }[]
+  >([]);
+  const [adsbLoading, setAdsbLoading] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadAdsb() {
+      try {
+        setAdsbLoading(true);
+        const res = await fetch("/api/aircraft/positions", { cache: "no-store" });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled) setAdsbAircraft(data.aircraft ?? []);
+      } catch {
+        // Silently fail — ADS-B is optional
+      } finally {
+        if (!cancelled) setAdsbLoading(false);
+      }
+    }
+    loadAdsb();
+    const id = setInterval(loadAdsb, 60_000); // refresh every 60s
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+
   return (
     <div className="space-y-5">
       {/* ── 7-day date strip ── */}
@@ -2165,7 +2191,7 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
 
           {viewMode === "map" ? (
             <div className="rounded-xl overflow-hidden border shadow-sm">
-              <MapView vans={displayedVans} colors={VAN_COLORS} liveVanPositions={liveVanPositions} liveVanIsLive={liveVanIsLive} />
+              <MapView vans={displayedVans} colors={VAN_COLORS} liveVanPositions={liveVanPositions} liveVanIsLive={liveVanIsLive} adsbAircraft={adsbAircraft} />
             </div>
           ) : (
             <div className="space-y-3">
@@ -2179,6 +2205,21 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
                   color={VAN_COLORS[(van.vanId - 1) % VAN_COLORS.length]}
                 />
               ))}
+            </div>
+          )}
+
+          {/* ADS-B status */}
+          {adsbAircraft.length > 0 && (
+            <div className="flex items-center gap-2 text-xs text-gray-500 px-1">
+              <span className="inline-block w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+              <span>
+                ADS-B: {adsbAircraft.filter((a) => !a.on_ground).length} airborne,{" "}
+                {adsbAircraft.filter((a) => a.on_ground).length} on ground
+                <span className="text-gray-400 ml-1">
+                  ({adsbAircraft.length} of {adsbAircraft.length} tracked)
+                </span>
+              </span>
+              {adsbLoading && <span className="text-gray-400">updating…</span>}
             </div>
           )}
 

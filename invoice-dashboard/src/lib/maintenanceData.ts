@@ -409,8 +409,9 @@ export function assignVans(
 
   FIXED_VAN_ZONES.forEach((zone, i) => {
     const aircraft = fixedClusters[i];
-    if (aircraft.length === 0) return;
-    const maxDist = Math.max(...aircraft.map((a) => haversineKm(zone.lat, zone.lon, a.lat, a.lon)));
+    const maxDist = aircraft.length > 0
+      ? Math.max(...aircraft.map((a) => haversineKm(zone.lat, zone.lon, a.lat, a.lon)))
+      : 50;
     result.push({
       vanId: zone.vanId,
       homeAirport: zone.homeAirport,
