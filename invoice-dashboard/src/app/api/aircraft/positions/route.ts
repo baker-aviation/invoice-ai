@@ -93,12 +93,16 @@ function nNumberToHex(tail: string): string | null {
 async function tryAdsbEndpoint(url: string): Promise<any | null> {
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      console.warn(`[ADS-B] ${url} → HTTP ${res.status}`);
+      return null;
+    }
     const json = await res.json();
     const ac = json.ac?.[0];
     if (!ac || ac.lat == null || ac.lon == null) return null;
     return ac;
-  } catch {
+  } catch (err) {
+    console.warn(`[ADS-B] ${url} → error:`, err instanceof Error ? err.message : err);
     return null;
   }
 }
@@ -161,6 +165,16 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ aircraft: [], count: 0, cached: false });
   }
 
+  // Quick connectivity probe — test one known-active hex to detect IP blocks
+  let adsbReachable = false;
+  try {
+    const probe = await fetch(`${ADSB_API}/hex/a4eae7`, { signal: AbortSignal.timeout(5000) });
+    adsbReachable = probe.ok;
+    if (!probe.ok) console.warn(`[ADS-B] Probe failed: HTTP ${probe.status}`);
+  } catch (err) {
+    console.warn("[ADS-B] Probe error:", err instanceof Error ? err.message : err);
+  }
+
   // Phase 1: Try hex lookups in small batches (most reliable strategy).
   // Pre-compute all ICAO hex codes and batch 5 at a time with delays.
   const positions: AircraftPosition[] = [];
@@ -212,6 +226,9 @@ export async function GET(req: NextRequest) {
     aircraft: positions,
     count: positions.length,
     total_tails: tails.length,
+    tails_queried: tails,
+    source: dbTails.length > 0 ? "flights_db" : "fallback_trips",
+    adsb_reachable: adsbReachable,
     cached: false,
   });
 }

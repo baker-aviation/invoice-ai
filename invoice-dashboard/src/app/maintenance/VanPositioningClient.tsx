@@ -2050,7 +2050,7 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
           return;
         }
         const data = await res.json();
-        console.log(`[ADS-B] ${data.count ?? 0}/${data.total_tails ?? "?"} aircraft found${data.cached ? " (cached)" : ""}`);
+        console.log(`[ADS-B] ${data.count ?? 0}/${data.total_tails ?? "?"} aircraft found${data.cached ? " (cached)" : ""} | reachable=${data.adsb_reachable} source=${data.source}`);
         if (!cancelled) setAdsbAircraft(data.aircraft ?? []);
       } catch (err) {
         console.warn("[ADS-B] fetch failed:", err);
