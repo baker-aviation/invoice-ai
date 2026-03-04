@@ -34,7 +34,7 @@ INBOX_KEYWORDS = [
     s.strip().lower()
     for s in os.getenv(
         "INBOX_KEYWORDS",
-        "application,resume,cv,first officer,sic,pilot,maintenance,technician,dispatcher,sales",
+        "application,applicant,resume,cv,first officer,sic,pilot,captain,maintenance,technician,dispatcher,sales,recommendation,lor,challenger,citation",
     ).split(",")
     if s.strip()
 ]
