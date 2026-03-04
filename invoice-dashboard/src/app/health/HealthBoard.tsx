@@ -99,7 +99,7 @@ export function HealthBoard() {
       setTriggerResult({ name, ok: false, msg: "Failed" });
     } finally {
       setTriggering(null);
-      clearTimeout(resultTimer.current);
+      if (resultTimer.current) clearTimeout(resultTimer.current);
       resultTimer.current = setTimeout(() => setTriggerResult(null), 5000);
     }
   }, [fetchHealth]);
