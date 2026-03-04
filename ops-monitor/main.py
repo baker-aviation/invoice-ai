@@ -89,9 +89,9 @@ _SKIP_FLIGHT_TYPES = {
 # SUMMARY keywords that indicate a non-flight entry regardless of flight_type.
 _SKIP_SUMMARY_KEYWORDS = {"NOT FLYING"}
 
-# FAA NMS API (production)
-NMS_AUTH_URL = "https://api-nms.aim.faa.gov/v1/auth/token"
-NMS_API_BASE = "https://api-nms.aim.faa.gov/nmsapi"
+# FAA NMS API (test environment — swap to production URL when available)
+NMS_AUTH_URL = "https://api-staging.cgifederal-aim.com/v1/auth/token"
+NMS_API_BASE = "https://api-staging.cgifederal-aim.com/nmsapi"
 
 FOREFLIGHT_MAILBOX = os.getenv("FOREFLIGHT_MAILBOX", "ForeFlight@baker-aviation.com")
 MS_TENANT_ID = os.getenv("MS_TENANT_ID")
