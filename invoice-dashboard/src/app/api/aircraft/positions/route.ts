@@ -122,40 +122,6 @@ function toPosition(tail: string, ac: any): AircraftPosition {
   };
 }
 
-/**
- * Try multiple lookup strategies for a tail number:
- * 1. /reg/{N-number}  — direct registration lookup
- * 2. /hex/{icao}      — ICAO hex code (computed from N-number)
- * 3. /callsign/{KOW+digits} — operator callsign (Baker Aviation = KOW)
- */
-async function fetchAdsbPosition(tail: string): Promise<AircraftPosition | null> {
-  try {
-    const reg = tail.replace(/-/g, "");
-
-    // Strategy 1: direct registration lookup
-    let ac = await tryAdsbEndpoint(`${ADSB_API}/reg/${reg}`);
-    if (ac) return toPosition(tail, ac);
-
-    // Strategy 2: ICAO hex code
-    const hex = nNumberToHex(reg);
-    if (hex) {
-      ac = await tryAdsbEndpoint(`${ADSB_API}/hex/${hex}`);
-      if (ac) return toPosition(tail, ac);
-    }
-
-    // Strategy 3: callsign with operator prefix (KOW = Baker Aviation)
-    const numMatch = reg.match(/^N(\d+)/i);
-    if (numMatch) {
-      ac = await tryAdsbEndpoint(`${ADSB_API}/callsign/KOW${numMatch[1]}`);
-      if (ac) return toPosition(tail, ac);
-    }
-
-    return null;
-  } catch {
-    return null;
-  }
-}
-
 export async function GET(req: NextRequest) {
   const auth = await requireAuth(req);
   if (!isAuthed(auth)) return auth.error;
@@ -194,20 +160,49 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ aircraft: [], count: 0, cached: false });
   }
 
-  // Query airplanes.live in batches (respect 1 req/sec rate limit)
+  // Phase 1: Try hex lookups in small batches (most reliable strategy).
+  // Pre-compute all ICAO hex codes and batch 3 at a time with delays.
   const positions: AircraftPosition[] = [];
-  const BATCH_SIZE = 5;
+  const foundTails = new Set<string>();
+  const BATCH = 3;
 
-  for (let i = 0; i < tails.length; i += BATCH_SIZE) {
-    const batch = tails.slice(i, i + BATCH_SIZE);
-    const results = await Promise.all(batch.map(fetchAdsbPosition));
+  // Build hex→tail map
+  const hexMap = new Map<string, string>();
+  for (const tail of tails) {
+    const hex = nNumberToHex(tail.replace(/-/g, ""));
+    if (hex) hexMap.set(tail, hex);
+  }
+
+  const hexEntries = [...hexMap.entries()];
+  for (let i = 0; i < hexEntries.length; i += BATCH) {
+    const batch = hexEntries.slice(i, i + BATCH);
+    const results = await Promise.all(
+      batch.map(async ([tail, hex]) => {
+        const ac = await tryAdsbEndpoint(`${ADSB_API}/hex/${hex}`);
+        return ac ? toPosition(tail, ac) : null;
+      }),
+    );
     for (const r of results) {
-      if (r) positions.push(r);
+      if (r) { positions.push(r); foundTails.add(r.tail); }
     }
-    // Rate limit pause between batches (skip after last batch)
-    if (i + BATCH_SIZE < tails.length) {
-      await new Promise((resolve) => setTimeout(resolve, 1200));
+    if (i + BATCH < hexEntries.length) {
+      await new Promise((resolve) => setTimeout(resolve, 1100));
     }
+  }
+
+  // Phase 2: For tails not found via hex, try reg then callsign (serialized).
+  const missingTails = tails.filter((t) => !foundTails.has(t));
+  for (const tail of missingTails) {
+    const reg = tail.replace(/-/g, "");
+    let ac = await tryAdsbEndpoint(`${ADSB_API}/reg/${reg}`);
+    if (!ac) {
+      const numMatch = reg.match(/^N(\d+)/i);
+      if (numMatch) {
+        ac = await tryAdsbEndpoint(`${ADSB_API}/callsign/KOW${numMatch[1]}`);
+      }
+    }
+    if (ac) { positions.push(toPosition(tail, ac)); foundTails.add(tail); }
+    await new Promise((resolve) => setTimeout(resolve, 500));
   }
 
   cachedResult = { data: positions, ts: Date.now() };
