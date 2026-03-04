@@ -2035,7 +2035,7 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
 
   // ── ADS-B live aircraft positions (airplanes.live) ──
   const [adsbAircraft, setAdsbAircraft] = useState<
-    { tail: string; lat: number; lon: number; alt_baro: number | null; gs: number | null; track: number | null; on_ground: boolean; squawk: string | null; flight: string | null; seen: number | null }[]
+    { tail: string; lat: number; lon: number; alt_baro: number | null; gs: number | null; track: number | null; baro_rate: number | null; on_ground: boolean; squawk: string | null; flight: string | null; seen: number | null; aircraft_type: string | null; description: string | null }[]
   >([]);
   const [adsbLoading, setAdsbLoading] = useState(false);
 

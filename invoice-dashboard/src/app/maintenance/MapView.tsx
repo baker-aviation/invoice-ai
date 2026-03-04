@@ -28,10 +28,13 @@ export type AdsbAircraft = {
   alt_baro: number | null;
   gs: number | null;
   track: number | null;
+  baro_rate: number | null;
   on_ground: boolean;
   squawk: string | null;
   flight: string | null;
   seen: number | null;
+  aircraft_type: string | null;
+  description: string | null;
 };
 
 type Props = {
@@ -263,11 +266,17 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive,
             <div className="text-sm space-y-1">
               <div className="font-bold text-blue-700">✈ {ac.tail}</div>
               {ac.flight && <div className="text-xs text-gray-500">Callsign: {ac.flight}</div>}
+              {ac.description && <div className="text-xs text-gray-400">{ac.description}</div>}
               <div className="text-xs">
                 {ac.on_ground ? (
                   <span className="text-gray-500 font-medium">On Ground</span>
                 ) : (
-                  <span className="text-blue-600 font-medium">Airborne · {fmtAlt(ac.alt_baro)}</span>
+                  <span className="text-blue-600 font-medium">
+                    {ac.baro_rate != null && ac.baro_rate > 300 ? "Climbing" : ac.baro_rate != null && ac.baro_rate < -300 ? "Descending" : "Airborne"} · {fmtAlt(ac.alt_baro)}
+                    {ac.baro_rate != null && Math.abs(ac.baro_rate) > 300 && (
+                      <span className="text-gray-500"> ({ac.baro_rate > 0 ? "+" : ""}{ac.baro_rate} fpm)</span>
+                    )}
+                  </span>
                 )}
               </div>
               {ac.gs != null && (

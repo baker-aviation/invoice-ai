@@ -1,11 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/service";
 import { requireAuth, isAuthed } from "@/lib/api-auth";
+import { TRIPS } from "@/lib/maintenanceData";
 
 export const dynamic = "force-dynamic";
 
 // Airplanes.live API — free, no API key, 1 req/sec rate limit
 const ADSB_API = "https://api.airplanes.live/v2";
+
+// Fallback: unique tail numbers from the hardcoded TRIPS list
+const FALLBACK_TAILS = [...new Set(TRIPS.map((t) => t.tail))];
 
 export type AircraftPosition = {
   tail: string;
@@ -14,11 +18,14 @@ export type AircraftPosition = {
   alt_baro: number | null;    // feet
   gs: number | null;          // ground speed (knots)
   track: number | null;       // heading (degrees)
+  baro_rate: number | null;   // vertical rate (ft/min)
   on_ground: boolean;
   squawk: string | null;
   flight: string | null;      // callsign
   seen: number | null;        // seconds since last message
   hex: string | null;         // ICAO hex code
+  aircraft_type: string | null; // e.g. "C750"
+  description: string | null;   // e.g. "CESSNA 750 Citation 10"
 };
 
 // Simple in-memory cache to respect rate limits
@@ -44,11 +51,14 @@ async function fetchAdsbPosition(tail: string): Promise<AircraftPosition | null>
       alt_baro: typeof ac.alt_baro === "number" ? ac.alt_baro : null,
       gs: typeof ac.gs === "number" ? ac.gs : null,
       track: typeof ac.track === "number" ? ac.track : null,
+      baro_rate: typeof ac.baro_rate === "number" ? ac.baro_rate : null,
       on_ground: ac.alt_baro === "ground" || ac.on_ground === true,
       squawk: ac.squawk ?? null,
       flight: ac.flight?.trim() ?? null,
       seen: typeof ac.seen === "number" ? ac.seen : null,
       hex: ac.hex ?? null,
+      aircraft_type: ac.t ?? null,
+      description: ac.desc ?? null,
     };
   } catch {
     return null;
@@ -80,11 +90,14 @@ export async function GET(req: NextRequest) {
     .gte("scheduled_departure", past)
     .lte("scheduled_departure", future);
 
-  const tails = [...new Set(
+  const dbTails = [...new Set(
     (flights ?? [])
       .map((f) => f.tail_number as string | null)
       .filter((t): t is string => !!t),
   )];
+
+  // Use DB tails if available, otherwise fall back to hardcoded fleet list
+  const tails = dbTails.length > 0 ? dbTails : FALLBACK_TAILS;
 
   if (tails.length === 0) {
     return NextResponse.json({ aircraft: [], count: 0, cached: false });
