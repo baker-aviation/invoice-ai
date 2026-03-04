@@ -62,6 +62,32 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(url);
   }
 
+  // Role-based routing for authenticated users
+  if (user) {
+    const role =
+      (user.app_metadata?.role as string | undefined) ??
+      (user.user_metadata?.role as string | undefined);
+    const pathname = request.nextUrl.pathname;
+
+    // Pilot-only users can only access /pilot/* and /login
+    if (role === "pilot") {
+      if (!pathname.startsWith("/pilot") && !pathname.startsWith("/login") && !pathname.startsWith("/api/")) {
+        const url = request.nextUrl.clone();
+        url.pathname = "/pilot";
+        return NextResponse.redirect(url);
+      }
+    }
+
+    // Dashboard-only users cannot access /admin/* routes
+    if (role === "dashboard") {
+      if (pathname.startsWith("/admin")) {
+        const url = request.nextUrl.clone();
+        url.pathname = "/";
+        return NextResponse.redirect(url);
+      }
+    }
+  }
+
   return supabaseResponse;
 }
 

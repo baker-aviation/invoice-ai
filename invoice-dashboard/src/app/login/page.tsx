@@ -15,13 +15,17 @@ export default function LoginPage() {
     setError("");
 
     const supabase = createClient();
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
 
     if (error) {
       setError(error.message);
       setLoading(false);
     } else {
-      window.location.href = "/";
+      // Redirect based on user role
+      const role =
+        data.user?.app_metadata?.role ??
+        data.user?.user_metadata?.role;
+      window.location.href = role === "pilot" ? "/pilot" : "/";
     }
   }
 
