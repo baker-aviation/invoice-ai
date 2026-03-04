@@ -31,7 +31,7 @@ export type AircraftPosition = {
 
 // Simple in-memory cache to respect rate limits
 let cachedResult: { data: AircraftPosition[]; ts: number } | null = null;
-const CACHE_TTL_MS = 30_000; // 30 seconds
+const CACHE_TTL_MS = 60_000; // 60 seconds — matches client refresh interval
 
 // ---------------------------------------------------------------------------
 // N-number → ICAO hex code conversion
@@ -165,20 +165,10 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ aircraft: [], count: 0, cached: false });
   }
 
-  // Quick connectivity probe — test one known-active hex to detect IP blocks
-  let adsbReachable = false;
-  try {
-    const probe = await fetch(`${ADSB_API}/hex/a4eae7`, { signal: AbortSignal.timeout(5000) });
-    adsbReachable = probe.ok;
-    if (!probe.ok) console.warn(`[ADS-B] Probe failed: HTTP ${probe.status}`);
-  } catch (err) {
-    console.warn("[ADS-B] Probe error:", err instanceof Error ? err.message : err);
-  }
-
-  // Phase 1: Try hex lookups in small batches (most reliable strategy).
-  // Pre-compute all ICAO hex codes and batch 5 at a time with delays.
+  // Hex lookups in small batches — hex is the most reliable ADS-B strategy.
+  // No fallback to /reg/ or /callsign/ since hex covers all N-numbers and
+  // skipping fallbacks avoids wasting rate-limited API calls on parked aircraft.
   const positions: AircraftPosition[] = [];
-  const foundTails = new Set<string>();
   const BATCH = 5;
 
   // Build hex→tail map
@@ -198,26 +188,11 @@ export async function GET(req: NextRequest) {
       }),
     );
     for (const r of results) {
-      if (r) { positions.push(r); foundTails.add(r.tail); }
+      if (r) positions.push(r);
     }
     if (i + BATCH < hexEntries.length) {
       await new Promise((resolve) => setTimeout(resolve, 600));
     }
-  }
-
-  // Phase 2: For tails not found via hex, try reg then callsign (serialized).
-  const missingTails = tails.filter((t) => !foundTails.has(t));
-  for (const tail of missingTails) {
-    const reg = tail.replace(/-/g, "");
-    let ac = await tryAdsbEndpoint(`${ADSB_API}/reg/${reg}`);
-    if (!ac) {
-      const numMatch = reg.match(/^N(\d+)/i);
-      if (numMatch) {
-        ac = await tryAdsbEndpoint(`${ADSB_API}/callsign/KOW${numMatch[1]}`);
-      }
-    }
-    if (ac) { positions.push(toPosition(tail, ac)); foundTails.add(tail); }
-    await new Promise((resolve) => setTimeout(resolve, 500));
   }
 
   cachedResult = { data: positions, ts: Date.now() };
@@ -226,9 +201,6 @@ export async function GET(req: NextRequest) {
     aircraft: positions,
     count: positions.length,
     total_tails: tails.length,
-    tails_queried: tails,
-    source: dbTails.length > 0 ? "flights_db" : "fallback_trips",
-    adsb_reachable: adsbReachable,
     cached: false,
   });
 }
