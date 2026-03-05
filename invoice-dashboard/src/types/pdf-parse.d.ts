@@ -13,3 +13,8 @@ declare module "pdf-parse" {
   ): Promise<PDFParseResult>;
   export default pdfParse;
 }
+
+declare module "pdf-parse/lib/pdf-parse.js" {
+  import pdfParse from "pdf-parse";
+  export default pdfParse;
+}

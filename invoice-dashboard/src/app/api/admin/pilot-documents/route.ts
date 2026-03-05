@@ -125,7 +125,7 @@ export async function POST(req: NextRequest) {
     if (file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")) {
       (async () => {
         try {
-          const pdfParse = (await import("pdf-parse")).default;
+          const pdfParse = (await import("pdf-parse/lib/pdf-parse.js")).default;
           const parsed = await pdfParse(buffer);
           const text = parsed.text?.trim();
           if (!text || text.length < 50) {

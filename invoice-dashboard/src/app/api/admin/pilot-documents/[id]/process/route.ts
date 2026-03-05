@@ -57,7 +57,7 @@ export async function POST(
       .download();
 
     // Extract text
-    const pdfParse = (await import("pdf-parse")).default;
+    const pdfParse = (await import("pdf-parse/lib/pdf-parse.js")).default;
     const parsed = await pdfParse(buffer);
     const text = parsed.text?.trim();
 
