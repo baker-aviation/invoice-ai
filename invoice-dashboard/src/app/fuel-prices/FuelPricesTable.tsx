@@ -149,7 +149,7 @@ export default function FuelPricesTable({
   const [airportFilter, setAirportFilter] = useState("");
   const [vendorFilter, setVendorFilter] = useState("");
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
-  const [viewMode, setViewMode] = useState<ViewMode>("compare");
+  const [viewMode, setViewMode] = useState<ViewMode>("all");
 
   // Unique airports and vendors for filter dropdowns
   const airports = useMemo(() => {
@@ -264,7 +264,7 @@ export default function FuelPricesTable({
         {/* View toggle */}
         {hasBothSources && (
           <div className="flex rounded-lg border bg-gray-100 p-0.5">
-            {(["compare", "all"] as const).map((mode) => (
+            {(["all", "compare"] as const).map((mode) => (
               <button
                 key={mode}
                 type="button"
@@ -275,7 +275,7 @@ export default function FuelPricesTable({
                     : "text-gray-500 hover:text-gray-700"
                 }`}
               >
-                {mode === "compare" ? "Compare by Airport" : "All Records"}
+                {mode === "compare" ? "Compare by Airport" : "Live Feed"}
               </button>
             ))}
           </div>
