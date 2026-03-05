@@ -169,10 +169,13 @@ export default function BulletinsList({
                   </div>
                   <h3 className="font-semibold text-gray-900 text-sm">{b.title}</h3>
                   {b.summary && (
-                    <div
-                      className="text-sm text-gray-500 mt-1.5 line-clamp-[8] leading-relaxed prose prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0"
-                      dangerouslySetInnerHTML={{ __html: b.summary }}
-                    />
+                    <>
+                      <div
+                        className="text-sm text-gray-500 mt-1.5 line-clamp-[8] leading-relaxed prose prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0"
+                        dangerouslySetInnerHTML={{ __html: b.summary }}
+                      />
+                      <span className="text-xs text-blue-500 mt-1.5 inline-block">Read more &rarr;</span>
+                    </>
                   )}
                 </div>
                 {b.video_filename && (
