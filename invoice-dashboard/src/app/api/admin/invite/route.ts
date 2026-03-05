@@ -45,7 +45,7 @@ export async function POST(req: NextRequest) {
   const results: { email: string; status: string; error?: string }[] = [];
 
   for (const email of parsed.data.emails) {
-    const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || req.nextUrl.origin;
+    const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || `https://${req.headers.get("host")}`;
     const { error } = await supabase.auth.admin.inviteUserByEmail(email, {
       redirectTo: `${siteUrl}/auth/callback?next=/login/reset`,
     });

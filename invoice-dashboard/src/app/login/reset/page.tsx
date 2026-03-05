@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 
 export default function ResetPasswordPage() {
@@ -9,6 +9,22 @@ export default function ResetPasswordPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [done, setDone] = useState(false);
+  const [ready, setReady] = useState(false);
+
+  // Handle invite/reset tokens from URL hash
+  useEffect(() => {
+    const supabase = createClient();
+    // Supabase puts tokens in the URL hash — the client SDK picks them up automatically
+    supabase.auth.onAuthStateChange((event) => {
+      if (event === "PASSWORD_RECOVERY" || event === "SIGNED_IN") {
+        setReady(true);
+      }
+    });
+    // Also check if there's already a session (e.g. came from /auth/callback)
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session) setReady(true);
+    });
+  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -47,6 +63,16 @@ export default function ResetPasswordPage() {
           >
             Sign in
           </a>
+        </div>
+      </div>
+    );
+  }
+
+  if (!ready) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="bg-white rounded-xl shadow-md p-8 w-full max-w-sm text-center space-y-4">
+          <p className="text-sm text-gray-500">Verifying your link…</p>
         </div>
       </div>
     );
