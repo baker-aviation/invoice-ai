@@ -214,15 +214,18 @@ function CreateBulletinModal({ onClose }: { onClose: () => void }) {
     setError("");
 
     try {
-      const fd = new FormData();
-      fd.append("title", form.title.trim());
-      fd.append("category", form.category);
-      if (form.summary.trim()) fd.append("summary", form.summary.trim());
-      if (videoFile) fd.append("video", videoFile);
+      // Step 1: Create bulletin (JSON, small payload)
+      const payload: Record<string, string> = {
+        title: form.title.trim(),
+        category: form.category,
+      };
+      if (form.summary.trim()) payload.summary = form.summary.trim();
+      if (videoFile) payload.video_filename = videoFile.name;
 
       const res = await fetch("/api/pilot/bulletins", {
         method: "POST",
-        body: fd,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
       });
 
       if (!res.ok) {
@@ -230,6 +233,28 @@ function CreateBulletinModal({ onClose }: { onClose: () => void }) {
         setError(data.error ?? "Failed to create bulletin");
         setSubmitting(false);
         return;
+      }
+
+      const { upload_url } = await res.json();
+
+      // Step 2: Upload video directly to GCS via presigned URL
+      if (videoFile && upload_url) {
+        const ext = videoFile.name.split(".").pop()?.toLowerCase();
+        const contentType =
+          ext === "mp4" ? "video/mp4"
+          : ext === "m4v" ? "video/x-m4v"
+          : "video/quicktime";
+
+        const uploadRes = await fetch(upload_url, {
+          method: "PUT",
+          headers: { "Content-Type": contentType },
+          body: videoFile,
+        });
+
+        if (!uploadRes.ok) {
+          // Bulletin was created but video failed — non-blocking
+          console.error("Video upload failed:", uploadRes.status);
+        }
       }
 
       onClose();

@@ -40,8 +40,10 @@ export async function GET(req: NextRequest) {
 
 /**
  * POST /api/pilot/bulletins — create a bulletin (admin only)
- * Multipart form: title, summary, category, video (optional .mov file)
- * Uploads video to GCS and posts summary to #pilots Slack channel.
+ * JSON body: { title, summary?, category, video_filename? }
+ *
+ * If video_filename is provided, returns a presigned GCS upload URL
+ * for the client to upload the video directly.
  */
 export async function POST(req: NextRequest) {
   const auth = await requireAdmin(req);
@@ -51,17 +53,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
 
-  let formData: FormData;
+  let body: { title?: string; summary?: string; category?: string; video_filename?: string };
   try {
-    formData = await req.formData();
+    body = await req.json();
   } catch {
-    return NextResponse.json({ error: "Invalid form data" }, { status: 400 });
+    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  const title = (formData.get("title") as string)?.trim();
-  const summary = (formData.get("summary") as string)?.trim() || null;
-  const category = (formData.get("category") as string)?.trim();
-  const file = formData.get("video") as File | null;
+  const title = body.title?.trim();
+  const summary = body.summary?.trim() || null;
+  const category = body.category?.trim();
+  const videoFilename = body.video_filename?.trim() || null;
 
   if (!title) {
     return NextResponse.json({ error: "Title is required" }, { status: 400 });
@@ -72,17 +74,10 @@ export async function POST(req: NextRequest) {
 
   let gcsBucket: string | null = null;
   let gcsKey: string | null = null;
-  let videoFilename: string | null = null;
+  let uploadUrl: string | null = null;
 
-  // Upload .mov video to GCS if provided
-  if (file) {
-    if (!file.name.match(/\.(mov|mp4|m4v)$/i)) {
-      return NextResponse.json({ error: "Only .mov, .mp4, and .m4v video files are allowed" }, { status: 400 });
-    }
-    if (file.size > 500 * 1024 * 1024) {
-      return NextResponse.json({ error: "File too large (max 500MB)" }, { status: 400 });
-    }
-
+  // Generate presigned upload URL if video will be attached
+  if (videoFilename) {
     try {
       const { Storage } = await import("@google-cloud/storage");
       let storage: InstanceType<typeof Storage>;
@@ -96,23 +91,26 @@ export async function POST(req: NextRequest) {
       }
 
       gcsBucket = process.env.GCS_BUCKET || "baker-aviation-invoice-pdfs";
-      const bucket = storage.bucket(gcsBucket);
-
-      const safeName = file.name.replace(/\//g, "_");
+      const safeName = videoFilename.replace(/\//g, "_");
       const ts = Date.now();
       gcsKey = `pilot-bulletins/${category}/${ts}-${safeName}`;
-      videoFilename = file.name;
 
-      const arrayBuffer = await file.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
+      const ext = videoFilename.split(".").pop()?.toLowerCase();
+      const contentType =
+        ext === "mp4" ? "video/mp4"
+        : ext === "m4v" ? "video/x-m4v"
+        : "video/quicktime";
 
-      const blob = bucket.file(gcsKey);
-      await blob.save(buffer, {
-        contentType: file.type || "video/quicktime",
+      const [url] = await storage.bucket(gcsBucket).file(gcsKey).getSignedUrl({
+        version: "v4",
+        action: "write",
+        expires: Date.now() + 30 * 60 * 1000, // 30 minutes
+        contentType,
       });
+      uploadUrl = url;
     } catch (err) {
-      console.error("[pilot/bulletins] GCS upload error:", err);
-      return NextResponse.json({ error: "Failed to upload video" }, { status: 500 });
+      console.error("[pilot/bulletins] presign error:", err);
+      return NextResponse.json({ error: "Failed to prepare video upload" }, { status: 500 });
     }
   }
 
@@ -137,5 +135,5 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Failed to create bulletin" }, { status: 500 });
   }
 
-  return NextResponse.json({ bulletin }, { status: 201 });
+  return NextResponse.json({ bulletin, upload_url: uploadUrl }, { status: 201 });
 }
