@@ -151,6 +151,15 @@ export default function FuelPricesTable({
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
   const [viewMode, setViewMode] = useState<ViewMode>("all");
 
+  // Document IDs that serve as baselines for other rows
+  const baselineDocIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const r of initialPrices) {
+      if (r.previous_document_id) ids.add(r.previous_document_id);
+    }
+    return ids;
+  }, [initialPrices]);
+
   // Unique airports and vendors for filter dropdowns
   const airports = useMemo(() => {
     const set = new Set<string>();
@@ -501,7 +510,9 @@ export default function FuelPricesTable({
                 <th className="px-4 py-3">Airport</th>
                 <th className="px-4 py-3">Vendor / FBO</th>
                 <th className="px-4 py-3">Tail</th>
-                <th className="px-4 py-3 text-right">Effective $/gal</th>
+                <th className="px-4 py-3 text-right">Gallons</th>
+                <th className="px-4 py-3 text-right">Fuel Total</th>
+                <th className="px-4 py-3 text-right">$/Gal</th>
                 <th className="px-4 py-3 text-right">
                   <span title="Average effective $/gal for this airport + vendor across all records">FBO Avg</span>
                 </th>
@@ -514,8 +525,6 @@ export default function FuelPricesTable({
                 <th className="px-4 py-3 text-right">
                   <span title="How this row's price compares to the airport average">vs Apt</span>
                 </th>
-                <th className="px-4 py-3 text-right">Gallons</th>
-                <th className="px-4 py-3 text-right">Fuel Total</th>
                 <th className="px-4 py-3 text-center">Source</th>
                 <th className="px-4 py-3 text-center">Invoice</th>
               </tr>
@@ -523,6 +532,7 @@ export default function FuelPricesTable({
             <tbody className="divide-y">
               {pageRows.map((row) => {
                 const isJetInsight = (row.data_source ?? "invoice") === "jetinsight";
+                const isBaseline = !isJetInsight && baselineDocIds.has(row.document_id);
                 const fboKey = row.airport_code && row.vendor_name
                   ? `${row.airport_code}|${row.vendor_name}` : null;
                 const fboStats = fboKey ? fboAvgLookup.get(fboKey) : null;
@@ -553,6 +563,12 @@ export default function FuelPricesTable({
                       {row.vendor_name || "\u2014"}
                     </td>
                     <td className="px-4 py-2.5 whitespace-nowrap">{row.tail_number || "\u2014"}</td>
+                    <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono">
+                      {row.gallons != null ? Number(row.gallons).toFixed(0) : "\u2014"}
+                    </td>
+                    <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono">
+                      {fmt$(row.fuel_total, 2)}
+                    </td>
                     <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono font-medium">
                       {fmt$(price)}
                     </td>
@@ -594,14 +610,10 @@ export default function FuelPricesTable({
                         <span className="text-gray-300 text-xs">{"\u2014"}</span>
                       )}
                     </td>
-                    <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono">
-                      {row.gallons != null ? Number(row.gallons).toFixed(0) : "\u2014"}
-                    </td>
-                    <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono">
-                      {fmt$(row.fuel_total, 2)}
-                    </td>
                     <td className="px-4 py-2.5 whitespace-nowrap text-center">
-                      {sourceBadge(row.data_source)}
+                      {isBaseline ? (
+                        <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-orange-100 text-orange-800">Baseline</span>
+                      ) : sourceBadge(row.data_source)}
                     </td>
                     <td className="px-4 py-2.5 whitespace-nowrap text-center">
                       {isJetInsight ? (
