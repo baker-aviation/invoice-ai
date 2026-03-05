@@ -117,28 +117,59 @@ export default function AdminDocumentsPage() {
     clearMessages();
     setUploading(true);
 
-    const formData = new FormData();
-    formData.append("file", uploadFile);
-    formData.append("title", uploadTitle);
-    formData.append("description", uploadDesc);
-    formData.append("category", uploadCategory);
+    try {
+      // Step 1: Get signed upload URL + create DB record
+      const metaRes = await fetch("/api/admin/pilot-documents", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: uploadTitle,
+          description: uploadDesc,
+          category: uploadCategory,
+          filename: uploadFile.name,
+          contentType: uploadFile.type || "application/octet-stream",
+          size: uploadFile.size,
+        }),
+      });
 
-    const res = await fetch("/api/admin/pilot-documents", { method: "POST", body: formData });
-    setUploading(false);
+      if (!metaRes.ok) {
+        const data = await metaRes.json().catch(() => ({}));
+        setError(data.error || "Upload failed");
+        return;
+      }
 
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      setError(data.error || "Upload failed");
-      return;
+      const { document: doc, uploadUrl } = await metaRes.json();
+
+      // Step 2: Upload file directly to GCS via signed URL
+      const gcsRes = await fetch(uploadUrl, {
+        method: "PUT",
+        headers: { "Content-Type": uploadFile.type || "application/octet-stream" },
+        body: uploadFile,
+      });
+
+      if (!gcsRes.ok) {
+        setError("Failed to upload file to storage");
+        return;
+      }
+
+      // Step 3: Trigger RAG processing for PDFs
+      const isPdf = uploadFile.type === "application/pdf" || uploadFile.name.toLowerCase().endsWith(".pdf");
+      if (isPdf) {
+        fetch(`/api/admin/pilot-documents/${doc.id}/process`, { method: "POST" }).catch(() => {});
+      }
+
+      setSuccess("Document uploaded successfully");
+      setShowUpload(false);
+      setUploadFile(null);
+      setUploadTitle("");
+      setUploadDesc("");
+      setUploadCategory("");
+      fetchDocuments();
+    } catch {
+      setError("Upload failed");
+    } finally {
+      setUploading(false);
     }
-
-    setSuccess("Document uploaded successfully");
-    setShowUpload(false);
-    setUploadFile(null);
-    setUploadTitle("");
-    setUploadDesc("");
-    setUploadCategory("");
-    fetchDocuments();
   }
 
   async function handleEdit() {

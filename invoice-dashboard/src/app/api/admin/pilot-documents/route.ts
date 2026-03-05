@@ -39,31 +39,27 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
 
-  let formData: FormData;
+  let body: { title?: string; description?: string; category?: string; filename?: string; contentType?: string; size?: number };
   try {
-    formData = await req.formData();
+    body = await req.json();
   } catch {
-    return NextResponse.json({ error: "Invalid form data" }, { status: 400 });
+    return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
   }
 
-  const file = formData.get("file") as File | null;
-  const title = (formData.get("title") as string)?.trim();
-  const description = (formData.get("description") as string)?.trim() || null;
-  const category = (formData.get("category") as string)?.trim();
+  const title = body.title?.trim();
+  const description = body.description?.trim() || null;
+  const category = body.category?.trim();
+  const filename = body.filename?.trim();
+  const contentType = body.contentType || "application/octet-stream";
+  const size = body.size ?? 0;
 
-  if (!file) {
-    return NextResponse.json({ error: "file is required" }, { status: 400 });
-  }
-  if (!title) {
-    return NextResponse.json({ error: "title is required" }, { status: 400 });
-  }
-  if (!category) {
-    return NextResponse.json({ error: "category is required" }, { status: 400 });
-  }
+  if (!title) return NextResponse.json({ error: "title is required" }, { status: 400 });
+  if (!category) return NextResponse.json({ error: "category is required" }, { status: 400 });
+  if (!filename) return NextResponse.json({ error: "filename is required" }, { status: 400 });
 
   // Validate file type
   const allowedExtensions = /\.(pdf|mp4|mov|avi|mkv|webm|doc|docx|xls|xlsx|ppt|pptx|txt|csv|png|jpg|jpeg)$/i;
-  if (!file.name.match(allowedExtensions)) {
+  if (!filename.match(allowedExtensions)) {
     return NextResponse.json(
       { error: "File type not allowed. Accepted: PDF, video, Office docs, images, TXT, CSV." },
       { status: 400 },
@@ -71,12 +67,12 @@ export async function POST(req: NextRequest) {
   }
 
   // Max 100MB
-  if (file.size > 100 * 1024 * 1024) {
+  if (size > 100 * 1024 * 1024) {
     return NextResponse.json({ error: "File too large (max 100MB)" }, { status: 400 });
   }
 
   try {
-    // Upload to GCS
+    // Generate a signed upload URL so the client uploads directly to GCS
     const { Storage } = await import("@google-cloud/storage");
     let storage: InstanceType<typeof Storage>;
     const b64Key = process.env.GCP_SERVICE_ACCOUNT_KEY;
@@ -88,14 +84,14 @@ export async function POST(req: NextRequest) {
     }
 
     const bucketName = process.env.GCS_BUCKET || "baker-aviation-invoice-pdfs";
-    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, "_");
     const gcsKey = `pilot-documents/${category}/${Date.now()}-${safeName}`;
 
-    const arrayBuffer = await file.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-
-    await storage.bucket(bucketName).file(gcsKey).save(buffer, {
-      contentType: file.type || "application/octet-stream",
+    const [uploadUrl] = await storage.bucket(bucketName).file(gcsKey).getSignedUrl({
+      version: "v4",
+      action: "write",
+      expires: Date.now() + 30 * 60 * 1000, // 30 minutes
+      contentType,
     });
 
     // Insert metadata row
@@ -106,11 +102,11 @@ export async function POST(req: NextRequest) {
         title,
         description,
         category,
-        filename: file.name,
-        content_type: file.type || "application/octet-stream",
+        filename,
+        content_type: contentType,
         gcs_bucket: bucketName,
         gcs_key: gcsKey,
-        size_bytes: buffer.length,
+        size_bytes: size,
         uploaded_by: auth.userId,
       })
       .select("*")
@@ -121,30 +117,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Failed to save document record" }, { status: 500 });
     }
 
-    // Fire-and-forget: extract text from PDFs and ingest chunks for RAG
-    if (file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")) {
-      (async () => {
-        try {
-          const { extractPdfText } = await import("@/lib/pdf-extract");
-          const text = (await extractPdfText(buffer)).trim();
-          if (!text || text.length < 50) {
-            await supa
-              .from("pilot_documents")
-              .update({ embedding_status: "no_text", chunk_count: 0 })
-              .eq("id", row.id);
-            return;
-          }
-          const { ingestDocumentChunks } = await import("@/lib/rag");
-          await ingestDocumentChunks(row.id, text);
-          console.log(`[pilot-documents] ingested chunks for doc ${row.id}`);
-        } catch (err) {
-          console.error(`[pilot-documents] ingestion error for doc ${row.id}:`, err);
-          // Status already set to "error" by ingestDocumentChunks on failure
-        }
-      })();
-    }
-
-    return NextResponse.json({ ok: true, document: row }, { status: 201 });
+    return NextResponse.json({ ok: true, document: row, uploadUrl }, { status: 201 });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("[pilot-documents] upload error:", message, err);
