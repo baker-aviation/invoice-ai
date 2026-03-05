@@ -148,13 +148,7 @@ export default function UsersPage() {
                 <tr key={user.id} className="border-t border-gray-100 group">
                   <td className="px-4 py-3 align-top">
                     <div>
-                      <button
-                        type="button"
-                        onClick={() => isDashboard && setExpandedUser(isExpanded ? null : user.id)}
-                        className={`text-gray-800 text-left ${isDashboard ? "hover:text-slate-600 cursor-pointer" : ""}`}
-                      >
-                        {user.email}
-                      </button>
+                      <span className="text-gray-800">{user.email}</span>
                       {isDashboard && (
                         <p className="text-xs text-gray-400 mt-0.5">
                           {user.permissions.length === 0
@@ -217,6 +211,14 @@ export default function UsersPage() {
                           </option>
                         ))}
                       </select>
+                      {isDashboard && (
+                        <button
+                          onClick={() => setExpandedUser(isExpanded ? null : user.id)}
+                          className="text-slate-500 hover:text-slate-800 text-sm font-medium"
+                        >
+                          {isExpanded ? "Close" : "Permissions"}
+                        </button>
+                      )}
                       <button
                         onClick={() => handleDelete(user.id, user.email)}
                         disabled={deleting === user.id}
