@@ -53,10 +53,10 @@ export function PilotShell({ children }: { children: React.ReactNode }) {
           </button>
         </div>
       )}
-      <header className="bg-blue-900 text-white shadow-md">
+      <header className="bg-slate-900 text-white shadow-md">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 py-3 flex items-center justify-between">
           <Link href="/pilot" className="flex items-center gap-2 hover:opacity-90 transition-opacity">
-            <Image src="/logo2.png" alt="Baker Aviation" width={120} height={38} priority className="brightness-0 invert" />
+            <Image src="/logo3.png" alt="Baker Aviation" width={120} height={38} priority />
             <span className="font-medium text-blue-200 text-sm">Pilot Portal</span>
           </Link>
 
