@@ -77,10 +77,11 @@ export async function POST(
       status: "ready",
       chunk_count: ingestion.chunkCount,
     });
-  } catch (err) {
-    console.error(`[pilot-documents] re-process error for doc ${id}:`, err);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[pilot-documents] re-process error for doc ${id}:`, message, err);
     return NextResponse.json(
-      { error: "Processing failed" },
+      { error: `Processing failed: ${message}` },
       { status: 500 },
     );
   }
