@@ -542,14 +542,6 @@ function AlertCard({ alert, onAck }: { alert: OpsAlert; onAck: (id: string) => v
                   </span>
                 </div>
               )}
-              {nd?.issued && (
-                <div>
-                  <span className="text-gray-400">Issued: </span>
-                  <span className="font-mono font-medium text-gray-600">
-                    {fmtNotamDate(nd.issued, null)}
-                  </span>
-                </div>
-              )}
               {nd?.status && (
                 <div>
                   <span className="text-gray-400">Status: </span>
@@ -748,10 +740,20 @@ function DayHeader({ dateStr, flightCount, criticalCount, warningCount }: {
 // ─── Main board ───────────────────────────────────────────────────────────────
 
 function filterAlerts(flights: Flight[]): Flight[] {
-  return flights.map((f) => ({
-    ...f,
-    alerts: (f.alerts ?? []).filter((a) => ALERT_TYPES_SHOWN.has(a.alert_type)),
-  }));
+  return flights.map((f) => {
+    const shown = (f.alerts ?? []).filter((a) => ALERT_TYPES_SHOWN.has(a.alert_type));
+    // Deduplicate NOTAMs by subject (NOTAM number) + airport to avoid
+    // the same NOTAM appearing multiple times for one flight.
+    const seen = new Set<string>();
+    const deduped = shown.filter((a) => {
+      if (!a.alert_type.startsWith("NOTAM")) return true;
+      const key = `${a.subject ?? ""}|${a.airport_icao ?? ""}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    return { ...f, alerts: deduped };
+  });
 }
 
 export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] }) {

@@ -1385,7 +1385,7 @@ def debug_notam_test(airport: str = Query("KJFK")):
         r = requests.get(
             f"{NMS_API_BASE}/v1/notams",
             headers={"Authorization": f"Bearer {token}", "nmsResponseFormat": "GEOJSON"},
-            params={"location": icao, "classification": "DOMESTIC"},
+            params={"location": icao, "classification": "DOMESTIC,FDC"},
             timeout=(5, 10),
         )
         nms_result["status_code"] = r.status_code
@@ -1432,7 +1432,7 @@ def _fetch_notams(icao: str, token: str) -> List[Dict]:
                 "Authorization": f"Bearer {token}",
                 "nmsResponseFormat": "GEOJSON",
             },
-            params={"location": icao, "classification": "DOMESTIC"},
+            params={"location": icao, "classification": "DOMESTIC,FDC"},
             timeout=(5, 10),
         )
         print(f"NMS NOTAM {icao}: status={r.status_code} body={r.text[:200]!r}", flush=True)
