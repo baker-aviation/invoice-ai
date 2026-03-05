@@ -5,11 +5,18 @@ import "server-only";
  * Works in Node.js / Vercel serverless (no DOM/canvas dependencies).
  */
 export async function extractPdfText(buffer: Buffer): Promise<string> {
-  // Use the legacy build which doesn't require DOM APIs
   const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
 
+  // Disable worker — we're running server-side, no need for a web worker
+  pdfjsLib.GlobalWorkerOptions.workerSrc = "";
+
   const data = new Uint8Array(buffer);
-  const doc = await pdfjsLib.getDocument({ data, useSystemFonts: true }).promise;
+  const doc = await pdfjsLib.getDocument({
+    data,
+    useSystemFonts: true,
+    disableFontFace: true,
+    isEvalSupported: false,
+  }).promise;
 
   const pages: string[] = [];
   for (let i = 1; i <= doc.numPages; i++) {
