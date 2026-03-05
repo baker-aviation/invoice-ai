@@ -204,6 +204,27 @@ export default function FuelPricesTable({
     return lookup;
   }, [initialPrices]);
 
+  // Airport-level average lookup (all vendors combined)
+  const airportAvgLookup = useMemo(() => {
+    const buckets = new Map<string, number[]>();
+    for (const r of initialPrices) {
+      if (!r.airport_code || r.effective_price_per_gallon == null) continue;
+      if (!buckets.has(r.airport_code)) buckets.set(r.airport_code, []);
+      buckets.get(r.airport_code)!.push(r.effective_price_per_gallon);
+    }
+    const lookup = new Map<string, { avg: number; count: number; min: number; max: number }>();
+    for (const [key, prices] of buckets) {
+      const avg = prices.reduce((a, b) => a + b, 0) / prices.length;
+      lookup.set(key, {
+        avg: Math.round(avg * 10000) / 10000,
+        count: prices.length,
+        min: Math.min(...prices),
+        max: Math.max(...prices),
+      });
+    }
+    return lookup;
+  }, [initialPrices]);
+
   const filtered = useMemo(() => {
     let rows = initialPrices;
     if (sourceFilter !== "all") {
@@ -485,7 +506,13 @@ export default function FuelPricesTable({
                   <span title="Average effective $/gal for this airport + vendor across all records">FBO Avg</span>
                 </th>
                 <th className="px-4 py-3 text-right">
-                  <span title="How this row's price compares to the airport+vendor average">vs Avg</span>
+                  <span title="How this row's price compares to the FBO average">vs FBO</span>
+                </th>
+                <th className="px-4 py-3 text-right">
+                  <span title="Average effective $/gal across all vendors at this airport">Airport Avg</span>
+                </th>
+                <th className="px-4 py-3 text-right">
+                  <span title="How this row's price compares to the airport average">vs Apt</span>
                 </th>
                 <th className="px-4 py-3 text-right">Gallons</th>
                 <th className="px-4 py-3 text-right">Fuel Total</th>
@@ -499,11 +526,17 @@ export default function FuelPricesTable({
                 const fboKey = row.airport_code && row.vendor_name
                   ? `${row.airport_code}|${row.vendor_name}` : null;
                 const fboStats = fboKey ? fboAvgLookup.get(fboKey) : null;
+                const aptStats = row.airport_code ? airportAvgLookup.get(row.airport_code) : null;
                 const price = row.effective_price_per_gallon;
                 let vsAvgPct: number | null = null;
                 if (price != null && fboStats && fboStats.count > 1) {
                   vsAvgPct = ((price - fboStats.avg) / fboStats.avg) * 100;
                   vsAvgPct = Math.round(vsAvgPct * 10) / 10;
+                }
+                let vsAptPct: number | null = null;
+                if (price != null && aptStats && aptStats.count > 1) {
+                  vsAptPct = ((price - aptStats.avg) / aptStats.avg) * 100;
+                  vsAptPct = Math.round(vsAptPct * 10) / 10;
                 }
                 const overpriced = vsAvgPct != null && vsAvgPct > 5;
                 const underpriced = vsAvgPct != null && vsAvgPct < -5;
@@ -537,6 +570,25 @@ export default function FuelPricesTable({
                       {vsAvgPct != null ? (
                         <Badge variant={overpriced ? "danger" : underpriced ? "success" : "default"}>
                           {vsAvgPct >= 0 ? "+" : ""}{vsAvgPct}%
+                        </Badge>
+                      ) : (
+                        <span className="text-gray-300 text-xs">{"\u2014"}</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono text-gray-500">
+                      {aptStats ? (
+                        <span title={`${aptStats.count} records | range: ${fmt$(aptStats.min)} – ${fmt$(aptStats.max)}`}>
+                          {fmt$(aptStats.avg)}
+                          <span className="text-[10px] text-gray-400 ml-1">({aptStats.count})</span>
+                        </span>
+                      ) : (
+                        <span className="text-gray-300">{"\u2014"}</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2.5 whitespace-nowrap text-right">
+                      {vsAptPct != null ? (
+                        <Badge variant={vsAptPct > 5 ? "danger" : vsAptPct < -5 ? "success" : "default"}>
+                          {vsAptPct >= 0 ? "+" : ""}{vsAptPct}%
                         </Badge>
                       ) : (
                         <span className="text-gray-300 text-xs">{"\u2014"}</span>
@@ -580,7 +632,7 @@ export default function FuelPricesTable({
               })}
               {pageRows.length === 0 && (
                 <tr>
-                  <td colSpan={11} className="px-4 py-8 text-center text-gray-400">
+                  <td colSpan={13} className="px-4 py-8 text-center text-gray-400">
                     No fuel price records found.
                   </td>
                 </tr>
