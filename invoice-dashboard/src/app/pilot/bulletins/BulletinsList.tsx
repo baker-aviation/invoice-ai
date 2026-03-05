@@ -46,7 +46,17 @@ function formatDate(iso: string) {
 
 /** Strip HTML tags for list preview */
 function stripHtml(html: string) {
-  return html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+  const text = html.replace(/<[^>]*>/g, " ");
+  const decoded = text
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&#x27;/gi, "'")
+    .replace(/&#\d+;/g, "");
+  return decoded.replace(/\s+/g, " ").trim();
 }
 
 export default function BulletinsList({
