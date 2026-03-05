@@ -25,14 +25,17 @@ export default function TypeRatingsEditor({
   initialRatings,
   initialHasCitationX,
   initialHasChallenger300,
+  initialCategory,
 }: {
   applicationId: number;
   initialRatings: string[];
   initialHasCitationX: boolean | null;
   initialHasChallenger300: boolean | null;
+  initialCategory: string | null;
 }) {
   const [editing, setEditing] = useState(false);
   const [ratings, setRatings] = useState<string[]>(initialRatings);
+  const [skillbridge, setSkillbridge] = useState(initialCategory === "skillbridge");
   const [newRating, setNewRating] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -75,6 +78,9 @@ export default function TypeRatingsEditor({
           type_ratings: ratings,
           has_citation_x: hasCitationX(ratings),
           has_challenger_300_type_rating: hasChallenger(ratings),
+          ...(skillbridge !== (initialCategory === "skillbridge")
+            ? { category: skillbridge ? "skillbridge" : "pilot_pic" }
+            : {}),
         }),
       });
       if (!res.ok) {
@@ -106,7 +112,7 @@ export default function TypeRatingsEditor({
       <div className="flex items-center justify-between">
         <span className="text-xs font-medium text-gray-600">Edit Type Ratings</span>
         <button
-          onClick={() => { setEditing(false); setRatings(initialRatings); setError(null); }}
+          onClick={() => { setEditing(false); setRatings(initialRatings); setSkillbridge(initialCategory === "skillbridge"); setError(null); }}
           className="text-gray-400 hover:text-gray-600 text-lg leading-none"
         >
           &times;
@@ -165,10 +171,19 @@ export default function TypeRatingsEditor({
         ))}
       </div>
 
-      {/* Preview derived booleans */}
-      <div className="text-[11px] text-gray-500 space-x-3">
-        <span>Citation X (CE-750): {hasCitationX(ratings) ? "Yes" : "No"}</span>
-        <span>Challenger 300 (CL-300): {hasChallenger(ratings) ? "Yes" : "No"}</span>
+      {/* Tags */}
+      <div className="flex items-center gap-4 text-[11px] text-gray-500">
+        <span>CE-750: {hasCitationX(ratings) ? "Yes" : "No"}</span>
+        <span>CL-300: {hasChallenger(ratings) ? "Yes" : "No"}</span>
+        <label className="flex items-center gap-1.5 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={skillbridge}
+            onChange={(e) => setSkillbridge(e.target.checked)}
+            className="rounded"
+          />
+          <span className="font-medium text-cyan-700">SkillBridge</span>
+        </label>
       </div>
 
       {error && (

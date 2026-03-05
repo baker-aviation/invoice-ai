@@ -61,6 +61,17 @@ export async function PATCH(
     update.has_challenger_300_type_rating = body.has_challenger_300_type_rating;
   }
 
+  const validCategories = [
+    "pilot_pic", "pilot_sic", "skillbridge", "dispatcher", "maintenance",
+    "sales", "hr", "admin", "management", "line_service", "other",
+  ];
+  if ("category" in body) {
+    if (typeof body.category !== "string" || !validCategories.includes(body.category)) {
+      return NextResponse.json({ error: "Invalid category" }, { status: 400 });
+    }
+    update.category = body.category;
+  }
+
   if (Object.keys(update).length <= 1) {
     return NextResponse.json({ error: "No fields to update" }, { status: 400 });
   }

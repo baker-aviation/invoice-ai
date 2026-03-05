@@ -148,6 +148,7 @@ export default async function JobDetailPage({
                       initialRatings={Array.isArray(job?.type_ratings) ? job.type_ratings : []}
                       initialHasCitationX={job?.has_citation_x ?? null}
                       initialHasChallenger300={job?.has_challenger_300_type_rating ?? null}
+                      initialCategory={job?.category ?? null}
                     />
                   </div>
                 </>
