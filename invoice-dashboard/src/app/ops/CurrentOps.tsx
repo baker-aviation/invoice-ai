@@ -1,8 +1,8 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useState, useEffect, useCallback, useMemo } from "react";
-import type { Flight } from "@/lib/opsApi";
+import { useState, useEffect, useCallback, useMemo, Fragment } from "react";
+import type { Flight, OpsAlert } from "@/lib/opsApi";
 import type { AdsbAircraft, FlightInfoMap } from "@/app/maintenance/MapView";
 
 const OpsMap = dynamic(() => import("./OpsMap"), {
@@ -44,12 +44,41 @@ const FLIGHT_TYPE_COLORS: Record<string, string> = {
 
 const DEFAULT_TYPES = new Set(["Charter", "Revenue", "Positioning"]);
 
+type TimeRange = "Today" | "Tomorrow" | "Week" | "Month";
+
+function getTimeRange(range: TimeRange): { start: Date; end: Date } {
+  const now = new Date();
+  const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const tomorrowStart = new Date(todayStart.getTime() + 86400000);
+  const dayAfterTomorrow = new Date(todayStart.getTime() + 2 * 86400000);
+
+  switch (range) {
+    case "Today":
+      return { start: todayStart, end: tomorrowStart };
+    case "Tomorrow":
+      return { start: tomorrowStart, end: dayAfterTomorrow };
+    case "Week":
+      return { start: todayStart, end: new Date(todayStart.getTime() + 7 * 86400000) };
+    case "Month":
+      return { start: todayStart, end: new Date(todayStart.getTime() + 30 * 86400000) };
+  }
+}
+
+const SEVERITY_COLORS: Record<string, string> = {
+  critical: "bg-red-100 text-red-800 border-red-200",
+  high: "bg-orange-100 text-orange-800 border-orange-200",
+  medium: "bg-yellow-100 text-yellow-800 border-yellow-200",
+  low: "bg-blue-100 text-blue-800 border-blue-200",
+};
+
 /* ── component ──────────────────────────────────────── */
 
 export default function CurrentOps({ flights }: { flights: Flight[] }) {
   const [adsbAircraft, setAdsbAircraft] = useState<AdsbAircraft[]>([]);
   const [flightInfo, setFlightInfo] = useState<Map<string, FlightInfoMap>>(new Map());
   const [visibleTypes, setVisibleTypes] = useState<Set<string>>(DEFAULT_TYPES);
+  const [timeRange, setTimeRange] = useState<TimeRange>("Today");
+  const [expandedFlights, setExpandedFlights] = useState<Set<string>>(new Set());
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
   // Fetch ADS-B positions
@@ -99,17 +128,27 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
     return [...types].sort();
   }, [flights]);
 
-  // Filter today's flights by visible types
-  const todaysFlights = useMemo(() => {
+  // Filter flights by time range and visible types
+  const filteredFlights = useMemo(() => {
+    const { start, end } = getTimeRange(timeRange);
     return flights
       .filter((f) => {
         const type = f.flight_type || "Other";
         if (!visibleTypes.has(type)) return false;
-        // Show flights from today and tomorrow (next 48h window)
-        return true;
+        const dep = new Date(f.scheduled_departure);
+        return dep >= start && dep < end;
       })
       .sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure));
-  }, [flights, visibleTypes]);
+  }, [flights, visibleTypes, timeRange]);
+
+  function toggleExpanded(flightId: string) {
+    setExpandedFlights((prev) => {
+      const next = new Set(prev);
+      if (next.has(flightId)) next.delete(flightId);
+      else next.add(flightId);
+      return next;
+    });
+  }
 
   function toggleType(type: string) {
     setVisibleTypes((prev) => {
@@ -138,7 +177,7 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
             <span className="text-gray-500">{onGround} on ground</span>
           </span>
           <span className="text-gray-400">·</span>
-          <span className="text-gray-400">{todaysFlights.length} flights scheduled</span>
+          <span className="text-gray-400">{filteredFlights.length} flights scheduled</span>
         </div>
         {lastUpdate && (
           <span className="ml-auto text-xs text-gray-400">
@@ -152,24 +191,46 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
         <OpsMap adsbAircraft={adsbAircraft} flightInfo={flightInfo} />
       </div>
 
-      {/* ── Flight type filters ── */}
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Show:</span>
-        {allTypes.map((type) => {
-          const active = visibleTypes.has(type);
-          const colorClass = FLIGHT_TYPE_COLORS[type] || "bg-gray-100 text-gray-700";
-          return (
+      {/* ── Filters row ── */}
+      <div className="flex flex-wrap items-center gap-4">
+        {/* Time range */}
+        <div className="flex items-center gap-1">
+          {(["Today", "Tomorrow", "Week", "Month"] as TimeRange[]).map((r) => (
             <button
-              key={type}
-              onClick={() => toggleType(type)}
+              key={r}
+              onClick={() => setTimeRange(r)}
               className={`px-3 py-1 text-xs font-medium rounded-full transition-all ${
-                active ? colorClass : "bg-gray-100 text-gray-400 opacity-50"
+                timeRange === r
+                  ? "bg-gray-900 text-white"
+                  : "bg-gray-100 text-gray-500 hover:bg-gray-200"
               }`}
             >
-              {type}
+              {r}
             </button>
-          );
-        })}
+          ))}
+        </div>
+
+        <span className="text-gray-300">|</span>
+
+        {/* Flight type filters */}
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Type:</span>
+          {allTypes.map((type) => {
+            const active = visibleTypes.has(type);
+            const colorClass = FLIGHT_TYPE_COLORS[type] || "bg-gray-100 text-gray-700";
+            return (
+              <button
+                key={type}
+                onClick={() => toggleType(type)}
+                className={`px-3 py-1 text-xs font-medium rounded-full transition-all ${
+                  active ? colorClass : "bg-gray-100 text-gray-400 opacity-50"
+                }`}
+              >
+                {type}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {/* ── Schedule table ── */}
@@ -187,19 +248,21 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
             </tr>
           </thead>
           <tbody>
-            {todaysFlights.length === 0 ? (
+            {filteredFlights.length === 0 ? (
               <tr>
                 <td colSpan={7} className="px-4 py-8 text-center text-gray-400">
-                  No flights scheduled for selected types
+                  No flights scheduled for selected filters
                 </td>
               </tr>
             ) : (
-              todaysFlights.map((f) => {
+              filteredFlights.map((f) => {
                 const adsb = adsbAircraft.find((a) => a.tail === f.tail_number);
                 const fi = f.tail_number ? flightInfo.get(f.tail_number) : undefined;
-                const alertCount = f.alerts?.length ?? 0;
+                const alerts = f.alerts ?? [];
+                const alertCount = alerts.length;
                 const type = f.flight_type || "Other";
                 const typeColor = FLIGHT_TYPE_COLORS[type] || "bg-gray-100 text-gray-700";
+                const isExpanded = expandedFlights.has(f.id);
 
                 // Determine status
                 let status = "Scheduled";
@@ -225,46 +288,88 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
                 const isPast = depDate < new Date() && status === "Scheduled";
 
                 return (
-                  <tr
-                    key={f.id}
-                    className={`border-t hover:bg-gray-50 ${isPast ? "opacity-50" : ""}`}
-                  >
-                    <td className="px-4 py-2.5 font-mono font-semibold text-gray-900">
-                      {f.tail_number || "—"}
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <span className="font-mono font-medium">
-                        {f.departure_icao || "?"} → {f.arrival_icao || "?"}
-                      </span>
-                      {fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100 && (
-                        <div className="mt-1 w-20 h-1.5 bg-gray-200 rounded-full overflow-hidden">
-                          <div
-                            className="h-full bg-blue-500 rounded-full"
-                            style={{ width: `${fi.progress_percent}%` }}
-                          />
-                        </div>
-                      )}
-                    </td>
-                    <td className="px-4 py-2.5 text-gray-600">{fmtTime(f.scheduled_departure)}</td>
-                    <td className="px-4 py-2.5 text-gray-600">
-                      {fi?.arrival_time ? fmtTime(fi.arrival_time) : fmtTime(f.scheduled_arrival)}
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <span className={`px-2 py-0.5 text-xs font-medium rounded-full ${typeColor}`}>
-                        {type}
-                      </span>
-                    </td>
-                    <td className={`px-4 py-2.5 text-xs ${statusColor}`}>
-                      {status}
-                    </td>
-                    <td className="px-4 py-2.5">
-                      {alertCount > 0 && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full bg-red-100 text-red-700">
-                          {alertCount} alert{alertCount > 1 ? "s" : ""}
+                  <Fragment key={f.id}>
+                    <tr
+                      className={`border-t hover:bg-gray-50 ${isPast ? "opacity-50" : ""}`}
+                    >
+                      <td className="px-4 py-2.5 font-mono font-semibold text-gray-900">
+                        {f.tail_number || "—"}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <span className="font-mono font-medium">
+                          {f.departure_icao || "?"} → {f.arrival_icao || "?"}
                         </span>
-                      )}
-                    </td>
-                  </tr>
+                        {fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100 && (
+                          <div className="mt-1 w-20 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                            <div
+                              className="h-full bg-blue-500 rounded-full"
+                              style={{ width: `${fi.progress_percent}%` }}
+                            />
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-4 py-2.5 text-gray-600">{fmtTime(f.scheduled_departure)}</td>
+                      <td className="px-4 py-2.5 text-gray-600">
+                        {fi?.arrival_time ? fmtTime(fi.arrival_time) : fmtTime(f.scheduled_arrival)}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <span className={`px-2 py-0.5 text-xs font-medium rounded-full ${typeColor}`}>
+                          {type}
+                        </span>
+                      </td>
+                      <td className={`px-4 py-2.5 text-xs ${statusColor}`}>
+                        {status}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        {alertCount > 0 && (
+                          <button
+                            onClick={() => toggleExpanded(f.id)}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full bg-red-100 text-red-700 hover:bg-red-200 transition-colors cursor-pointer"
+                          >
+                            <span className={`inline-block transition-transform ${isExpanded ? "rotate-90" : ""}`}>
+                              &#9656;
+                            </span>
+                            {alertCount} alert{alertCount > 1 ? "s" : ""}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                    {isExpanded && alerts.map((alert) => (
+                      <tr key={alert.id} className="border-t border-dashed border-gray-100 bg-red-50/40">
+                        <td colSpan={7} className="px-4 py-3">
+                          <div className={`rounded-lg border p-3 text-xs ${SEVERITY_COLORS[alert.severity] || "bg-gray-50 text-gray-700 border-gray-200"}`}>
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="space-y-1 flex-1">
+                                <div className="flex items-center gap-2">
+                                  <span className="font-semibold uppercase tracking-wide">{alert.alert_type.replace(/_/g, " ")}</span>
+                                  <span className="opacity-60">·</span>
+                                  <span className="capitalize">{alert.severity}</span>
+                                  {alert.airport_icao && (
+                                    <>
+                                      <span className="opacity-60">·</span>
+                                      <span className="font-mono">{alert.airport_icao}</span>
+                                    </>
+                                  )}
+                                </div>
+                                {alert.subject && (
+                                  <div className="font-medium text-sm">{alert.subject}</div>
+                                )}
+                                {alert.body && (
+                                  <div className="whitespace-pre-wrap opacity-80 max-h-32 overflow-y-auto">{alert.body}</div>
+                                )}
+                                {alert.edct_time && (
+                                  <div className="font-medium">EDCT: {fmtTime(alert.edct_time)}</div>
+                                )}
+                              </div>
+                              <span className="text-[10px] opacity-50 whitespace-nowrap shrink-0">
+                                {fmtTime(alert.created_at)}
+                              </span>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </Fragment>
                 );
               })
             )}
