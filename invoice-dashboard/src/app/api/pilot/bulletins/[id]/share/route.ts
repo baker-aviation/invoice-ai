@@ -22,12 +22,20 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    // Paginate through all channels (public + private)
-    const allChannels: { id: string; name: string; is_private: boolean; is_member: boolean }[] = [];
+    // Check token identity and scopes
+    const authRes = await fetch("https://slack.com/api/auth.test", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      cache: "no-store",
+    });
+    const authData = await authRes.json();
+
+    // Use users.conversations — returns channels the bot is a member of (public + private)
+    const allChannels: { id: string; name: string; is_private: boolean }[] = [];
     let cursor: string | undefined;
 
     do {
-      const url = new URL("https://slack.com/api/conversations.list");
+      const url = new URL("https://slack.com/api/users.conversations");
       url.searchParams.set("types", "public_channel,private_channel");
       url.searchParams.set("exclude_archived", "true");
       url.searchParams.set("limit", "200");
@@ -44,7 +52,7 @@ export async function GET(req: NextRequest) {
           ok: false,
           channels: [],
           error: data.error,
-          _debug: { needed: data.needed, provided: data.provided },
+          _debug: { auth: authData, needed: data.needed, provided: data.provided },
         });
       }
 
@@ -53,7 +61,6 @@ export async function GET(req: NextRequest) {
           id: c.id,
           name: c.name,
           is_private: c.is_private,
-          is_member: c.is_member,
         });
       }
 
@@ -70,6 +77,9 @@ export async function GET(req: NextRequest) {
         private_count: channels.filter((c) => c.is_private).length,
         public_count: channels.filter((c) => !c.is_private).length,
         token_prefix: token.substring(0, 10) + "...",
+        bot_user: authData.ok ? authData.user : null,
+        bot_id: authData.ok ? authData.bot_id : null,
+        team: authData.ok ? authData.team : null,
       },
     });
   } catch (err) {
