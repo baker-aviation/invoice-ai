@@ -404,11 +404,10 @@ function AlertCard({ alert, onAck }: { alert: OpsAlert; onAck: (id: string) => v
           <span className="font-mono font-semibold text-gray-800 text-xs">{alert.airport_icao}</span>
         )}
         {alert.edct_time && (
-          <span className="text-gray-700 text-xs">
-            EDCT <span className="font-semibold">{alert.edct_time}</span>
-            {alert.original_departure_time && (
-              <span className="text-gray-500"> (was {alert.original_departure_time})</span>
-            )}
+          <span className="text-xs">
+            <span className="text-gray-500 line-through">{alert.original_departure_time ?? ""}</span>
+            {alert.original_departure_time && <span className="text-gray-400 mx-0.5">→</span>}
+            <span className="text-orange-700 font-bold">{alert.edct_time}</span>
           </span>
         )}
         {/* ── NOTAM effective times (inline) ── */}
@@ -971,11 +970,10 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
                 {flight?.tail_number && (
                   <span className="font-mono text-xs text-gray-600 bg-gray-100 rounded px-1.5 py-0.5">{flight.tail_number}</span>
                 )}
-                <span className="text-orange-800 text-xs font-semibold">
-                  EDCT {alert.edct_time ?? "—"}
-                  {alert.original_departure_time && (
-                    <span className="text-gray-500 font-normal"> (was {alert.original_departure_time})</span>
-                  )}
+                <span className="text-xs">
+                  <span className="text-gray-500 line-through">{alert.original_departure_time ?? ""}</span>
+                  {alert.original_departure_time && <span className="text-gray-400 mx-0.5">→</span>}
+                  <span className="text-orange-800 font-bold">{alert.edct_time ?? "—"}</span>
                 </span>
                 {flight && (
                   <span className="text-xs text-gray-500">

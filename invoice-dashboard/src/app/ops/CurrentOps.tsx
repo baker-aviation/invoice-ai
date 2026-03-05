@@ -219,11 +219,10 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
               <div key={a.id} className="flex items-center gap-3 text-sm text-amber-900">
                 <span className="font-medium">{a.route}</span>
                 {a.tail_number && <span className="text-amber-600">{a.tail_number}</span>}
-                <span className="text-amber-700">
-                  EDCT {a.edct_time ? fmtTime(a.edct_time) : "—"}
-                  {a.original_departure_time && (
-                    <span className="text-amber-500 ml-1">(was {fmtTime(a.original_departure_time)})</span>
-                  )}
+                <span className="text-sm">
+                  {a.original_departure_time && <span className="text-amber-500 line-through">{fmtTime(a.original_departure_time)}</span>}
+                  {a.original_departure_time && <span className="text-amber-400 mx-0.5">→</span>}
+                  <span className="text-amber-800 font-bold">{a.edct_time ? fmtTime(a.edct_time) : "—"}</span>
                 </span>
               </div>
             ))}
@@ -403,7 +402,11 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
                                   <div className="whitespace-pre-wrap opacity-80 max-h-32 overflow-y-auto">{alert.body}</div>
                                 )}
                                 {alert.edct_time && (
-                                  <div className="font-medium">EDCT: {fmtTime(alert.edct_time)}</div>
+                                  <div className="font-medium">
+                                    {alert.original_departure_time && <span className="line-through opacity-60 mr-1">{fmtTime(alert.original_departure_time)}</span>}
+                                    {alert.original_departure_time && <span className="opacity-50 mr-1">→</span>}
+                                    EDCT: {fmtTime(alert.edct_time)}
+                                  </div>
                                 )}
                               </div>
                               <span className="text-[10px] opacity-50 whitespace-nowrap shrink-0">
