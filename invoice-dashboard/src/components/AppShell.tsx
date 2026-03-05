@@ -7,17 +7,17 @@ import { createClient } from "@/lib/supabase/client";
 import { hasAccessToPath } from "@/lib/permissions";
 
 const NAV = [
-  { href: "/", label: "Home", exact: true },
-  { href: "/ops", label: "Ops", exact: false },
-  { href: "/invoices", label: "Invoices", exact: false },
-  { href: "/alerts", label: "Alerts", exact: false },
-  { href: "/fuel-prices", label: "Fuel Prices", exact: false },
-  { href: "/jobs", label: "Jobs", exact: false },
-  { href: "/maintenance", label: "AOG Vans", exact: false },
-  { href: "/vehicles", label: "Vehicles", exact: false },
-  { href: "/fees", label: "Fees", exact: false },
-  { href: "/health", label: "Health", exact: false },
-  { href: "/admin/settings", label: "Admin", exact: false },
+  { href: "/", label: "Home", exact: true, adminOnly: false },
+  { href: "/ops", label: "Ops", exact: false, adminOnly: false },
+  { href: "/invoices", label: "Invoices", exact: false, adminOnly: false },
+  { href: "/alerts", label: "Alerts", exact: false, adminOnly: false },
+  { href: "/fuel-prices", label: "Fuel Prices", exact: false, adminOnly: false },
+  { href: "/jobs", label: "Jobs", exact: false, adminOnly: false },
+  { href: "/maintenance", label: "AOG Vans", exact: false, adminOnly: false },
+  { href: "/vehicles", label: "Vehicles", exact: false, adminOnly: false },
+  { href: "/fees", label: "Fees", exact: false, adminOnly: false },
+  { href: "/health", label: "Health", exact: false, adminOnly: true },
+  { href: "/admin/settings", label: "Admin", exact: false, adminOnly: true },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -53,7 +53,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </Link>
 
           <nav className="flex items-center gap-1 text-sm">
-            {NAV.filter(({ href }) => isAdmin || hasAccessToPath(permissions, href)).map(({ href, label, exact }) => {
+            {NAV.filter(({ href, adminOnly }) => adminOnly ? isAdmin : (isAdmin || hasAccessToPath(permissions, href))).map(({ href, label, exact }) => {
               const isActive = exact ? pathname === href : pathname.startsWith(href);
               return (
                 <Link

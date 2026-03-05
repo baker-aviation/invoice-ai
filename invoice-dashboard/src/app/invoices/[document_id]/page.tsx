@@ -7,6 +7,7 @@ import ReparseButton from "./ReparseButton";
 import PdfViewer from "./PdfViewer";
 import CategorySelect from "./CategorySelect";
 import { AutoRefresh } from "@/components/AutoRefresh";
+import { createClient } from "@/lib/supabase/server";
 
 export default async function InvoiceDetailPage({
   params,
@@ -14,6 +15,11 @@ export default async function InvoiceDetailPage({
   params: Promise<{ document_id: string }>;
 }) {
   const { document_id } = await params;
+
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  const role = user?.app_metadata?.role ?? user?.user_metadata?.role;
+  const isAdmin = role === "admin";
 
   let data: Awaited<ReturnType<typeof fetchInvoiceDetail>>;
   try {
@@ -29,7 +35,7 @@ export default async function InvoiceDetailPage({
             <Link href="/invoices" className="rounded-md border px-3 py-2 text-sm">
               ← Back to Invoices
             </Link>
-            <ReparseButton documentId={document_id} />
+            {isAdmin && <ReparseButton documentId={document_id} />}
             <span className="text-xs text-gray-400 ml-auto">document_id: {document_id}</span>
           </div>
           <div className="rounded-xl border border-amber-200 bg-amber-50 p-6 text-center text-amber-800">
