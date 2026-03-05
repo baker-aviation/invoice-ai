@@ -58,17 +58,7 @@ export default function LoginPage() {
           priority
           unoptimized
         />
-        <div className="mt-4">
-          <Image
-            src="/logo3.png"
-            alt="Baker Aviation"
-            width={200}
-            height={63}
-            className="mx-auto"
-            priority
-            unoptimized
-          />
-        </div>
+        <div className="mt-4 h-16" />
       </div>
 
       {/* Login card */}
