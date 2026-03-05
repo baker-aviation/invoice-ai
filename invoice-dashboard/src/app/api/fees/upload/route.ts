@@ -92,9 +92,8 @@ export async function POST(req: NextRequest) {
     const { data, error } = await supa
       .from("expenses")
       .upsert(batch, {
-        onConflict: "idx_expenses_dedup",
+        onConflict: "expense_date,airport,vendor,amount",
         ignoreDuplicates: true,
-        count: "exact",
       })
       .select("id");
 

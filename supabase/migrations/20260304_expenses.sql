@@ -23,9 +23,7 @@ CREATE TABLE IF NOT EXISTS expenses (
 );
 
 -- Prevent duplicate rows from overlapping CSV uploads
-CREATE UNIQUE INDEX idx_expenses_dedup
-  ON expenses (expense_date, airport, vendor, amount)
-  WHERE amount > 0;
+ALTER TABLE expenses ADD CONSTRAINT expenses_dedup UNIQUE (expense_date, airport, vendor, amount);
 
 -- Dashboard queries
 CREATE INDEX idx_expenses_date   ON expenses (expense_date DESC);
