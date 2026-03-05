@@ -302,10 +302,10 @@ function CreateBulletinModal({ onClose }: { onClose: () => void }) {
       onClick={onClose}
     >
       <div
-        className={`bg-white rounded-xl shadow-xl mx-4 p-5 flex flex-col transition-all overflow-auto resize ${
+        className={`bg-white rounded-xl shadow-xl p-5 flex flex-col overflow-auto resize max-w-[95vw] max-h-[95vh] ${
           expanded
-            ? "w-full max-w-3xl h-[90vh]"
-            : "w-full max-w-lg max-h-[90vh]"
+            ? "w-[48rem] h-[90vh]"
+            : "w-[32rem] h-auto"
         }`}
         onClick={(e) => e.stopPropagation()}
       >

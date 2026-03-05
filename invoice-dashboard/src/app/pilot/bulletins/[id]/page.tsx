@@ -121,7 +121,7 @@ export default async function BulletinDetailPage({
                 Download
               </a>
             </div>
-            <div className="border-t bg-black aspect-video">
+            <div className="border-t bg-black aspect-video relative">
               <video
                 src={videoDownloadUrl}
                 controls
@@ -130,6 +130,21 @@ export default async function BulletinDetailPage({
               >
                 Your browser does not support video playback.
               </video>
+              {!videoUrl && (
+                <div className="absolute inset-0 flex items-center justify-center bg-gray-900/80">
+                  <p className="text-sm text-gray-300">
+                    Video preview unavailable.{" "}
+                    <a
+                      href={`/api/pilot/bulletins/${bulletin.id}/download`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-blue-400 underline"
+                    >
+                      Download to watch
+                    </a>
+                  </p>
+                </div>
+              )}
             </div>
           </div>
         )}
