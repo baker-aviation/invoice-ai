@@ -21,7 +21,11 @@ export async function middleware(request: NextRequest) {
   // Public routes that handle their own auth or need no auth
   // Use exact match to prevent prefix bypass on future sub-routes
   const publicApiPaths = ["/api/agents", "/api/vans/health", "/api/vans/diagnostics"];
-  if (publicApiPaths.some((p) => request.nextUrl.pathname === p)) {
+  if (
+    publicApiPaths.some((p) => request.nextUrl.pathname === p) ||
+    request.nextUrl.pathname.startsWith("/api/public/form/") ||
+    request.nextUrl.pathname.startsWith("/form/")
+  ) {
     return NextResponse.next();
   }
 

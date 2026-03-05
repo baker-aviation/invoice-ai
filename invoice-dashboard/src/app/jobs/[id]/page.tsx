@@ -3,6 +3,7 @@ import { Topbar } from "@/components/Topbar";
 import { Badge } from "@/components/Badge";
 import { fetchJobDetail, fetchLinkedLors } from "@/lib/jobApi";
 import FileViewer from "./FileViewer";
+import FormLinkButton from "./FormLinkButton";
 
 function fmtDate(s: any) {
   return String(s ?? "").replace("T", " ").replace("+00:00", "Z");
@@ -152,6 +153,27 @@ export default async function JobDetailPage({
               ) : null}
             </div>
           </div>
+
+          {/* Info Session Form Link */}
+          <div className="rounded-xl border bg-white p-4 shadow-sm">
+            <div className="text-sm font-semibold mb-2">Info Session Form</div>
+            <FormLinkButton parseId={job.id} />
+          </div>
+
+          {/* Info Session Responses */}
+          {job?.info_session_data && Object.keys(job.info_session_data).length > 0 && (
+            <div className="rounded-xl border bg-white p-4 shadow-sm">
+              <div className="text-sm font-semibold">Info Session Responses</div>
+              <div className="mt-3 grid gap-2 md:grid-cols-2 text-sm">
+                {Object.entries(job.info_session_data).map(([key, value]) => (
+                  <div key={key}>
+                    <span className="text-gray-500">{key.replace(/_/g, " ")}:</span>{" "}
+                    <span className="text-gray-900">{String(value)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="rounded-xl border bg-white p-4 shadow-sm">
             <div className="text-sm font-semibold">Files</div>

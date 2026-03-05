@@ -7,7 +7,7 @@ export function AppShellWrapper({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
 
   // Pilot portal and login have their own layouts — skip the dashboard AppShell
-  if (pathname.startsWith("/pilot") || pathname.startsWith("/login")) {
+  if (pathname.startsWith("/pilot") || pathname.startsWith("/login") || pathname.startsWith("/form")) {
     return <>{children}</>;
   }
 

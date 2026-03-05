@@ -126,6 +126,8 @@ export type JobRow = {
   notes: string | null;
   model: string | null;
 
+  info_session_data?: Record<string, any> | null;
+
   confidence?: any;
   raw_extraction?: any;
 };
