@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 interface ExpenseRow {
   expense_date: string;
@@ -18,6 +19,52 @@ interface ExpenseRow {
   upload_batch: string | null;
 }
 
+/**
+ * Fetch all rows matching a query by paginating through Supabase's 1000-row limit.
+ */
+async function fetchAll(
+  supa: SupabaseClient,
+  opts: {
+    categoryFilter?: string;
+    airportFilter?: string;
+    monthStart?: string;
+    monthEnd?: string;
+    select?: string;
+  },
+): Promise<ExpenseRow[]> {
+  const pageSize = 1000;
+  const all: ExpenseRow[] = [];
+  let from = 0;
+
+  const sel = opts.select ?? "expense_date, vendor, category, receipts, airport, fbo, bill_to, created_by, gallons, amount, repeats, uploaded_at, upload_batch";
+
+  while (true) {
+    let query = supa
+      .from("expenses")
+      .select(sel)
+      .gt("amount", 0)
+      .order("expense_date", { ascending: false })
+      .range(from, from + pageSize - 1);
+
+    if (opts.categoryFilter) query = query.eq("category", opts.categoryFilter);
+    if (opts.airportFilter) query = query.eq("airport", opts.airportFilter);
+    if (opts.monthStart && opts.monthEnd) {
+      query = query.gte("expense_date", opts.monthStart).lt("expense_date", opts.monthEnd);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    const rows = (data ?? []) as ExpenseRow[];
+    all.push(...rows);
+
+    if (rows.length < pageSize) break;
+    from += pageSize;
+  }
+
+  return all;
+}
+
 export async function GET(req: NextRequest) {
   const auth = await requireAuth(req);
   if ("error" in auth) return auth.error;
@@ -30,41 +77,54 @@ export async function GET(req: NextRequest) {
 
   const supa = createServiceClient();
 
+  // Parse month filter into date range
+  let monthStart: string | undefined;
+  let monthEnd: string | undefined;
+  if (monthFilter) {
+    const [mm, yyyy] = monthFilter.split("/");
+    if (mm && yyyy) {
+      monthStart = `${yyyy}-${mm.padStart(2, "0")}-01`;
+      const endMonth = parseInt(mm);
+      const endYear = endMonth === 12 ? parseInt(yyyy) + 1 : parseInt(yyyy);
+      const endMM = endMonth === 12 ? 1 : endMonth + 1;
+      monthEnd = `${endYear}-${String(endMM).padStart(2, "0")}-01`;
+    }
+  }
+
   try {
     // --- uploads view: show distinct upload batches ---
     if (view === "uploads") {
-      const { data, error } = await supa
-        .from("expenses")
-        .select("upload_batch, uploaded_at")
-        .order("uploaded_at", { ascending: false });
+      // Use RPC-style: just fetch batch + dates, paginated
+      const allRows: { upload_batch: string | null; uploaded_at: string; expense_date: string }[] = [];
+      let from = 0;
+      const pageSize = 1000;
 
-      if (error) throw error;
+      while (true) {
+        const { data, error } = await supa
+          .from("expenses")
+          .select("upload_batch, uploaded_at, expense_date")
+          .order("uploaded_at", { ascending: false })
+          .range(from, from + pageSize - 1);
 
-      // Group by batch
-      const batchMap = new Map<string, { uploadedAt: string; count: number }>();
-      for (const row of data ?? []) {
+        if (error) throw error;
+        allRows.push(...(data ?? []));
+        if ((data ?? []).length < pageSize) break;
+        from += pageSize;
+      }
+
+      const batchMap = new Map<string, { uploadedAt: string; count: number; minDate: string; maxDate: string }>();
+      for (const row of allRows) {
         const batch = row.upload_batch || "unknown";
         const existing = batchMap.get(batch);
         if (!existing) {
-          batchMap.set(batch, { uploadedAt: row.uploaded_at, count: 1 });
+          batchMap.set(batch, {
+            uploadedAt: row.uploaded_at,
+            count: 1,
+            minDate: row.expense_date,
+            maxDate: row.expense_date,
+          });
         } else {
           existing.count++;
-        }
-      }
-
-      // Also get date range per batch
-      const { data: dateRanges } = await supa
-        .from("expenses")
-        .select("upload_batch, expense_date")
-        .order("expense_date", { ascending: true });
-
-      const batchDates = new Map<string, { minDate: string; maxDate: string }>();
-      for (const row of dateRanges ?? []) {
-        const batch = row.upload_batch || "unknown";
-        const existing = batchDates.get(batch);
-        if (!existing) {
-          batchDates.set(batch, { minDate: row.expense_date, maxDate: row.expense_date });
-        } else {
           if (row.expense_date < existing.minDate) existing.minDate = row.expense_date;
           if (row.expense_date > existing.maxDate) existing.maxDate = row.expense_date;
         }
@@ -74,38 +134,20 @@ export async function GET(req: NextRequest) {
         batch,
         uploadedAt: info.uploadedAt,
         rowCount: info.count,
-        ...(batchDates.get(batch) ?? {}),
+        minDate: info.minDate,
+        maxDate: info.maxDate,
       }));
 
       return NextResponse.json({ ok: true, uploads });
     }
 
-    // --- Fetch all rows (with filters applied via query) ---
-    let query = supa
-      .from("expenses")
-      .select("expense_date, vendor, category, receipts, airport, fbo, bill_to, created_by, gallons, amount, repeats, uploaded_at, upload_batch")
-      .gt("amount", 0)
-      .order("expense_date", { ascending: false });
-
-    if (categoryFilter) query = query.eq("category", categoryFilter);
-    if (airportFilter) query = query.eq("airport", airportFilter);
-    if (monthFilter) {
-      // monthFilter is "MM/YYYY" — convert to date range
-      const [mm, yyyy] = monthFilter.split("/");
-      if (mm && yyyy) {
-        const start = `${yyyy}-${mm.padStart(2, "0")}-01`;
-        const endMonth = parseInt(mm);
-        const endYear = endMonth === 12 ? parseInt(yyyy) + 1 : parseInt(yyyy);
-        const endMM = endMonth === 12 ? 1 : endMonth + 1;
-        const end = `${endYear}-${String(endMM).padStart(2, "0")}-01`;
-        query = query.gte("expense_date", start).lt("expense_date", end);
-      }
-    }
-
-    const { data: rows, error } = await query;
-    if (error) throw error;
-
-    const filtered = (rows ?? []) as ExpenseRow[];
+    // --- Fetch all matching rows ---
+    const filtered = await fetchAll(supa, {
+      categoryFilter: categoryFilter || undefined,
+      airportFilter: airportFilter || undefined,
+      monthStart,
+      monthEnd,
+    });
 
     if (view === "summary") {
       const catMap = new Map<string, { count: number; total: number; max: number }>();
