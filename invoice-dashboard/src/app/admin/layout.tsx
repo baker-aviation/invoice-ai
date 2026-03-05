@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 const ADMIN_NAV = [
   { href: "/admin/settings", label: "ICS Sources" },
   { href: "/admin/forms", label: "Forms" },
+  { href: "/admin/documents", label: "Documents" },
   { href: "/admin/invite", label: "Invite Users" },
   { href: "/admin/users", label: "Manage Users" },
 ];
