@@ -110,7 +110,7 @@ export default function LorsTable({
         <p className="text-sm text-gray-500">{files.length} letter{files.length !== 1 ? "s" : ""} of recommendation</p>
       </div>
 
-      <div className="rounded-xl border bg-white overflow-hidden shadow-sm">
+      <div className="rounded-xl border bg-white shadow-sm">
         <div className="overflow-x-auto">
           <table className="min-w-full text-sm">
             <thead>
@@ -148,7 +148,7 @@ export default function LorsTable({
                             }
                           }}
                         />
-                        <div className="absolute z-10 mt-1 w-full max-h-48 overflow-y-auto rounded border bg-white shadow-lg">
+                        <div className="absolute z-10 bottom-full mb-1 w-full max-h-48 overflow-y-auto rounded border bg-white shadow-lg">
                           {f.linked_parse_id && (
                             <button
                               onClick={() => handleLink(f.id, null)}
