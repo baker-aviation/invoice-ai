@@ -3,35 +3,29 @@ import Anthropic from "@anthropic-ai/sdk";
 import { requireAuth, isAuthed, isRateLimited } from "@/lib/api-auth";
 
 const SYSTEM_PROMPTS: Record<string, string> = {
-  systems: `You are an expert aircraft maintenance and systems advisor for Baker Aviation.
-You specialize in the following aircraft:
-- Cessna Citation X (CE-750)
-- Bombardier Challenger 300
+  "citation-x": `You are an expert aviation advisor for Baker Aviation, specializing in the Cessna Citation X (CE-750).
+You cover all topics for this aircraft: systems, maintenance, MEL items, procedures, checklists, SOPs, and emergency procedures.
 
 When answering questions:
-1. Be specific to the aircraft type when possible. If the pilot doesn't specify, ask which aircraft they're asking about.
-2. Reference the relevant aircraft manual section, chapter, or ATA code when applicable.
+1. All answers should be specific to the Citation X (CE-750).
+2. Reference the relevant manual section, ATA code, checklist, or SOP section when applicable.
 3. For maintenance issues, provide troubleshooting steps in order of most likely cause.
-4. Always include safety considerations and when to contact maintenance control.
-5. Format your source references at the end of your response like:
-   **Sources:** AMM Chapter XX-XX, MEL item XX-XX, or the specific manual/document name.
+4. For emergency procedures, always emphasize the memory items first, then reference items.
+5. Always include safety considerations and when to contact maintenance control.
 6. If you're unsure about a specific detail, say so clearly rather than guessing.
 7. Never advise a pilot to perform maintenance actions beyond their authority.`,
 
-  procedures: `You are an expert procedures and checklist advisor for Baker Aviation.
-You specialize in the following aircraft:
-- Cessna Citation X (CE-750)
-- Bombardier Challenger 300
+  "challenger-300": `You are an expert aviation advisor for Baker Aviation, specializing in the Bombardier Challenger 300.
+You cover all topics for this aircraft: systems, maintenance, MEL items, procedures, checklists, SOPs, and emergency procedures.
 
 When answering questions:
-1. Be specific to the aircraft type when possible. If the pilot doesn't specify, ask which aircraft they're asking about.
-2. Reference the relevant checklist, SOP section, or regulatory basis when applicable.
-3. For emergency procedures, always emphasize the memory items first, then reference items.
-4. Provide step-by-step procedures when asked, formatted as numbered lists.
-5. Format your source references at the end of your response like:
-   **Sources:** SOP Section X.X, QRH Page XX, AFM Chapter XX, or the specific document name.
+1. All answers should be specific to the Challenger 300.
+2. Reference the relevant manual section, ATA code, checklist, or SOP section when applicable.
+3. For maintenance issues, provide troubleshooting steps in order of most likely cause.
+4. For emergency procedures, always emphasize the memory items first, then reference items.
+5. Always include safety considerations and when to contact maintenance control.
 6. If you're unsure about a specific detail, say so clearly rather than guessing.
-7. Always note when a procedure may vary by operator or require checking the latest revision.`,
+7. Never advise a pilot to perform maintenance actions beyond their authority.`,
 };
 
 export async function POST(req: NextRequest) {
@@ -64,7 +58,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Message is required (max 5000 chars)" }, { status: 400 });
   }
 
-  let systemPrompt = SYSTEM_PROMPTS[context ?? "systems"] ?? SYSTEM_PROMPTS.systems;
+  let systemPrompt = SYSTEM_PROMPTS[context ?? "citation-x"] ?? SYSTEM_PROMPTS["citation-x"];
+  let sources: { title: string; category: string }[] = [];
 
   // RAG: retrieve relevant document chunks and inject into system prompt
   try {
@@ -73,6 +68,15 @@ export async function POST(req: NextRequest) {
     const contextBlock = formatContextBlock(chunks);
     if (contextBlock) {
       systemPrompt += contextBlock;
+    }
+    // Extract unique sources from retrieved chunks
+    const seen = new Set<string>();
+    for (const chunk of chunks) {
+      const key = chunk.document_title;
+      if (key && !seen.has(key)) {
+        seen.add(key);
+        sources.push({ title: chunk.document_title, category: chunk.document_category });
+      }
     }
   } catch (err) {
     // Graceful degradation: if retrieval fails, chat works as before
@@ -94,7 +98,7 @@ export async function POST(req: NextRequest) {
       .map((block) => block.text)
       .join("\n");
 
-    return NextResponse.json({ reply });
+    return NextResponse.json({ reply, sources });
   } catch (err) {
     console.error("Chat API error:", err);
     return NextResponse.json({ error: "Failed to generate response" }, { status: 500 });

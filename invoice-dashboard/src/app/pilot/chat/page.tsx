@@ -2,25 +2,25 @@
 
 import { useState, useRef, useEffect } from "react";
 
-type BotTab = "systems" | "procedures";
+type BotTab = "citation-x" | "challenger-300";
 
 const BOTS: Record<BotTab, { label: string; description: string; placeholder: string }> = {
-  systems: {
-    label: "Aircraft Systems",
-    description: "Ask about aircraft systems, MEL items, and technical references.",
-    placeholder: "e.g. What are the hydraulic system limitations on the CE-750?",
+  "citation-x": {
+    label: "Citation X (CE-750)",
+    description: "Ask about systems, procedures, checklists, and technical references for the Citation X.",
+    placeholder: "e.g. What are the hydraulic system limitations?",
   },
-  procedures: {
-    label: "Procedures & Checklists",
-    description: "Ask about SOPs, emergency procedures, and checklist items.",
-    placeholder: "e.g. What is the engine start sequence for the Challenger 300?",
+  "challenger-300": {
+    label: "Challenger 300",
+    description: "Ask about systems, procedures, checklists, and technical references for the Challenger 300.",
+    placeholder: "e.g. What is the engine start sequence?",
   },
 };
 
 export default function PilotChatPage() {
-  const [activeBot, setActiveBot] = useState<BotTab>("systems");
+  const [activeBot, setActiveBot] = useState<BotTab>("citation-x");
   const [input, setInput] = useState("");
-  const [messages, setMessages] = useState<{ role: "user" | "assistant"; content: string }[]>([]);
+  const [messages, setMessages] = useState<{ role: "user" | "assistant"; content: string; sources?: { title: string; category: string }[] }[]>([]);
   const [loading, setLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const bot = BOTS[activeBot];
@@ -54,7 +54,7 @@ export default function PilotChatPage() {
       if (!res.ok) throw new Error("Failed to get response");
 
       const data = await res.json();
-      setMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
+      setMessages((prev) => [...prev, { role: "assistant", content: data.reply, sources: data.sources }]);
     } catch {
       setMessages((prev) => [
         ...prev,
@@ -99,15 +99,21 @@ export default function PilotChatPage() {
           </p>
         )}
         {messages.map((msg, i) => (
-          <div
-            key={i}
-            className={`max-w-[90%] sm:max-w-[80%] rounded-lg px-3 sm:px-4 py-2 text-sm whitespace-pre-wrap ${
-              msg.role === "user"
-                ? "self-end bg-blue-900 text-white"
-                : "self-start bg-gray-100 text-gray-800"
-            }`}
-          >
-            {msg.content}
+          <div key={i} className={`max-w-[90%] sm:max-w-[80%] ${msg.role === "user" ? "self-end" : "self-start"}`}>
+            <div
+              className={`rounded-lg px-3 sm:px-4 py-2 text-sm whitespace-pre-wrap ${
+                msg.role === "user"
+                  ? "bg-blue-900 text-white"
+                  : "bg-gray-100 text-gray-800"
+              }`}
+            >
+              {msg.content}
+            </div>
+            {msg.sources && msg.sources.length > 0 && (
+              <p className="text-xs text-gray-400 mt-1 px-1">
+                Sources: {msg.sources.map((s) => s.title).join(", ")}
+              </p>
+            )}
           </div>
         ))}
         {loading && (
