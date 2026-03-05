@@ -21,7 +21,7 @@ export async function middleware(request: NextRequest) {
 
   // Public routes that handle their own auth or need no auth
   // Use exact match to prevent prefix bypass on future sub-routes
-  const publicApiPaths = ["/api/agents", "/api/vans/health", "/api/vans/diagnostics"];
+  const publicApiPaths = ["/api/agents", "/api/vans/health", "/api/vans/diagnostics", "/api/invite"];
   if (
     publicApiPaths.some((p) => request.nextUrl.pathname === p) ||
     request.nextUrl.pathname.startsWith("/api/public/form/") ||
@@ -58,7 +58,7 @@ export async function middleware(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser();
 
-  if (!user && !request.nextUrl.pathname.startsWith("/login") && !request.nextUrl.pathname.startsWith("/auth/")) {
+  if (!user && !request.nextUrl.pathname.startsWith("/login") && !request.nextUrl.pathname.startsWith("/auth/") && request.nextUrl.pathname !== "/invite") {
     // API routes get a 401 JSON response, not a redirect to /login
     if (request.nextUrl.pathname.startsWith("/api/")) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
