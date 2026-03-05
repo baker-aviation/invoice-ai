@@ -4,6 +4,7 @@ import { Badge } from "@/components/Badge";
 import { fetchJobDetail, fetchLinkedLors } from "@/lib/jobApi";
 import FileViewer from "./FileViewer";
 import FormLinkButton from "./FormLinkButton";
+import AttachFileButton from "./AttachFileButton";
 
 function fmtDate(s: any) {
   return String(s ?? "").replace("T", " ").replace("+00:00", "Z");
@@ -176,7 +177,10 @@ export default async function JobDetailPage({
           )}
 
           <div className="rounded-xl border bg-white p-4 shadow-sm">
-            <div className="text-sm font-semibold">Files</div>
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-semibold">Files</div>
+              <AttachFileButton applicationId={Number(applicationId)} parseId={job.id} />
+            </div>
 
             {files.length === 0 ? (
               <div className="text-sm text-gray-500 mt-2">No files found.</div>
@@ -193,9 +197,13 @@ export default async function JobDetailPage({
             )}
           </div>
 
-          {lors.length > 0 && (
-            <div className="rounded-xl border bg-white p-4 shadow-sm">
+          <div className="rounded-xl border bg-white p-4 shadow-sm">
+            <div className="flex items-center justify-between">
               <div className="text-sm font-semibold">Letters of Recommendation</div>
+            </div>
+            {lors.length === 0 ? (
+              <div className="text-sm text-gray-500 mt-2">No LORs attached.</div>
+            ) : (
               <div className="mt-3 space-y-4">
                 {lors.map((f: any) => (
                   <FileViewer
@@ -205,8 +213,8 @@ export default async function JobDetailPage({
                   />
                 ))}
               </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       </>
     );
