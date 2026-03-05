@@ -927,8 +927,11 @@ function VanScheduleCard({
             <div className="font-semibold text-sm">
               {(samsaraVanName && parseVanDisplayName(samsaraVanName)) || zone.name}
             </div>
+            {samsaraVanName && (
+              <div className="text-[10px] text-gray-400 -mt-0.5">{samsaraVanName}</div>
+            )}
             <div className="text-xs text-gray-500">
-              Base: <span className="font-medium">{zone.homeAirport}</span>
+              {zone.city}
             </div>
             {liveAddress ? (
               <div className="text-xs text-green-600 mt-0.5 flex items-center gap-1">
