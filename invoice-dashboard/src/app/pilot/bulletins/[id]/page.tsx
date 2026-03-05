@@ -85,6 +85,10 @@ export default async function BulletinDetailPage({
             <BulletinDetail
               bulletinId={bulletin.id}
               slackTs={bulletin.slack_ts}
+              title={bulletin.title}
+              summary={bulletin.summary ?? ""}
+              category={bulletin.category}
+              videoFilename={bulletin.video_filename ?? null}
             />
           )}
         </div>

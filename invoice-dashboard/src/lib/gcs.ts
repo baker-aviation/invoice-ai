@@ -48,6 +48,9 @@ export async function signGcsUrl(
     ext === "pdf" ? "application/pdf"
     : ext === "docx" ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     : ext === "doc" ? "application/msword"
+    : ext === "mp4" ? "video/mp4"
+    : ext === "m4v" ? "video/x-m4v"
+    : ext === "mov" ? "video/quicktime"
     : "application/octet-stream";
 
   const filename = path.split("/").pop() ?? "file";
