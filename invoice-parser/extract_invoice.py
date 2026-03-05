@@ -206,7 +206,7 @@ def llm_extract_json(client: OpenAI, model: str, messages: List[dict], schema_bu
 
 # Prefer INV... when present; fall back to Invoice No/Number; then Ref Number.
 _INV_NO_STRONG = re.compile(r"\bINV\d{6,}\b", re.IGNORECASE)
-_INV_NO_LABEL = re.compile(r"\bInvoice\s*(?:No\.?|#|Number)?\s*[:#]?\s*([A-Z0-9-]{6,})\b", re.IGNORECASE)
+_INV_NO_LABEL = re.compile(r"\bInvoice\s+(?:No\.?|#|Number)\s*[:#]?\s*([A-Z0-9-]{6,})\b", re.IGNORECASE)
 _REF_NO_LABEL = re.compile(r"\bRef Number\s+([A-Z0-9-]{6,})\b", re.IGNORECASE)
 
 _GENERIC_INV_LABELS = {"INVOICE", "INVOICE #", "INVOICE NUMBER", "INVOICE NO", "INVOICE NO."}
@@ -688,7 +688,7 @@ def build_normal_messages(pdf_text: str) -> List[dict]:
         "\n"
         "Airport code:\n"
         "- Extract the ICAO or FAA airport identifier (3-4 uppercase letters/digits, e.g. KVNY, KBCT, TEB, EGE).\n"
-        "- Look for it in the header, 'Location', 'Base', 'FBO', 'Airport', or address fields.\n"
+        "- Look for it in the header, 'Location', 'Base', 'FBO', 'Airport', 'Aéroport', or address fields.\n"
         "- FBO invoices often show the airport in the vendor address or near the vendor name.\n"
         "- If the vendor name contains a dash followed by a 3-4 letter code (e.g. 'Signature Flight Support - EGE'), that IS the airport code.\n"
         "- If not explicitly labeled, look for 3-4 character codes near city/state references.\n"
@@ -698,6 +698,10 @@ def build_normal_messages(pdf_text: str) -> List[dict]:
         "Vendor name:\n"
         "- Use the primary vendor/company name, not a parent company or billing entity.\n"
         "- For subscription services (Starlink, ForeFlight, etc.), use the service name as vendor.\n"
+        "- For bilingual documents (French/English, etc.), use the English company name.\n"
+        "- For government agencies (Transport Canada, FAA, etc.), use the standard English agency name.\n"
+        "- If the document is NOT an invoice (e.g. a notice, letter, violation report), still extract whatever vendor/sender name is present and set total_amount to null.\n"
+        "- NEVER use placeholder strings like ':vendor_name_placeholder:'. Use null if you cannot determine the vendor.\n"
         "\n"
         "Multi-stop documents:\n"
         "- Some invoices contain multiple date/location sections.\n"
@@ -808,7 +812,7 @@ _INVOICE_ID_PATTERNS: List[re.Pattern] = [
     re.compile(r"\bCredit Memo No\.?:?\s*([A-Z0-9\-]+)\b", re.IGNORECASE),
 ]
 
-_BAD_ID = re.compile(r"^(?:PAGE|DATE|CUSTOMER|TOTAL|USD)$", re.IGNORECASE)
+_BAD_ID = re.compile(r"^(?:PAGE|DATE|CUSTOMER|TOTAL|USD|NUMBER|NUMBERS|INVOICE|PERIOD|DETAIL|SUMMARY|REPORT|BALANCE|STATEMENT)$", re.IGNORECASE)
 
 
 def extract_invoice_id_from_page(page_text: str) -> Optional[str]:

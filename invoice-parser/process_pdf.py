@@ -297,9 +297,18 @@ def split_text_into_sections(text: str) -> List[Tuple[str, str]]:
 # ---------------------------
 
 # Matches lines like "OSU1 JET FUEL ...", "MSN IP ...", "STS FSII ..."
+# Also matches codes with dashes (e.g. "YIP-AVFLIGHT", "APF JET FUEL")
 _AIRPORT_FUEL_RE = re.compile(
-    r"^([A-Z0-9]{3,4})\s+"
-    r"(?:JET[\s-]*(?:FUEL|A)|AVGAS|100LL|FUEL\b|IP\b|FSII|FLOW[\s-]*FEE|INTO[\s-]*PLANE)",
+    r"^([A-Z0-9]{3,4})[\s\-]+"
+    r"(?:JET[\s-]*(?:FUEL|A)|AVGAS|100LL|FUEL\b|IP[\s\-]|FSII|FLOW[\s-]*FEE|INTO[\s-]*PLANE|AVFLIGHT)",
+    re.I | re.M,
+)
+
+# Trailing airport codes: "THRU PUT - YIP", "FLOW FEE YIP", "FSII - APF"
+_TRAILING_AIRPORT_RE = re.compile(
+    r"(?:THRU\s*PUT|FLOW\s*FEE|FSII|INTO[\s-]*PLANE|FUEL\s*TAX|EXCISE\s*TAX|"
+    r"KEROSENE|LUST\s*TAX|SUPERFUND|STORAGE\s*(?:TK\s*)?FEE|PROTECTION|WATER\s*QUALITY)"
+    r"\s*[\-]?\s*([A-Z]{3})\b",
     re.I | re.M,
 )
 
@@ -310,15 +319,27 @@ def _subsplit_by_airport(section_text: str, parent_id: str) -> List[Tuple[str, s
     fuel statements (Avfuel, World Fuel).  Each airport stop becomes its
     own section so the parser creates a separate invoice per stop.
 
+    Uses both leading codes (^YIP JET FUEL) and trailing codes (FLOW FEE YIP).
+
     Returns list of (composite_id, text_section) tuples.
     Returns empty list if fewer than 2 distinct airports found.
     """
     matches: List[Tuple[int, str]] = []
+
+    # Pass 1: leading airport codes (e.g. "YIP JET FUEL", "APF-AVFLIGHT")
     for m in _AIRPORT_FUEL_RE.finditer(section_text or ""):
         code = m.group(1).upper()
         line_start = section_text.rfind("\n", 0, m.start())
         line_start = 0 if line_start < 0 else line_start + 1
         matches.append((line_start, code))
+
+    # Pass 2: trailing airport codes (e.g. "THRU PUT - YIP", "FLOW FEE APF")
+    if not matches:
+        for m in _TRAILING_AIRPORT_RE.finditer(section_text or ""):
+            code = m.group(1).upper()
+            line_start = section_text.rfind("\n", 0, m.start())
+            line_start = 0 if line_start < 0 else line_start + 1
+            matches.append((line_start, code))
 
     if not matches:
         return []
@@ -570,6 +591,9 @@ def _clean_vendor_name(v: Optional[str]) -> Optional[str]:
     if not vn or vn in {",", "/", "-"}:
         return None
     if len(vn) < 3:
+        return None
+    # Reject LLM placeholder strings (e.g. ":vendor_name_placeholder:")
+    if vn.startswith(":") and vn.endswith(":"):
         return None
     return vn
 
