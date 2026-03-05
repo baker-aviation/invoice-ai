@@ -404,7 +404,7 @@ function CreateBulletinModal({ onClose }: { onClose: () => void }) {
               onChange={(e) => setVideoFile(e.target.files?.[0] ?? null)}
               className="block w-full text-sm text-gray-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border file:border-gray-300 file:text-sm file:font-medium file:bg-white file:text-gray-700 hover:file:bg-gray-50"
             />
-            <p className="text-[10px] text-gray-400 mt-1">.mov, .mp4, .m4v — max 500MB</p>
+            <p className="text-[10px] text-gray-400 mt-1">.mov, .mp4, .m4v</p>
           </div>
 
           {error && (
