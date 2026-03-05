@@ -24,6 +24,7 @@ export async function middleware(request: NextRequest) {
   if (
     publicApiPaths.some((p) => request.nextUrl.pathname === p) ||
     request.nextUrl.pathname.startsWith("/api/public/form/") ||
+    request.nextUrl.pathname.startsWith("/api/public/info-session") ||
     request.nextUrl.pathname.startsWith("/form/")
   ) {
     return NextResponse.next();

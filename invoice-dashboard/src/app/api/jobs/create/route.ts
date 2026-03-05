@@ -74,7 +74,6 @@ export async function POST(req: NextRequest) {
         pic_time_hours: body.pic_time_hours ?? null,
         pipeline_stage: stage,
         notes: String(body.notes ?? "").trim() || null,
-        needs_review: false,
         model: "manual",
       })
       .select("id, application_id")
