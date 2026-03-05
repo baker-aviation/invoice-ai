@@ -8,7 +8,8 @@ import { requireAdmin, isRateLimited } from "@/lib/api-auth";
  *
  * Body: { document_ids: string[] }
  *
- * Clears old parsed data and fires off reparse for each document in parallel.
+ * Clears old parsed data and triggers reparse in staggered batches of 5
+ * to avoid overwhelming Cloud Run (concurrency=1, max 5 instances).
  * Max 50 documents per request.
  */
 
@@ -17,6 +18,7 @@ const PARSER_BASE =
 
 const UUID_RE = /^[a-f0-9-]{36}$/;
 const MAX_BATCH = 50;
+const CONCURRENCY = 5;
 
 export async function POST(req: NextRequest) {
   const auth = await requireAdmin(req);
@@ -55,11 +57,10 @@ export async function POST(req: NextRequest) {
   const supa = createServiceClient();
   const results: { id: string; status: string }[] = [];
 
-  // Process all documents: clear old data and trigger reparse
+  // Step 1: Clear old data for all documents (DB ops are fast, safe to parallelize)
   await Promise.all(
     validIds.map(async (documentId) => {
       try {
-        // Clean up old parsed data
         const { data: parsedInvoices } = await supa
           .from("parsed_invoices")
           .select("id")
@@ -78,31 +79,45 @@ export async function POST(req: NextRequest) {
         await supa.from("parsed_invoices").delete().eq("document_id", documentId);
         await supa.from("invoice_alerts").delete().eq("document_id", documentId);
 
-        // Reset document status
         await supa
           .from("documents")
           .update({ status: "uploaded", parse_error: null })
           .eq("id", documentId);
-
-        // Fire-and-forget reparse
-        const url = `${PARSER_BASE!.replace(/\/$/, "")}/jobs/parse_document?document_id=${encodeURIComponent(documentId)}`;
-        cloudRunFetch(url, {
-          method: "POST",
-          cache: "no-store",
-          signal: AbortSignal.timeout(180_000),
-        }).catch(() => {});
-
-        results.push({ id: documentId, status: "started" });
       } catch {
+        // DB cleanup failed — skip this doc
         results.push({ id: documentId, status: "error" });
       }
     }),
   );
 
+  // Step 2: Trigger reparses in batches of CONCURRENCY to avoid overwhelming Cloud Run
+  const errorIds = new Set(results.filter((r) => r.status === "error").map((r) => r.id));
+  const toReparse = validIds.filter((id) => !errorIds.has(id));
+
+  for (let i = 0; i < toReparse.length; i += CONCURRENCY) {
+    const batch = toReparse.slice(i, i + CONCURRENCY);
+    await Promise.all(
+      batch.map(async (documentId) => {
+        try {
+          const url = `${PARSER_BASE!.replace(/\/$/, "")}/jobs/parse_document?document_id=${encodeURIComponent(documentId)}`;
+          const res = await cloudRunFetch(url, {
+            method: "POST",
+            cache: "no-store",
+            signal: AbortSignal.timeout(180_000),
+          });
+          results.push({ id: documentId, status: res.ok ? "started" : "failed" });
+        } catch {
+          results.push({ id: documentId, status: "failed" });
+        }
+      }),
+    );
+  }
+
   return NextResponse.json({
     ok: true,
     total: results.length,
     started: results.filter((r) => r.status === "started").length,
+    failed: results.filter((r) => r.status !== "started").length,
     results,
   });
 }
