@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { hasAccessToPath } from "@/lib/permissions";
 
 export async function middleware(request: NextRequest) {
   // CSRF: reject cross-origin state-changing requests
@@ -84,8 +85,15 @@ export async function middleware(request: NextRequest) {
     }
 
     // Dashboard-only users cannot access /admin/* routes
+    // and are restricted to their allowed sections
     if (role === "dashboard") {
       if (pathname.startsWith("/admin")) {
+        const url = request.nextUrl.clone();
+        url.pathname = "/";
+        return NextResponse.redirect(url);
+      }
+      const permissions = user.app_metadata?.permissions as string[] | undefined;
+      if (!hasAccessToPath(permissions, pathname)) {
         const url = request.nextUrl.clone();
         url.pathname = "/";
         return NextResponse.redirect(url);

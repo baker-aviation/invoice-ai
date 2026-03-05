@@ -1,11 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { SECTIONS, type SectionKey } from "@/lib/permissions";
 
 type UserRow = {
   id: string;
   email: string;
   role: string | null;
+  permissions: string[];
   created_at: string;
   last_sign_in_at: string | null;
 };
@@ -24,6 +26,7 @@ export default function UsersPage() {
   const [error, setError] = useState("");
   const [updating, setUpdating] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [expandedUser, setExpandedUser] = useState<string | null>(null);
 
   async function fetchUsers() {
     setLoading(true);
@@ -62,6 +65,29 @@ export default function UsersPage() {
     setUpdating(null);
   }
 
+  async function handlePermissionToggle(userId: string, key: SectionKey, current: string[]) {
+    const updated = current.includes(key)
+      ? current.filter((k) => k !== key)
+      : [...current, key];
+
+    setUpdating(userId);
+    const res = await fetch("/api/admin/users", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId, permissions: updated }),
+    });
+
+    if (res.ok) {
+      setUsers((prev) =>
+        prev.map((u) => (u.id === userId ? { ...u, permissions: updated } : u))
+      );
+    } else {
+      const data = await res.json();
+      alert(data.error ?? "Failed to update permissions");
+    }
+    setUpdating(null);
+  }
+
   async function handleDelete(userId: string, email: string) {
     const confirmed = window.confirm(
       `Are you sure you want to delete ${email}? This cannot be undone.`
@@ -96,7 +122,7 @@ export default function UsersPage() {
     <div>
       <p className="text-sm text-gray-500 mb-6">
         Manage user access. <strong>Admin</strong> users can access everything.{" "}
-        <strong>Dashboard</strong> users see the operations dashboard.{" "}
+        <strong>Dashboard</strong> users see allowed sections (click row to configure).{" "}
         <strong>Pilot</strong> users access the pilot portal only.
       </p>
 
@@ -116,20 +142,65 @@ export default function UsersPage() {
                 label: user.role ?? "No role",
                 color: "bg-gray-100 text-gray-600",
               };
+              const isExpanded = expandedUser === user.id;
+              const isDashboard = user.role === "dashboard";
               return (
-                <tr key={user.id} className="border-t border-gray-100">
-                  <td className="px-4 py-3 text-gray-800">{user.email}</td>
-                  <td className="px-4 py-3">
+                <tr key={user.id} className="border-t border-gray-100 group">
+                  <td className="px-4 py-3 align-top">
+                    <div>
+                      <button
+                        type="button"
+                        onClick={() => isDashboard && setExpandedUser(isExpanded ? null : user.id)}
+                        className={`text-gray-800 text-left ${isDashboard ? "hover:text-slate-600 cursor-pointer" : ""}`}
+                      >
+                        {user.email}
+                      </button>
+                      {isDashboard && (
+                        <p className="text-xs text-gray-400 mt-0.5">
+                          {user.permissions.length === 0
+                            ? "All sections"
+                            : `${user.permissions.length} section${user.permissions.length === 1 ? "" : "s"}`}
+                        </p>
+                      )}
+                    </div>
+                    {isDashboard && isExpanded && (
+                      <div className="mt-3 mb-1 p-3 bg-gray-50 rounded-lg border border-gray-200">
+                        <p className="text-xs font-medium text-gray-600 mb-2">
+                          Allowed sections {user.permissions.length === 0 && <span className="text-gray-400 font-normal">(none selected = all access)</span>}
+                        </p>
+                        <div className="grid grid-cols-3 gap-2">
+                          {SECTIONS.map((section) => (
+                            <label
+                              key={section.key}
+                              className="flex items-center gap-2 text-xs text-gray-700 cursor-pointer"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={user.permissions.includes(section.key)}
+                                onChange={() =>
+                                  handlePermissionToggle(user.id, section.key, user.permissions)
+                                }
+                                disabled={updating === user.id}
+                                className="rounded border-gray-300 text-slate-600 focus:ring-slate-500"
+                              />
+                              {section.label}
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 align-top">
                     <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${roleInfo.color}`}>
                       {roleInfo.label}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-gray-500">
+                  <td className="px-4 py-3 text-gray-500 align-top">
                     {user.last_sign_in_at
                       ? new Date(user.last_sign_in_at).toLocaleDateString()
                       : "Never"}
                   </td>
-                  <td className="px-4 py-3">
+                  <td className="px-4 py-3 align-top">
                     <div className="flex items-center gap-2">
                       <select
                         value={user.role ?? ""}

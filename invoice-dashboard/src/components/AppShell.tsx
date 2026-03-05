@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
+import { hasAccessToPath } from "@/lib/permissions";
 
 const NAV = [
   { href: "/", label: "Home", exact: true },
@@ -23,12 +24,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const [isAdmin, setIsAdmin] = useState(false);
+  const [permissions, setPermissions] = useState<string[] | null>(null);
 
   useEffect(() => {
     const supabase = createClient();
     supabase.auth.getUser().then(({ data: { user } }) => {
       const role = user?.app_metadata?.role ?? user?.user_metadata?.role;
       setIsAdmin(role === "admin");
+      if (role === "dashboard") {
+        setPermissions((user?.app_metadata?.permissions as string[] | undefined) ?? null);
+      }
     });
   }, []);
 
@@ -48,7 +53,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </Link>
 
           <nav className="flex items-center gap-1 text-sm">
-            {NAV.map(({ href, label, exact }) => {
+            {NAV.filter(({ href }) => isAdmin || hasAccessToPath(permissions, href)).map(({ href, label, exact }) => {
               const isActive = exact ? pathname === href : pathname.startsWith(href);
               return (
                 <Link
