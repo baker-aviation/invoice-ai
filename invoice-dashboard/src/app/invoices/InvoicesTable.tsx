@@ -136,13 +136,11 @@ export default function InvoicesTable({ initialInvoices }: { initialInvoices: an
 
   async function bulkReparse() {
     // Get unique document IDs from current filtered view
-    const docIds = [...new Set(filtered.map((inv) => inv.document_id).filter(Boolean))];
-    if (docIds.length === 0) return;
-    if (docIds.length > MAX_BULK_REPARSE) {
-      setBulkResult(`Too many (${docIds.length}). Filter to ${MAX_BULK_REPARSE} or fewer.`);
-      return;
-    }
-    if (!confirm(`Re-parse ${docIds.length} document${docIds.length > 1 ? "s" : ""}? This will clear existing parsed data and re-extract from PDFs.`)) {
+    const allDocIds = [...new Set(filtered.map((inv) => inv.document_id).filter(Boolean))];
+    if (allDocIds.length === 0) return;
+    const docIds = allDocIds.slice(0, MAX_BULK_REPARSE);
+    const extra = allDocIds.length > MAX_BULK_REPARSE ? ` (first ${MAX_BULK_REPARSE} of ${allDocIds.length})` : "";
+    if (!confirm(`Re-parse ${docIds.length} document${docIds.length > 1 ? "s" : ""}${extra}? This will clear existing parsed data and re-extract from PDFs.`)) {
       return;
     }
     setBulkParsing(true);
