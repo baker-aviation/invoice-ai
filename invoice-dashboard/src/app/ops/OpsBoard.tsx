@@ -945,7 +945,12 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
   return (
     <div className="p-4 sm:p-6 space-y-4 bg-gray-50 min-h-screen">
       {/* EDCT Status Box */}
-      {edctAlerts.length > 0 && (
+      {edctAlerts.length === 0 ? (
+        <div className="flex items-center gap-2 rounded-lg border border-green-200 bg-green-50 px-4 py-2.5 text-sm">
+          <span className="w-2.5 h-2.5 rounded-full bg-green-500" />
+          <span className="font-medium text-green-800">No active EDCTs</span>
+        </div>
+      ) : (
         <div className="rounded-xl border-2 border-orange-300 bg-orange-50 shadow-sm overflow-hidden">
           <div className="px-4 py-2.5 bg-orange-100 border-b border-orange-200 flex items-center gap-2">
             <span className="w-2.5 h-2.5 rounded-full bg-orange-500 animate-pulse" />
