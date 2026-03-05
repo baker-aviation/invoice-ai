@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 
@@ -48,15 +49,25 @@ export default function LoginPage() {
     <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center px-4">
       {/* Hero section */}
       <div className="mb-8 text-center">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
+        <Image
           src="/logo1.png"
-          alt="Baker Aviation"
+          alt="Baker Aviation Aircraft"
+          width={960}
+          height={280}
           className="mx-auto max-w-md w-full drop-shadow-2xl"
+          priority
+          unoptimized
         />
         <div className="mt-4">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/logo.png" alt="Baker Aviation" className="mx-auto h-12 brightness-0 invert opacity-90" />
+          <Image
+            src="/logo.png"
+            alt="Baker Aviation"
+            width={200}
+            height={55}
+            className="mx-auto brightness-0 invert opacity-90"
+            priority
+            unoptimized
+          />
         </div>
       </div>
 
