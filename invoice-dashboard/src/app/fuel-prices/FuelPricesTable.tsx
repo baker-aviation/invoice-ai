@@ -512,7 +512,9 @@ export default function FuelPricesTable({
                 <th className="px-4 py-3">Tail</th>
                 <th className="px-4 py-3 text-right">Gallons</th>
                 <th className="px-4 py-3 text-right">Fuel Total</th>
-                <th className="px-4 py-3 text-right">$/Gal</th>
+                <th className="px-4 py-3 text-right">
+                  <span title="Effective $/gal (fuel + per-gallon taxes). Base price shown below in gray.">$/Gal</span>
+                </th>
                 <th className="px-4 py-3 text-right">
                   <span title="Average effective $/gal for this airport + vendor across all records">FBO Avg</span>
                 </th>
@@ -570,7 +572,12 @@ export default function FuelPricesTable({
                       {fmt$(row.fuel_total, 2)}
                     </td>
                     <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono font-medium">
-                      {fmt$(price)}
+                      <div>{fmt$(price)}</div>
+                      {row.base_price_per_gallon != null && row.base_price_per_gallon !== price && (
+                        <div className="text-[10px] text-gray-400 font-normal" title="Base fuel rate (before per-gallon taxes)">
+                          base {fmt$(row.base_price_per_gallon)}
+                        </div>
+                      )}
                     </td>
                     <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono text-gray-500">
                       {fboStats ? (
