@@ -54,7 +54,7 @@ export default function LoginPage() {
           alt="Baker Aviation Aircraft"
           width={960}
           height={280}
-          className="mx-auto max-w-md w-full drop-shadow-2xl"
+          className="mx-auto max-w-md w-full drop-shadow-2xl rounded-2xl"
           priority
           unoptimized
         />
@@ -64,7 +64,7 @@ export default function LoginPage() {
             alt="Baker Aviation"
             width={200}
             height={55}
-            className="mx-auto brightness-0 invert opacity-90"
+            className="mx-auto invert mix-blend-lighten"
             priority
             unoptimized
           />
