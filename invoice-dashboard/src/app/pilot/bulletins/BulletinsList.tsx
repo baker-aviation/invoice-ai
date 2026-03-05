@@ -285,6 +285,10 @@ function CreateBulletinModal({ onClose }: { onClose: () => void }) {
 
         if (!uploadRes.ok) {
           console.error("Video upload failed:", uploadRes.status);
+          setError("Bulletin created but video upload failed. Edit the bulletin to re-upload.");
+          setSubmitting(false);
+          router.refresh();
+          return;
         }
       }
 
@@ -299,7 +303,7 @@ function CreateBulletinModal({ onClose }: { onClose: () => void }) {
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
-      onClick={onClose}
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div
         className={`bg-white rounded-xl shadow-xl p-5 flex flex-col overflow-auto resize max-w-[95vw] max-h-[95vh] ${
@@ -307,7 +311,6 @@ function CreateBulletinModal({ onClose }: { onClose: () => void }) {
             ? "w-[48rem] h-[90vh]"
             : "w-[32rem] h-auto"
         }`}
-        onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-4 shrink-0">
           <h2 className="text-base font-semibold text-gray-900">
