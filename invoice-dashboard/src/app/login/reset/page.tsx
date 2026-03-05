@@ -55,8 +55,8 @@ export default function ResetPasswordPage() {
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center">
       <div className="bg-white rounded-xl shadow-md p-8 w-full max-w-sm">
-        <h1 className="text-xl font-bold text-slate-900 mb-2">Reset password</h1>
-        <p className="text-sm text-gray-500 mb-6">Enter your new password below.</p>
+        <h1 className="text-xl font-bold text-slate-900 mb-2">Set your password</h1>
+        <p className="text-sm text-gray-500 mb-6">Choose a password for your account.</p>
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">New password</label>
