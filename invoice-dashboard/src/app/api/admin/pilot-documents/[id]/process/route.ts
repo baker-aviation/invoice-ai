@@ -57,9 +57,8 @@ export async function POST(
       .download();
 
     // Extract text
-    const pdfParse = (await import("pdf-parse/lib/pdf-parse.js")).default;
-    const parsed = await pdfParse(buffer);
-    const text = parsed.text?.trim();
+    const { extractPdfText } = await import("@/lib/pdf-extract");
+    const text = (await extractPdfText(buffer)).trim();
 
     if (!text || text.length < 50) {
       await supa
