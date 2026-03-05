@@ -8,6 +8,7 @@ const TABS = [
   { href: "/jobs/pipeline", label: "Pipeline" },
   { href: "/jobs/forecast", label: "Forecast" },
   { href: "/jobs/lors", label: "LORs" },
+  { href: "/jobs/rejected", label: "Rejected" },
 ] as const;
 
 export default function JobsNav() {
