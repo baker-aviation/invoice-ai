@@ -92,9 +92,10 @@ export default async function BulletinDetailPage({
         <h1 className="text-lg font-bold text-gray-900 mb-3">{bulletin.title}</h1>
 
         {bulletin.summary && (
-          <div className="text-sm text-gray-700 mb-4 whitespace-pre-wrap leading-relaxed">
-            {bulletin.summary}
-          </div>
+          <div
+            className="text-sm text-gray-700 mb-4 leading-relaxed prose prose-sm max-w-none"
+            dangerouslySetInnerHTML={{ __html: bulletin.summary }}
+          />
         )}
 
         {videoDownloadUrl && (

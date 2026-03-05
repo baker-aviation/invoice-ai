@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useRef, useState, useCallback } from "react";
 
 type Bulletin = {
   id: number;
@@ -44,6 +44,11 @@ function formatDate(iso: string) {
   });
 }
 
+/** Strip HTML tags for list preview */
+function stripHtml(html: string) {
+  return html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+}
+
 export default function BulletinsList({
   bulletins,
   isAdmin,
@@ -59,9 +64,9 @@ export default function BulletinsList({
     if (activeCategory !== "all" && b.category !== activeCategory) return false;
     if (search) {
       const q = search.toLowerCase();
+      const plainSummary = b.summary ? stripHtml(b.summary).toLowerCase() : "";
       return (
-        b.title.toLowerCase().includes(q) ||
-        (b.summary?.toLowerCase().includes(q) ?? false)
+        b.title.toLowerCase().includes(q) || plainSummary.includes(q)
       );
     }
     return true;
@@ -155,7 +160,7 @@ export default function BulletinsList({
                   <h3 className="font-medium text-gray-900 text-sm">{b.title}</h3>
                   {b.summary && (
                     <p className="text-xs text-gray-500 mt-1 line-clamp-2">
-                      {b.summary}
+                      {stripHtml(b.summary)}
                     </p>
                   )}
                 </div>
@@ -181,31 +186,58 @@ export default function BulletinsList({
 }
 
 // ---------------------------------------------------------------------------
+// Rich Text Toolbar Button
+// ---------------------------------------------------------------------------
+
+function ToolbarBtn({
+  label,
+  command,
+  value,
+}: {
+  label: string;
+  command: string;
+  value?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onMouseDown={(e) => {
+        e.preventDefault();
+        document.execCommand(command, false, value);
+      }}
+      className="px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-200 rounded transition-colors"
+      title={label}
+    >
+      {label}
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Create Bulletin Modal
 // ---------------------------------------------------------------------------
 
 function CreateBulletinModal({ onClose }: { onClose: () => void }) {
   const router = useRouter();
-  const [form, setForm] = useState({
-    title: "",
-    summary: "",
-    category: "",
-  });
+  const editorRef = useRef<HTMLDivElement>(null);
+  const [title, setTitle] = useState("");
+  const [category, setCategory] = useState("");
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [expanded, setExpanded] = useState(false);
 
-  function set(field: string, value: string) {
-    setForm((prev) => ({ ...prev, [field]: value }));
-  }
+  const getContent = useCallback(() => {
+    return editorRef.current?.innerHTML?.trim() || "";
+  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!form.title.trim()) {
+    if (!title.trim()) {
       setError("Title is required");
       return;
     }
-    if (!form.category) {
+    if (!category) {
       setError("Category is required");
       return;
     }
@@ -214,12 +246,12 @@ function CreateBulletinModal({ onClose }: { onClose: () => void }) {
     setError("");
 
     try {
-      // Step 1: Create bulletin (JSON, small payload)
+      const content = getContent();
       const payload: Record<string, string> = {
-        title: form.title.trim(),
-        category: form.category,
+        title: title.trim(),
+        category,
       };
-      if (form.summary.trim()) payload.summary = form.summary.trim();
+      if (content) payload.summary = content;
       if (videoFile) payload.video_filename = videoFile.name;
 
       const res = await fetch("/api/pilot/bulletins", {
@@ -237,7 +269,7 @@ function CreateBulletinModal({ onClose }: { onClose: () => void }) {
 
       const { upload_url } = await res.json();
 
-      // Step 2: Upload video directly to GCS via presigned URL
+      // Upload video directly to GCS via presigned URL
       if (videoFile && upload_url) {
         const ext = videoFile.name.split(".").pop()?.toLowerCase();
         const contentType =
@@ -252,7 +284,6 @@ function CreateBulletinModal({ onClose }: { onClose: () => void }) {
         });
 
         if (!uploadRes.ok) {
-          // Bulletin was created but video failed — non-blocking
           console.error("Video upload failed:", uploadRes.status);
         }
       }
@@ -271,42 +302,56 @@ function CreateBulletinModal({ onClose }: { onClose: () => void }) {
       onClick={onClose}
     >
       <div
-        className="bg-white rounded-xl shadow-xl w-full max-w-lg mx-4 p-5"
+        className={`bg-white rounded-xl shadow-xl mx-4 p-5 flex flex-col transition-all ${
+          expanded
+            ? "w-full max-w-3xl h-[90vh]"
+            : "w-full max-w-lg max-h-[90vh]"
+        }`}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center justify-between mb-4 shrink-0">
           <h2 className="text-base font-semibold text-gray-900">
             New Bulletin
           </h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-gray-400 hover:text-gray-600 text-lg leading-none"
-          >
-            &times;
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setExpanded((v) => !v)}
+              className="text-gray-400 hover:text-gray-600 text-xs px-2 py-1 border border-gray-200 rounded hover:bg-gray-50"
+              title={expanded ? "Collapse" : "Expand"}
+            >
+              {expanded ? "Collapse" : "Expand"}
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="text-gray-400 hover:text-gray-600 text-lg leading-none"
+            >
+              &times;
+            </button>
+          </div>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-3">
-          <div>
+        <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0 gap-3">
+          <div className="shrink-0">
             <label className="block text-xs font-medium text-gray-600 mb-1">
               Title *
             </label>
             <input
-              value={form.title}
-              onChange={(e) => set("title", e.target.value)}
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
               className="w-full rounded-lg border border-gray-200 px-3 py-1.5 text-sm outline-none focus:border-gray-400"
               autoFocus
             />
           </div>
 
-          <div>
+          <div className="shrink-0">
             <label className="block text-xs font-medium text-gray-600 mb-1">
               Category *
             </label>
             <select
-              value={form.category}
-              onChange={(e) => set("category", e.target.value)}
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
               className="w-full rounded-lg border border-gray-200 px-3 py-1.5 text-sm outline-none focus:border-gray-400 bg-white"
             >
               <option value="">Select...</option>
@@ -317,20 +362,39 @@ function CreateBulletinModal({ onClose }: { onClose: () => void }) {
             </select>
           </div>
 
-          <div>
+          {/* Rich text editor */}
+          <div className="flex flex-col flex-1 min-h-0">
             <label className="block text-xs font-medium text-gray-600 mb-1">
               Content
             </label>
-            <textarea
-              value={form.summary}
-              onChange={(e) => set("summary", e.target.value)}
-              rows={8}
-              className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-gray-400 resize-y"
-              placeholder="Bulletin content..."
-            />
+            <div className="border border-gray-200 rounded-lg flex flex-col flex-1 min-h-0 overflow-hidden focus-within:border-gray-400">
+              {/* Toolbar */}
+              <div className="flex items-center gap-0.5 px-2 py-1 border-b border-gray-100 bg-gray-50 shrink-0 flex-wrap">
+                <ToolbarBtn label="B" command="bold" />
+                <ToolbarBtn label="I" command="italic" />
+                <ToolbarBtn label="U" command="underline" />
+                <span className="w-px h-4 bg-gray-200 mx-1" />
+                <ToolbarBtn label="H1" command="formatBlock" value="h1" />
+                <ToolbarBtn label="H2" command="formatBlock" value="h2" />
+                <ToolbarBtn label="H3" command="formatBlock" value="h3" />
+                <span className="w-px h-4 bg-gray-200 mx-1" />
+                <ToolbarBtn label="List" command="insertUnorderedList" />
+                <ToolbarBtn label="1." command="insertOrderedList" />
+              </div>
+              {/* Editable area */}
+              <div
+                ref={editorRef}
+                contentEditable
+                className={`px-3 py-2 text-sm outline-none overflow-y-auto prose prose-sm max-w-none ${
+                  expanded ? "flex-1" : "min-h-[200px] max-h-[400px]"
+                }`}
+                data-placeholder="Bulletin content..."
+                suppressContentEditableWarning
+              />
+            </div>
           </div>
 
-          <div>
+          <div className="shrink-0">
             <label className="block text-xs font-medium text-gray-600 mb-1">
               Video (optional)
             </label>
@@ -344,12 +408,12 @@ function CreateBulletinModal({ onClose }: { onClose: () => void }) {
           </div>
 
           {error && (
-            <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+            <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 shrink-0">
               {error}
             </div>
           )}
 
-          <div className="flex justify-end gap-2 pt-1">
+          <div className="flex justify-end gap-2 pt-1 shrink-0">
             <button
               type="button"
               onClick={onClose}
