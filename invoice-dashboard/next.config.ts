@@ -1,7 +1,4 @@
 import type { NextConfig } from "next";
-import path from "path";
-
-const monorepoRoot = path.resolve(__dirname, "..");
 
 const securityHeaders = [
   { key: "X-Frame-Options", value: "DENY" },
@@ -29,12 +26,7 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: "..",
   },
-  outputFileTracingRoot: monorepoRoot,
   serverExternalPackages: ["pdfjs-dist"],
-  webpack(config) {
-    config.resolve.alias["@agents"] = path.join(monorepoRoot, "agents");
-    return config;
-  },
   async headers() {
     return [{ source: "/(.*)", headers: securityHeaders }];
   },
