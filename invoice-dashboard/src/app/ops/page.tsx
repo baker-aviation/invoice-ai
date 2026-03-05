@@ -4,7 +4,7 @@ import { Topbar } from "@/components/Topbar";
 import { AutoRefresh } from "@/components/AutoRefresh";
 import { fetchFlights } from "@/lib/opsApi";
 import { createClient } from "@/lib/supabase/server";
-import OpsBoard from "./OpsBoard";
+import OpsTabs from "./OpsTabs";
 
 export default async function OpsPage() {
   // Get current user for per-user alert dismissals
@@ -18,7 +18,6 @@ export default async function OpsPage() {
     return { ok: false, flights: [] as any[], count: 0, error: null as string | null };
   });
 
-  // Surface backend error (returned as JSON with ok:false) vs fetch error
   const displayError = error || (data.ok === false && (data as any).error ? (data as any).error : null);
 
   return (
@@ -30,7 +29,7 @@ export default async function OpsPage() {
           <strong>API error:</strong> {displayError}
         </div>
       )}
-      <OpsBoard initialFlights={data.flights} />
+      <OpsTabs flights={data.flights} />
     </>
   );
 }
