@@ -7,10 +7,10 @@ import type { HiringStage, JobDetailResponse, JobRow, JobsListResponse } from "@
 // ---------------------------------------------------------------------------
 
 const JOB_COLUMNS =
-  "id, application_id, created_at, updated_at, hiring_stage, category, employment_type, candidate_name, email, phone, location, total_time_hours, turbine_time_hours, pic_time_hours, sic_time_hours, has_citation_x, has_challenger_300_type_rating, type_ratings, soft_gate_pic_met, soft_gate_pic_status, needs_review, notes, model, info_session_data";
+  "id, application_id, created_at, updated_at, hiring_stage, category, employment_type, candidate_name, email, phone, location, total_time_hours, turbine_time_hours, pic_time_hours, sic_time_hours, has_citation_x, has_challenger_300_type_rating, type_ratings, soft_gate_pic_met, soft_gate_pic_status, needs_review, notes, model, info_session_data, structured_notes, rejected_at, rejection_reason, deleted_at";
 
 const JOB_COLUMNS_WITH_STAGE =
-  "id, application_id, created_at, updated_at, pipeline_stage, category, employment_type, candidate_name, email, phone, location, total_time_hours, turbine_time_hours, pic_time_hours, sic_time_hours, has_citation_x, has_challenger_300_type_rating, type_ratings, soft_gate_pic_met, soft_gate_pic_status, needs_review, notes, model, info_session_data";
+  "id, application_id, created_at, updated_at, pipeline_stage, category, employment_type, candidate_name, email, phone, location, total_time_hours, turbine_time_hours, pic_time_hours, sic_time_hours, has_citation_x, has_challenger_300_type_rating, type_ratings, soft_gate_pic_met, soft_gate_pic_status, needs_review, notes, model, info_session_data, structured_notes, rejected_at, rejection_reason, deleted_at";
 
 const JOB_COLUMNS_BASE =
   "id, application_id, created_at, updated_at, category, employment_type, candidate_name, email, phone, location, total_time_hours, turbine_time_hours, pic_time_hours, sic_time_hours, has_citation_x, has_challenger_300_type_rating, type_ratings, soft_gate_pic_met, soft_gate_pic_status, needs_review, notes, model, info_session_data";
@@ -42,6 +42,9 @@ async function queryJobs(
   if (params.has_challenger_300_type_rating) {
     query = query.eq("has_challenger_300_type_rating", params.has_challenger_300_type_rating === "true");
   }
+
+  // Hide soft-deleted rows by default
+  query = query.is("deleted_at", null);
 
   return query;
 }
@@ -249,4 +252,25 @@ export async function fetchLinkedLors(parseId: number | null | undefined): Promi
       };
     }),
   );
+}
+
+// ---------------------------------------------------------------------------
+// Previously rejected applications by email
+// ---------------------------------------------------------------------------
+
+export async function fetchPreviousRejections(
+  email: string,
+  excludeId: number,
+): Promise<{ id: number; application_id: number; rejected_at: string; rejection_reason: string | null }[]> {
+  if (!email) return [];
+  const supa = createServiceClient();
+  const { data, error } = await supa
+    .from("job_application_parse")
+    .select("id, application_id, rejected_at, rejection_reason")
+    .eq("email", email)
+    .not("rejected_at", "is", null)
+    .is("deleted_at", null)
+    .neq("id", excludeId);
+  if (error) return [];
+  return (data ?? []) as any;
 }

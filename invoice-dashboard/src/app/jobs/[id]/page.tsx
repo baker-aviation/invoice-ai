@@ -1,14 +1,21 @@
 import Link from "next/link";
 import { Topbar } from "@/components/Topbar";
 import { Badge } from "@/components/Badge";
-import { fetchJobDetail, fetchLinkedLors } from "@/lib/jobApi";
+import { fetchJobDetail, fetchLinkedLors, fetchPreviousRejections } from "@/lib/jobApi";
 import FileViewer from "./FileViewer";
 import FormLinkButton from "./FormLinkButton";
 import AttachFileButton from "./AttachFileButton";
 import TypeRatingsEditor from "./TypeRatingsEditor";
+import ProfileEditor from "./ProfileEditor";
 
 function fmtDate(s: any) {
   return String(s ?? "").replace("T", " ").replace("+00:00", "Z");
+}
+
+function sentenceCase(key: string): string {
+  const words = key.replace(/_/g, " ").trim();
+  if (!words) return "";
+  return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -49,7 +56,7 @@ export default async function JobDetailPage({
 }: {
   params: Promise<{ id: string }>;
 }) {
-  const { id } = await params; // ✅ Next 16: params is a Promise
+  const { id } = await params;
   const raw = id;
   const applicationId = String(raw ?? "").match(/\d+/)?.[0] || "";
 
@@ -64,6 +71,13 @@ export default async function JobDetailPage({
     const lors = await fetchLinkedLors(job?.id);
     const isPilot = job?.category === "pilot_pic" || job?.category === "pilot_sic";
 
+    // Check for previously rejected applications with the same email
+    const previousRejections = job?.email
+      ? await fetchPreviousRejections(job.email, job.id)
+      : [];
+
+    const isRejected = !!job?.rejected_at;
+
     return (
       <>
         <Topbar title="Job detail" />
@@ -74,6 +88,45 @@ export default async function JobDetailPage({
               ← Back to Jobs
             </Link>
           </div>
+
+          {/* Rejection banner */}
+          {isRejected && (
+            <div className="rounded-xl border border-red-200 bg-red-50 p-4 shadow-sm">
+              <div className="flex items-center gap-2">
+                <span className="text-red-600 font-semibold text-sm">Rejected</span>
+                <span className="text-xs text-red-400">
+                  {fmtDate(job.rejected_at)}
+                </span>
+              </div>
+              {job.rejection_reason && (
+                <div className="mt-1 text-sm text-red-700">{job.rejection_reason}</div>
+              )}
+            </div>
+          )}
+
+          {/* Previously rejected alert */}
+          {previousRejections.length > 0 && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 shadow-sm">
+              <div className="text-sm font-semibold text-amber-800">
+                Previously Rejected Application{previousRejections.length > 1 ? "s" : ""}
+              </div>
+              <div className="mt-1 text-xs text-amber-700 space-y-1">
+                {previousRejections.map((r) => (
+                  <div key={r.id}>
+                    <Link
+                      href={`/jobs/${r.application_id}`}
+                      className="text-amber-800 underline hover:text-amber-900"
+                    >
+                      Application #{r.application_id}
+                    </Link>
+                    {" — rejected "}
+                    {fmtDate(r.rejected_at)}
+                    {r.rejection_reason ? `: ${r.rejection_reason}` : ""}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="rounded-xl border bg-white p-4 shadow-sm">
             <div className="flex items-center justify-between gap-4">
@@ -86,6 +139,7 @@ export default async function JobDetailPage({
               </div>
 
               <div className="flex items-center gap-2">
+                {isRejected && <Badge variant="danger">Rejected</Badge>}
                 {job?.needs_review ? <Badge variant="warning">review</Badge> : <Badge>ok</Badge>}
                 {isPilot && (
                   job?.soft_gate_pic_status && job.soft_gate_pic_status !== "missing_time" ? (
@@ -160,7 +214,61 @@ export default async function JobDetailPage({
                   <div className="mt-1 whitespace-pre-wrap">{job.notes}</div>
                 </div>
               ) : null}
+
+              {/* Structured notes display (read-only) */}
+              {job?.structured_notes && Object.values(job.structured_notes).some(Boolean) && (
+                <div className="md:col-span-4 mt-2 space-y-2">
+                  <div className="text-gray-500 font-medium">Review Notes</div>
+                  <div className="grid gap-2 md:grid-cols-2">
+                    {job.structured_notes.hr_notes && (
+                      <div className="rounded border border-gray-100 bg-gray-50 p-2">
+                        <div className="text-xs font-medium text-gray-500">HR Notes</div>
+                        <div className="mt-1 text-sm whitespace-pre-wrap">{job.structured_notes.hr_notes}</div>
+                      </div>
+                    )}
+                    {job.structured_notes.prd_review_notes && (
+                      <div className="rounded border border-gray-100 bg-gray-50 p-2">
+                        <div className="text-xs font-medium text-gray-500">PRD Review Notes</div>
+                        <div className="mt-1 text-sm whitespace-pre-wrap">{job.structured_notes.prd_review_notes}</div>
+                      </div>
+                    )}
+                    {job.structured_notes.tims_notes && (
+                      <div className="rounded border border-gray-100 bg-gray-50 p-2">
+                        <div className="text-xs font-medium text-gray-500">Tim&apos;s Notes</div>
+                        <div className="mt-1 text-sm whitespace-pre-wrap">{job.structured_notes.tims_notes}</div>
+                      </div>
+                    )}
+                    {job.structured_notes.chief_pilot_notes && (
+                      <div className="rounded border border-gray-100 bg-gray-50 p-2">
+                        <div className="text-xs font-medium text-gray-500">Chief Pilot Notes</div>
+                        <div className="mt-1 text-sm whitespace-pre-wrap">{job.structured_notes.chief_pilot_notes}</div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
+
+            {/* Profile editor (edit/reject/delete actions) */}
+            <ProfileEditor
+              data={{
+                applicationId: Number(applicationId),
+                candidate_name: job?.candidate_name ?? null,
+                email: job?.email ?? null,
+                phone: job?.phone ?? null,
+                location: job?.location ?? null,
+                category: job?.category ?? null,
+                employment_type: job?.employment_type ?? null,
+                total_time_hours: job?.total_time_hours ?? null,
+                pic_time_hours: job?.pic_time_hours ?? null,
+                turbine_time_hours: job?.turbine_time_hours ?? null,
+                sic_time_hours: job?.sic_time_hours ?? null,
+                notes: job?.notes ?? null,
+                structured_notes: job?.structured_notes ?? null,
+                rejected_at: job?.rejected_at ?? null,
+                rejection_reason: job?.rejection_reason ?? null,
+              }}
+            />
           </div>
 
           {/* Info Session Form Link */}
@@ -169,18 +277,24 @@ export default async function JobDetailPage({
             <FormLinkButton parseId={job.id} />
           </div>
 
-          {/* Info Session Responses */}
+          {/* Info Session Responses — table layout */}
           {job?.info_session_data && Object.keys(job.info_session_data).length > 0 && (
             <div className="rounded-xl border bg-white p-4 shadow-sm">
-              <div className="text-sm font-semibold">Info Session Responses</div>
-              <div className="mt-3 grid gap-2 md:grid-cols-2 text-sm">
-                {Object.entries(job.info_session_data).map(([key, value]) => (
-                  <div key={key}>
-                    <span className="text-gray-500">{key.replace(/_/g, " ")}:</span>{" "}
-                    <span className="text-gray-900">{String(value)}</span>
-                  </div>
-                ))}
-              </div>
+              <div className="text-sm font-semibold mb-3">Info Session Responses</div>
+              <table className="w-full text-sm">
+                <tbody className="divide-y divide-gray-100">
+                  {Object.entries(job.info_session_data).map(([key, value]) => (
+                    <tr key={key}>
+                      <td className="py-1.5 pr-4 text-gray-500 whitespace-nowrap align-top font-medium w-1/3">
+                        {sentenceCase(key)}
+                      </td>
+                      <td className="py-1.5 text-gray-900 whitespace-pre-wrap">
+                        {String(value)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
 

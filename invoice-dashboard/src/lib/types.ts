@@ -126,6 +126,17 @@ export type JobRow = {
   notes: string | null;
   model: string | null;
 
+  structured_notes?: {
+    hr_notes?: string;
+    prd_review_notes?: string;
+    tims_notes?: string;
+    chief_pilot_notes?: string;
+  } | null;
+
+  rejected_at?: string | null;
+  rejection_reason?: string | null;
+  deleted_at?: string | null;
+
   info_session_data?: Record<string, any> | null;
 
   confidence?: any;

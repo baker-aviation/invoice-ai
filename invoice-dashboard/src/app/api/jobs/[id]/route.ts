@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireAuth, isAuthed, isRateLimited } from "@/lib/api-auth";
+import { requireAuth, requireAdmin, isAuthed, isRateLimited } from "@/lib/api-auth";
 import { cloudRunFetch } from "@/lib/cloud-run-fetch";
+import { createServiceClient } from "@/lib/supabase/service";
 
 const BASE = process.env.JOB_API_BASE_URL;
 
@@ -49,4 +50,40 @@ export async function GET(
   } catch {
     return NextResponse.json({ error: "Upstream unavailable" }, { status: 502 });
   }
+}
+
+/**
+ * DELETE /api/jobs/[id] — soft-delete a candidate profile
+ * [id] = application_id
+ */
+export async function DELETE(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const auth = await requireAdmin(req);
+  if ("error" in auth) return auth.error;
+  if (isRateLimited(auth.userId)) {
+    return NextResponse.json({ error: "Too many requests" }, { status: 429 });
+  }
+
+  const { id } = await params;
+  const applicationId = Number(id);
+  if (!applicationId || isNaN(applicationId)) {
+    return NextResponse.json({ error: "Invalid application ID" }, { status: 400 });
+  }
+
+  const supa = createServiceClient();
+  const { error } = await supa
+    .from("job_application_parse")
+    .update({
+      deleted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("application_id", applicationId);
+
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  return NextResponse.json({ ok: true });
 }
