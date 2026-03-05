@@ -640,6 +640,16 @@ def classify_doc_type(raw: dict) -> str:
     ]):
         return "training"
 
+    # ── Plane lease ────────────────────────────────────────────────
+    if any(k in text for k in [
+        "aircraft lease",
+        "plane lease",
+        "dry lease",
+        "wet lease",
+        "aircraft rental",
+    ]):
+        return "plane_lease"
+
     # ── Maintenance / parts / MRO invoices ────────────────────────
     if any(k in text for k in [
         "maintenance",

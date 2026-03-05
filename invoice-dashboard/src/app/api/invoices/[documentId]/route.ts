@@ -112,5 +112,30 @@ export async function PATCH(
     return NextResponse.json({ error: "Database error" }, { status: 500 });
   }
 
+  // Learn: upsert vendor → category rule so future invoices from this vendor
+  // automatically get this category (unless the user clears the override).
+  if (value) {
+    // Look up vendor_name from the invoice
+    const invoiceQuery = body.invoice_id
+      ? supa.from("parsed_invoices").select("vendor_name").eq("id", body.invoice_id).maybeSingle()
+      : supa.from("parsed_invoices").select("vendor_name").eq("document_id", documentId).limit(1).maybeSingle();
+
+    const { data: inv } = await invoiceQuery;
+    const vendorName = inv?.vendor_name as string | null;
+
+    if (vendorName) {
+      const vendorNormalized = vendorName.trim().toLowerCase();
+      await supa.from("category_rules").upsert(
+        {
+          vendor_normalized: vendorNormalized,
+          vendor_display: vendorName.trim(),
+          category: value,
+          updated_by: auth.userId,
+        },
+        { onConflict: "vendor_normalized" },
+      );
+    }
+  }
+
   return NextResponse.json({ ok: true, category_override: value });
 }

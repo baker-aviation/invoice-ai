@@ -39,22 +39,36 @@ export async function fetchInvoices(params: {
   const { data, error } = await query;
   if (error) throw new Error(`fetchInvoices failed: ${error.message}`);
 
-  let invoices: InvoiceListItem[] = (data ?? []).map((row) => ({
-    id: row.id as string,
-    document_id: row.document_id as string,
-    created_at: row.created_at as string,
-    vendor_name: row.vendor_name as string | null,
-    invoice_number: row.invoice_number as string | null,
-    invoice_date: row.invoice_date as string | null,
-    airport_code: row.airport_code as string | null,
-    tail_number: row.tail_number as string | null,
-    currency: row.currency as string | null,
-    total: row.total as number | string | null,
-    doc_type: row.doc_type as string | null,
-    review_required: row.review_required as boolean | null,
-    risk_score: row.risk_score as number | null,
-    has_line_items: Array.isArray(row.line_items) ? row.line_items.length > 0 : false,
-  }));
+  // Load learned vendor → category rules
+  const { data: rules } = await supa
+    .from("category_rules")
+    .select("vendor_normalized, category");
+  const ruleMap = new Map<string, string>();
+  for (const r of rules ?? []) {
+    ruleMap.set(r.vendor_normalized as string, r.category as string);
+  }
+
+  let invoices: InvoiceListItem[] = (data ?? []).map((row) => {
+    const vendorNorm = ((row.vendor_name as string) ?? "").trim().toLowerCase();
+    return {
+      id: row.id as string,
+      document_id: row.document_id as string,
+      created_at: row.created_at as string,
+      vendor_name: row.vendor_name as string | null,
+      invoice_number: row.invoice_number as string | null,
+      invoice_date: row.invoice_date as string | null,
+      airport_code: row.airport_code as string | null,
+      tail_number: row.tail_number as string | null,
+      currency: row.currency as string | null,
+      total: row.total as number | string | null,
+      doc_type: row.doc_type as string | null,
+      review_required: row.review_required as boolean | null,
+      risk_score: row.risk_score as number | null,
+      has_line_items: Array.isArray(row.line_items) ? row.line_items.length > 0 : false,
+      category_override: row.category_override as string | null,
+      learned_category: ruleMap.get(vendorNorm) ?? null,
+    };
+  });
 
   // Client-side text search (matches backend behavior)
   if (params.q) {
@@ -101,6 +115,15 @@ export async function fetchInvoiceDetail(documentId: string): Promise<InvoiceDet
   if (error) throw new Error(`fetchInvoiceDetail failed: ${error.message}`);
   if (!data || data.length === 0) throw new Error("fetchInvoiceDetail failed: 404");
 
+  // Load learned vendor → category rules
+  const { data: rules } = await supa
+    .from("category_rules")
+    .select("vendor_normalized, category");
+  const ruleMap = new Map<string, string>();
+  for (const r of rules ?? []) {
+    ruleMap.set(r.vendor_normalized as string, r.category as string);
+  }
+
   // Parse line_items for each invoice row
   const invoices = data.map((row: any) => {
     let lineItems = row.line_items;
@@ -111,7 +134,12 @@ export async function fetchInvoiceDetail(documentId: string): Promise<InvoiceDet
         lineItems = [];
       }
     }
-    return { ...row, line_items: Array.isArray(lineItems) ? lineItems : [] };
+    const vendorNorm = ((row.vendor_name as string) ?? "").trim().toLowerCase();
+    return {
+      ...row,
+      line_items: Array.isArray(lineItems) ? lineItems : [],
+      learned_category: ruleMap.get(vendorNorm) ?? null,
+    };
   });
 
   // Try to get signed PDF URL from Cloud Run (non-blocking — page loads even if this fails)
