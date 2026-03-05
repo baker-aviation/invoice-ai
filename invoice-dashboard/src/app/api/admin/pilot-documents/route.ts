@@ -121,6 +121,31 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Failed to save document record" }, { status: 500 });
     }
 
+    // Fire-and-forget: extract text from PDFs and ingest chunks for RAG
+    if (file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")) {
+      (async () => {
+        try {
+          const { PDFParse } = await import("pdf-parse");
+          const parser = new PDFParse({ data: new Uint8Array(buffer) });
+          const result = await parser.getText();
+          const text = result.text?.trim();
+          if (!text || text.length < 50) {
+            await supa
+              .from("pilot_documents")
+              .update({ embedding_status: "no_text", chunk_count: 0 })
+              .eq("id", row.id);
+            return;
+          }
+          const { ingestDocumentChunks } = await import("@/lib/rag");
+          await ingestDocumentChunks(row.id, text);
+          console.log(`[pilot-documents] ingested chunks for doc ${row.id}`);
+        } catch (err) {
+          console.error(`[pilot-documents] ingestion error for doc ${row.id}:`, err);
+          // Status already set to "error" by ingestDocumentChunks on failure
+        }
+      })();
+    }
+
     return NextResponse.json({ ok: true, document: row }, { status: 201 });
   } catch (err) {
     console.error("[pilot-documents] upload error:", err);

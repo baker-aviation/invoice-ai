@@ -64,7 +64,20 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Message is required (max 5000 chars)" }, { status: 400 });
   }
 
-  const systemPrompt = SYSTEM_PROMPTS[context ?? "systems"] ?? SYSTEM_PROMPTS.systems;
+  let systemPrompt = SYSTEM_PROMPTS[context ?? "systems"] ?? SYSTEM_PROMPTS.systems;
+
+  // RAG: retrieve relevant document chunks and inject into system prompt
+  try {
+    const { retrieveChunks, formatContextBlock } = await import("@/lib/rag");
+    const chunks = await retrieveChunks(message, 5);
+    const contextBlock = formatContextBlock(chunks);
+    if (contextBlock) {
+      systemPrompt += contextBlock;
+    }
+  } catch (err) {
+    // Graceful degradation: if retrieval fails, chat works as before
+    console.warn("[pilot-chat] RAG retrieval failed, continuing without context:", err);
+  }
 
   try {
     const client = new Anthropic({ apiKey });
