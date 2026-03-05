@@ -87,17 +87,17 @@ export default async function JobDetailPage({
               <div className="flex items-center gap-2">
                 {job?.needs_review ? <Badge variant="warning">review</Badge> : <Badge>ok</Badge>}
                 {isPilot && (
-                  job?.soft_gate_pic_status ? (
+                  job?.soft_gate_pic_status && job.soft_gate_pic_status !== "missing_time" ? (
                     <Badge
                       variant={
-                        job.soft_gate_pic_status.toLowerCase().startsWith("meets")
+                        job.soft_gate_pic_status.toLowerCase() === "pass" || job.soft_gate_pic_status.toLowerCase().startsWith("meets")
                           ? "default"
                           : job.soft_gate_pic_status.toLowerCase().startsWith("close")
                           ? "warning"
                           : "danger"
                       }
                     >
-                      PIC gate: {job.soft_gate_pic_status}
+                      PIC gate: {job.soft_gate_pic_status === "pass" ? "Met" : job.soft_gate_pic_status === "fail" ? "Not met" : job.soft_gate_pic_status}
                     </Badge>
                   ) : job?.soft_gate_pic_met === true ? (
                     <Badge variant="default">PIC gate: Met</Badge>

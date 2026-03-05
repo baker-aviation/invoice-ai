@@ -97,8 +97,9 @@ function hasChallenger(j: any): boolean {
 function picGateShort(status: string | null, met: boolean | null | undefined): { label: string; cls: string } | null {
   if (status) {
     const s = status.toLowerCase();
-    if (s.startsWith("meets")) return { label: "Met", cls: "text-emerald-700 bg-emerald-50 border-emerald-200" };
+    if (s === "pass" || s.startsWith("meets")) return { label: "Met", cls: "text-emerald-700 bg-emerald-50 border-emerald-200" };
     if (s.startsWith("close") || s.includes("near")) return { label: "Close", cls: "text-amber-700 bg-amber-50 border-amber-200" };
+    if (s === "missing_time") return null; // no hours data — show nothing
     return { label: "Not met", cls: "text-gray-500 bg-gray-50 border-gray-200" };
   }
   // Fallback: use the boolean soft_gate_pic_met for older rows without a status string
@@ -202,8 +203,10 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
       const jSoft = normalize(j.soft_gate_pic_status);
 
       if (category !== "ALL" && jCategory !== category) return false;
-      if (softGate === "MET" && !jSoft.toLowerCase().startsWith("meets")) return false;
-      if (softGate === "NOT_MET" && jSoft.toLowerCase().startsWith("meets")) return false;
+      const softLower = jSoft.toLowerCase();
+      const isMet = softLower === "pass" || softLower.startsWith("meets");
+      if (softGate === "MET" && !isMet) return false;
+      if (softGate === "NOT_MET" && isMet) return false;
 
       if (citation === "YES" && !hasCitationX(j)) return false;
       if (citation === "NO" && hasCitationX(j)) return false;
