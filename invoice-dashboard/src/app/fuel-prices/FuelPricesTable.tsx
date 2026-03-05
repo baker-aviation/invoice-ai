@@ -639,7 +639,7 @@ export default function FuelPricesTable({
                           >
                             View
                           </Link>
-                          {row.previous_document_id ? (
+                          {row.previous_document_id && /^[a-f0-9-]{36}$/.test(row.previous_document_id) ? (
                             <Link
                               href={`/invoices/${row.previous_document_id}`}
                               className="text-gray-500 hover:text-gray-700 underline"
