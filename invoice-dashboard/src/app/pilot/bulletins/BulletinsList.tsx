@@ -141,7 +141,7 @@ export default function BulletinsList({
             <Link
               key={b.id}
               href={`/pilot/bulletins/${b.id}`}
-              className="block bg-white border border-gray-200 rounded-lg px-4 py-3 hover:border-gray-300 hover:shadow-sm transition-all"
+              className="block bg-white border border-gray-200 rounded-lg px-5 py-4 hover:border-gray-300 hover:shadow-sm transition-all"
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0 flex-1">
@@ -157,9 +157,9 @@ export default function BulletinsList({
                       {formatDate(b.published_at)}
                     </span>
                   </div>
-                  <h3 className="font-medium text-gray-900 text-sm">{b.title}</h3>
+                  <h3 className="font-semibold text-gray-900 text-sm">{b.title}</h3>
                   {b.summary && (
-                    <p className="text-xs text-gray-500 mt-1 line-clamp-2">
+                    <p className="text-sm text-gray-500 mt-1.5 line-clamp-4 leading-relaxed">
                       {stripHtml(b.summary)}
                     </p>
                   )}
