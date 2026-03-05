@@ -55,7 +55,7 @@ async function fetchAll(
     const { data, error } = await query;
     if (error) throw error;
 
-    const rows = (data ?? []) as ExpenseRow[];
+    const rows = (data ?? []) as unknown as ExpenseRow[];
     all.push(...rows);
 
     if (rows.length < pageSize) break;
