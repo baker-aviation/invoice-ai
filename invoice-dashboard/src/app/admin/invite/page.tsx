@@ -8,6 +8,7 @@ export default function InvitePage() {
   const [emailsText, setEmailsText] = useState("");
   const [results, setResults] = useState<InviteResult[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -20,15 +21,25 @@ export default function InvitePage() {
 
     setLoading(true);
     setResults([]);
+    setError("");
 
-    const res = await fetch("/api/admin/invite", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ emails }),
-    });
+    try {
+      const res = await fetch("/api/admin/invite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ emails }),
+      });
 
-    const data = await res.json();
-    setResults(data.results ?? []);
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? `Request failed (${res.status})`);
+      } else {
+        setResults(data.results ?? []);
+      }
+    } catch (err) {
+      setError("Network error — check console for details");
+      console.error(err);
+    }
     setLoading(false);
   }
 
@@ -55,6 +66,12 @@ export default function InvitePage() {
           {loading ? "Generating…" : "Generate Invite Links"}
         </button>
       </form>
+
+      {error && (
+        <div className="mt-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-4 py-3">
+          {error}
+        </div>
+      )}
 
       {results.length > 0 && (
         <div className="mt-6 border border-gray-200 rounded-lg overflow-hidden">
