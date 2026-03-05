@@ -710,11 +710,18 @@ def build_normal_messages(pdf_text: str) -> List[dict]:
         "\n"
         "Avfuel activity invoice receipts:\n"
         "- If the text contains 'ACTIVITY INVOICE' and a 'Receipt Number', this is a SINGLE receipt extracted from an Avfuel activity statement.\n"
-        "- The vendor is 'Avfuel Corporation'.\n"
-        "- Use the Receipt Number as invoice_number.\n"
-        "- The receipt row contains: FBO/location (with airport code), tail number, date, product, gallons, price per gallon, and amount.\n"
-        "- The FBO name in the receipt row often includes an airport code (e.g. 'Sheltair FLL' means airport_code = FLL).\n"
+        "- The vendor is ALWAYS 'Avfuel Corporation' (NOT the customer/account holder like 'Baker Aviation').\n"
+        "- Use the INVOICE NO. from the receipt row as invoice_number (e.g. 24161943), NOT the Receipt Number.\n"
+        "- The receipt row has: RECEIPT NO., LOCATION (with ICAO airport code in parentheses like '(KYIP)'), TAIL NO., INVOICE NO., TYPE.\n"
+        "- Extract airport_code from the LOCATION field — the ICAO code in parentheses (e.g. 'AVFLIGHT WILLOW RUN (KYIP)' means airport_code = YIP, stripping the K prefix).\n"
+        "- Extract tail_number from the TAIL NO. field.\n"
         "- Extract the fuel line item with proper quantity (gallons), unit_price (per gallon), and total (amount).\n"
+        "- The TOTAL line at the end of each receipt section is the receipt total — use it as total_amount.\n"
+        "\n"
+        "World Fuel / FUEL TICKET invoices:\n"
+        "- If the text contains 'FUEL TICKET' followed by a number, use that fuel ticket number as invoice_number (not the consolidated invoice number).\n"
+        "- Each fuel ticket has its own tail_number and airport_code — extract them per-ticket.\n"
+        "- Extract the fuel line item with quantity (gallons), unit_price (per gallon), and total for that specific ticket.\n"
     )
     user = f"Extract the invoice fields from this document text:\n\nDOCUMENT TEXT:\n{pdf_text}"
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
@@ -964,6 +971,11 @@ def extract_one_pdf(
 
     # 4) Infer airport code if LLM missed it
     data = infer_airport_code(data, pdf_text)
+
+    # 5) Normalize ICAO K-prefix → FAA 3-letter (KBOS → BOS)
+    ac = (data.get("airport_code") or "").strip().upper()
+    if len(ac) == 4 and ac.startswith("K") and ac[1:].isalpha():
+        data["airport_code"] = ac[1:]
 
     return data
 

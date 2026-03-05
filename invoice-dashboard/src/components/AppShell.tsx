@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -48,8 +49,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen bg-gray-50 text-gray-900">
       <header className="bg-slate-900 text-white shadow-md">
         <div className="mx-auto max-w-7xl px-6 py-3 flex items-center justify-between">
-          <Link href="/" className="font-bold text-white hover:text-slate-200 tracking-tight">
-            Baker Aviation
+          <Link href="/" className="flex items-center hover:opacity-90 transition-opacity">
+            <Image src="/logo2.png" alt="Baker Aviation" width={120} height={38} priority className="brightness-0 invert" />
           </Link>
 
           <nav className="flex items-center gap-1 text-sm">

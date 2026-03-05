@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -54,8 +55,9 @@ export function PilotShell({ children }: { children: React.ReactNode }) {
       )}
       <header className="bg-blue-900 text-white shadow-md">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 py-3 flex items-center justify-between">
-          <Link href="/pilot" className="font-bold text-white hover:text-blue-200 tracking-tight">
-            Baker Aviation — Pilot Portal
+          <Link href="/pilot" className="flex items-center gap-2 hover:opacity-90 transition-opacity">
+            <Image src="/logo2.png" alt="Baker Aviation" width={120} height={38} priority className="brightness-0 invert" />
+            <span className="font-medium text-blue-200 text-sm">Pilot Portal</span>
           </Link>
 
           {/* Mobile hamburger */}

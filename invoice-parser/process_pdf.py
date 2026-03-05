@@ -106,6 +106,7 @@ def scrub_obj(x):
 # ---------------------------
 
 INV_PATTERNS = [
+    re.compile(r"\bFUEL\s+TICKET\s+(\d{4,})\b", re.I),
     re.compile(r"\bRef Number\s+([A-Z0-9-]{6,})\b", re.I),
     re.compile(r"\bInvoice\s+(?:No\.?|#|Number)?\s*([A-Z0-9-]{3,})\b", re.I),
     re.compile(r"\bCredit Memo No\.?:\s*([A-Z0-9-]{3,})\b", re.I),
@@ -145,6 +146,7 @@ def maybe_statement_gate(text: str, invoice_ids: List[str]) -> Tuple[bool, int]:
         "Ref Number" in (text or "")
         or bool(re.search(r"\bCredit Memo\b", text or "", re.I))
         or bool(re.search(r"\bInvoice\b", text or "", re.I))
+        or bool(re.search(r"\bFUEL\s+TICKET\b", text or "", re.I))
     )
     maybe_statement = has_multi_ids or (has_multi_pages and has_statement_markers)
     return maybe_statement, page_count
@@ -155,6 +157,7 @@ def maybe_statement_gate(text: str, invoice_ids: List[str]) -> Tuple[bool, int]:
 # ---------------------------
 
 _SECTION_BOUNDARY_PATTERNS = [
+    re.compile(r"\bFUEL\s+TICKET\s+(\d{4,})\b", re.I),
     re.compile(r"\bRef Number\s+([A-Z0-9][A-Z0-9-]*)\b", re.I),
     re.compile(r"\bInvoice\s+(?:No\.?|#|Number)\s*:?\s*([A-Z0-9][A-Z0-9-]{2,})\b", re.I),
     re.compile(r"\bCredit Memo\s+(?:No\.?|#|Number)\s*:?\s*([A-Z0-9][A-Z0-9-]{2,})\b", re.I),
@@ -206,14 +209,41 @@ def split_avfuel_activity_invoice(text: str) -> List[Tuple[str, str]]:
     if m_ref:
         master_ref = m_ref.group(1)
 
-    # Find all receipt number positions
+    # Stop before BILLING SUMMARY — receipt numbers there are duplicates
+    billing_summary_pos = len(text)
+    bs_match = re.search(r"BILLING\s+SUMMARY", text, re.I)
+    if bs_match:
+        billing_summary_pos = bs_match.start()
+
+    # Find all receipt number positions (only in the detail section, before
+    # the billing summary).  Receipt numbers are 9 digits with leading zeros
+    # (e.g. 000914753).  We use a stricter pattern to avoid matching 8-digit
+    # invoice numbers (e.g. 24161943) that also appear in the receipt table.
+    _AVFUEL_RECEIPT_RE = re.compile(r"^\s{0,20}(0\d{8})\b", re.MULTILINE)
     matches = []
-    for m in _RECEIPT_LINE_RE.finditer(text):
+    seen_receipts = set()
+    for m in _AVFUEL_RECEIPT_RE.finditer(text, 0, billing_summary_pos):
         receipt_no = m.group(1)
-        # Skip if this is the master REF NO
         if master_ref and receipt_no == master_ref:
             continue
+        # Only take the first occurrence of each receipt number
+        if receipt_no in seen_receipts:
+            continue
+        seen_receipts.add(receipt_no)
         matches.append((m.start(), receipt_no))
+
+    # Fallback: if strict pattern found < 2, try the broader 7-9 digit pattern
+    if len(matches) < 2:
+        matches = []
+        seen_receipts = set()
+        for m in _RECEIPT_LINE_RE.finditer(text, 0, billing_summary_pos):
+            receipt_no = m.group(1)
+            if master_ref and receipt_no == master_ref:
+                continue
+            if receipt_no in seen_receipts:
+                continue
+            seen_receipts.add(receipt_no)
+            matches.append((m.start(), receipt_no))
 
     if len(matches) < 2:
         return []
@@ -225,7 +255,7 @@ def split_avfuel_activity_invoice(text: str) -> List[Tuple[str, str]]:
     # Split text at each receipt boundary
     sections: List[Tuple[str, str]] = []
     for i, (pos, receipt_no) in enumerate(matches):
-        end = matches[i + 1][0] if i + 1 < len(matches) else len(text)
+        end = matches[i + 1][0] if i + 1 < len(matches) else billing_summary_pos
         receipt_text = text[pos:end].strip()
 
         # Skip if the receipt text looks like a TOTAL/summary line
@@ -953,7 +983,13 @@ def process_one_pdf(
     _NOSPLIT_VENDORS = ["vector planepass", "planepass"]
     suppress_split = any(v in (text or "").lower() for v in _NOSPLIT_VENDORS)
 
-    if maybe_statement and not suppress_split:
+    # Avfuel activity invoices: suppress PDF-level page splitting so the
+    # receipt-level text splitter handles them (it splits by receipt row,
+    # not by page boundary, which is what we need for tabular formats).
+    is_avfuel_activity = is_avfuel_activity_invoice(text or "")
+    suppress_pdf_split = suppress_split or is_avfuel_activity
+
+    if maybe_statement and not suppress_pdf_split:
         split_dir.mkdir(parents=True, exist_ok=True)
         try:
             run([

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const PAGE_SIZE = 25;
 const MAX_BULK_REPARSE = 50;
@@ -56,11 +56,41 @@ export default function InvoicesTable({ initialInvoices }: { initialInvoices: an
   const [page, setPage] = useState(0);
   const [bulkParsing, setBulkParsing] = useState(false);
   const [bulkResult, setBulkResult] = useState<string | null>(null);
+  const [serverResults, setServerResults] = useState<any[] | null>(null);
+  const [serverLoading, setServerLoading] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // When the user types a search query, fetch from server (debounced)
+  const doServerSearch = useCallback((query: string) => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (!query.trim()) {
+      setServerResults(null);
+      return;
+    }
+    debounceRef.current = setTimeout(async () => {
+      setServerLoading(true);
+      try {
+        const params = new URLSearchParams({ q: query, limit: "500" });
+        const res = await fetch(`/api/invoices?${params}`);
+        const data = await res.json();
+        if (data.ok) setServerResults(data.invoices);
+      } catch { /* ignore */ }
+      setServerLoading(false);
+    }, 350);
+  }, []);
+
+  useEffect(() => {
+    doServerSearch(q);
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, [q, doServerSearch]);
+
+  // Use server results when searching, initial data otherwise
+  const allInvoices = serverResults ?? initialInvoices;
 
   // Multi-invoice document info: for each document_id, compute count + combined total
   const docInfo = useMemo(() => {
     const map = new Map<string, { count: number; combinedTotal: number; ids: string[] }>();
-    for (const inv of initialInvoices) {
+    for (const inv of allInvoices) {
       const docId = inv.document_id;
       if (!docId) continue;
       if (!map.has(docId)) map.set(docId, { count: 0, combinedTotal: 0, ids: [] });
@@ -71,32 +101,30 @@ export default function InvoicesTable({ initialInvoices }: { initialInvoices: an
       entry.ids.push(inv.id);
     }
     return map;
-  }, [initialInvoices]);
+  }, [allInvoices]);
 
   const airports = useMemo(() => {
     const set = new Set<string>();
-    for (const inv of initialInvoices) {
+    for (const inv of allInvoices) {
       const a = normalize(inv.airport_code).toUpperCase();
       if (a) set.add(a);
     }
     return ["ALL", ...Array.from(set).sort()];
-  }, [initialInvoices]);
+  }, [allInvoices]);
 
   const vendors = useMemo(() => {
     const set = new Set<string>();
-    for (const inv of initialInvoices) {
+    for (const inv of allInvoices) {
       const v = normalize(inv.vendor_name);
       if (v) set.add(v);
     }
     return ["ALL", ...Array.from(set).sort((a, b) => a.localeCompare(b))];
-  }, [initialInvoices]);
+  }, [allInvoices]);
 
-  const overdueCount = useMemo(() => initialInvoices.filter(isOverdue).length, [initialInvoices]);
+  const overdueCount = useMemo(() => allInvoices.filter(isOverdue).length, [allInvoices]);
 
   const filtered = useMemo(() => {
-    const query = q.toLowerCase().trim();
-
-    return initialInvoices.filter((inv) => {
+    return allInvoices.filter((inv) => {
       const invAirport = normalize(inv.airport_code).toUpperCase();
       const invVendor = normalize(inv.vendor_name);
 
@@ -105,22 +133,9 @@ export default function InvoicesTable({ initialInvoices }: { initialInvoices: an
       if (category !== "ALL" && inferCategory(inv) !== category) return false;
       if (showOverdueOnly && !isOverdue(inv)) return false;
 
-      if (!query) return true;
-
-      const haystack = [
-        inv.document_id,
-        inv.vendor_name,
-        inv.airport_code,
-        inv.tail_number,
-        inv.invoice_number,
-        inv.currency,
-      ]
-        .map((v) => String(v ?? "").toLowerCase())
-        .join(" ");
-
-      return haystack.includes(query);
+      return true;
     });
-  }, [initialInvoices, q, airport, vendor, category, showOverdueOnly]);
+  }, [allInvoices, airport, vendor, category, showOverdueOnly]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const paged = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
@@ -131,6 +146,7 @@ export default function InvoicesTable({ initialInvoices }: { initialInvoices: an
     setVendor("ALL");
     setCategory("ALL");
     setShowOverdueOnly(false);
+    setServerResults(null);
     setPage(0);
   };
 
@@ -184,12 +200,17 @@ export default function InvoicesTable({ initialInvoices }: { initialInvoices: an
       )}
 
       <div className="flex flex-wrap items-center gap-3">
-        <input
-          value={q}
-          onChange={(e) => { setQ(e.target.value); setPage(0); }}
-          placeholder="Search vendor, airport, tail, invoice #…"
-          className="w-full max-w-xl rounded-xl border bg-white px-4 py-2 text-sm shadow-sm outline-none"
-        />
+        <div className="relative w-full max-w-xl">
+          <input
+            value={q}
+            onChange={(e) => { setQ(e.target.value); setPage(0); }}
+            placeholder="Search vendor, airport, tail, invoice #…"
+            className="w-full rounded-xl border bg-white px-4 py-2 text-sm shadow-sm outline-none"
+          />
+          {serverLoading && (
+            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-400">searching…</span>
+          )}
+        </div>
 
         <select
           value={airport}

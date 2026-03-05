@@ -60,6 +60,16 @@ MIN_INFERRED_PRICE = 3.0   # below $3/gal is almost certainly a fee, not fuel
 MAX_INFERRED_PRICE = 12.0  # above $12/gal is unrealistic for Jet A
 
 
+def _normalize_airport(code: Optional[str]) -> Optional[str]:
+    """KBOS → BOS. Strips ICAO K-prefix for US airports."""
+    if not code:
+        return code
+    c = code.strip().upper()
+    if len(c) == 4 and c.startswith("K") and c[1:].isalpha():
+        return c[1:]
+    return c
+
+
 def _is_fuel_line(desc: str) -> bool:
     return bool(_FUEL_RE.search(desc or ""))
 
@@ -187,7 +197,7 @@ def extract_fuel_price(invoice: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return {
         "document_id": invoice.get("document_id"),
         "parsed_invoice_id": str(invoice.get("id") or ""),
-        "airport_code": (invoice.get("airport_code") or "").strip().upper() or None,
+        "airport_code": _normalize_airport(invoice.get("airport_code")),
         "vendor_name": invoice.get("vendor_name") or invoice.get("vendor_normalized") or None,
         "tail_number": invoice.get("tail_number"),
         "invoice_date": invoice.get("invoice_date"),
@@ -213,13 +223,14 @@ def check_price_increase(
     Compare against the most recent fuel price at the same airport.
     Returns increase details if >= PRICE_INCREASE_PCT, else None.
     """
+    airport_code = _normalize_airport(airport_code)
     if not airport_code:
         return None
 
     rows = safe_select_many(
         FUEL_PRICES_TABLE,
         "effective_price_per_gallon, invoice_date, vendor_name, document_id",
-        eq={"airport_code": airport_code.upper()},
+        eq={"airport_code": airport_code},
         order="invoice_date",
         desc=True,
         limit=5,

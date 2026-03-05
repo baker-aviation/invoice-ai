@@ -29,6 +29,13 @@ export async function fetchInvoices(params: {
     .order("created_at", { ascending: false })
     .limit(limit);
 
+  if (params.q) {
+    const q = params.q.replace(/%/g, "");
+    const pattern = `%${q}%`;
+    query = query.or(
+      `vendor_name.ilike.${pattern},invoice_number.ilike.${pattern},airport_code.ilike.${pattern},tail_number.ilike.${pattern},document_id.ilike.${pattern}`
+    );
+  }
   if (params.vendor) query = query.ilike("vendor_name", `%${params.vendor}%`);
   if (params.doc_type) query = query.eq("doc_type", params.doc_type);
   if (params.airport) query = query.ilike("airport_code", `%${params.airport}%`);
@@ -69,16 +76,6 @@ export async function fetchInvoices(params: {
       learned_category: ruleMap.get(vendorNorm) ?? null,
     };
   });
-
-  // Client-side text search (matches backend behavior)
-  if (params.q) {
-    const qLower = params.q.toLowerCase();
-    invoices = invoices.filter((inv) =>
-      [inv.vendor_name, inv.invoice_number, inv.airport_code, inv.tail_number, inv.document_id]
-        .filter(Boolean)
-        .some((f) => String(f).toLowerCase().includes(qLower)),
-    );
-  }
 
   return { ok: true, count: invoices.length, invoices };
 }
