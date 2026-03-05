@@ -2,6 +2,67 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin, isRateLimited } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 
+/**
+ * Convert HTML (from contentEditable editor) to Slack mrkdwn format.
+ */
+function htmlToSlackMrkdwn(html: string): string {
+  let s = html;
+
+  // Decode common HTML entities first (before tags are processed)
+  s = s.replace(/&nbsp;/gi, " ");
+  s = s.replace(/&amp;/gi, "&");
+  s = s.replace(/&lt;/gi, "<\u200B"); // zero-width space to avoid Slack re-parsing
+  s = s.replace(/&gt;/gi, "\u200B>");
+  s = s.replace(/&quot;/gi, '"');
+
+  // Headings → bold uppercase on its own line
+  s = s.replace(/<h[1-3][^>]*>([\s\S]*?)<\/h[1-3]>/gi, (_m, inner) => {
+    const text = inner.replace(/<[^>]*>/g, "").trim();
+    return `\n*${text.toUpperCase()}*\n`;
+  });
+
+  // Bold / strong
+  s = s.replace(/<(b|strong)[^>]*>([\s\S]*?)<\/\1>/gi, "*$2*");
+
+  // Italic / em
+  s = s.replace(/<(i|em)[^>]*>([\s\S]*?)<\/\1>/gi, "_$2_");
+
+  // Underline — no Slack equivalent, just strip tags
+  s = s.replace(/<\/?u[^>]*>/gi, "");
+
+  // Ordered lists: number the items, then remove the wrapper
+  s = s.replace(/<ol[^>]*>([\s\S]*?)<\/ol>/gi, (_m, inner) => {
+    let idx = 0;
+    return inner.replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, (_li: string, content: string) => {
+      idx++;
+      return `${idx}. ${content.replace(/<[^>]*>/g, "").trim()}\n`;
+    });
+  });
+
+  // Unordered lists: bullet the items, then remove the wrapper
+  s = s.replace(/<ul[^>]*>([\s\S]*?)<\/ul>/gi, (_m, inner) => {
+    return inner.replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, (_li: string, content: string) => {
+      return `• ${content.replace(/<[^>]*>/g, "").trim()}\n`;
+    });
+  });
+
+  // <br>, </p>, </div> → newline
+  s = s.replace(/<br\s*\/?>/gi, "\n");
+  s = s.replace(/<\/p>/gi, "\n");
+  s = s.replace(/<\/div>/gi, "\n");
+
+  // Strip any remaining HTML tags
+  s = s.replace(/<[^>]*>/g, "");
+
+  // Clean up zero-width spaces used to protect angle brackets
+  s = s.replace(/\u200B/g, "");
+
+  // Collapse 3+ newlines to 2
+  s = s.replace(/\n{3,}/g, "\n\n");
+
+  return s.trim();
+}
+
 const CATEGORY_LABELS: Record<string, string> = {
   chief_pilot: "Chief Pilot",
   operations: "Operations",
@@ -22,14 +83,6 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    // Check token identity and scopes
-    const authRes = await fetch("https://slack.com/api/auth.test", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
-      cache: "no-store",
-    });
-    const authData = await authRes.json();
-
     // Use users.conversations — returns channels the bot is a member of (public + private)
     const allChannels: { id: string; name: string; is_private: boolean }[] = [];
     let cursor: string | undefined;
@@ -52,7 +105,6 @@ export async function GET(req: NextRequest) {
           ok: false,
           channels: [],
           error: data.error,
-          _debug: { auth: authData, needed: data.needed, provided: data.provided },
         });
       }
 
@@ -72,15 +124,6 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       ok: true,
       channels,
-      _debug: {
-        total: channels.length,
-        private_count: channels.filter((c) => c.is_private).length,
-        public_count: channels.filter((c) => !c.is_private).length,
-        token_prefix: token.substring(0, 10) + "...",
-        bot_user: authData.ok ? authData.user : null,
-        bot_id: authData.ok ? authData.bot_id : null,
-        team: authData.ok ? authData.team : null,
-      },
     });
   } catch (err) {
     return NextResponse.json({ ok: false, channels: [], error: String(err) }, { status: 502 });
@@ -137,9 +180,9 @@ export async function POST(
   const bulletinUrl = `${appUrl}/pilot/bulletins/${bulletin.id}`;
   const categoryLabel = CATEGORY_LABELS[bulletin.category] || bulletin.category;
 
-  // Strip HTML from summary for Slack
-  const plainSummary = bulletin.summary
-    ? bulletin.summary.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim()
+  // Convert HTML summary to Slack mrkdwn
+  const slackSummary = bulletin.summary
+    ? htmlToSlackMrkdwn(bulletin.summary)
     : null;
 
   const slackPayload = {
@@ -150,7 +193,7 @@ export async function POST(
         type: "section",
         text: {
           type: "mrkdwn",
-          text: `📋 *New ${categoryLabel} Bulletin*\n*${bulletin.title}*${plainSummary ? `\n${plainSummary}` : ""}`,
+          text: `📋 *New ${categoryLabel} Bulletin*\n*${bulletin.title}*${slackSummary ? `\n${slackSummary}` : ""}`,
         },
       },
       {
