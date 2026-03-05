@@ -79,6 +79,7 @@ export async function PATCH(req: NextRequest) {
 
   const fileId = body.file_id;
   const linkedParseId = body.linked_parse_id ?? null;
+  const fileCategory = body.file_category ?? undefined;
 
   if (!fileId || typeof fileId !== "number") {
     return NextResponse.json({ error: "file_id is required" }, { status: 400 });
@@ -88,11 +89,21 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: "linked_parse_id must be a number or null" }, { status: 400 });
   }
 
+  const validCategories = ["resume", "lor", "cover_letter", "other"];
+  if (fileCategory !== undefined && !validCategories.includes(fileCategory)) {
+    return NextResponse.json({ error: "Invalid file_category" }, { status: 400 });
+  }
+
   const supa = createServiceClient();
+
+  const updateData: Record<string, unknown> = { linked_parse_id: linkedParseId };
+  if (fileCategory !== undefined) {
+    updateData.file_category = fileCategory;
+  }
 
   const { error } = await supa
     .from("job_application_files")
-    .update({ linked_parse_id: linkedParseId })
+    .update(updateData)
     .eq("id", fileId);
 
   if (error) {

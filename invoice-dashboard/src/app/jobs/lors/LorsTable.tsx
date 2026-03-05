@@ -81,6 +81,25 @@ export default function LorsTable({
     }
   }
 
+  async function handleReclassify(fileId: number) {
+    if (!confirm("Reclassify this file as a resume? It will be removed from the LOR list.")) return;
+    setSaving(true);
+    try {
+      const res = await fetch("/api/jobs/lors", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ file_id: fileId, linked_parse_id: null, file_category: "resume" }),
+      });
+      if (res.ok) {
+        setFiles((prev) => prev.filter((f) => f.id !== fileId));
+      }
+    } catch (e) {
+      console.error("Reclassify failed:", e);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   const filteredCandidates = search
     ? candidates.filter((c) => c.name.toLowerCase().includes(search.toLowerCase()))
     : candidates.slice(0, 20);
@@ -186,6 +205,14 @@ export default function LorsTable({
                           View
                         </a>
                       )}
+                      <button
+                        onClick={() => handleReclassify(f.id)}
+                        disabled={saving}
+                        className="text-xs px-2 py-1 rounded border border-red-200 text-red-600 hover:bg-red-50 font-medium"
+                        title="Reclassify as resume (remove from LOR list)"
+                      >
+                        Not a LOR
+                      </button>
                     </div>
                   </td>
                 </tr>

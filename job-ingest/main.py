@@ -228,14 +228,25 @@ def _classify_file(filename: str, subject: str) -> str:
     """Classify a file as resume, lor, cover_letter, or other based on filename/subject."""
     fn = (filename or "").lower()
     subj = (subject or "").lower()
-    combined = f" {fn} {subj} "
 
-    if any(k in combined for k in LOR_KEYWORDS):
-        return "lor"
-    if any(k in combined for k in COVER_LETTER_KEYWORDS):
-        return "cover_letter"
-    if any(k in combined for k in RESUME_KEYWORDS):
+    # Check filename first — it's more reliable than the email subject
+    fn_padded = f" {fn} "
+    if any(k in fn_padded for k in RESUME_KEYWORDS):
         return "resume"
+    if any(k in fn_padded for k in LOR_KEYWORDS):
+        return "lor"
+    if any(k in fn_padded for k in COVER_LETTER_KEYWORDS):
+        return "cover_letter"
+
+    # Fall back to email subject
+    subj_padded = f" {subj} "
+    if any(k in subj_padded for k in LOR_KEYWORDS):
+        return "lor"
+    if any(k in subj_padded for k in COVER_LETTER_KEYWORDS):
+        return "cover_letter"
+    if any(k in subj_padded for k in RESUME_KEYWORDS):
+        return "resume"
+
     # Default to resume for job application emails
     return "resume"
 
