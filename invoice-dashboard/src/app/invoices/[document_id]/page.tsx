@@ -5,6 +5,7 @@ import { Badge } from "@/components/Badge";
 import { inferCategory, CATEGORY_COLORS } from "@/lib/invoiceCategory";
 import ReparseButton from "./ReparseButton";
 import PdfViewer from "./PdfViewer";
+import CategorySelect from "./CategorySelect";
 import { AutoRefresh } from "@/components/AutoRefresh";
 
 export default async function InvoiceDetailPage({
@@ -107,7 +108,12 @@ export default async function InvoiceDetailPage({
                   <div><span className="text-gray-500">Tail:</span> {invoice.tail_number ?? "—"}</div>
                   <div>
                     <span className="text-gray-500">Category:</span>{" "}
-                    <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${CATEGORY_COLORS[cat]}`}>{cat}</span>
+                    <CategorySelect
+                      documentId={document_id}
+                      invoiceId={invoice.id}
+                      currentCategory={cat}
+                      categoryOverride={invoice.category_override ?? null}
+                    />
                   </div>
                   <div><span className="text-gray-500">Doc type:</span> {invoice.doc_type ?? "—"}</div>
                   <div className="text-right md:text-left">

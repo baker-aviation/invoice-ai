@@ -43,7 +43,8 @@ function isOverdue(inv: any): boolean {
   return diffDays > 30;
 }
 
-const ALL_CATEGORIES: string[] = ["ALL", "FBO/Fuel", "Maintenance/Parts", "Lease/Utilities", "Pilot Training", "Pilot Operations", "Subscriptions", "Other"];
+import { ALL_CATEGORIES as CATEGORIES } from "@/lib/invoiceCategory";
+const ALL_CATEGORY_OPTIONS: string[] = ["ALL", ...CATEGORIES];
 
 export default function InvoicesTable({ initialInvoices }: { initialInvoices: any[] }) {
   const [q, setQ] = useState("");
@@ -182,7 +183,7 @@ export default function InvoicesTable({ initialInvoices }: { initialInvoices: an
           onChange={(e) => { setCategory(e.target.value); setPage(0); }}
           className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm"
         >
-          {ALL_CATEGORIES.map((c) => (
+          {ALL_CATEGORY_OPTIONS.map((c) => (
             <option key={c} value={c}>{c === "ALL" ? "All categories" : c}</option>
           ))}
         </select>

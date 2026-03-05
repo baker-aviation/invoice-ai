@@ -8,7 +8,7 @@ import type { AlertRow, AlertsResponse, FuelPriceRow, FuelPricesResponse, Invoic
 // ---------------------------------------------------------------------------
 
 const INVOICE_COLUMNS =
-  "id, document_id, created_at, vendor_name, invoice_number, invoice_date, airport_code, tail_number, currency, total, doc_type, review_required, risk_score, line_items";
+  "id, document_id, created_at, vendor_name, invoice_number, invoice_date, airport_code, tail_number, currency, total, doc_type, review_required, risk_score, line_items, category_override";
 
 export async function fetchInvoices(params: {
   limit?: number;

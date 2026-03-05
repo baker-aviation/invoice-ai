@@ -3,6 +3,7 @@ import { requireAuth, isAuthed, isRateLimited } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 import { signGcsUrl } from "@/lib/gcs";
 import { cloudRunFetch } from "@/lib/cloud-run-fetch";
+import { ALL_CATEGORIES } from "@/lib/invoiceCategory";
 
 const INVOICE_BASE = process.env.INVOICE_API_BASE_URL;
 
@@ -56,4 +57,60 @@ export async function GET(
   }
 
   return NextResponse.json({ error: "PDF unavailable — no GCS credentials or backend configured" }, { status: 503 });
+}
+
+// ---------------------------------------------------------------------------
+// PATCH — Update category override for all invoices in a document
+// ---------------------------------------------------------------------------
+
+const VALID_CATEGORIES = new Set([...ALL_CATEGORIES, ""]);
+
+export async function PATCH(
+  req: NextRequest,
+  { params }: { params: Promise<{ documentId: string }> }
+) {
+  const auth = await requireAuth(req);
+  if (!isAuthed(auth)) return auth.error;
+
+  if (isRateLimited(auth.userId)) {
+    return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
+  }
+
+  const { documentId } = await params;
+  if (!SAFE_ID_RE.test(documentId)) {
+    return NextResponse.json({ error: "Invalid document ID" }, { status: 400 });
+  }
+
+  let body: { category_override: string; invoice_id?: string };
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  }
+
+  const override = body.category_override ?? "";
+  if (!VALID_CATEGORIES.has(override)) {
+    return NextResponse.json({ error: "Invalid category" }, { status: 400 });
+  }
+
+  const supa = createServiceClient();
+  const value = override || null; // empty string → null (clear override)
+
+  // If invoice_id provided, update just that one; otherwise update all in the document
+  let query = supa
+    .from("parsed_invoices")
+    .update({ category_override: value })
+    .eq("document_id", documentId);
+
+  if (body.invoice_id) {
+    query = query.eq("id", body.invoice_id);
+  }
+
+  const { error } = await query;
+  if (error) {
+    console.error("[invoices/PATCH] Update error:", error);
+    return NextResponse.json({ error: "Database error" }, { status: 500 });
+  }
+
+  return NextResponse.json({ ok: true, category_override: value });
 }
