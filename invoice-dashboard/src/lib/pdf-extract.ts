@@ -1,4 +1,5 @@
 import "server-only";
+import { join } from "path";
 
 /**
  * Extract all text from a PDF buffer using pdfjs-dist legacy build.
@@ -7,8 +8,11 @@ import "server-only";
 export async function extractPdfText(buffer: Buffer): Promise<string> {
   const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
 
-  // Disable worker — we're running server-side, no need for a web worker
-  pdfjsLib.GlobalWorkerOptions.workerSrc = "";
+  // Point workerSrc at the actual worker file so the fake worker can load it
+  pdfjsLib.GlobalWorkerOptions.workerSrc = join(
+    process.cwd(),
+    "node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs",
+  );
 
   const data = new Uint8Array(buffer);
   const doc = await pdfjsLib.getDocument({
