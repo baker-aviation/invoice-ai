@@ -947,7 +947,13 @@ def process_one_pdf(
     did_split = False
     part_pdfs: List[Path] = []
 
-    if maybe_statement:
+    # ── Vendor-specific split suppression ──────────────────────────
+    # Some vendors (e.g. Vector PLANEPASS) produce multi-page PDFs that
+    # should NOT be split — keep the entire document as a single invoice.
+    _NOSPLIT_VENDORS = ["vector planepass", "planepass"]
+    suppress_split = any(v in (text or "").lower() for v in _NOSPLIT_VENDORS)
+
+    if maybe_statement and not suppress_split:
         split_dir.mkdir(parents=True, exist_ok=True)
         try:
             run([
@@ -968,12 +974,6 @@ def process_one_pdf(
                 "details": {"pdf": str(pdf_path)},
             })
             did_split = False
-
-    # ── Vendor-specific split suppression ──────────────────────────
-    # Some vendors (e.g. Vector PLANEPASS) produce multi-page PDFs that
-    # should NOT be split — keep the entire document as a single invoice.
-    _NOSPLIT_VENDORS = ["vector planepass", "planepass"]
-    suppress_split = any(v in (text or "").lower() for v in _NOSPLIT_VENDORS)
 
     # Avfuel activity invoice splitting (highest priority for tabular format):
     # handles tabular multi-invoice PDFs where each receipt is a row in a table
