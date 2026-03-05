@@ -110,7 +110,7 @@ export async function POST(req: NextRequest) {
       uploadUrl = url;
     } catch (err) {
       console.error("[pilot/bulletins] presign error:", err);
-      return NextResponse.json({ error: "Failed to prepare video upload" }, { status: 500 });
+      return NextResponse.json({ error: `Failed to prepare video upload: ${err instanceof Error ? err.message : err}` }, { status: 500 });
     }
   }
 
@@ -132,7 +132,7 @@ export async function POST(req: NextRequest) {
 
   if (dbErr) {
     console.error("[pilot/bulletins] insert error:", dbErr);
-    return NextResponse.json({ error: "Failed to create bulletin" }, { status: 500 });
+    return NextResponse.json({ error: `Failed to create bulletin: ${dbErr.message}` }, { status: 500 });
   }
 
   return NextResponse.json({ bulletin, upload_url: uploadUrl }, { status: 201 });
