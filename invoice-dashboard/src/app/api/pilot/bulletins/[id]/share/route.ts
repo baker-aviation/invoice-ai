@@ -33,12 +33,13 @@ export async function GET(req: NextRequest) {
     }
 
     const channels = (data.channels ?? [])
-      .filter((c: { is_member: boolean }) => c.is_member)
-      .map((c: { id: string; name: string; is_private: boolean }) => ({
+      .map((c: { id: string; name: string; is_private: boolean; is_member: boolean }) => ({
         id: c.id,
         name: c.name,
         is_private: c.is_private,
-      }));
+        is_member: c.is_member,
+      }))
+      .sort((a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name));
 
     return NextResponse.json({ ok: true, channels });
   } catch (err) {
