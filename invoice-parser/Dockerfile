@@ -17,6 +17,9 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY . /app
 
+RUN useradd -r -s /bin/false appuser
+USER appuser
+
 ENV PORT=8080
 EXPOSE 8080
 

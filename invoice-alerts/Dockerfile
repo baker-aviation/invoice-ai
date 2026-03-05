@@ -16,6 +16,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# Run as non-root user
+RUN useradd -r -s /bin/false appuser
+USER appuser
+
 # Cloud Run listens on $PORT
 ENV PORT=8080
 EXPOSE 8080

@@ -96,6 +96,10 @@ async function loadCSV(): Promise<FeeRow[]> {
 }
 
 export async function GET(req: NextRequest) {
+  const { requireAuth } = await import("@/lib/api-auth");
+  const auth = await requireAuth(req);
+  if ("error" in auth) return auth.error;
+
   try {
     const rows = await loadCSV();
 

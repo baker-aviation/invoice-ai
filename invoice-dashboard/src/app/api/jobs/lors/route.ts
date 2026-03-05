@@ -1,13 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/service";
 import { signGcsUrl } from "@/lib/gcs";
+import { requireAuth, requireAdmin, isRateLimited } from "@/lib/api-auth";
 
 export const dynamic = "force-dynamic";
 
 /**
  * GET /api/jobs/lors — list all LOR files with linked candidate info
  */
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const auth = await requireAuth(req);
+  if ("error" in auth) return auth.error;
+
   const supa = createServiceClient();
 
   const { data: files, error } = await supa
@@ -60,6 +64,12 @@ export async function GET() {
  * Body: { file_id: number, linked_parse_id: number | null }
  */
 export async function PATCH(req: NextRequest) {
+  const auth = await requireAdmin(req);
+  if ("error" in auth) return auth.error;
+  if (isRateLimited(auth.userId)) {
+    return NextResponse.json({ error: "Too many requests" }, { status: 429 });
+  }
+
   let body: Record<string, any>;
   try {
     body = await req.json();
@@ -72,6 +82,10 @@ export async function PATCH(req: NextRequest) {
 
   if (!fileId || typeof fileId !== "number") {
     return NextResponse.json({ error: "file_id is required" }, { status: 400 });
+  }
+
+  if (linkedParseId !== null && typeof linkedParseId !== "number") {
+    return NextResponse.json({ error: "linked_parse_id must be a number or null" }, { status: 400 });
   }
 
   const supa = createServiceClient();

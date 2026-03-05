@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/service";
 import { cloudRunFetch } from "@/lib/cloud-run-fetch";
 import { GoogleAuth } from "google-auth-library";
+import { requireAuth } from "@/lib/api-auth";
 
 /**
  * GET /api/invoices/{documentId}/pdf
@@ -51,9 +52,12 @@ function getAuth(): GoogleAuth {
 }
 
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ documentId: string }> },
 ) {
+  const auth = await requireAuth(req);
+  if ("error" in auth) return auth.error;
+
   const { documentId } = await params;
   if (!SAFE_ID_RE.test(documentId)) {
     return NextResponse.json({ error: "Invalid document ID" }, { status: 400 });
@@ -81,7 +85,7 @@ export async function GET(
   if (SIGNED_URL_BASE) {
     try {
       const url = `${SIGNED_URL_BASE.replace(/\/$/, "")}/api/invoices/${documentId}/pdf-url`;
-      console.log(`[pdf] Strategy 1: calling ${url}`);
+      console.log("[pdf] Strategy 1: calling Cloud Run signed URL endpoint");
       const res = await cloudRunFetch(url, {
         cache: "no-store",
         signal: AbortSignal.timeout(5000),
@@ -145,14 +149,7 @@ export async function GET(
       return NextResponse.json(
         {
           error: `GCS returned ${gcsRes.status}`,
-          hint: "Ensure the service account has Storage Object Viewer role on the bucket",
-          debug: {
-            strategy1_failure: strategy1Reason || "unknown",
-            signed_url_base: SIGNED_URL_BASE ?? null,
-            has_invoice_api_url: !!process.env.INVOICE_API_BASE_URL,
-            has_parser_url: !!(process.env.PARSER_API_BASE_URL ?? process.env.INVOICE_PARSER_URL),
-            has_gcp_sa_key: !!process.env.GCP_SA_KEY,
-          },
+          hint: "PDF retrieval failed — check server logs for details",
         },
         { status: 502 },
       );

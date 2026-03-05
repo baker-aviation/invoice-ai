@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/service";
+import { requireAdmin, isRateLimited } from "@/lib/api-auth";
 
 /**
  * POST /api/jobs/upload — upload a resume file for parsing
@@ -17,6 +18,12 @@ import { createServiceClient } from "@/lib/supabase/service";
  *   4. Trigger parse via job-parse service
  */
 export async function POST(req: NextRequest) {
+  const auth = await requireAdmin(req);
+  if ("error" in auth) return auth.error;
+  if (isRateLimited(auth.userId, 10)) {
+    return NextResponse.json({ error: "Too many requests" }, { status: 429 });
+  }
+
   let formData: FormData;
   try {
     formData = await req.formData();
