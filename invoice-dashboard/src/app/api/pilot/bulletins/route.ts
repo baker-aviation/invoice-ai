@@ -137,59 +137,5 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Failed to create bulletin" }, { status: 500 });
   }
 
-  // Post to #pilots Slack channel
-  const slackToken = process.env.SLACK_BOT_TOKEN;
-  if (slackToken && bulletin) {
-    try {
-      const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://baker-ai-gamma.vercel.app";
-      const bulletinUrl = `${appUrl}/pilot/bulletins/${bulletin.id}`;
-      const categoryLabel = CATEGORY_LABELS[category] || category;
-
-      const slackPayload = {
-        channel: "C04AM137PEE",
-        text: `New ${categoryLabel} Bulletin: ${title}`,
-        blocks: [
-          {
-            type: "section",
-            text: {
-              type: "mrkdwn",
-              text: `📋 *New ${categoryLabel} Bulletin*\n*${title}*${summary ? `\n${summary}` : ""}`,
-            },
-          },
-          {
-            type: "actions",
-            elements: [
-              {
-                type: "button",
-                text: { type: "plain_text", text: "View Bulletin", emoji: true },
-                url: bulletinUrl,
-              },
-            ],
-          },
-        ],
-      };
-
-      const res = await fetch("https://slack.com/api/chat.postMessage", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${slackToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(slackPayload),
-      });
-      const slackData = await res.json();
-
-      if (slackData.ok && slackData.ts) {
-        await supa
-          .from("pilot_bulletins")
-          .update({ slack_ts: slackData.ts })
-          .eq("id", bulletin.id);
-      }
-    } catch (err) {
-      // Non-blocking — bulletin was created, Slack is best-effort
-      console.error("[pilot/bulletins] Slack post error:", err);
-    }
-  }
-
   return NextResponse.json({ bulletin }, { status: 201 });
 }

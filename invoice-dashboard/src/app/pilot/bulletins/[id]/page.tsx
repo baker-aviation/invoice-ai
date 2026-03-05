@@ -84,7 +84,7 @@ export default async function BulletinDetailPage({
           {isAdmin && (
             <BulletinDetail
               bulletinId={bulletin.id}
-              showDelete
+              slackTs={bulletin.slack_ts}
             />
           )}
         </div>
