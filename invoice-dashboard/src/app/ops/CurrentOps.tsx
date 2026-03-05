@@ -165,12 +165,12 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
 
   // Collect active EDCT alerts across all flights
   const edctAlerts = useMemo(() => {
-    const alerts: (OpsAlert & { route: string })[] = [];
+    const alerts: (OpsAlert & { route: string; fallback_departure?: string })[] = [];
     for (const f of flights) {
       for (const a of f.alerts) {
         if (a.alert_type === "EDCT") {
           const route = [f.departure_icao, f.arrival_icao].filter(Boolean).join(" → ") || "Unknown";
-          alerts.push({ ...a, route });
+          alerts.push({ ...a, route, fallback_departure: f.scheduled_departure ?? undefined });
         }
       }
     }
@@ -220,8 +220,10 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
                 <span className="font-medium">{a.route}</span>
                 {a.tail_number && <span className="text-amber-600">{a.tail_number}</span>}
                 <span className="text-sm">
-                  {a.original_departure_time && <span className="text-amber-500 line-through">{fmtTime(a.original_departure_time)}</span>}
-                  {a.original_departure_time && <span className="text-amber-400 mx-0.5">→</span>}
+                  {(a.original_departure_time || a.fallback_departure) && (
+                    <span className="text-amber-500 line-through">{fmtTime(a.original_departure_time ?? a.fallback_departure ?? "")}</span>
+                  )}
+                  {(a.original_departure_time || a.fallback_departure) && <span className="text-amber-400 mx-0.5">→</span>}
                   <span className="text-amber-800 font-bold">{a.edct_time ? fmtTime(a.edct_time) : "—"}</span>
                 </span>
               </div>

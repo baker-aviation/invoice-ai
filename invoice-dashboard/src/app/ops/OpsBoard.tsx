@@ -971,15 +971,12 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
                   <span className="font-mono text-xs text-gray-600 bg-gray-100 rounded px-1.5 py-0.5">{flight.tail_number}</span>
                 )}
                 <span className="text-xs">
-                  <span className="text-gray-500 line-through">{alert.original_departure_time ?? ""}</span>
-                  {alert.original_departure_time && <span className="text-gray-400 mx-0.5">→</span>}
+                  {(alert.original_departure_time || flight?.scheduled_departure) && (
+                    <span className="text-gray-500 line-through">{alert.original_departure_time ?? fmtTime(flight?.scheduled_departure ?? "")}</span>
+                  )}
+                  {(alert.original_departure_time || flight?.scheduled_departure) && <span className="text-gray-400 mx-0.5">→</span>}
                   <span className="text-orange-800 font-bold">{alert.edct_time ?? "—"}</span>
                 </span>
-                {flight && (
-                  <span className="text-xs text-gray-500">
-                    Dep {fmtTime(flight.scheduled_departure)}
-                  </span>
-                )}
                 <button
                   type="button"
                   onClick={() => handleAckWithApi(alert.id)}

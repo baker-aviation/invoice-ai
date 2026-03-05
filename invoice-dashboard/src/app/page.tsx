@@ -55,7 +55,7 @@ async function fetchStats(): Promise<DashboardStats> {
       .gte("created_at", ago24h.toISOString()),
     supa.from("ops_alerts").select("id", { count: "exact", head: true })
       .is("acknowledged_at", null)
-      .eq("alert_type", "edct"),
+      .eq("alert_type", "EDCT"),
     supa.from("flights").select("id", { count: "exact", head: true })
       .eq("status", "airborne"),
     supa.from("documents").select("id", { count: "exact", head: true }),
