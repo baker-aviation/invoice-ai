@@ -639,9 +639,8 @@ def _upsert_parse_row(supa: Client, application_id: int, result: Dict[str, Any])
         "type_ratings": tr.get("ratings") or [],
         "type_ratings_raw": tr.get("raw_snippet"),
 
-        # soft gate
+        # soft gate (soft_gate_pic_status is a generated column — do NOT set it)
         "soft_gate_pic_met": soft_gate_pic_met,
-        "soft_gate_pic_status": soft_gate_pic_status,
 
         # misc
         "notes": result.get("notes"),
