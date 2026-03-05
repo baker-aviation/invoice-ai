@@ -68,6 +68,7 @@ export type FuelPriceRow = {
   previous_document_id: string | null;
   alert_sent: boolean | null;
   data_source: string | null; // 'invoice' | 'jetinsight'
+  has_additive: boolean;
   created_at: string;
 };
 

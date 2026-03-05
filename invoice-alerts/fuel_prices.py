@@ -45,6 +45,13 @@ _FUEL_TAX_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Additive line items (FSII / Prist) — included in effective price but flagged
+_ADDITIVE_RE = re.compile(
+    r"\bfsii\b|\bprist\b|\bfuel\s+system\s+icing\b|\banti[\s-]?ic(?:e|ing)\b"
+    r"|\bicing\s+inhibitor\b|\badditive\b",
+    re.IGNORECASE,
+)
+
 # Minimum realistic fuel unit price — jet fuel never costs less than $1/gal
 MIN_FUEL_PRICE = 1.0
 
@@ -171,6 +178,12 @@ def extract_fuel_price(invoice: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     effective_price = fuel_total / fuel_qty if fuel_qty > 0 else base_price
 
+    # Detect if any associated line is an additive (FSII/Prist)
+    has_additive = any(
+        _ADDITIVE_RE.search(str(li.get("description") or li.get("name") or ""))
+        for li in associated
+    )
+
     return {
         "document_id": invoice.get("document_id"),
         "parsed_invoice_id": str(invoice.get("id") or ""),
@@ -184,6 +197,7 @@ def extract_fuel_price(invoice: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "gallons": round(fuel_qty, 2),
         "fuel_total": round(fuel_total, 2),
         "associated_line_items": associated,
+        "has_additive": has_additive,
     }
 
 
@@ -264,6 +278,7 @@ def store_fuel_price(
         "currency": data.get("currency", "USD"),
         "associated_line_items": json.dumps(data.get("associated_line_items", [])),
         "data_source": data.get("data_source", "invoice"),
+        "has_additive": data.get("has_additive", False),
         "price_change_pct": increase["price_change_pct"] if increase else None,
         "previous_price": increase["previous_price"] if increase else None,
         "previous_document_id": increase.get("previous_document_id") if increase else None,

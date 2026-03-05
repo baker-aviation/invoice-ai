@@ -572,7 +572,12 @@ export default function FuelPricesTable({
                       {fmt$(row.fuel_total, 2)}
                     </td>
                     <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono font-medium">
-                      <div>{fmt$(price)}</div>
+                      <div className="inline-flex items-center gap-1 justify-end">
+                        {fmt$(price)}
+                        {row.has_additive && (
+                          <span className="text-[9px] font-semibold px-1 py-0.5 rounded bg-amber-100 text-amber-700" title="Includes FSII/Prist additive">FSII</span>
+                        )}
+                      </div>
                       {row.base_price_per_gallon != null && row.base_price_per_gallon !== price && (
                         <div className="text-[10px] text-gray-400 font-normal" title="Base fuel rate (before per-gallon taxes)">
                           base {fmt$(row.base_price_per_gallon)}
