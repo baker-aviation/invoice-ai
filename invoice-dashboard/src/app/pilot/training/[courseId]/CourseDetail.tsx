@@ -33,28 +33,39 @@ const LESSON_TYPE_ICONS: Record<string, string> = {
   text: "📝",
 };
 
+type QuizStats = {
+  lesson_id: number;
+  total_attempts: number;
+  unique_users: number;
+  avg_score_pct: number;
+};
+
 export default function CourseDetail({
   course,
   modules,
   lessons,
   completedLessonIds,
   isAdmin,
+  quizStats,
 }: {
   course: Record<string, unknown>;
   modules: Record<string, unknown>[];
   lessons: Record<string, unknown>[];
   completedLessonIds: number[];
   isAdmin: boolean;
+  quizStats?: QuizStats[];
 }) {
   const router = useRouter();
   const c = course as unknown as Course;
   const mods = modules as unknown as Module[];
   const lsns = lessons as unknown as Lesson[];
   const completedSet = new Set(completedLessonIds);
+  const quizStatsMap = new Map((quizStats ?? []).map((s) => [s.lesson_id, s]));
 
   const [showAddModule, setShowAddModule] = useState(false);
   const [showAddLesson, setShowAddLesson] = useState<number | null>(null);
   const [publishing, setPublishing] = useState(false);
+  const [deleting, setDeleting] = useState<string | null>(null);
 
   async function togglePublish() {
     setPublishing(true);
@@ -69,6 +80,33 @@ export default function CourseDetail({
       router.refresh();
     } finally {
       setPublishing(false);
+    }
+  }
+
+  async function deleteModule(moduleId: number) {
+    if (!confirm("Delete this module and all its lessons?")) return;
+    setDeleting(`mod-${moduleId}`);
+    try {
+      await fetch(`/api/pilot/training/${c.id}/modules/${moduleId}`, {
+        method: "DELETE",
+      });
+      router.refresh();
+    } finally {
+      setDeleting(null);
+    }
+  }
+
+  async function deleteLesson(moduleId: number, lessonId: number) {
+    if (!confirm("Delete this lesson?")) return;
+    setDeleting(`lesson-${lessonId}`);
+    try {
+      await fetch(
+        `/api/pilot/training/${c.id}/modules/${moduleId}/lessons/${lessonId}`,
+        { method: "DELETE" }
+      );
+      router.refresh();
+    } finally {
+      setDeleting(null);
     }
   }
 
@@ -157,12 +195,21 @@ export default function CourseDetail({
                     {mod.title}
                   </h3>
                   {isAdmin && (
-                    <button
-                      onClick={() => setShowAddLesson(mod.id)}
-                      className="text-[11px] text-blue-700 hover:underline"
-                    >
-                      + Lesson
-                    </button>
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={() => setShowAddLesson(mod.id)}
+                        className="text-[11px] text-blue-700 hover:underline"
+                      >
+                        + Lesson
+                      </button>
+                      <button
+                        onClick={() => deleteModule(mod.id)}
+                        disabled={deleting === `mod-${mod.id}`}
+                        className="text-[11px] text-red-500 hover:text-red-700 hover:underline disabled:opacity-50"
+                      >
+                        {deleting === `mod-${mod.id}` ? "Deleting..." : "Delete"}
+                      </button>
+                    </div>
                   )}
                 </div>
                 {modLessons.length === 0 ? (
@@ -173,33 +220,51 @@ export default function CourseDetail({
                   <ul className="divide-y divide-gray-100">
                     {modLessons.map((lesson) => {
                       const done = completedSet.has(lesson.id);
+                      const stats = quizStatsMap.get(lesson.id);
                       return (
                         <li key={lesson.id}>
-                          <Link
-                            href={`/pilot/training/${c.id}/${lesson.id}`}
-                            className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors"
-                          >
-                            <span className="text-sm">
-                              {LESSON_TYPE_ICONS[lesson.lesson_type] || "📝"}
-                            </span>
-                            <span className="text-sm text-gray-800 flex-1">
-                              {lesson.title}
-                            </span>
-                            <span className="text-[10px] text-gray-400 uppercase">
-                              {lesson.lesson_type}
-                            </span>
-                            {!isAdmin && (
-                              <span
-                                className={`w-5 h-5 rounded-full flex items-center justify-center text-xs ${
-                                  done
-                                    ? "bg-green-100 text-green-700"
-                                    : "bg-gray-100 text-gray-400"
-                                }`}
-                              >
-                                {done ? "✓" : "○"}
+                          <div className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors">
+                            <Link
+                              href={`/pilot/training/${c.id}/${lesson.id}`}
+                              className="flex items-center gap-3 flex-1 min-w-0"
+                            >
+                              <span className="text-sm">
+                                {LESSON_TYPE_ICONS[lesson.lesson_type] || "📝"}
                               </span>
+                              <span className="text-sm text-gray-800 flex-1">
+                                {lesson.title}
+                              </span>
+                              <span className="text-[10px] text-gray-400 uppercase">
+                                {lesson.lesson_type}
+                              </span>
+                              {!isAdmin && (
+                                <span
+                                  className={`w-5 h-5 rounded-full flex items-center justify-center text-xs ${
+                                    done
+                                      ? "bg-green-100 text-green-700"
+                                      : "bg-gray-100 text-gray-400"
+                                  }`}
+                                >
+                                  {done ? "✓" : "○"}
+                                </span>
+                              )}
+                              {isAdmin && stats && (
+                                <span className="text-[10px] text-gray-400 shrink-0" title={`${stats.total_attempts} attempts by ${stats.unique_users} pilot(s)`}>
+                                  {stats.unique_users} pilot{stats.unique_users !== 1 ? "s" : ""} · avg {stats.avg_score_pct}%
+                                </span>
+                              )}
+                            </Link>
+                            {isAdmin && (
+                              <button
+                                onClick={() => deleteLesson(mod.id, lesson.id)}
+                                disabled={deleting === `lesson-${lesson.id}`}
+                                className="text-[10px] text-red-400 hover:text-red-600 shrink-0 disabled:opacity-50"
+                                title="Delete lesson"
+                              >
+                                {deleting === `lesson-${lesson.id}` ? "..." : "✕"}
+                              </button>
                             )}
-                          </Link>
+                          </div>
                         </li>
                       );
                     })}
