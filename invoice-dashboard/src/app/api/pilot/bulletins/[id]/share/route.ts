@@ -10,7 +10,45 @@ const CATEGORY_LABELS: Record<string, string> = {
 };
 
 /**
- * POST /api/pilot/bulletins/[id]/share — share bulletin to #pilots Slack channel (admin only)
+ * GET /api/pilot/bulletins/[id]/share — list Slack channels the bot can post to
+ */
+export async function GET(req: NextRequest) {
+  const auth = await requireAdmin(req);
+  if ("error" in auth) return auth.error;
+
+  const token = process.env.SLACK_BOT_TOKEN;
+  if (!token) {
+    return NextResponse.json({ ok: false, channels: [], error: "SLACK_BOT_TOKEN not configured" });
+  }
+
+  try {
+    // Fetch channels the bot is a member of (public + private)
+    const res = await fetch(
+      "https://slack.com/api/conversations.list?types=public_channel,private_channel&exclude_archived=true&limit=200",
+      { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" },
+    );
+    const data = await res.json();
+    if (!data.ok) {
+      return NextResponse.json({ ok: false, channels: [], error: data.error });
+    }
+
+    const channels = (data.channels ?? [])
+      .filter((c: { is_member: boolean }) => c.is_member)
+      .map((c: { id: string; name: string; is_private: boolean }) => ({
+        id: c.id,
+        name: c.name,
+        is_private: c.is_private,
+      }));
+
+    return NextResponse.json({ ok: true, channels });
+  } catch (err) {
+    return NextResponse.json({ ok: false, channels: [], error: String(err) }, { status: 502 });
+  }
+}
+
+/**
+ * POST /api/pilot/bulletins/[id]/share — share bulletin to a Slack channel (admin only)
+ * Body: { channel_id: string }
  */
 export async function POST(
   req: NextRequest,
@@ -28,6 +66,15 @@ export async function POST(
   if (!bulletinId || isNaN(bulletinId)) {
     return NextResponse.json({ error: "Invalid bulletin ID" }, { status: 400 });
   }
+
+  let body: { channel_id?: string };
+  try {
+    body = await req.json();
+  } catch {
+    body = {};
+  }
+
+  const channelId = body.channel_id || "C04AM137PEE";
 
   const supa = createServiceClient();
   const { data: bulletin, error } = await supa
@@ -49,15 +96,20 @@ export async function POST(
   const bulletinUrl = `${appUrl}/pilot/bulletins/${bulletin.id}`;
   const categoryLabel = CATEGORY_LABELS[bulletin.category] || bulletin.category;
 
+  // Strip HTML from summary for Slack
+  const plainSummary = bulletin.summary
+    ? bulletin.summary.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim()
+    : null;
+
   const slackPayload = {
-    channel: "C04AM137PEE",
+    channel: channelId,
     text: `New ${categoryLabel} Bulletin: ${bulletin.title}`,
     blocks: [
       {
         type: "section",
         text: {
           type: "mrkdwn",
-          text: `📋 *New ${categoryLabel} Bulletin*\n*${bulletin.title}*${bulletin.summary ? `\n${bulletin.summary}` : ""}`,
+          text: `📋 *New ${categoryLabel} Bulletin*\n*${bulletin.title}*${plainSummary ? `\n${plainSummary}` : ""}`,
         },
       },
       {
@@ -95,7 +147,7 @@ export async function POST(
         .eq("id", bulletin.id);
     }
 
-    return NextResponse.json({ ok: true, ts: slackData.ts });
+    return NextResponse.json({ ok: true, ts: slackData.ts, channel: channelId });
   } catch (err) {
     console.error("[pilot/bulletins] Slack share error:", err);
     return NextResponse.json({ error: "Failed to post to Slack" }, { status: 502 });
