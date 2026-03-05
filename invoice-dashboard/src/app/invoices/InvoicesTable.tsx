@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 
 const PAGE_SIZE = 25;
+const MAX_BULK_REPARSE = 50;
 
 function normalize(v: any) {
   return String(v ?? "").trim();
@@ -53,6 +54,8 @@ export default function InvoicesTable({ initialInvoices }: { initialInvoices: an
   const [category, setCategory] = useState("ALL");
   const [showOverdueOnly, setShowOverdueOnly] = useState(false);
   const [page, setPage] = useState(0);
+  const [bulkParsing, setBulkParsing] = useState(false);
+  const [bulkResult, setBulkResult] = useState<string | null>(null);
 
   // Multi-invoice document info: for each document_id, compute count + combined total
   const docInfo = useMemo(() => {
@@ -131,6 +134,38 @@ export default function InvoicesTable({ initialInvoices }: { initialInvoices: an
     setPage(0);
   };
 
+  async function bulkReparse() {
+    // Get unique document IDs from current filtered view
+    const docIds = [...new Set(filtered.map((inv) => inv.document_id).filter(Boolean))];
+    if (docIds.length === 0) return;
+    if (docIds.length > MAX_BULK_REPARSE) {
+      setBulkResult(`Too many (${docIds.length}). Filter to ${MAX_BULK_REPARSE} or fewer.`);
+      return;
+    }
+    if (!confirm(`Re-parse ${docIds.length} document${docIds.length > 1 ? "s" : ""}? This will clear existing parsed data and re-extract from PDFs.`)) {
+      return;
+    }
+    setBulkParsing(true);
+    setBulkResult(null);
+    try {
+      const res = await fetch("/api/invoices/reparse-bulk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ document_ids: docIds }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setBulkResult(`Started re-parsing ${data.started} document${data.started > 1 ? "s" : ""}. Results will appear as they complete.`);
+      } else {
+        setBulkResult(`Error: ${data.error}`);
+      }
+    } catch {
+      setBulkResult("Request failed");
+    } finally {
+      setBulkParsing(false);
+    }
+  }
+
   return (
     <div className="p-6 space-y-4">
       {/* Overdue alert banner */}
@@ -205,8 +240,22 @@ export default function InvoicesTable({ initialInvoices }: { initialInvoices: an
           Clear
         </button>
 
+        <button
+          onClick={bulkReparse}
+          disabled={bulkParsing || filtered.length === 0}
+          className="rounded-xl border bg-amber-50 border-amber-200 px-3 py-2 text-sm text-amber-700 shadow-sm hover:bg-amber-100 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {bulkParsing ? "Re-parsing…" : `Re-parse filtered (${[...new Set(filtered.map((i) => i.document_id).filter(Boolean))].length})`}
+        </button>
+
         <div className="text-xs text-gray-500">{filtered.length} shown</div>
       </div>
+
+      {bulkResult && (
+        <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-2 text-sm text-blue-800">
+          {bulkResult}
+        </div>
+      )}
 
       <div className="rounded-xl border bg-white overflow-hidden shadow-sm">
         <div className="overflow-x-auto">
