@@ -50,7 +50,7 @@ export async function signGcsUrl(
     : ext === "doc" ? "application/msword"
     : ext === "mp4" ? "video/mp4"
     : ext === "m4v" ? "video/x-m4v"
-    : ext === "mov" ? "video/quicktime"
+    : ext === "mov" ? "video/mp4"
     : "application/octet-stream";
 
   const filename = path.split("/").pop() ?? "file";
