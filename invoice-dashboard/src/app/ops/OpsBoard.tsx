@@ -360,6 +360,86 @@ const ALERT_TYPES_SHOWN = new Set([
   "NOTAM_TFR", "NOTAM_PPR", "EDCT",
 ]);
 
+// ─── EDCT expandable row (status box) ────────────────────────────────────────
+
+function EdctRow({ alert, flight, onDismiss, fmtTime }: {
+  alert: OpsAlert;
+  flight: Flight | null;
+  onDismiss: (id: string) => void;
+  fmtTime: (s: string) => string;
+}) {
+  const [open, setOpen] = useState(false);
+
+  // Extract program info from body
+  const body = alert.body ?? "";
+  const programMode = body.match(/Program Delay Mode:\s*(.+)/i)?.[1]?.trim();
+  const programStart = body.match(/Program Start Time:\s*(.+)/i)?.[1]?.trim();
+  const programEnd = body.match(/Program End Time:\s*(.+)/i)?.[1]?.trim();
+  const expectedArrival = body.match(/Expected Arrival Time:\s*(.+)/i)?.[1]?.trim();
+  const source = "ForeFlight"; // TODO: derive from alert metadata when other sources added
+
+  return (
+    <div className="bg-white rounded-lg border border-orange-200 text-sm overflow-hidden">
+      <div className="flex items-center gap-3 px-3 py-2">
+        <button
+          type="button"
+          onClick={() => setOpen(!open)}
+          className="text-gray-400 hover:text-gray-600 transition-colors shrink-0"
+        >
+          <svg className={`w-3.5 h-3.5 transition-transform ${open ? "rotate-90" : ""}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
+        </button>
+        <span className={`w-2 h-2 rounded-full shrink-0 ${alert.severity === "critical" ? "bg-red-500" : "bg-orange-500"}`} />
+        {flight && (
+          <span className="font-mono font-bold text-gray-800 text-xs">
+            {flight.departure_icao ?? "????"} → {flight.arrival_icao ?? "????"}
+          </span>
+        )}
+        {(alert.tail_number || flight?.tail_number) && (
+          <span className="font-mono text-xs text-gray-600 bg-gray-100 rounded px-1.5 py-0.5">{alert.tail_number || flight?.tail_number}</span>
+        )}
+        <span className="text-xs">
+          {(alert.original_departure_time || flight?.scheduled_departure) && (
+            <span className="text-gray-500 line-through">{alert.original_departure_time ?? fmtTime(flight?.scheduled_departure ?? "")}</span>
+          )}
+          {(alert.original_departure_time || flight?.scheduled_departure) && <span className="text-gray-400 mx-0.5">→</span>}
+          <span className="text-orange-800 font-bold">{alert.edct_time ?? "—"}</span>
+        </span>
+        <button
+          type="button"
+          onClick={() => onDismiss(alert.id)}
+          className="ml-auto text-xs text-gray-500 hover:text-green-700 hover:bg-green-50 border border-gray-200 hover:border-green-300 rounded px-1.5 py-0.5 transition-colors"
+        >
+          Dismiss
+        </button>
+      </div>
+      {open && (
+        <div className="px-3 pb-3 pt-1 border-t border-orange-100 grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-1.5 text-xs text-gray-600">
+          {alert.subject && (
+            <div className="col-span-2 sm:col-span-3 text-gray-800 font-medium truncate">{alert.subject}</div>
+          )}
+          <div><span className="text-gray-400">Source:</span> {source}</div>
+          <div><span className="text-gray-400">Received:</span> {fmtTime(alert.created_at)}</div>
+          {(alert.tail_number || flight?.tail_number) && (
+            <div><span className="text-gray-400">Tail:</span> {alert.tail_number || flight?.tail_number}</div>
+          )}
+          {programMode && <div><span className="text-gray-400">Program:</span> {programMode}</div>}
+          {programStart && <div><span className="text-gray-400">Program start:</span> {programStart}</div>}
+          {programEnd && <div><span className="text-gray-400">Program end:</span> {programEnd}</div>}
+          {expectedArrival && <div><span className="text-gray-400">Expected arrival:</span> {expectedArrival}</div>}
+          {alert.original_departure_time && (
+            <div><span className="text-gray-400">Original dep:</span> {alert.original_departure_time}</div>
+          )}
+          {alert.edct_time && (
+            <div><span className="text-gray-400">New EDCT:</span> <span className="font-semibold text-orange-700">{alert.edct_time}</span></div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Alert inline card (server-side NOTAM/EDCT alerts) ──────────────────────
 
 function AlertCard({ alert, onAck }: { alert: OpsAlert; onAck: (id: string) => void }) {
@@ -960,31 +1040,7 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
           </div>
           <div className="p-3 space-y-2">
             {edctAlerts.map(({ alert, flight }) => (
-              <div key={alert.id} className="flex items-center gap-3 bg-white rounded-lg border border-orange-200 px-3 py-2 text-sm">
-                <span className={`w-2 h-2 rounded-full shrink-0 ${alert.severity === "critical" ? "bg-red-500" : "bg-orange-500"}`} />
-                {flight && (
-                  <span className="font-mono font-bold text-gray-800 text-xs">
-                    {flight.departure_icao ?? "????"} → {flight.arrival_icao ?? "????"}
-                  </span>
-                )}
-                {flight?.tail_number && (
-                  <span className="font-mono text-xs text-gray-600 bg-gray-100 rounded px-1.5 py-0.5">{flight.tail_number}</span>
-                )}
-                <span className="text-xs">
-                  {(alert.original_departure_time || flight?.scheduled_departure) && (
-                    <span className="text-gray-500 line-through">{alert.original_departure_time ?? fmtTime(flight?.scheduled_departure ?? "")}</span>
-                  )}
-                  {(alert.original_departure_time || flight?.scheduled_departure) && <span className="text-gray-400 mx-0.5">→</span>}
-                  <span className="text-orange-800 font-bold">{alert.edct_time ?? "—"}</span>
-                </span>
-                <button
-                  type="button"
-                  onClick={() => handleAckWithApi(alert.id)}
-                  className="ml-auto text-xs text-gray-500 hover:text-green-700 hover:bg-green-50 border border-gray-200 hover:border-green-300 rounded px-1.5 py-0.5 transition-colors"
-                >
-                  Dismiss
-                </button>
-              </div>
+              <EdctRow key={alert.id} alert={alert} flight={flight} onDismiss={handleAckWithApi} fmtTime={fmtTime} />
             ))}
           </div>
         </div>
