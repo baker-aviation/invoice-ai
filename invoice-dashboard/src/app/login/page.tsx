@@ -60,11 +60,11 @@ export default function LoginPage() {
         />
         <div className="mt-4">
           <Image
-            src="/logo2.png"
+            src="/logo3.png"
             alt="Baker Aviation"
             width={200}
             height={63}
-            className="mx-auto brightness-0 invert"
+            className="mx-auto"
             priority
             unoptimized
           />
