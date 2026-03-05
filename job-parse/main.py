@@ -507,17 +507,23 @@ Rules:
 
 - type_ratings:
   - has_citation_x: true ONLY if the resume explicitly lists "Citation X", "CE-750", "CE750", or "C750"
-    as a TYPE RATING held by the applicant. Do NOT set true for other Citation variants (Citation II,
-    Citation III, Citation V, Citation Sovereign, Citation Latitude, Citation Excel, Citation Mustang,
-    C550, C560, C650, C680, etc.) — those are different aircraft. Do NOT infer from generic "Cessna"
-    or "Citation" mentions without the specific X/CE-750/C750 designation.
-  - has_challenger_300: true if the resume explicitly lists "Challenger 300", "Challenger 350",
-    "CL-300", or "CL-350" as a TYPE RATING. The 300 and 350 share the same type certificate.
+    as a TYPE RATING held by the applicant. CRITICAL FALSE POSITIVES TO AVOID:
+    * CE-500 is NOT Citation X — it is a Citation V/Ultra/Encore (completely different aircraft)
+    * CE-525 is NOT Citation X — it is a CitationJet/CJ series
+    * CE-550, CE-560, CE-560XL are NOT Citation X — they are Citation II/V/Excel variants
+    * CE-650 is NOT Citation X — it is a Citation III/VI/VII
+    * CE-680 is NOT Citation X — it is a Citation Sovereign
+    * Only CE-750 / C750 / "Citation X" is the actual Citation X
+    * Do NOT set true based on Letters of Recommendation — only the applicant's own resume
+  - has_challenger_300: true ONLY if the resume explicitly lists "Challenger 300", "Challenger 350",
+    "CL-300", or "CL-350" as a TYPE RATING held by the applicant.
     Do NOT set true for generic "Challenger" without a model number, or other Bombardier/Canadair
     variants (CRJ, Global, Learjet, etc.).
-  - ratings: list only the specific type rating codes/names explicitly mentioned (e.g. CE-750, CL-300).
-    Normalize to standard format. Do not infer or guess ratings not clearly stated.
-  - raw_snippet: the exact small text snippet from the resume where type ratings appear.
+    Do NOT set true based on Letters of Recommendation — only the applicant's own resume.
+  - ratings: list ONLY the exact type rating codes written on the applicant's resume (e.g. CE-500, HS-125).
+    Do NOT add CE-750 or CL-300 unless those exact codes appear. Do NOT normalize CE-500 to CE-750.
+    Do NOT include ratings mentioned only in recommendation letters.
+  - raw_snippet: copy the EXACT text from the resume's type ratings / certificates section verbatim.
 
 - notes:
   - short summary focused on TT, PIC, turbine, SIC, and aircraft type ratings.
@@ -565,32 +571,46 @@ Rules:
 def _validate_type_ratings(result: Dict[str, Any]) -> Dict[str, Any]:
     """
     Post-processing guard: cross-check has_citation_x and has_challenger_300
-    against the actual extracted ratings list.  GPT-4.1-mini sometimes sets
-    the boolean true for similar-sounding but different Cessna types
-    (CE-525, CE-560XL, etc.).
+    against the raw_snippet (the actual text from the resume).  GPT sometimes
+    hallucinates CE-750 from CE-500 or from LOR mentions.
     """
     tr = result.get("type_ratings") or {}
+    raw_snippet = (tr.get("raw_snippet") or "").lower()
     ratings = [r.lower() for r in (tr.get("ratings") or [])]
-    joined = " ".join(ratings)
 
-    # Citation X must match CE-750, CE750, C750, or "citation x"
-    citation_x_present = any(
-        tok in joined
+    # --- Citation X validation ---
+    # The raw_snippet must contain the actual CE-750/C750/Citation X text
+    citation_x_in_snippet = any(
+        tok in raw_snippet
         for tok in ("ce-750", "ce750", "c750", "citation x")
     )
-    if tr.get("has_citation_x") and not citation_x_present:
-        print(f"VALIDATE: overriding has_citation_x → false (ratings: {ratings})", flush=True)
+    if tr.get("has_citation_x") and not citation_x_in_snippet:
+        print(f"VALIDATE: overriding has_citation_x → false (raw_snippet doesn't contain CE-750/C750/Citation X)", flush=True)
         tr["has_citation_x"] = False
 
-    # Challenger 300/350 must match CL-300, CL300, CL-350, CL350, or "challenger 300/350"
-    challenger_present = any(
-        tok in joined
+    # Also strip CE-750/CL-300 from ratings list if they don't appear in raw_snippet
+    if not citation_x_in_snippet:
+        cleaned = [r for r in ratings if not any(tok in r.lower() for tok in ("ce-750", "ce750", "c750", "citation x"))]
+        if len(cleaned) != len(ratings):
+            print(f"VALIDATE: removed hallucinated Citation X from ratings list", flush=True)
+            ratings = cleaned
+
+    # --- Challenger 300/350 validation ---
+    challenger_in_snippet = any(
+        tok in raw_snippet
         for tok in ("cl-300", "cl300", "cl-350", "cl350", "challenger 300", "challenger 350")
     )
-    if tr.get("has_challenger_300") and not challenger_present:
-        print(f"VALIDATE: overriding has_challenger_300 → false (ratings: {ratings})", flush=True)
+    if tr.get("has_challenger_300") and not challenger_in_snippet:
+        print(f"VALIDATE: overriding has_challenger_300 → false (raw_snippet doesn't contain CL-300/CL-350/Challenger 300)", flush=True)
         tr["has_challenger_300"] = False
 
+    if not challenger_in_snippet:
+        cleaned = [r for r in ratings if not any(tok in r.lower() for tok in ("cl-300", "cl300", "cl-350", "cl350", "challenger 300", "challenger 350"))]
+        if len(cleaned) != len(ratings):
+            print(f"VALIDATE: removed hallucinated Challenger 300/350 from ratings list", flush=True)
+            ratings = cleaned
+
+    tr["ratings"] = ratings
     result["type_ratings"] = tr
     return result
 

@@ -5,6 +5,7 @@ import { fetchJobDetail, fetchLinkedLors } from "@/lib/jobApi";
 import FileViewer from "./FileViewer";
 import FormLinkButton from "./FormLinkButton";
 import AttachFileButton from "./AttachFileButton";
+import TypeRatingsEditor from "./TypeRatingsEditor";
 
 function fmtDate(s: any) {
   return String(s ?? "").replace("T", " ").replace("+00:00", "Z");
@@ -142,6 +143,12 @@ export default async function JobDetailPage({
                     {Array.isArray(job?.type_ratings) && job.type_ratings.length
                       ? job.type_ratings.map(ratingLabel).join(", ")
                       : "—"}
+                    <TypeRatingsEditor
+                      applicationId={Number(applicationId)}
+                      initialRatings={Array.isArray(job?.type_ratings) ? job.type_ratings : []}
+                      initialHasCitationX={job?.has_citation_x ?? null}
+                      initialHasChallenger300={job?.has_challenger_300_type_rating ?? null}
+                    />
                   </div>
                 </>
               )}
