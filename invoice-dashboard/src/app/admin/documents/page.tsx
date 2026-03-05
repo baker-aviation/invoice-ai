@@ -13,6 +13,8 @@ type Document = {
   uploaded_by: string | null;
   created_at: string;
   updated_at: string;
+  embedding_status: string | null;
+  chunk_count: number;
 };
 
 type Category = {
@@ -36,6 +38,24 @@ function fileTypeLabel(ct: string): string {
   if (ct.includes("sheet") || ct.includes("xls") || ct.includes("csv")) return "Spreadsheet";
   if (ct.includes("presentation") || ct.includes("ppt")) return "Slides";
   return "File";
+}
+
+function embeddingBadge(status: string | null, chunkCount: number, contentType: string): React.ReactNode {
+  const isPdf = contentType.includes("pdf");
+  if (!isPdf) return <span className="inline-block px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-500">N/A</span>;
+  if (!status) return <span className="inline-block px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-500">Not indexed</span>;
+  switch (status) {
+    case "ready":
+      return <span className="inline-block px-2 py-0.5 text-xs rounded-full bg-green-100 text-green-700">{chunkCount} chunks</span>;
+    case "processing":
+      return <span className="inline-block px-2 py-0.5 text-xs rounded-full bg-yellow-100 text-yellow-700">Processing...</span>;
+    case "error":
+      return <span className="inline-block px-2 py-0.5 text-xs rounded-full bg-red-100 text-red-700">Error</span>;
+    case "no_text":
+      return <span className="inline-block px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-500">No text</span>;
+    default:
+      return <span className="inline-block px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-500">{status}</span>;
+  }
 }
 
 export default function AdminDocumentsPage() {
@@ -211,6 +231,29 @@ export default function AdminDocumentsPage() {
       setError("Import failed");
     } finally {
       setImporting(false);
+    }
+  }
+
+  async function handleReprocess(docId: number) {
+    clearMessages();
+    // Optimistically show processing state
+    setDocuments((prev) =>
+      prev.map((d) => (d.id === docId ? { ...d, embedding_status: "processing" } : d)),
+    );
+
+    try {
+      const res = await fetch(`/api/admin/pilot-documents/${docId}/process`, { method: "POST" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setError(data.error || "Re-processing failed");
+      } else {
+        const data = await res.json();
+        setSuccess(`Re-processed: ${data.chunk_count ?? 0} chunks created`);
+      }
+      fetchDocuments();
+    } catch {
+      setError("Re-processing failed");
+      fetchDocuments();
     }
   }
 
@@ -432,6 +475,7 @@ export default function AdminDocumentsPage() {
                 <th className="text-left px-4 py-3 font-medium text-gray-600">Type</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-600">Size</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-600">Date</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">RAG</th>
                 <th className="text-right px-4 py-3 font-medium text-gray-600">Actions</th>
               </tr>
             </thead>
@@ -450,7 +494,18 @@ export default function AdminDocumentsPage() {
                   <td className="px-4 py-3 text-gray-600">
                     {new Date(doc.created_at).toLocaleDateString()}
                   </td>
+                  <td className="px-4 py-3">
+                    {embeddingBadge(doc.embedding_status, doc.chunk_count, doc.content_type)}
+                  </td>
                   <td className="px-4 py-3 text-right space-x-2">
+                    {doc.content_type.includes("pdf") && (
+                      <button
+                        onClick={() => handleReprocess(doc.id)}
+                        className="text-blue-600 hover:text-blue-800 text-xs font-medium"
+                      >
+                        Re-process
+                      </button>
+                    )}
                     <button
                       onClick={() => {
                         setEditDoc(doc);
