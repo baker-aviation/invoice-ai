@@ -1,138 +1,119 @@
 import { NextRequest, NextResponse } from "next/server";
-import { promises as fs } from "fs";
-import path from "path";
+import { requireAuth } from "@/lib/api-auth";
+import { createServiceClient } from "@/lib/supabase/service";
 
-interface FeeRow {
-  date: string;
+interface ExpenseRow {
+  expense_date: string;
   vendor: string;
   category: string;
   receipts: string;
   airport: string;
   fbo: string;
-  billTo: string;
-  createdBy: string;
+  bill_to: string;
+  created_by: string;
   gallons: number | null;
-  amount: number | null;
+  amount: number;
   repeats: string;
-}
-
-let cachedRows: FeeRow[] | null = null;
-
-function parseCSVLine(line: string): string[] {
-  const fields: string[] = [];
-  let current = "";
-  let inQuotes = false;
-
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (ch === '"') {
-      if (inQuotes && i + 1 < line.length && line[i + 1] === '"') {
-        current += '"';
-        i++;
-      } else {
-        inQuotes = !inQuotes;
-      }
-    } else if (ch === "," && !inQuotes) {
-      fields.push(current.trim());
-      current = "";
-    } else {
-      current += ch;
-    }
-  }
-  fields.push(current.trim());
-  return fields;
-}
-
-function parseAmount(raw: string): number | null {
-  if (!raw || raw === "null" || raw === "TBD" || raw === "N/A") return null;
-  const cleaned = raw.replace(/[$,]/g, "").trim();
-  const num = parseFloat(cleaned);
-  return isNaN(num) ? null : num;
-}
-
-function parseGallons(raw: string): number | null {
-  if (!raw || raw === "null") return null;
-  const num = parseFloat(raw.replace(/,/g, ""));
-  return isNaN(num) ? null : num;
-}
-
-async function loadCSV(): Promise<FeeRow[]> {
-  if (cachedRows) return cachedRows;
-
-  const csvPath = path.join(process.cwd(), "public", "data", "fees.csv");
-  const text = await fs.readFile(csvPath, "utf-8");
-  const lines = text.split("\n").filter((l) => l.trim());
-
-  // Skip header
-  const rows: FeeRow[] = [];
-  for (let i = 1; i < lines.length; i++) {
-    const fields = parseCSVLine(lines[i]);
-    if (fields.length < 11) continue;
-
-    const amount = parseAmount(fields[9]);
-    // Skip rows with no amount or $0 amounts
-    if (amount === null || amount <= 0) continue;
-
-    const airport = fields[4] === "null" ? "" : fields[4];
-    const fbo = fields[5] === "null" ? "" : fields[5];
-
-    rows.push({
-      date: fields[0],
-      vendor: fields[1],
-      category: fields[2],
-      receipts: fields[3],
-      airport,
-      fbo,
-      billTo: fields[6] === "Not set" ? "" : fields[6],
-      createdBy: fields[7],
-      gallons: parseGallons(fields[8]),
-      amount,
-      repeats: fields[10],
-    });
-  }
-
-  cachedRows = rows;
-  return rows;
+  uploaded_at: string;
+  upload_batch: string | null;
 }
 
 export async function GET(req: NextRequest) {
-  const { requireAuth } = await import("@/lib/api-auth");
   const auth = await requireAuth(req);
   if ("error" in auth) return auth.error;
 
+  const { searchParams } = new URL(req.url);
+  const view = searchParams.get("view") || "summary";
+  const categoryFilter = searchParams.get("category") || "";
+  const airportFilter = searchParams.get("airport") || "";
+  const monthFilter = searchParams.get("month") || "";
+
+  const supa = createServiceClient();
+
   try {
-    const rows = await loadCSV();
+    // --- uploads view: show distinct upload batches ---
+    if (view === "uploads") {
+      const { data, error } = await supa
+        .from("expenses")
+        .select("upload_batch, uploaded_at")
+        .order("uploaded_at", { ascending: false });
 
-    const { searchParams } = new URL(req.url);
-    const view = searchParams.get("view") || "summary";
-    const categoryFilter = searchParams.get("category") || "";
-    const airportFilter = searchParams.get("airport") || "";
-    const monthFilter = searchParams.get("month") || ""; // e.g. "12/2025" or "01/2026"
+      if (error) throw error;
 
-    // Filter rows
-    let filtered = rows;
+      // Group by batch
+      const batchMap = new Map<string, { uploadedAt: string; count: number }>();
+      for (const row of data ?? []) {
+        const batch = row.upload_batch || "unknown";
+        const existing = batchMap.get(batch);
+        if (!existing) {
+          batchMap.set(batch, { uploadedAt: row.uploaded_at, count: 1 });
+        } else {
+          existing.count++;
+        }
+      }
 
-    if (categoryFilter) {
-      filtered = filtered.filter((r) => r.category === categoryFilter);
+      // Also get date range per batch
+      const { data: dateRanges } = await supa
+        .from("expenses")
+        .select("upload_batch, expense_date")
+        .order("expense_date", { ascending: true });
+
+      const batchDates = new Map<string, { minDate: string; maxDate: string }>();
+      for (const row of dateRanges ?? []) {
+        const batch = row.upload_batch || "unknown";
+        const existing = batchDates.get(batch);
+        if (!existing) {
+          batchDates.set(batch, { minDate: row.expense_date, maxDate: row.expense_date });
+        } else {
+          if (row.expense_date < existing.minDate) existing.minDate = row.expense_date;
+          if (row.expense_date > existing.maxDate) existing.maxDate = row.expense_date;
+        }
+      }
+
+      const uploads = Array.from(batchMap.entries()).map(([batch, info]) => ({
+        batch,
+        uploadedAt: info.uploadedAt,
+        rowCount: info.count,
+        ...(batchDates.get(batch) ?? {}),
+      }));
+
+      return NextResponse.json({ ok: true, uploads });
     }
-    if (airportFilter) {
-      filtered = filtered.filter((r) => r.airport === airportFilter);
-    }
+
+    // --- Fetch all rows (with filters applied via query) ---
+    let query = supa
+      .from("expenses")
+      .select("expense_date, vendor, category, receipts, airport, fbo, bill_to, created_by, gallons, amount, repeats, uploaded_at, upload_batch")
+      .gt("amount", 0)
+      .order("expense_date", { ascending: false });
+
+    if (categoryFilter) query = query.eq("category", categoryFilter);
+    if (airportFilter) query = query.eq("airport", airportFilter);
     if (monthFilter) {
-      filtered = filtered.filter((r) => {
-        const parts = r.date.split("/");
-        return `${parts[0]}/${parts[2]}` === monthFilter;
-      });
+      // monthFilter is "MM/YYYY" — convert to date range
+      const [mm, yyyy] = monthFilter.split("/");
+      if (mm && yyyy) {
+        const start = `${yyyy}-${mm.padStart(2, "0")}-01`;
+        const endMonth = parseInt(mm);
+        const endYear = endMonth === 12 ? parseInt(yyyy) + 1 : parseInt(yyyy);
+        const endMM = endMonth === 12 ? 1 : endMonth + 1;
+        const end = `${endYear}-${String(endMM).padStart(2, "0")}-01`;
+        query = query.gte("expense_date", start).lt("expense_date", end);
+      }
     }
+
+    const { data: rows, error } = await query;
+    if (error) throw error;
+
+    const filtered = (rows ?? []) as ExpenseRow[];
 
     if (view === "summary") {
-      // Get unique categories with counts and totals
       const catMap = new Map<string, { count: number; total: number; max: number }>();
       for (const r of filtered) {
         const existing = catMap.get(r.category) || { count: 0, total: 0, max: 0 };
         existing.count++;
-        existing.total += r.amount!;
-        existing.max = Math.max(existing.max, r.amount!);
+        existing.total += Number(r.amount);
+        existing.max = Math.max(existing.max, Number(r.amount));
         catMap.set(r.category, existing);
       }
 
@@ -146,15 +127,13 @@ export async function GET(req: NextRequest) {
         }))
         .sort((a, b) => b.total - a.total);
 
-      // Get unique airports
       const airports = [...new Set(filtered.map((r) => r.airport).filter(Boolean))].sort();
 
-      // Get unique months
       const months = [
         ...new Set(
-          rows.map((r) => {
-            const parts = r.date.split("/");
-            return `${parts[0]}/${parts[2]}`;
+          filtered.map((r) => {
+            const d = new Date(r.expense_date);
+            return `${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
           }),
         ),
       ].sort();
@@ -169,7 +148,6 @@ export async function GET(req: NextRequest) {
     }
 
     if (view === "by-category") {
-      // Group by airport, rank by total spend
       const airportMap = new Map<
         string,
         { total: number; max: number; count: number; fbo: string; maxVendor: string; maxAmount: number }
@@ -177,18 +155,13 @@ export async function GET(req: NextRequest) {
       for (const r of filtered) {
         if (!r.airport) continue;
         const existing = airportMap.get(r.airport) || {
-          total: 0,
-          max: 0,
-          count: 0,
-          fbo: "",
-          maxVendor: "",
-          maxAmount: 0,
+          total: 0, max: 0, count: 0, fbo: "", maxVendor: "", maxAmount: 0,
         };
         existing.count++;
-        existing.total += r.amount!;
-        if (r.amount! > existing.maxAmount) {
-          existing.max = r.amount!;
-          existing.maxAmount = r.amount!;
+        existing.total += Number(r.amount);
+        if (Number(r.amount) > existing.maxAmount) {
+          existing.max = Number(r.amount);
+          existing.maxAmount = Number(r.amount);
           existing.maxVendor = r.vendor;
           existing.fbo = r.fbo;
         }
@@ -207,19 +180,15 @@ export async function GET(req: NextRequest) {
         }))
         .sort((a, b) => b.total - a.total);
 
-      // Monthly trend
       const monthMap = new Map<string, number>();
       for (const r of filtered) {
-        const parts = r.date.split("/");
-        const m = `${parts[0]}/${parts[2]}`;
-        monthMap.set(m, (monthMap.get(m) || 0) + r.amount!);
+        const d = new Date(r.expense_date);
+        const m = `${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
+        monthMap.set(m, (monthMap.get(m) || 0) + Number(r.amount));
       }
 
       const monthlyTrend = Array.from(monthMap.entries())
-        .map(([month, total]) => ({
-          month,
-          total: Math.round(total * 100) / 100,
-        }))
+        .map(([month, total]) => ({ month, total: Math.round(total * 100) / 100 }))
         .sort((a, b) => a.month.localeCompare(b.month));
 
       return NextResponse.json({
@@ -232,17 +201,13 @@ export async function GET(req: NextRequest) {
     }
 
     if (view === "by-airport") {
-      // Group by category at this airport
-      const catMap = new Map<
-        string,
-        { total: number; max: number; count: number; maxVendor: string }
-      >();
+      const catMap = new Map<string, { total: number; max: number; count: number; maxVendor: string }>();
       for (const r of filtered) {
         const existing = catMap.get(r.category) || { total: 0, max: 0, count: 0, maxVendor: "" };
         existing.count++;
-        existing.total += r.amount!;
-        if (r.amount! > existing.max) {
-          existing.max = r.amount!;
+        existing.total += Number(r.amount);
+        if (Number(r.amount) > existing.max) {
+          existing.max = Number(r.amount);
           existing.maxVendor = r.vendor;
         }
         catMap.set(r.category, existing);
@@ -259,12 +224,11 @@ export async function GET(req: NextRequest) {
         }))
         .sort((a, b) => b.total - a.total);
 
-      // Top vendors at this airport
       const vendorMap = new Map<string, { total: number; count: number }>();
       for (const r of filtered) {
         const existing = vendorMap.get(r.vendor) || { total: 0, count: 0 };
         existing.count++;
-        existing.total += r.amount!;
+        existing.total += Number(r.amount);
         vendorMap.set(r.vendor, existing);
       }
 
