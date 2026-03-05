@@ -10,6 +10,10 @@ const UpdateRoleSchema = z.object({
   role: z.enum(VALID_ROLES),
 });
 
+const DeleteUserSchema = z.object({
+  userId: z.string().uuid("Invalid user ID"),
+});
+
 /**
  * GET /api/admin/users — List all users with their roles.
  */
@@ -87,4 +91,50 @@ export async function PUT(req: NextRequest) {
   }
 
   return NextResponse.json({ success: true, userId: parsed.data.userId, role: parsed.data.role });
+}
+
+/**
+ * DELETE /api/admin/users — Delete a user account.
+ */
+export async function DELETE(req: NextRequest) {
+  const auth = await requireAdmin(req);
+  if (!isAuthed(auth)) return auth.error;
+
+  if (isRateLimited(auth.userId, 10)) {
+    return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  }
+
+  const parsed = DeleteUserSchema.safeParse(body);
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`);
+    return NextResponse.json({ error: "Validation failed", details: issues }, { status: 400 });
+  }
+
+  // Prevent admins from deleting themselves
+  if (parsed.data.userId === auth.userId) {
+    return NextResponse.json({ error: "Cannot delete your own account" }, { status: 400 });
+  }
+
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !serviceKey) {
+    return NextResponse.json({ error: "Server misconfiguration" }, { status: 500 });
+  }
+
+  const supabase = createClient(supabaseUrl, serviceKey);
+
+  const { error } = await supabase.auth.admin.deleteUser(parsed.data.userId);
+
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  return NextResponse.json({ success: true, userId: parsed.data.userId });
 }

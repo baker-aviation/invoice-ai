@@ -23,6 +23,7 @@ export default function UsersPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [updating, setUpdating] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
 
   async function fetchUsers() {
     setLoading(true);
@@ -59,6 +60,28 @@ export default function UsersPage() {
       alert(data.error ?? "Failed to update role");
     }
     setUpdating(null);
+  }
+
+  async function handleDelete(userId: string, email: string) {
+    const confirmed = window.confirm(
+      `Are you sure you want to delete ${email}? This cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    setDeleting(userId);
+    const res = await fetch("/api/admin/users", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId }),
+    });
+
+    if (res.ok) {
+      setUsers((prev) => prev.filter((u) => u.id !== userId));
+    } else {
+      const data = await res.json();
+      alert(data.error ?? "Failed to delete user");
+    }
+    setDeleting(null);
   }
 
   if (loading) {
@@ -107,21 +130,31 @@ export default function UsersPage() {
                       : "Never"}
                   </td>
                   <td className="px-4 py-3">
-                    <select
-                      value={user.role ?? ""}
-                      onChange={(e) => handleRoleChange(user.id, e.target.value)}
-                      disabled={updating === user.id}
-                      className="border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500 disabled:opacity-50"
-                    >
-                      <option value="" disabled>
-                        Select role
-                      </option>
-                      {ROLES.map((r) => (
-                        <option key={r} value={r}>
-                          {ROLE_LABELS[r].label}
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={user.role ?? ""}
+                        onChange={(e) => handleRoleChange(user.id, e.target.value)}
+                        disabled={updating === user.id}
+                        className="border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500 disabled:opacity-50"
+                      >
+                        <option value="" disabled>
+                          Select role
                         </option>
-                      ))}
-                    </select>
+                        {ROLES.map((r) => (
+                          <option key={r} value={r}>
+                            {ROLE_LABELS[r].label}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={() => handleDelete(user.id, user.email)}
+                        disabled={deleting === user.id}
+                        className="text-red-500 hover:text-red-700 disabled:opacity-50 text-sm font-medium"
+                        title="Delete user"
+                      >
+                        {deleting === user.id ? "…" : "Delete"}
+                      </button>
+                    </div>
                   </td>
                 </tr>
               );
