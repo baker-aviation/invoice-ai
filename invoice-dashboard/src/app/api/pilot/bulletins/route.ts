@@ -22,7 +22,7 @@ export async function GET(req: NextRequest) {
 
   let query = supa
     .from("pilot_bulletins")
-    .select("id, title, summary, category, published_at, pdf_filename, video_url, created_at")
+    .select("id, title, summary, category, published_at, video_filename, created_at")
     .order("published_at", { ascending: false });
 
   if (category) {
@@ -40,8 +40,8 @@ export async function GET(req: NextRequest) {
 
 /**
  * POST /api/pilot/bulletins — create a bulletin (admin only)
- * Multipart form: title, summary, category, pdf (file), video_url (optional)
- * Uploads PDF to GCS and posts summary to #pilots Slack channel.
+ * Multipart form: title, summary, category, video (optional .mov file)
+ * Uploads video to GCS and posts summary to #pilots Slack channel.
  */
 export async function POST(req: NextRequest) {
   const auth = await requireAdmin(req);
@@ -61,8 +61,7 @@ export async function POST(req: NextRequest) {
   const title = (formData.get("title") as string)?.trim();
   const summary = (formData.get("summary") as string)?.trim() || null;
   const category = (formData.get("category") as string)?.trim();
-  const videoUrl = (formData.get("video_url") as string)?.trim() || null;
-  const file = formData.get("pdf") as File | null;
+  const file = formData.get("video") as File | null;
 
   if (!title) {
     return NextResponse.json({ error: "Title is required" }, { status: 400 });
@@ -73,15 +72,15 @@ export async function POST(req: NextRequest) {
 
   let gcsBucket: string | null = null;
   let gcsKey: string | null = null;
-  let pdfFilename: string | null = null;
+  let videoFilename: string | null = null;
 
-  // Upload PDF to GCS if provided
+  // Upload .mov video to GCS if provided
   if (file) {
-    if (!file.name.match(/\.pdf$/i) && file.type !== "application/pdf") {
-      return NextResponse.json({ error: "Only PDF files are allowed" }, { status: 400 });
+    if (!file.name.match(/\.(mov|mp4|m4v)$/i)) {
+      return NextResponse.json({ error: "Only .mov, .mp4, and .m4v video files are allowed" }, { status: 400 });
     }
-    if (file.size > 50 * 1024 * 1024) {
-      return NextResponse.json({ error: "File too large (max 50MB)" }, { status: 400 });
+    if (file.size > 500 * 1024 * 1024) {
+      return NextResponse.json({ error: "File too large (max 500MB)" }, { status: 400 });
     }
 
     try {
@@ -102,18 +101,18 @@ export async function POST(req: NextRequest) {
       const safeName = file.name.replace(/\//g, "_");
       const ts = Date.now();
       gcsKey = `pilot-bulletins/${category}/${ts}-${safeName}`;
-      pdfFilename = file.name;
+      videoFilename = file.name;
 
       const arrayBuffer = await file.arrayBuffer();
       const buffer = Buffer.from(arrayBuffer);
 
       const blob = bucket.file(gcsKey);
       await blob.save(buffer, {
-        contentType: "application/pdf",
+        contentType: file.type || "video/quicktime",
       });
     } catch (err) {
       console.error("[pilot/bulletins] GCS upload error:", err);
-      return NextResponse.json({ error: "Failed to upload PDF" }, { status: 500 });
+      return NextResponse.json({ error: "Failed to upload video" }, { status: 500 });
     }
   }
 
@@ -126,12 +125,11 @@ export async function POST(req: NextRequest) {
       summary,
       category,
       created_by: auth.userId,
-      pdf_gcs_bucket: gcsBucket,
-      pdf_gcs_key: gcsKey,
-      pdf_filename: pdfFilename,
-      video_url: videoUrl,
+      video_gcs_bucket: gcsBucket,
+      video_gcs_key: gcsKey,
+      video_filename: videoFilename,
     })
-    .select("id, title, summary, category, published_at, pdf_filename, video_url")
+    .select("id, title, summary, category, published_at, video_filename")
     .single();
 
   if (dbErr) {

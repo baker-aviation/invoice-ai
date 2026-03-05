@@ -4,7 +4,7 @@ import { createServiceClient } from "@/lib/supabase/service";
 import { signGcsUrl } from "@/lib/gcs";
 
 /**
- * GET /api/pilot/bulletins/[id]/download — redirect to signed GCS URL for the PDF
+ * GET /api/pilot/bulletins/[id]/download — redirect to signed GCS URL for the video
  */
 export async function GET(
   req: NextRequest,
@@ -22,7 +22,7 @@ export async function GET(
   const supa = createServiceClient();
   const { data, error } = await supa
     .from("pilot_bulletins")
-    .select("pdf_gcs_bucket, pdf_gcs_key, pdf_filename")
+    .select("video_gcs_bucket, video_gcs_key, video_filename")
     .eq("id", bulletinId)
     .single();
 
@@ -30,11 +30,11 @@ export async function GET(
     return NextResponse.json({ error: "Bulletin not found" }, { status: 404 });
   }
 
-  if (!data.pdf_gcs_bucket || !data.pdf_gcs_key) {
-    return NextResponse.json({ error: "No PDF attached to this bulletin" }, { status: 404 });
+  if (!data.video_gcs_bucket || !data.video_gcs_key) {
+    return NextResponse.json({ error: "No video attached to this bulletin" }, { status: 404 });
   }
 
-  const signedUrl = await signGcsUrl(data.pdf_gcs_bucket, data.pdf_gcs_key);
+  const signedUrl = await signGcsUrl(data.video_gcs_bucket, data.video_gcs_key);
   if (!signedUrl) {
     return NextResponse.json({ error: "Failed to generate download URL" }, { status: 500 });
   }

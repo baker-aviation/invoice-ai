@@ -57,7 +57,8 @@ export default async function BulletinDetailPage({
     year: "numeric",
   });
 
-  const downloadUrl = bulletin.pdf_gcs_key
+  const isAdmin = role === "admin";
+  const videoDownloadUrl = bulletin.video_gcs_key
     ? `/api/pilot/bulletins/${bulletin.id}/download`
     : null;
 
@@ -71,29 +72,56 @@ export default async function BulletinDetailPage({
       </Link>
 
       <div className="bg-white border border-gray-200 rounded-lg p-5">
-        <div className="flex items-center gap-2 mb-2">
-          <span
-            className={`inline-block px-2 py-0.5 text-[10px] font-semibold rounded-full ${categoryColor}`}
-          >
-            {categoryLabel}
-          </span>
-          <span className="text-xs text-gray-400">{publishedAt}</span>
+        <div className="flex items-center justify-between gap-3 mb-2">
+          <div className="flex items-center gap-2">
+            <span
+              className={`inline-block px-2 py-0.5 text-[10px] font-semibold rounded-full ${categoryColor}`}
+            >
+              {categoryLabel}
+            </span>
+            <span className="text-xs text-gray-400">{publishedAt}</span>
+          </div>
+          {isAdmin && (
+            <BulletinDetail
+              bulletinId={bulletin.id}
+              showDelete
+            />
+          )}
         </div>
 
         <h1 className="text-lg font-bold text-gray-900 mb-3">{bulletin.title}</h1>
 
         {bulletin.summary && (
-          <p className="text-sm text-gray-600 mb-4 whitespace-pre-wrap">
+          <div className="text-sm text-gray-700 mb-4 whitespace-pre-wrap leading-relaxed">
             {bulletin.summary}
-          </p>
+          </div>
         )}
 
-        <BulletinDetail
-          bulletinId={bulletin.id}
-          downloadUrl={downloadUrl}
-          pdfFilename={bulletin.pdf_filename}
-          videoUrl={bulletin.video_url}
-        />
+        {videoDownloadUrl && (
+          <div className="border rounded-lg overflow-hidden">
+            <div className="flex items-center justify-between gap-3 px-4 py-3 text-sm bg-gray-50">
+              <div className="font-medium truncate">{bulletin.video_filename ?? "Video"}</div>
+              <a
+                href={videoDownloadUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs px-2.5 py-1.5 rounded border border-gray-300 hover:bg-gray-100 font-medium text-blue-600 shrink-0"
+              >
+                Download
+              </a>
+            </div>
+            <div className="border-t bg-black aspect-video">
+              <video
+                src={videoDownloadUrl}
+                controls
+                className="w-full h-full"
+                preload="metadata"
+              >
+                Your browser does not support video playback.
+              </video>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

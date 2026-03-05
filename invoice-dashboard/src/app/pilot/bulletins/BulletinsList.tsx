@@ -10,8 +10,7 @@ type Bulletin = {
   summary: string | null;
   category: string;
   published_at: string;
-  pdf_filename: string | null;
-  video_url: string | null;
+  video_filename: string | null;
   created_at: string;
 };
 
@@ -160,18 +159,13 @@ export default function BulletinsList({
                     </p>
                   )}
                 </div>
-                <div className="flex items-center gap-2 shrink-0 mt-1">
-                  {b.pdf_filename && (
-                    <span className="text-[10px] text-gray-400 border border-gray-200 rounded px-1.5 py-0.5">
-                      PDF
-                    </span>
-                  )}
-                  {b.video_url && (
+                {b.video_filename && (
+                  <div className="shrink-0 mt-1">
                     <span className="text-[10px] text-gray-400 border border-gray-200 rounded px-1.5 py-0.5">
                       Video
                     </span>
-                  )}
-                </div>
+                  </div>
+                )}
               </div>
             </Link>
           ))}
@@ -196,9 +190,8 @@ function CreateBulletinModal({ onClose }: { onClose: () => void }) {
     title: "",
     summary: "",
     category: "",
-    video_url: "",
   });
-  const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [videoFile, setVideoFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
@@ -225,8 +218,7 @@ function CreateBulletinModal({ onClose }: { onClose: () => void }) {
       fd.append("title", form.title.trim());
       fd.append("category", form.category);
       if (form.summary.trim()) fd.append("summary", form.summary.trim());
-      if (form.video_url.trim()) fd.append("video_url", form.video_url.trim());
-      if (pdfFile) fd.append("pdf", pdfFile);
+      if (videoFile) fd.append("video", videoFile);
 
       const res = await fetch("/api/pilot/bulletins", {
         method: "POST",
@@ -254,7 +246,7 @@ function CreateBulletinModal({ onClose }: { onClose: () => void }) {
       onClick={onClose}
     >
       <div
-        className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4 p-5"
+        className="bg-white rounded-xl shadow-xl w-full max-w-lg mx-4 p-5"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-4">
@@ -302,39 +294,28 @@ function CreateBulletinModal({ onClose }: { onClose: () => void }) {
 
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">
-              Summary
+              Content
             </label>
             <textarea
               value={form.summary}
               onChange={(e) => set("summary", e.target.value)}
-              rows={3}
-              className="w-full rounded-lg border border-gray-200 px-3 py-1.5 text-sm outline-none focus:border-gray-400 resize-none"
-              placeholder="Overview shown in list and sent to Slack..."
+              rows={8}
+              className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-gray-400 resize-y"
+              placeholder="Bulletin content..."
             />
           </div>
 
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">
-              PDF
+              Video (optional)
             </label>
             <input
               type="file"
-              accept=".pdf"
-              onChange={(e) => setPdfFile(e.target.files?.[0] ?? null)}
+              accept=".mov,.mp4,.m4v"
+              onChange={(e) => setVideoFile(e.target.files?.[0] ?? null)}
               className="block w-full text-sm text-gray-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border file:border-gray-300 file:text-sm file:font-medium file:bg-white file:text-gray-700 hover:file:bg-gray-50"
             />
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">
-              Video URL (optional)
-            </label>
-            <input
-              value={form.video_url}
-              onChange={(e) => set("video_url", e.target.value)}
-              placeholder="YouTube or Vimeo URL"
-              className="w-full rounded-lg border border-gray-200 px-3 py-1.5 text-sm outline-none focus:border-gray-400"
-            />
+            <p className="text-[10px] text-gray-400 mt-1">.mov, .mp4, .m4v — max 500MB</p>
           </div>
 
           {error && (

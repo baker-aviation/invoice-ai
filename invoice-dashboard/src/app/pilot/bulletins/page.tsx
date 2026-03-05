@@ -19,7 +19,7 @@ export default async function BulletinsPage() {
   const supa = createServiceClient();
   const { data: bulletins } = await supa
     .from("pilot_bulletins")
-    .select("id, title, summary, category, published_at, pdf_filename, video_url, created_at")
+    .select("id, title, summary, category, published_at, video_filename, created_at")
     .order("published_at", { ascending: false });
 
   return (
