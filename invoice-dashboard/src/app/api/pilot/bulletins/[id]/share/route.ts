@@ -22,26 +22,56 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    // Fetch channels the bot is a member of (public + private)
-    const res = await fetch(
-      "https://slack.com/api/conversations.list?types=public_channel,private_channel&exclude_archived=true&limit=200",
-      { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" },
-    );
-    const data = await res.json();
-    if (!data.ok) {
-      return NextResponse.json({ ok: false, channels: [], error: data.error });
-    }
+    // Paginate through all channels (public + private)
+    const allChannels: { id: string; name: string; is_private: boolean; is_member: boolean }[] = [];
+    let cursor: string | undefined;
 
-    const channels = (data.channels ?? [])
-      .map((c: { id: string; name: string; is_private: boolean; is_member: boolean }) => ({
-        id: c.id,
-        name: c.name,
-        is_private: c.is_private,
-        is_member: c.is_member,
-      }))
-      .sort((a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name));
+    do {
+      const url = new URL("https://slack.com/api/conversations.list");
+      url.searchParams.set("types", "public_channel,private_channel");
+      url.searchParams.set("exclude_archived", "true");
+      url.searchParams.set("limit", "200");
+      if (cursor) url.searchParams.set("cursor", cursor);
 
-    return NextResponse.json({ ok: true, channels });
+      const res = await fetch(url.toString(), {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      });
+      const data = await res.json();
+
+      if (!data.ok) {
+        return NextResponse.json({
+          ok: false,
+          channels: [],
+          error: data.error,
+          _debug: { needed: data.needed, provided: data.provided },
+        });
+      }
+
+      for (const c of data.channels ?? []) {
+        allChannels.push({
+          id: c.id,
+          name: c.name,
+          is_private: c.is_private,
+          is_member: c.is_member,
+        });
+      }
+
+      cursor = data.response_metadata?.next_cursor || undefined;
+    } while (cursor);
+
+    const channels = allChannels.sort((a, b) => a.name.localeCompare(b.name));
+
+    return NextResponse.json({
+      ok: true,
+      channels,
+      _debug: {
+        total: channels.length,
+        private_count: channels.filter((c) => c.is_private).length,
+        public_count: channels.filter((c) => !c.is_private).length,
+        token_prefix: token.substring(0, 10) + "...",
+      },
+    });
   } catch (err) {
     return NextResponse.json({ ok: false, channels: [], error: String(err) }, { status: 502 });
   }
