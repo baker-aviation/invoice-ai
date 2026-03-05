@@ -142,7 +142,6 @@ export default async function HomePage() {
                 { label: "Today", value: stats.flightsToday },
                 { label: "Next 7 days", value: stats.flights7d },
                 { label: "Airborne", value: stats.airborne, accent: stats.airborne > 0 ? "text-green-600" : "text-gray-400" },
-                { label: "Active alerts 24h", value: stats.activeAlerts24h, accent: stats.activeAlerts24h > 0 ? "text-amber-600" : "text-gray-400" },
                 { label: "Active EDCTs", value: stats.activeEdcts, accent: stats.activeEdcts > 0 ? "text-red-600" : "text-gray-400" },
               ] : undefined}
             />

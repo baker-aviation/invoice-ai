@@ -921,7 +921,7 @@ def pull_edct(
 
             res = (
                 supa.table(OPS_ALERTS_TABLE)
-                .upsert(alert, on_conflict="source_message_id", ignore_duplicates=True)
+                .upsert(alert, on_conflict="source_message_id")
                 .execute()
             )
             if res.data:
@@ -1013,7 +1013,7 @@ def _parse_edct_email(subject: str, body: str, msg_id: str) -> Dict[str, Any]:
     # Original / proposed departure
     orig_dep = None
     orig_m = re.search(
-        r"(?:Original|Proposed|Filed|Scheduled)\s+(?:Departure|Dep)\s*[:\-]?\s*("
+        r"(?:Original|Proposed|Filed|Scheduled)\s+(?:Departure|Dep)(?:\s+Time)?\s*[:\-]?\s*("
         r"\d{2}/\d{2}/\d{4}\s+\d{4}Z"
         r"|\d{4}Z"
         r"|\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}"
@@ -1044,7 +1044,8 @@ def _parse_edct_email(subject: str, body: str, msg_id: str) -> Dict[str, Any]:
 
 
 def _find_flight_for_alert(supa, alert: Dict) -> Optional[str]:
-    """Match an alert to a flight by airport pair within a ±12h window."""
+    """Match an alert to a flight by airport pair within a ±12h window.
+    Also backfills tail_number on the alert from the matched flight."""
     dep = alert.get("departure_icao")
     arr = alert.get("arrival_icao")
     if not dep or not arr:
@@ -1053,7 +1054,7 @@ def _find_flight_for_alert(supa, alert: Dict) -> Optional[str]:
     now = datetime.now(timezone.utc)
     res = (
         supa.table(FLIGHTS_TABLE)
-        .select("id")
+        .select("id, tail_number")
         .eq("departure_icao", dep)
         .eq("arrival_icao", arr)
         .gte("scheduled_departure", (now - timedelta(hours=2)).isoformat())
@@ -1062,7 +1063,12 @@ def _find_flight_for_alert(supa, alert: Dict) -> Optional[str]:
         .execute()
     )
     rows = res.data or []
-    return rows[0]["id"] if rows else None
+    if not rows:
+        return None
+    # Backfill tail_number from flight if not already parsed from email
+    if not alert.get("tail_number") and rows[0].get("tail_number"):
+        alert["tail_number"] = rows[0]["tail_number"]
+    return rows[0]["id"]
 
 
 # ─── Job: check_notams ────────────────────────────────────────────────────────
