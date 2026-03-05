@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import { createServiceClient } from "@/lib/supabase/service";
+import { signGcsUrl } from "@/lib/gcs";
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import BulletinDetail from "./BulletinDetail";
@@ -58,9 +59,14 @@ export default async function BulletinDetailPage({
   });
 
   const isAdmin = role === "admin";
-  const videoDownloadUrl = bulletin.video_gcs_key
-    ? `/api/pilot/bulletins/${bulletin.id}/download`
-    : null;
+
+  // Generate signed URL server-side so <video> gets a direct URL (redirects break Range requests)
+  let videoUrl: string | null = null;
+  if (bulletin.video_gcs_bucket && bulletin.video_gcs_key) {
+    videoUrl = await signGcsUrl(bulletin.video_gcs_bucket, bulletin.video_gcs_key);
+  }
+  const videoDownloadUrl = videoUrl
+    ?? (bulletin.video_gcs_key ? `/api/pilot/bulletins/${bulletin.id}/download` : null);
 
   return (
     <div>

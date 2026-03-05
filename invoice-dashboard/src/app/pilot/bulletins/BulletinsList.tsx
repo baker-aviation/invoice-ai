@@ -302,7 +302,7 @@ function CreateBulletinModal({ onClose }: { onClose: () => void }) {
       onClick={onClose}
     >
       <div
-        className={`bg-white rounded-xl shadow-xl mx-4 p-5 flex flex-col transition-all ${
+        className={`bg-white rounded-xl shadow-xl mx-4 p-5 flex flex-col transition-all overflow-auto resize ${
           expanded
             ? "w-full max-w-3xl h-[90vh]"
             : "w-full max-w-lg max-h-[90vh]"
