@@ -119,6 +119,7 @@ const ALERT_COLUMNS =
 export async function fetchFlights(params: {
   lookahead_hours?: number;
   lookback_hours?: number;
+  userId?: string;
 } = {}): Promise<FlightsResponse> {
   const supa = createServiceClient();
   const lookahead = params.lookahead_hours ?? 720;
@@ -141,7 +142,19 @@ export async function fetchFlights(params: {
     return { ok: true, flights: [], count: 0 };
   }
 
-  // Fetch unacknowledged alerts for these flights (batch by 200)
+  // Load this user's dismissed alert IDs
+  const dismissedIds = new Set<string>();
+  if (params.userId) {
+    const { data: dismissals } = await supa
+      .from("ops_alert_dismissals")
+      .select("alert_id")
+      .eq("user_id", params.userId);
+    for (const d of dismissals ?? []) {
+      dismissedIds.add(d.alert_id as string);
+    }
+  }
+
+  // Fetch alerts for these flights (batch by 200)
   const flightIds = flightRows.map((f) => f.id as string);
   const alertsByFlight = new Map<string, OpsAlert[]>();
 
@@ -150,12 +163,13 @@ export async function fetchFlights(params: {
     const { data: alertRows, error: alertErr } = await supa
       .from("ops_alerts")
       .select(ALERT_COLUMNS)
-      .in("flight_id", batch)
-      .is("acknowledged_at", null);
+      .in("flight_id", batch);
 
     if (alertErr) throw new Error(`fetchFlights alerts failed: ${alertErr.message}`);
 
     for (const row of alertRows ?? []) {
+      // Skip alerts this user has dismissed
+      if (dismissedIds.has(row.id as string)) continue;
       // Filter noise NOTAMs
       if (isNoiseNotam(row as { alert_type: string; body: string | null })) continue;
 
@@ -189,12 +203,13 @@ export async function fetchFlights(params: {
     .select(ALERT_COLUMNS)
     .eq("alert_type", "EDCT")
     .is("flight_id", null)
-    .is("acknowledged_at", null)
     .gte("created_at", past)
     .order("created_at", { ascending: false })
     .limit(50);
 
-  const orphanAlerts: OpsAlert[] = (orphanRows ?? []).map((row) => ({
+  const orphanAlerts: OpsAlert[] = (orphanRows ?? [])
+    .filter((row) => !dismissedIds.has(row.id as string))
+    .map((row) => ({
     id: row.id as string,
     flight_id: null,
     alert_type: row.alert_type as string,

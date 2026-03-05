@@ -3,11 +3,17 @@ export const dynamic = "force-dynamic";
 import { Topbar } from "@/components/Topbar";
 import { AutoRefresh } from "@/components/AutoRefresh";
 import { fetchFlights } from "@/lib/opsApi";
+import { createClient } from "@/lib/supabase/server";
 import OpsBoard from "./OpsBoard";
 
 export default async function OpsPage() {
+  // Get current user for per-user alert dismissals
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  const userId = user?.id;
+
   let error: string | null = null;
-  const data = await fetchFlights({ lookahead_hours: 720 }).catch((e) => {
+  const data = await fetchFlights({ lookahead_hours: 720, userId }).catch((e) => {
     error = String(e);
     return { ok: false, flights: [] as any[], count: 0, error: null as string | null };
   });
