@@ -147,8 +147,9 @@ export async function POST(req: NextRequest) {
     }
 
     return NextResponse.json({ ok: true, document: row }, { status: 201 });
-  } catch (err) {
-    console.error("[pilot-documents] upload error:", err);
-    return NextResponse.json({ error: "Upload failed" }, { status: 500 });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("[pilot-documents] upload error:", message, err);
+    return NextResponse.json({ error: `Upload failed: ${message}` }, { status: 500 });
   }
 }
