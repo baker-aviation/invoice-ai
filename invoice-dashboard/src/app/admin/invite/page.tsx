@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-type InviteResult = { email: string; status: string; error?: string };
+type InviteResult = { email: string; status: string; error?: string; link?: string };
 
 export default function InvitePage() {
   const [emailsText, setEmailsText] = useState("");
@@ -35,8 +35,8 @@ export default function InvitePage() {
   return (
     <div className="max-w-xl">
       <p className="text-sm text-gray-500 mb-6">
-        Enter email addresses (one per line or comma-separated). Each person
-        will receive an invite link to set their own password.
+        Enter email addresses (one per line or comma-separated). Invite links
+        will be generated for you to share directly.
       </p>
 
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">
@@ -52,7 +52,7 @@ export default function InvitePage() {
           disabled={loading}
           className="self-start bg-slate-900 text-white rounded-md px-5 py-2 text-sm font-medium hover:bg-slate-700 disabled:opacity-50"
         >
-          {loading ? "Sending…" : "Send Invites"}
+          {loading ? "Generating…" : "Generate Invite Links"}
         </button>
       </form>
 
@@ -70,8 +70,15 @@ export default function InvitePage() {
                 <tr key={r.email} className="border-t border-gray-100">
                   <td className="px-4 py-2 text-gray-800">{r.email}</td>
                   <td className="px-4 py-2">
-                    {r.status === "sent" ? (
-                      <span className="text-green-600 font-medium">Sent</span>
+                    {r.link ? (
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(r.link!);
+                        }}
+                        className="text-blue-600 hover:text-blue-800 font-medium text-xs underline"
+                      >
+                        Copy Link
+                      </button>
                     ) : (
                       <span className="text-red-600">{r.error ?? "Failed"}</span>
                     )}

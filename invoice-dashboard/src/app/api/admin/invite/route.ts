@@ -42,18 +42,27 @@ export async function POST(req: NextRequest) {
   }
 
   const supabase = createClient(supabaseUrl, serviceKey);
-  const results: { email: string; status: string; error?: string }[] = [];
+  const results: { email: string; status: string; error?: string; link?: string }[] = [];
+
+  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || `https://${req.headers.get("host")}`;
 
   for (const email of parsed.data.emails) {
-    const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || `https://${req.headers.get("host")}`;
-    const { error } = await supabase.auth.admin.inviteUserByEmail(email, {
-      redirectTo: `${siteUrl}/auth/callback?next=/login/reset`,
-    });
-    results.push({
+    const { data, error } = await supabase.auth.admin.generateLink({
+      type: "invite",
       email,
-      status: error ? "failed" : "sent",
-      ...(error ? { error: error.message } : {}),
+      options: {
+        redirectTo: `${siteUrl}/auth/callback?next=/login/reset`,
+      },
     });
+
+    if (error || !data?.properties?.hashed_token) {
+      results.push({ email, status: "failed", error: error?.message ?? "No link generated" });
+    } else {
+      // Build the verification URL that goes through Supabase's verify endpoint
+      const token = data.properties.hashed_token;
+      const verifyUrl = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/auth/v1/verify?token=${token}&type=invite&redirect_to=${encodeURIComponent(`${siteUrl}/auth/callback?next=/login/reset`)}`;
+      results.push({ email, status: "link_generated", link: verifyUrl });
+    }
   }
 
   return NextResponse.json({ results });
