@@ -7,6 +7,7 @@ import { createClient } from "@/lib/supabase/client";
 
 const PILOT_NAV = [
   { href: "/pilot", label: "Home", exact: true },
+  { href: "/pilot/bulletins", label: "Bulletins", exact: false },
   { href: "/pilot/chat", label: "Aircraft Chat", exact: false },
   { href: "/pilot/documents", label: "Documents", exact: false },
   { href: "/pilot/tanker", label: "Tanker Planner", exact: false },
