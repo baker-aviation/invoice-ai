@@ -50,7 +50,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <header className="bg-slate-900 text-white shadow-md">
         <div className="mx-auto max-w-7xl px-6 py-3 flex items-center justify-between">
           <Link href="/" className="flex items-center hover:opacity-90 transition-opacity">
-            <Image src="/logo3.png" alt="Baker Aviation" width={120} height={38} priority />
+            <Image src="/logo3.png" alt="Baker Aviation" width={150} height={47} priority />
           </Link>
 
           <nav className="flex items-center gap-1 text-sm">
