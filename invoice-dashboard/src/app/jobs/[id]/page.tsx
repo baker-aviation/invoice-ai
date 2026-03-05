@@ -37,6 +37,7 @@ const RATING_LABELS: Record<string, string> = {
   "C750": "C750 (Citation X)",
   "CL-300": "CL-300 (Challenger 300)",
   "CL-350": "CL-350 (Challenger 350)",
+  "CL-30": "CL-30 (Challenger 300)",
 };
 
 function categoryLabel(raw: string | null): string {

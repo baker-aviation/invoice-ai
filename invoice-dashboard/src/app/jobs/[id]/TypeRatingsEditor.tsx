@@ -63,7 +63,7 @@ export default function TypeRatingsEditor({
   function hasChallenger(list: string[]): boolean {
     return list.some((r) => {
       const u = r.toUpperCase();
-      return u.includes("CL-300") || u.includes("CL300") || u.includes("CL-350") || u.includes("CL350") || u.includes("CHALLENGER 300") || u.includes("CHALLENGER 350");
+      return u.includes("CL-300") || u.includes("CL300") || u.includes("CL-350") || u.includes("CL350") || u.includes("CL-30") || u.includes("CHALLENGER 300") || u.includes("CHALLENGER 350");
     });
   }
 

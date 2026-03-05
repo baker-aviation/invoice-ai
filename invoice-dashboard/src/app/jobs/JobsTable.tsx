@@ -90,7 +90,7 @@ function hasChallenger(j: any): boolean {
   const ratings: string[] = Array.isArray(j.type_ratings) ? j.type_ratings : [];
   return ratings.some((r) => {
     const u = r.toLowerCase();
-    return u.includes("cl-300") || u.includes("cl300") || u.includes("challenger 300") || u.includes("challenger-300");
+    return u.includes("cl-300") || u.includes("cl300") || u.includes("cl-30") || u.includes("challenger 300") || u.includes("challenger-300");
   });
 }
 
