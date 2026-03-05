@@ -57,10 +57,9 @@ export async function POST(
       .download();
 
     // Extract text
-    const { PDFParse } = await import("pdf-parse");
-    const parser = new PDFParse({ data: new Uint8Array(buffer) });
-    const textResult = await parser.getText();
-    const text = textResult.text?.trim();
+    const pdfParse = (await import("pdf-parse")).default;
+    const parsed = await pdfParse(buffer);
+    const text = parsed.text?.trim();
 
     if (!text || text.length < 50) {
       await supa

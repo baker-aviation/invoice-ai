@@ -125,10 +125,9 @@ export async function POST(req: NextRequest) {
     if (file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")) {
       (async () => {
         try {
-          const { PDFParse } = await import("pdf-parse");
-          const parser = new PDFParse({ data: new Uint8Array(buffer) });
-          const result = await parser.getText();
-          const text = result.text?.trim();
+          const pdfParse = (await import("pdf-parse")).default;
+          const parsed = await pdfParse(buffer);
+          const text = parsed.text?.trim();
           if (!text || text.length < 50) {
             await supa
               .from("pilot_documents")
