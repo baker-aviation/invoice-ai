@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 
 const NAV = [
@@ -21,6 +22,15 @@ const NAV = [
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  useEffect(() => {
+    const supabase = createClient();
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      const role = user?.app_metadata?.role ?? user?.user_metadata?.role;
+      setIsAdmin(role === "admin");
+    });
+  }, []);
 
   async function handleSignOut() {
     const supabase = createClient();
@@ -54,6 +64,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 </Link>
               );
             })}
+            {isAdmin && (
+              <button
+                onClick={() => router.push("/pilot")}
+                className="ml-3 rounded-md px-3 py-1.5 text-sm font-medium bg-blue-600 text-white hover:bg-blue-500 transition-colors"
+              >
+                View as Pilot
+              </button>
+            )}
             <button
               onClick={handleSignOut}
               className="ml-3 rounded-md px-3 py-1.5 text-sm font-medium text-slate-300 hover:bg-white/10 hover:text-white transition-colors"
