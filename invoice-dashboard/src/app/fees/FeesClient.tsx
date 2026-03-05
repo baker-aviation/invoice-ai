@@ -109,6 +109,8 @@ export default function FeesClient() {
 
   // Upload state
   const [uploading, setUploading] = useState(false);
+  const [showFormatInfo, setShowFormatInfo] = useState(false);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [uploadResult, setUploadResult] = useState<{
     inserted: number;
     skipped: number;
@@ -148,18 +150,27 @@ export default function FeesClient() {
     if (showUploads) loadUploads();
   }, [showUploads, loadUploads]);
 
-  // Handle upload
-  async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
+  // Handle file selection — show format confirmation first
+  function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
-
-    setUploading(true);
+    e.target.value = "";
+    setPendingFile(file);
+    setShowFormatInfo(true);
     setUploadResult(null);
     setError(null);
+  }
+
+  // Handle confirmed upload
+  async function handleConfirmUpload() {
+    if (!pendingFile) return;
+
+    setShowFormatInfo(false);
+    setUploading(true);
 
     try {
       const form = new FormData();
-      form.append("file", file);
+      form.append("file", pendingFile);
 
       const res = await fetch("/api/fees/upload", { method: "POST", body: form });
       const data = await res.json();
@@ -176,8 +187,13 @@ export default function FeesClient() {
       setError(String(err));
     } finally {
       setUploading(false);
-      e.target.value = "";
+      setPendingFile(null);
     }
+  }
+
+  function handleCancelUpload() {
+    setShowFormatInfo(false);
+    setPendingFile(null);
   }
 
   // Load category drill-down
@@ -251,7 +267,7 @@ export default function FeesClient() {
           <input
             type="file"
             accept=".csv"
-            onChange={handleUpload}
+            onChange={handleFileSelect}
             disabled={uploading}
             className="hidden"
           />
@@ -271,6 +287,52 @@ export default function FeesClient() {
           </span>
         )}
       </div>
+
+      {/* ── Format confirmation dialog ── */}
+      {showFormatInfo && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-2xl shadow-xl max-w-lg w-full mx-4 p-6 space-y-4">
+            <h3 className="text-lg font-semibold text-gray-900">CSV Format Required</h3>
+            <p className="text-sm text-gray-600">
+              Your CSV must have these columns in this exact order:
+            </p>
+            <div className="bg-gray-50 rounded-lg p-3 font-mono text-xs text-gray-700 overflow-x-auto">
+              Date, Vendor, Category, Receipts, Airport, FBO, Bill to, Created by, Gallons, Amount, Repeats
+            </div>
+            <div className="text-sm text-gray-500 space-y-1">
+              <p><span className="font-medium text-gray-700">Date:</span> MM/DD/YY or MM/DD/YYYY</p>
+              <p><span className="font-medium text-gray-700">Amount:</span> $1,234.56 or 1234.56 (TBD/N/A rows are skipped)</p>
+              <p><span className="font-medium text-gray-700">Duplicates:</span> Rows matching the same date + airport + vendor + amount are automatically skipped</p>
+            </div>
+            <p className="text-sm text-gray-500">
+              This matches the <span className="font-medium">Analytics &gt; Accounting &gt; Expenses</span> export from your accounting software.
+            </p>
+            {pendingFile && (
+              <div className="flex items-center gap-2 text-sm text-gray-600 bg-blue-50 rounded-lg px-3 py-2">
+                <svg className="h-4 w-4 text-blue-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                <span className="truncate">{pendingFile.name}</span>
+                <span className="text-gray-400 shrink-0">({(pendingFile.size / 1024).toFixed(0)} KB)</span>
+              </div>
+            )}
+            <div className="flex gap-3 pt-2">
+              <button
+                onClick={handleConfirmUpload}
+                className="flex-1 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700 transition-colors"
+              >
+                Upload
+              </button>
+              <button
+                onClick={handleCancelUpload}
+                className="flex-1 rounded-lg border border-gray-300 px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Upload history ── */}
       {showUploads && (
