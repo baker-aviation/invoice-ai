@@ -19,6 +19,12 @@ const CARDS = [
     description: "Plan fuel tanker requests for upcoming flights.",
     icon: "⛽",
   },
+  {
+    href: "/pilot/training",
+    title: "Training",
+    description: "Assigned training courses, modules, and progress tracking.",
+    icon: "🎓",
+  },
 ];
 
 export default function PilotHome() {
