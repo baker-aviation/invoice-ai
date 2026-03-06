@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 import { useState, useEffect, useCallback, useMemo, Fragment } from "react";
 import type { Flight, OpsAlert } from "@/lib/opsApi";
 import type { AdsbAircraft, FlightInfoMap } from "@/app/maintenance/MapView";
+import { fmtTimeInTz } from "@/lib/airportTimezones";
 
 const OpsMap = dynamic(() => import("./OpsMap"), {
   ssr: false,
@@ -15,18 +16,6 @@ const OpsMap = dynamic(() => import("./OpsMap"), {
 });
 
 /* ── helpers ──────────────────────────────────────── */
-
-function fmtTime(s: string | null | undefined): string {
-  if (!s) return "—";
-  const d = new Date(s);
-  if (isNaN(d.getTime())) return s;
-  return (
-    d.toLocaleString("en-US", {
-      month: "short", day: "numeric",
-      hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC",
-    }) + "Z"
-  );
-}
 
 function isToday(iso: string): boolean {
   const d = new Date(iso);
@@ -80,6 +69,14 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
   const [timeRange, setTimeRange] = useState<TimeRange>("Today");
   const [expandedFlights, setExpandedFlights] = useState<Set<string>>(new Set());
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  const [useUtc, setUseUtc] = useState(false);
+
+  // Shorthand for formatting times — uses departure or arrival airport TZ
+  const fmt = useCallback(
+    (iso: string | null | undefined, icao?: string | null) =>
+      fmtTimeInTz(iso, icao, !useUtc),
+    [useUtc],
+  );
 
   // Fetch FlightAware data (primary source for both positions and flight info)
   const fetchFlightInfo = useCallback(async () => {
@@ -226,10 +223,10 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
                 {a.tail_number && <span className="text-amber-600">{a.tail_number}</span>}
                 <span className="text-sm">
                   {(a.original_departure_time || a.fallback_departure) && (
-                    <span className="text-amber-500 line-through">{fmtTime(a.original_departure_time ?? a.fallback_departure ?? "")}</span>
+                    <span className="text-amber-500 line-through">{fmt(a.original_departure_time ?? a.fallback_departure ?? "", a.airport_icao)}</span>
                   )}
                   {(a.original_departure_time || a.fallback_departure) && <span className="text-amber-400 mx-0.5">→</span>}
-                  <span className="text-amber-800 font-bold">{a.edct_time ? fmtTime(a.edct_time) : "—"}</span>
+                  <span className="text-amber-800 font-bold">{a.edct_time ? fmt(a.edct_time, a.airport_icao) : "—"}</span>
                 </span>
               </div>
             ))}
@@ -260,6 +257,20 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
             </button>
           ))}
         </div>
+
+        <span className="text-gray-300">|</span>
+
+        {/* Timezone toggle */}
+        <button
+          onClick={() => setUseUtc((v) => !v)}
+          className={`px-3 py-1 text-xs font-medium rounded-full transition-all ${
+            useUtc
+              ? "bg-indigo-100 text-indigo-700"
+              : "bg-gray-900 text-white"
+          }`}
+        >
+          {useUtc ? "UTC / Zulu" : "Local Time"}
+        </button>
 
         <span className="text-gray-300">|</span>
 
@@ -308,7 +319,12 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
             ) : (
               filteredFlights.map((f) => {
                 const adsb = adsbAircraft.find((a) => a.tail === f.tail_number);
-                const fi = f.tail_number ? flightInfo.get(f.tail_number) : undefined;
+                const rawFi = f.tail_number ? flightInfo.get(f.tail_number) : undefined;
+                // Only attach FlightAware info if the route matches this specific leg
+                const fi = rawFi && (
+                  (!rawFi.origin_icao || !f.departure_icao || rawFi.origin_icao === f.departure_icao) &&
+                  (!rawFi.destination_icao || !f.arrival_icao || rawFi.destination_icao === f.arrival_icao)
+                ) ? rawFi : undefined;
                 const alerts = f.alerts ?? [];
                 const alertCount = alerts.length;
                 const type = f.flight_type || "Other";
@@ -389,18 +405,18 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
                         )}
                       </td>
                       <td className="px-4 py-2.5 text-gray-600">
-                        <div>{fmtTime(f.scheduled_departure)}</div>
+                        <div>{fmt(f.scheduled_departure, f.departure_icao)}</div>
                         {depMismatchMin !== null && fi?.departure_time && (
                           <div className="mt-0.5 text-[10px] font-semibold text-amber-700">
-                            FA Est. Departure: {fmtTime(fi.departure_time)}
+                            FA Est. Departure: {fmt(fi.departure_time, f.departure_icao)}
                           </div>
                         )}
                       </td>
                       <td className="px-4 py-2.5 text-gray-600">
-                        <div>{fmtTime(f.scheduled_arrival)}</div>
+                        <div>{fmt(f.scheduled_arrival, f.arrival_icao)}</div>
                         {fi?.arrival_time && (
                           <div className="text-[10px] text-green-600 font-medium mt-0.5">
-                            FlightAware ETA: {fmtTime(fi.arrival_time)}
+                            FlightAware ETA: {fmt(fi.arrival_time, f.arrival_icao)}
                           </div>
                         )}
                       </td>
@@ -451,14 +467,14 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
                                 )}
                                 {alert.edct_time && (
                                   <div className="font-medium">
-                                    {alert.original_departure_time && <span className="line-through opacity-60 mr-1">{fmtTime(alert.original_departure_time)}</span>}
+                                    {alert.original_departure_time && <span className="line-through opacity-60 mr-1">{fmt(alert.original_departure_time, alert.airport_icao)}</span>}
                                     {alert.original_departure_time && <span className="opacity-50 mr-1">→</span>}
-                                    EDCT: {fmtTime(alert.edct_time)}
+                                    EDCT: {fmt(alert.edct_time, alert.airport_icao)}
                                   </div>
                                 )}
                               </div>
                               <span className="text-[10px] opacity-50 whitespace-nowrap shrink-0">
-                                {fmtTime(alert.created_at)}
+                                {fmt(alert.created_at)}
                               </span>
                             </div>
                           </div>
