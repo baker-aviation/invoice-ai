@@ -179,66 +179,99 @@ function lookupAdvertisedPrice(
 
 type AdvVsActualRow = {
   key: string;
-  weekStart: string;
   airport: string;
   fboVendor: string;
   volumeTier: string;
   tailNumbers: string | null;
-  advertisedPrice: number;
+  currentWeek: string;
+  currentPrice: number;
+  prevWeek: string | null;
+  prevPrice: number | null;
+  wowChange: number | null;     // dollar change
+  wowChangePct: number | null;  // percent change
   actualAvgPrice: number | null;
   invoiceCount: number;
-  diffPct: number | null;
+  vsActualPct: number | null;
 };
 
 function buildAdvVsActual(
   prices: FuelPriceRow[],
   advertisedPrices: AdvertisedPriceRow[],
 ): AdvVsActualRow[] {
-  // Group invoice data by (vendor, airport, week)
+  // Group invoice data by (vendor_lower, airport) — all time for "actual" avg
   const invoiceBuckets = new Map<string, { prices: number[]; count: number }>();
   for (const r of prices) {
-    if (!r.vendor_name || !r.airport_code || !r.invoice_date || r.effective_price_per_gallon == null) continue;
+    if (!r.vendor_name || !r.airport_code || r.effective_price_per_gallon == null) continue;
     if ((r.data_source ?? "invoice") !== "invoice") continue;
-    const weekMonday = getWeekMonday(r.invoice_date);
-    const key = `${r.vendor_name.toLowerCase()}|${r.airport_code}|${weekMonday}`;
+    const key = `${r.vendor_name.toLowerCase()}|${r.airport_code}`;
     if (!invoiceBuckets.has(key)) invoiceBuckets.set(key, { prices: [], count: 0 });
     const bucket = invoiceBuckets.get(key)!;
     bucket.prices.push(r.effective_price_per_gallon);
     bucket.count++;
   }
 
-  const rows: AdvVsActualRow[] = [];
+  // Group advertised by identity key → sorted by week_start desc
+  const advByIdentity = new Map<string, AdvertisedPriceRow[]>();
   for (const adv of advertisedPrices) {
-    const key = `${adv.fbo_vendor.toLowerCase()}|${adv.airport_code}|${adv.week_start}`;
-    const bucket = invoiceBuckets.get(key);
+    const key = `${adv.fbo_vendor}|${adv.airport_code}|${adv.volume_tier}|${adv.tail_numbers ?? ""}`;
+    if (!advByIdentity.has(key)) advByIdentity.set(key, []);
+    advByIdentity.get(key)!.push(adv);
+  }
+
+  const rows: AdvVsActualRow[] = [];
+  for (const [, group] of advByIdentity) {
+    // Sort by week desc
+    group.sort((a, b) => b.week_start.localeCompare(a.week_start));
+    const latest = group[0];
+    const prev = group.length > 1 ? group[1] : null;
+
+    let wowChange: number | null = null;
+    let wowChangePct: number | null = null;
+    if (prev) {
+      wowChange = Math.round((latest.price - prev.price) * 10000) / 10000;
+      if (prev.price > 0) {
+        wowChangePct = Math.round(((latest.price - prev.price) / prev.price) * 1000) / 10;
+      }
+    }
+
+    // Actual invoice avg for this vendor+airport
+    const invKey = `${latest.fbo_vendor.toLowerCase()}|${latest.airport_code}`;
+    const bucket = invoiceBuckets.get(invKey);
     const actualAvg = bucket && bucket.prices.length > 0
       ? Math.round((bucket.prices.reduce((a, b) => a + b, 0) / bucket.prices.length) * 10000) / 10000
       : null;
     const invoiceCount = bucket?.count ?? 0;
-    let diffPct: number | null = null;
-    if (actualAvg != null && adv.price > 0) {
-      diffPct = Math.round(((actualAvg - adv.price) / adv.price) * 1000) / 10;
+
+    let vsActualPct: number | null = null;
+    if (actualAvg != null && latest.price > 0) {
+      vsActualPct = Math.round(((actualAvg - latest.price) / latest.price) * 1000) / 10;
     }
 
     rows.push({
-      key: `${adv.id}`,
-      weekStart: adv.week_start,
-      airport: adv.airport_code,
-      fboVendor: adv.fbo_vendor,
-      volumeTier: adv.volume_tier,
-      tailNumbers: adv.tail_numbers,
-      advertisedPrice: adv.price,
+      key: `${latest.id}`,
+      airport: latest.airport_code,
+      fboVendor: latest.fbo_vendor,
+      volumeTier: latest.volume_tier,
+      tailNumbers: latest.tail_numbers,
+      currentWeek: latest.week_start,
+      currentPrice: latest.price,
+      prevWeek: prev?.week_start ?? null,
+      prevPrice: prev?.price ?? null,
+      wowChange,
+      wowChangePct,
       actualAvgPrice: actualAvg,
       invoiceCount,
-      diffPct,
+      vsActualPct,
     });
   }
 
-  // Sort by week desc, then airport
+  // Sort by airport, then vendor, then tier
   rows.sort((a, b) => {
-    const wc = b.weekStart.localeCompare(a.weekStart);
-    if (wc !== 0) return wc;
-    return a.airport.localeCompare(b.airport);
+    const ac = a.airport.localeCompare(b.airport);
+    if (ac !== 0) return ac;
+    const vc = a.fboVendor.localeCompare(b.fboVendor);
+    if (vc !== 0) return vc;
+    return a.volumeTier.localeCompare(b.volumeTier);
   });
 
   return rows;
@@ -981,39 +1014,42 @@ export default function FuelPricesTable({
             <table className="min-w-full text-sm">
               <thead>
                 <tr className="bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  <th className="px-4 py-3">Week</th>
                   <th className="px-4 py-3">Airport</th>
                   <th className="px-4 py-3">FBO Vendor</th>
                   <th className="px-4 py-3">Tier</th>
                   <th className="px-4 py-3">Tails</th>
                   <th className="px-4 py-3 text-right">
-                    <span className="inline-flex items-center gap-1">
-                      Adv. $/gal
-                      <span className="inline-block w-2 h-2 rounded-full bg-purple-400" />
-                    </span>
+                    <span title="Current week's advertised price">Current $/gal</span>
                   </th>
                   <th className="px-4 py-3 text-right">
-                    <span className="inline-flex items-center gap-1">
-                      Actual Avg $/gal
-                      <span className="inline-block w-2 h-2 rounded-full bg-blue-400" />
-                    </span>
+                    <span title="Previous week's advertised price">Prev $/gal</span>
                   </th>
-                  <th className="px-4 py-3 text-center"># Invoices</th>
-                  <th className="px-4 py-3 text-right">Diff %</th>
+                  <th className="px-4 py-3 text-right">
+                    <span title="Week-over-week change in advertised price">WoW</span>
+                  </th>
+                  <th className="px-4 py-3 text-right">
+                    <span title="Average actual invoice price for this vendor + airport">Actual Avg</span>
+                  </th>
+                  <th className="px-4 py-3 text-center"># Inv</th>
+                  <th className="px-4 py-3 text-right">
+                    <span title="Actual vs current advertised: positive = paying more">vs Adv.</span>
+                  </th>
+                  <th className="px-4 py-3 text-right text-[10px] normal-case">Week of</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
                 {advPageRows.map((row) => {
-                  const overpriced = row.diffPct != null && row.diffPct > 2;
-                  const underpriced = row.diffPct != null && row.diffPct < -2;
+                  const wowUp = row.wowChangePct != null && row.wowChangePct > 0;
+                  const wowDown = row.wowChangePct != null && row.wowChangePct < 0;
+                  const overActual = row.vsActualPct != null && row.vsActualPct > 2;
+                  const underActual = row.vsActualPct != null && row.vsActualPct < -2;
                   return (
                     <tr
                       key={row.key}
                       className={`hover:bg-gray-50 ${
-                        overpriced ? "bg-red-50/60" : underpriced ? "bg-green-50/60" : ""
+                        overActual ? "bg-red-50/60" : underActual ? "bg-green-50/60" : ""
                       }`}
                     >
-                      <td className="px-4 py-2.5 whitespace-nowrap text-xs">{fmtDate(row.weekStart)}</td>
                       <td className="px-4 py-2.5 whitespace-nowrap font-semibold">{row.airport}</td>
                       <td className="px-4 py-2.5 whitespace-nowrap max-w-[180px] truncate text-xs text-gray-600" title={row.fboVendor}>
                         {row.fboVendor}
@@ -1021,29 +1057,54 @@ export default function FuelPricesTable({
                       <td className="px-4 py-2.5 whitespace-nowrap text-xs text-gray-500">{row.volumeTier}</td>
                       <td className="px-4 py-2.5 whitespace-nowrap text-xs text-gray-500">{row.tailNumbers || "All"}</td>
                       <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono font-medium text-purple-700">
-                        {fmt$(row.advertisedPrice)}
+                        {fmt$(row.currentPrice)}
+                      </td>
+                      <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono text-gray-400">
+                        {row.prevPrice != null ? fmt$(row.prevPrice) : <span className="text-gray-300">{"\u2014"}</span>}
+                      </td>
+                      <td className="px-4 py-2.5 whitespace-nowrap text-right">
+                        {row.wowChange != null ? (
+                          <span className={`font-mono text-xs font-medium ${wowUp ? "text-red-600" : wowDown ? "text-green-600" : "text-gray-500"}`}>
+                            {row.wowChange > 0 ? "+" : ""}{row.wowChange.toFixed(4)}
+                            <span className="text-[10px] ml-0.5 opacity-70">
+                              ({row.wowChangePct! >= 0 ? "+" : ""}{row.wowChangePct}%)
+                            </span>
+                          </span>
+                        ) : (
+                          <span className="text-gray-300 text-xs">{"\u2014"}</span>
+                        )}
                       </td>
                       <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono font-medium text-blue-700">
-                        {row.actualAvgPrice != null ? fmt$(row.actualAvgPrice) : <span className="text-gray-300">{"\u2014"}</span>}
+                        {row.actualAvgPrice != null ? (
+                          <span>
+                            {fmt$(row.actualAvgPrice)}
+                            <span className="text-[10px] text-gray-400 ml-1">({row.invoiceCount})</span>
+                          </span>
+                        ) : (
+                          <span className="text-gray-300">{"\u2014"}</span>
+                        )}
                       </td>
                       <td className="px-4 py-2.5 whitespace-nowrap text-center text-xs text-gray-500">
                         {row.invoiceCount || "\u2014"}
                       </td>
                       <td className="px-4 py-2.5 whitespace-nowrap text-right">
-                        {row.diffPct != null ? (
-                          <Badge variant={overpriced ? "danger" : underpriced ? "success" : "default"}>
-                            {row.diffPct >= 0 ? "+" : ""}{row.diffPct}%
+                        {row.vsActualPct != null ? (
+                          <Badge variant={overActual ? "danger" : underActual ? "success" : "default"}>
+                            {row.vsActualPct >= 0 ? "+" : ""}{row.vsActualPct}%
                           </Badge>
                         ) : (
                           <span className="text-gray-300 text-xs">{"\u2014"}</span>
                         )}
+                      </td>
+                      <td className="px-4 py-2.5 whitespace-nowrap text-right text-[10px] text-gray-400">
+                        {fmtDate(row.currentWeek)}
                       </td>
                     </tr>
                   );
                 })}
                 {advPageRows.length === 0 && (
                   <tr>
-                    <td colSpan={9} className="px-4 py-8 text-center text-gray-400">
+                    <td colSpan={11} className="px-4 py-8 text-center text-gray-400">
                       No advertised price data found. Use &ldquo;Import Advertised Prices&rdquo; to upload FBO price sheets.
                     </td>
                   </tr>
@@ -1053,14 +1114,15 @@ export default function FuelPricesTable({
           </div>
 
           {/* Legend */}
-          <div className="flex items-center gap-4 text-xs text-gray-500">
-            <span>Diff = (Actual &minus; Advertised) / Advertised</span>
+          <div className="flex flex-wrap items-center gap-4 text-xs text-gray-500">
+            <span>WoW = week-over-week change in advertised price</span>
             <span className="inline-flex items-center gap-1">
-              <span className="inline-block w-2 h-2 rounded-full bg-red-300" /> Paying more than advertised
+              <span className="inline-block w-2 h-2 rounded-full bg-red-300" /> Price went up / Paying more
             </span>
             <span className="inline-flex items-center gap-1">
-              <span className="inline-block w-2 h-2 rounded-full bg-green-300" /> Paying less than advertised
+              <span className="inline-block w-2 h-2 rounded-full bg-green-300" /> Price went down / Paying less
             </span>
+            <span>vs Adv. = (Actual Avg &minus; Advertised) / Advertised</span>
           </div>
         </>
       )}
