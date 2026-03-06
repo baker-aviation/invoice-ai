@@ -24,9 +24,28 @@ export default function TrainingHome({
   progressCounts: Record<number, number>;
   isAdmin: boolean;
 }) {
+  const router = useRouter();
   const [showCreate, setShowCreate] = useState(false);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
 
   const typedCourses = courses as unknown as Course[];
+
+  async function deleteCourse(courseId: number, title: string) {
+    if (!confirm(`Delete "${title}" and all its modules/lessons?`)) return;
+    setDeletingId(courseId);
+    try {
+      const res = await fetch(`/api/pilot/training/${courseId}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        alert(data.error ?? "Failed to delete course");
+      }
+      router.refresh();
+    } finally {
+      setDeletingId(null);
+    }
+  }
 
   return (
     <div>
@@ -56,18 +75,22 @@ export default function TrainingHome({
             const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
 
             return (
-              <Link
+              <div
                 key={course.id}
-                href={`/pilot/training/${course.id}`}
-                className="block bg-white border border-gray-200 rounded-xl p-5 hover:border-blue-300 hover:shadow-md transition-all"
+                className="relative bg-white border border-gray-200 rounded-xl p-5 hover:border-blue-300 hover:shadow-md transition-all"
               >
+                <Link
+                  href={`/pilot/training/${course.id}`}
+                  className="block"
+                >
                 <div className="flex items-start justify-between gap-2 mb-2">
                   <h2 className="font-semibold text-gray-900 text-sm">
                     {course.title}
                   </h2>
+                  <div className="flex items-center gap-2 shrink-0">
                   {isAdmin && (
                     <span
-                      className={`shrink-0 text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                      className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
                         course.status === "published"
                           ? "bg-green-100 text-green-800"
                           : "bg-yellow-100 text-yellow-800"
@@ -76,6 +99,7 @@ export default function TrainingHome({
                       {course.status}
                     </span>
                   )}
+                  </div>
                 </div>
                 {course.description && (
                   <p className="text-xs text-gray-500 mb-3 line-clamp-2">
@@ -108,7 +132,22 @@ export default function TrainingHome({
                     {total} lesson{total !== 1 ? "s" : ""}
                   </p>
                 )}
-              </Link>
+                </Link>
+                {isAdmin && (
+                  <button
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      deleteCourse(course.id, course.title);
+                    }}
+                    disabled={deletingId === course.id}
+                    className="absolute top-2 right-2 text-[10px] text-red-400 hover:text-red-600 hover:bg-red-50 rounded px-1.5 py-0.5 transition-colors disabled:opacity-50"
+                    title="Delete course"
+                  >
+                    {deletingId === course.id ? "Deleting..." : "✕"}
+                  </button>
+                )}
+              </div>
             );
           })}
         </div>
