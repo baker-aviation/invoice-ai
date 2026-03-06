@@ -7,13 +7,28 @@ import RichTextEditor, { type RichTextEditorHandle } from "@/components/RichText
 type SlackChannel = { id: string; name: string; is_private: boolean };
 type AttachmentRef = { id: number; filename: string };
 
+/** Map file extension to MIME type (client-side) */
+function contentTypeFromFilename(name: string): string {
+  const ext = name.split(".").pop()?.toLowerCase();
+  switch (ext) {
+    case "mp4": return "video/mp4";
+    case "m4v": return "video/x-m4v";
+    case "mov": return "video/quicktime";
+    case "pdf": return "application/pdf";
+    case "jpg": case "jpeg": return "image/jpeg";
+    case "png": return "image/png";
+    case "gif": return "image/gif";
+    case "webp": return "image/webp";
+    default: return "application/octet-stream";
+  }
+}
+
 export default function BulletinDetail({
   bulletinId,
   slackTs,
   title: initialTitle,
   summary: initialSummary,
   category: initialCategory,
-  videoFilename: initialVideoFilename,
   attachments: initialAttachments,
 }: {
   bulletinId: number;
@@ -21,7 +36,6 @@ export default function BulletinDetail({
   title: string;
   summary: string;
   category: string;
-  videoFilename: string | null;
   attachments: AttachmentRef[];
 }) {
   const router = useRouter();
@@ -186,7 +200,6 @@ export default function BulletinDetail({
           initialTitle={initialTitle}
           initialSummary={initialSummary}
           initialCategory={initialCategory}
-          initialVideoFilename={initialVideoFilename}
           initialAttachments={initialAttachments}
           onClose={() => setShowEdit(false)}
         />
@@ -204,7 +217,6 @@ function EditBulletinModal({
   initialTitle,
   initialSummary,
   initialCategory,
-  initialVideoFilename,
   initialAttachments,
   onClose,
 }: {
@@ -212,7 +224,6 @@ function EditBulletinModal({
   initialTitle: string;
   initialSummary: string;
   initialCategory: string;
-  initialVideoFilename: string | null;
   initialAttachments: AttachmentRef[];
   onClose: () => void;
 }) {
@@ -220,7 +231,6 @@ function EditBulletinModal({
   const editorRef = useRef<RichTextEditorHandle>(null);
   const [title, setTitle] = useState(initialTitle);
   const [category, setCategory] = useState(initialCategory);
-  const [videoFile, setVideoFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [expanded, setExpanded] = useState(false);
@@ -229,22 +239,22 @@ function EditBulletinModal({
   const [existingAttachments, setExistingAttachments] = useState<AttachmentRef[]>(initialAttachments);
   const [removedAttachmentIds, setRemovedAttachmentIds] = useState<number[]>([]);
   // New files to upload
-  const [newDocFiles, setNewDocFiles] = useState<File[]>([]);
+  const [newFiles, setNewFiles] = useState<File[]>([]);
 
   function removeExistingAttachment(id: number) {
     setExistingAttachments((prev) => prev.filter((a) => a.id !== id));
     setRemovedAttachmentIds((prev) => [...prev, id]);
   }
 
-  function handleNewDocFiles(e: React.ChangeEvent<HTMLInputElement>) {
+  function handleNewFiles(e: React.ChangeEvent<HTMLInputElement>) {
     const files = e.target.files;
     if (!files) return;
-    setNewDocFiles((prev) => [...prev, ...Array.from(files)]);
+    setNewFiles((prev) => [...prev, ...Array.from(files)]);
     e.target.value = "";
   }
 
-  function removeNewDocFile(index: number) {
-    setNewDocFiles((prev) => prev.filter((_, i) => i !== index));
+  function removeNewFile(index: number) {
+    setNewFiles((prev) => prev.filter((_, i) => i !== index));
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -268,7 +278,6 @@ function EditBulletinModal({
         summary: content,
         category,
       };
-      if (videoFile) payload.video_filename = videoFile.name;
 
       const res = await fetch(`/api/pilot/bulletins/${bulletinId}`, {
         method: "PATCH",
@@ -283,31 +292,6 @@ function EditBulletinModal({
         return;
       }
 
-      const { upload_url } = await res.json();
-
-      // Upload video directly to GCS via presigned URL
-      if (videoFile && upload_url) {
-        const ext = videoFile.name.split(".").pop()?.toLowerCase();
-        const contentType =
-          ext === "mp4" ? "video/mp4"
-          : ext === "m4v" ? "video/x-m4v"
-          : "video/quicktime";
-
-        const uploadRes = await fetch(upload_url, {
-          method: "PUT",
-          headers: { "Content-Type": contentType },
-          body: videoFile,
-        });
-
-        if (!uploadRes.ok) {
-          console.error("Video upload failed:", uploadRes.status);
-          setError("Changes saved but video upload failed. Try again.");
-          setSubmitting(false);
-          router.refresh();
-          return;
-        }
-      }
-
       // Delete removed attachments
       for (const attId of removedAttachmentIds) {
         await fetch(`/api/pilot/bulletins/${bulletinId}/attachments?attachment_id=${attId}`, {
@@ -317,8 +301,8 @@ function EditBulletinModal({
 
       // Upload new attachments
       const startOrder = existingAttachments.length;
-      for (let i = 0; i < newDocFiles.length; i++) {
-        const file = newDocFiles[i];
+      for (let i = 0; i < newFiles.length; i++) {
+        const file = newFiles[i];
         const attRes = await fetch(`/api/pilot/bulletins/${bulletinId}/attachments`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -333,24 +317,17 @@ function EditBulletinModal({
           return;
         }
 
-        const { upload_url: attUploadUrl } = await attRes.json();
-        const ext = file.name.split(".").pop()?.toLowerCase();
-        const contentType =
-          ext === "pdf" ? "application/pdf"
-          : ext === "jpg" || ext === "jpeg" ? "image/jpeg"
-          : ext === "png" ? "image/png"
-          : ext === "gif" ? "image/gif"
-          : ext === "webp" ? "image/webp"
-          : "application/octet-stream";
+        const { upload_url } = await attRes.json();
+        const contentType = contentTypeFromFilename(file.name);
 
-        const uploadRes = await fetch(attUploadUrl, {
+        const uploadRes = await fetch(upload_url, {
           method: "PUT",
           headers: { "Content-Type": contentType },
           body: file,
         });
 
         if (!uploadRes.ok) {
-          console.error("Attachment upload failed:", uploadRes.status);
+          console.error("Upload failed:", uploadRes.status);
           setError(`Changes saved but upload of "${file.name}" failed. Try again.`);
           setSubmitting(false);
           router.refresh();
@@ -446,20 +423,7 @@ function EditBulletinModal({
 
           <div className="shrink-0">
             <label className="block text-xs font-medium text-gray-600 mb-1">
-              Video {initialVideoFilename ? `(current: ${initialVideoFilename})` : "(optional)"}
-            </label>
-            <input
-              type="file"
-              accept=".mov,.mp4,.m4v"
-              onChange={(e) => setVideoFile(e.target.files?.[0] ?? null)}
-              className="block w-full text-sm text-gray-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border file:border-gray-300 file:text-sm file:font-medium file:bg-white file:text-gray-700 hover:file:bg-gray-50"
-            />
-            <p className="text-[10px] text-gray-400 mt-1">.mov, .mp4, .m4v — leave empty to keep current video</p>
-          </div>
-
-          <div className="shrink-0">
-            <label className="block text-xs font-medium text-gray-600 mb-1">
-              PDFs / Images
+              Attachments
             </label>
 
             {/* Existing attachments as chips */}
@@ -485,17 +449,17 @@ function EditBulletinModal({
 
             <input
               type="file"
-              accept=".pdf,.jpg,.jpeg,.png,.gif,.webp"
+              accept=".mov,.mp4,.m4v,.pdf,.jpg,.jpeg,.png,.gif,.webp"
               multiple
-              onChange={handleNewDocFiles}
+              onChange={handleNewFiles}
               className="block w-full text-sm text-gray-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border file:border-gray-300 file:text-sm file:font-medium file:bg-white file:text-gray-700 hover:file:bg-gray-50"
             />
-            <p className="text-[10px] text-gray-400 mt-1">.pdf, .jpg, .png, .gif, .webp — select multiple files to add</p>
+            <p className="text-[10px] text-gray-400 mt-1">Videos, PDFs, or images — select multiple files to add</p>
 
             {/* New files to upload */}
-            {newDocFiles.length > 0 && (
+            {newFiles.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-1.5">
-                {newDocFiles.map((f, i) => (
+                {newFiles.map((f, i) => (
                   <span
                     key={`${f.name}-${i}`}
                     className="inline-flex items-center gap-1 px-2 py-0.5 text-xs bg-green-50 text-green-700 rounded-full border border-green-200"
@@ -503,7 +467,7 @@ function EditBulletinModal({
                     {f.name}
                     <button
                       type="button"
-                      onClick={() => removeNewDocFile(i)}
+                      onClick={() => removeNewFile(i)}
                       className="text-green-400 hover:text-red-500 leading-none"
                     >
                       &times;

@@ -67,14 +67,6 @@ export default async function BulletinDetailPage({
 
   const isAdmin = role === "admin";
 
-  // Generate signed URL server-side so <video> gets a direct URL (redirects break Range requests)
-  let videoUrl: string | null = null;
-  if (bulletin.video_gcs_bucket && bulletin.video_gcs_key) {
-    videoUrl = await signGcsUrl(bulletin.video_gcs_bucket, bulletin.video_gcs_key);
-  }
-  const videoDownloadUrl = videoUrl
-    ?? (bulletin.video_gcs_key ? `/api/pilot/bulletins/${bulletin.id}/download` : null);
-
   // Sign URLs for all attachments
   const rawAttachments = (bulletin.pilot_bulletin_attachments ?? []) as {
     id: number;
@@ -121,7 +113,6 @@ export default async function BulletinDetailPage({
               title={bulletin.title}
               summary={bulletin.summary ?? ""}
               category={bulletin.category}
-              videoFilename={bulletin.video_filename ?? null}
               attachments={attachments.map((a) => ({ id: a.id, filename: a.filename }))}
             />
           )}
@@ -136,51 +127,54 @@ export default async function BulletinDetailPage({
           />
         )}
 
-        {videoDownloadUrl && (
-          <div className="border rounded-lg overflow-hidden">
-            <div className="flex items-center justify-between gap-3 px-4 py-3 text-sm bg-gray-50">
-              <div className="font-medium truncate">{bulletin.video_filename ?? "Video"}</div>
-              <a
-                href={videoDownloadUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="text-xs px-2.5 py-1.5 rounded border border-gray-300 hover:bg-gray-100 font-medium text-blue-600 shrink-0"
-              >
-                Download
-              </a>
-            </div>
-            <div className="border-t bg-black aspect-video relative">
-              <video
-                src={videoDownloadUrl}
-                controls
-                className="w-full h-full"
-                preload="metadata"
-              >
-                Your browser does not support video playback.
-              </video>
-              {!videoUrl && (
-                <div className="absolute inset-0 flex items-center justify-center bg-gray-900/80">
-                  <p className="text-sm text-gray-300">
-                    Video preview unavailable.{" "}
-                    <a
-                      href={`/api/pilot/bulletins/${bulletin.id}/download`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-blue-400 underline"
-                    >
-                      Download to watch
-                    </a>
-                  </p>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Render attachments */}
+        {/* Render all attachments */}
         {attachments.map((att) => {
+          const isVideo = att.content_type.startsWith("video/");
           const isImage = att.content_type.startsWith("image/");
           const downloadUrl = att.url ?? `/api/pilot/bulletins/${bulletin.id}/download?attachment_id=${att.id}`;
+
+          if (isVideo) {
+            return (
+              <div key={att.id} className="border rounded-lg overflow-hidden mt-4">
+                <div className="flex items-center justify-between gap-3 px-4 py-3 text-sm bg-gray-50">
+                  <div className="font-medium truncate">{att.filename}</div>
+                  <a
+                    href={downloadUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-xs px-2.5 py-1.5 rounded border border-gray-300 hover:bg-gray-100 font-medium text-blue-600 shrink-0"
+                  >
+                    Download
+                  </a>
+                </div>
+                <div className="border-t bg-black aspect-video relative">
+                  <video
+                    src={downloadUrl}
+                    controls
+                    className="w-full h-full"
+                    preload="metadata"
+                  >
+                    Your browser does not support video playback.
+                  </video>
+                  {!att.url && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-gray-900/80">
+                      <p className="text-sm text-gray-300">
+                        Video preview unavailable.{" "}
+                        <a
+                          href={`/api/pilot/bulletins/${bulletin.id}/download?attachment_id=${att.id}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-blue-400 underline"
+                        >
+                          Download to watch
+                        </a>
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          }
 
           return (
             <div key={att.id} className="border rounded-lg overflow-hidden mt-4">

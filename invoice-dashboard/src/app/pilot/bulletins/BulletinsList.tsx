@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
 import RichTextEditor, { type RichTextEditorHandle } from "@/components/RichTextEditor";
 
-type Attachment = { id: number; filename: string };
+type Attachment = { id: number; filename: string; content_type: string };
 
 type Bulletin = {
   id: number;
@@ -13,7 +13,6 @@ type Bulletin = {
   summary: string | null;
   category: string;
   published_at: string;
-  video_filename: string | null;
   pilot_bulletin_attachments: Attachment[];
   created_at: string;
 };
@@ -63,18 +62,45 @@ function stripHtml(html: string) {
   return decoded.replace(/\s+/g, " ").trim();
 }
 
+function isVideoContentType(ct: string) {
+  return ct.startsWith("video/");
+}
+
+function isVideoFilename(name: string) {
+  return /\.(mp4|m4v|mov)$/i.test(name);
+}
+
 /** Determine badge labels from an attachments array */
 function attachmentBadges(attachments: Attachment[]): string[] {
   const badges: string[] = [];
+  let videoCount = 0;
   let pdfCount = 0;
   let imgCount = 0;
   for (const a of attachments) {
-    if (/\.(jpg|jpeg|png|gif|webp)$/i.test(a.filename)) imgCount++;
+    if (isVideoContentType(a.content_type) || isVideoFilename(a.filename)) videoCount++;
+    else if (/\.(jpg|jpeg|png|gif|webp)$/i.test(a.filename)) imgCount++;
     else pdfCount++;
   }
+  if (videoCount > 0) badges.push(videoCount === 1 ? "Video" : `${videoCount} Videos`);
   if (pdfCount > 0) badges.push(pdfCount === 1 ? "PDF" : `${pdfCount} PDFs`);
   if (imgCount > 0) badges.push(imgCount === 1 ? "Image" : `${imgCount} Images`);
   return badges;
+}
+
+/** Map file extension to MIME type (client-side) */
+function contentTypeFromFilename(name: string): string {
+  const ext = name.split(".").pop()?.toLowerCase();
+  switch (ext) {
+    case "mp4": return "video/mp4";
+    case "m4v": return "video/x-m4v";
+    case "mov": return "video/quicktime";
+    case "pdf": return "application/pdf";
+    case "jpg": case "jpeg": return "image/jpeg";
+    case "png": return "image/png";
+    case "gif": return "image/gif";
+    case "webp": return "image/webp";
+    default: return "application/octet-stream";
+  }
 }
 
 export default function BulletinsList({
@@ -198,13 +224,8 @@ export default function BulletinsList({
                       </>
                     )}
                   </div>
-                  {(b.video_filename || badges.length > 0) && (
+                  {badges.length > 0 && (
                     <div className="shrink-0 mt-1 flex flex-col gap-1">
-                      {b.video_filename && (
-                        <span className="text-[10px] text-gray-400 border border-gray-200 rounded px-1.5 py-0.5">
-                          Video
-                        </span>
-                      )}
                       {badges.map((label) => (
                         <span key={label} className="text-[10px] text-gray-400 border border-gray-200 rounded px-1.5 py-0.5">
                           {label}
@@ -236,21 +257,20 @@ function CreateBulletinModal({ onClose }: { onClose: () => void }) {
   const editorRef = useRef<RichTextEditorHandle>(null);
   const [title, setTitle] = useState("");
   const [category, setCategory] = useState("");
-  const [videoFile, setVideoFile] = useState<File | null>(null);
-  const [docFiles, setDocFiles] = useState<File[]>([]);
+  const [files, setFiles] = useState<File[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [expanded, setExpanded] = useState(false);
 
-  function handleDocFilesChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = e.target.files;
-    if (!files) return;
-    setDocFiles((prev) => [...prev, ...Array.from(files)]);
-    e.target.value = ""; // reset so same file can be re-added
+  function handleFilesChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const selected = e.target.files;
+    if (!selected) return;
+    setFiles((prev) => [...prev, ...Array.from(selected)]);
+    e.target.value = "";
   }
 
-  function removeDocFile(index: number) {
-    setDocFiles((prev) => prev.filter((_, i) => i !== index));
+  function removeFile(index: number) {
+    setFiles((prev) => prev.filter((_, i) => i !== index));
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -274,7 +294,6 @@ function CreateBulletinModal({ onClose }: { onClose: () => void }) {
         category,
       };
       if (content) payload.summary = content;
-      if (videoFile) payload.video_filename = videoFile.name;
 
       const res = await fetch("/api/pilot/bulletins", {
         method: "POST",
@@ -289,35 +308,11 @@ function CreateBulletinModal({ onClose }: { onClose: () => void }) {
         return;
       }
 
-      const { bulletin, upload_url } = await res.json();
+      const { bulletin } = await res.json();
 
-      // Upload video directly to GCS via presigned URL
-      if (videoFile && upload_url) {
-        const ext = videoFile.name.split(".").pop()?.toLowerCase();
-        const contentType =
-          ext === "mp4" ? "video/mp4"
-          : ext === "m4v" ? "video/x-m4v"
-          : "video/quicktime";
-
-        const uploadRes = await fetch(upload_url, {
-          method: "PUT",
-          headers: { "Content-Type": contentType },
-          body: videoFile,
-        });
-
-        if (!uploadRes.ok) {
-          console.error("Video upload failed:", uploadRes.status);
-          setError("Bulletin created but video upload failed. Edit the bulletin to re-upload.");
-          setSubmitting(false);
-          router.refresh();
-          return;
-        }
-      }
-
-      // Upload each doc/image attachment via the attachments endpoint
-      for (let i = 0; i < docFiles.length; i++) {
-        const file = docFiles[i];
-        // Create attachment record + get presigned URL
+      // Upload each file as an attachment
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
         const attRes = await fetch(`/api/pilot/bulletins/${bulletin.id}/attachments`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -332,26 +327,17 @@ function CreateBulletinModal({ onClose }: { onClose: () => void }) {
           return;
         }
 
-        const { upload_url: attUploadUrl } = await attRes.json();
+        const { upload_url } = await attRes.json();
+        const contentType = contentTypeFromFilename(file.name);
 
-        // Upload file to GCS
-        const ext = file.name.split(".").pop()?.toLowerCase();
-        const contentType =
-          ext === "pdf" ? "application/pdf"
-          : ext === "jpg" || ext === "jpeg" ? "image/jpeg"
-          : ext === "png" ? "image/png"
-          : ext === "gif" ? "image/gif"
-          : ext === "webp" ? "image/webp"
-          : "application/octet-stream";
-
-        const uploadRes = await fetch(attUploadUrl, {
+        const uploadRes = await fetch(upload_url, {
           method: "PUT",
           headers: { "Content-Type": contentType },
           body: file,
         });
 
         if (!uploadRes.ok) {
-          console.error("Attachment upload failed:", uploadRes.status);
+          console.error("Upload failed:", uploadRes.status);
           setError(`Bulletin created but upload of "${file.name}" failed. Edit the bulletin to re-upload.`);
           setSubmitting(false);
           router.refresh();
@@ -446,32 +432,19 @@ function CreateBulletinModal({ onClose }: { onClose: () => void }) {
 
           <div className="shrink-0">
             <label className="block text-xs font-medium text-gray-600 mb-1">
-              Video (optional)
+              Attachments (optional)
             </label>
             <input
               type="file"
-              accept=".mov,.mp4,.m4v"
-              onChange={(e) => setVideoFile(e.target.files?.[0] ?? null)}
-              className="block w-full text-sm text-gray-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border file:border-gray-300 file:text-sm file:font-medium file:bg-white file:text-gray-700 hover:file:bg-gray-50"
-            />
-            <p className="text-[10px] text-gray-400 mt-1">.mov, .mp4, .m4v</p>
-          </div>
-
-          <div className="shrink-0">
-            <label className="block text-xs font-medium text-gray-600 mb-1">
-              PDFs / Images (optional)
-            </label>
-            <input
-              type="file"
-              accept=".pdf,.jpg,.jpeg,.png,.gif,.webp"
+              accept=".mov,.mp4,.m4v,.pdf,.jpg,.jpeg,.png,.gif,.webp"
               multiple
-              onChange={handleDocFilesChange}
+              onChange={handleFilesChange}
               className="block w-full text-sm text-gray-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border file:border-gray-300 file:text-sm file:font-medium file:bg-white file:text-gray-700 hover:file:bg-gray-50"
             />
-            <p className="text-[10px] text-gray-400 mt-1">.pdf, .jpg, .png, .gif, .webp — select multiple files</p>
-            {docFiles.length > 0 && (
+            <p className="text-[10px] text-gray-400 mt-1">Videos, PDFs, or images — select multiple files</p>
+            {files.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-1.5">
-                {docFiles.map((f, i) => (
+                {files.map((f, i) => (
                   <span
                     key={`${f.name}-${i}`}
                     className="inline-flex items-center gap-1 px-2 py-0.5 text-xs bg-gray-100 text-gray-700 rounded-full"
@@ -479,7 +452,7 @@ function CreateBulletinModal({ onClose }: { onClose: () => void }) {
                     {f.name}
                     <button
                       type="button"
-                      onClick={() => removeDocFile(i)}
+                      onClick={() => removeFile(i)}
                       className="text-gray-400 hover:text-red-500 leading-none"
                     >
                       &times;

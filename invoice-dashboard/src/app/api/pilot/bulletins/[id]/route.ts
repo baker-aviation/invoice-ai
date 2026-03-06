@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, requireAdmin, isAuthed, isRateLimited } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
-import { presignUpload } from "@/lib/gcs-upload";
 
 type RouteCtx = { params: Promise<{ id: string }> };
 
@@ -41,9 +40,9 @@ const CATEGORY_LABELS: Record<string, string> = {
 
 /**
  * PATCH /api/pilot/bulletins/[id] — update a bulletin (admin only)
- * JSON body: { title?, summary?, category?, video_filename? }
+ * JSON body: { title?, summary?, category? }
  *
- * Attachments are managed via the /attachments sub-route.
+ * All attachments are managed via the /attachments sub-route.
  */
 export async function PATCH(req: NextRequest, { params }: RouteCtx) {
   const auth = await requireAdmin(req);
@@ -59,7 +58,7 @@ export async function PATCH(req: NextRequest, { params }: RouteCtx) {
     return NextResponse.json({ error: "Invalid bulletin ID" }, { status: 400 });
   }
 
-  let body: { title?: string; summary?: string; category?: string; video_filename?: string };
+  let body: { title?: string; summary?: string; category?: string };
   try {
     body = await req.json();
   } catch {
@@ -88,24 +87,7 @@ export async function PATCH(req: NextRequest, { params }: RouteCtx) {
     updates.category = category;
   }
 
-  let uploadUrl: string | null = null;
-  const videoFilename = body.video_filename?.trim() || null;
-  const cat = (updates.category as string) || "general";
-
-  if (videoFilename) {
-    try {
-      const result = await presignUpload(videoFilename, `pilot-bulletins/${cat}`);
-      uploadUrl = result.url;
-      updates.video_gcs_bucket = result.bucket;
-      updates.video_gcs_key = result.key;
-      updates.video_filename = videoFilename;
-    } catch (err) {
-      console.error("[pilot/bulletins] video presign error:", err);
-      return NextResponse.json({ error: `Failed to prepare video upload: ${err instanceof Error ? err.message : err}` }, { status: 500 });
-    }
-  }
-
-  if (Object.keys(updates).length === 0 && !uploadUrl) {
+  if (Object.keys(updates).length === 0) {
     return NextResponse.json({ error: "No fields to update" }, { status: 400 });
   }
 
@@ -122,7 +104,7 @@ export async function PATCH(req: NextRequest, { params }: RouteCtx) {
     return NextResponse.json({ error: `Failed to update bulletin: ${dbErr.message}` }, { status: 500 });
   }
 
-  return NextResponse.json({ bulletin, upload_url: uploadUrl });
+  return NextResponse.json({ bulletin });
 }
 
 /**

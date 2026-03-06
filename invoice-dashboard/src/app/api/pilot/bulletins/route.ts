@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, requireAdmin, isAuthed, isRateLimited } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
-import { presignUpload } from "@/lib/gcs-upload";
 
 const CATEGORY_LABELS: Record<string, string> = {
   chief_pilot: "Chief Pilot",
@@ -23,7 +22,7 @@ export async function GET(req: NextRequest) {
 
   let query = supa
     .from("pilot_bulletins")
-    .select("id, title, summary, category, published_at, video_filename, created_at, pilot_bulletin_attachments(id, filename)")
+    .select("id, title, summary, category, published_at, created_at, pilot_bulletin_attachments(id, filename, content_type)")
     .order("published_at", { ascending: false });
 
   if (category) {
@@ -41,10 +40,10 @@ export async function GET(req: NextRequest) {
 
 /**
  * POST /api/pilot/bulletins — create a bulletin (admin only)
- * JSON body: { title, summary?, category, video_filename? }
+ * JSON body: { title, summary?, category }
  *
- * Returns presigned GCS upload URL for video if filename provided.
- * Attachments (PDFs/images) are added via POST /api/pilot/bulletins/[id]/attachments after creation.
+ * All attachments (videos, PDFs, images) are added via
+ * POST /api/pilot/bulletins/[id]/attachments after creation.
  */
 export async function POST(req: NextRequest) {
   const auth = await requireAdmin(req);
@@ -54,7 +53,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
 
-  let body: { title?: string; summary?: string; category?: string; video_filename?: string };
+  let body: { title?: string; summary?: string; category?: string };
   try {
     body = await req.json();
   } catch {
@@ -64,7 +63,6 @@ export async function POST(req: NextRequest) {
   const title = body.title?.trim();
   const summary = body.summary?.trim() || null;
   const category = body.category?.trim();
-  const videoFilename = body.video_filename?.trim() || null;
 
   if (!title) {
     return NextResponse.json({ error: "Title is required" }, { status: 400 });
@@ -73,24 +71,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid category" }, { status: 400 });
   }
 
-  let videoGcsBucket: string | null = null;
-  let videoGcsKey: string | null = null;
-  let uploadUrl: string | null = null;
-
-  // Generate presigned upload URL if video will be attached
-  if (videoFilename) {
-    try {
-      const result = await presignUpload(videoFilename, `pilot-bulletins/${category}`);
-      videoGcsBucket = result.bucket;
-      videoGcsKey = result.key;
-      uploadUrl = result.url;
-    } catch (err) {
-      console.error("[pilot/bulletins] video presign error:", err);
-      return NextResponse.json({ error: `Failed to prepare video upload: ${err instanceof Error ? err.message : err}` }, { status: 500 });
-    }
-  }
-
-  // Insert into database
   const supa = createServiceClient();
   const { data: bulletin, error: dbErr } = await supa
     .from("pilot_bulletins")
@@ -99,11 +79,8 @@ export async function POST(req: NextRequest) {
       summary,
       category,
       created_by: auth.userId,
-      video_gcs_bucket: videoGcsBucket,
-      video_gcs_key: videoGcsKey,
-      video_filename: videoFilename,
     })
-    .select("id, title, summary, category, published_at, video_filename")
+    .select("id, title, summary, category, published_at")
     .single();
 
   if (dbErr) {
@@ -111,5 +88,5 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `Failed to create bulletin: ${dbErr.message}` }, { status: 500 });
   }
 
-  return NextResponse.json({ bulletin, upload_url: uploadUrl }, { status: 201 });
+  return NextResponse.json({ bulletin }, { status: 201 });
 }
