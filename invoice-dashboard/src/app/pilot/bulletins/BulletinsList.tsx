@@ -173,7 +173,7 @@ export default function BulletinsList({
                   {b.summary && (
                     <>
                       <div
-                        className="text-sm text-gray-500 mt-1.5 line-clamp-[8] leading-snug prose prose-sm max-w-none prose-p:my-0.5 prose-ul:my-0.5 prose-ol:my-0.5 prose-li:my-0 prose-headings:my-1 prose-headings:text-sm [&>div]:my-0 [&>br]:leading-tight"
+                        className="text-sm text-gray-500 mt-1.5 line-clamp-[8] leading-snug prose prose-sm max-w-none prose-p:my-0.5 prose-ul:my-0.5 prose-ol:my-0.5 prose-li:my-0 prose-headings:my-1 prose-headings:text-sm [&>div]:my-0 [&>br]:leading-tight [&_*]:!text-sm [&_*]:!font-normal [&_*]:!text-gray-500 [&_h1]:!font-semibold [&_h2]:!font-semibold [&_h3]:!font-semibold [&_b]:!font-semibold [&_strong]:!font-semibold"
                         dangerouslySetInnerHTML={{ __html: b.summary }}
                       />
                       <span className="text-xs text-blue-500 mt-1.5 inline-block">Read more &rarr;</span>
