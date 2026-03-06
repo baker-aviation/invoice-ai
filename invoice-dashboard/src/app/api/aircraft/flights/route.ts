@@ -11,7 +11,7 @@ const FALLBACK_TAILS = [...new Set(TRIPS.map((t) => t.tail))];
 
 // Cache: FlightAware data changes slowly — cache 2 minutes
 let cachedResult: { data: FlightInfo[]; ts: number } | null = null;
-const CACHE_TTL_MS = 120_000;
+const CACHE_TTL_MS = 600_000; // 10 minutes
 
 export async function GET(req: NextRequest) {
   const auth = await requireAuth(req);

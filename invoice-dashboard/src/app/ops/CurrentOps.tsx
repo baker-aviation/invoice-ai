@@ -334,25 +334,34 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
                 // Determine status
                 let status = "Scheduled";
                 let statusColor = "text-gray-500";
-                if (adsb && !adsb.on_ground) {
+
+                // Check if this leg's scheduled arrival is in the past
+                const arrivalDate = f.scheduled_arrival ? new Date(f.scheduled_arrival) : null;
+                const now = new Date();
+                const arrivalPassed = arrivalDate && arrivalDate < now;
+
+                if (fi?.status) {
+                  status = fi.status;
+                  if (fi.status.includes("En Route")) statusColor = "text-blue-600 font-medium";
+                  if (fi.status.includes("Arrived") || fi.status.includes("Landed")) statusColor = "text-green-600 font-medium";
+                } else if (adsb && !adsb.on_ground) {
                   status = "Airborne";
                   statusColor = "text-blue-600 font-medium";
                 } else if (adsb && adsb.on_ground) {
                   status = "On Ground";
                   statusColor = "text-gray-500";
+                } else if (arrivalPassed) {
+                  status = "Arrived";
+                  statusColor = "text-green-600 font-medium";
                 }
-                if (fi?.status) {
-                  status = fi.status;
-                  if (fi.status.includes("En Route")) statusColor = "text-blue-600 font-medium";
-                  if (fi.status.includes("Arrived")) statusColor = "text-green-600 font-medium";
-                }
+
                 if (fi?.diverted) {
                   status = "DIVERTED";
                   statusColor = "text-red-600 font-bold";
                 }
 
                 const depDate = new Date(f.scheduled_departure);
-                const isPast = depDate < new Date() && status === "Scheduled";
+                const isPast = depDate < now && status === "Scheduled";
 
                 // Departure time mismatch: compare FlightAware departure vs ICS scheduled
                 const MISMATCH_THRESHOLD_MIN = 15;
