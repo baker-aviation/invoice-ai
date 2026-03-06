@@ -369,7 +369,6 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
                 }
 
                 const depDate = new Date(f.scheduled_departure);
-                const isPast = depDate < now && status === "Scheduled";
 
                 // Departure time mismatch: compare FlightAware departure vs ICS scheduled
                 const MISMATCH_THRESHOLD_MIN = 15;
@@ -390,7 +389,7 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
                 return (
                   <Fragment key={f.id}>
                     <tr
-                      className={`border-t hover:bg-gray-50 ${isPast ? "opacity-50" : ""}`}
+                      className="border-t hover:bg-gray-50"
                     >
                       <td className="px-4 py-2.5 font-mono font-semibold text-gray-900">
                         {f.tail_number || "—"}
