@@ -13,32 +13,48 @@ const FLIGHT_TIME_RED_MIN = 570; // 9.5 hours
 const FLIGHT_TIME_YELLOW_MIN = 480; // 8 hours
 const REST_RED_HOURS = 12;
 const REST_YELLOW_HOURS = 14;
+const MAX_LEG_DURATION_MIN = 12 * 60; // cap any single leg at 12h (sanity)
+const MIN_REST_GAP_MS = 6 * 60 * 60 * 1000; // 6h minimum for crew rest
+
+// Only include revenue/charter and positioning legs for duty tracking
+const DUTY_FLIGHT_TYPES = new Set(["revenue", "owner", "positioning", "ferry"]);
 
 /* ── Types ──────────────────────────────────────────── */
 
-type LegInfo = {
+type LegInterval = {
   departure_icao: string | null;
   arrival_icao: string | null;
-  scheduled_departure: string;
-  scheduled_arrival: string | null;
-  actual_departure: string | null;
-  actual_arrival: string | null;
-  estimated_arrival: string | null;
+  startMs: number;
+  endMs: number;
   durationMin: number;
+  source: "actual" | "fa-estimate" | "scheduled";
+};
+
+type WindowLeg = LegInterval & {
+  /** Minutes of this leg that overlap the worst window */
+  overlapMin: number;
+  /** Running total at end of this leg within the window */
+  runningTotalMin: number;
+  /** True if this leg is the one that crosses the threshold */
+  breachesAt?: number; // minute mark where threshold crossed
 };
 
 type TailFlightTime = {
   tail: string;
   maxRolling24hrMin: number;
-  legs: LegInfo[];
+  windowLegs: WindowLeg[];
+  /** The leg that should be slid to fix the issue */
+  suggestion: string | null;
 };
 
 type TailCrewRest = {
   tail: string;
   lastLanding: string | null;
   lastLandingIcao: string | null;
+  lastLandingSource: "actual" | "fa-estimate" | "scheduled";
   nextDeparture: string | null;
   nextDepartureIcao: string | null;
+  nextDepartureSource: "actual" | "fa-estimate" | "scheduled";
   restMinutes: number | null;
 };
 
@@ -50,39 +66,36 @@ function fmtDuration(minutes: number): string {
   return `${h}h ${m.toString().padStart(2, "0")}m`;
 }
 
+function sourceLabel(src: "actual" | "fa-estimate" | "scheduled"): string {
+  if (src === "actual") return "Actual";
+  if (src === "fa-estimate") return "FA Est";
+  return "Sched";
+}
+
+function sourceBadgeClass(src: "actual" | "fa-estimate" | "scheduled"): string {
+  if (src === "actual") return "bg-green-100 text-green-700";
+  if (src === "fa-estimate") return "bg-blue-100 text-blue-700";
+  return "bg-gray-100 text-gray-500";
+}
+
 /**
- * Compute the maximum total flight time in any rolling 24-hour window,
- * scanning from now forward through the next 24 hours.
- *
- * For each minute from now to now+24h, we check: how much flight time
- * falls within the 24-hour window ending at that minute? The maximum
- * across all those checks is the answer.
- *
- * Optimised: we only need to check at event boundaries (leg start/end times
- * and those times ± 24h), not literally every minute.
+ * Find the worst 24hr window (the one with max flight time)
+ * scanning window-end from now to now+24h.
+ * Returns { maxMin, bestWindowEnd }.
  */
-function computeMaxRolling24hr(
-  legs: { startMs: number; endMs: number }[],
+function findWorstWindow(
+  legs: LegInterval[],
   nowMs: number,
-): number {
-  if (legs.length === 0) return 0;
+): { maxMin: number; windowEndMs: number } {
+  if (legs.length === 0) return { maxMin: 0, windowEndMs: nowMs };
 
   const WINDOW_MS = 24 * 60 * 60 * 1000;
 
-  // We want: for window-end T in [now, now + 24h],
-  // sum of overlap between each leg and [T - 24h, T].
-  // The max changes only at leg start/end boundaries, so collect those.
   const checkPoints = new Set<number>();
-  // Always check now and now+24h
   checkPoints.add(nowMs);
   checkPoints.add(nowMs + WINDOW_MS);
 
   for (const leg of legs) {
-    // Window-end values where the overlap changes:
-    // when T = leg.startMs (leg starts entering the window from the right)
-    // when T = leg.endMs (leg fully inside)
-    // when T = leg.startMs + 24h (leg starts leaving the window from the left)
-    // when T = leg.endMs + 24h (leg fully outside)
     for (const t of [leg.startMs, leg.endMs, leg.startMs + WINDOW_MS, leg.endMs + WINDOW_MS]) {
       if (t >= nowMs && t <= nowMs + WINDOW_MS) {
         checkPoints.add(t);
@@ -91,6 +104,7 @@ function computeMaxRolling24hr(
   }
 
   let maxTotalMs = 0;
+  let bestEnd = nowMs;
 
   for (const windowEnd of checkPoints) {
     const windowStart = windowEnd - WINDOW_MS;
@@ -104,10 +118,13 @@ function computeMaxRolling24hr(
       }
     }
 
-    if (totalMs > maxTotalMs) maxTotalMs = totalMs;
+    if (totalMs > maxTotalMs) {
+      maxTotalMs = totalMs;
+      bestEnd = windowEnd;
+    }
   }
 
-  return maxTotalMs / 60_000; // convert to minutes
+  return { maxMin: maxTotalMs / 60_000, windowEndMs: bestEnd };
 }
 
 /* ── Component ──────────────────────────────────────── */
@@ -149,21 +166,21 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
     for (const fi of faData) {
       const key = `${fi.tail}|${fi.origin_icao ?? ""}|${fi.destination_icao ?? ""}`;
       map.set(key, fi);
-      // Also store by tail-only for fallback
-      if (!map.has(fi.tail) || (fi.latitude != null && fi.longitude != null)) {
-        map.set(fi.tail, fi);
-      }
     }
     return map;
   }, [faData]);
 
-  /* ── Build enriched leg data per tail ── */
-  const legsByTail = useMemo(() => {
-    const result = new Map<string, LegInfo[]>();
+  /* ── Build leg intervals per tail ── */
+  const intervalsByTail = useMemo(() => {
+    const result = new Map<string, LegInterval[]>();
     const now = Date.now();
 
     for (const f of flights) {
       if (!f.tail_number) continue;
+
+      // Only include charter/revenue and positioning legs
+      const ft = (f.flight_type ?? "").toLowerCase();
+      if (ft && !DUTY_FLIGHT_TYPES.has(ft)) continue;
 
       const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
       const fi = faMap.get(routeKey);
@@ -172,40 +189,48 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
       const actualArr = fi?.actual_arrival ?? null;
       const estimatedArr = fi?.arrival_time ?? null;
 
-      // Determine best departure time
+      // Determine source for departure
       const depIso = actualDep ?? f.scheduled_departure;
       const depMs = new Date(depIso).getTime();
 
-      // Determine best arrival time
-      const arrIso = actualArr ?? estimatedArr ?? f.scheduled_arrival;
-      const arrMs = arrIso ? new Date(arrIso).getTime() : null;
+      // Determine arrival and source
+      let arrIso: string | null;
+      let source: "actual" | "fa-estimate" | "scheduled";
+      let endMs: number;
 
-      let durationMin: number;
       if (actualArr) {
-        // Completed flight
-        durationMin = (new Date(actualArr).getTime() - depMs) / 60_000;
+        arrIso = actualArr;
+        source = "actual";
+        endMs = new Date(actualArr).getTime();
       } else if (actualDep && !actualArr) {
-        // In-flight: duration = now - actual departure
-        durationMin = (now - new Date(actualDep).getTime()) / 60_000;
-      } else if (arrMs) {
-        // Scheduled: use estimated/scheduled arrival
-        durationMin = (arrMs - depMs) / 60_000;
+        // In-flight
+        arrIso = null;
+        source = estimatedArr ? "fa-estimate" : "actual";
+        endMs = estimatedArr ? new Date(estimatedArr).getTime() : now;
+      } else if (estimatedArr) {
+        arrIso = estimatedArr;
+        source = "fa-estimate";
+        endMs = new Date(estimatedArr).getTime();
       } else {
-        durationMin = 0;
+        arrIso = f.scheduled_arrival;
+        source = "scheduled";
+        endMs = arrIso ? new Date(arrIso).getTime() : depMs;
       }
 
-      // Discard invalid durations
+      let durationMin = (endMs - depMs) / 60_000;
       if (durationMin < 0) durationMin = 0;
+      if (durationMin > MAX_LEG_DURATION_MIN) durationMin = MAX_LEG_DURATION_MIN;
 
-      const leg: LegInfo = {
+      // Re-clamp endMs based on capped duration
+      endMs = depMs + durationMin * 60_000;
+
+      const leg: LegInterval = {
         departure_icao: f.departure_icao,
         arrival_icao: f.arrival_icao,
-        scheduled_departure: f.scheduled_departure,
-        scheduled_arrival: f.scheduled_arrival,
-        actual_departure: actualDep,
-        actual_arrival: actualArr,
-        estimated_arrival: estimatedArr,
+        startMs: depMs,
+        endMs,
         durationMin,
+        source,
       };
 
       if (!result.has(f.tail_number)) {
@@ -216,11 +241,7 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
 
     // Sort legs by departure time within each tail
     for (const legs of result.values()) {
-      legs.sort(
-        (a, b) =>
-          new Date(a.actual_departure ?? a.scheduled_departure).getTime() -
-          new Date(b.actual_departure ?? b.scheduled_departure).getTime(),
-      );
+      legs.sort((a, b) => a.startMs - b.startMs);
     }
 
     return result;
@@ -229,119 +250,124 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
   /* ── Feature 1: Rolling 24hr flight time per tail ── */
   const flightTimeData = useMemo((): TailFlightTime[] => {
     const result: TailFlightTime[] = [];
+    const now = Date.now();
+    const WINDOW_MS = 24 * 60 * 60 * 1000;
 
-    for (const [tail, legs] of legsByTail) {
-      const now = Date.now();
-      const intervals = legs
-        .filter((l) => l.durationMin > 0)
-        .map((l) => {
-          const depIso = l.actual_departure ?? l.scheduled_departure;
-          const startMs = new Date(depIso).getTime();
-          let endMs: number;
-          if (l.actual_arrival) {
-            endMs = new Date(l.actual_arrival).getTime();
-          } else if (l.actual_departure && !l.actual_arrival) {
-            endMs = now; // in-flight
-          } else {
-            endMs = startMs + l.durationMin * 60_000;
-          }
-          return { startMs, endMs };
-        })
-        .sort((a, b) => a.startMs - b.startMs);
+    for (const [tail, legs] of intervalsByTail) {
+      const validLegs = legs.filter((l) => l.durationMin > 0);
+      const { maxMin, windowEndMs } = findWorstWindow(validLegs, now);
+      const windowStartMs = windowEndMs - WINDOW_MS;
 
-      const maxMin = computeMaxRolling24hr(intervals, now);
+      // Get legs that overlap this worst window, sorted by start
+      const windowLegs: WindowLeg[] = [];
+      let runningTotal = 0;
+      let breachLegIdx = -1;
+
+      for (const leg of validLegs) {
+        const overlapStart = Math.max(leg.startMs, windowStartMs);
+        const overlapEnd = Math.min(leg.endMs, windowEndMs);
+        if (overlapEnd <= overlapStart) continue;
+
+        const overlapMin = (overlapEnd - overlapStart) / 60_000;
+        const prevTotal = runningTotal;
+        runningTotal += overlapMin;
+
+        const wl: WindowLeg = {
+          ...leg,
+          overlapMin,
+          runningTotalMin: runningTotal,
+        };
+
+        // Check if this leg crosses the 8h caution threshold
+        if (prevTotal < FLIGHT_TIME_YELLOW_MIN && runningTotal >= FLIGHT_TIME_YELLOW_MIN) {
+          breachLegIdx = windowLegs.length;
+          wl.breachesAt = FLIGHT_TIME_YELLOW_MIN;
+        }
+        // Or the 9.5h red threshold
+        if (prevTotal < FLIGHT_TIME_RED_MIN && runningTotal >= FLIGHT_TIME_RED_MIN) {
+          breachLegIdx = windowLegs.length;
+          wl.breachesAt = FLIGHT_TIME_RED_MIN;
+        }
+
+        windowLegs.push(wl);
+      }
+
+      // Suggestion: if breaching, suggest sliding the first leg after breach
+      let suggestion: string | null = null;
+      if (breachLegIdx >= 0 && breachLegIdx + 1 < windowLegs.length) {
+        const slideLeg = windowLegs[breachLegIdx + 1];
+        suggestion = `Consider sliding ${slideLeg.departure_icao ?? "?"}-${slideLeg.arrival_icao ?? "?"} to reduce 24hr total`;
+      } else if (breachLegIdx >= 0) {
+        // The breach leg itself is the last one — suggest sliding it
+        const slideLeg = windowLegs[breachLegIdx];
+        suggestion = `Consider sliding ${slideLeg.departure_icao ?? "?"}-${slideLeg.arrival_icao ?? "?"} to reduce 24hr total`;
+      }
 
       result.push({
         tail,
         maxRolling24hrMin: maxMin,
-        legs,
+        windowLegs,
+        suggestion,
       });
     }
 
     // Sort: highest flight time first
     result.sort((a, b) => b.maxRolling24hrMin - a.maxRolling24hrMin);
     return result;
-  }, [legsByTail]);
+  }, [intervalsByTail]);
 
   /* ── Feature 2: Crew rest per tail ── */
-  // Only gaps ≥ 6 hours between landing→departure count as rest (overnight).
-  // Quick turns during the same duty day are not rest periods.
-  const MIN_REST_GAP_MS = 6 * 60 * 60 * 1000;
-
   const crewRestData = useMemo((): TailCrewRest[] => {
     const result: TailCrewRest[] = [];
     const now = Date.now();
 
-    for (const [tail, legs] of legsByTail) {
-      // Build sorted timeline of (landing, next_departure) gaps
-      const sortedLegs = [...legs].sort(
-        (a, b) =>
-          new Date(a.actual_departure ?? a.scheduled_departure).getTime() -
-          new Date(b.actual_departure ?? b.scheduled_departure).getTime(),
-      );
+    for (const [tail, legs] of intervalsByTail) {
+      const sorted = [...legs].sort((a, b) => a.startMs - b.startMs);
 
-      // Find the overnight rest gap: the last gap ≥ 6h where the landing
-      // is in the past and the next departure is in the future (or the last
-      // such gap before the next future departure).
       let bestLanding: string | null = null;
       let bestLandingIcao: string | null = null;
+      let bestLandingSource: "actual" | "fa-estimate" | "scheduled" = "scheduled";
       let bestNextDep: string | null = null;
       let bestNextDepIcao: string | null = null;
+      let bestNextDepSource: "actual" | "fa-estimate" | "scheduled" = "scheduled";
       let bestRestMin: number | null = null;
 
-      for (let i = 0; i < sortedLegs.length - 1; i++) {
-        const landingIso = sortedLegs[i].actual_arrival ?? sortedLegs[i].scheduled_arrival;
-        const nextDepIso = sortedLegs[i + 1].actual_departure ?? sortedLegs[i + 1].scheduled_departure;
-        if (!landingIso) continue;
-
-        const landingMs = new Date(landingIso).getTime();
-        const nextDepMs = new Date(nextDepIso).getTime();
+      // Look for gaps >= 6h between consecutive legs
+      for (let i = 0; i < sorted.length - 1; i++) {
+        const landingMs = sorted[i].endMs;
+        const nextDepMs = sorted[i + 1].startMs;
         const gapMs = nextDepMs - landingMs;
 
-        // Only count gaps ≥ 6 hours as crew rest
         if (gapMs < MIN_REST_GAP_MS) continue;
 
-        // We want the rest gap that straddles "now" or is the most recent
-        // completed one before a future departure
+        // We want the gap that straddles now or is the first future one
         if (nextDepMs > now) {
-          // This gap leads to a future departure — this is the active rest window
-          bestLanding = landingIso;
-          bestLandingIcao = sortedLegs[i].arrival_icao;
-          bestNextDep = nextDepIso;
-          bestNextDepIcao = sortedLegs[i + 1].departure_icao;
+          bestLanding = new Date(landingMs).toISOString();
+          bestLandingIcao = sorted[i].arrival_icao;
+          bestLandingSource = sorted[i].source;
+          bestNextDep = new Date(nextDepMs).toISOString();
+          bestNextDepIcao = sorted[i + 1].departure_icao;
+          bestNextDepSource = sorted[i + 1].source === "actual" ? "actual" : "scheduled";
           bestRestMin = gapMs / 60_000;
-          break; // first future gap ≥ 6h is the one we care about
+          break;
         }
       }
 
-      // If no gap found with a future departure, check if the last leg's
-      // landing has no following departure (end of schedule)
-      if (!bestNextDep && sortedLegs.length > 0) {
-        // Find next future departure if any
-        const nextFutureLeg = sortedLegs.find((l) => {
-          const depMs = new Date(l.actual_departure ?? l.scheduled_departure).getTime();
-          return depMs > now;
-        });
-        if (nextFutureLeg) {
-          // Find last past landing
-          const pastLegs = sortedLegs.filter((l) => {
-            const arrIso = l.actual_arrival ?? l.scheduled_arrival;
-            return arrIso && new Date(arrIso).getTime() <= now;
-          });
-          if (pastLegs.length > 0) {
-            const lastPast = pastLegs[pastLegs.length - 1];
-            const landingIso = lastPast.actual_arrival ?? lastPast.scheduled_arrival;
-            const nextDepIso = nextFutureLeg.actual_departure ?? nextFutureLeg.scheduled_departure;
-            if (landingIso) {
-              const gapMs = new Date(nextDepIso).getTime() - new Date(landingIso).getTime();
-              if (gapMs >= MIN_REST_GAP_MS) {
-                bestLanding = landingIso;
-                bestLandingIcao = lastPast.arrival_icao;
-                bestNextDep = nextDepIso;
-                bestNextDepIcao = nextFutureLeg.departure_icao;
-                bestRestMin = gapMs / 60_000;
-              }
-            }
+      // Fallback: last past landing → next future departure with 6h+ gap
+      if (!bestNextDep && sorted.length > 0) {
+        const pastLegs = sorted.filter((l) => l.endMs <= now);
+        const futureLeg = sorted.find((l) => l.startMs > now);
+        if (pastLegs.length > 0 && futureLeg) {
+          const lastPast = pastLegs[pastLegs.length - 1];
+          const gapMs = futureLeg.startMs - lastPast.endMs;
+          if (gapMs >= MIN_REST_GAP_MS) {
+            bestLanding = new Date(lastPast.endMs).toISOString();
+            bestLandingIcao = lastPast.arrival_icao;
+            bestLandingSource = lastPast.source;
+            bestNextDep = new Date(futureLeg.startMs).toISOString();
+            bestNextDepIcao = futureLeg.departure_icao;
+            bestNextDepSource = futureLeg.source === "actual" ? "actual" : "scheduled";
+            bestRestMin = gapMs / 60_000;
           }
         }
       }
@@ -350,13 +376,14 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
         tail,
         lastLanding: bestLanding,
         lastLandingIcao: bestLandingIcao,
+        lastLandingSource: bestLandingSource,
         nextDeparture: bestNextDep,
         nextDepartureIcao: bestNextDepIcao,
+        nextDepartureSource: bestNextDepSource,
         restMinutes: bestRestMin,
       });
     }
 
-    // Sort: shortest rest first (most critical at top), nulls at bottom
     result.sort((a, b) => {
       if (a.restMinutes == null && b.restMinutes == null) return 0;
       if (a.restMinutes == null) return 1;
@@ -365,10 +392,9 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
     });
 
     return result;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [legsByTail]);
+  }, [intervalsByTail]);
 
-  /* ── Alert counts for summary bar ── */
+  /* ── Alert counts ── */
   const flightTimeAlerts = flightTimeData.filter(
     (t) => t.maxRolling24hrMin >= FLIGHT_TIME_YELLOW_MIN,
   ).length;
@@ -384,7 +410,7 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
       <div className="flex flex-wrap items-center gap-3 text-sm">
         <div className="flex items-center gap-4">
           <span className="font-medium text-gray-700">
-            {legsByTail.size} tail{legsByTail.size !== 1 ? "s" : ""} tracked
+            {intervalsByTail.size} tail{intervalsByTail.size !== 1 ? "s" : ""} tracked
           </span>
           {flightTimeAlerts > 0 && (
             <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full bg-red-100 text-red-700">
@@ -432,26 +458,22 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
             <thead>
               <tr className="bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                 <th className="px-4 py-3">Tail</th>
-                <th className="px-4 py-3">Max 24hr Flight Time</th>
-                <th className="px-4 py-3 w-48">Status</th>
-                <th className="px-4 py-3">Legs Breakdown</th>
+                <th className="px-4 py-3">Max 24hr</th>
+                <th className="px-4 py-3 w-40">Status</th>
+                <th className="px-4 py-3">Window Legs</th>
               </tr>
             </thead>
             <tbody>
               {flightTimeData.length === 0 ? (
                 <tr>
-                  <td
-                    colSpan={4}
-                    className="px-4 py-8 text-center text-gray-400"
-                  >
+                  <td colSpan={4} className="px-4 py-8 text-center text-gray-400">
                     No flight data available
                   </td>
                 </tr>
               ) : (
                 flightTimeData.map((t) => {
                   const isRed = t.maxRolling24hrMin >= FLIGHT_TIME_RED_MIN;
-                  const isYellow =
-                    !isRed && t.maxRolling24hrMin >= FLIGHT_TIME_YELLOW_MIN;
+                  const isYellow = !isRed && t.maxRolling24hrMin >= FLIGHT_TIME_YELLOW_MIN;
                   const pct = Math.min(
                     (t.maxRolling24hrMin / (MAX_DUTY_HOURS_SCALE * 60)) * 100,
                     100,
@@ -462,7 +484,7 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
                   else if (isYellow) barColor = "bg-amber-500";
 
                   return (
-                    <tr key={t.tail} className="border-t hover:bg-gray-50">
+                    <tr key={t.tail} className="border-t hover:bg-gray-50 align-top">
                       <td className="px-4 py-2.5 font-mono font-semibold text-gray-900">
                         {t.tail}
                       </td>
@@ -470,11 +492,7 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
                         <div className="flex items-center gap-2">
                           <span
                             className={`font-mono font-medium ${
-                              isRed
-                                ? "text-red-700"
-                                : isYellow
-                                  ? "text-amber-700"
-                                  : "text-gray-700"
+                              isRed ? "text-red-700" : isYellow ? "text-amber-700" : "text-gray-700"
                             }`}
                           >
                             {fmtDuration(t.maxRolling24hrMin)}
@@ -505,31 +523,49 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
                         </div>
                       </td>
                       <td className="px-4 py-2.5">
-                        <div className="flex flex-wrap gap-1.5">
-                          {t.legs
-                            .filter((l) => l.durationMin > 0)
-                            .map((leg, i) => (
-                              <span
-                                key={i}
-                                className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] rounded bg-gray-100 text-gray-600"
-                                title={`${leg.departure_icao ?? "?"} - ${leg.arrival_icao ?? "?"}: ${fmtDuration(leg.durationMin)}`}
-                              >
-                                <span className="font-mono font-medium">
-                                  {leg.departure_icao ?? "?"}-
-                                  {leg.arrival_icao ?? "?"}
-                                </span>
-                                <span className="text-gray-400">
-                                  {fmtDuration(leg.durationMin)}
-                                </span>
-                              </span>
-                            ))}
-                          {t.legs.filter((l) => l.durationMin > 0).length ===
-                            0 && (
-                            <span className="text-xs text-gray-400">
-                              No completed legs
-                            </span>
-                          )}
-                        </div>
+                        {t.windowLegs.length === 0 ? (
+                          <span className="text-xs text-gray-400">No legs in window</span>
+                        ) : (
+                          <div className="space-y-1">
+                            {t.windowLegs.map((wl, i) => {
+                              const isBreach = wl.breachesAt != null;
+                              return (
+                                <div key={i} className="flex items-center gap-1.5 flex-wrap">
+                                  <span
+                                    className={`inline-flex items-center gap-1 px-2 py-0.5 text-[11px] rounded font-mono font-medium ${
+                                      isBreach
+                                        ? "bg-red-50 text-red-700 ring-1 ring-red-200"
+                                        : "bg-gray-100 text-gray-700"
+                                    }`}
+                                  >
+                                    {wl.departure_icao ?? "?"}-{wl.arrival_icao ?? "?"}
+                                    <span className={isBreach ? "text-red-400" : "text-gray-400"}>
+                                      {fmtDuration(wl.overlapMin)}
+                                    </span>
+                                  </span>
+                                  <span className={`px-1 py-0.5 text-[9px] font-medium rounded ${sourceBadgeClass(wl.source)}`}>
+                                    {sourceLabel(wl.source)}
+                                  </span>
+                                  <span className="text-[10px] text-gray-400">
+                                    = {fmtDuration(wl.runningTotalMin)}
+                                  </span>
+                                  {isBreach && (
+                                    <span className="text-[10px] font-semibold text-red-600">
+                                      {wl.breachesAt === FLIGHT_TIME_RED_MIN
+                                        ? "9.5h limit hit"
+                                        : "8h caution"}
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            })}
+                            {t.suggestion && (isRed || isYellow) && (
+                              <div className="mt-1.5 px-2 py-1 text-[11px] rounded bg-blue-50 text-blue-700 border border-blue-100">
+                                {t.suggestion}
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </td>
                     </tr>
                   );
@@ -559,23 +595,15 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
             <tbody>
               {crewRestData.length === 0 ? (
                 <tr>
-                  <td
-                    colSpan={5}
-                    className="px-4 py-8 text-center text-gray-400"
-                  >
+                  <td colSpan={5} className="px-4 py-8 text-center text-gray-400">
                     No flight data available
                   </td>
                 </tr>
               ) : (
                 crewRestData.map((t) => {
-                  const restHours =
-                    t.restMinutes != null ? t.restMinutes / 60 : null;
-                  const isRed =
-                    restHours != null && restHours < REST_RED_HOURS;
-                  const isYellow =
-                    restHours != null &&
-                    !isRed &&
-                    restHours < REST_YELLOW_HOURS;
+                  const restHours = t.restMinutes != null ? t.restMinutes / 60 : null;
+                  const isRed = restHours != null && restHours < REST_RED_HOURS;
+                  const isYellow = restHours != null && !isRed && restHours < REST_YELLOW_HOURS;
                   const isOk = restHours != null && !isRed && !isYellow;
 
                   return (
@@ -585,18 +613,28 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
                       </td>
                       <td className="px-4 py-2.5 text-gray-600">
                         {t.lastLanding ? (
-                          <span className="font-mono">
-                            {fmt(t.lastLanding, t.lastLandingIcao)}
-                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-mono">
+                              {fmt(t.lastLanding, t.lastLandingIcao)}
+                            </span>
+                            <span className={`px-1 py-0.5 text-[9px] font-medium rounded ${sourceBadgeClass(t.lastLandingSource)}`}>
+                              {sourceLabel(t.lastLandingSource)}
+                            </span>
+                          </div>
                         ) : (
                           <span className="text-gray-400">--</span>
                         )}
                       </td>
                       <td className="px-4 py-2.5 text-gray-600">
                         {t.nextDeparture ? (
-                          <span className="font-mono">
-                            {fmt(t.nextDeparture, t.nextDepartureIcao)}
-                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-mono">
+                              {fmt(t.nextDeparture, t.nextDepartureIcao)}
+                            </span>
+                            <span className={`px-1 py-0.5 text-[9px] font-medium rounded ${sourceBadgeClass(t.nextDepartureSource)}`}>
+                              {sourceLabel(t.nextDepartureSource)}
+                            </span>
+                          </div>
                         ) : (
                           <span className="text-gray-400">--</span>
                         )}
@@ -605,11 +643,7 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
                         {t.restMinutes != null ? (
                           <span
                             className={`font-mono font-medium ${
-                              isRed
-                                ? "text-red-700"
-                                : isYellow
-                                  ? "text-amber-700"
-                                  : "text-gray-700"
+                              isRed ? "text-red-700" : isYellow ? "text-amber-700" : "text-gray-700"
                             }`}
                           >
                             {fmtDuration(t.restMinutes)}
@@ -639,7 +673,7 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
                         )}
                         {restHours == null && (
                           <span className="text-xs text-gray-400">
-                            No upcoming leg
+                            No upcoming rest
                           </span>
                         )}
                       </td>
