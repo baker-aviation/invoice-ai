@@ -113,7 +113,7 @@ export default async function BulletinDetailPage({
 
         {bulletin.summary && (
           <div
-            className="text-sm text-gray-700 mb-4 leading-relaxed prose prose-sm max-w-none"
+            className="text-sm text-gray-700 mb-4 leading-relaxed prose prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-headings:my-2 [&>div]:my-0.5"
             dangerouslySetInnerHTML={{ __html: bulletin.summary }}
           />
         )}
