@@ -333,6 +333,22 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
                 const depDate = new Date(f.scheduled_departure);
                 const isPast = depDate < new Date() && status === "Scheduled";
 
+                // Departure time mismatch: compare FlightAware departure vs ICS scheduled
+                const MISMATCH_THRESHOLD_MIN = 15;
+                let depMismatchMin: number | null = null;
+                if (fi?.departure_time && f.scheduled_departure) {
+                  const faDep = new Date(fi.departure_time).getTime();
+                  const icsDep = new Date(f.scheduled_departure).getTime();
+                  // Only flag if FA route matches this leg (same origin)
+                  const routeMatches = !fi.origin_icao || !f.departure_icao || fi.origin_icao === f.departure_icao;
+                  if (routeMatches) {
+                    const diffMin = Math.round((faDep - icsDep) / 60000);
+                    if (Math.abs(diffMin) >= MISMATCH_THRESHOLD_MIN) {
+                      depMismatchMin = diffMin;
+                    }
+                  }
+                }
+
                 return (
                   <Fragment key={f.id}>
                     <tr
@@ -354,9 +370,21 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
                           </div>
                         )}
                       </td>
-                      <td className="px-4 py-2.5 text-gray-600">{fmtTime(f.scheduled_departure)}</td>
                       <td className="px-4 py-2.5 text-gray-600">
-                        {fi?.arrival_time ? fmtTime(fi.arrival_time) : fmtTime(f.scheduled_arrival)}
+                        <div>{fmtTime(f.scheduled_departure)}</div>
+                        {depMismatchMin !== null && (
+                          <div className="mt-0.5 inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-semibold rounded bg-amber-100 text-amber-800 border border-amber-200" title={`FlightAware shows departure at ${fmtTime(fi!.departure_time!)}`}>
+                            FA: {depMismatchMin > 0 ? `+${depMismatchMin}` : depMismatchMin}min
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-4 py-2.5 text-gray-600">
+                        {fi?.arrival_time ? (
+                          <div>
+                            <div>{fmtTime(fi.arrival_time)}</div>
+                            <div className="text-[10px] text-green-600 font-medium">FA ETA</div>
+                          </div>
+                        ) : fmtTime(f.scheduled_arrival)}
                       </td>
                       <td className="px-4 py-2.5">
                         <span className={`px-2 py-0.5 text-xs font-medium rounded-full ${typeColor}`}>
