@@ -192,6 +192,8 @@ type AdvVsActualRow = {
   actualAvgPrice: number | null;
   invoiceCount: number;
   vsActualPct: number | null;
+  recent7dAvg: number | null;   // avg price paid last 7 days at this airport
+  recent7dCount: number;         // number of entries in last 7 days
 };
 
 function buildAdvVsActual(
@@ -200,9 +202,22 @@ function buildAdvVsActual(
 ): AdvVsActualRow[] {
   // Group invoice data by (vendor_lower, airport) — all time for "actual" avg
   const invoiceBuckets = new Map<string, { prices: number[]; count: number }>();
+  // Also build 7-day recent lookup by airport (all sources)
+  const now = new Date();
+  const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+  const recent7dByAirport = new Map<string, number[]>();
+
   for (const r of prices) {
-    if (!r.vendor_name || !r.airport_code || r.effective_price_per_gallon == null) continue;
-    if ((r.data_source ?? "invoice") !== "invoice") continue;
+    if (!r.airport_code || r.effective_price_per_gallon == null) continue;
+
+    // 7-day recent: all sources, by airport
+    if (r.invoice_date && r.invoice_date >= sevenDaysAgo) {
+      if (!recent7dByAirport.has(r.airport_code)) recent7dByAirport.set(r.airport_code, []);
+      recent7dByAirport.get(r.airport_code)!.push(r.effective_price_per_gallon);
+    }
+
+    // All-time by vendor+airport (invoices only)
+    if (!r.vendor_name || (r.data_source ?? "invoice") !== "invoice") continue;
     const key = `${r.vendor_name.toLowerCase()}|${r.airport_code}`;
     if (!invoiceBuckets.has(key)) invoiceBuckets.set(key, { prices: [], count: 0 });
     const bucket = invoiceBuckets.get(key)!;
@@ -242,9 +257,18 @@ function buildAdvVsActual(
       : null;
     const invoiceCount = bucket?.count ?? 0;
 
+    // 7-day recent avg at this airport
+    const recentPrices = recent7dByAirport.get(latest.airport_code);
+    const recent7dAvg = recentPrices && recentPrices.length > 0
+      ? Math.round((recentPrices.reduce((a, b) => a + b, 0) / recentPrices.length) * 10000) / 10000
+      : null;
+    const recent7dCount = recentPrices?.length ?? 0;
+
+    // vs Adv uses 7-day avg if available, otherwise all-time
+    const comparePrice = recent7dAvg ?? actualAvg;
     let vsActualPct: number | null = null;
-    if (actualAvg != null && latest.price > 0) {
-      vsActualPct = Math.round(((actualAvg - latest.price) / latest.price) * 1000) / 10;
+    if (comparePrice != null && latest.price > 0) {
+      vsActualPct = Math.round(((comparePrice - latest.price) / latest.price) * 1000) / 10;
     }
 
     rows.push({
@@ -262,6 +286,8 @@ function buildAdvVsActual(
       actualAvgPrice: actualAvg,
       invoiceCount,
       vsActualPct,
+      recent7dAvg,
+      recent7dCount,
     });
   }
 
@@ -1028,9 +1054,8 @@ export default function FuelPricesTable({
                     <span title="Week-over-week change in advertised price">WoW</span>
                   </th>
                   <th className="px-4 py-3 text-right">
-                    <span title="Average actual invoice price for this vendor + airport">Actual Avg</span>
+                    <span title="Average price paid at this airport in last 7 days (invoices + JetInsight)">Last 7d Avg</span>
                   </th>
-                  <th className="px-4 py-3 text-center"># Inv</th>
                   <th className="px-4 py-3 text-right">
                     <span title="Actual vs current advertised: positive = paying more">vs Adv.</span>
                   </th>
@@ -1075,17 +1100,14 @@ export default function FuelPricesTable({
                         )}
                       </td>
                       <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono font-medium text-blue-700">
-                        {row.actualAvgPrice != null ? (
+                        {row.recent7dAvg != null ? (
                           <span>
-                            {fmt$(row.actualAvgPrice)}
-                            <span className="text-[10px] text-gray-400 ml-1">({row.invoiceCount})</span>
+                            {fmt$(row.recent7dAvg)}
+                            <span className="text-[10px] text-gray-400 ml-1">({row.recent7dCount})</span>
                           </span>
                         ) : (
                           <span className="text-gray-300">{"\u2014"}</span>
                         )}
-                      </td>
-                      <td className="px-4 py-2.5 whitespace-nowrap text-center text-xs text-gray-500">
-                        {row.invoiceCount || "\u2014"}
                       </td>
                       <td className="px-4 py-2.5 whitespace-nowrap text-right">
                         {row.vsActualPct != null ? (
@@ -1104,7 +1126,7 @@ export default function FuelPricesTable({
                 })}
                 {advPageRows.length === 0 && (
                   <tr>
-                    <td colSpan={11} className="px-4 py-8 text-center text-gray-400">
+                    <td colSpan={10} className="px-4 py-8 text-center text-gray-400">
                       No advertised price data found. Use &ldquo;Import Advertised Prices&rdquo; to upload FBO price sheets.
                     </td>
                   </tr>
