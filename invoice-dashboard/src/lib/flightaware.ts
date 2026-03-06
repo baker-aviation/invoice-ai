@@ -162,6 +162,7 @@ async function getFlightPosition(
 /**
  * For a list of tail numbers, return all recent flights from FlightAware
  * (within 12 hours past + upcoming). Includes completed, en-route, and scheduled.
+ * Only fetches position for the single active en-route flight per tail (to limit API calls).
  */
 export async function getActiveFlights(
   tails: string[],
@@ -178,6 +179,7 @@ export async function getActiveFlights(
         try {
           const flights = await getFlightsByRegistration(tail);
           const recent: FlightInfo[] = [];
+          let positionFetched = false;
 
           for (const f of flights) {
             if (f.cancelled) continue;
@@ -190,13 +192,15 @@ export async function getActiveFlights(
 
             const info = toFlightInfo(tail, f);
 
-            // If en-route and no position, fetch position separately
+            // Only fetch position for the FIRST en-route flight per tail (saves API calls)
             if (
+              !positionFetched &&
               info.latitude == null &&
               f.actual_off != null &&
               f.actual_on == null &&
               f.fa_flight_id
             ) {
+              positionFetched = true;
               const pos = await getFlightPosition(f.fa_flight_id);
               if (pos) {
                 info.latitude = pos.latitude;
