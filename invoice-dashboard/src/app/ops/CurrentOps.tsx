@@ -81,43 +81,48 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
   const [expandedFlights, setExpandedFlights] = useState<Set<string>>(new Set());
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
-  // Fetch ADS-B positions
-  const fetchPositions = useCallback(async () => {
-    try {
-      const res = await fetch("/api/aircraft/positions", { cache: "no-store" });
-      if (res.ok) {
-        const data = await res.json();
-        setAdsbAircraft(data.aircraft ?? []);
-        setLastUpdate(new Date());
-      }
-    } catch { /* ignore */ }
-  }, []);
-
-  // Fetch FlightAware data
+  // Fetch FlightAware data (primary source for both positions and flight info)
   const fetchFlightInfo = useCallback(async () => {
     try {
       const res = await fetch("/api/aircraft/flights", { cache: "no-store" });
       if (res.ok) {
         const data = await res.json();
         const map = new Map<string, FlightInfoMap>();
+        const positions: AdsbAircraft[] = [];
         for (const fi of data.flights ?? []) {
           map.set(fi.tail, fi);
+          // Synthesize map positions from FlightAware data
+          if (fi.latitude != null && fi.longitude != null) {
+            positions.push({
+              tail: fi.tail,
+              lat: fi.latitude,
+              lon: fi.longitude,
+              alt_baro: fi.altitude ?? null,
+              gs: fi.groundspeed ?? null,
+              track: fi.heading ?? null,
+              baro_rate: null,
+              on_ground: false,
+              squawk: null,
+              flight: fi.ident ?? null,
+              seen: null,
+              aircraft_type: null,
+              description: null,
+            });
+          }
         }
         setFlightInfo(map);
+        setAdsbAircraft(positions);
+        setLastUpdate(new Date());
       }
     } catch { /* ignore */ }
   }, []);
 
   // Poll every 60 seconds
   useEffect(() => {
-    fetchPositions();
     fetchFlightInfo();
-    const interval = setInterval(() => {
-      fetchPositions();
-      fetchFlightInfo();
-    }, 60_000);
+    const interval = setInterval(fetchFlightInfo, 60_000);
     return () => clearInterval(interval);
-  }, [fetchPositions, fetchFlightInfo]);
+  }, [fetchFlightInfo]);
 
   // Get all unique flight types
   const allTypes = useMemo(() => {
@@ -362,19 +367,32 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
                           {f.departure_icao || "?"} → {f.arrival_icao || "?"}
                         </span>
                         {fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100 && (
-                          <div className="mt-1 w-20 h-1.5 bg-gray-200 rounded-full overflow-hidden">
-                            <div
-                              className="h-full bg-blue-500 rounded-full"
-                              style={{ width: `${fi.progress_percent}%` }}
-                            />
+                          <div className="mt-1 flex items-center gap-2">
+                            <div className="w-20 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                              <div
+                                className="h-full bg-blue-500 rounded-full"
+                                style={{ width: `${fi.progress_percent}%` }}
+                              />
+                            </div>
+                            {fi.arrival_time && (() => {
+                              const remaining = Math.round((new Date(fi.arrival_time).getTime() - Date.now()) / 60000);
+                              if (remaining <= 0) return null;
+                              const hrs = Math.floor(remaining / 60);
+                              const mins = remaining % 60;
+                              return (
+                                <span className="text-[10px] text-blue-600 font-medium whitespace-nowrap">
+                                  {hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`} remaining
+                                </span>
+                              );
+                            })()}
                           </div>
                         )}
                       </td>
                       <td className="px-4 py-2.5 text-gray-600">
                         <div>{fmtTime(f.scheduled_departure)}</div>
-                        {depMismatchMin !== null && (
-                          <div className="mt-0.5 inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-semibold rounded bg-amber-100 text-amber-800 border border-amber-200" title={`FlightAware shows departure at ${fmtTime(fi!.departure_time!)}`}>
-                            FA: {depMismatchMin > 0 ? `+${depMismatchMin}` : depMismatchMin}min
+                        {depMismatchMin !== null && fi?.departure_time && (
+                          <div className="mt-0.5 text-[10px] font-semibold text-amber-700">
+                            FA Est. Departure: {fmtTime(fi.departure_time)}
                           </div>
                         )}
                       </td>
