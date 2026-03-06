@@ -11,7 +11,12 @@ const FALLBACK_TAILS = [...new Set(TRIPS.map((t) => t.tail))];
 
 // Cache: FlightAware data changes slowly — cache 2 minutes
 let cachedResult: { data: FlightInfo[]; ts: number } | null = null;
-const CACHE_TTL_MS = 600_000; // 10 minutes
+// 10 min during business hours (7AM–11PM CT), 20 min overnight
+function getCacheTtl(): number {
+  const ct = new Date().toLocaleString("en-US", { timeZone: "America/Chicago", hour: "numeric", hour12: false });
+  const hour = parseInt(ct, 10);
+  return (hour >= 7 && hour < 23) ? 600_000 : 1_200_000;
+}
 
 export async function GET(req: NextRequest) {
   const auth = await requireAuth(req);
@@ -27,7 +32,7 @@ export async function GET(req: NextRequest) {
   }
 
   // Return cache if fresh
-  if (cachedResult && Date.now() - cachedResult.ts < CACHE_TTL_MS) {
+  if (cachedResult && Date.now() - cachedResult.ts < getCacheTtl()) {
     return NextResponse.json({
       flights: cachedResult.data,
       count: cachedResult.data.length,

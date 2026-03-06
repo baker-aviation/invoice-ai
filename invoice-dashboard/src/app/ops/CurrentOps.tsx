@@ -340,28 +340,27 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
                 let status = "Scheduled";
                 let statusColor = "text-gray-500";
 
-                // Check if this leg's scheduled arrival is in the past
                 const arrivalDate = f.scheduled_arrival ? new Date(f.scheduled_arrival) : null;
                 const now = new Date();
                 const arrivalPassed = arrivalDate && arrivalDate < now;
 
-                if (arrivalPassed) {
-                  // Leg is complete — arrival time has passed
-                  status = "Arrived";
-                  statusColor = "text-green-600 font-medium";
-                } else if (fi?.status) {
+                if (fi?.status) {
+                  // FlightAware matched this leg — trust its status (handles delays)
                   status = fi.status;
                   if (fi.status.includes("En Route")) statusColor = "text-blue-600 font-medium";
                   if (fi.status.includes("Arrived") || fi.status.includes("Landed")) statusColor = "text-green-600 font-medium";
-                } else if (fi && !arrivalPassed) {
-                  // FlightAware matched this leg but no explicit status
-                  if (fi.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100) {
-                    status = "En Route";
-                    statusColor = "text-blue-600 font-medium";
-                  }
-                } else if (adsb && !adsb.on_ground && !arrivalPassed) {
-                  status = "Airborne";
+                } else if (fi && !fi.actual_arrival && fi.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100) {
+                  // FA matched, no explicit status but in progress
+                  status = "En Route";
                   statusColor = "text-blue-600 font-medium";
+                } else if (fi?.actual_arrival) {
+                  // FA says landed
+                  status = "Arrived";
+                  statusColor = "text-green-600 font-medium";
+                } else if (arrivalPassed && !fi) {
+                  // No FA data, but scheduled arrival is past — assume arrived
+                  status = "Arrived";
+                  statusColor = "text-green-600 font-medium";
                 }
 
                 if (fi?.diverted) {
@@ -441,7 +440,7 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
                           <div className="text-[10px] text-green-600 font-medium mt-0.5">
                             Actual: {fmt(fi.actual_arrival, f.arrival_icao)}
                           </div>
-                        ) : fi?.arrival_time && !arrivalPassed ? (
+                        ) : fi?.arrival_time && !fi?.actual_arrival && status !== "Arrived" ? (
                           <div className="text-[10px] text-green-600 font-medium mt-0.5">
                             FlightAware ETA: {fmt(fi.arrival_time, f.arrival_icao)}
                           </div>
