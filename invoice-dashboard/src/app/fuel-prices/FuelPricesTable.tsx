@@ -226,6 +226,8 @@ function buildAdvVsActual(
 
   for (const r of prices) {
     if (!r.airport_code || r.effective_price_per_gallon == null) continue;
+    // Filter out prices below $1 (assumed erroneous)
+    if (r.effective_price_per_gallon < 1) continue;
 
     // Store under all airport variants for flexible matching
     if (r.invoice_date) {
@@ -235,19 +237,20 @@ function buildAdvVsActual(
       }
     }
 
-    // All-time by vendor+airport (invoices only)
-    if (!r.vendor_name || (r.data_source ?? "invoice") !== "invoice") continue;
-    const key = `${r.vendor_name.toLowerCase()}|${r.airport_code}`;
-    if (!invoiceBuckets.has(key)) invoiceBuckets.set(key, { prices: [], count: 0 });
-    const bucket = invoiceBuckets.get(key)!;
-    bucket.prices.push(r.effective_price_per_gallon);
-    bucket.count++;
+    // All-time by airport (all sources — assume same FBO at each airport)
+    for (const v of airportVariants(r.airport_code)) {
+      if (!invoiceBuckets.has(v)) invoiceBuckets.set(v, { prices: [], count: 0 });
+      const bucket = invoiceBuckets.get(v)!;
+      bucket.prices.push(r.effective_price_per_gallon);
+      bucket.count++;
+    }
   }
 
-  // Group advertised by identity key → sorted by week_start desc
+  // Group advertised by identity key — skip tail-specific rows (show "All" only)
   const advByIdentity = new Map<string, AdvertisedPriceRow[]>();
   for (const adv of advertisedPrices) {
-    const key = `${adv.fbo_vendor}|${adv.airport_code}|${adv.volume_tier}|${adv.tail_numbers ?? ""}`;
+    if (adv.tail_numbers) continue; // skip tail-specific rows
+    const key = `${adv.fbo_vendor}|${adv.airport_code}|${adv.volume_tier}`;
     if (!advByIdentity.has(key)) advByIdentity.set(key, []);
     advByIdentity.get(key)!.push(adv);
   }
@@ -268,9 +271,8 @@ function buildAdvVsActual(
       }
     }
 
-    // Actual invoice avg for this vendor+airport
-    const invKey = `${latest.fbo_vendor.toLowerCase()}|${latest.airport_code}`;
-    const bucket = invoiceBuckets.get(invKey);
+    // Actual avg for this airport (all vendors/sources)
+    const bucket = invoiceBuckets.get(latest.airport_code);
     const actualAvg = bucket && bucket.prices.length > 0
       ? Math.round((bucket.prices.reduce((a, b) => a + b, 0) / bucket.prices.length) * 10000) / 10000
       : null;
@@ -281,7 +283,7 @@ function buildAdvVsActual(
     const minDate = new Date(weekDate.getTime() - 3 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
     const maxDate = new Date(weekDate.getTime() + 10 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
     const airportPrices = pricesByAirport.get(latest.airport_code) ?? [];
-    const recentPrices = airportPrices.filter((p) => p.date >= minDate && p.date <= maxDate);
+    const recentPrices = airportPrices.filter((p) => p.date >= minDate && p.date <= maxDate && p.price >= 1);
     const recent7dAvg = recentPrices.length > 0
       ? Math.round((recentPrices.reduce((a, b) => a + b.price, 0) / recentPrices.length) * 10000) / 10000
       : null;
