@@ -18,6 +18,12 @@ export default async function OpsPage() {
     return { ok: false, flights: [] as any[], count: 0, error: null as string | null };
   });
 
+  // Fetch Baker PPR airports from database
+  const { data: pprRows } = await supabase
+    .from("baker_ppr_airports")
+    .select("icao");
+  const bakerPprAirports: string[] = (pprRows ?? []).map((r: { icao: string }) => r.icao);
+
   const displayError = error || (data.ok === false && (data as any).error ? (data as any).error : null);
 
   return (
@@ -29,7 +35,7 @@ export default async function OpsPage() {
           <strong>API error:</strong> {displayError}
         </div>
       )}
-      <OpsTabs flights={data.flights} />
+      <OpsTabs flights={data.flights} bakerPprAirports={bakerPprAirports} />
     </>
   );
 }

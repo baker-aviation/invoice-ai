@@ -216,9 +216,7 @@ const AIRPORTS_24_7 = new Set([
   "KSAT", "KMSO", "KBGR",
 ]);
 
-// ─── Baker PPR airports ──────────────────────────────────────────────────────
-
-const BAKER_PPR_AIRPORTS = new Set(["KNUQ", "KSAN", "KLAS", "KSNA", "KJAC", "KMKY"]);
+// ─── Baker PPR airports (fetched from database) ─────────────────────────────
 
 function isAfterHours(utcIso: string | null, icao: string | null): boolean {
   if (!utcIso) return false;
@@ -756,8 +754,9 @@ function filterAlerts(flights: Flight[]): Flight[] {
   });
 }
 
-export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] }) {
+export default function OpsBoard({ initialFlights, bakerPprAirports }: { initialFlights: Flight[]; bakerPprAirports: string[] }) {
   const now = useMemo(() => new Date(), []);
+  const BAKER_PPR_AIRPORTS = useMemo(() => new Set(bakerPprAirports), [bakerPprAirports]);
   const [activeFilter, setActiveFilter] = useState<AlertFilter>("ALL");
   const [notamSub, setNotamSub] = useState<NotamSubFilter>("ALL_NOTAMS");
   const [pprSub, setPprSub] = useState<PprSubFilter>("ALL_PPR");
@@ -842,12 +841,28 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
         });
       }
 
+      // Baker PPR airports
+      const pprSeen = new Set<string>();
+      for (const icao of [f.departure_icao, f.arrival_icao]) {
+        if (icao && BAKER_PPR_AIRPORTS.has(icao) && !pprSeen.has(icao)) {
+          pprSeen.add(icao);
+          alerts.push({
+            key: `baker-ppr-${icao}-${f.id}`,
+            flightId: f.id,
+            type: "BAKER_PPR",
+            label: "Baker PPR",
+            severity: "info",
+            message: `${icao} — Baker PPR required`,
+          });
+        }
+      }
+
       if (alerts.length > 0) {
         map.set(f.id, alerts);
       }
     }
     return map;
-  }, [withFilteredAlerts]);
+  }, [withFilteredAlerts, BAKER_PPR_AIRPORTS]);
 
   // Apply time range
   const cutoff = useMemo(() => {
@@ -909,7 +924,7 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
     }
 
     return timeFiltered;
-  }, [timeFiltered, activeFilter, notamSub, pprSub]);
+  }, [timeFiltered, activeFilter, notamSub, pprSub, BAKER_PPR_AIRPORTS]);
 
   // Apply flight type filter on top of alert filter
   const filtered = useMemo(() => {
@@ -997,7 +1012,7 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
       }
     }
     return counts;
-  }, [timeFiltered, ackedIds, clientAlertsByFlight, dismissedClientAlerts]);
+  }, [timeFiltered, ackedIds, clientAlertsByFlight, dismissedClientAlerts, BAKER_PPR_AIRPORTS]);
 
   // EDCT alerts for status box: unacknowledged, future or within last 5 hours
   const edctAlerts = useMemo(() => {
