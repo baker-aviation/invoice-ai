@@ -48,6 +48,8 @@ export type FlightInfoMap = {
   progress_percent: number | null;
   departure_time: string | null;
   arrival_time: string | null;     // ETA
+  actual_departure?: string | null;
+  actual_arrival?: string | null;
   route_distance_nm: number | null;
   diverted: boolean;
   // Position (from FlightAware, for en-route flights)

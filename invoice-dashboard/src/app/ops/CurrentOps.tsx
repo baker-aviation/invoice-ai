@@ -84,11 +84,17 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
       const res = await fetch("/api/aircraft/flights", { cache: "no-store" });
       if (res.ok) {
         const data = await res.json();
+        // Key by tail|origin|dest so each scheduled leg can find its FA match
         const map = new Map<string, FlightInfoMap>();
         const positions: AdsbAircraft[] = [];
         for (const fi of data.flights ?? []) {
-          map.set(fi.tail, fi);
-          // Synthesize map positions from FlightAware data
+          const key = `${fi.tail}|${fi.origin_icao ?? ""}|${fi.destination_icao ?? ""}`;
+          map.set(key, fi);
+          // Also store by tail-only for fallback
+          if (!map.has(fi.tail) || (fi.latitude != null && fi.longitude != null)) {
+            map.set(fi.tail, fi);
+          }
+          // Synthesize map positions from en-route flights
           if (fi.latitude != null && fi.longitude != null) {
             positions.push({
               tail: fi.tail,
@@ -319,12 +325,11 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
             ) : (
               filteredFlights.map((f) => {
                 const adsb = adsbAircraft.find((a) => a.tail === f.tail_number);
-                const rawFi = f.tail_number ? flightInfo.get(f.tail_number) : undefined;
-                // Only attach FlightAware info if the route matches this specific leg
-                const fi = rawFi && (
-                  (!rawFi.origin_icao || !f.departure_icao || rawFi.origin_icao === f.departure_icao) &&
-                  (!rawFi.destination_icao || !f.arrival_icao || rawFi.destination_icao === f.arrival_icao)
-                ) ? rawFi : undefined;
+                // Look up FlightAware info by route-specific key first, then fall back to tail-only
+                const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
+                const fi = f.tail_number
+                  ? (flightInfo.get(routeKey) ?? undefined)
+                  : undefined;
                 const alerts = f.alerts ?? [];
                 const alertCount = alerts.length;
                 const type = f.flight_type || "Other";
@@ -340,19 +345,23 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
                 const now = new Date();
                 const arrivalPassed = arrivalDate && arrivalDate < now;
 
-                if (fi?.status) {
+                if (arrivalPassed) {
+                  // Leg is complete — arrival time has passed
+                  status = "Arrived";
+                  statusColor = "text-green-600 font-medium";
+                } else if (fi?.status) {
                   status = fi.status;
                   if (fi.status.includes("En Route")) statusColor = "text-blue-600 font-medium";
                   if (fi.status.includes("Arrived") || fi.status.includes("Landed")) statusColor = "text-green-600 font-medium";
-                } else if (adsb && !adsb.on_ground) {
+                } else if (fi && !arrivalPassed) {
+                  // FlightAware matched this leg but no explicit status
+                  if (fi.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100) {
+                    status = "En Route";
+                    statusColor = "text-blue-600 font-medium";
+                  }
+                } else if (adsb && !adsb.on_ground && !arrivalPassed) {
                   status = "Airborne";
                   statusColor = "text-blue-600 font-medium";
-                } else if (adsb && adsb.on_ground) {
-                  status = "On Ground";
-                  statusColor = "text-gray-500";
-                } else if (arrivalPassed) {
-                  status = "Arrived";
-                  statusColor = "text-green-600 font-medium";
                 }
 
                 if (fi?.diverted) {
@@ -415,7 +424,12 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
                       </td>
                       <td className="px-4 py-2.5 text-gray-600">
                         <div>{fmt(f.scheduled_departure, f.departure_icao)}</div>
-                        {depMismatchMin !== null && fi?.departure_time && (
+                        {fi?.actual_departure && (
+                          <div className="text-[10px] text-green-600 font-medium mt-0.5">
+                            Actual: {fmt(fi.actual_departure, f.departure_icao)}
+                          </div>
+                        )}
+                        {depMismatchMin !== null && fi?.departure_time && !fi?.actual_departure && (
                           <div className="mt-0.5 text-[10px] font-semibold text-amber-700">
                             FA Est. Departure: {fmt(fi.departure_time, f.departure_icao)}
                           </div>
@@ -423,11 +437,15 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
                       </td>
                       <td className="px-4 py-2.5 text-gray-600">
                         <div>{fmt(f.scheduled_arrival, f.arrival_icao)}</div>
-                        {fi?.arrival_time && (
+                        {fi?.actual_arrival ? (
+                          <div className="text-[10px] text-green-600 font-medium mt-0.5">
+                            Actual: {fmt(fi.actual_arrival, f.arrival_icao)}
+                          </div>
+                        ) : fi?.arrival_time && !arrivalPassed ? (
                           <div className="text-[10px] text-green-600 font-medium mt-0.5">
                             FlightAware ETA: {fmt(fi.arrival_time, f.arrival_icao)}
                           </div>
-                        )}
+                        ) : null}
                       </td>
                       <td className="px-4 py-2.5">
                         <span className={`px-2 py-0.5 text-xs font-medium rounded-full ${typeColor}`}>

@@ -93,6 +93,8 @@ export type FlightInfo = {
   departure_time: string | null;   // actual or estimated gate out
   arrival_time: string | null;     // estimated runway on (ETA)
   scheduled_arrival: string | null;
+  actual_departure: string | null; // actual gate out
+  actual_arrival: string | null;   // actual gate in
   // Route
   route: string | null;
   route_distance_nm: number | null;
@@ -158,13 +160,14 @@ async function getFlightPosition(
 }
 
 /**
- * For a list of tail numbers, find the current/most-recent flight for each
- * and return simplified FlightInfo objects.
+ * For a list of tail numbers, return all recent flights from FlightAware
+ * (within 12 hours past + upcoming). Includes completed, en-route, and scheduled.
  */
 export async function getActiveFlights(
   tails: string[],
 ): Promise<FlightInfo[]> {
   const results: FlightInfo[] = [];
+  const now = Date.now();
 
   // Query in batches of 3 to stay well under rate limits
   const BATCH = 3;
@@ -174,35 +177,47 @@ export async function getActiveFlights(
       batch.map(async (tail) => {
         try {
           const flights = await getFlightsByRegistration(tail);
-          const active = pickActiveFlight(flights);
-          if (!active) return null;
-          const info = toFlightInfo(tail, active);
+          const recent: FlightInfo[] = [];
 
-          // If en-route and no position from flights endpoint, fetch position separately
-          if (
-            info.latitude == null &&
-            active.actual_off != null &&
-            active.actual_on == null &&
-            active.fa_flight_id
-          ) {
-            const pos = await getFlightPosition(active.fa_flight_id);
-            if (pos) {
-              info.latitude = pos.latitude;
-              info.longitude = pos.longitude;
-              info.altitude = pos.altitude ?? null;
-              info.groundspeed = pos.groundspeed ?? null;
-              info.heading = pos.heading ?? null;
+          for (const f of flights) {
+            if (f.cancelled) continue;
+            // Include flights from last 12 hours + upcoming
+            const dep = f.actual_out ?? f.estimated_out ?? f.scheduled_out;
+            if (dep) {
+              const depMs = new Date(dep).getTime();
+              if (depMs < now - 12 * 3600_000) continue;
             }
+
+            const info = toFlightInfo(tail, f);
+
+            // If en-route and no position, fetch position separately
+            if (
+              info.latitude == null &&
+              f.actual_off != null &&
+              f.actual_on == null &&
+              f.fa_flight_id
+            ) {
+              const pos = await getFlightPosition(f.fa_flight_id);
+              if (pos) {
+                info.latitude = pos.latitude;
+                info.longitude = pos.longitude;
+                info.altitude = pos.altitude ?? null;
+                info.groundspeed = pos.groundspeed ?? null;
+                info.heading = pos.heading ?? null;
+              }
+            }
+
+            recent.push(info);
           }
 
-          return info;
+          return recent;
         } catch {
-          return null;
+          return [];
         }
       }),
     );
-    for (const r of batchResults) {
-      if (r) results.push(r);
+    for (const batch of batchResults) {
+      results.push(...batch);
     }
     // Rate limit pause between batches
     if (i + BATCH < tails.length) {
@@ -262,6 +277,8 @@ function toFlightInfo(tail: string, f: FaFlight): FlightInfo {
     departure_time: f.actual_out ?? f.estimated_out ?? f.scheduled_out,
     arrival_time: f.estimated_on ?? f.scheduled_on,
     scheduled_arrival: f.scheduled_on,
+    actual_departure: f.actual_out ?? null,
+    actual_arrival: f.actual_in ?? f.actual_on ?? null,
     route: f.route,
     route_distance_nm: f.route_distance,
     filed_altitude: f.filed_altitude,
