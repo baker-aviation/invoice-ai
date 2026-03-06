@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
 import RichTextEditor, { type RichTextEditorHandle } from "@/components/RichTextEditor";
 
+type Attachment = { id: number; filename: string };
+
 type Bulletin = {
   id: number;
   title: string;
@@ -12,7 +14,7 @@ type Bulletin = {
   category: string;
   published_at: string;
   video_filename: string | null;
-  doc_filename: string | null;
+  pilot_bulletin_attachments: Attachment[];
   created_at: string;
 };
 
@@ -59,6 +61,20 @@ function stripHtml(html: string) {
     .replace(/&#x27;/gi, "'")
     .replace(/&#\d+;/g, "");
   return decoded.replace(/\s+/g, " ").trim();
+}
+
+/** Determine badge labels from an attachments array */
+function attachmentBadges(attachments: Attachment[]): string[] {
+  const badges: string[] = [];
+  let pdfCount = 0;
+  let imgCount = 0;
+  for (const a of attachments) {
+    if (/\.(jpg|jpeg|png|gif|webp)$/i.test(a.filename)) imgCount++;
+    else pdfCount++;
+  }
+  if (pdfCount > 0) badges.push(pdfCount === 1 ? "PDF" : `${pdfCount} PDFs`);
+  if (imgCount > 0) badges.push(imgCount === 1 ? "Image" : `${imgCount} Images`);
+  return badges;
 }
 
 export default function BulletinsList({
@@ -149,54 +165,57 @@ export default function BulletinsList({
         </div>
       ) : (
         <div className="grid gap-3">
-          {filtered.map((b) => (
-            <Link
-              key={b.id}
-              href={`/pilot/bulletins/${b.id}`}
-              className="block bg-white border border-gray-200 rounded-lg px-5 py-4 hover:border-gray-300 hover:shadow-sm transition-all"
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span
-                      className={`inline-block px-2 py-0.5 text-[10px] font-semibold rounded-full ${
-                        CATEGORY_COLORS[b.category] || "bg-gray-100 text-gray-700"
-                      }`}
-                    >
-                      {CATEGORY_LABELS[b.category] || b.category}
-                    </span>
-                    <span className="text-xs text-gray-400">
-                      {formatDate(b.published_at)}
-                    </span>
+          {filtered.map((b) => {
+            const badges = attachmentBadges(b.pilot_bulletin_attachments ?? []);
+            return (
+              <Link
+                key={b.id}
+                href={`/pilot/bulletins/${b.id}`}
+                className="block bg-white border border-gray-200 rounded-lg px-5 py-4 hover:border-gray-300 hover:shadow-sm transition-all"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span
+                        className={`inline-block px-2 py-0.5 text-[10px] font-semibold rounded-full ${
+                          CATEGORY_COLORS[b.category] || "bg-gray-100 text-gray-700"
+                        }`}
+                      >
+                        {CATEGORY_LABELS[b.category] || b.category}
+                      </span>
+                      <span className="text-xs text-gray-400">
+                        {formatDate(b.published_at)}
+                      </span>
+                    </div>
+                    <h3 className="font-semibold text-gray-900 text-sm">{b.title}</h3>
+                    {b.summary && (
+                      <>
+                        <div
+                          className="text-sm text-gray-500 mt-1.5 line-clamp-[8] leading-snug prose prose-sm max-w-none prose-p:my-0.5 prose-ul:my-0.5 prose-ol:my-0.5 prose-li:my-0 prose-headings:my-1 prose-headings:text-sm [&>div]:my-0 [&>br]:leading-tight [&_*]:!text-sm [&_*]:!font-normal [&_*]:!text-gray-500 [&_h1]:!font-semibold [&_h2]:!font-semibold [&_h3]:!font-semibold [&_b]:!font-semibold [&_strong]:!font-semibold"
+                          dangerouslySetInnerHTML={{ __html: b.summary }}
+                        />
+                        <span className="text-xs text-blue-500 mt-1.5 inline-block">Read more &rarr;</span>
+                      </>
+                    )}
                   </div>
-                  <h3 className="font-semibold text-gray-900 text-sm">{b.title}</h3>
-                  {b.summary && (
-                    <>
-                      <div
-                        className="text-sm text-gray-500 mt-1.5 line-clamp-[8] leading-snug prose prose-sm max-w-none prose-p:my-0.5 prose-ul:my-0.5 prose-ol:my-0.5 prose-li:my-0 prose-headings:my-1 prose-headings:text-sm [&>div]:my-0 [&>br]:leading-tight [&_*]:!text-sm [&_*]:!font-normal [&_*]:!text-gray-500 [&_h1]:!font-semibold [&_h2]:!font-semibold [&_h3]:!font-semibold [&_b]:!font-semibold [&_strong]:!font-semibold"
-                        dangerouslySetInnerHTML={{ __html: b.summary }}
-                      />
-                      <span className="text-xs text-blue-500 mt-1.5 inline-block">Read more &rarr;</span>
-                    </>
+                  {(b.video_filename || badges.length > 0) && (
+                    <div className="shrink-0 mt-1 flex flex-col gap-1">
+                      {b.video_filename && (
+                        <span className="text-[10px] text-gray-400 border border-gray-200 rounded px-1.5 py-0.5">
+                          Video
+                        </span>
+                      )}
+                      {badges.map((label) => (
+                        <span key={label} className="text-[10px] text-gray-400 border border-gray-200 rounded px-1.5 py-0.5">
+                          {label}
+                        </span>
+                      ))}
+                    </div>
                   )}
                 </div>
-                {(b.video_filename || b.doc_filename) && (
-                  <div className="shrink-0 mt-1 flex flex-col gap-1">
-                    {b.video_filename && (
-                      <span className="text-[10px] text-gray-400 border border-gray-200 rounded px-1.5 py-0.5">
-                        Video
-                      </span>
-                    )}
-                    {b.doc_filename && (
-                      <span className="text-[10px] text-gray-400 border border-gray-200 rounded px-1.5 py-0.5">
-                        {/\.(jpg|jpeg|png|gif|webp)$/i.test(b.doc_filename) ? "Image" : "PDF"}
-                      </span>
-                    )}
-                  </div>
-                )}
-              </div>
-            </Link>
-          ))}
+              </Link>
+            );
+          })}
         </div>
       )}
 
@@ -218,10 +237,21 @@ function CreateBulletinModal({ onClose }: { onClose: () => void }) {
   const [title, setTitle] = useState("");
   const [category, setCategory] = useState("");
   const [videoFile, setVideoFile] = useState<File | null>(null);
-  const [docFile, setDocFile] = useState<File | null>(null);
+  const [docFiles, setDocFiles] = useState<File[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [expanded, setExpanded] = useState(false);
+
+  function handleDocFilesChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = e.target.files;
+    if (!files) return;
+    setDocFiles((prev) => [...prev, ...Array.from(files)]);
+    e.target.value = ""; // reset so same file can be re-added
+  }
+
+  function removeDocFile(index: number) {
+    setDocFiles((prev) => prev.filter((_, i) => i !== index));
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -245,7 +275,6 @@ function CreateBulletinModal({ onClose }: { onClose: () => void }) {
       };
       if (content) payload.summary = content;
       if (videoFile) payload.video_filename = videoFile.name;
-      if (docFile) payload.doc_filename = docFile.name;
 
       const res = await fetch("/api/pilot/bulletins", {
         method: "POST",
@@ -260,7 +289,7 @@ function CreateBulletinModal({ onClose }: { onClose: () => void }) {
         return;
       }
 
-      const { upload_url, doc_upload_url } = await res.json();
+      const { bulletin, upload_url } = await res.json();
 
       // Upload video directly to GCS via presigned URL
       if (videoFile && upload_url) {
@@ -285,9 +314,28 @@ function CreateBulletinModal({ onClose }: { onClose: () => void }) {
         }
       }
 
-      // Upload document/image directly to GCS via presigned URL
-      if (docFile && doc_upload_url) {
-        const ext = docFile.name.split(".").pop()?.toLowerCase();
+      // Upload each doc/image attachment via the attachments endpoint
+      for (let i = 0; i < docFiles.length; i++) {
+        const file = docFiles[i];
+        // Create attachment record + get presigned URL
+        const attRes = await fetch(`/api/pilot/bulletins/${bulletin.id}/attachments`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ filename: file.name, sort_order: i }),
+        });
+
+        if (!attRes.ok) {
+          console.error("Attachment creation failed for:", file.name);
+          setError(`Bulletin created but attachment "${file.name}" failed. Edit the bulletin to re-upload.`);
+          setSubmitting(false);
+          router.refresh();
+          return;
+        }
+
+        const { upload_url: attUploadUrl } = await attRes.json();
+
+        // Upload file to GCS
+        const ext = file.name.split(".").pop()?.toLowerCase();
         const contentType =
           ext === "pdf" ? "application/pdf"
           : ext === "jpg" || ext === "jpeg" ? "image/jpeg"
@@ -296,15 +344,15 @@ function CreateBulletinModal({ onClose }: { onClose: () => void }) {
           : ext === "webp" ? "image/webp"
           : "application/octet-stream";
 
-        const uploadRes = await fetch(doc_upload_url, {
+        const uploadRes = await fetch(attUploadUrl, {
           method: "PUT",
           headers: { "Content-Type": contentType },
-          body: docFile,
+          body: file,
         });
 
         if (!uploadRes.ok) {
-          console.error("Document upload failed:", uploadRes.status);
-          setError("Bulletin created but document upload failed. Edit the bulletin to re-upload.");
+          console.error("Attachment upload failed:", uploadRes.status);
+          setError(`Bulletin created but upload of "${file.name}" failed. Edit the bulletin to re-upload.`);
           setSubmitting(false);
           router.refresh();
           return;
@@ -411,15 +459,35 @@ function CreateBulletinModal({ onClose }: { onClose: () => void }) {
 
           <div className="shrink-0">
             <label className="block text-xs font-medium text-gray-600 mb-1">
-              PDF / Image (optional)
+              PDFs / Images (optional)
             </label>
             <input
               type="file"
               accept=".pdf,.jpg,.jpeg,.png,.gif,.webp"
-              onChange={(e) => setDocFile(e.target.files?.[0] ?? null)}
+              multiple
+              onChange={handleDocFilesChange}
               className="block w-full text-sm text-gray-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border file:border-gray-300 file:text-sm file:font-medium file:bg-white file:text-gray-700 hover:file:bg-gray-50"
             />
-            <p className="text-[10px] text-gray-400 mt-1">.pdf, .jpg, .png, .gif, .webp</p>
+            <p className="text-[10px] text-gray-400 mt-1">.pdf, .jpg, .png, .gif, .webp — select multiple files</p>
+            {docFiles.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {docFiles.map((f, i) => (
+                  <span
+                    key={`${f.name}-${i}`}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 text-xs bg-gray-100 text-gray-700 rounded-full"
+                  >
+                    {f.name}
+                    <button
+                      type="button"
+                      onClick={() => removeDocFile(i)}
+                      className="text-gray-400 hover:text-red-500 leading-none"
+                    >
+                      &times;
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
 
           {error && (

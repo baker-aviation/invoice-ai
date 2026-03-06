@@ -1,14 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, requireAdmin, isAuthed, isRateLimited } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
+import { presignUpload } from "@/lib/gcs-upload";
+
+type RouteCtx = { params: Promise<{ id: string }> };
 
 /**
- * GET /api/pilot/bulletins/[id] — single bulletin
+ * GET /api/pilot/bulletins/[id] — single bulletin with attachments
  */
-export async function GET(
-  req: NextRequest,
-  { params }: { params: Promise<{ id: string }> },
-) {
+export async function GET(req: NextRequest, { params }: RouteCtx) {
   const auth = await requireAuth(req);
   if (!isAuthed(auth)) return auth.error;
 
@@ -21,7 +21,7 @@ export async function GET(
   const supa = createServiceClient();
   const { data, error } = await supa
     .from("pilot_bulletins")
-    .select("*")
+    .select("*, pilot_bulletin_attachments(id, filename, content_type, gcs_bucket, gcs_key, sort_order)")
     .eq("id", bulletinId)
     .single();
 
@@ -39,58 +39,13 @@ const CATEGORY_LABELS: Record<string, string> = {
   maintenance: "Maintenance",
 };
 
-/** Map file extension to MIME type for uploads */
-function contentTypeForExt(ext: string | undefined): string {
-  switch (ext) {
-    case "mp4": return "video/mp4";
-    case "m4v": return "video/x-m4v";
-    case "mov": return "video/quicktime";
-    case "pdf": return "application/pdf";
-    case "jpg": case "jpeg": return "image/jpeg";
-    case "png": return "image/png";
-    case "gif": return "image/gif";
-    case "webp": return "image/webp";
-    default: return "application/octet-stream";
-  }
-}
-
-/** Create a GCS Storage client */
-async function getGcsStorage() {
-  const { Storage } = await import("@google-cloud/storage");
-  const b64Key = process.env.GCP_SERVICE_ACCOUNT_KEY;
-  if (b64Key) {
-    const creds = JSON.parse(Buffer.from(b64Key, "base64").toString("utf-8"));
-    return new Storage({ credentials: creds, projectId: creds.project_id });
-  }
-  return new Storage();
-}
-
-/** Generate a presigned upload URL for a file */
-async function presignUpload(filename: string, gcsPrefix: string): Promise<{ bucket: string; key: string; url: string }> {
-  const storage = await getGcsStorage();
-  const bucket = process.env.GCS_BUCKET || "baker-aviation-invoice-pdfs";
-  const safeName = filename.replace(/\//g, "_");
-  const key = `${gcsPrefix}/${Date.now()}-${safeName}`;
-  const ext = filename.split(".").pop()?.toLowerCase();
-  const contentType = contentTypeForExt(ext);
-
-  const [url] = await storage.bucket(bucket).file(key).getSignedUrl({
-    version: "v4",
-    action: "write",
-    expires: Date.now() + 30 * 60 * 1000,
-    contentType,
-  });
-  return { bucket, key, url };
-}
-
 /**
  * PATCH /api/pilot/bulletins/[id] — update a bulletin (admin only)
- * JSON body: { title?, summary?, category?, video_filename?, doc_filename? }
+ * JSON body: { title?, summary?, category?, video_filename? }
+ *
+ * Attachments are managed via the /attachments sub-route.
  */
-export async function PATCH(
-  req: NextRequest,
-  { params }: { params: Promise<{ id: string }> },
-) {
+export async function PATCH(req: NextRequest, { params }: RouteCtx) {
   const auth = await requireAdmin(req);
   if ("error" in auth) return auth.error;
 
@@ -104,7 +59,7 @@ export async function PATCH(
     return NextResponse.json({ error: "Invalid bulletin ID" }, { status: 400 });
   }
 
-  let body: { title?: string; summary?: string; category?: string; video_filename?: string; doc_filename?: string };
+  let body: { title?: string; summary?: string; category?: string; video_filename?: string };
   try {
     body = await req.json();
   } catch {
@@ -150,23 +105,7 @@ export async function PATCH(
     }
   }
 
-  let docUploadUrl: string | null = null;
-  const docFilename = body.doc_filename?.trim() || null;
-
-  if (docFilename) {
-    try {
-      const result = await presignUpload(docFilename, `pilot-bulletins/${cat}/docs`);
-      docUploadUrl = result.url;
-      updates.doc_gcs_bucket = result.bucket;
-      updates.doc_gcs_key = result.key;
-      updates.doc_filename = docFilename;
-    } catch (err) {
-      console.error("[pilot/bulletins] doc presign error:", err);
-      return NextResponse.json({ error: `Failed to prepare document upload: ${err instanceof Error ? err.message : err}` }, { status: 500 });
-    }
-  }
-
-  if (Object.keys(updates).length === 0 && !uploadUrl && !docUploadUrl) {
+  if (Object.keys(updates).length === 0 && !uploadUrl) {
     return NextResponse.json({ error: "No fields to update" }, { status: 400 });
   }
 
@@ -183,16 +122,13 @@ export async function PATCH(
     return NextResponse.json({ error: `Failed to update bulletin: ${dbErr.message}` }, { status: 500 });
   }
 
-  return NextResponse.json({ bulletin, upload_url: uploadUrl, doc_upload_url: docUploadUrl });
+  return NextResponse.json({ bulletin, upload_url: uploadUrl });
 }
 
 /**
  * DELETE /api/pilot/bulletins/[id] — delete a bulletin (admin only)
  */
-export async function DELETE(
-  req: NextRequest,
-  { params }: { params: Promise<{ id: string }> },
-) {
+export async function DELETE(req: NextRequest, { params }: RouteCtx) {
   const auth = await requireAdmin(req);
   if ("error" in auth) return auth.error;
 

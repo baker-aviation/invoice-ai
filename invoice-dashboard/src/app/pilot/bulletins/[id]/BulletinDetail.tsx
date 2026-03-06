@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import RichTextEditor, { type RichTextEditorHandle } from "@/components/RichTextEditor";
 
 type SlackChannel = { id: string; name: string; is_private: boolean };
+type AttachmentRef = { id: number; filename: string };
 
 export default function BulletinDetail({
   bulletinId,
@@ -13,7 +14,7 @@ export default function BulletinDetail({
   summary: initialSummary,
   category: initialCategory,
   videoFilename: initialVideoFilename,
-  docFilename: initialDocFilename,
+  attachments: initialAttachments,
 }: {
   bulletinId: number;
   slackTs: string | null;
@@ -21,7 +22,7 @@ export default function BulletinDetail({
   summary: string;
   category: string;
   videoFilename: string | null;
-  docFilename: string | null;
+  attachments: AttachmentRef[];
 }) {
   const router = useRouter();
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -186,7 +187,7 @@ export default function BulletinDetail({
           initialSummary={initialSummary}
           initialCategory={initialCategory}
           initialVideoFilename={initialVideoFilename}
-          initialDocFilename={initialDocFilename}
+          initialAttachments={initialAttachments}
           onClose={() => setShowEdit(false)}
         />
       )}
@@ -204,7 +205,7 @@ function EditBulletinModal({
   initialSummary,
   initialCategory,
   initialVideoFilename,
-  initialDocFilename,
+  initialAttachments,
   onClose,
 }: {
   bulletinId: number;
@@ -212,7 +213,7 @@ function EditBulletinModal({
   initialSummary: string;
   initialCategory: string;
   initialVideoFilename: string | null;
-  initialDocFilename: string | null;
+  initialAttachments: AttachmentRef[];
   onClose: () => void;
 }) {
   const router = useRouter();
@@ -220,10 +221,31 @@ function EditBulletinModal({
   const [title, setTitle] = useState(initialTitle);
   const [category, setCategory] = useState(initialCategory);
   const [videoFile, setVideoFile] = useState<File | null>(null);
-  const [docFile, setDocFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [expanded, setExpanded] = useState(false);
+
+  // Existing attachments (can be removed)
+  const [existingAttachments, setExistingAttachments] = useState<AttachmentRef[]>(initialAttachments);
+  const [removedAttachmentIds, setRemovedAttachmentIds] = useState<number[]>([]);
+  // New files to upload
+  const [newDocFiles, setNewDocFiles] = useState<File[]>([]);
+
+  function removeExistingAttachment(id: number) {
+    setExistingAttachments((prev) => prev.filter((a) => a.id !== id));
+    setRemovedAttachmentIds((prev) => [...prev, id]);
+  }
+
+  function handleNewDocFiles(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = e.target.files;
+    if (!files) return;
+    setNewDocFiles((prev) => [...prev, ...Array.from(files)]);
+    e.target.value = "";
+  }
+
+  function removeNewDocFile(index: number) {
+    setNewDocFiles((prev) => prev.filter((_, i) => i !== index));
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -247,7 +269,6 @@ function EditBulletinModal({
         category,
       };
       if (videoFile) payload.video_filename = videoFile.name;
-      if (docFile) payload.doc_filename = docFile.name;
 
       const res = await fetch(`/api/pilot/bulletins/${bulletinId}`, {
         method: "PATCH",
@@ -262,7 +283,7 @@ function EditBulletinModal({
         return;
       }
 
-      const { upload_url, doc_upload_url } = await res.json();
+      const { upload_url } = await res.json();
 
       // Upload video directly to GCS via presigned URL
       if (videoFile && upload_url) {
@@ -287,9 +308,33 @@ function EditBulletinModal({
         }
       }
 
-      // Upload document/image directly to GCS via presigned URL
-      if (docFile && doc_upload_url) {
-        const ext = docFile.name.split(".").pop()?.toLowerCase();
+      // Delete removed attachments
+      for (const attId of removedAttachmentIds) {
+        await fetch(`/api/pilot/bulletins/${bulletinId}/attachments?attachment_id=${attId}`, {
+          method: "DELETE",
+        });
+      }
+
+      // Upload new attachments
+      const startOrder = existingAttachments.length;
+      for (let i = 0; i < newDocFiles.length; i++) {
+        const file = newDocFiles[i];
+        const attRes = await fetch(`/api/pilot/bulletins/${bulletinId}/attachments`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ filename: file.name, sort_order: startOrder + i }),
+        });
+
+        if (!attRes.ok) {
+          console.error("Attachment creation failed for:", file.name);
+          setError(`Changes saved but attachment "${file.name}" failed. Try again.`);
+          setSubmitting(false);
+          router.refresh();
+          return;
+        }
+
+        const { upload_url: attUploadUrl } = await attRes.json();
+        const ext = file.name.split(".").pop()?.toLowerCase();
         const contentType =
           ext === "pdf" ? "application/pdf"
           : ext === "jpg" || ext === "jpeg" ? "image/jpeg"
@@ -298,15 +343,15 @@ function EditBulletinModal({
           : ext === "webp" ? "image/webp"
           : "application/octet-stream";
 
-        const uploadRes = await fetch(doc_upload_url, {
+        const uploadRes = await fetch(attUploadUrl, {
           method: "PUT",
           headers: { "Content-Type": contentType },
-          body: docFile,
+          body: file,
         });
 
         if (!uploadRes.ok) {
-          console.error("Document upload failed:", uploadRes.status);
-          setError("Changes saved but document upload failed. Try again.");
+          console.error("Attachment upload failed:", uploadRes.status);
+          setError(`Changes saved but upload of "${file.name}" failed. Try again.`);
           setSubmitting(false);
           router.refresh();
           return;
@@ -414,15 +459,59 @@ function EditBulletinModal({
 
           <div className="shrink-0">
             <label className="block text-xs font-medium text-gray-600 mb-1">
-              PDF / Image {initialDocFilename ? `(current: ${initialDocFilename})` : "(optional)"}
+              PDFs / Images
             </label>
+
+            {/* Existing attachments as chips */}
+            {existingAttachments.length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-1.5">
+                {existingAttachments.map((a) => (
+                  <span
+                    key={a.id}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 text-xs bg-blue-50 text-blue-700 rounded-full border border-blue-200"
+                  >
+                    {a.filename}
+                    <button
+                      type="button"
+                      onClick={() => removeExistingAttachment(a.id)}
+                      className="text-blue-400 hover:text-red-500 leading-none"
+                    >
+                      &times;
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+
             <input
               type="file"
               accept=".pdf,.jpg,.jpeg,.png,.gif,.webp"
-              onChange={(e) => setDocFile(e.target.files?.[0] ?? null)}
+              multiple
+              onChange={handleNewDocFiles}
               className="block w-full text-sm text-gray-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border file:border-gray-300 file:text-sm file:font-medium file:bg-white file:text-gray-700 hover:file:bg-gray-50"
             />
-            <p className="text-[10px] text-gray-400 mt-1">.pdf, .jpg, .png, .gif, .webp — leave empty to keep current</p>
+            <p className="text-[10px] text-gray-400 mt-1">.pdf, .jpg, .png, .gif, .webp — select multiple files to add</p>
+
+            {/* New files to upload */}
+            {newDocFiles.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {newDocFiles.map((f, i) => (
+                  <span
+                    key={`${f.name}-${i}`}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 text-xs bg-green-50 text-green-700 rounded-full border border-green-200"
+                  >
+                    {f.name}
+                    <button
+                      type="button"
+                      onClick={() => removeNewDocFile(i)}
+                      className="text-green-400 hover:text-red-500 leading-none"
+                    >
+                      &times;
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
 
           {error && (

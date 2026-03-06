@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, requireAdmin, isAuthed, isRateLimited } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
+import { presignUpload } from "@/lib/gcs-upload";
 
 const CATEGORY_LABELS: Record<string, string> = {
   chief_pilot: "Chief Pilot",
@@ -22,7 +23,7 @@ export async function GET(req: NextRequest) {
 
   let query = supa
     .from("pilot_bulletins")
-    .select("id, title, summary, category, published_at, video_filename, doc_filename, created_at")
+    .select("id, title, summary, category, published_at, video_filename, created_at, pilot_bulletin_attachments(id, filename)")
     .order("published_at", { ascending: false });
 
   if (category) {
@@ -38,55 +39,12 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({ bulletins: data });
 }
 
-/** Map file extension to MIME type for uploads */
-function contentTypeForExt(ext: string | undefined): string {
-  switch (ext) {
-    case "mp4": return "video/mp4";
-    case "m4v": return "video/x-m4v";
-    case "mov": return "video/quicktime";
-    case "pdf": return "application/pdf";
-    case "jpg": case "jpeg": return "image/jpeg";
-    case "png": return "image/png";
-    case "gif": return "image/gif";
-    case "webp": return "image/webp";
-    default: return "application/octet-stream";
-  }
-}
-
-/** Create a GCS Storage client */
-async function getGcsStorage() {
-  const { Storage } = await import("@google-cloud/storage");
-  const b64Key = process.env.GCP_SERVICE_ACCOUNT_KEY;
-  if (b64Key) {
-    const creds = JSON.parse(Buffer.from(b64Key, "base64").toString("utf-8"));
-    return new Storage({ credentials: creds, projectId: creds.project_id });
-  }
-  return new Storage();
-}
-
-/** Generate a presigned upload URL for a file */
-async function presignUpload(filename: string, gcsPrefix: string): Promise<{ bucket: string; key: string; url: string }> {
-  const storage = await getGcsStorage();
-  const bucket = process.env.GCS_BUCKET || "baker-aviation-invoice-pdfs";
-  const safeName = filename.replace(/\//g, "_");
-  const key = `${gcsPrefix}/${Date.now()}-${safeName}`;
-  const ext = filename.split(".").pop()?.toLowerCase();
-  const contentType = contentTypeForExt(ext);
-
-  const [url] = await storage.bucket(bucket).file(key).getSignedUrl({
-    version: "v4",
-    action: "write",
-    expires: Date.now() + 30 * 60 * 1000, // 30 minutes
-    contentType,
-  });
-  return { bucket, key, url };
-}
-
 /**
  * POST /api/pilot/bulletins — create a bulletin (admin only)
- * JSON body: { title, summary?, category, video_filename?, doc_filename? }
+ * JSON body: { title, summary?, category, video_filename? }
  *
- * Returns presigned GCS upload URLs for video and/or document if filenames provided.
+ * Returns presigned GCS upload URL for video if filename provided.
+ * Attachments (PDFs/images) are added via POST /api/pilot/bulletins/[id]/attachments after creation.
  */
 export async function POST(req: NextRequest) {
   const auth = await requireAdmin(req);
@@ -96,7 +54,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
 
-  let body: { title?: string; summary?: string; category?: string; video_filename?: string; doc_filename?: string };
+  let body: { title?: string; summary?: string; category?: string; video_filename?: string };
   try {
     body = await req.json();
   } catch {
@@ -107,7 +65,6 @@ export async function POST(req: NextRequest) {
   const summary = body.summary?.trim() || null;
   const category = body.category?.trim();
   const videoFilename = body.video_filename?.trim() || null;
-  const docFilename = body.doc_filename?.trim() || null;
 
   if (!title) {
     return NextResponse.json({ error: "Title is required" }, { status: 400 });
@@ -133,23 +90,6 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  let docGcsBucket: string | null = null;
-  let docGcsKey: string | null = null;
-  let docUploadUrl: string | null = null;
-
-  // Generate presigned upload URL if document/image will be attached
-  if (docFilename) {
-    try {
-      const result = await presignUpload(docFilename, `pilot-bulletins/${category}/docs`);
-      docGcsBucket = result.bucket;
-      docGcsKey = result.key;
-      docUploadUrl = result.url;
-    } catch (err) {
-      console.error("[pilot/bulletins] doc presign error:", err);
-      return NextResponse.json({ error: `Failed to prepare document upload: ${err instanceof Error ? err.message : err}` }, { status: 500 });
-    }
-  }
-
   // Insert into database
   const supa = createServiceClient();
   const { data: bulletin, error: dbErr } = await supa
@@ -162,11 +102,8 @@ export async function POST(req: NextRequest) {
       video_gcs_bucket: videoGcsBucket,
       video_gcs_key: videoGcsKey,
       video_filename: videoFilename,
-      doc_gcs_bucket: docGcsBucket,
-      doc_gcs_key: docGcsKey,
-      doc_filename: docFilename,
     })
-    .select("id, title, summary, category, published_at, video_filename, doc_filename")
+    .select("id, title, summary, category, published_at, video_filename")
     .single();
 
   if (dbErr) {
@@ -174,5 +111,5 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `Failed to create bulletin: ${dbErr.message}` }, { status: 500 });
   }
 
-  return NextResponse.json({ bulletin, upload_url: uploadUrl, doc_upload_url: docUploadUrl }, { status: 201 });
+  return NextResponse.json({ bulletin, upload_url: uploadUrl }, { status: 201 });
 }

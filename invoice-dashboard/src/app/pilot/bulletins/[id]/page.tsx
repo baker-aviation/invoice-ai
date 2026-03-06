@@ -21,6 +21,13 @@ const CATEGORY_COLORS: Record<string, string> = {
   maintenance: "bg-orange-100 text-orange-800",
 };
 
+type SignedAttachment = {
+  id: number;
+  filename: string;
+  content_type: string;
+  url: string | null;
+};
+
 export default async function BulletinDetailPage({
   params,
 }: {
@@ -43,7 +50,7 @@ export default async function BulletinDetailPage({
   const supa = createServiceClient();
   const { data: bulletin } = await supa
     .from("pilot_bulletins")
-    .select("*")
+    .select("*, pilot_bulletin_attachments(id, filename, content_type, gcs_bucket, gcs_key, sort_order)")
     .eq("id", bulletinId)
     .single();
 
@@ -68,14 +75,25 @@ export default async function BulletinDetailPage({
   const videoDownloadUrl = videoUrl
     ?? (bulletin.video_gcs_key ? `/api/pilot/bulletins/${bulletin.id}/download` : null);
 
-  // Generate signed URL for document/image attachment
-  let docUrl: string | null = null;
-  if (bulletin.doc_gcs_bucket && bulletin.doc_gcs_key) {
-    docUrl = await signGcsUrl(bulletin.doc_gcs_bucket, bulletin.doc_gcs_key);
-  }
-  const docDownloadUrl = docUrl
-    ?? (bulletin.doc_gcs_key ? `/api/pilot/bulletins/${bulletin.id}/download?type=doc` : null);
-  const isImage = /\.(jpg|jpeg|png|gif|webp)$/i.test(bulletin.doc_filename ?? "");
+  // Sign URLs for all attachments
+  const rawAttachments = (bulletin.pilot_bulletin_attachments ?? []) as {
+    id: number;
+    filename: string;
+    content_type: string;
+    gcs_bucket: string;
+    gcs_key: string;
+    sort_order: number;
+  }[];
+  const attachments: SignedAttachment[] = await Promise.all(
+    rawAttachments
+      .sort((a, b) => a.sort_order - b.sort_order)
+      .map(async (a) => ({
+        id: a.id,
+        filename: a.filename,
+        content_type: a.content_type,
+        url: await signGcsUrl(a.gcs_bucket, a.gcs_key),
+      })),
+  );
 
   return (
     <div>
@@ -104,7 +122,7 @@ export default async function BulletinDetailPage({
               summary={bulletin.summary ?? ""}
               category={bulletin.category}
               videoFilename={bulletin.video_filename ?? null}
-              docFilename={bulletin.doc_filename ?? null}
+              attachments={attachments.map((a) => ({ id: a.id, filename: a.filename }))}
             />
           )}
         </div>
@@ -159,53 +177,59 @@ export default async function BulletinDetailPage({
           </div>
         )}
 
-        {docDownloadUrl && (
-          <div className="border rounded-lg overflow-hidden mt-4">
-            <div className="flex items-center justify-between gap-3 px-4 py-3 text-sm bg-gray-50">
-              <div className="font-medium truncate">{bulletin.doc_filename ?? "Document"}</div>
-              <a
-                href={docDownloadUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="text-xs px-2.5 py-1.5 rounded border border-gray-300 hover:bg-gray-100 font-medium text-blue-600 shrink-0"
-              >
-                {isImage ? "Open" : "Download"}
-              </a>
+        {/* Render attachments */}
+        {attachments.map((att) => {
+          const isImage = att.content_type.startsWith("image/");
+          const downloadUrl = att.url ?? `/api/pilot/bulletins/${bulletin.id}/download?attachment_id=${att.id}`;
+
+          return (
+            <div key={att.id} className="border rounded-lg overflow-hidden mt-4">
+              <div className="flex items-center justify-between gap-3 px-4 py-3 text-sm bg-gray-50">
+                <div className="font-medium truncate">{att.filename}</div>
+                <a
+                  href={downloadUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs px-2.5 py-1.5 rounded border border-gray-300 hover:bg-gray-100 font-medium text-blue-600 shrink-0"
+                >
+                  {isImage ? "Open" : "Download"}
+                </a>
+              </div>
+              {isImage && att.url ? (
+                <div className="border-t bg-gray-100 p-4 flex justify-center">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={att.url}
+                    alt={att.filename}
+                    className="max-w-full max-h-[600px] rounded"
+                  />
+                </div>
+              ) : att.url ? (
+                <div className="border-t">
+                  <iframe
+                    src={att.url}
+                    className="w-full h-[600px]"
+                    title={att.filename}
+                  />
+                </div>
+              ) : (
+                <div className="border-t bg-gray-50 p-6 text-center">
+                  <p className="text-sm text-gray-500">
+                    Preview unavailable.{" "}
+                    <a
+                      href={`/api/pilot/bulletins/${bulletin.id}/download?attachment_id=${att.id}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-blue-500 underline"
+                    >
+                      Download to view
+                    </a>
+                  </p>
+                </div>
+              )}
             </div>
-            {isImage && docUrl ? (
-              <div className="border-t bg-gray-100 p-4 flex justify-center">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={docUrl}
-                  alt={bulletin.doc_filename ?? "Attached image"}
-                  className="max-w-full max-h-[600px] rounded"
-                />
-              </div>
-            ) : docUrl ? (
-              <div className="border-t">
-                <iframe
-                  src={docUrl}
-                  className="w-full h-[600px]"
-                  title={bulletin.doc_filename ?? "Document"}
-                />
-              </div>
-            ) : (
-              <div className="border-t bg-gray-50 p-6 text-center">
-                <p className="text-sm text-gray-500">
-                  Preview unavailable.{" "}
-                  <a
-                    href={`/api/pilot/bulletins/${bulletin.id}/download?type=doc`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-blue-500 underline"
-                  >
-                    Download to view
-                  </a>
-                </p>
-              </div>
-            )}
-          </div>
-        )}
+          );
+        })}
       </div>
     </div>
   );
