@@ -78,7 +78,7 @@ export async function POST(
   });
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Failed to create form link" }, { status: 500 });
   }
 
   const baseUrl = req.headers.get("x-forwarded-host") || req.headers.get("host") || "localhost:3000";

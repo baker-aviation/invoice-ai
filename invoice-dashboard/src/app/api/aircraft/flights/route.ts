@@ -69,7 +69,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       flights: cachedResult?.data ?? [],
       count: cachedResult?.data.length ?? 0,
-      error: err instanceof Error ? err.message : "FlightAware query failed",
+      error: "FlightAware query failed",
       cached: true,
     });
   }

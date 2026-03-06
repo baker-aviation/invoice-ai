@@ -1,5 +1,6 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/service";
+import { requireAdmin, isAuthed } from "@/lib/api-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -39,7 +40,10 @@ const PIPELINES: {
  * Queries the pipeline_runs table for the most recent run of each pipeline.
  * Returns a status for each: "ok" if recent, "warning" if stale, "error" if very stale or last run errored.
  */
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const auth = await requireAdmin(req);
+  if (!isAuthed(auth)) return auth.error;
+
   try {
     const supa = createServiceClient();
 
@@ -126,7 +130,7 @@ export async function GET() {
     });
   } catch (e) {
     return NextResponse.json(
-      { overall: "error", error: String(e), pipelines: [] },
+      { overall: "error", error: "Internal server error", pipelines: [] },
       { status: 500 },
     );
   }

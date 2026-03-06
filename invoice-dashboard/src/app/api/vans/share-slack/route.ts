@@ -57,7 +57,7 @@ export async function GET(req: NextRequest) {
     }));
     return NextResponse.json({ ok: true, channels });
   } catch (err) {
-    return NextResponse.json({ ok: false, channels: [], error: String(err) }, { status: 502 });
+    return NextResponse.json({ ok: false, channels: [], error: "Slack API request failed" }, { status: 502 });
   }
 }
 
@@ -143,6 +143,6 @@ export async function POST(req: NextRequest) {
     }
     return NextResponse.json({ ok: true, ts: data.ts, channel: data.channel });
   } catch (err) {
-    return NextResponse.json({ error: String(err) }, { status: 502 });
+    return NextResponse.json({ error: "Slack API request failed" }, { status: 502 });
   }
 }

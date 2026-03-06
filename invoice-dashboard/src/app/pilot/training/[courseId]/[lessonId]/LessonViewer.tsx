@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
 import RichTextEditor, { type RichTextEditorHandle } from "@/components/RichTextEditor";
+import SafeHTML from "@/components/SafeHTML";
 
 type Lesson = {
   id: number;
@@ -210,9 +211,9 @@ export default function LessonViewer({
 
         {/* Text */}
         {l.lesson_type === "text" && l.content_html && (
-          <div
+          <SafeHTML
+            html={l.content_html}
             className="prose prose-sm max-w-none"
-            dangerouslySetInnerHTML={{ __html: l.content_html }}
           />
         )}
         {l.lesson_type === "text" && !l.content_html && (

@@ -19,7 +19,7 @@ export async function GET(req: NextRequest) {
       .order("created_at", { ascending: false });
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ error: "Database operation failed" }, { status: 500 });
     }
     return NextResponse.json({ courses: data });
   }
@@ -43,7 +43,7 @@ export async function GET(req: NextRequest) {
     .order("created_at", { ascending: false });
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Database operation failed" }, { status: 500 });
   }
   return NextResponse.json({ courses: data });
 }
@@ -84,7 +84,7 @@ export async function POST(req: NextRequest) {
     .single();
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Database operation failed" }, { status: 500 });
   }
 
   return NextResponse.json({ course: data }, { status: 201 });

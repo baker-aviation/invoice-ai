@@ -126,7 +126,7 @@ export async function PATCH(
     } catch (err) {
       console.error("[lms/lessons] video presign error:", err);
       return NextResponse.json(
-        { error: `Failed to prepare video upload: ${err instanceof Error ? err.message : err}` },
+        { error: "Failed to prepare video upload" },
         { status: 500 },
       );
     }
@@ -169,7 +169,7 @@ export async function PATCH(
     } catch (err) {
       console.error("[lms/lessons] doc presign error:", err);
       return NextResponse.json(
-        { error: `Failed to prepare document upload: ${err instanceof Error ? err.message : err}` },
+        { error: "Failed to prepare document upload" },
         { status: 500 },
       );
     }
@@ -190,7 +190,7 @@ export async function PATCH(
     .single();
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Database operation failed" }, { status: 500 });
   }
 
   return NextResponse.json({ lesson: data, upload_url: uploadUrl });
@@ -220,7 +220,7 @@ export async function DELETE(
   const { error } = await supa.from("lms_lessons").delete().eq("id", id);
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Database operation failed" }, { status: 500 });
   }
 
   return NextResponse.json({ ok: true });

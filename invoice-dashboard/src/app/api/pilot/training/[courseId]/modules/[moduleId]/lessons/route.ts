@@ -26,7 +26,7 @@ export async function GET(
     .order("sort_order", { ascending: true });
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Database operation failed" }, { status: 500 });
   }
 
   return NextResponse.json({ lessons: data });
@@ -122,7 +122,7 @@ export async function POST(
     } catch (err) {
       console.error("[lms/lessons] video presign error:", err);
       return NextResponse.json(
-        { error: `Failed to prepare video upload: ${err instanceof Error ? err.message : err}` },
+        { error: "Failed to prepare video upload" },
         { status: 500 },
       );
     }
@@ -165,7 +165,7 @@ export async function POST(
     } catch (err) {
       console.error("[lms/lessons] doc presign error:", err);
       return NextResponse.json(
-        { error: `Failed to prepare document upload: ${err instanceof Error ? err.message : err}` },
+        { error: "Failed to prepare document upload" },
         { status: 500 },
       );
     }
@@ -179,7 +179,7 @@ export async function POST(
     .single();
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Database operation failed" }, { status: 500 });
   }
 
   return NextResponse.json({ lesson: data, upload_url: uploadUrl }, { status: 201 });

@@ -39,7 +39,7 @@ export async function GET(
     .limit(200);
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Failed to fetch NOTAMs" }, { status: 500 });
   }
 
   // Sort: priority types first (RWY, AD, PPR, TFR), then by date

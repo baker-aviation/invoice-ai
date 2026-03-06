@@ -32,7 +32,7 @@ export async function GET(req: NextRequest) {
 
   const { data, error } = await supabase.auth.admin.listUsers({ perPage: 200 });
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Failed to list users" }, { status: 500 });
   }
 
   const users = data.users.map((u) => ({
@@ -89,7 +89,7 @@ export async function PUT(req: NextRequest) {
   });
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Failed to update role" }, { status: 500 });
   }
 
   return NextResponse.json({ success: true, userId: parsed.data.userId, role: parsed.data.role });
@@ -137,7 +137,7 @@ export async function PATCH(req: NextRequest) {
   });
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Failed to update permissions" }, { status: 500 });
   }
 
   return NextResponse.json({ success: true, userId: parsed.data.userId, permissions: parsed.data.permissions });
@@ -183,7 +183,7 @@ export async function DELETE(req: NextRequest) {
   const { error } = await supabase.auth.admin.deleteUser(parsed.data.userId);
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Failed to delete user" }, { status: 500 });
   }
 
   return NextResponse.json({ success: true, userId: parsed.data.userId });

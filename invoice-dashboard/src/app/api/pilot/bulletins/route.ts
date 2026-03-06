@@ -87,7 +87,7 @@ export async function POST(req: NextRequest) {
 
   if (dbErr) {
     console.error("[pilot/bulletins] insert error:", dbErr);
-    return NextResponse.json({ error: `Failed to create bulletin: ${dbErr.message}` }, { status: 500 });
+    return NextResponse.json({ error: "Failed to create bulletin" }, { status: 500 });
   }
 
   return NextResponse.json({ bulletin }, { status: 201 });

@@ -82,7 +82,7 @@ export async function DELETE(
     .eq("application_id", applicationId);
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Failed to delete candidate" }, { status: 500 });
   }
 
   return NextResponse.json({ ok: true });

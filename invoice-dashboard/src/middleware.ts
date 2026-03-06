@@ -2,9 +2,32 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 import { hasAccessToPath } from "@/lib/permissions";
 
+const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+const isDev = process.env.NODE_ENV === "development";
+const isReadOnly = process.env.DEV_READ_ONLY === "true";
+
 export async function middleware(request: NextRequest) {
+  // --- Dev safety: block mutating API requests when DEV_READ_ONLY=true ---
+  if (isDev && MUTATING_METHODS.has(request.method) && request.nextUrl.pathname.startsWith("/api/")) {
+    console.warn(
+      `\x1b[33m⚠  DEV → PRODUCTION WRITE: ${request.method} ${request.nextUrl.pathname}\x1b[0m`,
+    );
+    if (isReadOnly) {
+      console.warn(
+        `\x1b[31m✖  BLOCKED by DEV_READ_ONLY\x1b[0m`,
+      );
+      return NextResponse.json(
+        {
+          error: "Blocked: DEV_READ_ONLY is enabled. Mutating requests are disabled in development.",
+          hint: "Set DEV_READ_ONLY=false in .env.local to allow writes.",
+        },
+        { status: 403 },
+      );
+    }
+  }
+
   // CSRF: reject cross-origin state-changing requests
-  if (request.method === "POST" || request.method === "PUT" || request.method === "DELETE") {
+  if (MUTATING_METHODS.has(request.method)) {
     const origin = request.headers.get("origin");
     const host = request.headers.get("host");
     if (origin && host) {
@@ -70,9 +93,7 @@ export async function middleware(request: NextRequest) {
 
   // Role-based routing for authenticated users
   if (user) {
-    const role =
-      (user.app_metadata?.role as string | undefined) ??
-      (user.user_metadata?.role as string | undefined);
+    const role = user.app_metadata?.role as string | undefined;
     const pathname = request.nextUrl.pathname;
 
     // Pilot-only users can only access /pilot/* and /login

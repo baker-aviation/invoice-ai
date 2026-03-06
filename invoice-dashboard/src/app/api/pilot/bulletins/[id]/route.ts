@@ -103,7 +103,7 @@ export async function PATCH(req: NextRequest, { params }: RouteCtx) {
 
   if (dbErr) {
     console.error("[pilot/bulletins] update error:", dbErr);
-    return NextResponse.json({ error: `Failed to update bulletin: ${dbErr.message}` }, { status: 500 });
+    return NextResponse.json({ error: "Failed to update bulletin" }, { status: 500 });
   }
 
   return NextResponse.json({ bulletin });

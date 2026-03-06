@@ -102,7 +102,7 @@ export async function POST(req: NextRequest, { params }: RouteCtx) {
   } catch (err) {
     console.error("[pilot/bulletins/attachments] presign error:", err);
     return NextResponse.json(
-      { error: `Failed to prepare upload: ${err instanceof Error ? err.message : err}` },
+      { error: "Failed to prepare upload" },
       { status: 500 },
     );
   }

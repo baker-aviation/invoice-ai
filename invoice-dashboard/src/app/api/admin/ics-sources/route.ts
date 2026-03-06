@@ -25,7 +25,7 @@ export async function GET(req: NextRequest) {
     .order("created_at", { ascending: true });
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Database operation failed" }, { status: 500 });
   }
   return NextResponse.json({ sources: data });
 }
@@ -68,7 +68,7 @@ export async function POST(req: NextRequest) {
     .single();
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Database operation failed" }, { status: 500 });
   }
   return NextResponse.json({ source: data }, { status: 201 });
 }
@@ -114,7 +114,7 @@ export async function PUT(req: NextRequest) {
     .single();
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Database operation failed" }, { status: 500 });
   }
   return NextResponse.json({ source: data });
 }
@@ -148,7 +148,7 @@ export async function DELETE(req: NextRequest) {
   const { error } = await sb.from(TABLE).delete().eq("id", parsed.data.id);
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Database operation failed" }, { status: 500 });
   }
   return NextResponse.json({ ok: true });
 }

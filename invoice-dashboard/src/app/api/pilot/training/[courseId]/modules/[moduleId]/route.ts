@@ -52,7 +52,7 @@ export async function PATCH(
     .single();
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Database operation failed" }, { status: 500 });
   }
 
   return NextResponse.json({ module: data });
@@ -82,7 +82,7 @@ export async function DELETE(
   const { error } = await supa.from("lms_modules").delete().eq("id", id);
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Database operation failed" }, { status: 500 });
   }
 
   return NextResponse.json({ ok: true });

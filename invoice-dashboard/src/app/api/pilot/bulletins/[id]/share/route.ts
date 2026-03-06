@@ -128,7 +128,7 @@ export async function GET(req: NextRequest) {
       channels,
     });
   } catch (err) {
-    return NextResponse.json({ ok: false, channels: [], error: String(err) }, { status: 502 });
+    return NextResponse.json({ ok: false, channels: [], error: "Failed to fetch channels" }, { status: 502 });
   }
 }
 

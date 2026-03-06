@@ -4,6 +4,7 @@ import { signGcsUrl } from "@/lib/gcs";
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import BulletinDetail from "./BulletinDetail";
+import SafeHTML from "@/components/SafeHTML";
 
 export const dynamic = "force-dynamic";
 
@@ -125,9 +126,9 @@ export default async function BulletinDetailPage({
         <h1 className="text-lg font-bold text-gray-900 mb-3">{bulletin.title}</h1>
 
         {bulletin.summary && (
-          <div
+          <SafeHTML
+            html={bulletin.summary}
             className="text-sm text-gray-700 mb-4 leading-relaxed prose prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-headings:my-2 [&>div]:my-0.5 [&_*]:!text-sm [&_*]:!text-gray-700 [&_h1]:!text-base [&_h1]:!font-bold [&_h2]:!text-sm [&_h2]:!font-bold [&_h3]:!text-sm [&_h3]:!font-semibold [&_b]:!font-semibold [&_strong]:!font-semibold"
-            dangerouslySetInnerHTML={{ __html: bulletin.summary }}
           />
         )}
 
