@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { Suspense, useState, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
 
 type Question = {
@@ -18,6 +18,14 @@ type FormConfig = {
 };
 
 export default function InfoSessionFormPage() {
+  return (
+    <Suspense fallback={<div className="text-center py-16 text-gray-400 text-sm">Loading form...</div>}>
+      <InfoSessionFormInner />
+    </Suspense>
+  );
+}
+
+function InfoSessionFormInner() {
   const searchParams = useSearchParams();
   const formType = searchParams.get("type") ?? "regular";
 
