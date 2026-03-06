@@ -12,6 +12,8 @@ const CATEGORY_LABELS: Record<string, string> = {
   operations: "Operations",
   tims: "Tim's",
   maintenance: "Maintenance",
+  citation_x: "Citation X",
+  challenger_300: "Challenger 300",
 };
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -19,6 +21,8 @@ const CATEGORY_COLORS: Record<string, string> = {
   operations: "bg-green-100 text-green-800",
   tims: "bg-purple-100 text-purple-800",
   maintenance: "bg-orange-100 text-orange-800",
+  citation_x: "bg-sky-100 text-sky-800",
+  challenger_300: "bg-amber-100 text-amber-800",
 };
 
 type SignedAttachment = {

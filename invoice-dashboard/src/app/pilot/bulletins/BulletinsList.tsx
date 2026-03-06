@@ -23,6 +23,8 @@ const CATEGORIES = [
   { key: "operations", label: "Operations" },
   { key: "tims", label: "Tim's" },
   { key: "maintenance", label: "Maintenance" },
+  { key: "citation_x", label: "Citation X" },
+  { key: "challenger_300", label: "Challenger 300" },
 ];
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -30,6 +32,8 @@ const CATEGORY_LABELS: Record<string, string> = {
   operations: "Operations",
   tims: "Tim's",
   maintenance: "Maintenance",
+  citation_x: "Citation X",
+  challenger_300: "Challenger 300",
 };
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -37,6 +41,8 @@ const CATEGORY_COLORS: Record<string, string> = {
   operations: "bg-green-100 text-green-800",
   tims: "bg-purple-100 text-purple-800",
   maintenance: "bg-orange-100 text-orange-800",
+  citation_x: "bg-sky-100 text-sky-800",
+  challenger_300: "bg-amber-100 text-amber-800",
 };
 
 function formatDate(iso: string) {
@@ -415,6 +421,8 @@ function CreateBulletinModal({ onClose }: { onClose: () => void }) {
               <option value="operations">Operations</option>
               <option value="tims">Tim&apos;s</option>
               <option value="maintenance">Maintenance</option>
+              <option value="citation_x">Citation X</option>
+              <option value="challenger_300">Challenger 300</option>
             </select>
           </div>
 

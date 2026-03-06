@@ -405,6 +405,8 @@ function EditBulletinModal({
               <option value="operations">Operations</option>
               <option value="tims">Tim&apos;s</option>
               <option value="maintenance">Maintenance</option>
+              <option value="citation_x">Citation X</option>
+              <option value="challenger_300">Challenger 300</option>
             </select>
           </div>
 

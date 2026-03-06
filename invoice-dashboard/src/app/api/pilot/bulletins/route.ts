@@ -7,6 +7,8 @@ const CATEGORY_LABELS: Record<string, string> = {
   operations: "Operations",
   tims: "Tim's",
   maintenance: "Maintenance",
+  citation_x: "Citation X",
+  challenger_300: "Challenger 300",
 };
 
 /**
