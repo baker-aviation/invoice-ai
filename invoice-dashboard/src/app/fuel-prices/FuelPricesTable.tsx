@@ -218,28 +218,21 @@ function buildAdvVsActual(
     return [up];
   }
 
-  // Helper to push a price into a map for all airport variants
-  function pushToMap(map: Map<string, number[]>, baseKey: string, airport: string, price: number) {
-    for (const v of airportVariants(airport)) {
-      const k = baseKey.replace(airport, v);
-      if (!map.has(k)) map.set(k, []);
-      map.get(k)!.push(price);
-    }
-  }
-
   // Group invoice data by (vendor_lower, airport) — all time for "actual" avg
   const invoiceBuckets = new Map<string, { prices: number[]; count: number }>();
-  // Also build per-airport + per-week lookup for recent prices (all sources)
-  // Key: "AIRPORT|week_start" → prices[]
-  const recentByAirportWeek = new Map<string, number[]>();
+  // Build per-airport list of (date, price) for flexible date-range lookups
+  // Key: normalized airport code → { date, price }[]
+  const pricesByAirport = new Map<string, { date: string; price: number }[]>();
 
   for (const r of prices) {
     if (!r.airport_code || r.effective_price_per_gallon == null) continue;
 
-    // Per airport+week: all sources, store under all airport variants
+    // Store under all airport variants for flexible matching
     if (r.invoice_date) {
-      const wk = getWeekMonday(r.invoice_date);
-      pushToMap(recentByAirportWeek, `${r.airport_code}|${wk}`, r.airport_code, r.effective_price_per_gallon);
+      for (const v of airportVariants(r.airport_code)) {
+        if (!pricesByAirport.has(v)) pricesByAirport.set(v, []);
+        pricesByAirport.get(v)!.push({ date: r.invoice_date, price: r.effective_price_per_gallon });
+      }
     }
 
     // All-time by vendor+airport (invoices only)
@@ -283,13 +276,16 @@ function buildAdvVsActual(
       : null;
     const invoiceCount = bucket?.count ?? 0;
 
-    // Actual avg at this airport for the same week as the advertised price
-    const weekKey = `${latest.airport_code}|${latest.week_start}`;
-    const recentPrices = recentByAirportWeek.get(weekKey);
-    const recent7dAvg = recentPrices && recentPrices.length > 0
-      ? Math.round((recentPrices.reduce((a, b) => a + b, 0) / recentPrices.length) * 10000) / 10000
+    // Actual avg at this airport within ±10 days of the advertised week_start
+    const weekDate = new Date(latest.week_start + "T12:00:00");
+    const minDate = new Date(weekDate.getTime() - 3 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+    const maxDate = new Date(weekDate.getTime() + 10 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+    const airportPrices = pricesByAirport.get(latest.airport_code) ?? [];
+    const recentPrices = airportPrices.filter((p) => p.date >= minDate && p.date <= maxDate);
+    const recent7dAvg = recentPrices.length > 0
+      ? Math.round((recentPrices.reduce((a, b) => a + b.price, 0) / recentPrices.length) * 10000) / 10000
       : null;
-    const recent7dCount = recentPrices?.length ?? 0;
+    const recent7dCount = recentPrices.length;
 
     // vs Adv uses 7-day avg if available, otherwise all-time
     const comparePrice = recent7dAvg ?? actualAvg;
@@ -1091,8 +1087,15 @@ export default function FuelPricesTable({
               </thead>
               <tbody className="divide-y">
                 {advPageRows.map((row) => {
-                  const wowUp = row.wowChangePct != null && row.wowChangePct > 0;
-                  const wowDown = row.wowChangePct != null && row.wowChangePct < 0;
+                  const absWow = row.wowChange != null ? Math.abs(row.wowChange) : 0;
+                  // Green ≤$0.05, Yellow $0.06–$0.15, Red >$0.15
+                  const wowColor = row.wowChange == null || absWow === 0
+                    ? "text-gray-500"
+                    : absWow <= 0.05
+                    ? "text-green-600"
+                    : absWow <= 0.15
+                    ? "text-amber-600"
+                    : "text-red-600";
                   const overActual = row.vsActualPct != null && row.vsActualPct > 2;
                   const underActual = row.vsActualPct != null && row.vsActualPct < -2;
                   return (
@@ -1116,7 +1119,7 @@ export default function FuelPricesTable({
                       </td>
                       <td className="px-4 py-2.5 whitespace-nowrap text-right">
                         {row.wowChange != null ? (
-                          <span className={`font-mono text-xs font-medium ${wowUp ? "text-red-600" : wowDown ? "text-green-600" : "text-gray-500"}`}>
+                          <span className={`font-mono text-xs font-medium ${wowColor}`}>
                             {row.wowChange > 0 ? "+" : ""}{row.wowChange.toFixed(4)}
                             <span className="text-[10px] ml-0.5 opacity-70">
                               ({row.wowChangePct! >= 0 ? "+" : ""}{row.wowChangePct}%)
