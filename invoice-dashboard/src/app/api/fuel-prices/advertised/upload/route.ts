@@ -66,9 +66,10 @@ export async function POST(req: NextRequest) {
 
     const volumeTier = fields[1].trim() || "1+";
     const product = fields[2].trim() || "Jet-A";
-    const tailNumbers = fields[3].trim() || null;
-    const price = parsePrice(fields[4]);
+    const price = parsePrice(fields[3]);
     if (price === null || price <= 0) continue;
+    const rawTails = fields[4]?.trim() ?? "";
+    const tailNumbers = (!rawTails || rawTails.toLowerCase() === "all tails") ? null : rawTails;
 
     rows.push({
       fbo_vendor: vendor,

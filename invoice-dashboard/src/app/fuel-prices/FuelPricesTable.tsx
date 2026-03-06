@@ -289,8 +289,8 @@ function ImportAdvertisedModal({ onClose }: { onClose: () => void }) {
 
         <div className="mb-4 rounded-lg bg-blue-50 border border-blue-200 p-3 text-xs text-blue-800">
           <p className="font-semibold mb-1">Expected CSV format:</p>
-          <code className="block whitespace-pre text-[11px]">Airport, Volume Tier, Product, Tail Numbers, Price</code>
-          <p className="mt-1 text-blue-600">Airport may be blank on continuation rows (carries forward). Price like $6.30.</p>
+          <code className="block whitespace-pre text-[11px]">FBO, Volume Tier, Product, Price, Tail Numbers</code>
+          <p className="mt-1 text-blue-600">FBO (airport code) may be blank on continuation rows (carries forward). Price like $6.30. &ldquo;All Tails&rdquo; = all aircraft.</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-3">
