@@ -128,7 +128,7 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
     return [...types].sort();
   }, [flights]);
 
-  // Filter flights by time range and visible types
+  // Filter flights by time range and visible types, ordered by departure time
   const filteredFlights = useMemo(() => {
     const { start, end } = getTimeRange(timeRange);
     return flights
@@ -379,12 +379,12 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
                         )}
                       </td>
                       <td className="px-4 py-2.5 text-gray-600">
-                        {fi?.arrival_time ? (
-                          <div>
-                            <div>{fmtTime(fi.arrival_time)}</div>
-                            <div className="text-[10px] text-green-600 font-medium">FA ETA</div>
+                        <div>{fmtTime(f.scheduled_arrival)}</div>
+                        {fi?.arrival_time && (
+                          <div className="text-[10px] text-green-600 font-medium mt-0.5">
+                            FlightAware ETA: {fmtTime(fi.arrival_time)}
                           </div>
-                        ) : fmtTime(f.scheduled_arrival)}
+                        )}
                       </td>
                       <td className="px-4 py-2.5">
                         <span className={`px-2 py-0.5 text-xs font-medium rounded-full ${typeColor}`}>

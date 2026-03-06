@@ -32,6 +32,15 @@ export type FaAirport = {
   state: string | null;
 };
 
+export type FaPosition = {
+  latitude: number;
+  longitude: number;
+  altitude: number | null;
+  groundspeed: number | null;
+  heading: number | null;
+  timestamp: string | null;
+};
+
 export type FaFlight = {
   ident: string;              // e.g. "KOW102"
   fa_flight_id: string;
@@ -65,6 +74,8 @@ export type FaFlight = {
   arrival_delay: number | null;
   diverted: boolean;
   cancelled: boolean;
+  // Position (available for en-route flights)
+  last_position: FaPosition | null;
 };
 
 // Simplified version for the dashboard
@@ -89,6 +100,12 @@ export type FlightInfo = {
   // Flags
   diverted: boolean;
   cancelled: boolean;
+  // Position (from FlightAware, for en-route flights)
+  latitude: number | null;
+  longitude: number | null;
+  altitude: number | null;
+  groundspeed: number | null;
+  heading: number | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -208,5 +225,10 @@ function toFlightInfo(tail: string, f: FaFlight): FlightInfo {
     filed_altitude: f.filed_altitude,
     diverted: f.diverted,
     cancelled: f.cancelled,
+    latitude: f.last_position?.latitude ?? null,
+    longitude: f.last_position?.longitude ?? null,
+    altitude: f.last_position?.altitude ?? null,
+    groundspeed: f.last_position?.groundspeed ?? null,
+    heading: f.last_position?.heading ?? null,
   };
 }

@@ -50,6 +50,12 @@ export type FlightInfoMap = {
   arrival_time: string | null;     // ETA
   route_distance_nm: number | null;
   diverted: boolean;
+  // Position (from FlightAware, for en-route flights)
+  latitude?: number | null;
+  longitude?: number | null;
+  altitude?: number | null;
+  groundspeed?: number | null;
+  heading?: number | null;
 };
 
 type Props = {
