@@ -68,6 +68,15 @@ export default async function BulletinDetailPage({
   const videoDownloadUrl = videoUrl
     ?? (bulletin.video_gcs_key ? `/api/pilot/bulletins/${bulletin.id}/download` : null);
 
+  // Generate signed URL for document/image attachment
+  let docUrl: string | null = null;
+  if (bulletin.doc_gcs_bucket && bulletin.doc_gcs_key) {
+    docUrl = await signGcsUrl(bulletin.doc_gcs_bucket, bulletin.doc_gcs_key);
+  }
+  const docDownloadUrl = docUrl
+    ?? (bulletin.doc_gcs_key ? `/api/pilot/bulletins/${bulletin.id}/download?type=doc` : null);
+  const isImage = /\.(jpg|jpeg|png|gif|webp)$/i.test(bulletin.doc_filename ?? "");
+
   return (
     <div>
       <Link
@@ -95,6 +104,7 @@ export default async function BulletinDetailPage({
               summary={bulletin.summary ?? ""}
               category={bulletin.category}
               videoFilename={bulletin.video_filename ?? null}
+              docFilename={bulletin.doc_filename ?? null}
             />
           )}
         </div>
@@ -146,6 +156,54 @@ export default async function BulletinDetailPage({
                 </div>
               )}
             </div>
+          </div>
+        )}
+
+        {docDownloadUrl && (
+          <div className="border rounded-lg overflow-hidden mt-4">
+            <div className="flex items-center justify-between gap-3 px-4 py-3 text-sm bg-gray-50">
+              <div className="font-medium truncate">{bulletin.doc_filename ?? "Document"}</div>
+              <a
+                href={docDownloadUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs px-2.5 py-1.5 rounded border border-gray-300 hover:bg-gray-100 font-medium text-blue-600 shrink-0"
+              >
+                {isImage ? "Open" : "Download"}
+              </a>
+            </div>
+            {isImage && docUrl ? (
+              <div className="border-t bg-gray-100 p-4 flex justify-center">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={docUrl}
+                  alt={bulletin.doc_filename ?? "Attached image"}
+                  className="max-w-full max-h-[600px] rounded"
+                />
+              </div>
+            ) : docUrl ? (
+              <div className="border-t">
+                <iframe
+                  src={docUrl}
+                  className="w-full h-[600px]"
+                  title={bulletin.doc_filename ?? "Document"}
+                />
+              </div>
+            ) : (
+              <div className="border-t bg-gray-50 p-6 text-center">
+                <p className="text-sm text-gray-500">
+                  Preview unavailable.{" "}
+                  <a
+                    href={`/api/pilot/bulletins/${bulletin.id}/download?type=doc`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-blue-500 underline"
+                  >
+                    Download to view
+                  </a>
+                </p>
+              </div>
+            )}
           </div>
         )}
       </div>

@@ -39,9 +39,53 @@ const CATEGORY_LABELS: Record<string, string> = {
   maintenance: "Maintenance",
 };
 
+/** Map file extension to MIME type for uploads */
+function contentTypeForExt(ext: string | undefined): string {
+  switch (ext) {
+    case "mp4": return "video/mp4";
+    case "m4v": return "video/x-m4v";
+    case "mov": return "video/quicktime";
+    case "pdf": return "application/pdf";
+    case "jpg": case "jpeg": return "image/jpeg";
+    case "png": return "image/png";
+    case "gif": return "image/gif";
+    case "webp": return "image/webp";
+    default: return "application/octet-stream";
+  }
+}
+
+/** Create a GCS Storage client */
+async function getGcsStorage() {
+  const { Storage } = await import("@google-cloud/storage");
+  const b64Key = process.env.GCP_SERVICE_ACCOUNT_KEY;
+  if (b64Key) {
+    const creds = JSON.parse(Buffer.from(b64Key, "base64").toString("utf-8"));
+    return new Storage({ credentials: creds, projectId: creds.project_id });
+  }
+  return new Storage();
+}
+
+/** Generate a presigned upload URL for a file */
+async function presignUpload(filename: string, gcsPrefix: string): Promise<{ bucket: string; key: string; url: string }> {
+  const storage = await getGcsStorage();
+  const bucket = process.env.GCS_BUCKET || "baker-aviation-invoice-pdfs";
+  const safeName = filename.replace(/\//g, "_");
+  const key = `${gcsPrefix}/${Date.now()}-${safeName}`;
+  const ext = filename.split(".").pop()?.toLowerCase();
+  const contentType = contentTypeForExt(ext);
+
+  const [url] = await storage.bucket(bucket).file(key).getSignedUrl({
+    version: "v4",
+    action: "write",
+    expires: Date.now() + 30 * 60 * 1000,
+    contentType,
+  });
+  return { bucket, key, url };
+}
+
 /**
  * PATCH /api/pilot/bulletins/[id] — update a bulletin (admin only)
- * JSON body: { title?, summary?, category?, video_filename? }
+ * JSON body: { title?, summary?, category?, video_filename?, doc_filename? }
  */
 export async function PATCH(
   req: NextRequest,
@@ -60,7 +104,7 @@ export async function PATCH(
     return NextResponse.json({ error: "Invalid bulletin ID" }, { status: 400 });
   }
 
-  let body: { title?: string; summary?: string; category?: string; video_filename?: string };
+  let body: { title?: string; summary?: string; category?: string; video_filename?: string; doc_filename?: string };
   try {
     body = await req.json();
   } catch {
@@ -91,50 +135,38 @@ export async function PATCH(
 
   let uploadUrl: string | null = null;
   const videoFilename = body.video_filename?.trim() || null;
+  const cat = (updates.category as string) || "general";
 
   if (videoFilename) {
     try {
-      const { Storage } = await import("@google-cloud/storage");
-      let storage: InstanceType<typeof Storage>;
-
-      const b64Key = process.env.GCP_SERVICE_ACCOUNT_KEY;
-      if (b64Key) {
-        const creds = JSON.parse(Buffer.from(b64Key, "base64").toString("utf-8"));
-        storage = new Storage({ credentials: creds, projectId: creds.project_id });
-      } else {
-        storage = new Storage();
-      }
-
-      const gcsBucket = process.env.GCS_BUCKET || "baker-aviation-invoice-pdfs";
-      const safeName = videoFilename.replace(/\//g, "_");
-      const ts = Date.now();
-      const cat = (updates.category as string) || "general";
-      const gcsKey = `pilot-bulletins/${cat}/${ts}-${safeName}`;
-
-      const ext = videoFilename.split(".").pop()?.toLowerCase();
-      const contentType =
-        ext === "mp4" ? "video/mp4"
-        : ext === "m4v" ? "video/x-m4v"
-        : "video/quicktime";
-
-      const [url] = await storage.bucket(gcsBucket).file(gcsKey).getSignedUrl({
-        version: "v4",
-        action: "write",
-        expires: Date.now() + 30 * 60 * 1000,
-        contentType,
-      });
-      uploadUrl = url;
-
-      updates.video_gcs_bucket = gcsBucket;
-      updates.video_gcs_key = gcsKey;
+      const result = await presignUpload(videoFilename, `pilot-bulletins/${cat}`);
+      uploadUrl = result.url;
+      updates.video_gcs_bucket = result.bucket;
+      updates.video_gcs_key = result.key;
       updates.video_filename = videoFilename;
     } catch (err) {
-      console.error("[pilot/bulletins] presign error:", err);
+      console.error("[pilot/bulletins] video presign error:", err);
       return NextResponse.json({ error: `Failed to prepare video upload: ${err instanceof Error ? err.message : err}` }, { status: 500 });
     }
   }
 
-  if (Object.keys(updates).length === 0 && !uploadUrl) {
+  let docUploadUrl: string | null = null;
+  const docFilename = body.doc_filename?.trim() || null;
+
+  if (docFilename) {
+    try {
+      const result = await presignUpload(docFilename, `pilot-bulletins/${cat}/docs`);
+      docUploadUrl = result.url;
+      updates.doc_gcs_bucket = result.bucket;
+      updates.doc_gcs_key = result.key;
+      updates.doc_filename = docFilename;
+    } catch (err) {
+      console.error("[pilot/bulletins] doc presign error:", err);
+      return NextResponse.json({ error: `Failed to prepare document upload: ${err instanceof Error ? err.message : err}` }, { status: 500 });
+    }
+  }
+
+  if (Object.keys(updates).length === 0 && !uploadUrl && !docUploadUrl) {
     return NextResponse.json({ error: "No fields to update" }, { status: 400 });
   }
 
@@ -151,7 +183,7 @@ export async function PATCH(
     return NextResponse.json({ error: `Failed to update bulletin: ${dbErr.message}` }, { status: 500 });
   }
 
-  return NextResponse.json({ bulletin, upload_url: uploadUrl });
+  return NextResponse.json({ bulletin, upload_url: uploadUrl, doc_upload_url: docUploadUrl });
 }
 
 /**

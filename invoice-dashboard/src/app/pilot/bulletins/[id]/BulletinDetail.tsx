@@ -1,7 +1,8 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import RichTextEditor, { type RichTextEditorHandle } from "@/components/RichTextEditor";
 
 type SlackChannel = { id: string; name: string; is_private: boolean };
 
@@ -12,6 +13,7 @@ export default function BulletinDetail({
   summary: initialSummary,
   category: initialCategory,
   videoFilename: initialVideoFilename,
+  docFilename: initialDocFilename,
 }: {
   bulletinId: number;
   slackTs: string | null;
@@ -19,6 +21,7 @@ export default function BulletinDetail({
   summary: string;
   category: string;
   videoFilename: string | null;
+  docFilename: string | null;
 }) {
   const router = useRouter();
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -183,38 +186,11 @@ export default function BulletinDetail({
           initialSummary={initialSummary}
           initialCategory={initialCategory}
           initialVideoFilename={initialVideoFilename}
+          initialDocFilename={initialDocFilename}
           onClose={() => setShowEdit(false)}
         />
       )}
     </>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Rich Text Toolbar Button
-// ---------------------------------------------------------------------------
-
-function ToolbarBtn({
-  label,
-  command,
-  value,
-}: {
-  label: string;
-  command: string;
-  value?: string;
-}) {
-  return (
-    <button
-      type="button"
-      onMouseDown={(e) => {
-        e.preventDefault();
-        document.execCommand(command, false, value);
-      }}
-      className="px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-200 rounded transition-colors"
-      title={label}
-    >
-      {label}
-    </button>
   );
 }
 
@@ -228,6 +204,7 @@ function EditBulletinModal({
   initialSummary,
   initialCategory,
   initialVideoFilename,
+  initialDocFilename,
   onClose,
 }: {
   bulletinId: number;
@@ -235,27 +212,18 @@ function EditBulletinModal({
   initialSummary: string;
   initialCategory: string;
   initialVideoFilename: string | null;
+  initialDocFilename: string | null;
   onClose: () => void;
 }) {
   const router = useRouter();
-  const editorRef = useRef<HTMLDivElement>(null);
+  const editorRef = useRef<RichTextEditorHandle>(null);
   const [title, setTitle] = useState(initialTitle);
   const [category, setCategory] = useState(initialCategory);
   const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [docFile, setDocFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [expanded, setExpanded] = useState(false);
-
-  // Pre-populate the rich text editor with existing content
-  useEffect(() => {
-    if (editorRef.current && initialSummary) {
-      editorRef.current.innerHTML = initialSummary;
-    }
-  }, [initialSummary]);
-
-  const getContent = useCallback(() => {
-    return editorRef.current?.innerHTML?.trim() || "";
-  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -272,13 +240,14 @@ function EditBulletinModal({
     setError("");
 
     try {
-      const content = getContent();
+      const content = editorRef.current?.getHTML() ?? "";
       const payload: Record<string, string> = {
         title: title.trim(),
         summary: content,
         category,
       };
       if (videoFile) payload.video_filename = videoFile.name;
+      if (docFile) payload.doc_filename = docFile.name;
 
       const res = await fetch(`/api/pilot/bulletins/${bulletinId}`, {
         method: "PATCH",
@@ -293,7 +262,7 @@ function EditBulletinModal({
         return;
       }
 
-      const { upload_url } = await res.json();
+      const { upload_url, doc_upload_url } = await res.json();
 
       // Upload video directly to GCS via presigned URL
       if (videoFile && upload_url) {
@@ -312,6 +281,32 @@ function EditBulletinModal({
         if (!uploadRes.ok) {
           console.error("Video upload failed:", uploadRes.status);
           setError("Changes saved but video upload failed. Try again.");
+          setSubmitting(false);
+          router.refresh();
+          return;
+        }
+      }
+
+      // Upload document/image directly to GCS via presigned URL
+      if (docFile && doc_upload_url) {
+        const ext = docFile.name.split(".").pop()?.toLowerCase();
+        const contentType =
+          ext === "pdf" ? "application/pdf"
+          : ext === "jpg" || ext === "jpeg" ? "image/jpeg"
+          : ext === "png" ? "image/png"
+          : ext === "gif" ? "image/gif"
+          : ext === "webp" ? "image/webp"
+          : "application/octet-stream";
+
+        const uploadRes = await fetch(doc_upload_url, {
+          method: "PUT",
+          headers: { "Content-Type": contentType },
+          body: docFile,
+        });
+
+        if (!uploadRes.ok) {
+          console.error("Document upload failed:", uploadRes.status);
+          setError("Changes saved but document upload failed. Try again.");
           setSubmitting(false);
           router.refresh();
           return;
@@ -396,31 +391,12 @@ function EditBulletinModal({
             <label className="block text-xs font-medium text-gray-600 mb-1">
               Content
             </label>
-            <div className="border border-gray-200 rounded-lg flex flex-col flex-1 min-h-0 overflow-hidden focus-within:border-gray-400">
-              {/* Toolbar */}
-              <div className="flex items-center gap-0.5 px-2 py-1 border-b border-gray-100 bg-gray-50 shrink-0 flex-wrap">
-                <ToolbarBtn label="B" command="bold" />
-                <ToolbarBtn label="I" command="italic" />
-                <ToolbarBtn label="U" command="underline" />
-                <span className="w-px h-4 bg-gray-200 mx-1" />
-                <ToolbarBtn label="H1" command="formatBlock" value="h1" />
-                <ToolbarBtn label="H2" command="formatBlock" value="h2" />
-                <ToolbarBtn label="H3" command="formatBlock" value="h3" />
-                <span className="w-px h-4 bg-gray-200 mx-1" />
-                <ToolbarBtn label="List" command="insertUnorderedList" />
-                <ToolbarBtn label="1." command="insertOrderedList" />
-              </div>
-              {/* Editable area */}
-              <div
-                ref={editorRef}
-                contentEditable
-                className={`px-3 py-2 text-sm outline-none overflow-y-auto prose prose-sm max-w-none ${
-                  expanded ? "flex-1" : "min-h-[200px] max-h-[400px]"
-                }`}
-                data-placeholder="Bulletin content..."
-                suppressContentEditableWarning
-              />
-            </div>
+            <RichTextEditor
+              ref={editorRef}
+              initialHTML={initialSummary}
+              placeholder="Bulletin content..."
+              expanded={expanded}
+            />
           </div>
 
           <div className="shrink-0">
@@ -434,6 +410,19 @@ function EditBulletinModal({
               className="block w-full text-sm text-gray-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border file:border-gray-300 file:text-sm file:font-medium file:bg-white file:text-gray-700 hover:file:bg-gray-50"
             />
             <p className="text-[10px] text-gray-400 mt-1">.mov, .mp4, .m4v — leave empty to keep current video</p>
+          </div>
+
+          <div className="shrink-0">
+            <label className="block text-xs font-medium text-gray-600 mb-1">
+              PDF / Image {initialDocFilename ? `(current: ${initialDocFilename})` : "(optional)"}
+            </label>
+            <input
+              type="file"
+              accept=".pdf,.jpg,.jpeg,.png,.gif,.webp"
+              onChange={(e) => setDocFile(e.target.files?.[0] ?? null)}
+              className="block w-full text-sm text-gray-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border file:border-gray-300 file:text-sm file:font-medium file:bg-white file:text-gray-700 hover:file:bg-gray-50"
+            />
+            <p className="text-[10px] text-gray-400 mt-1">.pdf, .jpg, .png, .gif, .webp — leave empty to keep current</p>
           </div>
 
           {error && (

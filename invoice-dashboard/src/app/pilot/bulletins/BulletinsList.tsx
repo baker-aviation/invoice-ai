@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useRef, useState, useCallback } from "react";
+import { useRef, useState } from "react";
+import RichTextEditor, { type RichTextEditorHandle } from "@/components/RichTextEditor";
 
 type Bulletin = {
   id: number;
@@ -11,6 +12,7 @@ type Bulletin = {
   category: string;
   published_at: string;
   video_filename: string | null;
+  doc_filename: string | null;
   created_at: string;
 };
 
@@ -178,11 +180,18 @@ export default function BulletinsList({
                     </>
                   )}
                 </div>
-                {b.video_filename && (
-                  <div className="shrink-0 mt-1">
-                    <span className="text-[10px] text-gray-400 border border-gray-200 rounded px-1.5 py-0.5">
-                      Video
-                    </span>
+                {(b.video_filename || b.doc_filename) && (
+                  <div className="shrink-0 mt-1 flex flex-col gap-1">
+                    {b.video_filename && (
+                      <span className="text-[10px] text-gray-400 border border-gray-200 rounded px-1.5 py-0.5">
+                        Video
+                      </span>
+                    )}
+                    {b.doc_filename && (
+                      <span className="text-[10px] text-gray-400 border border-gray-200 rounded px-1.5 py-0.5">
+                        {/\.(jpg|jpeg|png|gif|webp)$/i.test(b.doc_filename) ? "Image" : "PDF"}
+                      </span>
+                    )}
                   </div>
                 )}
               </div>
@@ -200,50 +209,19 @@ export default function BulletinsList({
 }
 
 // ---------------------------------------------------------------------------
-// Rich Text Toolbar Button
-// ---------------------------------------------------------------------------
-
-function ToolbarBtn({
-  label,
-  command,
-  value,
-}: {
-  label: string;
-  command: string;
-  value?: string;
-}) {
-  return (
-    <button
-      type="button"
-      onMouseDown={(e) => {
-        e.preventDefault();
-        document.execCommand(command, false, value);
-      }}
-      className="px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-200 rounded transition-colors"
-      title={label}
-    >
-      {label}
-    </button>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Create Bulletin Modal
 // ---------------------------------------------------------------------------
 
 function CreateBulletinModal({ onClose }: { onClose: () => void }) {
   const router = useRouter();
-  const editorRef = useRef<HTMLDivElement>(null);
+  const editorRef = useRef<RichTextEditorHandle>(null);
   const [title, setTitle] = useState("");
   const [category, setCategory] = useState("");
   const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [docFile, setDocFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [expanded, setExpanded] = useState(false);
-
-  const getContent = useCallback(() => {
-    return editorRef.current?.innerHTML?.trim() || "";
-  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -260,13 +238,14 @@ function CreateBulletinModal({ onClose }: { onClose: () => void }) {
     setError("");
 
     try {
-      const content = getContent();
+      const content = editorRef.current?.getHTML() ?? "";
       const payload: Record<string, string> = {
         title: title.trim(),
         category,
       };
       if (content) payload.summary = content;
       if (videoFile) payload.video_filename = videoFile.name;
+      if (docFile) payload.doc_filename = docFile.name;
 
       const res = await fetch("/api/pilot/bulletins", {
         method: "POST",
@@ -281,7 +260,7 @@ function CreateBulletinModal({ onClose }: { onClose: () => void }) {
         return;
       }
 
-      const { upload_url } = await res.json();
+      const { upload_url, doc_upload_url } = await res.json();
 
       // Upload video directly to GCS via presigned URL
       if (videoFile && upload_url) {
@@ -300,6 +279,32 @@ function CreateBulletinModal({ onClose }: { onClose: () => void }) {
         if (!uploadRes.ok) {
           console.error("Video upload failed:", uploadRes.status);
           setError("Bulletin created but video upload failed. Edit the bulletin to re-upload.");
+          setSubmitting(false);
+          router.refresh();
+          return;
+        }
+      }
+
+      // Upload document/image directly to GCS via presigned URL
+      if (docFile && doc_upload_url) {
+        const ext = docFile.name.split(".").pop()?.toLowerCase();
+        const contentType =
+          ext === "pdf" ? "application/pdf"
+          : ext === "jpg" || ext === "jpeg" ? "image/jpeg"
+          : ext === "png" ? "image/png"
+          : ext === "gif" ? "image/gif"
+          : ext === "webp" ? "image/webp"
+          : "application/octet-stream";
+
+        const uploadRes = await fetch(doc_upload_url, {
+          method: "PUT",
+          headers: { "Content-Type": contentType },
+          body: docFile,
+        });
+
+        if (!uploadRes.ok) {
+          console.error("Document upload failed:", uploadRes.status);
+          setError("Bulletin created but document upload failed. Edit the bulletin to re-upload.");
           setSubmitting(false);
           router.refresh();
           return;
@@ -384,31 +389,11 @@ function CreateBulletinModal({ onClose }: { onClose: () => void }) {
             <label className="block text-xs font-medium text-gray-600 mb-1">
               Content
             </label>
-            <div className="border border-gray-200 rounded-lg flex flex-col flex-1 min-h-0 overflow-hidden focus-within:border-gray-400">
-              {/* Toolbar */}
-              <div className="flex items-center gap-0.5 px-2 py-1 border-b border-gray-100 bg-gray-50 shrink-0 flex-wrap">
-                <ToolbarBtn label="B" command="bold" />
-                <ToolbarBtn label="I" command="italic" />
-                <ToolbarBtn label="U" command="underline" />
-                <span className="w-px h-4 bg-gray-200 mx-1" />
-                <ToolbarBtn label="H1" command="formatBlock" value="h1" />
-                <ToolbarBtn label="H2" command="formatBlock" value="h2" />
-                <ToolbarBtn label="H3" command="formatBlock" value="h3" />
-                <span className="w-px h-4 bg-gray-200 mx-1" />
-                <ToolbarBtn label="List" command="insertUnorderedList" />
-                <ToolbarBtn label="1." command="insertOrderedList" />
-              </div>
-              {/* Editable area */}
-              <div
-                ref={editorRef}
-                contentEditable
-                className={`px-3 py-2 text-sm outline-none overflow-y-auto prose prose-sm max-w-none ${
-                  expanded ? "flex-1" : "min-h-[200px] max-h-[400px]"
-                }`}
-                data-placeholder="Bulletin content..."
-                suppressContentEditableWarning
-              />
-            </div>
+            <RichTextEditor
+              ref={editorRef}
+              placeholder="Bulletin content..."
+              expanded={expanded}
+            />
           </div>
 
           <div className="shrink-0">
@@ -422,6 +407,19 @@ function CreateBulletinModal({ onClose }: { onClose: () => void }) {
               className="block w-full text-sm text-gray-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border file:border-gray-300 file:text-sm file:font-medium file:bg-white file:text-gray-700 hover:file:bg-gray-50"
             />
             <p className="text-[10px] text-gray-400 mt-1">.mov, .mp4, .m4v</p>
+          </div>
+
+          <div className="shrink-0">
+            <label className="block text-xs font-medium text-gray-600 mb-1">
+              PDF / Image (optional)
+            </label>
+            <input
+              type="file"
+              accept=".pdf,.jpg,.jpeg,.png,.gif,.webp"
+              onChange={(e) => setDocFile(e.target.files?.[0] ?? null)}
+              className="block w-full text-sm text-gray-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border file:border-gray-300 file:text-sm file:font-medium file:bg-white file:text-gray-700 hover:file:bg-gray-50"
+            />
+            <p className="text-[10px] text-gray-400 mt-1">.pdf, .jpg, .png, .gif, .webp</p>
           </div>
 
           {error && (
