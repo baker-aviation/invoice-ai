@@ -19,7 +19,7 @@ import os
 import re
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import google.auth
 import requests
@@ -33,7 +33,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from rules import rule_matches
+from rules import rule_matches, _norm
 from supa import safe_insert, safe_select_many, safe_select_one, safe_update, safe_update_where, log_pipeline_run
 from fuel_prices import (
     extract_fuel_price,
@@ -593,6 +593,11 @@ def run_alerts(document_id: str) -> Dict[str, Any]:
         evaluated = 0
         matched_rules: List[Dict[str, Any]] = []
 
+        # Track line items already covered by a prior rule to prevent
+        # overlapping rules (e.g. "De-ice", "De-icing", "De-icing related")
+        # from each creating a separate alert for the same line item.
+        claimed_line_items: Set[str] = set()
+
         for rule in rules:
             if not _is_rule_enabled(rule):
                 continue
@@ -618,6 +623,21 @@ def run_alerts(document_id: str) -> Dict[str, Any]:
             # ACTIONABLE ONLY
             if not fee_name or fee_amount is None or fee_amount <= 0:
                 continue
+
+            # DEDUP: skip if all matched line items were already claimed
+            # by a prior rule (prevents overlapping rules like "De-ice" /
+            # "De-icing" / "De-icing related" from each alerting).
+            li_keys = set()
+            for li in (result.matched_line_items or []):
+                desc = _norm(li.get("description") or li.get("name") or "")
+                amt = str(_to_float(li.get("total")) or 0)
+                li_keys.add(f"{desc}|{amt}")
+
+            if li_keys and li_keys.issubset(claimed_line_items):
+                continue
+
+            # Claim these line items for future dedup
+            claimed_line_items.update(li_keys)
 
             alert_row = {
                 "created_at": _utc_now(),
