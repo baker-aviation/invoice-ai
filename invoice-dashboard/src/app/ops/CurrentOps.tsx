@@ -54,6 +54,131 @@ function getTimeRange(range: TimeRange): { start: Date; end: Date } {
   }
 }
 
+const DUTY_FLIGHT_TYPES = new Set(["revenue", "owner", "positioning", "ferry", "charter"]);
+const MAX_LEG_DURATION_MIN = 12 * 60;
+const MIN_REST_GAP_MS = 6 * 60 * 60 * 1000;
+
+type TailDutySummary = {
+  flightTimeMin: number;
+  restMin: number | null;
+};
+
+/** Compute per-tail 24hr flight time and crew rest from flights + FA data */
+function computeTailDuty(
+  flights: Flight[],
+  faMap: Map<string, FlightInfoMap>,
+): Map<string, TailDutySummary> {
+  const nowMs = Date.now();
+  const WINDOW_MS = 24 * 60 * 60 * 1000;
+
+  // Build intervals per tail (only duty-relevant flight types)
+  const tailIntervals = new Map<string, { startMs: number; endMs: number }[]>();
+  for (const f of flights) {
+    if (!f.tail_number) continue;
+    const ft = (f.flight_type ?? "").toLowerCase();
+    if (ft && !DUTY_FLIGHT_TYPES.has(ft)) continue;
+
+    const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
+    const fi = faMap.get(routeKey);
+
+    const actualDep = fi?.actual_departure ?? null;
+    const actualArr = fi?.actual_arrival ?? null;
+    const estimatedArr = fi?.arrival_time ?? null;
+
+    const depMs = new Date(actualDep ?? f.scheduled_departure).getTime();
+    let endMs: number;
+    if (actualArr) {
+      endMs = new Date(actualArr).getTime();
+    } else if (actualDep && !actualArr) {
+      endMs = estimatedArr ? new Date(estimatedArr).getTime() : nowMs;
+    } else if (estimatedArr) {
+      endMs = new Date(estimatedArr).getTime();
+    } else {
+      endMs = f.scheduled_arrival ? new Date(f.scheduled_arrival).getTime() : depMs;
+    }
+
+    let durMin = (endMs - depMs) / 60_000;
+    if (durMin < 0) durMin = 0;
+    if (durMin > MAX_LEG_DURATION_MIN) durMin = MAX_LEG_DURATION_MIN;
+    endMs = depMs + durMin * 60_000;
+    if (durMin <= 0) continue;
+
+    if (!tailIntervals.has(f.tail_number)) tailIntervals.set(f.tail_number, []);
+    tailIntervals.get(f.tail_number)!.push({ startMs: depMs, endMs });
+  }
+
+  const result = new Map<string, TailDutySummary>();
+
+  for (const [tail, intervals] of tailIntervals) {
+    intervals.sort((a, b) => a.startMs - b.startMs);
+
+    // --- Rolling 24hr flight time ---
+    const checkPoints = new Set<number>();
+    checkPoints.add(nowMs);
+    checkPoints.add(nowMs + WINDOW_MS);
+    for (const leg of intervals) {
+      for (const t of [leg.startMs, leg.endMs, leg.startMs + WINDOW_MS, leg.endMs + WINDOW_MS]) {
+        if (t >= nowMs && t <= nowMs + WINDOW_MS) checkPoints.add(t);
+      }
+    }
+
+    let maxMs = 0;
+    for (const windowEnd of checkPoints) {
+      const windowStart = windowEnd - WINDOW_MS;
+      let totalMs = 0;
+      for (const leg of intervals) {
+        const os = Math.max(leg.startMs, windowStart);
+        const oe = Math.min(leg.endMs, windowEnd);
+        if (oe > os) totalMs += oe - os;
+      }
+      if (totalMs > maxMs) maxMs = totalMs;
+    }
+
+    // --- Crew rest ---
+    let restMin: number | null = null;
+    for (let i = 0; i < intervals.length - 1; i++) {
+      const gapMs = intervals[i + 1].startMs - intervals[i].endMs;
+      if (gapMs < MIN_REST_GAP_MS) continue;
+      if (intervals[i + 1].startMs > nowMs) {
+        restMin = gapMs / 60_000;
+        break;
+      }
+    }
+    // Fallback
+    if (restMin == null) {
+      const pastLegs = intervals.filter((l) => l.endMs <= nowMs);
+      const futureLeg = intervals.find((l) => l.startMs > nowMs);
+      if (pastLegs.length > 0 && futureLeg) {
+        const gap = futureLeg.startMs - pastLegs[pastLegs.length - 1].endMs;
+        if (gap >= MIN_REST_GAP_MS) restMin = gap / 60_000;
+      }
+    }
+
+    result.set(tail, { flightTimeMin: maxMs / 60_000, restMin });
+  }
+
+  return result;
+}
+
+function dutyColor(flightTimeMin: number): string {
+  if (flightTimeMin >= 570) return "text-red-700 bg-red-50"; // >= 9.5h
+  if (flightTimeMin >= 510) return "text-amber-700 bg-amber-50"; // >= 8.5h (within 1h)
+  return "text-green-700 bg-green-50";
+}
+
+function restColor(restMin: number | null): string {
+  if (restMin == null) return "text-gray-400";
+  if (restMin < 12 * 60) return "text-red-700 bg-red-50"; // < 12h
+  if (restMin < 13 * 60) return "text-amber-700 bg-amber-50"; // < 13h (within 1h)
+  return "text-green-700 bg-green-50";
+}
+
+function fmtHM(minutes: number): string {
+  const h = Math.floor(minutes / 60);
+  const m = Math.round(minutes % 60);
+  return `${h}:${m.toString().padStart(2, "0")}`;
+}
+
 const SEVERITY_COLORS: Record<string, string> = {
   critical: "bg-red-100 text-red-800 border-red-200",
   high: "bg-orange-100 text-orange-800 border-orange-200",
@@ -214,6 +339,9 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
   // Combine flying + parked for the map
   const allMapAircraft = useMemo(() => [...adsbAircraft, ...parkedAircraft], [adsbAircraft, parkedAircraft]);
 
+  // Per-tail duty summary (24hr flight time + crew rest)
+  const tailDuty = useMemo(() => computeTailDuty(flights, flightInfo), [flights, flightInfo]);
+
   // Count airborne vs on-ground
   const airborne = adsbAircraft.length;
   const onGround = parkedAircraft.length;
@@ -371,13 +499,15 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
               <th className="px-4 py-3">Arrival</th>
               <th className="px-4 py-3">Type</th>
               <th className="px-4 py-3">Status</th>
+              <th className="px-4 py-3">24hr Flight</th>
+              <th className="px-4 py-3">Crew Rest</th>
               <th className="px-4 py-3">Notes</th>
             </tr>
           </thead>
           <tbody>
             {filteredFlights.length === 0 ? (
               <tr>
-                <td colSpan={7} className="px-4 py-8 text-center text-gray-400">
+                <td colSpan={9} className="px-4 py-8 text-center text-gray-400">
                   No flights scheduled for selected filters
                 </td>
               </tr>
@@ -535,6 +665,28 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
                         {status}
                       </td>
                       <td className="px-4 py-2.5">
+                        {(() => {
+                          const duty = f.tail_number ? tailDuty.get(f.tail_number) : null;
+                          if (!duty) return <span className="text-xs text-gray-300">--</span>;
+                          return (
+                            <span className={`inline-block px-1.5 py-0.5 text-xs font-mono font-medium rounded ${dutyColor(duty.flightTimeMin)}`}>
+                              {fmtHM(duty.flightTimeMin)}
+                            </span>
+                          );
+                        })()}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        {(() => {
+                          const duty = f.tail_number ? tailDuty.get(f.tail_number) : null;
+                          if (!duty || duty.restMin == null) return <span className="text-xs text-gray-300">--</span>;
+                          return (
+                            <span className={`inline-block px-1.5 py-0.5 text-xs font-mono font-medium rounded ${restColor(duty.restMin)}`}>
+                              {fmtHM(duty.restMin)}
+                            </span>
+                          );
+                        })()}
+                      </td>
+                      <td className="px-4 py-2.5">
                         {alertCount > 0 && (
                           <button
                             onClick={() => toggleExpanded(f.id)}
@@ -550,7 +702,7 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
                     </tr>
                     {isExpanded && alerts.map((alert) => (
                       <tr key={alert.id} className="border-t border-dashed border-gray-100 bg-red-50/40">
-                        <td colSpan={7} className="px-4 py-3">
+                        <td colSpan={9} className="px-4 py-3">
                           <div className={`rounded-lg border p-3 text-xs ${SEVERITY_COLORS[alert.severity] || "bg-gray-50 text-gray-700 border-gray-200"}`}>
                             <div className="flex items-start justify-between gap-2">
                               <div className="space-y-1 flex-1">
