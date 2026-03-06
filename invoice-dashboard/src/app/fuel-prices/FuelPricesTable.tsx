@@ -157,8 +157,17 @@ function lookupAdvertisedPrice(
 ): number | null {
   if (!vendorName || !airportCode || !invoiceDate) return null;
   const weekMonday = getWeekMonday(invoiceDate);
-  const key = `${vendorName.toLowerCase()}|${airportCode}|${weekMonday}`;
-  const matches = advLookup.get(key);
+  // Try both ICAO (KTEB) and IATA (TEB) variants
+  const codes = airportCode.length === 4 && airportCode.startsWith("K")
+    ? [airportCode, airportCode.slice(1)]
+    : airportCode.length === 3
+    ? [airportCode, `K${airportCode}`]
+    : [airportCode];
+  let matches: AdvertisedPriceRow[] | undefined;
+  for (const code of codes) {
+    matches = advLookup.get(`${vendorName.toLowerCase()}|${code}|${weekMonday}`);
+    if (matches && matches.length > 0) break;
+  }
   if (!matches || matches.length === 0) return null;
 
   // Prefer tail-specific match, fall back to null (all tails)
@@ -200,6 +209,24 @@ function buildAdvVsActual(
   prices: FuelPriceRow[],
   advertisedPrices: AdvertisedPriceRow[],
 ): AdvVsActualRow[] {
+  // Normalize airport codes: KTEB↔TEB, KHOU↔HOU etc.
+  // Returns all variants to check (e.g. ["KTEB","TEB"] or ["TEB","KTEB"])
+  function airportVariants(code: string): string[] {
+    const up = code.toUpperCase();
+    if (up.length === 4 && up.startsWith("K")) return [up, up.slice(1)];
+    if (up.length === 3) return [up, `K${up}`];
+    return [up];
+  }
+
+  // Helper to push a price into a map for all airport variants
+  function pushToMap(map: Map<string, number[]>, baseKey: string, airport: string, price: number) {
+    for (const v of airportVariants(airport)) {
+      const k = baseKey.replace(airport, v);
+      if (!map.has(k)) map.set(k, []);
+      map.get(k)!.push(price);
+    }
+  }
+
   // Group invoice data by (vendor_lower, airport) — all time for "actual" avg
   const invoiceBuckets = new Map<string, { prices: number[]; count: number }>();
   // Also build per-airport + per-week lookup for recent prices (all sources)
@@ -209,12 +236,10 @@ function buildAdvVsActual(
   for (const r of prices) {
     if (!r.airport_code || r.effective_price_per_gallon == null) continue;
 
-    // Per airport+week: all sources
+    // Per airport+week: all sources, store under all airport variants
     if (r.invoice_date) {
       const wk = getWeekMonday(r.invoice_date);
-      const rkey = `${r.airport_code}|${wk}`;
-      if (!recentByAirportWeek.has(rkey)) recentByAirportWeek.set(rkey, []);
-      recentByAirportWeek.get(rkey)!.push(r.effective_price_per_gallon);
+      pushToMap(recentByAirportWeek, `${r.airport_code}|${wk}`, r.airport_code, r.effective_price_per_gallon);
     }
 
     // All-time by vendor+airport (invoices only)
