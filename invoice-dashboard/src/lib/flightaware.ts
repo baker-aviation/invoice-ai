@@ -134,6 +134,30 @@ export async function getFlightsByRegistration(
 }
 
 /**
+ * Get the last position for a specific flight by fa_flight_id.
+ */
+async function getFlightPosition(
+  faFlightId: string,
+): Promise<FaPosition | null> {
+  const url = `${BASE}/flights/${encodeURIComponent(faFlightId)}/position`;
+  try {
+    const res = await fetch(url, {
+      headers: headers(),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    // The position endpoint returns the last position directly
+    if (data.last_position) return data.last_position as FaPosition;
+    // Or it might return position fields at top level
+    if (data.latitude != null && data.longitude != null) return data as FaPosition;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * For a list of tail numbers, find the current/most-recent flight for each
  * and return simplified FlightInfo objects.
  */
@@ -150,10 +174,28 @@ export async function getActiveFlights(
       batch.map(async (tail) => {
         try {
           const flights = await getFlightsByRegistration(tail);
-          // Find the best flight: en route > recently departed > upcoming
           const active = pickActiveFlight(flights);
           if (!active) return null;
-          return toFlightInfo(tail, active);
+          const info = toFlightInfo(tail, active);
+
+          // If en-route and no position from flights endpoint, fetch position separately
+          if (
+            info.latitude == null &&
+            active.actual_off != null &&
+            active.actual_on == null &&
+            active.fa_flight_id
+          ) {
+            const pos = await getFlightPosition(active.fa_flight_id);
+            if (pos) {
+              info.latitude = pos.latitude;
+              info.longitude = pos.longitude;
+              info.altitude = pos.altitude ?? null;
+              info.groundspeed = pos.groundspeed ?? null;
+              info.heading = pos.heading ?? null;
+            }
+          }
+
+          return info;
         } catch {
           return null;
         }

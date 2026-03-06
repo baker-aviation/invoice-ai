@@ -1,5 +1,6 @@
 # ops-monitor/main.py
 import json
+import math
 import os
 import re
 import threading
@@ -100,6 +101,76 @@ MS_CLIENT_SECRET = os.getenv("MS_CLIENT_SECRET")
 
 FLIGHTS_TABLE = "flights"
 OPS_ALERTS_TABLE = "ops_alerts"
+
+# ─── Airport coordinates for TFR proximity checks ────────────────────────────
+# Baker's common airports + major nearby airports. (lat, lon) in decimal degrees.
+AIRPORT_COORDS: Dict[str, Tuple[float, float]] = {
+    # South Florida
+    "KOPF": (25.9068, -80.2784),   # Opa-locka Executive
+    "KMIA": (25.7959, -80.2870),   # Miami International
+    "KFLL": (26.0726, -80.1527),   # Fort Lauderdale-Hollywood
+    "KFXE": (26.1973, -80.1707),   # Fort Lauderdale Executive
+    "KPBI": (26.6832, -80.0956),   # Palm Beach International
+    "KBCT": (26.3785, -80.1077),   # Boca Raton
+    "KHWO": (26.0012, -80.2407),   # North Perry
+    "KTMB": (25.6479, -80.4328),   # Kendall-Tamiami Executive
+    "KPMP": (26.2471, -80.1111),   # Pompano Beach Airpark
+    # NYC area
+    "KJFK": (40.6413, -73.7781),   # JFK
+    "KLGA": (40.7769, -73.8740),   # LaGuardia
+    "KEWR": (40.6895, -74.1745),   # Newark
+    "KTEB": (40.8501, -74.0608),   # Teterboro
+    "KHPN": (41.0670, -73.7076),   # Westchester County
+    "KFRG": (40.7288, -73.4134),   # Republic (Farmingdale)
+    "KISP": (40.7952, -73.1002),   # Long Island MacArthur
+    "KCDW": (40.8752, -74.2814),   # Essex County
+    "KMMU": (40.7994, -74.4149),   # Morristown Municipal
+    "KSWF": (41.5041, -74.1048),   # Stewart/Newburgh
+    # Washington DC area
+    "KIAD": (38.9474, -77.4599),   # Dulles
+    "KDCA": (38.8512, -77.0402),   # Reagan National
+    "KBWI": (39.1754, -76.6683),   # Baltimore-Washington
+    # Texas
+    "KDAL": (32.8471, -96.8518),   # Dallas Love Field
+    "KDFW": (32.8998, -97.0403),   # Dallas/Fort Worth
+    "KHOU": (29.6454, -95.2789),   # Houston Hobby
+    "KIAH": (29.9902, -95.3368),   # Houston Intercontinental
+    "KAUS": (30.1945, -97.6699),   # Austin-Bergstrom
+    "KSAT": (29.5337, -98.4698),   # San Antonio
+    "KADS": (32.9686, -96.8364),   # Addison
+    "KFTW": (32.8198, -97.3624),   # Fort Worth Meacham
+    # Other major
+    "KATL": (33.6407, -84.4277),   # Atlanta
+    "KORD": (41.9742, -87.9073),   # Chicago O'Hare
+    "KMDW": (41.7868, -87.7522),   # Chicago Midway
+    "KLAX": (33.9416, -118.4085),  # Los Angeles
+    "KVNY": (34.2098, -118.4898),  # Van Nuys
+    "KSFO": (37.6213, -122.3790),  # San Francisco
+    "KLAS": (36.0840, -115.1537),  # Las Vegas
+    "KDEN": (39.8561, -104.6737),  # Denver
+    "KBOS": (42.3656, -71.0096),   # Boston
+    "KPHL": (39.8744, -75.2424),   # Philadelphia
+    "KCLT": (35.2140, -80.9431),   # Charlotte
+    "KMSP": (44.8820, -93.2218),   # Minneapolis
+    "KDTW": (42.2124, -83.3534),   # Detroit
+    "KSEA": (47.4502, -122.3088),  # Seattle
+    "KMCO": (28.4312, -81.3081),   # Orlando
+    "KTPA": (27.9755, -82.5332),   # Tampa
+    "KRSW": (26.5362, -81.7552),   # Southwest Florida (Fort Myers)
+    "KAPF": (26.1526, -81.7753),   # Naples Municipal
+    "KFMY": (26.5866, -81.8633),   # Page Field (Fort Myers)
+    "KJAX": (30.4941, -81.6879),   # Jacksonville
+    "KPDK": (33.8756, -84.3020),   # DeKalb-Peachtree (Atlanta exec)
+    "KASG": (27.7717, -81.5306),   # Springhill (FL)
+    "KOBE": (30.0616, -87.8733),   # Southwest Alabama Regional
+    "KNEW": (30.0424, -90.0283),   # Lakefront (New Orleans)
+    "KMSY": (29.9934, -90.2580),   # Louis Armstrong (New Orleans)
+    "KBNA": (36.1245, -86.6782),   # Nashville
+    "KCHS": (32.8986, -80.0405),   # Charleston
+    "KSAV": (32.1276, -81.2021),   # Savannah
+    "KPNS": (30.4734, -87.1866),   # Pensacola
+    "KVPS": (30.4832, -86.5254),   # Destin-Fort Walton Beach
+}
 
 
 def _extract_notam_dates(raw_data) -> Optional[Dict[str, Optional[str]]]:
@@ -220,12 +291,25 @@ def _graph_get(url: str, token: str, params: Dict = None) -> Dict:
 
 
 def _to_aware(dt) -> Optional[datetime]:
-    """Normalize an icalendar dt value to a timezone-aware datetime."""
+    """Normalize an icalendar dt value to a timezone-aware datetime.
+
+    Naive datetimes (no timezone info) are assumed to be in the timezone
+    specified by ICS_NAIVE_TZ env var (default: America/Chicago for Baker
+    Aviation / Fort Worth).  JetInsight ICS feeds often omit the Z suffix
+    and send local times.
+    """
     if dt is None:
         return None
     if hasattr(dt, "hour"):  # datetime
         if dt.tzinfo is None:
-            return dt.replace(tzinfo=timezone.utc)
+            # Naive datetime — apply configured local timezone, then convert to UTC
+            import zoneinfo
+            tz_name = os.getenv("ICS_NAIVE_TZ", "America/Chicago")
+            try:
+                local_tz = zoneinfo.ZoneInfo(tz_name)
+            except Exception:
+                local_tz = timezone.utc
+            return dt.replace(tzinfo=local_tz).astimezone(timezone.utc)
         return dt.astimezone(timezone.utc)
     # date-only — treat as UTC midnight
     return datetime(dt.year, dt.month, dt.day, tzinfo=timezone.utc)
@@ -1071,6 +1155,267 @@ def _find_flight_for_alert(supa, alert: Dict) -> Optional[str]:
     return rows[0]["id"]
 
 
+# ─── TFR proximity checking (FAA tfr.faa.gov scraper) ─────────────────────────
+
+_TFR_LIST_URL = "https://tfr.faa.gov/tfr2/list.html"
+_TFR_DETAIL_URL = "https://tfr.faa.gov/save_pages/detail_{notam_id}.xml"
+
+
+def _haversine_nm(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance between two points in nautical miles."""
+    R_NM = 3440.065  # Earth radius in nautical miles
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (math.sin(dlat / 2) ** 2
+         + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2))
+         * math.sin(dlon / 2) ** 2)
+    return 2 * R_NM * math.asin(math.sqrt(a))
+
+
+def _parse_dms(dms_str: str) -> Optional[float]:
+    """Parse FAA DMS coordinate string to decimal degrees.
+
+    Formats seen in TFR XML:
+      '25.54.25.96N'  → 25 + 54/60 + 25.96/3600
+      '080.16.42.24W' → -(80 + 16/60 + 42.24/3600)
+    """
+    if not dms_str:
+        return None
+    m = re.match(r"(\d+)\.(\d+)\.(\d+(?:\.\d+)?)\s*([NSEW])", dms_str.strip(), re.IGNORECASE)
+    if not m:
+        return None
+    deg = int(m.group(1))
+    mins = int(m.group(2))
+    secs = float(m.group(3))
+    dd = deg + mins / 60.0 + secs / 3600.0
+    if m.group(4).upper() in ("S", "W"):
+        dd = -dd
+    return dd
+
+
+def _fetch_tfr_list() -> List[str]:
+    """Scrape tfr.faa.gov list page for all active TFR NOTAM IDs.
+
+    Returns list of NOTAM ID strings (e.g. ['FDC_6_4515', '6_4339']).
+    """
+    r = requests.get(_TFR_LIST_URL, timeout=(5, 10), headers={
+        "User-Agent": "Baker-Aviation-OpsMonitor/1.0",
+    })
+    r.raise_for_status()
+    # Links look like: save_pages/detail_6_4515.html or detail_FDC_6_4515.html
+    ids = re.findall(r"save_pages/detail_([A-Za-z0-9_/]+)\.html", r.text)
+    # Deduplicate while preserving order
+    seen: set = set()
+    unique: List[str] = []
+    for tfr_id in ids:
+        if tfr_id not in seen:
+            seen.add(tfr_id)
+            unique.append(tfr_id)
+    print(f"TFR list: found {len(unique)} active TFRs", flush=True)
+    return unique
+
+
+def _fetch_tfr_detail(notam_id: str) -> Optional[str]:
+    """Fetch individual TFR detail XML from tfr.faa.gov."""
+    url = _TFR_DETAIL_URL.format(notam_id=notam_id)
+    try:
+        r = requests.get(url, timeout=(5, 15), headers={
+            "User-Agent": "Baker-Aviation-OpsMonitor/1.0",
+        })
+        if r.ok:
+            return r.text
+        print(f"TFR detail {notam_id}: HTTP {r.status_code}", flush=True)
+        return None
+    except Exception as e:
+        print(f"TFR detail {notam_id} fetch error: {repr(e)}", flush=True)
+        return None
+
+
+def _parse_tfr_xml(notam_id: str, xml_text: str) -> List[Dict[str, Any]]:
+    """Extract TFR shapes (center + radius) from FAA AIXM XML.
+
+    Returns list of dicts: [{"lat": float, "lon": float, "radius_nm": float, "description": str}]
+    Multiple shapes possible for complex TFRs.
+    """
+    shapes: List[Dict[str, Any]] = []
+
+    # --- Primary: AIXM <Avx> elements with <GeoLat>/<GeoLong>/<valRadiusDist> ---
+    # Find all groups that have a radius and center point
+    radius_matches = re.findall(
+        r"<(?:ns1:)?valRadiusDist[^>]*>\s*([0-9.]+)\s*</",
+        xml_text
+    )
+    lat_matches = re.findall(
+        r"<(?:ns1:)?GeoLat[^>]*>\s*([^<]+?)\s*</",
+        xml_text
+    )
+    lon_matches = re.findall(
+        r"<(?:ns1:)?GeoLong[^>]*>\s*([^<]+?)\s*</",
+        xml_text
+    )
+
+    # Extract description text for the alert body
+    desc_match = re.search(r"<(?:ns1:)?txtDescrUSNS[^>]*>\s*([\s\S]*?)\s*</", xml_text)
+    description = desc_match.group(1).strip()[:2000] if desc_match else ""
+    if not description:
+        # Try txtName as fallback
+        name_match = re.search(r"<(?:ns1:)?txtName[^>]*>\s*([\s\S]*?)\s*</", xml_text)
+        description = name_match.group(1).strip()[:2000] if name_match else f"TFR {notam_id}"
+
+    if radius_matches and lat_matches and lon_matches:
+        for i, radius_str in enumerate(radius_matches):
+            # Use the corresponding lat/lon (AIXM typically puts center coords
+            # as the first <Avx> GeoLat/GeoLong before the arc points)
+            lat_idx = min(i, len(lat_matches) - 1)
+            lon_idx = min(i, len(lon_matches) - 1)
+            lat = _parse_dms(lat_matches[lat_idx])
+            lon = _parse_dms(lon_matches[lon_idx])
+            try:
+                radius_nm = float(radius_str)
+            except ValueError:
+                continue
+            if lat is not None and lon is not None and radius_nm > 0:
+                shapes.append({
+                    "lat": lat,
+                    "lon": lon,
+                    "radius_nm": radius_nm,
+                    "description": description,
+                })
+
+    # --- Fallback: Q-line coordinates in description ---
+    # Format like: ...AREA DEFINED AS 30NM RADIUS OF 254425N0801642W...
+    if not shapes:
+        qline = re.search(
+            r"(\d+(?:\.\d+)?)\s*NM\s+RADIUS\s+OF\s+(\d{2,3})(\d{2})(\d{2}(?:\.\d+)?)([NS])\s*(\d{2,3})(\d{2})(\d{2}(?:\.\d+)?)([EW])",
+            xml_text.upper()
+        )
+        if qline:
+            radius_nm = float(qline.group(1))
+            lat = int(qline.group(2)) + int(qline.group(3)) / 60.0 + float(qline.group(4)) / 3600.0
+            if qline.group(5) == "S":
+                lat = -lat
+            lon = int(qline.group(6)) + int(qline.group(7)) / 60.0 + float(qline.group(8)) / 3600.0
+            if qline.group(9) == "W":
+                lon = -lon
+            if radius_nm > 0:
+                shapes.append({
+                    "lat": lat,
+                    "lon": lon,
+                    "radius_nm": radius_nm,
+                    "description": description,
+                })
+
+    return shapes
+
+
+def _run_check_tfrs(flights: List[Dict]) -> Dict[str, Any]:
+    """Fetch all active TFRs from FAA website, check proximity to flight airports.
+
+    Returns stats dict with tfr_count, tfr_alerts_created.
+    """
+    # Collect unique airports from flights that we have coordinates for
+    flight_airports: Dict[str, List[Dict]] = {}  # icao -> [flight, ...]
+    for f in flights:
+        for icao in [f.get("departure_icao"), f.get("arrival_icao")]:
+            if icao and icao in AIRPORT_COORDS:
+                flight_airports.setdefault(icao, []).append(f)
+
+    if not flight_airports:
+        print("TFR check: no flight airports with known coordinates", flush=True)
+        return {"tfr_count": 0, "tfr_alerts_created": 0}
+
+    # Fetch TFR list
+    tfr_ids = _fetch_tfr_list()
+    if not tfr_ids:
+        return {"tfr_count": 0, "tfr_alerts_created": 0}
+
+    # Fetch TFR details in parallel (30s budget)
+    tfr_shapes: List[Tuple[str, Dict]] = []  # (notam_id, shape)
+    pool = ThreadPoolExecutor(max_workers=20)
+    future_to_id = {pool.submit(_fetch_tfr_detail, tid): tid for tid in tfr_ids}
+    try:
+        for future in as_completed(future_to_id, timeout=25):
+            tid = future_to_id[future]
+            try:
+                xml_text = future.result()
+                if xml_text:
+                    for shape in _parse_tfr_xml(tid, xml_text):
+                        tfr_shapes.append((tid, shape))
+            except Exception as e:
+                print(f"TFR detail parse error {tid}: {repr(e)}", flush=True)
+    except FuturesTimeoutError:
+        parsed_count = len(set(tid for tid, _ in tfr_shapes))
+        print(f"TFR detail fetch 25s budget exceeded; parsed {parsed_count}/{len(tfr_ids)} TFRs", flush=True)
+    finally:
+        pool.shutdown(wait=False)
+
+    print(f"TFR check: {len(tfr_shapes)} shapes from {len(tfr_ids)} TFRs, checking {len(flight_airports)} airports", flush=True)
+
+    # Proximity check: TFR radius + 10nm buffer
+    TFR_BUFFER_NM = 10
+    alerts_to_insert = []
+    for notam_id, shape in tfr_shapes:
+        tfr_lat = shape["lat"]
+        tfr_lon = shape["lon"]
+        tfr_radius = shape["radius_nm"]
+        check_dist = tfr_radius + TFR_BUFFER_NM
+
+        for icao, coord in AIRPORT_COORDS.items():
+            if icao not in flight_airports:
+                continue
+            dist = _haversine_nm(tfr_lat, tfr_lon, coord[0], coord[1])
+            if dist <= check_dist:
+                # This TFR affects this airport — create alert for each flight
+                for flight in flight_airports[icao]:
+                    fid = flight["id"]
+                    source_id = f"tfr-{notam_id}-{fid}"
+                    alerts_to_insert.append({
+                        "flight_id": fid,
+                        "alert_type": "NOTAM_TFR",
+                        "severity": "critical",
+                        "airport_icao": icao,
+                        "subject": f"TFR {notam_id.replace('_', '/')} within {dist:.0f}nm"[:500],
+                        "body": f"TFR {notam_id.replace('_', '/')} ({shape['radius_nm']:.0f}nm radius) "
+                                f"is {dist:.0f}nm from {icao}. {shape['description']}"[:2000],
+                        "source_message_id": source_id,
+                        "raw_data": json.dumps({
+                            "tfr_notam_id": notam_id,
+                            "tfr_center_lat": tfr_lat,
+                            "tfr_center_lon": tfr_lon,
+                            "tfr_radius_nm": tfr_radius,
+                            "airport_distance_nm": round(dist, 1),
+                        }),
+                        "created_at": _utc_now(),
+                    })
+
+    tfr_alerts_created = 0
+    if alerts_to_insert:
+        # Deduplicate by source_message_id before upserting (same TFR+flight may match
+        # via both departure and arrival airport)
+        seen_ids: set = set()
+        deduped: list = []
+        for a in alerts_to_insert:
+            if a["source_message_id"] not in seen_ids:
+                seen_ids.add(a["source_message_id"])
+                deduped.append(a)
+        alerts_to_insert = deduped
+
+        print(f"TFR check: upserting {len(alerts_to_insert)} TFR alerts", flush=True)
+        try:
+            supa = sb()
+            res = (
+                supa.table(OPS_ALERTS_TABLE)
+                .upsert(alerts_to_insert, on_conflict="source_message_id")
+                .execute()
+            )
+            tfr_alerts_created = len(res.data) if res.data else 0
+        except Exception as e:
+            print(f"TFR alert upsert error: {repr(e)}", flush=True)
+
+    print(f"TFR check complete: tfrs={len(tfr_ids)} shapes={len(tfr_shapes)} alerts={tfr_alerts_created}", flush=True)
+    return {"tfr_count": len(tfr_ids), "tfr_alerts_created": tfr_alerts_created}
+
+
 # ─── Job: check_notams ────────────────────────────────────────────────────────
 
 
@@ -1180,11 +1525,26 @@ def _run_check_notams(lookahead_hours: int) -> dict:
         except Exception as e:
             print(f"NOTAM bulk upsert error: {repr(e)}", flush=True)
 
+    # ── TFR proximity check (area-wide TFRs not tied to specific airports) ──
+    tfr_stats = {"tfr_count": 0, "tfr_alerts_created": 0}
+    try:
+        tfr_stats = _run_check_tfrs(flights)
+    except Exception as e:
+        print(f"TFR proximity check failed (non-fatal): {repr(e)}", flush=True)
+
+    total_alerts = alerts_created + tfr_stats.get("tfr_alerts_created", 0)
     print(
-        f"check_notams complete: flights={len(flights)} airports={len(airports)} alerts_created={alerts_created}",
+        f"check_notams complete: flights={len(flights)} airports={len(airports)} "
+        f"notam_alerts={alerts_created} tfr_alerts={tfr_stats.get('tfr_alerts_created', 0)}",
         flush=True,
     )
-    return {"flights_checked": len(flights), "airports_checked": len(airports), "alerts_created": alerts_created}
+    return {
+        "flights_checked": len(flights),
+        "airports_checked": len(airports),
+        "alerts_created": total_alerts,
+        "notam_alerts": alerts_created,
+        **tfr_stats,
+    }
 
 
 @app.post("/jobs/check_notams")
@@ -1418,6 +1778,68 @@ def debug_notam_test(airport: str = Query("KJFK")):
         legacy_result["error"] = repr(e)
     result["legacy"] = legacy_result
 
+    return result
+
+
+@app.get("/debug/tfr_test")
+def debug_tfr_test():
+    """Fetch all active TFRs and check proximity against all known airports.
+    Use this to test the TFR proximity checker without needing scheduled flights."""
+    result: Dict[str, Any] = {"ok": False}
+    try:
+        tfr_ids = _fetch_tfr_list()
+        result["tfr_ids"] = tfr_ids[:50]  # cap output size
+        result["tfr_count"] = len(tfr_ids)
+
+        # Fetch details for up to 30 TFRs (keep response time reasonable)
+        shapes_by_tfr: Dict[str, List] = {}
+        pool = ThreadPoolExecutor(max_workers=20)
+        ids_to_fetch = tfr_ids[:30]
+        future_to_id = {pool.submit(_fetch_tfr_detail, tid): tid for tid in ids_to_fetch}
+        try:
+            for future in as_completed(future_to_id, timeout=25):
+                tid = future_to_id[future]
+                try:
+                    xml_text = future.result()
+                    if xml_text:
+                        shapes = _parse_tfr_xml(tid, xml_text)
+                        if shapes:
+                            shapes_by_tfr[tid] = shapes
+                except Exception as e:
+                    shapes_by_tfr[tid] = [{"error": repr(e)}]
+        except FuturesTimeoutError:
+            result["detail_timeout"] = True
+        finally:
+            pool.shutdown(wait=False)
+
+        result["tfrs_with_geometry"] = len(shapes_by_tfr)
+        result["shapes"] = {
+            tid: shapes for tid, shapes in list(shapes_by_tfr.items())[:20]
+        }
+
+        # Proximity check against all known airports
+        proximity_hits: List[Dict] = []
+        TFR_BUFFER_NM = 10
+        for tid, shapes in shapes_by_tfr.items():
+            for shape in shapes:
+                if "error" in shape:
+                    continue
+                for icao, (lat, lon) in AIRPORT_COORDS.items():
+                    dist = _haversine_nm(shape["lat"], shape["lon"], lat, lon)
+                    if dist <= shape["radius_nm"] + TFR_BUFFER_NM:
+                        proximity_hits.append({
+                            "tfr_id": tid,
+                            "airport": icao,
+                            "distance_nm": round(dist, 1),
+                            "tfr_radius_nm": shape["radius_nm"],
+                            "tfr_center": f"{shape['lat']:.4f}, {shape['lon']:.4f}",
+                        })
+
+        result["proximity_hits"] = proximity_hits
+        result["airports_affected"] = sorted(set(h["airport"] for h in proximity_hits))
+        result["ok"] = True
+    except Exception as e:
+        result["error"] = repr(e)
     return result
 
 
