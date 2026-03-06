@@ -246,11 +246,24 @@ function buildAdvVsActual(
     }
   }
 
-  // Group advertised by identity key — skip tail-specific rows (show "All" only)
+  // Group advertised by vendor+airport — skip tail-specific rows, collapse tiers
+  // For each (vendor, airport, week), keep only the lowest-priced tier
+  const dedupedAdv: AdvertisedPriceRow[] = [];
+  const seenByWeek = new Map<string, AdvertisedPriceRow>();
+  const sortedAdv = [...advertisedPrices]
+    .filter((a) => !a.tail_numbers)
+    .sort((a, b) => a.price - b.price); // lowest price first
+  for (const adv of sortedAdv) {
+    const wk = `${adv.fbo_vendor}|${adv.airport_code}|${adv.week_start}`;
+    if (!seenByWeek.has(wk)) {
+      seenByWeek.set(wk, adv);
+      dedupedAdv.push(adv);
+    }
+  }
+
   const advByIdentity = new Map<string, AdvertisedPriceRow[]>();
-  for (const adv of advertisedPrices) {
-    if (adv.tail_numbers) continue; // skip tail-specific rows
-    const key = `${adv.fbo_vendor}|${adv.airport_code}|${adv.volume_tier}`;
+  for (const adv of dedupedAdv) {
+    const key = `${adv.fbo_vendor}|${adv.airport_code}`;
     if (!advByIdentity.has(key)) advByIdentity.set(key, []);
     advByIdentity.get(key)!.push(adv);
   }
