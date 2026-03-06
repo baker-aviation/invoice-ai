@@ -51,35 +51,52 @@ function fmtDuration(minutes: number): string {
 }
 
 /**
- * Given a sorted list of (start, end) intervals within a 24-hour context,
- * compute the maximum total flight time across all rolling 24-hour windows.
+ * Compute the maximum total flight time in any rolling 24-hour window,
+ * scanning from now forward through the next 24 hours.
  *
- * We use the "sliding window anchored at each event start" approach:
- * for each leg start time, sum all leg durations that overlap the
- * [start, start + 24h] window.
+ * For each minute from now to now+24h, we check: how much flight time
+ * falls within the 24-hour window ending at that minute? The maximum
+ * across all those checks is the answer.
+ *
+ * Optimised: we only need to check at event boundaries (leg start/end times
+ * and those times ± 24h), not literally every minute.
  */
 function computeMaxRolling24hr(
-  legs: { startMs: number; endMs: number }[]
+  legs: { startMs: number; endMs: number }[],
+  nowMs: number,
 ): number {
   if (legs.length === 0) return 0;
 
   const WINDOW_MS = 24 * 60 * 60 * 1000;
-  let maxTotalMs = 0;
 
-  // Anchor the window start at each leg's start time, and also at
-  // (each leg's end time - 24h) to catch all boundary cases.
-  const anchors = new Set<number>();
+  // We want: for window-end T in [now, now + 24h],
+  // sum of overlap between each leg and [T - 24h, T].
+  // The max changes only at leg start/end boundaries, so collect those.
+  const checkPoints = new Set<number>();
+  // Always check now and now+24h
+  checkPoints.add(nowMs);
+  checkPoints.add(nowMs + WINDOW_MS);
+
   for (const leg of legs) {
-    anchors.add(leg.startMs);
-    anchors.add(leg.endMs - WINDOW_MS);
+    // Window-end values where the overlap changes:
+    // when T = leg.startMs (leg starts entering the window from the right)
+    // when T = leg.endMs (leg fully inside)
+    // when T = leg.startMs + 24h (leg starts leaving the window from the left)
+    // when T = leg.endMs + 24h (leg fully outside)
+    for (const t of [leg.startMs, leg.endMs, leg.startMs + WINDOW_MS, leg.endMs + WINDOW_MS]) {
+      if (t >= nowMs && t <= nowMs + WINDOW_MS) {
+        checkPoints.add(t);
+      }
+    }
   }
 
-  for (const windowStart of anchors) {
-    const windowEnd = windowStart + WINDOW_MS;
+  let maxTotalMs = 0;
+
+  for (const windowEnd of checkPoints) {
+    const windowStart = windowEnd - WINDOW_MS;
     let totalMs = 0;
 
     for (const leg of legs) {
-      // Clamp leg to window boundaries
       const overlapStart = Math.max(leg.startMs, windowStart);
       const overlapEnd = Math.min(leg.endMs, windowEnd);
       if (overlapEnd > overlapStart) {
@@ -232,7 +249,7 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
         })
         .sort((a, b) => a.startMs - b.startMs);
 
-      const maxMin = computeMaxRolling24hr(intervals);
+      const maxMin = computeMaxRolling24hr(intervals, now);
 
       result.push({
         tail,
@@ -247,53 +264,95 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
   }, [legsByTail]);
 
   /* ── Feature 2: Crew rest per tail ── */
+  // Only gaps ≥ 6 hours between landing→departure count as rest (overnight).
+  // Quick turns during the same duty day are not rest periods.
+  const MIN_REST_GAP_MS = 6 * 60 * 60 * 1000;
+
   const crewRestData = useMemo((): TailCrewRest[] => {
     const result: TailCrewRest[] = [];
     const now = Date.now();
 
     for (const [tail, legs] of legsByTail) {
-      // Find the most recent landing (actual or scheduled) that is in the past
-      let lastLanding: string | null = null;
-      let lastLandingIcao: string | null = null;
+      // Build sorted timeline of (landing, next_departure) gaps
+      const sortedLegs = [...legs].sort(
+        (a, b) =>
+          new Date(a.actual_departure ?? a.scheduled_departure).getTime() -
+          new Date(b.actual_departure ?? b.scheduled_departure).getTime(),
+      );
 
-      for (const leg of legs) {
-        const arrIso = leg.actual_arrival ?? leg.scheduled_arrival;
-        if (arrIso && new Date(arrIso).getTime() <= now) {
-          // This is a past arrival — take the latest one
-          if (!lastLanding || new Date(arrIso).getTime() > new Date(lastLanding).getTime()) {
-            lastLanding = arrIso;
-            lastLandingIcao = leg.arrival_icao;
-          }
+      // Find the overnight rest gap: the last gap ≥ 6h where the landing
+      // is in the past and the next departure is in the future (or the last
+      // such gap before the next future departure).
+      let bestLanding: string | null = null;
+      let bestLandingIcao: string | null = null;
+      let bestNextDep: string | null = null;
+      let bestNextDepIcao: string | null = null;
+      let bestRestMin: number | null = null;
+
+      for (let i = 0; i < sortedLegs.length - 1; i++) {
+        const landingIso = sortedLegs[i].actual_arrival ?? sortedLegs[i].scheduled_arrival;
+        const nextDepIso = sortedLegs[i + 1].actual_departure ?? sortedLegs[i + 1].scheduled_departure;
+        if (!landingIso) continue;
+
+        const landingMs = new Date(landingIso).getTime();
+        const nextDepMs = new Date(nextDepIso).getTime();
+        const gapMs = nextDepMs - landingMs;
+
+        // Only count gaps ≥ 6 hours as crew rest
+        if (gapMs < MIN_REST_GAP_MS) continue;
+
+        // We want the rest gap that straddles "now" or is the most recent
+        // completed one before a future departure
+        if (nextDepMs > now) {
+          // This gap leads to a future departure — this is the active rest window
+          bestLanding = landingIso;
+          bestLandingIcao = sortedLegs[i].arrival_icao;
+          bestNextDep = nextDepIso;
+          bestNextDepIcao = sortedLegs[i + 1].departure_icao;
+          bestRestMin = gapMs / 60_000;
+          break; // first future gap ≥ 6h is the one we care about
         }
       }
 
-      // Find the next scheduled departure (in the future)
-      let nextDeparture: string | null = null;
-      let nextDepartureIcao: string | null = null;
-
-      for (const leg of legs) {
-        const depIso = leg.actual_departure ?? leg.scheduled_departure;
-        if (new Date(depIso).getTime() > now) {
-          if (!nextDeparture || new Date(depIso).getTime() < new Date(nextDeparture).getTime()) {
-            nextDeparture = depIso;
-            nextDepartureIcao = leg.departure_icao;
+      // If no gap found with a future departure, check if the last leg's
+      // landing has no following departure (end of schedule)
+      if (!bestNextDep && sortedLegs.length > 0) {
+        // Find next future departure if any
+        const nextFutureLeg = sortedLegs.find((l) => {
+          const depMs = new Date(l.actual_departure ?? l.scheduled_departure).getTime();
+          return depMs > now;
+        });
+        if (nextFutureLeg) {
+          // Find last past landing
+          const pastLegs = sortedLegs.filter((l) => {
+            const arrIso = l.actual_arrival ?? l.scheduled_arrival;
+            return arrIso && new Date(arrIso).getTime() <= now;
+          });
+          if (pastLegs.length > 0) {
+            const lastPast = pastLegs[pastLegs.length - 1];
+            const landingIso = lastPast.actual_arrival ?? lastPast.scheduled_arrival;
+            const nextDepIso = nextFutureLeg.actual_departure ?? nextFutureLeg.scheduled_departure;
+            if (landingIso) {
+              const gapMs = new Date(nextDepIso).getTime() - new Date(landingIso).getTime();
+              if (gapMs >= MIN_REST_GAP_MS) {
+                bestLanding = landingIso;
+                bestLandingIcao = lastPast.arrival_icao;
+                bestNextDep = nextDepIso;
+                bestNextDepIcao = nextFutureLeg.departure_icao;
+                bestRestMin = gapMs / 60_000;
+              }
+            }
           }
         }
-      }
-
-      let restMinutes: number | null = null;
-      if (lastLanding && nextDeparture) {
-        restMinutes =
-          (new Date(nextDeparture).getTime() - new Date(lastLanding).getTime()) / 60_000;
       }
 
       result.push({
         tail,
-        lastLanding,
-        lastLandingIcao,
-        nextDeparture,
-        nextDepartureIcao,
-        restMinutes,
+        lastLanding: bestLanding,
+        lastLandingIcao: bestLandingIcao,
+        nextDeparture: bestNextDep,
+        nextDepartureIcao: bestNextDepIcao,
+        restMinutes: bestRestMin,
       });
     }
 
@@ -306,6 +365,7 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
     });
 
     return result;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [legsByTail]);
 
   /* ── Alert counts for summary bar ── */
