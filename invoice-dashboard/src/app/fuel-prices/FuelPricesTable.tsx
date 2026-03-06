@@ -1082,7 +1082,7 @@ export default function FuelPricesTable({
                         {row.fboVendor}
                       </td>
                       <td className="px-4 py-2.5 whitespace-nowrap text-xs text-gray-500">{row.volumeTier}</td>
-                      <td className="px-4 py-2.5 whitespace-nowrap text-xs text-gray-500">{row.tailNumbers || "All"}</td>
+                      <td className="px-4 py-2.5 text-xs text-gray-500 max-w-[120px] truncate" title={row.tailNumbers || "All"}>{row.tailNumbers || "All"}</td>
                       <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono font-medium text-purple-700">
                         {fmt$(row.currentPrice)}
                       </td>
