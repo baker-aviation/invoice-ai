@@ -202,18 +202,19 @@ function buildAdvVsActual(
 ): AdvVsActualRow[] {
   // Group invoice data by (vendor_lower, airport) — all time for "actual" avg
   const invoiceBuckets = new Map<string, { prices: number[]; count: number }>();
-  // Also build 7-day recent lookup by airport (all sources)
-  const now = new Date();
-  const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
-  const recent7dByAirport = new Map<string, number[]>();
+  // Also build per-airport + per-week lookup for recent prices (all sources)
+  // Key: "AIRPORT|week_start" → prices[]
+  const recentByAirportWeek = new Map<string, number[]>();
 
   for (const r of prices) {
     if (!r.airport_code || r.effective_price_per_gallon == null) continue;
 
-    // 7-day recent: all sources, by airport
-    if (r.invoice_date && r.invoice_date >= sevenDaysAgo) {
-      if (!recent7dByAirport.has(r.airport_code)) recent7dByAirport.set(r.airport_code, []);
-      recent7dByAirport.get(r.airport_code)!.push(r.effective_price_per_gallon);
+    // Per airport+week: all sources
+    if (r.invoice_date) {
+      const wk = getWeekMonday(r.invoice_date);
+      const rkey = `${r.airport_code}|${wk}`;
+      if (!recentByAirportWeek.has(rkey)) recentByAirportWeek.set(rkey, []);
+      recentByAirportWeek.get(rkey)!.push(r.effective_price_per_gallon);
     }
 
     // All-time by vendor+airport (invoices only)
@@ -257,8 +258,9 @@ function buildAdvVsActual(
       : null;
     const invoiceCount = bucket?.count ?? 0;
 
-    // 7-day recent avg at this airport
-    const recentPrices = recent7dByAirport.get(latest.airport_code);
+    // Actual avg at this airport for the same week as the advertised price
+    const weekKey = `${latest.airport_code}|${latest.week_start}`;
+    const recentPrices = recentByAirportWeek.get(weekKey);
     const recent7dAvg = recentPrices && recentPrices.length > 0
       ? Math.round((recentPrices.reduce((a, b) => a + b, 0) / recentPrices.length) * 10000) / 10000
       : null;
@@ -1054,7 +1056,7 @@ export default function FuelPricesTable({
                     <span title="Week-over-week change in advertised price">WoW</span>
                   </th>
                   <th className="px-4 py-3 text-right">
-                    <span title="Average price paid at this airport in last 7 days (invoices + JetInsight)">Last 7d Avg</span>
+                    <span title="Average price actually paid at this airport during the same week (invoices + JetInsight)">Actual Paid</span>
                   </th>
                   <th className="px-4 py-3 text-right">
                     <span title="Actual vs current advertised: positive = paying more">vs Adv.</span>
