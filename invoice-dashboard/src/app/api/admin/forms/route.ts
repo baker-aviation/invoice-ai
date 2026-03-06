@@ -12,25 +12,42 @@ function getServiceClient() {
   return createClient(url, key);
 }
 
-// ── GET: fetch the active form ──────────────────────────────────────────────
+// ── GET: fetch active forms (all slugs, or one by ?slug=) ──────────────────
 
 export async function GET(req: NextRequest) {
   const auth = await requireAdmin(req);
   if (!isAuthed(auth)) return auth.error;
 
+  const slug = req.nextUrl.searchParams.get("slug");
   const sb = getServiceClient();
+
+  if (slug) {
+    const { data, error } = await sb
+      .from(TABLE)
+      .select("*")
+      .eq("is_active", true)
+      .eq("slug", slug)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+    return NextResponse.json({ form: data });
+  }
+
+  // Return all active forms
   const { data, error } = await sb
     .from(TABLE)
     .select("*")
     .eq("is_active", true)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .order("created_at", { ascending: true });
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
-  return NextResponse.json({ form: data });
+  return NextResponse.json({ forms: data ?? [] });
 }
 
 // ── PUT: update form title, description, or questions ───────────────────────

@@ -35,15 +35,21 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
 
+  const slug = req.nextUrl.searchParams.get("type") ?? "regular";
+
   const sb = getServiceClient();
 
-  const { data: form } = await sb
+  let query = sb
     .from("info_session_forms")
     .select("title, description, questions")
     .eq("is_active", true)
     .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .limit(1);
+
+  // Filter by slug if the column exists; fall back gracefully
+  query = query.eq("slug", slug);
+
+  const { data: form } = await query.maybeSingle();
 
   if (!form) {
     return NextResponse.json({ error: "No form configured" }, { status: 500 });
@@ -58,6 +64,8 @@ export async function POST(req: NextRequest) {
   if (isIpRateLimited(getIp(req))) {
     return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
+
+  const slug = req.nextUrl.searchParams.get("type") ?? "regular";
 
   let body: { name?: string; email?: string; answers?: Record<string, unknown> };
   try {
@@ -87,6 +95,7 @@ export async function POST(req: NextRequest) {
     .from("info_session_forms")
     .select("questions")
     .eq("is_active", true)
+    .eq("slug", slug)
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();

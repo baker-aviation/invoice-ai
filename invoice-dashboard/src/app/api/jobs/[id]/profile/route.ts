@@ -42,6 +42,14 @@ export async function PATCH(
     updated_at: new Date().toISOString(),
   };
 
+  // Boolean fields
+  if ("needs_review" in body) {
+    if (typeof body.needs_review !== "boolean") {
+      return NextResponse.json({ error: "needs_review must be a boolean" }, { status: 400 });
+    }
+    update.needs_review = body.needs_review;
+  }
+
   // String fields
   const stringFields = ["candidate_name", "email", "phone", "location", "employment_type", "notes"] as const;
   for (const field of stringFields) {

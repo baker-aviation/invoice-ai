@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useSearchParams } from "next/navigation";
 
 type Question = {
   id: string;
@@ -17,6 +18,9 @@ type FormConfig = {
 };
 
 export default function InfoSessionFormPage() {
+  const searchParams = useSearchParams();
+  const formType = searchParams.get("type") ?? "regular";
+
   const [form, setForm] = useState<FormConfig | null>(null);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -29,7 +33,7 @@ export default function InfoSessionFormPage() {
   useEffect(() => {
     async function loadForm() {
       try {
-        const res = await fetch("/api/public/info-session");
+        const res = await fetch(`/api/public/info-session?type=${encodeURIComponent(formType)}`);
         const data = await res.json();
         if (!res.ok) {
           setError(data.error ?? "Failed to load form");
@@ -48,7 +52,7 @@ export default function InfoSessionFormPage() {
       }
     }
     loadForm();
-  }, []);
+  }, [formType]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -71,7 +75,7 @@ export default function InfoSessionFormPage() {
     setError(null);
 
     try {
-      const res = await fetch("/api/public/info-session", {
+      const res = await fetch(`/api/public/info-session?type=${encodeURIComponent(formType)}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: name.trim(), email: email.trim(), answers }),

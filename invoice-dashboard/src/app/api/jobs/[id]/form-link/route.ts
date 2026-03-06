@@ -23,6 +23,16 @@ export async function POST(
     return NextResponse.json({ error: "Invalid candidate ID" }, { status: 400 });
   }
 
+  let formType = "regular";
+  try {
+    const body = await req.json();
+    if (body.form_type && typeof body.form_type === "string") {
+      formType = body.form_type;
+    }
+  } catch {
+    // No body or invalid JSON — use default
+  }
+
   const sb = getServiceClient();
 
   // Verify candidate exists
@@ -36,11 +46,12 @@ export async function POST(
     return NextResponse.json({ error: "Candidate not found" }, { status: 404 });
   }
 
-  // Check for existing unused token
+  // Check for existing unused token of same form type
   const { data: existing } = await sb
     .from("info_session_tokens")
     .select("token, used_at, expires_at")
     .eq("parse_id", parseId)
+    .eq("form_type", formType)
     .is("used_at", null)
     .gt("expires_at", new Date().toISOString())
     .order("created_at", { ascending: false })
@@ -63,6 +74,7 @@ export async function POST(
   const { error } = await sb.from("info_session_tokens").insert({
     token,
     parse_id: parseId,
+    form_type: formType,
   });
 
   if (error) {

@@ -49,7 +49,7 @@ export async function GET(
   // Look up token
   const { data: tokenRow } = await sb
     .from("info_session_tokens")
-    .select("parse_id, used_at, expires_at")
+    .select("parse_id, used_at, expires_at, form_type")
     .eq("token", token)
     .maybeSingle();
 
@@ -65,14 +65,17 @@ export async function GET(
     return NextResponse.json({ error: "This link has expired" }, { status: 410 });
   }
 
-  // Fetch active form
-  const { data: form } = await sb
+  // Fetch active form matching the token's form_type
+  const formSlug = tokenRow.form_type ?? "regular";
+  let formQuery = sb
     .from("info_session_forms")
     .select("title, description, questions")
     .eq("is_active", true)
     .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .limit(1);
+  formQuery = formQuery.eq("slug", formSlug);
+
+  const { data: form } = await formQuery.maybeSingle();
 
   if (!form) {
     return NextResponse.json({ error: "No form configured" }, { status: 500 });
@@ -115,7 +118,7 @@ export async function POST(
   // Validate token
   const { data: tokenRow } = await sb
     .from("info_session_tokens")
-    .select("id, parse_id, used_at, expires_at")
+    .select("id, parse_id, used_at, expires_at, form_type")
     .eq("token", token)
     .maybeSingle();
 
@@ -145,13 +148,15 @@ export async function POST(
   }
 
   // Validate answers against form questions
-  const { data: form } = await sb
+  const formSlug = tokenRow.form_type ?? "regular";
+  let formQuery = sb
     .from("info_session_forms")
     .select("questions")
     .eq("is_active", true)
     .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .limit(1);
+  formQuery = formQuery.eq("slug", formSlug);
+  const { data: form } = await formQuery.maybeSingle();
 
   if (form?.questions) {
     const questions = form.questions as Array<{ id: string; required: boolean }>;

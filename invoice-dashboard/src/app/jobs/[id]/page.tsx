@@ -7,6 +7,7 @@ import FormLinkButton from "./FormLinkButton";
 import AttachFileButton from "./AttachFileButton";
 import TypeRatingsEditor from "./TypeRatingsEditor";
 import ProfileEditor from "./ProfileEditor";
+import ReviewBadge from "./ReviewBadge";
 
 function fmtDate(s: any) {
   return String(s ?? "").replace("T", " ").replace("+00:00", "Z");
@@ -141,7 +142,10 @@ export default async function JobDetailPage({
 
               <div className="flex items-center gap-2">
                 {isRejected && <Badge variant="danger">Rejected</Badge>}
-                {job?.needs_review ? <Badge variant="warning">review</Badge> : <Badge>ok</Badge>}
+                <ReviewBadge
+                  applicationId={Number(applicationId)}
+                  initialNeedsReview={job?.needs_review ?? false}
+                />
                 {isPilot && (
                   job?.soft_gate_pic_status && job.soft_gate_pic_status !== "missing_time" ? (
                     <Badge
