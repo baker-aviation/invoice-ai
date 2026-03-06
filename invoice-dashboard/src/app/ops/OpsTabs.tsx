@@ -4,11 +4,12 @@ import { useState } from "react";
 import type { Flight } from "@/lib/opsApi";
 import CurrentOps from "./CurrentOps";
 import OpsBoard from "./OpsBoard";
+import DutyTracker from "./DutyTracker";
 
-const TABS = ["Current Ops", "NOTAMs & PPRs"] as const;
+const TABS = ["Current Ops", "Flight Time & Rest", "NOTAMs & PPRs"] as const;
 type Tab = (typeof TABS)[number];
 
-export default function OpsTabs({ flights }: { flights: Flight[] }) {
+export default function OpsTabs({ flights, bakerPprAirports }: { flights: Flight[]; bakerPprAirports: string[] }) {
   const [tab, setTab] = useState<Tab>("Current Ops");
 
   return (
@@ -33,8 +34,10 @@ export default function OpsTabs({ flights }: { flights: Flight[] }) {
       {/* Tab content */}
       {tab === "Current Ops" ? (
         <CurrentOps flights={flights} />
+      ) : tab === "Flight Time & Rest" ? (
+        <DutyTracker flights={flights} />
       ) : (
-        <OpsBoard initialFlights={flights} />
+        <OpsBoard initialFlights={flights} bakerPprAirports={bakerPprAirports} />
       )}
     </div>
   );

@@ -40,6 +40,7 @@ export type AdsbAircraft = {
 export type FlightInfoMap = {
   tail: string;
   ident: string;
+  fa_flight_id?: string;
   origin_icao: string | null;
   origin_name: string | null;
   destination_icao: string | null;

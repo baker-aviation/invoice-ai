@@ -159,6 +159,35 @@ async function getFlightPosition(
   }
 }
 
+export type FaTrackPoint = {
+  latitude: number;
+  longitude: number;
+  altitude: number | null;
+  groundspeed: number | null;
+  heading: number | null;
+  timestamp: string;
+};
+
+/**
+ * Get the full flight track (list of positions) for a specific flight by fa_flight_id.
+ */
+export async function getFlightTrack(
+  faFlightId: string,
+): Promise<FaTrackPoint[]> {
+  const url = `${BASE}/flights/${encodeURIComponent(faFlightId)}/track`;
+  try {
+    const res = await fetch(url, {
+      headers: headers(),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data.positions ?? []) as FaTrackPoint[];
+  } catch {
+    return [];
+  }
+}
+
 /**
  * For a list of tail numbers, return all recent flights from FlightAware
  * (within 12 hours past + upcoming). Includes completed, en-route, and scheduled.

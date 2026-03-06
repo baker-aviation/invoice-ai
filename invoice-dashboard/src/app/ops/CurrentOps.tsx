@@ -5,6 +5,7 @@ import { useState, useEffect, useCallback, useMemo, Fragment } from "react";
 import type { Flight, OpsAlert } from "@/lib/opsApi";
 import type { AdsbAircraft, FlightInfoMap } from "@/app/maintenance/MapView";
 import { fmtTimeInTz } from "@/lib/airportTimezones";
+import { getAirportInfo } from "@/lib/airportCoords";
 
 const OpsMap = dynamic(() => import("./OpsMap"), {
   ssr: false,
@@ -70,6 +71,7 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
   const [expandedFlights, setExpandedFlights] = useState<Set<string>>(new Set());
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [useUtc, setUseUtc] = useState(false);
+  const [showActual, setShowActual] = useState(false);
 
   // Shorthand for formatting times — uses departure or arrival airport TZ
   const fmt = useCallback(
@@ -167,9 +169,54 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
     });
   }
 
+  // Compute parked aircraft positions from schedule + FA data
+  const parkedAircraft = useMemo(() => {
+    const flyingTails = new Set(adsbAircraft.map((a) => a.tail));
+    const now = new Date();
+    const parked: AdsbAircraft[] = [];
+    // Group flights by tail, find last arrived leg
+    const tailLastArrival = new Map<string, { icao: string; time: Date }>();
+    for (const f of flights) {
+      if (!f.tail_number || !f.arrival_icao) continue;
+      if (flyingTails.has(f.tail_number)) continue; // currently airborne
+      const arrTime = new Date(f.scheduled_arrival ?? f.scheduled_departure);
+      if (arrTime > now) continue; // hasn't arrived yet
+      const existing = tailLastArrival.get(f.tail_number);
+      if (!existing || arrTime > existing.time) {
+        tailLastArrival.set(f.tail_number, { icao: f.arrival_icao, time: arrTime });
+      }
+    }
+    for (const [tail, { icao }] of tailLastArrival) {
+      // Look up airport coords — try ICAO (strip K prefix for lookup) and full code
+      const code = icao.startsWith("K") ? icao.slice(1) : icao;
+      const info = getAirportInfo(code) ?? getAirportInfo(icao);
+      if (info) {
+        parked.push({
+          tail,
+          lat: info.lat,
+          lon: info.lon,
+          alt_baro: 0,
+          gs: 0,
+          track: null,
+          baro_rate: null,
+          on_ground: true,
+          squawk: null,
+          flight: null,
+          seen: null,
+          aircraft_type: null,
+          description: `Parked at ${icao}`,
+        });
+      }
+    }
+    return parked;
+  }, [flights, adsbAircraft]);
+
+  // Combine flying + parked for the map
+  const allMapAircraft = useMemo(() => [...adsbAircraft, ...parkedAircraft], [adsbAircraft, parkedAircraft]);
+
   // Count airborne vs on-ground
-  const airborne = adsbAircraft.filter((a) => !a.on_ground).length;
-  const onGround = adsbAircraft.filter((a) => a.on_ground).length;
+  const airborne = adsbAircraft.length;
+  const onGround = parkedAircraft.length;
 
   // Collect active EDCT alerts across all flights
   const edctAlerts = useMemo(() => {
@@ -242,7 +289,7 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
 
       {/* ── Map ── */}
       <div className="rounded-xl border border-gray-200 overflow-hidden">
-        <OpsMap adsbAircraft={adsbAircraft} flightInfo={flightInfo} />
+        <OpsMap adsbAircraft={allMapAircraft} flightInfo={flightInfo} />
       </div>
 
       {/* ── Filters row ── */}
@@ -276,6 +323,18 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
           }`}
         >
           {useUtc ? "UTC / Zulu" : "Local Time"}
+        </button>
+
+        {/* Actual times toggle */}
+        <button
+          onClick={() => setShowActual((v) => !v)}
+          className={`px-3 py-1 text-xs font-medium rounded-full transition-all ${
+            showActual
+              ? "bg-green-100 text-green-700"
+              : "bg-gray-100 text-gray-500 hover:bg-gray-200"
+          }`}
+        >
+          {showActual ? "Actual Times" : "Scheduled Times"}
         </button>
 
         <span className="text-gray-300">|</span>
@@ -421,29 +480,51 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
                         )}
                       </td>
                       <td className="px-4 py-2.5 text-gray-600">
-                        <div>{fmt(f.scheduled_departure, f.departure_icao)}</div>
-                        {fi?.actual_departure && (
-                          <div className="text-[10px] text-green-600 font-medium mt-0.5">
-                            Actual: {fmt(fi.actual_departure, f.departure_icao)}
-                          </div>
-                        )}
-                        {depMismatchMin !== null && fi?.departure_time && !fi?.actual_departure && (
-                          <div className="mt-0.5 text-[10px] font-semibold text-amber-700">
-                            FA Est. Departure: {fmt(fi.departure_time, f.departure_icao)}
-                          </div>
+                        {showActual && fi?.actual_departure ? (
+                          <>
+                            <div>{fmt(fi.actual_departure, f.departure_icao)}</div>
+                            <div className="text-[10px] text-gray-400 mt-0.5">
+                              Sched: {fmt(f.scheduled_departure, f.departure_icao)}
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <div>{fmt(f.scheduled_departure, f.departure_icao)}</div>
+                            {fi?.actual_departure && (
+                              <div className="text-[10px] text-green-600 font-medium mt-0.5">
+                                Actual: {fmt(fi.actual_departure, f.departure_icao)}
+                              </div>
+                            )}
+                            {depMismatchMin !== null && fi?.departure_time && !fi?.actual_departure && (
+                              <div className="mt-0.5 text-[10px] font-semibold text-amber-700">
+                                FA Est. Departure: {fmt(fi.departure_time, f.departure_icao)}
+                              </div>
+                            )}
+                          </>
                         )}
                       </td>
                       <td className="px-4 py-2.5 text-gray-600">
-                        <div>{fmt(f.scheduled_arrival, f.arrival_icao)}</div>
-                        {fi?.actual_arrival ? (
-                          <div className="text-[10px] text-green-600 font-medium mt-0.5">
-                            Actual: {fmt(fi.actual_arrival, f.arrival_icao)}
-                          </div>
-                        ) : fi?.arrival_time && !fi?.actual_arrival && status !== "Arrived" ? (
-                          <div className="text-[10px] text-green-600 font-medium mt-0.5">
-                            FlightAware ETA: {fmt(fi.arrival_time, f.arrival_icao)}
-                          </div>
-                        ) : null}
+                        {showActual && fi?.actual_arrival ? (
+                          <>
+                            <div>{fmt(fi.actual_arrival, f.arrival_icao)}</div>
+                            <div className="text-[10px] text-gray-400 mt-0.5">
+                              Sched: {fmt(f.scheduled_arrival, f.arrival_icao)}
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <div>{fmt(f.scheduled_arrival, f.arrival_icao)}</div>
+                            {fi?.actual_arrival ? (
+                              <div className="text-[10px] text-green-600 font-medium mt-0.5">
+                                Actual: {fmt(fi.actual_arrival, f.arrival_icao)}
+                              </div>
+                            ) : fi?.arrival_time && !fi?.actual_arrival && status !== "Arrived" ? (
+                              <div className="text-[10px] text-green-600 font-medium mt-0.5">
+                                FlightAware ETA: {fmt(fi.arrival_time, f.arrival_icao)}
+                              </div>
+                            ) : null}
+                          </>
+                        )}
                       </td>
                       <td className="px-4 py-2.5">
                         <span className={`px-2 py-0.5 text-xs font-medium rounded-full ${typeColor}`}>

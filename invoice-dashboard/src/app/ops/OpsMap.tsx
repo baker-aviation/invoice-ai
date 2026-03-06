@@ -1,12 +1,13 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import L from "leaflet";
-import { MapContainer, TileLayer, Marker, Popup, Tooltip } from "react-leaflet";
+import { MapContainer, TileLayer, Marker, Popup, Tooltip, Polyline } from "react-leaflet";
 import type { AdsbAircraft, FlightInfoMap } from "@/app/maintenance/MapView";
 
 function adsbDivIcon(track: number | null, onGround: boolean): L.DivIcon {
   const rotation = track != null ? track - 45 : -45;
-  const color = onGround ? "#6b7280" : "#2563eb";
+  const color = onGround ? "#93c5fd" : "#1d4ed8";
   return L.divIcon({
     html: `<div style="
       color:${color};
@@ -50,6 +51,80 @@ type Props = {
   flightInfo: Map<string, FlightInfoMap>;
 };
 
+/**
+ * Fetches and renders route tracks for en-route flights.
+ */
+function FlightTracks({ flightInfo }: { flightInfo: Map<string, FlightInfoMap> }) {
+  const [tracks, setTracks] = useState<Map<string, [number, number][]>>(new Map());
+
+  useEffect(() => {
+    // Find en-route flights with fa_flight_id
+    const enRoute: FlightInfoMap[] = [];
+    const seen = new Set<string>();
+    for (const fi of flightInfo.values()) {
+      if (fi.latitude != null && fi.longitude != null && !seen.has(fi.tail)) {
+        seen.add(fi.tail);
+        enRoute.push(fi);
+      }
+    }
+
+    if (enRoute.length === 0) {
+      setTracks(new Map());
+      return;
+    }
+
+    // Fetch tracks for en-route flights
+    const controller = new AbortController();
+    (async () => {
+      const newTracks = new Map<string, [number, number][]>();
+      for (const fi of enRoute) {
+        const flightId = fi.fa_flight_id;
+        if (!flightId) continue;
+
+        try {
+          const res = await fetch(`/api/aircraft/track/${encodeURIComponent(flightId)}`, {
+            signal: controller.signal,
+            cache: "no-store",
+          });
+          if (res.ok) {
+            const data = await res.json();
+            const positions: [number, number][] = (data.positions ?? [])
+              .filter((p: { latitude: number; longitude: number }) => p.latitude && p.longitude)
+              .map((p: { latitude: number; longitude: number }) => [p.latitude, p.longitude] as [number, number]);
+            if (positions.length > 1) {
+              newTracks.set(fi.tail, positions);
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
+      if (!controller.signal.aborted) {
+        setTracks(newTracks);
+      }
+    })();
+
+    return () => controller.abort();
+  }, [flightInfo]);
+
+  return (
+    <>
+      {Array.from(tracks.entries()).map(([tail, positions]) => (
+        <Polyline
+          key={`track-${tail}`}
+          positions={positions}
+          pathOptions={{
+            color: "#1d4ed8",
+            weight: 2,
+            opacity: 0.5,
+            dashArray: "4 6",
+          }}
+        />
+      ))}
+    </>
+  );
+}
+
 export default function OpsMap({ adsbAircraft, flightInfo }: Props) {
   return (
     <MapContainer
@@ -63,7 +138,10 @@ export default function OpsMap({ adsbAircraft, flightInfo }: Props) {
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
       />
 
-      {/* ADS-B aircraft (primary source) */}
+      {/* Route tracks for en-route flights */}
+      <FlightTracks flightInfo={flightInfo} />
+
+      {/* Aircraft markers */}
       {adsbAircraft.map((ac) => {
         const fi = flightInfo.get(ac.tail);
         return (
@@ -71,10 +149,10 @@ export default function OpsMap({ adsbAircraft, flightInfo }: Props) {
             key={`adsb-${ac.tail}`}
             position={[ac.lat, ac.lon]}
             icon={adsbDivIcon(ac.track, ac.on_ground)}
-            zIndexOffset={2000}
+            zIndexOffset={ac.on_ground ? 1000 : 2000}
           >
             <Tooltip permanent direction="top" offset={[0, -14]} className="van-label-tooltip">
-              <span style={{ fontWeight: 700, fontSize: "10px", color: ac.on_ground ? "#6b7280" : "#2563eb" }}>
+              <span style={{ fontWeight: 700, fontSize: "10px", color: ac.on_ground ? "#93c5fd" : "#1d4ed8" }}>
                 {ac.tail}
               </span>
             </Tooltip>
