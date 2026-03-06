@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { Badge } from "@/components/Badge";
-import type { FuelPriceRow } from "@/lib/types";
+import type { AdvertisedPriceRow, FuelPriceRow } from "@/lib/types";
 
 const PAGE_SIZE = 25;
 
@@ -31,10 +31,19 @@ function fmtDate(d: string | null | undefined): string {
   }
 }
 
+/** Get the Monday of the week containing a date string */
+function getWeekMonday(dateStr: string): string {
+  const d = new Date(dateStr + "T12:00:00");
+  const day = d.getDay(); // 0=Sun, 1=Mon, ...
+  const diff = day === 0 ? -6 : 1 - day;
+  d.setDate(d.getDate() + diff);
+  return d.toISOString().split("T")[0];
+}
+
 // ─── Data source labels & colors ─────────────────────────────────────────────
 
 type SourceFilter = "all" | "invoice" | "jetinsight";
-type ViewMode = "compare" | "all";
+type ViewMode = "compare" | "all" | "advertised";
 
 const SOURCE_BADGE: Record<string, { label: string; classes: string }> = {
   invoice:    { label: "Invoice",    classes: "bg-blue-100 text-blue-800" },
@@ -137,12 +146,222 @@ function buildComparisons(prices: FuelPriceRow[]): AirportComparison[] {
   return comparisons;
 }
 
+// ─── Advertised price lookup helper ──────────────────────────────────────────
+
+function lookupAdvertisedPrice(
+  advLookup: Map<string, AdvertisedPriceRow[]>,
+  vendorName: string | null,
+  airportCode: string | null,
+  invoiceDate: string | null,
+  tailNumber: string | null,
+): number | null {
+  if (!vendorName || !airportCode || !invoiceDate) return null;
+  const weekMonday = getWeekMonday(invoiceDate);
+  const key = `${vendorName.toLowerCase()}|${airportCode}|${weekMonday}`;
+  const matches = advLookup.get(key);
+  if (!matches || matches.length === 0) return null;
+
+  // Prefer tail-specific match, fall back to null (all tails)
+  if (tailNumber) {
+    const tailMatch = matches.find(
+      (m) => m.tail_numbers && m.tail_numbers.split(",").map((t) => t.trim()).includes(tailNumber)
+    );
+    if (tailMatch) return tailMatch.price;
+  }
+  // Fall back to "all tails" (null tail_numbers), lowest volume tier ("1+")
+  const allTails = matches
+    .filter((m) => !m.tail_numbers)
+    .sort((a, b) => a.volume_tier.localeCompare(b.volume_tier));
+  return allTails[0]?.price ?? matches[0]?.price ?? null;
+}
+
+// ─── Advertised vs Actual comparison builder ─────────────────────────────────
+
+type AdvVsActualRow = {
+  key: string;
+  weekStart: string;
+  airport: string;
+  fboVendor: string;
+  volumeTier: string;
+  tailNumbers: string | null;
+  advertisedPrice: number;
+  actualAvgPrice: number | null;
+  invoiceCount: number;
+  diffPct: number | null;
+};
+
+function buildAdvVsActual(
+  prices: FuelPriceRow[],
+  advertisedPrices: AdvertisedPriceRow[],
+): AdvVsActualRow[] {
+  // Group invoice data by (vendor, airport, week)
+  const invoiceBuckets = new Map<string, { prices: number[]; count: number }>();
+  for (const r of prices) {
+    if (!r.vendor_name || !r.airport_code || !r.invoice_date || r.effective_price_per_gallon == null) continue;
+    if ((r.data_source ?? "invoice") !== "invoice") continue;
+    const weekMonday = getWeekMonday(r.invoice_date);
+    const key = `${r.vendor_name.toLowerCase()}|${r.airport_code}|${weekMonday}`;
+    if (!invoiceBuckets.has(key)) invoiceBuckets.set(key, { prices: [], count: 0 });
+    const bucket = invoiceBuckets.get(key)!;
+    bucket.prices.push(r.effective_price_per_gallon);
+    bucket.count++;
+  }
+
+  const rows: AdvVsActualRow[] = [];
+  for (const adv of advertisedPrices) {
+    const key = `${adv.fbo_vendor.toLowerCase()}|${adv.airport_code}|${adv.week_start}`;
+    const bucket = invoiceBuckets.get(key);
+    const actualAvg = bucket && bucket.prices.length > 0
+      ? Math.round((bucket.prices.reduce((a, b) => a + b, 0) / bucket.prices.length) * 10000) / 10000
+      : null;
+    const invoiceCount = bucket?.count ?? 0;
+    let diffPct: number | null = null;
+    if (actualAvg != null && adv.price > 0) {
+      diffPct = Math.round(((actualAvg - adv.price) / adv.price) * 1000) / 10;
+    }
+
+    rows.push({
+      key: `${adv.id}`,
+      weekStart: adv.week_start,
+      airport: adv.airport_code,
+      fboVendor: adv.fbo_vendor,
+      volumeTier: adv.volume_tier,
+      tailNumbers: adv.tail_numbers,
+      advertisedPrice: adv.price,
+      actualAvgPrice: actualAvg,
+      invoiceCount,
+      diffPct,
+    });
+  }
+
+  // Sort by week desc, then airport
+  rows.sort((a, b) => {
+    const wc = b.weekStart.localeCompare(a.weekStart);
+    if (wc !== 0) return wc;
+    return a.airport.localeCompare(b.airport);
+  });
+
+  return rows;
+}
+
+// ─── Import Modal ────────────────────────────────────────────────────────────
+
+function ImportAdvertisedModal({ onClose }: { onClose: () => void }) {
+  const [vendor, setVendor] = useState("");
+  const [weekStart, setWeekStart] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; inserted?: number; skipped?: number; error?: string } | null>(null);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!file || !vendor || !weekStart) return;
+    setLoading(true);
+    setResult(null);
+
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("vendor", vendor);
+    fd.append("week_start", weekStart);
+
+    try {
+      const res = await fetch("/api/fuel-prices/advertised/upload", { method: "POST", body: fd });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        setResult({ ok: true, inserted: data.inserted, skipped: data.skipped });
+      } else {
+        setResult({ ok: false, error: data.error || "Upload failed" });
+      }
+    } catch {
+      setResult({ ok: false, error: "Network error" });
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4 p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-semibold">Import Advertised Prices</h3>
+          <button type="button" onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">&times;</button>
+        </div>
+
+        <div className="mb-4 rounded-lg bg-blue-50 border border-blue-200 p-3 text-xs text-blue-800">
+          <p className="font-semibold mb-1">Expected CSV format:</p>
+          <code className="block whitespace-pre text-[11px]">Airport, Volume Tier, Product, Tail Numbers, Price</code>
+          <p className="mt-1 text-blue-600">Airport may be blank on continuation rows (carries forward). Price like $6.30.</p>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">FBO Vendor Name</label>
+            <input
+              type="text"
+              required
+              value={vendor}
+              onChange={(e) => setVendor(e.target.value)}
+              placeholder="e.g. Jet Aviation"
+              className="w-full rounded-md border px-3 py-2 text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Week Starting</label>
+            <input
+              type="date"
+              required
+              value={weekStart}
+              onChange={(e) => setWeekStart(e.target.value)}
+              className="w-full rounded-md border px-3 py-2 text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">CSV File</label>
+            <input
+              type="file"
+              accept=".csv"
+              required
+              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+              className="w-full text-sm"
+            />
+          </div>
+
+          {result && (
+            <div className={`rounded-lg p-3 text-sm ${result.ok ? "bg-green-50 text-green-800" : "bg-red-50 text-red-800"}`}>
+              {result.ok
+                ? `Imported ${result.inserted} rows (${result.skipped} duplicates skipped)`
+                : result.error}
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2 pt-2">
+            <button type="button" onClick={onClose} className="px-4 py-2 text-sm rounded-md border hover:bg-gray-50">
+              {result?.ok ? "Close" : "Cancel"}
+            </button>
+            {!result?.ok && (
+              <button
+                type="submit"
+                disabled={loading || !file || !vendor || !weekStart}
+                className="px-4 py-2 text-sm rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+              >
+                {loading ? "Uploading..." : "Import"}
+              </button>
+            )}
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 
 export default function FuelPricesTable({
   initialPrices,
+  advertisedPrices = [],
 }: {
   initialPrices: FuelPriceRow[];
+  advertisedPrices?: AdvertisedPriceRow[];
 }) {
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState("");
@@ -150,6 +369,7 @@ export default function FuelPricesTable({
   const [vendorFilter, setVendorFilter] = useState("");
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
   const [viewMode, setViewMode] = useState<ViewMode>("all");
+  const [showImportModal, setShowImportModal] = useState(false);
 
   // Document IDs that serve as baselines for other rows
   const baselineDocIds = useMemo(() => {
@@ -234,6 +454,23 @@ export default function FuelPricesTable({
     return lookup;
   }, [initialPrices]);
 
+  // Advertised price lookup: key = "vendor_lower|airport|week_monday" → rows
+  const advLookup = useMemo(() => {
+    const lookup = new Map<string, AdvertisedPriceRow[]>();
+    for (const adv of advertisedPrices) {
+      const key = `${adv.fbo_vendor.toLowerCase()}|${adv.airport_code}|${adv.week_start}`;
+      if (!lookup.has(key)) lookup.set(key, []);
+      lookup.get(key)!.push(adv);
+    }
+    return lookup;
+  }, [advertisedPrices]);
+
+  // Advertised vs Actual comparison rows
+  const advVsActual = useMemo(
+    () => buildAdvVsActual(initialPrices, advertisedPrices),
+    [initialPrices, advertisedPrices],
+  );
+
   const filtered = useMemo(() => {
     let rows = initialPrices;
     if (sourceFilter !== "all") {
@@ -275,41 +512,65 @@ export default function FuelPricesTable({
     return rows;
   }, [comparisons, airportFilter, search]);
 
+  // Filtered advertised vs actual
+  const filteredAdvVsActual = useMemo(() => {
+    let rows = advVsActual;
+    if (airportFilter) rows = rows.filter((r) => r.airport === airportFilter);
+    if (vendorFilter) rows = rows.filter((r) => r.fboVendor === vendorFilter);
+    if (search) {
+      const q = search.toLowerCase();
+      rows = rows.filter((r) =>
+        [r.airport, r.fboVendor, r.tailNumbers]
+          .filter(Boolean)
+          .some((f) => String(f).toLowerCase().includes(q)),
+      );
+    }
+    return rows;
+  }, [advVsActual, airportFilter, vendorFilter, search]);
+
   const pageRows = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
 
   const compPageRows = filteredComparisons.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
   const compTotalPages = Math.ceil(filteredComparisons.length / PAGE_SIZE);
 
+  const advPageRows = filteredAdvVsActual.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  const advTotalPages = Math.ceil(filteredAdvVsActual.length / PAGE_SIZE);
+
   const hasBothSources = sourceCounts.invoice > 0 && sourceCounts.jetinsight > 0;
   const hasJetInsight = sourceCounts.jetinsight > 0;
+  const hasAdvertised = advertisedPrices.length > 0;
 
-  const activeTotalPages = viewMode === "compare" ? compTotalPages : totalPages;
-  const activeCount = viewMode === "compare" ? filteredComparisons.length : filtered.length;
+  const activeTotalPages = viewMode === "compare" ? compTotalPages : viewMode === "advertised" ? advTotalPages : totalPages;
+  const activeCount = viewMode === "compare" ? filteredComparisons.length : viewMode === "advertised" ? filteredAdvVsActual.length : filtered.length;
 
   return (
     <div className="space-y-4">
       {/* View mode tabs + source filters */}
       <div className="flex flex-wrap items-center gap-4">
         {/* View toggle */}
-        {hasBothSources && (
-          <div className="flex rounded-lg border bg-gray-100 p-0.5">
-            {(["all", "compare"] as const).map((mode) => (
-              <button
-                key={mode}
-                type="button"
-                onClick={() => { setViewMode(mode); setPage(0); }}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                  viewMode === mode
-                    ? "bg-white text-gray-900 shadow-sm"
-                    : "text-gray-500 hover:text-gray-700"
-                }`}
-              >
-                {mode === "compare" ? "Compare by Airport" : "Live Feed"}
-              </button>
-            ))}
-          </div>
-        )}
+        <div className="flex rounded-lg border bg-gray-100 p-0.5">
+          {(
+            [
+              { key: "all" as const, label: "Live Feed" },
+              ...(hasBothSources ? [{ key: "compare" as const, label: "Compare by Airport" }] : []),
+              ...(hasAdvertised ? [{ key: "advertised" as const, label: "Advertised vs Actual" }] : []),
+            ]
+          ).map(({ key, label }) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => { setViewMode(key); setPage(0); }}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                viewMode === key
+                  ? "bg-white text-gray-900 shadow-sm"
+                  : "text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
 
         {/* Source pills (only in "all" mode) */}
         {viewMode === "all" && (hasBothSources || hasJetInsight) && (
@@ -346,6 +607,15 @@ export default function FuelPricesTable({
             })}
           </div>
         )}
+
+        {/* Import button */}
+        <button
+          type="button"
+          onClick={() => setShowImportModal(true)}
+          className="ml-auto px-3 py-1.5 text-xs font-medium rounded-md border border-purple-300 bg-purple-50 text-purple-700 hover:bg-purple-100 transition-colors"
+        >
+          Import Advertised Prices
+        </button>
       </div>
 
       {/* Filters */}
@@ -361,7 +631,7 @@ export default function FuelPricesTable({
           ))}
         </select>
 
-        {viewMode === "all" && (
+        {(viewMode === "all" || viewMode === "advertised") && (
           <select
             value={vendorFilter}
             onChange={(e) => { setVendorFilter(e.target.value); setPage(0); }}
@@ -383,9 +653,11 @@ export default function FuelPricesTable({
         />
 
         <span className="ml-auto text-xs text-gray-500">
-          {activeCount} {viewMode === "compare" ? "airports" : "records"}
+          {activeCount} {viewMode === "compare" ? "airports" : viewMode === "advertised" ? "price rows" : "records"}
         </span>
       </div>
+
+      {showImportModal && <ImportAdvertisedModal onClose={() => setShowImportModal(false)} />}
 
       {/* ─── Comparison View ─────────────────────────────────────────── */}
       {viewMode === "compare" && (
@@ -500,7 +772,7 @@ export default function FuelPricesTable({
         </>
       )}
 
-      {/* ─── All Records View ─────────────────────────────────────────── */}
+      {/* ─── All Records View (Live Feed) ───────────────────────────── */}
       {viewMode === "all" && (
         <div className="rounded-xl border bg-white overflow-hidden shadow-sm overflow-x-auto">
           <table className="min-w-full text-sm">
@@ -515,6 +787,16 @@ export default function FuelPricesTable({
                 <th className="px-4 py-3 text-right">
                   <span title="Effective $/gal (fuel + per-gallon taxes). Base price shown below in gray.">$/Gal</span>
                 </th>
+                {hasAdvertised && (
+                  <>
+                    <th className="px-4 py-3 text-right">
+                      <span title="FBO advertised price for this airport + vendor + week">Adv. Price</span>
+                    </th>
+                    <th className="px-4 py-3 text-right">
+                      <span title="Difference between effective price and advertised price">vs Adv.</span>
+                    </th>
+                  </>
+                )}
                 <th className="px-4 py-3 text-right">
                   <span title="Average effective $/gal for this airport + vendor across all records">FBO Avg</span>
                 </th>
@@ -540,6 +822,16 @@ export default function FuelPricesTable({
                 const fboStats = fboKey ? fboAvgLookup.get(fboKey) : null;
                 const aptStats = row.airport_code ? airportAvgLookup.get(row.airport_code) : null;
                 const price = row.effective_price_per_gallon;
+
+                // Advertised price lookup
+                const advPrice = hasAdvertised
+                  ? lookupAdvertisedPrice(advLookup, row.vendor_name, row.airport_code, row.invoice_date, row.tail_number)
+                  : null;
+                let vsAdvPct: number | null = null;
+                if (price != null && advPrice != null && advPrice > 0) {
+                  vsAdvPct = Math.round(((price - advPrice) / advPrice) * 1000) / 10;
+                }
+
                 let vsAvgPct: number | null = null;
                 if (price != null && fboStats && fboStats.count > 1) {
                   vsAvgPct = ((price - fboStats.avg) / fboStats.avg) * 100;
@@ -584,6 +876,22 @@ export default function FuelPricesTable({
                         </div>
                       )}
                     </td>
+                    {hasAdvertised && (
+                      <>
+                        <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono text-purple-700">
+                          {advPrice != null ? fmt$(advPrice) : <span className="text-gray-300">{"\u2014"}</span>}
+                        </td>
+                        <td className="px-4 py-2.5 whitespace-nowrap text-right">
+                          {vsAdvPct != null ? (
+                            <Badge variant={vsAdvPct > 2 ? "danger" : vsAdvPct < -2 ? "success" : "default"}>
+                              {vsAdvPct >= 0 ? "+" : ""}{vsAdvPct}%
+                            </Badge>
+                          ) : (
+                            <span className="text-gray-300 text-xs">{"\u2014"}</span>
+                          )}
+                        </td>
+                      </>
+                    )}
                     <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono text-gray-500">
                       {fboStats ? (
                         <span title={`${fboStats.count} records | range: ${fmt$(fboStats.min)} – ${fmt$(fboStats.max)}`}>
@@ -656,7 +964,7 @@ export default function FuelPricesTable({
               })}
               {pageRows.length === 0 && (
                 <tr>
-                  <td colSpan={13} className="px-4 py-8 text-center text-gray-400">
+                  <td colSpan={hasAdvertised ? 15 : 13} className="px-4 py-8 text-center text-gray-400">
                     No fuel price records found.
                   </td>
                 </tr>
@@ -664,6 +972,97 @@ export default function FuelPricesTable({
             </tbody>
           </table>
         </div>
+      )}
+
+      {/* ─── Advertised vs Actual View ──────────────────────────────── */}
+      {viewMode === "advertised" && (
+        <>
+          <div className="rounded-xl border bg-white overflow-hidden shadow-sm overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <th className="px-4 py-3">Week</th>
+                  <th className="px-4 py-3">Airport</th>
+                  <th className="px-4 py-3">FBO Vendor</th>
+                  <th className="px-4 py-3">Tier</th>
+                  <th className="px-4 py-3">Tails</th>
+                  <th className="px-4 py-3 text-right">
+                    <span className="inline-flex items-center gap-1">
+                      Adv. $/gal
+                      <span className="inline-block w-2 h-2 rounded-full bg-purple-400" />
+                    </span>
+                  </th>
+                  <th className="px-4 py-3 text-right">
+                    <span className="inline-flex items-center gap-1">
+                      Actual Avg $/gal
+                      <span className="inline-block w-2 h-2 rounded-full bg-blue-400" />
+                    </span>
+                  </th>
+                  <th className="px-4 py-3 text-center"># Invoices</th>
+                  <th className="px-4 py-3 text-right">Diff %</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {advPageRows.map((row) => {
+                  const overpriced = row.diffPct != null && row.diffPct > 2;
+                  const underpriced = row.diffPct != null && row.diffPct < -2;
+                  return (
+                    <tr
+                      key={row.key}
+                      className={`hover:bg-gray-50 ${
+                        overpriced ? "bg-red-50/60" : underpriced ? "bg-green-50/60" : ""
+                      }`}
+                    >
+                      <td className="px-4 py-2.5 whitespace-nowrap text-xs">{fmtDate(row.weekStart)}</td>
+                      <td className="px-4 py-2.5 whitespace-nowrap font-semibold">{row.airport}</td>
+                      <td className="px-4 py-2.5 whitespace-nowrap max-w-[180px] truncate text-xs text-gray-600" title={row.fboVendor}>
+                        {row.fboVendor}
+                      </td>
+                      <td className="px-4 py-2.5 whitespace-nowrap text-xs text-gray-500">{row.volumeTier}</td>
+                      <td className="px-4 py-2.5 whitespace-nowrap text-xs text-gray-500">{row.tailNumbers || "All"}</td>
+                      <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono font-medium text-purple-700">
+                        {fmt$(row.advertisedPrice)}
+                      </td>
+                      <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono font-medium text-blue-700">
+                        {row.actualAvgPrice != null ? fmt$(row.actualAvgPrice) : <span className="text-gray-300">{"\u2014"}</span>}
+                      </td>
+                      <td className="px-4 py-2.5 whitespace-nowrap text-center text-xs text-gray-500">
+                        {row.invoiceCount || "\u2014"}
+                      </td>
+                      <td className="px-4 py-2.5 whitespace-nowrap text-right">
+                        {row.diffPct != null ? (
+                          <Badge variant={overpriced ? "danger" : underpriced ? "success" : "default"}>
+                            {row.diffPct >= 0 ? "+" : ""}{row.diffPct}%
+                          </Badge>
+                        ) : (
+                          <span className="text-gray-300 text-xs">{"\u2014"}</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+                {advPageRows.length === 0 && (
+                  <tr>
+                    <td colSpan={9} className="px-4 py-8 text-center text-gray-400">
+                      No advertised price data found. Use &ldquo;Import Advertised Prices&rdquo; to upload FBO price sheets.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Legend */}
+          <div className="flex items-center gap-4 text-xs text-gray-500">
+            <span>Diff = (Actual &minus; Advertised) / Advertised</span>
+            <span className="inline-flex items-center gap-1">
+              <span className="inline-block w-2 h-2 rounded-full bg-red-300" /> Paying more than advertised
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <span className="inline-block w-2 h-2 rounded-full bg-green-300" /> Paying less than advertised
+            </span>
+          </div>
+        </>
       )}
 
       {/* Pagination */}

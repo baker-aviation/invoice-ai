@@ -78,6 +78,19 @@ export type FuelPricesResponse = {
   fuel_prices: FuelPriceRow[];
 };
 
+export type AdvertisedPriceRow = {
+  id: number;
+  fbo_vendor: string;
+  airport_code: string;
+  volume_tier: string;
+  product: string;
+  price: number;
+  tail_numbers: string | null;
+  week_start: string;
+  upload_batch: string | null;
+  created_at: string;
+};
+
 /* =========================
    Jobs
 ========================= */

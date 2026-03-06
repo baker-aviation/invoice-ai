@@ -1,7 +1,7 @@
 import { createServiceClient } from "@/lib/supabase/service";
 import { cloudRunFetch } from "@/lib/cloud-run-fetch";
 import { signGcsUrl } from "@/lib/gcs";
-import type { AlertRow, AlertsResponse, FuelPriceRow, FuelPricesResponse, InvoiceDetailResponse, InvoiceListItem, InvoiceListResponse } from "@/lib/types";
+import type { AdvertisedPriceRow, AlertRow, AlertsResponse, FuelPriceRow, FuelPricesResponse, InvoiceDetailResponse, InvoiceListItem, InvoiceListResponse } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
 // Invoices — direct Supabase query to parsed_invoices
@@ -328,4 +328,31 @@ export async function fetchFuelPrices(params: {
   }
 
   return { ok: true, count: fuelPrices.length, fuel_prices: fuelPrices };
+}
+
+// ---------------------------------------------------------------------------
+// Advertised Fuel Prices — fbo_advertised_prices table
+// ---------------------------------------------------------------------------
+
+export async function fetchAdvertisedPrices(): Promise<AdvertisedPriceRow[]> {
+  const supa = createServiceClient();
+  const { data, error } = await supa
+    .from("fbo_advertised_prices")
+    .select("*")
+    .order("week_start", { ascending: false });
+
+  if (error) throw new Error(`fetchAdvertisedPrices failed: ${error.message}`);
+
+  return (data ?? []).map((row) => ({
+    id: row.id as number,
+    fbo_vendor: row.fbo_vendor as string,
+    airport_code: row.airport_code as string,
+    volume_tier: row.volume_tier as string,
+    product: row.product as string,
+    price: Number(row.price),
+    tail_numbers: (row.tail_numbers as string | null) ?? null,
+    week_start: row.week_start as string,
+    upload_batch: (row.upload_batch as string | null) ?? null,
+    created_at: row.created_at as string,
+  }));
 }
