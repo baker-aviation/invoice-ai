@@ -217,6 +217,7 @@ function getThreeDayWindowMs(): { startMs: number; endMs: number } {
 
 export default function DutyTracker({ flights }: { flights: Flight[] }) {
   const [faData, setFaData] = useState<FlightInfoMap[]>([]);
+  const [faLoading, setFaLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [useUtc, setUseUtc] = useState(false);
 
@@ -226,7 +227,8 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
     [useUtc],
   );
 
-  const fetchFaData = useCallback(async () => {
+  const fetchFaData = useCallback(async (isInitial = false) => {
+    if (isInitial) setFaLoading(true);
     try {
       const res = await fetch("/api/aircraft/flights", { cache: "no-store" });
       if (res.ok) {
@@ -235,11 +237,12 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
         setLastUpdate(new Date());
       }
     } catch { /* ignore */ }
+    if (isInitial) setFaLoading(false);
   }, []);
 
   useEffect(() => {
-    fetchFaData();
-    const interval = setInterval(fetchFaData, POLL_INTERVAL_MS);
+    fetchFaData(true);
+    const interval = setInterval(() => fetchFaData(false), POLL_INTERVAL_MS);
     return () => clearInterval(interval);
   }, [fetchFaData]);
 
@@ -434,6 +437,12 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
             </span>
           )}
           <span className="text-xs text-gray-400">Yesterday / Today / Tomorrow</span>
+          {faLoading && (
+            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 text-xs text-gray-400">
+              <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
+              Loading FlightAware...
+            </span>
+          )}
         </div>
 
         <div className="ml-auto flex items-center gap-3">
