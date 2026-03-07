@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import L from "leaflet";
 import { MapContainer, TileLayer, Marker, Popup, Tooltip, Polyline, useMap } from "react-leaflet";
 import type { AdsbAircraft, FlightInfoMap } from "@/app/maintenance/MapView";
@@ -37,17 +37,21 @@ function getAircraftColors(ac: AdsbAircraft, fleetLookup: Map<string, string>): 
     : { icon: "#404040", label: "#525252" };
 }
 
+// Airplane SVG path pointing UP (nose at top). Designed in a 32x32 viewBox.
+const PLANE_PATH = "M16 1.5l-1.2 7.5-7.3 2.5 1 2 5.5-1 -1 8-3 2v2l4.5-1.5L16 24.5l1.5-1.5 4.5 1.5v-2l-3-2-1-8 5.5 1 1-2-7.3-2.5z";
+
 function acDivIcon(ac: AdsbAircraft, fleetLookup: Map<string, string>): L.DivIcon {
   const rotation = ac.track != null ? ac.track : 0;
   const colors = getAircraftColors(ac, fleetLookup);
-  // SVG airplane icon that points UP by default (0deg = north)
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="22" height="22" fill="${colors.icon}" style="transform:rotate(${rotation}deg);filter:drop-shadow(0 1px 3px rgba(0,0,0,0.4))"><path d="M12 2L8 9H3l2 3.5L3 16h5l4 6 4-6h5l-2-3.5L21 9h-5L12 2z"/></svg>`;
+  const size = ac.on_ground ? 18 : 22;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="${size}" height="${size}" fill="${colors.icon}" style="transform:rotate(${rotation}deg);filter:drop-shadow(0 1px 2px rgba(0,0,0,0.45))"><path d="${PLANE_PATH}"/></svg>`;
+  const half = size / 2;
   return L.divIcon({
     html: svg,
     className: "",
-    iconSize: [22, 22],
-    iconAnchor: [11, 11],
-    popupAnchor: [0, -14],
+    iconSize: [size, size],
+    iconAnchor: [half, half],
+    popupAnchor: [0, -half],
   });
 }
 
@@ -155,22 +159,10 @@ function FlightTracks({ flightInfo, fleetLookup }: { flightInfo: Map<string, Fli
 
 /* ── Radar overlay ── */
 
-function RadarPane() {
-  const map = useMap();
-  useEffect(() => {
-    if (!map.getPane("radarPane")) {
-      const pane = map.createPane("radarPane");
-      pane.style.zIndex = "350";
-      pane.style.pointerEvents = "none";
-    }
-  }, [map]);
-  return null;
-}
-
 function RadarLayer({ visible }: { visible: boolean }) {
   const map = useMap();
   const [radarPath, setRadarPath] = useState<string | null>(null);
-  const [tileLayer, setTileLayer] = useState<L.TileLayer | null>(null);
+  const layerRef = useRef<L.TileLayer | null>(null);
 
   const fetchRadar = useCallback(async () => {
     try {
@@ -190,26 +182,20 @@ function RadarLayer({ visible }: { visible: boolean }) {
     return () => clearInterval(interval);
   }, [visible, fetchRadar]);
 
-  // Imperatively manage the tile layer to ensure proper pane support
   useEffect(() => {
-    if (!visible || !radarPath) {
-      if (tileLayer) {
-        map.removeLayer(tileLayer);
-        setTileLayer(null);
-      }
-      return;
+    // Remove previous layer
+    if (layerRef.current) {
+      map.removeLayer(layerRef.current);
+      layerRef.current = null;
     }
+
+    if (!visible || !radarPath) return;
 
     // Ensure pane exists
     if (!map.getPane("radarPane")) {
       const pane = map.createPane("radarPane");
       pane.style.zIndex = "350";
       pane.style.pointerEvents = "none";
-    }
-
-    // Remove old layer
-    if (tileLayer) {
-      map.removeLayer(tileLayer);
     }
 
     const layer = L.tileLayer(
@@ -221,12 +207,14 @@ function RadarLayer({ visible }: { visible: boolean }) {
       }
     );
     layer.addTo(map);
-    setTileLayer(layer);
+    layerRef.current = layer;
 
     return () => {
-      map.removeLayer(layer);
+      if (layerRef.current) {
+        map.removeLayer(layerRef.current);
+        layerRef.current = null;
+      }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, radarPath, map]);
 
   return null;
@@ -234,28 +222,33 @@ function RadarLayer({ visible }: { visible: boolean }) {
 
 /* ── Legend ── */
 
+function LegendPlane({ color }: { color: string }) {
+  return (
+    <svg viewBox="0 0 32 32" width="14" height="14" fill={color}>
+      <path d={PLANE_PATH} />
+    </svg>
+  );
+}
+
 function MapLegend() {
   return (
-    <div className="absolute bottom-3 right-3 z-[1000] bg-white/90 backdrop-blur-sm rounded-lg shadow-md px-3 py-2 text-[11px] space-y-1.5">
-      <div className="font-semibold text-gray-700 text-[10px] uppercase tracking-wider">Fleet</div>
+    <div className="absolute bottom-3 right-3 z-[1000] bg-white/90 backdrop-blur-sm rounded-lg shadow-md px-3 py-2.5 text-[11px] space-y-1">
+      <div className="font-semibold text-gray-700 text-[10px] uppercase tracking-wider mb-1">Fleet</div>
       <div className="flex items-center gap-2">
-        <svg viewBox="0 0 24 24" width="14" height="14" fill="#991b1b"><path d="M12 2L8 9H3l2 3.5L3 16h5l4 6 4-6h5l-2-3.5L21 9h-5L12 2z"/></svg>
-        <span className="text-gray-700">Challenger</span>
-        <span className="text-[9px] text-gray-400">(300/350)</span>
+        <LegendPlane color="#991b1b" />
+        <span className="text-gray-700">Challenger - In flight</span>
       </div>
       <div className="flex items-center gap-2">
-        <svg viewBox="0 0 24 24" width="14" height="14" fill="#1e3a8a"><path d="M12 2L8 9H3l2 3.5L3 16h5l4 6 4-6h5l-2-3.5L21 9h-5L12 2z"/></svg>
-        <span className="text-gray-700">Citation X</span>
+        <LegendPlane color="#f87171" />
+        <span className="text-gray-700">Challenger - Ground</span>
       </div>
-      <div className="border-t border-gray-200 pt-1 mt-1 space-y-1">
-        <div className="flex items-center gap-2">
-          <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: "#f87171" }} />
-          <span className="text-gray-500">On ground</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: "#991b1b" }} />
-          <span className="text-gray-500">In flight</span>
-        </div>
+      <div className="flex items-center gap-2 mt-1">
+        <LegendPlane color="#1e3a8a" />
+        <span className="text-gray-700">Citation X - In flight</span>
+      </div>
+      <div className="flex items-center gap-2">
+        <LegendPlane color="#60a5fa" />
+        <span className="text-gray-700">Citation X - Ground</span>
       </div>
     </div>
   );
