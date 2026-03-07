@@ -144,6 +144,17 @@ function computeTailDuty(
     }
 
     let durMin = (endMs - depMs) / 60_000;
+
+    // Sanity check: if FA-derived duration is wildly longer than scheduled,
+    // FA likely has bad data (timezone issues, wrong flight match). Fall back to ICS.
+    if (fi && f.scheduled_arrival) {
+      const schedDur = (new Date(f.scheduled_arrival).getTime() - new Date(f.scheduled_departure).getTime()) / 60_000;
+      if (schedDur > 0 && durMin > Math.max(schedDur * 2, schedDur + 120)) {
+        endMs = new Date(f.scheduled_arrival).getTime();
+        durMin = (endMs - depMs) / 60_000;
+      }
+    }
+
     if (durMin < 0) durMin = 0;
     if (durMin > MAX_LEG_DURATION_MIN) durMin = MAX_LEG_DURATION_MIN;
     endMs = depMs + durMin * 60_000;
@@ -966,9 +977,9 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                             if (!edct?.edct_time) return null;
                             return (
                               <div className="text-[10px] font-medium text-amber-700 whitespace-nowrap">
-                                EDCT: {fmt(edct.edct_time, edct.airport_icao)}
+                                EDCT: {fmt(edct.edct_time, f.departure_icao)}
                                 {edct.original_departure_time && (
-                                  <span className="text-gray-400 line-through ml-1">{fmt(edct.original_departure_time, edct.airport_icao)}</span>
+                                  <span className="text-gray-400 line-through ml-1">{fmt(edct.original_departure_time, f.departure_icao)}</span>
                                 )}
                               </div>
                             );

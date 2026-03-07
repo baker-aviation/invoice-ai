@@ -359,7 +359,7 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive,
   const [showLabels, setShowLabels] = useState(true);
   const [showRings, setShowRings] = useState(true);
   const [showVans, setShowVans] = useState(true);
-  const [darkMode, setDarkMode] = useState(false);
+  const [darkMode, setDarkMode] = useState(true);
   const [showRadar, setShowRadar] = useState(false);
   const radarUrl = useRadarUrl(showRadar);
   const containerRef = useRef<HTMLDivElement>(null);

@@ -264,7 +264,7 @@ function ToggleBtn({ label, active, onClick }: { label: string; active: boolean;
 /* ── Main map component ── */
 
 export default function OpsMap({ aircraft, flightInfo }: Props) {
-  const [darkMode, setDarkMode] = useState(false);
+  const [darkMode, setDarkMode] = useState(true);
   const [showRadar, setShowRadar] = useState(false);
   const radarUrl = useRadarUrl(showRadar);
   const containerRef = useRef<HTMLDivElement>(null);
