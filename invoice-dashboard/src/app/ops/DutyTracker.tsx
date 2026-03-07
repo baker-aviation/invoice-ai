@@ -73,12 +73,6 @@ type TailData = {
   suggestion: string | null; // fix suggestion text
 };
 
-type DelayAlert = {
-  tail: string;
-  type: "rest" | "flight-time";
-  message: string;
-  severity: "red" | "amber";
-};
 
 /* ── Helpers ──────────────────────────────────────────── */
 
@@ -493,55 +487,6 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
     return result;
   }, [intervalsByTail]);
 
-  /* ── Alerts ── */
-  const alerts = useMemo((): DelayAlert[] => {
-    const result: DelayAlert[] = [];
-    for (const td of tailData) {
-      // Flight time alerts
-      if (td.maxRolling24hrMin >= FLIGHT_TIME_RED_MIN) {
-        result.push({
-          tail: td.tail,
-          type: "flight-time",
-          severity: "red",
-          message: `${td.tail}: 24hr flight time at ${fmtDuration(td.maxRolling24hrMin)} — exceeds 10h limit (Part 135.267)`,
-        });
-      } else if (td.maxRolling24hrMin >= FLIGHT_TIME_YELLOW_MIN) {
-        result.push({
-          tail: td.tail,
-          type: "flight-time",
-          severity: "amber",
-          message: `${td.tail}: 24hr flight time at ${fmtDuration(td.maxRolling24hrMin)} — approaching 10h limit`,
-        });
-      }
-
-      // Rest alerts
-      for (const rest of td.restPeriods) {
-        const restHours = rest.minutes / 60;
-        if (restHours < REST_RED_HOURS) {
-          result.push({
-            tail: td.tail,
-            type: "rest",
-            severity: "red",
-            message: `${td.tail}: Crew rest at ${fmtDuration(rest.minutes)} — below ${REST_RED_HOURS}h minimum (Lead: ${LEAD_TIME_MIN}m, Post: ${POST_TIME_MIN}m)`,
-          });
-        } else if (restHours < REST_YELLOW_HOURS) {
-          result.push({
-            tail: td.tail,
-            type: "rest",
-            severity: "amber",
-            message: `${td.tail}: Crew rest at ${fmtDuration(rest.minutes)} — approaching ${REST_RED_HOURS}h minimum`,
-          });
-        }
-      }
-    }
-    result.sort((a, b) => (a.severity === "red" ? 0 : 1) - (b.severity === "red" ? 0 : 1));
-    return result;
-  }, [tailData]);
-
-  /* ── Alert counts ── */
-  const flightTimeAlerts = tailData.filter((t) => t.maxRolling24hrMin >= FLIGHT_TIME_YELLOW_MIN).length;
-  const restAlerts = tailData.reduce((n, td) => n + td.restPeriods.filter((r) => r.minutes / 60 < REST_YELLOW_HOURS).length, 0);
-
   /* ── Render ────────────────────────────────────────── */
   return (
     <div className="space-y-6">
@@ -551,16 +496,6 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
           <span className="font-medium text-gray-700">
             {intervalsByTail.size} tail{intervalsByTail.size !== 1 ? "s" : ""} tracked
           </span>
-          {flightTimeAlerts > 0 && (
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full bg-red-100 text-red-700">
-              {flightTimeAlerts} duty alert{flightTimeAlerts !== 1 ? "s" : ""}
-            </span>
-          )}
-          {restAlerts > 0 && (
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full bg-amber-100 text-amber-700">
-              {restAlerts} rest alert{restAlerts !== 1 ? "s" : ""}
-            </span>
-          )}
           <span className="text-xs text-gray-400">Yesterday / Today / Tomorrow</span>
           {faLoading && (
             <span className="inline-flex items-center gap-1.5 px-2 py-0.5 text-xs text-gray-400">
@@ -587,27 +522,6 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
           )}
         </div>
       </div>
-
-      {/* ── Alerts ── */}
-      {alerts.length > 0 && (
-        <div className="space-y-2">
-          {alerts.map((a, i) => (
-            <div
-              key={i}
-              className={`flex items-start gap-2 rounded-lg border px-4 py-2.5 text-sm ${
-                a.severity === "red"
-                  ? "border-red-200 bg-red-50 text-red-800"
-                  : "border-amber-200 bg-amber-50 text-amber-800"
-              }`}
-            >
-              <span className={`w-2 h-2 mt-1.5 rounded-full shrink-0 ${
-                a.severity === "red" ? "bg-red-500" : "bg-amber-500"
-              }`} />
-              <span>{a.message}</span>
-            </div>
-          ))}
-        </div>
-      )}
 
       {/* ── Per-tail cards ── */}
       {tailData.length === 0 ? (

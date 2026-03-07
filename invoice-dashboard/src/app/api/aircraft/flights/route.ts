@@ -67,10 +67,18 @@ export async function GET(req: NextRequest) {
     const flights = await getActiveFlights(tails);
     cachedResult = { data: flights, ts: Date.now() };
 
+    // Count flights per tail for debugging
+    const perTail: Record<string, number> = {};
+    for (const f of flights) {
+      perTail[f.tail] = (perTail[f.tail] ?? 0) + 1;
+    }
+
     return NextResponse.json({
       flights,
       count: flights.length,
       total_tails: tails.length,
+      tails_queried: tails,
+      flights_per_tail: perTail,
       cached: false,
       cached_at: new Date(cachedResult!.ts).toISOString(),
       cache_age_s: 0,

@@ -134,7 +134,9 @@ export async function getFlightsByRegistration(
     return [];
   }
   const data = await res.json();
-  return (data.flights ?? []) as FaFlight[];
+  const flights = (data.flights ?? []) as FaFlight[];
+  console.log(`[FA] ${registration}: ${flights.length} flights returned`);
+  return flights;
 }
 
 /**
