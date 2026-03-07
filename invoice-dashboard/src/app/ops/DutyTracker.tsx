@@ -23,7 +23,7 @@ const FLIGHT_TIME_YELLOW_MIN = 540; // 9 hours — caution (within 1hr of limit)
 const REST_RED_HOURS = 10; // minimum required rest
 const REST_YELLOW_HOURS = 11; // within 1hr of minimum
 const MAX_LEG_DURATION_MIN = 12 * 60; // cap any single leg at 12h (sanity)
-const MIN_REST_GAP_MS = 6 * 60 * 60 * 1000; // 6h minimum to split duty periods
+const MIN_REST_GAP_MS = 8 * 60 * 60 * 1000; // 8h minimum to split duty periods
 const LEAD_TIME_MIN = 60; // duty starts 60min before first leg
 const POST_TIME_MIN = 30; // duty ends 30min after last leg
 
