@@ -15,12 +15,16 @@ export async function GET(req: NextRequest) {
   const auth = await requireAuth(req);
   if (!isAuthed(auth)) return auth.error;
 
-  // Check if FlightAware is configured
+  // If FA key is missing, serve from shared Supabase cache (written by prod) — no API calls
   if (!process.env.FLIGHTAWARE_API_KEY) {
+    const stale = await getCache();
     return NextResponse.json({
-      flights: [],
-      count: 0,
-      error: "FLIGHTAWARE_API_KEY not configured",
+      flights: stale?.data ?? [],
+      count: stale?.data.length ?? 0,
+      cached: true,
+      cached_at: stale ? new Date(stale.ts).toISOString() : null,
+      cache_age_s: stale ? Math.round((Date.now() - stale.ts) / 1000) : null,
+      cache_only: true,
     });
   }
 
