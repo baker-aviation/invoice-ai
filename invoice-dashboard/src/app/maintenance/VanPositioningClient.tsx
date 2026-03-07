@@ -156,6 +156,7 @@ function fmtTime(s: string | null | undefined): string {
   if (!s) return "—";
   const d = new Date(s);
   if (isNaN(d.getTime())) return s;
+  const tzAbbr = d.toLocaleTimeString("en-US", { timeZoneName: "short" }).split(" ").pop() ?? "";
   return (
     d.toLocaleString("en-US", {
       month: "short",
@@ -163,8 +164,7 @@ function fmtTime(s: string | null | undefined): string {
       hour: "2-digit",
       minute: "2-digit",
       hour12: false,
-      timeZone: DISPLAY_TZ,
-    }) + " ET"
+    }) + ` ${tzAbbr}`
   );
 }
 
@@ -364,17 +364,17 @@ function fmtDriveTime(distKm: number): string {
   return m === 0 ? `${h}h drive` : `${h}h ${m}m drive`;
 }
 
-/** Format a UTC ISO timestamp to "HH:MM ET". */
+/** Format a UTC ISO timestamp to "HH:MM" in the user's local timezone with tz abbreviation. */
 function fmtUtcHM(iso: string): string {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return "—";
+  const tzAbbr = d.toLocaleTimeString("en-US", { timeZoneName: "short" }).split(" ").pop() ?? "";
   return (
     d.toLocaleTimeString("en-US", {
       hour: "2-digit",
       minute: "2-digit",
       hour12: false,
-      timeZone: DISPLAY_TZ,
-    }) + " ET"
+    }) + ` ${tzAbbr}`
   );
 }
 
@@ -528,72 +528,143 @@ function computeZoneItems(
   baseLat: number,
   baseLon: number,
 ): VanFlightItem[] {
+  // All arrivals today (any airport, not filtered by zone yet)
   const arrivalsToday = allFlights.filter((f) => {
     if (!f.arrival_icao || !f.scheduled_arrival) return false;
     if (!isOnEtDate(f.scheduled_arrival, date)) return false;
-    // Hide "other" category flights from the AOG schedule
     const ft = inferFlightType(f);
     const cat = getFilterCategory(ft);
     if (cat === "other") return false;
     const iata = f.arrival_icao.replace(/^K/, "");
     const info = getAirportInfo(iata);
-    if (!info || !isContiguous48(info.state)) return false;
-    return haversineKm(zone.lat, zone.lon, info.lat, info.lon) <= SCHEDULE_ARRIVAL_RADIUS_KM;
+    return !!(info && isContiguous48(info.state));
   });
 
-  const rawItems = arrivalsToday
-    .map((arr) => {
-      const iata = arr.arrival_icao!.replace(/^K/, "");
-      const info = getAirportInfo(iata);
-      const distKm = info ? Math.round(haversineKm(baseLat, baseLon, info.lat, info.lon)) : 0;
+  // Build VanFlightItems with next departure info
+  function buildItem(arr: Flight): VanFlightItem {
+    const nextDep =
+      allFlights
+        .filter(
+          (f) =>
+            f.tail_number === arr.tail_number &&
+            f.departure_icao === arr.arrival_icao &&
+            f.scheduled_departure > (arr.scheduled_arrival ?? ""),
+        )
+        .sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure))[0] ?? null;
 
-      const nextDep =
-        allFlights
-          .filter(
-            (f) =>
-              f.tail_number === arr.tail_number &&
-              f.departure_icao === arr.arrival_icao &&
-              f.scheduled_departure > (arr.scheduled_arrival ?? ""),
-          )
-          .sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure))[0] ?? null;
+    const iata = arr.arrival_icao!.replace(/^K/, "");
+    const info = getAirportInfo(iata);
+    const distKm = info ? Math.round(haversineKm(baseLat, baseLon, info.lat, info.lon)) : 0;
 
-      return {
-        arrFlight: arr,
-        nextDep,
-        isRepo: isPositioningFlight(arr),
-        nextIsRepo: nextDep ? isPositioningFlight(nextDep) : false,
-        airport: iata,
-        airportInfo: info,
-        distKm,
-      };
-    })
-    .filter(({ arrFlight, nextDep }) => {
-      if (!nextDep) return true;
-      // Transit filter: if aircraft arrives and departs same day with < 2h
-      // ground time, it's just passing through — skip it
-      if (nextDep.scheduled_departure.startsWith(date)) {
-        const arrMs = new Date(arrFlight.scheduled_arrival ?? "").getTime();
-        const depMs = new Date(nextDep.scheduled_departure).getTime();
-        const groundHours = (depMs - arrMs) / 3_600_000;
-        if (groundHours < 2 && !isPositioningFlight(nextDep)) return false;
+    return {
+      arrFlight: arr,
+      nextDep,
+      isRepo: isPositioningFlight(arr),
+      nextIsRepo: nextDep ? isPositioningFlight(nextDep) : false,
+      airport: iata,
+      airportInfo: info,
+      distKm,
+    };
+  }
+
+  /** Check if an airport is within this zone's radius. */
+  function isInZone(iata: string): boolean {
+    const info = getAirportInfo(iata);
+    if (!info) return false;
+    return haversineKm(zone.lat, zone.lon, info.lat, info.lon) <= SCHEDULE_ARRIVAL_RADIUS_KM;
+  }
+
+  // Group arrivals by tail number
+  const byTail = new Map<string, Flight[]>();
+  for (const f of arrivalsToday) {
+    const key = f.tail_number || `_no_tail_${f.id}`;
+    const arr = byTail.get(key) ?? [];
+    arr.push(f);
+    byTail.set(key, arr);
+  }
+
+  // Priority logic per tail:
+  // 1. End-of-day airport in zone → assign there
+  // 2. Quickturn before repo out of zone → assign at the quickturn airport
+  // 3. Skip if neither applies
+  const rawItems: VanFlightItem[] = [];
+
+  for (const [tailKey, legs] of byTail) {
+    // Sort by arrival time descending to find last arrival first
+    const sorted = [...legs].sort((a, b) =>
+      (b.scheduled_arrival ?? "").localeCompare(a.scheduled_arrival ?? ""),
+    );
+
+    // Find the tail's end-of-day airport: follow the chain of same-day departures
+    // from the last arrival to find where the aircraft actually ends up
+    let endOfDayFlight = sorted[0]; // last arrival of the day
+    let endOfDayAirport = endOfDayFlight.arrival_icao!.replace(/^K/, "");
+
+    // Walk forward: if there's a same-day departure from this airport, follow it
+    let current = endOfDayFlight;
+    for (let i = 0; i < 5; i++) { // max 5 hops to prevent infinite loops
+      const nextLeg = allFlights.find(
+        (f) =>
+          f.tail_number === current.tail_number &&
+          f.departure_icao === current.arrival_icao &&
+          f.scheduled_departure > (current.scheduled_arrival ?? "") &&
+          isOnEtDate(f.scheduled_departure, date),
+      );
+      if (!nextLeg || !nextLeg.arrival_icao) break;
+      endOfDayFlight = nextLeg;
+      endOfDayAirport = nextLeg.arrival_icao.replace(/^K/, "");
+      current = nextLeg;
+    }
+
+    // Priority 1: end-of-day airport is in zone
+    if (isInZone(endOfDayAirport)) {
+      // Use the last arrival leg that lands in the zone as the display item
+      // but show the end-of-day airport for van assignment
+      const lastInZone = sorted.find((f) => isInZone(f.arrival_icao!.replace(/^K/, "")));
+      const item = buildItem(lastInZone ?? sorted[0]);
+      // Override airport to end-of-day location
+      const eodInfo = getAirportInfo(endOfDayAirport);
+      if (eodInfo) {
+        item.airport = endOfDayAirport;
+        item.airportInfo = eodInfo;
+        item.distKm = Math.round(haversineKm(baseLat, baseLon, eodInfo.lat, eodInfo.lon));
       }
-      if (isPositioningFlight(nextDep)) return true;
-      return !isOnEtDate(nextDep.scheduled_departure, date);
-    });
+      rawItems.push(item);
+      continue;
+    }
 
-  // Deduplicate by tail — prefer the arrival closest to the van's home base
-  // so the van sees the most operationally relevant leg, not a distant transit.
-  // Use flight ID as key for flights with no tail number to avoid collapsing them.
-  const byTail = new Map<string, VanFlightItem>();
-  for (const item of rawItems) {
-    const key = item.arrFlight.tail_number || `_no_tail_${item.arrFlight.id}`;
-    const existing = byTail.get(key);
-    if (!existing || item.distKm < existing.distKm) {
-      byTail.set(key, item);
+    // Priority 2: quickturn in zone before a repo/departure out of zone
+    // Look for a leg that arrives in zone, has a same-day departure (quickturn)
+    for (const leg of sorted) {
+      const arrIata = leg.arrival_icao!.replace(/^K/, "");
+      if (!isInZone(arrIata)) continue;
+
+      const item = buildItem(leg);
+      if (!item.nextDep) continue; // no departure = done for day (should have been caught by P1)
+
+      const arrMs = new Date(leg.scheduled_arrival ?? "").getTime();
+      const depMs = new Date(item.nextDep.scheduled_departure).getTime();
+      const groundHours = (depMs - arrMs) / 3_600_000;
+
+      // Quickturn (< 2h) or short ground time before repo
+      if (groundHours < 6 && (item.nextIsRepo || isPositioningFlight(item.nextDep))) {
+        rawItems.push(item);
+        break;
+      }
     }
   }
 
-  return Array.from(byTail.values())
+  // Deduplicate by tail — keep the one closest to the van base
+  const deduped = new Map<string, VanFlightItem>();
+  for (const item of rawItems) {
+    const key = item.arrFlight.tail_number || `_no_tail_${item.arrFlight.id}`;
+    const existing = deduped.get(key);
+    if (!existing || item.distKm < existing.distKm) {
+      deduped.set(key, item);
+    }
+  }
+
+  return Array.from(deduped.values())
     .sort((a, b) =>
       (a.arrFlight.scheduled_arrival ?? "").localeCompare(b.arrFlight.scheduled_arrival ?? ""),
     )
@@ -1323,22 +1394,13 @@ function ScheduleTab({
       const items = result.get(zone.vanId) ?? [];
       const baseLat = liveVanPositions.get(zone.vanId)?.lat ?? zone.lat;
       const baseLon = liveVanPositions.get(zone.vanId)?.lon ?? zone.lon;
-      let sorted = greedySort(recalcDist(items, baseLat, baseLon), baseLat, baseLon);
-      // If any items have FA ETAs, re-sort by effective arrival time
-      // so the van visits airports in order of actual aircraft arrival
-      if (flightInfoMap.size > 0) {
-        const hasAnyFaEta = sorted.some((item) => {
-          const tail = item.arrFlight.tail_number;
-          return tail ? flightInfoMap.get(tail)?.arrival_time != null : false;
-        });
-        if (hasAnyFaEta) {
-          sorted = sorted.sort((a, b) => {
-            const etaA = getEffectiveArrival(a, flightInfoMap);
-            const etaB = getEffectiveArrival(b, flightInfoMap);
-            return etaA.localeCompare(etaB);
-          });
-        }
-      }
+      const withDist = recalcDist(items, baseLat, baseLon);
+      // Sort by arrival time (FA ETA preferred, then scheduled)
+      const sorted = withDist.sort((a, b) => {
+        const etaA = getEffectiveArrival(a, flightInfoMap);
+        const etaB = getEffectiveArrival(b, flightInfoMap);
+        return etaA.localeCompare(etaB);
+      });
       result.set(zone.vanId, sorted);
     }
 
