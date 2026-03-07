@@ -1316,12 +1316,11 @@ def _fetch_tfr_geojson() -> List[Dict[str, Any]]:
 
 def _check_airport_vs_tfr(
     airport_lat: float, airport_lon: float,
-    feature: Dict[str, Any], buffer_nm: float = 10.0,
+    feature: Dict[str, Any], buffer_nm: float = 0,
 ) -> Optional[Dict[str, Any]]:
-    """Check if an airport is affected by a TFR polygon.
+    """Check if an airport is inside a TFR polygon.
 
-    Returns proximity info dict if affected, None otherwise.
-    Uses point-in-polygon first, then centroid distance + buffer as fallback.
+    Returns proximity info dict if the airport is inside the polygon, None otherwise.
     """
     geom = feature.get("geometry", {})
     geom_type = geom.get("type", "")
@@ -1341,18 +1340,10 @@ def _check_airport_vs_tfr(
     for ring in rings:
         if len(ring) < 3:
             continue
-        # Test 1: point-in-polygon (airport inside TFR)
         if _point_in_polygon(airport_lon, airport_lat, ring):
             clon, clat = _polygon_centroid(ring)
             dist = _haversine_nm(airport_lat, airport_lon, clat, clon)
             return {"inside": True, "distance_nm": round(dist, 1)}
-
-        # Test 2: centroid distance check with buffer
-        clon, clat = _polygon_centroid(ring)
-        effective_radius = _max_vertex_dist_nm(clat, clon, ring)
-        dist = _haversine_nm(airport_lat, airport_lon, clat, clon)
-        if dist <= effective_radius + buffer_nm:
-            return {"inside": False, "distance_nm": round(dist, 1), "effective_radius_nm": round(effective_radius, 1)}
 
     return None
 
