@@ -72,7 +72,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "FLIGHTAWARE_WEBHOOK_SECRET not configured" }, { status: 503 });
   }
 
-  let body: { action?: string };
+  let body: { action?: string; base_url?: string };
   try {
     body = await req.json();
   } catch {
@@ -82,11 +82,21 @@ export async function POST(req: NextRequest) {
   const action = body.action ?? "refresh";
   const supa = createServiceClient();
 
-  // Determine webhook URL
-  const baseUrl = process.env.NEXT_PUBLIC_SITE_URL
-    ?? process.env.VERCEL_URL
-    ?? "https://baker-ai-gamma.vercel.app";
-  const webhookUrl = `${baseUrl.startsWith("http") ? baseUrl : `https://${baseUrl}`}/api/aircraft/webhook?secret=${encodeURIComponent(webhookSecret)}`;
+  // Webhook URL: caller provides base_url, or fall back to env / Vercel auto-detect
+  const baseUrl = body.base_url
+    ?? process.env.WEBHOOK_BASE_URL
+    ?? process.env.NEXT_PUBLIC_SITE_URL
+    ?? process.env.VERCEL_PROJECT_PRODUCTION_URL
+    ?? process.env.VERCEL_URL;
+
+  if (!baseUrl) {
+    return NextResponse.json({
+      error: "Provide base_url in request body (e.g. https://baker-ai-gamma.vercel.app)",
+    }, { status: 400 });
+  }
+
+  const normalizedBase = baseUrl.startsWith("http") ? baseUrl : `https://${baseUrl}`;
+  const webhookUrl = `${normalizedBase}/api/aircraft/webhook?secret=${encodeURIComponent(webhookSecret)}`;
 
   const results: { action: string; details: unknown[] } = { action, details: [] };
 
