@@ -880,18 +880,29 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
       {/* ── Schedule table ── */}
       {viewMode === "table" && (
       <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
-        <table className="w-full text-sm">
+        <table className="w-full text-sm table-fixed">
+          <colgroup>
+            <col className="w-[100px]" />  {/* Status */}
+            <col className="w-[90px]" />   {/* Tail */}
+            <col className="w-[140px]" />  {/* Route */}
+            <col />                         {/* Departure */}
+            <col />                         {/* Arrival */}
+            <col className="w-[80px]" />   {/* Type */}
+            <col className="w-[70px]" />   {/* 10/24 */}
+            <col className="w-[70px]" />   {/* Rest */}
+            <col className="w-[80px]" />   {/* Notes */}
+          </colgroup>
           <thead>
             <tr className="bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">Tail</th>
-              <th className="px-4 py-3">Route</th>
-              <th className="px-4 py-3">Departure</th>
-              <th className="px-4 py-3">Arrival</th>
-              <th className="px-4 py-3">Type</th>
-              <th className="px-4 py-3">Notes</th>
-              <th className="px-4 py-3">10/24 Check</th>
-              <th className="px-4 py-3">Crew Rest</th>
+              <th className="px-3 py-3">Status</th>
+              <th className="px-3 py-3">Tail</th>
+              <th className="px-3 py-3">Route</th>
+              <th className="px-3 py-3">Departure</th>
+              <th className="px-3 py-3">Arrival</th>
+              <th className="px-3 py-3">Type</th>
+              <th className="px-3 py-3">10/24</th>
+              <th className="px-3 py-3">Rest</th>
+              <th className="px-3 py-3">Notes</th>
             </tr>
           </thead>
           <tbody>
@@ -969,42 +980,37 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                     <tr
                       className="border-t hover:bg-gray-50"
                     >
-                      <td className="px-4 py-2.5">
-                        <div className="flex flex-col gap-1">
+                      <td className="px-3 py-2.5 overflow-visible">
+                        <div className="flex flex-col gap-0.5">
                           <span className={`text-xs font-medium ${statusColor}`}>{status}</span>
                           {(() => {
-                            // "Not airborne" alert
                             const schedMs = new Date(f.scheduled_departure).getTime();
                             const nowMs = Date.now();
                             if (schedMs < nowMs && !fi?.actual_departure && status === "Scheduled") {
                               const lateMin = Math.round((nowMs - schedMs) / 60_000);
                               return (
-                                <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold rounded-full whitespace-nowrap ${lateMin > 30 ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"}`}>
-                                  Not airborne +{lateMin}m
+                                <span className={`inline-flex items-center px-1.5 py-0.5 text-[10px] font-bold rounded-full ${lateMin > 30 ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"}`}>
+                                  +{lateMin}m late
                                 </span>
                               );
                             }
                             return null;
                           })()}
                           {(() => {
-                            // EDCT alert inline
                             const edct = alerts.find((a) => a.alert_type === "EDCT");
                             if (!edct?.edct_time) return null;
                             return (
-                              <div className="text-[10px] font-medium text-amber-700 whitespace-nowrap">
-                                EDCT: {fmt(edct.edct_time, f.departure_icao)}
-                                {edct.original_departure_time && (
-                                  <span className="text-gray-400 line-through ml-1">{fmt(edct.original_departure_time, f.departure_icao)}</span>
-                                )}
+                              <div className="text-[10px] font-medium text-amber-700">
+                                EDCT {fmt(edct.edct_time, f.departure_icao)}
                               </div>
                             );
                           })()}
                         </div>
                       </td>
-                      <td className="px-4 py-2.5 font-mono font-semibold text-gray-900">
+                      <td className="px-3 py-2.5 font-mono font-semibold text-gray-900">
                         {f.tail_number || "—"}
                       </td>
-                      <td className="px-4 py-2.5">
+                      <td className="px-3 py-2.5">
                         <span className="font-mono font-medium">
                           {f.departure_icao || "?"} → {f.arrival_icao || "?"}
                         </span>
@@ -1030,7 +1036,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                           </div>
                         )}
                       </td>
-                      <td className="px-4 py-2.5 text-gray-600">
+                      <td className="px-3 py-2.5 text-gray-600">
                         <div>{fmt(f.scheduled_departure, f.departure_icao)}</div>
                         {fi?.actual_departure ? (
                           <div className={`text-[10px] font-medium mt-0.5 ${delayColorClass(f.scheduled_departure, fi.actual_departure)}`}>
@@ -1045,7 +1051,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                           ) : null;
                         })()}
                       </td>
-                      <td className="px-4 py-2.5 text-gray-600">
+                      <td className="px-3 py-2.5 text-gray-600">
                         <div>{fmt(f.scheduled_arrival, f.arrival_icao)}</div>
                         {fi?.actual_arrival && f.scheduled_arrival ? (
                           <div className={`text-[10px] font-medium mt-0.5 ${delayColorClass(f.scheduled_arrival, fi.actual_arrival)}`}>
@@ -1057,25 +1063,12 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                           </div>
                         ) : null}
                       </td>
-                      <td className="px-4 py-2.5">
-                        <span className={`px-2 py-0.5 text-xs font-medium rounded-full ${typeColor}`}>
+                      <td className="px-3 py-2.5">
+                        <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded-full ${typeColor}`}>
                           {type}
                         </span>
                       </td>
-                      <td className="px-4 py-2.5">
-                        {alertCount > 0 && (
-                          <button
-                            onClick={() => toggleExpanded(f.id)}
-                            className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full bg-red-100 text-red-700 hover:bg-red-200 transition-colors cursor-pointer"
-                          >
-                            <span className={`inline-block transition-transform ${isExpanded ? "rotate-90" : ""}`}>
-                              &#9656;
-                            </span>
-                            {alertCount} alert{alertCount > 1 ? "s" : ""}
-                          </button>
-                        )}
-                      </td>
-                      <td className="px-4 py-2.5">
+                      <td className="px-3 py-2.5">
                         {(() => {
                           const duty = f.tail_number ? tailDuty.get(f.tail_number) : null;
                           if (!duty) return <span className="text-xs text-gray-300">--</span>;
@@ -1086,13 +1079,13 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                               className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-xs font-mono font-medium rounded cursor-pointer hover:opacity-80 transition-opacity ${LEVEL_COLORS[level]}`}
                               title="View detailed 10/24 breakdown"
                             >
-                              <span className="text-[11px]">{LEVEL_ICONS[level]}</span>
+                              <span className="text-[10px]">{LEVEL_ICONS[level]}</span>
                               {fmtHM(duty.flightTimeMin)}
                             </button>
                           );
                         })()}
                       </td>
-                      <td className="px-4 py-2.5">
+                      <td className="px-3 py-2.5">
                         {(() => {
                           const duty = f.tail_number ? tailDuty.get(f.tail_number) : null;
                           if (!duty || duty.restMin == null) return <span className="text-xs text-gray-300">--</span>;
@@ -1104,11 +1097,24 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                               className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-xs font-mono font-medium rounded cursor-pointer hover:opacity-80 transition-opacity ${LEVEL_COLORS[level]}`}
                               title="View detailed crew rest breakdown"
                             >
-                              <span className="text-[11px]">{LEVEL_ICONS[level]}</span>
+                              <span className="text-[10px]">{LEVEL_ICONS[level]}</span>
                               {fmtHM(duty.restMin)}
                             </button>
                           );
                         })()}
+                      </td>
+                      <td className="px-3 py-2.5">
+                        {alertCount > 0 && (
+                          <button
+                            onClick={() => toggleExpanded(f.id)}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full bg-red-100 text-red-700 hover:bg-red-200 transition-colors cursor-pointer"
+                          >
+                            <span className={`inline-block transition-transform ${isExpanded ? "rotate-90" : ""}`}>
+                              &#9656;
+                            </span>
+                            {alertCount}
+                          </button>
+                        )}
                       </td>
                     </tr>
                     {isExpanded && alerts.map((alert) => (
