@@ -26,15 +26,17 @@ export async function GET(req: NextRequest) {
 
   // Return cache if fresh (unless ?refresh=true)
   const forceRefresh = req.nextUrl.searchParams.get("refresh") === "true";
-  const cachedResult = getCache();
-  if (!forceRefresh && cachedResult && isCacheFresh()) {
-    return NextResponse.json({
-      flights: cachedResult.data,
-      count: cachedResult.data.length,
-      cached: true,
-      cached_at: new Date(cachedResult.ts).toISOString(),
-      cache_age_s: Math.round((Date.now() - cachedResult.ts) / 1000),
-    });
+  if (!forceRefresh && await isCacheFresh()) {
+    const cachedResult = await getCache();
+    if (cachedResult) {
+      return NextResponse.json({
+        flights: cachedResult.data,
+        count: cachedResult.data.length,
+        cached: true,
+        cached_at: new Date(cachedResult.ts).toISOString(),
+        cache_age_s: Math.round((Date.now() - cachedResult.ts) / 1000),
+      });
+    }
   }
 
   // Get tail numbers from flights table
@@ -59,7 +61,7 @@ export async function GET(req: NextRequest) {
 
   try {
     const flights = await getActiveFlights(tails);
-    setCache(flights);
+    await setCache(flights);
 
     // Auto-register FA webhook alerts for any new tails (fire-and-forget)
     refreshAlerts(tails).catch(() => {});
@@ -81,7 +83,7 @@ export async function GET(req: NextRequest) {
       cache_age_s: 0,
     });
   } catch (err) {
-    const stale = getCache();
+    const stale = await getCache();
     return NextResponse.json({
       flights: stale?.data ?? [],
       count: stale?.data.length ?? 0,
