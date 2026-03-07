@@ -857,12 +857,12 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
         <table className="w-full text-sm">
           <thead>
             <tr className="bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <th className="px-4 py-3">Status</th>
               <th className="px-4 py-3">Tail</th>
               <th className="px-4 py-3">Route</th>
               <th className="px-4 py-3">Departure</th>
               <th className="px-4 py-3">Arrival</th>
               <th className="px-4 py-3">Type</th>
-              <th className="px-4 py-3">Status</th>
               <th className="px-4 py-3">Notes</th>
               <th className="px-4 py-3">10/24 Check</th>
               <th className="px-4 py-3">Crew Rest</th>
@@ -943,6 +943,38 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                     <tr
                       className="border-t hover:bg-gray-50"
                     >
+                      <td className="px-4 py-2.5">
+                        <div className="flex flex-col gap-1">
+                          <span className={`text-xs font-medium ${statusColor}`}>{status}</span>
+                          {(() => {
+                            // "Not airborne" alert
+                            const schedMs = new Date(f.scheduled_departure).getTime();
+                            const nowMs = Date.now();
+                            if (schedMs < nowMs && !fi?.actual_departure && status === "Scheduled") {
+                              const lateMin = Math.round((nowMs - schedMs) / 60_000);
+                              return (
+                                <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold rounded-full whitespace-nowrap ${lateMin > 30 ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"}`}>
+                                  Not airborne +{lateMin}m
+                                </span>
+                              );
+                            }
+                            return null;
+                          })()}
+                          {(() => {
+                            // EDCT alert inline
+                            const edct = alerts.find((a) => a.alert_type === "EDCT");
+                            if (!edct?.edct_time) return null;
+                            return (
+                              <div className="text-[10px] font-medium text-amber-700 whitespace-nowrap">
+                                EDCT: {fmt(edct.edct_time, edct.airport_icao)}
+                                {edct.original_departure_time && (
+                                  <span className="text-gray-400 line-through ml-1">{fmt(edct.original_departure_time, edct.airport_icao)}</span>
+                                )}
+                              </div>
+                            );
+                          })()}
+                        </div>
+                      </td>
                       <td className="px-4 py-2.5 font-mono font-semibold text-gray-900">
                         {f.tail_number || "—"}
                       </td>
@@ -1004,37 +1036,18 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                           {type}
                         </span>
                       </td>
-                      <td className={`px-4 py-2.5 text-xs ${statusColor}`}>
-                        {status}
-                      </td>
                       <td className="px-4 py-2.5">
-                        <div className="flex flex-col gap-1">
-                          {alertCount > 0 && (
-                            <button
-                              onClick={() => toggleExpanded(f.id)}
-                              className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full bg-red-100 text-red-700 hover:bg-red-200 transition-colors cursor-pointer"
-                            >
-                              <span className={`inline-block transition-transform ${isExpanded ? "rotate-90" : ""}`}>
-                                &#9656;
-                              </span>
-                              {alertCount} alert{alertCount > 1 ? "s" : ""}
-                            </button>
-                          )}
-                          {(() => {
-                            // "Not airborne" alert: scheduled departure has passed but no actual departure
-                            const schedMs = new Date(f.scheduled_departure).getTime();
-                            const now = Date.now();
-                            if (schedMs < now && !fi?.actual_departure && status === "Scheduled") {
-                              const lateMin = Math.round((now - schedMs) / 60_000);
-                              return (
-                                <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium rounded-full ${lateMin > 30 ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"}`}>
-                                  Not airborne +{lateMin}m
-                                </span>
-                              );
-                            }
-                            return null;
-                          })()}
-                        </div>
+                        {alertCount > 0 && (
+                          <button
+                            onClick={() => toggleExpanded(f.id)}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full bg-red-100 text-red-700 hover:bg-red-200 transition-colors cursor-pointer"
+                          >
+                            <span className={`inline-block transition-transform ${isExpanded ? "rotate-90" : ""}`}>
+                              &#9656;
+                            </span>
+                            {alertCount} alert{alertCount > 1 ? "s" : ""}
+                          </button>
+                        )}
                       </td>
                       <td className="px-4 py-2.5">
                         {(() => {
