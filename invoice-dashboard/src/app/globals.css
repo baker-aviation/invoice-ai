@@ -48,10 +48,6 @@ body {
   display: none;
 }
 
-/* Dark map mode — invert base tiles only, not overlays or markers */
-.map-dark .leaflet-tile-pane .leaflet-layer:first-child {
-  filter: invert(1) hue-rotate(180deg) brightness(0.85) contrast(1.2);
-}
 
 /* Van label tooltips */
 .van-label-tooltip.leaflet-tooltip {

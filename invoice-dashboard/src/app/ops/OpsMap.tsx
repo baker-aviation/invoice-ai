@@ -162,6 +162,7 @@ function FlightTracks({ flightInfo, fleetLookup }: { flightInfo: Map<string, Fli
 /* ── Tile layers ── */
 
 const LIGHT_TILES = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
+const DARK_TILES = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png";
 
 /* ── Radar overlay ── */
 
@@ -277,12 +278,20 @@ export default function OpsMap({ aircraft, flightInfo }: Props) {
         zoom={4}
         style={{ height: "500px", width: "100%" }}
         scrollWheelZoom
-        className={darkMode ? "map-dark" : ""}
       >
-        <TileLayer
-          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-          url={LIGHT_TILES}
-        />
+        {darkMode ? (
+          <TileLayer
+            key="dark"
+            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>'
+            url={DARK_TILES}
+          />
+        ) : (
+          <TileLayer
+            key="light"
+            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+            url={LIGHT_TILES}
+          />
+        )}
 
         {/* Radar overlay */}
         {radarUrl && (
