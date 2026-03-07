@@ -41,6 +41,7 @@ type LegInterval = {
   source: "actual" | "fa-estimate" | "scheduled";
   depIso: string;
   arrIso: string;
+  flightType: string | null;
 };
 
 type ChartPoint = { timeMs: number; hours: number };
@@ -69,6 +70,7 @@ type TailData = {
   chartPoints: ChartPoint[];
   hasFlightsTomorrow: boolean;
   breachLegKey: string | null; // "dpIdx-legIdx" of the leg that pushes past 10h
+  suggestion: string | null; // fix suggestion text
 };
 
 type DelayAlert = {
@@ -90,6 +92,21 @@ function sourceLabel(src: "actual" | "fa-estimate" | "scheduled"): string {
   if (src === "actual") return "Actual";
   if (src === "fa-estimate") return "FA Est";
   return "Sched";
+}
+
+function fmtFlightType(ft: string | null): string | null {
+  if (!ft) return null;
+  const l = ft.toLowerCase();
+  if (l === "revenue" || l === "charter" || l === "owner") return "REV";
+  if (l === "positioning" || l === "ferry") return "POS";
+  return ft.slice(0, 3).toUpperCase();
+}
+
+function flightTypeBadgeClass(ft: string | null): string {
+  const label = fmtFlightType(ft);
+  if (label === "POS") return "bg-yellow-100 text-yellow-700";
+  if (label === "REV") return "bg-blue-100 text-blue-700";
+  return "bg-gray-100 text-gray-500";
 }
 
 function sourceBadgeClass(src: "actual" | "fa-estimate" | "scheduled"): string {
@@ -252,6 +269,61 @@ function findBreachLeg(dps: DutyPeriod[]): string | null {
   return null;
 }
 
+/** Compute a fix suggestion: find the earliest departure time for the breach leg
+ *  that keeps the rolling 24hr total under 10h. */
+function computeSuggestion(dps: DutyPeriod[], breachKey: string | null): string | null {
+  if (!breachKey) return null;
+  const [dpIdxStr, legIdxStr] = breachKey.split("-");
+  const dpIdx = parseInt(dpIdxStr);
+  const legIdx = parseInt(legIdxStr);
+  const dp = dps[dpIdx];
+  if (!dp) return null;
+  const breachLeg = dp.legs[legIdx];
+  if (!breachLeg) return null;
+
+  const route = `${breachLeg.departure_icao ?? "?"}-${breachLeg.arrival_icao ?? "?"}`;
+
+  // Collect all legs BEFORE the breach leg
+  const priorLegs: LegInterval[] = [];
+  for (let d = 0; d < dps.length; d++) {
+    for (let l = 0; l < dps[d].legs.length; l++) {
+      if (d === dpIdx && l === legIdx) break;
+      priorLegs.push(dps[d].legs[l]);
+    }
+    if (d === dpIdx) break;
+  }
+
+  // Scan forward from breach leg's current start time minute-by-minute
+  // to find the earliest departure where rolling 24hr stays under 10h
+  const WINDOW_MS = 24 * 60 * 60 * 1000;
+  const legDurMs = breachLeg.durationMin * 60_000;
+  const STEP = 5 * 60_000; // 5 minute steps
+  const MAX_SHIFT = 12 * 60 * 60_000; // don't look more than 12h out
+
+  for (let shift = STEP; shift <= MAX_SHIFT; shift += STEP) {
+    const newStart = breachLeg.startMs + shift;
+    const newEnd = newStart + legDurMs;
+    const windowStart = newEnd - WINDOW_MS;
+
+    let totalMin = 0;
+    for (const leg of priorLegs) {
+      const os = Math.max(leg.startMs, windowStart);
+      const oe = Math.min(leg.endMs, newEnd);
+      if (oe > os) totalMin += (oe - os) / 60_000;
+    }
+    totalMin += breachLeg.durationMin;
+
+    if (totalMin < FLIGHT_TIME_RED_MIN) {
+      const d = new Date(newStart);
+      const hh = d.getUTCHours().toString().padStart(2, "0");
+      const mm = d.getUTCMinutes().toString().padStart(2, "0");
+      return `Slide ${route} to depart ${hh}${mm}Z or later`;
+    }
+  }
+
+  return `Consider removing or shortening ${route}`;
+}
+
 /** Get yesterday 0000Z to end of tomorrow 2359Z */
 function getThreeDayWindowMs(): { startMs: number; endMs: number } {
   const now = new Date();
@@ -384,6 +456,7 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
         source,
         depIso,
         arrIso,
+        flightType: f.flight_type,
       });
     }
 
@@ -411,8 +484,9 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
       const tomorrowUtcEnd = tomorrowUtcStart + 24 * 60 * 60 * 1000;
       const hasFlightsTomorrow = validLegs.some((l) => l.startMs >= tomorrowUtcStart && l.startMs < tomorrowUtcEnd);
       const breachLegKey = maxRolling24hrMin >= FLIGHT_TIME_YELLOW_MIN ? findBreachLeg(dutyPeriods) : null;
+      const suggestion = maxRolling24hrMin >= FLIGHT_TIME_YELLOW_MIN ? computeSuggestion(dutyPeriods, breachLegKey) : null;
 
-      result.push({ tail, dutyPeriods, restPeriods, maxRolling24hrMin, chartPoints, hasFlightsTomorrow, breachLegKey });
+      result.push({ tail, dutyPeriods, restPeriods, maxRolling24hrMin, chartPoints, hasFlightsTomorrow, breachLegKey, suggestion });
     }
 
     result.sort((a, b) => b.maxRolling24hrMin - a.maxRolling24hrMin);
@@ -598,7 +672,12 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
                               domain={["dataMin", "dataMax"]}
                               tickFormatter={(ms: number) => {
                                 const d = new Date(ms);
-                                return `${d.getUTCHours().toString().padStart(2, "0")}${d.getUTCMinutes().toString().padStart(2, "0")}`;
+                                const hh = d.getUTCHours().toString().padStart(2, "0");
+                                const mm = d.getUTCMinutes().toString().padStart(2, "0");
+                                if (hh === "00" && parseInt(mm) < 15) {
+                                  return `${d.getUTCDate()} ${d.toLocaleString("en-US", { month: "short", timeZone: "UTC" })}`;
+                                }
+                                return `${hh}${mm}`;
                               }}
                               tick={{ fontSize: 9, fill: "#9ca3af" }}
                               tickLine={false}
@@ -614,6 +693,26 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
                               tickFormatter={(v: number) => `${v}h`}
                             />
                             <ReferenceLine y={10} stroke="#22c55e" strokeWidth={1.5} strokeDasharray="4 3" label={{ value: "10h", position: "left", fontSize: 9, fill: "#22c55e" }} />
+                            {/* Midnight UTC reference lines */}
+                            {(() => {
+                              const pts = td.chartPoints;
+                              if (pts.length < 2) return null;
+                              const minMs = pts[0].timeMs;
+                              const maxMs = pts[pts.length - 1].timeMs;
+                              const lines: React.ReactNode[] = [];
+                              // Find first midnight at or after minMs
+                              let m = new Date(minMs);
+                              m = new Date(Date.UTC(m.getUTCFullYear(), m.getUTCMonth(), m.getUTCDate() + 1));
+                              while (m.getTime() < maxMs) {
+                                const ms = m.getTime();
+                                const lbl = `${m.getUTCDate()} ${m.toLocaleString("en-US", { month: "short", timeZone: "UTC" })}`;
+                                lines.push(
+                                  <ReferenceLine key={ms} x={ms} stroke="#d1d5db" strokeWidth={1} strokeDasharray="3 3" label={{ value: lbl, position: "top", fontSize: 8, fill: "#9ca3af" }} />
+                                );
+                                m = new Date(ms + 24 * 60 * 60 * 1000);
+                              }
+                              return lines;
+                            })()}
                             <Tooltip
                               formatter={(value) => [`${Number(value ?? 0).toFixed(1)}h`, "Flight Time"]}
                               labelFormatter={(label) => {
@@ -668,9 +767,17 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
                                     <span className={isBreach ? "text-red-400" : "text-gray-400"}>{fmtDuration(leg.durationMin)}</span>
                                   </span>
                                   <span className="text-[10px] text-gray-400 font-mono">{depTime}→{arrTime}Z</span>
+                                  {fmtFlightType(leg.flightType) && (
+                                    <span className={`px-1 py-0.5 text-[9px] font-bold rounded ${flightTypeBadgeClass(leg.flightType)}`}>{fmtFlightType(leg.flightType)}</span>
+                                  )}
                                   <span className={`px-1 py-0.5 text-[9px] font-medium rounded ${sourceBadgeClass(leg.source)}`}>{sourceLabel(leg.source)}</span>
                                   {isBreach && (
-                                    <span className="text-[10px] font-semibold text-red-600">10h limit (135.267)</span>
+                                    <span className="text-[10px] font-semibold text-red-600">10h limit</span>
+                                  )}
+                                  {isBreach && td.suggestion && (
+                                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-100 font-medium">
+                                      {td.suggestion}
+                                    </span>
                                   )}
                                 </div>
                               );
