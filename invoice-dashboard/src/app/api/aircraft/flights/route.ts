@@ -31,12 +31,15 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  // Return cache if fresh
-  if (cachedResult && Date.now() - cachedResult.ts < getCacheTtl()) {
+  // Return cache if fresh (unless ?refresh=true)
+  const forceRefresh = req.nextUrl.searchParams.get("refresh") === "true";
+  if (!forceRefresh && cachedResult && Date.now() - cachedResult.ts < getCacheTtl()) {
     return NextResponse.json({
       flights: cachedResult.data,
       count: cachedResult.data.length,
       cached: true,
+      cached_at: new Date(cachedResult.ts).toISOString(),
+      cache_age_s: Math.round((Date.now() - cachedResult.ts) / 1000),
     });
   }
 
@@ -69,6 +72,8 @@ export async function GET(req: NextRequest) {
       count: flights.length,
       total_tails: tails.length,
       cached: false,
+      cached_at: new Date(cachedResult!.ts).toISOString(),
+      cache_age_s: 0,
     });
   } catch (err) {
     return NextResponse.json({
