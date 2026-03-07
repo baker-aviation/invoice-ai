@@ -680,34 +680,6 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
 
         <span className="text-gray-300">|</span>
 
-        {/* Alerts toggle */}
-        <div className="flex rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm">
-          <button
-            type="button"
-            onClick={() => setShowAcknowledged(false)}
-            className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
-              !showAcknowledged
-                ? "bg-slate-800 text-white shadow-sm"
-                : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
-            }`}
-          >
-            Unacknowledged
-          </button>
-          <button
-            type="button"
-            onClick={() => setShowAcknowledged(true)}
-            className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
-              showAcknowledged
-                ? "bg-slate-800 text-white shadow-sm"
-                : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
-            }`}
-          >
-            All
-          </button>
-        </div>
-
-        <span className="text-gray-300">|</span>
-
         {/* Timezone toggle */}
         <button
           onClick={() => setUseUtc((v) => !v)}
@@ -934,15 +906,15 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
       <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
         <table className="w-full text-sm">
           <colgroup>
-            <col style={{ width: "7%" }} />   {/* Status */}
+            <col style={{ width: "9%" }} />   {/* Status */}
             <col style={{ width: "7%" }} />   {/* Tail */}
             <col style={{ width: "12%" }} />  {/* Route */}
-            <col style={{ width: "15%" }} />  {/* Departure */}
-            <col style={{ width: "15%" }} />  {/* Arrival */}
+            <col style={{ width: "14%" }} />  {/* Departure */}
+            <col style={{ width: "14%" }} />  {/* Arrival */}
             <col style={{ width: "8%" }} />   {/* Type */}
             <col style={{ width: "6%" }} />   {/* 10/24 */}
             <col style={{ width: "6%" }} />   {/* Rest */}
-            <col style={{ width: "5%" }} />   {/* Notes */}
+            <col style={{ width: "5%" }} />   {/* Alerts */}
           </colgroup>
           <thead>
             <tr className="bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -954,7 +926,35 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
               <th className="px-3 py-3">Type</th>
               <th className="px-3 py-3">10/24</th>
               <th className="px-3 py-3">Rest</th>
-              <th className="px-3 py-3">Notes</th>
+              <th className="px-3 py-3">
+                <div className="flex flex-col gap-0.5">
+                  <span>NOTAMs, PPRs & TFRs</span>
+                  <div className="flex rounded border border-gray-200 bg-white p-0.5 w-fit font-normal normal-case tracking-normal">
+                    <button
+                      type="button"
+                      onClick={() => setShowAcknowledged(false)}
+                      className={`px-1.5 py-0.5 text-[10px] font-medium rounded transition-colors ${
+                        !showAcknowledged
+                          ? "bg-slate-800 text-white"
+                          : "text-gray-500 hover:text-gray-900"
+                      }`}
+                    >
+                      Unack'd
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowAcknowledged(true)}
+                      className={`px-1.5 py-0.5 text-[10px] font-medium rounded transition-colors ${
+                        showAcknowledged
+                          ? "bg-slate-800 text-white"
+                          : "text-gray-500 hover:text-gray-900"
+                      }`}
+                    >
+                      All
+                    </button>
+                  </div>
+                </div>
+              </th>
             </tr>
           </thead>
           <tbody>
