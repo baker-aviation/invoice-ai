@@ -491,27 +491,25 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
     return result;
   }, [intervalsByTail]);
 
-  // Scroll to a specific tail card when requested — poll until element exists
+  // Scroll to a specific tail card when requested
+  // Wait for FA data to finish loading so card order is stable
   useEffect(() => {
-    if (!scrollToTail) return;
-    let attempts = 0;
-    const maxAttempts = 30; // 3 seconds max
-    const timer = setInterval(() => {
-      attempts++;
-      const el = document.getElementById(`duty-${scrollToTail}`);
-      if (el) {
-        clearInterval(timer);
-        el.scrollIntoView({ behavior: "smooth", block: "center" });
-        el.classList.add("ring-2", "ring-blue-400");
-        setTimeout(() => el.classList.remove("ring-2", "ring-blue-400"), 2500);
+    if (!scrollToTail || faLoading) return;
+    // FA data loaded — cards are in final order. Use rAF + small delay
+    // so React has flushed the DOM after the tailData recompute.
+    const raf = requestAnimationFrame(() => {
+      setTimeout(() => {
+        const el = document.getElementById(`duty-${scrollToTail}`);
+        if (el) {
+          el.scrollIntoView({ behavior: "smooth", block: "center" });
+          el.classList.add("ring-2", "ring-blue-400");
+          setTimeout(() => el.classList.remove("ring-2", "ring-blue-400"), 2500);
+        }
         onScrollComplete?.();
-      } else if (attempts >= maxAttempts) {
-        clearInterval(timer);
-        onScrollComplete?.();
-      }
-    }, 100);
-    return () => clearInterval(timer);
-  }, [scrollToTail, onScrollComplete]);
+      }, 50);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [scrollToTail, faLoading, onScrollComplete]);
 
   /* ── Render ────────────────────────────────────────── */
   return (
