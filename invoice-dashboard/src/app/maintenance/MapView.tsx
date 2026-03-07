@@ -213,7 +213,7 @@ function ToggleButton({ label, active, onClick }: { label: string; active: boole
 /* ── Tile layers ── */
 
 const LIGHT_TILES = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
-const DARK_TILES = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png";
+const DARK_TILES = "https://tiles.stadiamaps.com/tiles/alidade_smooth_dark/{z}/{x}/{y}.png";
 
 /* ── Radar overlay ── */
 
@@ -308,7 +308,7 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive,
         {darkMode ? (
           <TileLayer
             key="dark"
-            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>'
+            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://stadiamaps.com/">Stadia</a>'
             url={DARK_TILES}
           />
         ) : (
