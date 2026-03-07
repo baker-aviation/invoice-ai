@@ -43,7 +43,7 @@ export async function GET(req: NextRequest) {
   // Get tail numbers (same logic as positions route)
   const supa = createServiceClient();
   const now = new Date();
-  const past = new Date(now.getTime() - 12 * 60 * 60 * 1000).toISOString();
+  const past = new Date(now.getTime() - 48 * 60 * 60 * 1000).toISOString();
   const future = new Date(now.getTime() + 48 * 60 * 60 * 1000).toISOString();
 
   const { data: dbFlights } = await supa

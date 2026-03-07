@@ -13,7 +13,9 @@ export default async function OpsPage() {
   const userId = user?.id;
 
   let error: string | null = null;
-  const data = await fetchFlights({ lookahead_hours: 720, userId }).catch((e) => {
+  // lookback 48h so "Today" filter never loses earlier flights as the UTC day progresses,
+  // and duty tracking can see yesterday's legs for rolling-24hr calculations.
+  const data = await fetchFlights({ lookahead_hours: 720, lookback_hours: 48, userId }).catch((e) => {
     error = String(e);
     return { ok: false, flights: [] as any[], count: 0, error: null as string | null };
   });
