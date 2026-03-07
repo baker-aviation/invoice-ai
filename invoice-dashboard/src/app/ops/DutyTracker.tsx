@@ -330,7 +330,11 @@ function getThreeDayWindowMs(): { startMs: number; endMs: number } {
 
 /* ── Component ──────────────────────────────────────── */
 
-export default function DutyTracker({ flights }: { flights: Flight[] }) {
+export default function DutyTracker({ flights, scrollToTail, onScrollComplete }: {
+  flights: Flight[];
+  scrollToTail?: string | null;
+  onScrollComplete?: () => void;
+}) {
   const [faData, setFaData] = useState<FlightInfoMap[]>([]);
   const [faLoading, setFaLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
@@ -487,6 +491,23 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
     return result;
   }, [intervalsByTail]);
 
+  // Scroll to a specific tail card when requested
+  useEffect(() => {
+    if (!scrollToTail) return;
+    // Small delay to let the DOM render after tab switch
+    const timer = setTimeout(() => {
+      const el = document.getElementById(`duty-${scrollToTail}`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        // Brief highlight
+        el.classList.add("ring-2", "ring-blue-400");
+        setTimeout(() => el.classList.remove("ring-2", "ring-blue-400"), 2000);
+      }
+      onScrollComplete?.();
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [scrollToTail, onScrollComplete]);
+
   /* ── Render ────────────────────────────────────────── */
   return (
     <div className="space-y-6">
@@ -541,7 +562,7 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
             else if (isYellow) barColor = "bg-amber-500";
 
             return (
-              <div key={td.tail} className="rounded-xl border border-gray-200 bg-white overflow-hidden">
+              <div key={td.tail} id={`duty-${td.tail}`} className="rounded-xl border border-gray-200 bg-white overflow-hidden">
                 {/* ── Header: tail + rolling 24hr summary ── */}
                 <div className="flex items-start gap-4 px-4 py-3 border-b border-gray-100">
                   <div className="shrink-0">

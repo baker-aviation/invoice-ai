@@ -11,6 +11,12 @@ type Tab = (typeof TABS)[number];
 
 export default function OpsTabs({ flights, bakerPprAirports }: { flights: Flight[]; bakerPprAirports: string[] }) {
   const [tab, setTab] = useState<Tab>("Current Ops");
+  const [scrollToTail, setScrollToTail] = useState<string | null>(null);
+
+  function switchToDuty(tail?: string) {
+    setScrollToTail(tail ?? null);
+    setTab("Flight Time & Rest");
+  }
 
   return (
     <div className="px-6 py-4 space-y-4">
@@ -33,9 +39,9 @@ export default function OpsTabs({ flights, bakerPprAirports }: { flights: Flight
 
       {/* Tab content */}
       {tab === "Current Ops" ? (
-        <CurrentOps flights={flights} onSwitchToDuty={() => setTab("Flight Time & Rest")} />
+        <CurrentOps flights={flights} onSwitchToDuty={switchToDuty} />
       ) : tab === "Flight Time & Rest" ? (
-        <DutyTracker flights={flights} />
+        <DutyTracker flights={flights} scrollToTail={scrollToTail} onScrollComplete={() => setScrollToTail(null)} />
       ) : (
         <OpsBoard initialFlights={flights} bakerPprAirports={bakerPprAirports} />
       )}

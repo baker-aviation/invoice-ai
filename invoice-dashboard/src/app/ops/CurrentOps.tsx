@@ -235,7 +235,7 @@ const SEVERITY_COLORS: Record<string, string> = {
 
 /* ── component ──────────────────────────────────────── */
 
-export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Flight[]; onSwitchToDuty?: () => void }) {
+export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Flight[]; onSwitchToDuty?: (tail?: string) => void }) {
   const [adsbAircraft, setAdsbAircraft] = useState<AdsbAircraft[]>([]);
   const [flightInfo, setFlightInfo] = useState<Map<string, FlightInfoMap>>(new Map());
   const [visibleTypes, setVisibleTypes] = useState<Set<string>>(DEFAULT_TYPES);
@@ -668,7 +668,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                           {duty && (
                             <>
                               <button
-                                onClick={onSwitchToDuty}
+                                onClick={() => onSwitchToDuty?.(tail)}
                                 className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-mono font-medium rounded cursor-pointer hover:opacity-80 transition-opacity ${dutyColor(duty.flightTimeMin)}`}
                                 title="View detailed 10/24 breakdown"
                               >
@@ -680,7 +680,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                                 if (!rl) return null;
                                 return (
                                   <button
-                                    onClick={onSwitchToDuty}
+                                    onClick={() => onSwitchToDuty?.(tail)}
                                     className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-mono font-medium rounded cursor-pointer hover:opacity-80 transition-opacity ${LEVEL_COLORS[rl]}`}
                                     title="View detailed crew rest breakdown"
                                   >
@@ -954,7 +954,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                           const level = dutyLevel(duty.flightTimeMin);
                           return (
                             <button
-                              onClick={onSwitchToDuty}
+                              onClick={() => onSwitchToDuty?.(f.tail_number ?? undefined)}
                               className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-xs font-mono font-medium rounded cursor-pointer hover:opacity-80 transition-opacity ${LEVEL_COLORS[level]}`}
                               title="View detailed 10/24 breakdown"
                             >
@@ -972,7 +972,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                           if (!level) return <span className="text-xs text-gray-300">--</span>;
                           return (
                             <button
-                              onClick={onSwitchToDuty}
+                              onClick={() => onSwitchToDuty?.(f.tail_number ?? undefined)}
                               className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-xs font-mono font-medium rounded cursor-pointer hover:opacity-80 transition-opacity ${LEVEL_COLORS[level]}`}
                               title="View detailed crew rest breakdown"
                             >

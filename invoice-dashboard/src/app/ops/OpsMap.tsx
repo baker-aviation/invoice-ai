@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import L from "leaflet";
-import { MapContainer, TileLayer, Marker, Popup, Tooltip, Polyline, useMap } from "react-leaflet";
+import { MapContainer, TileLayer, Marker, Popup, Tooltip, Polyline } from "react-leaflet";
 import type { AdsbAircraft, FlightInfoMap } from "@/app/maintenance/MapView";
 
 /* ── Fleet type helpers ── */
@@ -159,70 +159,32 @@ function FlightTracks({ flightInfo, fleetLookup }: { flightInfo: Map<string, Fli
 
 /* ── Radar overlay ── */
 
-function RadarLayer({ visible }: { visible: boolean }) {
-  const map = useMap();
-  const layerRef = useRef<L.TileLayer | null>(null);
-  const [ready, setReady] = useState(false);
+function useRadarUrl(enabled: boolean): string | null {
+  const [url, setUrl] = useState<string | null>(null);
 
-  // Create the pane once on mount
   useEffect(() => {
-    if (!map.getPane("radarPane")) {
-      const pane = map.createPane("radarPane");
-      pane.style.zIndex = "350";
-      pane.style.pointerEvents = "none";
-    }
-    setReady(true);
-  }, [map]);
-
-  // Fetch radar timestamp and manage layer
-  useEffect(() => {
-    if (!ready) return;
-
-    // Remove existing
-    if (layerRef.current) {
-      map.removeLayer(layerRef.current);
-      layerRef.current = null;
-    }
-
-    if (!visible) return;
+    if (!enabled) { setUrl(null); return; }
 
     let cancelled = false;
-
-    async function addRadar() {
+    async function fetch_url() {
       try {
         const res = await fetch("https://api.rainviewer.com/public/weather-maps.json");
         if (!res.ok || cancelled) return;
         const data = await res.json();
         const past = data?.radar?.past;
-        if (!past?.length || cancelled) return;
-        const path = past[past.length - 1].path;
-
-        const layer = L.tileLayer(
-          `https://tilecache.rainviewer.com${path}/256/{z}/{x}/{y}/2/1_1.png`,
-          { opacity: 0.45, pane: "radarPane" }
-        );
-        if (cancelled) return;
-        layer.addTo(map);
-        layerRef.current = layer;
-      } catch {
-        // ignore
-      }
+        if (past?.length && !cancelled) {
+          const path = past[past.length - 1].path;
+          setUrl(`https://tilecache.rainviewer.com${path}/256/{z}/{x}/{y}/2/1_1.png`);
+        }
+      } catch { /* ignore */ }
     }
 
-    addRadar();
-    const interval = setInterval(addRadar, 5 * 60 * 1000);
+    fetch_url();
+    const interval = setInterval(fetch_url, 5 * 60 * 1000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [enabled]);
 
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-      if (layerRef.current) {
-        map.removeLayer(layerRef.current);
-        layerRef.current = null;
-      }
-    };
-  }, [visible, ready, map]);
-
-  return null;
+  return url;
 }
 
 /* ── Legend ── */
@@ -263,6 +225,7 @@ function MapLegend() {
 
 export default function OpsMap({ adsbAircraft, flightInfo }: Props) {
   const [showRadar, setShowRadar] = useState(false);
+  const radarUrl = useRadarUrl(showRadar);
 
   // Build fleet type lookup from FlightAware data
   const fleetLookup = new Map<string, string>();
@@ -301,8 +264,15 @@ export default function OpsMap({ adsbAircraft, flightInfo }: Props) {
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
 
-        {/* Radar overlay — imperatively managed */}
-        <RadarLayer visible={showRadar} />
+        {/* Radar overlay — simple TileLayer when URL is available */}
+        {radarUrl && (
+          <TileLayer
+            key={radarUrl}
+            url={radarUrl}
+            opacity={0.45}
+            zIndex={300}
+          />
+        )}
 
         {/* Route tracks for en-route flights */}
         <FlightTracks flightInfo={flightInfo} fleetLookup={fleetLookup} />
