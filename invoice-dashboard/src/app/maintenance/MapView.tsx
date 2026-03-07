@@ -305,12 +305,18 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive,
         scrollWheelZoom
       >
         <TileLayer
-          key={showRadar ? "dark" : "light"}
-          attribution={showRadar ? DARK_ATTR : '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'}
-          url={showRadar ? DARK_TILES : LIGHT_TILES}
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+          url={LIGHT_TILES}
         />
 
-        {/* Radar overlay */}
+        {/* Dark basemap overlay + radar */}
+        {showRadar && (
+          <TileLayer
+            url={DARK_TILES}
+            attribution={DARK_ATTR}
+            zIndex={100}
+          />
+        )}
         {radarUrl && (
           <TileLayer key={`radar-${radarUrl}`} url={radarUrl} opacity={0.6} zIndex={300} />
         )}
