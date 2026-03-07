@@ -6,6 +6,7 @@ import type { VanZone } from "@/lib/maintenanceData";
 import {
   computeZoneItems,
   greedySort,
+  buildItemFromFlight,
   fmtDriveTime,
   fmtUtcHM,
   fmtTimeUntil,
@@ -100,10 +101,14 @@ export default function VanDriverClient({
   vanId,
   zone,
   initialFlights,
+  publishedFlightIds,
+  publishedAt,
 }: {
   vanId: number;
   zone: VanZone;
   initialFlights: Flight[];
+  publishedFlightIds: string[] | null;
+  publishedAt: string | null;
 }) {
   const [flights, setFlights] = useState<Flight[]>(initialFlights);
   const [flightInfoMap, setFlightInfoMap] = useState<Map<string, FlightInfoEntry>>(new Map());
@@ -150,13 +155,13 @@ export default function VanDriverClient({
     setRefreshing(false);
   }, []);
 
-  // Auto-refresh every 2 minutes
+  // Auto-refresh every 5 minutes
   useEffect(() => {
     fetchFlightInfo();
     const interval = setInterval(() => {
       fetchFlightInfo();
       refreshFlights();
-    }, 120_000);
+    }, 300_000);
     return () => clearInterval(interval);
   }, [fetchFlightInfo, refreshFlights]);
 
@@ -172,9 +177,19 @@ export default function VanDriverClient({
   const date = todayEtDate();
 
   const stops = useMemo(() => {
+    if (publishedFlightIds && publishedFlightIds.length > 0) {
+      // Use Director's published schedule — preserve ordering
+      const items: VanFlightItem[] = [];
+      for (const fId of publishedFlightIds) {
+        const item = buildItemFromFlight(fId, flights, zone.lat, zone.lon);
+        if (item) items.push(item);
+      }
+      return items;
+    }
+    // Fallback: auto-compute
     const items = computeZoneItems(zone, flights, date, zone.lat, zone.lon);
     return greedySort(items, zone.lat, zone.lon);
-  }, [zone, flights, date]);
+  }, [zone, flights, date, publishedFlightIds]);
 
   const totalRouteKm = useMemo(() => routeDistKm(stops), [stops]);
 
@@ -217,6 +232,16 @@ export default function VanDriverClient({
           {refreshing ? "Refreshing..." : "Refresh"}
         </button>
       </div>
+
+      {/* Published schedule banner */}
+      {publishedAt && publishedFlightIds && publishedFlightIds.length > 0 && (
+        <div className="bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 rounded-xl px-4 py-2.5 mb-4 flex items-center gap-2">
+          <span className="w-1.5 h-1.5 rounded-full bg-blue-500 inline-block flex-shrink-0" />
+          <span className="text-sm text-blue-700 dark:text-blue-300 font-medium">
+            Schedule set by Director &middot; {new Date(publishedAt).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", timeZone: "America/New_York" })} ET
+          </span>
+        </div>
+      )}
 
       {/* Hero card — next stop */}
       {nextStopIdx >= 0 && stops[nextStopIdx] && (

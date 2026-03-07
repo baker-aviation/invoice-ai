@@ -273,6 +273,45 @@ export function greedySort(items: VanFlightItem[], startLat: number, startLon: n
   return result;
 }
 
+/**
+ * Build a VanFlightItem from a single flight (by ID), reusing the same logic
+ * as computeZoneItems. Used by the van driver page to reconstruct items from
+ * a published schedule's ordered flight IDs.
+ */
+export function buildItemFromFlight(
+  flightId: string,
+  allFlights: Flight[],
+  baseLat: number,
+  baseLon: number,
+): VanFlightItem | null {
+  const arr = allFlights.find((f) => f.id === flightId);
+  if (!arr || !arr.arrival_icao) return null;
+
+  const iata = arr.arrival_icao.replace(/^K/, "");
+  const info = getAirportInfo(iata);
+  const distKm = info ? Math.round(haversineKm(baseLat, baseLon, info.lat, info.lon)) : 0;
+
+  const nextDep =
+    allFlights
+      .filter(
+        (f) =>
+          f.tail_number === arr.tail_number &&
+          f.departure_icao === arr.arrival_icao &&
+          f.scheduled_departure > (arr.scheduled_arrival ?? ""),
+      )
+      .sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure))[0] ?? null;
+
+  return {
+    arrFlight: arr,
+    nextDep,
+    isRepo: isPositioningFlight(arr),
+    nextIsRepo: nextDep ? isPositioningFlight(nextDep) : false,
+    airport: iata,
+    airportInfo: info,
+    distKm,
+  };
+}
+
 /** Recalculate distKm for items relative to a van's base position. */
 export function recalcDist(items: VanFlightItem[], baseLat: number, baseLon: number): VanFlightItem[] {
   return items.map((item) => ({

@@ -5,6 +5,11 @@ import VanDriverClient from "./VanDriverClient";
 
 export const dynamic = "force-dynamic";
 
+/** Today's date in ET (YYYY-MM-DD). */
+function todayEtDate(): string {
+  return new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+}
+
 export default async function VanPage({ params }: { params: Promise<{ vanId: string }> }) {
   const { vanId: vanIdStr } = await params;
   const vanId = parseInt(vanIdStr, 10);
@@ -26,5 +31,25 @@ export default async function VanPage({ params }: { params: Promise<{ vanId: str
     .lte("scheduled_departure", future)
     .order("scheduled_departure", { ascending: true });
 
-  return <VanDriverClient vanId={vanId} zone={zone} initialFlights={flights ?? []} />;
+  // Check for a published schedule for this van today
+  const today = todayEtDate();
+  const { data: published } = await supa
+    .from("van_published_schedules")
+    .select("flight_ids, published_at")
+    .eq("van_id", vanId)
+    .eq("schedule_date", today)
+    .maybeSingle();
+
+  const publishedFlightIds = published?.flight_ids ?? null;
+  const publishedAt = published?.published_at ?? null;
+
+  return (
+    <VanDriverClient
+      vanId={vanId}
+      zone={zone}
+      initialFlights={flights ?? []}
+      publishedFlightIds={publishedFlightIds}
+      publishedAt={publishedAt}
+    />
+  );
 }
