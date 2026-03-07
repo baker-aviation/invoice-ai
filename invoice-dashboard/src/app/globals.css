@@ -47,3 +47,22 @@ body {
 .ops-tail-tooltip.leaflet-tooltip::before {
   display: none;
 }
+
+/* Dark map tiles (CSS invert) — used when radar overlay is active */
+.dark-tiles {
+  filter: invert(1) hue-rotate(180deg) brightness(0.9) contrast(1.1);
+}
+
+/* Van label tooltips */
+.van-label-tooltip.leaflet-tooltip {
+  background: rgba(255, 255, 255, 0.85);
+  border: none;
+  border-radius: 4px;
+  padding: 1px 5px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.van-label-tooltip.leaflet-tooltip::before {
+  display: none;
+}
