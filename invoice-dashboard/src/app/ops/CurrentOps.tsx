@@ -55,6 +55,19 @@ function getTimeRange(range: TimeRange): { start: Date; end: Date } {
   }
 }
 
+/** Map ICAO type codes to fleet display names */
+const FLEET_TYPE_LABELS: Record<string, string> = {
+  C750: "Citation X",
+  CL30: "Challenger 300",
+  CL35: "Challenger 350",
+};
+function getFleetType(icaoType: string | null | undefined): string {
+  if (!icaoType) return "Other";
+  return FLEET_TYPE_LABELS[icaoType] ?? "Other";
+}
+/** Group order: Challenger first, then Citation X, then Other */
+const FLEET_ORDER = ["Challenger 300", "Challenger 350", "Citation X", "Other"];
+
 const DUTY_FLIGHT_TYPES = new Set(["revenue", "owner", "positioning", "ferry", "charter"]);
 const MAX_LEG_DURATION_MIN = 12 * 60;
 const MIN_REST_GAP_MS = 6 * 60 * 60 * 1000;
@@ -286,20 +299,45 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
       .sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure));
   }, [flights, visibleTypes, timeRange]);
 
-  // Group filtered flights by tail for aircraft card view (follows time range filter)
-  const flightsByTail = useMemo(() => {
-    const map = new Map<string, Flight[]>();
+  // Build tail → fleet type lookup from FlightAware data
+  const tailFleetType = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const fi of flightInfo.values()) {
+      if (fi.tail && fi.aircraft_type && !map.has(fi.tail)) {
+        map.set(fi.tail, getFleetType(fi.aircraft_type));
+      }
+    }
+    return map;
+  }, [flightInfo]);
+
+  // Group filtered flights by fleet type → tail for aircraft card view
+  const flightsByFleetType = useMemo(() => {
+    // First group by tail
+    const byTail = new Map<string, Flight[]>();
     for (const f of filteredFlights) {
       const tail = f.tail_number || "Unassigned";
-      if (!map.has(tail)) map.set(tail, []);
-      map.get(tail)!.push(f);
+      if (!byTail.has(tail)) byTail.set(tail, []);
+      byTail.get(tail)!.push(f);
     }
-    // Sort legs within each tail
-    for (const legs of map.values()) {
+    for (const legs of byTail.values()) {
       legs.sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure));
     }
-    return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-  }, [filteredFlights]);
+    // Group tails by fleet type, sort tails alphabetically within each type
+    const groups = new Map<string, [string, Flight[]][]>();
+    for (const [tail, legs] of byTail) {
+      const fleetType = tailFleetType.get(tail) ?? "Other";
+      if (!groups.has(fleetType)) groups.set(fleetType, []);
+      groups.get(fleetType)!.push([tail, legs]);
+    }
+    for (const tails of groups.values()) {
+      tails.sort((a, b) => a[0].localeCompare(b[0]));
+    }
+    // Sort groups by FLEET_ORDER
+    return [...groups.entries()].sort(
+      (a, b) => (FLEET_ORDER.indexOf(a[0]) === -1 ? 99 : FLEET_ORDER.indexOf(a[0]))
+              - (FLEET_ORDER.indexOf(b[0]) === -1 ? 99 : FLEET_ORDER.indexOf(b[0]))
+    );
+  }, [filteredFlights, tailFleetType]);
 
   function toggleExpanded(flightId: string) {
     setExpandedFlights((prev) => {
@@ -479,7 +517,8 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
         </button>
 
         {/* View mode toggle */}
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">View:</span>
           <button
             onClick={() => setViewMode("table")}
             className={`px-3 py-1 text-xs font-medium rounded-full transition-all ${
@@ -535,115 +574,120 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
         </div>
       </div>
 
-      {/* ── Aircraft Card View ── */}
+      {/* ── Aircraft Card View — grouped by fleet type ── */}
       {viewMode === "aircraft" && (
-        <div>
-          <div className="text-xs text-gray-500 mb-2 font-medium">
-            {timeRange === "Today" ? "Today" : timeRange === "Tomorrow" ? "Tomorrow" : timeRange === "Week" ? "This Week" : "This Month"} — {flightsByTail.length} aircraft, {filteredFlights.length} legs
-          </div>
-          <div className="grid grid-cols-1 gap-4">
-            {flightsByTail.map(([tail, tailFlights]) => {
-              const duty = tailDuty.get(tail);
-              return (
-                <div key={tail} className="rounded-xl border border-gray-200 bg-white overflow-hidden">
-                  <div className="flex items-center justify-between px-4 py-2.5 bg-gray-50 border-b border-gray-200">
-                    <span className="font-mono font-bold text-gray-900">{tail}</span>
-                    <div className="flex items-center gap-2">
-                      {duty && (
-                        <>
-                          <span className={`px-1.5 py-0.5 text-[10px] font-mono font-medium rounded ${dutyColor(duty.flightTimeMin)}`} title="24hr flight time">
-                            {fmtHM(duty.flightTimeMin)}
-                          </span>
-                          {duty.restMin != null && (
-                            <span className={`px-1.5 py-0.5 text-[10px] font-mono font-medium rounded ${restColor(duty.restMin)}`} title="Crew rest">
-                              R:{fmtHM(duty.restMin)}
-                            </span>
-                          )}
-                        </>
-                      )}
-                    </div>
-                  </div>
-                  <div className="divide-y divide-gray-100">
-                    {tailFlights.map((f) => {
-                      const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
-                      const fi = f.tail_number ? (flightInfo.get(routeKey) ?? undefined) : undefined;
-                      const type = f.flight_type || "Other";
-                      const typeColor = FLIGHT_TYPE_COLORS[type] || "bg-gray-100 text-gray-700";
-
-                      let status = "Scheduled";
-                      let statusColor = "text-gray-500";
-                      const arrivalDate = f.scheduled_arrival ? new Date(f.scheduled_arrival) : null;
-                      const now = new Date();
-                      const arrivalPassed = arrivalDate && arrivalDate < now;
-                      if (fi?.status) {
-                        status = fi.status;
-                        if (fi.status.includes("En Route")) statusColor = "text-blue-600 font-medium";
-                        if (fi.status.includes("Arrived") || fi.status.includes("Landed")) statusColor = "text-green-600 font-medium";
-                      } else if (fi?.actual_arrival) {
-                        status = "Arrived";
-                        statusColor = "text-green-600 font-medium";
-                      } else if (arrivalPassed && !fi) {
-                        status = "Arrived";
-                        statusColor = "text-green-600 font-medium";
-                      }
-                      if (fi?.diverted) { status = "DIVERTED"; statusColor = "text-red-600 font-bold"; }
-
-                      const actualDepIso = fi?.actual_departure ?? null;
-                      const actualArrIso = fi?.actual_arrival ?? null;
-
-                      return (
-                        <div key={f.id} className="px-4 py-2 text-xs">
-                          <div className="flex items-center gap-3">
-                            <span className="font-mono font-medium text-gray-800 w-28 shrink-0">
-                              {f.departure_icao || "?"} → {f.arrival_icao || "?"}
-                            </span>
-                            <div className="w-36 shrink-0">
-                              <div className="text-gray-500">
-                                {fmt(f.scheduled_departure, f.departure_icao)}
-                              </div>
-                              {actualDepIso && (
-                                <div className={`text-[10px] font-medium ${delayColorClass(f.scheduled_departure, actualDepIso)}`}>
-                                  Actual: {fmt(actualDepIso, f.departure_icao)}
-                                </div>
-                              )}
-                            </div>
-                            <div className="w-36 shrink-0">
-                              <div className="text-gray-500">
-                                {fmt(f.scheduled_arrival, f.arrival_icao)}
-                              </div>
-                              {actualArrIso && f.scheduled_arrival ? (
-                                <div className={`text-[10px] font-medium ${delayColorClass(f.scheduled_arrival, actualArrIso)}`}>
-                                  Actual: {fmt(actualArrIso, f.arrival_icao)}
-                                </div>
-                              ) : fi?.arrival_time && !actualArrIso ? (
-                                <div className="text-[10px] text-blue-600 font-medium">
-                                  ETA: {fmt(fi.arrival_time, f.arrival_icao)}
-                                </div>
-                              ) : null}
-                            </div>
-                            <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded-full ${typeColor}`}>
-                              {type}
-                            </span>
-                            <span className={`text-xs ${statusColor}`}>{status}</span>
-                            {fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100 && (
-                              <div className="w-16 h-1.5 bg-gray-200 rounded-full overflow-hidden">
-                                <div className="h-full bg-blue-500 rounded-full" style={{ width: `${fi.progress_percent}%` }} />
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              );
-            })}
-            {flightsByTail.length === 0 && (
-              <div className="col-span-full text-center text-gray-400 py-8">
-                No flights scheduled
+        <div className="space-y-6">
+          {flightsByFleetType.map(([fleetType, tails]) => (
+            <div key={fleetType}>
+              <div className="flex items-center gap-2 mb-3">
+                <h3 className="text-sm font-bold text-gray-800">{fleetType}</h3>
+                <span className="text-xs text-gray-400">{tails.length} aircraft</span>
               </div>
-            )}
-          </div>
+              <div className="grid grid-cols-1 gap-4">
+                {tails.map(([tail, tailFlights]) => {
+                  const duty = tailDuty.get(tail);
+                  return (
+                    <div key={tail} className="rounded-xl border border-gray-200 bg-white overflow-hidden">
+                      <div className="flex items-center justify-between px-4 py-2.5 bg-gray-50 border-b border-gray-200">
+                        <span className="font-mono font-bold text-gray-900">{tail}</span>
+                        <div className="flex items-center gap-2">
+                          {duty && (
+                            <>
+                              <span className={`px-1.5 py-0.5 text-[10px] font-mono font-medium rounded ${dutyColor(duty.flightTimeMin)}`} title="24hr flight time">
+                                {fmtHM(duty.flightTimeMin)}
+                              </span>
+                              {duty.restMin != null && (
+                                <span className={`px-1.5 py-0.5 text-[10px] font-mono font-medium rounded ${restColor(duty.restMin)}`} title="Crew rest">
+                                  R:{fmtHM(duty.restMin)}
+                                </span>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      </div>
+                      <div className="divide-y divide-gray-100">
+                        {tailFlights.map((f) => {
+                          const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
+                          const fi = f.tail_number ? (flightInfo.get(routeKey) ?? undefined) : undefined;
+                          const type = f.flight_type || "Other";
+                          const typeColor = FLIGHT_TYPE_COLORS[type] || "bg-gray-100 text-gray-700";
+
+                          let status = "Scheduled";
+                          let statusColor = "text-gray-500";
+                          const arrivalDate = f.scheduled_arrival ? new Date(f.scheduled_arrival) : null;
+                          const now = new Date();
+                          const arrivalPassed = arrivalDate && arrivalDate < now;
+                          if (fi?.status) {
+                            status = fi.status;
+                            if (fi.status.includes("En Route")) statusColor = "text-blue-600 font-medium";
+                            if (fi.status.includes("Arrived") || fi.status.includes("Landed")) statusColor = "text-green-600 font-medium";
+                          } else if (fi?.actual_arrival) {
+                            status = "Arrived";
+                            statusColor = "text-green-600 font-medium";
+                          } else if (arrivalPassed && !fi) {
+                            status = "Arrived";
+                            statusColor = "text-green-600 font-medium";
+                          }
+                          if (fi?.diverted) { status = "DIVERTED"; statusColor = "text-red-600 font-bold"; }
+
+                          const actualDepIso = fi?.actual_departure ?? null;
+                          const actualArrIso = fi?.actual_arrival ?? null;
+
+                          return (
+                            <div key={f.id} className="px-4 py-2 text-xs">
+                              <div className="flex items-center gap-3">
+                                <span className="font-mono font-medium text-gray-800 w-28 shrink-0">
+                                  {f.departure_icao || "?"} → {f.arrival_icao || "?"}
+                                </span>
+                                <div className="w-36 shrink-0">
+                                  <div className="text-gray-500">
+                                    {fmt(f.scheduled_departure, f.departure_icao)}
+                                  </div>
+                                  {actualDepIso && (
+                                    <div className={`text-[10px] font-medium ${delayColorClass(f.scheduled_departure, actualDepIso)}`}>
+                                      Actual: {fmt(actualDepIso, f.departure_icao)}
+                                    </div>
+                                  )}
+                                </div>
+                                <div className="w-36 shrink-0">
+                                  <div className="text-gray-500">
+                                    {fmt(f.scheduled_arrival, f.arrival_icao)}
+                                  </div>
+                                  {actualArrIso && f.scheduled_arrival ? (
+                                    <div className={`text-[10px] font-medium ${delayColorClass(f.scheduled_arrival, actualArrIso)}`}>
+                                      Actual: {fmt(actualArrIso, f.arrival_icao)}
+                                    </div>
+                                  ) : fi?.arrival_time && !actualArrIso ? (
+                                    <div className="text-[10px] text-blue-600 font-medium">
+                                      ETA: {fmt(fi.arrival_time, f.arrival_icao)}
+                                    </div>
+                                  ) : null}
+                                </div>
+                                <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded-full ${typeColor}`}>
+                                  {type}
+                                </span>
+                                <span className={`text-xs ${statusColor}`}>{status}</span>
+                                {fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100 && (
+                                  <div className="w-16 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                                    <div className="h-full bg-blue-500 rounded-full" style={{ width: `${fi.progress_percent}%` }} />
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+          {flightsByFleetType.length === 0 && (
+            <div className="text-center text-gray-400 py-8">
+              No flights scheduled
+            </div>
+          )}
         </div>
       )}
 

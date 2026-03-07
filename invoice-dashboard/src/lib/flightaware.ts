@@ -102,6 +102,8 @@ export type FlightInfo = {
   // Flags
   diverted: boolean;
   cancelled: boolean;
+  // Aircraft
+  aircraft_type: string | null; // ICAO type code e.g. "C750", "CL30", "CL35"
   // Position (from FlightAware, for en-route flights)
   latitude: number | null;
   longitude: number | null;
@@ -317,6 +319,7 @@ function toFlightInfo(tail: string, f: FaFlight): FlightInfo {
     filed_altitude: f.filed_altitude,
     diverted: f.diverted,
     cancelled: f.cancelled,
+    aircraft_type: f.aircraft_type ?? null,
     latitude: f.last_position?.latitude ?? null,
     longitude: f.last_position?.longitude ?? null,
     altitude: f.last_position?.altitude ?? null,

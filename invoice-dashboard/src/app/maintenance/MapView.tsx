@@ -53,6 +53,7 @@ export type FlightInfoMap = {
   actual_arrival?: string | null;
   route_distance_nm: number | null;
   diverted: boolean;
+  aircraft_type?: string | null; // ICAO type code e.g. "C750", "CL30", "CL35"
   // Position (from FlightAware, for en-route flights)
   latitude?: number | null;
   longitude?: number | null;
