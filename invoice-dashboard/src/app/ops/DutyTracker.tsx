@@ -68,6 +68,7 @@ type TailData = {
   maxRolling24hrMin: number;
   chartPoints: ChartPoint[];
   hasFlightsTomorrow: boolean;
+  breachLegKey: string | null; // "dpIdx-legIdx" of the leg that pushes past 10h
 };
 
 type DelayAlert = {
@@ -183,7 +184,7 @@ function buildDP(legs: LegInterval[], num: number): DutyPeriod {
   const dutyOnMs = firstDep - LEAD_TIME_MIN * 60_000;
   const dutyOffMs = lastArr + POST_TIME_MIN * 60_000;
   return {
-    label: `DP ${num}`,
+    label: `DP ${num}`, // will be replaced after grouping by date
     dateLabel: fmtDateShort(firstDep),
     legs,
     dutyOnMs,
@@ -191,6 +192,25 @@ function buildDP(legs: LegInterval[], num: number): DutyPeriod {
     dutyMinutes: (dutyOffMs - dutyOnMs) / 60_000,
     flightMinutes: legs.reduce((s, l) => s + l.durationMin, 0),
   };
+}
+
+/** Relabel DPs: use date as label, add "- DP N" suffix when multiple DPs share a date */
+function relabelDPs(dps: DutyPeriod[]): void {
+  const countByDate = new Map<string, number>();
+  for (const dp of dps) {
+    countByDate.set(dp.dateLabel, (countByDate.get(dp.dateLabel) ?? 0) + 1);
+  }
+  const seenByDate = new Map<string, number>();
+  for (const dp of dps) {
+    const count = countByDate.get(dp.dateLabel) ?? 1;
+    if (count > 1) {
+      const idx = (seenByDate.get(dp.dateLabel) ?? 0) + 1;
+      seenByDate.set(dp.dateLabel, idx);
+      dp.label = `${dp.dateLabel} - DP ${idx}`;
+    } else {
+      dp.label = dp.dateLabel;
+    }
+  }
 }
 
 function buildRestPeriods(dps: DutyPeriod[]): RestPeriod[] {
@@ -201,6 +221,35 @@ function buildRestPeriods(dps: DutyPeriod[]): RestPeriod[] {
     rests.push({ startMs, stopMs, minutes: Math.max(0, (stopMs - startMs) / 60_000) });
   }
   return rests;
+}
+
+/** Find the leg that pushes the rolling 24hr total past 10h.
+ *  Returns "dpIdx-legIdx" key or null. */
+function findBreachLeg(dps: DutyPeriod[]): string | null {
+  const WINDOW_MS = 24 * 60 * 60 * 1000;
+  const allLegs: { dpIdx: number; legIdx: number; leg: LegInterval }[] = [];
+  for (let d = 0; d < dps.length; d++) {
+    for (let l = 0; l < dps[d].legs.length; l++) {
+      allLegs.push({ dpIdx: d, legIdx: l, leg: dps[d].legs[l] });
+    }
+  }
+  allLegs.sort((a, b) => a.leg.startMs - b.leg.startMs);
+
+  // For each leg, compute rolling 24hr total at that leg's end
+  for (let i = 0; i < allLegs.length; i++) {
+    const windowEnd = allLegs[i].leg.endMs;
+    const windowStart = windowEnd - WINDOW_MS;
+    let totalMin = 0;
+    for (let j = 0; j <= i; j++) {
+      const os = Math.max(allLegs[j].leg.startMs, windowStart);
+      const oe = Math.min(allLegs[j].leg.endMs, windowEnd);
+      if (oe > os) totalMin += (oe - os) / 60_000;
+    }
+    if (totalMin >= FLIGHT_TIME_YELLOW_MIN) {
+      return `${allLegs[i].dpIdx}-${allLegs[i].legIdx}`;
+    }
+  }
+  return null;
 }
 
 /** Get yesterday 0000Z to end of tomorrow 2359Z */
@@ -351,6 +400,7 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
     for (const [tail, legs] of intervalsByTail) {
       const validLegs = legs.filter((l) => l.durationMin > 0);
       const dutyPeriods = groupIntoDutyPeriods(validLegs);
+      relabelDPs(dutyPeriods);
       const restPeriods = buildRestPeriods(dutyPeriods);
       const maxRolling24hrMin = findMaxRolling24(validLegs);
       const chartPoints = buildRolling24Chart(validLegs);
@@ -360,8 +410,9 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
       const tomorrowUtcStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) + 24 * 60 * 60 * 1000;
       const tomorrowUtcEnd = tomorrowUtcStart + 24 * 60 * 60 * 1000;
       const hasFlightsTomorrow = validLegs.some((l) => l.startMs >= tomorrowUtcStart && l.startMs < tomorrowUtcEnd);
+      const breachLegKey = maxRolling24hrMin >= FLIGHT_TIME_YELLOW_MIN ? findBreachLeg(dutyPeriods) : null;
 
-      result.push({ tail, dutyPeriods, restPeriods, maxRolling24hrMin, chartPoints, hasFlightsTomorrow });
+      result.push({ tail, dutyPeriods, restPeriods, maxRolling24hrMin, chartPoints, hasFlightsTomorrow, breachLegKey });
     }
 
     result.sort((a, b) => b.maxRolling24hrMin - a.maxRolling24hrMin);
@@ -596,7 +647,6 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
                           {/* Duty period header */}
                           <div className="flex items-center gap-2 mb-1.5">
                             <span className="font-semibold text-gray-700">{dp.label}</span>
-                            <span className="text-[10px] text-gray-400">{dp.dateLabel}</span>
                             <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-500">
                               On: {fmtZulu(dp.dutyOnMs)} Off: {fmtZulu(dp.dutyOffMs)}
                             </span>
@@ -610,14 +660,18 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
                             {dp.legs.map((leg, legIdx) => {
                               const depTime = new Date(leg.depIso).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC" });
                               const arrTime = new Date(leg.arrIso).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC" });
+                              const isBreach = td.breachLegKey === `${dpIdx}-${legIdx}`;
                               return (
                                 <div key={legIdx} className="flex items-center gap-1.5 flex-wrap">
-                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] rounded font-mono font-medium bg-gray-100 text-gray-700">
+                                  <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-[11px] rounded font-mono font-medium ${isBreach ? "bg-red-50 text-red-700 ring-1 ring-red-200" : "bg-gray-100 text-gray-700"}`}>
                                     {leg.departure_icao ?? "?"}-{leg.arrival_icao ?? "?"}
-                                    <span className="text-gray-400">{fmtDuration(leg.durationMin)}</span>
+                                    <span className={isBreach ? "text-red-400" : "text-gray-400"}>{fmtDuration(leg.durationMin)}</span>
                                   </span>
                                   <span className="text-[10px] text-gray-400 font-mono">{depTime}→{arrTime}Z</span>
                                   <span className={`px-1 py-0.5 text-[9px] font-medium rounded ${sourceBadgeClass(leg.source)}`}>{sourceLabel(leg.source)}</span>
+                                  {isBreach && (
+                                    <span className="text-[10px] font-semibold text-red-600">10h limit (135.267)</span>
+                                  )}
                                 </div>
                               );
                             })}
