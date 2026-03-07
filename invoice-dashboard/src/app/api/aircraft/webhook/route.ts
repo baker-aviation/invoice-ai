@@ -82,5 +82,8 @@ export async function POST(req: NextRequest) {
   // Invalidate flights cache — next client poll will fetch fresh data
   invalidateCache();
 
+  // Process events immediately for real-time alerts (fire-and-forget)
+  import("@/lib/flightEvents").then(m => m.processFlightEvents()).catch(() => {});
+
   return NextResponse.json({ ok: true, event_code: eventCode });
 }

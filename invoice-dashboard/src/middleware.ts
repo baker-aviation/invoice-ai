@@ -96,11 +96,21 @@ export async function middleware(request: NextRequest) {
     const role = user.app_metadata?.role as string | undefined;
     const pathname = request.nextUrl.pathname;
 
-    // Pilot-only users can only access /pilot/* and /login
+    // Pilot-only users can only access /pilot/*, /van/*, and /login
     if (role === "pilot") {
-      if (!pathname.startsWith("/pilot") && !pathname.startsWith("/login") && !pathname.startsWith("/api/")) {
+      if (!pathname.startsWith("/pilot") && !pathname.startsWith("/van") && !pathname.startsWith("/login") && !pathname.startsWith("/api/")) {
         const url = request.nextUrl.clone();
         url.pathname = "/pilot";
+        return NextResponse.redirect(url);
+      }
+    }
+
+    // Van-only users can only access /van/* and /login
+    if (role === "van") {
+      if (!pathname.startsWith("/van") && !pathname.startsWith("/login") && !pathname.startsWith("/api/")) {
+        const vanIdMeta = user.app_metadata?.van_id ?? 1;
+        const url = request.nextUrl.clone();
+        url.pathname = `/van/${vanIdMeta}`;
         return NextResponse.redirect(url);
       }
     }

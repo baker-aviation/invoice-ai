@@ -496,6 +496,24 @@ type VanFlightItem = {
   distKm:     number;
 };
 
+type FlightInfoEntry = {
+  tail: string; ident: string; origin_icao: string | null; origin_name: string | null;
+  destination_icao: string | null; destination_name: string | null; status: string | null;
+  progress_percent: number | null; departure_time: string | null; arrival_time: string | null;
+  route_distance_nm: number | null; diverted: boolean;
+  latitude?: number | null; longitude?: number | null; altitude?: number | null;
+  groundspeed?: number | null; heading?: number | null;
+};
+
+/** Get the effective arrival time for a flight item, preferring FA ETA over scheduled. */
+function getEffectiveArrival(item: VanFlightItem, flightInfoMap: Map<string, FlightInfoEntry>): string {
+  const tail = item.arrFlight.tail_number;
+  if (!tail) return item.arrFlight.scheduled_arrival ?? "";
+  const fi = flightInfoMap.get(tail);
+  if (fi?.arrival_time) return fi.arrival_time;
+  return item.arrFlight.scheduled_arrival ?? "";
+}
+
 const MAX_ARRIVALS_PER_VAN = 4;
 
 // ---------------------------------------------------------------------------
@@ -701,6 +719,7 @@ function SlackShareModal({
   homeAirport,
   date,
   items,
+  flightInfoMap,
   onClose,
 }: {
   vanName: string;
@@ -708,6 +727,7 @@ function SlackShareModal({
   homeAirport: string;
   date: string;
   items: VanFlightItem[];
+  flightInfoMap: Map<string, FlightInfoEntry>;
   onClose: () => void;
 }) {
   const [state, setState] = useState<SlackShareState>("loading-channels");
@@ -745,17 +765,32 @@ function SlackShareModal({
         homeAirport,
         date,
         items: items.map((item) => {
+          const fi = flightInfoMap.get(item.arrFlight.tail_number ?? "");
           const arrMs = item.arrFlight.scheduled_arrival ? new Date(item.arrFlight.scheduled_arrival).getTime() : null;
           const gapMs = item.nextDep && arrMs
             ? new Date(item.nextDep.scheduled_departure).getTime() - arrMs : Infinity;
           const turnLabel = !item.nextDep || gapMs >= 6 * 3600000
             ? "Done for day"
             : gapMs < 2 * 3600000 ? "Quickturn" : undefined;
+          // Determine status from FA data when available
+          let slackStatus: string;
+          if (fi?.diverted) {
+            slackStatus = "DIVERTED";
+          } else if (fi?.status?.includes("Landed")) {
+            slackStatus = "Landed";
+          } else if (fi?.status?.includes("En Route")) {
+            const eta = fi.arrival_time ? fmtTimeUntil(fi.arrival_time) : "";
+            slackStatus = eta ? `En Route (ETA ${eta})` : "En Route";
+          } else if (item.arrFlight.scheduled_arrival && new Date(item.arrFlight.scheduled_arrival) < new Date()) {
+            slackStatus = "~Landed";
+          } else {
+            slackStatus = "Scheduled";
+          }
           return {
             tail: item.arrFlight.tail_number ?? "—",
             route: `${item.arrFlight.departure_icao?.replace(/^K/, "") ?? "?"} → ${item.airport}`,
             arrivalTime: item.arrFlight.scheduled_arrival ? fmtUtcHM(item.arrFlight.scheduled_arrival) : "—",
-            status: item.arrFlight.scheduled_arrival && new Date(item.arrFlight.scheduled_arrival) < new Date() ? "~Landed" : "Scheduled",
+            status: slackStatus,
             nextDep: item.nextDep ? `Flying again ${fmtUtcHM(item.nextDep.scheduled_departure)} → ${item.nextDep.arrival_icao?.replace(/^K/, "") ?? "?"}` : undefined,
             turnStatus: turnLabel,
             driveTime: item.distKm > 0 ? fmtDriveTime(item.distKm) : undefined,
@@ -864,6 +899,7 @@ function VanScheduleCard({
   samsaraVanName,
   isDropTarget,
   hasOverrides,
+  flightInfoMap,
   onDragStart,
   onDragOver,
   onDrop,
@@ -880,6 +916,7 @@ function VanScheduleCard({
   samsaraVanName?: string | null;
   isDropTarget: boolean;
   hasOverrides: boolean;
+  flightInfoMap: Map<string, FlightInfoEntry>;
   onDragStart: (e: React.DragEvent, flightId: string, fromVanId: number) => void;
   onDragOver: (e: React.DragEvent) => void;
   onDrop: (e: React.DragEvent, toVanId: number) => void;
@@ -910,6 +947,7 @@ function VanScheduleCard({
           homeAirport={zone.homeAirport}
           date={date}
           items={items}
+          flightInfoMap={flightInfoMap}
           onClose={() => setShowSlackModal(false)}
         />
       )}
@@ -980,8 +1018,16 @@ function VanScheduleCard({
           ) : (
             <div className="divide-y">
               {items.map(({ arrFlight, nextDep, isRepo, nextIsRepo, airport, airportInfo, distKm }) => {
+                const fi = flightInfoMap.get(arrFlight.tail_number ?? "");
                 const arrTime = arrFlight.scheduled_arrival ? new Date(arrFlight.scheduled_arrival) : null;
                 const hasLanded = arrTime !== null && arrTime < now;
+                // Compute delay from FA data
+                const faEtaMs = fi?.arrival_time ? new Date(fi.arrival_time).getTime() : null;
+                const schedMs = arrTime ? arrTime.getTime() : null;
+                const delayMs = (faEtaMs != null && schedMs != null) ? faEtaMs - schedMs : 0;
+                const delayMin = Math.round(delayMs / 60000);
+                const isEnRoute = fi?.status?.includes("En Route") ?? false;
+                const faLanded = fi?.status?.includes("Landed") ?? false;
                 const groundMs = nextDep && arrTime
                   ? new Date(nextDep.scheduled_departure).getTime() - arrTime.getTime()
                   : Infinity;
@@ -1040,7 +1086,7 @@ function VanScheduleCard({
                           <span className="text-xs font-semibold bg-orange-100 text-orange-700 rounded-full px-2 py-0.5">Maint</span>
                         )}
                       </div>
-                      {/* Right: times + status + remove */}
+                      {/* Right: times + status + countdown + remove */}
                       <div className="flex items-center gap-2 shrink-0">
                         <div className="text-right text-xs whitespace-nowrap">
                           {arrFlight.scheduled_departure && (
@@ -1049,10 +1095,38 @@ function VanScheduleCard({
                           {arrTime && (
                             <span className="text-gray-400">{" → "}<span className="font-medium text-gray-700">{fmtUtcHM(arrFlight.scheduled_arrival!)}</span></span>
                           )}
+                          {/* Landing countdown when en route with FA ETA */}
+                          {isEnRoute && fi?.arrival_time && !faLanded && (() => {
+                            const countdown = fmtTimeUntil(fi.arrival_time!);
+                            const etaColorClass = delayMin > 30 ? "text-red-600" : delayMin > 15 ? "text-amber-600" : delayMin < -5 ? "text-green-600" : "text-blue-600";
+                            return countdown ? (
+                              <span className={`ml-1 font-medium ${etaColorClass}`}>
+                                Landing {countdown}
+                              </span>
+                            ) : null;
+                          })()}
                         </div>
-                        <span className={`text-xs font-semibold rounded-full px-2 py-0.5 ${hasLanded ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-600"}`}>
-                          {hasLanded ? "~Landed" : "Scheduled"}
-                        </span>
+                        {/* FA-powered status badge */}
+                        {fi?.diverted ? (
+                          <span className="text-xs font-semibold rounded-full px-2 py-0.5 bg-red-100 text-red-700">DIVERTED</span>
+                        ) : faLanded ? (
+                          <span className="text-xs font-semibold rounded-full px-2 py-0.5 bg-green-100 text-green-700">Landed</span>
+                        ) : isEnRoute ? (
+                          <span className="text-xs font-semibold rounded-full px-2 py-0.5 bg-blue-100 text-blue-700">
+                            En Route{fi?.progress_percent != null ? ` ${fi.progress_percent}%` : ""}
+                          </span>
+                        ) : (
+                          <span className={`text-xs font-semibold rounded-full px-2 py-0.5 ${hasLanded ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-600"}`}>
+                            {hasLanded ? "~Landed" : "Scheduled"}
+                          </span>
+                        )}
+                        {/* Delay alert badges (diversion already shown in status badge above) */}
+                        {!fi?.diverted && delayMin > 30 && (
+                          <span className="text-xs font-semibold rounded-full px-2 py-0.5 bg-red-100 text-red-700">Delayed ~{delayMin}m</span>
+                        )}
+                        {!fi?.diverted && delayMin > 15 && delayMin <= 30 && (
+                          <span className="text-xs font-semibold rounded-full px-2 py-0.5 bg-amber-100 text-amber-700">Delayed ~{delayMin}m</span>
+                        )}
                         <button
                           onClick={(e) => { e.stopPropagation(); onRemove(arrFlight.id); }}
                           className="p-1 rounded-md text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors"
@@ -1064,9 +1138,15 @@ function VanScheduleCard({
                         </button>
                       </div>
                     </div>
-                    {/* Sub-info line: airport city + drive time + flying again */}
+                    {/* Sub-info line: airport city + drive time + FA ETA + flying again */}
                     <div className="ml-8 mt-0.5 flex items-center gap-2 text-xs text-gray-400 flex-wrap">
-                      <span>{airport}{airportInfo ? ` · ${airportInfo.city}, ${airportInfo.state}` : ""} · {fmtDriveTime(distKm)}</span>
+                      <span>
+                        {airport}{airportInfo ? ` · ${airportInfo.city}, ${airportInfo.state}` : ""} · {fmtDriveTime(distKm)}
+                        {isEnRoute && fi?.arrival_time && !faLanded && (() => {
+                          const etaStr = fmtTimeUntil(fi.arrival_time!);
+                          return etaStr ? ` · ETA ${etaStr}` : "";
+                        })()}
+                      </span>
                       {nextDep && (
                         <>
                           <span className="text-gray-300">|</span>
@@ -1133,12 +1213,14 @@ function ScheduleTab({
   liveVanPositions,
   liveVanAddresses,
   vanZoneNames,
+  flightInfoMap,
 }: {
   allFlights: Flight[];
   date: string;
   liveVanPositions: Map<number, { lat: number; lon: number }>;
   liveVanAddresses: Map<number, string | null>;
   vanZoneNames: Map<number, string>;
+  flightInfoMap: Map<string, FlightInfoEntry>;
 }) {
   const hasLive = liveVanPositions.size > 0;
 
@@ -1236,17 +1318,32 @@ function ScheduleTab({
       }
     }
 
-    // Recalculate distances + greedy sort for each van
+    // Recalculate distances + greedy sort for each van, then re-sort by FA ETA
     for (const zone of FIXED_VAN_ZONES) {
       const items = result.get(zone.vanId) ?? [];
       const baseLat = liveVanPositions.get(zone.vanId)?.lat ?? zone.lat;
       const baseLon = liveVanPositions.get(zone.vanId)?.lon ?? zone.lon;
-      const sorted = greedySort(recalcDist(items, baseLat, baseLon), baseLat, baseLon);
+      let sorted = greedySort(recalcDist(items, baseLat, baseLon), baseLat, baseLon);
+      // If any items have FA ETAs, re-sort by effective arrival time
+      // so the van visits airports in order of actual aircraft arrival
+      if (flightInfoMap.size > 0) {
+        const hasAnyFaEta = sorted.some((item) => {
+          const tail = item.arrFlight.tail_number;
+          return tail ? flightInfoMap.get(tail)?.arrival_time != null : false;
+        });
+        if (hasAnyFaEta) {
+          sorted = sorted.sort((a, b) => {
+            const etaA = getEffectiveArrival(a, flightInfoMap);
+            const etaB = getEffectiveArrival(b, flightInfoMap);
+            return etaA.localeCompare(etaB);
+          });
+        }
+      }
       result.set(zone.vanId, sorted);
     }
 
     return result;
-  }, [baseItemsByVan, overrides, removals, liveVanPositions, allDayArrivals]);
+  }, [baseItemsByVan, overrides, removals, liveVanPositions, allDayArrivals, flightInfoMap]);
 
   // Uncovered aircraft: arrivals today not assigned to any van
   const uncoveredItems = useMemo(() => {
@@ -1555,6 +1652,7 @@ function ScheduleTab({
               samsaraVanName={vanZoneNames.get(zone.vanId)}
               isDropTarget={dropTargetVan === zone.vanId}
               hasOverrides={editedVans.has(zone.vanId)}
+              flightInfoMap={flightInfoMap}
               onDragStart={handleDragStart}
               onDragOver={handleDragOver}
               onDrop={handleDrop}
@@ -2038,14 +2136,7 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
   }, []);
 
   // ── FlightAware flight info (ETA, route, origin/destination, positions) ──
-  type FlightInfoEntry = {
-    tail: string; ident: string; origin_icao: string | null; origin_name: string | null;
-    destination_icao: string | null; destination_name: string | null; status: string | null;
-    progress_percent: number | null; departure_time: string | null; arrival_time: string | null;
-    route_distance_nm: number | null; diverted: boolean;
-    latitude?: number | null; longitude?: number | null; altitude?: number | null;
-    groundspeed?: number | null; heading?: number | null;
-  };
+  // FlightInfoEntry type is defined at module level
   const [flightInfoMap, setFlightInfoMap] = useState<Map<string, FlightInfoEntry>>(new Map());
   const [faAircraft, setFaAircraft] = useState<AircraftPosition[]>([]);
 
@@ -2335,7 +2426,7 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
 
       {/* ── Schedule tab ── */}
       {activeTab === "schedule" && (
-        <ScheduleTab allFlights={activeFlights} date={selectedDate} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} />
+        <ScheduleTab allFlights={activeFlights} date={selectedDate} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} flightInfoMap={flightInfoMap} />
       )}
 
       {/* ── Flight Schedule tab — grouped by aircraft ── */}
