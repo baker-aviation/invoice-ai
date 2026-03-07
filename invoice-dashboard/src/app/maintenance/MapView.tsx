@@ -11,7 +11,7 @@
 
 import { useState, useEffect } from "react";
 import L from "leaflet";
-import { MapContainer, TileLayer, Circle, Marker, Popup, Tooltip, useMap } from "react-leaflet";
+import { MapContainer, TileLayer, Circle, Marker, Popup, Tooltip, Polyline, useMap } from "react-leaflet";
 import type { VanAssignment } from "@/lib/maintenanceData";
 
 // 3-hour driving radius: ~300 km at highway speed
@@ -214,6 +214,15 @@ function ToggleButton({ label, active, onClick }: { label: string; active: boole
 
 const LIGHT_TILES = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
 
+/** Tells Leaflet to recalculate size when fullscreen toggles */
+function MapResizer({ fullscreen }: { fullscreen: boolean }) {
+  const map = useMap();
+  useEffect(() => {
+    setTimeout(() => map.invalidateSize(), 100);
+  }, [fullscreen, map]);
+  return null;
+}
+
 /** Applies CSS invert filter directly to Leaflet's tile pane element */
 function DarkModeFilter({ enabled }: { enabled: boolean }) {
   const map = useMap();
@@ -226,6 +235,65 @@ function DarkModeFilter({ enabled }: { enabled: boolean }) {
     }
   }, [enabled, map]);
   return null;
+}
+
+/* ── Flight tracks for en-route aircraft ── */
+
+function FlightTracks({ flightInfo, fleetLookup }: { flightInfo: Map<string, FlightInfoMap>; fleetLookup: Map<string, string> }) {
+  const [tracks, setTracks] = useState<Map<string, [number, number][]>>(new Map());
+
+  useEffect(() => {
+    const enRoute: FlightInfoMap[] = [];
+    const seen = new Set<string>();
+    for (const fi of flightInfo.values()) {
+      if (fi.latitude != null && fi.longitude != null && !seen.has(fi.tail)) {
+        seen.add(fi.tail);
+        enRoute.push(fi);
+      }
+    }
+    if (enRoute.length === 0) { setTracks(new Map()); return; }
+
+    const controller = new AbortController();
+    (async () => {
+      const newTracks = new Map<string, [number, number][]>();
+      for (const fi of enRoute) {
+        if (!fi.fa_flight_id) continue;
+        try {
+          const res = await fetch(`/api/aircraft/track/${encodeURIComponent(fi.fa_flight_id)}`, {
+            signal: controller.signal, cache: "no-store",
+          });
+          if (res.ok) {
+            const data = await res.json();
+            const positions: [number, number][] = (data.positions ?? [])
+              .filter((p: { latitude: number; longitude: number }) => p.latitude && p.longitude)
+              .map((p: { latitude: number; longitude: number }) => [p.latitude, p.longitude] as [number, number]);
+            if (positions.length > 1) newTracks.set(fi.tail, positions);
+          }
+        } catch { /* ignore */ }
+      }
+      if (!controller.signal.aborted) setTracks(newTracks);
+    })();
+    return () => controller.abort();
+  }, [flightInfo]);
+
+  function trackColor(tail: string): string {
+    const fleet = fleetLookup.get(tail);
+    if (fleet === "Challenger 300" || fleet === "Challenger 350") return "#dc2626";
+    if (fleet === "Citation X") return "#1d4ed8";
+    return "#6b7280";
+  }
+
+  return (
+    <>
+      {Array.from(tracks.entries()).map(([tail, positions]) => (
+        <Polyline
+          key={`track-${tail}`}
+          positions={positions}
+          pathOptions={{ color: trackColor(tail), weight: 2, opacity: 0.5, dashArray: "4 6" }}
+        />
+      ))}
+    </>
+  );
 }
 
 /* ── Radar overlay ── */
@@ -266,6 +334,7 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive,
   const [showVans, setShowVans] = useState(true);
   const [darkMode, setDarkMode] = useState(false);
   const [showRadar, setShowRadar] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const radarUrl = useRadarUrl(showRadar);
 
   // Build fleet type lookup from FlightAware data
@@ -300,7 +369,7 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive,
   const enRouteTails = new Set((aircraftPositions ?? []).map((a) => a.tail));
 
   return (
-    <div className="relative">
+    <div className={`relative ${isFullscreen ? "fixed inset-0 z-[9999] bg-white" : ""}`}>
       {/* Toggle controls */}
       <div className="absolute top-2 right-2 z-[1000] flex gap-1.5">
         <ToggleButton label="Labels" active={showLabels} onClick={() => setShowLabels((v) => !v)} />
@@ -308,6 +377,7 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive,
         <ToggleButton label="Vans" active={showVans} onClick={() => setShowVans((v) => !v)} />
         <ToggleButton label={darkMode ? "Dark" : "Light"} active={darkMode} onClick={() => setDarkMode((v) => !v)} />
         <ToggleButton label={showRadar ? "Radar ON" : "Radar"} active={showRadar} onClick={() => setShowRadar((v) => !v)} />
+        <ToggleButton label={isFullscreen ? "Exit ⛶" : "⛶"} active={isFullscreen} onClick={() => setIsFullscreen((v) => !v)} />
       </div>
 
       <MapLegend />
@@ -315,7 +385,7 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive,
       <MapContainer
         center={[37.5, -96]}
         zoom={4}
-        style={{ height: "520px", width: "100%" }}
+        style={{ height: isFullscreen ? "100vh" : "520px", width: "100%" }}
         scrollWheelZoom
       >
         <TileLayer
@@ -323,11 +393,15 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive,
           url={LIGHT_TILES}
         />
         <DarkModeFilter enabled={darkMode} />
+        <MapResizer fullscreen={isFullscreen} />
 
         {/* Radar overlay */}
         {radarUrl && (
           <TileLayer key={`radar-${radarUrl}`} url={radarUrl} opacity={0.65} zIndex={300} />
         )}
+
+        {/* Flight tracks for en-route aircraft */}
+        {flightInfo && <FlightTracks flightInfo={flightInfo} fleetLookup={fleetLookup} />}
 
         {/* Range rings — subtle dashed lines */}
         {showRings && vans.map((van) => {

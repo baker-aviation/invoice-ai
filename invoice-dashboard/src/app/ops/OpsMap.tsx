@@ -243,9 +243,34 @@ function MapLegend() {
 
 /* ── Main map component ── */
 
+/** Tells Leaflet to recalculate size when fullscreen toggles */
+function MapResizer({ fullscreen }: { fullscreen: boolean }) {
+  const map = useMap();
+  useEffect(() => {
+    setTimeout(() => map.invalidateSize(), 100);
+  }, [fullscreen, map]);
+  return null;
+}
+
+function ToggleBtn({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+        active
+          ? "bg-blue-600 text-white"
+          : "bg-white text-gray-600 border border-gray-300 hover:bg-gray-50"
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
+
 export default function OpsMap({ aircraft, flightInfo }: Props) {
   const [darkMode, setDarkMode] = useState(false);
   const [showRadar, setShowRadar] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const radarUrl = useRadarUrl(showRadar);
 
   // Build fleet type lookup from FlightAware data
@@ -260,28 +285,11 @@ export default function OpsMap({ aircraft, flightInfo }: Props) {
   }
 
   return (
-    <div className="relative">
+    <div className={`relative ${isFullscreen ? "fixed inset-0 z-[9999] bg-white" : ""}`}>
       <div className="absolute top-2 right-2 z-[1000] flex gap-1.5">
-        <button
-          onClick={() => setDarkMode((v) => !v)}
-          className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
-            darkMode
-              ? "bg-blue-600 text-white"
-              : "bg-white text-gray-600 border border-gray-300 hover:bg-gray-50"
-          }`}
-        >
-          {darkMode ? "Dark" : "Light"}
-        </button>
-        <button
-          onClick={() => setShowRadar((v) => !v)}
-          className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
-            showRadar
-              ? "bg-blue-600 text-white"
-              : "bg-white text-gray-600 border border-gray-300 hover:bg-gray-50"
-          }`}
-        >
-          {showRadar ? "Radar ON" : "Radar"}
-        </button>
+        <ToggleBtn label={darkMode ? "Dark" : "Light"} active={darkMode} onClick={() => setDarkMode((v) => !v)} />
+        <ToggleBtn label={showRadar ? "Radar ON" : "Radar"} active={showRadar} onClick={() => setShowRadar((v) => !v)} />
+        <ToggleBtn label={isFullscreen ? "Exit ⛶" : "⛶"} active={isFullscreen} onClick={() => setIsFullscreen((v) => !v)} />
       </div>
 
       <MapLegend />
@@ -289,7 +297,7 @@ export default function OpsMap({ aircraft, flightInfo }: Props) {
       <MapContainer
         center={[37.5, -96]}
         zoom={4}
-        style={{ height: "500px", width: "100%" }}
+        style={{ height: isFullscreen ? "100vh" : "500px", width: "100%" }}
         scrollWheelZoom
       >
         <TileLayer
@@ -297,6 +305,7 @@ export default function OpsMap({ aircraft, flightInfo }: Props) {
           url={LIGHT_TILES}
         />
         <DarkModeFilter enabled={darkMode} />
+        <MapResizer fullscreen={isFullscreen} />
 
         {/* Radar overlay */}
         {radarUrl && (
