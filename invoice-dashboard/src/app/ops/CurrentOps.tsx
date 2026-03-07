@@ -78,13 +78,27 @@ type TailDutySummary = {
   restMin: number | null;
 };
 
-/** Compute per-tail 24hr flight time and crew rest from flights + FA data */
+/** Compute per-tail 24hr flight time and crew rest from flights + FA data.
+ *  Uses same 3-day window (yesterday→end of tomorrow) and FA matching as DutyTracker. */
 function computeTailDuty(
   flights: Flight[],
   faMap: Map<string, FlightInfoMap>,
 ): Map<string, TailDutySummary> {
   const nowMs = Date.now();
   const WINDOW_MS = 24 * 60 * 60 * 1000;
+
+  // 3-day window: yesterday 0000Z → end of tomorrow 2359Z (matches DutyTracker)
+  const todayUtc = Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate());
+  const windowStart = todayUtc - WINDOW_MS;
+  const windowEnd = todayUtc + 2 * WINDOW_MS;
+
+  // Group FA data by tail for better matching
+  const faByTail = new Map<string, FlightInfoMap[]>();
+  for (const fi of faMap.values()) {
+    if (!fi.tail) continue;
+    if (!faByTail.has(fi.tail)) faByTail.set(fi.tail, []);
+    faByTail.get(fi.tail)!.push(fi);
+  }
 
   // Build intervals per tail (only duty-relevant flight types)
   const tailIntervals = new Map<string, { startMs: number; endMs: number }[]>();
@@ -93,8 +107,25 @@ function computeTailDuty(
     const ft = (f.flight_type ?? "").toLowerCase();
     if (ft && !DUTY_FLIGHT_TYPES.has(ft)) continue;
 
-    const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
-    const fi = faMap.get(routeKey);
+    // Match FA data: prefer exact route match, fall back to closest departure time
+    const tailFaFlights = faByTail.get(f.tail_number) ?? [];
+    let fi: FlightInfoMap | undefined;
+    fi = tailFaFlights.find(
+      (fa) => fa.origin_icao === f.departure_icao && fa.destination_icao === f.arrival_icao,
+    );
+    if (!fi && tailFaFlights.length > 0) {
+      const schedMs = new Date(f.scheduled_departure).getTime();
+      let bestDiff = Infinity;
+      for (const fa of tailFaFlights) {
+        const faDep = fa.departure_time ?? fa.actual_departure;
+        if (!faDep) continue;
+        const diff = Math.abs(new Date(faDep).getTime() - schedMs);
+        if (diff < bestDiff && diff < 2 * 60 * 60 * 1000) {
+          bestDiff = diff;
+          fi = fa;
+        }
+      }
+    }
 
     const actualDep = fi?.actual_departure ?? null;
     const actualArr = fi?.actual_arrival ?? null;
@@ -118,6 +149,9 @@ function computeTailDuty(
     endMs = depMs + durMin * 60_000;
     if (durMin <= 0) continue;
 
+    // Filter: only include legs within the 3-day window
+    if (endMs < windowStart || depMs > windowEnd) continue;
+
     if (!tailIntervals.has(f.tail_number)) tailIntervals.set(f.tail_number, []);
     tailIntervals.get(f.tail_number)!.push({ startMs: depMs, endMs });
   }
@@ -137,12 +171,12 @@ function computeTailDuty(
     }
 
     let maxMs = 0;
-    for (const windowEnd of checkPoints) {
-      const windowStart = windowEnd - WINDOW_MS;
+    for (const wp of checkPoints) {
+      const ws = wp - WINDOW_MS;
       let totalMs = 0;
       for (const leg of intervals) {
-        const os = Math.max(leg.startMs, windowStart);
-        const oe = Math.min(leg.endMs, windowEnd);
+        const os = Math.max(leg.startMs, ws);
+        const oe = Math.min(leg.endMs, wp);
         if (oe > os) totalMs += oe - os;
       }
       if (totalMs > maxMs) maxMs = totalMs;
@@ -158,7 +192,6 @@ function computeTailDuty(
         break;
       }
     }
-    // Fallback
     if (restMin == null) {
       const pastLegs = intervals.filter((l) => l.endMs <= nowMs);
       const futureLeg = intervals.find((l) => l.startMs > nowMs);
