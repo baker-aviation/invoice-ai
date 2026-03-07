@@ -3,18 +3,15 @@
 /**
  * MapView — Van Positioning map.
  *
- * Aircraft use the same SVG icon style + fleet colors as OpsMap.
- * Van markers use a simple van silhouette (no colored circle).
- * Range rings are subtle dashed lines.
- * Toggle controls for labels, range rings, and vans to reduce clutter.
+ * FlightAware-inspired styling: clean data labels with text shadows,
+ * no white tooltip boxes, professional aviation aesthetic.
  */
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import L from "leaflet";
 import { MapContainer, TileLayer, Circle, Marker, Popup, Tooltip, Polyline, useMap } from "react-leaflet";
 import type { VanAssignment } from "@/lib/maintenanceData";
 
-// 3-hour driving radius: ~300 km at highway speed
 const THREE_HOUR_RADIUS_M = 300_000;
 
 type LivePos = { lat: number; lon: number };
@@ -68,78 +65,89 @@ type Props = {
   flightInfo?: Map<string, FlightInfoMap>;
 };
 
-/* ── Fleet type helpers (same as OpsMap) ── */
+/* ── Fleet type helpers ── */
 
 const CHALLENGER_TYPES = new Set(["CL30", "CL35"]);
 const CITATION_TYPES = new Set(["C750"]);
 
-function getAircraftColors(ac: AircraftPosition, fleetLookup: Map<string, string>): { icon: string; label: string } {
-  const fleet = fleetLookup.get(ac.tail);
+function getFleetName(fleetLookup: Map<string, string>, tail: string): string | undefined {
+  return fleetLookup.get(tail);
+}
+
+function getAcColor(fleetLookup: Map<string, string>, tail: string, onGround: boolean): string {
+  const fleet = getFleetName(fleetLookup, tail);
   if (fleet === "Challenger 300" || fleet === "Challenger 350") {
-    return ac.on_ground
-      ? { icon: "#f87171", label: "#ef4444" }
-      : { icon: "#991b1b", label: "#dc2626" };
+    return onGround ? "#f87171" : "#eab308"; // ground: light red, flight: golden yellow (FA style)
   }
   if (fleet === "Citation X") {
-    return ac.on_ground
-      ? { icon: "#60a5fa", label: "#3b82f6" }
-      : { icon: "#1e3a8a", label: "#1d4ed8" };
+    return onGround ? "#60a5fa" : "#22d3ee"; // ground: light blue, flight: cyan
   }
-  return ac.on_ground
-    ? { icon: "#a3a3a3", label: "#737373" }
-    : { icon: "#404040", label: "#525252" };
+  return onGround ? "#a3a3a3" : "#d4d4d4"; // gray
 }
 
-// Airplane SVG path pointing UP (same as OpsMap)
+// Airplane SVG path pointing UP
 const PLANE_PATH = "M16 1.5l-1.2 7.5-7.3 2.5 1 2 5.5-1 -1 8-3 2v2l4.5-1.5L16 24.5l1.5-1.5 4.5 1.5v-2l-3-2-1-8 5.5 1 1-2-7.3-2.5z";
 
-function acDivIcon(ac: AircraftPosition, fleetLookup: Map<string, string>): L.DivIcon {
-  const rotation = ac.track != null ? ac.track : 0;
-  const colors = getAircraftColors(ac, fleetLookup);
-  const size = ac.on_ground ? 22 : 28; // larger than OpsMap per boss request
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="${size}" height="${size}" fill="${colors.icon}" style="transform:rotate(${rotation}deg);filter:drop-shadow(0 1px 2px rgba(0,0,0,0.45))"><path d="${PLANE_PATH}"/></svg>`;
+function acDivIcon(track: number | null, color: string, onGround: boolean): L.DivIcon {
+  const rotation = track != null ? track : 0;
+  const size = onGround ? 20 : 26;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="${size}" height="${size}" fill="${color}" style="transform:rotate(${rotation}deg);filter:drop-shadow(0 1px 3px rgba(0,0,0,0.7))"><path d="${PLANE_PATH}"/></svg>`;
   const half = size / 2;
-  return L.divIcon({
-    html: svg,
-    className: "",
-    iconSize: [size, size],
-    iconAnchor: [half, half],
-    popupAnchor: [0, -half],
-  });
+  return L.divIcon({ html: svg, className: "", iconSize: [size, size], iconAnchor: [half, half], popupAnchor: [0, -half] });
 }
 
-// Overnight plane icon — colored to van assignment
 function overnightDivIcon(color: string): L.DivIcon {
-  const size = 20;
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="${size}" height="${size}" fill="${color}" opacity="0.6" style="filter:drop-shadow(0 1px 2px rgba(0,0,0,0.3))"><path d="${PLANE_PATH}"/></svg>`;
+  const size = 18;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="${size}" height="${size}" fill="${color}" opacity="0.5" style="filter:drop-shadow(0 1px 2px rgba(0,0,0,0.4))"><path d="${PLANE_PATH}"/></svg>`;
   const half = size / 2;
-  return L.divIcon({
-    html: svg,
-    className: "",
-    iconSize: [size, size],
-    iconAnchor: [half, half],
-    popupAnchor: [0, -half],
-  });
+  return L.divIcon({ html: svg, className: "", iconSize: [size, size], iconAnchor: [half, half], popupAnchor: [0, -half] });
 }
 
-// Van icon — simple van silhouette SVG (no colored circle)
-function vanDivIcon(color: string, vanId: number): L.DivIcon {
+/** FA-style data label: callsign, type, altitude, speed, route — no box */
+function acDataLabel(ac: AircraftPosition, fi: FlightInfoMap | undefined, fleetLookup: Map<string, string>): string {
+  const color = getAcColor(fleetLookup, ac.tail, ac.on_ground);
+  const lines: string[] = [];
+
+  // Line 1: ident + type
+  const ident = fi?.ident ?? ac.flight ?? ac.tail;
+  const type = fi?.aircraft_type ?? "";
+  lines.push(`<b>${ident}</b>${type ? " " + type : ""}`);
+
+  if (!ac.on_ground) {
+    // Line 2: altitude + groundspeed
+    const alt = ac.alt_baro != null && ac.alt_baro > 0 ? Math.round(ac.alt_baro).toString() : "";
+    const gs = ac.gs != null ? Math.round(ac.gs).toString() : "";
+    if (alt || gs) lines.push([alt, gs].filter(Boolean).join(" "));
+
+    // Line 3: route (ORIG DEST)
+    if (fi?.origin_icao && fi?.destination_icao) {
+      const orig = fi.origin_icao.replace(/^K/, "");
+      const dest = fi.destination_icao.replace(/^K/, "");
+      lines.push(`${orig} ${dest}`);
+    }
+  }
+
+  const shadow = "text-shadow: 0 1px 3px rgba(0,0,0,0.9), 0 0 6px rgba(0,0,0,0.6)";
+  return `<div style="color:${color};font-family:ui-monospace,monospace;font-size:10px;line-height:1.3;white-space:nowrap;${shadow}">${lines.join("<br>")}</div>`;
+}
+
+// Van icon — clean van silhouette
+function vanDivIcon(color: string): L.DivIcon {
   return L.divIcon({
-    html: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="28" height="28" fill="${color}" style="filter:drop-shadow(0 1px 3px rgba(0,0,0,0.4))">
+    html: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="${color}" style="filter:drop-shadow(0 1px 3px rgba(0,0,0,0.5))">
       <path d="M1 12.5V11l2-6h11l3 4h3a2 2 0 012 2v1.5h-1a2.5 2.5 0 00-5 0H8a2.5 2.5 0 00-5 0H1zm4.5 2a1.5 1.5 0 110-3 1.5 1.5 0 010 3zm12 0a1.5 1.5 0 110-3 1.5 1.5 0 010 3zM5 7l-1.5 4h5V7H5zm4.5 0v4h4.5L12 7H9.5z"/>
     </svg>`,
     className: "",
-    iconSize: [28, 28],
-    iconAnchor: [14, 14],
-    popupAnchor: [0, -16],
+    iconSize: [24, 24],
+    iconAnchor: [12, 12],
+    popupAnchor: [0, -14],
   });
 }
 
 function fmtAlt(alt: number | null): string {
   if (alt == null) return "\u2014";
   if (alt <= 0) return "GND";
-  if (alt < 1000) return `${Math.round(alt)}ft`;
-  if (alt < 18000) return `${Math.round(alt / 1000)}k`;
+  if (alt < 18000) return `${Math.round(alt)}`;
   return `FL${Math.round(alt / 100)}`;
 }
 
@@ -150,16 +158,15 @@ function fmtEta(iso: string | null | undefined): string {
   const diffMs = d.getTime() - now.getTime();
   const diffMin = Math.round(diffMs / 60000);
   const time = d.toLocaleTimeString("en-US", {
-    hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC",
-  }) + "Z";
+    hour: "2-digit", minute: "2-digit", hour12: true, timeZone: "UTC",
+  }) + " UTC";
   if (diffMin <= 0) return time;
   const hrs = Math.floor(diffMin / 60);
   const mins = diffMin % 60;
-  const remaining = hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`;
-  return `${time} (${remaining})`;
+  return hrs > 0 ? `${time} (${hrs}h ${mins}m)` : `${time} (${mins}m)`;
 }
 
-/* ── Legend (same fleet key as OpsMap) ── */
+/* ── Legend ── */
 
 function LegendPlane({ color }: { color: string }) {
   return (
@@ -169,25 +176,28 @@ function LegendPlane({ color }: { color: string }) {
   );
 }
 
-function MapLegend() {
+function MapLegend({ dark }: { dark: boolean }) {
+  const bg = dark ? "bg-black/70" : "bg-white/90";
+  const text = dark ? "text-gray-300" : "text-gray-700";
+  const heading = dark ? "text-gray-400" : "text-gray-600";
   return (
-    <div className="absolute bottom-3 right-3 z-[1000] bg-white/90 backdrop-blur-sm rounded-lg shadow-md px-3 py-2.5 text-[11px] space-y-1">
-      <div className="font-semibold text-gray-700 text-[10px] uppercase tracking-wider mb-1">Fleet</div>
+    <div className={`absolute bottom-3 right-3 z-[1000] ${bg} backdrop-blur-sm rounded-lg shadow-md px-3 py-2.5 text-[11px] space-y-1`}>
+      <div className={`font-semibold ${heading} text-[10px] uppercase tracking-wider mb-1`}>Fleet</div>
       <div className="flex items-center gap-2">
-        <LegendPlane color="#991b1b" />
-        <span className="text-gray-700">Challenger - In flight</span>
+        <LegendPlane color="#eab308" />
+        <span className={text}>Challenger - In flight</span>
       </div>
       <div className="flex items-center gap-2">
         <LegendPlane color="#f87171" />
-        <span className="text-gray-700">Challenger - Ground</span>
+        <span className={text}>Challenger - Ground</span>
       </div>
       <div className="flex items-center gap-2 mt-1">
-        <LegendPlane color="#1e3a8a" />
-        <span className="text-gray-700">Citation X - In flight</span>
+        <LegendPlane color="#22d3ee" />
+        <span className={text}>Citation X - In flight</span>
       </div>
       <div className="flex items-center gap-2">
         <LegendPlane color="#60a5fa" />
-        <span className="text-gray-700">Citation X - Ground</span>
+        <span className={text}>Citation X - Ground</span>
       </div>
     </div>
   );
@@ -199,10 +209,10 @@ function ToggleButton({ label, active, onClick }: { label: string; active: boole
   return (
     <button
       onClick={onClick}
-      className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+      className={`px-2.5 py-1 rounded text-xs font-medium shadow-sm transition-colors ${
         active
           ? "bg-blue-600 text-white"
-          : "bg-white text-gray-600 border border-gray-300 hover:bg-gray-50"
+          : "bg-white/90 text-gray-600 border border-gray-300 hover:bg-gray-50"
       }`}
     >
       {label}
@@ -210,20 +220,10 @@ function ToggleButton({ label, active, onClick }: { label: string; active: boole
   );
 }
 
-/* ── Tile layers ── */
+/* ── Tile layers + map utilities ── */
 
 const LIGHT_TILES = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
 
-/** Tells Leaflet to recalculate size when fullscreen toggles */
-function MapResizer({ fullscreen }: { fullscreen: boolean }) {
-  const map = useMap();
-  useEffect(() => {
-    setTimeout(() => map.invalidateSize(), 100);
-  }, [fullscreen, map]);
-  return null;
-}
-
-/** Applies CSS invert filter directly to Leaflet's tile pane element */
 function DarkModeFilter({ enabled }: { enabled: boolean }) {
   const map = useMap();
   useEffect(() => {
@@ -237,7 +237,41 @@ function DarkModeFilter({ enabled }: { enabled: boolean }) {
   return null;
 }
 
-/* ── Flight tracks for en-route aircraft ── */
+/* ── Fullscreen via browser API ── */
+
+function useFullscreen(ref: React.RefObject<HTMLDivElement | null>) {
+  const [isFs, setIsFs] = useState(false);
+
+  const toggle = useCallback(() => {
+    if (!ref.current) return;
+    if (!document.fullscreenElement) {
+      ref.current.requestFullscreen().catch(() => {});
+    } else {
+      document.exitFullscreen().catch(() => {});
+    }
+  }, [ref]);
+
+  useEffect(() => {
+    const handler = () => setIsFs(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", handler);
+    return () => document.removeEventListener("fullscreenchange", handler);
+  }, []);
+
+  return { isFs, toggle };
+}
+
+/** Tells Leaflet to recalculate size after fullscreen change */
+function MapResizer() {
+  const map = useMap();
+  useEffect(() => {
+    const handler = () => setTimeout(() => map.invalidateSize(), 200);
+    document.addEventListener("fullscreenchange", handler);
+    return () => document.removeEventListener("fullscreenchange", handler);
+  }, [map]);
+  return null;
+}
+
+/* ── Flight tracks ── */
 
 function FlightTracks({ flightInfo, fleetLookup }: { flightInfo: Map<string, FlightInfoMap>; fleetLookup: Map<string, string> }) {
   const [tracks, setTracks] = useState<Map<string, [number, number][]>>(new Map());
@@ -277,10 +311,7 @@ function FlightTracks({ flightInfo, fleetLookup }: { flightInfo: Map<string, Fli
   }, [flightInfo]);
 
   function trackColor(tail: string): string {
-    const fleet = fleetLookup.get(tail);
-    if (fleet === "Challenger 300" || fleet === "Challenger 350") return "#dc2626";
-    if (fleet === "Citation X") return "#1d4ed8";
-    return "#6b7280";
+    return getAcColor(fleetLookup, tail, false);
   }
 
   return (
@@ -289,7 +320,7 @@ function FlightTracks({ flightInfo, fleetLookup }: { flightInfo: Map<string, Fli
         <Polyline
           key={`track-${tail}`}
           positions={positions}
-          pathOptions={{ color: trackColor(tail), weight: 2, opacity: 0.5, dashArray: "4 6" }}
+          pathOptions={{ color: trackColor(tail), weight: 2, opacity: 0.6 }}
         />
       ))}
     </>
@@ -300,10 +331,8 @@ function FlightTracks({ flightInfo, fleetLookup }: { flightInfo: Map<string, Fli
 
 function useRadarUrl(enabled: boolean): string | null {
   const [url, setUrl] = useState<string | null>(null);
-
   useEffect(() => {
     if (!enabled) { setUrl(null); return; }
-
     let cancelled = false;
     async function fetchUrl() {
       try {
@@ -317,12 +346,10 @@ function useRadarUrl(enabled: boolean): string | null {
         }
       } catch { /* ignore */ }
     }
-
     fetchUrl();
     const interval = setInterval(fetchUrl, 5 * 60 * 1000);
     return () => { cancelled = true; clearInterval(interval); };
   }, [enabled]);
-
   return url;
 }
 
@@ -334,8 +361,9 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive,
   const [showVans, setShowVans] = useState(true);
   const [darkMode, setDarkMode] = useState(false);
   const [showRadar, setShowRadar] = useState(false);
-  const [isFullscreen, setIsFullscreen] = useState(false);
   const radarUrl = useRadarUrl(showRadar);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const { isFs, toggle: toggleFs } = useFullscreen(containerRef);
 
   // Build fleet type lookup from FlightAware data
   const fleetLookup = new Map<string, string>();
@@ -369,7 +397,7 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive,
   const enRouteTails = new Set((aircraftPositions ?? []).map((a) => a.tail));
 
   return (
-    <div className={`relative ${isFullscreen ? "fixed inset-0 z-[9999] bg-white" : ""}`}>
+    <div ref={containerRef} className="relative" style={isFs ? { background: "#1a1a2e" } : undefined}>
       {/* Toggle controls */}
       <div className="absolute top-2 right-2 z-[1000] flex gap-1.5">
         <ToggleButton label="Labels" active={showLabels} onClick={() => setShowLabels((v) => !v)} />
@@ -377,15 +405,15 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive,
         <ToggleButton label="Vans" active={showVans} onClick={() => setShowVans((v) => !v)} />
         <ToggleButton label={darkMode ? "Dark" : "Light"} active={darkMode} onClick={() => setDarkMode((v) => !v)} />
         <ToggleButton label={showRadar ? "Radar ON" : "Radar"} active={showRadar} onClick={() => setShowRadar((v) => !v)} />
-        <ToggleButton label={isFullscreen ? "Exit ⛶" : "⛶"} active={isFullscreen} onClick={() => setIsFullscreen((v) => !v)} />
+        <ToggleButton label={isFs ? "Exit ⛶" : "⛶"} active={isFs} onClick={toggleFs} />
       </div>
 
-      <MapLegend />
+      <MapLegend dark={darkMode} />
 
       <MapContainer
         center={[37.5, -96]}
         zoom={4}
-        style={{ height: isFullscreen ? "100vh" : "520px", width: "100%" }}
+        style={{ height: isFs ? "100vh" : "520px", width: "100%" }}
         scrollWheelZoom
       >
         <TileLayer
@@ -393,17 +421,15 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive,
           url={LIGHT_TILES}
         />
         <DarkModeFilter enabled={darkMode} />
-        <MapResizer fullscreen={isFullscreen} />
+        <MapResizer />
 
-        {/* Radar overlay */}
         {radarUrl && (
           <TileLayer key={`radar-${radarUrl}`} url={radarUrl} opacity={0.65} zIndex={300} />
         )}
 
-        {/* Flight tracks for en-route aircraft */}
         {flightInfo && <FlightTracks flightInfo={flightInfo} fleetLookup={fleetLookup} />}
 
-        {/* Range rings — subtle dashed lines */}
+        {/* Range rings */}
         {showRings && vans.map((van) => {
           const color = colors[(van.vanId - 1) % colors.length];
           const pos = liveVanPositions.get(van.vanId) ?? { lat: van.lat, lon: van.lon };
@@ -412,19 +438,12 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive,
               key={`radius-${van.vanId}`}
               center={[pos.lat, pos.lon]}
               radius={THREE_HOUR_RADIUS_M}
-              pathOptions={{
-                color,
-                fillColor: color,
-                fillOpacity: 0.02,
-                weight: 1,
-                dashArray: "8 6",
-                opacity: 0.4,
-              }}
+              pathOptions={{ color, fillColor: color, fillOpacity: 0.02, weight: 1, dashArray: "8 6", opacity: 0.35 }}
             />
           );
         })}
 
-        {/* Van markers — simple van silhouette */}
+        {/* Van markers */}
         {showVans && vans.map((van) => {
           const color = colors[(van.vanId - 1) % colors.length];
           const cachedPos = liveVanPositions.get(van.vanId);
@@ -432,14 +451,9 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive,
           const isLive = liveVanIsLive ? liveVanIsLive.get(van.vanId) === true : cachedPos !== undefined;
           const isLastKnown = cachedPos !== undefined && !isLive;
           return (
-            <Marker
-              key={`van-${van.vanId}`}
-              position={[pos.lat, pos.lon]}
-              icon={vanDivIcon(color, van.vanId)}
-              zIndexOffset={1000}
-            >
+            <Marker key={`van-${van.vanId}`} position={[pos.lat, pos.lon]} icon={vanDivIcon(color)} zIndexOffset={1000}>
               {showLabels && (
-                <Tooltip permanent direction="top" offset={[0, -16]} className="van-label-tooltip">
+                <Tooltip permanent direction="top" offset={[0, -14]} className="fa-label-tooltip">
                   <span style={{ fontWeight: 700, fontSize: "10px", color }}>Van {van.vanId}</span>
                 </Tooltip>
               )}
@@ -447,26 +461,19 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive,
                 <div className="text-sm space-y-1">
                   <div className="font-bold" style={{ color }}>Van {van.vanId}</div>
                   <div className="text-gray-500">{van.region}</div>
-                  <div>Home base: <span className="font-medium">{van.homeAirport}</span></div>
+                  <div>Home: <span className="font-medium">{van.homeAirport}</span></div>
                   {isLive ? (
-                    <div className="text-xs text-green-600 font-medium">
-                      ● Live GPS: {pos.lat.toFixed(4)}, {pos.lon.toFixed(4)}
-                    </div>
+                    <div className="text-xs text-green-600 font-medium">● Live GPS</div>
                   ) : isLastKnown ? (
-                    <div className="text-xs text-amber-600 font-medium">
-                      ◐ Last known GPS: {pos.lat.toFixed(4)}, {pos.lon.toFixed(4)}
-                    </div>
+                    <div className="text-xs text-amber-600 font-medium">◐ Last known</div>
                   ) : (
-                    <div className="text-xs text-gray-400">No GPS — showing home base</div>
+                    <div className="text-xs text-gray-400">No GPS</div>
                   )}
-                  <div className="text-xs text-gray-500">3-hr radius ≈ 300 km</div>
                   {van.aircraft.length > 0 && (
                     <>
-                      <div className="pt-1 font-medium">Overnight ({van.aircraft.length}):</div>
+                      <div className="pt-1 font-medium text-xs">Aircraft ({van.aircraft.length}):</div>
                       {van.aircraft.map((ac) => (
-                        <div key={ac.tail} className="font-mono text-xs">
-                          {ac.tail} @ {ac.airport}
-                        </div>
+                        <div key={ac.tail} className="font-mono text-xs">{ac.tail} @ {ac.airport}</div>
                       ))}
                     </>
                   )}
@@ -476,124 +483,73 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive,
           );
         })}
 
-        {/* Overnight aircraft markers — colored to van, dimmed */}
+        {/* Overnight aircraft */}
         {Array.from(aircraftByAirport.entries()).map(([key, info]) => {
           const staticTails = info.tails.filter((t) => !enRouteTails.has(t));
           if (staticTails.length === 0) return null;
           return (
-            <Marker
-              key={`plane-${key}`}
-              position={[info.lat, info.lon]}
-              icon={overnightDivIcon(info.color)}
-            >
-              {showLabels && staticTails.length > 1 && (
-                <Tooltip direction="top" offset={[0, -8]} permanent className="van-label-tooltip">
-                  <span className="text-[9px] font-semibold" style={{ color: info.color }}>{staticTails.length} ac</span>
+            <Marker key={`plane-${key}`} position={[info.lat, info.lon]} icon={overnightDivIcon(info.color)}>
+              {showLabels && (
+                <Tooltip direction="right" offset={[10, 0]} permanent className="fa-data-tooltip">
+                  <div style={{ color: "#4ade80", fontFamily: "ui-monospace,monospace", fontSize: "10px", lineHeight: "1.3", textShadow: "0 1px 3px rgba(0,0,0,0.9)" }}>
+                    <b>{key.split("-")[0]}</b>
+                    <br />{staticTails.join(", ")}
+                  </div>
                 </Tooltip>
               )}
               <Popup>
                 <div className="text-sm space-y-1">
-                  <div className="font-bold" style={{ color: info.color }}>
-                    {staticTails.join(", ")}
-                  </div>
-                  <div className="text-gray-500 text-xs">
-                    Overnight: {key.split("-")[0]} · Van {info.vanId}
-                  </div>
-                  {staticTails.map((t) => (
-                    <div key={t} className="font-mono text-xs">{t}</div>
-                  ))}
+                  <div className="font-bold" style={{ color: info.color }}>{staticTails.join(", ")}</div>
+                  <div className="text-gray-500 text-xs">Overnight: {key.split("-")[0]} · Van {info.vanId}</div>
                 </div>
               </Popup>
             </Marker>
           );
         })}
 
-        {/* En-route aircraft — OpsMap-style SVG icons with fleet colors */}
+        {/* En-route aircraft — FA-style labels */}
         {(aircraftPositions ?? []).map((ac) => {
           const fi = flightInfo?.get(ac.tail);
-          const acColors = getAircraftColors(ac, fleetLookup);
+          const color = getAcColor(fleetLookup, ac.tail, ac.on_ground);
           return (
             <Marker
               key={`fa-${ac.tail}`}
               position={[ac.lat, ac.lon]}
-              icon={acDivIcon(ac, fleetLookup)}
+              icon={acDivIcon(ac.track, color, ac.on_ground)}
               zIndexOffset={2000}
             >
               {showLabels && (
-                <Tooltip permanent direction="top" offset={[0, -16]} className="ops-tail-tooltip">
-                  <span style={{
-                    fontWeight: 600,
-                    fontSize: "9px",
-                    color: acColors.label,
-                    letterSpacing: "0.02em",
-                  }}>
-                    {ac.tail}
-                    {!ac.on_ground && ac.alt_baro != null && ac.alt_baro > 0 && (
-                      <span style={{ fontWeight: 400, opacity: 0.7, marginLeft: "3px" }}>
-                        {fmtAlt(ac.alt_baro)}
-                      </span>
-                    )}
-                  </span>
+                <Tooltip permanent direction="right" offset={[14, 0]} className="fa-data-tooltip">
+                  <div dangerouslySetInnerHTML={{ __html: acDataLabel(ac, fi, fleetLookup) }} />
                 </Tooltip>
               )}
               <Popup>
                 <div className="text-sm space-y-1">
-                  <div className="font-bold" style={{ color: acColors.label }}>
+                  <div className="font-bold" style={{ color }}>
                     {ac.tail}
                     {fleetLookup.has(ac.tail) && (
-                      <span className="font-normal text-xs text-gray-400 ml-1.5">
-                        {fleetLookup.get(ac.tail)}
-                      </span>
+                      <span className="font-normal text-xs text-gray-400 ml-1.5">{fleetLookup.get(ac.tail)}</span>
                     )}
                   </div>
-                  {ac.flight && <div className="text-xs text-gray-500">Callsign: {ac.flight}</div>}
-
                   {fi && (fi.origin_icao || fi.destination_icao) && (
-                    <div className="text-xs font-medium border-t border-gray-100 pt-1 mt-1">
-                      <span className="font-mono">
-                        {fi.origin_icao ?? "?"} → {fi.destination_icao ?? "?"}
-                      </span>
-                      {fi.progress_percent != null && (
-                        <span className="text-gray-400 ml-1">({fi.progress_percent}%)</span>
-                      )}
+                    <div className="text-xs font-medium font-mono">
+                      {fi.origin_icao ?? "?"} → {fi.destination_icao ?? "?"}
+                      {fi.progress_percent != null && <span className="text-gray-400 ml-1">({fi.progress_percent}%)</span>}
                     </div>
                   )}
-                  {fi?.destination_name && (
-                    <div className="text-xs text-gray-500">{fi.destination_name}</div>
-                  )}
-
                   {fi?.arrival_time && (
-                    <div className="text-xs font-semibold text-green-700">
-                      ETA: {fmtEta(fi.arrival_time)}
-                    </div>
+                    <div className="text-xs font-semibold text-green-700">ETA: {fmtEta(fi.arrival_time)}</div>
                   )}
-
                   <div className="text-xs">
                     {ac.on_ground ? (
                       <span className="text-gray-500 font-medium">On Ground</span>
                     ) : (
-                      <span className="font-medium" style={{ color: acColors.label }}>
-                        {ac.baro_rate != null && ac.baro_rate > 300 ? "Climbing" : ac.baro_rate != null && ac.baro_rate < -300 ? "Descending" : "Airborne"} · {fmtAlt(ac.alt_baro)}
-                        {ac.baro_rate != null && Math.abs(ac.baro_rate) > 300 && (
-                          <span className="text-gray-500"> ({ac.baro_rate > 0 ? "+" : ""}{ac.baro_rate} fpm)</span>
-                        )}
+                      <span className="font-medium" style={{ color }}>
+                        {fmtAlt(ac.alt_baro)} · {ac.gs != null ? `${Math.round(ac.gs)} kts` : ""}
                       </span>
                     )}
                   </div>
-                  {ac.gs != null && (
-                    <div className="text-xs text-gray-600">
-                      GS: {Math.round(ac.gs)} kts · HDG: {ac.track != null ? `${Math.round(ac.track)}°` : "\u2014"}
-                    </div>
-                  )}
-                  {fi?.route_distance_nm && !ac.on_ground && (
-                    <div className="text-xs text-gray-500">Route: {fi.route_distance_nm} nm</div>
-                  )}
-                  {fi?.diverted && (
-                    <div className="text-xs font-semibold text-red-600">DIVERTED</div>
-                  )}
-                  <div className="text-xs text-gray-400">
-                    {ac.lat.toFixed(4)}, {ac.lon.toFixed(4)}
-                  </div>
+                  {fi?.diverted && <div className="text-xs font-semibold text-red-600">DIVERTED</div>}
                 </div>
               </Popup>
             </Marker>
