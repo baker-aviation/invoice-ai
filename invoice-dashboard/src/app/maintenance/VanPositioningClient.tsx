@@ -1074,15 +1074,36 @@ function VanScheduleCard({
             V{zone.vanId}
           </div>
           <div>
-            <div className="font-semibold text-sm">
-              {(samsaraVanName && parseVanDisplayName(samsaraVanName)) || zone.name}
-            </div>
-            {samsaraVanName && (
-              <div className="text-[10px] text-gray-400 -mt-0.5">{samsaraVanName}</div>
-            )}
-            <div className="text-xs text-gray-500">
-              {zone.city}
-            </div>
+            {(() => {
+              // Extract city, state from live GPS address (e.g. "123 Main St, Vail, CO, 81657")
+              let liveCityState: string | null = null;
+              if (liveAddress) {
+                const parts = liveAddress.split(",").map((p) => p.trim());
+                // Find state abbreviation (2 uppercase letters, possibly followed by zip)
+                for (let i = 1; i < parts.length; i++) {
+                  const stateMatch = parts[i].match(/^([A-Z]{2})$/);
+                  if (stateMatch && i >= 1) {
+                    liveCityState = `${parts[i - 1]}, ${stateMatch[1]}`;
+                    break;
+                  }
+                }
+              }
+              return (
+                <>
+                  <div className="font-semibold text-sm">
+                    {liveCityState ? `${liveCityState} Van` : ((samsaraVanName && parseVanDisplayName(samsaraVanName)) || zone.name)}
+                  </div>
+                  {samsaraVanName && (
+                    <div className="text-[10px] text-gray-400 -mt-0.5">{samsaraVanName}</div>
+                  )}
+                  {!liveCityState && (
+                    <div className="text-xs text-gray-500">
+                      {zone.city}
+                    </div>
+                  )}
+                </>
+              );
+            })()}
             {liveAddress ? (
               <div className="text-xs text-green-600 mt-0.5 flex items-center gap-1">
                 <span className="w-1.5 h-1.5 rounded-full bg-green-500 inline-block flex-shrink-0" />
@@ -1338,6 +1359,24 @@ function ScheduleTab({
   // Manual overrides: flightId → target vanId (moves) + removed flight IDs
   const [overrides, setOverrides] = useState<Map<string, number>>(new Map());
   const [removals, setRemovals] = useState<Set<string>>(new Set());
+
+  // Publish state
+  const [publishedAt, setPublishedAt] = useState<string | null>(null);
+  const [publishing, setPublishing] = useState(false);
+  const [publishError, setPublishError] = useState<string | null>(null);
+  // Snapshot of edits at last publish — used to detect unpublished changes
+  const [publishedEditsSnapshot, setPublishedEditsSnapshot] = useState<string>("");
+
+  // Check existing publish status on mount / date change
+  useEffect(() => {
+    setPublishedAt(null);
+    setPublishError(null);
+    setPublishedEditsSnapshot("");
+    fetch(`/api/vans/publish?date=${date}`)
+      .then((r) => r.json())
+      .then((d) => { if (d.published_at) setPublishedAt(d.published_at); })
+      .catch(() => {});
+  }, [date]);
   // Reset overrides when date changes
   const prevDateRef = useRef(date);
   if (prevDateRef.current !== date) {
@@ -1533,6 +1572,46 @@ function ScheduleTab({
     }
   }, []);
 
+  // Current edits fingerprint — changes when overrides or removals change
+  const currentEditsFingerprint = useMemo(() => {
+    const parts: string[] = [];
+    for (const [fId, vId] of overrides) parts.push(`m:${fId}:${vId}`);
+    for (const fId of removals) parts.push(`r:${fId}`);
+    // Also include the base flight IDs per van to detect schedule data changes
+    for (const [vanId, items] of finalItemsByVan) {
+      parts.push(`v${vanId}:${items.map((i) => i.arrFlight.id).join(",")}`);
+    }
+    return parts.sort().join("|");
+  }, [overrides, removals, finalItemsByVan]);
+
+  const hasUnpublishedChanges = publishedAt && currentEditsFingerprint !== publishedEditsSnapshot;
+
+  const handlePublish = useCallback(async () => {
+    setPublishing(true);
+    setPublishError(null);
+    try {
+      const assignments = FIXED_VAN_ZONES.map((zone) => ({
+        vanId: zone.vanId,
+        flightIds: (finalItemsByVan.get(zone.vanId) ?? []).map((item) => item.arrFlight.id),
+      }));
+      const res = await fetch("/api/vans/publish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date, assignments }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setPublishError(data.error ?? "Publish failed");
+      } else {
+        setPublishedAt(data.published_at);
+        setPublishedEditsSnapshot(currentEditsFingerprint);
+      }
+    } catch {
+      setPublishError("Network error");
+    }
+    setPublishing(false);
+  }, [date, finalItemsByVan, currentEditsFingerprint]);
+
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between flex-wrap gap-2">
@@ -1545,13 +1624,44 @@ function ScheduleTab({
             </span>
           )}
         </div>
-        {totalEdits > 0 && (
+        <div className="flex items-center gap-2 flex-wrap">
+          {totalEdits > 0 && (
+            <button
+              onClick={() => { setOverrides(new Map()); setRemovals(new Set()); }}
+              className="text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5 hover:bg-amber-100 transition-colors"
+            >
+              Reset all edits ({totalEdits})
+            </button>
+          )}
           <button
-            onClick={() => { setOverrides(new Map()); setRemovals(new Set()); }}
-            className="text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5 hover:bg-amber-100 transition-colors"
+            onClick={handlePublish}
+            disabled={publishing}
+            className="text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 active:bg-blue-800 disabled:bg-blue-400 rounded-lg px-4 py-1.5 transition-colors"
           >
-            Reset all edits ({totalEdits})
+            {publishing ? "Sending…" : "Send to Vans"}
           </button>
+        </div>
+      </div>
+
+      {/* Publish status */}
+      <div className="flex items-center gap-3 flex-wrap">
+        {publishedAt && !hasUnpublishedChanges && (
+          <span className="text-xs text-green-600 font-medium flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-green-500 inline-block" />
+            Last published: {new Date(publishedAt).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", timeZone: "America/New_York" })} ET
+          </span>
+        )}
+        {hasUnpublishedChanges && (
+          <span className="text-xs text-amber-600 font-medium flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-amber-500 inline-block" />
+            Unpublished changes
+          </span>
+        )}
+        {!publishedAt && !publishing && (
+          <span className="text-xs text-gray-400">Not yet published for this date</span>
+        )}
+        {publishError && (
+          <span className="text-xs text-red-600 font-medium">{publishError}</span>
         )}
       </div>
       {totalEdits > 0 && (
