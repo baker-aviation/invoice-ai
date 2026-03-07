@@ -471,8 +471,18 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
       });
     }
 
-    for (const legs of result.values()) {
+    for (const [tail, legs] of result) {
       legs.sort((a, b) => a.startMs - b.startMs);
+      // Dedup: remove legs with same route and overlapping times (ICS sometimes has duplicate entries)
+      const deduped: LegInterval[] = [];
+      for (const leg of legs) {
+        const prev = deduped[deduped.length - 1];
+        if (prev && prev.departure_icao === leg.departure_icao && prev.arrival_icao === leg.arrival_icao && Math.abs(prev.startMs - leg.startMs) < 5 * 60_000) {
+          continue; // skip duplicate
+        }
+        deduped.push(leg);
+      }
+      result.set(tail, deduped);
     }
     return result;
   }, [flights, faByTail]);

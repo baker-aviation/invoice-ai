@@ -160,6 +160,13 @@ function computeTailDuty(
 
   for (const [tail, intervals] of tailIntervals) {
     intervals.sort((a, b) => a.startMs - b.startMs);
+    // Dedup: remove legs with same start time (ICS sometimes has duplicate entries)
+    for (let i = intervals.length - 1; i > 0; i--) {
+      if (Math.abs(intervals[i].startMs - intervals[i - 1].startMs) < 5 * 60_000 &&
+          Math.abs(intervals[i].endMs - intervals[i - 1].endMs) < 5 * 60_000) {
+        intervals.splice(i, 1);
+      }
+    }
 
     // --- Rolling 24hr flight time (Part 135.267: ANY 24 consecutive hours) ---
     const checkPoints = new Set<number>();
@@ -257,12 +264,12 @@ function delayColorClass(scheduledIso: string, actualIso: string): string {
   return "text-green-600";
 }
 
-/** Delay color for departure estimates: ≤15m green, 15-30m amber, >30m red */
-function depEstColorClass(scheduledIso: string, estIso: string): string {
+/** Delay color for departure estimates: only show if ≥15min late. Returns null if on-time. */
+function depEstColorClass(scheduledIso: string, estIso: string): string | null {
   const delayMin = (new Date(estIso).getTime() - new Date(scheduledIso).getTime()) / 60_000;
   if (delayMin > 30) return "text-red-600 font-semibold";
   if (delayMin > 15) return "text-amber-700 font-semibold";
-  return "text-blue-600";
+  return null; // on-time or early — don't show
 }
 
 function fmtHM(minutes: number): string {
@@ -741,7 +748,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                       <div className="divide-y divide-gray-100">
                         {tailFlights.map((f) => {
                           const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
-                          const fi = f.tail_number ? (flightInfo.get(routeKey) ?? undefined) : undefined;
+                          const fi = f.tail_number ? (flightInfo.get(routeKey) ?? flightInfo.get(f.tail_number) ?? undefined) : undefined;
                           const type = f.flight_type || "Other";
                           const typeColor = FLIGHT_TYPE_COLORS[type] || "bg-gray-100 text-gray-700";
 
@@ -780,11 +787,14 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                                     <div className={`text-[10px] font-medium ${delayColorClass(f.scheduled_departure, actualDepIso)}`}>
                                       Actual: {fmt(actualDepIso, f.departure_icao)}
                                     </div>
-                                  ) : fi?.departure_time && Math.abs(new Date(fi.departure_time).getTime() - new Date(f.scheduled_departure).getTime()) > 60_000 ? (
-                                    <div className={`text-[10px] font-medium ${depEstColorClass(f.scheduled_departure, fi.departure_time)}`}>
-                                      Est: {fmt(fi.departure_time, f.departure_icao)}
-                                    </div>
-                                  ) : null}
+                                  ) : (() => {
+                                    const estColor = fi?.departure_time ? depEstColorClass(f.scheduled_departure, fi.departure_time) : null;
+                                    return estColor ? (
+                                      <div className={`text-[10px] font-medium ${estColor}`}>
+                                        Est: {fmt(fi!.departure_time!, f.departure_icao)}
+                                      </div>
+                                    ) : null;
+                                  })()}
                                 </div>
                                 <div className="w-36 shrink-0">
                                   <div className="text-gray-500">
@@ -809,6 +819,19 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                                     <div className="h-full bg-blue-500 rounded-full" style={{ width: `${fi.progress_percent}%` }} />
                                   </div>
                                 )}
+                                {(() => {
+                                  const schedMs = new Date(f.scheduled_departure).getTime();
+                                  const now = Date.now();
+                                  if (schedMs < now && !fi?.actual_departure && status === "Scheduled") {
+                                    const lateMin = Math.round((now - schedMs) / 60_000);
+                                    return (
+                                      <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded-full ${lateMin > 30 ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"}`}>
+                                        Not airborne +{lateMin}m
+                                      </span>
+                                    );
+                                  }
+                                  return null;
+                                })()}
                               </div>
                             </div>
                           );
@@ -857,7 +880,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                 // Look up FlightAware info by route-specific key first, then fall back to tail-only
                 const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
                 const fi = f.tail_number
-                  ? (flightInfo.get(routeKey) ?? undefined)
+                  ? (flightInfo.get(routeKey) ?? flightInfo.get(f.tail_number) ?? undefined)
                   : undefined;
                 const alerts = f.alerts ?? [];
                 const alertCount = alerts.length;
@@ -955,11 +978,14 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                           <div className={`text-[10px] font-medium mt-0.5 ${delayColorClass(f.scheduled_departure, fi.actual_departure)}`}>
                             Actual: {fmt(fi.actual_departure, f.departure_icao)}
                           </div>
-                        ) : fi?.departure_time && Math.abs(new Date(fi.departure_time).getTime() - new Date(f.scheduled_departure).getTime()) > 60_000 ? (
-                          <div className={`text-[10px] font-medium mt-0.5 ${depEstColorClass(f.scheduled_departure, fi.departure_time)}`}>
-                            Est: {fmt(fi.departure_time, f.departure_icao)}
-                          </div>
-                        ) : null}
+                        ) : (() => {
+                          const estColor = fi?.departure_time ? depEstColorClass(f.scheduled_departure, fi.departure_time) : null;
+                          return estColor ? (
+                            <div className={`text-[10px] font-medium mt-0.5 ${estColor}`}>
+                              Est: {fmt(fi!.departure_time!, f.departure_icao)}
+                            </div>
+                          ) : null;
+                        })()}
                       </td>
                       <td className="px-4 py-2.5 text-gray-600">
                         <div>{fmt(f.scheduled_arrival, f.arrival_icao)}</div>
@@ -982,17 +1008,33 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                         {status}
                       </td>
                       <td className="px-4 py-2.5">
-                        {alertCount > 0 && (
-                          <button
-                            onClick={() => toggleExpanded(f.id)}
-                            className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full bg-red-100 text-red-700 hover:bg-red-200 transition-colors cursor-pointer"
-                          >
-                            <span className={`inline-block transition-transform ${isExpanded ? "rotate-90" : ""}`}>
-                              &#9656;
-                            </span>
-                            {alertCount} alert{alertCount > 1 ? "s" : ""}
-                          </button>
-                        )}
+                        <div className="flex flex-col gap-1">
+                          {alertCount > 0 && (
+                            <button
+                              onClick={() => toggleExpanded(f.id)}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full bg-red-100 text-red-700 hover:bg-red-200 transition-colors cursor-pointer"
+                            >
+                              <span className={`inline-block transition-transform ${isExpanded ? "rotate-90" : ""}`}>
+                                &#9656;
+                              </span>
+                              {alertCount} alert{alertCount > 1 ? "s" : ""}
+                            </button>
+                          )}
+                          {(() => {
+                            // "Not airborne" alert: scheduled departure has passed but no actual departure
+                            const schedMs = new Date(f.scheduled_departure).getTime();
+                            const now = Date.now();
+                            if (schedMs < now && !fi?.actual_departure && status === "Scheduled") {
+                              const lateMin = Math.round((now - schedMs) / 60_000);
+                              return (
+                                <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium rounded-full ${lateMin > 30 ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"}`}>
+                                  Not airborne +{lateMin}m
+                                </span>
+                              );
+                            }
+                            return null;
+                          })()}
+                        </div>
                       </td>
                       <td className="px-4 py-2.5">
                         {(() => {
