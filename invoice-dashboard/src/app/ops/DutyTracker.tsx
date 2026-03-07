@@ -16,7 +16,7 @@ import { fmtTimeInTz } from "@/lib/airportTimezones";
 
 /* ── Constants ──────────────────────────────────────── */
 
-const POLL_INTERVAL_MS = 60_000;
+const POLL_INTERVAL_MS = 300_000; // 5 min — duty data doesn't need real-time
 // Part 135.267(b)(2): 10h limit for two-pilot crew in any 24 consecutive hours
 const FLIGHT_TIME_RED_MIN = 600; // 10 hours — hard limit
 const FLIGHT_TIME_YELLOW_MIN = 540; // 9 hours — caution (within 1hr of limit)

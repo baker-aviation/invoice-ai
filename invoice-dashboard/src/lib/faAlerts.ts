@@ -18,7 +18,7 @@ function faHeaders() {
  * Only run once every 30 minutes to avoid hammering FA.
  */
 let lastRefreshMs = 0;
-const REFRESH_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+const REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours — alerts are persistent, no need to re-check often
 
 /**
  * Register FA webhook alerts for any tails that don't have one yet.

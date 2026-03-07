@@ -275,8 +275,12 @@ function MapResizer() {
 
 function FlightTracks({ flightInfo, fleetLookup }: { flightInfo: Map<string, FlightInfoMap>; fleetLookup: Map<string, string> }) {
   const [tracks, setTracks] = useState<Map<string, [number, number][]>>(new Map());
+  const lastFetchRef = useRef(0);
 
   useEffect(() => {
+    // Throttle: only refetch tracks every 5 min
+    if (Date.now() - lastFetchRef.current < 5 * 60_000 && tracks.size > 0) return;
+
     const enRoute: FlightInfoMap[] = [];
     const seen = new Set<string>();
     for (const fi of flightInfo.values()) {
@@ -288,6 +292,7 @@ function FlightTracks({ flightInfo, fleetLookup }: { flightInfo: Map<string, Fli
     if (enRoute.length === 0) { setTracks(new Map()); return; }
 
     const controller = new AbortController();
+    lastFetchRef.current = Date.now();
     (async () => {
       const newTracks = new Map<string, [number, number][]>();
       for (const fi of enRoute) {
