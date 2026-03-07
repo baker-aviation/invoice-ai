@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   ResponsiveContainer,
   AreaChart,
@@ -491,25 +491,31 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
     return result;
   }, [intervalsByTail]);
 
-  // Scroll to a specific tail card when requested
-  // Wait for FA data to finish loading so card order is stable
+  // Scroll to a specific tail card when requested.
+  // Depends on tailData so it re-fires after FA data recomputes the card list.
+  // Uses two rAFs to ensure React has flushed the DOM.
+  const scrollDone = useRef(false);
+  useEffect(() => { scrollDone.current = false; }, [scrollToTail]);
   useEffect(() => {
-    if (!scrollToTail || faLoading) return;
-    // FA data loaded — cards are in final order. Use rAF + small delay
-    // so React has flushed the DOM after the tailData recompute.
-    const raf = requestAnimationFrame(() => {
-      setTimeout(() => {
+    if (!scrollToTail || scrollDone.current) return;
+    // Only scroll once FA data has loaded (tailData will recompute)
+    if (faLoading) return;
+    // Double-rAF to ensure DOM is painted after React commit
+    const raf1 = requestAnimationFrame(() => {
+      const raf2 = requestAnimationFrame(() => {
         const el = document.getElementById(`duty-${scrollToTail}`);
         if (el) {
+          scrollDone.current = true;
           el.scrollIntoView({ behavior: "smooth", block: "center" });
           el.classList.add("ring-2", "ring-blue-400");
           setTimeout(() => el.classList.remove("ring-2", "ring-blue-400"), 2500);
+          onScrollComplete?.();
         }
-        onScrollComplete?.();
-      }, 50);
+      });
+      return () => cancelAnimationFrame(raf2);
     });
-    return () => cancelAnimationFrame(raf);
-  }, [scrollToTail, faLoading, onScrollComplete]);
+    return () => cancelAnimationFrame(raf1);
+  }, [scrollToTail, faLoading, tailData, onScrollComplete]);
 
   /* ── Render ────────────────────────────────────────── */
   return (
