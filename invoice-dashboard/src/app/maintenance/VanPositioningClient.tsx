@@ -147,16 +147,51 @@ function isOnEtDate(utcIso: string | null | undefined, etDate: string): boolean 
   return utcToEtDate(utcIso) === etDate;
 }
 
+// ── Airport-local timezone lookup (state-based fallback) ──
+const STATE_TZ: Record<string, string> = {
+  // Eastern
+  CT:"America/New_York",DE:"America/New_York",FL:"America/New_York",GA:"America/New_York",
+  IN:"America/New_York",KY:"America/New_York",ME:"America/New_York",MD:"America/New_York",
+  MA:"America/New_York",MI:"America/New_York",NH:"America/New_York",NJ:"America/New_York",
+  NY:"America/New_York",NC:"America/New_York",OH:"America/New_York",PA:"America/New_York",
+  RI:"America/New_York",SC:"America/New_York",VT:"America/New_York",VA:"America/New_York",
+  WV:"America/New_York",DC:"America/New_York",
+  // Central
+  AL:"America/Chicago",AR:"America/Chicago",IL:"America/Chicago",IA:"America/Chicago",
+  KS:"America/Chicago",LA:"America/Chicago",MN:"America/Chicago",MS:"America/Chicago",
+  MO:"America/Chicago",NE:"America/Chicago",ND:"America/Chicago",OK:"America/Chicago",
+  SD:"America/Chicago",TN:"America/Chicago",TX:"America/Chicago",WI:"America/Chicago",
+  // Mountain
+  CO:"America/Denver",ID:"America/Denver",MT:"America/Denver",NM:"America/Denver",
+  UT:"America/Denver",WY:"America/Denver",
+  // Arizona (no DST)
+  AZ:"America/Phoenix",
+  // Pacific
+  CA:"America/Los_Angeles",NV:"America/Los_Angeles",OR:"America/Los_Angeles",WA:"America/Los_Angeles",
+  // Alaska / Hawaii
+  AK:"America/Anchorage",HI:"Pacific/Honolulu",
+};
+
+/** Get IANA timezone for an IATA airport code using state lookup. */
+function airportTz(iata: string | null | undefined): string {
+  if (!iata) return DISPLAY_TZ;
+  const info = getAirportInfo(iata.replace(/^K/, ""));
+  if (!info) return DISPLAY_TZ;
+  return STATE_TZ[info.state] ?? DISPLAY_TZ;
+}
+
 function fmtLongDate(d: string) {
   const dt = new Date(d + "T12:00:00");
   return dt.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
 }
 
-function fmtTime(s: string | null | undefined): string {
+/** Format with month+day in airport-local time. */
+function fmtTime(s: string | null | undefined, icao?: string | null): string {
   if (!s) return "—";
   const d = new Date(s);
   if (isNaN(d.getTime())) return s;
-  const tzAbbr = d.toLocaleTimeString("en-US", { timeZoneName: "short" }).split(" ").pop() ?? "";
+  const tz = airportTz(icao);
+  const tzAbbr = d.toLocaleTimeString("en-US", { timeZoneName: "short", timeZone: tz }).split(" ").pop() ?? "";
   return (
     d.toLocaleString("en-US", {
       month: "short",
@@ -164,6 +199,7 @@ function fmtTime(s: string | null | undefined): string {
       hour: "2-digit",
       minute: "2-digit",
       hour12: false,
+      timeZone: tz,
     }) + ` ${tzAbbr}`
   );
 }
@@ -364,16 +400,18 @@ function fmtDriveTime(distKm: number): string {
   return m === 0 ? `${h}h drive` : `${h}h ${m}m drive`;
 }
 
-/** Format a UTC ISO timestamp to "HH:MM" in the user's local timezone with tz abbreviation. */
-function fmtUtcHM(iso: string): string {
+/** Format a UTC ISO timestamp to "HH:MM TZ" in the airport's local timezone. */
+function fmtUtcHM(iso: string, icao?: string | null): string {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return "—";
-  const tzAbbr = d.toLocaleTimeString("en-US", { timeZoneName: "short" }).split(" ").pop() ?? "";
+  const tz = airportTz(icao);
+  const tzAbbr = d.toLocaleTimeString("en-US", { timeZoneName: "short", timeZone: tz }).split(" ").pop() ?? "";
   return (
     d.toLocaleTimeString("en-US", {
       hour: "2-digit",
       minute: "2-digit",
       hour12: false,
+      timeZone: tz,
     }) + ` ${tzAbbr}`
   );
 }
@@ -860,9 +898,9 @@ function SlackShareModal({
           return {
             tail: item.arrFlight.tail_number ?? "—",
             route: `${item.arrFlight.departure_icao?.replace(/^K/, "") ?? "?"} → ${item.airport}`,
-            arrivalTime: item.arrFlight.scheduled_arrival ? fmtUtcHM(item.arrFlight.scheduled_arrival) : "—",
+            arrivalTime: item.arrFlight.scheduled_arrival ? fmtUtcHM(item.arrFlight.scheduled_arrival, item.arrFlight.arrival_icao) : "—",
             status: slackStatus,
-            nextDep: item.nextDep ? `Flying again ${fmtUtcHM(item.nextDep.scheduled_departure)} → ${item.nextDep.arrival_icao?.replace(/^K/, "") ?? "?"}` : undefined,
+            nextDep: item.nextDep ? `Flying again ${fmtUtcHM(item.nextDep.scheduled_departure, item.nextDep.departure_icao)} → ${item.nextDep.arrival_icao?.replace(/^K/, "") ?? "?"}` : undefined,
             turnStatus: turnLabel,
             driveTime: item.distKm > 0 ? fmtDriveTime(item.distKm) : undefined,
           };
@@ -1161,10 +1199,10 @@ function VanScheduleCard({
                       <div className="flex items-center gap-2 shrink-0">
                         <div className="text-right text-xs whitespace-nowrap">
                           {arrFlight.scheduled_departure && (
-                            <span className="text-gray-400">{fmtUtcHM(arrFlight.scheduled_departure)}</span>
+                            <span className="text-gray-400">{fmtUtcHM(arrFlight.scheduled_departure, arrFlight.departure_icao)}</span>
                           )}
                           {arrTime && (
-                            <span className="text-gray-400">{" → "}<span className="font-medium text-gray-700">{fmtUtcHM(arrFlight.scheduled_arrival!)}</span></span>
+                            <span className="text-gray-400">{" → "}<span className="font-medium text-gray-700">{fmtUtcHM(arrFlight.scheduled_arrival!, arrFlight.arrival_icao)}</span></span>
                           )}
                           {/* Landing countdown when en route with FA ETA */}
                           {isEnRoute && fi?.arrival_time && !faLanded && (() => {
@@ -1222,7 +1260,7 @@ function VanScheduleCard({
                         <>
                           <span className="text-gray-300">|</span>
                           <span className={nextIsRepo ? "text-purple-600 font-medium" : "text-blue-600 font-medium"}>
-                            Flying again {fmtTimeUntil(nextDep.scheduled_departure) && `${fmtTimeUntil(nextDep.scheduled_departure)} · `}{fmtUtcHM(nextDep.scheduled_departure)} → {nextDep.arrival_icao?.replace(/^K/, "") ?? "?"}
+                            Flying again {fmtTimeUntil(nextDep.scheduled_departure) && `${fmtTimeUntil(nextDep.scheduled_departure)} · `}{fmtUtcHM(nextDep.scheduled_departure, nextDep.departure_icao)} → {nextDep.arrival_icao?.replace(/^K/, "") ?? "?"}
                             {nextIsRepo && <span className="text-purple-400 font-normal"> (repo)</span>}
                           </span>
                         </>
@@ -1240,7 +1278,7 @@ function VanScheduleCard({
                           return (
                             <div key={f.id} className={`flex items-center gap-2 text-xs py-px ${isNext ? "text-gray-500" : "text-gray-400"}`}>
                               <span className="font-mono text-gray-500">{dep} → {arrIcao}</span>
-                              <span>{fmtUtcHM(f.scheduled_departure)}{f.scheduled_arrival ? ` – ${fmtUtcHM(f.scheduled_arrival)}` : ""}</span>
+                              <span>{fmtUtcHM(f.scheduled_departure, f.departure_icao)}{f.scheduled_arrival ? ` – ${fmtUtcHM(f.scheduled_arrival, f.arrival_icao)}` : ""}</span>
                               {ft && (
                                 <span className={`rounded px-1 py-0.5 text-[10px] font-medium ${
                                   cat === "positioning" ? "bg-purple-50 text-purple-500"
@@ -1395,12 +1433,10 @@ function ScheduleTab({
       const baseLat = liveVanPositions.get(zone.vanId)?.lat ?? zone.lat;
       const baseLon = liveVanPositions.get(zone.vanId)?.lon ?? zone.lon;
       const withDist = recalcDist(items, baseLat, baseLon);
-      // Sort by arrival time (FA ETA preferred, then scheduled)
-      const sorted = withDist.sort((a, b) => {
-        const etaA = getEffectiveArrival(a, flightInfoMap);
-        const etaB = getEffectiveArrival(b, flightInfoMap);
-        return etaA.localeCompare(etaB);
-      });
+      // Sort by scheduled arrival time (earliest first)
+      const sorted = withDist.sort((a, b) =>
+        (a.arrFlight.scheduled_arrival ?? "").localeCompare(b.arrFlight.scheduled_arrival ?? ""),
+      );
       result.set(zone.vanId, sorted);
     }
 
@@ -1663,7 +1699,7 @@ function ScheduleTab({
                         return (
                           <div key={f.id} className="flex items-center gap-2 text-xs text-gray-600 py-px">
                             <span className="font-mono">{dep} → {arrIcao}</span>
-                            <span>{fmtUtcHM(f.scheduled_departure)}{f.scheduled_arrival ? ` – ${fmtUtcHM(f.scheduled_arrival)}` : ""}</span>
+                            <span>{fmtUtcHM(f.scheduled_departure, f.departure_icao)}{f.scheduled_arrival ? ` – ${fmtUtcHM(f.scheduled_arrival, f.arrival_icao)}` : ""}</span>
                             {ft && (
                               <span className={`rounded px-1 py-0.5 text-[10px] font-medium ${
                                 isMaint ? "bg-orange-50 text-orange-600"
@@ -1681,7 +1717,7 @@ function ScheduleTab({
                       {nextDep && (
                         <div className="flex items-center gap-2 text-xs py-px">
                           <span className={nextIsRepo ? "text-purple-600 font-medium" : "text-blue-600 font-medium"}>
-                            Flying again {fmtTimeUntil(nextDep.scheduled_departure) && `${fmtTimeUntil(nextDep.scheduled_departure)} · `}{fmtUtcHM(nextDep.scheduled_departure)} → {nextDep.arrival_icao?.replace(/^K/, "") ?? "?"}
+                            Flying again {fmtTimeUntil(nextDep.scheduled_departure) && `${fmtTimeUntil(nextDep.scheduled_departure)} · `}{fmtUtcHM(nextDep.scheduled_departure, nextDep.departure_icao)} → {nextDep.arrival_icao?.replace(/^K/, "") ?? "?"}
                           </span>
                           {nextIsRepo && <span className="text-purple-400">(repo)</span>}
                         </div>
@@ -2213,7 +2249,12 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
         const map = new Map<string, FlightInfoEntry>();
         const positions: AircraftPosition[] = [];
         for (const f of (data.flights ?? [])) {
-          map.set(f.tail, f);
+          // Prioritise en-route flights so they aren't overwritten by scheduled/completed ones
+          const existing = map.get(f.tail);
+          const fIsEnRoute = f.status?.includes("En Route");
+          if (!existing || fIsEnRoute || (!existing.status?.includes("En Route") && !existing.status?.includes("Landed"))) {
+            map.set(f.tail, f);
+          }
           // Synthesize map positions from en-route flights with position data
           if (f.latitude != null && f.longitude != null) {
             positions.push({
@@ -2603,10 +2644,10 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
                                 <span className="font-mono text-sm text-gray-700">{arr}</span>
                               </div>
                               <div className="text-xs text-gray-600 min-w-[80px]">
-                                {fmtTime(f.scheduled_departure)}
+                                {fmtTime(f.scheduled_departure, f.departure_icao)}
                               </div>
                               <div className="text-xs text-gray-500 hidden sm:block min-w-[80px]">
-                                Arr {fmtTime(f.scheduled_arrival)}
+                                Arr {fmtTime(f.scheduled_arrival, f.arrival_icao)}
                               </div>
                               <div className="text-xs text-gray-400 hidden md:block min-w-[50px]">
                                 {f.scheduled_arrival ? fmtDuration(f.scheduled_departure, f.scheduled_arrival) : "—"}
