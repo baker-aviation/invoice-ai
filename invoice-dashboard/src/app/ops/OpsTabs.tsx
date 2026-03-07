@@ -33,7 +33,7 @@ export default function OpsTabs({ flights, bakerPprAirports }: { flights: Flight
 
       {/* Tab content */}
       {tab === "Current Ops" ? (
-        <CurrentOps flights={flights} />
+        <CurrentOps flights={flights} onSwitchToDuty={() => setTab("Flight Time & Rest")} />
       ) : tab === "Flight Time & Rest" ? (
         <DutyTracker flights={flights} />
       ) : (

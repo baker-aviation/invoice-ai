@@ -235,7 +235,7 @@ const SEVERITY_COLORS: Record<string, string> = {
 
 /* ── component ──────────────────────────────────────── */
 
-export default function CurrentOps({ flights }: { flights: Flight[] }) {
+export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Flight[]; onSwitchToDuty?: () => void }) {
   const [adsbAircraft, setAdsbAircraft] = useState<AdsbAircraft[]>([]);
   const [flightInfo, setFlightInfo] = useState<Map<string, FlightInfoMap>>(new Map());
   const [visibleTypes, setVisibleTypes] = useState<Set<string>>(DEFAULT_TYPES);
@@ -667,18 +667,26 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
                         <div className="flex items-center gap-2">
                           {duty && (
                             <>
-                              <span className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-mono font-medium rounded ${dutyColor(duty.flightTimeMin)}`} title="10/24 Check">
+                              <button
+                                onClick={onSwitchToDuty}
+                                className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-mono font-medium rounded cursor-pointer hover:opacity-80 transition-opacity ${dutyColor(duty.flightTimeMin)}`}
+                                title="View detailed 10/24 breakdown"
+                              >
                                 <span className="text-[10px]">{LEVEL_ICONS[dutyLevel(duty.flightTimeMin)]}</span>
                                 {fmtHM(duty.flightTimeMin)}
-                              </span>
+                              </button>
                               {duty.restMin != null && (() => {
                                 const rl = restLevel(duty.restMin);
                                 if (!rl) return null;
                                 return (
-                                  <span className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-mono font-medium rounded ${LEVEL_COLORS[rl]}`} title="Crew rest">
+                                  <button
+                                    onClick={onSwitchToDuty}
+                                    className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-mono font-medium rounded cursor-pointer hover:opacity-80 transition-opacity ${LEVEL_COLORS[rl]}`}
+                                    title="View detailed crew rest breakdown"
+                                  >
                                     <span className="text-[10px]">{LEVEL_ICONS[rl]}</span>
                                     R:{fmtHM(duty.restMin!)}
-                                  </span>
+                                  </button>
                                 );
                               })()}
                             </>
@@ -945,10 +953,14 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
                           if (!duty) return <span className="text-xs text-gray-300">--</span>;
                           const level = dutyLevel(duty.flightTimeMin);
                           return (
-                            <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-xs font-mono font-medium rounded ${LEVEL_COLORS[level]}`}>
+                            <button
+                              onClick={onSwitchToDuty}
+                              className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-xs font-mono font-medium rounded cursor-pointer hover:opacity-80 transition-opacity ${LEVEL_COLORS[level]}`}
+                              title="View detailed 10/24 breakdown"
+                            >
                               <span className="text-[11px]">{LEVEL_ICONS[level]}</span>
                               {fmtHM(duty.flightTimeMin)}
-                            </span>
+                            </button>
                           );
                         })()}
                       </td>
@@ -959,10 +971,14 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
                           const level = restLevel(duty.restMin);
                           if (!level) return <span className="text-xs text-gray-300">--</span>;
                           return (
-                            <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-xs font-mono font-medium rounded ${LEVEL_COLORS[level]}`}>
+                            <button
+                              onClick={onSwitchToDuty}
+                              className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-xs font-mono font-medium rounded cursor-pointer hover:opacity-80 transition-opacity ${LEVEL_COLORS[level]}`}
+                              title="View detailed crew rest breakdown"
+                            >
                               <span className="text-[11px]">{LEVEL_ICONS[level]}</span>
                               {fmtHM(duty.restMin)}
-                            </span>
+                            </button>
                           );
                         })()}
                       </td>
