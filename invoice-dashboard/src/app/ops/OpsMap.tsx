@@ -187,9 +187,16 @@ function MapResizer() {
   const map = useMap();
   useEffect(() => {
     const handler = () => {
+      const container = map.getContainer();
+      if (document.fullscreenElement) {
+        container.style.height = "100vh";
+        container.style.width = "100vw";
+      } else {
+        container.style.height = "500px";
+        container.style.width = "100%";
+      }
       map.invalidateSize();
-      setTimeout(() => map.invalidateSize(), 100);
-      setTimeout(() => map.invalidateSize(), 500);
+      setTimeout(() => map.invalidateSize(), 300);
     };
     document.addEventListener("fullscreenchange", handler);
     return () => document.removeEventListener("fullscreenchange", handler);
@@ -271,7 +278,7 @@ export default function OpsMap({ aircraft, flightInfo }: Props) {
   }
 
   return (
-    <div ref={containerRef} className="relative" style={{ width: "100%", height: isFs ? "100vh" : undefined }}>
+    <div ref={containerRef} className="relative">
       <div className="absolute top-2 right-2 z-[1000] flex gap-1.5">
         <ToggleBtn label={darkMode ? "Dark" : "Light"} active={darkMode} onClick={() => setDarkMode((v) => !v)} />
         <ToggleBtn label={showRadar ? "Radar ON" : "Radar"} active={showRadar} onClick={() => setShowRadar((v) => !v)} />
@@ -283,7 +290,7 @@ export default function OpsMap({ aircraft, flightInfo }: Props) {
       <MapContainer
         center={[37.5, -96]}
         zoom={4}
-        style={isFs ? { position: "absolute", top: 0, left: 0, right: 0, bottom: 0 } : { height: "500px", width: "100%" }}
+        style={{ height: "500px", width: "100%" }}
         scrollWheelZoom
       >
         <TileLayer
