@@ -422,6 +422,71 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
       .sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure));
   }, [flights, visibleTypes, timeRange]);
 
+  // Detect legs superseded by FA (route changed after schedule) + inject FA replacement legs
+  const { displayFlights, supersededIds } = useMemo(() => {
+    const superseded = new Set<string>();
+    const replacements: Flight[] = [];
+    const addedRoutes = new Set<string>();
+
+    for (const f of filteredFlights) {
+      if (!f.tail_number || !f.departure_icao || !f.arrival_icao) continue;
+
+      // Check if a route-specific FA match exists
+      const routeKey = `${f.tail_number}|${f.departure_icao}|${f.arrival_icao}`;
+      if (flightInfo.has(routeKey)) continue; // Route matches FA — not superseded
+
+      // Check tail's active FA flight
+      const tailFi = flightInfo.get(f.tail_number);
+      if (!tailFi) continue;
+      if (tailFi.origin_icao !== f.departure_icao) continue; // Different origin
+      if (tailFi.destination_icao === f.arrival_icao) continue; // Same dest
+
+      // Must be active (en-route or actually departed)
+      const isActive = tailFi.actual_departure != null ||
+        tailFi.status?.includes("En Route") ||
+        (tailFi.status?.includes("Landed") && tailFi.actual_arrival != null);
+      if (!isActive) continue;
+
+      // Check departure time proximity (within 3 hours)
+      const faDepIso = tailFi.departure_time ?? tailFi.actual_departure;
+      if (faDepIso) {
+        const diff = Math.abs(new Date(faDepIso).getTime() - new Date(f.scheduled_departure).getTime());
+        if (diff > 3 * 3600_000) continue;
+      }
+
+      superseded.add(f.id);
+
+      // Inject replacement (once per route), skip if already in schedule
+      const replRouteKey = `${f.tail_number}|${tailFi.origin_icao}|${tailFi.destination_icao}`;
+      if (addedRoutes.has(replRouteKey)) continue;
+      const existsInSchedule = filteredFlights.some(
+        (ff) => ff.tail_number === f.tail_number &&
+          ff.departure_icao === tailFi.origin_icao &&
+          ff.arrival_icao === tailFi.destination_icao,
+      );
+      if (existsInSchedule) continue;
+
+      addedRoutes.add(replRouteKey);
+      replacements.push({
+        id: `fa-${replRouteKey}`,
+        ics_uid: "",
+        tail_number: f.tail_number,
+        departure_icao: tailFi.origin_icao,
+        arrival_icao: tailFi.destination_icao,
+        scheduled_departure: faDepIso ?? f.scheduled_departure,
+        scheduled_arrival: tailFi.arrival_time ?? null,
+        summary: null,
+        flight_type: f.flight_type, // inherit type from superseded leg
+        alerts: [],
+      });
+    }
+
+    const all = [...filteredFlights, ...replacements].sort(
+      (a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure),
+    );
+    return { displayFlights: all, supersededIds: superseded };
+  }, [filteredFlights, flightInfo]);
+
   // Build tail → fleet type lookup from FlightAware data
   const tailFleetType = useMemo(() => {
     const map = new Map<string, string>();
@@ -437,7 +502,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
   const flightsByFleetType = useMemo(() => {
     // First group by tail
     const byTail = new Map<string, Flight[]>();
-    for (const f of filteredFlights) {
+    for (const f of displayFlights) {
       const tail = f.tail_number || "Unassigned";
       if (!byTail.has(tail)) byTail.set(tail, []);
       byTail.get(tail)!.push(f);
@@ -460,7 +525,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
       (a, b) => (FLEET_ORDER.indexOf(a[0]) === -1 ? 99 : FLEET_ORDER.indexOf(a[0]))
               - (FLEET_ORDER.indexOf(b[0]) === -1 ? 99 : FLEET_ORDER.indexOf(b[0]))
     );
-  }, [filteredFlights, tailFleetType]);
+  }, [displayFlights, tailFleetType]);
 
   function toggleExpanded(flightId: string) {
     setExpandedFlights((prev) => {
@@ -604,7 +669,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
             <span className="text-gray-500">{onGround} on ground</span>
           </span>
           <span className="text-gray-400">·</span>
-          <span className="text-gray-400">{filteredFlights.length} flights scheduled</span>
+          <span className="text-gray-400">{displayFlights.length} flights scheduled</span>
         </div>
         {lastUpdate && (
           <span className="ml-auto text-xs text-gray-400">
@@ -822,13 +887,17 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                           }
                           if (fi?.diverted) { status = "DIVERTED"; statusColor = "text-red-600 font-bold"; }
 
+                          const isCancelled = supersededIds.has(f.id);
+                          const isFaSourced = f.id.startsWith("fa-");
+                          if (isCancelled) { status = "Cancelled"; statusColor = "text-red-600 font-medium"; }
+
                           const actualDepIso = fi?.actual_departure ?? null;
                           const actualArrIso = fi?.actual_arrival ?? null;
 
                           return (
-                            <div key={f.id} className="px-4 py-2 text-xs">
+                            <div key={f.id} className={`px-4 py-2 text-xs ${isCancelled ? "opacity-50 bg-gray-50" : ""} ${isFaSourced ? "bg-blue-50/40" : ""}`}>
                               <div className="flex items-center gap-3">
-                                <span className="font-mono font-medium text-gray-800 w-28 shrink-0">
+                                <span className={`font-mono font-medium w-28 shrink-0 ${isCancelled ? "line-through text-gray-400" : "text-gray-800"}`}>
                                   {f.departure_icao || "?"} → {f.arrival_icao || "?"}
                                 </span>
                                 <div className="w-36 shrink-0">
@@ -866,6 +935,9 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                                   {type}
                                 </span>
                                 <span className={`text-xs ${statusColor}`}>{status}</span>
+                                {isFaSourced && (
+                                  <span className="px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-blue-100 text-blue-700">FA</span>
+                                )}
                                 {fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100 && (
                                   <div className="w-16 h-1.5 bg-gray-200 rounded-full overflow-hidden">
                                     <div className="h-full bg-blue-500 rounded-full" style={{ width: `${fi.progress_percent}%` }} />
@@ -960,14 +1032,14 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
             </tr>
           </thead>
           <tbody>
-            {filteredFlights.length === 0 ? (
+            {displayFlights.length === 0 ? (
               <tr>
                 <td colSpan={9} className="px-4 py-8 text-center text-gray-400">
                   No flights scheduled for selected filters
                 </td>
               </tr>
             ) : (
-              filteredFlights.map((f) => {
+              displayFlights.map((f) => {
                 // Look up FlightAware info by route-specific key first, then fall back to tail-only
                 const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
                 const fi = f.tail_number
@@ -1012,6 +1084,14 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                   statusColor = "text-red-600 font-bold";
                 }
 
+                // Check if this leg is superseded by FA (route changed)
+                const isCancelled = supersededIds.has(f.id);
+                const isFaSourced = f.id.startsWith("fa-");
+                if (isCancelled) {
+                  status = "Cancelled";
+                  statusColor = "text-red-600 font-medium";
+                }
+
                 const depDate = new Date(f.scheduled_departure);
 
                 // Departure time mismatch: compare FlightAware departure vs ICS scheduled
@@ -1033,11 +1113,16 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                 return (
                   <Fragment key={f.id}>
                     <tr
-                      className="border-t hover:bg-gray-50"
+                      className={`border-t hover:bg-gray-50 ${isCancelled ? "opacity-50 bg-gray-50" : ""} ${isFaSourced ? "bg-blue-50/40" : ""}`}
                     >
                       <td className="px-3 py-2.5 overflow-visible">
                         <div className="flex flex-col gap-0.5">
                           <span className={`text-xs font-medium ${statusColor}`}>{status}</span>
+                          {isFaSourced && (
+                            <span className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-blue-100 text-blue-700">
+                              FA Source
+                            </span>
+                          )}
                           {(() => {
                             const schedMs = new Date(f.scheduled_departure).getTime();
                             const nowMs = Date.now();
@@ -1066,7 +1151,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                         {f.tail_number || "—"}
                       </td>
                       <td className="px-3 py-2.5">
-                        <span className="font-mono font-medium">
+                        <span className={`font-mono font-medium ${isCancelled ? "line-through text-gray-400" : ""}`}>
                           {f.departure_icao || "?"} → {f.arrival_icao || "?"}
                         </span>
                         {fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100 && (
