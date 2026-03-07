@@ -174,6 +174,14 @@ function restColor(restMin: number | null): string {
   return "text-green-700 bg-green-50";
 }
 
+/** Delay color: early/≤15m green, 15-45m amber, >45m red */
+function delayColorClass(scheduledIso: string, actualIso: string): string {
+  const delayMin = (new Date(actualIso).getTime() - new Date(scheduledIso).getTime()) / 60_000;
+  if (delayMin > 45) return "text-red-600";
+  if (delayMin > 15) return "text-amber-600";
+  return "text-green-600";
+}
+
 function fmtHM(minutes: number): string {
   const h = Math.floor(minutes / 60);
   const m = Math.round(minutes % 60);
@@ -580,18 +588,8 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
                       }
                       if (fi?.diverted) { status = "DIVERTED"; statusColor = "text-red-600 font-bold"; }
 
-                      // Delay: compare actual departure to scheduled
-                      let delayMin: number | null = null;
-                      let delayColor = "";
                       const actualDepIso = fi?.actual_departure ?? null;
-                      if (actualDepIso) {
-                        delayMin = Math.round(
-                          (new Date(actualDepIso).getTime() - new Date(f.scheduled_departure).getTime()) / 60_000,
-                        );
-                        if (delayMin > 45) delayColor = "text-red-600";
-                        else if (delayMin > 15) delayColor = "text-amber-600";
-                        else delayColor = "text-green-600";
-                      }
+                      const actualArrIso = fi?.actual_arrival ?? null;
 
                       return (
                         <div key={f.id} className="px-4 py-2 text-xs">
@@ -604,13 +602,24 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
                                 {fmt(f.scheduled_departure, f.departure_icao)}
                               </div>
                               {actualDepIso && (
-                                <div className={`text-[10px] font-medium ${delayColor}`}>
+                                <div className={`text-[10px] font-medium ${delayColorClass(f.scheduled_departure, actualDepIso)}`}>
                                   Actual: {fmt(actualDepIso, f.departure_icao)}
-                                  {delayMin != null && delayMin > 0 && (
-                                    <span className="ml-1">(+{delayMin}m)</span>
-                                  )}
                                 </div>
                               )}
+                            </div>
+                            <div className="w-36 shrink-0">
+                              <div className="text-gray-500">
+                                {fmt(f.scheduled_arrival, f.arrival_icao)}
+                              </div>
+                              {actualArrIso && f.scheduled_arrival ? (
+                                <div className={`text-[10px] font-medium ${delayColorClass(f.scheduled_arrival, actualArrIso)}`}>
+                                  Actual: {fmt(actualArrIso, f.arrival_icao)}
+                                </div>
+                              ) : fi?.arrival_time && !actualArrIso ? (
+                                <div className="text-[10px] text-blue-600 font-medium">
+                                  ETA: {fmt(fi.arrival_time, f.arrival_icao)}
+                                </div>
+                              ) : null}
                             </div>
                             <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded-full ${typeColor}`}>
                               {type}
@@ -761,51 +770,29 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
                         )}
                       </td>
                       <td className="px-4 py-2.5 text-gray-600">
-                        {showActual && fi?.actual_departure ? (
-                          <>
-                            <div>{fmt(fi.actual_departure, f.departure_icao)}</div>
-                            <div className="text-[10px] text-gray-400 mt-0.5">
-                              Sched: {fmt(f.scheduled_departure, f.departure_icao)}
-                            </div>
-                          </>
-                        ) : (
-                          <>
-                            <div>{fmt(f.scheduled_departure, f.departure_icao)}</div>
-                            {fi?.actual_departure && (
-                              <div className="text-[10px] text-green-600 font-medium mt-0.5">
-                                Actual: {fmt(fi.actual_departure, f.departure_icao)}
-                              </div>
-                            )}
-                            {depMismatchMin !== null && fi?.departure_time && !fi?.actual_departure && (
-                              <div className="mt-0.5 text-[10px] font-semibold text-amber-700">
-                                FA Est. Departure: {fmt(fi.departure_time, f.departure_icao)}
-                              </div>
-                            )}
-                          </>
+                        <div>{fmt(f.scheduled_departure, f.departure_icao)}</div>
+                        {fi?.actual_departure && (
+                          <div className={`text-[10px] font-medium mt-0.5 ${delayColorClass(f.scheduled_departure, fi.actual_departure)}`}>
+                            Actual: {fmt(fi.actual_departure, f.departure_icao)}
+                          </div>
+                        )}
+                        {!fi?.actual_departure && depMismatchMin !== null && fi?.departure_time && (
+                          <div className="mt-0.5 text-[10px] font-semibold text-amber-700">
+                            FA Est: {fmt(fi.departure_time, f.departure_icao)}
+                          </div>
                         )}
                       </td>
                       <td className="px-4 py-2.5 text-gray-600">
-                        {showActual && fi?.actual_arrival ? (
-                          <>
-                            <div>{fmt(fi.actual_arrival, f.arrival_icao)}</div>
-                            <div className="text-[10px] text-gray-400 mt-0.5">
-                              Sched: {fmt(f.scheduled_arrival, f.arrival_icao)}
-                            </div>
-                          </>
-                        ) : (
-                          <>
-                            <div>{fmt(f.scheduled_arrival, f.arrival_icao)}</div>
-                            {fi?.actual_arrival ? (
-                              <div className="text-[10px] text-green-600 font-medium mt-0.5">
-                                Actual: {fmt(fi.actual_arrival, f.arrival_icao)}
-                              </div>
-                            ) : fi?.arrival_time && !fi?.actual_arrival && status !== "Arrived" ? (
-                              <div className="text-[10px] text-green-600 font-medium mt-0.5">
-                                FlightAware ETA: {fmt(fi.arrival_time, f.arrival_icao)}
-                              </div>
-                            ) : null}
-                          </>
-                        )}
+                        <div>{fmt(f.scheduled_arrival, f.arrival_icao)}</div>
+                        {fi?.actual_arrival && f.scheduled_arrival ? (
+                          <div className={`text-[10px] font-medium mt-0.5 ${delayColorClass(f.scheduled_arrival, fi.actual_arrival)}`}>
+                            Actual: {fmt(fi.actual_arrival, f.arrival_icao)}
+                          </div>
+                        ) : fi?.arrival_time && !fi?.actual_arrival && status !== "Arrived" ? (
+                          <div className="text-[10px] text-blue-600 font-medium mt-0.5">
+                            ETA: {fmt(fi.arrival_time, f.arrival_icao)}
+                          </div>
+                        ) : null}
                       </td>
                       <td className="px-4 py-2.5">
                         <span className={`px-2 py-0.5 text-xs font-medium rounded-full ${typeColor}`}>
