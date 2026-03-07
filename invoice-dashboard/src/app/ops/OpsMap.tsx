@@ -281,7 +281,7 @@ export default function OpsMap({ aircraft, flightInfo }: Props) {
   }
 
   return (
-    <div ref={containerRef} className="relative" style={isFs ? { width: "100%", height: "100%" } : undefined}>
+    <div ref={containerRef} className="relative" style={isFs ? { width: "100vw", height: "100vh" } : undefined}>
       <div className="absolute top-2 right-2 z-[1000] flex gap-1.5">
         <ToggleBtn label={darkMode ? "Dark" : "Light"} active={darkMode} onClick={() => setDarkMode((v) => !v)} />
         <ToggleBtn label={showRadar ? "Radar ON" : "Radar"} active={showRadar} onClick={() => setShowRadar((v) => !v)} />

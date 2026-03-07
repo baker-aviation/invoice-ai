@@ -129,10 +129,12 @@ function acDataLabel(ac: AircraftPosition, fi: FlightInfoMap | undefined, fleetL
   return `<div style="color:${color};font-family:ui-monospace,monospace;font-size:10px;line-height:1.3;white-space:nowrap;${shadow}">${lines.join("<br>")}</div>`;
 }
 
-// Van icon — clean van silhouette
-function vanDivIcon(color: string): L.DivIcon {
+// Van icon — clean van silhouette, always green
+const VAN_COLOR = "#22c55e";
+
+function vanDivIcon(): L.DivIcon {
   return L.divIcon({
-    html: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="${color}" style="filter:drop-shadow(0 1px 3px rgba(0,0,0,0.5))">
+    html: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="${VAN_COLOR}" style="filter:drop-shadow(0 1px 3px rgba(0,0,0,0.5))">
       <path d="M1 12.5V11l2-6h11l3 4h3a2 2 0 012 2v1.5h-1a2.5 2.5 0 00-5 0H8a2.5 2.5 0 00-5 0H1zm4.5 2a1.5 1.5 0 110-3 1.5 1.5 0 010 3zm12 0a1.5 1.5 0 110-3 1.5 1.5 0 010 3zM5 7l-1.5 4h5V7H5zm4.5 0v4h4.5L12 7H9.5z"/>
     </svg>`,
     className: "",
@@ -395,7 +397,7 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive,
   const enRouteTails = new Set((aircraftPositions ?? []).map((a) => a.tail));
 
   return (
-    <div ref={containerRef} className="relative" style={isFs ? { width: "100%", height: "100%" } : undefined}>
+    <div ref={containerRef} className="relative" style={isFs ? { width: "100vw", height: "100vh" } : undefined}>
       {/* Toggle controls */}
       <div className="absolute top-2 right-2 z-[1000] flex gap-1.5">
         <ToggleButton label="Labels" active={showLabels} onClick={() => setShowLabels((v) => !v)} />
@@ -429,37 +431,35 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive,
 
         {/* Range rings */}
         {showRings && vans.map((van) => {
-          const color = colors[(van.vanId - 1) % colors.length];
           const pos = liveVanPositions.get(van.vanId) ?? { lat: van.lat, lon: van.lon };
           return (
             <Circle
               key={`radius-${van.vanId}`}
               center={[pos.lat, pos.lon]}
               radius={THREE_HOUR_RADIUS_M}
-              pathOptions={{ color, fillColor: color, fillOpacity: 0.02, weight: 1, dashArray: "8 6", opacity: 0.35 }}
+              pathOptions={{ color: VAN_COLOR, fillColor: VAN_COLOR, fillOpacity: 0.02, weight: 1, dashArray: "8 6", opacity: 0.35 }}
             />
           );
         })}
 
         {/* Van markers */}
         {showVans && vans.map((van) => {
-          const color = colors[(van.vanId - 1) % colors.length];
           const cachedPos = liveVanPositions.get(van.vanId);
           const pos = cachedPos ?? { lat: van.lat, lon: van.lon };
           const isLive = liveVanIsLive ? liveVanIsLive.get(van.vanId) === true : cachedPos !== undefined;
           const isLastKnown = cachedPos !== undefined && !isLive;
           return (
-            <Marker key={`van-${van.vanId}`} position={[pos.lat, pos.lon]} icon={vanDivIcon(color)} zIndexOffset={1000}>
+            <Marker key={`van-${van.vanId}`} position={[pos.lat, pos.lon]} icon={vanDivIcon()} zIndexOffset={1000}>
               {showLabels && (
                 <Tooltip permanent direction="top" offset={[0, -14]} className="fa-data-tooltip">
-                  <div style={{ color, fontFamily: "ui-monospace,monospace", fontSize: "10px", fontWeight: 700, whiteSpace: "nowrap", textShadow: "0 1px 3px rgba(0,0,0,0.9), 0 0 6px rgba(0,0,0,0.6)" }}>
+                  <div style={{ color: VAN_COLOR, fontFamily: "ui-monospace,monospace", fontSize: "10px", fontWeight: 700, whiteSpace: "nowrap", textShadow: "0 1px 3px rgba(0,0,0,0.9), 0 0 6px rgba(0,0,0,0.6)" }}>
                     Van {van.vanId}
                   </div>
                 </Tooltip>
               )}
               <Popup>
                 <div className="text-sm space-y-1">
-                  <div className="font-bold" style={{ color }}>Van {van.vanId}</div>
+                  <div className="font-bold" style={{ color: VAN_COLOR }}>Van {van.vanId}</div>
                   <div className="text-gray-500">{van.region}</div>
                   <div>Home: <span className="font-medium">{van.homeAirport}</span></div>
                   {isLive ? (
