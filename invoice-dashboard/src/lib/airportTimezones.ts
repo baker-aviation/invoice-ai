@@ -254,32 +254,59 @@ export function getAirportTimezone(icao: string | null | undefined): string | nu
  * Format a UTC ISO timestamp in the given timezone.
  * Returns something like "Mar 6, 09:06 EST" for local or "Mar 6, 14:06Z" for UTC.
  */
+export type TzMode = "local" | "UTC" | "EST" | "CST" | "MST" | "PST";
+
+const TZ_MODE_MAP: Record<TzMode, string | null> = {
+  local: null, // resolved per-airport
+  UTC: "UTC",
+  EST: "America/New_York",
+  CST: "America/Chicago",
+  MST: "America/Denver",
+  PST: "America/Los_Angeles",
+};
+
 export function fmtTimeInTz(
   iso: string | null | undefined,
   airportIcao: string | null | undefined,
   useLocal: boolean,
+  tzMode?: TzMode,
 ): string {
   if (!iso) return "—";
   const d = new Date(iso);
   if (isNaN(d.getTime())) return iso;
 
-  if (!useLocal) {
-    // UTC format
-    return (
-      d.toLocaleString("en-US", {
+  // Resolve timezone: tzMode takes priority, then useLocal flag
+  const mode: TzMode = tzMode ?? (useLocal ? "local" : "UTC");
+  const fixedTz = TZ_MODE_MAP[mode];
+
+  // For fixed timezone modes (UTC, EST, CST, etc.)
+  if (fixedTz) {
+    const suffix = mode === "UTC" ? "Z" : "";
+    try {
+      const timePart = d.toLocaleString("en-US", {
         month: "short",
         day: "numeric",
         hour: "2-digit",
         minute: "2-digit",
         hour12: false,
-        timeZone: "UTC",
-      }) + "Z"
-    );
+        timeZone: fixedTz,
+      });
+      if (mode === "UTC") return timePart + suffix;
+      const tzAbbr = d
+        .toLocaleString("en-US", { timeZoneName: "short", timeZone: fixedTz })
+        .split(" ")
+        .pop() ?? mode;
+      return `${timePart} ${tzAbbr}`;
+    } catch {
+      return d.toLocaleString("en-US", {
+        month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC",
+      }) + "Z";
+    }
   }
 
+  // Local mode: use airport timezone
   const tz = getAirportTimezone(airportIcao);
   if (!tz) {
-    // Unknown airport — fall back to UTC
     return (
       d.toLocaleString("en-US", {
         month: "short",
@@ -292,7 +319,6 @@ export function fmtTimeInTz(
     );
   }
 
-  // Format in local timezone with short tz abbreviation
   try {
     const timePart = d.toLocaleString("en-US", {
       month: "short",
@@ -303,7 +329,6 @@ export function fmtTimeInTz(
       timeZone: tz,
     });
 
-    // Get timezone abbreviation (e.g. EST, CST, PST)
     const tzAbbr = d
       .toLocaleString("en-US", { timeZoneName: "short", timeZone: tz })
       .split(" ")

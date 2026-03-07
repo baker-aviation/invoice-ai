@@ -4,7 +4,7 @@ import dynamic from "next/dynamic";
 import { useState, useEffect, useCallback, useMemo, Fragment } from "react";
 import type { Flight, OpsAlert } from "@/lib/opsApi";
 import type { AircraftPosition, FlightInfoMap } from "@/app/maintenance/MapView";
-import { fmtTimeInTz } from "@/lib/airportTimezones";
+import { fmtTimeInTz, type TzMode } from "@/lib/airportTimezones";
 import { getAirportInfo } from "@/lib/airportCoords";
 import { TRIPS } from "@/lib/maintenanceData";
 
@@ -332,15 +332,15 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
   const [localAckedIds, setLocalAckedIds] = useState<Set<string>>(new Set());
   const [showAcknowledged, setShowAcknowledged] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
-  const [useUtc, setUseUtc] = useState(false);
+  const [tzMode, setTzMode] = useState<TzMode>("local");
   const [showActual, setShowActual] = useState(false);
   const [viewMode, setViewMode] = useState<"table" | "aircraft">("table");
 
   // Shorthand for formatting times — uses departure or arrival airport TZ
   const fmt = useCallback(
     (iso: string | null | undefined, icao?: string | null) =>
-      fmtTimeInTz(iso, icao, !useUtc),
-    [useUtc],
+      fmtTimeInTz(iso, icao, true, tzMode),
+    [tzMode],
   );
 
   const isAcked = useCallback(
@@ -788,17 +788,20 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
 
         <span className="text-gray-300">|</span>
 
-        {/* Timezone toggle */}
-        <button
-          onClick={() => setUseUtc((v) => !v)}
-          className={`px-3 py-1 text-xs font-medium rounded-full transition-all ${
-            useUtc
-              ? "bg-indigo-100 text-indigo-700"
-              : "bg-gray-900 text-white"
-          }`}
+        {/* Timezone selector */}
+        <select
+          value={tzMode}
+          onChange={(e) => setTzMode(e.target.value as TzMode)}
+          className="px-3 py-1 text-xs font-medium rounded-full bg-gray-900 text-white border-0 cursor-pointer appearance-none pr-6"
+          style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath fill='white' d='M0 0l4 5 4-5z'/%3E%3C/svg%3E\")", backgroundRepeat: "no-repeat", backgroundPosition: "right 8px center" }}
         >
-          {useUtc ? "UTC / Zulu" : "Local Time"}
-        </button>
+          <option value="local">Local Time</option>
+          <option value="UTC">UTC / Zulu</option>
+          <option value="EST">Eastern</option>
+          <option value="CST">Central</option>
+          <option value="MST">Mountain</option>
+          <option value="PST">Pacific</option>
+        </select>
 
         {/* View mode toggle */}
         <div className="flex items-center gap-2">
