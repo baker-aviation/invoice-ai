@@ -77,7 +77,7 @@ function getFleetName(fleetLookup: Map<string, string>, tail: string): string | 
 function getAcColor(fleetLookup: Map<string, string>, tail: string, onGround: boolean): string {
   const fleet = getFleetName(fleetLookup, tail);
   if (fleet === "Challenger 300" || fleet === "Challenger 350") {
-    return onGround ? "#f87171" : "#eab308"; // ground: light red, flight: golden yellow (FA style)
+    return onGround ? "#f87171" : "#dc2626"; // ground: light red, flight: dark red
   }
   if (fleet === "Citation X") {
     return onGround ? "#60a5fa" : "#22d3ee"; // ground: light blue, flight: cyan
@@ -184,7 +184,7 @@ function MapLegend({ dark }: { dark: boolean }) {
     <div className={`absolute bottom-3 right-3 z-[1000] ${bg} backdrop-blur-sm rounded-lg shadow-md px-3 py-2.5 text-[11px] space-y-1`}>
       <div className={`font-semibold ${heading} text-[10px] uppercase tracking-wider mb-1`}>Fleet</div>
       <div className="flex items-center gap-2">
-        <LegendPlane color="#eab308" />
+        <LegendPlane color="#dc2626" />
         <span className={text}>Challenger - In flight</span>
       </div>
       <div className="flex items-center gap-2">
