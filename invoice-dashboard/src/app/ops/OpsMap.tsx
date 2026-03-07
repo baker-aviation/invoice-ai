@@ -161,61 +161,66 @@ function FlightTracks({ flightInfo, fleetLookup }: { flightInfo: Map<string, Fli
 
 function RadarLayer({ visible }: { visible: boolean }) {
   const map = useMap();
-  const [radarPath, setRadarPath] = useState<string | null>(null);
   const layerRef = useRef<L.TileLayer | null>(null);
+  const [ready, setReady] = useState(false);
 
-  const fetchRadar = useCallback(async () => {
-    try {
-      const res = await fetch("https://api.rainviewer.com/public/weather-maps.json");
-      const data = await res.json();
-      const past = data?.radar?.past;
-      if (past?.length) {
-        setRadarPath(past[past.length - 1].path);
-      }
-    } catch { /* ignore */ }
-  }, []);
-
+  // Create the pane once on mount
   useEffect(() => {
-    if (!visible) return;
-    fetchRadar();
-    const interval = setInterval(fetchRadar, 5 * 60 * 1000);
-    return () => clearInterval(interval);
-  }, [visible, fetchRadar]);
-
-  useEffect(() => {
-    // Remove previous layer
-    if (layerRef.current) {
-      map.removeLayer(layerRef.current);
-      layerRef.current = null;
-    }
-
-    if (!visible || !radarPath) return;
-
-    // Ensure pane exists
     if (!map.getPane("radarPane")) {
       const pane = map.createPane("radarPane");
       pane.style.zIndex = "350";
       pane.style.pointerEvents = "none";
     }
+    setReady(true);
+  }, [map]);
 
-    const layer = L.tileLayer(
-      `https://tilecache.rainviewer.com${radarPath}/256/{z}/{x}/{y}/2/1_1.png`,
-      {
-        opacity: 0.4,
-        pane: "radarPane",
-        attribution: '<a href="https://www.rainviewer.com/">RainViewer</a>',
+  // Fetch radar timestamp and manage layer
+  useEffect(() => {
+    if (!ready) return;
+
+    // Remove existing
+    if (layerRef.current) {
+      map.removeLayer(layerRef.current);
+      layerRef.current = null;
+    }
+
+    if (!visible) return;
+
+    let cancelled = false;
+
+    async function addRadar() {
+      try {
+        const res = await fetch("https://api.rainviewer.com/public/weather-maps.json");
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        const past = data?.radar?.past;
+        if (!past?.length || cancelled) return;
+        const path = past[past.length - 1].path;
+
+        const layer = L.tileLayer(
+          `https://tilecache.rainviewer.com${path}/256/{z}/{x}/{y}/2/1_1.png`,
+          { opacity: 0.45, pane: "radarPane" }
+        );
+        if (cancelled) return;
+        layer.addTo(map);
+        layerRef.current = layer;
+      } catch {
+        // ignore
       }
-    );
-    layer.addTo(map);
-    layerRef.current = layer;
+    }
+
+    addRadar();
+    const interval = setInterval(addRadar, 5 * 60 * 1000);
 
     return () => {
+      cancelled = true;
+      clearInterval(interval);
       if (layerRef.current) {
         map.removeLayer(layerRef.current);
         layerRef.current = null;
       }
     };
-  }, [visible, radarPath, map]);
+  }, [visible, ready, map]);
 
   return null;
 }

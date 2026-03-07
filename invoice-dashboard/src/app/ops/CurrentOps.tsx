@@ -175,17 +175,41 @@ function computeTailDuty(
 }
 
 // Part 135.267(b)(2): 10h limit for two-pilot crew
+type StatusLevel = "green" | "amber" | "red";
+
+function dutyLevel(flightTimeMin: number): StatusLevel {
+  if (flightTimeMin >= 600) return "red";    // >= 10h — exceeded
+  if (flightTimeMin >= 540) return "amber";  // >= 9h (within 1h)
+  return "green";
+}
+
+function restLevel(restMin: number | null): StatusLevel | null {
+  if (restMin == null) return null;
+  if (restMin <= 600) return "red";   // <= 10h — below minimum
+  if (restMin <= 660) return "amber"; // 10-11h — approaching minimum
+  return "green";                     // > 11h — good
+}
+
+const LEVEL_COLORS: Record<StatusLevel, string> = {
+  green: "text-green-700 bg-green-50",
+  amber: "text-amber-700 bg-amber-50",
+  red: "text-red-700 bg-red-50",
+};
+
+const LEVEL_ICONS: Record<StatusLevel, string> = {
+  green: "\u2705",  // green check
+  amber: "\u26A0\uFE0F",   // warning
+  red: "\uD83D\uDED1",     // stop sign
+};
+
 function dutyColor(flightTimeMin: number): string {
-  if (flightTimeMin >= 600) return "text-red-700 bg-red-50"; // >= 10h — exceeded
-  if (flightTimeMin >= 540) return "text-amber-700 bg-amber-50"; // >= 9h (within 1h)
-  return "text-green-700 bg-green-50";
+  return LEVEL_COLORS[dutyLevel(flightTimeMin)];
 }
 
 function restColor(restMin: number | null): string {
-  if (restMin == null) return "text-gray-400";
-  if (restMin < 10 * 60) return "text-red-700 bg-red-50"; // < 10h required min
-  if (restMin < 11 * 60) return "text-amber-700 bg-amber-50"; // < 11h (within 1h)
-  return "text-green-700 bg-green-50";
+  const level = restLevel(restMin);
+  if (!level) return "text-gray-400";
+  return LEVEL_COLORS[level];
 }
 
 /** Delay color: early/≤15m green, 15-45m amber, >45m red */
@@ -643,14 +667,20 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
                         <div className="flex items-center gap-2">
                           {duty && (
                             <>
-                              <span className={`px-1.5 py-0.5 text-[10px] font-mono font-medium rounded ${dutyColor(duty.flightTimeMin)}`} title="24hr flight time">
+                              <span className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-mono font-medium rounded ${dutyColor(duty.flightTimeMin)}`} title="10/24 Check">
+                                <span className="text-[10px]">{LEVEL_ICONS[dutyLevel(duty.flightTimeMin)]}</span>
                                 {fmtHM(duty.flightTimeMin)}
                               </span>
-                              {duty.restMin != null && (
-                                <span className={`px-1.5 py-0.5 text-[10px] font-mono font-medium rounded ${restColor(duty.restMin)}`} title="Crew rest">
-                                  R:{fmtHM(duty.restMin)}
-                                </span>
-                              )}
+                              {duty.restMin != null && (() => {
+                                const rl = restLevel(duty.restMin);
+                                if (!rl) return null;
+                                return (
+                                  <span className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-mono font-medium rounded ${LEVEL_COLORS[rl]}`} title="Crew rest">
+                                    <span className="text-[10px]">{LEVEL_ICONS[rl]}</span>
+                                    R:{fmtHM(duty.restMin!)}
+                                  </span>
+                                );
+                              })()}
                             </>
                           )}
                         </div>
@@ -754,7 +784,7 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
               <th className="px-4 py-3">Type</th>
               <th className="px-4 py-3">Status</th>
               <th className="px-4 py-3">Notes</th>
-              <th className="px-4 py-3">24hr Flight</th>
+              <th className="px-4 py-3">10/24 Check</th>
               <th className="px-4 py-3">Crew Rest</th>
             </tr>
           </thead>
@@ -913,8 +943,10 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
                         {(() => {
                           const duty = f.tail_number ? tailDuty.get(f.tail_number) : null;
                           if (!duty) return <span className="text-xs text-gray-300">--</span>;
+                          const level = dutyLevel(duty.flightTimeMin);
                           return (
-                            <span className={`inline-block px-1.5 py-0.5 text-xs font-mono font-medium rounded ${dutyColor(duty.flightTimeMin)}`}>
+                            <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-xs font-mono font-medium rounded ${LEVEL_COLORS[level]}`}>
+                              <span className="text-[11px]">{LEVEL_ICONS[level]}</span>
                               {fmtHM(duty.flightTimeMin)}
                             </span>
                           );
@@ -924,8 +956,11 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
                         {(() => {
                           const duty = f.tail_number ? tailDuty.get(f.tail_number) : null;
                           if (!duty || duty.restMin == null) return <span className="text-xs text-gray-300">--</span>;
+                          const level = restLevel(duty.restMin);
+                          if (!level) return <span className="text-xs text-gray-300">--</span>;
                           return (
-                            <span className={`inline-block px-1.5 py-0.5 text-xs font-mono font-medium rounded ${restColor(duty.restMin)}`}>
+                            <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-xs font-mono font-medium rounded ${LEVEL_COLORS[level]}`}>
+                              <span className="text-[11px]">{LEVEL_ICONS[level]}</span>
                               {fmtHM(duty.restMin)}
                             </span>
                           );
