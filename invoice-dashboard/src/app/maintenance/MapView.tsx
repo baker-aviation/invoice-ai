@@ -103,30 +103,11 @@ function overnightDivIcon(color: string): L.DivIcon {
   return L.divIcon({ html: svg, className: "", iconSize: [size, size], iconAnchor: [half, half], popupAnchor: [0, -half] });
 }
 
-/** FA-style data label — full block for en-route, just tail for ground */
-function acDataLabel(ac: AircraftPosition, fi: FlightInfoMap | undefined, fleetLookup: Map<string, string>): string {
+/** Label for aircraft — just tail number (keep van map clean) */
+function acDataLabel(ac: AircraftPosition, _fi: FlightInfoMap | undefined, fleetLookup: Map<string, string>): string {
   const color = getAcColor(fleetLookup, ac.tail, ac.on_ground);
   const shadow = "text-shadow: 0 1px 3px rgba(0,0,0,0.9), 0 0 6px rgba(0,0,0,0.6)";
-
-  // Ground aircraft: just tail number
-  if (ac.on_ground) {
-    return `<div style="color:${color};font-family:ui-monospace,monospace;font-size:10px;white-space:nowrap;${shadow}"><b>${ac.tail}</b></div>`;
-  }
-
-  // En-route: full data block
-  const lines: string[] = [];
-  const ident = fi?.ident ?? ac.flight ?? ac.tail;
-  const type = fi?.aircraft_type ?? "";
-  lines.push(`<b>${ident}</b>${type ? " " + type : ""}`);
-  const alt = ac.alt_baro != null && ac.alt_baro > 0 ? Math.round(ac.alt_baro).toString() : "";
-  const gs = ac.gs != null ? Math.round(ac.gs).toString() : "";
-  if (alt || gs) lines.push([alt, gs].filter(Boolean).join(" "));
-  if (fi?.origin_icao && fi?.destination_icao) {
-    const orig = fi.origin_icao.replace(/^K/, "");
-    const dest = fi.destination_icao.replace(/^K/, "");
-    lines.push(`${orig} ${dest}`);
-  }
-  return `<div style="color:${color};font-family:ui-monospace,monospace;font-size:10px;line-height:1.3;white-space:nowrap;${shadow}">${lines.join("<br>")}</div>`;
+  return `<div style="color:${color};font-family:ui-monospace,monospace;font-size:10px;white-space:nowrap;${shadow}"><b>${ac.tail}</b></div>`;
 }
 
 // Van icon — clean van silhouette, always green
