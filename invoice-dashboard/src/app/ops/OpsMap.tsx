@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import L from "leaflet";
-import { MapContainer, TileLayer, Marker, Popup, Tooltip, Polyline } from "react-leaflet";
+import { MapContainer, TileLayer, Marker, Popup, Tooltip, Polyline, useMap } from "react-leaflet";
 import type { AdsbAircraft, FlightInfoMap } from "@/app/maintenance/MapView";
 
 function adsbDivIcon(track: number | null, onGround: boolean): L.DivIcon {
@@ -125,23 +125,94 @@ function FlightTracks({ flightInfo }: { flightInfo: Map<string, FlightInfoMap> }
   );
 }
 
-export default function OpsMap({ adsbAircraft, flightInfo }: Props) {
+/**
+ * Creates a custom pane for the radar layer so it renders
+ * above the base map but below markers and polylines.
+ */
+function RadarPane() {
+  const map = useMap();
+  useEffect(() => {
+    if (!map.getPane("radarPane")) {
+      const pane = map.createPane("radarPane");
+      pane.style.zIndex = "350"; // between tiles (200) and overlays (400)
+      pane.style.pointerEvents = "none";
+    }
+  }, [map]);
+  return null;
+}
+
+/**
+ * Fetches the latest radar tile path from RainViewer and renders it.
+ */
+function RadarLayer({ visible }: { visible: boolean }) {
+  const [radarPath, setRadarPath] = useState<string | null>(null);
+
+  const fetchRadar = useCallback(async () => {
+    try {
+      const res = await fetch("https://api.rainviewer.com/public/weather-maps.json");
+      const data = await res.json();
+      const past = data?.radar?.past;
+      if (past?.length) {
+        setRadarPath(past[past.length - 1].path);
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!visible) return;
+    fetchRadar();
+    const interval = setInterval(fetchRadar, 5 * 60 * 1000); // refresh every 5 min
+    return () => clearInterval(interval);
+  }, [visible, fetchRadar]);
+
+  if (!visible || !radarPath) return null;
+
   return (
-    <MapContainer
-      center={[37.5, -96]}
-      zoom={4}
-      style={{ height: "500px", width: "100%" }}
-      scrollWheelZoom
-    >
-      <TileLayer
-        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-      />
+    <TileLayer
+      url={`https://tilecache.rainviewer.com${radarPath}/256/{z}/{x}/{y}/2/1_1.png`}
+      opacity={0.4}
+      pane="radarPane"
+      attribution='<a href="https://www.rainviewer.com/">RainViewer</a>'
+    />
+  );
+}
 
-      {/* Route tracks for en-route flights */}
-      <FlightTracks flightInfo={flightInfo} />
+export default function OpsMap({ adsbAircraft, flightInfo }: Props) {
+  const [showRadar, setShowRadar] = useState(false);
 
-      {/* Aircraft markers */}
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setShowRadar((v) => !v)}
+        className={`absolute top-2 right-2 z-[1000] px-3 py-1.5 rounded-md text-xs font-medium shadow-md transition-colors ${
+          showRadar
+            ? "bg-blue-600 text-white hover:bg-blue-700"
+            : "bg-white text-gray-700 hover:bg-gray-100 border border-gray-300"
+        }`}
+      >
+        {showRadar ? "Radar ON" : "Radar"}
+      </button>
+      <MapContainer
+        center={[37.5, -96]}
+        zoom={4}
+        style={{ height: "500px", width: "100%" }}
+        scrollWheelZoom
+      >
+        <TileLayer
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        />
+
+        {/* Radar overlay — below tracks and markers */}
+        <RadarPane />
+        <RadarLayer visible={showRadar} />
+
+        {/* Route tracks for en-route flights */}
+        <FlightTracks flightInfo={flightInfo} />
+
+        {/* Aircraft markers */}
       {adsbAircraft.map((ac) => {
         const fi = flightInfo.get(ac.tail);
         return (
@@ -219,6 +290,7 @@ export default function OpsMap({ adsbAircraft, flightInfo }: Props) {
         );
       })}
 
-    </MapContainer>
+      </MapContainer>
+    </div>
   );
 }
