@@ -275,6 +275,21 @@ function delayColorClass(scheduledIso: string, actualIso: string): string {
   return "text-green-600";
 }
 
+/** Look up FA data: try route-specific key first, fall back to tail-only if route matches */
+function matchFlightInfo(
+  map: Map<string, FlightInfoMap>,
+  routeKey: string,
+  tail: string,
+  departureIcao: string | null,
+): FlightInfoMap | undefined {
+  const byRoute = map.get(routeKey);
+  if (byRoute) return byRoute;
+  // Tail-only fallback: only use if the FA flight's origin matches this leg's origin
+  const byTail = map.get(tail);
+  if (byTail && departureIcao && byTail.origin_icao === departureIcao) return byTail;
+  return undefined;
+}
+
 /** Delay color for departure estimates: only show if ≥15min late. Returns null if on-time. */
 function depEstColorClass(scheduledIso: string, estIso: string): string | null {
   const delayMin = (new Date(estIso).getTime() - new Date(scheduledIso).getTime()) / 60_000;
@@ -759,7 +774,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                       <div className="divide-y divide-gray-100">
                         {tailFlights.map((f) => {
                           const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
-                          const fi = f.tail_number ? (flightInfo.get(routeKey) ?? flightInfo.get(f.tail_number) ?? undefined) : undefined;
+                          const fi = f.tail_number ? matchFlightInfo(flightInfo, routeKey, f.tail_number, f.departure_icao) : undefined;
                           const type = f.flight_type || "Other";
                           const typeColor = FLIGHT_TYPE_COLORS[type] || "bg-gray-100 text-gray-700";
 
@@ -891,7 +906,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                 // Look up FlightAware info by route-specific key first, then fall back to tail-only
                 const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
                 const fi = f.tail_number
-                  ? (flightInfo.get(routeKey) ?? flightInfo.get(f.tail_number) ?? undefined)
+                  ? matchFlightInfo(flightInfo, routeKey, f.tail_number, f.departure_icao)
                   : undefined;
                 const alerts = f.alerts ?? [];
                 const alertCount = alerts.length;
