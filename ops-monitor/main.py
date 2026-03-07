@@ -775,10 +775,16 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
                 skipped += 1
                 continue
 
+            # Always set ALL fields so stale data gets overwritten on re-sync
             flight: Dict[str, Any] = {
                 "ics_uid": uid,
+                "tail_number": tail,
+                "departure_icao": dep_icao,
+                "arrival_icao": arr_icao,
                 "scheduled_departure": dep_dt.isoformat(),
+                "scheduled_arrival": arr_dt.isoformat() if arr_dt else None,
                 "summary": summary,
+                "flight_type": flight_type,
                 "updated_at": _utc_now(),
                 # Always include all columns so batch upserts don't
                 # nullify existing values on rows with missing keys.
@@ -949,10 +955,37 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
     except Exception as e:
         print(f"sync_schedule cleanup error: {repr(e)}", flush=True)
 
+    # ── Cleanup: delete future flights that no longer appear in any ICS feed ──
+    # Only run cleanup if we successfully fetched at least 1 feed (avoid
+    # wiping everything if all feeds failed).
+    deleted = 0
+    live_uids = {f["ics_uid"] for f in batch}
+    successful_feeds = sum(1 for v in feed_results.values() if isinstance(v, int))
+    if successful_feeds > 0 and live_uids:
+        try:
+            # Find future flights in DB whose ics_uid is NOT in the current feed
+            existing = supa.table(FLIGHTS_TABLE) \
+                .select("id, ics_uid") \
+                .gte("scheduled_departure", now.isoformat()) \
+                .execute()
+            stale_ids = [
+                row["id"] for row in (existing.data or [])
+                if row["ics_uid"] not in live_uids
+            ]
+            if stale_ids:
+                # Delete in chunks of 50
+                for i in range(0, len(stale_ids), CHUNK):
+                    chunk_ids = stale_ids[i:i + CHUNK]
+                    supa.table(FLIGHTS_TABLE).delete().in_("id", chunk_ids).execute()
+                    deleted += len(chunk_ids)
+                print(f"sync_schedule: deleted {deleted} stale future flights no longer in ICS feeds", flush=True)
+        except Exception as e:
+            print(f"sync_schedule cleanup error: {repr(e)}", flush=True)
+
     t_total = _time.monotonic() - t0
-    print(f"sync_schedule: done in {t_total:.1f}s — upserted={upserted} skipped={skipped} errors={errors} cleaned={cleaned}", flush=True)
+    print(f"sync_schedule: done in {t_total:.1f}s — upserted={upserted} skipped={skipped} errors={errors} cleaned={cleaned} deleted={deleted}", flush=True)
     log_pipeline_run("flight-sync", items=upserted, duration_ms=int(t_total * 1000), message=f"upserted={upserted} skipped={skipped}")
-    return {"ok": True, "upserted": upserted, "skipped": skipped, "errors": errors, "cleaned": cleaned, "fetch_secs": round(t_fetch, 1), "total_secs": round(t_total, 1)}
+    return {"ok": True, "upserted": upserted, "skipped": skipped, "errors": errors, "cleaned": cleaned, "deleted": deleted, "fetch_secs": round(t_fetch, 1), "total_secs": round(t_total, 1)}
 
 
 # ─── Job: pull_edct ───────────────────────────────────────────────────────────
