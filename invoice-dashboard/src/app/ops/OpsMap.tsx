@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import L from "leaflet";
-import { MapContainer, TileLayer, Marker, Popup, Tooltip, Polyline } from "react-leaflet";
+import { MapContainer, TileLayer, Marker, Popup, Tooltip, Polyline, useMap } from "react-leaflet";
 import type { AircraftPosition, FlightInfoMap } from "@/app/maintenance/MapView";
 
 /* ── Fleet type helpers ── */
@@ -162,7 +162,20 @@ function FlightTracks({ flightInfo, fleetLookup }: { flightInfo: Map<string, Fli
 /* ── Tile layers ── */
 
 const LIGHT_TILES = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
-const DARK_TILES = "https://tiles.stadiamaps.com/tiles/alidade_smooth_dark/{z}/{x}/{y}.png";
+
+/** Applies CSS invert filter directly to Leaflet's tile pane element */
+function DarkModeFilter({ enabled }: { enabled: boolean }) {
+  const map = useMap();
+  useEffect(() => {
+    const pane = map.getPane("tilePane");
+    if (pane) {
+      pane.style.filter = enabled
+        ? "invert(1) hue-rotate(180deg) brightness(0.85) contrast(1.2)"
+        : "";
+    }
+  }, [enabled, map]);
+  return null;
+}
 
 /* ── Radar overlay ── */
 
@@ -279,19 +292,11 @@ export default function OpsMap({ aircraft, flightInfo }: Props) {
         style={{ height: "500px", width: "100%" }}
         scrollWheelZoom
       >
-        {darkMode ? (
-          <TileLayer
-            key="dark"
-            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://stadiamaps.com/">Stadia</a>'
-            url={DARK_TILES}
-          />
-        ) : (
-          <TileLayer
-            key="light"
-            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-            url={LIGHT_TILES}
-          />
-        )}
+        <TileLayer
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+          url={LIGHT_TILES}
+        />
+        <DarkModeFilter enabled={darkMode} />
 
         {/* Radar overlay */}
         {radarUrl && (
