@@ -830,7 +830,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                                     <div className={`text-[10px] font-medium ${delayColorClass(f.scheduled_arrival, actualArrIso)}`}>
                                       Actual: {fmt(actualArrIso, f.arrival_icao)}
                                     </div>
-                                  ) : fi?.arrival_time && !actualArrIso ? (
+                                  ) : fi?.arrival_time && fi?.actual_departure && !actualArrIso ? (
                                     <div className="text-[10px] text-blue-600 font-medium">
                                       ETA: {fmt(fi.arrival_time, f.arrival_icao)}
                                     </div>
@@ -1057,7 +1057,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                           <div className={`text-[10px] font-medium mt-0.5 ${delayColorClass(f.scheduled_arrival, fi.actual_arrival)}`}>
                             Actual: {fmt(fi.actual_arrival, f.arrival_icao)}
                           </div>
-                        ) : fi?.arrival_time && !fi?.actual_arrival && status !== "Arrived" ? (
+                        ) : fi?.arrival_time && fi?.actual_departure && !fi?.actual_arrival ? (
                           <div className="text-[10px] text-blue-600 font-medium mt-0.5">
                             ETA: {fmt(fi.arrival_time, f.arrival_icao)}
                           </div>
