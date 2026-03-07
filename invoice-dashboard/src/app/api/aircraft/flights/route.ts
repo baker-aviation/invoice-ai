@@ -24,8 +24,27 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  // Return cache if fresh (unless ?refresh=true)
+  // Dev/preview: only read from Supabase cache — never call FA API.
+  // This halves API costs since dev and prod share the same FA key.
+  const isProd = process.env.VERCEL_ENV === "production";
   const forceRefresh = req.nextUrl.searchParams.get("refresh") === "true";
+
+  if (!isProd && !forceRefresh) {
+    const cachedResult = await getCache();
+    if (cachedResult) {
+      return NextResponse.json({
+        flights: cachedResult.data,
+        count: cachedResult.data.length,
+        cached: true,
+        cached_at: new Date(cachedResult.ts).toISOString(),
+        cache_age_s: Math.round((Date.now() - cachedResult.ts) / 1000),
+        source: "dev-cache-only",
+      });
+    }
+    // No cache yet — fall through to fetch once to seed it
+  }
+
+  // Return cache if fresh (unless ?refresh=true)
   if (!forceRefresh && await isCacheFresh()) {
     const cachedResult = await getCache();
     if (cachedResult) {

@@ -4,10 +4,10 @@ import { getFlightTrack, type FaTrackPoint } from "@/lib/flightaware";
 
 export const dynamic = "force-dynamic";
 
-// Cache: 60 seconds
-let cache: { data: FaTrackPoint[]; flightId: string; ts: number } | null =
-  null;
-const CACHE_TTL = 60_000;
+// Cache multiple flights, 5-minute TTL (tracks don't change fast)
+const trackCache = new Map<string, { data: FaTrackPoint[]; ts: number }>();
+const CACHE_TTL = 5 * 60_000;
+const MAX_ENTRIES = 30;
 
 export async function GET(
   req: NextRequest,
@@ -25,22 +25,24 @@ export async function GET(
     });
   }
 
-  // Return cache if fresh and same flightId
-  if (
-    cache &&
-    cache.flightId === flightId &&
-    Date.now() - cache.ts < CACHE_TTL
-  ) {
-    return NextResponse.json({ positions: cache.data, cached: true });
+  // Return cache if fresh
+  const cached = trackCache.get(flightId);
+  if (cached && Date.now() - cached.ts < CACHE_TTL) {
+    return NextResponse.json({ positions: cached.data, cached: true });
   }
 
   try {
     const positions = await getFlightTrack(flightId);
-    cache = { data: positions, flightId, ts: Date.now() };
+    trackCache.set(flightId, { data: positions, ts: Date.now() });
+    // Evict old entries if cache grows too large
+    if (trackCache.size > MAX_ENTRIES) {
+      const oldest = [...trackCache.entries()].sort((a, b) => a[1].ts - b[1].ts)[0];
+      if (oldest) trackCache.delete(oldest[0]);
+    }
     return NextResponse.json({ positions, cached: false });
   } catch {
     return NextResponse.json({
-      positions: cache?.flightId === flightId ? cache.data : [],
+      positions: cached?.data ?? [],
       error: "FlightAware track query failed",
       cached: true,
     });
