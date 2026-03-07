@@ -112,14 +112,13 @@ function computeTailDuty(
   for (const [tail, intervals] of tailIntervals) {
     intervals.sort((a, b) => a.startMs - b.startMs);
 
-    // --- Rolling 24hr flight time ---
+    // --- Rolling 24hr flight time (Part 135.267: ANY 24 consecutive hours) ---
     const checkPoints = new Set<number>();
-    checkPoints.add(nowMs);
-    checkPoints.add(nowMs + WINDOW_MS);
     for (const leg of intervals) {
-      for (const t of [leg.startMs, leg.endMs, leg.startMs + WINDOW_MS, leg.endMs + WINDOW_MS]) {
-        if (t >= nowMs && t <= nowMs + WINDOW_MS) checkPoints.add(t);
-      }
+      checkPoints.add(leg.startMs);
+      checkPoints.add(leg.endMs);
+      checkPoints.add(leg.startMs + WINDOW_MS);
+      checkPoints.add(leg.endMs + WINDOW_MS);
     }
 
     let maxMs = 0;
@@ -160,16 +159,17 @@ function computeTailDuty(
   return result;
 }
 
+// Part 135.267(b)(2): 10h limit for two-pilot crew
 function dutyColor(flightTimeMin: number): string {
-  if (flightTimeMin >= 570) return "text-red-700 bg-red-50"; // >= 9.5h
-  if (flightTimeMin >= 510) return "text-amber-700 bg-amber-50"; // >= 8.5h (within 1h)
+  if (flightTimeMin >= 600) return "text-red-700 bg-red-50"; // >= 10h — exceeded
+  if (flightTimeMin >= 540) return "text-amber-700 bg-amber-50"; // >= 9h (within 1h)
   return "text-green-700 bg-green-50";
 }
 
 function restColor(restMin: number | null): string {
   if (restMin == null) return "text-gray-400";
-  if (restMin < 12 * 60) return "text-red-700 bg-red-50"; // < 12h
-  if (restMin < 13 * 60) return "text-amber-700 bg-amber-50"; // < 13h (within 1h)
+  if (restMin < 10 * 60) return "text-red-700 bg-red-50"; // < 10h required min
+  if (restMin < 11 * 60) return "text-amber-700 bg-amber-50"; // < 11h (within 1h)
   return "text-green-700 bg-green-50";
 }
 
@@ -197,6 +197,7 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [useUtc, setUseUtc] = useState(false);
   const [showActual, setShowActual] = useState(false);
+  const [viewMode, setViewMode] = useState<"table" | "aircraft">("table");
 
   // Shorthand for formatting times — uses departure or arrival airport TZ
   const fmt = useCallback(
@@ -275,6 +276,17 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
       })
       .sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure));
   }, [flights, visibleTypes, timeRange]);
+
+  // Group filtered flights by tail for aircraft card view
+  const flightsByTail = useMemo(() => {
+    const map = new Map<string, Flight[]>();
+    for (const f of filteredFlights) {
+      const tail = f.tail_number || "Unassigned";
+      if (!map.has(tail)) map.set(tail, []);
+      map.get(tail)!.push(f);
+    }
+    return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  }, [filteredFlights]);
 
   function toggleExpanded(flightId: string) {
     setExpandedFlights((prev) => {
@@ -453,6 +465,28 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
           {useUtc ? "UTC / Zulu" : "Local Time"}
         </button>
 
+        {/* View mode toggle */}
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => setViewMode("table")}
+            className={`px-3 py-1 text-xs font-medium rounded-full transition-all ${
+              viewMode === "table" ? "bg-gray-900 text-white" : "bg-gray-100 text-gray-500 hover:bg-gray-200"
+            }`}
+          >
+            Table
+          </button>
+          <button
+            onClick={() => setViewMode("aircraft")}
+            className={`px-3 py-1 text-xs font-medium rounded-full transition-all ${
+              viewMode === "aircraft" ? "bg-gray-900 text-white" : "bg-gray-100 text-gray-500 hover:bg-gray-200"
+            }`}
+          >
+            By Aircraft
+          </button>
+        </div>
+
+        <span className="text-gray-300">|</span>
+
         {/* Actual times toggle */}
         <button
           onClick={() => setShowActual((v) => !v)}
@@ -488,7 +522,89 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
         </div>
       </div>
 
+      {/* ── Aircraft Card View ── */}
+      {viewMode === "aircraft" && (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          {flightsByTail.map(([tail, tailFlights]) => {
+            const duty = tailDuty.get(tail);
+            return (
+              <div key={tail} className="rounded-xl border border-gray-200 bg-white overflow-hidden">
+                <div className="flex items-center justify-between px-4 py-2.5 bg-gray-50 border-b border-gray-200">
+                  <span className="font-mono font-bold text-gray-900">{tail}</span>
+                  <div className="flex items-center gap-2">
+                    {duty && (
+                      <>
+                        <span className={`px-1.5 py-0.5 text-[10px] font-mono font-medium rounded ${dutyColor(duty.flightTimeMin)}`} title="24hr flight time">
+                          {fmtHM(duty.flightTimeMin)}
+                        </span>
+                        {duty.restMin != null && (
+                          <span className={`px-1.5 py-0.5 text-[10px] font-mono font-medium rounded ${restColor(duty.restMin)}`} title="Crew rest">
+                            R:{fmtHM(duty.restMin)}
+                          </span>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </div>
+                <div className="divide-y divide-gray-100">
+                  {tailFlights.map((f) => {
+                    const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
+                    const fi = f.tail_number ? (flightInfo.get(routeKey) ?? undefined) : undefined;
+                    const type = f.flight_type || "Other";
+                    const typeColor = FLIGHT_TYPE_COLORS[type] || "bg-gray-100 text-gray-700";
+
+                    let status = "Scheduled";
+                    let statusColor = "text-gray-500";
+                    const arrivalDate = f.scheduled_arrival ? new Date(f.scheduled_arrival) : null;
+                    const now = new Date();
+                    const arrivalPassed = arrivalDate && arrivalDate < now;
+                    if (fi?.status) {
+                      status = fi.status;
+                      if (fi.status.includes("En Route")) statusColor = "text-blue-600 font-medium";
+                      if (fi.status.includes("Arrived") || fi.status.includes("Landed")) statusColor = "text-green-600 font-medium";
+                    } else if (fi?.actual_arrival) {
+                      status = "Arrived";
+                      statusColor = "text-green-600 font-medium";
+                    } else if (arrivalPassed && !fi) {
+                      status = "Arrived";
+                      statusColor = "text-green-600 font-medium";
+                    }
+                    if (fi?.diverted) { status = "DIVERTED"; statusColor = "text-red-600 font-bold"; }
+
+                    return (
+                      <div key={f.id} className="px-4 py-2 flex items-center gap-3 text-xs">
+                        <span className="font-mono font-medium text-gray-800 w-28 shrink-0">
+                          {f.departure_icao || "?"} → {f.arrival_icao || "?"}
+                        </span>
+                        <span className="text-gray-500 w-32 shrink-0">
+                          {fmt(f.scheduled_departure, f.departure_icao)}
+                        </span>
+                        <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded-full ${typeColor}`}>
+                          {type}
+                        </span>
+                        <span className={`text-xs ${statusColor}`}>{status}</span>
+                        {fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100 && (
+                          <div className="w-16 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                            <div className="h-full bg-blue-500 rounded-full" style={{ width: `${fi.progress_percent}%` }} />
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+          {flightsByTail.length === 0 && (
+            <div className="col-span-full text-center text-gray-400 py-8">
+              No flights scheduled for selected filters
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ── Schedule table ── */}
+      {viewMode === "table" && (
       <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
         <table className="w-full text-sm">
           <thead>
@@ -499,9 +615,9 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
               <th className="px-4 py-3">Arrival</th>
               <th className="px-4 py-3">Type</th>
               <th className="px-4 py-3">Status</th>
+              <th className="px-4 py-3">Notes</th>
               <th className="px-4 py-3">24hr Flight</th>
               <th className="px-4 py-3">Crew Rest</th>
-              <th className="px-4 py-3">Notes</th>
             </tr>
           </thead>
           <tbody>
@@ -665,6 +781,19 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
                         {status}
                       </td>
                       <td className="px-4 py-2.5">
+                        {alertCount > 0 && (
+                          <button
+                            onClick={() => toggleExpanded(f.id)}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full bg-red-100 text-red-700 hover:bg-red-200 transition-colors cursor-pointer"
+                          >
+                            <span className={`inline-block transition-transform ${isExpanded ? "rotate-90" : ""}`}>
+                              &#9656;
+                            </span>
+                            {alertCount} alert{alertCount > 1 ? "s" : ""}
+                          </button>
+                        )}
+                      </td>
+                      <td className="px-4 py-2.5">
                         {(() => {
                           const duty = f.tail_number ? tailDuty.get(f.tail_number) : null;
                           if (!duty) return <span className="text-xs text-gray-300">--</span>;
@@ -685,19 +814,6 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
                             </span>
                           );
                         })()}
-                      </td>
-                      <td className="px-4 py-2.5">
-                        {alertCount > 0 && (
-                          <button
-                            onClick={() => toggleExpanded(f.id)}
-                            className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full bg-red-100 text-red-700 hover:bg-red-200 transition-colors cursor-pointer"
-                          >
-                            <span className={`inline-block transition-transform ${isExpanded ? "rotate-90" : ""}`}>
-                              &#9656;
-                            </span>
-                            {alertCount} alert{alertCount > 1 ? "s" : ""}
-                          </button>
-                        )}
                       </td>
                     </tr>
                     {isExpanded && alerts.map((alert) => (
@@ -746,6 +862,7 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
           </tbody>
         </table>
       </div>
+      )}
     </div>
   );
 }

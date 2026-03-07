@@ -9,8 +9,9 @@ import { fmtTimeInTz } from "@/lib/airportTimezones";
 
 const POLL_INTERVAL_MS = 60_000;
 const MAX_DUTY_HOURS_SCALE = 10; // progress bar scale (hours)
-const FLIGHT_TIME_RED_MIN = 570; // 9.5 hours
-const FLIGHT_TIME_YELLOW_MIN = 480; // 8 hours
+// Part 135.267(b)(2): 10h limit for two-pilot crew in any 24 consecutive hours
+const FLIGHT_TIME_RED_MIN = 600; // 10 hours — hard limit
+const FLIGHT_TIME_YELLOW_MIN = 540; // 9 hours — caution (within 1hr of limit)
 const REST_RED_HOURS = 12;
 const REST_YELLOW_HOURS = 14;
 const MAX_LEG_DURATION_MIN = 12 * 60; // cap any single leg at 12h (sanity)
@@ -79,32 +80,33 @@ function sourceBadgeClass(src: "actual" | "fa-estimate" | "scheduled"): string {
 }
 
 /**
- * Find the worst 24hr window (the one with max flight time)
- * scanning window-end from now to now+24h.
- * Returns { maxMin, bestWindowEnd }.
+ * Part 135.267(b): "during ANY 24 consecutive hours" the total flight time
+ * may not exceed 10 hours. We must check every possible 24-hour window
+ * that spans the scheduled/actual legs — past, present, and future.
+ *
+ * The max changes only at leg-boundary checkpoints:
+ * for each leg start and end, the window ending at that point (or
+ * the window starting at that point) defines a boundary.
  */
 function findWorstWindow(
   legs: LegInterval[],
-  nowMs: number,
 ): { maxMin: number; windowEndMs: number } {
-  if (legs.length === 0) return { maxMin: 0, windowEndMs: nowMs };
+  if (legs.length === 0) return { maxMin: 0, windowEndMs: Date.now() };
 
   const WINDOW_MS = 24 * 60 * 60 * 1000;
 
+  // Check window-end at every leg start and leg end, plus their +24h offsets.
+  // This covers all boundary transitions where the total could change.
   const checkPoints = new Set<number>();
-  checkPoints.add(nowMs);
-  checkPoints.add(nowMs + WINDOW_MS);
-
   for (const leg of legs) {
-    for (const t of [leg.startMs, leg.endMs, leg.startMs + WINDOW_MS, leg.endMs + WINDOW_MS]) {
-      if (t >= nowMs && t <= nowMs + WINDOW_MS) {
-        checkPoints.add(t);
-      }
-    }
+    checkPoints.add(leg.startMs);
+    checkPoints.add(leg.endMs);
+    checkPoints.add(leg.startMs + WINDOW_MS);
+    checkPoints.add(leg.endMs + WINDOW_MS);
   }
 
   let maxTotalMs = 0;
-  let bestEnd = nowMs;
+  let bestEnd = legs[0].endMs;
 
   for (const windowEnd of checkPoints) {
     const windowStart = windowEnd - WINDOW_MS;
@@ -255,7 +257,7 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
 
     for (const [tail, legs] of intervalsByTail) {
       const validLegs = legs.filter((l) => l.durationMin > 0);
-      const { maxMin, windowEndMs } = findWorstWindow(validLegs, now);
+      const { maxMin, windowEndMs } = findWorstWindow(validLegs);
       const windowStartMs = windowEndMs - WINDOW_MS;
 
       // Get legs that overlap this worst window, sorted by start
@@ -552,8 +554,8 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
                                   {isBreach && (
                                     <span className="text-[10px] font-semibold text-red-600">
                                       {wl.breachesAt === FLIGHT_TIME_RED_MIN
-                                        ? "9.5h limit hit"
-                                        : "8h caution"}
+                                        ? "10h limit (135.267)"
+                                        : "9h caution"}
                                     </span>
                                   )}
                                 </div>
