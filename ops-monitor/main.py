@@ -1383,7 +1383,7 @@ def _run_check_tfrs(flights: List[Dict]) -> Dict[str, Any]:
 
     print(f"TFR check: {len(features)} TFRs, checking {len(flight_airports)} airports", flush=True)
 
-    TFR_BUFFER_NM = 10
+    TFR_BUFFER_NM = 3
     alerts_to_insert = []
     for feature in features:
         props = feature.get("properties", {})
@@ -1837,7 +1837,7 @@ def debug_tfr_test():
         ]
 
         # Proximity check against all known airports
-        TFR_BUFFER_NM = 10
+        TFR_BUFFER_NM = 3
         proximity_hits: List[Dict] = []
         for feature in features:
             props = feature.get("properties", {})
