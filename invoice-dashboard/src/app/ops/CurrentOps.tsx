@@ -368,20 +368,41 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
     const flyingTails = new Set(adsbAircraft.map((a) => a.tail));
     const now = new Date();
     const parked: AdsbAircraft[] = [];
-    // Group flights by tail, find last arrived leg
-    const tailLastArrival = new Map<string, { icao: string; time: Date }>();
+    // For each tail, find its most likely current location:
+    // 1. Last arrived leg (arrival in the past)
+    // 2. Next departing leg (departure in the future — they're parked at that airport)
+    const tailLocation = new Map<string, { icao: string; time: Date; source: string }>();
+
     for (const f of flights) {
-      if (!f.tail_number || !f.arrival_icao) continue;
+      if (!f.tail_number) continue;
       if (flyingTails.has(f.tail_number)) continue; // currently airborne
-      const arrTime = new Date(f.scheduled_arrival ?? f.scheduled_departure);
-      if (arrTime > now) continue; // hasn't arrived yet
-      const existing = tailLastArrival.get(f.tail_number);
-      if (!existing || arrTime > existing.time) {
-        tailLastArrival.set(f.tail_number, { icao: f.arrival_icao, time: arrTime });
+
+      // Option A: past arrival — aircraft is at arrival airport
+      if (f.arrival_icao) {
+        const arrTime = new Date(f.scheduled_arrival ?? f.scheduled_departure);
+        if (arrTime <= now) {
+          const existing = tailLocation.get(f.tail_number);
+          if (!existing || arrTime > existing.time) {
+            tailLocation.set(f.tail_number, { icao: f.arrival_icao, time: arrTime, source: `Arrived at ${f.arrival_icao}` });
+          }
+        }
+      }
+
+      // Option B: future departure — aircraft is at departure airport
+      // Only use this if we don't already have a more recent arrival
+      if (f.departure_icao) {
+        const depTime = new Date(f.scheduled_departure);
+        if (depTime > now) {
+          const existing = tailLocation.get(f.tail_number);
+          // Use departure airport if no arrival data, or if this departure is sooner (next leg)
+          if (!existing) {
+            tailLocation.set(f.tail_number, { icao: f.departure_icao, time: depTime, source: `Next dep from ${f.departure_icao}` });
+          }
+        }
       }
     }
-    for (const [tail, { icao }] of tailLastArrival) {
-      // Look up airport coords — try ICAO (strip K prefix for lookup) and full code
+
+    for (const [tail, { icao, source }] of tailLocation) {
       const code = icao.startsWith("K") ? icao.slice(1) : icao;
       const info = getAirportInfo(code) ?? getAirportInfo(icao);
       if (info) {
@@ -398,7 +419,7 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
           flight: null,
           seen: null,
           aircraft_type: null,
-          description: `Parked at ${icao}`,
+          description: source,
         });
       }
     }

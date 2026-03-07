@@ -5,33 +5,60 @@ import L from "leaflet";
 import { MapContainer, TileLayer, Marker, Popup, Tooltip, Polyline, useMap } from "react-leaflet";
 import type { AdsbAircraft, FlightInfoMap } from "@/app/maintenance/MapView";
 
-function adsbDivIcon(track: number | null, onGround: boolean): L.DivIcon {
-  const rotation = track != null ? track - 45 : -45;
-  const color = onGround ? "#93c5fd" : "#1d4ed8";
+/* ── Fleet type helpers ── */
+
+const CHALLENGER_TYPES = new Set(["CL30", "CL35"]);
+const CITATION_TYPES = new Set(["C750"]);
+
+function isChallenger(ac: AdsbAircraft, fleetLookup: Map<string, string>): boolean {
+  const fleet = fleetLookup.get(ac.tail);
+  return fleet === "Challenger 300" || fleet === "Challenger 350";
+}
+
+function isCitation(ac: AdsbAircraft, fleetLookup: Map<string, string>): boolean {
+  const fleet = fleetLookup.get(ac.tail);
+  return fleet === "Citation X";
+}
+
+function getAircraftColors(ac: AdsbAircraft, fleetLookup: Map<string, string>): { icon: string; label: string } {
+  if (isChallenger(ac, fleetLookup)) {
+    return ac.on_ground
+      ? { icon: "#f87171", label: "#ef4444" }   // light red / red-400 / red-500
+      : { icon: "#991b1b", label: "#dc2626" };   // dark red-800 / red-600
+  }
+  if (isCitation(ac, fleetLookup)) {
+    return ac.on_ground
+      ? { icon: "#60a5fa", label: "#3b82f6" }   // light blue-400 / blue-500
+      : { icon: "#1e3a8a", label: "#1d4ed8" };   // dark blue-900 / blue-700
+  }
+  // Default (Other/unknown fleet)
+  return ac.on_ground
+    ? { icon: "#a3a3a3", label: "#737373" }     // gray
+    : { icon: "#404040", label: "#525252" };
+}
+
+function acDivIcon(ac: AdsbAircraft, fleetLookup: Map<string, string>): L.DivIcon {
+  const rotation = ac.track != null ? ac.track : 0;
+  const colors = getAircraftColors(ac, fleetLookup);
+  // SVG airplane icon that points UP by default (0deg = north)
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="22" height="22" fill="${colors.icon}" style="transform:rotate(${rotation}deg);filter:drop-shadow(0 1px 3px rgba(0,0,0,0.4))"><path d="M12 2L8 9H3l2 3.5L3 16h5l4 6 4-6h5l-2-3.5L21 9h-5L12 2z"/></svg>`;
   return L.divIcon({
-    html: `<div style="
-      color:${color};
-      font-size:20px;
-      line-height:1;
-      filter:drop-shadow(0 1px 4px rgba(0,0,0,0.5));
-      user-select:none;
-      transform:rotate(${rotation}deg);
-    ">✈</div>`,
+    html: svg,
     className: "",
-    iconSize: [24, 24],
-    iconAnchor: [12, 12],
+    iconSize: [22, 22],
+    iconAnchor: [11, 11],
     popupAnchor: [0, -14],
   });
 }
 
 function fmtAlt(alt: number | null): string {
-  if (alt == null) return "—";
+  if (alt == null) return "\u2014";
   if (alt <= 0) return "GND";
   return `FL${Math.round(alt / 100)}`;
 }
 
 function fmtEta(iso: string | null | undefined): string {
-  if (!iso) return "—";
+  if (!iso) return "\u2014";
   const d = new Date(iso);
   const now = new Date();
   const diffMs = d.getTime() - now.getTime();
@@ -51,14 +78,12 @@ type Props = {
   flightInfo: Map<string, FlightInfoMap>;
 };
 
-/**
- * Fetches and renders route tracks for en-route flights.
- */
-function FlightTracks({ flightInfo }: { flightInfo: Map<string, FlightInfoMap> }) {
+/* ── Flight tracks for en-route aircraft ── */
+
+function FlightTracks({ flightInfo, fleetLookup }: { flightInfo: Map<string, FlightInfoMap>; fleetLookup: Map<string, string> }) {
   const [tracks, setTracks] = useState<Map<string, [number, number][]>>(new Map());
 
   useEffect(() => {
-    // Find en-route flights with fa_flight_id
     const enRoute: FlightInfoMap[] = [];
     const seen = new Set<string>();
     for (const fi of flightInfo.values()) {
@@ -73,14 +98,12 @@ function FlightTracks({ flightInfo }: { flightInfo: Map<string, FlightInfoMap> }
       return;
     }
 
-    // Fetch tracks for en-route flights
     const controller = new AbortController();
     (async () => {
       const newTracks = new Map<string, [number, number][]>();
       for (const fi of enRoute) {
         const flightId = fi.fa_flight_id;
         if (!flightId) continue;
-
         try {
           const res = await fetch(`/api/aircraft/track/${encodeURIComponent(flightId)}`, {
             signal: controller.signal,
@@ -95,9 +118,7 @@ function FlightTracks({ flightInfo }: { flightInfo: Map<string, FlightInfoMap> }
               newTracks.set(fi.tail, positions);
             }
           }
-        } catch {
-          // ignore
-        }
+        } catch { /* ignore */ }
       }
       if (!controller.signal.aborted) {
         setTracks(newTracks);
@@ -107,6 +128,13 @@ function FlightTracks({ flightInfo }: { flightInfo: Map<string, FlightInfoMap> }
     return () => controller.abort();
   }, [flightInfo]);
 
+  function trackColor(tail: string): string {
+    const fleet = fleetLookup.get(tail);
+    if (fleet === "Challenger 300" || fleet === "Challenger 350") return "#dc2626"; // red
+    if (fleet === "Citation X") return "#1d4ed8"; // blue
+    return "#6b7280"; // gray
+  }
+
   return (
     <>
       {Array.from(tracks.entries()).map(([tail, positions]) => (
@@ -114,7 +142,7 @@ function FlightTracks({ flightInfo }: { flightInfo: Map<string, FlightInfoMap> }
           key={`track-${tail}`}
           positions={positions}
           pathOptions={{
-            color: "#1d4ed8",
+            color: trackColor(tail),
             weight: 2,
             opacity: 0.5,
             dashArray: "4 6",
@@ -125,27 +153,24 @@ function FlightTracks({ flightInfo }: { flightInfo: Map<string, FlightInfoMap> }
   );
 }
 
-/**
- * Creates a custom pane for the radar layer so it renders
- * above the base map but below markers and polylines.
- */
+/* ── Radar overlay ── */
+
 function RadarPane() {
   const map = useMap();
   useEffect(() => {
     if (!map.getPane("radarPane")) {
       const pane = map.createPane("radarPane");
-      pane.style.zIndex = "350"; // between tiles (200) and overlays (400)
+      pane.style.zIndex = "350";
       pane.style.pointerEvents = "none";
     }
   }, [map]);
   return null;
 }
 
-/**
- * Fetches the latest radar tile path from RainViewer and renders it.
- */
 function RadarLayer({ visible }: { visible: boolean }) {
+  const map = useMap();
   const [radarPath, setRadarPath] = useState<string | null>(null);
+  const [tileLayer, setTileLayer] = useState<L.TileLayer | null>(null);
 
   const fetchRadar = useCallback(async () => {
     try {
@@ -155,32 +180,102 @@ function RadarLayer({ visible }: { visible: boolean }) {
       if (past?.length) {
         setRadarPath(past[past.length - 1].path);
       }
-    } catch {
-      // ignore
-    }
+    } catch { /* ignore */ }
   }, []);
 
   useEffect(() => {
     if (!visible) return;
     fetchRadar();
-    const interval = setInterval(fetchRadar, 5 * 60 * 1000); // refresh every 5 min
+    const interval = setInterval(fetchRadar, 5 * 60 * 1000);
     return () => clearInterval(interval);
   }, [visible, fetchRadar]);
 
-  if (!visible || !radarPath) return null;
+  // Imperatively manage the tile layer to ensure proper pane support
+  useEffect(() => {
+    if (!visible || !radarPath) {
+      if (tileLayer) {
+        map.removeLayer(tileLayer);
+        setTileLayer(null);
+      }
+      return;
+    }
 
+    // Ensure pane exists
+    if (!map.getPane("radarPane")) {
+      const pane = map.createPane("radarPane");
+      pane.style.zIndex = "350";
+      pane.style.pointerEvents = "none";
+    }
+
+    // Remove old layer
+    if (tileLayer) {
+      map.removeLayer(tileLayer);
+    }
+
+    const layer = L.tileLayer(
+      `https://tilecache.rainviewer.com${radarPath}/256/{z}/{x}/{y}/2/1_1.png`,
+      {
+        opacity: 0.4,
+        pane: "radarPane",
+        attribution: '<a href="https://www.rainviewer.com/">RainViewer</a>',
+      }
+    );
+    layer.addTo(map);
+    setTileLayer(layer);
+
+    return () => {
+      map.removeLayer(layer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, radarPath, map]);
+
+  return null;
+}
+
+/* ── Legend ── */
+
+function MapLegend() {
   return (
-    <TileLayer
-      url={`https://tilecache.rainviewer.com${radarPath}/256/{z}/{x}/{y}/2/1_1.png`}
-      opacity={0.4}
-      pane="radarPane"
-      attribution='<a href="https://www.rainviewer.com/">RainViewer</a>'
-    />
+    <div className="absolute bottom-3 right-3 z-[1000] bg-white/90 backdrop-blur-sm rounded-lg shadow-md px-3 py-2 text-[11px] space-y-1.5">
+      <div className="font-semibold text-gray-700 text-[10px] uppercase tracking-wider">Fleet</div>
+      <div className="flex items-center gap-2">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="#991b1b"><path d="M12 2L8 9H3l2 3.5L3 16h5l4 6 4-6h5l-2-3.5L21 9h-5L12 2z"/></svg>
+        <span className="text-gray-700">Challenger</span>
+        <span className="text-[9px] text-gray-400">(300/350)</span>
+      </div>
+      <div className="flex items-center gap-2">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="#1e3a8a"><path d="M12 2L8 9H3l2 3.5L3 16h5l4 6 4-6h5l-2-3.5L21 9h-5L12 2z"/></svg>
+        <span className="text-gray-700">Citation X</span>
+      </div>
+      <div className="border-t border-gray-200 pt-1 mt-1 space-y-1">
+        <div className="flex items-center gap-2">
+          <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: "#f87171" }} />
+          <span className="text-gray-500">On ground</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: "#991b1b" }} />
+          <span className="text-gray-500">In flight</span>
+        </div>
+      </div>
+    </div>
   );
 }
 
+/* ── Main map component ── */
+
 export default function OpsMap({ adsbAircraft, flightInfo }: Props) {
   const [showRadar, setShowRadar] = useState(false);
+
+  // Build fleet type lookup from FlightAware data
+  const fleetLookup = new Map<string, string>();
+  for (const fi of flightInfo.values()) {
+    if (fi.tail && fi.aircraft_type && !fleetLookup.has(fi.tail)) {
+      const t = fi.aircraft_type;
+      if (CHALLENGER_TYPES.has(t)) fleetLookup.set(fi.tail, t === "CL30" ? "Challenger 300" : "Challenger 350");
+      else if (CITATION_TYPES.has(t)) fleetLookup.set(fi.tail, "Citation X");
+      else fleetLookup.set(fi.tail, "Other");
+    }
+  }
 
   return (
     <div className="relative">
@@ -194,6 +289,9 @@ export default function OpsMap({ adsbAircraft, flightInfo }: Props) {
       >
         {showRadar ? "Radar ON" : "Radar"}
       </button>
+
+      <MapLegend />
+
       <MapContainer
         center={[37.5, -96]}
         zoom={4}
@@ -205,90 +303,102 @@ export default function OpsMap({ adsbAircraft, flightInfo }: Props) {
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
 
-        {/* Radar overlay — below tracks and markers */}
-        <RadarPane />
+        {/* Radar overlay — imperatively managed */}
         <RadarLayer visible={showRadar} />
 
         {/* Route tracks for en-route flights */}
-        <FlightTracks flightInfo={flightInfo} />
+        <FlightTracks flightInfo={flightInfo} fleetLookup={fleetLookup} />
 
         {/* Aircraft markers */}
-      {adsbAircraft.map((ac) => {
-        const fi = flightInfo.get(ac.tail);
-        return (
-          <Marker
-            key={`adsb-${ac.tail}`}
-            position={[ac.lat, ac.lon]}
-            icon={adsbDivIcon(ac.track, ac.on_ground)}
-            zIndexOffset={ac.on_ground ? 1000 : 2000}
-          >
-            <Tooltip permanent direction="top" offset={[0, -14]} className="van-label-tooltip">
-              <span style={{ fontWeight: 700, fontSize: "10px", color: ac.on_ground ? "#93c5fd" : "#1d4ed8" }}>
-                {ac.tail}
-              </span>
-            </Tooltip>
-            <Popup>
-              <div className="text-sm space-y-1">
-                <div className="font-bold text-blue-700">✈ {ac.tail}</div>
-                {ac.flight && <div className="text-xs text-gray-500">Callsign: {ac.flight}</div>}
-                {ac.description && <div className="text-xs text-gray-400">{ac.description}</div>}
-
-                {fi && (fi.origin_icao || fi.destination_icao) && (
-                  <div className="text-xs font-medium border-t border-gray-100 pt-1 mt-1">
-                    <span className="font-mono">
-                      {fi.origin_icao ?? "?"} → {fi.destination_icao ?? "?"}
-                    </span>
-                    {fi.progress_percent != null && (
-                      <span className="text-gray-400 ml-1">({fi.progress_percent}%)</span>
+        {adsbAircraft.map((ac) => {
+          const fi = flightInfo.get(ac.tail);
+          const colors = getAircraftColors(ac, fleetLookup);
+          return (
+            <Marker
+              key={`adsb-${ac.tail}`}
+              position={[ac.lat, ac.lon]}
+              icon={acDivIcon(ac, fleetLookup)}
+              zIndexOffset={ac.on_ground ? 1000 : 2000}
+            >
+              <Tooltip permanent direction="top" offset={[0, -14]} className="ops-tail-tooltip">
+                <span style={{
+                  fontWeight: 600,
+                  fontSize: "9px",
+                  color: colors.label,
+                  letterSpacing: "0.02em",
+                }}>
+                  {ac.tail}
+                </span>
+              </Tooltip>
+              <Popup>
+                <div className="text-sm space-y-1">
+                  <div className="font-bold" style={{ color: colors.label }}>
+                    {ac.tail}
+                    {fleetLookup.has(ac.tail) && (
+                      <span className="font-normal text-xs text-gray-400 ml-1.5">
+                        {fleetLookup.get(ac.tail)}
+                      </span>
                     )}
                   </div>
-                )}
-                {fi?.destination_name && (
-                  <div className="text-xs text-gray-500">{fi.destination_name}</div>
-                )}
+                  {ac.flight && <div className="text-xs text-gray-500">Callsign: {ac.flight}</div>}
+                  {ac.description && <div className="text-xs text-gray-400">{ac.description}</div>}
 
-                {fi?.arrival_time && (
-                  <div className="text-xs font-semibold text-green-700">
-                    ETA: {fmtEta(fi.arrival_time)}
-                  </div>
-                )}
-
-                <div className="text-xs">
-                  {ac.on_ground ? (
-                    <span className="text-gray-500 font-medium">On Ground</span>
-                  ) : (
-                    <span className="text-blue-600 font-medium">
-                      {ac.baro_rate != null && ac.baro_rate > 300 ? "Climbing" : ac.baro_rate != null && ac.baro_rate < -300 ? "Descending" : "Airborne"} · {fmtAlt(ac.alt_baro)}
-                      {ac.baro_rate != null && Math.abs(ac.baro_rate) > 300 && (
-                        <span className="text-gray-500"> ({ac.baro_rate > 0 ? "+" : ""}{ac.baro_rate} fpm)</span>
+                  {fi && (fi.origin_icao || fi.destination_icao) && (
+                    <div className="text-xs font-medium border-t border-gray-100 pt-1 mt-1">
+                      <span className="font-mono">
+                        {fi.origin_icao ?? "?"} → {fi.destination_icao ?? "?"}
+                      </span>
+                      {fi.progress_percent != null && (
+                        <span className="text-gray-400 ml-1">({fi.progress_percent}%)</span>
                       )}
-                    </span>
+                    </div>
+                  )}
+                  {fi?.destination_name && (
+                    <div className="text-xs text-gray-500">{fi.destination_name}</div>
+                  )}
+
+                  {fi?.arrival_time && (
+                    <div className="text-xs font-semibold text-green-700">
+                      ETA: {fmtEta(fi.arrival_time)}
+                    </div>
+                  )}
+
+                  <div className="text-xs">
+                    {ac.on_ground ? (
+                      <span className="text-gray-500 font-medium">On Ground</span>
+                    ) : (
+                      <span className="font-medium" style={{ color: colors.label }}>
+                        {ac.baro_rate != null && ac.baro_rate > 300 ? "Climbing" : ac.baro_rate != null && ac.baro_rate < -300 ? "Descending" : "Airborne"} · {fmtAlt(ac.alt_baro)}
+                        {ac.baro_rate != null && Math.abs(ac.baro_rate) > 300 && (
+                          <span className="text-gray-500"> ({ac.baro_rate > 0 ? "+" : ""}{ac.baro_rate} fpm)</span>
+                        )}
+                      </span>
+                    )}
+                  </div>
+                  {ac.gs != null && (
+                    <div className="text-xs text-gray-600">
+                      GS: {Math.round(ac.gs)} kts · HDG: {ac.track != null ? `${Math.round(ac.track)}°` : "\u2014"}
+                    </div>
+                  )}
+                  {fi?.route_distance_nm && !ac.on_ground && (
+                    <div className="text-xs text-gray-500">Route: {fi.route_distance_nm} nm</div>
+                  )}
+                  {fi?.diverted && (
+                    <div className="text-xs font-semibold text-red-600">DIVERTED</div>
+                  )}
+                  <div className="text-xs text-gray-400">
+                    {ac.lat.toFixed(4)}, {ac.lon.toFixed(4)}
+                  </div>
+                  {ac.seen != null && (
+                    <div className="text-xs text-gray-400">
+                      Last seen: {ac.seen < 60 ? `${ac.seen}s ago` : `${Math.round(ac.seen / 60)}m ago`}
+                    </div>
                   )}
                 </div>
-                {ac.gs != null && (
-                  <div className="text-xs text-gray-600">
-                    GS: {Math.round(ac.gs)} kts · HDG: {ac.track != null ? `${Math.round(ac.track)}°` : "—"}
-                  </div>
-                )}
-                {fi?.route_distance_nm && !ac.on_ground && (
-                  <div className="text-xs text-gray-500">Route: {fi.route_distance_nm} nm</div>
-                )}
-                {fi?.diverted && (
-                  <div className="text-xs font-semibold text-red-600">DIVERTED</div>
-                )}
-                <div className="text-xs text-gray-400">
-                  {ac.lat.toFixed(4)}, {ac.lon.toFixed(4)}
-                </div>
-                {ac.seen != null && (
-                  <div className="text-xs text-gray-400">
-                    Last seen: {ac.seen < 60 ? `${ac.seen}s ago` : `${Math.round(ac.seen / 60)}m ago`}
-                  </div>
-                )}
-              </div>
-            </Popup>
-          </Marker>
-        );
-      })}
+              </Popup>
+            </Marker>
+          );
+        })}
 
       </MapContainer>
     </div>
