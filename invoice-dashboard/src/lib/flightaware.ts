@@ -337,7 +337,7 @@ function toFlightInfo(tail: string, f: FaFlight): FlightInfo {
     destination_name: f.destination?.name ?? null,
     status: f.status,
     progress_percent: f.progress_percent,
-    departure_time: f.actual_out ?? f.estimated_out ?? f.scheduled_out,
+    departure_time: f.actual_out ?? f.estimated_out ?? f.estimated_off ?? f.scheduled_out,
     arrival_time: f.estimated_on ?? f.scheduled_on,
     scheduled_arrival: f.scheduled_on,
     actual_departure: f.actual_out ?? f.actual_off ?? null,

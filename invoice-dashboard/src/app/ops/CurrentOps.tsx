@@ -776,7 +776,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                                     <div className={`text-[10px] font-medium ${delayColorClass(f.scheduled_departure, actualDepIso)}`}>
                                       Actual: {fmt(actualDepIso, f.departure_icao)}
                                     </div>
-                                  ) : fi?.departure_time && fi.departure_time !== f.scheduled_departure ? (
+                                  ) : fi?.departure_time && Math.abs(new Date(fi.departure_time).getTime() - new Date(f.scheduled_departure).getTime()) > 60_000 ? (
                                     <div className={`text-[10px] font-medium ${depEstColorClass(f.scheduled_departure, fi.departure_time)}`}>
                                       Est: {fmt(fi.departure_time, f.departure_icao)}
                                     </div>
@@ -951,7 +951,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                           <div className={`text-[10px] font-medium mt-0.5 ${delayColorClass(f.scheduled_departure, fi.actual_departure)}`}>
                             Actual: {fmt(fi.actual_departure, f.departure_icao)}
                           </div>
-                        ) : fi?.departure_time && fi.departure_time !== f.scheduled_departure ? (
+                        ) : fi?.departure_time && Math.abs(new Date(fi.departure_time).getTime() - new Date(f.scheduled_departure).getTime()) > 60_000 ? (
                           <div className={`text-[10px] font-medium mt-0.5 ${depEstColorClass(f.scheduled_departure, fi.departure_time)}`}>
                             Est: {fmt(fi.departure_time, f.departure_icao)}
                           </div>
