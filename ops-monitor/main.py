@@ -1209,6 +1209,94 @@ def _max_vertex_dist_nm(center_lat: float, center_lon: float, ring: List[List[fl
     return max_d
 
 
+def _get_feature_ring(feature: Dict[str, Any]) -> Optional[List[List[float]]]:
+    """Extract the first polygon ring from a GeoJSON feature."""
+    geom = feature.get("geometry", {})
+    geom_type = geom.get("type", "")
+    coords = geom.get("coordinates", [])
+    if not coords:
+        return None
+    if geom_type == "Polygon":
+        return coords[0] if coords else None
+    elif geom_type == "MultiPolygon":
+        return coords[0][0] if coords and coords[0] else None
+    return None
+
+
+def _filter_vip_inner_rings(features: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """For VIP TFRs with inner/outer rings, keep only the inner (smaller) ring.
+
+    VIP TFRs (presidential movements etc.) have two concentric polygons — a
+    large outer ring (~30nm) and a smaller inner ring (~10nm).  The FAA WFS
+    returns them as separate features with nearly identical centroids.  We
+    group features whose centroids are within 5nm of each other and, for
+    groups with 2+ members, keep only the smallest polygon so we only alert
+    when the airport is truly inside the restricted core.
+    """
+    # Compute centroid + effective radius per feature
+    meta: List[Tuple[int, float, float, float]] = []  # (idx, lat, lon, radius)
+    for i, f in enumerate(features):
+        ring = _get_feature_ring(f)
+        if ring and len(ring) >= 3:
+            clon, clat = _polygon_centroid(ring)
+            radius = _max_vertex_dist_nm(clat, clon, ring)
+            meta.append((i, clat, clon, radius))
+        else:
+            meta.append((i, 0.0, 0.0, -1.0))  # no geometry → keep as-is
+
+    # Group by centroid proximity (within 5nm = same TFR complex)
+    used: set = set()
+    keep_indices: set = set()
+
+    for mi in range(len(meta)):
+        if mi in used:
+            continue
+        idx_i, lat_i, lon_i, rad_i = meta[mi]
+        if rad_i < 0:
+            keep_indices.add(idx_i)
+            used.add(mi)
+            continue
+
+        group = [mi]
+        used.add(mi)
+        for mj in range(mi + 1, len(meta)):
+            if mj in used:
+                continue
+            _, lat_j, lon_j, rad_j = meta[mj]
+            if rad_j < 0:
+                continue
+            if _haversine_nm(lat_i, lon_i, lat_j, lon_j) < 5.0:
+                group.append(mj)
+                used.add(mj)
+
+        if len(group) == 1:
+            keep_indices.add(meta[group[0]][0])
+        else:
+            # Multiple overlapping features → keep smallest (inner ring)
+            smallest = min(group, key=lambda g: meta[g][3])
+            kept_idx = meta[smallest][0]
+            kept_radius = meta[smallest][3]
+            dropped = [meta[g][0] for g in group if meta[g][0] != kept_idx]
+            dropped_radii = [round(meta[g][3], 1) for g in group if meta[g][0] != kept_idx]
+            kept_key = features[kept_idx].get("properties", {}).get("NOTAM_KEY", "?")
+            print(
+                f"TFR VIP filter: keeping inner ring {kept_key} "
+                f"(r={kept_radius:.1f}nm), dropping {len(dropped)} outer ring(s) "
+                f"(r={dropped_radii})",
+                flush=True,
+            )
+            keep_indices.add(kept_idx)
+
+    result = [features[i] for i in sorted(keep_indices)]
+    if len(result) < len(features):
+        print(
+            f"TFR VIP filter: {len(features)} features → {len(result)} "
+            f"(dropped {len(features) - len(result)} outer rings)",
+            flush=True,
+        )
+    return result
+
+
 def _fetch_tfr_geojson() -> List[Dict[str, Any]]:
     """Fetch all active TFRs as GeoJSON features from FAA GeoServer WFS.
 
@@ -1289,6 +1377,9 @@ def _run_check_tfrs(flights: List[Dict]) -> Dict[str, Any]:
     features = _fetch_tfr_geojson()
     if not features:
         return {"tfr_count": 0, "tfr_alerts_created": 0}
+
+    # VIP TFRs have inner + outer ring as separate features — keep only inner
+    features = _filter_vip_inner_rings(features)
 
     print(f"TFR check: {len(features)} TFRs, checking {len(flight_airports)} airports", flush=True)
 
