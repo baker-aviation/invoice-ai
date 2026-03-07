@@ -283,12 +283,20 @@ function matchFlightInfo(
   routeKey: string,
   tail: string,
   departureIcao: string | null,
+  scheduledDep?: string,
 ): FlightInfoMap | undefined {
   const byRoute = map.get(routeKey);
   if (byRoute) return byRoute;
-  // Tail-only fallback: only use if the FA flight's origin matches this leg's origin
+  // Tail-only fallback: only use if the FA flight's origin matches AND departure is within 6h
   const byTail = map.get(tail);
-  if (byTail && departureIcao && byTail.origin_icao === departureIcao) return byTail;
+  if (byTail && departureIcao && byTail.origin_icao === departureIcao) {
+    if (scheduledDep && byTail.departure_time) {
+      const schedMs = new Date(scheduledDep).getTime();
+      const faDepMs = new Date(byTail.departure_time).getTime();
+      if (Math.abs(schedMs - faDepMs) > 6 * 3600_000) return undefined;
+    }
+    return byTail;
+  }
   return undefined;
 }
 
@@ -898,7 +906,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                       <div className="divide-y divide-gray-100">
                         {tailFlights.map((f) => {
                           const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
-                          const fi = f.tail_number ? matchFlightInfo(flightInfo, routeKey, f.tail_number, f.departure_icao) : undefined;
+                          const fi = f.tail_number ? matchFlightInfo(flightInfo, routeKey, f.tail_number, f.departure_icao, f.scheduled_departure) : undefined;
                           const type = f.flight_type || "Other";
                           const typeColor = FLIGHT_TYPE_COLORS[type] || "bg-gray-100 text-gray-700";
 
@@ -998,6 +1006,20 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                             </div>
                           );
                         })}
+                        {(timeRange === "Today + Tomorrow" || timeRange === "Tomorrow") && (() => {
+                          const tomorrow = new Date();
+                          tomorrow.setDate(tomorrow.getDate() + 1);
+                          const tomorrowStr = [tomorrow.getFullYear(), String(tomorrow.getMonth() + 1).padStart(2, "0"), String(tomorrow.getDate()).padStart(2, "0")].join("-");
+                          const hasTomorrow = tailFlights.some((f) => f.scheduled_departure.startsWith(tomorrowStr));
+                          if (!hasTomorrow) {
+                            return (
+                              <div className="px-4 py-2 text-xs text-gray-400 italic border-t border-dashed border-gray-200">
+                                No legs scheduled tomorrow
+                              </div>
+                            );
+                          }
+                          return null;
+                        })()}
                       </div>
                     </div>
                   );
@@ -1081,7 +1103,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                 // Look up FlightAware info by route-specific key first, then fall back to tail-only
                 const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
                 const fi = f.tail_number
-                  ? matchFlightInfo(flightInfo, routeKey, f.tail_number, f.departure_icao)
+                  ? matchFlightInfo(flightInfo, routeKey, f.tail_number, f.departure_icao, f.scheduled_departure)
                   : undefined;
                 const allAlerts = f.alerts ?? [];
                 const alerts = showAcknowledged ? allAlerts : allAlerts.filter((a) => !isAcked(a));
