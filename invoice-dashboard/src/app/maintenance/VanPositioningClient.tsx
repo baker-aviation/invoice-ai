@@ -514,7 +514,7 @@ function getEffectiveArrival(item: VanFlightItem, flightInfoMap: Map<string, Fli
   return item.arrFlight.scheduled_arrival ?? "";
 }
 
-const MAX_ARRIVALS_PER_VAN = 4;
+const MAX_ARRIVALS_PER_VAN = 8;
 
 // ---------------------------------------------------------------------------
 // Compute schedule items for a single zone (extracted so ScheduleTab can
