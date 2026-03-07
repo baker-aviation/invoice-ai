@@ -37,8 +37,9 @@ const DEFAULT_TYPES = new Set(["Charter", "Revenue", "Positioning"]);
 type TimeRange = "Today" | "Tomorrow" | "Week" | "Month";
 
 function getTimeRange(range: TimeRange): { start: Date; end: Date } {
+  // Use local (browser) date boundaries so "Today" = local calendar day
   const now = new Date();
-  const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const tomorrowStart = new Date(todayStart.getTime() + 86400000);
   const dayAfterTomorrow = new Date(todayStart.getTime() + 2 * 86400000);
 

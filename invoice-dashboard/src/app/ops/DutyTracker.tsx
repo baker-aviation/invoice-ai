@@ -120,19 +120,19 @@ function findWorstWindow(
   return { maxMin: maxTotalMs / 60_000, windowEndMs: bestEnd };
 }
 
-/** Check if a rest gap's next departure falls within today+tomorrow */
+/** Check if a rest gap's next departure falls within today+tomorrow (local time) */
 function isWithin48h(ms: number): boolean {
   const now = new Date();
-  const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const cutoff = todayStart.getTime() + 2 * 86400000;
   return ms < cutoff;
 }
 
-/** Check if the worst window overlaps today+tomorrow */
+/** Check if the worst window overlaps today+tomorrow (local time) */
 function windowOverlaps48h(windowEndMs: number): boolean {
   const WINDOW_MS = 24 * 60 * 60 * 1000;
   const now = new Date();
-  const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const cutoff = todayStart.getTime() + 2 * 86400000;
   const windowStartMs = windowEndMs - WINDOW_MS;
   return windowStartMs < cutoff && windowEndMs > todayStart.getTime();
