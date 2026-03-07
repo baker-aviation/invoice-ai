@@ -387,7 +387,7 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive,
   const enRouteTails = new Set((aircraftPositions ?? []).map((a) => a.tail));
 
   return (
-    <div ref={containerRef} className="relative" style={isFs ? { width: "100%", height: "100%" } : undefined}>
+    <div ref={containerRef} className="relative" style={{ width: "100%", height: isFs ? "100vh" : undefined }}>
       {/* Toggle controls */}
       <div className="absolute top-2 right-2 z-[1000] flex gap-1.5">
         <ToggleButton label="Labels" active={showLabels} onClick={() => setShowLabels((v) => !v)} />
@@ -403,7 +403,7 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive,
       <MapContainer
         center={[37.5, -96]}
         zoom={4}
-        style={{ height: isFs ? "100%" : "520px", width: "100%" }}
+        style={isFs ? { position: "absolute", top: 0, left: 0, right: 0, bottom: 0 } : { height: "520px", width: "100%" }}
         scrollWheelZoom
       >
         <TileLayer
