@@ -286,15 +286,21 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
     return [...types].sort();
   }, [flights]);
 
-  // Filter flights by time range and visible types, ordered by departure time
+  // Filter flights by time range and visible types, deduplicate, ordered by departure time
   const filteredFlights = useMemo(() => {
     const { start, end } = getTimeRange(timeRange);
+    const seen = new Set<string>();
     return flights
       .filter((f) => {
         const type = f.flight_type || "Other";
         if (!visibleTypes.has(type)) return false;
         const dep = new Date(f.scheduled_departure);
-        return dep >= start && dep < end;
+        if (dep < start || dep >= end) return false;
+        // Deduplicate: same tail + route + departure time = same leg
+        const dedupKey = `${f.tail_number}|${f.departure_icao}|${f.arrival_icao}|${f.scheduled_departure}`;
+        if (seen.has(dedupKey)) return false;
+        seen.add(dedupKey);
+        return true;
       })
       .sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure));
   }, [flights, visibleTypes, timeRange]);
@@ -409,15 +415,20 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
   const airborne = adsbAircraft.length;
   const onGround = parkedAircraft.length;
 
-  // Collect active EDCT alerts across all flights
+  // Collect same-day EDCT alerts across all flights
   const edctAlerts = useMemo(() => {
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const tomorrowStart = new Date(todayStart.getTime() + 86400000);
     const alerts: (OpsAlert & { route: string; fallback_departure?: string })[] = [];
     for (const f of flights) {
       for (const a of f.alerts) {
-        if (a.alert_type === "EDCT") {
-          const route = [f.departure_icao, f.arrival_icao].filter(Boolean).join(" → ") || "Unknown";
-          alerts.push({ ...a, route, fallback_departure: f.scheduled_departure ?? undefined });
-        }
+        if (a.alert_type !== "EDCT") continue;
+        // Only show EDCTs for today's flights
+        const dep = new Date(a.edct_time ?? a.original_departure_time ?? f.scheduled_departure);
+        if (dep < todayStart || dep >= tomorrowStart) continue;
+        const route = [f.departure_icao, f.arrival_icao].filter(Boolean).join(" → ") || "Unknown";
+        alerts.push({ ...a, route, fallback_departure: f.scheduled_departure ?? undefined });
       }
     }
     return alerts;
