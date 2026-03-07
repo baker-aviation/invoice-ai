@@ -242,11 +242,11 @@ export async function getActiveFlights(
 
           for (const f of flights) {
             if (f.cancelled) continue;
-            // Include flights from last 12 hours + upcoming
+            // Include flights from last 48 hours + upcoming (daily baseline needs wider window)
             const dep = f.actual_out ?? f.estimated_out ?? f.scheduled_out;
             if (dep) {
               const depMs = new Date(dep).getTime();
-              if (depMs < now - 12 * 3600_000) continue;
+              if (depMs < now - 48 * 3600_000) continue;
             }
 
             const info = toFlightInfo(tail, f);
