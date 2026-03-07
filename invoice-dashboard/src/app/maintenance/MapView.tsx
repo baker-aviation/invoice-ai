@@ -77,10 +77,10 @@ function getFleetName(fleetLookup: Map<string, string>, tail: string): string | 
 function getAcColor(fleetLookup: Map<string, string>, tail: string, onGround: boolean): string {
   const fleet = getFleetName(fleetLookup, tail);
   if (fleet === "Challenger 300" || fleet === "Challenger 350") {
-    return onGround ? "#f87171" : "#dc2626"; // ground: light red, flight: dark red
+    return onGround ? "#fca5a5" : "#ef4444"; // ground: dim red, flight: bright red
   }
   if (fleet === "Citation X") {
-    return onGround ? "#60a5fa" : "#22d3ee"; // ground: light blue, flight: cyan
+    return onGround ? "#93c5fd" : "#2563eb"; // ground: light blue, flight: dark blue
   }
   return onGround ? "#a3a3a3" : "#d4d4d4"; // gray
 }
@@ -165,19 +165,19 @@ function MapLegend({ dark }: { dark: boolean }) {
     <div className={`absolute bottom-3 right-3 z-[1000] ${bg} backdrop-blur-sm rounded-lg shadow-md px-3 py-2.5 text-[11px] space-y-1`}>
       <div className={`font-semibold ${heading} text-[10px] uppercase tracking-wider mb-1`}>Fleet</div>
       <div className="flex items-center gap-2">
-        <LegendPlane color="#dc2626" />
+        <LegendPlane color="#ef4444" />
         <span className={text}>Challenger - In flight</span>
       </div>
       <div className="flex items-center gap-2">
-        <LegendPlane color="#f87171" />
+        <LegendPlane color="#fca5a5" />
         <span className={text}>Challenger - Ground</span>
       </div>
       <div className="flex items-center gap-2 mt-1">
-        <LegendPlane color="#22d3ee" />
+        <LegendPlane color="#2563eb" />
         <span className={text}>Citation X - In flight</span>
       </div>
       <div className="flex items-center gap-2">
-        <LegendPlane color="#60a5fa" />
+        <LegendPlane color="#93c5fd" />
         <span className={text}>Citation X - Ground</span>
       </div>
     </div>
@@ -387,7 +387,7 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive,
   const enRouteTails = new Set((aircraftPositions ?? []).map((a) => a.tail));
 
   return (
-    <div ref={containerRef} className="relative" style={isFs ? { width: "100vw", height: "100vh" } : undefined}>
+    <div ref={containerRef} className="relative" style={isFs ? { width: "100%", height: "100%" } : undefined}>
       {/* Toggle controls */}
       <div className="absolute top-2 right-2 z-[1000] flex gap-1.5">
         <ToggleButton label="Labels" active={showLabels} onClick={() => setShowLabels((v) => !v)} />
@@ -403,7 +403,7 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive,
       <MapContainer
         center={[37.5, -96]}
         zoom={4}
-        style={{ height: isFs ? "100vh" : "520px", width: "100%" }}
+        style={{ height: isFs ? "100%" : "520px", width: "100%" }}
         scrollWheelZoom
       >
         <TileLayer
