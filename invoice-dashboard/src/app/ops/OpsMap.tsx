@@ -31,24 +31,29 @@ function acDivIcon(track: number | null, color: string, onGround: boolean): L.Di
   return L.divIcon({ html: svg, className: "", iconSize: [size, size], iconAnchor: [half, half], popupAnchor: [0, -half] });
 }
 
-/** FA-style data label */
+/** FA-style data label — full block for en-route, just tail for ground */
 function acDataLabel(ac: AircraftPosition, fi: FlightInfoMap | undefined, fleetLookup: Map<string, string>): string {
   const color = getAcColor(fleetLookup, ac.tail, ac.on_ground);
+  const shadow = "text-shadow: 0 1px 3px rgba(0,0,0,0.9), 0 0 6px rgba(0,0,0,0.6)";
+
+  // Ground aircraft: just tail number
+  if (ac.on_ground) {
+    return `<div style="color:${color};font-family:ui-monospace,monospace;font-size:10px;white-space:nowrap;${shadow}"><b>${ac.tail}</b></div>`;
+  }
+
+  // En-route: full data block
   const lines: string[] = [];
   const ident = fi?.ident ?? ac.flight ?? ac.tail;
   const type = fi?.aircraft_type ?? "";
   lines.push(`<b>${ident}</b>${type ? " " + type : ""}`);
-  if (!ac.on_ground) {
-    const alt = ac.alt_baro != null && ac.alt_baro > 0 ? Math.round(ac.alt_baro).toString() : "";
-    const gs = ac.gs != null ? Math.round(ac.gs).toString() : "";
-    if (alt || gs) lines.push([alt, gs].filter(Boolean).join(" "));
-    if (fi?.origin_icao && fi?.destination_icao) {
-      const orig = fi.origin_icao.replace(/^K/, "");
-      const dest = fi.destination_icao.replace(/^K/, "");
-      lines.push(`${orig} ${dest}`);
-    }
+  const alt = ac.alt_baro != null && ac.alt_baro > 0 ? Math.round(ac.alt_baro).toString() : "";
+  const gs = ac.gs != null ? Math.round(ac.gs).toString() : "";
+  if (alt || gs) lines.push([alt, gs].filter(Boolean).join(" "));
+  if (fi?.origin_icao && fi?.destination_icao) {
+    const orig = fi.origin_icao.replace(/^K/, "");
+    const dest = fi.destination_icao.replace(/^K/, "");
+    lines.push(`${orig} ${dest}`);
   }
-  const shadow = "text-shadow: 0 1px 3px rgba(0,0,0,0.9), 0 0 6px rgba(0,0,0,0.6)";
   return `<div style="color:${color};font-family:ui-monospace,monospace;font-size:10px;line-height:1.3;white-space:nowrap;${shadow}">${lines.join("<br>")}</div>`;
 }
 
@@ -276,7 +281,7 @@ export default function OpsMap({ aircraft, flightInfo }: Props) {
   }
 
   return (
-    <div ref={containerRef} className="relative" style={isFs ? { background: "#1a1a2e" } : undefined}>
+    <div ref={containerRef} className="relative" style={isFs ? { width: "100%", height: "100%" } : undefined}>
       <div className="absolute top-2 right-2 z-[1000] flex gap-1.5">
         <ToggleBtn label={darkMode ? "Dark" : "Light"} active={darkMode} onClick={() => setDarkMode((v) => !v)} />
         <ToggleBtn label={showRadar ? "Radar ON" : "Radar"} active={showRadar} onClick={() => setShowRadar((v) => !v)} />
@@ -288,7 +293,7 @@ export default function OpsMap({ aircraft, flightInfo }: Props) {
       <MapContainer
         center={[37.5, -96]}
         zoom={4}
-        style={{ height: isFs ? "100vh" : "500px", width: "100%" }}
+        style={{ height: isFs ? "100%" : "500px", width: "100%" }}
         scrollWheelZoom
       >
         <TileLayer

@@ -103,31 +103,29 @@ function overnightDivIcon(color: string): L.DivIcon {
   return L.divIcon({ html: svg, className: "", iconSize: [size, size], iconAnchor: [half, half], popupAnchor: [0, -half] });
 }
 
-/** FA-style data label: callsign, type, altitude, speed, route — no box */
+/** FA-style data label — full block for en-route, just tail for ground */
 function acDataLabel(ac: AircraftPosition, fi: FlightInfoMap | undefined, fleetLookup: Map<string, string>): string {
   const color = getAcColor(fleetLookup, ac.tail, ac.on_ground);
-  const lines: string[] = [];
+  const shadow = "text-shadow: 0 1px 3px rgba(0,0,0,0.9), 0 0 6px rgba(0,0,0,0.6)";
 
-  // Line 1: ident + type
+  // Ground aircraft: just tail number
+  if (ac.on_ground) {
+    return `<div style="color:${color};font-family:ui-monospace,monospace;font-size:10px;white-space:nowrap;${shadow}"><b>${ac.tail}</b></div>`;
+  }
+
+  // En-route: full data block
+  const lines: string[] = [];
   const ident = fi?.ident ?? ac.flight ?? ac.tail;
   const type = fi?.aircraft_type ?? "";
   lines.push(`<b>${ident}</b>${type ? " " + type : ""}`);
-
-  if (!ac.on_ground) {
-    // Line 2: altitude + groundspeed
-    const alt = ac.alt_baro != null && ac.alt_baro > 0 ? Math.round(ac.alt_baro).toString() : "";
-    const gs = ac.gs != null ? Math.round(ac.gs).toString() : "";
-    if (alt || gs) lines.push([alt, gs].filter(Boolean).join(" "));
-
-    // Line 3: route (ORIG DEST)
-    if (fi?.origin_icao && fi?.destination_icao) {
-      const orig = fi.origin_icao.replace(/^K/, "");
-      const dest = fi.destination_icao.replace(/^K/, "");
-      lines.push(`${orig} ${dest}`);
-    }
+  const alt = ac.alt_baro != null && ac.alt_baro > 0 ? Math.round(ac.alt_baro).toString() : "";
+  const gs = ac.gs != null ? Math.round(ac.gs).toString() : "";
+  if (alt || gs) lines.push([alt, gs].filter(Boolean).join(" "));
+  if (fi?.origin_icao && fi?.destination_icao) {
+    const orig = fi.origin_icao.replace(/^K/, "");
+    const dest = fi.destination_icao.replace(/^K/, "");
+    lines.push(`${orig} ${dest}`);
   }
-
-  const shadow = "text-shadow: 0 1px 3px rgba(0,0,0,0.9), 0 0 6px rgba(0,0,0,0.6)";
   return `<div style="color:${color};font-family:ui-monospace,monospace;font-size:10px;line-height:1.3;white-space:nowrap;${shadow}">${lines.join("<br>")}</div>`;
 }
 
@@ -397,7 +395,7 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive,
   const enRouteTails = new Set((aircraftPositions ?? []).map((a) => a.tail));
 
   return (
-    <div ref={containerRef} className="relative" style={isFs ? { background: "#1a1a2e" } : undefined}>
+    <div ref={containerRef} className="relative" style={isFs ? { width: "100%", height: "100%" } : undefined}>
       {/* Toggle controls */}
       <div className="absolute top-2 right-2 z-[1000] flex gap-1.5">
         <ToggleButton label="Labels" active={showLabels} onClick={() => setShowLabels((v) => !v)} />
@@ -413,7 +411,7 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive,
       <MapContainer
         center={[37.5, -96]}
         zoom={4}
-        style={{ height: isFs ? "100vh" : "520px", width: "100%" }}
+        style={{ height: isFs ? "100%" : "520px", width: "100%" }}
         scrollWheelZoom
       >
         <TileLayer
@@ -453,8 +451,10 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive,
           return (
             <Marker key={`van-${van.vanId}`} position={[pos.lat, pos.lon]} icon={vanDivIcon(color)} zIndexOffset={1000}>
               {showLabels && (
-                <Tooltip permanent direction="top" offset={[0, -14]} className="fa-label-tooltip">
-                  <span style={{ fontWeight: 700, fontSize: "10px", color }}>Van {van.vanId}</span>
+                <Tooltip permanent direction="top" offset={[0, -14]} className="fa-data-tooltip">
+                  <div style={{ color, fontFamily: "ui-monospace,monospace", fontSize: "10px", fontWeight: 700, whiteSpace: "nowrap", textShadow: "0 1px 3px rgba(0,0,0,0.9), 0 0 6px rgba(0,0,0,0.6)" }}>
+                    Van {van.vanId}
+                  </div>
                 </Tooltip>
               )}
               <Popup>
@@ -491,9 +491,8 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive,
             <Marker key={`plane-${key}`} position={[info.lat, info.lon]} icon={overnightDivIcon(info.color)}>
               {showLabels && (
                 <Tooltip direction="right" offset={[10, 0]} permanent className="fa-data-tooltip">
-                  <div style={{ color: "#4ade80", fontFamily: "ui-monospace,monospace", fontSize: "10px", lineHeight: "1.3", textShadow: "0 1px 3px rgba(0,0,0,0.9)" }}>
-                    <b>{key.split("-")[0]}</b>
-                    <br />{staticTails.join(", ")}
+                  <div style={{ color: info.color, fontFamily: "ui-monospace,monospace", fontSize: "10px", whiteSpace: "nowrap", textShadow: "0 1px 3px rgba(0,0,0,0.9), 0 0 6px rgba(0,0,0,0.6)" }}>
+                    <b>{staticTails.join(", ")}</b>
                   </div>
                 </Tooltip>
               )}
