@@ -423,38 +423,48 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
   }, [flights, visibleTypes, timeRange]);
 
   // Detect legs superseded by FA (route changed after schedule) + inject FA replacement legs
-  const { displayFlights, supersededIds } = useMemo(() => {
-    const superseded = new Set<string>();
+  // Also detect diversions (FA says diverted — original destination gets strikethrough)
+  const { displayFlights, supersededMap } = useMemo(() => {
+    // Map from flight.id → { actualDest, diverted } for cancelled/diverted rendering
+    const superseded = new Map<string, { actualDest: string | null; diverted: boolean }>();
     const replacements: Flight[] = [];
     const addedRoutes = new Set<string>();
 
     for (const f of filteredFlights) {
-      if (!f.tail_number || !f.departure_icao || !f.arrival_icao) continue;
+      if (!f.tail_number || !f.departure_icao) continue;
 
-      // Check if a route-specific FA match exists
-      const routeKey = `${f.tail_number}|${f.departure_icao}|${f.arrival_icao}`;
+      // --- Diversion detection ---
+      // If FA matched this leg's route but says it's diverted, mark it
+      const routeKey = `${f.tail_number}|${f.departure_icao}|${f.arrival_icao ?? ""}`;
+      const routeFi = flightInfo.get(routeKey);
+      if (routeFi?.diverted && routeFi.destination_icao && routeFi.destination_icao !== f.arrival_icao) {
+        superseded.set(f.id, { actualDest: routeFi.destination_icao, diverted: true });
+        continue;
+      }
+
+      if (!f.arrival_icao) continue;
+
+      // --- Route change detection ---
       if (flightInfo.has(routeKey)) continue; // Route matches FA — not superseded
 
       // Check tail's active FA flight
       const tailFi = flightInfo.get(f.tail_number);
       if (!tailFi) continue;
-      if (tailFi.origin_icao !== f.departure_icao) continue; // Different origin
-      if (tailFi.destination_icao === f.arrival_icao) continue; // Same dest
+      if (tailFi.origin_icao !== f.departure_icao) continue;
+      if (tailFi.destination_icao === f.arrival_icao) continue;
 
-      // Must be active (en-route or actually departed)
       const isActive = tailFi.actual_departure != null ||
         tailFi.status?.includes("En Route") ||
         (tailFi.status?.includes("Landed") && tailFi.actual_arrival != null);
       if (!isActive) continue;
 
-      // Check departure time proximity (within 3 hours)
       const faDepIso = tailFi.departure_time ?? tailFi.actual_departure;
       if (faDepIso) {
         const diff = Math.abs(new Date(faDepIso).getTime() - new Date(f.scheduled_departure).getTime());
         if (diff > 3 * 3600_000) continue;
       }
 
-      superseded.add(f.id);
+      superseded.set(f.id, { actualDest: tailFi.destination_icao, diverted: tailFi.diverted });
 
       // Inject replacement (once per route), skip if already in schedule
       const replRouteKey = `${f.tail_number}|${tailFi.origin_icao}|${tailFi.destination_icao}`;
@@ -476,7 +486,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
         scheduled_departure: faDepIso ?? f.scheduled_departure,
         scheduled_arrival: tailFi.arrival_time ?? null,
         summary: null,
-        flight_type: f.flight_type, // inherit type from superseded leg
+        flight_type: f.flight_type,
         alerts: [],
       });
     }
@@ -484,7 +494,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
     const all = [...filteredFlights, ...replacements].sort(
       (a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure),
     );
-    return { displayFlights: all, supersededIds: superseded };
+    return { displayFlights: all, supersededMap: superseded };
   }, [filteredFlights, flightInfo]);
 
   // Build tail → fleet type lookup from FlightAware data
@@ -887,45 +897,50 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                           }
                           if (fi?.diverted) { status = "DIVERTED"; statusColor = "text-red-600 font-bold"; }
 
-                          const isCancelled = supersededIds.has(f.id);
+                          const supersedInfo = supersededMap.get(f.id);
+                          const isCancelled = !!supersedInfo;
                           const isFaSourced = f.id.startsWith("fa-");
-                          if (isCancelled) { status = "Cancelled"; statusColor = "text-red-600 font-medium"; }
+                          if (isCancelled) {
+                            status = supersedInfo.diverted ? "DIVERTED" : "Cancelled";
+                            statusColor = "text-red-600 font-medium";
+                          }
 
-                          const actualDepIso = fi?.actual_departure ?? null;
-                          const actualArrIso = fi?.actual_arrival ?? null;
+                          const actualDepIso = isCancelled ? null : (fi?.actual_departure ?? null);
+                          const actualArrIso = isCancelled ? null : (fi?.actual_arrival ?? null);
 
                           return (
                             <div key={f.id} className={`px-4 py-2 text-xs ${isCancelled ? "opacity-50 bg-gray-50" : ""} ${isFaSourced ? "bg-blue-50/40" : ""}`}>
                               <div className="flex items-center gap-3">
-                                <span className={`font-mono font-medium w-28 shrink-0 ${isCancelled ? "line-through text-gray-400" : "text-gray-800"}`}>
-                                  {f.departure_icao || "?"} → {f.arrival_icao || "?"}
+                                <span className="font-mono font-medium w-28 shrink-0 text-gray-800">
+                                  {f.departure_icao || "?"} →{" "}
+                                  {isCancelled ? (
+                                    <>
+                                      <span className="line-through text-red-400">{f.arrival_icao || "?"}</span>
+                                      {supersedInfo.actualDest && (
+                                        <span className="text-red-600 font-bold ml-1">{supersedInfo.actualDest}</span>
+                                      )}
+                                    </>
+                                  ) : (f.arrival_icao || "?")}
                                 </span>
                                 <div className="w-36 shrink-0">
                                   <div className="text-gray-500">
                                     {fmt(f.scheduled_departure, f.departure_icao)}
                                   </div>
-                                  {actualDepIso ? (
+                                  {!isCancelled && actualDepIso ? (
                                     <div className={`text-[10px] font-medium ${delayColorClass(f.scheduled_departure, actualDepIso)}`}>
                                       Actual: {fmt(actualDepIso, f.departure_icao)}
                                     </div>
-                                  ) : (() => {
-                                    const estColor = fi?.departure_time ? depEstColorClass(f.scheduled_departure, fi.departure_time) : null;
-                                    return estColor ? (
-                                      <div className={`text-[10px] font-medium ${estColor}`}>
-                                        Est: {fmt(fi!.departure_time!, f.departure_icao)}
-                                      </div>
-                                    ) : null;
-                                  })()}
+                                  ) : null}
                                 </div>
                                 <div className="w-36 shrink-0">
                                   <div className="text-gray-500">
                                     {fmt(f.scheduled_arrival, f.arrival_icao)}
                                   </div>
-                                  {actualArrIso && f.scheduled_arrival ? (
+                                  {!isCancelled && actualArrIso && f.scheduled_arrival ? (
                                     <div className={`text-[10px] font-medium ${delayColorClass(f.scheduled_arrival, actualArrIso)}`}>
                                       Actual: {fmt(actualArrIso, f.arrival_icao)}
                                     </div>
-                                  ) : fi?.arrival_time && fi?.actual_departure && !actualArrIso ? (
+                                  ) : !isCancelled && fi?.arrival_time && fi?.actual_departure && !actualArrIso ? (
                                     <div className="text-[10px] text-blue-600 font-medium">
                                       ETA: {fmt(fi.arrival_time, f.arrival_icao)}
                                     </div>
@@ -938,7 +953,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                                 {isFaSourced && (
                                   <span className="px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-blue-100 text-blue-700">FA</span>
                                 )}
-                                {fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100 && (
+                                {!isCancelled && fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100 && (
                                   <div className="w-16 h-1.5 bg-gray-200 rounded-full overflow-hidden">
                                     <div className="h-full bg-blue-500 rounded-full" style={{ width: `${fi.progress_percent}%` }} />
                                   </div>
@@ -1084,11 +1099,12 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                   statusColor = "text-red-600 font-bold";
                 }
 
-                // Check if this leg is superseded by FA (route changed)
-                const isCancelled = supersededIds.has(f.id);
+                // Check if this leg is superseded by FA (route changed or diverted)
+                const supersedInfo = supersededMap.get(f.id);
+                const isCancelled = !!supersedInfo;
                 const isFaSourced = f.id.startsWith("fa-");
                 if (isCancelled) {
-                  status = "Cancelled";
+                  status = supersedInfo.diverted ? "DIVERTED" : "Cancelled";
                   statusColor = "text-red-600 font-medium";
                 }
 
@@ -1151,10 +1167,18 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                         {f.tail_number || "—"}
                       </td>
                       <td className="px-3 py-2.5">
-                        <span className={`font-mono font-medium ${isCancelled ? "line-through text-gray-400" : ""}`}>
-                          {f.departure_icao || "?"} → {f.arrival_icao || "?"}
+                        <span className="font-mono font-medium">
+                          {f.departure_icao || "?"} →{" "}
+                          {isCancelled ? (
+                            <>
+                              <span className="line-through text-red-400">{f.arrival_icao || "?"}</span>
+                              {supersedInfo.actualDest && (
+                                <span className="text-red-600 font-bold ml-1">{supersedInfo.actualDest}</span>
+                              )}
+                            </>
+                          ) : (f.arrival_icao || "?")}
                         </span>
-                        {fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100 && (
+                        {!isCancelled && fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100 && (
                           <div className="mt-1 flex items-center gap-2">
                             <div className="w-20 h-1.5 bg-gray-200 rounded-full overflow-hidden">
                               <div
@@ -1178,26 +1202,26 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                       </td>
                       <td className="px-3 py-2.5 text-gray-600">
                         <div>{fmt(f.scheduled_departure, f.departure_icao)}</div>
-                        {fi?.actual_departure ? (
+                        {!isCancelled && fi?.actual_departure ? (
                           <div className={`text-[10px] font-medium mt-0.5 ${delayColorClass(f.scheduled_departure, fi.actual_departure)}`}>
                             Actual: {fmt(fi.actual_departure, f.departure_icao)}
                           </div>
-                        ) : (() => {
+                        ) : !isCancelled ? (() => {
                           const estColor = fi?.departure_time ? depEstColorClass(f.scheduled_departure, fi.departure_time) : null;
                           return estColor ? (
                             <div className={`text-[10px] font-medium mt-0.5 ${estColor}`}>
                               Est: {fmt(fi!.departure_time!, f.departure_icao)}
                             </div>
                           ) : null;
-                        })()}
+                        })() : null}
                       </td>
                       <td className="px-3 py-2.5 text-gray-600">
                         <div>{fmt(f.scheduled_arrival, f.arrival_icao)}</div>
-                        {fi?.actual_arrival && f.scheduled_arrival ? (
+                        {!isCancelled && fi?.actual_arrival && f.scheduled_arrival ? (
                           <div className={`text-[10px] font-medium mt-0.5 ${delayColorClass(f.scheduled_arrival, fi.actual_arrival)}`}>
                             Actual: {fmt(fi.actual_arrival, f.arrival_icao)}
                           </div>
-                        ) : fi?.arrival_time && fi?.actual_departure && !fi?.actual_arrival ? (
+                        ) : !isCancelled && fi?.arrival_time && fi?.actual_departure && !fi?.actual_arrival ? (
                           <div className="text-[10px] text-blue-600 font-medium mt-0.5">
                             ETA: {fmt(fi.arrival_time, f.arrival_icao)}
                           </div>
