@@ -387,10 +387,10 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
     } catch { /* ignore */ }
   }, []);
 
-  // Poll every 60 seconds
+  // Poll every 5 minutes
   useEffect(() => {
     fetchFlightInfo();
-    const interval = setInterval(fetchFlightInfo, 120_000); // 2 min — server cache is 10min
+    const interval = setInterval(fetchFlightInfo, 300_000); // 5 min — server cache is 15min
     return () => clearInterval(interval);
   }, [fetchFlightInfo]);
 

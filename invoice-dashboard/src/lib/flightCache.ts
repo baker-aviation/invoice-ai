@@ -13,7 +13,7 @@ import { createServiceClient } from "./supabase/service";
 
 let memCache: { data: FlightInfo[]; ts: number } | null = null;
 
-// 10 min during business hours (7AM–11PM CT), 20 min overnight
+// 15 min during business hours (7AM–11PM CT), 30 min overnight
 export function getCacheTtl(): number {
   const ct = new Date().toLocaleString("en-US", {
     timeZone: "America/Chicago",
@@ -21,7 +21,7 @@ export function getCacheTtl(): number {
     hour12: false,
   });
   const hour = parseInt(ct, 10);
-  return hour >= 7 && hour < 23 ? 600_000 : 1_200_000;
+  return hour >= 7 && hour < 23 ? 900_000 : 1_800_000;
 }
 
 export async function getCache(): Promise<{ data: FlightInfo[]; ts: number } | null> {

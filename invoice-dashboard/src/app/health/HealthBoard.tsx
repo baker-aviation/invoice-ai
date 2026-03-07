@@ -161,7 +161,7 @@ export function HealthBoard() {
   useEffect(() => {
     fetchHealth();
     fetchFaHealth();
-    const id = setInterval(() => { fetchHealth(); fetchFaHealth(); }, 60_000);
+    const id = setInterval(() => { fetchHealth(); fetchFaHealth(); }, 300_000);
     return () => clearInterval(id);
   }, [fetchHealth, fetchFaHealth]);
 

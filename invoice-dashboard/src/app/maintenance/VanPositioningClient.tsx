@@ -2530,7 +2530,7 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
       }
     }
     loadFlightInfo();
-    const id = setInterval(loadFlightInfo, 120_000); // refresh every 2 min
+    const id = setInterval(loadFlightInfo, 300_000); // refresh every 5 min
     return () => { cancelled = true; clearInterval(id); };
   }, []);
 

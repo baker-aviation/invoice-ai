@@ -432,7 +432,7 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive,
           <TileLayer key={`radar-${radarUrl}`} url={radarUrl} opacity={0.65} zIndex={300} />
         )}
 
-        {flightInfo && <FlightTracks flightInfo={flightInfo} fleetLookup={fleetLookup} />}
+        {/* FlightTracks removed — van positioning page doesn't need flight track polylines (saves ~50% of track API calls) */}
 
         {/* Range rings */}
         {showRings && vans.map((van) => {

@@ -72,8 +72,8 @@ function FlightTracks({ flightInfo, fleetLookup }: { flightInfo: Map<string, Fli
   const lastFetchRef = useRef(0);
 
   useEffect(() => {
-    // Throttle: only refetch tracks every 5 min (server also caches 5 min)
-    if (Date.now() - lastFetchRef.current < 5 * 60_000 && tracks.size > 0) return;
+    // Throttle: only refetch tracks every 15 min (server also caches 15 min)
+    if (Date.now() - lastFetchRef.current < 15 * 60_000 && tracks.size > 0) return;
 
     const enRoute: FlightInfoMap[] = [];
     const seen = new Set<string>();
