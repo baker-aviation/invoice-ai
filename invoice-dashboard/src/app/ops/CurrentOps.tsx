@@ -35,7 +35,7 @@ const FLIGHT_TYPE_COLORS: Record<string, string> = {
 
 const DEFAULT_TYPES = new Set(["Charter", "Revenue", "Positioning"]);
 
-type TimeRange = "Today" | "Tomorrow" | "Week" | "Month";
+type TimeRange = "Today" | "Today + Tomorrow" | "Tomorrow" | "Week" | "Month";
 
 function getTimeRange(range: TimeRange): { start: Date; end: Date } {
   // Use local (browser) date boundaries so "Today" = local calendar day
@@ -47,6 +47,8 @@ function getTimeRange(range: TimeRange): { start: Date; end: Date } {
   switch (range) {
     case "Today":
       return { start: todayStart, end: tomorrowStart };
+    case "Today + Tomorrow":
+      return { start: todayStart, end: dayAfterTomorrow };
     case "Tomorrow":
       return { start: tomorrowStart, end: dayAfterTomorrow };
     case "Week":
@@ -663,7 +665,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
       <div className="flex flex-wrap items-center gap-4">
         {/* Time range */}
         <div className="flex items-center gap-1">
-          {(["Today", "Tomorrow", "Week", "Month"] as TimeRange[]).map((r) => (
+          {(["Today", "Today + Tomorrow", "Tomorrow", "Week", "Month"] as TimeRange[]).map((r) => (
             <button
               key={r}
               onClick={() => setTimeRange(r)}
