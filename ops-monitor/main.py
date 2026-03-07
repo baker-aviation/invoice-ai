@@ -960,8 +960,8 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
 
 @app.post("/jobs/pull_edct")
 def pull_edct(
-    lookback_minutes: int = Query(60, ge=1, le=1440),
-    max_messages: int = Query(50, ge=1, le=200),
+    lookback_minutes: int = Query(360, ge=1, le=1440),
+    max_messages: int = Query(100, ge=1, le=200),
 ):
     """
     Pull EDCT / ground delay emails from the ForeFlight mailbox and store alerts.
