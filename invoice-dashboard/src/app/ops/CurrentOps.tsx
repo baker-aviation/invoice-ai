@@ -71,7 +71,7 @@ const FLEET_ORDER = ["Challenger 300", "Challenger 350", "Citation X", "Other"];
 
 const DUTY_FLIGHT_TYPES = new Set(["revenue", "owner", "positioning", "ferry", "charter"]);
 const MAX_LEG_DURATION_MIN = 12 * 60;
-const MIN_REST_GAP_MS = 6 * 60 * 60 * 1000;
+const MIN_REST_GAP_MS = 8 * 60 * 60 * 1000;
 
 type TailDutySummary = {
   flightTimeMin: number;
@@ -182,22 +182,26 @@ function computeTailDuty(
       if (totalMs > maxMs) maxMs = totalMs;
     }
 
-    // --- Crew rest ---
+    // --- Crew rest: find the most recent completed rest period ---
+    // Walk backwards to find the last rest gap (≥8h) before a leg that has started.
+    // This shows how much rest the crew got before their current/most recent duty period.
     let restMin: number | null = null;
-    for (let i = 0; i < intervals.length - 1; i++) {
+    for (let i = intervals.length - 2; i >= 0; i--) {
       const gapMs = intervals[i + 1].startMs - intervals[i].endMs;
       if (gapMs < MIN_REST_GAP_MS) continue;
-      if (intervals[i + 1].startMs > nowMs) {
+      if (intervals[i + 1].startMs <= nowMs) {
         restMin = gapMs / 60_000;
         break;
       }
     }
+    // Fallback: if no past rest found, show the upcoming rest
     if (restMin == null) {
-      const pastLegs = intervals.filter((l) => l.endMs <= nowMs);
-      const futureLeg = intervals.find((l) => l.startMs > nowMs);
-      if (pastLegs.length > 0 && futureLeg) {
-        const gap = futureLeg.startMs - pastLegs[pastLegs.length - 1].endMs;
-        if (gap >= MIN_REST_GAP_MS) restMin = gap / 60_000;
+      for (let i = 0; i < intervals.length - 1; i++) {
+        const gapMs = intervals[i + 1].startMs - intervals[i].endMs;
+        if (gapMs >= MIN_REST_GAP_MS && intervals[i + 1].startMs > nowMs) {
+          restMin = gapMs / 60_000;
+          break;
+        }
       }
     }
 
