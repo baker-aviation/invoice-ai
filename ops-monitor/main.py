@@ -1155,10 +1155,13 @@ def _find_flight_for_alert(supa, alert: Dict) -> Optional[str]:
     return rows[0]["id"]
 
 
-# ─── TFR proximity checking (FAA tfr.faa.gov scraper) ─────────────────────────
+# ─── TFR proximity checking (FAA GeoServer WFS API) ──────────────────────────
 
-_TFR_LIST_URL = "https://tfr.faa.gov/tfr2/list.html"
-_TFR_DETAIL_URL = "https://tfr.faa.gov/save_pages/detail_{notam_id}.xml"
+_TFR_WFS_URL = (
+    "https://tfr.faa.gov/geoserver/TFR/ows"
+    "?service=WFS&version=1.0.0&request=GetFeature"
+    "&typeName=TFR:V_TFR_LOC&outputFormat=application/json&maxFeatures=500"
+)
 
 
 def _haversine_nm(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -1172,144 +1175,102 @@ def _haversine_nm(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 2 * R_NM * math.asin(math.sqrt(a))
 
 
-def _parse_dms(dms_str: str) -> Optional[float]:
-    """Parse FAA DMS coordinate string to decimal degrees.
+def _point_in_polygon(px: float, py: float, polygon: List[List[float]]) -> bool:
+    """Ray-casting point-in-polygon test. polygon is [[lon,lat], ...]."""
+    n = len(polygon)
+    inside = False
+    j = n - 1
+    for i in range(n):
+        xi, yi = polygon[i][0], polygon[i][1]
+        xj, yj = polygon[j][0], polygon[j][1]
+        if ((yi > py) != (yj > py)) and (px < (xj - xi) * (py - yi) / (yj - yi) + xi):
+            inside = not inside
+        j = i
+    return inside
 
-    Formats seen in TFR XML:
-      '25.54.25.96N'  → 25 + 54/60 + 25.96/3600
-      '080.16.42.24W' → -(80 + 16/60 + 42.24/3600)
+
+def _polygon_centroid(ring: List[List[float]]) -> Tuple[float, float]:
+    """Compute centroid (lon, lat) of a polygon ring [[lon,lat], ...]."""
+    n = len(ring)
+    if n == 0:
+        return (0.0, 0.0)
+    cx = sum(p[0] for p in ring) / n
+    cy = sum(p[1] for p in ring) / n
+    return (cx, cy)
+
+
+def _max_vertex_dist_nm(center_lat: float, center_lon: float, ring: List[List[float]]) -> float:
+    """Max distance from centroid to any polygon vertex, in NM."""
+    max_d = 0.0
+    for p in ring:
+        d = _haversine_nm(center_lat, center_lon, p[1], p[0])
+        if d > max_d:
+            max_d = d
+    return max_d
+
+
+def _fetch_tfr_geojson() -> List[Dict[str, Any]]:
+    """Fetch all active TFRs as GeoJSON features from FAA GeoServer WFS.
+
+    Returns list of GeoJSON feature dicts with properties and polygon geometry.
+    Single HTTP request — no scraping or parallel detail fetches needed.
     """
-    if not dms_str:
-        return None
-    m = re.match(r"(\d+)\.(\d+)\.(\d+(?:\.\d+)?)\s*([NSEW])", dms_str.strip(), re.IGNORECASE)
-    if not m:
-        return None
-    deg = int(m.group(1))
-    mins = int(m.group(2))
-    secs = float(m.group(3))
-    dd = deg + mins / 60.0 + secs / 3600.0
-    if m.group(4).upper() in ("S", "W"):
-        dd = -dd
-    return dd
-
-
-def _fetch_tfr_list() -> List[str]:
-    """Scrape tfr.faa.gov list page for all active TFR NOTAM IDs.
-
-    Returns list of NOTAM ID strings (e.g. ['FDC_6_4515', '6_4339']).
-    """
-    r = requests.get(_TFR_LIST_URL, timeout=(5, 10), headers={
+    r = requests.get(_TFR_WFS_URL, timeout=(5, 20), headers={
         "User-Agent": "Baker-Aviation-OpsMonitor/1.0",
+        "Accept": "application/json",
     })
     r.raise_for_status()
-    # Links look like: save_pages/detail_6_4515.html or detail_FDC_6_4515.html
-    ids = re.findall(r"save_pages/detail_([A-Za-z0-9_/]+)\.html", r.text)
-    # Deduplicate while preserving order
-    seen: set = set()
-    unique: List[str] = []
-    for tfr_id in ids:
-        if tfr_id not in seen:
-            seen.add(tfr_id)
-            unique.append(tfr_id)
-    print(f"TFR list: found {len(unique)} active TFRs", flush=True)
-    return unique
+    data = r.json()
+    features = data.get("features", [])
+    print(f"TFR WFS: fetched {len(features)} active TFRs", flush=True)
+    return features
 
 
-def _fetch_tfr_detail(notam_id: str) -> Optional[str]:
-    """Fetch individual TFR detail XML from tfr.faa.gov."""
-    url = _TFR_DETAIL_URL.format(notam_id=notam_id)
-    try:
-        r = requests.get(url, timeout=(5, 15), headers={
-            "User-Agent": "Baker-Aviation-OpsMonitor/1.0",
-        })
-        if r.ok:
-            return r.text
-        print(f"TFR detail {notam_id}: HTTP {r.status_code}", flush=True)
-        return None
-    except Exception as e:
-        print(f"TFR detail {notam_id} fetch error: {repr(e)}", flush=True)
-        return None
+def _check_airport_vs_tfr(
+    airport_lat: float, airport_lon: float,
+    feature: Dict[str, Any], buffer_nm: float = 10.0,
+) -> Optional[Dict[str, Any]]:
+    """Check if an airport is affected by a TFR polygon.
 
-
-def _parse_tfr_xml(notam_id: str, xml_text: str) -> List[Dict[str, Any]]:
-    """Extract TFR shapes (center + radius) from FAA AIXM XML.
-
-    Returns list of dicts: [{"lat": float, "lon": float, "radius_nm": float, "description": str}]
-    Multiple shapes possible for complex TFRs.
+    Returns proximity info dict if affected, None otherwise.
+    Uses point-in-polygon first, then centroid distance + buffer as fallback.
     """
-    shapes: List[Dict[str, Any]] = []
+    geom = feature.get("geometry", {})
+    geom_type = geom.get("type", "")
+    coords = geom.get("coordinates", [])
+    if not coords:
+        return None
 
-    # --- Primary: AIXM <Avx> elements with <GeoLat>/<GeoLong>/<valRadiusDist> ---
-    # Find all groups that have a radius and center point
-    radius_matches = re.findall(
-        r"<(?:ns1:)?valRadiusDist[^>]*>\s*([0-9.]+)\s*</",
-        xml_text
-    )
-    lat_matches = re.findall(
-        r"<(?:ns1:)?GeoLat[^>]*>\s*([^<]+?)\s*</",
-        xml_text
-    )
-    lon_matches = re.findall(
-        r"<(?:ns1:)?GeoLong[^>]*>\s*([^<]+?)\s*</",
-        xml_text
-    )
+    # Normalize to list of polygon rings
+    rings: List[List[List[float]]] = []
+    if geom_type == "Polygon":
+        rings = [coords[0]] if coords else []
+    elif geom_type == "MultiPolygon":
+        rings = [poly[0] for poly in coords if poly]
+    else:
+        return None
 
-    # Extract description text for the alert body
-    desc_match = re.search(r"<(?:ns1:)?txtDescrUSNS[^>]*>\s*([\s\S]*?)\s*</", xml_text)
-    description = desc_match.group(1).strip()[:2000] if desc_match else ""
-    if not description:
-        # Try txtName as fallback
-        name_match = re.search(r"<(?:ns1:)?txtName[^>]*>\s*([\s\S]*?)\s*</", xml_text)
-        description = name_match.group(1).strip()[:2000] if name_match else f"TFR {notam_id}"
+    for ring in rings:
+        if len(ring) < 3:
+            continue
+        # Test 1: point-in-polygon (airport inside TFR)
+        if _point_in_polygon(airport_lon, airport_lat, ring):
+            clon, clat = _polygon_centroid(ring)
+            dist = _haversine_nm(airport_lat, airport_lon, clat, clon)
+            return {"inside": True, "distance_nm": round(dist, 1)}
 
-    if radius_matches and lat_matches and lon_matches:
-        for i, radius_str in enumerate(radius_matches):
-            # Use the corresponding lat/lon (AIXM typically puts center coords
-            # as the first <Avx> GeoLat/GeoLong before the arc points)
-            lat_idx = min(i, len(lat_matches) - 1)
-            lon_idx = min(i, len(lon_matches) - 1)
-            lat = _parse_dms(lat_matches[lat_idx])
-            lon = _parse_dms(lon_matches[lon_idx])
-            try:
-                radius_nm = float(radius_str)
-            except ValueError:
-                continue
-            if lat is not None and lon is not None and radius_nm > 0:
-                shapes.append({
-                    "lat": lat,
-                    "lon": lon,
-                    "radius_nm": radius_nm,
-                    "description": description,
-                })
+        # Test 2: centroid distance check with buffer
+        clon, clat = _polygon_centroid(ring)
+        effective_radius = _max_vertex_dist_nm(clat, clon, ring)
+        dist = _haversine_nm(airport_lat, airport_lon, clat, clon)
+        if dist <= effective_radius + buffer_nm:
+            return {"inside": False, "distance_nm": round(dist, 1), "effective_radius_nm": round(effective_radius, 1)}
 
-    # --- Fallback: Q-line coordinates in description ---
-    # Format like: ...AREA DEFINED AS 30NM RADIUS OF 254425N0801642W...
-    if not shapes:
-        qline = re.search(
-            r"(\d+(?:\.\d+)?)\s*NM\s+RADIUS\s+OF\s+(\d{2,3})(\d{2})(\d{2}(?:\.\d+)?)([NS])\s*(\d{2,3})(\d{2})(\d{2}(?:\.\d+)?)([EW])",
-            xml_text.upper()
-        )
-        if qline:
-            radius_nm = float(qline.group(1))
-            lat = int(qline.group(2)) + int(qline.group(3)) / 60.0 + float(qline.group(4)) / 3600.0
-            if qline.group(5) == "S":
-                lat = -lat
-            lon = int(qline.group(6)) + int(qline.group(7)) / 60.0 + float(qline.group(8)) / 3600.0
-            if qline.group(9) == "W":
-                lon = -lon
-            if radius_nm > 0:
-                shapes.append({
-                    "lat": lat,
-                    "lon": lon,
-                    "radius_nm": radius_nm,
-                    "description": description,
-                })
-
-    return shapes
+    return None
 
 
 def _run_check_tfrs(flights: List[Dict]) -> Dict[str, Any]:
-    """Fetch all active TFRs from FAA website, check proximity to flight airports.
+    """Fetch all active TFRs from FAA GeoServer, check proximity to flight airports.
 
     Returns stats dict with tfr_count, tfr_alerts_created.
     """
@@ -1324,69 +1285,54 @@ def _run_check_tfrs(flights: List[Dict]) -> Dict[str, Any]:
         print("TFR check: no flight airports with known coordinates", flush=True)
         return {"tfr_count": 0, "tfr_alerts_created": 0}
 
-    # Fetch TFR list
-    tfr_ids = _fetch_tfr_list()
-    if not tfr_ids:
+    # Single WFS request gets all active TFRs with polygon geometry
+    features = _fetch_tfr_geojson()
+    if not features:
         return {"tfr_count": 0, "tfr_alerts_created": 0}
 
-    # Fetch TFR details in parallel (30s budget)
-    tfr_shapes: List[Tuple[str, Dict]] = []  # (notam_id, shape)
-    pool = ThreadPoolExecutor(max_workers=20)
-    future_to_id = {pool.submit(_fetch_tfr_detail, tid): tid for tid in tfr_ids}
-    try:
-        for future in as_completed(future_to_id, timeout=25):
-            tid = future_to_id[future]
-            try:
-                xml_text = future.result()
-                if xml_text:
-                    for shape in _parse_tfr_xml(tid, xml_text):
-                        tfr_shapes.append((tid, shape))
-            except Exception as e:
-                print(f"TFR detail parse error {tid}: {repr(e)}", flush=True)
-    except FuturesTimeoutError:
-        parsed_count = len(set(tid for tid, _ in tfr_shapes))
-        print(f"TFR detail fetch 25s budget exceeded; parsed {parsed_count}/{len(tfr_ids)} TFRs", flush=True)
-    finally:
-        pool.shutdown(wait=False)
+    print(f"TFR check: {len(features)} TFRs, checking {len(flight_airports)} airports", flush=True)
 
-    print(f"TFR check: {len(tfr_shapes)} shapes from {len(tfr_ids)} TFRs, checking {len(flight_airports)} airports", flush=True)
-
-    # Proximity check: TFR radius + 10nm buffer
     TFR_BUFFER_NM = 10
     alerts_to_insert = []
-    for notam_id, shape in tfr_shapes:
-        tfr_lat = shape["lat"]
-        tfr_lon = shape["lon"]
-        tfr_radius = shape["radius_nm"]
-        check_dist = tfr_radius + TFR_BUFFER_NM
+    for feature in features:
+        props = feature.get("properties", {})
+        notam_key = props.get("NOTAM_KEY", "unknown")
+        title = props.get("TITLE", "")
+        state = props.get("STATE", "")
 
-        for icao, coord in AIRPORT_COORDS.items():
-            if icao not in flight_airports:
+        for icao in flight_airports:
+            coord = AIRPORT_COORDS[icao]
+            hit = _check_airport_vs_tfr(coord[0], coord[1], feature, TFR_BUFFER_NM)
+            if not hit:
                 continue
-            dist = _haversine_nm(tfr_lat, tfr_lon, coord[0], coord[1])
-            if dist <= check_dist:
-                # This TFR affects this airport — create alert for each flight
-                for flight in flight_airports[icao]:
-                    fid = flight["id"]
-                    source_id = f"tfr-{notam_id}-{fid}"
-                    alerts_to_insert.append({
-                        "flight_id": fid,
-                        "alert_type": "NOTAM_TFR",
-                        "severity": "critical",
-                        "airport_icao": icao,
-                        "subject": f"TFR {notam_id.replace('_', '/')} within {dist:.0f}nm"[:500],
-                        "body": f"TFR {notam_id.replace('_', '/')} ({shape['radius_nm']:.0f}nm radius) "
-                                f"is {dist:.0f}nm from {icao}. {shape['description']}"[:2000],
-                        "source_message_id": source_id,
-                        "raw_data": json.dumps({
-                            "tfr_notam_id": notam_id,
-                            "tfr_center_lat": tfr_lat,
-                            "tfr_center_lon": tfr_lon,
-                            "tfr_radius_nm": tfr_radius,
-                            "airport_distance_nm": round(dist, 1),
-                        }),
-                        "created_at": _utc_now(),
-                    })
+
+            dist = hit["distance_nm"]
+            inside = hit.get("inside", False)
+            proximity_desc = "airport inside TFR" if inside else f"{dist}nm from TFR"
+
+            for flight in flight_airports[icao]:
+                fid = flight["id"]
+                # Use notam_key in source_message_id for dedup
+                safe_key = notam_key.replace("/", "_").replace(" ", "_")
+                source_id = f"tfr-{safe_key}-{fid}"
+                alerts_to_insert.append({
+                    "flight_id": fid,
+                    "alert_type": "NOTAM_TFR",
+                    "severity": "critical",
+                    "airport_icao": icao,
+                    "subject": f"TFR {notam_key} — {proximity_desc}"[:500],
+                    "body": f"TFR {notam_key} ({proximity_desc}). "
+                            f"{title}. State: {state}"[:2000],
+                    "source_message_id": source_id,
+                    "raw_data": json.dumps({
+                        "tfr_notam_key": notam_key,
+                        "tfr_title": title[:500],
+                        "tfr_state": state,
+                        "airport_distance_nm": dist,
+                        "airport_inside_tfr": inside,
+                    }),
+                    "created_at": _utc_now(),
+                })
 
     tfr_alerts_created = 0
     if alerts_to_insert:
@@ -1412,8 +1358,8 @@ def _run_check_tfrs(flights: List[Dict]) -> Dict[str, Any]:
         except Exception as e:
             print(f"TFR alert upsert error: {repr(e)}", flush=True)
 
-    print(f"TFR check complete: tfrs={len(tfr_ids)} shapes={len(tfr_shapes)} alerts={tfr_alerts_created}", flush=True)
-    return {"tfr_count": len(tfr_ids), "tfr_alerts_created": tfr_alerts_created}
+    print(f"TFR check complete: tfrs={len(features)} alerts={tfr_alerts_created}", flush=True)
+    return {"tfr_count": len(features), "tfr_alerts_created": tfr_alerts_created}
 
 
 # ─── Job: check_notams ────────────────────────────────────────────────────────
@@ -1787,56 +1733,40 @@ def debug_tfr_test():
     Use this to test the TFR proximity checker without needing scheduled flights."""
     result: Dict[str, Any] = {"ok": False}
     try:
-        tfr_ids = _fetch_tfr_list()
-        result["tfr_ids"] = tfr_ids[:50]  # cap output size
-        result["tfr_count"] = len(tfr_ids)
-
-        # Fetch details for up to 30 TFRs (keep response time reasonable)
-        shapes_by_tfr: Dict[str, List] = {}
-        pool = ThreadPoolExecutor(max_workers=20)
-        ids_to_fetch = tfr_ids[:30]
-        future_to_id = {pool.submit(_fetch_tfr_detail, tid): tid for tid in ids_to_fetch}
-        try:
-            for future in as_completed(future_to_id, timeout=25):
-                tid = future_to_id[future]
-                try:
-                    xml_text = future.result()
-                    if xml_text:
-                        shapes = _parse_tfr_xml(tid, xml_text)
-                        if shapes:
-                            shapes_by_tfr[tid] = shapes
-                except Exception as e:
-                    shapes_by_tfr[tid] = [{"error": repr(e)}]
-        except FuturesTimeoutError:
-            result["detail_timeout"] = True
-        finally:
-            pool.shutdown(wait=False)
-
-        result["tfrs_with_geometry"] = len(shapes_by_tfr)
-        result["shapes"] = {
-            tid: shapes for tid, shapes in list(shapes_by_tfr.items())[:20]
-        }
+        features = _fetch_tfr_geojson()
+        result["tfr_count"] = len(features)
+        result["sample_tfrs"] = [
+            {
+                "notam_key": f.get("properties", {}).get("NOTAM_KEY"),
+                "title": f.get("properties", {}).get("TITLE", "")[:100],
+                "state": f.get("properties", {}).get("STATE"),
+                "geometry_type": f.get("geometry", {}).get("type"),
+            }
+            for f in features[:20]
+        ]
 
         # Proximity check against all known airports
-        proximity_hits: List[Dict] = []
         TFR_BUFFER_NM = 10
-        for tid, shapes in shapes_by_tfr.items():
-            for shape in shapes:
-                if "error" in shape:
-                    continue
-                for icao, (lat, lon) in AIRPORT_COORDS.items():
-                    dist = _haversine_nm(shape["lat"], shape["lon"], lat, lon)
-                    if dist <= shape["radius_nm"] + TFR_BUFFER_NM:
-                        proximity_hits.append({
-                            "tfr_id": tid,
-                            "airport": icao,
-                            "distance_nm": round(dist, 1),
-                            "tfr_radius_nm": shape["radius_nm"],
-                            "tfr_center": f"{shape['lat']:.4f}, {shape['lon']:.4f}",
-                        })
+        proximity_hits: List[Dict] = []
+        for feature in features:
+            props = feature.get("properties", {})
+            notam_key = props.get("NOTAM_KEY", "unknown")
+            title = props.get("TITLE", "")
+
+            for icao, (lat, lon) in AIRPORT_COORDS.items():
+                hit = _check_airport_vs_tfr(lat, lon, feature, TFR_BUFFER_NM)
+                if hit:
+                    proximity_hits.append({
+                        "tfr_notam_key": notam_key,
+                        "tfr_title": title[:80],
+                        "airport": icao,
+                        "distance_nm": hit["distance_nm"],
+                        "inside_tfr": hit.get("inside", False),
+                    })
 
         result["proximity_hits"] = proximity_hits
         result["airports_affected"] = sorted(set(h["airport"] for h in proximity_hits))
+        result["hit_count"] = len(proximity_hits)
         result["ok"] = True
     except Exception as e:
         result["error"] = repr(e)
