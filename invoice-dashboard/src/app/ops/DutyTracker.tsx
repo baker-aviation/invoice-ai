@@ -67,6 +67,7 @@ type TailData = {
   restPeriods: RestPeriod[];
   maxRolling24hrMin: number;
   chartPoints: ChartPoint[];
+  hasFlightsTomorrow: boolean;
 };
 
 type DelayAlert = {
@@ -242,11 +243,12 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
     return () => clearInterval(interval);
   }, [fetchFaData]);
 
-  const faMap = useMemo(() => {
-    const map = new Map<string, FlightInfoMap>();
+  // Group FA flights by tail for flexible matching
+  const faByTail = useMemo(() => {
+    const map = new Map<string, FlightInfoMap[]>();
     for (const fi of faData) {
-      const key = `${fi.tail}|${fi.origin_icao ?? ""}|${fi.destination_icao ?? ""}`;
-      map.set(key, fi);
+      if (!map.has(fi.tail)) map.set(fi.tail, []);
+      map.get(fi.tail)!.push(fi);
     }
     return map;
   }, [faData]);
@@ -262,8 +264,27 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
       const ft = (f.flight_type ?? "").toLowerCase();
       if (ft && !DUTY_FLIGHT_TYPES.has(ft)) continue;
 
-      const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
-      const fi = faMap.get(routeKey);
+      // Match FA data: prefer exact route match, fall back to closest departure time
+      const tailFaFlights = faByTail.get(f.tail_number) ?? [];
+      let fi: FlightInfoMap | undefined;
+      // Try exact route match first
+      fi = tailFaFlights.find(
+        (fa) => fa.origin_icao === f.departure_icao && fa.destination_icao === f.arrival_icao
+      );
+      // Fall back: match by closest scheduled departure time (within 2h)
+      if (!fi && tailFaFlights.length > 0) {
+        const schedMs = new Date(f.scheduled_departure).getTime();
+        let bestDiff = Infinity;
+        for (const fa of tailFaFlights) {
+          const faDep = fa.departure_time ?? fa.actual_departure;
+          if (!faDep) continue;
+          const diff = Math.abs(new Date(faDep).getTime() - schedMs);
+          if (diff < bestDiff && diff < 2 * 60 * 60 * 1000) {
+            bestDiff = diff;
+            fi = fa;
+          }
+        }
+      }
 
       const actualDep = fi?.actual_departure ?? null;
       const actualArr = fi?.actual_arrival ?? null;
@@ -318,7 +339,7 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
       legs.sort((a, b) => a.startMs - b.startMs);
     }
     return result;
-  }, [flights, faMap]);
+  }, [flights, faByTail]);
 
   /* ── Build per-tail data with duty periods ── */
   const tailData = useMemo((): TailData[] => {
@@ -331,7 +352,13 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
       const maxRolling24hrMin = findMaxRolling24(validLegs);
       const chartPoints = buildRolling24Chart(validLegs);
 
-      result.push({ tail, dutyPeriods, restPeriods, maxRolling24hrMin, chartPoints });
+      // Check if any leg departs tomorrow (UTC)
+      const now = new Date();
+      const tomorrowUtcStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) + 24 * 60 * 60 * 1000;
+      const tomorrowUtcEnd = tomorrowUtcStart + 24 * 60 * 60 * 1000;
+      const hasFlightsTomorrow = validLegs.some((l) => l.startMs >= tomorrowUtcStart && l.startMs < tomorrowUtcEnd);
+
+      result.push({ tail, dutyPeriods, restPeriods, maxRolling24hrMin, chartPoints, hasFlightsTomorrow });
     }
 
     result.sort((a, b) => b.maxRolling24hrMin - a.maxRolling24hrMin);
@@ -615,6 +642,13 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
                           )}
                         </div>
                       ))
+                    )}
+
+                    {/* No flights tomorrow note */}
+                    {!td.hasFlightsTomorrow && (
+                      <div className="mt-3 px-2.5 py-1.5 rounded-lg bg-gray-50 border border-gray-200 text-[11px] text-gray-400 italic">
+                        No flights scheduled tomorrow
+                      </div>
                     )}
                   </div>
                 </div>
