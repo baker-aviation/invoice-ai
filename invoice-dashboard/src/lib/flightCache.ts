@@ -13,15 +13,11 @@ import { createServiceClient } from "./supabase/service";
 
 let memCache: { data: FlightInfo[]; ts: number } | null = null;
 
-// 15 min during business hours (7AM–11PM CT), 30 min overnight
+// Full FA poll once per day — webhook push events keep cache current between polls
+const CACHE_TTL = 24 * 60 * 60_000; // 24 hours
+
 export function getCacheTtl(): number {
-  const ct = new Date().toLocaleString("en-US", {
-    timeZone: "America/Chicago",
-    hour: "numeric",
-    hour12: false,
-  });
-  const hour = parseInt(ct, 10);
-  return hour >= 7 && hour < 23 ? 900_000 : 1_800_000;
+  return CACHE_TTL;
 }
 
 export async function getCache(): Promise<{ data: FlightInfo[]; ts: number } | null> {
@@ -83,4 +79,31 @@ export function invalidateCache(): void {
 export async function isCacheFresh(): Promise<boolean> {
   const cached = await getCache();
   return cached !== null && Date.now() - cached.ts < getCacheTtl();
+}
+
+/**
+ * Update or insert a single flight in the cache without a full FA re-poll.
+ * Used by webhook events to keep cache current between daily polls.
+ */
+export async function updateFlightInCache(
+  tail: string,
+  update: Partial<FlightInfo> & { fa_flight_id: string },
+): Promise<void> {
+  const cached = await getCache();
+  if (!cached || cached.data.length === 0) return; // no cache to update
+
+  const flights = [...cached.data];
+  const idx = flights.findIndex(
+    (f) => f.fa_flight_id === update.fa_flight_id,
+  );
+
+  if (idx >= 0) {
+    // Merge update into existing entry
+    flights[idx] = { ...flights[idx], ...update };
+  } else {
+    // New flight not in cache — add it with tail
+    flights.push({ ...({ tail } as FlightInfo), ...update } as FlightInfo);
+  }
+
+  await setCache(flights);
 }

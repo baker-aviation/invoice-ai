@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/service";
-import { invalidateCache } from "@/lib/flightCache";
+import { updateFlightInCache } from "@/lib/flightCache";
+import type { FlightInfo } from "@/lib/flightaware";
 
 export const dynamic = "force-dynamic";
 
@@ -9,7 +10,7 @@ export const dynamic = "force-dynamic";
  *
  * FA sends POST requests here when alert events fire (filed, departure,
  * arrival, cancelled, diverted). We store the event in Supabase and
- * invalidate the flights cache so the next client poll gets fresh data.
+ * update the flight in cache directly — no full FA re-poll needed.
  *
  * Auth: shared secret as query param — ?secret=<FLIGHTAWARE_WEBHOOK_SECRET>
  */
@@ -79,8 +80,37 @@ export async function POST(req: NextRequest) {
     // Still return 200 so FA doesn't retry endlessly
   }
 
-  // Invalidate flights cache — next client poll will fetch fresh data
-  invalidateCache();
+  // Update the specific flight in cache instead of invalidating everything
+  if (faFlightId && registration) {
+    const update: Partial<FlightInfo> & { fa_flight_id: string } = {
+      fa_flight_id: faFlightId,
+      ident: ident ?? undefined,
+      aircraft_type: aircraftType,
+      origin_icao: origin,
+      destination_icao: destination,
+      diverted: eventCode === "diverted",
+      cancelled: eventCode === "cancelled",
+    };
+
+    // Map event codes to status
+    if (eventCode === "departure") {
+      update.status = "En Route";
+      update.actual_departure = new Date().toISOString();
+    } else if (eventCode === "arrival") {
+      update.status = "Landed";
+      update.actual_arrival = new Date().toISOString();
+    } else if (eventCode === "cancelled") {
+      update.status = "Cancelled";
+    } else if (eventCode === "diverted") {
+      update.status = "Diverted";
+    } else if (eventCode === "filed") {
+      update.status = "Filed";
+    }
+
+    updateFlightInCache(registration, update).catch((err) => {
+      console.error("[FA Webhook] Cache update failed:", err);
+    });
+  }
 
   // Process events immediately for real-time alerts (fire-and-forget)
   import("@/lib/flightEvents").then(m => m.processFlightEvents()).catch(() => {});

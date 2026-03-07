@@ -61,7 +61,8 @@ export async function GET(req: NextRequest) {
       .filter((t): t is string => !!t),
   )];
 
-  const tails = dbTails.length > 0 ? dbTails : FALLBACK_TAILS;
+  // Merge scheduled tails with known fleet tails so we never miss aircraft
+  const tails = [...new Set([...dbTails, ...FALLBACK_TAILS])];
 
   try {
     const flights = await getActiveFlights(tails);
