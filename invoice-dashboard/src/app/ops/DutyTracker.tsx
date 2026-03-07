@@ -491,21 +491,26 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
     return result;
   }, [intervalsByTail]);
 
-  // Scroll to a specific tail card when requested
+  // Scroll to a specific tail card when requested — poll until element exists
   useEffect(() => {
     if (!scrollToTail) return;
-    // Small delay to let the DOM render after tab switch
-    const timer = setTimeout(() => {
+    let attempts = 0;
+    const maxAttempts = 30; // 3 seconds max
+    const timer = setInterval(() => {
+      attempts++;
       const el = document.getElementById(`duty-${scrollToTail}`);
       if (el) {
+        clearInterval(timer);
         el.scrollIntoView({ behavior: "smooth", block: "center" });
-        // Brief highlight
         el.classList.add("ring-2", "ring-blue-400");
-        setTimeout(() => el.classList.remove("ring-2", "ring-blue-400"), 2000);
+        setTimeout(() => el.classList.remove("ring-2", "ring-blue-400"), 2500);
+        onScrollComplete?.();
+      } else if (attempts >= maxAttempts) {
+        clearInterval(timer);
+        onScrollComplete?.();
       }
-      onScrollComplete?.();
-    }, 150);
-    return () => clearTimeout(timer);
+    }, 100);
+    return () => clearInterval(timer);
   }, [scrollToTail, onScrollComplete]);
 
   /* ── Render ────────────────────────────────────────── */
