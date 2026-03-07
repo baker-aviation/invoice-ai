@@ -245,7 +245,11 @@ function useFullscreen(ref: React.RefObject<HTMLDivElement | null>) {
 function MapResizer() {
   const map = useMap();
   useEffect(() => {
-    const handler = () => setTimeout(() => map.invalidateSize(), 200);
+    const handler = () => {
+      map.invalidateSize();
+      setTimeout(() => map.invalidateSize(), 100);
+      setTimeout(() => map.invalidateSize(), 500);
+    };
     document.addEventListener("fullscreenchange", handler);
     return () => document.removeEventListener("fullscreenchange", handler);
   }, [map]);
@@ -399,7 +403,7 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive,
       <MapContainer
         center={[37.5, -96]}
         zoom={4}
-        style={{ height: isFs ? "100%" : "520px", width: "100%" }}
+        style={{ height: isFs ? "100vh" : "520px", width: "100%" }}
         scrollWheelZoom
       >
         <TileLayer
