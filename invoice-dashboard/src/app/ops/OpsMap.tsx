@@ -58,6 +58,7 @@ function acDivIcon(ac: AdsbAircraft, fleetLookup: Map<string, string>): L.DivIco
 function fmtAlt(alt: number | null): string {
   if (alt == null) return "\u2014";
   if (alt <= 0) return "GND";
+  if (alt < 18000) return `${Math.round(alt / 1000)}k`;
   return `FL${Math.round(alt / 100)}`;
 }
 
