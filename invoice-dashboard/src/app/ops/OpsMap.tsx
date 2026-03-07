@@ -296,6 +296,11 @@ export default function OpsMap({ adsbAircraft, flightInfo }: Props) {
                   letterSpacing: "0.02em",
                 }}>
                   {ac.tail}
+                  {!ac.on_ground && ac.alt_baro != null && ac.alt_baro > 0 && (
+                    <span style={{ fontWeight: 400, opacity: 0.7, marginLeft: "3px" }}>
+                      {fmtAlt(ac.alt_baro)}
+                    </span>
+                  )}
                 </span>
               </Tooltip>
               <Popup>
