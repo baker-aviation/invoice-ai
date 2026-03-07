@@ -996,6 +996,96 @@ function SlackShareModal({
 }
 
 // ---------------------------------------------------------------------------
+// LegNoteInline — MX director note per flight leg
+// ---------------------------------------------------------------------------
+
+function LegNoteInline({
+  flightId,
+  tailNumber,
+  note,
+  onSave,
+}: {
+  flightId: string;
+  tailNumber: string | null;
+  note: string;
+  onSave: (flightId: string, tailNumber: string | null, note: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(note);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Sync draft when note changes externally
+  useEffect(() => { setDraft(note); }, [note]);
+  useEffect(() => { if (editing) inputRef.current?.focus(); }, [editing]);
+
+  if (!editing && !note) {
+    return (
+      <button
+        onClick={(e) => { e.stopPropagation(); setEditing(true); }}
+        className="ml-8 mt-1 text-[11px] text-gray-400 hover:text-indigo-600 hover:underline"
+      >
+        + Add MX note
+      </button>
+    );
+  }
+
+  if (!editing) {
+    return (
+      <div
+        className="ml-8 mt-1 flex items-start gap-1.5 group cursor-pointer"
+        onClick={(e) => { e.stopPropagation(); setEditing(true); }}
+      >
+        <span className="text-[11px] font-medium text-indigo-600 shrink-0">MX:</span>
+        <span className="text-[11px] text-gray-600 whitespace-pre-wrap">{note}</span>
+        <button className="text-[10px] text-gray-300 group-hover:text-indigo-500 shrink-0 ml-1">edit</button>
+      </div>
+    );
+  }
+
+  const commit = () => {
+    onSave(flightId, tailNumber, draft);
+    setEditing(false);
+  };
+
+  return (
+    <div className="ml-8 mt-1 flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+      <span className="text-[11px] font-medium text-indigo-600 shrink-0">MX:</span>
+      <input
+        ref={inputRef}
+        className="flex-1 text-[11px] border border-indigo-200 rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit();
+          if (e.key === "Escape") { setDraft(note); setEditing(false); }
+        }}
+        placeholder="Note for van driver…"
+      />
+      <button
+        onClick={commit}
+        className="text-[10px] font-medium text-white bg-indigo-500 hover:bg-indigo-600 rounded px-1.5 py-0.5"
+      >
+        Save
+      </button>
+      {note && (
+        <button
+          onClick={() => { onSave(flightId, tailNumber, ""); setEditing(false); }}
+          className="text-[10px] text-red-400 hover:text-red-600"
+        >
+          Delete
+        </button>
+      )}
+      <button
+        onClick={() => { setDraft(note); setEditing(false); }}
+        className="text-[10px] text-gray-400 hover:text-gray-600"
+      >
+        Cancel
+      </button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // VanScheduleCard — now receives items as props (no internal computation)
 // ---------------------------------------------------------------------------
 
@@ -1011,6 +1101,8 @@ function VanScheduleCard({
   isDropTarget,
   hasOverrides,
   flightInfoMap,
+  legNotes,
+  onSaveNote,
   onDragStart,
   onDragOver,
   onDrop,
@@ -1028,6 +1120,8 @@ function VanScheduleCard({
   isDropTarget: boolean;
   hasOverrides: boolean;
   flightInfoMap: Map<string, FlightInfoEntry>;
+  legNotes: Map<string, string>;
+  onSaveNote: (flightId: string, tailNumber: string | null, note: string) => void;
   onDragStart: (e: React.DragEvent, flightId: string, fromVanId: number) => void;
   onDragOver: (e: React.DragEvent) => void;
   onDrop: (e: React.DragEvent, toVanId: number) => void;
@@ -1319,6 +1413,13 @@ function VanScheduleCard({
                         })}
                       </div>
                     )}
+                    {/* MX director note */}
+                    <LegNoteInline
+                      flightId={arrFlight.id}
+                      tailNumber={arrFlight.tail_number ?? null}
+                      note={legNotes.get(arrFlight.id) ?? ""}
+                      onSave={onSaveNote}
+                    />
                   </div>
                 );
               })}
@@ -1367,7 +1468,10 @@ function ScheduleTab({
   // Snapshot of edits at last publish — used to detect unpublished changes
   const [publishedEditsSnapshot, setPublishedEditsSnapshot] = useState<string>("");
 
-  // Check existing publish status on mount / date change
+  // MX director notes per leg
+  const [legNotes, setLegNotes] = useState<Map<string, string>>(new Map());
+
+  // Check existing publish status + load notes on mount / date change
   useEffect(() => {
     setPublishedAt(null);
     setPublishError(null);
@@ -1375,6 +1479,15 @@ function ScheduleTab({
     fetch(`/api/vans/publish?date=${date}`)
       .then((r) => r.json())
       .then((d) => { if (d.published_at) setPublishedAt(d.published_at); })
+      .catch(() => {});
+    // Load existing notes
+    fetch(`/api/vans/notes?date=${date}`)
+      .then((r) => r.json())
+      .then((d) => {
+        const map = new Map<string, string>();
+        for (const n of d.notes ?? []) map.set(n.flight_id, n.note);
+        setLegNotes(map);
+      })
       .catch(() => {});
   }, [date]);
   // Reset overrides when date changes
@@ -1388,6 +1501,21 @@ function ScheduleTab({
   const totalEdits = overrides.size + removals.size;
 
   // DnD visual state
+  const saveLegNote = useCallback(async (flightId: string, tailNumber: string | null, note: string) => {
+    if (!note.trim()) {
+      // Delete note
+      setLegNotes((prev) => { const m = new Map(prev); m.delete(flightId); return m; });
+      fetch(`/api/vans/notes?flight_id=${encodeURIComponent(flightId)}`, { method: "DELETE" }).catch(() => {});
+      return;
+    }
+    setLegNotes((prev) => new Map(prev).set(flightId, note.trim()));
+    fetch("/api/vans/notes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ flight_id: flightId, date, tail_number: tailNumber, note }),
+    }).catch(() => {});
+  }, [date]);
+
   const [dropTargetVan, setDropTargetVan] = useState<number | null>(null);
   const dragCounterRef = useRef(0);
 
@@ -1863,6 +1991,8 @@ function ScheduleTab({
               isDropTarget={dropTargetVan === zone.vanId}
               hasOverrides={editedVans.has(zone.vanId)}
               flightInfoMap={flightInfoMap}
+              legNotes={legNotes}
+              onSaveNote={saveLegNote}
               onDragStart={handleDragStart}
               onDragOver={handleDragOver}
               onDrop={handleDrop}
