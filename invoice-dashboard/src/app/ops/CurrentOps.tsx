@@ -491,9 +491,32 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
       });
     }
 
-    const all = [...filteredFlights, ...replacements].sort(
-      (a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure),
-    );
+    // Build replacement lookup: cancelled flight id → replacement flight
+    const replacementFor = new Map<string, Flight>();
+    for (const r of replacements) {
+      // Find the cancelled flight this replaces (same tail + origin)
+      for (const [fid, info] of superseded) {
+        const orig = filteredFlights.find((ff) => ff.id === fid);
+        if (orig && orig.tail_number && r.tail_number === orig.tail_number &&
+            r.departure_icao === orig.departure_icao && r.arrival_icao === info.actualDest) {
+          replacementFor.set(fid, r);
+          break;
+        }
+      }
+    }
+
+    // Insert replacements directly after their cancelled leg
+    const all: Flight[] = [];
+    const inserted = new Set<string>();
+    for (const f of filteredFlights) {
+      all.push(f);
+      const repl = replacementFor.get(f.id);
+      if (repl) { all.push(repl); inserted.add(repl.id); }
+    }
+    // Add any remaining replacements that weren't paired
+    for (const r of replacements) {
+      if (!inserted.has(r.id)) all.push(r);
+    }
     return { displayFlights: all, supersededMap: superseded };
   }, [filteredFlights, flightInfo]);
 
