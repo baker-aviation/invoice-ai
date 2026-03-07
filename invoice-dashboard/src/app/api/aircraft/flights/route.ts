@@ -3,7 +3,8 @@ import { requireAuth, isAuthed } from "@/lib/api-auth";
 import { getActiveFlights } from "@/lib/flightaware";
 import { TRIPS } from "@/lib/maintenanceData";
 import { createServiceClient } from "@/lib/supabase/service";
-import { getCache, setCache, isCacheFresh, getCacheTtl } from "@/lib/flightCache";
+import { getCache, setCache, isCacheFresh } from "@/lib/flightCache";
+import { refreshAlerts } from "@/lib/faAlerts";
 
 export const dynamic = "force-dynamic";
 
@@ -59,6 +60,9 @@ export async function GET(req: NextRequest) {
   try {
     const flights = await getActiveFlights(tails);
     setCache(flights);
+
+    // Auto-register FA webhook alerts for any new tails (fire-and-forget)
+    refreshAlerts(tails).catch(() => {});
 
     // Count flights per tail for debugging
     const perTail: Record<string, number> = {};
