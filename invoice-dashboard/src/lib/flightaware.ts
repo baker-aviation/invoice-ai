@@ -116,9 +116,16 @@ export type FlightInfo = {
 // API calls
 // ---------------------------------------------------------------------------
 
+// LADD/PIA-blocked aircraft: registration lookup returns nothing,
+// so we fall back to querying by callsign (operator + fleet number).
+const CALLSIGN_FALLBACKS: Record<string, string> = {
+  N301HR: "KOW301",
+};
+
 /**
  * Get recent and upcoming flights for a registration (tail number).
  * Returns the most recent / current / upcoming flights.
+ * Falls back to callsign lookup for LADD/PIA-blocked aircraft.
  */
 export async function getFlightsByRegistration(
   registration: string,
@@ -134,8 +141,27 @@ export async function getFlightsByRegistration(
     return [];
   }
   const data = await res.json();
-  const flights = (data.flights ?? []) as FaFlight[];
+  let flights = (data.flights ?? []) as FaFlight[];
   console.log(`[FA] ${registration}: ${flights.length} flights returned`);
+
+  // Fallback: try callsign for blocked aircraft
+  if (flights.length === 0 && CALLSIGN_FALLBACKS[registration]) {
+    const callsign = CALLSIGN_FALLBACKS[registration];
+    console.log(`[FA] ${registration}: trying callsign fallback ${callsign}`);
+    const csUrl = `${BASE}/flights/${encodeURIComponent(callsign)}`;
+    try {
+      const csRes = await fetch(csUrl, {
+        headers: headers(),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (csRes.ok) {
+        const csData = await csRes.json();
+        flights = (csData.flights ?? []) as FaFlight[];
+        console.log(`[FA] ${callsign}: ${flights.length} flights returned (callsign fallback)`);
+      }
+    } catch { /* ignore callsign fallback errors */ }
+  }
+
   return flights;
 }
 
