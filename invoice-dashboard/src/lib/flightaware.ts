@@ -238,6 +238,7 @@ export async function getActiveFlights(
         try {
           const flights = await getFlightsByRegistration(tail);
           const recent: FlightInfo[] = [];
+          let positionFetched = false;
 
           for (const f of flights) {
             if (f.cancelled) continue;
@@ -249,8 +250,25 @@ export async function getActiveFlights(
             }
 
             const info = toFlightInfo(tail, f);
-            // last_position is already extracted by toFlightInfo from the flights response —
-            // no separate getFlightPosition call needed (saves ~1 API call per en-route aircraft per refresh)
+
+            // Fetch position for the FIRST en-route flight per tail if last_position was empty
+            if (
+              !positionFetched &&
+              info.latitude == null &&
+              f.actual_off != null &&
+              f.actual_on == null &&
+              f.fa_flight_id
+            ) {
+              positionFetched = true;
+              const pos = await getFlightPosition(f.fa_flight_id);
+              if (pos) {
+                info.latitude = pos.latitude;
+                info.longitude = pos.longitude;
+                info.altitude = pos.altitude ?? null;
+                info.groundspeed = pos.groundspeed ?? null;
+                info.heading = pos.heading ?? null;
+              }
+            }
 
             recent.push(info);
           }
