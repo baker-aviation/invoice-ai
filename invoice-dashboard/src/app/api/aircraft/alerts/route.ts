@@ -193,12 +193,26 @@ export async function POST(req: NextRequest) {
         signal: AbortSignal.timeout(10000),
       });
 
+      const responseText = await alertRes.text();
+
       if (alertRes.ok) {
-        const alertData = await alertRes.json();
-        const alertId = alertData.id ?? alertData.alert_id;
+        // FA may return empty body or JSON with alert ID
+        let alertId: number | null = null;
+        if (responseText) {
+          try {
+            const alertData = JSON.parse(responseText);
+            alertId = alertData.id ?? alertData.alert_id ?? null;
+          } catch { /* empty or non-JSON response — alert still created */ }
+        }
+
+        // Try to get alert ID from Location header if not in body
+        const location = alertRes.headers.get("location");
+        if (!alertId && location) {
+          const match = location.match(/\/alerts\/(\d+)/);
+          if (match) alertId = parseInt(match[1], 10);
+        }
 
         if (alertId) {
-          // Store registration
           await supa.from("fa_alert_registrations").upsert(
             { tail, alert_id: alertId, active: true },
             { onConflict: "tail" },
@@ -206,13 +220,12 @@ export async function POST(req: NextRequest) {
         }
 
         created++;
-        results.details.push({ step: "alert_created", tail, alert_id: alertId });
-        console.log(`[FA Alerts] Created alert for ${tail} (id: ${alertId})`);
+        results.details.push({ step: "alert_created", tail, alert_id: alertId, status: alertRes.status });
+        console.log(`[FA Alerts] Created alert for ${tail} (id: ${alertId}, status: ${alertRes.status})`);
       } else {
-        const errText = await alertRes.text();
         failed++;
-        results.details.push({ step: "alert_failed", tail, status: alertRes.status, error: errText });
-        console.warn(`[FA Alerts] Failed to create alert for ${tail}: ${alertRes.status} ${errText}`);
+        results.details.push({ step: "alert_failed", tail, status: alertRes.status, error: responseText });
+        console.warn(`[FA Alerts] Failed to create alert for ${tail}: ${alertRes.status} ${responseText}`);
       }
 
       // Rate limit: pause between calls
