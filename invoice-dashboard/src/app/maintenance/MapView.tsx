@@ -9,7 +9,7 @@
  * Aircraft markers (✈) — colored to match their assigned van — show the
  * OVERNIGHT position (where the plane will be at end of selected date).
  *
- * Live ADS-B markers (✈) — real-time aircraft positions from airplanes.live.
+ * En-route aircraft markers (✈) — real-time positions from FlightAware.
  */
 
 import L from "leaflet";
@@ -21,7 +21,7 @@ const THREE_HOUR_RADIUS_M = 300_000;
 
 type LivePos = { lat: number; lon: number };
 
-export type AdsbAircraft = {
+export type AircraftPosition = {
   tail: string;
   lat: number;
   lon: number;
@@ -69,8 +69,8 @@ type Props = {
   liveVanPositions: Map<number, LivePos>;
   /** Zone ID → whether the position is a live reading (true) or last-known cache (false). */
   liveVanIsLive?: Map<number, boolean>;
-  /** Live ADS-B aircraft positions from airplanes.live */
-  adsbAircraft?: AdsbAircraft[];
+  /** En-route aircraft positions from FlightAware */
+  aircraftPositions?: AircraftPosition[];
   /** FlightAware flight info by tail number */
   flightInfo?: Map<string, FlightInfoMap>;
 };
@@ -112,7 +112,7 @@ function planeDivIcon(color: string): L.DivIcon {
   });
 }
 
-function adsbDivIcon(track: number | null, onGround: boolean): L.DivIcon {
+function aircraftDivIcon(track: number | null, onGround: boolean): L.DivIcon {
   const rotation = track != null ? track - 45 : -45; // ✈ emoji points NE, subtract 45
   const color = onGround ? "#6b7280" : "#2563eb";
   return L.divIcon({
@@ -153,7 +153,7 @@ function fmtEta(iso: string | null | undefined): string {
   return `${time} (${remaining})`;
 }
 
-export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive, adsbAircraft, flightInfo }: Props) {
+export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive, aircraftPositions, flightInfo }: Props) {
   // Collect unique airport overnight positions → de-duplicate so one icon per airport per van
   const aircraftByAirport = new Map<
     string,
@@ -172,7 +172,7 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive,
   }
 
   // Build set of tails that have live ADS-B data (to dim/hide static overnight markers)
-  const adsbTails = new Set((adsbAircraft ?? []).map((a) => a.tail));
+  const enRouteTails = new Set((aircraftPositions ?? []).map((a) => a.tail));
 
   return (
     <MapContainer
@@ -260,7 +260,7 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive,
       {/* Skip tails that have live ADS-B data (live position takes priority) */}
       {Array.from(aircraftByAirport.entries()).map(([key, info]) => {
         // Filter out tails with live ADS-B positions
-        const staticTails = info.tails.filter((t) => !adsbTails.has(t));
+        const staticTails = info.tails.filter((t) => !enRouteTails.has(t));
         if (staticTails.length === 0) return null;
         return (
           <Marker
@@ -292,14 +292,14 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive,
         );
       })}
 
-      {/* Live ADS-B aircraft markers — real-time positions */}
-      {(adsbAircraft ?? []).map((ac) => {
+      {/* En-route aircraft markers — FlightAware positions */}
+      {(aircraftPositions ?? []).map((ac) => {
         const fi = flightInfo?.get(ac.tail);
         return (
           <Marker
-            key={`adsb-${ac.tail}`}
+            key={`fa-${ac.tail}`}
             position={[ac.lat, ac.lon]}
-            icon={adsbDivIcon(ac.track, ac.on_ground)}
+            icon={aircraftDivIcon(ac.track, ac.on_ground)}
             zIndexOffset={2000}
           >
             <Tooltip permanent direction="top" offset={[0, -14]} className="van-label-tooltip">

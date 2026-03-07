@@ -3,24 +3,24 @@
 import { useState, useEffect, useCallback } from "react";
 import L from "leaflet";
 import { MapContainer, TileLayer, Marker, Popup, Tooltip, Polyline } from "react-leaflet";
-import type { AdsbAircraft, FlightInfoMap } from "@/app/maintenance/MapView";
+import type { AircraftPosition, FlightInfoMap } from "@/app/maintenance/MapView";
 
 /* ── Fleet type helpers ── */
 
 const CHALLENGER_TYPES = new Set(["CL30", "CL35"]);
 const CITATION_TYPES = new Set(["C750"]);
 
-function isChallenger(ac: AdsbAircraft, fleetLookup: Map<string, string>): boolean {
+function isChallenger(ac: AircraftPosition, fleetLookup: Map<string, string>): boolean {
   const fleet = fleetLookup.get(ac.tail);
   return fleet === "Challenger 300" || fleet === "Challenger 350";
 }
 
-function isCitation(ac: AdsbAircraft, fleetLookup: Map<string, string>): boolean {
+function isCitation(ac: AircraftPosition, fleetLookup: Map<string, string>): boolean {
   const fleet = fleetLookup.get(ac.tail);
   return fleet === "Citation X";
 }
 
-function getAircraftColors(ac: AdsbAircraft, fleetLookup: Map<string, string>): { icon: string; label: string } {
+function getAircraftColors(ac: AircraftPosition, fleetLookup: Map<string, string>): { icon: string; label: string } {
   if (isChallenger(ac, fleetLookup)) {
     return ac.on_ground
       ? { icon: "#f87171", label: "#ef4444" }   // light red / red-400 / red-500
@@ -40,7 +40,7 @@ function getAircraftColors(ac: AdsbAircraft, fleetLookup: Map<string, string>): 
 // Airplane SVG path pointing UP (nose at top). Designed in a 32x32 viewBox.
 const PLANE_PATH = "M16 1.5l-1.2 7.5-7.3 2.5 1 2 5.5-1 -1 8-3 2v2l4.5-1.5L16 24.5l1.5-1.5 4.5 1.5v-2l-3-2-1-8 5.5 1 1-2-7.3-2.5z";
 
-function acDivIcon(ac: AdsbAircraft, fleetLookup: Map<string, string>): L.DivIcon {
+function acDivIcon(ac: AircraftPosition, fleetLookup: Map<string, string>): L.DivIcon {
   const rotation = ac.track != null ? ac.track : 0;
   const colors = getAircraftColors(ac, fleetLookup);
   const size = ac.on_ground ? 18 : 22;
@@ -80,7 +80,7 @@ function fmtEta(iso: string | null | undefined): string {
 }
 
 type Props = {
-  adsbAircraft: AdsbAircraft[];
+  aircraft: AircraftPosition[];
   flightInfo: Map<string, FlightInfoMap>;
 };
 
@@ -225,7 +225,7 @@ function MapLegend() {
 
 /* ── Main map component ── */
 
-export default function OpsMap({ adsbAircraft, flightInfo }: Props) {
+export default function OpsMap({ aircraft, flightInfo }: Props) {
   const [showRadar, setShowRadar] = useState(false);
   const radarUrl = useRadarUrl(showRadar);
 
@@ -280,12 +280,12 @@ export default function OpsMap({ adsbAircraft, flightInfo }: Props) {
         <FlightTracks flightInfo={flightInfo} fleetLookup={fleetLookup} />
 
         {/* Aircraft markers */}
-        {adsbAircraft.map((ac) => {
+        {aircraft.map((ac) => {
           const fi = flightInfo.get(ac.tail);
           const colors = getAircraftColors(ac, fleetLookup);
           return (
             <Marker
-              key={`adsb-${ac.tail}`}
+              key={`ac-${ac.tail}`}
               position={[ac.lat, ac.lon]}
               icon={acDivIcon(ac, fleetLookup)}
               zIndexOffset={ac.on_ground ? 1000 : 2000}

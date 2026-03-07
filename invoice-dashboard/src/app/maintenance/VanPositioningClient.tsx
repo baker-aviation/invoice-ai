@@ -13,6 +13,7 @@ import {
   AircraftOvernightPosition,
 } from "@/lib/maintenanceData";
 import { getAirportInfo } from "@/lib/airportCoords";
+import type { AircraftPosition } from "./MapView";
 
 // Leaflet requires SSR to be disabled
 const MapView = dynamic(() => import("./MapView"), {
@@ -2036,44 +2037,17 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
     return () => clearInterval(id);
   }, []);
 
-  // ── ADS-B live aircraft positions (airplanes.live) ──
-  const [adsbAircraft, setAdsbAircraft] = useState<
-    { tail: string; lat: number; lon: number; alt_baro: number | null; gs: number | null; track: number | null; baro_rate: number | null; on_ground: boolean; squawk: string | null; flight: string | null; seen: number | null; aircraft_type: string | null; description: string | null }[]
-  >([]);
-  const [adsbLoading, setAdsbLoading] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function loadAdsb() {
-      try {
-        setAdsbLoading(true);
-        const res = await fetch("/api/aircraft/positions", { cache: "no-store" });
-        if (!res.ok) {
-          console.warn(`[ADS-B] /api/aircraft/positions returned ${res.status}`);
-          return;
-        }
-        const data = await res.json();
-        console.log(`[ADS-B] ${data.count ?? 0}/${data.total_tails ?? "?"} aircraft on ADS-B${data.cached ? " (cached)" : ""}`);
-        if (!cancelled) setAdsbAircraft(data.aircraft ?? []);
-      } catch (err) {
-        console.warn("[ADS-B] fetch failed:", err);
-      } finally {
-        if (!cancelled) setAdsbLoading(false);
-      }
-    }
-    loadAdsb();
-    const id = setInterval(loadAdsb, 60_000); // refresh every 60s
-    return () => { cancelled = true; clearInterval(id); };
-  }, []);
-
-  // ── FlightAware flight info (ETA, route, origin/destination) ──
+  // ── FlightAware flight info (ETA, route, origin/destination, positions) ──
   type FlightInfoEntry = {
     tail: string; ident: string; origin_icao: string | null; origin_name: string | null;
     destination_icao: string | null; destination_name: string | null; status: string | null;
     progress_percent: number | null; departure_time: string | null; arrival_time: string | null;
     route_distance_nm: number | null; diverted: boolean;
+    latitude?: number | null; longitude?: number | null; altitude?: number | null;
+    groundspeed?: number | null; heading?: number | null;
   };
   const [flightInfoMap, setFlightInfoMap] = useState<Map<string, FlightInfoEntry>>(new Map());
+  const [faAircraft, setFaAircraft] = useState<AircraftPosition[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2084,10 +2058,30 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
         const data = await res.json();
         if (cancelled) return;
         const map = new Map<string, FlightInfoEntry>();
+        const positions: AircraftPosition[] = [];
         for (const f of (data.flights ?? [])) {
           map.set(f.tail, f);
+          // Synthesize map positions from en-route flights with position data
+          if (f.latitude != null && f.longitude != null) {
+            positions.push({
+              tail: f.tail,
+              lat: f.latitude,
+              lon: f.longitude,
+              alt_baro: f.altitude ?? null,
+              gs: f.groundspeed ?? null,
+              track: f.heading ?? null,
+              baro_rate: null,
+              on_ground: false,
+              squawk: null,
+              flight: f.ident ?? null,
+              seen: null,
+              aircraft_type: null,
+              description: null,
+            });
+          }
         }
         setFlightInfoMap(map);
+        setFaAircraft(positions);
       } catch {
         // FlightAware is optional — fail silently
       }
@@ -2229,7 +2223,7 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
 
           {viewMode === "map" ? (
             <div className="rounded-xl overflow-hidden border shadow-sm">
-              <MapView vans={displayedVans} colors={VAN_COLORS} liveVanPositions={liveVanPositions} liveVanIsLive={liveVanIsLive} adsbAircraft={adsbAircraft} flightInfo={flightInfoMap} />
+              <MapView vans={displayedVans} colors={VAN_COLORS} liveVanPositions={liveVanPositions} liveVanIsLive={liveVanIsLive} aircraftPositions={faAircraft} flightInfo={flightInfoMap} />
             </div>
           ) : (
             <div className="space-y-3">
@@ -2246,27 +2240,15 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
             </div>
           )}
 
-          {/* ADS-B + FlightAware status */}
-          {(adsbAircraft.length > 0 || flightInfoMap.size > 0) && (
+          {/* FlightAware status */}
+          {flightInfoMap.size > 0 && (
             <div className="flex flex-col gap-1 text-xs text-gray-500 px-1">
-              {adsbAircraft.length > 0 && (
-                <div className="flex items-center gap-2">
-                  <span className="inline-block w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
-                  <span>
-                    ADS-B: {adsbAircraft.filter((a) => !a.on_ground).length} airborne,{" "}
-                    {adsbAircraft.filter((a) => a.on_ground).length} on ground
-                  </span>
-                  {adsbLoading && <span className="text-gray-400">updating…</span>}
-                </div>
-              )}
-              {flightInfoMap.size > 0 && (
-                <div className="flex items-center gap-2">
-                  <span className="inline-block w-2 h-2 rounded-full bg-green-500" />
-                  <span>
-                    FlightAware: {flightInfoMap.size} flights with ETA data
-                  </span>
-                </div>
-              )}
+              <div className="flex items-center gap-2">
+                <span className="inline-block w-2 h-2 rounded-full bg-green-500" />
+                <span>
+                  FlightAware: {faAircraft.length} en-route, {flightInfoMap.size} flights tracked
+                </span>
+              </div>
             </div>
           )}
 

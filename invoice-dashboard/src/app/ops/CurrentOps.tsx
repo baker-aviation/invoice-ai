@@ -3,7 +3,7 @@
 import dynamic from "next/dynamic";
 import { useState, useEffect, useCallback, useMemo, Fragment } from "react";
 import type { Flight, OpsAlert } from "@/lib/opsApi";
-import type { AdsbAircraft, FlightInfoMap } from "@/app/maintenance/MapView";
+import type { AircraftPosition, FlightInfoMap } from "@/app/maintenance/MapView";
 import { fmtTimeInTz } from "@/lib/airportTimezones";
 import { getAirportInfo } from "@/lib/airportCoords";
 import { TRIPS } from "@/lib/maintenanceData";
@@ -236,7 +236,7 @@ const SEVERITY_COLORS: Record<string, string> = {
 /* ── component ──────────────────────────────────────── */
 
 export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Flight[]; onSwitchToDuty?: (tail?: string) => void }) {
-  const [adsbAircraft, setAdsbAircraft] = useState<AdsbAircraft[]>([]);
+  const [enRouteAircraft, setAircraftPosition] = useState<AircraftPosition[]>([]);
   const [flightInfo, setFlightInfo] = useState<Map<string, FlightInfoMap>>(new Map());
   const [visibleTypes, setVisibleTypes] = useState<Set<string>>(DEFAULT_TYPES);
   const [timeRange, setTimeRange] = useState<TimeRange>("Today");
@@ -261,7 +261,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
         const data = await res.json();
         // Key by tail|origin|dest so each scheduled leg can find its FA match
         const map = new Map<string, FlightInfoMap>();
-        const positions: AdsbAircraft[] = [];
+        const positions: AircraftPosition[] = [];
         for (const fi of data.flights ?? []) {
           const key = `${fi.tail}|${fi.origin_icao ?? ""}|${fi.destination_icao ?? ""}`;
           map.set(key, fi);
@@ -289,7 +289,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
           }
         }
         setFlightInfo(map);
-        setAdsbAircraft(positions);
+        setAircraftPosition(positions);
         setLastUpdate(new Date());
       }
     } catch { /* ignore */ }
@@ -390,9 +390,9 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
 
   // Compute parked aircraft positions from schedule + FA data
   const parkedAircraft = useMemo(() => {
-    const flyingTails = new Set(adsbAircraft.map((a) => a.tail));
+    const flyingTails = new Set(enRouteAircraft.map((a) => a.tail));
     const now = new Date();
-    const parked: AdsbAircraft[] = [];
+    const parked: AircraftPosition[] = [];
     // For each tail, find its most likely current location:
     // 1. Last arrived leg (arrival in the past)
     // 2. Next departing leg (departure in the future — they're parked at that airport)
@@ -466,16 +466,16 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
       }
     }
     return parked;
-  }, [flights, adsbAircraft]);
+  }, [flights, enRouteAircraft]);
 
   // Combine flying + parked for the map
-  const allMapAircraft = useMemo(() => [...adsbAircraft, ...parkedAircraft], [adsbAircraft, parkedAircraft]);
+  const allMapAircraft = useMemo(() => [...enRouteAircraft, ...parkedAircraft], [enRouteAircraft, parkedAircraft]);
 
   // Per-tail duty summary (24hr flight time + crew rest)
   const tailDuty = useMemo(() => computeTailDuty(flights, flightInfo), [flights, flightInfo]);
 
   // Count airborne vs on-ground
-  const airborne = adsbAircraft.length;
+  const airborne = enRouteAircraft.length;
   const onGround = parkedAircraft.length;
 
   // Collect same-day EDCT alerts across all flights
@@ -554,7 +554,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
 
       {/* ── Map ── */}
       <div className="rounded-xl border border-gray-200 overflow-hidden">
-        <OpsMap adsbAircraft={allMapAircraft} flightInfo={flightInfo} />
+        <OpsMap aircraft={allMapAircraft} flightInfo={flightInfo} />
       </div>
 
       {/* ── Filters row ── */}
@@ -805,7 +805,6 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
               </tr>
             ) : (
               filteredFlights.map((f) => {
-                const adsb = adsbAircraft.find((a) => a.tail === f.tail_number);
                 // Look up FlightAware info by route-specific key first, then fall back to tail-only
                 const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
                 const fi = f.tail_number

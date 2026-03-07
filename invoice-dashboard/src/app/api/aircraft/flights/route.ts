@@ -1,22 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, isAuthed } from "@/lib/api-auth";
-import { getActiveFlights, type FlightInfo } from "@/lib/flightaware";
+import { getActiveFlights } from "@/lib/flightaware";
 import { TRIPS } from "@/lib/maintenanceData";
 import { createServiceClient } from "@/lib/supabase/service";
+import { getCache, setCache, isCacheFresh, getCacheTtl } from "@/lib/flightCache";
 
 export const dynamic = "force-dynamic";
 
 // Fallback tail numbers
 const FALLBACK_TAILS = [...new Set(TRIPS.map((t) => t.tail))];
-
-// Cache: FlightAware data changes slowly — cache 2 minutes
-let cachedResult: { data: FlightInfo[]; ts: number } | null = null;
-// 10 min during business hours (7AM–11PM CT), 20 min overnight
-function getCacheTtl(): number {
-  const ct = new Date().toLocaleString("en-US", { timeZone: "America/Chicago", hour: "numeric", hour12: false });
-  const hour = parseInt(ct, 10);
-  return (hour >= 7 && hour < 23) ? 600_000 : 1_200_000;
-}
 
 export async function GET(req: NextRequest) {
   const auth = await requireAuth(req);
@@ -33,7 +25,8 @@ export async function GET(req: NextRequest) {
 
   // Return cache if fresh (unless ?refresh=true)
   const forceRefresh = req.nextUrl.searchParams.get("refresh") === "true";
-  if (!forceRefresh && cachedResult && Date.now() - cachedResult.ts < getCacheTtl()) {
+  const cachedResult = getCache();
+  if (!forceRefresh && cachedResult && isCacheFresh()) {
     return NextResponse.json({
       flights: cachedResult.data,
       count: cachedResult.data.length,
@@ -43,7 +36,7 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  // Get tail numbers (same logic as positions route)
+  // Get tail numbers from flights table
   const supa = createServiceClient();
   const now = new Date();
   const past = new Date(now.getTime() - 48 * 60 * 60 * 1000).toISOString();
@@ -65,7 +58,7 @@ export async function GET(req: NextRequest) {
 
   try {
     const flights = await getActiveFlights(tails);
-    cachedResult = { data: flights, ts: Date.now() };
+    setCache(flights);
 
     // Count flights per tail for debugging
     const perTail: Record<string, number> = {};
@@ -80,13 +73,14 @@ export async function GET(req: NextRequest) {
       tails_queried: tails,
       flights_per_tail: perTail,
       cached: false,
-      cached_at: new Date(cachedResult!.ts).toISOString(),
+      cached_at: new Date().toISOString(),
       cache_age_s: 0,
     });
   } catch (err) {
+    const stale = getCache();
     return NextResponse.json({
-      flights: cachedResult?.data ?? [],
-      count: cachedResult?.data.length ?? 0,
+      flights: stale?.data ?? [],
+      count: stale?.data.length ?? 0,
       error: "FlightAware query failed",
       cached: true,
     });
