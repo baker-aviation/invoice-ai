@@ -338,7 +338,6 @@ export function assignVans(
   const eligible = positions.filter(
     (p) => p.isKnown && p.lat !== 0 && isContiguous48(p.state)
   );
-  if (eligible.length === 0) return [];
 
   // Sort aircraft so closest-to-a-zone goes first (ensures nearest aircraft win slots)
   const sorted = [...eligible].sort((a, b) => {
