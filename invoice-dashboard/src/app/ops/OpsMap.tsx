@@ -230,6 +230,7 @@ function MapLegend() {
 /* ── Main map component ── */
 
 export default function OpsMap({ aircraft, flightInfo }: Props) {
+  const [darkMode, setDarkMode] = useState(false);
   const [showRadar, setShowRadar] = useState(false);
   const radarUrl = useRadarUrl(showRadar);
 
@@ -246,16 +247,28 @@ export default function OpsMap({ aircraft, flightInfo }: Props) {
 
   return (
     <div className="relative">
-      <button
-        onClick={() => setShowRadar((v) => !v)}
-        className={`absolute top-2 right-2 z-[1000] px-3 py-1.5 rounded-md text-xs font-medium shadow-md transition-colors ${
-          showRadar
-            ? "bg-blue-600 text-white hover:bg-blue-700"
-            : "bg-white text-gray-700 hover:bg-gray-100 border border-gray-300"
-        }`}
-      >
-        {showRadar ? "Radar ON" : "Radar"}
-      </button>
+      <div className="absolute top-2 right-2 z-[1000] flex gap-1.5">
+        <button
+          onClick={() => setDarkMode((v) => !v)}
+          className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+            darkMode
+              ? "bg-blue-600 text-white"
+              : "bg-white text-gray-600 border border-gray-300 hover:bg-gray-50"
+          }`}
+        >
+          {darkMode ? "Dark" : "Light"}
+        </button>
+        <button
+          onClick={() => setShowRadar((v) => !v)}
+          className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+            showRadar
+              ? "bg-blue-600 text-white"
+              : "bg-white text-gray-600 border border-gray-300 hover:bg-gray-50"
+          }`}
+        >
+          {showRadar ? "Radar ON" : "Radar"}
+        </button>
+      </div>
 
       <MapLegend />
 
@@ -264,11 +277,11 @@ export default function OpsMap({ aircraft, flightInfo }: Props) {
         zoom={4}
         style={{ height: "500px", width: "100%" }}
         scrollWheelZoom
+        className={darkMode ? "map-dark" : ""}
       >
         <TileLayer
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
           url={LIGHT_TILES}
-          className={showRadar ? "dark-tiles" : ""}
         />
 
         {/* Radar overlay */}

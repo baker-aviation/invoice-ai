@@ -250,6 +250,7 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive,
   const [showLabels, setShowLabels] = useState(true);
   const [showRings, setShowRings] = useState(true);
   const [showVans, setShowVans] = useState(true);
+  const [darkMode, setDarkMode] = useState(false);
   const [showRadar, setShowRadar] = useState(false);
   const radarUrl = useRadarUrl(showRadar);
 
@@ -291,6 +292,7 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive,
         <ToggleButton label="Labels" active={showLabels} onClick={() => setShowLabels((v) => !v)} />
         <ToggleButton label="Rings" active={showRings} onClick={() => setShowRings((v) => !v)} />
         <ToggleButton label="Vans" active={showVans} onClick={() => setShowVans((v) => !v)} />
+        <ToggleButton label={darkMode ? "Dark" : "Light"} active={darkMode} onClick={() => setDarkMode((v) => !v)} />
         <ToggleButton label={showRadar ? "Radar ON" : "Radar"} active={showRadar} onClick={() => setShowRadar((v) => !v)} />
       </div>
 
@@ -301,11 +303,11 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive,
         zoom={4}
         style={{ height: "520px", width: "100%" }}
         scrollWheelZoom
+        className={darkMode ? "map-dark" : ""}
       >
         <TileLayer
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
           url={LIGHT_TILES}
-          className={showRadar ? "dark-tiles" : ""}
         />
 
         {/* Radar overlay */}
