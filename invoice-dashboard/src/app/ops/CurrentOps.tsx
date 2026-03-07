@@ -245,12 +245,20 @@ function restColor(restMin: number | null): string {
   return LEVEL_COLORS[level];
 }
 
-/** Delay color: early/≤15m green, 15-45m amber, >45m red */
+/** Delay color for actuals: early/≤15m green, 15-45m amber, >45m red */
 function delayColorClass(scheduledIso: string, actualIso: string): string {
   const delayMin = (new Date(actualIso).getTime() - new Date(scheduledIso).getTime()) / 60_000;
   if (delayMin > 45) return "text-red-600";
   if (delayMin > 15) return "text-amber-600";
   return "text-green-600";
+}
+
+/** Delay color for departure estimates: ≤15m green, 15-30m amber, >30m red */
+function depEstColorClass(scheduledIso: string, estIso: string): string {
+  const delayMin = (new Date(estIso).getTime() - new Date(scheduledIso).getTime()) / 60_000;
+  if (delayMin > 30) return "text-red-600 font-semibold";
+  if (delayMin > 15) return "text-amber-700 font-semibold";
+  return "text-blue-600";
 }
 
 function fmtHM(minutes: number): string {
@@ -764,11 +772,15 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                                   <div className="text-gray-500">
                                     {fmt(f.scheduled_departure, f.departure_icao)}
                                   </div>
-                                  {actualDepIso && (
+                                  {actualDepIso ? (
                                     <div className={`text-[10px] font-medium ${delayColorClass(f.scheduled_departure, actualDepIso)}`}>
                                       Actual: {fmt(actualDepIso, f.departure_icao)}
                                     </div>
-                                  )}
+                                  ) : fi?.departure_time && fi.departure_time !== f.scheduled_departure ? (
+                                    <div className={`text-[10px] font-medium ${depEstColorClass(f.scheduled_departure, fi.departure_time)}`}>
+                                      Est: {fmt(fi.departure_time, f.departure_icao)}
+                                    </div>
+                                  ) : null}
                                 </div>
                                 <div className="w-36 shrink-0">
                                   <div className="text-gray-500">
@@ -935,16 +947,15 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                       </td>
                       <td className="px-4 py-2.5 text-gray-600">
                         <div>{fmt(f.scheduled_departure, f.departure_icao)}</div>
-                        {fi?.actual_departure && (
+                        {fi?.actual_departure ? (
                           <div className={`text-[10px] font-medium mt-0.5 ${delayColorClass(f.scheduled_departure, fi.actual_departure)}`}>
                             Actual: {fmt(fi.actual_departure, f.departure_icao)}
                           </div>
-                        )}
-                        {!fi?.actual_departure && depMismatchMin !== null && fi?.departure_time && (
-                          <div className="mt-0.5 text-[10px] font-semibold text-amber-700">
-                            FA Est: {fmt(fi.departure_time, f.departure_icao)}
+                        ) : fi?.departure_time && fi.departure_time !== f.scheduled_departure ? (
+                          <div className={`text-[10px] font-medium mt-0.5 ${depEstColorClass(f.scheduled_departure, fi.departure_time)}`}>
+                            Est: {fmt(fi.departure_time, f.departure_icao)}
                           </div>
-                        )}
+                        ) : null}
                       </td>
                       <td className="px-4 py-2.5 text-gray-600">
                         <div>{fmt(f.scheduled_arrival, f.arrival_icao)}</div>
