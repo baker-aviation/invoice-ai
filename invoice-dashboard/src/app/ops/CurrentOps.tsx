@@ -880,17 +880,17 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
       {/* ── Schedule table ── */}
       {viewMode === "table" && (
       <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
-        <table className="w-full text-sm table-fixed">
+        <table className="w-full text-sm">
           <colgroup>
-            <col className="w-[100px]" />  {/* Status */}
-            <col className="w-[90px]" />   {/* Tail */}
-            <col className="w-[140px]" />  {/* Route */}
-            <col />                         {/* Departure */}
-            <col />                         {/* Arrival */}
-            <col className="w-[80px]" />   {/* Type */}
-            <col className="w-[70px]" />   {/* 10/24 */}
-            <col className="w-[70px]" />   {/* Rest */}
-            <col className="w-[80px]" />   {/* Notes */}
+            <col style={{ width: "7%" }} />   {/* Status */}
+            <col style={{ width: "7%" }} />   {/* Tail */}
+            <col style={{ width: "12%" }} />  {/* Route */}
+            <col style={{ width: "15%" }} />  {/* Departure */}
+            <col style={{ width: "15%" }} />  {/* Arrival */}
+            <col style={{ width: "8%" }} />   {/* Type */}
+            <col style={{ width: "6%" }} />   {/* 10/24 */}
+            <col style={{ width: "6%" }} />   {/* Rest */}
+            <col style={{ width: "5%" }} />   {/* Notes */}
           </colgroup>
           <thead>
             <tr className="bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
