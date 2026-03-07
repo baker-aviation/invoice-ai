@@ -409,7 +409,7 @@ function EdctRow({ alert, flight, onDismiss, fmtTime }: {
           onClick={() => onDismiss(alert.id)}
           className="ml-auto text-xs text-gray-500 hover:text-green-700 hover:bg-green-50 border border-gray-200 hover:border-green-300 rounded px-1.5 py-0.5 transition-colors"
         >
-          Dismiss
+          Ack
         </button>
       </div>
       {open && (
@@ -440,7 +440,7 @@ function EdctRow({ alert, flight, onDismiss, fmtTime }: {
 
 // ─── Alert inline card (server-side NOTAM/EDCT alerts) ──────────────────────
 
-function AlertCard({ alert, onAck }: { alert: OpsAlert; onAck: (id: string) => void }) {
+function AlertCard({ alert, onAck, acked }: { alert: OpsAlert; onAck: (id: string) => void; acked?: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const [acking, setAcking] = useState(false);
 
@@ -464,9 +464,11 @@ function AlertCard({ alert, onAck }: { alert: OpsAlert; onAck: (id: string) => v
   return (
     <div
       className={`rounded-lg border text-sm transition-all ${
-        alert.severity === "critical"
-          ? "border-red-200 bg-red-50/60"
-          : "border-amber-200 bg-amber-50/60"
+        acked
+          ? "border-gray-200 bg-gray-50/60 opacity-60"
+          : alert.severity === "critical"
+            ? "border-red-200 bg-red-50/60"
+            : "border-amber-200 bg-amber-50/60"
       }`}
     >
       <button
@@ -498,14 +500,18 @@ function AlertCard({ alert, onAck }: { alert: OpsAlert; onAck: (id: string) => v
           </span>
         )}
         <div className="ml-auto flex items-center gap-1.5 shrink-0">
-          <button
-            type="button"
-            onClick={handleAck}
-            disabled={acking}
-            className="text-xs text-gray-500 hover:text-green-700 hover:bg-green-50 border border-gray-200 hover:border-green-300 rounded px-1.5 py-0.5 transition-colors disabled:opacity-50"
-          >
-            {acking ? "..." : "Dismiss"}
-          </button>
+          {acked ? (
+            <span className="text-xs text-gray-400 bg-gray-100 rounded px-1.5 py-0.5">Ack'd</span>
+          ) : (
+            <button
+              type="button"
+              onClick={handleAck}
+              disabled={acking}
+              className="text-xs text-gray-500 hover:text-green-700 hover:bg-green-50 border border-gray-200 hover:border-green-300 rounded px-1.5 py-0.5 transition-colors disabled:opacity-50"
+            >
+              {acking ? "..." : "Ack"}
+            </button>
+          )}
           <span className="text-gray-400 text-xs">{expanded ? "▲" : "▼"}</span>
         </div>
       </button>
@@ -611,16 +617,18 @@ function ClientAlertCard({ alert, onDismiss }: { alert: ClientAlert; onDismiss: 
 // ─── Flight card ──────────────────────────────────────────────────────────────
 
 function FlightCard({
-  flight, ackedIds, onAck, clientAlerts, dismissedClientAlerts, onDismissClient,
+  flight, isAcked, showAcknowledged, onAck, clientAlerts, dismissedClientAlerts, onDismissClient,
 }: {
   flight: Flight;
-  ackedIds: Set<string>;
+  isAcked: (a: OpsAlert) => boolean;
+  showAcknowledged: boolean;
   onAck: (id: string) => void;
   clientAlerts: ClientAlert[];
   dismissedClientAlerts: Set<string>;
   onDismissClient: (key: string) => void;
 }) {
-  const alerts = (flight.alerts ?? []).filter((a) => !ackedIds.has(a.id));
+  const visibleAlerts = (flight.alerts ?? []).filter((a) => showAcknowledged || !isAcked(a));
+  const alerts = visibleAlerts;
   const activeClientAlerts = clientAlerts.filter((ca) => !dismissedClientAlerts.has(ca.key));
   const hasCritical = alerts.some((a) => a.severity === "critical");
   const hasWarning = alerts.some((a) => a.severity === "warning");
@@ -697,7 +705,7 @@ function FlightCard({
       {/* Alerts (server + client) */}
       {totalAlertCount > 0 && (
         <div className="px-3 pb-3 space-y-1.5">
-          {alerts.map((a) => <AlertCard key={a.id} alert={a} onAck={onAck} />)}
+          {alerts.map((a) => <AlertCard key={a.id} alert={a} onAck={onAck} acked={isAcked(a)} />)}
           {activeClientAlerts.map((ca) => (
             <ClientAlertCard key={ca.key} alert={ca} onDismiss={onDismissClient} />
           ))}
@@ -763,7 +771,8 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
   const [flightTypeFilter, setFlightTypeFilter] = useState<Set<string>>(new Set(["Charter", "Revenue", "Positioning"]));
   const [showAllTypes, setShowAllTypes] = useState(false);
   const [activeRange, setActiveRange] = useState<TimeRange>("7D");
-  const [ackedIds, setAckedIds] = useState<Set<string>>(new Set());
+  const [localAckedIds, setLocalAckedIds] = useState<Set<string>>(new Set());
+  const [showAcknowledged, setShowAcknowledged] = useState(false);
   const [dismissedClientAlerts, setDismissedClientAlerts] = useState<Set<string>>(new Set());
 
   // Load dismissed client alerts from localStorage on mount
@@ -772,14 +781,12 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
   }, []);
 
   const handleAck = useCallback((id: string) => {
-    setAckedIds((prev) => new Set(prev).add(id));
-  }, []);
-
-  // Acknowledge + server call (for EDCT status box dismiss buttons)
-  const handleAckWithApi = useCallback((id: string) => {
-    setAckedIds((prev) => new Set(prev).add(id));
+    setLocalAckedIds((prev) => new Set(prev).add(id));
     fetch(`/api/ops/alerts/${id}/acknowledge`, { method: "POST" }).catch(() => {});
   }, []);
+
+  // An alert is "acknowledged" if the server has it acked OR we optimistically acked it
+  const isAcked = useCallback((a: OpsAlert) => a.acknowledged_at != null || localAckedIds.has(a.id), [localAckedIds]);
 
   const handleDismissClient = useCallback((key: string) => {
     setDismissedClientAlerts((prev) => {
@@ -967,11 +974,11 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
 
   // Stats
   const totalFlights = timeFiltered.length;
-  const totalAlerts = timeFiltered.reduce((n, f) => n + (f.alerts?.filter((a) => !ackedIds.has(a.id)).length ?? 0), 0);
-  const criticalFlights = timeFiltered.filter((f) => f.alerts?.some((a) => a.severity === "critical" && !ackedIds.has(a.id))).length;
+  const totalAlerts = timeFiltered.reduce((n, f) => n + (f.alerts?.filter((a) => !isAcked(a)).length ?? 0), 0);
+  const criticalFlights = timeFiltered.filter((f) => f.alerts?.some((a) => a.severity === "critical" && !isAcked(a))).length;
   const warningFlights = timeFiltered.filter((f) =>
-    f.alerts?.some((a) => a.severity === "warning" && !ackedIds.has(a.id)) &&
-    !f.alerts?.some((a) => a.severity === "critical" && !ackedIds.has(a.id))
+    f.alerts?.some((a) => a.severity === "warning" && !isAcked(a)) &&
+    !f.alerts?.some((a) => a.severity === "critical" && !isAcked(a))
   ).length;
 
   // Alert counts per category (for pill badges)
@@ -981,7 +988,7 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
     for (const f of timeFiltered) {
       // Server alerts — count flights with NOTAM alerts
       for (const a of f.alerts ?? []) {
-        if (ackedIds.has(a.id)) continue;
+        if (isAcked(a)) continue;
         if (a.alert_type.startsWith("NOTAM") && !flightsCounted.NOTAMS.has(f.id)) {
           counts.NOTAMS++;
           flightsCounted.NOTAMS.add(f.id);
@@ -1012,7 +1019,7 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
       }
     }
     return counts;
-  }, [timeFiltered, ackedIds, clientAlertsByFlight, dismissedClientAlerts, BAKER_PPR_AIRPORTS]);
+  }, [timeFiltered, isAcked, clientAlertsByFlight, dismissedClientAlerts, BAKER_PPR_AIRPORTS]);
 
   // EDCT alerts for status box: unacknowledged, future or within last 5 hours
   const edctAlerts = useMemo(() => {
@@ -1021,7 +1028,7 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
     for (const f of withFilteredAlerts) {
       for (const a of f.alerts ?? []) {
         if (a.alert_type !== "EDCT") continue;
-        if (ackedIds.has(a.id)) continue;
+        if (isAcked(a)) continue;
         // Show if flight departs in the future or within last 5 hours
         const depTime = new Date(f.scheduled_departure);
         if (depTime >= fiveHoursAgo) {
@@ -1036,7 +1043,7 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
       return tA.localeCompare(tB);
     });
     return results;
-  }, [withFilteredAlerts, ackedIds, now]);
+  }, [withFilteredAlerts, isAcked, now]);
 
   return (
     <div className="p-4 sm:p-6 space-y-4 bg-gray-50 min-h-screen">
@@ -1057,7 +1064,7 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
           </div>
           <div className="p-3 space-y-2">
             {edctAlerts.map(({ alert, flight }) => (
-              <EdctRow key={alert.id} alert={alert} flight={flight} onDismiss={handleAckWithApi} fmtTime={fmtTime} />
+              <EdctRow key={alert.id} alert={alert} flight={flight} onDismiss={handleAck} fmtTime={fmtTime} />
             ))}
           </div>
         </div>
@@ -1148,6 +1155,32 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
                 </button>
               );
             })}
+          </div>
+
+          {/* Unacknowledged / All toggle */}
+          <div className="flex rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm ml-auto">
+            <button
+              type="button"
+              onClick={() => setShowAcknowledged(false)}
+              className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+                !showAcknowledged
+                  ? "bg-slate-800 text-white shadow-sm"
+                  : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
+              }`}
+            >
+              Unacknowledged
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowAcknowledged(true)}
+              className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+                showAcknowledged
+                  ? "bg-slate-800 text-white shadow-sm"
+                  : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
+              }`}
+            >
+              All
+            </button>
           </div>
         </div>
 
@@ -1265,11 +1298,11 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
         <div className="space-y-1">
           {byDay.map(({ date, flights: dayFlights }) => {
             const dayCritical = dayFlights.filter((f) =>
-              f.alerts?.some((a) => a.severity === "critical" && !ackedIds.has(a.id))
+              f.alerts?.some((a) => a.severity === "critical" && !isAcked(a))
             ).length;
             const dayWarning = dayFlights.filter((f) =>
-              f.alerts?.some((a) => a.severity === "warning" && !ackedIds.has(a.id)) &&
-              !f.alerts?.some((a) => a.severity === "critical" && !ackedIds.has(a.id))
+              f.alerts?.some((a) => a.severity === "warning" && !isAcked(a)) &&
+              !f.alerts?.some((a) => a.severity === "critical" && !isAcked(a))
             ).length;
 
             return (
@@ -1285,7 +1318,8 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
                     <FlightCard
                       key={f.id}
                       flight={f}
-                      ackedIds={ackedIds}
+                      isAcked={isAcked}
+                      showAcknowledged={showAcknowledged}
                       onAck={handleAck}
                       clientAlerts={clientAlertsByFlight.get(f.id) ?? []}
                       dismissedClientAlerts={dismissedClientAlerts}

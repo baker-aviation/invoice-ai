@@ -7,20 +7,16 @@ import { createClient } from "@/lib/supabase/server";
 import OpsTabs from "./OpsTabs";
 
 export default async function OpsPage() {
-  // Get current user for per-user alert dismissals
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  const userId = user?.id;
-
   let error: string | null = null;
   // lookback 48h so "Today" filter never loses earlier flights as the UTC day progresses,
   // and duty tracking can see yesterday's legs for rolling-24hr calculations.
-  const data = await fetchFlights({ lookahead_hours: 720, lookback_hours: 48, userId }).catch((e) => {
+  const data = await fetchFlights({ lookahead_hours: 720, lookback_hours: 48 }).catch((e) => {
     error = String(e);
     return { ok: false, flights: [] as any[], count: 0, error: null as string | null };
   });
 
   // Fetch Baker PPR airports from database
+  const supabase = await createClient();
   const { data: pprRows } = await supabase
     .from("baker_ppr_airports")
     .select("icao");

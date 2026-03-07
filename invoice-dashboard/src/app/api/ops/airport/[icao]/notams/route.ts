@@ -31,7 +31,7 @@ export async function GET(
 
   const { data, error } = await supa
     .from("ops_alerts")
-    .select("id, alert_type, severity, airport_icao, subject, body, created_at, acknowledged_at, raw_data")
+    .select("id, alert_type, severity, airport_icao, subject, body, created_at, acknowledged_at, acknowledged_by, raw_data")
     .eq("airport_icao", upper)
     .like("alert_type", "NOTAM_%")
     .gte("created_at", cutoff)

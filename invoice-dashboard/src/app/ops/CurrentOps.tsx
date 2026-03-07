@@ -319,6 +319,8 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
   const [visibleTypes, setVisibleTypes] = useState<Set<string>>(DEFAULT_TYPES);
   const [timeRange, setTimeRange] = useState<TimeRange>("Today");
   const [expandedFlights, setExpandedFlights] = useState<Set<string>>(new Set());
+  const [localAckedIds, setLocalAckedIds] = useState<Set<string>>(new Set());
+  const [showAcknowledged, setShowAcknowledged] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [useUtc, setUseUtc] = useState(false);
   const [showActual, setShowActual] = useState(false);
@@ -330,6 +332,16 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
       fmtTimeInTz(iso, icao, !useUtc),
     [useUtc],
   );
+
+  const isAcked = useCallback(
+    (a: OpsAlert) => a.acknowledged_at != null || localAckedIds.has(a.id),
+    [localAckedIds],
+  );
+
+  const handleAck = useCallback((id: string) => {
+    setLocalAckedIds((prev) => new Set(prev).add(id));
+    fetch(`/api/ops/alerts/${id}/acknowledge`, { method: "POST" }).catch(() => {});
+  }, []);
 
   // Fetch FlightAware data (primary source for both positions and flight info)
   const fetchFlightInfo = useCallback(async () => {
@@ -565,6 +577,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
     for (const f of flights) {
       for (const a of f.alerts) {
         if (a.alert_type !== "EDCT") continue;
+        if (!showAcknowledged && isAcked(a)) continue;
         // Only show EDCTs for today's flights
         const dep = new Date(a.edct_time ?? a.original_departure_time ?? f.scheduled_departure);
         if (dep < todayStart || dep >= tomorrowStart) continue;
@@ -573,7 +586,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
       }
     }
     return alerts;
-  }, [flights]);
+  }, [flights, isAcked, showAcknowledged]);
 
   return (
     <div className="space-y-4">
@@ -614,7 +627,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
           </div>
           <div className="space-y-1.5">
             {edctAlerts.map((a) => (
-              <div key={a.id} className="flex items-center gap-3 text-sm text-amber-900">
+              <div key={a.id} className={`flex items-center gap-3 text-sm text-amber-900 ${isAcked(a) ? "opacity-50" : ""}`}>
                 <span className="font-medium">{a.route}</span>
                 {a.tail_number && <span className="text-amber-600">{a.tail_number}</span>}
                 <span className="text-sm">
@@ -624,6 +637,17 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                   {(a.original_departure_time || a.fallback_departure) && <span className="text-amber-400 mx-0.5">→</span>}
                   <span className="text-amber-800 font-bold">{a.edct_time ? fmt(a.edct_time, a.airport_icao) : "—"}</span>
                 </span>
+                {isAcked(a) ? (
+                  <span className="ml-auto text-xs text-gray-400 bg-gray-100 rounded px-1.5 py-0.5">Ack'd</span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => handleAck(a.id)}
+                    className="ml-auto text-xs text-gray-500 hover:text-green-700 hover:bg-green-50 border border-gray-200 hover:border-green-300 rounded px-1.5 py-0.5 transition-colors"
+                  >
+                    Ack
+                  </button>
+                )}
               </div>
             ))}
           </div>
@@ -652,6 +676,34 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
               {r}
             </button>
           ))}
+        </div>
+
+        <span className="text-gray-300">|</span>
+
+        {/* Alerts toggle */}
+        <div className="flex rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm">
+          <button
+            type="button"
+            onClick={() => setShowAcknowledged(false)}
+            className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+              !showAcknowledged
+                ? "bg-slate-800 text-white shadow-sm"
+                : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
+            }`}
+          >
+            Unacknowledged
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowAcknowledged(true)}
+            className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+              showAcknowledged
+                ? "bg-slate-800 text-white shadow-sm"
+                : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
+            }`}
+          >
+            All
+          </button>
         </div>
 
         <span className="text-gray-300">|</span>
@@ -919,7 +971,8 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                 const fi = f.tail_number
                   ? matchFlightInfo(flightInfo, routeKey, f.tail_number, f.departure_icao)
                   : undefined;
-                const alerts = f.alerts ?? [];
+                const allAlerts = f.alerts ?? [];
+                const alerts = showAcknowledged ? allAlerts : allAlerts.filter((a) => !isAcked(a));
                 const alertCount = alerts.length;
                 const type = f.flight_type || "Other";
                 const typeColor = FLIGHT_TYPE_COLORS[type] || "bg-gray-100 text-gray-700";
@@ -1118,9 +1171,9 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                       </td>
                     </tr>
                     {isExpanded && alerts.map((alert) => (
-                      <tr key={alert.id} className="border-t border-dashed border-gray-100 bg-red-50/40">
+                      <tr key={alert.id} className={`border-t border-dashed border-gray-100 ${isAcked(alert) ? "bg-gray-50/40 opacity-60" : "bg-red-50/40"}`}>
                         <td colSpan={9} className="px-4 py-3">
-                          <div className={`rounded-lg border p-3 text-xs ${SEVERITY_COLORS[alert.severity] || "bg-gray-50 text-gray-700 border-gray-200"}`}>
+                          <div className={`rounded-lg border p-3 text-xs ${isAcked(alert) ? "bg-gray-50 text-gray-700 border-gray-200" : SEVERITY_COLORS[alert.severity] || "bg-gray-50 text-gray-700 border-gray-200"}`}>
                             <div className="flex items-start justify-between gap-2">
                               <div className="space-y-1 flex-1">
                                 <div className="flex items-center gap-2">
@@ -1148,9 +1201,22 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                                   </div>
                                 )}
                               </div>
-                              <span className="text-[10px] opacity-50 whitespace-nowrap shrink-0">
-                                {fmt(alert.created_at)}
-                              </span>
+                              <div className="flex flex-col items-end gap-1 shrink-0">
+                                <span className="text-[10px] opacity-50 whitespace-nowrap">
+                                  {fmt(alert.created_at)}
+                                </span>
+                                {isAcked(alert) ? (
+                                  <span className="text-xs text-gray-400 bg-gray-100 rounded px-1.5 py-0.5">Ack'd</span>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleAck(alert.id)}
+                                    className="text-xs text-gray-500 hover:text-green-700 hover:bg-green-50 border border-gray-200 hover:border-green-300 rounded px-1.5 py-0.5 transition-colors"
+                                  >
+                                    Ack
+                                  </button>
+                                )}
+                              </div>
                             </div>
                           </div>
                         </td>

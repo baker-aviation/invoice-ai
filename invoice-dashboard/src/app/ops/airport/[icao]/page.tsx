@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 
@@ -13,6 +13,7 @@ type Notam = {
   body: string | null;
   created_at: string;
   acknowledged_at: string | null;
+  acknowledged_by: string | null;
 };
 
 const TYPE_LABELS: Record<string, string> = {
@@ -53,6 +54,8 @@ export default function AirportNotamsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
+  const [localAckedIds, setLocalAckedIds] = useState<Set<string>>(new Set());
+  const [showAcknowledged, setShowAcknowledged] = useState(false);
 
   useEffect(() => {
     if (!icao) return;
@@ -66,14 +69,25 @@ export default function AirportNotamsPage() {
       .finally(() => setLoading(false));
   }, [icao]);
 
-  const priorityNotams = notams.filter((n) => PRIORITY_TYPES.has(n.alert_type));
-  const otherNotams = notams.filter((n) => !PRIORITY_TYPES.has(n.alert_type));
-  const activeNotams = notams.filter((n) => !n.acknowledged_at);
+  const isAcked = useCallback(
+    (n: Notam) => n.acknowledged_at != null || localAckedIds.has(n.id),
+    [localAckedIds],
+  );
+
+  const handleAck = useCallback((id: string) => {
+    setLocalAckedIds((prev) => new Set(prev).add(id));
+    fetch(`/api/ops/alerts/${id}/acknowledge`, { method: "POST" }).catch(() => {});
+  }, []);
+
+  const visibleNotams = showAcknowledged ? notams : notams.filter((n) => !isAcked(n));
+  const priorityNotams = visibleNotams.filter((n) => PRIORITY_TYPES.has(n.alert_type));
+  const otherNotams = visibleNotams.filter((n) => !PRIORITY_TYPES.has(n.alert_type));
+  const activeNotams = notams.filter((n) => !isAcked(n));
 
   return (
     <div className="p-4 sm:p-6 max-w-4xl mx-auto bg-gray-50 min-h-screen">
       {/* Header */}
-      <div className="flex items-center gap-3 mb-6">
+      <div className="flex items-center gap-3 mb-4">
         <Link
           href="/ops"
           className="text-sm text-gray-500 hover:text-gray-800 transition-colors"
@@ -88,6 +102,34 @@ export default function AirportNotamsPage() {
         </span>
       </div>
 
+      {/* Unacknowledged / All toggle */}
+      <div className="flex items-center gap-3 mb-6">
+        <div className="flex rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm">
+          <button
+            type="button"
+            onClick={() => setShowAcknowledged(false)}
+            className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+              !showAcknowledged
+                ? "bg-slate-800 text-white shadow-sm"
+                : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
+            }`}
+          >
+            Unacknowledged
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowAcknowledged(true)}
+            className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+              showAcknowledged
+                ? "bg-slate-800 text-white shadow-sm"
+                : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
+            }`}
+          >
+            All
+          </button>
+        </div>
+      </div>
+
       {loading && (
         <div className="text-sm text-gray-400 py-12 text-center">Loading NOTAMs…</div>
       )}
@@ -98,13 +140,15 @@ export default function AirportNotamsPage() {
         </div>
       )}
 
-      {!loading && notams.length === 0 && (
+      {!loading && visibleNotams.length === 0 && (
         <div className="text-sm text-gray-400 py-12 text-center border border-dashed border-gray-300 rounded-lg">
-          No NOTAMs found for {icao} in the last 30 days.
+          {showAcknowledged
+            ? `No NOTAMs found for ${icao} in the last 30 days.`
+            : `No unacknowledged NOTAMs for ${icao}.`}
         </div>
       )}
 
-      {!loading && notams.length > 0 && (
+      {!loading && visibleNotams.length > 0 && (
         <div className="space-y-6">
           {/* Priority NOTAMs: RWY, AD, PPR, TFR */}
           {priorityNotams.length > 0 && (
@@ -114,7 +158,7 @@ export default function AirportNotamsPage() {
               </h2>
               <div className="space-y-2">
                 {priorityNotams.map((n) => (
-                  <NotamCard key={n.id} notam={n} />
+                  <NotamCard key={n.id} notam={n} isAcked={isAcked(n)} onAck={handleAck} />
                 ))}
               </div>
             </div>
@@ -140,7 +184,7 @@ export default function AirportNotamsPage() {
               </div>
               <div className="space-y-2">
                 {(showAll ? otherNotams : otherNotams.slice(0, 5)).map((n) => (
-                  <NotamCard key={n.id} notam={n} />
+                  <NotamCard key={n.id} notam={n} isAcked={isAcked(n)} onAck={handleAck} />
                 ))}
               </div>
             </div>
@@ -151,16 +195,22 @@ export default function AirportNotamsPage() {
   );
 }
 
-function NotamCard({ notam }: { notam: Notam }) {
+function NotamCard({ notam, isAcked, onAck }: { notam: Notam; isAcked: boolean; onAck: (id: string) => void }) {
   const [expanded, setExpanded] = useState(false);
+  const [acking, setAcking] = useState(false);
   const typeLabel = TYPE_LABELS[notam.alert_type] ?? notam.alert_type;
   const typeColor = TYPE_COLORS[notam.alert_type] ?? TYPE_COLORS.NOTAM_OTHER;
-  const isDismissed = !!notam.acknowledged_at;
+
+  async function handleAck(e: React.MouseEvent) {
+    e.stopPropagation();
+    setAcking(true);
+    onAck(notam.id);
+  }
 
   return (
     <div
       className={`rounded-lg border bg-white shadow-sm overflow-hidden ${
-        isDismissed ? "opacity-50" : ""
+        isAcked ? "opacity-50" : ""
       }`}
     >
       <button
@@ -175,8 +225,17 @@ function NotamCard({ notam }: { notam: Notam }) {
           <span className="text-sm text-gray-800 font-mono truncate">{notam.subject}</span>
         )}
         <span className="ml-auto text-xs text-gray-400 shrink-0">{fmtDate(notam.created_at)}</span>
-        {isDismissed && (
-          <span className="text-xs text-gray-400 bg-gray-100 rounded px-1.5 py-0.5">Dismissed</span>
+        {isAcked ? (
+          <span className="text-xs text-gray-400 bg-gray-100 rounded px-1.5 py-0.5">Acknowledged</span>
+        ) : (
+          <button
+            type="button"
+            onClick={handleAck}
+            disabled={acking}
+            className="text-xs text-gray-500 hover:text-green-700 hover:bg-green-50 border border-gray-200 hover:border-green-300 rounded px-1.5 py-0.5 transition-colors disabled:opacity-50"
+          >
+            {acking ? "..." : "Ack"}
+          </button>
         )}
         <span className="text-gray-400 text-xs shrink-0">{expanded ? "▲" : "▼"}</span>
       </button>
