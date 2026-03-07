@@ -6,6 +6,7 @@ import type { Flight, OpsAlert } from "@/lib/opsApi";
 import type { AdsbAircraft, FlightInfoMap } from "@/app/maintenance/MapView";
 import { fmtTimeInTz } from "@/lib/airportTimezones";
 import { getAirportInfo } from "@/lib/airportCoords";
+import { TRIPS } from "@/lib/maintenanceData";
 
 const OpsMap = dynamic(() => import("./OpsMap"), {
   ssr: false,
@@ -400,6 +401,23 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
           }
         }
       }
+    }
+
+    // Also include fleet tails from TRIPS that have no scheduled flights
+    // Use the most recent trip's destination as their parked location
+    const allTailsOnMap = new Set([...flyingTails, ...tailLocation.keys()]);
+    const tripsByTail = new Map<string, { to: string; tripEnd: string }>();
+    for (const trip of TRIPS) {
+      if (allTailsOnMap.has(trip.tail)) continue;
+      if (trip.status === "Cancelled" || trip.status === "Declined") continue;
+      const existing = tripsByTail.get(trip.tail);
+      if (!existing || trip.tripEnd > existing.tripEnd) {
+        tripsByTail.set(trip.tail, { to: trip.to, tripEnd: trip.tripEnd });
+      }
+    }
+    for (const [tail, { to }] of tripsByTail) {
+      const code = to.startsWith("K") ? to.slice(1) : to;
+      tailLocation.set(tail, { icao: to, time: new Date(0), source: `Last trip to ${code}` });
     }
 
     for (const [tail, { icao, source }] of tailLocation) {
