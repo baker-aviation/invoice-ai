@@ -29,6 +29,8 @@ type LegInterval = {
   endMs: number;
   durationMin: number;
   source: "actual" | "fa-estimate" | "scheduled";
+  depIso: string;   // departure time used (actual or scheduled)
+  arrIso: string;   // arrival time used (actual, estimate, or scheduled)
 };
 
 type WindowLeg = LegInterval & {
@@ -220,6 +222,8 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
 
       if (durationMin <= 0) continue;
 
+      const arrIso = new Date(endMs).toISOString();
+
       if (!result.has(f.tail_number)) result.set(f.tail_number, []);
       result.get(f.tail_number)!.push({
         departure_icao: f.departure_icao,
@@ -228,6 +232,8 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
         endMs,
         durationMin,
         source,
+        depIso,
+        arrIso,
       });
     }
 
@@ -421,30 +427,23 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
   }, [intervalsByTail]);
 
   /* ── Filter data by sub-tab ── */
+  // "today" = show all tails (full picture for today & tomorrow)
+  // "future" = only show tails with alerts/conflicts beyond 48h
   const filteredFlightTime = useMemo(() => {
-    if (subTab === "today") {
-      return flightTimeData.filter((t) => {
-        const entry = t as TailFlightTime & { _windowEndMs?: number };
-        return entry._windowEndMs ? windowOverlaps48h(entry._windowEndMs) : true;
-      });
-    }
-    // Future: only show items NOT in today+tomorrow, or with alerts
+    if (subTab === "today") return flightTimeData;
     return flightTimeData.filter((t) => {
       const entry = t as TailFlightTime & { _windowEndMs?: number };
-      return entry._windowEndMs ? !windowOverlaps48h(entry._windowEndMs) : false;
+      if (!entry._windowEndMs) return false;
+      return !windowOverlaps48h(entry._windowEndMs) && t.maxRolling24hrMin >= FLIGHT_TIME_YELLOW_MIN;
     });
   }, [flightTimeData, subTab]);
 
   const filteredCrewRest = useMemo(() => {
-    if (subTab === "today") {
-      return crewRestData.filter((t) => {
-        if (!t.nextDeparture) return true;
-        return isWithin48h(new Date(t.nextDeparture).getTime());
-      });
-    }
+    if (subTab === "today") return crewRestData;
     return crewRestData.filter((t) => {
       if (!t.nextDeparture) return false;
-      return !isWithin48h(new Date(t.nextDeparture).getTime());
+      const depMs = new Date(t.nextDeparture).getTime();
+      return !isWithin48h(depMs) && t.restMinutes != null && t.restMinutes < REST_YELLOW_HOURS * 60;
     });
   }, [crewRestData, subTab]);
 
@@ -594,12 +593,15 @@ export default function DutyTracker({ flights }: { flights: Flight[] }) {
                           <div className="space-y-1">
                             {t.windowLegs.map((wl, i) => {
                               const isBreach = wl.breachesAt != null;
+                              const depTime = new Date(wl.depIso).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC" });
+                              const arrTime = new Date(wl.arrIso).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC" });
                               return (
                                 <div key={i} className="flex items-center gap-1.5 flex-wrap">
                                   <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-[11px] rounded font-mono font-medium ${isBreach ? "bg-red-50 text-red-700 ring-1 ring-red-200" : "bg-gray-100 text-gray-700"}`}>
                                     {wl.departure_icao ?? "?"}-{wl.arrival_icao ?? "?"}
                                     <span className={isBreach ? "text-red-400" : "text-gray-400"}>{fmtDuration(wl.overlapMin)}</span>
                                   </span>
+                                  <span className="text-[10px] text-gray-400 font-mono">{depTime}→{arrTime}Z</span>
                                   <span className={`px-1 py-0.5 text-[9px] font-medium rounded ${sourceBadgeClass(wl.source)}`}>{sourceLabel(wl.source)}</span>
                                   <span className="text-[10px] text-gray-400">= {fmtDuration(wl.runningTotalMin)}</span>
                                   {isBreach && (

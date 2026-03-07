@@ -277,17 +277,10 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
       .sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure));
   }, [flights, visibleTypes, timeRange]);
 
-  // Group flights by tail for aircraft card view — always today + tomorrow
+  // Group filtered flights by tail for aircraft card view (follows time range filter)
   const flightsByTail = useMemo(() => {
-    const now = new Date();
-    const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-    const dayAfterTomorrow = new Date(todayStart.getTime() + 2 * 86400000);
     const map = new Map<string, Flight[]>();
-    for (const f of flights) {
-      const type = f.flight_type || "Other";
-      if (!visibleTypes.has(type)) continue;
-      const dep = new Date(f.scheduled_departure);
-      if (dep < todayStart || dep >= dayAfterTomorrow) continue;
+    for (const f of filteredFlights) {
       const tail = f.tail_number || "Unassigned";
       if (!map.has(tail)) map.set(tail, []);
       map.get(tail)!.push(f);
@@ -297,7 +290,7 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
       legs.sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure));
     }
     return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-  }, [flights, visibleTypes]);
+  }, [filteredFlights]);
 
   function toggleExpanded(flightId: string) {
     setExpandedFlights((prev) => {
@@ -533,13 +526,13 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
         </div>
       </div>
 
-      {/* ── Aircraft Card View (always today + tomorrow) ── */}
+      {/* ── Aircraft Card View ── */}
       {viewMode === "aircraft" && (
         <div>
           <div className="text-xs text-gray-500 mb-2 font-medium">
-            Showing all legs for Today &amp; Tomorrow
+            {timeRange === "Today" ? "Today" : timeRange === "Tomorrow" ? "Tomorrow" : timeRange === "Week" ? "This Week" : "This Month"} — {flightsByTail.length} aircraft, {filteredFlights.length} legs
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 gap-4">
             {flightsByTail.map(([tail, tailFlights]) => {
               const duty = tailDuty.get(tail);
               return (
@@ -594,8 +587,8 @@ export default function CurrentOps({ flights }: { flights: Flight[] }) {
                         delayMin = Math.round(
                           (new Date(actualDepIso).getTime() - new Date(f.scheduled_departure).getTime()) / 60_000,
                         );
-                        if (delayMin >= 60) delayColor = "text-red-600";
-                        else if (delayMin >= 30) delayColor = "text-amber-600";
+                        if (delayMin > 45) delayColor = "text-red-600";
+                        else if (delayMin > 15) delayColor = "text-amber-600";
                         else delayColor = "text-green-600";
                       }
 
