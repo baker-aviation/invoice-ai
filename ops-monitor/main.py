@@ -607,7 +607,8 @@ def get_flights(
             for a in all_alerts:
                 # Filter out legacy noise RWY NOTAMs already in the DB
                 if a.get("alert_type") == "NOTAM_RUNWAY" and a.get("body"):
-                    if _is_noise_notam(a["body"].upper()):
+                    body_upper = a["body"].upper()
+                    if _is_noise_notam(body_upper) or _is_ignorable_runway(body_upper):
                         continue
                 # Extract NOTAM effective dates from raw_data, then drop
                 # the heavy blob to keep the response small.
@@ -1959,9 +1960,14 @@ def _is_relevant_notam_msg(msg: str) -> bool:
         # actual runway closures (ILS, PAPI, ALS, LGT, TWY, APRON, windcone).
         if _is_noise_notam(m):
             return False
+        # Skip grass/turf runways or runways shorter than 4000 ft
+        if _is_ignorable_runway(m):
+            return False
         return True
     if re.search(r"(CLSD|CLOSED).{0,60}(RWY|RUNWAY)", m):
         if _is_noise_notam(m):
+            return False
+        if _is_ignorable_runway(m):
             return False
         return True
     # Airport/aerodrome closure
@@ -1995,6 +2001,21 @@ def _is_noise_notam(msg_upper: str) -> bool:
     """Return True if the NOTAM is about equipment/lighting rather than an
     actual runway or airport closure worth alerting on."""
     return bool(_NOISE_TERMS.search(msg_upper))
+
+
+def _is_ignorable_runway(msg_upper: str) -> bool:
+    """Return True if the runway closure is for a grass/turf runway or one
+    shorter than 4000 ft — not usable by our jets, so skip the alert."""
+    # Grass / turf / sod surface
+    if re.search(r"\b(TURF|GRASS|SOD)\b", msg_upper):
+        return True
+    # Runway dimensions like 3500X60 or 2800 X 75 — check length < 4000
+    dim = re.search(r"\b(\d{3,5})\s*X\s*\d{2,4}\b", msg_upper)
+    if dim:
+        length = int(dim.group(1))
+        if length < 4000:
+            return True
+    return False
 
 
 def _classify_notam(msg: str) -> str:
