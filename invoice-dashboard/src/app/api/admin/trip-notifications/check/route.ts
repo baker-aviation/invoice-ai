@@ -32,13 +32,15 @@ export async function POST(req: NextRequest) {
   const now = new Date();
   const windowEnd = new Date(now.getTime() + 75 * 60 * 1000);
 
-  // 1. Find flights departing within the next 75 minutes
+  // 1. Find live flights departing within the next 75 minutes (skip positioning/ferry/maintenance)
+  const LIVE_TYPES = ["Revenue", "Owner", "Charter"];
   const { data: flights, error: flightsErr } = await supa
     .from("flights")
-    .select("id, tail_number, departure_icao, arrival_icao, scheduled_departure")
+    .select("id, tail_number, departure_icao, arrival_icao, scheduled_departure, flight_type, summary")
     .gte("scheduled_departure", now.toISOString())
     .lte("scheduled_departure", windowEnd.toISOString())
-    .not("tail_number", "is", null);
+    .not("tail_number", "is", null)
+    .in("flight_type", LIVE_TYPES);
 
   if (flightsErr) {
     return NextResponse.json({ error: "Failed to query flights", detail: flightsErr.message }, { status: 500 });
