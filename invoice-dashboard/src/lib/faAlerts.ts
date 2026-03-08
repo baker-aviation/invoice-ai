@@ -89,7 +89,7 @@ export async function refreshAlerts(tails: string[]): Promise<void> {
               departure: true,
               cancelled: true,
               diverted: true,
-              filed: true,
+              filed: false,
             },
             target_url: webhookUrl,
           }),

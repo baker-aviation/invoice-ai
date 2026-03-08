@@ -186,7 +186,7 @@ export async function POST(req: NextRequest) {
             departure: true,
             cancelled: true,
             diverted: true,
-            filed: true,
+            filed: false,
           },
           target_url: webhookUrl,
         }),
