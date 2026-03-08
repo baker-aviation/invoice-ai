@@ -1,5 +1,6 @@
 import { createServiceClient } from "@/lib/supabase/service";
 import { FIXED_VAN_ZONES } from "@/lib/maintenanceData";
+import { fetchMxNotes } from "@/lib/opsApi";
 import { notFound } from "next/navigation";
 import VanDriverClient from "./VanDriverClient";
 
@@ -41,7 +42,9 @@ export default async function VanPage({ params }: { params: Promise<{ vanId: str
     .maybeSingle();
 
   const publishedFlightIds = published?.flight_ids ?? null;
-  const publishedAt = published?.published_at ?? null;
+  const publishedAtStr = published?.published_at ?? null;
+
+  const mxNotes = await fetchMxNotes().catch(() => []);
 
   return (
     <VanDriverClient
@@ -49,7 +52,8 @@ export default async function VanPage({ params }: { params: Promise<{ vanId: str
       zone={zone}
       initialFlights={flights ?? []}
       publishedFlightIds={publishedFlightIds}
-      publishedAt={publishedAt}
+      publishedAt={publishedAtStr}
+      mxNotes={mxNotes}
     />
   );
 }

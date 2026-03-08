@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useMemo, useEffect, useCallback } from "react";
-import type { Flight } from "@/lib/opsApi";
+import type { Flight, MxNote } from "@/lib/opsApi";
 import type { VanZone } from "@/lib/maintenanceData";
 import {
   computeZoneItems,
@@ -103,12 +103,14 @@ export default function VanDriverClient({
   initialFlights,
   publishedFlightIds,
   publishedAt,
+  mxNotes,
 }: {
   vanId: number;
   zone: VanZone;
   initialFlights: Flight[];
   publishedFlightIds: string[] | null;
   publishedAt: string | null;
+  mxNotes?: MxNote[];
 }) {
   const [flights, setFlights] = useState<Flight[]>(initialFlights);
   const [flightInfoMap, setFlightInfoMap] = useState<Map<string, FlightInfoEntry>>(new Map());
@@ -192,6 +194,17 @@ export default function VanDriverClient({
   }, [zone, flights, date, publishedFlightIds]);
 
   const totalRouteKm = useMemo(() => routeDistKm(stops), [stops]);
+
+  const mxNotesByTail = useMemo(() => {
+    const map = new Map<string, MxNote[]>();
+    for (const n of mxNotes ?? []) {
+      if (!n.tail_number) continue;
+      const arr = map.get(n.tail_number) ?? [];
+      arr.push(n);
+      map.set(n.tail_number, arr);
+    }
+    return map;
+  }, [mxNotes]);
 
   // Find the "next" stop — first non-landed
   const nextStopIdx = useMemo(() => {
@@ -286,6 +299,7 @@ export default function VanDriverClient({
                 ? flightInfoMap.get(item.arrFlight.tail_number)
                 : undefined}
               flightInfoMap={flightInfoMap}
+              tailMxNotes={mxNotesByTail.get(item.arrFlight.tail_number ?? "") ?? []}
             />
           ))}
         </div>
@@ -379,12 +393,14 @@ function StopCard({
   isNext,
   fi,
   flightInfoMap,
+  tailMxNotes,
 }: {
   item: VanFlightItem;
   index: number;
   isNext: boolean;
   fi: FlightInfoEntry | undefined;
   flightInfoMap: Map<string, FlightInfoEntry>;
+  tailMxNotes: MxNote[];
 }) {
   const tail = item.arrFlight.tail_number ?? "TBD";
   const dep = item.arrFlight.departure_icao?.replace(/^K/, "") ?? "???";
@@ -472,6 +488,27 @@ function StopCard({
             </span>
           )}
         </div>
+
+        {/* MX notes */}
+        {tailMxNotes.length > 0 && (
+          <div className="ml-7 mt-3 space-y-1.5">
+            {tailMxNotes.map((n) => (
+              <div key={n.id} className="bg-orange-50 dark:bg-orange-900/30 border border-orange-200 dark:border-orange-800 rounded-lg px-3 py-2">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-orange-600 dark:text-orange-400 font-bold text-xs shrink-0">MX</span>
+                  <span className="text-xs font-medium text-orange-700 dark:text-orange-300">{n.airport_icao}</span>
+                  <span className="text-sm text-gray-700 dark:text-gray-300">{n.body}</span>
+                </div>
+                {n.start_time && (
+                  <div className="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5">
+                    {new Date(n.start_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                    {n.end_time && n.end_time !== n.start_time && ` – ${new Date(n.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* Navigate button */}
         {navUrl && (
