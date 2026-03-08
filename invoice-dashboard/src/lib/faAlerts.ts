@@ -106,10 +106,13 @@ export async function refreshAlerts(tails: string[]): Promise<void> {
           }
 
           if (alertId) {
-            await supa.from("fa_alert_registrations").upsert(
+            const { error: upsertErr } = await supa.from("fa_alert_registrations").upsert(
               { tail, alert_id: alertId, active: true },
               { onConflict: "tail" },
             );
+            if (upsertErr) {
+              console.error(`[FA Alerts] DB upsert failed for ${tail}:`, upsertErr.message);
+            }
           }
           console.log(`[FA Alerts] Auto-registered ${tail} (id: ${alertId})`);
         } else {
