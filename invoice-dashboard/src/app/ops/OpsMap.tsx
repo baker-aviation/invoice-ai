@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import L from "leaflet";
 import { MapContainer, TileLayer, Marker, Popup, Tooltip, Polyline, useMap } from "react-leaflet";
 import type { AircraftPosition, FlightInfoMap } from "@/app/maintenance/MapView";
+import { getAirportInfo } from "@/lib/airportCoords";
 
 /* ── Fleet type helpers ── */
 
@@ -94,6 +95,30 @@ function detectHolding(positions: { heading?: number | null }[]): boolean {
 
 type TrackPoint = { latitude: number; longitude: number; heading?: number | null };
 
+/** Strip leading "K" from US ICAO codes (e.g. KTEB→TEB) for airport lookup */
+function stripK(icao: string | null | undefined): string | null {
+  if (!icao) return null;
+  if (icao.length === 4 && icao.startsWith("K")) return icao.slice(1);
+  return icao;
+}
+
+/** Build a fallback dashed route: origin → plane → destination */
+function buildFallbackRoute(
+  fi: FlightInfoMap,
+  ac: AircraftPosition | undefined,
+): [number, number][] | null {
+  const points: [number, number][] = [];
+  // Origin
+  const orig = getAirportInfo(fi.origin_icao ?? "") ?? getAirportInfo(stripK(fi.origin_icao) ?? "");
+  if (orig) points.push([orig.lat, orig.lon]);
+  // Current position (from ADSB)
+  if (ac && ac.lat && ac.lon) points.push([ac.lat, ac.lon]);
+  // Destination
+  const dest = getAirportInfo(fi.destination_icao ?? "") ?? getAirportInfo(stripK(fi.destination_icao) ?? "");
+  if (dest) points.push([dest.lat, dest.lon]);
+  return points.length >= 2 ? points : null;
+}
+
 function FlightTracks({
   aircraft,
   flightInfo,
@@ -106,15 +131,22 @@ function FlightTracks({
   onHoldingDetected: (tails: Set<string>) => void;
 }) {
   const [tracks, setTracks] = useState<Map<string, [number, number][]>>(new Map());
+  const [fallbacks, setFallbacks] = useState<Map<string, [number, number][]>>(new Map());
   const lastFetchRef = useRef(0);
 
-  // Build set of airborne tails
+  // Build set of airborne tails + quick lookup
   const airborneSet = useMemo(() => {
     const s = new Set<string>();
     for (const ac of aircraft) {
       if (!ac.on_ground) s.add(ac.tail);
     }
     return s;
+  }, [aircraft]);
+
+  const acByTail = useMemo(() => {
+    const m = new Map<string, AircraftPosition>();
+    for (const ac of aircraft) m.set(ac.tail, ac);
+    return m;
   }, [aircraft]);
 
   useEffect(() => {
@@ -130,12 +162,13 @@ function FlightTracks({
         enRoute.push(fi);
       }
     }
-    if (enRoute.length === 0) { setTracks(new Map()); onHoldingDetected(new Set()); return; }
+    if (enRoute.length === 0) { setTracks(new Map()); setFallbacks(new Map()); onHoldingDetected(new Set()); return; }
 
     const controller = new AbortController();
     lastFetchRef.current = Date.now();
     (async () => {
       const newTracks = new Map<string, [number, number][]>();
+      const newFallbacks = new Map<string, [number, number][]>();
       const holdingTails = new Set<string>();
       for (const fi of enRoute) {
         try {
@@ -148,7 +181,13 @@ function FlightTracks({
             const positions: [number, number][] = rawPositions
               .filter((p) => p.latitude && p.longitude)
               .map((p) => [p.latitude, p.longitude] as [number, number]);
-            if (positions.length > 1) newTracks.set(fi.tail, positions);
+            if (positions.length > 1) {
+              newTracks.set(fi.tail, positions);
+            } else {
+              // No track data — build fallback route line
+              const fb = buildFallbackRoute(fi, acByTail.get(fi.tail));
+              if (fb) newFallbacks.set(fi.tail, fb);
+            }
             // Check holding from raw positions (have heading)
             if (detectHolding(rawPositions)) holdingTails.add(fi.tail);
           }
@@ -156,6 +195,7 @@ function FlightTracks({
       }
       if (!controller.signal.aborted) {
         setTracks(newTracks);
+        setFallbacks(newFallbacks);
         onHoldingDetected(holdingTails);
       }
     })();
@@ -164,11 +204,20 @@ function FlightTracks({
 
   return (
     <>
+      {/* Real FA track polylines */}
       {Array.from(tracks.entries()).map(([tail, positions]) => (
         <Polyline
           key={`track-${tail}`}
           positions={positions}
           pathOptions={{ color: getAcColor(fleetLookup, tail, false), weight: 2, opacity: 0.6 }}
+        />
+      ))}
+      {/* Fallback dashed route lines for flights without track data */}
+      {Array.from(fallbacks.entries()).map(([tail, positions]) => (
+        <Polyline
+          key={`fallback-${tail}`}
+          positions={positions}
+          pathOptions={{ color: getAcColor(fleetLookup, tail, false), weight: 1.5, opacity: 0.4, dashArray: "8 6" }}
         />
       ))}
     </>
