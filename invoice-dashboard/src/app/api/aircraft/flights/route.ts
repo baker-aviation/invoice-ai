@@ -71,7 +71,15 @@ export async function GET(req: NextRequest) {
 
     // Auto-register FA webhook alerts for new tails — runs after response is sent
     // so the 30-tail loop (~15s) doesn't block the client
-    after(() => refreshAlerts(tails).catch(() => {}));
+    after(async () => {
+      try {
+        console.log("[FA Alerts] after() starting refreshAlerts for", tails.length, "tails");
+        await refreshAlerts(tails);
+        console.log("[FA Alerts] after() completed");
+      } catch (err) {
+        console.error("[FA Alerts] after() failed:", err);
+      }
+    });
 
     // Count flights per tail for debugging
     const perTail: Record<string, number> = {};

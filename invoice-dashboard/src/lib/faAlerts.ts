@@ -26,14 +26,24 @@ const REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours — alerts are persis
  */
 export async function refreshAlerts(tails: string[]): Promise<void> {
   // Skip if checked recently
-  if (Date.now() - lastRefreshMs < REFRESH_INTERVAL_MS) return;
+  if (Date.now() - lastRefreshMs < REFRESH_INTERVAL_MS) {
+    console.log("[FA Alerts] Skipped — checked", Math.round((Date.now() - lastRefreshMs) / 60000), "min ago");
+    return;
+  }
   lastRefreshMs = Date.now();
 
   const apiKey = process.env.FLIGHTAWARE_API_KEY;
   const webhookSecret = process.env.FLIGHTAWARE_WEBHOOK_SECRET;
   const baseUrl = process.env.WEBHOOK_BASE_URL;
 
-  if (!apiKey || !webhookSecret || !baseUrl) return;
+  if (!apiKey || !webhookSecret || !baseUrl) {
+    console.warn("[FA Alerts] Missing env vars:", {
+      hasApiKey: !!apiKey,
+      hasWebhookSecret: !!webhookSecret,
+      hasBaseUrl: !!baseUrl,
+    });
+    return;
+  }
 
   try {
     const supa = createServiceClient();
