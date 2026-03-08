@@ -1924,12 +1924,7 @@ function ScheduleTab({
                             Maintenance Scheduled
                           </span>
                         )}
-                        {uncovQuickturn && (
-                          <span className="text-xs bg-amber-100 text-amber-700 rounded-full px-2 py-0.5 font-semibold">
-                            Quickturn
-                          </span>
-                        )}
-                        {/* Done-for-day badge hidden for unassigned aircraft */}
+                        {/* Quickturn + Done-for-day badges hidden for unassigned aircraft */}
                       </div>
                       <select
                         className="text-xs border border-red-200 rounded-lg px-2 py-1.5 bg-white text-red-700 font-medium cursor-pointer hover:border-red-400 focus:outline-none focus:ring-2 focus:ring-red-300 appearance-none"
