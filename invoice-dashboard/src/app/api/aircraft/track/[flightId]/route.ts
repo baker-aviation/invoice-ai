@@ -4,9 +4,9 @@ import { getFlightTrack, type FaTrackPoint } from "@/lib/flightaware";
 
 export const dynamic = "force-dynamic";
 
-// Cache: 15 minutes per flight, keyed by flightId
+// Cache: 5 minutes per flight, keyed by flightId
 const cache = new Map<string, { data: FaTrackPoint[]; ts: number }>();
-const CACHE_TTL = 15 * 60_000;
+const CACHE_TTL = 5 * 60_000;
 const MAX_CACHE_SIZE = 30;
 
 export async function GET(

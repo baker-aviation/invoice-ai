@@ -876,7 +876,19 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                   return (
                     <div key={tail} className="rounded-xl border border-gray-200 bg-white overflow-hidden">
                       <div className="flex items-center justify-between px-4 py-2.5 bg-gray-50 border-b border-gray-200">
-                        <span className="font-mono font-bold text-gray-900">{tail}</span>
+                        <span className="inline-flex items-center gap-1.5 font-mono font-bold text-gray-900">
+                          {tail}
+                          {(() => {
+                            const tailFi = flightInfo.get(tail);
+                            if (tailFi?.diverted) return (
+                              <span className="relative flex h-2.5 w-2.5" title="DIVERTED">
+                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
+                                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500" />
+                              </span>
+                            );
+                            return null;
+                          })()}
+                        </span>
                         <div className="flex items-center gap-2">
                           {duty && (
                             <>
@@ -1212,7 +1224,15 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                         </div>
                       </td>
                       <td className="px-3 py-2.5 font-mono font-semibold text-gray-900">
-                        {f.tail_number || "—"}
+                        <span className="inline-flex items-center gap-1.5">
+                          {f.tail_number || "—"}
+                          {(fi?.diverted || supersedInfo?.diverted) && (
+                            <span className="relative flex h-2.5 w-2.5" title="DIVERTED">
+                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
+                              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500" />
+                            </span>
+                          )}
+                        </span>
                       </td>
                       <td className="px-3 py-2.5">
                         <span className="font-mono font-medium">
