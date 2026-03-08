@@ -58,7 +58,8 @@ function getTimeRange(range: TimeRange): { start: Date; end: Date } {
   }
 }
 
-/** Find the salesperson for a flight by matching tail + departure date within trip range */
+/** Find the salesperson for a flight by matching tail + departure date within trip range.
+ *  When multiple trips match, prefer the narrowest (most specific) date range. */
 function findSalesperson(
   tripSalespersons: TripSalesperson[],
   tailNumber: string | null,
@@ -66,12 +67,18 @@ function findSalesperson(
 ): string | null {
   if (!tailNumber) return null;
   const depDate = scheduledDeparture.split("T")[0]; // YYYY-MM-DD
+  let best: TripSalesperson | null = null;
+  let bestSpan = Infinity;
   for (const t of tripSalespersons) {
     if (t.tail_number === tailNumber && depDate >= t.trip_start && depDate <= t.trip_end) {
-      return t.salesperson_name;
+      const span = new Date(t.trip_end).getTime() - new Date(t.trip_start).getTime();
+      if (span < bestSpan) {
+        best = t;
+        bestSpan = span;
+      }
     }
   }
-  return null;
+  return best?.salesperson_name ?? null;
 }
 
 /** Map ICAO type codes to fleet display names */
