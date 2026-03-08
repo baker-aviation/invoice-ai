@@ -104,6 +104,31 @@ export async function POST(req: NextRequest) {
     return await teardownAlerts(supa, results);
   }
 
+  // For setup: delete ALL existing alerts from FA first (including orphaned ones not in our DB)
+  if (action === "setup") {
+    try {
+      const listRes = await fetch(`${FA_BASE}/alerts`, { headers: faHeaders(), signal: AbortSignal.timeout(10000) });
+      if (listRes.ok) {
+        const listData = await listRes.json();
+        const allAlerts = listData.alerts ?? [];
+        let cleaned = 0;
+        for (const alert of allAlerts) {
+          try {
+            await fetch(`${FA_BASE}/alerts/${alert.id}`, { method: "DELETE", headers: faHeaders(), signal: AbortSignal.timeout(10000) });
+            cleaned++;
+            await new Promise((r) => setTimeout(r, 300));
+          } catch { /* ignore */ }
+        }
+        // Clear our DB registrations too
+        await supa.from("fa_alert_registrations").update({ active: false }).eq("active", true);
+        results.details.push({ step: "cleanup", deleted: cleaned, total_found: allAlerts.length });
+        console.log(`[FA Alerts] Setup cleanup: deleted ${cleaned}/${allAlerts.length} existing alerts`);
+      }
+    } catch (err) {
+      results.details.push({ step: "cleanup_error", error: String(err) });
+    }
+  }
+
   // Step 1: Register webhook endpoint with FA
   try {
     const endpointRes = await fetch(`${FA_BASE}/alerts/endpoint`, {
