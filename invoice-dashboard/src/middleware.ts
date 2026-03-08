@@ -26,8 +26,9 @@ export async function middleware(request: NextRequest) {
     }
   }
 
-  // CSRF: reject cross-origin state-changing requests
-  if (MUTATING_METHODS.has(request.method)) {
+  // CSRF: reject cross-origin state-changing requests (skip for external webhooks)
+  const csrfExemptPaths = ["/api/aircraft/webhook"];
+  if (MUTATING_METHODS.has(request.method) && !csrfExemptPaths.some((p) => request.nextUrl.pathname === p)) {
     const origin = request.headers.get("origin");
     const host = request.headers.get("host");
     if (origin && host) {
@@ -44,7 +45,7 @@ export async function middleware(request: NextRequest) {
 
   // Public routes that handle their own auth or need no auth
   // Use exact match to prevent prefix bypass on future sub-routes
-  const publicApiPaths = ["/api/agents", "/api/vans/health", "/api/vans/diagnostics", "/api/invite"];
+  const publicApiPaths = ["/api/agents", "/api/vans/health", "/api/vans/diagnostics", "/api/invite", "/api/aircraft/webhook"];
   if (
     publicApiPaths.some((p) => request.nextUrl.pathname === p) ||
     request.nextUrl.pathname.startsWith("/api/public/form/") ||
