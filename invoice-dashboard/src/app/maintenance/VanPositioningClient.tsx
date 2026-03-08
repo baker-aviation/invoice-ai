@@ -996,6 +996,35 @@ function SlackShareModal({
 }
 
 // ---------------------------------------------------------------------------
+// MxNoteInline — JetInsight maintenance alerts per aircraft
+// ---------------------------------------------------------------------------
+
+function MxNoteInline({ notes }: { notes: MxNote[] }) {
+  if (notes.length === 0) return null;
+  return (
+    <div className="ml-8 mt-1 space-y-1">
+      {notes.map((n) => (
+        <div key={n.id} className="flex items-start gap-2 bg-orange-50 border border-orange-200 rounded-lg px-3 py-1.5">
+          <span className="text-orange-500 font-bold text-xs mt-0.5 shrink-0">MX</span>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs font-medium text-orange-700">{n.airport_icao}</span>
+              <span className="text-xs text-gray-700">{n.body}</span>
+              {n.start_time && (
+                <span className="text-[11px] text-gray-400 ml-auto shrink-0">
+                  {new Date(n.start_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                  {n.end_time && n.end_time !== n.start_time && ` – ${new Date(n.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`}
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // LegNoteInline — MX director note per flight leg
 // ---------------------------------------------------------------------------
 
@@ -1102,6 +1131,7 @@ function VanScheduleCard({
   hasOverrides,
   flightInfoMap,
   legNotes,
+  mxNotesByTail,
   onSaveNote,
   onDragStart,
   onDragOver,
@@ -1121,6 +1151,7 @@ function VanScheduleCard({
   hasOverrides: boolean;
   flightInfoMap: Map<string, FlightInfoEntry>;
   legNotes: Map<string, string>;
+  mxNotesByTail: Map<string, MxNote[]>;
   onSaveNote: (flightId: string, tailNumber: string | null, note: string) => void;
   onDragStart: (e: React.DragEvent, flightId: string, fromVanId: number) => void;
   onDragOver: (e: React.DragEvent) => void;
@@ -1413,6 +1444,8 @@ function VanScheduleCard({
                         })}
                       </div>
                     )}
+                    {/* MX notes from JetInsight */}
+                    <MxNoteInline notes={mxNotesByTail.get(arrFlight.tail_number ?? "") ?? []} />
                     {/* MX director note */}
                     <LegNoteInline
                       flightId={arrFlight.id}
@@ -1447,6 +1480,7 @@ function ScheduleTab({
   liveVanAddresses,
   vanZoneNames,
   flightInfoMap,
+  mxNotesByTail,
 }: {
   allFlights: Flight[];
   date: string;
@@ -1454,6 +1488,7 @@ function ScheduleTab({
   liveVanAddresses: Map<number, string | null>;
   vanZoneNames: Map<number, string>;
   flightInfoMap: Map<string, FlightInfoEntry>;
+  mxNotesByTail: Map<string, MxNote[]>;
 }) {
   const hasLive = liveVanPositions.size > 0;
 
@@ -1963,6 +1998,8 @@ function ScheduleTab({
                         </div>
                       )}
                     </div>
+                    {/* MX notes from JetInsight */}
+                    <MxNoteInline notes={mxNotesByTail.get(tail ?? "") ?? []} />
                   </div>
                 );
               })}
@@ -1992,6 +2029,7 @@ function ScheduleTab({
               hasOverrides={editedVans.has(zone.vanId)}
               flightInfoMap={flightInfoMap}
               legNotes={legNotes}
+              mxNotesByTail={mxNotesByTail}
               onSaveNote={saveLegNote}
               onDragStart={handleDragStart}
               onDragOver={handleDragOver}
@@ -2327,6 +2365,18 @@ export default function VanPositioningClient({ initialFlights, mxNotes }: { init
     }),
     [initialFlights],
   );
+
+  // MX notes grouped by tail number for inline display
+  const mxNotesByTail = useMemo(() => {
+    const map = new Map<string, MxNote[]>();
+    for (const n of mxNotes ?? []) {
+      if (!n.tail_number) continue;
+      const arr = map.get(n.tail_number) ?? [];
+      arr.push(n);
+      map.set(n.tail_number, arr);
+    }
+    return map;
+  }, [mxNotes]);
 
   // Flights arriving on the selected date (for stats bar) — only active types
   // Use ET date matching so evening flights show on the correct day
@@ -2809,7 +2859,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes }: { init
 
       {/* ── Schedule tab ── */}
       {activeTab === "schedule" && (
-        <ScheduleTab allFlights={activeFlights} date={selectedDate} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} flightInfoMap={flightInfoMap} />
+        <ScheduleTab allFlights={activeFlights} date={selectedDate} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} flightInfoMap={flightInfoMap} mxNotesByTail={mxNotesByTail} />
       )}
 
       {/* ── Flight Schedule tab — grouped by aircraft ── */}
@@ -2948,6 +2998,26 @@ export default function VanPositioningClient({ initialFlights, mxNotes }: { init
                           );
                         })}
                       </div>
+                      {/* MX notes from JetInsight */}
+                      {(mxNotesByTail.get(tail ?? "") ?? []).length > 0 && (
+                        <div className="border-t border-orange-100 px-4 py-2 space-y-1">
+                          {(mxNotesByTail.get(tail ?? "") ?? []).map((n) => (
+                            <div key={n.id} className="flex items-start gap-2 bg-orange-50 border border-orange-200 rounded-lg px-3 py-1.5">
+                              <span className="text-orange-500 font-bold text-xs mt-0.5 shrink-0">MX</span>
+                              <div className="flex items-center gap-2 flex-wrap min-w-0 flex-1">
+                                <span className="text-xs font-medium text-orange-700">{n.airport_icao}</span>
+                                <span className="text-xs text-gray-700">{n.body}</span>
+                                {n.start_time && (
+                                  <span className="text-[11px] text-gray-400 ml-auto shrink-0">
+                                    {new Date(n.start_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                                    {n.end_time && n.end_time !== n.start_time && ` – ${new Date(n.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
