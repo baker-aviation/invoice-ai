@@ -200,29 +200,46 @@ export type FaTrackPoint = {
 
 /**
  * Get the full flight track (list of positions) for a specific flight by fa_flight_id.
+ * Follows FA pagination if the first page is empty but more pages exist.
  */
 export async function getFlightTrack(
   faFlightId: string,
 ): Promise<FaTrackPoint[]> {
-  const url = `${BASE}/flights/${encodeURIComponent(faFlightId)}/track?include_estimated_positions=true`;
+  let url: string | null = `${BASE}/flights/${encodeURIComponent(faFlightId)}/track?include_estimated_positions=true`;
+  const allPositions: FaTrackPoint[] = [];
+
   try {
-    const res = await fetch(url, {
-      headers: headers(),
-      signal: AbortSignal.timeout(10000),
-    });
-    if (!res.ok) {
-      console.warn(`[FA Track] ${faFlightId}: HTTP ${res.status}`);
-      return [];
+    // Follow up to 3 pages (most flights fit in 1-2)
+    for (let page = 0; page < 3 && url; page++) {
+      const res = await fetch(url, {
+        headers: headers(),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) {
+        console.warn(`[FA Track] ${faFlightId}: HTTP ${res.status} (page ${page})`);
+        break;
+      }
+      const data = await res.json();
+      const positions = (data.positions ?? data.track ?? []) as FaTrackPoint[];
+      allPositions.push(...positions);
+
+      // Check for next page
+      const nextLink = data.links?.next as string | undefined;
+      if (nextLink && positions.length > 0) {
+        // FA returns relative or absolute URLs
+        url = nextLink.startsWith("http") ? nextLink : `${BASE}${nextLink}`;
+      } else {
+        url = null;
+      }
     }
-    const data = await res.json();
-    const positions = (data.positions ?? data.track ?? []) as FaTrackPoint[];
-    if (positions.length === 0) {
-      console.warn(`[FA Track] ${faFlightId}: empty positions. Response keys: ${Object.keys(data).join(", ")}`);
+
+    if (allPositions.length === 0) {
+      console.warn(`[FA Track] ${faFlightId}: no positions after pagination`);
     }
-    return positions;
+    return allPositions;
   } catch (err) {
     console.error(`[FA Track] ${faFlightId}: fetch error`, err);
-    return [];
+    return allPositions.length > 0 ? allPositions : [];
   }
 }
 
