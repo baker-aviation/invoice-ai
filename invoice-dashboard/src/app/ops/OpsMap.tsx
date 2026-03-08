@@ -66,10 +66,58 @@ type Props = {
   flightInfo: Map<string, FlightInfoMap>;
 };
 
-/* ── Route lines (origin → destination) ── */
+/* ── Route lines (origin → plane → destination with smooth bend) ── */
 
 function stripKPrefix(icao: string): string {
   return icao.startsWith("K") ? icao.slice(1) : icao;
+}
+
+/** Quadratic Bezier curve: p0 → control → p2, returns intermediate points */
+function bezierCurve(
+  p0: [number, number],
+  control: [number, number],
+  p2: [number, number],
+  segments: number = 10,
+): [number, number][] {
+  const pts: [number, number][] = [];
+  for (let i = 0; i <= segments; i++) {
+    const t = i / segments;
+    const u = 1 - t;
+    pts.push([
+      u * u * p0[0] + 2 * u * t * control[0] + t * t * p2[0],
+      u * u * p0[1] + 2 * u * t * control[1] + t * t * p2[1],
+    ]);
+  }
+  return pts;
+}
+
+/** Build path: origin → [smooth curve through plane] → destination */
+function buildRoutePath(
+  origin: [number, number],
+  plane: [number, number],
+  dest: [number, number],
+): [number, number][] {
+  // How far back/forward from plane to start the curve (fraction of each segment)
+  const CURVE_RADIUS = 0.15;
+
+  // Point on origin→plane segment, slightly before plane
+  const before: [number, number] = [
+    plane[0] + CURVE_RADIUS * (origin[0] - plane[0]),
+    plane[1] + CURVE_RADIUS * (origin[1] - plane[1]),
+  ];
+  // Point on plane→dest segment, slightly after plane
+  const after: [number, number] = [
+    plane[0] + CURVE_RADIUS * (dest[0] - plane[0]),
+    plane[1] + CURVE_RADIUS * (dest[1] - plane[1]),
+  ];
+
+  return [
+    origin,
+    before,
+    ...bezierCurve(before, plane, after, 10),
+    after,
+    dest,
+  ];
 }
 
 function FlightRoutes({ flightInfo, fleetLookup }: { flightInfo: Map<string, FlightInfoMap>; fleetLookup: Map<string, string> }) {
@@ -88,7 +136,11 @@ function FlightRoutes({ flightInfo, fleetLookup }: { flightInfo: Map<string, Fli
 
     routes.push({
       tail: fi.tail,
-      positions: [[origin.lat, origin.lon], [dest.lat, dest.lon]],
+      positions: buildRoutePath(
+        [origin.lat, origin.lon],
+        [fi.latitude, fi.longitude],
+        [dest.lat, dest.lon],
+      ),
     });
   }
 
