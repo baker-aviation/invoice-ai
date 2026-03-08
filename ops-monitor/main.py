@@ -90,6 +90,18 @@ _SKIP_FLIGHT_TYPES = {
 # SUMMARY keywords that indicate a non-flight entry regardless of flight_type.
 _SKIP_SUMMARY_KEYWORDS = {"NOT FLYING"}
 
+
+def _extract_mx_note(summary: str) -> str:
+    """Extract the MX note from a JetInsight maintenance SUMMARY.
+    e.g. '[N553FX] #3 TIRE CHANGE (BED - BED) - Maintenance' → '#3 TIRE CHANGE'
+    """
+    m = re.search(r"\]\s*(.+?)\s*\(", summary)
+    if m:
+        note = m.group(1).strip().rstrip("-–").strip()
+        if note:
+            return note
+    return summary
+
 # FAA NMS API (test environment — swap to production once onboarded)
 NMS_AUTH_URL = "https://api-staging.cgifederal-aim.com/v1/auth/token"
 NMS_API_BASE = "https://api-staging.cgifederal-aim.com/nmsapi"
@@ -734,6 +746,7 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
 
     # Build batch of flights to upsert
     batch: List[Dict[str, Any]] = []
+    mx_alerts_batch: List[Dict[str, Any]] = []
     for component in all_components:
         try:
             uid = str(component.get("UID", "")).strip()
@@ -764,7 +777,25 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
 
             # ── Filter out non-flight scheduling entries ──────────────────
             # 1. Same departure/arrival = not an aircraft movement
+            #    BUT capture maintenance events as MX_NOTE alerts
             if dep_icao and arr_icao and dep_icao == arr_icao:
+                if flight_type and flight_type.lower() == "maintenance" and tail:
+                    mx_note = _extract_mx_note(summary)
+                    mx_alerts_batch.append({
+                        "alert_type": "MX_NOTE",
+                        "severity": "info",
+                        "airport_icao": dep_icao,
+                        "tail_number": tail,
+                        "subject": f"[{tail}] {mx_note}" if mx_note else f"[{tail}] Maintenance",
+                        "body": mx_note or summary,
+                        "source_message_id": f"mx-{uid}",
+                        "raw_data": {
+                            "start_time": dep_dt.isoformat() if dep_dt else None,
+                            "end_time": arr_dt.isoformat() if arr_dt else None,
+                            "ics_uid": uid,
+                            "summary": summary,
+                        },
+                    })
                 skipped += 1
                 continue
             # 2. Administrative flight types (home-base notes, repo requests)
@@ -852,6 +883,18 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
                 except Exception as row_err:
                     errors += 1
                     print(f"sync_schedule row upsert error uid={row.get('ics_uid','?')}: {repr(row_err)}", flush=True)
+
+    # ── Upsert MX_NOTE alerts from maintenance events ───────────────────
+    mx_created = 0
+    if mx_alerts_batch:
+        print(f"sync_schedule: upserting {len(mx_alerts_batch)} MX_NOTE alerts", flush=True)
+        try:
+            res = supa.table(OPS_ALERTS_TABLE).upsert(
+                mx_alerts_batch, on_conflict="source_message_id"
+            ).execute()
+            mx_created = len(res.data) if res.data else 0
+        except Exception as e:
+            print(f"sync_schedule MX_NOTE upsert error: {repr(e)}", flush=True)
 
     # ── Clean cross-feed dups from DB ────────────────────────────────────
     if dup_uids:
@@ -984,9 +1027,9 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
             print(f"sync_schedule cleanup error: {repr(e)}", flush=True)
 
     t_total = _time.monotonic() - t0
-    print(f"sync_schedule: done in {t_total:.1f}s — upserted={upserted} skipped={skipped} errors={errors} cleaned={cleaned} deleted={deleted}", flush=True)
-    log_pipeline_run("flight-sync", items=upserted, duration_ms=int(t_total * 1000), message=f"upserted={upserted} skipped={skipped}")
-    return {"ok": True, "upserted": upserted, "skipped": skipped, "errors": errors, "cleaned": cleaned, "deleted": deleted, "fetch_secs": round(t_fetch, 1), "total_secs": round(t_total, 1)}
+    print(f"sync_schedule: done in {t_total:.1f}s — upserted={upserted} skipped={skipped} errors={errors} cleaned={cleaned} deleted={deleted} mx_notes={mx_created}", flush=True)
+    log_pipeline_run("flight-sync", items=upserted, duration_ms=int(t_total * 1000), message=f"upserted={upserted} skipped={skipped} mx_notes={mx_created}")
+    return {"ok": True, "upserted": upserted, "skipped": skipped, "errors": errors, "cleaned": cleaned, "deleted": deleted, "mx_notes": mx_created, "fetch_secs": round(t_fetch, 1), "total_secs": round(t_total, 1)}
 
 
 # ─── Job: pull_edct ───────────────────────────────────────────────────────────

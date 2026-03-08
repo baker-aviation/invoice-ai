@@ -2,7 +2,7 @@
 
 import dynamic from "next/dynamic";
 import { useState, useMemo, useEffect, useRef, useCallback } from "react";
-import type { Flight } from "@/lib/opsApi";
+import type { Flight, MxNote } from "@/lib/opsApi";
 import {
   computeOvernightPositions,
   computeOvernightPositionsFromFlights,
@@ -2297,7 +2297,7 @@ const haversineKmClient = (lat1: number, lon1: number, lat2: number, lon2: numbe
 // Main client component
 // ---------------------------------------------------------------------------
 
-export default function VanPositioningClient({ initialFlights }: { initialFlights: Flight[] }) {
+export default function VanPositioningClient({ initialFlights, mxNotes }: { initialFlights: Flight[]; mxNotes?: MxNote[] }) {
   const dates = useMemo(() => getDateRange(7), []); // 7-day window
   const [dayIdx, setDayIdx] = useState(0);
   const [activeTab, setActiveTab] = useState<"map" | "schedule" | "flights">("map");
@@ -2588,6 +2588,37 @@ export default function VanPositioningClient({ initialFlights }: { initialFlight
           </div>
         );
       })()}
+
+      {/* ── MX Notes from JetInsight ── */}
+      {mxNotes && mxNotes.length > 0 && (
+        <div className="rounded-xl border-2 border-orange-300 bg-orange-50 px-5 py-4 shadow-sm">
+          <div className="flex items-center gap-3 mb-2">
+            <div className="w-10 h-10 rounded-full flex items-center justify-center text-xl shrink-0 bg-orange-100">
+              !
+            </div>
+            <div className="text-base font-bold text-orange-800">
+              Maintenance Notes ({mxNotes.length})
+            </div>
+          </div>
+          <div className="flex flex-col gap-2 ml-[52px]">
+            {mxNotes.map((note) => (
+              <div key={note.id} className="bg-white border border-orange-200 rounded-lg px-3 py-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold text-orange-800">{note.tail_number}</span>
+                  <span className="text-xs text-orange-600">{note.airport_icao}</span>
+                  {note.start_time && (
+                    <span className="text-[11px] text-gray-500 ml-auto">
+                      {new Date(note.start_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                      {note.end_time && ` – ${new Date(note.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`}
+                    </span>
+                  )}
+                </div>
+                <div className="text-sm text-gray-700 mt-0.5">{note.body}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* ── Tab bar ── */}
       <div className="flex gap-3">

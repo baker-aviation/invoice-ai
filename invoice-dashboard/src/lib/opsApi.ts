@@ -265,3 +265,53 @@ export async function fetchFlights(params: {
 
   return { ok: true, flights, count: flights.length };
 }
+
+// ---------------------------------------------------------------------------
+// MX Notes — maintenance alerts from JetInsight ICS feeds
+// ---------------------------------------------------------------------------
+
+export type MxNote = {
+  id: string;
+  tail_number: string | null;
+  airport_icao: string | null;
+  subject: string | null;
+  body: string | null;
+  start_time: string | null;
+  end_time: string | null;
+  created_at: string;
+  acknowledged_at: string | null;
+};
+
+export async function fetchMxNotes(): Promise<MxNote[]> {
+  const supa = createServiceClient();
+  const { data, error } = await supa
+    .from("ops_alerts")
+    .select("id, tail_number, airport_icao, subject, body, created_at, acknowledged_at, raw_data")
+    .eq("alert_type", "MX_NOTE")
+    .is("acknowledged_at", null)
+    .order("created_at", { ascending: false })
+    .limit(100);
+
+  if (error || !data) return [];
+
+  return data.map((row) => {
+    let startTime: string | null = null;
+    let endTime: string | null = null;
+    try {
+      const rd = typeof row.raw_data === "string" ? JSON.parse(row.raw_data) : row.raw_data;
+      startTime = rd?.start_time ?? null;
+      endTime = rd?.end_time ?? null;
+    } catch { /* ignore */ }
+    return {
+      id: row.id as string,
+      tail_number: row.tail_number as string | null,
+      airport_icao: row.airport_icao as string | null,
+      subject: row.subject as string | null,
+      body: row.body as string | null,
+      start_time: startTime,
+      end_time: endTime,
+      created_at: row.created_at as string,
+      acknowledged_at: row.acknowledged_at as string | null,
+    };
+  });
+}
