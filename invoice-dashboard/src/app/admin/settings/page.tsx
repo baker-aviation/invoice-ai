@@ -18,6 +18,13 @@ type BakerPprAirport = {
   created_at: string;
 };
 
+type SlackMapping = {
+  id: number;
+  salesperson_name: string;
+  slack_user_id: string;
+  created_at: string;
+};
+
 export default function SettingsPage() {
   const [sources, setSources] = useState<IcsSource[]>([]);
   const [loading, setLoading] = useState(true);
@@ -40,6 +47,22 @@ export default function SettingsPage() {
   const [pprError, setPprError] = useState<string | null>(null);
   const [newIcao, setNewIcao] = useState("");
   const [addingIcao, setAddingIcao] = useState(false);
+
+  // Trip CSV upload state
+  const [csvUploading, setCsvUploading] = useState(false);
+  const [csvResult, setCsvResult] = useState<string | null>(null);
+
+  // Salesperson Slack mapping state
+  const [slackMappings, setSlackMappings] = useState<SlackMapping[]>([]);
+  const [slackLoading, setSlackLoading] = useState(true);
+  const [slackError, setSlackError] = useState<string | null>(null);
+  const [newSpName, setNewSpName] = useState("");
+  const [newSpSlackId, setNewSpSlackId] = useState("");
+  const [addingSp, setAddingSp] = useState(false);
+
+  // Notification check state
+  const [notifChecking, setNotifChecking] = useState(false);
+  const [notifResult, setNotifResult] = useState<string | null>(null);
 
   const fetchSources = useCallback(async () => {
     try {
@@ -78,6 +101,107 @@ export default function SettingsPage() {
   useEffect(() => {
     fetchPprAirports();
   }, [fetchPprAirports]);
+
+  // ── Salesperson Slack mapping fetching & handlers ──────────────────────────
+
+  const fetchSlackMappings = useCallback(async () => {
+    try {
+      const res = await fetch("/api/admin/salesperson-slack");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setSlackMappings(data.mappings ?? []);
+      setSlackError(null);
+    } catch (err) {
+      setSlackError(err instanceof Error ? err.message : "Failed to load");
+    } finally {
+      setSlackLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchSlackMappings();
+  }, [fetchSlackMappings]);
+
+  async function handleCsvUpload(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const form = e.currentTarget;
+    const fileInput = form.elements.namedItem("csvFile") as HTMLInputElement;
+    const file = fileInput?.files?.[0];
+    if (!file) return;
+
+    setCsvUploading(true);
+    setCsvResult(null);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch("/api/admin/trip-salespersons/upload", { method: "POST", body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+      setCsvResult(`Uploaded ${data.upserted} trip(s) from ${data.totalParsed} parsed rows.`);
+      fileInput.value = "";
+    } catch (err) {
+      setCsvResult(err instanceof Error ? err.message : "Upload failed");
+    } finally {
+      setCsvUploading(false);
+    }
+  }
+
+  async function handleAddSlackMapping(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newSpName.trim() || !newSpSlackId.trim()) return;
+    setAddingSp(true);
+    try {
+      const res = await fetch("/api/admin/salesperson-slack", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ salesperson_name: newSpName.trim(), slack_user_id: newSpSlackId.trim() }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error ?? `HTTP ${res.status}`);
+      }
+      setNewSpName("");
+      setNewSpSlackId("");
+      await fetchSlackMappings();
+    } catch (err) {
+      setSlackError(err instanceof Error ? err.message : "Failed to add");
+    } finally {
+      setAddingSp(false);
+    }
+  }
+
+  async function handleDeleteSlackMapping(name: string) {
+    if (!confirm(`Remove Slack mapping for "${name}"?`)) return;
+    try {
+      const res = await fetch("/api/admin/salesperson-slack", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ salesperson_name: name }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await fetchSlackMappings();
+    } catch (err) {
+      setSlackError(err instanceof Error ? err.message : "Failed to delete");
+    }
+  }
+
+  async function handleCheckNotifications() {
+    setNotifChecking(true);
+    setNotifResult(null);
+    try {
+      const res = await fetch("/api/admin/trip-notifications/check", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+      let msg = `Checked ${data.checked} flight(s): ${data.sent} DM(s) sent, ${data.skipped} skipped.`;
+      if (data.errors?.length) msg += ` Errors: ${data.errors.join("; ")}`;
+      if (data.message) msg = data.message;
+      setNotifResult(msg);
+    } catch (err) {
+      setNotifResult(err instanceof Error ? err.message : "Check failed");
+    } finally {
+      setNotifChecking(false);
+    }
+  }
 
   async function handleAddIcao(e: React.FormEvent) {
     e.preventDefault();
@@ -443,6 +567,135 @@ export default function SettingsPage() {
               </button>
             </span>
           ))}
+        </div>
+      )}
+
+      {/* ── Trip Salesperson CSV Upload ─────────────────────────────────────── */}
+      <hr className="my-8 border-gray-200" />
+      <h2 className="text-lg font-semibold text-slate-900 mb-1">Trip Salesperson CSV Upload</h2>
+      <p className="text-sm text-gray-500 mb-4">
+        Upload a JetInsight CSV to map trips to salespersons. Expected columns:
+        Trip, Customer, Trip start, Trip end, Aircraft, From, To, Salesperson.
+      </p>
+
+      <form onSubmit={handleCsvUpload} className="mb-4 flex gap-2 items-center">
+        <input
+          type="file"
+          name="csvFile"
+          accept=".csv"
+          className="text-sm text-gray-600 file:mr-3 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200"
+        />
+        <button
+          type="submit"
+          disabled={csvUploading}
+          className="bg-slate-900 text-white rounded-md px-5 py-2 text-sm font-medium hover:bg-slate-700 disabled:opacity-50 whitespace-nowrap"
+        >
+          {csvUploading ? "Uploading…" : "Upload CSV"}
+        </button>
+      </form>
+
+      {csvResult && (
+        <div className="mb-4 px-4 py-2 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-700">
+          {csvResult}
+        </div>
+      )}
+
+      {/* ── Salesperson Slack Mapping ───────────────────────────────────────── */}
+      <hr className="my-8 border-gray-200" />
+      <h2 className="text-lg font-semibold text-slate-900 mb-1">Salesperson Slack Mapping</h2>
+      <p className="text-sm text-gray-500 mb-4">
+        Map salesperson names (as they appear in JetInsight) to Slack user IDs
+        for departure DM notifications.
+      </p>
+
+      {slackError && (
+        <div className="mb-4 px-4 py-2 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+          {slackError}
+          <button onClick={() => setSlackError(null)} className="ml-2 text-red-400 hover:text-red-600">&times;</button>
+        </div>
+      )}
+
+      <form onSubmit={handleAddSlackMapping} className="mb-4 flex gap-2">
+        <input
+          type="text"
+          value={newSpName}
+          onChange={(e) => setNewSpName(e.target.value)}
+          placeholder="Salesperson name"
+          className="border border-gray-300 rounded-md px-3 py-2 text-sm w-48 focus:outline-none focus:ring-2 focus:ring-slate-500"
+        />
+        <input
+          type="text"
+          value={newSpSlackId}
+          onChange={(e) => setNewSpSlackId(e.target.value)}
+          placeholder="Slack user ID (U...)"
+          className="border border-gray-300 rounded-md px-3 py-2 text-sm w-44 font-mono focus:outline-none focus:ring-2 focus:ring-slate-500"
+        />
+        <button
+          type="submit"
+          disabled={addingSp || !newSpName.trim() || !newSpSlackId.trim()}
+          className="bg-slate-900 text-white rounded-md px-5 py-2 text-sm font-medium hover:bg-slate-700 disabled:opacity-50 whitespace-nowrap"
+        >
+          {addingSp ? "Adding…" : "Add Mapping"}
+        </button>
+      </form>
+
+      {slackLoading ? (
+        <div className="text-sm text-gray-400 py-4 text-center">Loading…</div>
+      ) : slackMappings.length === 0 ? (
+        <div className="text-sm text-gray-400 py-4 text-center border border-dashed border-gray-300 rounded-lg">
+          No salesperson Slack mappings configured.
+        </div>
+      ) : (
+        <div className="border border-gray-200 rounded-lg overflow-hidden">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="text-left px-4 py-2 font-medium text-gray-600">Salesperson</th>
+                <th className="text-left px-4 py-2 font-medium text-gray-600">Slack User ID</th>
+                <th className="text-right px-4 py-2 font-medium text-gray-600 w-20">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {slackMappings.map((m) => (
+                <tr key={m.id} className="border-t border-gray-100">
+                  <td className="px-4 py-2 font-medium text-gray-800">{m.salesperson_name}</td>
+                  <td className="px-4 py-2 font-mono text-xs text-gray-500">{m.slack_user_id}</td>
+                  <td className="px-4 py-2 text-right">
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteSlackMapping(m.salesperson_name)}
+                      className="text-xs text-gray-400 hover:text-red-600 px-2 py-1 rounded hover:bg-red-50"
+                    >
+                      Remove
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* ── Test Notifications ─────────────────────────────────────────────── */}
+      <hr className="my-8 border-gray-200" />
+      <h2 className="text-lg font-semibold text-slate-900 mb-1">Test Departure Notifications</h2>
+      <p className="text-sm text-gray-500 mb-4">
+        Manually run the notification check. This scans flights departing in the
+        next ~75 minutes, matches them to trip salespersons, and sends Slack DMs.
+      </p>
+
+      <button
+        type="button"
+        onClick={handleCheckNotifications}
+        disabled={notifChecking}
+        className="bg-slate-900 text-white rounded-md px-5 py-2 text-sm font-medium hover:bg-slate-700 disabled:opacity-50"
+      >
+        {notifChecking ? "Checking…" : "Run Notification Check"}
+      </button>
+
+      {notifResult && (
+        <div className="mt-3 px-4 py-2 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-700">
+          {notifResult}
         </div>
       )}
     </div>
