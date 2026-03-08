@@ -3,6 +3,7 @@
 export type InvoiceCategory =
   | "FBO"
   | "Fuel Contract"
+  | "Electronic Funds Transfer"
   | "Maintenance/Parts"
   | "Lease/Utilities"
   | "Plane Lease"
@@ -15,6 +16,7 @@ export type InvoiceCategory =
 export const ALL_CATEGORIES: InvoiceCategory[] = [
   "FBO",
   "Fuel Contract",
+  "Electronic Funds Transfer",
   "Maintenance/Parts",
   "Lease/Utilities",
   "Plane Lease",
@@ -37,6 +39,8 @@ const DOC_TYPE_MAP: Record<string, InvoiceCategory> = {
   pilot_operations: "Pilot Operations",
   training: "Training",
   subscriptions: "Subscriptions",
+  eft: "Electronic Funds Transfer",
+  eft_prenotification: "Electronic Funds Transfer",
   not_invoice: "Not an Invoice",
 };
 
@@ -62,6 +66,7 @@ const PLANE_LEASE_KEYWORDS = ["aircraft lease", "plane lease", "dry lease", "wet
 const PILOT_OPS_KEYWORDS = ["prod support", "product support", "jeppesen", "foreflight", "charts", "bombardier", "gulfstream", "dassault", "pilot supplies", "crew supplies", "smart parts"];
 const TRAINING_KEYWORDS = ["training", "simulator", "type rating", "flightsafety", "flight safety", "simcom", "cae", "recurrent", "initial training", "ground school"];
 const SUBS_KEYWORDS = ["starlink", "subscription", "monthly service", "recurring", "satcom", "internet service", "connectivity", "wifi", "software license"];
+const EFT_KEYWORDS = ["electronic funds transfer", "eft prenotification", "eft transfer", "funds transfer", "payment to be transferred", "prenotification only"];
 const NOT_INVOICE_KEYWORDS = ["noise violation", "curfew violation", "noise abatement", "noise complaint", "voluntary nighttime"];
 
 export function inferCategory(inv: {
@@ -81,14 +86,17 @@ export function inferCategory(inv: {
   // 3. Map from backend doc_type
   const mapped = inv.doc_type ? DOC_TYPE_MAP[inv.doc_type] : undefined;
   if (mapped) return mapped;
-  // 4. Known vendor name checks — fuel vendors first, then FBO
-  const vn = (inv.vendor_name ?? "").toLowerCase();
-  if (KNOWN_FUEL_VENDORS.some((k) => vn.includes(k))) return "Fuel Contract";
-  if (KNOWN_FBO_VENDORS.some((k) => vn.includes(k))) return "FBO";
-  // 5. Keyword fallback for doc_type="other" or missing
+  // 4. EFT check — must come before vendor name checks because fuel vendors
+  //    like Avfuel send both regular invoices and EFT prenotifications
   const hay = [inv.vendor_name, inv.doc_type, ...(inv.line_items?.map((l) => l.description) ?? [])]
     .join(" ")
     .toLowerCase();
+  if (EFT_KEYWORDS.some((k) => hay.includes(k))) return "Electronic Funds Transfer";
+  // 5. Known vendor name checks — fuel vendors first, then FBO
+  const vn = (inv.vendor_name ?? "").toLowerCase();
+  if (KNOWN_FUEL_VENDORS.some((k) => vn.includes(k))) return "Fuel Contract";
+  if (KNOWN_FBO_VENDORS.some((k) => vn.includes(k))) return "FBO";
+  // 6. Keyword fallback for doc_type="other" or missing
   if (NOT_INVOICE_KEYWORDS.some((k) => hay.includes(k))) return "Not an Invoice";
   if (SUBS_KEYWORDS.some((k) => hay.includes(k))) return "Subscriptions";
   if (TRAINING_KEYWORDS.some((k) => hay.includes(k))) return "Training";
@@ -104,6 +112,7 @@ export function inferCategory(inv: {
 export const CATEGORY_COLORS: Record<InvoiceCategory, string> = {
   "FBO": "bg-blue-100 text-blue-700",
   "Fuel Contract": "bg-sky-100 text-sky-700",
+  "Electronic Funds Transfer": "bg-emerald-100 text-emerald-700",
   "Maintenance/Parts": "bg-amber-100 text-amber-700",
   "Lease/Utilities": "bg-purple-100 text-purple-700",
   "Plane Lease": "bg-violet-100 text-violet-700",
