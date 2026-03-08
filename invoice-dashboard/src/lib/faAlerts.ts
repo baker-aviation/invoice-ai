@@ -32,9 +32,9 @@ export async function refreshAlerts(tails: string[]): Promise<void> {
   }
   lastRefreshMs = Date.now();
 
-  const apiKey = process.env.FLIGHTAWARE_API_KEY;
-  const webhookSecret = process.env.FLIGHTAWARE_WEBHOOK_SECRET;
-  const baseUrl = process.env.WEBHOOK_BASE_URL;
+  const apiKey = process.env.FLIGHTAWARE_API_KEY?.trim();
+  const webhookSecret = process.env.FLIGHTAWARE_WEBHOOK_SECRET?.trim();
+  const baseUrl = process.env.WEBHOOK_BASE_URL?.trim();
 
   if (!apiKey || !webhookSecret || !baseUrl) {
     console.warn("[FA Alerts] Missing env vars:", {

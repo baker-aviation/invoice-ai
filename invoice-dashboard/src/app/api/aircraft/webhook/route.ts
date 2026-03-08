@@ -16,14 +16,14 @@ export const dynamic = "force-dynamic";
  */
 
 export async function POST(req: NextRequest) {
-  // Validate webhook secret
-  const secret = process.env.FLIGHTAWARE_WEBHOOK_SECRET;
+  // Validate webhook secret (trim to guard against Vercel env var whitespace)
+  const secret = process.env.FLIGHTAWARE_WEBHOOK_SECRET?.trim();
   if (!secret) {
     console.error("[FA Webhook] FLIGHTAWARE_WEBHOOK_SECRET not configured");
     return NextResponse.json({ error: "not configured" }, { status: 503 });
   }
 
-  const reqSecret = req.nextUrl.searchParams.get("secret");
+  const reqSecret = req.nextUrl.searchParams.get("secret")?.trim() ?? null;
   if (reqSecret !== secret) {
     console.warn(`[FA Webhook] Secret mismatch — env len=${secret.length} req len=${reqSecret?.length ?? "null"} envStart=${secret.slice(0, 6)} reqStart=${reqSecret?.slice(0, 6) ?? "null"}`);
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
