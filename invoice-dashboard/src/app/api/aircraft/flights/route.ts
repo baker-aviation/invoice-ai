@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { after } from "next/server";
 import { requireAuth, isAuthed } from "@/lib/api-auth";
 import { getActiveFlights } from "@/lib/flightaware";
 import { TRIPS } from "@/lib/maintenanceData";
@@ -68,8 +69,9 @@ export async function GET(req: NextRequest) {
     const flights = await getActiveFlights(tails);
     await setCache(flights);
 
-    // Auto-register FA webhook alerts for any new tails (fire-and-forget)
-    refreshAlerts(tails).catch(() => {});
+    // Auto-register FA webhook alerts for new tails — runs after response is sent
+    // so the 30-tail loop (~15s) doesn't block the client
+    after(() => refreshAlerts(tails).catch(() => {}));
 
     // Count flights per tail for debugging
     const perTail: Record<string, number> = {};
