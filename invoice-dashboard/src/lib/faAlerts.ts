@@ -45,6 +45,13 @@ export async function refreshAlerts(tails: string[]): Promise<void> {
     return;
   }
 
+  // Only register alerts from production to prevent duplicate registrations
+  // across dev/preview deployments
+  if (!baseUrl.includes("baker-ai-gamma")) {
+    console.log("[FA Alerts] Skipped — not production (base:", baseUrl, ")");
+    return;
+  }
+
   try {
     const supa = createServiceClient();
 
