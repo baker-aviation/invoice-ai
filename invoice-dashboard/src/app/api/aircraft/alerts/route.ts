@@ -111,13 +111,16 @@ export async function POST(req: NextRequest) {
       if (listRes.ok) {
         const listData = await listRes.json();
         const allAlerts = listData.alerts ?? [];
+        // Delete in parallel batches of 5 for speed
         let cleaned = 0;
-        for (const alert of allAlerts) {
-          try {
-            await fetch(`${FA_BASE}/alerts/${alert.id}`, { method: "DELETE", headers: faHeaders(), signal: AbortSignal.timeout(10000) });
-            cleaned++;
-            await new Promise((r) => setTimeout(r, 300));
-          } catch { /* ignore */ }
+        for (let i = 0; i < allAlerts.length; i += 5) {
+          const batch = allAlerts.slice(i, i + 5);
+          const delResults = await Promise.allSettled(
+            batch.map((alert: { id: number }) =>
+              fetch(`${FA_BASE}/alerts/${alert.id}`, { method: "DELETE", headers: faHeaders(), signal: AbortSignal.timeout(10000) })
+            )
+          );
+          cleaned += delResults.filter((r) => r.status === "fulfilled").length;
         }
         // Clear our DB registrations too
         await supa.from("fa_alert_registrations").update({ active: false }).eq("active", true);
@@ -253,8 +256,8 @@ export async function POST(req: NextRequest) {
         console.warn(`[FA Alerts] Failed to create alert for ${tail}: ${alertRes.status} ${responseText}`);
       }
 
-      // Rate limit: pause between calls
-      await new Promise((r) => setTimeout(r, 500));
+      // Rate limit: brief pause between calls
+      await new Promise((r) => setTimeout(r, 100));
     } catch (err) {
       failed++;
       results.details.push({ step: "alert_error", tail, error: String(err) });
