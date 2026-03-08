@@ -34,6 +34,10 @@ export async function GET(req: NextRequest) {
   if (!forceRefresh && await isCacheFresh()) {
     const cachedResult = await getCache();
     if (cachedResult) {
+      // Ensure webhook alerts are registered even on cached responses
+      after(async () => {
+        try { await refreshAlerts(FALLBACK_TAILS); } catch {}
+      });
       return NextResponse.json({
         flights: cachedResult.data,
         count: cachedResult.data.length,
