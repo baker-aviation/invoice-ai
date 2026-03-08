@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import L from "leaflet";
 import { MapContainer, TileLayer, Marker, Popup, Tooltip, Polyline, useMap } from "react-leaflet";
 import type { AircraftPosition, FlightInfoMap } from "@/app/maintenance/MapView";
+import { getAirportInfo } from "@/lib/airportCoords";
 
 /* ── Fleet type helpers ── */
 
@@ -65,55 +66,37 @@ type Props = {
   flightInfo: Map<string, FlightInfoMap>;
 };
 
-/* ── Flight tracks ── */
+/* ── Route lines (origin → destination) ── */
 
-function FlightTracks({ flightInfo, fleetLookup }: { flightInfo: Map<string, FlightInfoMap>; fleetLookup: Map<string, string> }) {
-  const [tracks, setTracks] = useState<Map<string, [number, number][]>>(new Map());
-  const lastFetchRef = useRef(0);
+function stripKPrefix(icao: string): string {
+  return icao.startsWith("K") ? icao.slice(1) : icao;
+}
 
-  useEffect(() => {
-    // Throttle: only refetch tracks every 15 min (server also caches 15 min)
-    if (Date.now() - lastFetchRef.current < 15 * 60_000 && tracks.size > 0) return;
+function FlightRoutes({ flightInfo, fleetLookup }: { flightInfo: Map<string, FlightInfoMap>; fleetLookup: Map<string, string> }) {
+  const routes: { tail: string; positions: [number, number][] }[] = [];
+  const seen = new Set<string>();
 
-    const enRoute: FlightInfoMap[] = [];
-    const seen = new Set<string>();
-    for (const fi of flightInfo.values()) {
-      if (fi.latitude != null && fi.longitude != null && !seen.has(fi.tail)) {
-        seen.add(fi.tail);
-        enRoute.push(fi);
-      }
-    }
-    if (enRoute.length === 0) { setTracks(new Map()); return; }
+  for (const fi of flightInfo.values()) {
+    if (seen.has(fi.tail)) continue;
+    seen.add(fi.tail);
+    if (fi.latitude == null || fi.longitude == null) continue;
+    if (!fi.origin_icao || !fi.destination_icao) continue;
 
-    const controller = new AbortController();
-    lastFetchRef.current = Date.now();
-    (async () => {
-      const newTracks = new Map<string, [number, number][]>();
-      for (const fi of enRoute) {
-        if (!fi.fa_flight_id) continue;
-        try {
-          const res = await fetch(`/api/aircraft/track/${encodeURIComponent(fi.fa_flight_id)}`, {
-            signal: controller.signal, cache: "no-store",
-          });
-          if (res.ok) {
-            const data = await res.json();
-            const positions: [number, number][] = (data.positions ?? [])
-              .filter((p: { latitude: number; longitude: number }) => p.latitude && p.longitude)
-              .map((p: { latitude: number; longitude: number }) => [p.latitude, p.longitude] as [number, number]);
-            if (positions.length > 1) newTracks.set(fi.tail, positions);
-          }
-        } catch { /* ignore */ }
-      }
-      if (!controller.signal.aborted) setTracks(newTracks);
-    })();
-    return () => controller.abort();
-  }, [flightInfo]);
+    const origin = getAirportInfo(fi.origin_icao) ?? getAirportInfo(stripKPrefix(fi.origin_icao));
+    const dest = getAirportInfo(fi.destination_icao) ?? getAirportInfo(stripKPrefix(fi.destination_icao));
+    if (!origin || !dest) continue;
+
+    routes.push({
+      tail: fi.tail,
+      positions: [[origin.lat, origin.lon], [dest.lat, dest.lon]],
+    });
+  }
 
   return (
     <>
-      {Array.from(tracks.entries()).map(([tail, positions]) => (
+      {routes.map(({ tail, positions }) => (
         <Polyline
-          key={`track-${tail}`}
+          key={`route-${tail}`}
           positions={positions}
           pathOptions={{ color: getAcColor(fleetLookup, tail, false), weight: 2, opacity: 0.6 }}
         />
@@ -304,7 +287,7 @@ export default function OpsMap({ aircraft, flightInfo }: Props) {
           <TileLayer key={`radar-${radarUrl}`} url={radarUrl} opacity={0.65} zIndex={300} />
         )}
 
-        <FlightTracks flightInfo={flightInfo} fleetLookup={fleetLookup} />
+        <FlightRoutes flightInfo={flightInfo} fleetLookup={fleetLookup} />
 
         {aircraft.map((ac) => {
           const fi = flightInfo.get(ac.tail);

@@ -215,8 +215,22 @@ const AIRPORTS: Record<string, AirportInfo> = {
   VPS: { code: "VPS", name: "Destin-Fort Walton Beach", lat: 30.4832, lon: -86.5254, city: "Valparaiso", state: "FL" },
 };
 
+// Worldwide airport coordinates fallback (ICAO + IATA keyed)
+// Each entry: [lat, lon, name]
+import allAirports from "./airports.json";
+const worldwide = allAirports as unknown as Record<string, [number, number, string]>;
+
 export function getAirportInfo(code: string): AirportInfo | null {
-  return AIRPORTS[code] ?? null;
+  // Prefer the curated Baker list (has city/state)
+  const curated = AIRPORTS[code];
+  if (curated) return curated;
+
+  // Fallback to worldwide dataset
+  const entry = worldwide[code];
+  if (entry) {
+    return { code, name: entry[2], lat: entry[0], lon: entry[1], city: "", state: "" };
+  }
+  return null;
 }
 
 export function getAllAirports(): AirportInfo[] {
