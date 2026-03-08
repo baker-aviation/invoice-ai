@@ -154,11 +154,12 @@ function FlightTracks({
     if (Date.now() - lastFetchRef.current < 5 * 60_000 && tracks.size > 0) return;
 
     // Collect airborne flights with FA flight IDs
+    // Look up by tail key directly — the tail-keyed entry prefers en-route flights
+    // (iterating .values() would hit route-keyed entries first, which may be completed flights)
     const enRoute: FlightInfoMap[] = [];
-    const seen = new Set<string>();
-    for (const fi of flightInfo.values()) {
-      if (!seen.has(fi.tail) && airborneSet.has(fi.tail) && fi.fa_flight_id) {
-        seen.add(fi.tail);
+    for (const tail of airborneSet) {
+      const fi = flightInfo.get(tail);
+      if (fi && fi.fa_flight_id) {
         enRoute.push(fi);
       }
     }
