@@ -13,8 +13,9 @@ import { createServiceClient } from "./supabase/service";
 
 let memCache: { data: FlightInfo[]; ts: number } | null = null;
 
-// Full FA poll once per day — webhook push events keep cache current between polls
-const CACHE_TTL = 24 * 60 * 60_000; // 24 hours
+// Re-poll FA every 15 minutes to catch status changes (en route, landed, etc.)
+// Webhook push events also update the cache between polls.
+const CACHE_TTL = 15 * 60_000; // 15 minutes
 
 export function getCacheTtl(): number {
   return CACHE_TTL;
