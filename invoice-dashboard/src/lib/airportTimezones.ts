@@ -254,15 +254,18 @@ export function getAirportTimezone(icao: string | null | undefined): string | nu
  * Format a UTC ISO timestamp in the given timezone.
  * Returns something like "Mar 6, 09:06 EST" for local or "Mar 6, 14:06Z" for UTC.
  */
-export type TzMode = "local" | "UTC" | "EST" | "CST" | "MST" | "PST";
+export type TzMode = "local" | "UTC" | "AST" | "EST" | "CST" | "MST" | "AZT" | "PST" | "AKST";
 
 const TZ_MODE_MAP: Record<TzMode, string | null> = {
   local: null, // resolved per-airport
   UTC: "UTC",
+  AST: "America/Puerto_Rico",   // Atlantic (no DST)
   EST: "America/New_York",
   CST: "America/Chicago",
   MST: "America/Denver",
+  AZT: "America/Phoenix",       // Arizona (no DST)
   PST: "America/Los_Angeles",
+  AKST: "America/Anchorage",
 };
 
 export function fmtTimeInTz(

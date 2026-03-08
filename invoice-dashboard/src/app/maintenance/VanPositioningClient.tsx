@@ -1924,16 +1924,7 @@ function ScheduleTab({
                             Maintenance Scheduled
                           </span>
                         )}
-                        {uncovQuickturn && (
-                          <span className="text-xs bg-amber-100 text-amber-700 rounded-full px-2 py-0.5 font-semibold">
-                            Quickturn
-                          </span>
-                        )}
-                        {uncovDoneForDay && (
-                          <span className="text-xs bg-green-100 text-green-700 rounded-full px-2 py-0.5 font-semibold">
-                            Done for day
-                          </span>
-                        )}
+                        {/* Quickturn + Done-for-day badges hidden for unassigned aircraft */}
                       </div>
                       <select
                         className="text-xs border border-red-200 rounded-lg px-2 py-1.5 bg-white text-red-700 font-medium cursor-pointer hover:border-red-400 focus:outline-none focus:ring-2 focus:ring-red-300 appearance-none"
@@ -2341,6 +2332,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes }: { init
   const [activeTab, setActiveTab] = useState<"map" | "schedule" | "flights">("map");
   const [viewMode, setViewMode] = useState<"map" | "list">("map");
   const [selectedVan, setSelectedVan] = useState<number | null>(null);
+  const [mxNotesOpen, setMxNotesOpen] = useState(false);
   const [schedTypeFilter, setSchedTypeFilter] = useState<string>("all");
 
   const selectedDate = dates[dayIdx];
@@ -2639,34 +2631,45 @@ export default function VanPositioningClient({ initialFlights, mxNotes }: { init
         );
       })()}
 
-      {/* ── MX Notes from JetInsight ── */}
+      {/* ── MX Notes from JetInsight (accordion) ── */}
       {mxNotes && mxNotes.length > 0 && (
         <div className="rounded-xl border-2 border-orange-300 bg-orange-50 px-5 py-4 shadow-sm">
-          <div className="flex items-center gap-3 mb-2">
+          <button
+            onClick={() => setMxNotesOpen((v) => !v)}
+            className="flex items-center gap-3 w-full text-left"
+          >
             <div className="w-10 h-10 rounded-full flex items-center justify-center text-xl shrink-0 bg-orange-100">
               !
             </div>
-            <div className="text-base font-bold text-orange-800">
+            <div className="text-base font-bold text-orange-800 flex-1">
               Maintenance Notes ({mxNotes.length})
             </div>
-          </div>
-          <div className="flex flex-col gap-2 ml-[52px]">
-            {mxNotes.map((note) => (
-              <div key={note.id} className="bg-white border border-orange-200 rounded-lg px-3 py-2">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-bold text-orange-800">{note.tail_number}</span>
-                  <span className="text-xs text-orange-600">{note.airport_icao}</span>
-                  {note.start_time && (
-                    <span className="text-[11px] text-gray-500 ml-auto">
-                      {new Date(note.start_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-                      {note.end_time && ` – ${new Date(note.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`}
-                    </span>
-                  )}
+            <svg
+              className={`w-5 h-5 text-orange-600 transition-transform ${mxNotesOpen ? "rotate-180" : ""}`}
+              fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+          {mxNotesOpen && (
+            <div className="flex flex-col gap-2 ml-[52px] mt-2">
+              {mxNotes.map((note) => (
+                <div key={note.id} className="bg-white border border-orange-200 rounded-lg px-3 py-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-orange-800">{note.tail_number}</span>
+                    <span className="text-xs text-orange-600">{note.airport_icao}</span>
+                    {note.start_time && (
+                      <span className="text-[11px] text-gray-500 ml-auto">
+                        {new Date(note.start_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                        {note.end_time && ` – ${new Date(note.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`}
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-sm text-gray-700 mt-0.5">{note.body}</div>
                 </div>
-                <div className="text-sm text-gray-700 mt-0.5">{note.body}</div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

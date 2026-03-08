@@ -225,6 +225,57 @@ function FlightTracks({
   );
 }
 
+/* ── AOG Van support ── */
+
+const VAN_COLOR = "#22c55e";
+
+type VanPos = { id: string; name: string; lat: number; lon: number };
+
+function vanDivIcon(): L.DivIcon {
+  return L.divIcon({
+    html: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="${VAN_COLOR}" style="filter:drop-shadow(0 1px 3px rgba(0,0,0,0.5))">
+      <path d="M1 12.5V11l2-6h11l3 4h3a2 2 0 012 2v1.5h-1a2.5 2.5 0 00-5 0H8a2.5 2.5 0 00-5 0H1zm4.5 2a1.5 1.5 0 110-3 1.5 1.5 0 010 3zm12 0a1.5 1.5 0 110-3 1.5 1.5 0 010 3zM5 7l-1.5 4h5V7H5zm4.5 0v4h4.5L12 7H9.5z"/>
+    </svg>`,
+    className: "",
+    iconSize: [24, 24],
+    iconAnchor: [12, 12],
+    popupAnchor: [0, -14],
+  });
+}
+
+function isAogVehicle(name: string): boolean {
+  const u = (name || "").toUpperCase();
+  if (u.includes("CLEANING")) return false;
+  return u.includes("VAN") || u.includes("AOG") || u.includes(" OG") || u.includes("TRAN");
+}
+
+function useVanPositions(enabled: boolean): VanPos[] {
+  const [vans, setVans] = useState<VanPos[]>([]);
+  useEffect(() => {
+    if (!enabled) { setVans([]); return; }
+    let cancelled = false;
+    async function load() {
+      try {
+        const res = await fetch("/api/vans", { cache: "no-store" });
+        const data = await res.json();
+        if (cancelled || !data.ok) return;
+        const aog = (data.vans ?? [])
+          .filter((v: { name: string; lat: number | null; lon: number | null }) =>
+            isAogVehicle(v.name) && v.lat != null && v.lon != null
+          )
+          .map((v: { id: string; name: string; lat: number; lon: number }) => ({
+            id: v.id, name: v.name, lat: v.lat, lon: v.lon,
+          }));
+        setVans(aog);
+      } catch { /* ignore */ }
+    }
+    load();
+    const interval = setInterval(load, 240_000); // refresh every 4 min
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [enabled]);
+  return vans;
+}
+
 /* ── Tile layers + map utilities ── */
 
 const LIGHT_TILES = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
@@ -366,8 +417,10 @@ function ToggleBtn({ label, active, onClick }: { label: string; active: boolean;
 export default function OpsMap({ aircraft, flightInfo }: Props) {
   const [darkMode, setDarkMode] = useState(true);
   const [showRadar, setShowRadar] = useState(false);
+  const [showVans, setShowVans] = useState(false);
   const [holdingTails, setHoldingTails] = useState<Set<string>>(new Set());
   const radarUrl = useRadarUrl(showRadar);
+  const vanPositions = useVanPositions(showVans);
   const containerRef = useRef<HTMLDivElement>(null);
   const { isFs, toggle: toggleFs } = useFullscreen(containerRef);
 
@@ -398,6 +451,7 @@ export default function OpsMap({ aircraft, flightInfo }: Props) {
       <div className="absolute top-2 right-2 z-[1000] flex gap-1.5">
         <ToggleBtn label={darkMode ? "Dark" : "Light"} active={darkMode} onClick={() => setDarkMode((v) => !v)} />
         <ToggleBtn label={showRadar ? "Radar ON" : "Radar"} active={showRadar} onClick={() => setShowRadar((v) => !v)} />
+        <ToggleBtn label={showVans ? "Vans ON" : "AOG Vans"} active={showVans} onClick={() => setShowVans((v) => !v)} />
         <ToggleBtn label={isFs ? "Exit ⛶" : "⛶"} active={isFs} onClick={toggleFs} />
       </div>
 
@@ -472,6 +526,23 @@ export default function OpsMap({ aircraft, flightInfo }: Props) {
             </Marker>
           );
         })}
+
+        {/* AOG Van markers */}
+        {showVans && vanPositions.map((v) => (
+          <Marker key={`van-${v.id}`} position={[v.lat, v.lon]} icon={vanDivIcon()} zIndexOffset={500}>
+            <Tooltip permanent direction="top" offset={[0, -14]} className="fa-data-tooltip">
+              <div style={{ color: VAN_COLOR, fontFamily: "ui-monospace,monospace", fontSize: "10px", fontWeight: 700, whiteSpace: "nowrap", textShadow: "0 1px 3px rgba(0,0,0,0.9), 0 0 6px rgba(0,0,0,0.6)" }}>
+                {v.name}
+              </div>
+            </Tooltip>
+            <Popup>
+              <div className="text-sm space-y-1">
+                <div className="font-bold" style={{ color: VAN_COLOR }}>{v.name}</div>
+                <div className="text-xs text-gray-500">{v.lat.toFixed(4)}, {v.lon.toFixed(4)}</div>
+              </div>
+            </Popup>
+          </Marker>
+        ))}
       </MapContainer>
     </div>
   );

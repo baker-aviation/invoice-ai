@@ -797,10 +797,13 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
         >
           <option value="local">Local Time</option>
           <option value="UTC">UTC / Zulu</option>
+          <option value="AST">Atlantic</option>
           <option value="EST">Eastern</option>
           <option value="CST">Central</option>
           <option value="MST">Mountain</option>
+          <option value="AZT">Arizona</option>
           <option value="PST">Pacific</option>
+          <option value="AKST">Alaska</option>
         </select>
 
         {/* View mode toggle */}
