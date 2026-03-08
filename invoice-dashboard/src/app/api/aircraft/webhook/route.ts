@@ -25,7 +25,7 @@ export async function POST(req: NextRequest) {
 
   const reqSecret = req.nextUrl.searchParams.get("secret");
   if (reqSecret !== secret) {
-    console.warn("[FA Webhook] Invalid secret");
+    console.warn(`[FA Webhook] Secret mismatch — env len=${secret.length} req len=${reqSecret?.length ?? "null"} envStart=${secret.slice(0, 6)} reqStart=${reqSecret?.slice(0, 6) ?? "null"}`);
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
