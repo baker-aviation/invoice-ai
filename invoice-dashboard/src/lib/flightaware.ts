@@ -204,16 +204,24 @@ export type FaTrackPoint = {
 export async function getFlightTrack(
   faFlightId: string,
 ): Promise<FaTrackPoint[]> {
-  const url = `${BASE}/flights/${encodeURIComponent(faFlightId)}/track`;
+  const url = `${BASE}/flights/${encodeURIComponent(faFlightId)}/track?include_estimated_positions=true`;
   try {
     const res = await fetch(url, {
       headers: headers(),
       signal: AbortSignal.timeout(10000),
     });
-    if (!res.ok) return [];
+    if (!res.ok) {
+      console.warn(`[FA Track] ${faFlightId}: HTTP ${res.status}`);
+      return [];
+    }
     const data = await res.json();
-    return (data.positions ?? []) as FaTrackPoint[];
-  } catch {
+    const positions = (data.positions ?? data.track ?? []) as FaTrackPoint[];
+    if (positions.length === 0) {
+      console.warn(`[FA Track] ${faFlightId}: empty positions. Response keys: ${Object.keys(data).join(", ")}`);
+    }
+    return positions;
+  } catch (err) {
+    console.error(`[FA Track] ${faFlightId}: fetch error`, err);
     return [];
   }
 }
