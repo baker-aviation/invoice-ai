@@ -67,6 +67,12 @@ export default function CourseDetail({
   const [publishing, setPublishing] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
 
+  // Inline rename state
+  const [editingModuleId, setEditingModuleId] = useState<number | null>(null);
+  const [editingModuleTitle, setEditingModuleTitle] = useState("");
+  const [editingLessonId, setEditingLessonId] = useState<number | null>(null);
+  const [editingLessonTitle, setEditingLessonTitle] = useState("");
+
   async function togglePublish() {
     setPublishing(true);
     try {
@@ -108,6 +114,30 @@ export default function CourseDetail({
     } finally {
       setDeleting(null);
     }
+  }
+
+  async function renameModule(moduleId: number) {
+    const title = editingModuleTitle.trim();
+    if (!title) { setEditingModuleId(null); return; }
+    await fetch(`/api/pilot/training/${c.id}/modules/${moduleId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    });
+    setEditingModuleId(null);
+    router.refresh();
+  }
+
+  async function renameLesson(moduleId: number, lessonId: number) {
+    const title = editingLessonTitle.trim();
+    if (!title) { setEditingLessonId(null); return; }
+    await fetch(`/api/pilot/training/${c.id}/modules/${moduleId}/lessons/${lessonId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    });
+    setEditingLessonId(null);
+    router.refresh();
   }
 
   const totalLessons = lsns.length;
@@ -191,9 +221,31 @@ export default function CourseDetail({
                 className="bg-white border border-gray-200 rounded-lg overflow-hidden"
               >
                 <div className="px-4 py-3 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
-                  <h3 className="font-medium text-sm text-gray-900">
-                    {mod.title}
-                  </h3>
+                  {isAdmin && editingModuleId === mod.id ? (
+                    <input
+                      value={editingModuleTitle}
+                      onChange={(e) => setEditingModuleTitle(e.target.value)}
+                      onBlur={() => renameModule(mod.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") renameModule(mod.id);
+                        if (e.key === "Escape") setEditingModuleId(null);
+                      }}
+                      className="font-medium text-sm text-gray-900 bg-white border border-gray-300 rounded px-2 py-0.5 outline-none focus:border-blue-400 w-64"
+                      autoFocus
+                    />
+                  ) : (
+                    <h3
+                      className={`font-medium text-sm text-gray-900 ${isAdmin ? "cursor-pointer hover:text-blue-700" : ""}`}
+                      onClick={() => {
+                        if (!isAdmin) return;
+                        setEditingModuleId(mod.id);
+                        setEditingModuleTitle(mod.title);
+                      }}
+                      title={isAdmin ? "Click to rename" : undefined}
+                    >
+                      {mod.title}
+                    </h3>
+                  )}
                   {isAdmin && (
                     <div className="flex items-center gap-3">
                       <button
@@ -224,6 +276,24 @@ export default function CourseDetail({
                       return (
                         <li key={lesson.id}>
                           <div className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors">
+                            {isAdmin && editingLessonId === lesson.id ? (
+                              <div className="flex items-center gap-3 flex-1 min-w-0">
+                                <span className="text-sm">
+                                  {LESSON_TYPE_ICONS[lesson.lesson_type] || "📝"}
+                                </span>
+                                <input
+                                  value={editingLessonTitle}
+                                  onChange={(e) => setEditingLessonTitle(e.target.value)}
+                                  onBlur={() => renameLesson(mod.id, lesson.id)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") renameLesson(mod.id, lesson.id);
+                                    if (e.key === "Escape") setEditingLessonId(null);
+                                  }}
+                                  className="text-sm text-gray-800 flex-1 bg-white border border-gray-300 rounded px-2 py-0.5 outline-none focus:border-blue-400"
+                                  autoFocus
+                                />
+                              </div>
+                            ) : (
                             <Link
                               href={`/pilot/training/${c.id}/${lesson.id}`}
                               className="flex items-center gap-3 flex-1 min-w-0"
@@ -231,7 +301,17 @@ export default function CourseDetail({
                               <span className="text-sm">
                                 {LESSON_TYPE_ICONS[lesson.lesson_type] || "📝"}
                               </span>
-                              <span className="text-sm text-gray-800 flex-1">
+                              <span
+                                className={`text-sm text-gray-800 flex-1 ${isAdmin ? "hover:text-blue-700" : ""}`}
+                                onClick={(e) => {
+                                  if (!isAdmin) return;
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  setEditingLessonId(lesson.id);
+                                  setEditingLessonTitle(lesson.title);
+                                }}
+                                title={isAdmin ? "Click to rename" : undefined}
+                              >
                                 {lesson.title}
                               </span>
                               <span className="text-[10px] text-gray-400 uppercase">
@@ -254,6 +334,7 @@ export default function CourseDetail({
                                 </span>
                               )}
                             </Link>
+                            )}
                             {isAdmin && (
                               <button
                                 onClick={() => deleteLesson(mod.id, lesson.id)}

@@ -12,6 +12,12 @@ type IcsSource = {
   created_at: string;
 };
 
+type BakerPprAirport = {
+  id: number;
+  icao: string;
+  created_at: string;
+};
+
 export default function SettingsPage() {
   const [sources, setSources] = useState<IcsSource[]>([]);
   const [loading, setLoading] = useState(true);
@@ -27,6 +33,13 @@ export default function SettingsPage() {
   const [editLabel, setEditLabel] = useState("");
   const [editUrl, setEditUrl] = useState("");
   const [saving, setSaving] = useState(false);
+
+  // Baker PPR state
+  const [pprAirports, setPprAirports] = useState<BakerPprAirport[]>([]);
+  const [pprLoading, setPprLoading] = useState(true);
+  const [pprError, setPprError] = useState<string | null>(null);
+  const [newIcao, setNewIcao] = useState("");
+  const [addingIcao, setAddingIcao] = useState(false);
 
   const fetchSources = useCallback(async () => {
     try {
@@ -45,6 +58,64 @@ export default function SettingsPage() {
   useEffect(() => {
     fetchSources();
   }, [fetchSources]);
+
+  // ── Baker PPR fetching & handlers ────────────────────────────────────────
+
+  const fetchPprAirports = useCallback(async () => {
+    try {
+      const res = await fetch("/api/admin/baker-ppr");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setPprAirports(data.airports ?? []);
+      setPprError(null);
+    } catch (err) {
+      setPprError(err instanceof Error ? err.message : "Failed to load");
+    } finally {
+      setPprLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchPprAirports();
+  }, [fetchPprAirports]);
+
+  async function handleAddIcao(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newIcao.trim()) return;
+    setAddingIcao(true);
+    try {
+      const res = await fetch("/api/admin/baker-ppr", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ icao: newIcao.trim() }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error ?? `HTTP ${res.status}`);
+      }
+      setNewIcao("");
+      await fetchPprAirports();
+    } catch (err) {
+      setPprError(err instanceof Error ? err.message : "Failed to add");
+    } finally {
+      setAddingIcao(false);
+    }
+  }
+
+  async function handleDeleteIcao(icao: string) {
+    if (!confirm(`Remove ${icao} from Baker PPR list?`)) return;
+    try {
+      const res = await fetch("/api/admin/baker-ppr", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ icao }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await fetchPprAirports();
+    } catch (err) {
+      setPprError(err instanceof Error ? err.message : "Failed to delete");
+    }
+  }
 
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();
@@ -314,6 +385,66 @@ export default function SettingsPage() {
           Changes take effect on the next ops-monitor sync (every 30 min) — no redeploy needed.
         </p>
       </div>
+
+      {/* ── Baker PPR Airports ────────────────────────────────────────────── */}
+      <hr className="my-8 border-gray-200" />
+      <h2 className="text-lg font-semibold text-slate-900 mb-1">Baker PPR Airports</h2>
+      <p className="text-sm text-gray-500 mb-4">
+        Airports that require Baker PPR (Prior Permission Required). Flights
+        to/from these airports will show a &quot;Baker PPR&quot; alert on the ops board.
+      </p>
+
+      {pprError && (
+        <div className="mb-4 px-4 py-2 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+          {pprError}
+          <button onClick={() => setPprError(null)} className="ml-2 text-red-400 hover:text-red-600">&times;</button>
+        </div>
+      )}
+
+      <form onSubmit={handleAddIcao} className="mb-4 flex gap-2">
+        <input
+          type="text"
+          value={newIcao}
+          onChange={(e) => setNewIcao(e.target.value.toUpperCase())}
+          placeholder="ICAO code (e.g. KNUQ)"
+          maxLength={5}
+          className="border border-gray-300 rounded-md px-3 py-2 text-sm w-44 font-mono uppercase focus:outline-none focus:ring-2 focus:ring-slate-500"
+        />
+        <button
+          type="submit"
+          disabled={addingIcao || !newIcao.trim()}
+          className="bg-slate-900 text-white rounded-md px-5 py-2 text-sm font-medium hover:bg-slate-700 disabled:opacity-50 whitespace-nowrap"
+        >
+          {addingIcao ? "Adding…" : "Add"}
+        </button>
+      </form>
+
+      {pprLoading ? (
+        <div className="text-sm text-gray-400 py-4 text-center">Loading…</div>
+      ) : pprAirports.length === 0 ? (
+        <div className="text-sm text-gray-400 py-4 text-center border border-dashed border-gray-300 rounded-lg">
+          No Baker PPR airports configured.
+        </div>
+      ) : (
+        <div className="flex flex-wrap gap-2">
+          {pprAirports.map((a) => (
+            <span
+              key={a.id}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 border border-amber-200 rounded-full text-sm font-mono font-semibold text-amber-800"
+            >
+              {a.icao}
+              <button
+                type="button"
+                onClick={() => handleDeleteIcao(a.icao)}
+                className="text-amber-400 hover:text-red-600 transition-colors"
+                title={`Remove ${a.icao}`}
+              >
+                &times;
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
