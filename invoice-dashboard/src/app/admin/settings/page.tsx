@@ -60,6 +60,9 @@ export default function SettingsPage() {
   const [newSpSlackId, setNewSpSlackId] = useState("");
   const [addingSp, setAddingSp] = useState(false);
 
+  // Slack test DM state
+  const [testingSlackId, setTestingSlackId] = useState<string | null>(null);
+
   // Notification check state
   const [notifChecking, setNotifChecking] = useState(false);
   const [notifResult, setNotifResult] = useState<string | null>(null);
@@ -182,6 +185,25 @@ export default function SettingsPage() {
       await fetchSlackMappings();
     } catch (err) {
       setSlackError(err instanceof Error ? err.message : "Failed to delete");
+    }
+  }
+
+  async function handleTestSlackDm(slackUserId: string) {
+    setTestingSlackId(slackUserId);
+    try {
+      const res = await fetch("/api/admin/salesperson-slack/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slack_user_id: slackUserId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+      setSlackError(null);
+      alert("Test DM sent! Check Slack.");
+    } catch (err) {
+      setSlackError(err instanceof Error ? err.message : "Test DM failed");
+    } finally {
+      setTestingSlackId(null);
     }
   }
 
@@ -652,7 +674,7 @@ export default function SettingsPage() {
               <tr>
                 <th className="text-left px-4 py-2 font-medium text-gray-600">Salesperson</th>
                 <th className="text-left px-4 py-2 font-medium text-gray-600">Slack User ID</th>
-                <th className="text-right px-4 py-2 font-medium text-gray-600 w-20">Actions</th>
+                <th className="text-right px-4 py-2 font-medium text-gray-600 w-36">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -661,13 +683,23 @@ export default function SettingsPage() {
                   <td className="px-4 py-2 font-medium text-gray-800">{m.salesperson_name}</td>
                   <td className="px-4 py-2 font-mono text-xs text-gray-500">{m.slack_user_id}</td>
                   <td className="px-4 py-2 text-right">
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteSlackMapping(m.salesperson_name)}
-                      className="text-xs text-gray-400 hover:text-red-600 px-2 py-1 rounded hover:bg-red-50"
-                    >
-                      Remove
-                    </button>
+                    <div className="flex items-center justify-end gap-1">
+                      <button
+                        type="button"
+                        onClick={() => handleTestSlackDm(m.slack_user_id)}
+                        disabled={testingSlackId === m.slack_user_id}
+                        className="text-xs text-blue-500 hover:text-blue-700 px-2 py-1 rounded hover:bg-blue-50 disabled:opacity-50"
+                      >
+                        {testingSlackId === m.slack_user_id ? "Sending…" : "Test DM"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteSlackMapping(m.salesperson_name)}
+                        className="text-xs text-gray-400 hover:text-red-600 px-2 py-1 rounded hover:bg-red-50"
+                      >
+                        Remove
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
