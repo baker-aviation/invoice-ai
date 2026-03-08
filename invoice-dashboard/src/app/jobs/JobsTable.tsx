@@ -90,15 +90,16 @@ function hasChallenger(j: any): boolean {
   const ratings: string[] = Array.isArray(j.type_ratings) ? j.type_ratings : [];
   return ratings.some((r) => {
     const u = r.toLowerCase();
-    return u.includes("cl-300") || u.includes("cl300") || u.includes("challenger 300") || u.includes("challenger-300");
+    return u.includes("cl-300") || u.includes("cl300") || u.includes("cl-30") || u.includes("challenger 300") || u.includes("challenger-300");
   });
 }
 
 function picGateShort(status: string | null, met: boolean | null | undefined): { label: string; cls: string } | null {
   if (status) {
     const s = status.toLowerCase();
-    if (s.startsWith("meets")) return { label: "Met", cls: "text-emerald-700 bg-emerald-50 border-emerald-200" };
+    if (s === "pass" || s.startsWith("meets")) return { label: "Met", cls: "text-emerald-700 bg-emerald-50 border-emerald-200" };
     if (s.startsWith("close") || s.includes("near")) return { label: "Close", cls: "text-amber-700 bg-amber-50 border-amber-200" };
+    if (s === "missing_time") return null; // no hours data — show nothing
     return { label: "Not met", cls: "text-gray-500 bg-gray-50 border-gray-200" };
   }
   // Fallback: use the boolean soft_gate_pic_met for older rows without a status string
@@ -178,7 +179,21 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
   const [citation, setCitation] = useState("ALL");
   const [challenger, setChallenger] = useState("ALL");
   const [skillbridge, setSkillbridge] = useState("ALL");
+  const [showRejected, setShowRejected] = useState(false);
   const [page, setPage] = useState(0);
+
+  // Build a set of emails that have been rejected (for "Prev. Rejected" badge)
+  const rejectedEmails = useMemo(() => {
+    const map = new Map<string, number[]>();
+    for (const j of initialJobs) {
+      if (j.rejected_at && j.email) {
+        const e = j.email.toLowerCase();
+        if (!map.has(e)) map.set(e, []);
+        map.get(e)!.push(j.id);
+      }
+    }
+    return map;
+  }, [initialJobs]);
 
   const categoryOptions: FilterOption[] = useMemo(() => {
     const counts = new Map<string, number>();
@@ -198,12 +213,17 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
     const query = q.toLowerCase().trim();
 
     return initialJobs.filter((j) => {
+      // Hide rejected by default unless toggled
+      if (!showRejected && j.rejected_at) return false;
+
       const jCategory = normalize(j.category);
       const jSoft = normalize(j.soft_gate_pic_status);
 
       if (category !== "ALL" && jCategory !== category) return false;
-      if (softGate === "MET" && !jSoft.toLowerCase().startsWith("meets")) return false;
-      if (softGate === "NOT_MET" && jSoft.toLowerCase().startsWith("meets")) return false;
+      const softLower = jSoft.toLowerCase();
+      const isMet = softLower === "pass" || softLower.startsWith("meets");
+      if (softGate === "MET" && !isMet) return false;
+      if (softGate === "NOT_MET" && isMet) return false;
 
       if (citation === "YES" && !hasCitationX(j)) return false;
       if (citation === "NO" && hasCitationX(j)) return false;
@@ -233,12 +253,12 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
 
       return haystack.includes(query);
     });
-  }, [initialJobs, q, category, softGate, citation, challenger, skillbridge]);
+  }, [initialJobs, q, category, softGate, citation, challenger, skillbridge, showRejected]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const paged = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
 
-  const hasActiveFilters = category !== "ALL" || softGate !== "ALL" || citation !== "ALL" || challenger !== "ALL" || skillbridge !== "ALL" || q !== "";
+  const hasActiveFilters = category !== "ALL" || softGate !== "ALL" || citation !== "ALL" || challenger !== "ALL" || skillbridge !== "ALL" || showRejected || q !== "";
 
   const clear = () => {
     setQ("");
@@ -247,6 +267,7 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
     setCitation("ALL");
     setChallenger("ALL");
     setSkillbridge("ALL");
+    setShowRejected(false);
     setPage(0);
   };
 
@@ -289,6 +310,18 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
           <TogglePill label="CE-750" value={citation} onChange={(v) => { setCitation(v); setPage(0); }} />
           <TogglePill label="CL-300" value={challenger} onChange={(v) => { setChallenger(v); setPage(0); }} />
           <TogglePill label="SkillBridge" value={skillbridge} onChange={(v) => { setSkillbridge(v); setPage(0); }} />
+          <div className="w-px h-5 bg-gray-200" />
+          <button
+            type="button"
+            onClick={() => { setShowRejected(!showRejected); setPage(0); }}
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-full border transition-colors ${
+              showRejected
+                ? "bg-red-50 text-red-600 border-red-200"
+                : "bg-white text-gray-500 border-gray-200 hover:border-gray-400"
+            }`}
+          >
+            Show rejected
+          </button>
         </div>
       </div>
 
@@ -317,7 +350,19 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
                 return (
                   <tr key={j.id ?? j.application_id} className="hover:bg-gray-50/60 transition-colors">
                     <td className="px-4 py-2.5">
-                      <div className="font-medium text-gray-900 truncate max-w-[200px]">{j.candidate_name ?? "—"}</div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-medium text-gray-900 truncate max-w-[200px]">{j.candidate_name ?? "—"}</span>
+                        {j.rejected_at && (
+                          <span className="inline-block rounded-full border border-red-200 bg-red-50 text-red-600 px-1.5 py-0.5 text-[10px] font-semibold whitespace-nowrap">
+                            Rejected
+                          </span>
+                        )}
+                        {!j.rejected_at && j.email && rejectedEmails.has(j.email.toLowerCase()) && (
+                          <span className="inline-block rounded-full border border-amber-200 bg-amber-50 text-amber-700 px-1.5 py-0.5 text-[10px] font-semibold whitespace-nowrap">
+                            Prev. Rejected
+                          </span>
+                        )}
+                      </div>
                       {j.email && <div className="text-xs text-gray-400 truncate max-w-[200px]">{j.email}</div>}
                     </td>
 

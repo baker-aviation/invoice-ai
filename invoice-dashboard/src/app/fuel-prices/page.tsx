@@ -3,18 +3,21 @@ export const revalidate = 0;
 
 import { Topbar } from "@/components/Topbar";
 import { AutoRefresh } from "@/components/AutoRefresh";
-import { fetchFuelPrices } from "@/lib/invoiceApi";
+import { fetchFuelPrices, fetchAdvertisedPrices } from "@/lib/invoiceApi";
 import FuelPricesTable from "./FuelPricesTable";
 
 export default async function FuelPricesPage() {
-  const data = await fetchFuelPrices({ limit: 2500 });
+  const [data, advertisedPrices] = await Promise.all([
+    fetchFuelPrices({ limit: 2500 }),
+    fetchAdvertisedPrices().catch(() => []),
+  ]);
   const fuelPrices = data.fuel_prices ?? [];
 
   return (
     <>
       <Topbar title="Fuel Prices" />
       <AutoRefresh intervalSeconds={120} />
-      <FuelPricesTable initialPrices={fuelPrices} />
+      <FuelPricesTable initialPrices={fuelPrices} advertisedPrices={advertisedPrices} />
     </>
   );
 }

@@ -12,9 +12,10 @@ const securityHeaders = [
       "default-src 'self'",
       "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
       "style-src 'self' 'unsafe-inline'",
-      "img-src 'self' data: blob: https://storage.googleapis.com https://*.tile.openstreetmap.org",
+      "img-src 'self' data: blob: https://storage.googleapis.com https://*.tile.openstreetmap.org https://tilecache.rainviewer.com",
       "font-src 'self'",
-      "connect-src 'self' https://*.supabase.co https://api.samsara.com",
+      "media-src 'self' https://storage.googleapis.com",
+      "connect-src 'self' https://*.supabase.co https://api.samsara.com https://storage.googleapis.com https://api.rainviewer.com",
       "frame-src 'self' https://view.officeapps.live.com https://storage.googleapis.com",
       "frame-ancestors 'none'",
     ].join("; "),
@@ -26,6 +27,7 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: "..",
   },
+  serverExternalPackages: ["pdfjs-dist"],
   async headers() {
     return [{ source: "/(.*)", headers: securityHeaders }];
   },

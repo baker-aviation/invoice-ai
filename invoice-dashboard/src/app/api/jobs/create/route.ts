@@ -56,7 +56,7 @@ export async function POST(req: NextRequest) {
 
     if (appErr || !appRow) {
       console.error("[jobs/create] Failed to create job_applications row:", appErr);
-      return NextResponse.json({ error: "Failed to create application" }, { status: 500 });
+      return NextResponse.json({ error: `Failed to create application: ${appErr?.message ?? "unknown"}` }, { status: 500 });
     }
 
     // 2. Create the parse row with candidate info
@@ -74,7 +74,6 @@ export async function POST(req: NextRequest) {
         pic_time_hours: body.pic_time_hours ?? null,
         pipeline_stage: stage,
         notes: String(body.notes ?? "").trim() || null,
-        needs_review: false,
         model: "manual",
       })
       .select("id, application_id")
@@ -82,7 +81,7 @@ export async function POST(req: NextRequest) {
 
     if (parseErr || !parseRow) {
       console.error("[jobs/create] Failed to create parse row:", parseErr);
-      return NextResponse.json({ error: "Failed to create candidate record" }, { status: 500 });
+      return NextResponse.json({ error: `Failed to create candidate record: ${parseErr?.message ?? "unknown"}` }, { status: 500 });
     }
 
     return NextResponse.json({

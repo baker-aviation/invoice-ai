@@ -24,6 +24,7 @@ export type OpsAlert = {
   edct_time: string | null;
   original_departure_time: string | null;
   acknowledged_at: string | null;
+  acknowledged_by: string | null;
   created_at: string;
   notam_dates: NotamDates | null;
 };
@@ -114,16 +115,18 @@ function extractNotamDates(rawData: unknown): NotamDates | null {
 // ---------------------------------------------------------------------------
 
 const ALERT_COLUMNS =
-  "id, flight_id, alert_type, severity, airport_icao, departure_icao, arrival_icao, tail_number, subject, body, edct_time, original_departure_time, acknowledged_at, created_at, raw_data";
+  "id, flight_id, alert_type, severity, airport_icao, departure_icao, arrival_icao, tail_number, subject, body, edct_time, original_departure_time, acknowledged_at, acknowledged_by, created_at, raw_data";
 
 export async function fetchFlights(params: {
   lookahead_hours?: number;
+  lookback_hours?: number;
 } = {}): Promise<FlightsResponse> {
   const supa = createServiceClient();
   const lookahead = params.lookahead_hours ?? 720;
+  const lookback = params.lookback_hours ?? 12;
 
   const now = new Date();
-  const past = new Date(now.getTime() - 12 * 60 * 60 * 1000).toISOString();
+  const past = new Date(now.getTime() - lookback * 60 * 60 * 1000).toISOString();
   const future = new Date(now.getTime() + lookahead * 60 * 60 * 1000).toISOString();
 
   // Fetch flights in the time window
@@ -139,7 +142,7 @@ export async function fetchFlights(params: {
     return { ok: true, flights: [], count: 0 };
   }
 
-  // Fetch unacknowledged alerts for these flights (batch by 200)
+  // Fetch alerts for these flights (batch by 200)
   const flightIds = flightRows.map((f) => f.id as string);
   const alertsByFlight = new Map<string, OpsAlert[]>();
 
@@ -148,8 +151,7 @@ export async function fetchFlights(params: {
     const { data: alertRows, error: alertErr } = await supa
       .from("ops_alerts")
       .select(ALERT_COLUMNS)
-      .in("flight_id", batch)
-      .is("acknowledged_at", null);
+      .in("flight_id", batch);
 
     if (alertErr) throw new Error(`fetchFlights alerts failed: ${alertErr.message}`);
 
@@ -171,6 +173,7 @@ export async function fetchFlights(params: {
         edct_time: row.edct_time as string | null,
         original_departure_time: row.original_departure_time as string | null,
         acknowledged_at: row.acknowledged_at as string | null,
+        acknowledged_by: row.acknowledged_by as string | null,
         created_at: row.created_at as string,
         notam_dates: extractNotamDates(row.raw_data),
       };
@@ -181,14 +184,15 @@ export async function fetchFlights(params: {
     }
   }
 
-  // Fetch orphan EDCT alerts (no flight_id) so they still show up
+  // Fetch orphan EDCT alerts (no flight_id) so they still show up — look back 48h
+  const edctPast = new Date(now.getTime() - 48 * 60 * 60 * 1000).toISOString();
   const { data: orphanRows } = await supa
     .from("ops_alerts")
     .select(ALERT_COLUMNS)
     .eq("alert_type", "EDCT")
     .is("flight_id", null)
     .is("acknowledged_at", null)
-    .gte("created_at", past)
+    .gte("created_at", edctPast)
     .order("created_at", { ascending: false })
     .limit(50);
 
@@ -206,12 +210,13 @@ export async function fetchFlights(params: {
     edct_time: row.edct_time as string | null,
     original_departure_time: row.original_departure_time as string | null,
     acknowledged_at: row.acknowledged_at as string | null,
+    acknowledged_by: row.acknowledged_by as string | null,
     created_at: row.created_at as string,
     notam_dates: extractNotamDates(row.raw_data),
   }));
 
   // Assemble flights with nested alerts
-  const flights: Flight[] = flightRows.map((f) => ({
+  const allFlights: Flight[] = flightRows.map((f) => ({
     id: f.id as string,
     ics_uid: f.ics_uid as string,
     tail_number: f.tail_number as string | null,
@@ -223,6 +228,24 @@ export async function fetchFlights(params: {
     flight_type: f.flight_type as string | null,
     alerts: alertsByFlight.get(f.id as string) ?? [],
   }));
+
+  // Deduplicate cross-feed flights: same tail+route+departure = same flight.
+  // Keep the first (by scheduled_departure sort order) and merge alerts.
+  const seen = new Map<string, number>();
+  const flights: Flight[] = [];
+  for (const f of allFlights) {
+    if (f.tail_number && f.departure_icao && f.arrival_icao) {
+      const sig = `${f.tail_number}|${f.departure_icao}|${f.arrival_icao}|${f.scheduled_departure}`;
+      const existing = seen.get(sig);
+      if (existing !== undefined) {
+        // Merge alerts from the duplicate into the kept flight
+        flights[existing].alerts.push(...f.alerts);
+        continue;
+      }
+      seen.set(sig, flights.length);
+    }
+    flights.push(f);
+  }
 
   // Add synthetic flight entries for orphan EDCT alerts
   for (const alert of orphanAlerts) {
@@ -241,4 +264,54 @@ export async function fetchFlights(params: {
   }
 
   return { ok: true, flights, count: flights.length };
+}
+
+// ---------------------------------------------------------------------------
+// MX Notes — maintenance alerts from JetInsight ICS feeds
+// ---------------------------------------------------------------------------
+
+export type MxNote = {
+  id: string;
+  tail_number: string | null;
+  airport_icao: string | null;
+  subject: string | null;
+  body: string | null;
+  start_time: string | null;
+  end_time: string | null;
+  created_at: string;
+  acknowledged_at: string | null;
+};
+
+export async function fetchMxNotes(): Promise<MxNote[]> {
+  const supa = createServiceClient();
+  const { data, error } = await supa
+    .from("ops_alerts")
+    .select("id, tail_number, airport_icao, subject, body, created_at, acknowledged_at, raw_data")
+    .eq("alert_type", "MX_NOTE")
+    .is("acknowledged_at", null)
+    .order("created_at", { ascending: false })
+    .limit(100);
+
+  if (error || !data) return [];
+
+  return data.map((row) => {
+    let startTime: string | null = null;
+    let endTime: string | null = null;
+    try {
+      const rd = typeof row.raw_data === "string" ? JSON.parse(row.raw_data) : row.raw_data;
+      startTime = rd?.start_time ?? null;
+      endTime = rd?.end_time ?? null;
+    } catch { /* ignore */ }
+    return {
+      id: row.id as string,
+      tail_number: row.tail_number as string | null,
+      airport_icao: row.airport_icao as string | null,
+      subject: row.subject as string | null,
+      body: row.body as string | null,
+      start_time: startTime,
+      end_time: endTime,
+      created_at: row.created_at as string,
+      acknowledged_at: row.acknowledged_at as string | null,
+    };
+  });
 }

@@ -1,11 +1,19 @@
 # Invoice AI — Project Context
 
-## CRITICAL: Production Deploy Rules
-- **NEVER push to `main`, merge into `main`, or trigger production deploys (Vercel, Cloud Run) without explicit user permission.**
-- `main` branch = production. Pushing to `main` triggers a Vercel deploy automatically.
-- `bash scripts/deploy-*.sh` deploys to Cloud Run production.
-- Always develop on feature branches. Only suggest merging to `main` or deploying when the user explicitly asks.
-- If the user asks "how do I deploy", explain the steps but **do not run them** — wait for the user to confirm.
+## CRITICAL: Git Workflow & Production Deploy Rules
+
+### Branch strategy
+- **`main`** = production. Pushing/merging to `main` triggers a Vercel deploy automatically.
+- **`dev`** = integration branch. All completed work merges here first.
+- **`claude/...`** = feature/fix branches. All development happens here.
+
+### Workflow
+1. Develop on a `claude/...` feature branch.
+2. At end of session (with user approval), merge the feature branch into `dev`.
+3. **NEVER** merge `dev` into `main` or push to `main` without explicit user permission.
+4. **NEVER** run `bash scripts/deploy-*.sh` (Cloud Run production) without explicit user permission.
+5. If the user asks "how do I deploy", explain the steps but **do not run them** — wait for the user to confirm.
+6. When the user says to push to production, create a PR from `dev` → `main` and confirm before merging.
 
 ## What this is
 Internal dashboard for Baker Aviation. Processes invoice PDFs from Outlook email,

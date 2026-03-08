@@ -7,13 +7,13 @@ import type { HiringStage, JobDetailResponse, JobRow, JobsListResponse } from "@
 // ---------------------------------------------------------------------------
 
 const JOB_COLUMNS =
-  "id, application_id, created_at, updated_at, hiring_stage, category, employment_type, candidate_name, email, phone, location, total_time_hours, turbine_time_hours, pic_time_hours, sic_time_hours, has_citation_x, has_challenger_300_type_rating, type_ratings, soft_gate_pic_met, soft_gate_pic_status, needs_review, notes, model";
+  "id, application_id, created_at, updated_at, hiring_stage, category, employment_type, candidate_name, email, phone, location, total_time_hours, turbine_time_hours, pic_time_hours, sic_time_hours, has_citation_x, has_challenger_300_type_rating, type_ratings, soft_gate_pic_met, soft_gate_pic_status, needs_review, notes, model, info_session_data, structured_notes, rejected_at, rejection_reason, deleted_at";
 
 const JOB_COLUMNS_WITH_STAGE =
-  "id, application_id, created_at, updated_at, pipeline_stage, category, employment_type, candidate_name, email, phone, location, total_time_hours, turbine_time_hours, pic_time_hours, sic_time_hours, has_citation_x, has_challenger_300_type_rating, type_ratings, soft_gate_pic_met, soft_gate_pic_status, needs_review, notes, model";
+  "id, application_id, created_at, updated_at, pipeline_stage, category, employment_type, candidate_name, email, phone, location, total_time_hours, turbine_time_hours, pic_time_hours, sic_time_hours, has_citation_x, has_challenger_300_type_rating, type_ratings, soft_gate_pic_met, soft_gate_pic_status, needs_review, notes, model, info_session_data, structured_notes, rejected_at, rejection_reason, deleted_at";
 
 const JOB_COLUMNS_BASE =
-  "id, application_id, created_at, updated_at, category, employment_type, candidate_name, email, phone, location, total_time_hours, turbine_time_hours, pic_time_hours, sic_time_hours, has_citation_x, has_challenger_300_type_rating, type_ratings, soft_gate_pic_met, soft_gate_pic_status, needs_review, notes, model";
+  "id, application_id, created_at, updated_at, category, employment_type, candidate_name, email, phone, location, total_time_hours, turbine_time_hours, pic_time_hours, sic_time_hours, has_citation_x, has_challenger_300_type_rating, type_ratings, soft_gate_pic_met, soft_gate_pic_status, needs_review, notes, model, info_session_data";
 
 async function queryJobs(
   supa: ReturnType<typeof createServiceClient>,
@@ -42,6 +42,9 @@ async function queryJobs(
   if (params.has_challenger_300_type_rating) {
     query = query.eq("has_challenger_300_type_rating", params.has_challenger_300_type_rating === "true");
   }
+
+  // Hide soft-deleted rows by default
+  query = query.is("deleted_at", null);
 
   return query;
 }
@@ -212,4 +215,62 @@ export async function fetchJobDetail(applicationId: string | number): Promise<Jo
   );
 
   return { ok: true, job: jobRow as JobRow, files };
+}
+
+// ---------------------------------------------------------------------------
+// Linked LORs — files linked to this candidate's parse row
+// ---------------------------------------------------------------------------
+
+export async function fetchLinkedLors(parseId: number | null | undefined): Promise<any[]> {
+  if (!parseId) return [];
+
+  const supa = createServiceClient();
+
+  const { data: lorFiles } = await supa
+    .from("job_application_files")
+    .select("id, filename, content_type, size_bytes, created_at, gcs_bucket, gcs_key, file_category, linked_parse_id")
+    .eq("linked_parse_id", parseId)
+    .eq("file_category", "lor")
+    .order("created_at", { ascending: true });
+
+  if (!lorFiles || lorFiles.length === 0) return [];
+
+  return Promise.all(
+    lorFiles.map(async (f) => {
+      let signed_url: string | null = null;
+      if (f.gcs_bucket && f.gcs_key) {
+        signed_url = await signGcsUrl(f.gcs_bucket as string, f.gcs_key as string);
+      }
+      if (!signed_url) signed_url = `/api/files/${f.id}`;
+      return {
+        id: f.id,
+        filename: f.filename,
+        content_type: f.content_type,
+        size_bytes: f.size_bytes,
+        created_at: f.created_at,
+        signed_url,
+      };
+    }),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Previously rejected applications by email
+// ---------------------------------------------------------------------------
+
+export async function fetchPreviousRejections(
+  email: string,
+  excludeId: number,
+): Promise<{ id: number; application_id: number; rejected_at: string; rejection_reason: string | null }[]> {
+  if (!email) return [];
+  const supa = createServiceClient();
+  const { data, error } = await supa
+    .from("job_application_parse")
+    .select("id, application_id, rejected_at, rejection_reason")
+    .eq("email", email)
+    .not("rejected_at", "is", null)
+    .is("deleted_at", null)
+    .neq("id", excludeId);
+  if (error) return [];
+  return (data ?? []) as any;
 }

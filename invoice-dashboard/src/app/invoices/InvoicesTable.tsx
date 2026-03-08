@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const PAGE_SIZE = 25;
+const MAX_BULK_REPARSE = 50;
 
 function normalize(v: any) {
   return String(v ?? "").trim();
@@ -43,7 +44,8 @@ function isOverdue(inv: any): boolean {
   return diffDays > 30;
 }
 
-const ALL_CATEGORIES: string[] = ["ALL", "FBO/Fuel", "Maintenance/Parts", "Lease/Utilities", "Pilot Training", "Pilot Operations", "Subscriptions", "Other"];
+import { ALL_CATEGORIES as CATEGORIES } from "@/lib/invoiceCategory";
+const ALL_CATEGORY_OPTIONS: string[] = ["ALL", ...CATEGORIES];
 
 export default function InvoicesTable({ initialInvoices }: { initialInvoices: any[] }) {
   const [q, setQ] = useState("");
@@ -52,11 +54,43 @@ export default function InvoicesTable({ initialInvoices }: { initialInvoices: an
   const [category, setCategory] = useState("ALL");
   const [showOverdueOnly, setShowOverdueOnly] = useState(false);
   const [page, setPage] = useState(0);
+  const [bulkParsing, setBulkParsing] = useState(false);
+  const [bulkResult, setBulkResult] = useState<string | null>(null);
+  const [serverResults, setServerResults] = useState<any[] | null>(null);
+  const [serverLoading, setServerLoading] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // When the user types a search query, fetch from server (debounced)
+  const doServerSearch = useCallback((query: string) => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (!query.trim()) {
+      setServerResults(null);
+      return;
+    }
+    debounceRef.current = setTimeout(async () => {
+      setServerLoading(true);
+      try {
+        const params = new URLSearchParams({ q: query, limit: "500" });
+        const res = await fetch(`/api/invoices?${params}`);
+        const data = await res.json();
+        if (data.ok) setServerResults(data.invoices);
+      } catch { /* ignore */ }
+      setServerLoading(false);
+    }, 350);
+  }, []);
+
+  useEffect(() => {
+    doServerSearch(q);
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, [q, doServerSearch]);
+
+  // Use server results when searching, initial data otherwise
+  const allInvoices = serverResults ?? initialInvoices;
 
   // Multi-invoice document info: for each document_id, compute count + combined total
   const docInfo = useMemo(() => {
     const map = new Map<string, { count: number; combinedTotal: number; ids: string[] }>();
-    for (const inv of initialInvoices) {
+    for (const inv of allInvoices) {
       const docId = inv.document_id;
       if (!docId) continue;
       if (!map.has(docId)) map.set(docId, { count: 0, combinedTotal: 0, ids: [] });
@@ -67,32 +101,30 @@ export default function InvoicesTable({ initialInvoices }: { initialInvoices: an
       entry.ids.push(inv.id);
     }
     return map;
-  }, [initialInvoices]);
+  }, [allInvoices]);
 
   const airports = useMemo(() => {
     const set = new Set<string>();
-    for (const inv of initialInvoices) {
+    for (const inv of allInvoices) {
       const a = normalize(inv.airport_code).toUpperCase();
       if (a) set.add(a);
     }
     return ["ALL", ...Array.from(set).sort()];
-  }, [initialInvoices]);
+  }, [allInvoices]);
 
   const vendors = useMemo(() => {
     const set = new Set<string>();
-    for (const inv of initialInvoices) {
+    for (const inv of allInvoices) {
       const v = normalize(inv.vendor_name);
       if (v) set.add(v);
     }
     return ["ALL", ...Array.from(set).sort((a, b) => a.localeCompare(b))];
-  }, [initialInvoices]);
+  }, [allInvoices]);
 
-  const overdueCount = useMemo(() => initialInvoices.filter(isOverdue).length, [initialInvoices]);
+  const overdueCount = useMemo(() => allInvoices.filter(isOverdue).length, [allInvoices]);
 
   const filtered = useMemo(() => {
-    const query = q.toLowerCase().trim();
-
-    return initialInvoices.filter((inv) => {
+    return allInvoices.filter((inv) => {
       const invAirport = normalize(inv.airport_code).toUpperCase();
       const invVendor = normalize(inv.vendor_name);
 
@@ -101,22 +133,9 @@ export default function InvoicesTable({ initialInvoices }: { initialInvoices: an
       if (category !== "ALL" && inferCategory(inv) !== category) return false;
       if (showOverdueOnly && !isOverdue(inv)) return false;
 
-      if (!query) return true;
-
-      const haystack = [
-        inv.document_id,
-        inv.vendor_name,
-        inv.airport_code,
-        inv.tail_number,
-        inv.invoice_number,
-        inv.currency,
-      ]
-        .map((v) => String(v ?? "").toLowerCase())
-        .join(" ");
-
-      return haystack.includes(query);
+      return true;
     });
-  }, [initialInvoices, q, airport, vendor, category, showOverdueOnly]);
+  }, [allInvoices, airport, vendor, category, showOverdueOnly]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const paged = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
@@ -127,8 +146,39 @@ export default function InvoicesTable({ initialInvoices }: { initialInvoices: an
     setVendor("ALL");
     setCategory("ALL");
     setShowOverdueOnly(false);
+    setServerResults(null);
     setPage(0);
   };
+
+  async function bulkReparse() {
+    // Get unique document IDs from current filtered view
+    const allDocIds = [...new Set(filtered.map((inv) => inv.document_id).filter(Boolean))];
+    if (allDocIds.length === 0) return;
+    const docIds = allDocIds.slice(0, MAX_BULK_REPARSE);
+    const extra = allDocIds.length > MAX_BULK_REPARSE ? ` (first ${MAX_BULK_REPARSE} of ${allDocIds.length})` : "";
+    if (!confirm(`Re-parse ${docIds.length} document${docIds.length > 1 ? "s" : ""}${extra}? This will clear existing parsed data and re-extract from PDFs.`)) {
+      return;
+    }
+    setBulkParsing(true);
+    setBulkResult(null);
+    try {
+      const res = await fetch("/api/invoices/reparse-bulk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ document_ids: docIds }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setBulkResult(`Started re-parsing ${data.started} document${data.started > 1 ? "s" : ""}. Results will appear as they complete.`);
+      } else {
+        setBulkResult(`Error: ${data.error}`);
+      }
+    } catch {
+      setBulkResult("Request failed");
+    } finally {
+      setBulkParsing(false);
+    }
+  }
 
   return (
     <div className="p-6 space-y-4">
@@ -150,12 +200,17 @@ export default function InvoicesTable({ initialInvoices }: { initialInvoices: an
       )}
 
       <div className="flex flex-wrap items-center gap-3">
-        <input
-          value={q}
-          onChange={(e) => { setQ(e.target.value); setPage(0); }}
-          placeholder="Search vendor, airport, tail, invoice #…"
-          className="w-full max-w-xl rounded-xl border bg-white px-4 py-2 text-sm shadow-sm outline-none"
-        />
+        <div className="relative w-full max-w-xl">
+          <input
+            value={q}
+            onChange={(e) => { setQ(e.target.value); setPage(0); }}
+            placeholder="Search vendor, airport, tail, invoice #…"
+            className="w-full rounded-xl border bg-white px-4 py-2 text-sm shadow-sm outline-none"
+          />
+          {serverLoading && (
+            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-400">searching…</span>
+          )}
+        </div>
 
         <select
           value={airport}
@@ -182,7 +237,7 @@ export default function InvoicesTable({ initialInvoices }: { initialInvoices: an
           onChange={(e) => { setCategory(e.target.value); setPage(0); }}
           className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm"
         >
-          {ALL_CATEGORIES.map((c) => (
+          {ALL_CATEGORY_OPTIONS.map((c) => (
             <option key={c} value={c}>{c === "ALL" ? "All categories" : c}</option>
           ))}
         </select>
@@ -204,8 +259,22 @@ export default function InvoicesTable({ initialInvoices }: { initialInvoices: an
           Clear
         </button>
 
+        <button
+          onClick={bulkReparse}
+          disabled={bulkParsing || filtered.length === 0}
+          className="rounded-xl border bg-amber-50 border-amber-200 px-3 py-2 text-sm text-amber-700 shadow-sm hover:bg-amber-100 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {bulkParsing ? "Re-parsing…" : `Re-parse filtered (${[...new Set(filtered.map((i) => i.document_id).filter(Boolean))].length})`}
+        </button>
+
         <div className="text-xs text-gray-500">{filtered.length} shown</div>
       </div>
+
+      {bulkResult && (
+        <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-2 text-sm text-blue-800">
+          {bulkResult}
+        </div>
+      )}
 
       <div className="rounded-xl border bg-white overflow-hidden shadow-sm">
         <div className="overflow-x-auto">

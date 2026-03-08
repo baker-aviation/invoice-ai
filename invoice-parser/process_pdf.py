@@ -106,6 +106,7 @@ def scrub_obj(x):
 # ---------------------------
 
 INV_PATTERNS = [
+    re.compile(r"\bFUEL\s+TICKET\s+(\d{4,})\b", re.I),
     re.compile(r"\bRef Number\s+([A-Z0-9-]{6,})\b", re.I),
     re.compile(r"\bInvoice\s+(?:No\.?|#|Number)?\s*([A-Z0-9-]{3,})\b", re.I),
     re.compile(r"\bCredit Memo No\.?:\s*([A-Z0-9-]{3,})\b", re.I),
@@ -145,6 +146,7 @@ def maybe_statement_gate(text: str, invoice_ids: List[str]) -> Tuple[bool, int]:
         "Ref Number" in (text or "")
         or bool(re.search(r"\bCredit Memo\b", text or "", re.I))
         or bool(re.search(r"\bInvoice\b", text or "", re.I))
+        or bool(re.search(r"\bFUEL\s+TICKET\b", text or "", re.I))
     )
     maybe_statement = has_multi_ids or (has_multi_pages and has_statement_markers)
     return maybe_statement, page_count
@@ -155,6 +157,7 @@ def maybe_statement_gate(text: str, invoice_ids: List[str]) -> Tuple[bool, int]:
 # ---------------------------
 
 _SECTION_BOUNDARY_PATTERNS = [
+    re.compile(r"\bFUEL\s+TICKET\s+(\d{4,})\b", re.I),
     re.compile(r"\bRef Number\s+([A-Z0-9][A-Z0-9-]*)\b", re.I),
     re.compile(r"\bInvoice\s+(?:No\.?|#|Number)\s*:?\s*([A-Z0-9][A-Z0-9-]{2,})\b", re.I),
     re.compile(r"\bCredit Memo\s+(?:No\.?|#|Number)\s*:?\s*([A-Z0-9][A-Z0-9-]{2,})\b", re.I),
@@ -163,7 +166,7 @@ _SECTION_BOUNDARY_PATTERNS = [
 
 # IDs that are clearly not invoice numbers
 _BAD_SECTION_ID = re.compile(
-    r"^(?:PAGE|DATE|CUSTOMER|TOTAL|USD|AMOUNT|NUMBER|THE|AND|FOR|TAX|NET)$", re.I
+    r"^(?:PAGE|DATE|CUSTOMER|TOTAL|USD|AMOUNT|NUMBER|NUMBERS|THE|AND|FOR|TAX|NET|INVOICE|PERIOD|DETAIL|SUMMARY|REPORT|BALANCE|STATEMENT)$", re.I
 )
 
 
@@ -206,14 +209,41 @@ def split_avfuel_activity_invoice(text: str) -> List[Tuple[str, str]]:
     if m_ref:
         master_ref = m_ref.group(1)
 
-    # Find all receipt number positions
+    # Stop before BILLING SUMMARY — receipt numbers there are duplicates
+    billing_summary_pos = len(text)
+    bs_match = re.search(r"BILLING\s+SUMMARY", text, re.I)
+    if bs_match:
+        billing_summary_pos = bs_match.start()
+
+    # Find all receipt number positions (only in the detail section, before
+    # the billing summary).  Receipt numbers are 9 digits with leading zeros
+    # (e.g. 000914753).  We use a stricter pattern to avoid matching 8-digit
+    # invoice numbers (e.g. 24161943) that also appear in the receipt table.
+    _AVFUEL_RECEIPT_RE = re.compile(r"^\s{0,20}(0\d{8})\b", re.MULTILINE)
     matches = []
-    for m in _RECEIPT_LINE_RE.finditer(text):
+    seen_receipts = set()
+    for m in _AVFUEL_RECEIPT_RE.finditer(text, 0, billing_summary_pos):
         receipt_no = m.group(1)
-        # Skip if this is the master REF NO
         if master_ref and receipt_no == master_ref:
             continue
+        # Only take the first occurrence of each receipt number
+        if receipt_no in seen_receipts:
+            continue
+        seen_receipts.add(receipt_no)
         matches.append((m.start(), receipt_no))
+
+    # Fallback: if strict pattern found < 2, try the broader 7-9 digit pattern
+    if len(matches) < 2:
+        matches = []
+        seen_receipts = set()
+        for m in _RECEIPT_LINE_RE.finditer(text, 0, billing_summary_pos):
+            receipt_no = m.group(1)
+            if master_ref and receipt_no == master_ref:
+                continue
+            if receipt_no in seen_receipts:
+                continue
+            seen_receipts.add(receipt_no)
+            matches.append((m.start(), receipt_no))
 
     if len(matches) < 2:
         return []
@@ -225,7 +255,7 @@ def split_avfuel_activity_invoice(text: str) -> List[Tuple[str, str]]:
     # Split text at each receipt boundary
     sections: List[Tuple[str, str]] = []
     for i, (pos, receipt_no) in enumerate(matches):
-        end = matches[i + 1][0] if i + 1 < len(matches) else len(text)
+        end = matches[i + 1][0] if i + 1 < len(matches) else billing_summary_pos
         receipt_text = text[pos:end].strip()
 
         # Skip if the receipt text looks like a TOTAL/summary line
@@ -297,9 +327,18 @@ def split_text_into_sections(text: str) -> List[Tuple[str, str]]:
 # ---------------------------
 
 # Matches lines like "OSU1 JET FUEL ...", "MSN IP ...", "STS FSII ..."
+# Also matches codes with dashes (e.g. "YIP-AVFLIGHT", "APF JET FUEL")
 _AIRPORT_FUEL_RE = re.compile(
-    r"^([A-Z0-9]{3,4})\s+"
-    r"(?:JET[\s-]*(?:FUEL|A)|AVGAS|100LL|FUEL\b|IP\b|FSII|FLOW[\s-]*FEE|INTO[\s-]*PLANE)",
+    r"^([A-Z0-9]{3,4})[\s\-]+"
+    r"(?:JET[\s-]*(?:FUEL|A)|AVGAS|100LL|FUEL\b|IP[\s\-]|FSII|FLOW[\s-]*FEE|INTO[\s-]*PLANE|AVFLIGHT)",
+    re.I | re.M,
+)
+
+# Trailing airport codes: "THRU PUT - YIP", "FLOW FEE YIP", "FSII - APF"
+_TRAILING_AIRPORT_RE = re.compile(
+    r"(?:THRU\s*PUT|FLOW\s*FEE|FSII|INTO[\s-]*PLANE|FUEL\s*TAX|EXCISE\s*TAX|"
+    r"KEROSENE|LUST\s*TAX|SUPERFUND|STORAGE\s*(?:TK\s*)?FEE|PROTECTION|WATER\s*QUALITY)"
+    r"\s*[\-]?\s*([A-Z]{3})\b",
     re.I | re.M,
 )
 
@@ -310,15 +349,27 @@ def _subsplit_by_airport(section_text: str, parent_id: str) -> List[Tuple[str, s
     fuel statements (Avfuel, World Fuel).  Each airport stop becomes its
     own section so the parser creates a separate invoice per stop.
 
+    Uses both leading codes (^YIP JET FUEL) and trailing codes (FLOW FEE YIP).
+
     Returns list of (composite_id, text_section) tuples.
     Returns empty list if fewer than 2 distinct airports found.
     """
     matches: List[Tuple[int, str]] = []
+
+    # Pass 1: leading airport codes (e.g. "YIP JET FUEL", "APF-AVFLIGHT")
     for m in _AIRPORT_FUEL_RE.finditer(section_text or ""):
         code = m.group(1).upper()
         line_start = section_text.rfind("\n", 0, m.start())
         line_start = 0 if line_start < 0 else line_start + 1
         matches.append((line_start, code))
+
+    # Pass 2: trailing airport codes (e.g. "THRU PUT - YIP", "FLOW FEE APF")
+    if not matches:
+        for m in _TRAILING_AIRPORT_RE.finditer(section_text or ""):
+            code = m.group(1).upper()
+            line_start = section_text.rfind("\n", 0, m.start())
+            line_start = 0 if line_start < 0 else line_start + 1
+            matches.append((line_start, code))
 
     if not matches:
         return []
@@ -571,16 +622,31 @@ def _clean_vendor_name(v: Optional[str]) -> Optional[str]:
         return None
     if len(vn) < 3:
         return None
+    # Reject LLM placeholder strings (e.g. ":vendor_name_placeholder:")
+    if vn.startswith(":") and vn.endswith(":"):
+        return None
     return vn
 
 def classify_doc_type(raw: dict) -> str:
     text = str(raw).lower()
 
-    # Known FBO / fuel vendors — check FIRST so that fuel invoices with
-    # generic keywords like "parts" or "inspection" in OCR noise or
-    # address fields still classify correctly as FBO.
+    # ── Not an invoice ─────────────────────────────────────────────
     if any(k in text for k in [
-        "avfuel", "world fuel", "sheltair", "atlantic aviation",
+        "noise violation", "curfew violation", "noise abatement",
+        "noise complaint", "voluntary nighttime",
+    ]):
+        return "not_invoice"
+
+    # ── Known fuel contract vendors — bulk/contract fuel pricing ──
+    if any(k in text for k in [
+        "avfuel", "world fuel", "everest fuel", "epic aviation",
+        "titan aviation fuels", "avflight",
+    ]):
+        return "fuel_contract"
+
+    # ── Known FBO vendors — handling/ramp/landing fees ────────────
+    if any(k in text for k in [
+        "sheltair", "atlantic aviation",
         "signature flight", "million air", "jet aviation",
         "wilson air", "ross aviation", "clay lacy", "cutter aviation",
         "pentastar", "xjet", "priester", "azorra",
@@ -594,9 +660,27 @@ def classify_doc_type(raw: dict) -> str:
         "pricing schedule",
         "supplier agreement"
     ]):
-        return "fuel_release"
+        return "fuel_contract"
 
-    # Maintenance / parts / MRO invoices
+    # ── Training ──────────────────────────────────────────────────
+    if any(k in text for k in [
+        "flightsafety", "flight safety", "simcom", "cae ",
+        "simulator training", "recurrent training", "type rating",
+        "initial training", "ground school",
+    ]):
+        return "training"
+
+    # ── Plane lease ────────────────────────────────────────────────
+    if any(k in text for k in [
+        "aircraft lease",
+        "plane lease",
+        "dry lease",
+        "wet lease",
+        "aircraft rental",
+    ]):
+        return "plane_lease"
+
+    # ── Maintenance / parts / MRO invoices ────────────────────────
     if any(k in text for k in [
         "maintenance",
         "repair",
@@ -635,7 +719,7 @@ def classify_doc_type(raw: dict) -> str:
     ]):
         return "maintenance"
 
-    # Lease / rent / management / utility invoices
+    # ── Lease / rent / management / utility invoices ──────────────
     if any(k in text for k in [
         "lease",
         "rent",
@@ -655,7 +739,7 @@ def classify_doc_type(raw: dict) -> str:
     ]):
         return "lease_utility"
 
-    # Subscriptions / recurring services
+    # ── Subscriptions / recurring services ────────────────────────
     if any(k in text for k in [
         "starlink",
         "subscription",
@@ -672,16 +756,13 @@ def classify_doc_type(raw: dict) -> str:
     ]):
         return "subscriptions"
 
-    # Pilot operations / training / OEM support
+    # ── Pilot operations / OEM support (NOT training — that's above)
     if any(k in text for k in [
         "prod support",
         "product support",
         "pilot supplies",
         "training",
         "simulator",
-        "recurrent training",
-        "type rating",
-        "initial training",
         "charts",
         "jeppesen",
         "foreflight",
@@ -699,7 +780,7 @@ def classify_doc_type(raw: dict) -> str:
     ]):
         return "pilot_operations"
 
-    # Parts / supplies invoices (before fbo_fee to avoid "handling" false positive)
+    # ── Parts / supplies invoices ─────────────────────────────────
     if any(k in text for k in [
         "parts order",
         "part number",
@@ -723,6 +804,7 @@ def classify_doc_type(raw: dict) -> str:
     ]):
         return "parts"
 
+    # ── FBO / handling fees (keyword fallback) ────────────────────
     if any(k in text for k in [
         "hangar",
         "parking",
@@ -753,22 +835,6 @@ def classify_doc_type(raw: dict) -> str:
         "flowage fee",
         "prist",
         "fsii",
-        # Known FBO vendors
-        "sheltair",
-        "atlantic aviation",
-        "signature flight",
-        "million air",
-        "jet aviation",
-        "xjet",
-        "priester",
-        "ross aviation",
-        "pentastar",
-        "cutter aviation",
-        "clay lacy",
-        "azorra",
-        "world fuel",
-        "avfuel",
-        "wilson air",
     ]):
         return "fbo_fee"
 
@@ -911,7 +977,19 @@ def process_one_pdf(
     did_split = False
     part_pdfs: List[Path] = []
 
-    if maybe_statement:
+    # ── Vendor-specific split suppression ──────────────────────────
+    # Some vendors (e.g. Vector PLANEPASS) produce multi-page PDFs that
+    # should NOT be split — keep the entire document as a single invoice.
+    _NOSPLIT_VENDORS = ["vector planepass", "planepass"]
+    suppress_split = any(v in (text or "").lower() for v in _NOSPLIT_VENDORS)
+
+    # Avfuel activity invoices: suppress PDF-level page splitting so the
+    # receipt-level text splitter handles them (it splits by receipt row,
+    # not by page boundary, which is what we need for tabular formats).
+    is_avfuel_activity = is_avfuel_activity_invoice(text or "")
+    suppress_pdf_split = suppress_split or is_avfuel_activity
+
+    if maybe_statement and not suppress_pdf_split:
         split_dir.mkdir(parents=True, exist_ok=True)
         try:
             run([
@@ -939,19 +1017,19 @@ def process_one_pdf(
     # splitting, which would incorrectly split on "Invoice" / "Ref Number"
     # keywords in the header, producing garbage sections.
     text_sections: List[Tuple[str, str]] = []
-    if not did_split:
+    if not did_split and not suppress_split:
         avfuel_sections = split_avfuel_activity_invoice(text)
         if avfuel_sections:
             text_sections = avfuel_sections
 
     # Text-based splitting fallback: when PDF page-split fails but multiple
     # invoice IDs are detected, split by text boundaries instead.
-    if not did_split and not text_sections and len(invoice_ids) >= 2:
+    if not did_split and not suppress_split and not text_sections and len(invoice_ids) >= 2:
         text_sections = split_text_into_sections(text)
 
     # Expand text sections with airport-based sub-splits (handles
     # consolidated fuel statements where one invoice covers multiple stops).
-    if text_sections:
+    if text_sections and not suppress_split:
         expanded: List[Tuple[str, str]] = []
         for inv_id, section_text in text_sections:
             sub = _subsplit_by_airport(section_text, inv_id)
@@ -964,7 +1042,7 @@ def process_one_pdf(
     # Airport-based splitting as a standalone fallback: when neither PDF
     # nor text-section splitting produced multiple sections, check for
     # multi-airport fuel patterns in the full text.
-    if not did_split and len(text_sections) < 2:
+    if not did_split and not suppress_split and len(text_sections) < 2:
         airport_sections = _subsplit_by_airport(text, pdf_path.stem)
         if len(airport_sections) >= 2:
             text_sections = airport_sections

@@ -35,8 +35,8 @@ export async function PATCH(req: NextRequest) {
   try {
     await updateHiringStage(id, stage as HiringStage);
     return NextResponse.json({ ok: true, id, stage });
-  } catch (e: any) {
-    return NextResponse.json({ error: e.message }, { status: 500 });
+  } catch {
+    return NextResponse.json({ error: "Failed to update hiring stage" }, { status: 500 });
   }
 }
 
@@ -73,7 +73,7 @@ export async function POST(req: NextRequest) {
       hiring_stage: (hiring_stage as HiringStage) ?? "new",
     });
     return NextResponse.json({ ok: true, job: row }, { status: 201 });
-  } catch (e: any) {
-    return NextResponse.json({ error: e.message }, { status: 500 });
+  } catch {
+    return NextResponse.json({ error: "Failed to create candidate" }, { status: 500 });
   }
 }

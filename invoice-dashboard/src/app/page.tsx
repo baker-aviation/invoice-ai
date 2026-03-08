@@ -11,8 +11,9 @@ import { createServiceClient } from "@/lib/supabase/service";
 type DashboardStats = {
   flights7d: number;
   flightsToday: number;
-  activeAlerts: number;
-  criticalAlerts: number;
+  activeAlerts24h: number;
+  activeEdcts: number;
+  airborne: number;
   totalInvoices: number;
   invoicesPending: number;
   feeAlertsPending: number;
@@ -29,11 +30,14 @@ async function fetchStats(): Promise<DashboardStats> {
   todayEnd.setUTCDate(todayEnd.getUTCDate() + 1);
   const weekOut = new Date(now.getTime() + 7 * 24 * 3600_000);
 
+  const ago24h = new Date(now.getTime() - 24 * 3600_000);
+
   const [
     flights7dRes,
     flightsTodayRes,
-    activeAlertsRes,
-    criticalAlertsRes,
+    activeAlerts24hRes,
+    activeEdctsRes,
+    airborneRes,
     totalInvoicesRes,
     invoicesPendingRes,
     feeAlertsPendingRes,
@@ -47,10 +51,13 @@ async function fetchStats(): Promise<DashboardStats> {
       .gte("scheduled_departure", todayStart.toISOString())
       .lt("scheduled_departure", todayEnd.toISOString()),
     supa.from("ops_alerts").select("id", { count: "exact", head: true })
-      .is("acknowledged_at", null),
+      .is("acknowledged_at", null)
+      .gte("created_at", ago24h.toISOString()),
     supa.from("ops_alerts").select("id", { count: "exact", head: true })
       .is("acknowledged_at", null)
-      .eq("severity", "critical"),
+      .eq("alert_type", "EDCT"),
+    supa.from("flights").select("id", { count: "exact", head: true })
+      .eq("status", "airborne"),
     supa.from("documents").select("id", { count: "exact", head: true }),
     supa.from("documents").select("id", { count: "exact", head: true })
       .in("status", ["uploaded", "processing"]),
@@ -64,8 +71,9 @@ async function fetchStats(): Promise<DashboardStats> {
   return {
     flights7d: flights7dRes.count ?? 0,
     flightsToday: flightsTodayRes.count ?? 0,
-    activeAlerts: activeAlertsRes.count ?? 0,
-    criticalAlerts: criticalAlertsRes.count ?? 0,
+    activeAlerts24h: activeAlerts24hRes.count ?? 0,
+    activeEdcts: activeEdctsRes.count ?? 0,
+    airborne: airborneRes.count ?? 0,
     totalInvoices: totalInvoicesRes.count ?? 0,
     invoicesPending: invoicesPendingRes.count ?? 0,
     feeAlertsPending: feeAlertsPendingRes.count ?? 0,
@@ -133,8 +141,8 @@ export default async function HomePage() {
               stats={stats ? [
                 { label: "Today", value: stats.flightsToday },
                 { label: "Next 7 days", value: stats.flights7d },
-                { label: "Active alerts", value: stats.activeAlerts, accent: stats.criticalAlerts > 0 ? "text-red-600" : stats.activeAlerts > 0 ? "text-amber-600" : "text-gray-400" },
-                ...(stats.criticalAlerts > 0 ? [{ label: "Critical", value: stats.criticalAlerts, accent: "text-red-600" }] : []),
+                { label: "Airborne", value: stats.airborne, accent: stats.airborne > 0 ? "text-green-600" : "text-gray-400" },
+                { label: "Active EDCTs", value: stats.activeEdcts, accent: stats.activeEdcts > 0 ? "text-red-600" : "text-gray-400" },
               ] : undefined}
             />
 

@@ -11,7 +11,7 @@ export default function FeesPage() {
       <AutoRefresh intervalSeconds={300} />
       <div className="p-6 space-y-2">
         <p className="text-sm text-gray-500">
-          Pilot-reported fees by category and airport · Dec 2025 – Feb 2026
+          Pilot-reported fees by category and airport · Upload CSV to add data
         </p>
         <FeesClient />
       </div>

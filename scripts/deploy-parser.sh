@@ -17,7 +17,7 @@ gcloud run deploy "${SERVICE_NAME}" \
   --platform managed \
   --no-allow-unauthenticated \
   --cpu 1 \
-  --memory 512Mi \
+  --memory 1Gi \
   --set-secrets "OPENAI_API_KEY=OPENAI_API_KEY:latest,SUPABASE_URL=SUPABASE_URL:latest,SUPABASE_SERVICE_ROLE_KEY=SUPABASE_SERVICE_ROLE_KEY:latest"
 
 echo "✅ Deployment complete."

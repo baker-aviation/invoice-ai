@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireAdmin, isAuthed, isRateLimited } from "@/lib/api-auth";
+import { requireAuth, isAuthed, isRateLimited } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -8,7 +8,7 @@ export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const auth = await requireAdmin(req);
+  const auth = await requireAuth(req);
   if (!isAuthed(auth)) return auth.error;
 
   if (isRateLimited(auth.userId)) {
@@ -22,15 +22,27 @@ export async function POST(
 
   try {
     const supa = createServiceClient();
-    const { data } = await supa
+
+    // Global acknowledgment: set acknowledged_at + acknowledged_by on the alert itself.
+    // Only update if not already acknowledged (avoid overwriting original acker).
+    const { data, error } = await supa
       .from("ops_alerts")
-      .update({ acknowledged_at: new Date().toISOString() })
+      .update({
+        acknowledged_at: new Date().toISOString(),
+        acknowledged_by: auth.userId,
+      })
       .eq("id", id)
-      .select("id");
-    if (!data || data.length === 0) {
-      return NextResponse.json({ error: "Alert not found" }, { status: 404 });
+      .is("acknowledged_at", null)
+      .select("id")
+      .single();
+
+    if (error && error.code !== "PGRST116") {
+      // PGRST116 = no rows matched (already acknowledged) — that's fine
+      console.error("[ops/acknowledge] Update error:", error);
+      return NextResponse.json({ error: "Database error" }, { status: 500 });
     }
-    return NextResponse.json({ ok: true });
+
+    return NextResponse.json({ ok: true, already_acked: !data });
   } catch (err) {
     console.error("[ops/acknowledge] Database error:", err);
     return NextResponse.json({ error: "Database error" }, { status: 500 });

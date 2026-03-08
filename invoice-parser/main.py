@@ -309,6 +309,48 @@ def reparse_document(document_id: str):
     return {"ok": True, "document_id": document_id, "reparse": True}
 
 
+@app.post("/jobs/reparse_empty")
+def reparse_empty(limit: int = Query(50, ge=1, le=200)):
+    """
+    Find parsed invoices with null vendor_name AND null total (empty extraction),
+    then reparse them in batch.  Used for backfilling after parser fixes.
+    """
+    # Find documents that have parsed_invoices rows but with empty fields
+    pi_res = (
+        supa.table("parsed_invoices")
+        .select("document_id")
+        .is_("vendor_name", "null")
+        .is_("total", "null")
+        .limit(limit)
+        .execute()
+    )
+    doc_ids = list({r["document_id"] for r in (pi_res.data or []) if r.get("document_id")})
+
+    if not doc_ids:
+        return {"ok": True, "message": "No empty parsed invoices found", "reparsed": 0, "failed": 0}
+
+    reparsed = 0
+    failed = 0
+    results = []
+    for did in doc_ids:
+        try:
+            reparse_document(document_id=did)
+            reparsed += 1
+            results.append({"document_id": did, "status": "reparsed"})
+        except Exception as e:
+            failed += 1
+            results.append({"document_id": did, "status": "failed", "error": str(e)})
+            print(f"reparse_empty failed for {did}: {e}", flush=True)
+
+    return {
+        "ok": True,
+        "candidates": len(doc_ids),
+        "reparsed": reparsed,
+        "failed": failed,
+        "results": results,
+    }
+
+
 @app.post("/jobs/parse_next")
 def parse_next(
     limit: int = Query(10, ge=1, le=50),

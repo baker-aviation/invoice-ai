@@ -206,7 +206,7 @@ def llm_extract_json(client: OpenAI, model: str, messages: List[dict], schema_bu
 
 # Prefer INV... when present; fall back to Invoice No/Number; then Ref Number.
 _INV_NO_STRONG = re.compile(r"\bINV\d{6,}\b", re.IGNORECASE)
-_INV_NO_LABEL = re.compile(r"\bInvoice\s*(?:No\.?|#|Number)?\s*[:#]?\s*([A-Z0-9-]{6,})\b", re.IGNORECASE)
+_INV_NO_LABEL = re.compile(r"\bInvoice\s+(?:No\.?|#|Number)\s*[:#]?\s*([A-Z0-9-]{6,})\b", re.IGNORECASE)
 _REF_NO_LABEL = re.compile(r"\bRef Number\s+([A-Z0-9-]{6,})\b", re.IGNORECASE)
 
 _GENERIC_INV_LABELS = {"INVOICE", "INVOICE #", "INVOICE NUMBER", "INVOICE NO", "INVOICE NO."}
@@ -688,7 +688,7 @@ def build_normal_messages(pdf_text: str) -> List[dict]:
         "\n"
         "Airport code:\n"
         "- Extract the ICAO or FAA airport identifier (3-4 uppercase letters/digits, e.g. KVNY, KBCT, TEB, EGE).\n"
-        "- Look for it in the header, 'Location', 'Base', 'FBO', 'Airport', or address fields.\n"
+        "- Look for it in the header, 'Location', 'Base', 'FBO', 'Airport', 'Aéroport', or address fields.\n"
         "- FBO invoices often show the airport in the vendor address or near the vendor name.\n"
         "- If the vendor name contains a dash followed by a 3-4 letter code (e.g. 'Signature Flight Support - EGE'), that IS the airport code.\n"
         "- If not explicitly labeled, look for 3-4 character codes near city/state references.\n"
@@ -698,6 +698,10 @@ def build_normal_messages(pdf_text: str) -> List[dict]:
         "Vendor name:\n"
         "- Use the primary vendor/company name, not a parent company or billing entity.\n"
         "- For subscription services (Starlink, ForeFlight, etc.), use the service name as vendor.\n"
+        "- For bilingual documents (French/English, etc.), use the English company name.\n"
+        "- For government agencies (Transport Canada, FAA, etc.), use the standard English agency name.\n"
+        "- If the document is NOT an invoice (e.g. a notice, letter, violation report), still extract whatever vendor/sender name is present and set total_amount to null.\n"
+        "- NEVER use placeholder strings like ':vendor_name_placeholder:'. Use null if you cannot determine the vendor.\n"
         "\n"
         "Multi-stop documents:\n"
         "- Some invoices contain multiple date/location sections.\n"
@@ -706,11 +710,18 @@ def build_normal_messages(pdf_text: str) -> List[dict]:
         "\n"
         "Avfuel activity invoice receipts:\n"
         "- If the text contains 'ACTIVITY INVOICE' and a 'Receipt Number', this is a SINGLE receipt extracted from an Avfuel activity statement.\n"
-        "- The vendor is 'Avfuel Corporation'.\n"
-        "- Use the Receipt Number as invoice_number.\n"
-        "- The receipt row contains: FBO/location (with airport code), tail number, date, product, gallons, price per gallon, and amount.\n"
-        "- The FBO name in the receipt row often includes an airport code (e.g. 'Sheltair FLL' means airport_code = FLL).\n"
+        "- The vendor is ALWAYS 'Avfuel Corporation' (NOT the customer/account holder like 'Baker Aviation').\n"
+        "- Use the INVOICE NO. from the receipt row as invoice_number (e.g. 24161943), NOT the Receipt Number.\n"
+        "- The receipt row has: RECEIPT NO., LOCATION (with ICAO airport code in parentheses like '(KYIP)'), TAIL NO., INVOICE NO., TYPE.\n"
+        "- Extract airport_code from the LOCATION field — the ICAO code in parentheses (e.g. 'AVFLIGHT WILLOW RUN (KYIP)' means airport_code = YIP, stripping the K prefix).\n"
+        "- Extract tail_number from the TAIL NO. field.\n"
         "- Extract the fuel line item with proper quantity (gallons), unit_price (per gallon), and total (amount).\n"
+        "- The TOTAL line at the end of each receipt section is the receipt total — use it as total_amount.\n"
+        "\n"
+        "World Fuel / FUEL TICKET invoices:\n"
+        "- If the text contains 'FUEL TICKET' followed by a number, use that fuel ticket number as invoice_number (not the consolidated invoice number).\n"
+        "- Each fuel ticket has its own tail_number and airport_code — extract them per-ticket.\n"
+        "- Extract the fuel line item with quantity (gallons), unit_price (per gallon), and total for that specific ticket.\n"
     )
     user = f"Extract the invoice fields from this document text:\n\nDOCUMENT TEXT:\n{pdf_text}"
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
@@ -808,7 +819,7 @@ _INVOICE_ID_PATTERNS: List[re.Pattern] = [
     re.compile(r"\bCredit Memo No\.?:?\s*([A-Z0-9\-]+)\b", re.IGNORECASE),
 ]
 
-_BAD_ID = re.compile(r"^(?:PAGE|DATE|CUSTOMER|TOTAL|USD)$", re.IGNORECASE)
+_BAD_ID = re.compile(r"^(?:PAGE|DATE|CUSTOMER|TOTAL|USD|NUMBER|NUMBERS|INVOICE|PERIOD|DETAIL|SUMMARY|REPORT|BALANCE|STATEMENT)$", re.IGNORECASE)
 
 
 def extract_invoice_id_from_page(page_text: str) -> Optional[str]:
@@ -960,6 +971,11 @@ def extract_one_pdf(
 
     # 4) Infer airport code if LLM missed it
     data = infer_airport_code(data, pdf_text)
+
+    # 5) Normalize ICAO K-prefix → FAA 3-letter (KBOS → BOS)
+    ac = (data.get("airport_code") or "").strip().upper()
+    if len(ac) == 4 and ac.startswith("K") and ac[1:].isalpha():
+        data["airport_code"] = ac[1:]
 
     return data
 

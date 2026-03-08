@@ -1,25 +1,42 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
+import { hasAccessToPath } from "@/lib/permissions";
 
 const NAV = [
-  { href: "/", label: "Home", exact: true },
-  { href: "/ops", label: "Ops", exact: false },
-  { href: "/invoices", label: "Invoices", exact: false },
-  { href: "/alerts", label: "Alerts", exact: false },
-  { href: "/fuel-prices", label: "Fuel Prices", exact: false },
-  { href: "/jobs", label: "Jobs", exact: false },
-  { href: "/maintenance", label: "AOG Vans", exact: false },
-  { href: "/vehicles", label: "Vehicles", exact: false },
-  { href: "/fees", label: "Fees", exact: false },
-  { href: "/health", label: "Health", exact: false },
+  { href: "/", label: "Home", exact: true, adminOnly: false },
+  { href: "/ops", label: "Ops", exact: false, adminOnly: false },
+  { href: "/invoices", label: "Invoices", exact: false, adminOnly: false },
+  { href: "/alerts", label: "Alerts", exact: false, adminOnly: false },
+  { href: "/fuel-prices", label: "Fuel Prices", exact: false, adminOnly: false },
+  { href: "/jobs", label: "Jobs", exact: false, adminOnly: false },
+  { href: "/maintenance", label: "AOG Vans", exact: false, adminOnly: false },
+  { href: "/vehicles", label: "Vehicles", exact: false, adminOnly: false },
+  { href: "/fees", label: "Fees", exact: false, adminOnly: false },
+  { href: "/health", label: "Health", exact: false, adminOnly: true },
+  { href: "/admin/settings", label: "Admin", exact: false, adminOnly: true },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [permissions, setPermissions] = useState<string[] | null>(null);
+
+  useEffect(() => {
+    const supabase = createClient();
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      const role = user?.app_metadata?.role ?? user?.user_metadata?.role;
+      setIsAdmin(role === "admin");
+      if (role === "dashboard") {
+        setPermissions((user?.app_metadata?.permissions as string[] | undefined) ?? null);
+      }
+    });
+  }, []);
 
   async function handleSignOut() {
     const supabase = createClient();
@@ -32,12 +49,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen bg-gray-50 text-gray-900">
       <header className="bg-slate-900 text-white shadow-md">
         <div className="mx-auto max-w-7xl px-6 py-3 flex items-center justify-between">
-          <Link href="/" className="font-bold text-white hover:text-slate-200 tracking-tight">
-            Baker Aviation
+          <Link href="/" className="flex items-center hover:opacity-90 transition-opacity">
+            <Image src="/logo3.png" alt="Baker Aviation" width={150} height={47} priority />
           </Link>
 
           <nav className="flex items-center gap-1 text-sm">
-            {NAV.map(({ href, label, exact }) => {
+            {NAV.filter(({ href, adminOnly }) => adminOnly ? isAdmin : (isAdmin || hasAccessToPath(permissions, href))).map(({ href, label, exact }) => {
               const isActive = exact ? pathname === href : pathname.startsWith(href);
               return (
                 <Link
@@ -53,6 +70,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 </Link>
               );
             })}
+            {isAdmin && (
+              <button
+                onClick={() => router.push("/pilot")}
+                className="ml-3 rounded-md px-3 py-1.5 text-sm font-medium bg-blue-600 text-white hover:bg-blue-500 transition-colors"
+              >
+                View as Pilot
+              </button>
+            )}
             <button
               onClick={handleSignOut}
               className="ml-3 rounded-md px-3 py-1.5 text-sm font-medium text-slate-300 hover:bg-white/10 hover:text-white transition-colors"
@@ -63,7 +88,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       </header>
 
-      <main className="mx-auto max-w-7xl px-6 py-6">{children}</main>
+      <main className={`mx-auto px-6 py-6 ${
+        pathname.startsWith("/fuel-prices") ? "max-w-[1600px]" : "max-w-7xl"
+      }`}>{children}</main>
     </div>
   );
 }

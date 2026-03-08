@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useMemo, useCallback, useEffect } from "react";
+import Link from "next/link";
 import type { Flight, OpsAlert } from "@/lib/opsApi";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -215,9 +216,7 @@ const AIRPORTS_24_7 = new Set([
   "KSAT", "KMSO", "KBGR",
 ]);
 
-// ─── Baker PPR airports ──────────────────────────────────────────────────────
-
-const BAKER_PPR_AIRPORTS = new Set(["KNUQ", "KSAN", "KLAS", "KSNA", "KJAC", "KMKY"]);
+// ─── Baker PPR airports (fetched from database) ─────────────────────────────
 
 function isAfterHours(utcIso: string | null, icao: string | null): boolean {
   if (!utcIso) return false;
@@ -229,6 +228,7 @@ function isAfterHours(utcIso: string | null, icao: string | null): boolean {
 // ─── Flight type badge colors (matching JetInsight categories) ───────────────
 
 const FLIGHT_TYPE_COLORS: Record<string, string> = {
+  Charter:        "bg-green-100 text-green-800",
   Revenue:        "bg-green-100 text-green-800",
   Owner:          "bg-blue-100 text-blue-800",
   Positioning:    "bg-yellow-100 text-yellow-800",
@@ -250,7 +250,7 @@ function flightTypeBadge(flightType: string): string {
 // Client-side fallback: infer flight_type from the ICS summary when the
 // backend didn't extract one (e.g. flights synced before parser update).
 const FLIGHT_TYPE_KEYWORDS = [
-  "Revenue", "Owner", "Positioning", "Maintenance", "Training",
+  "Charter", "Revenue", "Owner", "Positioning", "Maintenance", "Training",
   "Ferry", "Cargo", "Needs pos", "Crew conflict", "Time off",
   "Assignment", "Transient",
 ];
@@ -358,9 +358,89 @@ const ALERT_TYPES_SHOWN = new Set([
   "NOTAM_TFR", "NOTAM_PPR", "EDCT",
 ]);
 
+// ─── EDCT expandable row (status box) ────────────────────────────────────────
+
+function EdctRow({ alert, flight, onDismiss, fmtTime }: {
+  alert: OpsAlert;
+  flight: Flight | null;
+  onDismiss: (id: string) => void;
+  fmtTime: (s: string) => string;
+}) {
+  const [open, setOpen] = useState(false);
+
+  // Extract program info from body
+  const body = alert.body ?? "";
+  const programMode = body.match(/Program Delay Mode:\s*(.+)/i)?.[1]?.trim();
+  const programStart = body.match(/Program Start Time:\s*(.+)/i)?.[1]?.trim();
+  const programEnd = body.match(/Program End Time:\s*(.+)/i)?.[1]?.trim();
+  const expectedArrival = body.match(/Expected Arrival Time:\s*(.+)/i)?.[1]?.trim();
+  const source = "ForeFlight"; // TODO: derive from alert metadata when other sources added
+
+  return (
+    <div className="bg-white rounded-lg border border-orange-200 text-sm overflow-hidden">
+      <div className="flex items-center gap-3 px-3 py-2">
+        <button
+          type="button"
+          onClick={() => setOpen(!open)}
+          className="text-gray-400 hover:text-gray-600 transition-colors shrink-0"
+        >
+          <svg className={`w-3.5 h-3.5 transition-transform ${open ? "rotate-90" : ""}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
+        </button>
+        <span className={`w-2 h-2 rounded-full shrink-0 ${alert.severity === "critical" ? "bg-red-500" : "bg-orange-500"}`} />
+        {flight && (
+          <span className="font-mono font-bold text-gray-800 text-xs">
+            {flight.departure_icao ?? "????"} → {flight.arrival_icao ?? "????"}
+          </span>
+        )}
+        {(alert.tail_number || flight?.tail_number) && (
+          <span className="font-mono text-xs text-gray-600 bg-gray-100 rounded px-1.5 py-0.5">{alert.tail_number || flight?.tail_number}</span>
+        )}
+        <span className="text-xs">
+          {(alert.original_departure_time || flight?.scheduled_departure) && (
+            <span className="text-gray-500 line-through">{alert.original_departure_time ?? fmtTime(flight?.scheduled_departure ?? "")}</span>
+          )}
+          {(alert.original_departure_time || flight?.scheduled_departure) && <span className="text-gray-400 mx-0.5">→</span>}
+          <span className="text-orange-800 font-bold">{alert.edct_time ?? "—"}</span>
+        </span>
+        <button
+          type="button"
+          onClick={() => onDismiss(alert.id)}
+          className="ml-auto text-xs text-gray-500 hover:text-green-700 hover:bg-green-50 border border-gray-200 hover:border-green-300 rounded px-1.5 py-0.5 transition-colors"
+        >
+          Ack
+        </button>
+      </div>
+      {open && (
+        <div className="px-3 pb-3 pt-1 border-t border-orange-100 grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-1.5 text-xs text-gray-600">
+          {alert.subject && (
+            <div className="col-span-2 sm:col-span-3 text-gray-800 font-medium truncate">{alert.subject}</div>
+          )}
+          <div><span className="text-gray-400">Source:</span> {source}</div>
+          <div><span className="text-gray-400">Received:</span> {fmtTime(alert.created_at)}</div>
+          {(alert.tail_number || flight?.tail_number) && (
+            <div><span className="text-gray-400">Tail:</span> {alert.tail_number || flight?.tail_number}</div>
+          )}
+          {programMode && <div><span className="text-gray-400">Program:</span> {programMode}</div>}
+          {programStart && <div><span className="text-gray-400">Program start:</span> {programStart}</div>}
+          {programEnd && <div><span className="text-gray-400">Program end:</span> {programEnd}</div>}
+          {expectedArrival && <div><span className="text-gray-400">Expected arrival:</span> {expectedArrival}</div>}
+          {alert.original_departure_time && (
+            <div><span className="text-gray-400">Original dep:</span> {alert.original_departure_time}</div>
+          )}
+          {alert.edct_time && (
+            <div><span className="text-gray-400">New EDCT:</span> <span className="font-semibold text-orange-700">{alert.edct_time}</span></div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Alert inline card (server-side NOTAM/EDCT alerts) ──────────────────────
 
-function AlertCard({ alert, onAck }: { alert: OpsAlert; onAck: (id: string) => void }) {
+function AlertCard({ alert, onAck, acked }: { alert: OpsAlert; onAck: (id: string) => void; acked?: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const [acking, setAcking] = useState(false);
 
@@ -384,9 +464,11 @@ function AlertCard({ alert, onAck }: { alert: OpsAlert; onAck: (id: string) => v
   return (
     <div
       className={`rounded-lg border text-sm transition-all ${
-        alert.severity === "critical"
-          ? "border-red-200 bg-red-50/60"
-          : "border-amber-200 bg-amber-50/60"
+        acked
+          ? "border-gray-200 bg-gray-50/60 opacity-60"
+          : alert.severity === "critical"
+            ? "border-red-200 bg-red-50/60"
+            : "border-amber-200 bg-amber-50/60"
       }`}
     >
       <button
@@ -402,11 +484,10 @@ function AlertCard({ alert, onAck }: { alert: OpsAlert; onAck: (id: string) => v
           <span className="font-mono font-semibold text-gray-800 text-xs">{alert.airport_icao}</span>
         )}
         {alert.edct_time && (
-          <span className="text-gray-700 text-xs">
-            EDCT <span className="font-semibold">{alert.edct_time}</span>
-            {alert.original_departure_time && (
-              <span className="text-gray-500"> (was {alert.original_departure_time})</span>
-            )}
+          <span className="text-xs">
+            <span className="text-gray-500 line-through">{alert.original_departure_time ?? ""}</span>
+            {alert.original_departure_time && <span className="text-gray-400 mx-0.5">→</span>}
+            <span className="text-orange-700 font-bold">{alert.edct_time}</span>
           </span>
         )}
         {/* ── NOTAM effective times (inline) ── */}
@@ -419,14 +500,18 @@ function AlertCard({ alert, onAck }: { alert: OpsAlert; onAck: (id: string) => v
           </span>
         )}
         <div className="ml-auto flex items-center gap-1.5 shrink-0">
-          <button
-            type="button"
-            onClick={handleAck}
-            disabled={acking}
-            className="text-xs text-gray-500 hover:text-green-700 hover:bg-green-50 border border-gray-200 hover:border-green-300 rounded px-1.5 py-0.5 transition-colors disabled:opacity-50"
-          >
-            {acking ? "..." : "Dismiss"}
-          </button>
+          {acked ? (
+            <span className="text-xs text-gray-400 bg-gray-100 rounded px-1.5 py-0.5">Ack'd</span>
+          ) : (
+            <button
+              type="button"
+              onClick={handleAck}
+              disabled={acking}
+              className="text-xs text-gray-500 hover:text-green-700 hover:bg-green-50 border border-gray-200 hover:border-green-300 rounded px-1.5 py-0.5 transition-colors disabled:opacity-50"
+            >
+              {acking ? "..." : "Ack"}
+            </button>
+          )}
           <span className="text-gray-400 text-xs">{expanded ? "▲" : "▼"}</span>
         </div>
       </button>
@@ -458,14 +543,6 @@ function AlertCard({ alert, onAck }: { alert: OpsAlert; onAck: (id: string) => v
                     {notamTimes?.to === "PERM"
                       ? "PERM"
                       : fmtNotamDate(nd?.effective_end ?? null, nd?.end_date_utc ?? notamTimes?.to ?? null)}
-                  </span>
-                </div>
-              )}
-              {nd?.issued && (
-                <div>
-                  <span className="text-gray-400">Issued: </span>
-                  <span className="font-mono font-medium text-gray-600">
-                    {fmtNotamDate(nd.issued, null)}
                   </span>
                 </div>
               )}
@@ -540,16 +617,18 @@ function ClientAlertCard({ alert, onDismiss }: { alert: ClientAlert; onDismiss: 
 // ─── Flight card ──────────────────────────────────────────────────────────────
 
 function FlightCard({
-  flight, ackedIds, onAck, clientAlerts, dismissedClientAlerts, onDismissClient,
+  flight, isAcked, showAcknowledged, onAck, clientAlerts, dismissedClientAlerts, onDismissClient,
 }: {
   flight: Flight;
-  ackedIds: Set<string>;
+  isAcked: (a: OpsAlert) => boolean;
+  showAcknowledged: boolean;
   onAck: (id: string) => void;
   clientAlerts: ClientAlert[];
   dismissedClientAlerts: Set<string>;
   onDismissClient: (key: string) => void;
 }) {
-  const alerts = (flight.alerts ?? []).filter((a) => !ackedIds.has(a.id));
+  const visibleAlerts = (flight.alerts ?? []).filter((a) => showAcknowledged || !isAcked(a));
+  const alerts = visibleAlerts;
   const activeClientAlerts = clientAlerts.filter((ca) => !dismissedClientAlerts.has(ca.key));
   const hasCritical = alerts.some((a) => a.severity === "critical");
   const hasWarning = alerts.some((a) => a.severity === "warning");
@@ -573,9 +652,17 @@ function FlightCard({
       <div className="px-4 py-3 flex items-center justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">
           <div className="flex items-center gap-1.5 text-base font-bold font-mono tracking-wide shrink-0">
-            <span>{flight.departure_icao ?? "????"}</span>
+            {flight.departure_icao ? (
+              <Link href={`/ops/airport/${flight.departure_icao}`} className="hover:text-blue-700 hover:underline transition-colors">
+                {flight.departure_icao}
+              </Link>
+            ) : <span>????</span>}
             <span className="text-gray-400 text-sm">→</span>
-            <span>{flight.arrival_icao ?? "????"}</span>
+            {flight.arrival_icao ? (
+              <Link href={`/ops/airport/${flight.arrival_icao}`} className="hover:text-blue-700 hover:underline transition-colors">
+                {flight.arrival_icao}
+              </Link>
+            ) : <span>????</span>}
           </div>
           <div className="text-xs text-gray-600 truncate">
             <span className="font-medium">{fmtTime(flight.scheduled_departure)}</span>
@@ -618,7 +705,7 @@ function FlightCard({
       {/* Alerts (server + client) */}
       {totalAlertCount > 0 && (
         <div className="px-3 pb-3 space-y-1.5">
-          {alerts.map((a) => <AlertCard key={a.id} alert={a} onAck={onAck} />)}
+          {alerts.map((a) => <AlertCard key={a.id} alert={a} onAck={onAck} acked={isAcked(a)} />)}
           {activeClientAlerts.map((ca) => (
             <ClientAlertCard key={ca.key} alert={ca} onDismiss={onDismissClient} />
           ))}
@@ -659,21 +746,33 @@ function DayHeader({ dateStr, flightCount, criticalCount, warningCount }: {
 // ─── Main board ───────────────────────────────────────────────────────────────
 
 function filterAlerts(flights: Flight[]): Flight[] {
-  return flights.map((f) => ({
-    ...f,
-    alerts: (f.alerts ?? []).filter((a) => ALERT_TYPES_SHOWN.has(a.alert_type)),
-  }));
+  return flights.map((f) => {
+    const shown = (f.alerts ?? []).filter((a) => ALERT_TYPES_SHOWN.has(a.alert_type));
+    // Deduplicate NOTAMs by subject (NOTAM number) + airport to avoid
+    // the same NOTAM appearing multiple times for one flight.
+    const seen = new Set<string>();
+    const deduped = shown.filter((a) => {
+      if (!a.alert_type.startsWith("NOTAM")) return true;
+      const key = `${a.subject ?? ""}|${a.airport_icao ?? ""}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    return { ...f, alerts: deduped };
+  });
 }
 
-export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] }) {
+export default function OpsBoard({ initialFlights, bakerPprAirports }: { initialFlights: Flight[]; bakerPprAirports: string[] }) {
   const now = useMemo(() => new Date(), []);
+  const BAKER_PPR_AIRPORTS = useMemo(() => new Set(bakerPprAirports), [bakerPprAirports]);
   const [activeFilter, setActiveFilter] = useState<AlertFilter>("ALL");
   const [notamSub, setNotamSub] = useState<NotamSubFilter>("ALL_NOTAMS");
   const [pprSub, setPprSub] = useState<PprSubFilter>("ALL_PPR");
-  const [flightTypeFilter, setFlightTypeFilter] = useState<Set<string>>(new Set(["Revenue", "Positioning"]));
+  const [flightTypeFilter, setFlightTypeFilter] = useState<Set<string>>(new Set(["Charter", "Revenue", "Positioning"]));
   const [showAllTypes, setShowAllTypes] = useState(false);
   const [activeRange, setActiveRange] = useState<TimeRange>("7D");
-  const [ackedIds, setAckedIds] = useState<Set<string>>(new Set());
+  const [localAckedIds, setLocalAckedIds] = useState<Set<string>>(new Set());
+  const [showAcknowledged, setShowAcknowledged] = useState(false);
   const [dismissedClientAlerts, setDismissedClientAlerts] = useState<Set<string>>(new Set());
 
   // Load dismissed client alerts from localStorage on mount
@@ -682,14 +781,12 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
   }, []);
 
   const handleAck = useCallback((id: string) => {
-    setAckedIds((prev) => new Set(prev).add(id));
-  }, []);
-
-  // Acknowledge + server call (for EDCT status box dismiss buttons)
-  const handleAckWithApi = useCallback((id: string) => {
-    setAckedIds((prev) => new Set(prev).add(id));
+    setLocalAckedIds((prev) => new Set(prev).add(id));
     fetch(`/api/ops/alerts/${id}/acknowledge`, { method: "POST" }).catch(() => {});
   }, []);
+
+  // An alert is "acknowledged" if the server has it acked OR we optimistically acked it
+  const isAcked = useCallback((a: OpsAlert) => a.acknowledged_at != null || localAckedIds.has(a.id), [localAckedIds]);
 
   const handleDismissClient = useCallback((key: string) => {
     setDismissedClientAlerts((prev) => {
@@ -751,12 +848,28 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
         });
       }
 
+      // Baker PPR airports
+      const pprSeen = new Set<string>();
+      for (const icao of [f.departure_icao, f.arrival_icao]) {
+        if (icao && BAKER_PPR_AIRPORTS.has(icao) && !pprSeen.has(icao)) {
+          pprSeen.add(icao);
+          alerts.push({
+            key: `baker-ppr-${icao}-${f.id}`,
+            flightId: f.id,
+            type: "BAKER_PPR",
+            label: "Baker PPR",
+            severity: "info",
+            message: `${icao} — Baker PPR required`,
+          });
+        }
+      }
+
       if (alerts.length > 0) {
         map.set(f.id, alerts);
       }
     }
     return map;
-  }, [withFilteredAlerts]);
+  }, [withFilteredAlerts, BAKER_PPR_AIRPORTS]);
 
   // Apply time range
   const cutoff = useMemo(() => {
@@ -818,7 +931,7 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
     }
 
     return timeFiltered;
-  }, [timeFiltered, activeFilter, notamSub, pprSub]);
+  }, [timeFiltered, activeFilter, notamSub, pprSub, BAKER_PPR_AIRPORTS]);
 
   // Apply flight type filter on top of alert filter
   const filtered = useMemo(() => {
@@ -861,11 +974,11 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
 
   // Stats
   const totalFlights = timeFiltered.length;
-  const totalAlerts = timeFiltered.reduce((n, f) => n + (f.alerts?.filter((a) => !ackedIds.has(a.id)).length ?? 0), 0);
-  const criticalFlights = timeFiltered.filter((f) => f.alerts?.some((a) => a.severity === "critical" && !ackedIds.has(a.id))).length;
+  const totalAlerts = timeFiltered.reduce((n, f) => n + (f.alerts?.filter((a) => !isAcked(a)).length ?? 0), 0);
+  const criticalFlights = timeFiltered.filter((f) => f.alerts?.some((a) => a.severity === "critical" && !isAcked(a))).length;
   const warningFlights = timeFiltered.filter((f) =>
-    f.alerts?.some((a) => a.severity === "warning" && !ackedIds.has(a.id)) &&
-    !f.alerts?.some((a) => a.severity === "critical" && !ackedIds.has(a.id))
+    f.alerts?.some((a) => a.severity === "warning" && !isAcked(a)) &&
+    !f.alerts?.some((a) => a.severity === "critical" && !isAcked(a))
   ).length;
 
   // Alert counts per category (for pill badges)
@@ -875,7 +988,7 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
     for (const f of timeFiltered) {
       // Server alerts — count flights with NOTAM alerts
       for (const a of f.alerts ?? []) {
-        if (ackedIds.has(a.id)) continue;
+        if (isAcked(a)) continue;
         if (a.alert_type.startsWith("NOTAM") && !flightsCounted.NOTAMS.has(f.id)) {
           counts.NOTAMS++;
           flightsCounted.NOTAMS.add(f.id);
@@ -906,19 +1019,19 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
       }
     }
     return counts;
-  }, [timeFiltered, ackedIds, clientAlertsByFlight, dismissedClientAlerts]);
+  }, [timeFiltered, isAcked, clientAlertsByFlight, dismissedClientAlerts, BAKER_PPR_AIRPORTS]);
 
-  // EDCT alerts for status box: unacknowledged, future or within last 5 hours
+  // EDCT alerts for status box: unacknowledged, future or within last 24 hours
   const edctAlerts = useMemo(() => {
-    const fiveHoursAgo = new Date(now.getTime() - 5 * 3600000);
+    const lookback = new Date(now.getTime() - 24 * 3600000);
     const results: { alert: OpsAlert; flight: Flight | null }[] = [];
     for (const f of withFilteredAlerts) {
       for (const a of f.alerts ?? []) {
         if (a.alert_type !== "EDCT") continue;
-        if (ackedIds.has(a.id)) continue;
-        // Show if flight departs in the future or within last 5 hours
+        if (isAcked(a)) continue;
+        // Show if flight departs in the future or within last 24 hours
         const depTime = new Date(f.scheduled_departure);
-        if (depTime >= fiveHoursAgo) {
+        if (depTime >= lookback) {
           results.push({ alert: a, flight: f });
         }
       }
@@ -930,55 +1043,54 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
       return tA.localeCompare(tB);
     });
     return results;
-  }, [withFilteredAlerts, ackedIds, now]);
+  }, [withFilteredAlerts, isAcked, now]);
 
   return (
     <div className="p-4 sm:p-6 space-y-4 bg-gray-50 min-h-screen">
-      {/* EDCT Status Box */}
-      {edctAlerts.length > 0 && (
-        <div className="rounded-xl border-2 border-orange-300 bg-orange-50 shadow-sm overflow-hidden">
-          <div className="px-4 py-2.5 bg-orange-100 border-b border-orange-200 flex items-center gap-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-orange-500 animate-pulse" />
-            <span className="text-sm font-bold text-orange-900">EDCT / Ground Delays</span>
-            <span className="text-xs font-semibold bg-orange-200 text-orange-800 rounded-full px-2 py-0.5">
-              {edctAlerts.length}
-            </span>
-          </div>
+      {/* EDCT Status Box — always visible */}
+      <div className={`rounded-xl border-2 shadow-sm overflow-hidden ${
+        edctAlerts.length > 0
+          ? "border-orange-300 bg-orange-50"
+          : "border-green-300 bg-green-50"
+      }`}>
+        <div className={`px-4 py-2.5 border-b flex items-center gap-2 ${
+          edctAlerts.length > 0
+            ? "bg-orange-100 border-orange-200"
+            : "bg-green-100 border-green-200"
+        }`}>
+          {edctAlerts.length > 0 ? (
+            <>
+              <span className="w-2.5 h-2.5 rounded-full bg-orange-500 animate-pulse" />
+              <span className="text-sm font-bold text-orange-900">EDCT / Ground Delays</span>
+              <span className="text-xs font-semibold bg-orange-200 text-orange-800 rounded-full px-2 py-0.5">
+                {edctAlerts.length}
+              </span>
+            </>
+          ) : (
+            <>
+              <span className="w-2.5 h-2.5 rounded-full bg-green-500" />
+              <span className="text-sm font-bold text-green-900">EDCT / Ground Delays</span>
+              <span className="text-xs font-semibold bg-green-200 text-green-800 rounded-full px-2 py-0.5">
+                Clear
+              </span>
+            </>
+          )}
+          <span className="ml-auto text-xs text-gray-400">
+            Checked every 5 min via ForeFlight
+          </span>
+        </div>
+        {edctAlerts.length > 0 ? (
           <div className="p-3 space-y-2">
             {edctAlerts.map(({ alert, flight }) => (
-              <div key={alert.id} className="flex items-center gap-3 bg-white rounded-lg border border-orange-200 px-3 py-2 text-sm">
-                <span className={`w-2 h-2 rounded-full shrink-0 ${alert.severity === "critical" ? "bg-red-500" : "bg-orange-500"}`} />
-                {flight && (
-                  <span className="font-mono font-bold text-gray-800 text-xs">
-                    {flight.departure_icao ?? "????"} → {flight.arrival_icao ?? "????"}
-                  </span>
-                )}
-                {flight?.tail_number && (
-                  <span className="font-mono text-xs text-gray-600 bg-gray-100 rounded px-1.5 py-0.5">{flight.tail_number}</span>
-                )}
-                <span className="text-orange-800 text-xs font-semibold">
-                  EDCT {alert.edct_time ?? "—"}
-                  {alert.original_departure_time && (
-                    <span className="text-gray-500 font-normal"> (was {alert.original_departure_time})</span>
-                  )}
-                </span>
-                {flight && (
-                  <span className="text-xs text-gray-500">
-                    Dep {fmtTime(flight.scheduled_departure)}
-                  </span>
-                )}
-                <button
-                  type="button"
-                  onClick={() => handleAckWithApi(alert.id)}
-                  className="ml-auto text-xs text-gray-500 hover:text-green-700 hover:bg-green-50 border border-gray-200 hover:border-green-300 rounded px-1.5 py-0.5 transition-colors"
-                >
-                  Dismiss
-                </button>
-              </div>
+              <EdctRow key={alert.id} alert={alert} flight={flight} onDismiss={handleAck} fmtTime={fmtTime} />
             ))}
           </div>
-        </div>
-      )}
+        ) : (
+          <div className="px-4 py-3 text-sm text-green-700">
+            No active EDCT delays or ground stops
+          </div>
+        )}
+      </div>
 
       {/* Summary bar */}
       <div className="rounded-xl border bg-white shadow-sm px-5 py-4 flex items-center gap-6 flex-wrap">
@@ -1065,6 +1177,32 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
                 </button>
               );
             })}
+          </div>
+
+          {/* Unacknowledged / All toggle */}
+          <div className="flex rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm ml-auto">
+            <button
+              type="button"
+              onClick={() => setShowAcknowledged(false)}
+              className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+                !showAcknowledged
+                  ? "bg-slate-800 text-white shadow-sm"
+                  : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
+              }`}
+            >
+              Unacknowledged
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowAcknowledged(true)}
+              className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+                showAcknowledged
+                  ? "bg-slate-800 text-white shadow-sm"
+                  : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
+              }`}
+            >
+              All
+            </button>
           </div>
         </div>
 
@@ -1182,11 +1320,11 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
         <div className="space-y-1">
           {byDay.map(({ date, flights: dayFlights }) => {
             const dayCritical = dayFlights.filter((f) =>
-              f.alerts?.some((a) => a.severity === "critical" && !ackedIds.has(a.id))
+              f.alerts?.some((a) => a.severity === "critical" && !isAcked(a))
             ).length;
             const dayWarning = dayFlights.filter((f) =>
-              f.alerts?.some((a) => a.severity === "warning" && !ackedIds.has(a.id)) &&
-              !f.alerts?.some((a) => a.severity === "critical" && !ackedIds.has(a.id))
+              f.alerts?.some((a) => a.severity === "warning" && !isAcked(a)) &&
+              !f.alerts?.some((a) => a.severity === "critical" && !isAcked(a))
             ).length;
 
             return (
@@ -1202,7 +1340,8 @@ export default function OpsBoard({ initialFlights }: { initialFlights: Flight[] 
                     <FlightCard
                       key={f.id}
                       flight={f}
-                      ackedIds={ackedIds}
+                      isAcked={isAcked}
+                      showAcknowledged={showAcknowledged}
                       onAck={handleAck}
                       clientAlerts={clientAlertsByFlight.get(f.id) ?? []}
                       dismissedClientAlerts={dismissedClientAlerts}

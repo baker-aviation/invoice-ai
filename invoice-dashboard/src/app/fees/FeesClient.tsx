@@ -51,6 +51,14 @@ interface VendorRow {
   total: number;
 }
 
+interface UploadInfo {
+  batch: string;
+  uploadedAt: string;
+  rowCount: number;
+  minDate?: string;
+  maxDate?: string;
+}
+
 /* ── helpers ────────────────────────────────────────── */
 const fmt = (n: number) =>
   n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
@@ -60,6 +68,17 @@ const COLORS = [
   "#0891b2", "#4f46e5", "#c026d3", "#d97706", "#0d9488",
   "#6366f1", "#e11d48", "#65a30d", "#0284c7", "#9333ea",
 ];
+
+function formatDate(iso: string) {
+  return new Date(iso).toLocaleDateString("en-US", {
+    month: "short", day: "numeric", year: "numeric",
+    hour: "numeric", minute: "2-digit",
+  });
+}
+
+function formatDateShort(iso: string) {
+  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
 
 /* ── component ──────────────────────────────────────── */
 export default function FeesClient() {
@@ -88,8 +107,20 @@ export default function FeesClient() {
     topVendors: VendorRow[];
   } | null>(null);
 
+  // Upload state
+  const [uploading, setUploading] = useState(false);
+  const [showFormatInfo, setShowFormatInfo] = useState(false);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [uploadResult, setUploadResult] = useState<{
+    inserted: number;
+    skipped: number;
+    totalParsed: number;
+  } | null>(null);
+  const [uploads, setUploads] = useState<UploadInfo[]>([]);
+  const [showUploads, setShowUploads] = useState(false);
+
   // Load summary
-  useEffect(() => {
+  const loadSummary = useCallback(() => {
     setLoading(true);
     fetch("/api/fees?view=summary", { cache: "no-store" })
       .then((r) => r.json())
@@ -104,13 +135,71 @@ export default function FeesClient() {
       .finally(() => setLoading(false));
   }, []);
 
+  useEffect(() => { loadSummary(); }, [loadSummary]);
+
+  // Load uploads
+  const loadUploads = useCallback(() => {
+    fetch("/api/fees?view=uploads", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.ok) setUploads(d.uploads);
+      });
+  }, []);
+
+  useEffect(() => {
+    if (showUploads) loadUploads();
+  }, [showUploads, loadUploads]);
+
+  // Handle file selection — show format confirmation first
+  function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = "";
+    setPendingFile(file);
+    setShowFormatInfo(true);
+    setUploadResult(null);
+    setError(null);
+  }
+
+  // Handle confirmed upload
+  async function handleConfirmUpload() {
+    if (!pendingFile) return;
+
+    setShowFormatInfo(false);
+    setUploading(true);
+
+    try {
+      const form = new FormData();
+      form.append("file", pendingFile);
+
+      const res = await fetch("/api/fees/upload", { method: "POST", body: form });
+      const data = await res.json();
+
+      if (!res.ok) {
+        setError(data.error || "Upload failed");
+        return;
+      }
+
+      setUploadResult({ inserted: data.inserted, skipped: data.skipped, totalParsed: data.totalParsed });
+      loadSummary();
+      if (showUploads) loadUploads();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setUploading(false);
+      setPendingFile(null);
+    }
+  }
+
+  function handleCancelUpload() {
+    setShowFormatInfo(false);
+    setPendingFile(null);
+  }
+
   // Load category drill-down
   const loadCategoryView = useCallback(
     (cat: string, month: string) => {
-      if (!cat) {
-        setCategoryData(null);
-        return;
-      }
+      if (!cat) { setCategoryData(null); return; }
       const params = new URLSearchParams({ view: "by-category", category: cat });
       if (month) params.set("month", month);
       fetch(`/api/fees?${params}`, { cache: "no-store" })
@@ -127,10 +216,7 @@ export default function FeesClient() {
   // Load airport drill-down
   const loadAirportView = useCallback(
     (apt: string, month: string) => {
-      if (!apt) {
-        setAirportData(null);
-        return;
-      }
+      if (!apt) { setAirportData(null); return; }
       const params = new URLSearchParams({ view: "by-airport", airport: apt });
       if (month) params.set("month", month);
       fetch(`/api/fees?${params}`, { cache: "no-store" })
@@ -144,17 +230,12 @@ export default function FeesClient() {
     [],
   );
 
-  // Trigger drill-down on filter change
   useEffect(() => {
-    if (view === "category" && selectedCategory) {
-      loadCategoryView(selectedCategory, selectedMonth);
-    }
+    if (view === "category" && selectedCategory) loadCategoryView(selectedCategory, selectedMonth);
   }, [view, selectedCategory, selectedMonth, loadCategoryView]);
 
   useEffect(() => {
-    if (view === "airport" && selectedAirport) {
-      loadAirportView(selectedAirport, selectedMonth);
-    }
+    if (view === "airport" && selectedAirport) loadAirportView(selectedAirport, selectedMonth);
   }, [view, selectedAirport, selectedMonth, loadAirportView]);
 
   if (loading) {
@@ -165,16 +246,136 @@ export default function FeesClient() {
     );
   }
 
-  if (error) {
-    return (
-      <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-red-700 text-sm">
-        {error}
-      </div>
-    );
-  }
-
   return (
     <div className="space-y-6">
+      {/* ── Upload bar ── */}
+      <div className="flex flex-wrap items-center gap-3 rounded-xl border border-gray-200 bg-white p-4">
+        <label className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium text-white transition-colors cursor-pointer ${uploading ? "bg-gray-400" : "bg-blue-600 hover:bg-blue-700"}`}>
+          {uploading ? (
+            <>
+              <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />
+              Uploading…
+            </>
+          ) : (
+            <>
+              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+              </svg>
+              Upload Expense CSV
+            </>
+          )}
+          <input
+            type="file"
+            accept=".csv"
+            onChange={handleFileSelect}
+            disabled={uploading}
+            className="hidden"
+          />
+        </label>
+
+        <button
+          onClick={() => setShowUploads(!showUploads)}
+          className="text-sm text-blue-600 hover:text-blue-800 font-medium"
+        >
+          {showUploads ? "Hide" : "Show"} upload history
+        </button>
+
+        {uploadResult && (
+          <span className="text-sm text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-1.5">
+            {uploadResult.inserted} new rows added, {uploadResult.skipped} duplicates skipped
+            (of {uploadResult.totalParsed} parsed)
+          </span>
+        )}
+      </div>
+
+      {/* ── Format confirmation dialog ── */}
+      {showFormatInfo && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-2xl shadow-xl max-w-lg w-full mx-4 p-6 space-y-4">
+            <h3 className="text-lg font-semibold text-gray-900">CSV Format Required</h3>
+            <p className="text-sm text-gray-600">
+              Your CSV must have these columns in this exact order:
+            </p>
+            <div className="bg-gray-50 rounded-lg p-3 font-mono text-xs text-gray-700 overflow-x-auto">
+              Date, Vendor, Category, Receipts, Airport, FBO, Bill to, Created by, Gallons, Amount, Repeats
+            </div>
+            <div className="text-sm text-gray-500 space-y-1">
+              <p><span className="font-medium text-gray-700">Date:</span> MM/DD/YY or MM/DD/YYYY</p>
+              <p><span className="font-medium text-gray-700">Amount:</span> $1,234.56 or 1234.56 (TBD/N/A rows are skipped)</p>
+              <p><span className="font-medium text-gray-700">Duplicates:</span> Rows matching the same date + airport + vendor + amount are automatically skipped</p>
+            </div>
+            <p className="text-sm text-gray-500">
+              This matches the <span className="font-medium">Analytics &gt; Accounting &gt; Expenses</span> export from your accounting software.
+            </p>
+            {pendingFile && (
+              <div className="flex items-center gap-2 text-sm text-gray-600 bg-blue-50 rounded-lg px-3 py-2">
+                <svg className="h-4 w-4 text-blue-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                <span className="truncate">{pendingFile.name}</span>
+                <span className="text-gray-400 shrink-0">({(pendingFile.size / 1024).toFixed(0)} KB)</span>
+              </div>
+            )}
+            <div className="flex gap-3 pt-2">
+              <button
+                onClick={handleConfirmUpload}
+                className="flex-1 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700 transition-colors"
+              >
+                Upload
+              </button>
+              <button
+                onClick={handleCancelUpload}
+                className="flex-1 rounded-lg border border-gray-300 px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Upload history ── */}
+      {showUploads && (
+        <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
+          <div className="px-4 pt-4 pb-2">
+            <h3 className="text-sm font-semibold text-gray-700">Upload History</h3>
+          </div>
+          {uploads.length === 0 ? (
+            <p className="px-4 pb-4 text-sm text-gray-400">No uploads yet — upload a CSV to get started.</p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <th className="px-4 py-3">Uploaded</th>
+                  <th className="px-4 py-3">Date Range</th>
+                  <th className="px-4 py-3 text-right">Rows</th>
+                </tr>
+              </thead>
+              <tbody>
+                {uploads.map((u) => (
+                  <tr key={u.batch} className="border-t hover:bg-gray-50">
+                    <td className="px-4 py-2.5 text-gray-700">{formatDate(u.uploadedAt)}</td>
+                    <td className="px-4 py-2.5 text-gray-500">
+                      {u.minDate && u.maxDate
+                        ? `${formatDateShort(u.minDate)} – ${formatDateShort(u.maxDate)}`
+                        : "—"}
+                    </td>
+                    <td className="px-4 py-2.5 text-right text-gray-600 font-medium">{u.rowCount}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      {/* ── Error ── */}
+      {error && (
+        <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-red-700 text-sm">
+          {error}
+        </div>
+      )}
+
       {/* ── Tab bar + month filter ── */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex bg-gray-100 rounded-lg p-0.5">
@@ -215,7 +416,6 @@ export default function FeesClient() {
       {/* ── Category view ── */}
       {view === "category" && (
         <div className="space-y-6">
-          {/* Category selector cards */}
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
             {categories.map((cat) => (
               <button
@@ -236,14 +436,12 @@ export default function FeesClient() {
             ))}
           </div>
 
-          {/* Drill-down: selected category */}
           {selectedCategory && categoryData && (
             <div className="space-y-6">
               <h2 className="text-lg font-semibold text-gray-900">
                 {selectedCategory} — Top Locations
               </h2>
 
-              {/* Bar chart */}
               {categoryData.byAirport.length > 0 && (
                 <div className="rounded-xl border border-gray-200 bg-white p-4">
                   <h3 className="text-sm font-medium text-gray-600 mb-3">
@@ -274,7 +472,6 @@ export default function FeesClient() {
                 </div>
               )}
 
-              {/* Monthly trend */}
               {categoryData.monthlyTrend.length > 1 && (
                 <div className="rounded-xl border border-gray-200 bg-white p-4">
                   <h3 className="text-sm font-medium text-gray-600 mb-3">Monthly trend</h3>
@@ -299,7 +496,6 @@ export default function FeesClient() {
                 </div>
               )}
 
-              {/* Table */}
               <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
                 <table className="w-full text-sm">
                   <thead>
@@ -363,7 +559,6 @@ export default function FeesClient() {
                 {selectedAirport} — Fee Breakdown
               </h2>
 
-              {/* Bar chart by category */}
               {airportData.byCategory.length > 0 && (
                 <div className="rounded-xl border border-gray-200 bg-white p-4">
                   <h3 className="text-sm font-medium text-gray-600 mb-3">
@@ -401,7 +596,6 @@ export default function FeesClient() {
                 </div>
               )}
 
-              {/* Fee categories table */}
               <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
                 <h3 className="text-sm font-medium text-gray-600 px-4 pt-4 pb-2">
                   All fees at {selectedAirport}
@@ -432,7 +626,6 @@ export default function FeesClient() {
                 </table>
               </div>
 
-              {/* Top vendors */}
               {airportData.topVendors.length > 0 && (
                 <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
                   <h3 className="text-sm font-medium text-gray-600 px-4 pt-4 pb-2">

@@ -6,9 +6,10 @@ from pypdf import PdfReader, PdfWriter
 REF_RE = re.compile(r"\bRef Number\s+([A-Z0-9-]+)\b", re.IGNORECASE)
 INV_RE = re.compile(r"\bInvoice\s+(?:No\.?|Number)?\s*[:#]?\s*([A-Z0-9-]+)\b", re.IGNORECASE)
 CREDIT_RE = re.compile(r"\bCredit Memo No\.?\s*[:#]?\s*([A-Z0-9-]+)\b", re.IGNORECASE)
+FUEL_TICKET_RE = re.compile(r"\bFUEL\s+TICKET\s+(\d{4,})\b", re.IGNORECASE)
 
 def page_invoice_id(text: str) -> Optional[str]:
-    for rx in (REF_RE, CREDIT_RE, INV_RE):
+    for rx in (FUEL_TICKET_RE, REF_RE, CREDIT_RE, INV_RE):
         m = rx.search(text or "")
         if m:
             return m.group(1).strip()

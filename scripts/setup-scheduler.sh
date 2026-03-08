@@ -30,6 +30,21 @@ ALERTS_URL="https://invoice-alerts-${PROJECT_NUM}.${BASE}"
 JOB_INGEST_URL="https://job-ingest-${PROJECT_NUM}.${BASE}"
 JOB_PARSE_URL="https://job-parse-${PROJECT_NUM}.${BASE}"
 
+# OIDC auth — Cloud Run requires an identity token for authenticated invocations.
+# The audience must be the *real* service URL (the hashed one, not the project-number one).
+SA_EMAIL="${PROJECT_NUM}-compute@developer.gserviceaccount.com"
+
+lookup_url() {
+  gcloud run services describe "$1" \
+    --project "$PROJECT_ID" --region "$REGION" \
+    --format "value(status.url)" 2>/dev/null || true
+}
+
+INGEST_AUD=$(lookup_url invoice-ingest)
+ALERTS_AUD=$(lookup_url invoice-alerts)
+JOB_INGEST_AUD=$(lookup_url job-ingest)
+JOB_PARSE_AUD=$(lookup_url job-parse)
+
 # ── Helper ────────────────────────────────────────────────────────────────────
 # Creates a scheduler job, or updates it if it already exists.
 upsert_job() {
@@ -39,28 +54,26 @@ upsert_job() {
 
   if gcloud scheduler jobs describe "$name" \
        --project "$PROJECT_ID" --location "$SCHEDULER_REGION" &>/dev/null; then
-    echo "  ↻ updating  $name"
-    gcloud scheduler jobs update http "$name" \
+    # gcloud update won't add OIDC auth to a job that was created without it.
+    # Delete + recreate to ensure auth config is applied cleanly.
+    echo "  ↻ replacing  $name"
+    gcloud scheduler jobs delete "$name" \
       --project "$PROJECT_ID" \
       --location "$SCHEDULER_REGION" \
-      --schedule "$schedule" \
-      --uri "$uri" \
-      --http-method POST \
-      --time-zone "$TIME_ZONE" \
-      --quiet \
-      "$@"
+      --quiet 2>/dev/null || true
   else
     echo "  + creating  $name"
-    gcloud scheduler jobs create http "$name" \
-      --project "$PROJECT_ID" \
-      --location "$SCHEDULER_REGION" \
-      --schedule "$schedule" \
-      --uri "$uri" \
-      --http-method POST \
-      --time-zone "$TIME_ZONE" \
-      --quiet \
-      "$@"
   fi
+
+  gcloud scheduler jobs create http "$name" \
+    --project "$PROJECT_ID" \
+    --location "$SCHEDULER_REGION" \
+    --schedule "$schedule" \
+    --uri "$uri" \
+    --http-method POST \
+    --time-zone "$TIME_ZONE" \
+    --quiet \
+    "$@"
 }
 
 echo ""
@@ -76,29 +89,39 @@ echo "── Invoice pipeline"
 # Step 1: pull emails from Outlook → GCS + Supabase (status=uploaded)
 upsert_job "invoice-pull-mailbox" "*/15 * * * *" \
   "${INGEST_URL}/jobs/pull_mailbox?mailbox=${INVOICE_MAILBOX}&lookback_minutes=20&max_messages=50" \
-  --description "Pull invoice PDFs from Outlook mailbox into GCS"
+  --description "Pull invoice PDFs from Outlook mailbox into GCS" \
+  --oidc-service-account-email "$SA_EMAIL" \
+  --oidc-token-audience "$INGEST_AUD"
 
 # Step 2: parse uploaded docs via invoice-parser → Supabase (status=parsed)
 upsert_job "invoice-parse-next" "*/15 * * * *" \
   "${INGEST_URL}/jobs/parse_next?limit=10&status=uploaded" \
-  --description "Parse uploaded invoice documents"
+  --description "Parse uploaded invoice documents" \
+  --oidc-service-account-email "$SA_EMAIL" \
+  --oidc-token-audience "$INGEST_AUD"
 
 # Step 3: create alert rows from parsed invoices
 upsert_job "invoice-run-alerts-next" "*/15 * * * *" \
   "${ALERTS_URL}/jobs/run_alerts_next?limit=10&lookback_minutes=30" \
-  --description "Generate alert rows from newly parsed invoices"
+  --description "Generate alert rows from newly parsed invoices" \
+  --oidc-service-account-email "$SA_EMAIL" \
+  --oidc-token-audience "$ALERTS_AUD"
 
 # Step 4: extract fuel prices from parsed invoices (also runs inline in run_alerts,
 #         but this catches any previously-parsed invoices that were missed)
 upsert_job "invoice-extract-fuel-prices" "*/15 * * * *" \
   "${ALERTS_URL}/jobs/extract_fuel_prices_next?limit=20&lookback_minutes=60" \
-  --description "Extract fuel prices from recently parsed invoices"
+  --description "Extract fuel prices from recently parsed invoices" \
+  --oidc-service-account-email "$SA_EMAIL" \
+  --oidc-token-audience "$ALERTS_AUD"
 
 # Step 5: flush pending alerts to Slack — kept PAUSED by default to avoid repeat alerts.
 # Resume manually once dedup is confirmed: gcloud scheduler jobs resume invoice-alerts-flush ...
 upsert_job "invoice-alerts-flush" "*/15 * * * *" \
   "${ALERTS_URL}/jobs/flush_alerts?limit=25" \
-  --description "Send actionable alerts to Slack"
+  --description "Send actionable alerts to Slack" \
+  --oidc-service-account-email "$SA_EMAIL" \
+  --oidc-token-audience "$ALERTS_AUD"
 
 echo ""
 echo "── Job applications pipeline"
@@ -106,12 +129,16 @@ echo "── Job applications pipeline"
 # Step 1: pull job application emails → GCS + Supabase (hourly is sufficient)
 upsert_job "job-ingest-pull-applicants" "0 * * * *" \
   "${JOB_INGEST_URL}/jobs/pull_applicants?mailbox=${JOB_MAILBOX}&role_bucket=${JOB_ROLE_BUCKET}&max_messages=50" \
-  --description "Pull job application emails from Outlook into GCS"
+  --description "Pull job application emails from Outlook into GCS" \
+  --oidc-service-account-email "$SA_EMAIL" \
+  --oidc-token-audience "$JOB_INGEST_AUD"
 
 # Step 2: parse applications via OpenAI → Supabase
 upsert_job "job-parse-hourly" "0 * * * *" \
   "${JOB_PARSE_URL}/jobs/parse_next?limit=10" \
-  --description "Parse job applications with OpenAI extraction"
+  --description "Parse job applications with OpenAI extraction" \
+  --oidc-service-account-email "$SA_EMAIL" \
+  --oidc-token-audience "$JOB_PARSE_AUD"
 
 echo ""
 echo "── Ops monitor pipeline"
@@ -131,17 +158,23 @@ else
   # Sync JetInsight ICS feed → flights table (every 30 min)
   upsert_job "ops-sync-schedule" "*/30 * * * *" \
     "${OPS_URL}/jobs/sync_schedule" \
-    --description "Sync JetInsight ICS feed into flights table"
+    --description "Sync JetInsight ICS feed into flights table" \
+    --oidc-service-account-email "$SA_EMAIL" \
+    --oidc-token-audience "$OPS_URL"
 
   # Pull ForeFlight EDCT / ground-delay emails (every 5 min)
   upsert_job "ops-pull-edct" "*/5 * * * *" \
     "${OPS_URL}/jobs/pull_edct" \
-    --description "Pull EDCT and ground delay emails from ForeFlight mailbox"
+    --description "Pull EDCT and ground delay emails from ForeFlight mailbox" \
+    --oidc-service-account-email "$SA_EMAIL" \
+    --oidc-token-audience "$OPS_URL"
 
   # Check FAA NOTAMs for upcoming flight airports (every 30 min)
   upsert_job "ops-check-notams" "*/30 * * * *" \
     "${OPS_URL}/jobs/check_notams" \
-    --description "Check FAA NOTAM API for upcoming flight airports"
+    --description "Check FAA NOTAM API for upcoming flight airports" \
+    --oidc-service-account-email "$SA_EMAIL" \
+    --oidc-token-audience "$OPS_URL"
 fi
 
 echo ""

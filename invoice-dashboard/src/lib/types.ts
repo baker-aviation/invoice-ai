@@ -68,6 +68,7 @@ export type FuelPriceRow = {
   previous_document_id: string | null;
   alert_sent: boolean | null;
   data_source: string | null; // 'invoice' | 'jetinsight'
+  has_additive: boolean;
   created_at: string;
 };
 
@@ -75,6 +76,19 @@ export type FuelPricesResponse = {
   ok: boolean;
   count: number;
   fuel_prices: FuelPriceRow[];
+};
+
+export type AdvertisedPriceRow = {
+  id: number;
+  fbo_vendor: string;
+  airport_code: string;
+  volume_tier: string;
+  product: string;
+  price: number;
+  tail_numbers: string | null;
+  week_start: string;
+  upload_batch: string | null;
+  created_at: string;
 };
 
 /* =========================
@@ -125,6 +139,19 @@ export type JobRow = {
 
   notes: string | null;
   model: string | null;
+
+  structured_notes?: {
+    hr_notes?: string;
+    prd_review_notes?: string;
+    tims_notes?: string;
+    chief_pilot_notes?: string;
+  } | null;
+
+  rejected_at?: string | null;
+  rejection_reason?: string | null;
+  deleted_at?: string | null;
+
+  info_session_data?: Record<string, any> | null;
 
   confidence?: any;
   raw_extraction?: any;

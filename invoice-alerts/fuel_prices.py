@@ -45,12 +45,29 @@ _FUEL_TAX_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Additive line items (FSII / Prist) — included in effective price but flagged
+_ADDITIVE_RE = re.compile(
+    r"\bfsii\b|\bprist\b|\bfuel\s+system\s+icing\b|\banti[\s-]?ic(?:e|ing)\b"
+    r"|\bicing\s+inhibitor\b|\badditive\b",
+    re.IGNORECASE,
+)
+
 # Minimum realistic fuel unit price — jet fuel never costs less than $1/gal
 MIN_FUEL_PRICE = 1.0
 
 # Sanity range for inferred prices (total/qty fallback)
 MIN_INFERRED_PRICE = 3.0   # below $3/gal is almost certainly a fee, not fuel
 MAX_INFERRED_PRICE = 12.0  # above $12/gal is unrealistic for Jet A
+
+
+def _normalize_airport(code: Optional[str]) -> Optional[str]:
+    """KBOS → BOS. Strips ICAO K-prefix for US airports."""
+    if not code:
+        return code
+    c = code.strip().upper()
+    if len(c) == 4 and c.startswith("K") and c[1:].isalpha():
+        return c[1:]
+    return c
 
 
 def _is_fuel_line(desc: str) -> bool:
@@ -171,10 +188,16 @@ def extract_fuel_price(invoice: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     effective_price = fuel_total / fuel_qty if fuel_qty > 0 else base_price
 
+    # Detect if any associated line is an additive (FSII/Prist)
+    has_additive = any(
+        _ADDITIVE_RE.search(str(li.get("description") or li.get("name") or ""))
+        for li in associated
+    )
+
     return {
         "document_id": invoice.get("document_id"),
         "parsed_invoice_id": str(invoice.get("id") or ""),
-        "airport_code": (invoice.get("airport_code") or "").strip().upper() or None,
+        "airport_code": _normalize_airport(invoice.get("airport_code")),
         "vendor_name": invoice.get("vendor_name") or invoice.get("vendor_normalized") or None,
         "tail_number": invoice.get("tail_number"),
         "invoice_date": invoice.get("invoice_date"),
@@ -184,6 +207,7 @@ def extract_fuel_price(invoice: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "gallons": round(fuel_qty, 2),
         "fuel_total": round(fuel_total, 2),
         "associated_line_items": associated,
+        "has_additive": has_additive,
     }
 
 
@@ -199,13 +223,14 @@ def check_price_increase(
     Compare against the most recent fuel price at the same airport.
     Returns increase details if >= PRICE_INCREASE_PCT, else None.
     """
+    airport_code = _normalize_airport(airport_code)
     if not airport_code:
         return None
 
     rows = safe_select_many(
         FUEL_PRICES_TABLE,
         "effective_price_per_gallon, invoice_date, vendor_name, document_id",
-        eq={"airport_code": airport_code.upper()},
+        eq={"airport_code": airport_code},
         order="invoice_date",
         desc=True,
         limit=5,
@@ -264,6 +289,7 @@ def store_fuel_price(
         "currency": data.get("currency", "USD"),
         "associated_line_items": json.dumps(data.get("associated_line_items", [])),
         "data_source": data.get("data_source", "invoice"),
+        "has_additive": data.get("has_additive", False),
         "price_change_pct": increase["price_change_pct"] if increase else None,
         "previous_price": increase["previous_price"] if increase else None,
         "previous_document_id": increase.get("previous_document_id") if increase else None,

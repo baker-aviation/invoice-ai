@@ -129,6 +129,7 @@ function AddCandidateModal({
     total_time_hours: "",
     pic_time_hours: "",
   });
+  const [resumeFile, setResumeFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
@@ -177,6 +178,22 @@ function AddCandidateModal({
       }
 
       const data = await res.json();
+
+      // Upload resume file if provided
+      if (resumeFile && data.application_id && data.id) {
+        try {
+          const fd = new FormData();
+          fd.append("file", resumeFile);
+          fd.append("file_category", "resume");
+          fd.append("parse_id", String(data.id));
+          await fetch(`/api/jobs/${data.application_id}/attach`, {
+            method: "POST",
+            body: fd,
+          });
+        } catch {
+          // Non-blocking — candidate was created, file can be attached later
+        }
+      }
 
       // Build a local JobRow for optimistic UI
       const newJob: JobRow = {
@@ -309,6 +326,16 @@ function AddCandidateModal({
               </div>
             </div>
           )}
+
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Resume (PDF, DOCX)</label>
+            <input
+              type="file"
+              accept=".pdf,.docx,.doc,.txt"
+              onChange={(e) => setResumeFile(e.target.files?.[0] ?? null)}
+              className="block w-full text-sm text-gray-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border file:border-gray-300 file:text-sm file:font-medium file:bg-white file:text-gray-700 hover:file:bg-gray-50"
+            />
+          </div>
 
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">Notes</label>
@@ -618,7 +645,7 @@ export default function PipelineBoard({
               onDragOver={(e) => handleDragOver(e, stage)}
               onDragLeave={handleDragLeave}
               onDrop={(e) => handleDrop(e, stage)}
-              className={`shrink-0 w-[260px] flex flex-col rounded-xl border bg-gray-50 transition-colors ${
+              className={`flex-1 min-w-[200px] flex flex-col rounded-xl border bg-gray-50 transition-colors ${
                 isOver
                   ? "border-blue-400 bg-blue-50/50 ring-2 ring-blue-200"
                   : meta.color

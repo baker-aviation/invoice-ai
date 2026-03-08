@@ -1,5 +1,6 @@
 # ops-monitor/main.py
 import json
+import math
 import os
 import re
 import threading
@@ -25,10 +26,57 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 
-# Support multiple per-aircraft ICS URLs stored as newline-separated list in
-# JETINSIGHT_ICS_URLS, falling back to the legacy single-URL JETINSIGHT_ICS_URL.
+# ICS URLs: prefer database (ics_sources table), fall back to env vars.
 _raw_ics = os.getenv("JETINSIGHT_ICS_URLS") or os.getenv("JETINSIGHT_ICS_URL") or ""
-ICS_URLS: list[str] = [u.strip() for u in _raw_ics.splitlines() if u.strip()]
+_ENV_ICS_URLS: list[str] = [u.strip() for u in _raw_ics.splitlines() if u.strip()]
+# Legacy global kept for debug endpoints that reference it at module level.
+ICS_URLS: list[str] = list(_ENV_ICS_URLS)
+
+
+def _load_ics_urls() -> list[str]:
+    """Load enabled ICS URLs from the ics_sources table, falling back to env."""
+    try:
+        supa = sb()
+        rows = supa.table("ics_sources").select("id,url").eq("enabled", True).execute()
+        db_urls = [r["url"] for r in (rows.data or []) if r.get("url")]
+        if db_urls:
+            return db_urls
+    except Exception as e:
+        print(f"[_load_ics_urls] DB read failed, using env fallback: {e}", flush=True)
+    return list(_ENV_ICS_URLS)
+
+
+def _seed_ics_sources_from_env() -> Dict[str, Any]:
+    """Insert env-var ICS URLs into ics_sources table (skips duplicates)."""
+    if not _ENV_ICS_URLS:
+        return {"seeded": 0, "skipped": 0, "message": "No env var URLs to seed"}
+    supa = sb()
+    existing = supa.table("ics_sources").select("url").execute()
+    existing_urls = {r["url"] for r in (existing.data or [])}
+    seeded = 0
+    skipped = 0
+    for i, url in enumerate(_ENV_ICS_URLS):
+        if url in existing_urls:
+            skipped += 1
+            continue
+        supa.table("ics_sources").insert({
+            "label": f"Aircraft {i + 1}",
+            "url": url,
+            "enabled": True,
+        }).execute()
+        seeded += 1
+    return {"seeded": seeded, "skipped": skipped, "total_env": len(_ENV_ICS_URLS)}
+
+
+def _update_ics_sync_status(supa, url: str, ok: bool) -> None:
+    """Update last_sync_at/last_sync_ok for an ICS source by URL."""
+    try:
+        supa.table("ics_sources").update({
+            "last_sync_at": datetime.now(timezone.utc).isoformat(),
+            "last_sync_ok": ok,
+        }).eq("url", url).execute()
+    except Exception:
+        pass  # non-critical
 SAMSARA_API_KEY = os.getenv("SAMSARA_API_KEY")
 FAA_CLIENT_ID = os.getenv("FAA_CLIENT_ID")
 FAA_CLIENT_SECRET = os.getenv("FAA_CLIENT_SECRET")
@@ -42,9 +90,21 @@ _SKIP_FLIGHT_TYPES = {
 # SUMMARY keywords that indicate a non-flight entry regardless of flight_type.
 _SKIP_SUMMARY_KEYWORDS = {"NOT FLYING"}
 
-# FAA NMS API (production)
-NMS_AUTH_URL = "https://api-nms.aim.faa.gov/v1/auth/token"
-NMS_API_BASE = "https://api-nms.aim.faa.gov/nmsapi"
+
+def _extract_mx_note(summary: str) -> str:
+    """Extract the MX note from a JetInsight maintenance SUMMARY.
+    e.g. '[N553FX] #3 TIRE CHANGE (BED - BED) - Maintenance' → '#3 TIRE CHANGE'
+    """
+    m = re.search(r"\]\s*(.+?)\s*\(", summary)
+    if m:
+        note = m.group(1).strip().rstrip("-–").strip()
+        if note:
+            return note
+    return summary
+
+# FAA NMS API (test environment — swap to production once onboarded)
+NMS_AUTH_URL = "https://api-staging.cgifederal-aim.com/v1/auth/token"
+NMS_API_BASE = "https://api-staging.cgifederal-aim.com/nmsapi"
 
 FOREFLIGHT_MAILBOX = os.getenv("FOREFLIGHT_MAILBOX", "ForeFlight@baker-aviation.com")
 MS_TENANT_ID = os.getenv("MS_TENANT_ID")
@@ -53,6 +113,76 @@ MS_CLIENT_SECRET = os.getenv("MS_CLIENT_SECRET")
 
 FLIGHTS_TABLE = "flights"
 OPS_ALERTS_TABLE = "ops_alerts"
+
+# ─── Airport coordinates for TFR proximity checks ────────────────────────────
+# Baker's common airports + major nearby airports. (lat, lon) in decimal degrees.
+AIRPORT_COORDS: Dict[str, Tuple[float, float]] = {
+    # South Florida
+    "KOPF": (25.9068, -80.2784),   # Opa-locka Executive
+    "KMIA": (25.7959, -80.2870),   # Miami International
+    "KFLL": (26.0726, -80.1527),   # Fort Lauderdale-Hollywood
+    "KFXE": (26.1973, -80.1707),   # Fort Lauderdale Executive
+    "KPBI": (26.6832, -80.0956),   # Palm Beach International
+    "KBCT": (26.3785, -80.1077),   # Boca Raton
+    "KHWO": (26.0012, -80.2407),   # North Perry
+    "KTMB": (25.6479, -80.4328),   # Kendall-Tamiami Executive
+    "KPMP": (26.2471, -80.1111),   # Pompano Beach Airpark
+    # NYC area
+    "KJFK": (40.6413, -73.7781),   # JFK
+    "KLGA": (40.7769, -73.8740),   # LaGuardia
+    "KEWR": (40.6895, -74.1745),   # Newark
+    "KTEB": (40.8501, -74.0608),   # Teterboro
+    "KHPN": (41.0670, -73.7076),   # Westchester County
+    "KFRG": (40.7288, -73.4134),   # Republic (Farmingdale)
+    "KISP": (40.7952, -73.1002),   # Long Island MacArthur
+    "KCDW": (40.8752, -74.2814),   # Essex County
+    "KMMU": (40.7994, -74.4149),   # Morristown Municipal
+    "KSWF": (41.5041, -74.1048),   # Stewart/Newburgh
+    # Washington DC area
+    "KIAD": (38.9474, -77.4599),   # Dulles
+    "KDCA": (38.8512, -77.0402),   # Reagan National
+    "KBWI": (39.1754, -76.6683),   # Baltimore-Washington
+    # Texas
+    "KDAL": (32.8471, -96.8518),   # Dallas Love Field
+    "KDFW": (32.8998, -97.0403),   # Dallas/Fort Worth
+    "KHOU": (29.6454, -95.2789),   # Houston Hobby
+    "KIAH": (29.9902, -95.3368),   # Houston Intercontinental
+    "KAUS": (30.1945, -97.6699),   # Austin-Bergstrom
+    "KSAT": (29.5337, -98.4698),   # San Antonio
+    "KADS": (32.9686, -96.8364),   # Addison
+    "KFTW": (32.8198, -97.3624),   # Fort Worth Meacham
+    # Other major
+    "KATL": (33.6407, -84.4277),   # Atlanta
+    "KORD": (41.9742, -87.9073),   # Chicago O'Hare
+    "KMDW": (41.7868, -87.7522),   # Chicago Midway
+    "KLAX": (33.9416, -118.4085),  # Los Angeles
+    "KVNY": (34.2098, -118.4898),  # Van Nuys
+    "KSFO": (37.6213, -122.3790),  # San Francisco
+    "KLAS": (36.0840, -115.1537),  # Las Vegas
+    "KDEN": (39.8561, -104.6737),  # Denver
+    "KBOS": (42.3656, -71.0096),   # Boston
+    "KPHL": (39.8744, -75.2424),   # Philadelphia
+    "KCLT": (35.2140, -80.9431),   # Charlotte
+    "KMSP": (44.8820, -93.2218),   # Minneapolis
+    "KDTW": (42.2124, -83.3534),   # Detroit
+    "KSEA": (47.4502, -122.3088),  # Seattle
+    "KMCO": (28.4312, -81.3081),   # Orlando
+    "KTPA": (27.9755, -82.5332),   # Tampa
+    "KRSW": (26.5362, -81.7552),   # Southwest Florida (Fort Myers)
+    "KAPF": (26.1526, -81.7753),   # Naples Municipal
+    "KFMY": (26.5866, -81.8633),   # Page Field (Fort Myers)
+    "KJAX": (30.4941, -81.6879),   # Jacksonville
+    "KPDK": (33.8756, -84.3020),   # DeKalb-Peachtree (Atlanta exec)
+    "KASG": (27.7717, -81.5306),   # Springhill (FL)
+    "KOBE": (30.0616, -87.8733),   # Southwest Alabama Regional
+    "KNEW": (30.0424, -90.0283),   # Lakefront (New Orleans)
+    "KMSY": (29.9934, -90.2580),   # Louis Armstrong (New Orleans)
+    "KBNA": (36.1245, -86.6782),   # Nashville
+    "KCHS": (32.8986, -80.0405),   # Charleston
+    "KSAV": (32.1276, -81.2021),   # Savannah
+    "KPNS": (30.4734, -87.1866),   # Pensacola
+    "KVPS": (30.4832, -86.5254),   # Destin-Fort Walton Beach
+}
 
 
 def _extract_notam_dates(raw_data) -> Optional[Dict[str, Optional[str]]]:
@@ -173,12 +303,25 @@ def _graph_get(url: str, token: str, params: Dict = None) -> Dict:
 
 
 def _to_aware(dt) -> Optional[datetime]:
-    """Normalize an icalendar dt value to a timezone-aware datetime."""
+    """Normalize an icalendar dt value to a timezone-aware datetime.
+
+    Naive datetimes (no timezone info) are assumed to be in the timezone
+    specified by ICS_NAIVE_TZ env var (default: America/Chicago for Baker
+    Aviation / Fort Worth).  JetInsight ICS feeds often omit the Z suffix
+    and send local times.
+    """
     if dt is None:
         return None
     if hasattr(dt, "hour"):  # datetime
         if dt.tzinfo is None:
-            return dt.replace(tzinfo=timezone.utc)
+            # Naive datetime — apply configured local timezone, then convert to UTC
+            import zoneinfo
+            tz_name = os.getenv("ICS_NAIVE_TZ", "America/Chicago")
+            try:
+                local_tz = zoneinfo.ZoneInfo(tz_name)
+            except Exception:
+                local_tz = timezone.utc
+            return dt.replace(tzinfo=local_tz).astimezone(timezone.utc)
         return dt.astimezone(timezone.utc)
     # date-only — treat as UTC midnight
     return datetime(dt.year, dt.month, dt.day, tzinfo=timezone.utc)
@@ -476,7 +619,8 @@ def get_flights(
             for a in all_alerts:
                 # Filter out legacy noise RWY NOTAMs already in the DB
                 if a.get("alert_type") == "NOTAM_RUNWAY" and a.get("body"):
-                    if _is_noise_notam(a["body"].upper()):
+                    body_upper = a["body"].upper()
+                    if _is_noise_notam(body_upper) or _is_ignorable_runway(body_upper):
                         continue
                 # Extract NOTAM effective dates from raw_data, then drop
                 # the heavy blob to keep the response small.
@@ -562,20 +706,22 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
     import time as _time
     t0 = _time.monotonic()
 
-    if not ICS_URLS:
-        raise HTTPException(400, "JETINSIGHT_ICS_URLS not configured")
+    # Load ICS URLs from database (with env var fallback)
+    ics_urls = _load_ics_urls()
+    if not ics_urls:
+        raise HTTPException(400, "No ICS sources configured (check admin settings or JETINSIGHT_ICS_URLS env)")
 
     supa = sb()
     now = datetime.now(timezone.utc)
     cutoff = now + timedelta(hours=lookahead_hours)
 
-    print(f"sync_schedule: starting, {len(ICS_URLS)} feeds, lookahead={lookahead_hours}h", flush=True)
+    print(f"sync_schedule: starting, {len(ics_urls)} feeds, lookahead={lookahead_hours}h", flush=True)
 
     # Fetch all feeds in parallel, pre-filtering to only future events
     all_components: list = []
     feed_results: dict = {}
-    pool = ThreadPoolExecutor(max_workers=min(len(ICS_URLS), 8))
-    future_to_url = {pool.submit(_fetch_ics_events, url, now): url for url in ICS_URLS}
+    pool = ThreadPoolExecutor(max_workers=min(len(ics_urls), 8))
+    future_to_url = {pool.submit(_fetch_ics_events, url, now): url for url in ics_urls}
     try:
         for future in as_completed(future_to_url, timeout=60):
             url = future_to_url[future]
@@ -583,21 +729,24 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
                 events = future.result()
                 all_components.extend(events)
                 feed_results[url[-12:]] = len(events)
+                _update_ics_sync_status(supa, url, True)
             except Exception as e:
                 feed_results[url[-12:]] = f"ERR:{repr(e)[:60]}"
                 print(f"ICS fetch error {url[:80]}: {repr(e)}", flush=True)
+                _update_ics_sync_status(supa, url, False)
     except FuturesTimeoutError:
         print("ICS fetch 60s budget exceeded; some feeds may be missing", flush=True)
     finally:
         pool.shutdown(wait=False)
 
     t_fetch = _time.monotonic() - t0
-    print(f"sync_schedule: fetch phase done in {t_fetch:.1f}s, {len(all_components)} future events from {len(feed_results)}/{len(ICS_URLS)} feeds", flush=True)
+    print(f"sync_schedule: fetch phase done in {t_fetch:.1f}s, {len(all_components)} future events from {len(feed_results)}/{len(ics_urls)} feeds", flush=True)
 
     upserted = skipped = errors = 0
 
     # Build batch of flights to upsert
     batch: List[Dict[str, Any]] = []
+    mx_alerts_batch: List[Dict[str, Any]] = []
     for component in all_components:
         try:
             uid = str(component.get("UID", "")).strip()
@@ -628,7 +777,25 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
 
             # ── Filter out non-flight scheduling entries ──────────────────
             # 1. Same departure/arrival = not an aircraft movement
+            #    BUT capture maintenance events as MX_NOTE alerts
             if dep_icao and arr_icao and dep_icao == arr_icao:
+                if flight_type and flight_type.lower() == "maintenance" and tail:
+                    mx_note = _extract_mx_note(summary)
+                    mx_alerts_batch.append({
+                        "alert_type": "MX_NOTE",
+                        "severity": "info",
+                        "airport_icao": dep_icao,
+                        "tail_number": tail,
+                        "subject": f"[{tail}] {mx_note}" if mx_note else f"[{tail}] Maintenance",
+                        "body": mx_note or summary,
+                        "source_message_id": f"mx-{uid}",
+                        "raw_data": {
+                            "start_time": dep_dt.isoformat() if dep_dt else None,
+                            "end_time": arr_dt.isoformat() if arr_dt else None,
+                            "ics_uid": uid,
+                            "summary": summary,
+                        },
+                    })
                 skipped += 1
                 continue
             # 2. Administrative flight types (home-base notes, repo requests)
@@ -640,10 +807,16 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
                 skipped += 1
                 continue
 
+            # Always set ALL fields so stale data gets overwritten on re-sync
             flight: Dict[str, Any] = {
                 "ics_uid": uid,
+                "tail_number": tail,
+                "departure_icao": dep_icao,
+                "arrival_icao": arr_icao,
                 "scheduled_departure": dep_dt.isoformat(),
+                "scheduled_arrival": arr_dt.isoformat() if arr_dt else None,
                 "summary": summary,
+                "flight_type": flight_type,
                 "updated_at": _utc_now(),
                 # Always include all columns so batch upserts don't
                 # nullify existing values on rows with missing keys.
@@ -666,29 +839,29 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
         seen_uids[flight["ics_uid"]] = idx
     batch = [batch[i] for i in sorted(seen_uids.values())]
 
-    # Cross-feed dedup: same physical flight can appear in different per-aircraft
-    # feeds with different ics_uids. Deduplicate by flight identity
-    # (tail, dep_icao, arr_icao, scheduled_departure). Keep first occurrence;
-    # collect extra ics_uids to clean from DB.
-    cross_dup_uids: List[str] = []
-    seen_identity: Dict[str, int] = {}
-    deduped_batch: List[Dict[str, Any]] = []
-    for flight in batch:
-        identity = (
-            flight.get("tail_number", ""),
-            flight.get("departure_icao", ""),
-            flight.get("arrival_icao", ""),
-            flight.get("scheduled_departure", ""),
-        )
-        key = "|".join(identity)
-        if key in seen_identity:
-            cross_dup_uids.append(flight["ics_uid"])
+    # Second dedup: same physical flight can appear across per-aircraft feeds
+    # with DIFFERENT UIDs.  Dedup by (tail, dep_icao, arr_icao, dep_time).
+    # Keep the first occurrence; the duplicate gets its ics_uid recorded for
+    # later cleanup from the DB.
+    pre_dedup = len(batch)
+    flight_sigs: Dict[str, int] = {}
+    dup_uids: List[str] = []
+    for idx, flight in enumerate(batch):
+        tail = flight.get("tail_number", "")
+        dep = flight.get("departure_icao", "")
+        arr = flight.get("arrival_icao", "")
+        dep_t = flight.get("scheduled_departure", "")
+        if tail and dep and arr and dep_t:
+            sig = f"{tail}|{dep}|{arr}|{dep_t}"
+            if sig in flight_sigs:
+                dup_uids.append(flight["ics_uid"])
+                continue
+            flight_sigs[sig] = idx
         else:
-            seen_identity[key] = len(deduped_batch)
-            deduped_batch.append(flight)
-    if cross_dup_uids:
-        print(f"sync_schedule: removed {len(cross_dup_uids)} cross-feed duplicates", flush=True)
-    batch = deduped_batch
+            flight_sigs[flight["ics_uid"]] = idx  # can't dedup, keep it
+    batch = [batch[i] for i in sorted(flight_sigs.values())]
+    if pre_dedup != len(batch):
+        print(f"sync_schedule: cross-feed dedup removed {pre_dedup - len(batch)} duplicate flights", flush=True)
 
     t_parse = _time.monotonic() - t0
     print(f"sync_schedule: parsed {len(batch)} flights to upsert, {skipped} skipped in {t_parse:.1f}s", flush=True)
@@ -711,19 +884,94 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
                     errors += 1
                     print(f"sync_schedule row upsert error uid={row.get('ics_uid','?')}: {repr(row_err)}", flush=True)
 
-    # ── Clean cross-feed dups from DB ────────────────────────────────────
-    if cross_dup_uids:
+    # ── Upsert MX_NOTE alerts from maintenance events ───────────────────
+    mx_created = 0
+    if mx_alerts_batch:
+        print(f"sync_schedule: upserting {len(mx_alerts_batch)} MX_NOTE alerts", flush=True)
         try:
-            for i in range(0, len(cross_dup_uids), 50):
-                chunk_uids = cross_dup_uids[i:i + 50]
+            res = supa.table(OPS_ALERTS_TABLE).upsert(
+                mx_alerts_batch, on_conflict="source_message_id"
+            ).execute()
+            mx_created = len(res.data) if res.data else 0
+        except Exception as e:
+            print(f"sync_schedule MX_NOTE upsert error: {repr(e)}", flush=True)
+
+    # ── Clean cross-feed dups from DB ────────────────────────────────────
+    if dup_uids:
+        try:
+            for i in range(0, len(dup_uids), 50):
+                chunk_uids = dup_uids[i:i + 50]
                 supa.table(FLIGHTS_TABLE).delete().in_("ics_uid", chunk_uids).execute()
-            print(f"sync_schedule: deleted {len(cross_dup_uids)} cross-feed dup rows from DB", flush=True)
+            print(f"sync_schedule: deleted {len(dup_uids)} cross-feed dup rows from DB", flush=True)
         except Exception as e:
             print(f"sync_schedule: cross-feed dup cleanup error: {repr(e)}", flush=True)
 
     # ── Cleanup: remove non-flight entries already in the DB ─────────────
     cleaned = 0
     try:
+        # 0. Purge stale flights: delete DB rows whose ics_uid is no longer in
+        #    the fresh ICS data.  This handles legs that JetInsight removed or
+        #    replaced (new UID).  Scoped to flights departing between now and
+        #    the lookahead cutoff so we don't touch historical rows.
+        fresh_uids = {f["ics_uid"] for f in batch}
+        if fresh_uids:
+            # Fetch all ics_uids currently in the DB within the sync window
+            window_start = now.isoformat()
+            window_end = cutoff.isoformat()
+            db_rows = (
+                supa.table(FLIGHTS_TABLE)
+                .select("id, ics_uid")
+                .gte("scheduled_departure", window_start)
+                .lte("scheduled_departure", window_end)
+                .limit(10000)
+                .execute()
+            )
+            stale_ids = [
+                r["id"] for r in (db_rows.data or [])
+                if r.get("ics_uid") and r["ics_uid"] not in fresh_uids
+            ]
+            for i in range(0, len(stale_ids), 50):
+                chunk_ids = stale_ids[i:i + 50]
+                supa.table(FLIGHTS_TABLE).delete().in_("id", chunk_ids).execute()
+                cleaned += len(chunk_ids)
+            if stale_ids:
+                print(f"sync_schedule: purged {len(stale_ids)} stale flights from DB", flush=True)
+        # 0b. Delete cross-feed duplicates already in the DB — same
+        #     (tail, dep, arr, dep_time) but different ics_uid.
+        if dup_uids:
+            for i in range(0, len(dup_uids), 50):
+                chunk = dup_uids[i:i + 50]
+                supa.table(FLIGHTS_TABLE).delete().in_("ics_uid", chunk).execute()
+                cleaned += len(chunk)
+            print(f"sync_schedule: removed {len(dup_uids)} cross-feed dup flights from DB", flush=True)
+        # Also scan for existing cross-feed dups (from before this fix)
+        dup_scan = (
+            supa.table(FLIGHTS_TABLE)
+            .select("id, tail_number, departure_icao, arrival_icao, scheduled_departure")
+            .gte("scheduled_departure", now.isoformat())
+            .lte("scheduled_departure", cutoff.isoformat())
+            .limit(10000)
+            .execute()
+        )
+        sig_first: Dict[str, str] = {}  # sig → first id
+        dup_db_ids: List[str] = []
+        for r in (dup_scan.data or []):
+            t = r.get("tail_number") or ""
+            d = r.get("departure_icao") or ""
+            a = r.get("arrival_icao") or ""
+            dt = r.get("scheduled_departure") or ""
+            if t and d and a and dt:
+                sig = f"{t}|{d}|{a}|{dt}"
+                if sig in sig_first:
+                    dup_db_ids.append(r["id"])
+                else:
+                    sig_first[sig] = r["id"]
+        for i in range(0, len(dup_db_ids), 50):
+            chunk_ids = dup_db_ids[i:i + 50]
+            supa.table(FLIGHTS_TABLE).delete().in_("id", chunk_ids).execute()
+            cleaned += len(chunk_ids)
+        if dup_db_ids:
+            print(f"sync_schedule: cleaned {len(dup_db_ids)} existing cross-feed dups from DB", flush=True)
         # 1. Delete by known non-flight types
         for skip_type in _SKIP_FLIGHT_TYPES:
             res = supa.table(FLIGHTS_TABLE).delete().eq("flight_type", skip_type).execute()
@@ -751,10 +999,37 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
     except Exception as e:
         print(f"sync_schedule cleanup error: {repr(e)}", flush=True)
 
+    # ── Cleanup: delete future flights that no longer appear in any ICS feed ──
+    # Only run cleanup if we successfully fetched at least 1 feed (avoid
+    # wiping everything if all feeds failed).
+    deleted = 0
+    live_uids = {f["ics_uid"] for f in batch}
+    successful_feeds = sum(1 for v in feed_results.values() if isinstance(v, int))
+    if successful_feeds > 0 and live_uids:
+        try:
+            # Find future flights in DB whose ics_uid is NOT in the current feed
+            existing = supa.table(FLIGHTS_TABLE) \
+                .select("id, ics_uid") \
+                .gte("scheduled_departure", now.isoformat()) \
+                .execute()
+            stale_ids = [
+                row["id"] for row in (existing.data or [])
+                if row["ics_uid"] not in live_uids
+            ]
+            if stale_ids:
+                # Delete in chunks of 50
+                for i in range(0, len(stale_ids), CHUNK):
+                    chunk_ids = stale_ids[i:i + CHUNK]
+                    supa.table(FLIGHTS_TABLE).delete().in_("id", chunk_ids).execute()
+                    deleted += len(chunk_ids)
+                print(f"sync_schedule: deleted {deleted} stale future flights no longer in ICS feeds", flush=True)
+        except Exception as e:
+            print(f"sync_schedule cleanup error: {repr(e)}", flush=True)
+
     t_total = _time.monotonic() - t0
-    print(f"sync_schedule: done in {t_total:.1f}s — upserted={upserted} skipped={skipped} errors={errors} cleaned={cleaned}", flush=True)
-    log_pipeline_run("flight-sync", items=upserted, duration_ms=int(t_total * 1000), message=f"upserted={upserted} skipped={skipped}")
-    return {"ok": True, "upserted": upserted, "skipped": skipped, "errors": errors, "cleaned": cleaned, "fetch_secs": round(t_fetch, 1), "total_secs": round(t_total, 1)}
+    print(f"sync_schedule: done in {t_total:.1f}s — upserted={upserted} skipped={skipped} errors={errors} cleaned={cleaned} deleted={deleted} mx_notes={mx_created}", flush=True)
+    log_pipeline_run("flight-sync", items=upserted, duration_ms=int(t_total * 1000), message=f"upserted={upserted} skipped={skipped} mx_notes={mx_created}")
+    return {"ok": True, "upserted": upserted, "skipped": skipped, "errors": errors, "cleaned": cleaned, "deleted": deleted, "mx_notes": mx_created, "fetch_secs": round(t_fetch, 1), "total_secs": round(t_total, 1)}
 
 
 # ─── Job: pull_edct ───────────────────────────────────────────────────────────
@@ -762,8 +1037,8 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
 
 @app.post("/jobs/pull_edct")
 def pull_edct(
-    lookback_minutes: int = Query(60, ge=1, le=1440),
-    max_messages: int = Query(50, ge=1, le=200),
+    lookback_minutes: int = Query(360, ge=1, le=1440),
+    max_messages: int = Query(100, ge=1, le=200),
 ):
     """
     Pull EDCT / ground delay emails from the ForeFlight mailbox and store alerts.
@@ -807,7 +1082,7 @@ def pull_edct(
 
             res = (
                 supa.table(OPS_ALERTS_TABLE)
-                .upsert(alert, on_conflict="source_message_id", ignore_duplicates=True)
+                .upsert(alert, on_conflict="source_message_id")
                 .execute()
             )
             if res.data:
@@ -899,7 +1174,7 @@ def _parse_edct_email(subject: str, body: str, msg_id: str) -> Dict[str, Any]:
     # Original / proposed departure
     orig_dep = None
     orig_m = re.search(
-        r"(?:Original|Proposed|Filed|Scheduled)\s+(?:Departure|Dep)\s*[:\-]?\s*("
+        r"(?:Original|Proposed|Filed|Scheduled)\s+(?:Departure|Dep)(?:\s+Time)?\s*[:\-]?\s*("
         r"\d{2}/\d{2}/\d{4}\s+\d{4}Z"
         r"|\d{4}Z"
         r"|\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}"
@@ -930,7 +1205,8 @@ def _parse_edct_email(subject: str, body: str, msg_id: str) -> Dict[str, Any]:
 
 
 def _find_flight_for_alert(supa, alert: Dict) -> Optional[str]:
-    """Match an alert to a flight by airport pair within a ±12h window."""
+    """Match an alert to a flight by airport pair within a ±12h window.
+    Also backfills tail_number on the alert from the matched flight."""
     dep = alert.get("departure_icao")
     arr = alert.get("arrival_icao")
     if not dep or not arr:
@@ -939,7 +1215,7 @@ def _find_flight_for_alert(supa, alert: Dict) -> Optional[str]:
     now = datetime.now(timezone.utc)
     res = (
         supa.table(FLIGHTS_TABLE)
-        .select("id")
+        .select("id, tail_number")
         .eq("departure_icao", dep)
         .eq("arrival_icao", arr)
         .gte("scheduled_departure", (now - timedelta(hours=2)).isoformat())
@@ -948,7 +1224,301 @@ def _find_flight_for_alert(supa, alert: Dict) -> Optional[str]:
         .execute()
     )
     rows = res.data or []
-    return rows[0]["id"] if rows else None
+    if not rows:
+        return None
+    # Backfill tail_number from flight if not already parsed from email
+    if not alert.get("tail_number") and rows[0].get("tail_number"):
+        alert["tail_number"] = rows[0]["tail_number"]
+    return rows[0]["id"]
+
+
+# ─── TFR proximity checking (FAA GeoServer WFS API) ──────────────────────────
+
+_TFR_WFS_URL = (
+    "https://tfr.faa.gov/geoserver/TFR/ows"
+    "?service=WFS&version=1.0.0&request=GetFeature"
+    "&typeName=TFR:V_TFR_LOC&outputFormat=application/json&maxFeatures=500"
+)
+
+
+def _haversine_nm(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance between two points in nautical miles."""
+    R_NM = 3440.065  # Earth radius in nautical miles
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (math.sin(dlat / 2) ** 2
+         + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2))
+         * math.sin(dlon / 2) ** 2)
+    return 2 * R_NM * math.asin(math.sqrt(a))
+
+
+def _point_in_polygon(px: float, py: float, polygon: List[List[float]]) -> bool:
+    """Ray-casting point-in-polygon test. polygon is [[lon,lat], ...]."""
+    n = len(polygon)
+    inside = False
+    j = n - 1
+    for i in range(n):
+        xi, yi = polygon[i][0], polygon[i][1]
+        xj, yj = polygon[j][0], polygon[j][1]
+        if ((yi > py) != (yj > py)) and (px < (xj - xi) * (py - yi) / (yj - yi) + xi):
+            inside = not inside
+        j = i
+    return inside
+
+
+def _polygon_centroid(ring: List[List[float]]) -> Tuple[float, float]:
+    """Compute centroid (lon, lat) of a polygon ring [[lon,lat], ...]."""
+    n = len(ring)
+    if n == 0:
+        return (0.0, 0.0)
+    cx = sum(p[0] for p in ring) / n
+    cy = sum(p[1] for p in ring) / n
+    return (cx, cy)
+
+
+def _max_vertex_dist_nm(center_lat: float, center_lon: float, ring: List[List[float]]) -> float:
+    """Max distance from centroid to any polygon vertex, in NM."""
+    max_d = 0.0
+    for p in ring:
+        d = _haversine_nm(center_lat, center_lon, p[1], p[0])
+        if d > max_d:
+            max_d = d
+    return max_d
+
+
+def _get_feature_ring(feature: Dict[str, Any]) -> Optional[List[List[float]]]:
+    """Extract the first polygon ring from a GeoJSON feature."""
+    geom = feature.get("geometry", {})
+    geom_type = geom.get("type", "")
+    coords = geom.get("coordinates", [])
+    if not coords:
+        return None
+    if geom_type == "Polygon":
+        return coords[0] if coords else None
+    elif geom_type == "MultiPolygon":
+        return coords[0][0] if coords and coords[0] else None
+    return None
+
+
+def _filter_vip_inner_rings(features: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """For VIP TFRs with inner/outer rings, keep only the inner (smaller) ring.
+
+    VIP TFRs (presidential movements etc.) have two concentric polygons — a
+    large outer ring (~30nm) and a smaller inner ring (~10nm).  The FAA WFS
+    returns them as separate features with nearly identical centroids.  We
+    group features whose centroids are within 5nm of each other and, for
+    groups with 2+ members, keep only the smallest polygon so we only alert
+    when the airport is truly inside the restricted core.
+    """
+    # Compute centroid + effective radius per feature
+    meta: List[Tuple[int, float, float, float]] = []  # (idx, lat, lon, radius)
+    for i, f in enumerate(features):
+        ring = _get_feature_ring(f)
+        if ring and len(ring) >= 3:
+            clon, clat = _polygon_centroid(ring)
+            radius = _max_vertex_dist_nm(clat, clon, ring)
+            meta.append((i, clat, clon, radius))
+        else:
+            meta.append((i, 0.0, 0.0, -1.0))  # no geometry → keep as-is
+
+    # Group by centroid proximity (within 5nm = same TFR complex)
+    used: set = set()
+    keep_indices: set = set()
+
+    for mi in range(len(meta)):
+        if mi in used:
+            continue
+        idx_i, lat_i, lon_i, rad_i = meta[mi]
+        if rad_i < 0:
+            keep_indices.add(idx_i)
+            used.add(mi)
+            continue
+
+        group = [mi]
+        used.add(mi)
+        for mj in range(mi + 1, len(meta)):
+            if mj in used:
+                continue
+            _, lat_j, lon_j, rad_j = meta[mj]
+            if rad_j < 0:
+                continue
+            if _haversine_nm(lat_i, lon_i, lat_j, lon_j) < 5.0:
+                group.append(mj)
+                used.add(mj)
+
+        if len(group) == 1:
+            keep_indices.add(meta[group[0]][0])
+        else:
+            # Multiple overlapping features → keep smallest (inner ring)
+            smallest = min(group, key=lambda g: meta[g][3])
+            kept_idx = meta[smallest][0]
+            kept_radius = meta[smallest][3]
+            dropped = [meta[g][0] for g in group if meta[g][0] != kept_idx]
+            dropped_radii = [round(meta[g][3], 1) for g in group if meta[g][0] != kept_idx]
+            kept_key = features[kept_idx].get("properties", {}).get("NOTAM_KEY", "?")
+            print(
+                f"TFR VIP filter: keeping inner ring {kept_key} "
+                f"(r={kept_radius:.1f}nm), dropping {len(dropped)} outer ring(s) "
+                f"(r={dropped_radii})",
+                flush=True,
+            )
+            keep_indices.add(kept_idx)
+
+    result = [features[i] for i in sorted(keep_indices)]
+    if len(result) < len(features):
+        print(
+            f"TFR VIP filter: {len(features)} features → {len(result)} "
+            f"(dropped {len(features) - len(result)} outer rings)",
+            flush=True,
+        )
+    return result
+
+
+def _fetch_tfr_geojson() -> List[Dict[str, Any]]:
+    """Fetch all active TFRs as GeoJSON features from FAA GeoServer WFS.
+
+    Returns list of GeoJSON feature dicts with properties and polygon geometry.
+    Single HTTP request — no scraping or parallel detail fetches needed.
+    """
+    r = requests.get(_TFR_WFS_URL, timeout=(5, 20), headers={
+        "User-Agent": "Baker-Aviation-OpsMonitor/1.0",
+        "Accept": "application/json",
+    })
+    r.raise_for_status()
+    data = r.json()
+    features = data.get("features", [])
+    print(f"TFR WFS: fetched {len(features)} active TFRs", flush=True)
+    return features
+
+
+def _check_airport_vs_tfr(
+    airport_lat: float, airport_lon: float,
+    feature: Dict[str, Any], buffer_nm: float = 0,
+) -> Optional[Dict[str, Any]]:
+    """Check if an airport is inside a TFR polygon.
+
+    Returns proximity info dict if the airport is inside the polygon, None otherwise.
+    """
+    geom = feature.get("geometry", {})
+    geom_type = geom.get("type", "")
+    coords = geom.get("coordinates", [])
+    if not coords:
+        return None
+
+    # Normalize to list of polygon rings
+    rings: List[List[List[float]]] = []
+    if geom_type == "Polygon":
+        rings = [coords[0]] if coords else []
+    elif geom_type == "MultiPolygon":
+        rings = [poly[0] for poly in coords if poly]
+    else:
+        return None
+
+    for ring in rings:
+        if len(ring) < 3:
+            continue
+        if _point_in_polygon(airport_lon, airport_lat, ring):
+            clon, clat = _polygon_centroid(ring)
+            dist = _haversine_nm(airport_lat, airport_lon, clat, clon)
+            return {"inside": True, "distance_nm": round(dist, 1)}
+
+    return None
+
+
+def _run_check_tfrs(flights: List[Dict]) -> Dict[str, Any]:
+    """Fetch all active TFRs from FAA GeoServer, check proximity to flight airports.
+
+    Returns stats dict with tfr_count, tfr_alerts_created.
+    """
+    # Collect unique airports from flights that we have coordinates for
+    flight_airports: Dict[str, List[Dict]] = {}  # icao -> [flight, ...]
+    for f in flights:
+        for icao in [f.get("departure_icao"), f.get("arrival_icao")]:
+            if icao and icao in AIRPORT_COORDS:
+                flight_airports.setdefault(icao, []).append(f)
+
+    if not flight_airports:
+        print("TFR check: no flight airports with known coordinates", flush=True)
+        return {"tfr_count": 0, "tfr_alerts_created": 0}
+
+    # Single WFS request gets all active TFRs with polygon geometry
+    features = _fetch_tfr_geojson()
+    if not features:
+        return {"tfr_count": 0, "tfr_alerts_created": 0}
+
+    # VIP TFRs have inner + outer ring as separate features — keep only inner
+    features = _filter_vip_inner_rings(features)
+
+    print(f"TFR check: {len(features)} TFRs, checking {len(flight_airports)} airports", flush=True)
+
+    TFR_BUFFER_NM = 3
+    alerts_to_insert = []
+    for feature in features:
+        props = feature.get("properties", {})
+        notam_key = props.get("NOTAM_KEY", "unknown")
+        title = props.get("TITLE", "")
+        state = props.get("STATE", "")
+
+        for icao in flight_airports:
+            coord = AIRPORT_COORDS[icao]
+            hit = _check_airport_vs_tfr(coord[0], coord[1], feature, TFR_BUFFER_NM)
+            if not hit:
+                continue
+
+            dist = hit["distance_nm"]
+            inside = hit.get("inside", False)
+            proximity_desc = "airport inside TFR" if inside else f"{dist}nm from TFR"
+
+            for flight in flight_airports[icao]:
+                fid = flight["id"]
+                # Use notam_key in source_message_id for dedup
+                safe_key = notam_key.replace("/", "_").replace(" ", "_")
+                source_id = f"tfr-{safe_key}-{fid}"
+                alerts_to_insert.append({
+                    "flight_id": fid,
+                    "alert_type": "NOTAM_TFR",
+                    "severity": "critical",
+                    "airport_icao": icao,
+                    "subject": f"TFR {notam_key} — {proximity_desc}"[:500],
+                    "body": f"TFR {notam_key} ({proximity_desc}). "
+                            f"{title}. State: {state}"[:2000],
+                    "source_message_id": source_id,
+                    "raw_data": json.dumps({
+                        "tfr_notam_key": notam_key,
+                        "tfr_title": title[:500],
+                        "tfr_state": state,
+                        "airport_distance_nm": dist,
+                        "airport_inside_tfr": inside,
+                    }),
+                    "created_at": _utc_now(),
+                })
+
+    tfr_alerts_created = 0
+    if alerts_to_insert:
+        # Deduplicate by source_message_id before upserting (same TFR+flight may match
+        # via both departure and arrival airport)
+        seen_ids: set = set()
+        deduped: list = []
+        for a in alerts_to_insert:
+            if a["source_message_id"] not in seen_ids:
+                seen_ids.add(a["source_message_id"])
+                deduped.append(a)
+        alerts_to_insert = deduped
+
+        print(f"TFR check: upserting {len(alerts_to_insert)} TFR alerts", flush=True)
+        try:
+            supa = sb()
+            res = (
+                supa.table(OPS_ALERTS_TABLE)
+                .upsert(alerts_to_insert, on_conflict="source_message_id")
+                .execute()
+            )
+            tfr_alerts_created = len(res.data) if res.data else 0
+        except Exception as e:
+            print(f"TFR alert upsert error: {repr(e)}", flush=True)
+
+    print(f"TFR check complete: tfrs={len(features)} alerts={tfr_alerts_created}", flush=True)
+    return {"tfr_count": len(features), "tfr_alerts_created": tfr_alerts_created}
 
 
 # ─── Job: check_notams ────────────────────────────────────────────────────────
@@ -1060,11 +1630,26 @@ def _run_check_notams(lookahead_hours: int) -> dict:
         except Exception as e:
             print(f"NOTAM bulk upsert error: {repr(e)}", flush=True)
 
+    # ── TFR proximity check (area-wide TFRs not tied to specific airports) ──
+    tfr_stats = {"tfr_count": 0, "tfr_alerts_created": 0}
+    try:
+        tfr_stats = _run_check_tfrs(flights)
+    except Exception as e:
+        print(f"TFR proximity check failed (non-fatal): {repr(e)}", flush=True)
+
+    total_alerts = alerts_created + tfr_stats.get("tfr_alerts_created", 0)
     print(
-        f"check_notams complete: flights={len(flights)} airports={len(airports)} alerts_created={alerts_created}",
+        f"check_notams complete: flights={len(flights)} airports={len(airports)} "
+        f"notam_alerts={alerts_created} tfr_alerts={tfr_stats.get('tfr_alerts_created', 0)}",
         flush=True,
     )
-    return {"flights_checked": len(flights), "airports_checked": len(airports), "alerts_created": alerts_created}
+    return {
+        "flights_checked": len(flights),
+        "airports_checked": len(airports),
+        "alerts_created": total_alerts,
+        "notam_alerts": alerts_created,
+        **tfr_stats,
+    }
 
 
 @app.post("/jobs/check_notams")
@@ -1094,6 +1679,17 @@ def check_notams(lookahead_hours: int = Query(720, ge=1, le=720)):
         raise HTTPException(500, detail="check_notams failed")
     log_pipeline_run("notam-check", items=stats.get("alerts_created", 0), message=f"flights={stats.get('flights_checked', 0)} airports={stats.get('airports_checked', 0)}")
     return {"ok": True, **stats}
+
+
+@app.post("/jobs/seed_ics_sources")
+def seed_ics_sources():
+    """Seed the ics_sources table from JETINSIGHT_ICS_URLS env var.
+    Skips any URLs already in the table. Safe to call multiple times."""
+    try:
+        result = _seed_ics_sources_from_env()
+        return {"ok": True, **result}
+    except Exception as e:
+        raise HTTPException(500, detail=f"Seed failed: {repr(e)}")
 
 
 @app.get("/debug/ics_status")
@@ -1254,7 +1850,7 @@ def debug_notam_test(airport: str = Query("KJFK")):
         r = requests.get(
             f"{NMS_API_BASE}/v1/notams",
             headers={"Authorization": f"Bearer {token}", "nmsResponseFormat": "GEOJSON"},
-            params={"location": icao, "classification": "DOMESTIC"},
+            params={"location": icao, "classification": "DOMESTIC,FDC"},
             timeout=(5, 10),
         )
         nms_result["status_code"] = r.status_code
@@ -1290,6 +1886,52 @@ def debug_notam_test(airport: str = Query("KJFK")):
     return result
 
 
+@app.get("/debug/tfr_test")
+def debug_tfr_test():
+    """Fetch all active TFRs and check proximity against all known airports.
+    Use this to test the TFR proximity checker without needing scheduled flights."""
+    result: Dict[str, Any] = {"ok": False}
+    try:
+        features = _fetch_tfr_geojson()
+        result["tfr_count"] = len(features)
+        result["sample_tfrs"] = [
+            {
+                "notam_key": f.get("properties", {}).get("NOTAM_KEY"),
+                "title": f.get("properties", {}).get("TITLE", "")[:100],
+                "state": f.get("properties", {}).get("STATE"),
+                "geometry_type": f.get("geometry", {}).get("type"),
+            }
+            for f in features[:20]
+        ]
+
+        # Proximity check against all known airports
+        TFR_BUFFER_NM = 3
+        proximity_hits: List[Dict] = []
+        for feature in features:
+            props = feature.get("properties", {})
+            notam_key = props.get("NOTAM_KEY", "unknown")
+            title = props.get("TITLE", "")
+
+            for icao, (lat, lon) in AIRPORT_COORDS.items():
+                hit = _check_airport_vs_tfr(lat, lon, feature, TFR_BUFFER_NM)
+                if hit:
+                    proximity_hits.append({
+                        "tfr_notam_key": notam_key,
+                        "tfr_title": title[:80],
+                        "airport": icao,
+                        "distance_nm": hit["distance_nm"],
+                        "inside_tfr": hit.get("inside", False),
+                    })
+
+        result["proximity_hits"] = proximity_hits
+        result["airports_affected"] = sorted(set(h["airport"] for h in proximity_hits))
+        result["hit_count"] = len(proximity_hits)
+        result["ok"] = True
+    except Exception as e:
+        result["error"] = repr(e)
+    return result
+
+
 def _fetch_notams(icao: str, token: str) -> List[Dict]:
     """Return list of GeoJSON feature dicts from the NMS API for a given ICAO.
     Accepts a pre-fetched token so all workers share one auth call.
@@ -1301,7 +1943,7 @@ def _fetch_notams(icao: str, token: str) -> List[Dict]:
                 "Authorization": f"Bearer {token}",
                 "nmsResponseFormat": "GEOJSON",
             },
-            params={"location": icao, "classification": "DOMESTIC"},
+            params={"location": icao, "classification": "DOMESTIC,FDC"},
             timeout=(5, 10),
         )
         print(f"NMS NOTAM {icao}: status={r.status_code} body={r.text[:200]!r}", flush=True)
@@ -1361,9 +2003,14 @@ def _is_relevant_notam_msg(msg: str) -> bool:
         # actual runway closures (ILS, PAPI, ALS, LGT, TWY, APRON, windcone).
         if _is_noise_notam(m):
             return False
+        # Skip grass/turf runways or runways shorter than 4000 ft
+        if _is_ignorable_runway(m):
+            return False
         return True
     if re.search(r"(CLSD|CLOSED).{0,60}(RWY|RUNWAY)", m):
         if _is_noise_notam(m):
+            return False
+        if _is_ignorable_runway(m):
             return False
         return True
     # Airport/aerodrome closure
@@ -1397,6 +2044,21 @@ def _is_noise_notam(msg_upper: str) -> bool:
     """Return True if the NOTAM is about equipment/lighting rather than an
     actual runway or airport closure worth alerting on."""
     return bool(_NOISE_TERMS.search(msg_upper))
+
+
+def _is_ignorable_runway(msg_upper: str) -> bool:
+    """Return True if the runway closure is for a grass/turf runway or one
+    shorter than 4000 ft — not usable by our jets, so skip the alert."""
+    # Grass / turf / sod surface
+    if re.search(r"\b(TURF|GRASS|SOD)\b", msg_upper):
+        return True
+    # Runway dimensions like 3500X60 or 2800 X 75 — check length < 4000
+    dim = re.search(r"\b(\d{3,5})\s*X\s*\d{2,4}\b", msg_upper)
+    if dim:
+        length = int(dim.group(1))
+        if length < 4000:
+            return True
+    return False
 
 
 def _classify_notam(msg: str) -> str:

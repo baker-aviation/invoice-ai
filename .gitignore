@@ -26,7 +26,13 @@ invoice-parser/outlook_receipts/
 invoice-parser/golden_pdfs/
 invoice-parser/golden_set/
 
+# Sensitive data files
+*.jsonl
+today_docs.json
+Analytics*.csv
+
 # OS/editor
 .DS_Store
 .vscode/
 .idea/
+.vercel

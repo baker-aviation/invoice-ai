@@ -21,7 +21,7 @@
         "additionalProperties": false,
         "required": ["name", "raw_name"],
         "properties": {
-          "name": { "type": "string", "minLength": 1 },
+          "name": { "type": ["string", "null"] },
           "raw_name": { "type": ["string", "null"] }
         }
       },

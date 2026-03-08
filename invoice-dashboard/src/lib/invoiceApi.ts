@@ -1,14 +1,14 @@
 import { createServiceClient } from "@/lib/supabase/service";
 import { cloudRunFetch } from "@/lib/cloud-run-fetch";
 import { signGcsUrl } from "@/lib/gcs";
-import type { AlertRow, AlertsResponse, FuelPriceRow, FuelPricesResponse, InvoiceDetailResponse, InvoiceListItem, InvoiceListResponse } from "@/lib/types";
+import type { AdvertisedPriceRow, AlertRow, AlertsResponse, FuelPriceRow, FuelPricesResponse, InvoiceDetailResponse, InvoiceListItem, InvoiceListResponse } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
 // Invoices — direct Supabase query to parsed_invoices
 // ---------------------------------------------------------------------------
 
 const INVOICE_COLUMNS =
-  "id, document_id, created_at, vendor_name, invoice_number, invoice_date, airport_code, tail_number, currency, total, doc_type, review_required, risk_score, line_items";
+  "id, document_id, created_at, vendor_name, invoice_number, invoice_date, airport_code, tail_number, currency, total, doc_type, review_required, risk_score, line_items, category_override";
 
 export async function fetchInvoices(params: {
   limit?: number;
@@ -29,6 +29,13 @@ export async function fetchInvoices(params: {
     .order("created_at", { ascending: false })
     .limit(limit);
 
+  if (params.q) {
+    const q = params.q.replace(/%/g, "");
+    const pattern = `%${q}%`;
+    query = query.or(
+      `vendor_name.ilike.${pattern},invoice_number.ilike.${pattern},airport_code.ilike.${pattern},tail_number.ilike.${pattern},document_id.ilike.${pattern}`
+    );
+  }
   if (params.vendor) query = query.ilike("vendor_name", `%${params.vendor}%`);
   if (params.doc_type) query = query.eq("doc_type", params.doc_type);
   if (params.airport) query = query.ilike("airport_code", `%${params.airport}%`);
@@ -39,32 +46,36 @@ export async function fetchInvoices(params: {
   const { data, error } = await query;
   if (error) throw new Error(`fetchInvoices failed: ${error.message}`);
 
-  let invoices: InvoiceListItem[] = (data ?? []).map((row) => ({
-    id: row.id as string,
-    document_id: row.document_id as string,
-    created_at: row.created_at as string,
-    vendor_name: row.vendor_name as string | null,
-    invoice_number: row.invoice_number as string | null,
-    invoice_date: row.invoice_date as string | null,
-    airport_code: row.airport_code as string | null,
-    tail_number: row.tail_number as string | null,
-    currency: row.currency as string | null,
-    total: row.total as number | string | null,
-    doc_type: row.doc_type as string | null,
-    review_required: row.review_required as boolean | null,
-    risk_score: row.risk_score as number | null,
-    has_line_items: Array.isArray(row.line_items) ? row.line_items.length > 0 : false,
-  }));
-
-  // Client-side text search (matches backend behavior)
-  if (params.q) {
-    const qLower = params.q.toLowerCase();
-    invoices = invoices.filter((inv) =>
-      [inv.vendor_name, inv.invoice_number, inv.airport_code, inv.tail_number, inv.document_id]
-        .filter(Boolean)
-        .some((f) => String(f).toLowerCase().includes(qLower)),
-    );
+  // Load learned vendor → category rules
+  const { data: rules } = await supa
+    .from("category_rules")
+    .select("vendor_normalized, category");
+  const ruleMap = new Map<string, string>();
+  for (const r of rules ?? []) {
+    ruleMap.set(r.vendor_normalized as string, r.category as string);
   }
+
+  let invoices: InvoiceListItem[] = (data ?? []).map((row) => {
+    const vendorNorm = ((row.vendor_name as string) ?? "").trim().toLowerCase();
+    return {
+      id: row.id as string,
+      document_id: row.document_id as string,
+      created_at: row.created_at as string,
+      vendor_name: row.vendor_name as string | null,
+      invoice_number: row.invoice_number as string | null,
+      invoice_date: row.invoice_date as string | null,
+      airport_code: row.airport_code as string | null,
+      tail_number: row.tail_number as string | null,
+      currency: row.currency as string | null,
+      total: row.total as number | string | null,
+      doc_type: row.doc_type as string | null,
+      review_required: row.review_required as boolean | null,
+      risk_score: row.risk_score as number | null,
+      has_line_items: Array.isArray(row.line_items) ? row.line_items.length > 0 : false,
+      category_override: row.category_override as string | null,
+      learned_category: ruleMap.get(vendorNorm) ?? null,
+    };
+  });
 
   return { ok: true, count: invoices.length, invoices };
 }
@@ -101,6 +112,15 @@ export async function fetchInvoiceDetail(documentId: string): Promise<InvoiceDet
   if (error) throw new Error(`fetchInvoiceDetail failed: ${error.message}`);
   if (!data || data.length === 0) throw new Error("fetchInvoiceDetail failed: 404");
 
+  // Load learned vendor → category rules
+  const { data: rules } = await supa
+    .from("category_rules")
+    .select("vendor_normalized, category");
+  const ruleMap = new Map<string, string>();
+  for (const r of rules ?? []) {
+    ruleMap.set(r.vendor_normalized as string, r.category as string);
+  }
+
   // Parse line_items for each invoice row
   const invoices = data.map((row: any) => {
     let lineItems = row.line_items;
@@ -111,7 +131,12 @@ export async function fetchInvoiceDetail(documentId: string): Promise<InvoiceDet
         lineItems = [];
       }
     }
-    return { ...row, line_items: Array.isArray(lineItems) ? lineItems : [] };
+    const vendorNorm = ((row.vendor_name as string) ?? "").trim().toLowerCase();
+    return {
+      ...row,
+      line_items: Array.isArray(lineItems) ? lineItems : [],
+      learned_category: ruleMap.get(vendorNorm) ?? null,
+    };
   });
 
   // Try to get signed PDF URL from Cloud Run (non-blocking — page loads even if this fails)
@@ -249,7 +274,7 @@ export async function fetchAlerts(params: {
 // ---------------------------------------------------------------------------
 
 const FUEL_PRICE_COLUMNS =
-  "id, document_id, airport_code, vendor_name, base_price_per_gallon, effective_price_per_gallon, gallons, fuel_total, invoice_date, tail_number, currency, price_change_pct, previous_price, previous_document_id, alert_sent, data_source, created_at";
+  "id, document_id, airport_code, vendor_name, base_price_per_gallon, effective_price_per_gallon, gallons, fuel_total, invoice_date, tail_number, currency, price_change_pct, previous_price, previous_document_id, alert_sent, data_source, has_additive, created_at";
 
 export async function fetchFuelPrices(params: {
   limit?: number;
@@ -289,6 +314,7 @@ export async function fetchFuelPrices(params: {
     previous_document_id: row.previous_document_id as string | null,
     alert_sent: row.alert_sent as boolean | null,
     data_source: (row.data_source as string | null) ?? "invoice",
+    has_additive: (row.has_additive as boolean | null) ?? false,
     created_at: row.created_at as string,
   }));
 
@@ -302,4 +328,31 @@ export async function fetchFuelPrices(params: {
   }
 
   return { ok: true, count: fuelPrices.length, fuel_prices: fuelPrices };
+}
+
+// ---------------------------------------------------------------------------
+// Advertised Fuel Prices — fbo_advertised_prices table
+// ---------------------------------------------------------------------------
+
+export async function fetchAdvertisedPrices(): Promise<AdvertisedPriceRow[]> {
+  const supa = createServiceClient();
+  const { data, error } = await supa
+    .from("fbo_advertised_prices")
+    .select("*")
+    .order("week_start", { ascending: false });
+
+  if (error) throw new Error(`fetchAdvertisedPrices failed: ${error.message}`);
+
+  return (data ?? []).map((row) => ({
+    id: row.id as number,
+    fbo_vendor: row.fbo_vendor as string,
+    airport_code: row.airport_code as string,
+    volume_tier: row.volume_tier as string,
+    product: row.product as string,
+    price: Number(row.price),
+    tail_numbers: (row.tail_numbers as string | null) ?? null,
+    week_start: row.week_start as string,
+    upload_batch: (row.upload_batch as string | null) ?? null,
+    created_at: row.created_at as string,
+  }));
 }

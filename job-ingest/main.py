@@ -34,7 +34,7 @@ INBOX_KEYWORDS = [
     s.strip().lower()
     for s in os.getenv(
         "INBOX_KEYWORDS",
-        "application,resume,cv,first officer,sic,pilot,maintenance,technician,dispatcher,sales",
+        "application,applicant,resume,cv,first officer,sic,pilot,captain,maintenance,technician,dispatcher,sales,recommendation,lor,challenger,citation",
     ).split(",")
     if s.strip()
 ]
@@ -219,6 +219,95 @@ def _safe_insert_application(supa, row: Dict[str, Any]) -> int:
     raise RuntimeError("Could not insert or resolve application id")
 
 
+LOR_KEYWORDS = ["letter of rec", "recommendation", " lor ", "lor_", "lor.", "reference letter"]
+COVER_LETTER_KEYWORDS = ["cover letter", "cover_letter", "coverletter"]
+RESUME_KEYWORDS = ["resume", "cv", "curriculum vitae"]
+
+
+def _classify_file(filename: str, subject: str) -> str:
+    """Classify a file as resume, lor, cover_letter, or other based on filename/subject."""
+    fn = (filename or "").lower()
+    subj = (subject or "").lower()
+
+    # Check filename first — it's more reliable than the email subject
+    fn_padded = f" {fn} "
+    if any(k in fn_padded for k in RESUME_KEYWORDS):
+        return "resume"
+    if any(k in fn_padded for k in LOR_KEYWORDS):
+        return "lor"
+    if any(k in fn_padded for k in COVER_LETTER_KEYWORDS):
+        return "cover_letter"
+
+    # Fall back to email subject
+    subj_padded = f" {subj} "
+    if any(k in subj_padded for k in LOR_KEYWORDS):
+        return "lor"
+    if any(k in subj_padded for k in COVER_LETTER_KEYWORDS):
+        return "cover_letter"
+    if any(k in subj_padded for k in RESUME_KEYWORDS):
+        return "resume"
+
+    # Default to resume for job application emails
+    return "resume"
+
+
+def _try_match_lor_to_candidate(supa, filename: str, subject: str) -> Optional[int]:
+    """Try to find an existing parsed candidate to link an LOR to, by name matching."""
+    # Extract potential candidate name from subject or filename
+    # Common patterns: "LOR for John Smith", "Recommendation - Jane Doe", "John_Smith_LOR.pdf"
+    import re
+
+    # Try subject line first
+    patterns = [
+        r"(?:lor|recommendation|reference)\s+(?:for|letter for|letter -)\s+([A-Z][a-z]+\s+[A-Z][a-z]+)",
+        r"([A-Z][a-z]+\s+[A-Z][a-z]+)\s+(?:lor|recommendation|reference)",
+    ]
+    for pat in patterns:
+        m = re.search(pat, subject or "", re.IGNORECASE)
+        if m:
+            name = m.group(1).strip()
+            return _find_candidate_by_name(supa, name)
+
+    # Try filename: "John_Smith_LOR.pdf" or "LOR_John_Smith.pdf"
+    fn_base = (filename or "").rsplit(".", 1)[0]
+    fn_clean = fn_base.replace("_", " ").replace("-", " ")
+    # Remove known keywords
+    for kw in ["lor", "letter of recommendation", "recommendation", "reference", "letter"]:
+        fn_clean = re.sub(rf"\b{kw}\b", "", fn_clean, flags=re.IGNORECASE)
+    fn_clean = fn_clean.strip()
+    # If we have what looks like a name (2+ words, each capitalized or all lowercase)
+    parts = fn_clean.split()
+    if len(parts) >= 2:
+        name = " ".join(parts[:3])  # max 3 words for a name
+        return _find_candidate_by_name(supa, name)
+
+    return None
+
+
+def _find_candidate_by_name(supa, name: str) -> Optional[int]:
+    """Find a candidate parse row ID by name (case-insensitive)."""
+    if not name or len(name) < 3:
+        return None
+    try:
+        res = (
+            supa.table("job_application_parse")
+            .select("id, candidate_name")
+            .ilike("candidate_name", f"%{name}%")
+            .limit(5)
+            .execute()
+        )
+        data = getattr(res, "data", None) or []
+        if len(data) == 1:
+            return int(data[0]["id"])
+        # If multiple matches, try exact match
+        for row in data:
+            if (row.get("candidate_name") or "").lower() == name.lower():
+                return int(row["id"])
+    except Exception as e:
+        print(f"LOR name match error: {e}", flush=True)
+    return None
+
+
 def _file_exists(supa, gcs_key: str) -> bool:
     try:
         res = (
@@ -368,6 +457,13 @@ def pull_applicants(
             blob = bucket.blob(gcs_key)
             blob.upload_from_string(raw, content_type=content_type)
 
+            file_category = _classify_file(name, subject)
+
+            # For LORs, try to auto-link to an existing candidate
+            linked_parse_id = None
+            if file_category == "lor":
+                linked_parse_id = _try_match_lor_to_candidate(supa, name, subject)
+
             file_row = {
                 "application_id": app_id,
                 "message_id": mid,
@@ -376,6 +472,8 @@ def pull_applicants(
                 "gcs_bucket": bucket_name,
                 "gcs_key": gcs_key,
                 "size_bytes": len(raw),
+                "file_category": file_category,
+                "linked_parse_id": linked_parse_id,
             }
 
             try:

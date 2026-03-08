@@ -1,0 +1,37 @@
+import "server-only";
+import { join } from "path";
+
+/**
+ * Extract all text from a PDF buffer using pdfjs-dist legacy build.
+ * Works in Node.js / Vercel serverless (no DOM/canvas dependencies).
+ */
+export async function extractPdfText(buffer: Buffer): Promise<string> {
+  const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
+
+  // Point workerSrc at the actual worker file so the fake worker can load it
+  pdfjsLib.GlobalWorkerOptions.workerSrc = join(
+    process.cwd(),
+    "node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs",
+  );
+
+  const data = new Uint8Array(buffer);
+  const doc = await pdfjsLib.getDocument({
+    data,
+    useSystemFonts: true,
+    disableFontFace: true,
+    isEvalSupported: false,
+  }).promise;
+
+  const pages: string[] = [];
+  for (let i = 1; i <= doc.numPages; i++) {
+    const page = await doc.getPage(i);
+    const content = await page.getTextContent();
+    const text = content.items
+      .filter((item) => "str" in item)
+      .map((item) => (item as { str: string }).str)
+      .join(" ");
+    pages.push(text);
+  }
+
+  return pages.join("\n\n");
+}

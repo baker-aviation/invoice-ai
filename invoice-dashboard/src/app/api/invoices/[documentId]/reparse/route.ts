@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cloudRunFetch } from "@/lib/cloud-run-fetch";
 import { createServiceClient } from "@/lib/supabase/service";
+import { requireAdmin, isRateLimited } from "@/lib/api-auth";
 
 /**
  * POST /api/invoices/{documentId}/reparse
@@ -15,9 +16,15 @@ const PARSER_BASE =
 const SAFE_ID_RE = /^[a-f0-9-]{36}$/;
 
 export async function POST(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ documentId: string }> },
 ) {
+  const auth = await requireAdmin(req);
+  if ("error" in auth) return auth.error;
+  if (isRateLimited(auth.userId, 10)) {
+    return NextResponse.json({ error: "Too many requests" }, { status: 429 });
+  }
+
   const { documentId } = await params;
   if (!SAFE_ID_RE.test(documentId)) {
     return NextResponse.json({ error: "Invalid document ID" }, { status: 400 });
@@ -90,6 +97,6 @@ export async function POST(
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("reparse proxy error:", msg);
-    return NextResponse.json({ error: msg }, { status: 500 });
+    return NextResponse.json({ error: "Reparse failed" }, { status: 500 });
   }
 }
