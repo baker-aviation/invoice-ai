@@ -2966,6 +2966,11 @@ export default function VanPositioningClient({ initialFlights, mxNotes }: { init
                           const ft = inferFlightType(f);
                           const dep = f.departure_icao?.replace(/^K/, "") ?? "?";
                           const arr = f.arrival_icao?.replace(/^K/, "") ?? "?";
+                          const fi = f.tail_number ? flightInfoMap.get(f.tail_number) : undefined;
+                          // Match FA flight to this leg by checking origin matches
+                          const faMatchesLeg = fi && fi.origin_icao && f.departure_icao && fi.origin_icao === f.departure_icao;
+                          const isEnRoute = faMatchesLeg && (fi?.status === "En Route" || (fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100));
+                          const isLanded = faMatchesLeg && (fi?.status === "Landed" || fi?.status === "Arrived");
                           return (
                             <div key={f.id} className="px-4 py-2.5 flex items-center gap-4 flex-wrap">
                               <div className="flex items-center gap-2 min-w-[140px]">
@@ -2992,6 +2997,16 @@ export default function VanPositioningClient({ initialFlights, mxNotes }: { init
                                   "bg-gray-100 text-gray-600"
                                 }`}>
                                   {ft}
+                                </span>
+                              )}
+                              {isEnRoute && (
+                                <span className="text-xs rounded-full px-2 py-0.5 font-semibold bg-blue-100 text-blue-700">
+                                  En Route{fi?.progress_percent != null ? ` ${fi.progress_percent}%` : ""}
+                                </span>
+                              )}
+                              {isLanded && (
+                                <span className="text-xs rounded-full px-2 py-0.5 font-semibold bg-green-100 text-green-700">
+                                  Landed
                                 </span>
                               )}
                             </div>

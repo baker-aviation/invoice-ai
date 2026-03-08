@@ -451,13 +451,17 @@ function StopCard({
         </div>
 
         {/* Time info */}
-        <div className="flex items-center gap-3 mb-3 ml-7 flex-wrap">
+        <div className="flex items-center gap-3 mb-2 ml-7 flex-wrap">
+          <span className="text-xs text-gray-500 dark:text-gray-400">
+            Dep {fmtUtcHM(fi?.departure_time ?? item.arrFlight.scheduled_departure)}
+          </span>
+          <span className="text-gray-300 dark:text-gray-600">&rarr;</span>
           {countdown ? (
             <span className="text-sm font-medium text-blue-700 dark:text-blue-300">
               Landing {countdown}
             </span>
           ) : (
-            <span className="text-sm text-gray-500 dark:text-gray-400">
+            <span className="text-xs text-gray-500 dark:text-gray-400">
               ETA {arrTime}
             </span>
           )}
