@@ -120,28 +120,44 @@ function buildRoutePath(
   ];
 }
 
-function FlightRoutes({ flightInfo, fleetLookup }: { flightInfo: Map<string, FlightInfoMap>; fleetLookup: Map<string, string> }) {
+function FlightRoutes({ aircraft, flightInfo, fleetLookup }: { aircraft: AircraftPosition[]; flightInfo: Map<string, FlightInfoMap>; fleetLookup: Map<string, string> }) {
+  // Build tail → ADS-B position lookup (always has lat/lon for displayed planes)
+  const acPos = new Map<string, AircraftPosition>();
+  for (const ac of aircraft) acPos.set(ac.tail, ac);
+
   const routes: { tail: string; positions: [number, number][] }[] = [];
   const seen = new Set<string>();
 
   for (const fi of flightInfo.values()) {
     if (seen.has(fi.tail)) continue;
     seen.add(fi.tail);
-    if (fi.latitude == null || fi.longitude == null) continue;
     if (!fi.origin_icao || !fi.destination_icao) continue;
 
     const origin = getAirportInfo(fi.origin_icao) ?? getAirportInfo(stripKPrefix(fi.origin_icao));
     const dest = getAirportInfo(fi.destination_icao) ?? getAirportInfo(stripKPrefix(fi.destination_icao));
     if (!origin || !dest) continue;
 
-    routes.push({
-      tail: fi.tail,
-      positions: buildRoutePath(
-        [origin.lat, origin.lon],
-        [fi.latitude, fi.longitude],
-        [dest.lat, dest.lon],
-      ),
-    });
+    // Use ADS-B position first, fall back to FA API position
+    const ac = acPos.get(fi.tail);
+    const planeLat = ac?.lat ?? fi.latitude;
+    const planeLon = ac?.lon ?? fi.longitude;
+
+    if (planeLat != null && planeLon != null) {
+      routes.push({
+        tail: fi.tail,
+        positions: buildRoutePath(
+          [origin.lat, origin.lon],
+          [planeLat, planeLon],
+          [dest.lat, dest.lon],
+        ),
+      });
+    } else {
+      // No plane position — draw straight origin → dest
+      routes.push({
+        tail: fi.tail,
+        positions: [[origin.lat, origin.lon], [dest.lat, dest.lon]],
+      });
+    }
   }
 
   return (
@@ -339,7 +355,7 @@ export default function OpsMap({ aircraft, flightInfo }: Props) {
           <TileLayer key={`radar-${radarUrl}`} url={radarUrl} opacity={0.65} zIndex={300} />
         )}
 
-        <FlightRoutes flightInfo={flightInfo} fleetLookup={fleetLookup} />
+        <FlightRoutes aircraft={aircraft} flightInfo={flightInfo} fleetLookup={fleetLookup} />
 
         {aircraft.map((ac) => {
           const fi = flightInfo.get(ac.tail);
