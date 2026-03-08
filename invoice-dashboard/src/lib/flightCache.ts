@@ -13,12 +13,19 @@ import { createServiceClient } from "./supabase/service";
 
 let memCache: { data: FlightInfo[]; ts: number } | null = null;
 
-// Re-poll FA every 2 hours as a safety net. Webhook push events keep the cache
-// current in real-time between polls (departure, arrival, diversion, etc.).
-const CACHE_TTL = 2 * 60 * 60_000; // 2 hours
+// Dynamic TTL: poll every 5 min when aircraft are airborne, 2h otherwise.
+// Webhooks handle discrete events (filed, departure, arrival) but frequent
+// polling gives us live ETA/position updates for en-route flights.
+const AIRBORNE_TTL = 5 * 60_000;   // 5 minutes
+const IDLE_TTL = 2 * 60 * 60_000;  // 2 hours
+
+function hasAirborneFlights(flights: FlightInfo[]): boolean {
+  return flights.some((f) => f.status === "En Route");
+}
 
 export function getCacheTtl(): number {
-  return CACHE_TTL;
+  if (memCache && hasAirborneFlights(memCache.data)) return AIRBORNE_TTL;
+  return IDLE_TTL;
 }
 
 export async function getCache(): Promise<{ data: FlightInfo[]; ts: number } | null> {
