@@ -11,6 +11,7 @@ import {
   isContiguous48,
   haversineKm,
   FIXED_VAN_ZONES,
+  FALLBACK_TAILS,
   VanAssignment,
   AircraftOvernightPosition,
 } from "@/lib/maintenanceData";
@@ -1495,6 +1496,8 @@ function ScheduleTab({
   // Manual overrides: flightId → target vanId (moves) + removed flight IDs
   const [overrides, setOverrides] = useState<Map<string, number>>(new Map());
   const [removals, setRemovals] = useState<Set<string>>(new Set());
+  // Unscheduled aircraft assigned to vans: tail → vanId
+  const [unscheduledOverrides, setUnscheduledOverrides] = useState<Map<string, number>>(new Map());
 
   // Publish state
   const [publishedAt, setPublishedAt] = useState<string | null>(null);
@@ -1531,9 +1534,10 @@ function ScheduleTab({
     prevDateRef.current = date;
     if (overrides.size > 0) setOverrides(new Map());
     if (removals.size > 0) setRemovals(new Set());
+    if (unscheduledOverrides.size > 0) setUnscheduledOverrides(new Map());
   }
 
-  const totalEdits = overrides.size + removals.size;
+  const totalEdits = overrides.size + removals.size + unscheduledOverrides.size;
 
   // DnD visual state
   const saveLegNote = useCallback(async (flightId: string, tailNumber: string | null, note: string) => {
@@ -1631,6 +1635,43 @@ function ScheduleTab({
       }
     }
 
+    // Add unscheduled aircraft that have been assigned to vans
+    const unschedPositions = unscheduledOverrides.size > 0
+      ? computePositionsFromFlights(allFlights, date)
+      : [];
+    for (const [tail, targetVanId] of unscheduledOverrides) {
+      const syntheticId = `unsched_${tail}`;
+      const airport = unschedPositions.find((p) => p.tail === tail)?.airport ?? null;
+      const info = airport ? getAirportInfo(airport) : null;
+      const baseLat = liveVanPositions.get(targetVanId)?.lat ?? FIXED_VAN_ZONES.find((z) => z.vanId === targetVanId)!.lat;
+      const baseLon = liveVanPositions.get(targetVanId)?.lon ?? FIXED_VAN_ZONES.find((z) => z.vanId === targetVanId)!.lon;
+      const distKm = info ? Math.round(haversineKm(baseLat, baseLon, info.lat, info.lon)) : 0;
+      const syntheticFlight: Flight = {
+        id: syntheticId,
+        ics_uid: syntheticId,
+        tail_number: tail,
+        departure_icao: airport ? `K${airport}` : null,
+        arrival_icao: airport ? `K${airport}` : null,
+        scheduled_departure: `${date}T17:00:00Z`,
+        scheduled_arrival: `${date}T17:00:00Z`,
+        summary: `Unscheduled – ${tail}`,
+        flight_type: null,
+        alerts: [],
+      };
+      const item: VanFlightItem = {
+        arrFlight: syntheticFlight,
+        nextDep: null,
+        isRepo: false,
+        nextIsRepo: false,
+        airport: airport ?? "???",
+        airportInfo: info,
+        distKm,
+      };
+      const target = result.get(targetVanId) ?? [];
+      target.push(item);
+      result.set(targetVanId, target);
+    }
+
     // Recalculate distances + greedy sort for each van, then re-sort by FA ETA
     for (const zone of FIXED_VAN_ZONES) {
       const items = result.get(zone.vanId) ?? [];
@@ -1645,7 +1686,7 @@ function ScheduleTab({
     }
 
     return result;
-  }, [baseItemsByVan, overrides, removals, liveVanPositions, allDayArrivals, flightInfoMap]);
+  }, [baseItemsByVan, overrides, removals, liveVanPositions, allDayArrivals, flightInfoMap, unscheduledOverrides, allFlights, date]);
 
   // Uncovered aircraft: arrivals today not assigned to any van
   const uncoveredItems = useMemo(() => {
@@ -1655,6 +1696,55 @@ function ScheduleTab({
     }
     return allDayArrivals.filter((item) => !assignedIds.has(item.arrFlight.id));
   }, [allDayArrivals, finalItemsByVan]);
+
+  // Unscheduled aircraft: fleet tails with NO flights on this date
+  const unscheduledAircraft = useMemo(() => {
+    // All fleet tails = tails from live flights + fallback roster
+    const allTails = new Set<string>(FALLBACK_TAILS);
+    for (const f of allFlights) {
+      if (f.tail_number) allTails.add(f.tail_number);
+    }
+
+    // Tails that have ANY flight on this date (departure or arrival)
+    const scheduledTails = new Set<string>();
+    for (const f of allFlights) {
+      if (!f.tail_number) continue;
+      if (isOnEtDate(f.scheduled_departure, date) || isOnEtDate(f.scheduled_arrival, date)) {
+        // Exclude non-flight types (Time off, Assignment, etc.)
+        const ft = inferFlightType(f);
+        if (ft && NON_FLIGHT_TYPES.has(ft)) continue;
+        scheduledTails.add(f.tail_number);
+      }
+    }
+
+    // Unscheduled = fleet minus scheduled
+    const unscheduled = Array.from(allTails).filter((t) => !scheduledTails.has(t)).sort();
+
+    // Determine each tail's current location using overnight position logic
+    const positions = computePositionsFromFlights(allFlights, date);
+    const posMap = new Map<string, AircraftOvernightPosition>();
+    for (const p of positions) posMap.set(p.tail, p);
+
+    return unscheduled.map((tail) => {
+      const pos = posMap.get(tail);
+      const airport = pos?.airport ?? null;
+      const airportInfo = airport ? getAirportInfo(airport) : null;
+      return {
+        tail,
+        airport,
+        airportInfo,
+        lat: airportInfo?.lat ?? pos?.lat ?? 0,
+        lon: airportInfo?.lon ?? pos?.lon ?? 0,
+      };
+    });
+  }, [allFlights, date]);
+
+  // Is it after 5pm ET right now?
+  const isAfter5pmET = useMemo(() => {
+    const now = new Date();
+    const etHour = parseInt(now.toLocaleString("en-US", { hour: "2-digit", hour12: false, timeZone: "America/New_York" }));
+    return etHour >= 17;
+  }, []); // static for the lifecycle of the component — re-renders won't matter much
 
   // Track which vans have been manually edited
   const editedVans = useMemo(() => {
@@ -1691,6 +1781,20 @@ function ScheduleTab({
     try {
       const { flightId, fromVanId } = JSON.parse(e.dataTransfer.getData("text/plain"));
       if (fromVanId === toVanId) return;
+
+      // Handle unscheduled aircraft drops (synthetic IDs start with "unsched_")
+      if (typeof flightId === "string" && flightId.startsWith("unsched_")) {
+        const tail = flightId.replace("unsched_", "");
+        setUnscheduledOverrides((prev) => {
+          const next = new Map(prev);
+          if (fromVanId === -2 || toVanId > 0) {
+            next.set(tail, toVanId);
+          }
+          return next;
+        });
+        return;
+      }
+
       // If dragged from uncovered pool, clear any prior removal
       setRemovals((prev) => {
         if (!prev.has(flightId)) return prev;
@@ -1707,6 +1811,17 @@ function ScheduleTab({
   }, []);
 
   const handleRemove = useCallback((flightId: string) => {
+    // Handle unscheduled aircraft removal
+    if (flightId.startsWith("unsched_")) {
+      const tail = flightId.replace("unsched_", "");
+      setUnscheduledOverrides((prev) => {
+        if (!prev.has(tail)) return prev;
+        const next = new Map(prev);
+        next.delete(tail);
+        return next;
+      });
+      return;
+    }
     // Remove any move override for this flight
     setOverrides((prev) => {
       if (!prev.has(flightId)) return prev;
@@ -1740,12 +1855,13 @@ function ScheduleTab({
     const parts: string[] = [];
     for (const [fId, vId] of overrides) parts.push(`m:${fId}:${vId}`);
     for (const fId of removals) parts.push(`r:${fId}`);
+    for (const [tail, vId] of unscheduledOverrides) parts.push(`u:${tail}:${vId}`);
     // Also include the base flight IDs per van to detect schedule data changes
     for (const [vanId, items] of finalItemsByVan) {
       parts.push(`v${vanId}:${items.map((i) => i.arrFlight.id).join(",")}`);
     }
     return parts.sort().join("|");
-  }, [overrides, removals, finalItemsByVan]);
+  }, [overrides, removals, unscheduledOverrides, finalItemsByVan]);
 
   const hasUnpublishedChanges = publishedAt && currentEditsFingerprint !== publishedEditsSnapshot;
 
@@ -1790,7 +1906,7 @@ function ScheduleTab({
         <div className="flex items-center gap-2 flex-wrap">
           {totalEdits > 0 && (
             <button
-              onClick={() => { setOverrides(new Map()); setRemovals(new Set()); }}
+              onClick={() => { setOverrides(new Map()); setRemovals(new Set()); setUnscheduledOverrides(new Map()); }}
               className="text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5 hover:bg-amber-100 transition-colors"
             >
               Reset all edits ({totalEdits})
@@ -1994,6 +2110,86 @@ function ScheduleTab({
                   </div>
                 );
               })}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ── Unscheduled aircraft (no flights today) ── */}
+      {(() => {
+        // Filter out tails already assigned to a van via unscheduledOverrides
+        const visibleUnscheduled = unscheduledAircraft.filter(
+          (a) => !unscheduledOverrides.has(a.tail),
+        );
+        if (visibleUnscheduled.length === 0) return null;
+
+        return (
+          <div className={`border-2 border-dashed border-amber-200 rounded-xl bg-amber-50/50 overflow-hidden ${!isAfter5pmET ? "opacity-60" : ""}`}>
+            <div className="px-4 py-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="w-6 h-6 rounded-full bg-amber-100 flex items-center justify-center text-xs text-amber-700 font-bold">
+                  ?
+                </div>
+                <div>
+                  <div className="text-sm font-semibold text-amber-800">
+                    Unscheduled Aircraft
+                    <span className="ml-1.5 text-xs font-normal text-amber-600">({visibleUnscheduled.length})</span>
+                  </div>
+                  <div className="text-xs text-amber-600">
+                    {isAfter5pmET
+                      ? "No flights today — drag into a van to assign"
+                      : "Available after 5pm ET — drag into a van to assign early"}
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="border-t border-amber-200 divide-y divide-amber-100">
+              {visibleUnscheduled.map((ac) => (
+                <div
+                  key={ac.tail}
+                  draggable
+                  onDragStart={(e) => handleDragStart(e, `unsched_${ac.tail}`, -2)}
+                  className="px-4 py-2 cursor-grab active:cursor-grabbing hover:bg-amber-50/80"
+                >
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <div className="w-2.5 h-2.5 rounded-full bg-amber-300 flex-shrink-0" />
+                      <span className="font-mono font-semibold text-sm">{ac.tail}</span>
+                      {ac.airport && (
+                        <span className="text-xs text-gray-500 font-mono">{ac.airport}</span>
+                      )}
+                      <span className="text-xs bg-amber-100 text-amber-700 rounded px-1.5 py-0.5">No Schedule</span>
+                    </div>
+                    <select
+                      className="text-xs border border-amber-200 rounded-lg px-2 py-1.5 bg-white text-amber-700 font-medium cursor-pointer hover:border-amber-400 focus:outline-none focus:ring-2 focus:ring-amber-300 appearance-none"
+                      style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 5l3 3 3-3' fill='none' stroke='%23b45309' stroke-width='1.5'/%3E%3C/svg%3E\")", backgroundRepeat: "no-repeat", backgroundPosition: "right 6px center", paddingRight: "22px" }}
+                      value=""
+                      onChange={(e) => {
+                        const vanId = Number(e.target.value);
+                        if (!vanId) return;
+                        setUnscheduledOverrides((prev) => {
+                          const next = new Map(prev);
+                          next.set(ac.tail, vanId);
+                          return next;
+                        });
+                      }}
+                    >
+                      <option value="">Assign...</option>
+                      {FIXED_VAN_ZONES.map((z) => (
+                        <option key={z.vanId} value={z.vanId}>
+                          V{z.vanId} – {z.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  {ac.airportInfo && (
+                    <div className="ml-5 text-xs text-gray-500 mt-0.5">
+                      {ac.airportInfo.name}, {ac.airportInfo.state}
+                    </div>
+                  )}
+                  <MxNoteInline notes={mxNotesByTail.get(ac.tail) ?? []} />
+                </div>
+              ))}
             </div>
           </div>
         );

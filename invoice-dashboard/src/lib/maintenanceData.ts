@@ -184,6 +184,9 @@ export const TRIPS: Trip[] = [
   { tripId: "YIERKC",  tripStart: "2026-02-27", tripEnd: "2026-02-28", tail: "N106PC",  from: "TEB",  to: "MDLR", status: "Booked",   updated: "2026-02-24" },
 ];
 
+/** All unique tail numbers from TRIPS — used as the fallback fleet roster. */
+export const FALLBACK_TAILS: string[] = Array.from(new Set(TRIPS.map((t) => t.tail))).sort();
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
