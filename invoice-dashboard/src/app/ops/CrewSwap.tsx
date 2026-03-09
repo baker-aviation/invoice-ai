@@ -28,6 +28,59 @@ type RosterUploadResult = {
   summary: Record<string, number>;
 };
 
+// Optimizer result types (mirrors server types)
+type ScoreBreakdown = {
+  cost: number;
+  reliability: number;
+  convenience: number;
+  compliance: number;
+  fairness: number;
+};
+
+type TransportOption = {
+  type: "commercial_flight" | "drive" | "positioning_flight";
+  from: string;
+  to: string;
+  departure_time?: string;
+  arrival_time?: string;
+  duration_minutes: number;
+  cost_estimate: number;
+  details: string;
+};
+
+type SwapOption = {
+  swap_airport: string;
+  commercial_airport: string;
+  is_live_leg_adjacent: boolean;
+  gap_minutes: number;
+  oncoming_transport: TransportOption[];
+  offgoing_transport: TransportOption[];
+  score: number;
+  score_breakdown: ScoreBreakdown;
+};
+
+type TailSwapPlan = {
+  tail_number: string;
+  swap_date: string;
+  aircraft_type: string | null;
+  offgoing_pic: CrewMember | null;
+  offgoing_sic: CrewMember | null;
+  oncoming_pic: CrewMember | null;
+  oncoming_sic: CrewMember | null;
+  wednesday_legs: { departure_icao: string; arrival_icao: string; flight_type: string | null; scheduled_departure: string; scheduled_arrival: string | null }[];
+  options: SwapOption[];
+  warnings: string[];
+};
+
+type SwapPlanResult = {
+  ok: boolean;
+  swap_date: string;
+  plans: TailSwapPlan[];
+  unassigned_crew: CrewMember[];
+  warnings: string[];
+  commercial_flights_searched: number;
+};
+
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 type TailSchedule = {
@@ -110,6 +163,9 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
   const [uploadResult, setUploadResult] = useState<RosterUploadResult | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [showRoster, setShowRoster] = useState(false);
+  const [optimizing, setOptimizing] = useState(false);
+  const [swapPlan, setSwapPlan] = useState<SwapPlanResult | null>(null);
+  const [optimizeError, setOptimizeError] = useState<string | null>(null);
 
   // Fetch crew roster
   const loadCrew = useCallback(async () => {
@@ -290,6 +346,32 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
     }
     return changes;
   }, [tailSchedules]);
+
+  // Run swap optimizer
+  async function runOptimizer(includeFlights: boolean) {
+    setOptimizing(true);
+    setOptimizeError(null);
+    try {
+      const res = await fetch("/api/crew/optimize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          swap_date: selectedWed.toISOString().slice(0, 10),
+          search_flights: includeFlights,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setOptimizeError(data.error ?? "Optimization failed");
+      } else {
+        setSwapPlan(data);
+      }
+    } catch (e) {
+      setOptimizeError(e instanceof Error ? e.message : "Optimization failed");
+    } finally {
+      setOptimizing(false);
+    }
+  }
 
   // Navigate weeks
   function shiftWeek(delta: number) {
@@ -579,10 +661,250 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
         )}
       </div>
 
-      {/* Phase 2 placeholder */}
-      <div className="rounded-lg border border-dashed border-gray-300 p-6 text-center text-sm text-gray-400">
-        <p className="font-medium text-gray-500">Coming Soon</p>
-        <p className="mt-1">Commercial flight search (Amadeus), drive time estimates, and automated swap optimization</p>
+      {/* Swap Optimizer */}
+      <div className="rounded-lg border bg-white shadow-sm overflow-hidden">
+        <div className="px-4 py-3 bg-gray-50 border-b flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">
+            Swap Optimizer
+          </h3>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => runOptimizer(false)}
+              disabled={optimizing}
+              className={`px-3 py-1.5 text-xs font-medium border rounded-lg ${
+                optimizing ? "bg-gray-100 text-gray-400" : "bg-green-50 text-green-700 hover:bg-green-100 border-green-200"
+              }`}
+            >
+              {optimizing ? "Optimizing..." : "Optimize (Drive Only)"}
+            </button>
+            <button
+              onClick={() => runOptimizer(true)}
+              disabled={optimizing}
+              className={`px-3 py-1.5 text-xs font-medium border rounded-lg ${
+                optimizing ? "bg-gray-100 text-gray-400" : "bg-blue-50 text-blue-700 hover:bg-blue-100 border-blue-200"
+              }`}
+            >
+              {optimizing ? "Searching..." : "Optimize + Flights (Amadeus)"}
+            </button>
+          </div>
+        </div>
+
+        {optimizeError && (
+          <div className="px-4 py-3 bg-red-50 border-b border-red-200 text-sm text-red-700">
+            {optimizeError}
+          </div>
+        )}
+
+        {swapPlan && (
+          <div className="divide-y">
+            {/* Summary bar */}
+            <div className="px-4 py-2 bg-green-50 text-sm text-green-700 flex items-center gap-4">
+              <span className="font-medium">
+                {swapPlan.plans.length} tails planned for {swapPlan.swap_date}
+              </span>
+              {swapPlan.commercial_flights_searched > 0 && (
+                <span className="text-green-500 text-xs">
+                  ({swapPlan.commercial_flights_searched} flight routes searched)
+                </span>
+              )}
+              {swapPlan.unassigned_crew.length > 0 && (
+                <span className="text-amber-600 text-xs">
+                  {swapPlan.unassigned_crew.length} crew unassigned
+                </span>
+              )}
+            </div>
+
+            {/* Per-tail plans */}
+            {swapPlan.plans.map((plan) => (
+              <div key={plan.tail_number} className="px-4 py-3">
+                {/* Tail header */}
+                <div className="flex items-center gap-3 mb-2">
+                  <span className="font-mono font-bold text-gray-900">{plan.tail_number}</span>
+                  {plan.aircraft_type && (
+                    <span className={`text-xs px-1.5 py-0.5 rounded ${
+                      plan.aircraft_type === "citation_x" ? "bg-green-100 text-green-700"
+                        : plan.aircraft_type === "challenger" ? "bg-yellow-100 text-yellow-700"
+                        : "bg-purple-100 text-purple-700"
+                    }`}>
+                      {plan.aircraft_type === "citation_x" ? "Cit X" : plan.aircraft_type === "challenger" ? "CL" : plan.aircraft_type}
+                    </span>
+                  )}
+                  <span className="text-xs text-gray-400">{plan.wednesday_legs.length} legs on Wed</span>
+                </div>
+
+                {/* Crew changeover */}
+                <div className="grid grid-cols-2 gap-4 mb-3">
+                  <div className="text-sm">
+                    <span className="text-red-600 font-medium text-xs uppercase">Offgoing</span>
+                    <div className="mt-0.5">
+                      <span className="text-gray-700">{plan.offgoing_pic?.name ?? "—"}</span>
+                      <span className="text-gray-400 text-xs ml-1">(PIC)</span>
+                      {plan.offgoing_sic && (
+                        <>
+                          <span className="text-gray-300 mx-1">/</span>
+                          <span className="text-gray-700">{plan.offgoing_sic.name}</span>
+                          <span className="text-gray-400 text-xs ml-1">(SIC)</span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  <div className="text-sm">
+                    <span className="text-green-600 font-medium text-xs uppercase">Oncoming</span>
+                    <div className="mt-0.5">
+                      <span className="text-gray-700 font-medium">{plan.oncoming_pic?.name ?? "—"}</span>
+                      <span className="text-gray-400 text-xs ml-1">(PIC)</span>
+                      {plan.oncoming_pic?.home_airports && (
+                        <span className="text-gray-400 text-xs ml-1">
+                          [{plan.oncoming_pic.home_airports.join("/")}]
+                        </span>
+                      )}
+                      {plan.oncoming_sic && (
+                        <>
+                          <span className="text-gray-300 mx-1">/</span>
+                          <span className="text-gray-700 font-medium">{plan.oncoming_sic.name}</span>
+                          <span className="text-gray-400 text-xs ml-1">(SIC)</span>
+                          {plan.oncoming_sic.home_airports && (
+                            <span className="text-gray-400 text-xs ml-1">
+                              [{plan.oncoming_sic.home_airports.join("/")}]
+                            </span>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Swap options (top 3) */}
+                {plan.options.length > 0 && (
+                  <div className="space-y-2">
+                    <div className="text-xs font-medium text-gray-500 uppercase">Swap Options (ranked)</div>
+                    {plan.options.slice(0, 3).map((opt, i) => (
+                      <div
+                        key={i}
+                        className={`rounded-lg border p-3 text-sm ${
+                          i === 0 ? "border-green-200 bg-green-50" : "border-gray-200 bg-gray-50"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono font-bold">{opt.swap_airport}</span>
+                            {opt.swap_airport !== opt.commercial_airport && (
+                              <span className="text-xs text-gray-400">
+                                (commercial: {opt.commercial_airport})
+                              </span>
+                            )}
+                            {opt.is_live_leg_adjacent && (
+                              <span className="text-xs px-1.5 py-0.5 rounded bg-green-100 text-green-700">
+                                Live Leg
+                              </span>
+                            )}
+                            {opt.gap_minutes > 0 && (
+                              <span className="text-xs text-gray-400">{opt.gap_minutes}m gap</span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className={`text-xs font-bold px-2 py-0.5 rounded ${
+                              opt.score >= 70 ? "bg-green-100 text-green-700"
+                                : opt.score >= 50 ? "bg-yellow-100 text-yellow-700"
+                                : "bg-red-100 text-red-700"
+                            }`}>
+                              Score: {opt.score}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Score breakdown */}
+                        <div className="flex gap-3 text-[10px] text-gray-400 mb-2">
+                          <span>Cost: {opt.score_breakdown.cost}</span>
+                          <span>Reliability: {opt.score_breakdown.reliability}</span>
+                          <span>Convenience: {opt.score_breakdown.convenience}</span>
+                          <span>Compliance: {opt.score_breakdown.compliance}</span>
+                        </div>
+
+                        {/* Transport options */}
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <div className="text-[10px] font-medium text-green-600 uppercase mb-1">Oncoming Transport</div>
+                            {opt.oncoming_transport.length === 0 ? (
+                              <div className="text-xs text-gray-400 italic">No options found</div>
+                            ) : (
+                              opt.oncoming_transport.map((t, j) => (
+                                <div key={j} className="text-xs text-gray-600 flex items-center gap-1.5 mb-0.5">
+                                  <span className={`px-1 py-0.5 rounded text-[10px] font-medium ${
+                                    t.type === "commercial_flight" ? "bg-blue-100 text-blue-600"
+                                      : t.type === "drive" ? "bg-amber-100 text-amber-600"
+                                      : "bg-purple-100 text-purple-600"
+                                  }`}>
+                                    {t.type === "commercial_flight" ? "FLT" : t.type === "drive" ? "DRV" : "POS"}
+                                  </span>
+                                  <span>{t.details}</span>
+                                  <span className="text-gray-400">${Math.round(t.cost_estimate)}</span>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                          <div>
+                            <div className="text-[10px] font-medium text-red-600 uppercase mb-1">Offgoing Transport</div>
+                            {opt.offgoing_transport.length === 0 ? (
+                              <div className="text-xs text-gray-400 italic">No options found</div>
+                            ) : (
+                              opt.offgoing_transport.map((t, j) => (
+                                <div key={j} className="text-xs text-gray-600 flex items-center gap-1.5 mb-0.5">
+                                  <span className={`px-1 py-0.5 rounded text-[10px] font-medium ${
+                                    t.type === "commercial_flight" ? "bg-blue-100 text-blue-600"
+                                      : t.type === "drive" ? "bg-amber-100 text-amber-600"
+                                      : "bg-purple-100 text-purple-600"
+                                  }`}>
+                                    {t.type === "commercial_flight" ? "FLT" : t.type === "drive" ? "DRV" : "POS"}
+                                  </span>
+                                  <span>{t.details}</span>
+                                  <span className="text-gray-400">${Math.round(t.cost_estimate)}</span>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Warnings */}
+                {plan.warnings.length > 0 && (
+                  <div className="mt-2 space-y-1">
+                    {plan.warnings.map((w, i) => (
+                      <div key={i} className="text-xs text-amber-600 bg-amber-50 px-2 py-1 rounded">
+                        {w}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+
+            {/* Unassigned crew */}
+            {swapPlan.unassigned_crew.length > 0 && (
+              <div className="px-4 py-3">
+                <div className="text-xs font-medium text-gray-500 uppercase mb-2">
+                  Unassigned Crew ({swapPlan.unassigned_crew.length})
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {swapPlan.unassigned_crew.map((c) => (
+                    <span key={c.id} className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">
+                      {c.name} ({c.role})
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {!swapPlan && !optimizeError && (
+          <div className="px-4 py-6 text-center text-sm text-gray-400">
+            Click optimize to generate swap recommendations for {selectedWed.toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+          </div>
+        )}
       </div>
     </div>
   );
