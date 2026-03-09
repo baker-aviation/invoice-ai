@@ -184,6 +184,48 @@ function lookupAdvertisedPrice(
   return allTails[0]?.price ?? matches[0]?.price ?? null;
 }
 
+/** Find the cheapest advertised rate across ALL vendors for a given airport + week */
+function lookupBestRate(
+  advByAirportWeek: Map<string, AdvertisedPriceRow[]>,
+  airportCode: string | null,
+  invoiceDate: string | null,
+  gallons: number | null,
+): { price: number; vendor: string } | null {
+  if (!airportCode || !invoiceDate) return null;
+  const weekMonday = getWeekMonday(invoiceDate);
+  const codes = airportCode.length === 4 && airportCode.startsWith("K")
+    ? [airportCode, airportCode.slice(1)]
+    : airportCode.length === 3
+    ? [airportCode, `K${airportCode}`]
+    : [airportCode];
+
+  let allMatches: AdvertisedPriceRow[] = [];
+  for (const code of codes) {
+    const m = advByAirportWeek.get(`${code}|${weekMonday}`);
+    if (m) allMatches = allMatches.concat(m);
+  }
+  if (allMatches.length === 0) return null;
+
+  // Filter to applicable volume tiers based on gallons purchased
+  let candidates = allMatches.filter((m) => !m.tail_numbers);
+  if (gallons && gallons > 0) {
+    // Parse tier like "1+", "251+", "1001+", "1201-1500"
+    const applicable = candidates.filter((m) => {
+      const tierNum = parseInt(m.volume_tier, 10);
+      return !isNaN(tierNum) && gallons >= tierNum;
+    });
+    if (applicable.length > 0) candidates = applicable;
+  }
+  if (candidates.length === 0) candidates = allMatches;
+
+  // Find the cheapest
+  let best: AdvertisedPriceRow | null = null;
+  for (const c of candidates) {
+    if (!best || c.price < best.price) best = c;
+  }
+  return best ? { price: best.price, vendor: best.fbo_vendor } : null;
+}
+
 // ─── Advertised vs Actual comparison builder ─────────────────────────────────
 
 type AdvVsActualRow = {
@@ -284,8 +326,13 @@ function buildAdvVsActual(
       }
     }
 
-    // Actual avg for this airport (all vendors/sources)
-    const bucket = invoiceBuckets.get(latest.airport_code);
+    // Actual avg for this airport (all vendors/sources) — try all airport code variants
+    const variants = airportVariants(latest.airport_code);
+    let bucket: { prices: number[]; count: number } | undefined;
+    for (const v of variants) {
+      bucket = invoiceBuckets.get(v);
+      if (bucket && bucket.prices.length > 0) break;
+    }
     const actualAvg = bucket && bucket.prices.length > 0
       ? Math.round((bucket.prices.reduce((a, b) => a + b, 0) / bucket.prices.length) * 10000) / 10000
       : null;
@@ -295,7 +342,11 @@ function buildAdvVsActual(
     const weekDate = new Date(latest.week_start + "T12:00:00");
     const minDate = new Date(weekDate.getTime() - 3 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
     const maxDate = new Date(weekDate.getTime() + 10 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
-    const airportPrices = pricesByAirport.get(latest.airport_code) ?? [];
+    let airportPrices: { date: string; price: number }[] = [];
+    for (const v of variants) {
+      airportPrices = pricesByAirport.get(v) ?? [];
+      if (airportPrices.length > 0) break;
+    }
     const recentPrices = airportPrices.filter((p) => p.date >= minDate && p.date <= maxDate && p.price >= 1);
     const recent7dAvg = recentPrices.length > 0
       ? Math.round((recentPrices.reduce((a, b) => a + b.price, 0) / recentPrices.length) * 10000) / 10000
@@ -329,13 +380,20 @@ function buildAdvVsActual(
     });
   }
 
-  // Sort by airport, then vendor, then tier
+  // Sort: rows with actual invoice data first (by invoice count desc), then airport alpha
   rows.sort((a, b) => {
+    // Rows with actual paid data come first, ordered by most invoice activity
+    const aCount = a.invoiceCount + a.recent7dCount;
+    const bCount = b.invoiceCount + b.recent7dCount;
+    if (aCount > 0 && bCount === 0) return -1;
+    if (aCount === 0 && bCount > 0) return 1;
+    if (aCount > 0 && bCount > 0) {
+      if (bCount !== aCount) return bCount - aCount;
+    }
+    // Then by airport
     const ac = a.airport.localeCompare(b.airport);
     if (ac !== 0) return ac;
-    const vc = a.fboVendor.localeCompare(b.fboVendor);
-    if (vc !== 0) return vc;
-    return a.volumeTier.localeCompare(b.volumeTier);
+    return a.fboVendor.localeCompare(b.fboVendor);
   });
 
   return rows;
@@ -348,24 +406,24 @@ function ImportAdvertisedModal({ onClose }: { onClose: () => void }) {
   const [weekStart, setWeekStart] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<{ ok: boolean; inserted?: number; skipped?: number; error?: string } | null>(null);
+  const [result, setResult] = useState<{ ok: boolean; inserted?: number; skipped?: number; error?: string; vendor?: string; format?: string } | null>(null);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!file || !vendor || !weekStart) return;
+    if (!file) return;
     setLoading(true);
     setResult(null);
 
     const fd = new FormData();
     fd.append("file", file);
-    fd.append("vendor", vendor);
-    fd.append("week_start", weekStart);
+    if (vendor) fd.append("vendor", vendor);
+    if (weekStart) fd.append("week_start", weekStart);
 
     try {
       const res = await fetch("/api/fuel-prices/advertised/upload", { method: "POST", body: fd });
       const data = await res.json();
       if (res.ok && data.ok) {
-        setResult({ ok: true, inserted: data.inserted, skipped: data.skipped });
+        setResult({ ok: true, inserted: data.inserted, skipped: data.skipped, vendor: data.vendor, format: data.detectedFormat });
       } else {
         setResult({ ok: false, error: data.error || "Upload failed" });
       }
@@ -385,28 +443,30 @@ function ImportAdvertisedModal({ onClose }: { onClose: () => void }) {
         </div>
 
         <div className="mb-4 rounded-lg bg-blue-50 border border-blue-200 p-3 text-xs text-blue-800">
-          <p className="font-semibold mb-1">Expected CSV format:</p>
-          <code className="block whitespace-pre text-[11px]">FBO, Volume Tier, Product, Price, Tail Numbers</code>
-          <p className="mt-1 text-blue-600">FBO (airport code) may be blank on continuation rows (carries forward). Price like $6.30. &ldquo;All Tails&rdquo; = all aircraft.</p>
+          <p className="font-semibold mb-1">Supported CSV formats:</p>
+          <ul className="list-disc ml-4 space-y-0.5 text-[11px]">
+            <li><strong>AEG/Baker</strong> &mdash; auto-detected (ICAO, FUELER, TOTAL PRICE columns)</li>
+            <li><strong>Everest Fuel</strong> &mdash; auto-detected (ICAO, FBO, TIER, PRICE columns)</li>
+            <li><strong>Generic</strong> &mdash; Airport, Volume Tier, Product, Price, Tail Numbers</li>
+          </ul>
+          <p className="mt-1 text-blue-600">Baker &amp; Everest formats are auto-detected. Vendor name and week date are optional for those &mdash; date can be in filename (e.g. Everest Fuel_03_06_2026.csv).</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-3">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">FBO Vendor Name</label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Vendor Name <span className="text-gray-400 font-normal">(optional for Baker/Everest)</span></label>
             <input
               type="text"
-              required
               value={vendor}
               onChange={(e) => setVendor(e.target.value)}
-              placeholder="e.g. Jet Aviation"
+              placeholder="e.g. Jet Aviation — leave blank for auto-detect"
               className="w-full rounded-md border px-3 py-2 text-sm"
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Week Starting</label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Week Starting <span className="text-gray-400 font-normal">(optional if in filename)</span></label>
             <input
               type="date"
-              required
               value={weekStart}
               onChange={(e) => setWeekStart(e.target.value)}
               className="w-full rounded-md border px-3 py-2 text-sm"
@@ -426,7 +486,7 @@ function ImportAdvertisedModal({ onClose }: { onClose: () => void }) {
           {result && (
             <div className={`rounded-lg p-3 text-sm ${result.ok ? "bg-green-50 text-green-800" : "bg-red-50 text-red-800"}`}>
               {result.ok
-                ? `Imported ${result.inserted} rows (${result.skipped} duplicates skipped)`
+                ? `Imported ${result.inserted} rows (${result.skipped} updated)${result.vendor ? ` — ${result.vendor}` : ""}${result.format && result.format !== "generic" ? ` (${result.format} format)` : ""}`
                 : result.error}
             </div>
           )}
@@ -438,7 +498,7 @@ function ImportAdvertisedModal({ onClose }: { onClose: () => void }) {
             {!result?.ok && (
               <button
                 type="submit"
-                disabled={loading || !file || !vendor || !weekStart}
+                disabled={loading || !file}
                 className="px-4 py-2 text-sm rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
               >
                 {loading ? "Uploading..." : "Import"}
@@ -562,11 +622,42 @@ export default function FuelPricesTable({
     return lookup;
   }, [advertisedPrices]);
 
+  // Best-rate lookup: key = "airport|week_monday" → all vendor rows for that airport+week
+  const advByAirportWeek = useMemo(() => {
+    const lookup = new Map<string, AdvertisedPriceRow[]>();
+    for (const adv of advertisedPrices) {
+      const key = `${adv.airport_code}|${adv.week_start}`;
+      if (!lookup.has(key)) lookup.set(key, []);
+      lookup.get(key)!.push(adv);
+    }
+    return lookup;
+  }, [advertisedPrices]);
+
   // Advertised vs Actual comparison rows
   const advVsActual = useMemo(
     () => buildAdvVsActual(initialPrices, advertisedPrices),
     [initialPrices, advertisedPrices],
   );
+
+  // Latest invoice per airport (for linking from Adv vs Actual tab)
+  const latestInvoiceByAirport = useMemo(() => {
+    const lookup = new Map<string, { docId: string; date: string }>();
+    for (const r of initialPrices) {
+      if (!r.airport_code || !r.document_id || (r.data_source ?? "invoice") === "jetinsight") continue;
+      const codes = r.airport_code.length === 4 && r.airport_code.startsWith("K")
+        ? [r.airport_code, r.airport_code.slice(1)]
+        : r.airport_code.length === 3
+        ? [r.airport_code, `K${r.airport_code}`]
+        : [r.airport_code];
+      for (const code of codes) {
+        const existing = lookup.get(code);
+        if (!existing || (r.invoice_date ?? "") > existing.date) {
+          lookup.set(code, { docId: r.document_id, date: r.invoice_date ?? "" });
+        }
+      }
+    }
+    return lookup;
+  }, [initialPrices]);
 
   const filtered = useMemo(() => {
     let rows = initialPrices;
@@ -887,10 +978,10 @@ export default function FuelPricesTable({
                 {hasAdvertised && (
                   <>
                     <th className="px-4 py-3 text-right">
-                      <span title="FBO advertised price for this airport + vendor + week">Adv. Price</span>
+                      <span title="Cheapest contract rate across AEG, Everest, etc. for this airport + week + volume">Best Rate</span>
                     </th>
                     <th className="px-4 py-3 text-right">
-                      <span title="Difference between effective price and advertised price">vs Adv.</span>
+                      <span title="How much more/less you paid vs the best available contract rate">vs Best</span>
                     </th>
                   </>
                 )}
@@ -920,13 +1011,22 @@ export default function FuelPricesTable({
                 const aptStats = row.airport_code ? airportAvgLookup.get(row.airport_code) : null;
                 const price = row.effective_price_per_gallon;
 
-                // Advertised price lookup
+                // Advertised price lookup (vendor-specific)
                 const advPrice = hasAdvertised
                   ? lookupAdvertisedPrice(advLookup, row.vendor_name, row.airport_code, row.invoice_date, row.tail_number)
                   : null;
                 let vsAdvPct: number | null = null;
                 if (price != null && advPrice != null && advPrice > 0) {
                   vsAdvPct = Math.round(((price - advPrice) / advPrice) * 1000) / 10;
+                }
+
+                // Best available rate across all vendors
+                const bestRate = hasAdvertised
+                  ? lookupBestRate(advByAirportWeek, row.airport_code, row.invoice_date, row.gallons)
+                  : null;
+                let vsBestPct: number | null = null;
+                if (price != null && bestRate && bestRate.price > 0) {
+                  vsBestPct = Math.round(((price - bestRate.price) / bestRate.price) * 1000) / 10;
                 }
 
                 let vsAvgPct: number | null = null;
@@ -975,13 +1075,18 @@ export default function FuelPricesTable({
                     </td>
                     {hasAdvertised && (
                       <>
-                        <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono text-purple-700">
-                          {advPrice != null ? fmt$(advPrice) : <span className="text-gray-300">{"\u2014"}</span>}
+                        <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono text-blue-700">
+                          {bestRate ? (
+                            <span title={`${bestRate.vendor} contract rate`}>
+                              {fmt$(bestRate.price)}
+                              <div className="text-[10px] text-gray-400 font-normal">{bestRate.vendor}</div>
+                            </span>
+                          ) : <span className="text-gray-300">{"\u2014"}</span>}
                         </td>
                         <td className="px-4 py-2.5 whitespace-nowrap text-right">
-                          {vsAdvPct != null ? (
-                            <Badge variant={vsAdvPct > 2 ? "danger" : vsAdvPct < -2 ? "success" : "default"}>
-                              {vsAdvPct >= 0 ? "+" : ""}{vsAdvPct}%
+                          {vsBestPct != null ? (
+                            <Badge variant={vsBestPct > 2 ? "danger" : vsBestPct < -2 ? "success" : "default"}>
+                              {vsBestPct >= 0 ? "+" : ""}{vsBestPct}%
                             </Badge>
                           ) : (
                             <span className="text-gray-300 text-xs">{"\u2014"}</span>
@@ -1098,6 +1203,7 @@ export default function FuelPricesTable({
                     <span title="Actual vs current advertised: positive = paying more">vs Adv.</span>
                   </th>
                   <th className="px-4 py-3 text-right text-[10px] normal-case">Week of</th>
+                  <th className="px-4 py-3 text-center">Invoice</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
@@ -1166,12 +1272,28 @@ export default function FuelPricesTable({
                       <td className="px-4 py-2.5 whitespace-nowrap text-right text-[10px] text-gray-400">
                         {fmtDate(row.currentWeek)}
                       </td>
+                      <td className="px-4 py-2.5 whitespace-nowrap text-center">
+                        {(() => {
+                          const inv = latestInvoiceByAirport.get(row.airport);
+                          return inv ? (
+                            <Link
+                              href={`/invoices/${inv.docId}`}
+                              className="text-xs text-blue-600 hover:text-blue-800 underline"
+                              title={`Latest invoice: ${fmtDate(inv.date)}`}
+                            >
+                              View
+                            </Link>
+                          ) : (
+                            <span className="text-gray-300 text-xs">{"\u2014"}</span>
+                          );
+                        })()}
+                      </td>
                     </tr>
                   );
                 })}
                 {advPageRows.length === 0 && (
                   <tr>
-                    <td colSpan={10} className="px-4 py-8 text-center text-gray-400">
+                    <td colSpan={11} className="px-4 py-8 text-center text-gray-400">
                       No advertised price data found. Use &ldquo;Import Advertised Prices&rdquo; to upload FBO price sheets.
                     </td>
                   </tr>

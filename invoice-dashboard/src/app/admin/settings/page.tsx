@@ -67,6 +67,10 @@ export default function SettingsPage() {
   const [notifChecking, setNotifChecking] = useState(false);
   const [notifResult, setNotifResult] = useState<string | null>(null);
 
+  // Daily summary state
+  const [summaryChecking, setSummaryChecking] = useState(false);
+  const [summaryResult, setSummaryResult] = useState<string | null>(null);
+
   const fetchSources = useCallback(async () => {
     try {
       const res = await fetch("/api/admin/ics-sources");
@@ -229,6 +233,31 @@ export default function SettingsPage() {
       setNotifResult(err instanceof Error ? err.message : "Check failed");
     } finally {
       setNotifChecking(false);
+    }
+  }
+
+  async function handleDailySummary() {
+    setSummaryChecking(true);
+    setSummaryResult(null);
+    try {
+      const res = await fetch("/api/admin/trip-notifications/daily-summary", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+      let msg = `Daily summary for ${data.date}: sent ${data.sent}/${data.total} DMs.`;
+      if (data.sentDetails?.length) {
+        const details = data.sentDetails.map(
+          (d: { salesperson: string; legCount: number }) =>
+            `${d.salesperson} — ${d.legCount} leg(s)`
+        );
+        msg += "\n\n" + details.join("\n");
+      }
+      if (data.errors?.length) msg += "\n\nErrors: " + data.errors.join("; ");
+      if (data.message) msg = data.message;
+      setSummaryResult(msg);
+    } catch (err) {
+      setSummaryResult(err instanceof Error ? err.message : "Summary failed");
+    } finally {
+      setSummaryChecking(false);
     }
   }
 
@@ -735,6 +764,30 @@ export default function SettingsPage() {
       {notifResult && (
         <div className="mt-3 px-4 py-2 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-700 whitespace-pre-line">
           {notifResult}
+        </div>
+      )}
+
+      {/* ── Daily Summary ──────────────────────────────────────────────── */}
+      <hr className="my-8 border-gray-200" />
+      <h2 className="text-lg font-semibold text-slate-900 mb-1">Daily Evening Summary</h2>
+      <p className="text-sm text-gray-500 mb-4">
+        Send each salesperson a Slack DM with their sold legs for tomorrow.
+        Salespersons with no legs get a &quot;no sold legs&quot; message.
+        Runs automatically at 6pm EST daily.
+      </p>
+
+      <button
+        type="button"
+        onClick={handleDailySummary}
+        disabled={summaryChecking}
+        className="bg-slate-900 text-white rounded-md px-5 py-2 text-sm font-medium hover:bg-slate-700 disabled:opacity-50"
+      >
+        {summaryChecking ? "Sending…" : "Send Daily Summary Now"}
+      </button>
+
+      {summaryResult && (
+        <div className="mt-3 px-4 py-2 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-700 whitespace-pre-line">
+          {summaryResult}
         </div>
       )}
     </div>
