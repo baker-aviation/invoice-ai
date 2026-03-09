@@ -70,6 +70,7 @@ function fmtAlt(alt: number | null): string {
 type Props = {
   aircraft: AircraftPosition[];
   flightInfo: Map<string, FlightInfoMap>;
+  onHoldingDetected?: (tails: Set<string>) => void;
 };
 
 /* ── Holding pattern detection (client-side from track headings) ── */
@@ -150,8 +151,8 @@ function FlightTracks({
   }, [aircraft]);
 
   useEffect(() => {
-    // Throttle: only refetch tracks every 5 min
-    if (Date.now() - lastFetchRef.current < 5 * 60_000 && tracks.size > 0) return;
+    // Throttle: only refetch tracks every 2.5 min
+    if (Date.now() - lastFetchRef.current < 150_000 && tracks.size > 0) return;
 
     // Collect airborne flights with FA flight IDs
     // Look up by tail key directly — the tail-keyed entry prefers en-route flights
@@ -414,7 +415,7 @@ function ToggleBtn({ label, active, onClick }: { label: string; active: boolean;
 
 /* ── Main map component ── */
 
-export default function OpsMap({ aircraft, flightInfo }: Props) {
+export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHoldingDetectedProp }: Props) {
   const [darkMode, setDarkMode] = useState(true);
   const [showRadar, setShowRadar] = useState(false);
   const [showVans, setShowVans] = useState(false);
@@ -436,7 +437,8 @@ export default function OpsMap({ aircraft, flightInfo }: Props) {
 
   const handleHoldingDetected = useCallback((tails: Set<string>) => {
     setHoldingTails(tails);
-  }, []);
+    onHoldingDetectedProp?.(tails);
+  }, [onHoldingDetectedProp]);
 
   return (
     <div ref={containerRef} className="relative">
