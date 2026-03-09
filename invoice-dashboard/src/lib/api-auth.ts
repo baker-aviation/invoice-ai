@@ -123,6 +123,38 @@ export function isRateLimited(
 }
 
 /**
+ * Validate Supabase session AND require super_admin flag in app_metadata.
+ * Only the project owner should have this flag.
+ */
+export async function requireSuperAdmin(req: NextRequest): Promise<AuthResult> {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  if (!supabaseUrl || !supabaseAnonKey) {
+    return { error: NextResponse.json({ error: "Server misconfiguration" }, { status: 500 }) };
+  }
+
+  const supabase = createServerClient(supabaseUrl, supabaseAnonKey, {
+    cookies: {
+      getAll() { return req.cookies.getAll(); },
+      setAll() {},
+    },
+  });
+
+  const { data: { user }, error } = await supabase.auth.getUser();
+  if (error || !user) {
+    return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
+  }
+
+  if (!user.app_metadata?.super_admin) {
+    return { error: NextResponse.json({ error: "Forbidden" }, { status: 403 }) };
+  }
+
+  const role = (user.app_metadata?.role as string | undefined) ?? (user.user_metadata?.role as string | undefined);
+  return { userId: user.id, email: user.email ?? "", role };
+}
+
+/**
  * Type guard: returns true when auth succeeded (no error).
  */
 export function isAuthed(auth: AuthResult): auth is AuthSuccess {

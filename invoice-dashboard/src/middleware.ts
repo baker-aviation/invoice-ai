@@ -116,6 +116,15 @@ export async function middleware(request: NextRequest) {
       }
     }
 
+    // Super admin route — requires super_admin flag in app_metadata
+    if (pathname.startsWith("/admin/super")) {
+      if (!user.app_metadata?.super_admin) {
+        const url = request.nextUrl.clone();
+        url.pathname = "/";
+        return NextResponse.redirect(url);
+      }
+    }
+
     // Admin-only routes — block non-admin users
     if (role !== "admin" && (pathname.startsWith("/health") || pathname.startsWith("/admin"))) {
       const url = request.nextUrl.clone();
