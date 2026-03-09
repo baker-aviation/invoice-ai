@@ -1,7 +1,32 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import type { Flight } from "@/lib/opsApi";
+
+// ─── Crew Types ─────────────────────────────────────────────────────────────
+
+type CrewMember = {
+  id: string;
+  name: string;
+  role: "PIC" | "SIC";
+  home_airports: string[];
+  aircraft_types: string[];
+  is_checkairman: boolean;
+  is_skillbridge: boolean;
+  priority: number;
+  active: boolean;
+  notes: string | null;
+};
+
+type RosterUploadResult = {
+  ok: boolean;
+  total_parsed: number;
+  unique_crew: number;
+  upserted: number;
+  rotations_created: number;
+  errors?: string[];
+  summary: Record<string, number>;
+};
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -79,6 +104,54 @@ const FLIGHT_TYPE_COLORS: Record<string, string> = {
 
 export default function CrewSwap({ flights }: { flights: Flight[] }) {
   const [selectedWed, setSelectedWed] = useState<Date>(getNextWednesday());
+  const [crew, setCrew] = useState<CrewMember[]>([]);
+  const [crewLoaded, setCrewLoaded] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadResult, setUploadResult] = useState<RosterUploadResult | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [showRoster, setShowRoster] = useState(false);
+
+  // Fetch crew roster
+  const loadCrew = useCallback(async () => {
+    try {
+      const res = await fetch("/api/crew/roster");
+      if (!res.ok) return;
+      const data = await res.json();
+      setCrew(data.crew ?? []);
+      setCrewLoaded(true);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  // Load crew on first render
+  useEffect(() => {
+    loadCrew();
+  }, [loadCrew]);
+
+  // Upload Excel roster
+  async function handleUpload(file: File) {
+    setUploading(true);
+    setUploadError(null);
+    setUploadResult(null);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch("/api/crew/roster", { method: "POST", body: fd });
+      const data = await res.json();
+      if (!res.ok) {
+        setUploadError(data.error ?? "Upload failed");
+      } else {
+        setUploadResult(data);
+        // Refresh crew list
+        await loadCrew();
+      }
+    } catch (e) {
+      setUploadError(e instanceof Error ? e.message : "Upload failed");
+    } finally {
+      setUploading(false);
+    }
+  }
 
   // Build per-tail schedule focused on the selected Wednesday
   const tailSchedules = useMemo(() => {
@@ -378,10 +451,138 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
         </div>
       </div>
 
-      {/* Placeholder for future features */}
+      {/* Crew Roster Section */}
+      <div className="rounded-lg border bg-white shadow-sm overflow-hidden">
+        <div className="px-4 py-3 bg-gray-50 border-b flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">
+            Crew Roster {crewLoaded && `(${crew.length})`}
+          </h3>
+          <div className="flex items-center gap-2">
+            {crew.length > 0 && (
+              <button
+                onClick={() => setShowRoster(!showRoster)}
+                className="px-3 py-1.5 text-xs font-medium border rounded-lg hover:bg-gray-50"
+              >
+                {showRoster ? "Hide" : "Show"} Roster
+              </button>
+            )}
+            <label className={`px-3 py-1.5 text-xs font-medium border rounded-lg cursor-pointer ${
+              uploading ? "bg-gray-100 text-gray-400" : "bg-blue-50 text-blue-700 hover:bg-blue-100 border-blue-200"
+            }`}>
+              {uploading ? "Uploading..." : "Upload Roster (.xlsx)"}
+              <input
+                type="file"
+                accept=".xlsx,.xls"
+                className="hidden"
+                disabled={uploading}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) handleUpload(f);
+                  e.target.value = "";
+                }}
+              />
+            </label>
+          </div>
+        </div>
+
+        {/* Upload result */}
+        {uploadResult && (
+          <div className="px-4 py-3 bg-green-50 border-b border-green-200 text-sm">
+            <span className="text-green-700 font-medium">Roster uploaded: </span>
+            <span className="text-green-600">
+              {uploadResult.total_parsed} parsed, {uploadResult.unique_crew} unique, {uploadResult.upserted} upserted
+              {uploadResult.rotations_created > 0 && `, ${uploadResult.rotations_created} rotations`}
+            </span>
+            {uploadResult.summary && (
+              <span className="text-green-500 ml-2 text-xs">
+                (On-PIC: {uploadResult.summary.oncoming_pic ?? 0}, On-SIC: {uploadResult.summary.oncoming_sic ?? 0},
+                 Off-PIC: {uploadResult.summary.offgoing_pic ?? 0}, Off-SIC: {uploadResult.summary.offgoing_sic ?? 0})
+              </span>
+            )}
+            {uploadResult.errors && uploadResult.errors.length > 0 && (
+              <div className="mt-1 text-xs text-red-600">
+                Errors: {uploadResult.errors.join("; ")}
+              </div>
+            )}
+          </div>
+        )}
+        {uploadError && (
+          <div className="px-4 py-3 bg-red-50 border-b border-red-200 text-sm text-red-700">
+            {uploadError}
+          </div>
+        )}
+
+        {/* Roster table */}
+        {showRoster && crew.length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 text-left text-xs text-gray-500 uppercase tracking-wider">
+                <tr>
+                  <th className="px-4 py-2">Name</th>
+                  <th className="px-4 py-2">Role</th>
+                  <th className="px-4 py-2">Home</th>
+                  <th className="px-4 py-2">Aircraft</th>
+                  <th className="px-4 py-2">Flags</th>
+                  <th className="px-4 py-2">Notes</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {crew.map((c) => (
+                  <tr key={c.id} className="hover:bg-gray-50">
+                    <td className="px-4 py-2 font-medium text-gray-900">{c.name}</td>
+                    <td className="px-4 py-2">
+                      <span className={`text-xs px-2 py-0.5 rounded font-medium ${
+                        c.role === "PIC" ? "bg-blue-100 text-blue-700" : "bg-purple-100 text-purple-700"
+                      }`}>
+                        {c.role}
+                      </span>
+                    </td>
+                    <td className="px-4 py-2 font-mono text-xs text-gray-600">
+                      {c.home_airports.join(" / ")}
+                    </td>
+                    <td className="px-4 py-2 text-xs text-gray-600">
+                      {c.aircraft_types.map((t) => (
+                        <span key={t} className={`inline-block mr-1 px-1.5 py-0.5 rounded ${
+                          t === "citation_x" ? "bg-green-100 text-green-700"
+                            : t === "challenger" ? "bg-yellow-100 text-yellow-700"
+                            : t === "dual" ? "bg-purple-100 text-purple-700"
+                            : "bg-gray-100 text-gray-600"
+                        }`}>
+                          {t === "citation_x" ? "Cit X" : t === "challenger" ? "CL" : t === "dual" ? "Dual" : t}
+                        </span>
+                      ))}
+                    </td>
+                    <td className="px-4 py-2">
+                      <div className="flex gap-1">
+                        {c.is_checkairman && (
+                          <span className="text-xs px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">CA</span>
+                        )}
+                        {c.is_skillbridge && (
+                          <span className="text-xs px-1.5 py-0.5 rounded bg-teal-100 text-teal-700">SB</span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-4 py-2 text-xs text-gray-400 max-w-[200px] truncate">
+                      {c.notes ?? "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {!showRoster && crew.length === 0 && crewLoaded && (
+          <div className="px-4 py-6 text-center text-sm text-gray-400">
+            No crew roster loaded. Upload an Excel file to get started.
+          </div>
+        )}
+      </div>
+
+      {/* Phase 2 placeholder */}
       <div className="rounded-lg border border-dashed border-gray-300 p-6 text-center text-sm text-gray-400">
         <p className="font-medium text-gray-500">Coming Soon</p>
-        <p className="mt-1">Crew roster upload, commercial flight search, and automated swap planning</p>
+        <p className="mt-1">Commercial flight search (Amadeus), drive time estimates, and automated swap optimization</p>
       </div>
     </div>
   );
