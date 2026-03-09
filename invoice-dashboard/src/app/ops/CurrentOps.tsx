@@ -58,6 +58,35 @@ function getTimeRange(range: TimeRange): { start: Date; end: Date } {
   }
 }
 
+/** Find the salesperson for a flight by matching tail + origin + dest, or tail + date. */
+function findSalesperson(
+  tripSalespersons: TripSalesperson[],
+  tailNumber: string | null,
+  departureIcao: string | null,
+  arrivalIcao: string | null,
+  scheduledDeparture: string,
+): string | null {
+  if (!tailNumber) return null;
+  // Exact leg match: tail + origin + dest
+  for (const t of tripSalespersons) {
+    if (
+      t.tail_number === tailNumber &&
+      t.origin_icao === departureIcao &&
+      t.destination_icao === arrivalIcao
+    ) {
+      return t.salesperson_name;
+    }
+  }
+  // Fallback: tail + same date
+  const depDate = scheduledDeparture.split("T")[0];
+  for (const t of tripSalespersons) {
+    if (t.tail_number === tailNumber && t.scheduled_departure?.split("T")[0] === depDate) {
+      return t.salesperson_name;
+    }
+  }
+  return null;
+}
+
 /** Map ICAO type codes to fleet display names */
 const FLEET_TYPE_LABELS: Record<string, string> = {
   C750: "Citation X",
@@ -323,9 +352,21 @@ const SEVERITY_COLORS: Record<string, string> = {
 
 /* ── component ──────────────────────────────────────── */
 
+type TripSalesperson = {
+  trip_id: string;
+  tail_number: string;
+  scheduled_departure: string | null;
+  scheduled_arrival: string | null;
+  origin_icao: string | null;
+  destination_icao: string | null;
+  salesperson_name: string;
+  customer: string | null;
+};
+
 export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Flight[]; onSwitchToDuty?: (tail?: string) => void }) {
   const [enRouteAircraft, setAircraftPosition] = useState<AircraftPosition[]>([]);
   const [flightInfo, setFlightInfo] = useState<Map<string, FlightInfoMap>>(new Map());
+  const [tripSalespersons, setTripSalespersons] = useState<TripSalesperson[]>([]);
   const [visibleTypes, setVisibleTypes] = useState<Set<string>>(DEFAULT_TYPES);
   const [timeRange, setTimeRange] = useState<TimeRange>("Today");
   const [expandedFlights, setExpandedFlights] = useState<Set<string>>(new Set());
@@ -395,12 +436,25 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
     } catch { /* ignore */ }
   }, []);
 
+  // Fetch trip-salesperson mappings
+  const fetchTripSalespersons = useCallback(async () => {
+    try {
+      const res = await fetch("/api/admin/trip-salespersons", { cache: "no-store" });
+      if (res.ok) {
+        const data = await res.json();
+        setTripSalespersons(data.trips ?? []);
+      }
+    } catch { /* ignore */ }
+  }, []);
+
   // Poll every 5 minutes
   useEffect(() => {
     fetchFlightInfo();
+    fetchTripSalespersons();
     const interval = setInterval(fetchFlightInfo, 300_000); // 5 min — server cache is 15min
-    return () => clearInterval(interval);
-  }, [fetchFlightInfo]);
+    const spInterval = setInterval(fetchTripSalespersons, 300_000);
+    return () => { clearInterval(interval); clearInterval(spInterval); };
+  }, [fetchFlightInfo, fetchTripSalespersons]);
 
   // Get all unique flight types
   const allTypes = useMemo(() => {
@@ -1060,13 +1114,14 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
           <colgroup>
             <col style={{ width: "9%" }} />   {/* Status */}
             <col style={{ width: "7%" }} />   {/* Tail */}
-            <col style={{ width: "12%" }} />  {/* Route */}
-            <col style={{ width: "14%" }} />  {/* Departure */}
-            <col style={{ width: "14%" }} />  {/* Arrival */}
-            <col style={{ width: "8%" }} />   {/* Type */}
-            <col style={{ width: "6%" }} />   {/* 10/24 */}
-            <col style={{ width: "6%" }} />   {/* Rest */}
+            <col style={{ width: "11%" }} />  {/* Route */}
+            <col style={{ width: "13%" }} />  {/* Departure */}
+            <col style={{ width: "13%" }} />  {/* Arrival */}
+            <col style={{ width: "7%" }} />   {/* Type */}
+            <col style={{ width: "5%" }} />   {/* 10/24 */}
+            <col style={{ width: "5%" }} />   {/* Rest */}
             <col style={{ width: "5%" }} />   {/* Alerts */}
+            <col style={{ width: "9%" }} />   {/* Sales */}
           </colgroup>
           <thead>
             <tr className="bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -1107,12 +1162,13 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                   </div>
                 </div>
               </th>
+              <th className="px-3 py-3">Sales</th>
             </tr>
           </thead>
           <tbody>
             {displayFlights.length === 0 ? (
               <tr>
-                <td colSpan={9} className="px-4 py-8 text-center text-gray-400">
+                <td colSpan={10} className="px-4 py-8 text-center text-gray-400">
                   No flights scheduled for selected filters
                 </td>
               </tr>
@@ -1351,10 +1407,19 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                           </button>
                         )}
                       </td>
+                      <td className="px-3 py-2.5">
+                        {(() => {
+                          const LIVE = ["Revenue", "Owner", "Charter"];
+                          if (!LIVE.includes(type)) return null;
+                          const sp = findSalesperson(tripSalespersons, f.tail_number, f.departure_icao, f.arrival_icao, f.scheduled_departure);
+                          if (!sp) return null;
+                          return <span className="text-xs text-gray-700">{sp}</span>;
+                        })()}
+                      </td>
                     </tr>
                     {isExpanded && alerts.map((alert) => (
                       <tr key={alert.id} className={`border-t border-dashed border-gray-100 ${isAcked(alert) ? "bg-gray-50/40 opacity-60" : "bg-red-50/40"}`}>
-                        <td colSpan={9} className="px-4 py-3">
+                        <td colSpan={10} className="px-4 py-3">
                           <div className={`rounded-lg border p-3 text-xs ${isAcked(alert) ? "bg-gray-50 text-gray-700 border-gray-200" : SEVERITY_COLORS[alert.severity] || "bg-gray-50 text-gray-700 border-gray-200"}`}>
                             <div className="flex items-start justify-between gap-2">
                               <div className="space-y-1 flex-1">
