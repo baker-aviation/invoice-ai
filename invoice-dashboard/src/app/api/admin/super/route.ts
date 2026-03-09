@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 // Map Cloud Run services → the pipeline slugs that prove they're running.
 // If ANY mapped pipeline ran successfully recently, the service is "ok".
 const SERVICE_PIPELINE_MAP: { name: string; pipelines: string[]; warnMins: number }[] = [
-  { name: "ops-monitor", pipelines: ["flight-sync", "edct-pull", "notam-check"], warnMins: 45 },
+  { name: "ops-monitor", pipelines: ["flight-sync", "edct-pull", "notam-check"], warnMins: 10 },
   { name: "invoice-ingest", pipelines: ["invoice-ingest"], warnMins: 30 },
   { name: "invoice-parser", pipelines: ["invoice-parse"], warnMins: 30 },
   { name: "invoice-alerts", pipelines: ["alert-generation", "slack-flush"], warnMins: 30 },
@@ -61,7 +61,7 @@ type UserInfo = {
 };
 
 const PIPELINES = [
-  { slug: "flight-sync", name: "Flight Sync", warnMins: 45 },
+  { slug: "flight-sync", name: "Flight Sync", warnMins: 10 },
   { slug: "edct-pull", name: "EDCT Pull", warnMins: 15 },
   { slug: "notam-check", name: "NOTAM Check", warnMins: 45 },
   { slug: "invoice-ingest", name: "Invoice Ingest", warnMins: 30 },
