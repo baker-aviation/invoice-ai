@@ -184,6 +184,48 @@ function lookupAdvertisedPrice(
   return allTails[0]?.price ?? matches[0]?.price ?? null;
 }
 
+/** Find the cheapest advertised rate across ALL vendors for a given airport + week */
+function lookupBestRate(
+  advByAirportWeek: Map<string, AdvertisedPriceRow[]>,
+  airportCode: string | null,
+  invoiceDate: string | null,
+  gallons: number | null,
+): { price: number; vendor: string } | null {
+  if (!airportCode || !invoiceDate) return null;
+  const weekMonday = getWeekMonday(invoiceDate);
+  const codes = airportCode.length === 4 && airportCode.startsWith("K")
+    ? [airportCode, airportCode.slice(1)]
+    : airportCode.length === 3
+    ? [airportCode, `K${airportCode}`]
+    : [airportCode];
+
+  let allMatches: AdvertisedPriceRow[] = [];
+  for (const code of codes) {
+    const m = advByAirportWeek.get(`${code}|${weekMonday}`);
+    if (m) allMatches = allMatches.concat(m);
+  }
+  if (allMatches.length === 0) return null;
+
+  // Filter to applicable volume tiers based on gallons purchased
+  let candidates = allMatches.filter((m) => !m.tail_numbers);
+  if (gallons && gallons > 0) {
+    // Parse tier like "1+", "251+", "1001+", "1201-1500"
+    const applicable = candidates.filter((m) => {
+      const tierNum = parseInt(m.volume_tier, 10);
+      return !isNaN(tierNum) && gallons >= tierNum;
+    });
+    if (applicable.length > 0) candidates = applicable;
+  }
+  if (candidates.length === 0) candidates = allMatches;
+
+  // Find the cheapest
+  let best: AdvertisedPriceRow | null = null;
+  for (const c of candidates) {
+    if (!best || c.price < best.price) best = c;
+  }
+  return best ? { price: best.price, vendor: best.fbo_vendor } : null;
+}
+
 // ─── Advertised vs Actual comparison builder ─────────────────────────────────
 
 type AdvVsActualRow = {
@@ -580,11 +622,42 @@ export default function FuelPricesTable({
     return lookup;
   }, [advertisedPrices]);
 
+  // Best-rate lookup: key = "airport|week_monday" → all vendor rows for that airport+week
+  const advByAirportWeek = useMemo(() => {
+    const lookup = new Map<string, AdvertisedPriceRow[]>();
+    for (const adv of advertisedPrices) {
+      const key = `${adv.airport_code}|${adv.week_start}`;
+      if (!lookup.has(key)) lookup.set(key, []);
+      lookup.get(key)!.push(adv);
+    }
+    return lookup;
+  }, [advertisedPrices]);
+
   // Advertised vs Actual comparison rows
   const advVsActual = useMemo(
     () => buildAdvVsActual(initialPrices, advertisedPrices),
     [initialPrices, advertisedPrices],
   );
+
+  // Latest invoice per airport (for linking from Adv vs Actual tab)
+  const latestInvoiceByAirport = useMemo(() => {
+    const lookup = new Map<string, { docId: string; date: string }>();
+    for (const r of initialPrices) {
+      if (!r.airport_code || !r.document_id || (r.data_source ?? "invoice") === "jetinsight") continue;
+      const codes = r.airport_code.length === 4 && r.airport_code.startsWith("K")
+        ? [r.airport_code, r.airport_code.slice(1)]
+        : r.airport_code.length === 3
+        ? [r.airport_code, `K${r.airport_code}`]
+        : [r.airport_code];
+      for (const code of codes) {
+        const existing = lookup.get(code);
+        if (!existing || (r.invoice_date ?? "") > existing.date) {
+          lookup.set(code, { docId: r.document_id, date: r.invoice_date ?? "" });
+        }
+      }
+    }
+    return lookup;
+  }, [initialPrices]);
 
   const filtered = useMemo(() => {
     let rows = initialPrices;
@@ -905,6 +978,12 @@ export default function FuelPricesTable({
                 {hasAdvertised && (
                   <>
                     <th className="px-4 py-3 text-right">
+                      <span title="Cheapest contract rate across AEG, Everest, etc. for this airport + week + volume">Best Rate</span>
+                    </th>
+                    <th className="px-4 py-3 text-right">
+                      <span title="How much more/less you paid vs the best available contract rate">vs Best</span>
+                    </th>
+                    <th className="px-4 py-3 text-right">
                       <span title="FBO advertised price for this airport + vendor + week">Adv. Price</span>
                     </th>
                     <th className="px-4 py-3 text-right">
@@ -938,13 +1017,22 @@ export default function FuelPricesTable({
                 const aptStats = row.airport_code ? airportAvgLookup.get(row.airport_code) : null;
                 const price = row.effective_price_per_gallon;
 
-                // Advertised price lookup
+                // Advertised price lookup (vendor-specific)
                 const advPrice = hasAdvertised
                   ? lookupAdvertisedPrice(advLookup, row.vendor_name, row.airport_code, row.invoice_date, row.tail_number)
                   : null;
                 let vsAdvPct: number | null = null;
                 if (price != null && advPrice != null && advPrice > 0) {
                   vsAdvPct = Math.round(((price - advPrice) / advPrice) * 1000) / 10;
+                }
+
+                // Best available rate across all vendors
+                const bestRate = hasAdvertised
+                  ? lookupBestRate(advByAirportWeek, row.airport_code, row.invoice_date, row.gallons)
+                  : null;
+                let vsBestPct: number | null = null;
+                if (price != null && bestRate && bestRate.price > 0) {
+                  vsBestPct = Math.round(((price - bestRate.price) / bestRate.price) * 1000) / 10;
                 }
 
                 let vsAvgPct: number | null = null;
@@ -993,6 +1081,23 @@ export default function FuelPricesTable({
                     </td>
                     {hasAdvertised && (
                       <>
+                        <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono text-blue-700">
+                          {bestRate ? (
+                            <span title={`${bestRate.vendor} contract rate`}>
+                              {fmt$(bestRate.price)}
+                              <div className="text-[10px] text-gray-400 font-normal">{bestRate.vendor}</div>
+                            </span>
+                          ) : <span className="text-gray-300">{"\u2014"}</span>}
+                        </td>
+                        <td className="px-4 py-2.5 whitespace-nowrap text-right">
+                          {vsBestPct != null ? (
+                            <Badge variant={vsBestPct > 2 ? "danger" : vsBestPct < -2 ? "success" : "default"}>
+                              {vsBestPct >= 0 ? "+" : ""}{vsBestPct}%
+                            </Badge>
+                          ) : (
+                            <span className="text-gray-300 text-xs">{"\u2014"}</span>
+                          )}
+                        </td>
                         <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono text-purple-700">
                           {advPrice != null ? fmt$(advPrice) : <span className="text-gray-300">{"\u2014"}</span>}
                         </td>
@@ -1079,7 +1184,7 @@ export default function FuelPricesTable({
               })}
               {pageRows.length === 0 && (
                 <tr>
-                  <td colSpan={hasAdvertised ? 15 : 13} className="px-4 py-8 text-center text-gray-400">
+                  <td colSpan={hasAdvertised ? 17 : 13} className="px-4 py-8 text-center text-gray-400">
                     No fuel price records found.
                   </td>
                 </tr>
@@ -1116,6 +1221,7 @@ export default function FuelPricesTable({
                     <span title="Actual vs current advertised: positive = paying more">vs Adv.</span>
                   </th>
                   <th className="px-4 py-3 text-right text-[10px] normal-case">Week of</th>
+                  <th className="px-4 py-3 text-center">Invoice</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
@@ -1184,12 +1290,28 @@ export default function FuelPricesTable({
                       <td className="px-4 py-2.5 whitespace-nowrap text-right text-[10px] text-gray-400">
                         {fmtDate(row.currentWeek)}
                       </td>
+                      <td className="px-4 py-2.5 whitespace-nowrap text-center">
+                        {(() => {
+                          const inv = latestInvoiceByAirport.get(row.airport);
+                          return inv ? (
+                            <Link
+                              href={`/invoices/${inv.docId}`}
+                              className="text-xs text-blue-600 hover:text-blue-800 underline"
+                              title={`Latest invoice: ${fmtDate(inv.date)}`}
+                            >
+                              View
+                            </Link>
+                          ) : (
+                            <span className="text-gray-300 text-xs">{"\u2014"}</span>
+                          );
+                        })()}
+                      </td>
                     </tr>
                   );
                 })}
                 {advPageRows.length === 0 && (
                   <tr>
-                    <td colSpan={10} className="px-4 py-8 text-center text-gray-400">
+                    <td colSpan={11} className="px-4 py-8 text-center text-gray-400">
                       No advertised price data found. Use &ldquo;Import Advertised Prices&rdquo; to upload FBO price sheets.
                     </td>
                   </tr>
