@@ -355,6 +355,22 @@ def _parse_flight_fields(component) -> Tuple[Optional[str], Optional[str], Optio
     summary = str(component.get("SUMMARY", ""))
     description = str(component.get("DESCRIPTION", ""))
     location = str(component.get("LOCATION", "")).strip().upper()
+    jetinsight_url = str(component.get("URL", "")).strip() or None
+
+    # ── Crew info from DESCRIPTION: "PIC: Name\nSIC: Name\nPax: N" ────────
+    pic = sic = None
+    pax_count = None
+    for line in description.splitlines():
+        line = line.strip()
+        if line.upper().startswith("PIC:"):
+            pic = line[4:].strip() or None
+        elif line.upper().startswith("SIC:"):
+            sic = line[4:].strip() or None
+        elif line.upper().startswith("PAX:"):
+            try:
+                pax_count = int(line[4:].strip())
+            except ValueError:
+                pass
 
     # ── Tail number: prefer [NXXXXX] bracket format ──────────────────────────
     tail = None
@@ -827,14 +843,11 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
                 "scheduled_arrival": arr_dt.isoformat() if arr_dt else None,
                 "summary": summary,
                 "flight_type": flight_type,
+                "pic": pic,
+                "sic": sic,
+                "pax_count": pax_count,
+                "jetinsight_url": jetinsight_url,
                 "updated_at": _utc_now(),
-                # Always include all columns so batch upserts don't
-                # nullify existing values on rows with missing keys.
-                "tail_number": tail,
-                "departure_icao": dep_icao,
-                "arrival_icao": arr_icao,
-                "scheduled_arrival": arr_dt.isoformat() if arr_dt else None,
-                "flight_type": flight_type,
             }
 
             batch.append(flight)
@@ -1764,12 +1777,15 @@ def debug_sync_test():
 
 
 @app.get("/debug/ics_fields")
-def debug_ics_fields(count: int = Query(5, ge=1, le=20)):
+def debug_ics_fields(count: int = Query(5, ge=1, le=20), feed: int = Query(0, ge=0)):
     """Dump ALL raw ICS properties from the first N VEVENTs to see what JetInsight sends."""
-    if not ICS_URLS:
+    urls = _load_ics_urls()
+    if not urls:
         return {"error": "No ICS URLs configured"}
+    if feed >= len(urls):
+        return {"error": f"feed index {feed} out of range (0-{len(urls)-1})"}
     try:
-        r = requests.get(ICS_URLS[0], timeout=15)
+        r = requests.get(urls[feed], timeout=15, headers={"Cache-Control": "no-cache"})
         r.raise_for_status()
         cal = Calendar.from_ical(r.content)
         events = [c for c in cal.walk() if c.name == "VEVENT"]

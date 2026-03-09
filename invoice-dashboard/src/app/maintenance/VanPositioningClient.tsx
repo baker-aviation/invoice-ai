@@ -1656,6 +1656,10 @@ function ScheduleTab({
         scheduled_arrival: `${date}T17:00:00Z`,
         summary: `Unscheduled – ${tail}`,
         flight_type: null,
+        pic: null,
+        sic: null,
+        pax_count: null,
+        jetinsight_url: null,
         alerts: [],
       };
       const item: VanFlightItem = {

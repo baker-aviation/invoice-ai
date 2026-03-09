@@ -39,6 +39,10 @@ export type Flight = {
   scheduled_arrival: string | null;
   summary: string | null;
   flight_type: string | null;
+  pic: string | null;
+  sic: string | null;
+  pax_count: number | null;
+  jetinsight_url: string | null;
   alerts: OpsAlert[];
 };
 
@@ -132,7 +136,7 @@ export async function fetchFlights(params: {
   // Fetch flights in the time window
   const { data: flightRows, error: flightErr } = await supa
     .from("flights")
-    .select("id, ics_uid, tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, summary, flight_type")
+    .select("id, ics_uid, tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, summary, flight_type, pic, sic, pax_count, jetinsight_url")
     .gte("scheduled_departure", past)
     .lte("scheduled_departure", future)
     .order("scheduled_departure", { ascending: true });
@@ -226,6 +230,10 @@ export async function fetchFlights(params: {
     scheduled_arrival: f.scheduled_arrival as string | null,
     summary: f.summary as string | null,
     flight_type: f.flight_type as string | null,
+    pic: f.pic as string | null,
+    sic: f.sic as string | null,
+    pax_count: f.pax_count as number | null,
+    jetinsight_url: f.jetinsight_url as string | null,
     alerts: alertsByFlight.get(f.id as string) ?? [],
   }));
 
@@ -259,6 +267,10 @@ export async function fetchFlights(params: {
       scheduled_arrival: null,
       summary: alert.subject,
       flight_type: null,
+      pic: null,
+      sic: null,
+      pax_count: null,
+      jetinsight_url: null,
       alerts: [alert],
     });
   }
