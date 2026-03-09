@@ -377,9 +377,38 @@ function parsePrice(raw: string): number | null {
   return isNaN(num) ? null : num;
 }
 
+const MONTH_ABBR: Record<string, string> = {
+  JAN: "01", FEB: "02", MAR: "03", APR: "04", MAY: "05", JUN: "06",
+  JUL: "07", AUG: "08", SEP: "09", OCT: "10", NOV: "11", DEC: "12",
+};
+
+/** Parse various date formats into YYYY-MM-DD */
+function parseDate(raw: string): string | null {
+  // DD-Mon-YY (e.g. "02-Mar-26")
+  const abbr = raw.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2})$/);
+  if (abbr) {
+    const [, dd, mon, yy] = abbr;
+    const mm = MONTH_ABBR[mon.toUpperCase()];
+    if (mm) return `20${yy}-${mm}-${dd.padStart(2, "0")}`;
+  }
+  // DD-Mon-YYYY (e.g. "02-Mar-2026")
+  const abbrFull = raw.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})$/);
+  if (abbrFull) {
+    const [, dd, mon, yyyy] = abbrFull;
+    const mm = MONTH_ABBR[mon.toUpperCase()];
+    if (mm) return `${yyyy}-${mm}-${dd.padStart(2, "0")}`;
+  }
+  // Already ISO or parseable by Date
+  const d = new Date(raw + "T12:00:00");
+  if (!isNaN(d.getTime())) return d.toISOString().split("T")[0];
+  return null;
+}
+
 /** Normalize a date string to the Monday of that week (YYYY-MM-DD) */
 function normalizeToMonday(raw: string): string | null {
-  const d = new Date(raw + "T12:00:00");
+  const iso = parseDate(raw);
+  if (!iso) return null;
+  const d = new Date(iso + "T12:00:00");
   if (isNaN(d.getTime())) return null;
   const day = d.getDay(); // 0=Sun, 1=Mon, ...
   const diff = day === 0 ? -6 : 1 - day;
