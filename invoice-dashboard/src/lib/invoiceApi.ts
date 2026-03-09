@@ -285,9 +285,15 @@ export async function fetchFuelPrices(params: {
   const supa = createServiceClient();
   const limit = params.limit ?? 200;
 
+  // Filter out records with future dates (likely DD/MM vs MM/DD parsing errors)
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const maxDate = tomorrow.toISOString().split("T")[0];
+
   let query = supa
     .from("fuel_prices")
     .select(FUEL_PRICE_COLUMNS)
+    .lte("invoice_date", maxDate)
     .order("invoice_date", { ascending: false, nullsFirst: false })
     .limit(limit);
 
