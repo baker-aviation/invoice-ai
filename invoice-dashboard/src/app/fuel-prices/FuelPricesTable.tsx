@@ -187,6 +187,7 @@ function lookupAdvertisedPrice(
 /** Find the cheapest advertised rate across ALL vendors for a given airport + week */
 function lookupBestRate(
   advByAirportWeek: Map<string, AdvertisedPriceRow[]>,
+  advByAirport: Map<string, AdvertisedPriceRow[]>,
   airportCode: string | null,
   invoiceDate: string | null,
   gallons: number | null,
@@ -199,11 +200,28 @@ function lookupBestRate(
     ? [airportCode, `K${airportCode}`]
     : [airportCode];
 
+  // Try exact week match first
   let allMatches: AdvertisedPriceRow[] = [];
   for (const code of codes) {
     const m = advByAirportWeek.get(`${code}|${weekMonday}`);
     if (m) allMatches = allMatches.concat(m);
   }
+
+  // Fallback: use most recent week's prices for this airport (not newer than invoice date)
+  if (allMatches.length === 0) {
+    for (const code of codes) {
+      const allForAirport = advByAirport.get(code);
+      if (!allForAirport) continue;
+      // Find the most recent week that's on or before the invoice date
+      const recent = allForAirport.filter((a) => a.week_start <= weekMonday);
+      if (recent.length > 0) {
+        // recent is already sorted newest first — grab the latest week
+        const latestWeek = recent[0].week_start;
+        allMatches = allMatches.concat(recent.filter((a) => a.week_start === latestWeek));
+      }
+    }
+  }
+
   if (allMatches.length === 0) return null;
 
   // Filter to applicable volume tiers based on gallons purchased
@@ -633,6 +651,20 @@ export default function FuelPricesTable({
     return lookup;
   }, [advertisedPrices]);
 
+  // Fallback lookup: airport → all weeks sorted newest first (for when exact week has no match)
+  const advByAirport = useMemo(() => {
+    const lookup = new Map<string, AdvertisedPriceRow[]>();
+    for (const adv of advertisedPrices) {
+      if (!lookup.has(adv.airport_code)) lookup.set(adv.airport_code, []);
+      lookup.get(adv.airport_code)!.push(adv);
+    }
+    // Sort each airport's prices newest first
+    for (const [, rows] of lookup) {
+      rows.sort((a, b) => b.week_start.localeCompare(a.week_start));
+    }
+    return lookup;
+  }, [advertisedPrices]);
+
   // Advertised vs Actual comparison rows
   const advVsActual = useMemo(
     () => buildAdvVsActual(initialPrices, advertisedPrices),
@@ -1022,7 +1054,7 @@ export default function FuelPricesTable({
 
                 // Best available rate across all vendors
                 const bestRate = hasAdvertised
-                  ? lookupBestRate(advByAirportWeek, row.airport_code, row.invoice_date, row.gallons)
+                  ? lookupBestRate(advByAirportWeek, advByAirport, row.airport_code, row.invoice_date, row.gallons)
                   : null;
                 let vsBestPct: number | null = null;
                 if (price != null && bestRate && bestRate.price > 0) {
