@@ -534,34 +534,47 @@ export function buildSwapPlan(params: {
     // Sort options by score descending
     options.sort((a, b) => b.score - a.score);
 
-    // Assign best crew
-    const bestOption = options[0];
+    // Assign best crew — even if no options, still pick closest qualified crew
+    const bestOption = options[0] ?? null;
     let oncomingPic: CrewMember | null = null;
     let oncomingSic: CrewMember | null = null;
 
-    if (bestOption && qualifiedPics.length > 0) {
-      // Pick the PIC closest to the best swap airport
-      const commAirport = bestOption.commercial_airport;
+    // Use swap airport from best option, or fallback to first swap airport
+    const assignAirport = bestOption?.commercial_airport ?? swapAirports[0]?.airport ?? null;
+
+    if (qualifiedPics.length > 0 && assignAirport) {
+      const target = assignAirport.length === 3 ? `K${assignAirport}` : assignAirport;
       const sorted = qualifiedPics.map((p) => {
-        const home = closestHomeAirport(p, commAirport.length === 3 ? `K${commAirport}` : commAirport);
+        const home = closestHomeAirport(p, target);
         return { crew: p, miles: home.drive?.straight_line_miles ?? 9999 };
       }).sort((a, b) => a.miles - b.miles);
       oncomingPic = sorted[0]?.crew ?? null;
       if (oncomingPic) assignedCrewIds.add(oncomingPic.id);
+    } else if (qualifiedPics.length > 0) {
+      // No swap airport known — pick by priority
+      oncomingPic = qualifiedPics.sort((a, b) => b.priority - a.priority)[0] ?? null;
+      if (oncomingPic) assignedCrewIds.add(oncomingPic.id);
     }
 
-    if (bestOption && qualifiedSics.length > 0) {
-      const commAirport = bestOption.commercial_airport;
+    if (qualifiedSics.length > 0 && assignAirport) {
+      const target = assignAirport.length === 3 ? `K${assignAirport}` : assignAirport;
       const sorted = qualifiedSics.map((s) => {
-        const home = closestHomeAirport(s, commAirport.length === 3 ? `K${commAirport}` : commAirport);
+        const home = closestHomeAirport(s, target);
         return { crew: s, miles: home.drive?.straight_line_miles ?? 9999 };
       }).sort((a, b) => a.miles - b.miles);
       oncomingSic = sorted[0]?.crew ?? null;
       if (oncomingSic) assignedCrewIds.add(oncomingSic.id);
+    } else if (qualifiedSics.length > 0) {
+      oncomingSic = qualifiedSics.sort((a, b) => b.priority - a.priority)[0] ?? null;
+      if (oncomingSic) assignedCrewIds.add(oncomingSic.id);
     }
 
-    if (!oncomingPic) planWarnings.push("No qualified PIC available for this tail");
-    if (!oncomingSic) planWarnings.push("No qualified SIC available for this tail");
+    if (!oncomingPic) {
+      planWarnings.push(`No qualified PIC available (aircraft: ${aircraftType ?? "unknown"}, pool: ${picPool.length}, qualified: ${qualifiedPics.length}, offgoing: ${currentPicName ?? "none"})`);
+    }
+    if (!oncomingSic) {
+      planWarnings.push(`No qualified SIC available (aircraft: ${aircraftType ?? "unknown"}, pool: ${sicPool.length}, qualified: ${qualifiedSics.length}, offgoing: ${currentSicName ?? "none"})`);
+    }
 
     // Duty day check
     if (wedLegs.length > 0) {
