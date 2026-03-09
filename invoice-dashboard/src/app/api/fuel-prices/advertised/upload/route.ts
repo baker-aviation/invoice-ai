@@ -20,7 +20,7 @@ type PriceRow = {
  * FormData: file (CSV), vendor (string, optional for auto-detected formats),
  *           week_start (date string, optional for auto-detected formats)
  *
- * Auto-detects Baker/AEG Fuels, Everest Fuel, and WFS CSV formats by header row.
+ * Auto-detects Baker/AEG Fuels, Everest Fuel, WFS, and Avfuel CSV formats by header row.
  */
 export async function POST(req: NextRequest) {
   const auth = await requireAdmin(req);
@@ -85,6 +85,10 @@ export async function POST(req: NextRequest) {
     // World Fuel Services format — each row has its own Exp Date
     detectedVendor = "World Fuel Services";
     rows = parseWfsCSV(lines, headerFields, vendorOverride ?? detectedVendor, weekStartRaw, batchId);
+  } else if (format === "avfuel") {
+    // Avfuel/BAKAV format — each row has its own EFF DATE
+    detectedVendor = "Avfuel";
+    rows = parseAvfuelCSV(lines, headerFields, vendorOverride ?? detectedVendor, weekStartRaw, batchId);
   } else {
     // Original/generic format — vendor and week_start required
     if (!vendorOverride) return NextResponse.json({ error: "vendor is required for this CSV format" }, { status: 400 });
@@ -141,13 +145,15 @@ export async function POST(req: NextRequest) {
 
 // --- Format detection ---
 
-function detectFormat(headers: string[]): "baker" | "everest" | "wfs" | "generic" {
+function detectFormat(headers: string[]): "baker" | "everest" | "wfs" | "avfuel" | "generic" {
   // Baker/AEG: has ICAO, FUELER, TOTAL PRICE columns
   if (headers.includes("FUELER") && headers.includes("TOTAL PRICE")) return "baker";
   // Everest: has ICAO, FBO, TIER, PRICE columns
   if (headers.includes("FBO") && headers.includes("TIER") && headers.includes("PRICE")) return "everest";
   // WFS (World Fuel Services): has SUPPLIER, GAL FROM, GAL TO, ESTIMATED TOTAL PRICE
   if (headers.includes("SUPPLIER") && headers.includes("ESTIMATED TOTAL PRICE")) return "wfs";
+  // Avfuel/BAKAV: has FIXED BASE OPERATOR, EFF DATE, FROM, TO
+  if (headers.includes("FIXED BASE OPERATOR") && headers.includes("EFF DATE")) return "avfuel";
   return "generic";
 }
 
@@ -306,6 +312,66 @@ function parseWfsCSV(lines: string[], headers: string[], vendor: string, weekSta
   return rows;
 }
 
+// --- Avfuel/BAKAV parser ---
+
+function parseAvfuelCSV(lines: string[], headers: string[], vendor: string, weekStartOverride: string | null, batchId: string): PriceRow[] {
+  const col = (name: string) => headers.indexOf(name);
+  const icaoIdx = col("ICAO");
+  const fboIdx = col("FIXED BASE OPERATOR");
+  const fromIdx = col("FROM");
+  const toIdx = col("TO");
+  const priceIdx = col("PRICE");
+  const effDateIdx = col("EFF DATE");
+  const productIdx = col("PRODUCT");
+  const tailIdx = col("TAIL NUMBER");
+
+  if (icaoIdx < 0 || priceIdx < 0) return [];
+
+  const rows: PriceRow[] = [];
+
+  for (let i = 1; i < lines.length; i++) {
+    const fields = parseCSVLine(lines[i]);
+    const icao = fields[icaoIdx]?.trim().toUpperCase();
+    if (!icao) continue;
+
+    const price = parsePrice(fields[priceIdx]);
+    if (price === null || price <= 0) continue;
+
+    // Determine week_start: use override, or per-row EFF DATE
+    let weekStart: string | null = null;
+    if (weekStartOverride) {
+      weekStart = normalizeToMonday(weekStartOverride);
+    } else if (effDateIdx >= 0) {
+      const effRaw = fields[effDateIdx]?.trim();
+      if (effRaw) {
+        weekStart = normalizeToMonday(effRaw);
+      }
+    }
+    if (!weekStart) continue;
+
+    const galFrom = fields[fromIdx]?.trim() || "1";
+    const galTo = fields[toIdx]?.trim() || "";
+    const volumeTier = galTo && galTo !== "99999" && galTo !== "999999999" ? `${galFrom}-${galTo}` : `${galFrom}+`;
+    const fbo = fboIdx >= 0 ? fields[fboIdx]?.trim() || "" : "";
+    const product = productIdx >= 0 ? fields[productIdx]?.trim() || "Jet-A" : "Jet-A";
+    const rawTail = tailIdx >= 0 ? fields[tailIdx]?.trim() || "" : "";
+    const tailNumbers = rawTail || null;
+
+    rows.push({
+      fbo_vendor: vendor,
+      airport_code: icao,
+      volume_tier: volumeTier,
+      product: fbo ? `${product} (${fbo})` : product,
+      price,
+      tail_numbers: tailNumbers,
+      week_start: weekStart,
+      upload_batch: batchId,
+    });
+  }
+
+  return rows;
+}
+
 // --- Generic CSV parser (original format) ---
 
 function parseGenericCSV(lines: string[], vendor: string, weekStart: string, batchId: string): PriceRow[] {
@@ -397,6 +463,12 @@ function parseDate(raw: string): string | null {
     const [, dd, mon, yyyy] = abbrFull;
     const mm = MONTH_ABBR[mon.toUpperCase()];
     if (mm) return `${yyyy}-${mm}-${dd.padStart(2, "0")}`;
+  }
+  // M/D/YYYY or MM/DD/YYYY (e.g. "3/3/2026")
+  const slash = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (slash) {
+    const [, mm, dd, yyyy] = slash;
+    return `${yyyy}-${mm.padStart(2, "0")}-${dd.padStart(2, "0")}`;
   }
   // Already ISO or parseable by Date
   const d = new Date(raw + "T12:00:00");
