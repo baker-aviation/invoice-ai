@@ -476,7 +476,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
         const dep = new Date(f.scheduled_departure);
         if (dep < start || dep >= end) return false;
         // Deduplicate: same tail + route + departure time = same leg
-        const dedupKey = `${f.tail_number}|${f.departure_icao}|${f.arrival_icao}|${f.scheduled_departure}`;
+        const dedupKey = `${f.tail_number}|${f.departure_icao}|${f.arrival_icao}|${f.scheduled_departure}|${f.flight_type}`;
         if (seen.has(dedupKey)) return false;
         seen.add(dedupKey);
         return true;
@@ -1194,19 +1194,23 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                 const now = new Date();
                 const arrivalPassed = arrivalDate && arrivalDate < now;
 
-                if (fi?.status) {
-                  // FlightAware matched this leg — trust its status (handles delays)
+                if (fi?.actual_arrival) {
+                  // FA confirms landed — always takes priority
+                  status = "Arrived";
+                  statusColor = "text-green-600 font-medium";
+                } else if (fi && fi.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100) {
+                  // In progress — override stale FA status
+                  status = "En Route";
+                  statusColor = "text-blue-600 font-medium";
+                } else if (fi && fi.latitude != null && fi.longitude != null && !fi.actual_arrival) {
+                  // Has position data and hasn't arrived — must be en route
+                  status = "En Route";
+                  statusColor = "text-blue-600 font-medium";
+                } else if (fi?.status) {
+                  // Fall back to FA status string
                   status = fi.status;
                   if (fi.status.includes("En Route")) statusColor = "text-blue-600 font-medium";
                   if (fi.status.includes("Arrived") || fi.status.includes("Landed")) statusColor = "text-green-600 font-medium";
-                } else if (fi && !fi.actual_arrival && fi.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100) {
-                  // FA matched, no explicit status but in progress
-                  status = "En Route";
-                  statusColor = "text-blue-600 font-medium";
-                } else if (fi?.actual_arrival) {
-                  // FA says landed
-                  status = "Arrived";
-                  statusColor = "text-green-600 font-medium";
                 } else if (arrivalPassed && !fi) {
                   // No FA data, but scheduled arrival is past — assume arrived
                   status = "Arrived";
