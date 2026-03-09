@@ -550,6 +550,10 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
         scheduled_arrival: tailFi.arrival_time ?? null,
         summary: null,
         flight_type: f.flight_type,
+        pic: null,
+        sic: null,
+        pax_count: null,
+        jetinsight_url: null,
         alerts: [],
       });
     }

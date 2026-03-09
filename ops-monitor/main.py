@@ -355,6 +355,22 @@ def _parse_flight_fields(component) -> Tuple[Optional[str], Optional[str], Optio
     summary = str(component.get("SUMMARY", ""))
     description = str(component.get("DESCRIPTION", ""))
     location = str(component.get("LOCATION", "")).strip().upper()
+    jetinsight_url = str(component.get("URL", "")).strip() or None
+
+    # ── Crew info from DESCRIPTION: "PIC: Name\nSIC: Name\nPax: N" ────────
+    pic = sic = None
+    pax_count = None
+    for line in description.splitlines():
+        line = line.strip()
+        if line.upper().startswith("PIC:"):
+            pic = line[4:].strip() or None
+        elif line.upper().startswith("SIC:"):
+            sic = line[4:].strip() or None
+        elif line.upper().startswith("PAX:"):
+            try:
+                pax_count = int(line[4:].strip())
+            except ValueError:
+                pass
 
     # ── Tail number: prefer [NXXXXX] bracket format ──────────────────────────
     tail = None
@@ -827,14 +843,11 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
                 "scheduled_arrival": arr_dt.isoformat() if arr_dt else None,
                 "summary": summary,
                 "flight_type": flight_type,
+                "pic": pic,
+                "sic": sic,
+                "pax_count": pax_count,
+                "jetinsight_url": jetinsight_url,
                 "updated_at": _utc_now(),
-                # Always include all columns so batch upserts don't
-                # nullify existing values on rows with missing keys.
-                "tail_number": tail,
-                "departure_icao": dep_icao,
-                "arrival_icao": arr_icao,
-                "scheduled_arrival": arr_dt.isoformat() if arr_dt else None,
-                "flight_type": flight_type,
             }
 
             batch.append(flight)
