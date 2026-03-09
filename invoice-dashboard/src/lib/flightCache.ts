@@ -16,7 +16,7 @@ let memCache: { data: FlightInfo[]; ts: number } | null = null;
 // Dynamic TTL: poll every 5 min when aircraft are airborne, 2h otherwise.
 // Webhooks handle discrete events (filed, departure, arrival) but frequent
 // polling gives us live ETA/position updates for en-route flights.
-const AIRBORNE_TTL = 5 * 60_000;   // 5 minutes
+const AIRBORNE_TTL = 3 * 60_000;   // 3 minutes
 const IDLE_TTL = 2 * 60 * 60_000;  // 2 hours
 
 function hasAirborneFlights(flights: FlightInfo[]): boolean {

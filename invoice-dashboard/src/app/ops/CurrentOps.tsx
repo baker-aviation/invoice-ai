@@ -371,6 +371,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
   const [timeRange, setTimeRange] = useState<TimeRange>("Today");
   const [expandedFlights, setExpandedFlights] = useState<Set<string>>(new Set());
   const [localAckedIds, setLocalAckedIds] = useState<Set<string>>(new Set());
+  const [holdingTails, setHoldingTails] = useState<Set<string>>(new Set());
   const [showAcknowledged, setShowAcknowledged] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [tzMode, setTzMode] = useState<TzMode>("local");
@@ -451,7 +452,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
   useEffect(() => {
     fetchFlightInfo();
     fetchTripSalespersons();
-    const interval = setInterval(fetchFlightInfo, 300_000); // 5 min — server cache is 15min
+    const interval = setInterval(fetchFlightInfo, 150_000); // 2.5 min — server cache is 3min
     const spInterval = setInterval(fetchTripSalespersons, 300_000);
     return () => { clearInterval(interval); clearInterval(spInterval); };
   }, [fetchFlightInfo, fetchTripSalespersons]);
@@ -818,7 +819,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
 
       {/* ── Map ── */}
       <div className="rounded-xl border border-gray-200 overflow-hidden">
-        <OpsMap aircraft={allMapAircraft} flightInfo={flightInfo} />
+        <OpsMap aircraft={allMapAircraft} flightInfo={flightInfo} onHoldingDetected={setHoldingTails} />
       </div>
 
       {/* ── Filters row ── */}
@@ -999,6 +1000,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                             statusColor = "text-green-600 font-medium";
                           }
                           if (fi?.diverted) { status = "DIVERTED"; statusColor = "text-red-600 font-bold"; }
+                          else if (f.tail_number && holdingTails.has(f.tail_number) && status === "En Route") { status = "HOLDING"; statusColor = "text-red-600 font-bold animate-pulse"; }
 
                           const supersedInfo = supersededMap.get(f.id);
                           const isCancelled = !!supersedInfo;
@@ -1220,6 +1222,9 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                 if (fi?.diverted) {
                   status = "DIVERTED";
                   statusColor = "text-red-600 font-bold";
+                } else if (f.tail_number && holdingTails.has(f.tail_number) && (status === "En Route")) {
+                  status = "HOLDING";
+                  statusColor = "text-red-600 font-bold animate-pulse";
                 }
 
                 // Check if this leg is superseded by FA (route changed or diverted)
