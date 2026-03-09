@@ -338,15 +338,16 @@ function buildAdvVsActual(
     });
   }
 
-  // Sort: rows with actual comparison data first, then by most recent week, then airport
+  // Sort: rows with actual invoice data first (by invoice count desc), then airport alpha
   rows.sort((a, b) => {
-    // Rows with actual paid data come first
-    const aHasActual = a.actualAvgPrice != null || a.recent7dAvg != null ? 0 : 1;
-    const bHasActual = b.actualAvgPrice != null || b.recent7dAvg != null ? 0 : 1;
-    if (aHasActual !== bHasActual) return aHasActual - bHasActual;
-    // Then by most recent week desc
-    const wc = b.currentWeek.localeCompare(a.currentWeek);
-    if (wc !== 0) return wc;
+    // Rows with actual paid data come first, ordered by most invoice activity
+    const aCount = a.invoiceCount + a.recent7dCount;
+    const bCount = b.invoiceCount + b.recent7dCount;
+    if (aCount > 0 && bCount === 0) return -1;
+    if (aCount === 0 && bCount > 0) return 1;
+    if (aCount > 0 && bCount > 0) {
+      if (bCount !== aCount) return bCount - aCount;
+    }
     // Then by airport
     const ac = a.airport.localeCompare(b.airport);
     if (ac !== 0) return ac;
