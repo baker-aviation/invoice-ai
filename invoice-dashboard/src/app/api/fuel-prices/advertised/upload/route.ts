@@ -20,7 +20,7 @@ type PriceRow = {
  * FormData: file (CSV), vendor (string, optional for auto-detected formats),
  *           week_start (date string, optional for auto-detected formats)
  *
- * Auto-detects Baker/AEG Fuels and Everest Fuel CSV formats by header row.
+ * Auto-detects Baker/AEG Fuels, Everest Fuel, and WFS CSV formats by header row.
  */
 export async function POST(req: NextRequest) {
   const auth = await requireAdmin(req);
@@ -81,6 +81,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Could not determine week_start — please provide it" }, { status: 400 });
     }
     rows = parseEverestCSV(lines, headerFields, vendorOverride ?? detectedVendor, weekStart, batchId);
+  } else if (format === "wfs") {
+    // World Fuel Services format — each row has its own Exp Date
+    detectedVendor = "World Fuel Services";
+    rows = parseWfsCSV(lines, headerFields, vendorOverride ?? detectedVendor, weekStartRaw, batchId);
   } else {
     // Original/generic format — vendor and week_start required
     if (!vendorOverride) return NextResponse.json({ error: "vendor is required for this CSV format" }, { status: 400 });
@@ -137,11 +141,13 @@ export async function POST(req: NextRequest) {
 
 // --- Format detection ---
 
-function detectFormat(headers: string[]): "baker" | "everest" | "generic" {
+function detectFormat(headers: string[]): "baker" | "everest" | "wfs" | "generic" {
   // Baker/AEG: has ICAO, FUELER, TOTAL PRICE columns
   if (headers.includes("FUELER") && headers.includes("TOTAL PRICE")) return "baker";
   // Everest: has ICAO, FBO, TIER, PRICE columns
   if (headers.includes("FBO") && headers.includes("TIER") && headers.includes("PRICE")) return "everest";
+  // WFS (World Fuel Services): has SUPPLIER, GAL FROM, GAL TO, ESTIMATED TOTAL PRICE
+  if (headers.includes("SUPPLIER") && headers.includes("ESTIMATED TOTAL PRICE")) return "wfs";
   return "generic";
 }
 
@@ -235,6 +241,61 @@ function parseEverestCSV(lines: string[], headers: string[], vendor: string, wee
       airport_code: icao,
       volume_tier: `${tier}+`,
       product: fbo ? `Jet-A (${fbo})` : "Jet-A",
+      price,
+      tail_numbers: null,
+      week_start: weekStart,
+      upload_batch: batchId,
+    });
+  }
+
+  return rows;
+}
+
+// --- World Fuel Services parser ---
+
+function parseWfsCSV(lines: string[], headers: string[], vendor: string, weekStartOverride: string | null, batchId: string): PriceRow[] {
+  const col = (name: string) => headers.indexOf(name);
+  const icaoIdx = col("ICAO");
+  const supplierIdx = col("SUPPLIER");
+  const galFromIdx = col("GAL FROM");
+  const galToIdx = col("GAL TO");
+  const expDateIdx = col("EXP DATE");
+  const totalPriceIdx = col("ESTIMATED TOTAL PRICE");
+
+  if (icaoIdx < 0 || totalPriceIdx < 0) return [];
+
+  const rows: PriceRow[] = [];
+
+  for (let i = 1; i < lines.length; i++) {
+    const fields = parseCSVLine(lines[i]);
+    const icao = fields[icaoIdx]?.trim().toUpperCase();
+    if (!icao) continue;
+
+    const price = parsePrice(fields[totalPriceIdx]);
+    if (price === null || price <= 0) continue;
+
+    // Determine week_start: use override, or per-row Exp Date
+    let weekStart: string | null = null;
+    if (weekStartOverride) {
+      weekStart = normalizeToMonday(weekStartOverride);
+    } else if (expDateIdx >= 0) {
+      const expRaw = fields[expDateIdx]?.trim();
+      if (expRaw) {
+        weekStart = normalizeToMonday(expRaw);
+      }
+    }
+    if (!weekStart) continue; // skip rows with no usable date
+
+    const galFrom = fields[galFromIdx]?.trim() || "1";
+    const galTo = fields[galToIdx]?.trim() || "";
+    const volumeTier = galTo && galTo !== "999999999" ? `${galFrom}-${galTo}` : `${galFrom}+`;
+    const supplier = supplierIdx >= 0 ? fields[supplierIdx]?.trim() || "" : "";
+
+    rows.push({
+      fbo_vendor: vendor,
+      airport_code: icao,
+      volume_tier: volumeTier,
+      product: supplier ? `Jet-A (${supplier})` : "Jet-A",
       price,
       tail_numbers: null,
       week_start: weekStart,
