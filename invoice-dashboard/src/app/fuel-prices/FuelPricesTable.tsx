@@ -284,8 +284,13 @@ function buildAdvVsActual(
       }
     }
 
-    // Actual avg for this airport (all vendors/sources)
-    const bucket = invoiceBuckets.get(latest.airport_code);
+    // Actual avg for this airport (all vendors/sources) — try all airport code variants
+    const variants = airportVariants(latest.airport_code);
+    let bucket: { prices: number[]; count: number } | undefined;
+    for (const v of variants) {
+      bucket = invoiceBuckets.get(v);
+      if (bucket && bucket.prices.length > 0) break;
+    }
     const actualAvg = bucket && bucket.prices.length > 0
       ? Math.round((bucket.prices.reduce((a, b) => a + b, 0) / bucket.prices.length) * 10000) / 10000
       : null;
@@ -295,7 +300,11 @@ function buildAdvVsActual(
     const weekDate = new Date(latest.week_start + "T12:00:00");
     const minDate = new Date(weekDate.getTime() - 3 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
     const maxDate = new Date(weekDate.getTime() + 10 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
-    const airportPrices = pricesByAirport.get(latest.airport_code) ?? [];
+    let airportPrices: { date: string; price: number }[] = [];
+    for (const v of variants) {
+      airportPrices = pricesByAirport.get(v) ?? [];
+      if (airportPrices.length > 0) break;
+    }
     const recentPrices = airportPrices.filter((p) => p.date >= minDate && p.date <= maxDate && p.price >= 1);
     const recent7dAvg = recentPrices.length > 0
       ? Math.round((recentPrices.reduce((a, b) => a + b.price, 0) / recentPrices.length) * 10000) / 10000
@@ -329,13 +338,19 @@ function buildAdvVsActual(
     });
   }
 
-  // Sort by airport, then vendor, then tier
+  // Sort: rows with actual comparison data first, then by most recent week, then airport
   rows.sort((a, b) => {
+    // Rows with actual paid data come first
+    const aHasActual = a.actualAvgPrice != null || a.recent7dAvg != null ? 0 : 1;
+    const bHasActual = b.actualAvgPrice != null || b.recent7dAvg != null ? 0 : 1;
+    if (aHasActual !== bHasActual) return aHasActual - bHasActual;
+    // Then by most recent week desc
+    const wc = b.currentWeek.localeCompare(a.currentWeek);
+    if (wc !== 0) return wc;
+    // Then by airport
     const ac = a.airport.localeCompare(b.airport);
     if (ac !== 0) return ac;
-    const vc = a.fboVendor.localeCompare(b.fboVendor);
-    if (vc !== 0) return vc;
-    return a.volumeTier.localeCompare(b.volumeTier);
+    return a.fboVendor.localeCompare(b.fboVendor);
   });
 
   return rows;
