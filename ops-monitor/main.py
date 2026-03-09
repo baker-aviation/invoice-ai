@@ -682,6 +682,13 @@ def _fetch_ics_events(url: str, cutoff_past: datetime = None) -> list:
     If cutoff_past is given, skip events that ended before that time."""
     r = requests.get(url, timeout=30)
     r.raise_for_status()
+    # Log response headers to track JetInsight update frequency
+    last_mod = r.headers.get("Last-Modified", "none")
+    etag = r.headers.get("ETag", "none")
+    cache_ctrl = r.headers.get("Cache-Control", "none")
+    content_len = r.headers.get("Content-Length", len(r.content))
+    url_short = url.split("?")[0][-40:]
+    print(f"[ICS headers] {url_short}: Last-Modified={last_mod} ETag={etag} Cache-Control={cache_ctrl} size={content_len}", flush=True)
     cal = Calendar.from_ical(r.content)
     events = [c for c in cal.walk() if c.name == "VEVENT"]
     if cutoff_past is None:
