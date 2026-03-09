@@ -71,6 +71,24 @@ export default function SettingsPage() {
   const [summaryChecking, setSummaryChecking] = useState(false);
   const [summaryResult, setSummaryResult] = useState<string | null>(null);
 
+  // Notification log state
+  type NotifLog = {
+    id: number;
+    salesperson_name: string;
+    sent_at: string;
+    tail_number: string;
+    departure_icao: string;
+    arrival_icao: string;
+    scheduled_departure: string | null;
+    flight_type: string | null;
+    customer: string | null;
+    trip_id: string;
+  };
+  const [notifLog, setNotifLog] = useState<NotifLog[]>([]);
+  const [notifLogLoading, setNotifLogLoading] = useState(false);
+  const [notifLogError, setNotifLogError] = useState<string | null>(null);
+  const [notifLogLoaded, setNotifLogLoaded] = useState(false);
+
   const fetchSources = useCallback(async () => {
     try {
       const res = await fetch("/api/admin/ics-sources");
@@ -258,6 +276,22 @@ export default function SettingsPage() {
       setSummaryResult(err instanceof Error ? err.message : "Summary failed");
     } finally {
       setSummaryChecking(false);
+    }
+  }
+
+  async function fetchNotifLog() {
+    setNotifLogLoading(true);
+    setNotifLogError(null);
+    try {
+      const res = await fetch("/api/admin/trip-notifications/log");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+      setNotifLog(data.notifications ?? []);
+      setNotifLogLoaded(true);
+    } catch (err) {
+      setNotifLogError(err instanceof Error ? err.message : "Failed to load");
+    } finally {
+      setNotifLogLoading(false);
     }
   }
 
@@ -788,6 +822,79 @@ export default function SettingsPage() {
       {summaryResult && (
         <div className="mt-3 px-4 py-2 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-700 whitespace-pre-line">
           {summaryResult}
+        </div>
+      )}
+
+      {/* ── Notification Log ─────────────────────────────────────────────── */}
+      <hr className="my-8 border-gray-200" />
+      <h2 className="text-lg font-semibold text-slate-900 mb-1">Notification Log</h2>
+      <p className="text-sm text-gray-500 mb-4">
+        View departure DMs sent in the last 7 days. Use this to verify if a
+        salesperson received an alert for a specific flight.
+      </p>
+
+      <button
+        type="button"
+        onClick={fetchNotifLog}
+        disabled={notifLogLoading}
+        className="bg-slate-900 text-white rounded-md px-5 py-2 text-sm font-medium hover:bg-slate-700 disabled:opacity-50"
+      >
+        {notifLogLoading ? "Loading…" : notifLogLoaded ? "Refresh Log" : "Load Notification Log"}
+      </button>
+
+      {notifLogError && (
+        <div className="mt-3 px-4 py-2 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+          {notifLogError}
+        </div>
+      )}
+
+      {notifLogLoaded && notifLog.length === 0 && (
+        <div className="mt-3 text-sm text-gray-400 py-4 text-center border border-dashed border-gray-300 rounded-lg">
+          No notifications sent in the last 7 days.
+        </div>
+      )}
+
+      {notifLog.length > 0 && (
+        <div className="mt-3 border border-gray-200 rounded-lg overflow-hidden">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="text-left px-4 py-2 font-medium text-gray-600">Sent At</th>
+                <th className="text-left px-4 py-2 font-medium text-gray-600">Salesperson</th>
+                <th className="text-left px-4 py-2 font-medium text-gray-600">Tail</th>
+                <th className="text-left px-4 py-2 font-medium text-gray-600">Route</th>
+                <th className="text-left px-4 py-2 font-medium text-gray-600">Sched Dep</th>
+                <th className="text-left px-4 py-2 font-medium text-gray-600">Customer</th>
+              </tr>
+            </thead>
+            <tbody>
+              {notifLog.map((n) => {
+                const sentDate = new Date(n.sent_at);
+                const sentStr = sentDate.toLocaleString("en-US", {
+                  month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+                  hour12: true, timeZone: "America/Chicago",
+                });
+                const depStr = n.scheduled_departure
+                  ? new Date(n.scheduled_departure).toLocaleString("en-US", {
+                      month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+                      hour12: true, timeZone: "America/Chicago",
+                    })
+                  : "—";
+                const depIcao = n.departure_icao?.startsWith("K") ? n.departure_icao.slice(1) : n.departure_icao;
+                const arrIcao = n.arrival_icao?.startsWith("K") ? n.arrival_icao.slice(1) : n.arrival_icao;
+                return (
+                  <tr key={n.id} className="border-t border-gray-100 hover:bg-gray-50">
+                    <td className="px-4 py-2 text-xs text-gray-500 whitespace-nowrap">{sentStr}</td>
+                    <td className="px-4 py-2 font-medium text-gray-800">{n.salesperson_name}</td>
+                    <td className="px-4 py-2 font-mono text-xs text-gray-700">{n.tail_number}</td>
+                    <td className="px-4 py-2 font-mono text-xs text-gray-700">{depIcao} → {arrIcao}</td>
+                    <td className="px-4 py-2 text-xs text-gray-500 whitespace-nowrap">{depStr}</td>
+                    <td className="px-4 py-2 text-xs text-gray-500">{n.customer ?? "—"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       )}
     </div>
