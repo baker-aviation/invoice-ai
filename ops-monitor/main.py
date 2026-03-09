@@ -1764,12 +1764,15 @@ def debug_sync_test():
 
 
 @app.get("/debug/ics_fields")
-def debug_ics_fields(count: int = Query(5, ge=1, le=20)):
+def debug_ics_fields(count: int = Query(5, ge=1, le=20), feed: int = Query(0, ge=0)):
     """Dump ALL raw ICS properties from the first N VEVENTs to see what JetInsight sends."""
-    if not ICS_URLS:
+    urls = _load_ics_urls()
+    if not urls:
         return {"error": "No ICS URLs configured"}
+    if feed >= len(urls):
+        return {"error": f"feed index {feed} out of range (0-{len(urls)-1})"}
     try:
-        r = requests.get(ICS_URLS[0], timeout=15)
+        r = requests.get(urls[feed], timeout=15, headers={"Cache-Control": "no-cache"})
         r.raise_for_status()
         cal = Calendar.from_ical(r.content)
         events = [c for c in cal.walk() if c.name == "VEVENT"]
