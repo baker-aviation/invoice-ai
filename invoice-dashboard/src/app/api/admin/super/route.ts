@@ -5,19 +5,20 @@ import { cloudRunFetch } from "@/lib/cloud-run-fetch";
 
 export const dynamic = "force-dynamic";
 
-const OPS_BASE = process.env.OPS_API_BASE_URL;
-const INVOICE_BASE = process.env.INVOICE_API_BASE_URL;
-const JOB_BASE = process.env.JOB_API_BASE_URL;
-const PARSER_BASE = process.env.PARSER_API_BASE_URL ?? process.env.INVOICE_PARSER_URL;
+// Derive Cloud Run URL from service name — all services share the same hash
+const CLOUD_RUN_HASH = "hrzd5jf3da-uc";
+function serviceUrl(name: string): string {
+  return `https://${name}-${CLOUD_RUN_HASH}.a.run.app`;
+}
 
 // Cloud Run services with their health endpoints
 const SERVICES = [
-  { name: "ops-monitor", base: OPS_BASE, healthPath: "/healthz" },
-  { name: "invoice-ingest", base: INVOICE_BASE, healthPath: "/healthz" },
-  { name: "invoice-parser", base: PARSER_BASE, healthPath: "/health" },
-  { name: "invoice-alerts", base: INVOICE_BASE, healthPath: "/health" },
-  { name: "job-ingest", base: JOB_BASE, healthPath: "/_health" },
-  { name: "job-parse", base: JOB_BASE, healthPath: "/_health" },
+  { name: "ops-monitor", base: serviceUrl("ops-monitor"), healthPath: "/healthz" },
+  { name: "invoice-ingest", base: serviceUrl("invoice-ingest"), healthPath: "/healthz" },
+  { name: "invoice-parser", base: serviceUrl("invoice-parser"), healthPath: "/health" },
+  { name: "invoice-alerts", base: serviceUrl("invoice-alerts"), healthPath: "/health" },
+  { name: "job-ingest", base: serviceUrl("job-ingest"), healthPath: "/_health" },
+  { name: "job-parse", base: serviceUrl("job-parse"), healthPath: "/_health" },
 ];
 
 // Key tables to get row counts for
