@@ -172,6 +172,48 @@ function closestHomeAirport(
   return best;
 }
 
+/** Normalize a name for fuzzy matching: lowercase, handle "Last, First" → "first last" */
+function normalizeName(name: string): string {
+  let n = name.trim().toLowerCase();
+  // Handle "Last, First" or "Last,First"
+  if (n.includes(",")) {
+    const parts = n.split(",").map((p) => p.trim());
+    if (parts.length === 2) {
+      n = `${parts[1]} ${parts[0]}`;
+    }
+  }
+  // Remove extra whitespace
+  n = n.replace(/\s+/g, " ");
+  return n;
+}
+
+/** Find crew member by fuzzy name match */
+function findCrewByName(roster: CrewMember[], name: string, role: "PIC" | "SIC"): CrewMember | null {
+  const norm = normalizeName(name);
+
+  // 1. Exact normalized match
+  const exact = roster.find((c) => c.role === role && normalizeName(c.name) === norm);
+  if (exact) return exact;
+
+  // 2. Last name match (for "Williamson" matching "Wesley Williamson")
+  const normParts = norm.split(" ");
+  const lastName = normParts[normParts.length - 1];
+  const lastNameMatches = roster.filter((c) => {
+    if (c.role !== role) return false;
+    const cParts = normalizeName(c.name).split(" ");
+    return cParts[cParts.length - 1] === lastName;
+  });
+  if (lastNameMatches.length === 1) return lastNameMatches[0];
+
+  // 3. Contains match (either direction)
+  const contains = roster.find(
+    (c) => c.role === role && (normalizeName(c.name).includes(norm) || norm.includes(normalizeName(c.name))),
+  );
+  if (contains) return contains;
+
+  return null;
+}
+
 /** Check if crew member is qualified for an aircraft type */
 function isQualified(crew: CrewMember, aircraftType: string | null): boolean {
   if (!aircraftType || aircraftType === "unknown") return true;
@@ -274,12 +316,12 @@ export function buildSwapPlan(params: {
     const currentPicName = lastPrior?.pic ?? wedLegs[0]?.pic ?? null;
     const currentSicName = lastPrior?.sic ?? wedLegs[0]?.sic ?? null;
 
-    // Find crew members by name match
+    // Find crew members by fuzzy name match
     const offgoingPic = currentPicName
-      ? crewRoster.find((c) => c.name === currentPicName && c.role === "PIC") ?? null
+      ? findCrewByName(crewRoster, currentPicName, "PIC")
       : null;
     const offgoingSic = currentSicName
-      ? crewRoster.find((c) => c.name === currentSicName && c.role === "SIC") ?? null
+      ? findCrewByName(crewRoster, currentSicName, "SIC")
       : null;
 
     // Determine aircraft type from crew qualifications or flight data
@@ -330,12 +372,12 @@ export function buildSwapPlan(params: {
       });
     }
 
-    // Find best oncoming crew candidates
+    // Find best oncoming crew candidates (exclude offgoing crew and already-assigned)
     const qualifiedPics = picPool.filter(
-      (c) => isQualified(c, aircraftType) && !assignedCrewIds.has(c.id) && c.name !== currentPicName,
+      (c) => isQualified(c, aircraftType) && !assignedCrewIds.has(c.id) && c.id !== offgoingPic?.id,
     );
     const qualifiedSics = sicPool.filter(
-      (c) => isQualified(c, aircraftType) && !assignedCrewIds.has(c.id) && c.name !== currentSicName,
+      (c) => isQualified(c, aircraftType) && !assignedCrewIds.has(c.id) && c.id !== offgoingSic?.id,
     );
 
     // Build swap options for each candidate airport
