@@ -65,15 +65,13 @@ export async function POST(req: NextRequest) {
   const errors: string[] = [];
 
   for (const flight of flights) {
-    const depDate = flight.scheduled_departure.split("T")[0]; // YYYY-MM-DD
-
-    // 3. Find matching trip_salespersons: same tail, date falls within trip range
+    // 3. Find matching trip_salespersons: exact leg match (tail + origin + dest)
     const { data: trips } = await supa
       .from("trip_salespersons")
       .select("trip_id, salesperson_name, origin_icao, destination_icao, customer")
       .eq("tail_number", flight.tail_number)
-      .lte("trip_start", depDate)
-      .gte("trip_end", depDate);
+      .eq("origin_icao", flight.departure_icao)
+      .eq("destination_icao", flight.arrival_icao);
 
     if (!trips || trips.length === 0) continue;
 

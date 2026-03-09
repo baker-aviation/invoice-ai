@@ -58,27 +58,33 @@ function getTimeRange(range: TimeRange): { start: Date; end: Date } {
   }
 }
 
-/** Find the salesperson for a flight by matching tail + departure date within trip range.
- *  When multiple trips match, prefer the narrowest (most specific) date range. */
+/** Find the salesperson for a flight by matching tail + origin + dest, or tail + date. */
 function findSalesperson(
   tripSalespersons: TripSalesperson[],
   tailNumber: string | null,
+  departureIcao: string | null,
+  arrivalIcao: string | null,
   scheduledDeparture: string,
 ): string | null {
   if (!tailNumber) return null;
-  const depDate = scheduledDeparture.split("T")[0]; // YYYY-MM-DD
-  let best: TripSalesperson | null = null;
-  let bestSpan = Infinity;
+  // Exact leg match: tail + origin + dest
   for (const t of tripSalespersons) {
-    if (t.tail_number === tailNumber && depDate >= t.trip_start && depDate <= t.trip_end) {
-      const span = new Date(t.trip_end).getTime() - new Date(t.trip_start).getTime();
-      if (span < bestSpan) {
-        best = t;
-        bestSpan = span;
-      }
+    if (
+      t.tail_number === tailNumber &&
+      t.origin_icao === departureIcao &&
+      t.destination_icao === arrivalIcao
+    ) {
+      return t.salesperson_name;
     }
   }
-  return best?.salesperson_name ?? null;
+  // Fallback: tail + same date
+  const depDate = scheduledDeparture.split("T")[0];
+  for (const t of tripSalespersons) {
+    if (t.tail_number === tailNumber && t.scheduled_departure?.split("T")[0] === depDate) {
+      return t.salesperson_name;
+    }
+  }
+  return null;
 }
 
 /** Map ICAO type codes to fleet display names */
@@ -349,8 +355,10 @@ const SEVERITY_COLORS: Record<string, string> = {
 type TripSalesperson = {
   trip_id: string;
   tail_number: string;
-  trip_start: string;
-  trip_end: string;
+  scheduled_departure: string | null;
+  scheduled_arrival: string | null;
+  origin_icao: string | null;
+  destination_icao: string | null;
   salesperson_name: string;
   customer: string | null;
 };
@@ -1401,7 +1409,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                       </td>
                       <td className="px-3 py-2.5">
                         {(() => {
-                          const sp = findSalesperson(tripSalespersons, f.tail_number, f.scheduled_departure);
+                          const sp = findSalesperson(tripSalespersons, f.tail_number, f.departure_icao, f.arrival_icao, f.scheduled_departure);
                           if (!sp) return null;
                           return <span className="text-xs text-gray-700">{sp}</span>;
                         })()}

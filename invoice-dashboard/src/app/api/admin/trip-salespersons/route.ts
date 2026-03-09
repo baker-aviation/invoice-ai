@@ -14,8 +14,8 @@ export async function GET(req: NextRequest) {
   const supa = createServiceClient();
   const { data, error } = await supa
     .from("trip_salespersons")
-    .select("trip_id, tail_number, trip_start, trip_end, salesperson_name, customer")
-    .order("trip_start", { ascending: false });
+    .select("trip_id, tail_number, scheduled_departure, scheduled_arrival, origin_icao, destination_icao, salesperson_name, customer")
+    .order("scheduled_departure", { ascending: false });
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });

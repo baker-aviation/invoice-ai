@@ -5,13 +5,11 @@ import { createServiceClient } from "@/lib/supabase/service";
 /**
  * POST /api/admin/trip-salespersons/upload
  *
- * Upload a JetInsight CSV of trip-salesperson assignments.
+ * Upload a JetInsight "Aircraft Activity" CSV.
  * FormData: file (CSV)
  *
  * Expected CSV columns:
- *   Trip, Customer, Trip start, Trip end, Aircraft, From, To, Salesperson
- *
- * Airport format from JetInsight: "Teterboro (TEB)" → extract IATA, prefix K for domestic.
+ *   Start Z, Start time Z, End time Z, Tail #, Trip, Salesperson, Customer, Orig, Dest
  */
 export async function POST(req: NextRequest) {
   const auth = await requireAdmin(req);
@@ -43,12 +41,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "CSV has no data rows" }, { status: 400 });
   }
 
-  // Parse header to find column indices
   const headerFields = parseCSVLine(lines[0]);
   const colMap = findColumns(headerFields);
   if (!colMap) {
     return NextResponse.json(
-      { error: "CSV missing required columns. Expected: Trip, Customer, Trip start, Trip end, Aircraft, From, To, Salesperson" },
+      { error: "CSV missing required columns. Expected: Start Z, Start time Z, End time Z, Tail #, Trip, Salesperson, Customer, Orig, Dest" },
       { status: 400 },
     );
   }
@@ -56,28 +53,34 @@ export async function POST(req: NextRequest) {
   const rows = [];
   for (let i = 1; i < lines.length; i++) {
     const fields = parseCSVLine(lines[i]);
-    if (fields.length < headerFields.length) continue;
+    if (fields.length < 6) continue;
 
     const tripId = fields[colMap.trip]?.trim();
     const salesperson = fields[colMap.salesperson]?.trim();
-    if (!tripId || !salesperson) continue;
+    const tail = fields[colMap.tail]?.trim().toUpperCase();
+    if (!tripId || !salesperson || !tail) continue;
 
-    const tripStart = fields[colMap.tripStart]?.trim();
-    const tripEnd = fields[colMap.tripEnd]?.trim();
-    if (!tripStart || !tripEnd) continue;
+    const startDate = fields[colMap.startZ]?.trim();
+    const startTime = fields[colMap.startTimeZ]?.trim();
+    const endTime = fields[colMap.endTimeZ]?.trim();
+    if (!startDate || !startTime) continue;
 
-    const tail = extractTailNumber(fields[colMap.aircraft]?.trim() ?? "");
-    const originIcao = extractIcao(fields[colMap.from]?.trim() ?? "");
-    const destIcao = extractIcao(fields[colMap.to]?.trim() ?? "");
+    const originRaw = fields[colMap.orig]?.trim().toUpperCase() ?? "";
+    const destRaw = fields[colMap.dest]?.trim().toUpperCase() ?? "";
+    const originIcao = toIcao(originRaw);
+    const destIcao = toIcao(destRaw);
     const customer = fields[colMap.customer]?.trim() ?? null;
+
+    const departure = parseZuluDateTime(startDate, startTime);
+    const arrival = endTime ? parseZuluDateTime(startDate, endTime, departure) : null;
 
     rows.push({
       trip_id: tripId,
       tail_number: tail,
       origin_icao: originIcao,
       destination_icao: destIcao,
-      trip_start: normalizeDate(tripStart),
-      trip_end: normalizeDate(tripEnd),
+      scheduled_departure: departure,
+      scheduled_arrival: arrival,
       salesperson_name: salesperson,
       customer,
       updated_at: new Date().toISOString(),
@@ -89,27 +92,31 @@ export async function POST(req: NextRequest) {
   }
 
   const supa = createServiceClient();
-  let upserted = 0;
+
+  // Clear existing data before inserting fresh upload
+  await supa.from("trip_salespersons").delete().neq("id", 0);
+
+  let inserted = 0;
   const batchSize = 500;
 
   for (let i = 0; i < rows.length; i += batchSize) {
     const batch = rows.slice(i, i + batchSize);
     const { data, error } = await supa
       .from("trip_salespersons")
-      .upsert(batch, { onConflict: "trip_id" })
+      .upsert(batch, { onConflict: "trip_id,tail_number,origin_icao,destination_icao" })
       .select("id");
 
     if (error) {
       console.error("[trip-salespersons/upload] Supabase error:", error);
       return NextResponse.json(
-        { error: "Database upsert failed", detail: error.message, upserted, totalParsed: rows.length },
+        { error: "Database upsert failed", detail: error.message, inserted, totalParsed: rows.length },
         { status: 500 },
       );
     }
-    upserted += data?.length ?? 0;
+    inserted += data?.length ?? 0;
   }
 
-  return NextResponse.json({ ok: true, upserted, totalParsed: rows.length });
+  return NextResponse.json({ ok: true, inserted, totalParsed: rows.length });
 }
 
 // --- Helpers ---
@@ -140,70 +147,74 @@ function parseCSVLine(line: string): string[] {
 }
 
 type ColMap = {
+  startZ: number;
+  startTimeZ: number;
+  endTimeZ: number;
+  tail: number;
   trip: number;
-  customer: number;
-  tripStart: number;
-  tripEnd: number;
-  aircraft: number;
-  from: number;
-  to: number;
   salesperson: number;
+  customer: number;
+  orig: number;
+  dest: number;
 };
 
 function findColumns(headers: string[]): ColMap | null {
   const norm = headers.map((h) => h.trim().toLowerCase());
+  const startZ = norm.findIndex((h) => h === "start z");
+  const startTimeZ = norm.findIndex((h) => h === "start time z");
+  const endTimeZ = norm.findIndex((h) => h === "end time z");
+  const tail = norm.findIndex((h) => h === "tail #");
   const trip = norm.findIndex((h) => h === "trip");
-  const customer = norm.findIndex((h) => h === "customer");
-  const tripStart = norm.findIndex((h) => h === "trip start");
-  const tripEnd = norm.findIndex((h) => h === "trip end");
-  const aircraft = norm.findIndex((h) => h === "aircraft");
-  const from = norm.findIndex((h) => h === "from");
-  const to = norm.findIndex((h) => h === "to");
   const salesperson = norm.findIndex((h) => h === "salesperson");
+  const customer = norm.findIndex((h) => h === "customer");
+  const orig = norm.findIndex((h) => h === "orig");
+  const dest = norm.findIndex((h) => h === "dest");
 
-  if ([trip, customer, tripStart, tripEnd, aircraft, from, to, salesperson].some((i) => i === -1)) {
+  if ([startZ, startTimeZ, endTimeZ, tail, trip, salesperson, customer, orig, dest].some((i) => i === -1)) {
     return null;
   }
-  return { trip, customer, tripStart, tripEnd, aircraft, from, to, salesperson };
+  return { startZ, startTimeZ, endTimeZ, tail, trip, salesperson, customer, orig, dest };
 }
 
 /**
- * Extract ICAO code from JetInsight format: "Teterboro (TEB)" → "KTEB"
- * For 3-letter domestic IATA codes, prefix with K.
- * If already 4 chars (e.g. "KTEB"), return as-is.
+ * Convert airport code to ICAO.
+ * 3-letter codes get K prefix (US domestic). 4-letter already ICAO.
  */
-function extractIcao(raw: string): string | null {
-  if (!raw) return null;
-  // Try to match parenthesized code: "Teterboro (TEB)"
-  const match = raw.match(/\(([A-Z0-9]{3,4})\)/);
-  const code = match ? match[1] : raw.replace(/[^A-Z0-9]/gi, "").toUpperCase();
+function toIcao(code: string): string | null {
   if (!code) return null;
-  // 3-letter code → prefix K for domestic US
   if (code.length === 3) return `K${code}`;
   return code;
 }
 
 /**
- * Extract tail number from aircraft string.
- * JetInsight may include type: "N51GB (CL30)" → "N51GB"
+ * Parse "03/11/26" + "11:30 pm" into a Zulu ISO string.
+ * If the result is before `afterRef`, assume it crossed midnight and add a day.
  */
-function extractTailNumber(raw: string): string {
-  if (!raw) return "";
-  // Take the first word (before any parenthesized type)
-  const parts = raw.split(/\s+/);
-  return parts[0].toUpperCase();
-}
+function parseZuluDateTime(dateStr: string, timeStr: string, afterRef?: string | null): string {
+  // Parse date: MM/DD/YY or MM/DD/YYYY
+  const dm = dateStr.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (!dm) return new Date().toISOString();
+  let [, month, day, year] = dm;
+  if (year.length === 2) year = `20${year}`;
+  const dateISO = `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
 
-/**
- * Normalize date strings like "02/15/2026" or "2026-02-15" to "YYYY-MM-DD"
- */
-function normalizeDate(raw: string): string {
-  // Try MM/DD/YYYY format
-  const slashMatch = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (slashMatch) {
-    const [, m, d, y] = slashMatch;
-    return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+  // Parse time: "11:30 pm" or "03:36 am"
+  const tm = timeStr.match(/^(\d{1,2}):(\d{2})\s*(am|pm)$/i);
+  if (!tm) return `${dateISO}T00:00:00Z`;
+  let hours = parseInt(tm[1]);
+  const minutes = tm[2];
+  const ampm = tm[3].toLowerCase();
+  if (ampm === "pm" && hours < 12) hours += 12;
+  if (ampm === "am" && hours === 12) hours = 0;
+
+  const isoStr = `${dateISO}T${hours.toString().padStart(2, "0")}:${minutes}:00Z`;
+
+  // If arrival is before departure, it crossed midnight
+  if (afterRef && isoStr < afterRef) {
+    const d = new Date(isoStr);
+    d.setUTCDate(d.getUTCDate() + 1);
+    return d.toISOString();
   }
-  // Already ISO or other parseable format
-  return raw;
+
+  return isoStr;
 }
