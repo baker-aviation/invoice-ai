@@ -71,6 +71,19 @@ export default function SettingsPage() {
   const [summaryChecking, setSummaryChecking] = useState(false);
   const [summaryResult, setSummaryResult] = useState<string | null>(null);
 
+  // Summary log state
+  type SummaryLog = {
+    id: number;
+    salesperson_name: string;
+    summary_date: string;
+    leg_count: number;
+    sent_at: string;
+  };
+  const [summaryLog, setSummaryLog] = useState<SummaryLog[]>([]);
+  const [summaryLogLoading, setSummaryLogLoading] = useState(false);
+  const [summaryLogError, setSummaryLogError] = useState<string | null>(null);
+  const [summaryLogLoaded, setSummaryLogLoaded] = useState(false);
+
   // Notification log state
   type NotifLog = {
     id: number;
@@ -276,6 +289,22 @@ export default function SettingsPage() {
       setSummaryResult(err instanceof Error ? err.message : "Summary failed");
     } finally {
       setSummaryChecking(false);
+    }
+  }
+
+  async function fetchSummaryLog() {
+    setSummaryLogLoading(true);
+    setSummaryLogError(null);
+    try {
+      const res = await fetch("/api/admin/trip-notifications/summary-log");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+      setSummaryLog(data.summaries ?? []);
+      setSummaryLogLoaded(true);
+    } catch (err) {
+      setSummaryLogError(err instanceof Error ? err.message : "Failed to load");
+    } finally {
+      setSummaryLogLoading(false);
     }
   }
 
@@ -825,9 +854,78 @@ export default function SettingsPage() {
         </div>
       )}
 
+      {/* ── Daily Summary Log ────────────────────────────────────────────── */}
+      <hr className="my-8 border-gray-200" />
+      <h2 className="text-lg font-semibold text-slate-900 mb-1">Daily Summary Log</h2>
+      <p className="text-sm text-gray-500 mb-4">
+        View evening summary DMs sent in the last 30 days. Shows which
+        salespersons received their daily leg summary and how many legs were included.
+      </p>
+
+      <button
+        type="button"
+        onClick={fetchSummaryLog}
+        disabled={summaryLogLoading}
+        className="bg-slate-900 text-white rounded-md px-5 py-2 text-sm font-medium hover:bg-slate-700 disabled:opacity-50"
+      >
+        {summaryLogLoading ? "Loading…" : summaryLogLoaded ? "Refresh Log" : "Load Summary Log"}
+      </button>
+
+      {summaryLogError && (
+        <div className="mt-3 px-4 py-2 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+          {summaryLogError}
+        </div>
+      )}
+
+      {summaryLogLoaded && summaryLog.length === 0 && (
+        <div className="mt-3 text-sm text-gray-400 py-4 text-center border border-dashed border-gray-300 rounded-lg">
+          No daily summaries sent in the last 30 days.
+        </div>
+      )}
+
+      {summaryLog.length > 0 && (
+        <div className="mt-3 border border-gray-200 rounded-lg overflow-hidden">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="text-left px-4 py-2 font-medium text-gray-600">Sent At</th>
+                <th className="text-left px-4 py-2 font-medium text-gray-600">Salesperson</th>
+                <th className="text-left px-4 py-2 font-medium text-gray-600">Summary For</th>
+                <th className="text-left px-4 py-2 font-medium text-gray-600">Legs</th>
+              </tr>
+            </thead>
+            <tbody>
+              {summaryLog.map((s) => {
+                const sentStr = new Date(s.sent_at).toLocaleString("en-US", {
+                  month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+                  hour12: true, timeZone: "America/Chicago",
+                });
+                const dateStr = new Date(s.summary_date + "T12:00:00").toLocaleDateString("en-US", {
+                  weekday: "short", month: "short", day: "numeric",
+                });
+                return (
+                  <tr key={s.id} className="border-t border-gray-100 hover:bg-gray-50">
+                    <td className="px-4 py-2 text-xs text-gray-500 whitespace-nowrap">{sentStr}</td>
+                    <td className="px-4 py-2 font-medium text-gray-800">{s.salesperson_name}</td>
+                    <td className="px-4 py-2 text-xs text-gray-600">{dateStr}</td>
+                    <td className="px-4 py-2 text-xs text-gray-700">
+                      {s.leg_count === 0 ? (
+                        <span className="text-gray-400">No legs</span>
+                      ) : (
+                        <span className="font-medium">{s.leg_count} leg{s.leg_count !== 1 ? "s" : ""}</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       {/* ── Notification Log ─────────────────────────────────────────────── */}
       <hr className="my-8 border-gray-200" />
-      <h2 className="text-lg font-semibold text-slate-900 mb-1">Notification Log</h2>
+      <h2 className="text-lg font-semibold text-slate-900 mb-1">Departure Notification Log</h2>
       <p className="text-sm text-gray-500 mb-4">
         View departure DMs sent in the last 7 days. Use this to verify if a
         salesperson received an alert for a specific flight.

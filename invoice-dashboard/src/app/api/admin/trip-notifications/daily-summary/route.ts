@@ -160,6 +160,13 @@ export async function POST(req: NextRequest) {
         continue;
       }
 
+      // Log to summary table
+      await supa.from("salesperson_summary_sent").upsert({
+        salesperson_name: displayName,
+        summary_date: tomorrowStr,
+        leg_count: personLegs?.length ?? 0,
+      }, { onConflict: "salesperson_name,summary_date" });
+
       sentDetails.push({ salesperson: displayName, legCount: personLegs?.length ?? 0 });
       sent++;
     } catch (err) {
