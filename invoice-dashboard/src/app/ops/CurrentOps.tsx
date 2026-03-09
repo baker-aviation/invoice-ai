@@ -1409,6 +1409,8 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                       </td>
                       <td className="px-3 py-2.5">
                         {(() => {
+                          const LIVE = ["Revenue", "Owner", "Charter"];
+                          if (!LIVE.includes(type)) return null;
                           const sp = findSalesperson(tripSalespersons, f.tail_number, f.departure_icao, f.arrival_icao, f.scheduled_departure);
                           if (!sp) return null;
                           return <span className="text-xs text-gray-700">{sp}</span>;
