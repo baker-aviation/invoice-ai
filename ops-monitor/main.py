@@ -677,18 +677,21 @@ def get_notams(airports: str = Query(..., description="Comma-separated ICAO code
 # ─── Job: sync_schedule ───────────────────────────────────────────────────────
 
 
+_prev_etags: Dict[str, str] = {}  # url → last seen ETag
+
 def _fetch_ics_events(url: str, cutoff_past: datetime = None) -> list:
     """Fetch one ICS feed and return its VEVENT components.
     If cutoff_past is given, skip events that ended before that time."""
-    r = requests.get(url, timeout=30)
+    r = requests.get(url, timeout=30, headers={"Cache-Control": "no-cache"})
     r.raise_for_status()
-    # Log response headers to track JetInsight update frequency
-    last_mod = r.headers.get("Last-Modified", "none")
+    # Log response headers + ETag change tracking
     etag = r.headers.get("ETag", "none")
     cache_ctrl = r.headers.get("Cache-Control", "none")
-    content_len = r.headers.get("Content-Length", len(r.content))
     url_short = url.split("?")[0][-40:]
-    print(f"[ICS headers] {url_short}: Last-Modified={last_mod} ETag={etag} Cache-Control={cache_ctrl} size={content_len}", flush=True)
+    prev = _prev_etags.get(url)
+    changed = "NEW" if prev is None else ("CHANGED" if prev != etag else "same")
+    _prev_etags[url] = etag
+    print(f"[ICS] {url_short}: etag={changed} size={len(r.content)} Cache-Control={cache_ctrl}", flush=True)
     cal = Calendar.from_ical(r.content)
     events = [c for c in cal.walk() if c.name == "VEVENT"]
     if cutoff_past is None:
