@@ -1004,16 +1004,16 @@ export default function FuelPricesTable({
                 <th className="px-4 py-3">Tail</th>
                 <th className="px-4 py-3 text-right">Gallons</th>
                 <th className="px-4 py-3 text-right">Fuel Total</th>
-                <th className="px-4 py-3 text-right">
-                  <span title="Effective $/gal (fuel + per-gallon taxes). Base price shown below in gray.">$/Gal</span>
+                <th className="px-4 py-3 text-right bg-blue-50/70 border-l border-blue-100">
+                  <span title="Effective $/gal (fuel + per-gallon taxes). Base price shown below in gray." className="text-blue-900">$/Gal</span>
                 </th>
                 {hasAdvertised && (
                   <>
-                    <th className="px-4 py-3 text-right">
-                      <span title="Cheapest contract rate across AEG, Everest, etc. for this airport + week + volume">Best Rate</span>
+                    <th className="px-4 py-3 text-right bg-blue-50/70">
+                      <span title="Cheapest contract rate across AEG, Everest, etc. for this airport + week + volume" className="text-blue-900">Best Rate</span>
                     </th>
-                    <th className="px-4 py-3 text-right">
-                      <span title="How much more/less you paid vs the best available contract rate">vs Best</span>
+                    <th className="px-4 py-3 text-right bg-blue-50/70 border-r border-blue-100">
+                      <span title="How much more/less you paid vs the best available contract rate" className="text-blue-900">vs Best</span>
                     </th>
                   </>
                 )}
@@ -1092,7 +1092,7 @@ export default function FuelPricesTable({
                     <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono">
                       {fmt$(row.fuel_total, 2)}
                     </td>
-                    <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono font-medium">
+                    <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono font-medium bg-blue-50/40 border-l border-blue-100">
                       <div className="inline-flex items-center gap-1 justify-end">
                         {fmt$(price)}
                         {row.has_additive && (
@@ -1107,7 +1107,7 @@ export default function FuelPricesTable({
                     </td>
                     {hasAdvertised && (
                       <>
-                        <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono text-blue-700">
+                        <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono text-blue-700 font-medium bg-blue-50/40">
                           {bestRate ? (
                             <span title={`${bestRate.vendor} contract rate`}>
                               {fmt$(bestRate.price)}
@@ -1115,7 +1115,7 @@ export default function FuelPricesTable({
                             </span>
                           ) : <span className="text-gray-300">{"\u2014"}</span>}
                         </td>
-                        <td className="px-4 py-2.5 whitespace-nowrap text-right">
+                        <td className="px-4 py-2.5 whitespace-nowrap text-right bg-blue-50/40 border-r border-blue-100">
                           {vsBestPct != null ? (
                             <Badge variant={vsBestPct > 2 ? "danger" : vsBestPct < -2 ? "success" : "default"}>
                               {vsBestPct >= 0 ? "+" : ""}{vsBestPct}%
