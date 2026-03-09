@@ -215,7 +215,14 @@ export default function SettingsPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
       let msg = `Checked ${data.checked} flight(s): ${data.sent} DM(s) sent, ${data.skipped} skipped.`;
-      if (data.errors?.length) msg += ` Errors: ${data.errors.join("; ")}`;
+      if (data.sentDetails?.length) {
+        const details = data.sentDetails.map(
+          (d: { salesperson: string; tail: string; route: string; time: string }) =>
+            `${d.salesperson} — ${d.tail} ${d.route} at ${d.time}`
+        );
+        msg += "\n\nSent to:\n" + details.join("\n");
+      }
+      if (data.errors?.length) msg += "\n\nErrors: " + data.errors.join("; ");
       if (data.message) msg = data.message;
       setNotifResult(msg);
     } catch (err) {
@@ -726,7 +733,7 @@ export default function SettingsPage() {
       </button>
 
       {notifResult && (
-        <div className="mt-3 px-4 py-2 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-700">
+        <div className="mt-3 px-4 py-2 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-700 whitespace-pre-line">
           {notifResult}
         </div>
       )}

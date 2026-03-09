@@ -63,6 +63,7 @@ export async function POST(req: NextRequest) {
   let sent = 0;
   let skipped = 0;
   const errors: string[] = [];
+  const sentDetails: { salesperson: string; tail: string; route: string; time: string }[] = [];
 
   for (const flight of flights) {
     // 3. Find matching trip_salespersons: exact leg match (tail + origin + dest)
@@ -136,6 +137,12 @@ export async function POST(req: NextRequest) {
           salesperson_name: trip.salesperson_name,
         });
 
+        sentDetails.push({
+          salesperson: trip.salesperson_name,
+          tail: flight.tail_number,
+          route: `${depIcao} → ${arrIcao}`,
+          time: depTime,
+        });
         sent++;
       } catch (err) {
         errors.push(`Failed to DM ${trip.salesperson_name}: ${err instanceof Error ? err.message : "unknown"}`);
@@ -148,6 +155,7 @@ export async function POST(req: NextRequest) {
     checked: flights.length,
     sent,
     skipped,
+    sentDetails,
     ...(errors.length > 0 ? { errors } : {}),
   });
 }
