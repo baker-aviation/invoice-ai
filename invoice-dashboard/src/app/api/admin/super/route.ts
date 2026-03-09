@@ -110,7 +110,16 @@ export async function GET(req: NextRequest) {
             signal: AbortSignal.timeout(10000),
           });
           const latencyMs = Date.now() - start;
-          return { name: svc.name, status: res.ok ? "ok" : "error", latencyMs };
+          if (res.ok) {
+            return { name: svc.name, status: "ok", latencyMs };
+          }
+          const body = await res.text().catch(() => "");
+          return {
+            name: svc.name,
+            status: "error",
+            latencyMs,
+            error: `HTTP ${res.status}: ${body.slice(0, 120)}`,
+          };
         } catch (e) {
           return {
             name: svc.name,
