@@ -348,24 +348,24 @@ function ImportAdvertisedModal({ onClose }: { onClose: () => void }) {
   const [weekStart, setWeekStart] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<{ ok: boolean; inserted?: number; skipped?: number; error?: string } | null>(null);
+  const [result, setResult] = useState<{ ok: boolean; inserted?: number; skipped?: number; error?: string; vendor?: string; format?: string } | null>(null);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!file || !vendor || !weekStart) return;
+    if (!file) return;
     setLoading(true);
     setResult(null);
 
     const fd = new FormData();
     fd.append("file", file);
-    fd.append("vendor", vendor);
-    fd.append("week_start", weekStart);
+    if (vendor) fd.append("vendor", vendor);
+    if (weekStart) fd.append("week_start", weekStart);
 
     try {
       const res = await fetch("/api/fuel-prices/advertised/upload", { method: "POST", body: fd });
       const data = await res.json();
       if (res.ok && data.ok) {
-        setResult({ ok: true, inserted: data.inserted, skipped: data.skipped });
+        setResult({ ok: true, inserted: data.inserted, skipped: data.skipped, vendor: data.vendor, format: data.detectedFormat });
       } else {
         setResult({ ok: false, error: data.error || "Upload failed" });
       }
@@ -385,28 +385,30 @@ function ImportAdvertisedModal({ onClose }: { onClose: () => void }) {
         </div>
 
         <div className="mb-4 rounded-lg bg-blue-50 border border-blue-200 p-3 text-xs text-blue-800">
-          <p className="font-semibold mb-1">Expected CSV format:</p>
-          <code className="block whitespace-pre text-[11px]">FBO, Volume Tier, Product, Price, Tail Numbers</code>
-          <p className="mt-1 text-blue-600">FBO (airport code) may be blank on continuation rows (carries forward). Price like $6.30. &ldquo;All Tails&rdquo; = all aircraft.</p>
+          <p className="font-semibold mb-1">Supported CSV formats:</p>
+          <ul className="list-disc ml-4 space-y-0.5 text-[11px]">
+            <li><strong>AEG/Baker</strong> &mdash; auto-detected (ICAO, FUELER, TOTAL PRICE columns)</li>
+            <li><strong>Everest Fuel</strong> &mdash; auto-detected (ICAO, FBO, TIER, PRICE columns)</li>
+            <li><strong>Generic</strong> &mdash; Airport, Volume Tier, Product, Price, Tail Numbers</li>
+          </ul>
+          <p className="mt-1 text-blue-600">Baker &amp; Everest formats are auto-detected. Vendor name and week date are optional for those &mdash; date can be in filename (e.g. Everest Fuel_03_06_2026.csv).</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-3">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">FBO Vendor Name</label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Vendor Name <span className="text-gray-400 font-normal">(optional for Baker/Everest)</span></label>
             <input
               type="text"
-              required
               value={vendor}
               onChange={(e) => setVendor(e.target.value)}
-              placeholder="e.g. Jet Aviation"
+              placeholder="e.g. Jet Aviation — leave blank for auto-detect"
               className="w-full rounded-md border px-3 py-2 text-sm"
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Week Starting</label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Week Starting <span className="text-gray-400 font-normal">(optional if in filename)</span></label>
             <input
               type="date"
-              required
               value={weekStart}
               onChange={(e) => setWeekStart(e.target.value)}
               className="w-full rounded-md border px-3 py-2 text-sm"
@@ -426,7 +428,7 @@ function ImportAdvertisedModal({ onClose }: { onClose: () => void }) {
           {result && (
             <div className={`rounded-lg p-3 text-sm ${result.ok ? "bg-green-50 text-green-800" : "bg-red-50 text-red-800"}`}>
               {result.ok
-                ? `Imported ${result.inserted} rows (${result.skipped} duplicates skipped)`
+                ? `Imported ${result.inserted} rows (${result.skipped} updated)${result.vendor ? ` — ${result.vendor}` : ""}${result.format && result.format !== "generic" ? ` (${result.format} format)` : ""}`
                 : result.error}
             </div>
           )}
@@ -438,7 +440,7 @@ function ImportAdvertisedModal({ onClose }: { onClose: () => void }) {
             {!result?.ok && (
               <button
                 type="submit"
-                disabled={loading || !file || !vendor || !weekStart}
+                disabled={loading || !file}
                 className="px-4 py-2 text-sm rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
               >
                 {loading ? "Uploading..." : "Import"}
