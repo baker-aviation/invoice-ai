@@ -6,9 +6,9 @@ import { useEffect, useState, useCallback } from "react";
 
 type ServiceHealth = {
   name: string;
-  status: "ok" | "error" | "unconfigured";
-  latencyMs: number | null;
-  error?: string;
+  status: "ok" | "warning" | "error" | "unknown";
+  lastRun: string | null;
+  staleMins: number;
 };
 
 type PipelineStatus = {
@@ -213,7 +213,7 @@ export default function SuperAdminDashboard() {
   const pipelinesOk = data.pipelines.filter((p) => p.status === "ok").length;
   const overallStatus = data.services.some((s) => s.status === "error") || data.pipelines.some((p) => p.status === "error")
     ? "error"
-    : data.pipelines.some((p) => p.status === "warning")
+    : data.services.some((s) => s.status === "warning") || data.pipelines.some((p) => p.status === "warning")
       ? "warning"
       : "ok";
   const overall = STATUS[overallStatus];
@@ -272,17 +272,14 @@ export default function SuperAdminDashboard() {
                     <div className={`h-2.5 w-2.5 rounded-full ${s.dot}`} />
                     <div>
                       <div className="text-sm font-medium text-gray-900">{svc.name}</div>
-                      {svc.error && <div className="text-xs text-red-500 truncate max-w-[200px]">{svc.error}</div>}
+                      <div className="text-xs text-gray-400">
+                        {svc.lastRun ? `Last pipeline: ${fmtAge(svc.staleMins)}` : "No pipeline runs"}
+                      </div>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    {svc.latencyMs != null && (
-                      <span className="text-xs text-gray-400 tabular-nums">{svc.latencyMs}ms</span>
-                    )}
-                    <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${s.bg} ${s.text}`}>
-                      {s.label}
-                    </span>
-                  </div>
+                  <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${s.bg} ${s.text}`}>
+                    {s.label}
+                  </span>
                 </div>
               );
             })}

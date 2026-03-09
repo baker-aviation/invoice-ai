@@ -1,25 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireSuperAdmin, isAuthed, isRateLimited } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
-import { cloudRunFetch } from "@/lib/cloud-run-fetch";
 
 export const dynamic = "force-dynamic";
 
-// Derive Cloud Run URL from service name — all services share the same hash
-const CLOUD_RUN_HASH = "hrzd5jf3da-uc";
-function serviceUrl(name: string): string {
-  return `https://${name}-${CLOUD_RUN_HASH}.a.run.app`;
-}
-
-// Cloud Run services with their health endpoints
-// Note: /healthz is intercepted by Cloud Run GFE → 404. Use /debug/* or /docs instead.
-const SERVICES = [
-  { name: "ops-monitor", base: serviceUrl("ops-monitor"), healthPath: "/debug/ics_status" },
-  { name: "invoice-ingest", base: serviceUrl("invoice-ingest"), healthPath: "/docs" },
-  { name: "invoice-parser", base: serviceUrl("invoice-parser"), healthPath: "/health" },
-  { name: "invoice-alerts", base: serviceUrl("invoice-alerts"), healthPath: "/health" },
-  { name: "job-ingest", base: serviceUrl("job-ingest"), healthPath: "/_health" },
-  { name: "job-parse", base: serviceUrl("job-parse"), healthPath: "/_health" },
+// Map Cloud Run services → the pipeline slugs that prove they're running.
+// If ANY mapped pipeline ran successfully recently, the service is "ok".
+const SERVICE_PIPELINE_MAP: { name: string; pipelines: string[]; warnMins: number }[] = [
+  { name: "ops-monitor", pipelines: ["flight-sync", "edct-pull", "notam-check"], warnMins: 45 },
+  { name: "invoice-ingest", pipelines: ["invoice-ingest"], warnMins: 30 },
+  { name: "invoice-parser", pipelines: ["invoice-parse"], warnMins: 30 },
+  { name: "invoice-alerts", pipelines: ["alert-generation", "slack-flush"], warnMins: 30 },
+  { name: "job-ingest", pipelines: ["job-ingest"], warnMins: 90 },
+  { name: "job-parse", pipelines: ["job-parse"], warnMins: 90 },
 ];
 
 // Key tables to get row counts for
@@ -37,9 +30,9 @@ const TABLE_COUNTS = [
 
 type ServiceHealth = {
   name: string;
-  status: "ok" | "error" | "unconfigured";
-  latencyMs: number | null;
-  error?: string;
+  status: "ok" | "warning" | "error" | "unknown";
+  lastRun: string | null;
+  staleMins: number;
 };
 
 type PipelineStatus = {
@@ -97,41 +90,8 @@ export async function GET(req: NextRequest) {
   const supa = createServiceClient();
 
   // Run all queries in parallel
-  const [serviceResults, pipelineData, tableCounts, userData, queueData, faData] = await Promise.all([
-    // 1. Service health checks
-    Promise.all(
-      SERVICES.map(async (svc): Promise<ServiceHealth> => {
-        if (!svc.base) return { name: svc.name, status: "unconfigured", latencyMs: null };
-        const url = `${svc.base.replace(/\/$/, "")}${svc.healthPath}`;
-        const start = Date.now();
-        try {
-          const res = await cloudRunFetch(url, {
-            method: "GET",
-            signal: AbortSignal.timeout(10000),
-          });
-          const latencyMs = Date.now() - start;
-          if (res.ok) {
-            return { name: svc.name, status: "ok", latencyMs };
-          }
-          const body = await res.text().catch(() => "");
-          return {
-            name: svc.name,
-            status: "error",
-            latencyMs,
-            error: `HTTP ${res.status}: ${body.slice(0, 120)}`,
-          };
-        } catch (e) {
-          return {
-            name: svc.name,
-            status: "error",
-            latencyMs: Date.now() - start,
-            error: e instanceof Error ? e.message : "Unknown error",
-          };
-        }
-      }),
-    ),
-
-    // 2. Pipeline status from pipeline_runs
+  const [pipelineData, tableCounts, userData, queueData, faData] = await Promise.all([
+    // 1. Pipeline status from pipeline_runs
     supa
       .from("pipeline_runs")
       .select("pipeline, status, message, created_at")
@@ -221,6 +181,29 @@ export async function GET(req: NextRequest) {
     else if (staleMins <= p.warnMins * 3) status = "warning";
     else status = "error";
     return { slug: p.slug, name: p.name, lastRun: latest.created_at, lastStatus: latest.status, lastMessage: latest.message, staleMins, status };
+  });
+
+  // Derive Cloud Run service health from their pipeline runs
+  const serviceResults: ServiceHealth[] = SERVICE_PIPELINE_MAP.map((svc) => {
+    // Find the most recent successful run across all pipelines for this service
+    let bestRun: { created_at: string; status: string } | null = null;
+    for (const slug of svc.pipelines) {
+      const latest = latestByPipeline.get(slug);
+      if (!latest) continue;
+      if (!bestRun || new Date(latest.created_at) > new Date(bestRun.created_at)) {
+        bestRun = latest;
+      }
+    }
+    if (!bestRun) {
+      return { name: svc.name, status: "unknown" as const, lastRun: null, staleMins: -1 };
+    }
+    const staleMins = Math.round((Date.now() - new Date(bestRun.created_at).getTime()) / 60_000);
+    let status: ServiceHealth["status"];
+    if (bestRun.status === "error") status = "error";
+    else if (staleMins <= svc.warnMins) status = "ok";
+    else if (staleMins <= svc.warnMins * 3) status = "warning";
+    else status = "error";
+    return { name: svc.name, status, lastRun: bestRun.created_at, staleMins };
   });
 
   return NextResponse.json({
