@@ -983,12 +983,6 @@ export default function FuelPricesTable({
                     <th className="px-4 py-3 text-right">
                       <span title="How much more/less you paid vs the best available contract rate">vs Best</span>
                     </th>
-                    <th className="px-4 py-3 text-right">
-                      <span title="FBO advertised price for this airport + vendor + week">Adv. Price</span>
-                    </th>
-                    <th className="px-4 py-3 text-right">
-                      <span title="Difference between effective price and advertised price">vs Adv.</span>
-                    </th>
                   </>
                 )}
                 <th className="px-4 py-3 text-right">
@@ -1098,18 +1092,6 @@ export default function FuelPricesTable({
                             <span className="text-gray-300 text-xs">{"\u2014"}</span>
                           )}
                         </td>
-                        <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono text-purple-700">
-                          {advPrice != null ? fmt$(advPrice) : <span className="text-gray-300">{"\u2014"}</span>}
-                        </td>
-                        <td className="px-4 py-2.5 whitespace-nowrap text-right">
-                          {vsAdvPct != null ? (
-                            <Badge variant={vsAdvPct > 2 ? "danger" : vsAdvPct < -2 ? "success" : "default"}>
-                              {vsAdvPct >= 0 ? "+" : ""}{vsAdvPct}%
-                            </Badge>
-                          ) : (
-                            <span className="text-gray-300 text-xs">{"\u2014"}</span>
-                          )}
-                        </td>
                       </>
                     )}
                     <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono text-gray-500">
@@ -1184,7 +1166,7 @@ export default function FuelPricesTable({
               })}
               {pageRows.length === 0 && (
                 <tr>
-                  <td colSpan={hasAdvertised ? 17 : 13} className="px-4 py-8 text-center text-gray-400">
+                  <td colSpan={hasAdvertised ? 15 : 13} className="px-4 py-8 text-center text-gray-400">
                     No fuel price records found.
                   </td>
                 </tr>
