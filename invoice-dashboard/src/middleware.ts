@@ -48,6 +48,7 @@ export async function middleware(request: NextRequest) {
   const publicApiPaths = ["/api/agents", "/api/vans/health", "/api/vans/diagnostics", "/api/invite", "/api/aircraft/webhook"];
   if (
     publicApiPaths.some((p) => request.nextUrl.pathname === p) ||
+    request.nextUrl.pathname.startsWith("/api/cron/") ||
     request.nextUrl.pathname.startsWith("/api/public/form/") ||
     request.nextUrl.pathname.startsWith("/api/public/info-session") ||
     request.nextUrl.pathname.startsWith("/form/")
