@@ -12,9 +12,10 @@ function serviceUrl(name: string): string {
 }
 
 // Cloud Run services with their health endpoints
+// Note: /healthz is intercepted by Cloud Run GFE → 404. Use /debug/* or /docs instead.
 const SERVICES = [
-  { name: "ops-monitor", base: serviceUrl("ops-monitor"), healthPath: "/healthz" },
-  { name: "invoice-ingest", base: serviceUrl("invoice-ingest"), healthPath: "/healthz" },
+  { name: "ops-monitor", base: serviceUrl("ops-monitor"), healthPath: "/debug/ics_status" },
+  { name: "invoice-ingest", base: serviceUrl("invoice-ingest"), healthPath: "/docs" },
   { name: "invoice-parser", base: serviceUrl("invoice-parser"), healthPath: "/health" },
   { name: "invoice-alerts", base: serviceUrl("invoice-alerts"), healthPath: "/health" },
   { name: "job-ingest", base: serviceUrl("job-ingest"), healthPath: "/_health" },
