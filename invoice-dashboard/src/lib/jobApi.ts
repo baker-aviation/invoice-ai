@@ -74,7 +74,7 @@ export async function fetchJobs(
 
   let jobs = (data ?? []).map((row: any) => ({
     ...row,
-    pipeline_stage: row.pipeline_stage ?? "new",
+    pipeline_stage: row.pipeline_stage ?? "screening",
   })) as JobRow[];
 
   // Text search (matches backend behavior)
@@ -137,7 +137,7 @@ export async function createCandidate(fields: {
       location: fields.location || null,
       category: fields.category || null,
       notes: fields.notes || null,
-      hiring_stage: fields.hiring_stage ?? "new",
+      hiring_stage: fields.hiring_stage ?? "screening",
       created_at: now,
       updated_at: now,
     })
@@ -185,7 +185,7 @@ export async function fetchJobDetail(applicationId: string | number): Promise<Jo
 
   if (jobErr) throw new Error(`fetchJobDetail failed: ${jobErr.message}`);
   if (!jobRow) throw new Error("Job application not found");
-  if (!jobRow.pipeline_stage) jobRow.pipeline_stage = "new";
+  if (!jobRow.pipeline_stage) jobRow.pipeline_stage = "screening";
 
   // Fetch file metadata from Supabase (include GCS location for signing)
   const { data: fileRows } = await supa

@@ -13,11 +13,6 @@ const STAGE_META: Record<
   PipelineStage,
   { label: string; color: string; headerColor: string }
 > = {
-  new: {
-    label: "New",
-    color: "border-slate-200",
-    headerColor: "bg-slate-100 text-slate-700",
-  },
   screening: {
     label: "Screening",
     color: "border-blue-200",
@@ -37,6 +32,11 @@ const STAGE_META: Record<
     label: "Interview",
     color: "border-violet-200",
     headerColor: "bg-violet-100 text-violet-700",
+  },
+  pending_offer: {
+    label: "Pending Offer",
+    color: "border-pink-200",
+    headerColor: "bg-pink-100 text-pink-700",
   },
   offer: {
     label: "Offer",
@@ -157,7 +157,7 @@ function AddCandidateModal({
         location: form.location.trim() || null,
         category: form.category || null,
         notes: form.notes.trim() || null,
-        pipeline_stage: "new",
+        pipeline_stage: "screening",
       };
       if (isPilot) {
         if (form.total_time_hours) payload.total_time_hours = Number(form.total_time_hours);
@@ -201,7 +201,7 @@ function AddCandidateModal({
         application_id: data.application_id,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
-        pipeline_stage: "new",
+        pipeline_stage: "screening",
         category: form.category || null,
         employment_type: null,
         candidate_name: form.candidate_name.trim(),
@@ -495,7 +495,7 @@ export default function PipelineBoard({
       job.pipeline_stage ?? "",
     )
       ? (job.pipeline_stage as PipelineStage)
-      : "new";
+      : "screening";
     if (qLower) {
       const haystack = [
         job.candidate_name,
