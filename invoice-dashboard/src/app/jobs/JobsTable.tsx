@@ -291,11 +291,20 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          <FilterPills
-            options={categoryOptions}
-            value={category}
-            onChange={(v) => { setCategory(v); setPage(0); }}
-          />
+          <div className="flex items-center gap-1.5">
+            <label className="text-xs font-medium text-gray-500 whitespace-nowrap">Job Type</label>
+            <select
+              value={category}
+              onChange={(e) => { setCategory(e.target.value); setPage(0); }}
+              className="rounded-lg border border-gray-200 bg-gray-50 px-2.5 py-1.5 text-xs font-medium outline-none focus:border-gray-400 focus:bg-white transition-colors"
+            >
+              {categoryOptions.map((opt) => (
+                <option key={opt.key} value={opt.key}>
+                  {opt.label}{opt.count !== undefined ? ` (${opt.count})` : ""}
+                </option>
+              ))}
+            </select>
+          </div>
           <div className="w-px h-5 bg-gray-200" />
           <FilterPills
             options={[

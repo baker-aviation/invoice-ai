@@ -215,36 +215,38 @@ export default async function JobDetailPage({
 
               {job?.notes ? (
                 <div className="md:col-span-4">
-                  <div className="text-gray-500">Notes</div>
-                  <div className="mt-1 whitespace-pre-wrap">{job.notes}</div>
+                  <div className="rounded-lg border border-amber-200 bg-amber-50/50 p-3 border-l-4 border-l-amber-400">
+                    <div className="text-xs font-semibold text-amber-800 uppercase tracking-wide">Notes</div>
+                    <div className="mt-1.5 text-sm text-gray-800 whitespace-pre-wrap">{job.notes}</div>
+                  </div>
                 </div>
               ) : null}
 
               {/* Structured notes display (read-only) */}
               {job?.structured_notes && Object.values(job.structured_notes).some(Boolean) && (
                 <div className="md:col-span-4 mt-2 space-y-2">
-                  <div className="text-gray-500 font-medium">Review Notes</div>
+                  <div className="text-sm font-semibold text-gray-700">Review Notes</div>
                   <div className="grid gap-2 md:grid-cols-2">
                     {job.structured_notes.hr_notes && (
-                      <div className="rounded border border-gray-100 bg-gray-50 p-2">
+                      <div className="rounded border border-blue-100 bg-blue-50/40 border-l-4 border-l-blue-300 p-2">
                         <div className="text-xs font-medium text-gray-500">HR Notes</div>
                         <div className="mt-1 text-sm whitespace-pre-wrap">{job.structured_notes.hr_notes}</div>
                       </div>
                     )}
                     {job.structured_notes.prd_review_notes && (
-                      <div className="rounded border border-gray-100 bg-gray-50 p-2">
+                      <div className="rounded border border-blue-100 bg-blue-50/40 border-l-4 border-l-blue-300 p-2">
                         <div className="text-xs font-medium text-gray-500">PRD Review Notes</div>
                         <div className="mt-1 text-sm whitespace-pre-wrap">{job.structured_notes.prd_review_notes}</div>
                       </div>
                     )}
                     {job.structured_notes.tims_notes && (
-                      <div className="rounded border border-gray-100 bg-gray-50 p-2">
+                      <div className="rounded border border-blue-100 bg-blue-50/40 border-l-4 border-l-blue-300 p-2">
                         <div className="text-xs font-medium text-gray-500">Tim&apos;s Notes</div>
                         <div className="mt-1 text-sm whitespace-pre-wrap">{job.structured_notes.tims_notes}</div>
                       </div>
                     )}
                     {job.structured_notes.chief_pilot_notes && (
-                      <div className="rounded border border-gray-100 bg-gray-50 p-2">
+                      <div className="rounded border border-blue-100 bg-blue-50/40 border-l-4 border-l-blue-300 p-2">
                         <div className="text-xs font-medium text-gray-500">Chief Pilot Notes</div>
                         <div className="mt-1 text-sm whitespace-pre-wrap">{job.structured_notes.chief_pilot_notes}</div>
                       </div>
