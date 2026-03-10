@@ -1073,6 +1073,19 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                                   </div>
                                 )}
                                 {(() => {
+                                  const arrCode = f.arrival_icao?.toUpperCase();
+                                  if (!arrCode) return null;
+                                  const rate = bestFuelByAirport.get(arrCode) ?? bestFuelByAirport.get(arrCode.length === 4 && arrCode.startsWith("K") ? arrCode.slice(1) : `K${arrCode}`);
+                                  if (!rate) return null;
+                                  return (
+                                    <div className="ml-auto border-l border-gray-200 pl-3 text-right shrink-0">
+                                      <div className="text-xs font-semibold text-gray-600">{rate.fbo ?? rate.vendor}</div>
+                                      {rate.fbo && <div className="text-[10px] text-gray-400">{rate.vendor}</div>}
+                                      <div className="text-xs font-mono font-medium text-gray-900">${rate.price.toFixed(2)}</div>
+                                    </div>
+                                  );
+                                })()}
+                                {(() => {
                                   const schedMs = new Date(f.scheduled_departure).getTime();
                                   const now = Date.now();
                                   if (schedMs < now && !fi?.actual_departure && status === "Scheduled") {
@@ -1126,12 +1139,11 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
             <col style={{ width: "9%" }} />   {/* Status */}
             <col style={{ width: "7%" }} />   {/* Tail */}
             <col style={{ width: "11%" }} />  {/* Route */}
-            <col style={{ width: "12%" }} />  {/* Departure */}
-            <col style={{ width: "12%" }} />  {/* Arrival */}
+            <col style={{ width: "13%" }} />  {/* Departure */}
+            <col style={{ width: "13%" }} />  {/* Arrival */}
             <col style={{ width: "7%" }} />   {/* Type */}
             <col style={{ width: "5%" }} />   {/* 10/24 */}
             <col style={{ width: "5%" }} />   {/* Rest */}
-            <col style={{ width: "5%" }} />   {/* Fuel */}
             <col style={{ width: "5%" }} />   {/* Alerts */}
             <col style={{ width: "9%" }} />   {/* Sales */}
           </colgroup>
@@ -1145,7 +1157,6 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
               <th className="px-3 py-3">Type</th>
               <th className="px-3 py-3">10/24</th>
               <th className="px-3 py-3">Rest</th>
-              <th className="px-3 py-3">Fuel</th>
               <th className="px-3 py-3">
                 <div className="flex flex-col gap-0.5">
                   <span>NOTAMs, PPRs & TFRs</span>
@@ -1181,7 +1192,7 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
           <tbody>
             {displayFlights.length === 0 ? (
               <tr>
-                <td colSpan={11} className="px-4 py-8 text-center text-gray-400">
+                <td colSpan={10} className="px-4 py-8 text-center text-gray-400">
                   No flights scheduled for selected filters
                 </td>
               </tr>
@@ -1415,20 +1426,6 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                         })()}
                       </td>
                       <td className="px-3 py-2.5">
-                        {(() => {
-                          const arrCode = f.arrival_icao?.toUpperCase();
-                          if (!arrCode) return <span className="text-xs text-gray-300">&mdash;</span>;
-                          const rate = bestFuelByAirport.get(arrCode) ?? bestFuelByAirport.get(arrCode.length === 4 && arrCode.startsWith("K") ? arrCode.slice(1) : `K${arrCode}`);
-                          if (!rate) return <span className="text-xs text-gray-300">&mdash;</span>;
-                          return (
-                            <div>
-                              <div className="text-[10px] text-gray-500 truncate">{rate.fbo || `(${rate.vendor})`}</div>
-                              <span className="text-xs font-mono font-medium text-gray-900">${rate.price.toFixed(2)}</span>
-                            </div>
-                          );
-                        })()}
-                      </td>
-                      <td className="px-3 py-2.5">
                         {alertCount > 0 && (
                           <button
                             onClick={() => toggleExpanded(f.id)}
@@ -1453,7 +1450,7 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                     </tr>
                     {isExpanded && alerts.map((alert) => (
                       <tr key={alert.id} className={`border-t border-dashed border-gray-100 ${isAcked(alert) ? "bg-gray-50/40 opacity-60" : "bg-red-50/40"}`}>
-                        <td colSpan={11} className="px-4 py-3">
+                        <td colSpan={10} className="px-4 py-3">
                           <div className={`rounded-lg border p-3 text-xs ${isAcked(alert) ? "bg-gray-50 text-gray-700 border-gray-200" : SEVERITY_COLORS[alert.severity] || "bg-gray-50 text-gray-700 border-gray-200"}`}>
                             <div className="flex items-start justify-between gap-2">
                               <div className="space-y-1 flex-1">
