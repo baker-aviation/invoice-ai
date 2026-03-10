@@ -208,6 +208,7 @@ def llm_extract_json(client: OpenAI, model: str, messages: List[dict], schema_bu
 _INV_NO_STRONG = re.compile(r"\bINV\d{6,}\b", re.IGNORECASE)
 _INV_NO_LABEL = re.compile(r"\bInvoice\s+(?:No\.?|#|Number)\s*[:#]?\s*([A-Z0-9-]{6,})\b", re.IGNORECASE)
 _REF_NO_LABEL = re.compile(r"\bRef Number\s+([A-Z0-9-]{6,})\b", re.IGNORECASE)
+_ORDER_NO_LABEL = re.compile(r"\bOrder\s+[Nn]o\.?\s*:?\s*([A-Z0-9-]{4,})\b", re.IGNORECASE)
 
 _GENERIC_INV_LABELS = {"INVOICE", "INVOICE #", "INVOICE NUMBER", "INVOICE NO", "INVOICE NO."}
 
@@ -224,6 +225,10 @@ def best_invoice_number_from_text(pdf_text: str) -> Optional[str]:
         return (m.group(1) or "").strip().upper()
 
     m = _REF_NO_LABEL.search(t)
+    if m:
+        return (m.group(1) or "").strip().upper()
+
+    m = _ORDER_NO_LABEL.search(t)
     if m:
         return (m.group(1) or "").strip().upper()
 
@@ -635,7 +640,7 @@ def infer_airport_code(data: Dict[str, Any], pdf_text: str) -> Dict[str, Any]:
 
     # 3. Scan PDF text for airport codes near location keywords
     text_upper = (pdf_text or "").upper()
-    for label in ["AIRPORT:", "LOCATION:", "BASE:", "FBO:", "STATION:"]:
+    for label in ["AIRPORT:", "LOCATION:", "BASE:", "FBO:", "STATION:", "ORDER NO", "ORDER NO."]:
         idx = text_upper.find(label)
         if idx >= 0:
             # Look in the 40 chars after the label
@@ -697,11 +702,19 @@ def build_normal_messages(pdf_text: str) -> List[dict]:
         "\n"
         "Vendor name:\n"
         "- Use the primary vendor/company name, not a parent company or billing entity.\n"
+        "- For FBO invoices (Jet Aviation, Signature, Atlantic Aviation, etc.), the VENDOR is the FBO/service provider — NOT the customer/operator (e.g. 'Baker Aviation' is the customer, not the vendor).\n"
+        "- If 'Baker Aviation' appears as 'Operator' or billing recipient, the vendor is the OTHER company on the invoice.\n"
         "- For subscription services (Starlink, ForeFlight, etc.), use the service name as vendor.\n"
         "- For bilingual documents (French/English, etc.), use the English company name.\n"
         "- For government agencies (Transport Canada, FAA, etc.), use the standard English agency name.\n"
         "- If the document is NOT an invoice (e.g. a notice, letter, violation report), still extract whatever vendor/sender name is present and set total_amount to null.\n"
         "- NEVER use placeholder strings like ':vendor_name_placeholder:'. Use null if you cannot determine the vendor.\n"
+        "\n"
+        "FBO invoice fields:\n"
+        "- 'Order no' or 'Order Number' = invoice_number.\n"
+        "- 'Registration No' or 'Registration Number' = tail_number (aircraft registration).\n"
+        "- 'Arrival' / 'Departure' dates — use 'Arrival' as invoice_date if no explicit 'Invoice Date' is shown.\n"
+        "- Airport codes often appear in the order number (e.g. 'KBED-86387' means airport = BED).\n"
         "\n"
         "Multi-stop documents:\n"
         "- Some invoices contain multiple date/location sections.\n"
