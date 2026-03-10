@@ -149,6 +149,14 @@ const RAW: [string, string, boolean][] = [
   ["KMSO", "KMSO", true],   // Missoula (IS commercial)
   ["KFCA", "KFCA", true],   // Kalispell (IS commercial)
   ["KGTF", "KGTF", true],   // Great Falls (IS commercial)
+
+  // International — FBO to nearest commercial
+  ["CYYZ", "CYYZ", true],   // Toronto Pearson (IS commercial)
+  ["MROC", "MROC", true],   // San Jose Costa Rica (IS commercial)
+  ["MRLB", "MRLB", true],   // Liberia Costa Rica (IS commercial)
+  ["MBPV", "MBPV", true],   // Marsh Harbour Bahamas (IS commercial)
+  ["MYNN", "MYNN", true],   // Nassau Bahamas (IS commercial)
+  ["MPTO", "MPTO", true],   // Panama City (IS commercial)
 ];
 
 export const DEFAULT_AIRPORT_ALIASES: AirportAliasEntry[] = RAW.map(([fbo, comm, pref]) => ({

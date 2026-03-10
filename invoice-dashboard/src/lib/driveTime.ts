@@ -8,6 +8,7 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   // Texas
   KIAH: [29.9844, -95.3414],   // Houston Intercontinental
   KHOU: [29.6454, -95.2789],   // Houston Hobby
+  KDWH: [30.0618, -95.5528],   // David Wayne Hooks (FBO, near IAH)
   KDFW: [32.8968, -97.0380],   // Dallas/Fort Worth
   KDAL: [32.8471, -96.8518],   // Dallas Love Field
   KAUS: [30.1945, -97.6699],   // Austin
@@ -58,6 +59,8 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   KMDW: [41.7868, -87.7416],   // Chicago Midway
   KPWK: [42.1142, -87.9015],   // Chicago Executive (FBO)
   KDTW: [42.2124, -83.3534],   // Detroit
+  KGRR: [42.8808, -85.5228],   // Grand Rapids
+  KESC: [45.7227, -87.0937],   // Escanaba MI
   KMSP: [44.8820, -93.2218],   // Minneapolis
   KIND: [39.7173, -86.2944],   // Indianapolis
   KCVG: [39.0488, -84.6678],   // Cincinnati
@@ -68,6 +71,8 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   KLAS: [36.0840, -115.1537],  // Las Vegas
   KPHX: [33.4373, -112.0078],  // Phoenix
   KSDL: [33.6229, -111.9105],  // Scottsdale (FBO)
+  KPSP: [33.8297, -116.5067],  // Palm Springs
+  KTRM: [33.6267, -116.1597],  // Thermal/Jacqueline Cochran (FBO, near PSP)
   KSLC: [40.7884, -111.9778],  // Salt Lake City
   KASE: [39.2232, -106.8688],  // Aspen
   KEGE: [39.6426, -106.9159],  // Eagle/Vail

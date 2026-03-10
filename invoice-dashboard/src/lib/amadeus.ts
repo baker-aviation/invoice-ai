@@ -4,8 +4,8 @@
 const API_KEY = process.env.AMADEUS_API_KEY!;
 const API_SECRET = process.env.AMADEUS_API_SECRET!;
 
-// Use test environment by default — switch to production when ready
-const BASE_URL = "https://test.api.amadeus.com";
+// Production API for real flight data. Set AMADEUS_BASE_URL=https://test.api.amadeus.com for sandbox.
+const BASE_URL = process.env.AMADEUS_BASE_URL ?? "https://api.amadeus.com";
 
 // ─── Token management ────────────────────────────────────────────────────────
 
@@ -82,9 +82,9 @@ export async function searchFlights(params: {
   const token = await getToken();
   const { origin, destination, date, adults = 1, max = 5 } = params;
 
-  // Strip K prefix if ICAO codes are passed (KIAH → IAH)
-  const orig = origin.length === 4 && origin.startsWith("K") ? origin.slice(1) : origin;
-  const dest = destination.length === 4 && destination.startsWith("K") ? destination.slice(1) : destination;
+  // Convert ICAO to IATA codes
+  const orig = icaoToIata(origin);
+  const dest = icaoToIata(destination);
 
   const qs = new URLSearchParams({
     originLocationCode: orig,
@@ -102,10 +102,11 @@ export async function searchFlights(params: {
 
   if (!res.ok) {
     const text = await res.text();
-    // Amadeus returns 400 for invalid airport pairs — not an error we should throw on
     if (res.status === 400) {
+      console.warn(`Amadeus 400 for ${orig}->${dest} on ${date}: ${text.slice(0, 200)}`);
       return { origin: orig, destination: dest, date, offers: [], count: 0 };
     }
+    console.error(`Amadeus ${res.status} for ${orig}->${dest}: ${text.slice(0, 200)}`);
     throw new Error(`Amadeus search failed (${res.status}): ${text}`);
   }
 
@@ -118,6 +119,36 @@ export async function searchFlights(params: {
   }));
 
   return { origin: orig, destination: dest, date, offers, count: offers.length };
+}
+
+// ─── ICAO to IATA conversion ─────────────────────────────────────────────────
+
+const ICAO_TO_IATA: Record<string, string> = {
+  // Canada
+  CYYZ: "YYZ", CYUL: "YUL", CYVR: "YVR", CYOW: "YOW", CYYC: "YYC",
+  CYEG: "YEG", CYWG: "YWG", CYHZ: "YHZ", CYQB: "YQB",
+  // Mexico
+  MMMX: "MEX", MMUN: "CUN", MMMY: "MTY", MMGL: "GDL",
+  MMSD: "SJD", MMPR: "PVR", MMMD: "MID",
+  // Caribbean
+  MBPV: "MHH", MYNN: "NAS", MKJP: "KIN", TIST: "STT", TJSJ: "SJU",
+  TNCM: "SXM", TFFR: "PTP", TAPA: "ANU",
+  // Central America
+  MROC: "SJO", MRLB: "LIR", MHTG: "TGU", MGGT: "GUA",
+  MSLP: "SAL", MNMG: "MGA", MPTO: "PTY",
+  // Bermuda
+  TXKF: "BDA",
+  // Bahamas
+  MYGF: "FPO", MYEH: "ELH",
+};
+
+function icaoToIata(code: string): string {
+  // Check lookup table first (international)
+  if (ICAO_TO_IATA[code]) return ICAO_TO_IATA[code];
+  // US airports: strip K prefix (KIAH → IAH)
+  if (code.length === 4 && code.startsWith("K")) return code.slice(1);
+  // Already IATA or unknown — return as-is
+  return code;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

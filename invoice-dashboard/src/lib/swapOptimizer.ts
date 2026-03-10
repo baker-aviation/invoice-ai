@@ -276,7 +276,17 @@ function findAllCommercialAirports(fboIcao: string, aliases: AirportAlias[]): st
   return sorted.map((a) => a.commercial_icao);
 }
 
+const ICAO_IATA: Record<string, string> = {
+  CYYZ: "YYZ", CYUL: "YUL", CYVR: "YVR", CYOW: "YOW", CYYC: "YYC",
+  CYEG: "YEG", CYWG: "YWG", CYHZ: "YHZ", CYQB: "YQB",
+  MMMX: "MEX", MMUN: "CUN", MMMY: "MTY", MMGL: "GDL", MMSD: "SJD",
+  MBPV: "MHH", MYNN: "NAS", MKJP: "KIN", TJSJ: "SJU", TNCM: "SXM",
+  MROC: "SJO", MRLB: "LIR", MHTG: "TGU", MGGT: "GUA", MPTO: "PTY",
+  TXKF: "BDA", MYGF: "FPO",
+};
+
 function toIata(icao: string): string {
+  if (ICAO_IATA[icao]) return ICAO_IATA[icao];
   return icao.length === 4 && icao.startsWith("K") ? icao.slice(1) : icao;
 }
 
