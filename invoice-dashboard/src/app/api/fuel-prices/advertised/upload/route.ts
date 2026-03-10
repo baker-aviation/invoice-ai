@@ -68,7 +68,11 @@ export async function POST(req: NextRequest) {
   if (format === "baker") {
     // Baker/AEG Fuels format
     detectedVendor = "AEG Fuels";
-    const weekStart = resolveWeekStart(weekStartRaw, file.name);
+    let weekStart = resolveWeekStart(weekStartRaw, file.name);
+    if (!weekStart) {
+      // Fallback: use the most recent UPDATED date from the CSV rows
+      weekStart = extractMostRecentDate(lines, headerFields, "UPDATED");
+    }
     if (!weekStart) {
       return NextResponse.json({ error: "Could not determine week_start — please provide it" }, { status: 400 });
     }
@@ -82,13 +86,16 @@ export async function POST(req: NextRequest) {
     }
     rows = parseEverestCSV(lines, headerFields, vendorOverride ?? detectedVendor, weekStart, batchId);
   } else if (format === "wfs") {
-    // World Fuel Services format — each row has its own Exp Date
+    // World Fuel Services format — use filename date as week_start (per-row Exp Date may be stale)
     detectedVendor = "World Fuel Services";
-    rows = parseWfsCSV(lines, headerFields, vendorOverride ?? detectedVendor, weekStartRaw, batchId);
+    const wfsWeekStart = resolveWeekStart(weekStartRaw, file.name);
+    rows = parseWfsCSV(lines, headerFields, vendorOverride ?? detectedVendor, wfsWeekStart ?? weekStartRaw, batchId);
   } else if (format === "avfuel") {
-    // Avfuel/BAKAV format — each row has its own EFF DATE
+    // Avfuel/BAKAV format — use filename date as week_start so all rows share the same week
+    // (individual EFF DATEs may be stale if pricing hasn't changed)
     detectedVendor = "Avfuel";
-    rows = parseAvfuelCSV(lines, headerFields, vendorOverride ?? detectedVendor, weekStartRaw, batchId);
+    const avfuelWeekStart = resolveWeekStart(weekStartRaw, file.name);
+    rows = parseAvfuelCSV(lines, headerFields, vendorOverride ?? detectedVendor, avfuelWeekStart ?? weekStartRaw, batchId);
   } else if (format === "titan") {
     // Titan Fuels format — no date column, extract from filename
     detectedVendor = "Titan Fuels";
@@ -106,11 +113,11 @@ export async function POST(req: NextRequest) {
     }
     rows = parseSignatureCSV(lines, headerFields, vendorOverride ?? detectedVendor, weekStart, batchId);
   } else if (format === "jet_aviation") {
-    // Jet Aviation format — no date column, extract from filename or default to current week
+    // Jet Aviation format — no date column, extract from filename or require week_start
     detectedVendor = "Jet Aviation";
-    const weekStart = resolveWeekStart(weekStartRaw, file.name) ?? normalizeToMonday(new Date().toISOString().split("T")[0]);
+    const weekStart = resolveWeekStart(weekStartRaw, file.name);
     if (!weekStart) {
-      return NextResponse.json({ error: "Could not determine week_start — please provide it" }, { status: 400 });
+      return NextResponse.json({ error: "Could not determine week_start from filename — please provide the 'Week Starting' date" }, { status: 400 });
     }
     rows = parseJetAviationCSV(lines, headerFields, vendorOverride ?? detectedVendor, weekStart, batchId);
   } else {
@@ -229,6 +236,18 @@ function extractDateFromFilename(name: string): string | null {
     const d = new Date(`${yyyy}-${mm.padStart(2, "0")}-${dd.padStart(2, "0")}T12:00:00`);
     if (!isNaN(d.getTime())) return d.toISOString().split("T")[0];
   }
+  // MMDDYY (6-digit, e.g. "030726" = 03/07/26 → 2026-03-07, "031026" = 03/10/26)
+  // Match 6-digit sequences that aren't part of a longer number
+  const mmddyy = name.match(/(?<!\d)(\d{2})(\d{2})(\d{2})(?!\d)/);
+  if (mmddyy) {
+    const [, mm2, dd2, yy] = mmddyy;
+    const month = Number(mm2);
+    const day = Number(dd2);
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      const d = new Date(`20${yy}-${mm2}-${dd2}T12:00:00`);
+      if (!isNaN(d.getTime())) return d.toISOString().split("T")[0];
+    }
+  }
   return null;
 }
 
@@ -237,6 +256,21 @@ function resolveWeekStart(raw: string | null, filename: string): string | null {
   const dateStr = raw || extractDateFromFilename(filename);
   if (!dateStr) return null;
   return normalizeToMonday(dateStr);
+}
+
+/** Extract the most recent date from a named column across all CSV rows, normalized to Monday */
+function extractMostRecentDate(lines: string[], headers: string[], colName: string): string | null {
+  const idx = headers.indexOf(colName);
+  if (idx < 0) return null;
+  let latest: string | null = null;
+  for (let i = 1; i < lines.length; i++) {
+    const fields = parseCSVLine(lines[i]);
+    const raw = fields[idx]?.trim();
+    if (!raw) continue;
+    const iso = parseDate(raw);
+    if (iso && (!latest || iso > latest)) latest = iso;
+  }
+  return latest ? normalizeToMonday(latest) : null;
 }
 
 // --- Baker/AEG Fuels parser ---

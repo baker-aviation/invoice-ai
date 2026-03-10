@@ -582,6 +582,7 @@ export default function FuelPricesTable({
   const [viewMode, setViewMode] = useState<ViewMode>("all");
   const [showImportModal, setShowImportModal] = useState(false);
   const [volumeGallons, setVolumeGallons] = useState<string>("");
+  const [compareJetFbo, setCompareJetFbo] = useState(false);
 
   // Document IDs that serve as baselines for other rows
   const baselineDocIds = useMemo(() => {
@@ -815,6 +816,29 @@ export default function FuelPricesTable({
       rows = rows.filter((r) => variants.has(r.airport));
     }
     if (vendorFilter) rows = rows.filter((r) => r.fboVendor === vendorFilter);
+    if (compareJetFbo) {
+      // Match rows where the FBO (by vendor or fboName) is Jet Aviation, Atlantic, or Signature
+      function isTargetFbo(r: AdvVsActualRow): boolean {
+        const vendor = r.fboVendor.toLowerCase();
+        const fbo = (r.fboName ?? "").toLowerCase();
+        // Direct vendor match
+        if (vendor === "jet aviation" || vendor === "signature flight support") return true;
+        // FBO name contains target names (e.g. WFS "JET AVIATION" FBO, Avfuel "Atlantic Aviation")
+        if (fbo.includes("jet aviation") || fbo.includes("atlantic") || fbo.includes("signature")) return true;
+        return false;
+      }
+      // Find airports where Jet Aviation has pricing (by vendor or FBO name)
+      const jetAirports = new Set(
+        rows
+          .filter((r) => {
+            const vendor = r.fboVendor.toLowerCase();
+            const fbo = (r.fboName ?? "").toLowerCase();
+            return vendor === "jet aviation" || fbo.includes("jet aviation");
+          })
+          .map((r) => r.airport),
+      );
+      rows = rows.filter((r) => jetAirports.has(r.airport) && isTargetFbo(r));
+    }
     if (search) {
       const q = search.toLowerCase();
       rows = rows.filter((r) =>
@@ -824,7 +848,19 @@ export default function FuelPricesTable({
       );
     }
     return rows;
-  }, [advVsActual, airportFilter, vendorFilter, search]);
+  }, [advVsActual, airportFilter, vendorFilter, search, compareJetFbo]);
+
+  // Cheapest price per airport in the current filtered view
+  const cheapestByAirport = useMemo(() => {
+    const best = new Map<string, number>();
+    for (const r of filteredAdvVsActual) {
+      const existing = best.get(r.airport);
+      if (existing == null || r.currentPrice < existing) {
+        best.set(r.airport, r.currentPrice);
+      }
+    }
+    return best;
+  }, [filteredAdvVsActual]);
 
   const pageRows = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
@@ -943,14 +979,28 @@ export default function FuelPricesTable({
         )}
 
         {viewMode === "advertised" && (
-          <input
-            type="number"
-            placeholder="Gallons (e.g. 500)"
-            value={volumeGallons}
-            onChange={(e) => { setVolumeGallons(e.target.value); setPage(0); }}
-            className="rounded-md border px-3 py-1.5 text-sm bg-white w-44"
-            min={1}
-          />
+          <>
+            <input
+              type="number"
+              placeholder="Gallons (e.g. 500)"
+              value={volumeGallons}
+              onChange={(e) => { setVolumeGallons(e.target.value); setPage(0); }}
+              className="rounded-md border px-3 py-1.5 text-sm bg-white w-44"
+              min={1}
+            />
+            <button
+              type="button"
+              onClick={() => { setCompareJetFbo((v) => !v); setPage(0); }}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md border transition-colors ${
+                compareJetFbo
+                  ? "bg-indigo-100 text-indigo-800 border-indigo-300"
+                  : "bg-white text-gray-600 border-gray-200 hover:border-gray-400 hover:bg-gray-50"
+              }`}
+              title="Compare Jet Aviation, Atlantic, and Signature at airports where Jet Aviation has pricing"
+            >
+              Compare FBOs
+            </button>
+          </>
         )}
 
         <input
@@ -1381,11 +1431,13 @@ export default function FuelPricesTable({
                     : "text-red-600";
                   const overActual = row.vsActualPct != null && row.vsActualPct > 2;
                   const underActual = row.vsActualPct != null && row.vsActualPct < -2;
+                  const airportHasMultiple = filteredAdvVsActual.filter((r) => r.airport === row.airport).length > 1;
+                  const isCheapest = airportHasMultiple && cheapestByAirport.get(row.airport) === row.currentPrice;
                   return (
                     <tr
                       key={row.key}
                       className={`hover:bg-gray-50 ${
-                        overActual ? "bg-red-50/60" : underActual ? "bg-green-50/60" : ""
+                        isCheapest ? "bg-green-50/70" : overActual ? "bg-red-50/60" : underActual ? "bg-green-50/60" : ""
                       }`}
                     >
                       <td className="px-4 py-2.5 whitespace-nowrap font-semibold">{row.airport}</td>
@@ -1396,19 +1448,26 @@ export default function FuelPricesTable({
                       <td className="px-4 py-2.5 whitespace-nowrap text-xs text-gray-500">{row.volumeTier}</td>
                       <td className="px-4 py-2.5 text-xs text-gray-500 max-w-[120px] truncate" title={row.tailNumbers || "All"}>{row.tailNumbers || "All"}</td>
                       <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono font-medium text-purple-700">
-                        {fmt$(row.currentPrice)}
+                        <span className={isCheapest ? "inline-flex items-center gap-1" : ""}>
+                          {fmt$(row.currentPrice)}
+                          {isCheapest && <span className="text-[9px] font-semibold px-1 py-0.5 rounded bg-green-200 text-green-800">BEST</span>}
+                        </span>
                       </td>
                       <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono text-gray-400">
                         {row.prevPrice != null ? fmt$(row.prevPrice) : <span className="text-gray-300">{"\u2014"}</span>}
                       </td>
                       <td className="px-4 py-2.5 whitespace-nowrap text-right">
                         {row.wowChange != null ? (
-                          <span className={`font-mono text-xs font-medium ${wowColor}`}>
-                            {row.wowChange > 0 ? "+" : ""}{row.wowChange.toFixed(4)}
-                            <span className="text-[10px] ml-0.5 opacity-70">
-                              ({row.wowChangePct! >= 0 ? "+" : ""}{row.wowChangePct}%)
+                          absWow === 0 ? (
+                            <span className="text-xs text-gray-400 font-medium">No Change</span>
+                          ) : (
+                            <span className={`font-mono text-xs font-medium ${wowColor}`}>
+                              {row.wowChange > 0 ? "+" : ""}{row.wowChange.toFixed(4)}
+                              <span className="text-[10px] ml-0.5 opacity-70">
+                                ({row.wowChangePct! >= 0 ? "+" : ""}{row.wowChangePct}%)
+                              </span>
                             </span>
-                          </span>
+                          )
                         ) : (
                           <span className="text-gray-300 text-xs">{"\u2014"}</span>
                         )}

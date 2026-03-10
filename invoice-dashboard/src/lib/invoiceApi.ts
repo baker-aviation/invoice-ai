@@ -351,7 +351,7 @@ export async function fetchAdvertisedPrices(): Promise<AdvertisedPriceRow[]> {
     const { data, error } = await supa
       .from("fbo_advertised_prices")
       .select("*")
-      .order("week_start", { ascending: false })
+      .order("id", { ascending: true })
       .range(from, from + pageSize - 1);
     if (error) throw new Error(`fetchAdvertisedPrices failed: ${error.message}`);
     if (!data || data.length === 0) break;
