@@ -1453,11 +1453,20 @@ export default function FuelPricesTable({
                       </td>
                       <td className="px-4 py-2.5 whitespace-nowrap text-xs text-gray-500">{row.volumeTier}</td>
                       <td className="px-4 py-2.5 text-xs text-gray-500 max-w-[120px] truncate" title={row.tailNumbers || "All"}>{row.tailNumbers || "All"}</td>
-                      <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono font-medium text-purple-700">
-                        <span className={isCheapest ? "inline-flex items-center gap-1" : ""}>
-                          {fmt$(row.currentPrice)}
-                          {isCheapest && <span className="text-[9px] font-semibold px-1 py-0.5 rounded bg-green-200 text-green-800">BEST</span>}
-                        </span>
+                      <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono font-medium">
+                        {(() => {
+                          const weekDate = new Date(row.currentWeek + "T12:00:00");
+                          const now = new Date();
+                          const diffDays = Math.floor((now.getTime() - weekDate.getTime()) / 86400000);
+                          const isStale = diffDays > 6;
+                          return (
+                            <span className={`${isCheapest ? "inline-flex items-center gap-1" : ""} ${isStale ? "text-amber-600" : "text-green-700"}`}>
+                              {fmt$(row.currentPrice)}
+                              {isStale && <span className="text-[9px] ml-1 opacity-70">({fmtDate(row.currentWeek)})</span>}
+                              {isCheapest && <span className="text-[9px] font-semibold px-1 py-0.5 rounded bg-green-200 text-green-800">BEST</span>}
+                            </span>
+                          );
+                        })()}
                       </td>
                       <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono text-gray-400">
                         {row.prevPrice != null ? fmt$(row.prevPrice) : <span className="text-gray-300">{"\u2014"}</span>}
