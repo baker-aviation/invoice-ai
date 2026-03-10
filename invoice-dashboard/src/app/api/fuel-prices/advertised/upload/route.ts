@@ -129,13 +129,17 @@ export async function POST(req: NextRequest) {
   const supa = createServiceClient();
   const vendor = vendorOverride ?? detectedVendor ?? "";
 
-  // Delete old records for this vendor before inserting fresh data
-  const { error: delError } = await supa
-    .from("fbo_advertised_prices")
-    .delete()
-    .eq("fbo_vendor", vendor);
-  if (delError) {
-    console.error("[advertised/upload] Delete old records failed:", delError);
+  // Delete old records for this vendor + week_start(s) being uploaded (preserve other weeks)
+  const weekStarts = [...new Set(rows.map((r) => r.week_start))];
+  for (const ws of weekStarts) {
+    const { error: delError } = await supa
+      .from("fbo_advertised_prices")
+      .delete()
+      .eq("fbo_vendor", vendor)
+      .eq("week_start", ws);
+    if (delError) {
+      console.error(`[advertised/upload] Delete old records failed for ${vendor} week ${ws}:`, delError);
+    }
   }
 
   // Insert in batches of 500
