@@ -127,7 +127,12 @@ export async function POST(req: NextRequest) {
   }
 
   const supa = createServiceClient();
-  const vendor = vendorOverride ?? detectedVendor ?? "";
+  const vendor = normalizeVendorName(vendorOverride ?? detectedVendor ?? "");
+
+  // Normalize fbo_vendor in all rows to the canonical name
+  for (const row of rows) {
+    row.fbo_vendor = vendor;
+  }
 
   // Delete old records for this vendor + week_start(s) being uploaded (preserve other weeks)
   const weekStarts = [...new Set(rows.map((r) => r.week_start))];
@@ -663,6 +668,25 @@ function parseCSVLine(line: string): string[] {
   }
   fields.push(current.trim());
   return fields;
+}
+
+/** Normalize common vendor name aliases to canonical names */
+const VENDOR_ALIASES: Record<string, string> = {
+  "signature": "Signature Flight Support",
+  "sig": "Signature Flight Support",
+  "sfs": "Signature Flight Support",
+  "aeg": "AEG Fuels",
+  "aeg fuels": "AEG Fuels",
+  "wfs": "World Fuel Services",
+  "world fuel": "World Fuel Services",
+  "everest": "Everest Fuel",
+  "titan": "Titan Fuels",
+  "jet aviation": "Jet Aviation",
+  "avfuel": "Avfuel",
+};
+
+function normalizeVendorName(vendor: string): string {
+  return VENDOR_ALIASES[vendor.toLowerCase().trim()] ?? vendor;
 }
 
 function parsePrice(raw: string): number | null {
