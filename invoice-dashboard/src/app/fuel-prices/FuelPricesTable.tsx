@@ -286,6 +286,12 @@ function buildAdvVsActual(
   advertisedPrices: AdvertisedPriceRow[],
   volumeGallons: number | null,
 ): AdvVsActualRow[] {
+  // Strip leading K from US ICAO codes: KTEB→TEB, KHOU→HOU
+  function normAirport(code: string): string {
+    const up = code.toUpperCase();
+    return up.length === 4 && up.startsWith("K") ? up.slice(1) : up;
+  }
+
   // Normalize airport codes: KTEB↔TEB, KHOU↔HOU etc.
   // Returns all variants to check (e.g. ["KTEB","TEB"] or ["TEB","KTEB"])
   function airportVariants(code: string): string[] {
@@ -336,7 +342,7 @@ function buildAdvVsActual(
   const sortedAdv = [...filteredAdv].sort((a, b) => a.price - b.price);
   for (const adv of sortedAdv) {
     const fbo = extractFboName(adv.product) ?? "";
-    const wk = `${adv.fbo_vendor}|${adv.airport_code}|${fbo}|${adv.week_start}`;
+    const wk = `${adv.fbo_vendor}|${normAirport(adv.airport_code)}|${fbo}|${adv.week_start}`;
     if (!seenByWeek.has(wk)) {
       seenByWeek.set(wk, adv);
       dedupedAdv.push(adv);
@@ -346,7 +352,7 @@ function buildAdvVsActual(
   const advByIdentity = new Map<string, AdvertisedPriceRow[]>();
   for (const adv of dedupedAdv) {
     const fbo = extractFboName(adv.product) ?? "";
-    const key = `${adv.fbo_vendor}|${adv.airport_code}|${fbo}`;
+    const key = `${adv.fbo_vendor}|${normAirport(adv.airport_code)}|${fbo}`;
     if (!advByIdentity.has(key)) advByIdentity.set(key, []);
     advByIdentity.get(key)!.push(adv);
   }
@@ -403,7 +409,9 @@ function buildAdvVsActual(
 
     rows.push({
       key: `${latest.id}`,
-      airport: latest.airport_code,
+      airport: latest.airport_code.length === 4 && latest.airport_code.startsWith("K")
+        ? latest.airport_code.slice(1)
+        : latest.airport_code,
       fboVendor: latest.fbo_vendor,
       fboName: extractFboName(latest.product),
       volumeTier: latest.volume_tier,
