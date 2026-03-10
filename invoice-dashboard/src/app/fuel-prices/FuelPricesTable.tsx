@@ -244,6 +244,15 @@ function lookupBestRate(
   return best ? { price: best.price, vendor: best.fbo_vendor } : null;
 }
 
+/** Check if a gallon amount falls within a volume tier like "1-300" or "1201+" */
+function tierMatchesVolume(tier: string, gallons: number): boolean {
+  const plusMatch = tier.match(/^(\d+)\+$/);
+  if (plusMatch) return gallons >= parseInt(plusMatch[1], 10);
+  const rangeMatch = tier.match(/^(\d+)-(\d+)$/);
+  if (rangeMatch) return gallons >= parseInt(rangeMatch[1], 10) && gallons <= parseInt(rangeMatch[2], 10);
+  return true;
+}
+
 // ─── Advertised vs Actual comparison builder ─────────────────────────────────
 
 type AdvVsActualRow = {
@@ -268,6 +277,7 @@ type AdvVsActualRow = {
 function buildAdvVsActual(
   prices: FuelPriceRow[],
   advertisedPrices: AdvertisedPriceRow[],
+  volumeGallons: number | null,
 ): AdvVsActualRow[] {
   // Normalize airport codes: KTEB↔TEB, KHOU↔HOU etc.
   // Returns all variants to check (e.g. ["KTEB","TEB"] or ["TEB","KTEB"])
@@ -306,13 +316,17 @@ function buildAdvVsActual(
     }
   }
 
-  // Group advertised by vendor+airport — skip tail-specific rows, collapse tiers
-  // For each (vendor, airport, week), keep only the lowest-priced tier
+  // Group advertised by vendor+airport — skip tail-specific rows, filter by volume tier
+  let filteredAdv = advertisedPrices.filter((a) => !a.tail_numbers);
+  if (volumeGallons && volumeGallons > 0) {
+    // Keep only tiers that match the selected volume
+    const volumeFiltered = filteredAdv.filter((a) => tierMatchesVolume(a.volume_tier, volumeGallons));
+    if (volumeFiltered.length > 0) filteredAdv = volumeFiltered;
+  }
+  // For each (vendor, airport, week), keep only the best-matching tier
   const dedupedAdv: AdvertisedPriceRow[] = [];
   const seenByWeek = new Map<string, AdvertisedPriceRow>();
-  const sortedAdv = [...advertisedPrices]
-    .filter((a) => !a.tail_numbers)
-    .sort((a, b) => a.price - b.price); // lowest price first
+  const sortedAdv = [...filteredAdv].sort((a, b) => a.price - b.price);
   for (const adv of sortedAdv) {
     const wk = `${adv.fbo_vendor}|${adv.airport_code}|${adv.week_start}`;
     if (!seenByWeek.has(wk)) {
@@ -549,6 +563,7 @@ export default function FuelPricesTable({
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
   const [viewMode, setViewMode] = useState<ViewMode>("all");
   const [showImportModal, setShowImportModal] = useState(false);
+  const [volumeGallons, setVolumeGallons] = useState<string>("");
 
   // Document IDs that serve as baselines for other rows
   const baselineDocIds = useMemo(() => {
@@ -670,9 +685,10 @@ export default function FuelPricesTable({
   }, [advertisedPrices]);
 
   // Advertised vs Actual comparison rows
+  const parsedGallons = volumeGallons ? parseInt(volumeGallons, 10) : null;
   const advVsActual = useMemo(
-    () => buildAdvVsActual(initialPrices, advertisedPrices),
-    [initialPrices, advertisedPrices],
+    () => buildAdvVsActual(initialPrices, advertisedPrices, parsedGallons),
+    [initialPrices, advertisedPrices, parsedGallons],
   );
 
   // Latest invoice per airport (for linking from Adv vs Actual tab)
@@ -866,6 +882,17 @@ export default function FuelPricesTable({
               <option key={v} value={v}>{v}</option>
             ))}
           </select>
+        )}
+
+        {viewMode === "advertised" && (
+          <input
+            type="number"
+            placeholder="Gallons (e.g. 500)"
+            value={volumeGallons}
+            onChange={(e) => { setVolumeGallons(e.target.value); setPage(0); }}
+            className="rounded-md border px-3 py-1.5 text-sm bg-white w-44"
+            min={1}
+          />
         )}
 
         <input
