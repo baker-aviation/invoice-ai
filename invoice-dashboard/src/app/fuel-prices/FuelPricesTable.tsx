@@ -850,9 +850,8 @@ export default function FuelPricesTable({
     return rows;
   }, [advVsActual, airportFilter, vendorFilter, search, compareJetFbo]);
 
-  // Cheapest price per airport (for Compare FBOs highlighting)
+  // Cheapest price per airport in the current filtered view
   const cheapestByAirport = useMemo(() => {
-    if (!compareJetFbo) return new Map<string, number>();
     const best = new Map<string, number>();
     for (const r of filteredAdvVsActual) {
       const existing = best.get(r.airport);
@@ -861,7 +860,7 @@ export default function FuelPricesTable({
       }
     }
     return best;
-  }, [filteredAdvVsActual, compareJetFbo]);
+  }, [filteredAdvVsActual]);
 
   const pageRows = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
@@ -1432,7 +1431,8 @@ export default function FuelPricesTable({
                     : "text-red-600";
                   const overActual = row.vsActualPct != null && row.vsActualPct > 2;
                   const underActual = row.vsActualPct != null && row.vsActualPct < -2;
-                  const isCheapest = compareJetFbo && cheapestByAirport.get(row.airport) === row.currentPrice;
+                  const airportHasMultiple = filteredAdvVsActual.filter((r) => r.airport === row.airport).length > 1;
+                  const isCheapest = airportHasMultiple && cheapestByAirport.get(row.airport) === row.currentPrice;
                   return (
                     <tr
                       key={row.key}
