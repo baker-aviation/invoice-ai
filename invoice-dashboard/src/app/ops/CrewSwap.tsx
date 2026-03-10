@@ -155,6 +155,278 @@ const FLIGHT_TYPE_COLORS: Record<string, string> = {
 
 // ─── Component ──────────────────────────────────────────────────────────────
 
+// ─── Swap Sheet View (Excel-like) ────────────────────────────────────────────
+
+const AIRCRAFT_BADGE: Record<string, { label: string; cls: string }> = {
+  citation_x: { label: "Cit X", cls: "bg-green-100 text-green-700" },
+  challenger: { label: "CL", cls: "bg-yellow-100 text-yellow-700" },
+  dual: { label: "Dual", cls: "bg-purple-100 text-purple-700" },
+};
+
+function CrewRow({ crew, tail, direction }: {
+  crew: CrewMember | null;
+  tail: string;
+  direction: "oncoming" | "offgoing";
+}) {
+  if (!crew) return null;
+  const dirColor = direction === "oncoming" ? "text-green-600" : "text-red-600";
+  return (
+    <tr className="hover:bg-gray-50 border-b border-gray-100">
+      <td className="px-3 py-1.5 text-sm font-medium text-gray-900">{crew.name}</td>
+      <td className="px-3 py-1.5">
+        <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+          crew.role === "PIC" ? "bg-blue-100 text-blue-700" : "bg-purple-100 text-purple-700"
+        }`}>{crew.role}</span>
+      </td>
+      <td className="px-3 py-1.5 font-mono text-xs text-gray-600">
+        {crew.home_airports?.join("/") ?? "—"}
+      </td>
+      <td className="px-3 py-1.5 font-mono text-xs font-bold text-gray-800">{tail}</td>
+      <td className="px-3 py-1.5">
+        <span className={`text-xs font-medium ${dirColor}`}>
+          {direction === "oncoming" ? "ON" : "OFF"}
+        </span>
+      </td>
+      <td className="px-3 py-1.5">
+        <div className="flex gap-1">
+          {crew.aircraft_types?.map((t) => {
+            const b = AIRCRAFT_BADGE[t];
+            return b ? (
+              <span key={t} className={`text-[10px] px-1 py-0.5 rounded ${b.cls}`}>{b.label}</span>
+            ) : (
+              <span key={t} className="text-[10px] px-1 py-0.5 rounded bg-gray-100 text-gray-600">{t}</span>
+            );
+          })}
+        </div>
+      </td>
+      <td className="px-3 py-1.5">
+        <div className="flex gap-1">
+          {crew.is_checkairman && <span className="text-[10px] px-1 py-0.5 rounded bg-amber-100 text-amber-700">CA</span>}
+          {crew.is_skillbridge && <span className="text-[10px] px-1 py-0.5 rounded bg-teal-100 text-teal-700">SB</span>}
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+function SwapSheet({ plans, unassigned }: { plans: TailSwapPlan[]; unassigned: CrewMember[] }) {
+  // Build rows grouped by section
+  type Row = { crew: CrewMember; tail: string; direction: "oncoming" | "offgoing" };
+  const oncomingPics: Row[] = [];
+  const oncomingSics: Row[] = [];
+  const offgoingPics: Row[] = [];
+  const offgoingSics: Row[] = [];
+
+  for (const plan of plans) {
+    if (plan.oncoming_pic) oncomingPics.push({ crew: plan.oncoming_pic, tail: plan.tail_number, direction: "oncoming" });
+    if (plan.oncoming_sic) oncomingSics.push({ crew: plan.oncoming_sic, tail: plan.tail_number, direction: "oncoming" });
+    if (plan.offgoing_pic) offgoingPics.push({ crew: plan.offgoing_pic, tail: plan.tail_number, direction: "offgoing" });
+    if (plan.offgoing_sic) offgoingSics.push({ crew: plan.offgoing_sic, tail: plan.tail_number, direction: "offgoing" });
+  }
+
+  const SectionHeader = ({ title, count, color }: { title: string; count: number; color: string }) => (
+    <tr>
+      <td colSpan={7} className={`px-3 py-2 text-xs font-bold uppercase tracking-wider ${color}`}>
+        {title} ({count})
+      </td>
+    </tr>
+  );
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead className="bg-gray-50 text-left text-[10px] text-gray-500 uppercase tracking-wider">
+          <tr>
+            <th className="px-3 py-2 w-48">Name</th>
+            <th className="px-3 py-2 w-16">Role</th>
+            <th className="px-3 py-2 w-24">Home</th>
+            <th className="px-3 py-2 w-24">Aircraft</th>
+            <th className="px-3 py-2 w-12">Dir</th>
+            <th className="px-3 py-2 w-24">Type</th>
+            <th className="px-3 py-2 w-16">Flags</th>
+          </tr>
+        </thead>
+        <tbody>
+          <SectionHeader title="Oncoming Pilots — PIC" count={oncomingPics.length} color="bg-green-50 text-green-700" />
+          {oncomingPics.map((r, i) => <CrewRow key={`op-${i}`} crew={r.crew} tail={r.tail} direction={r.direction} />)}
+
+          <SectionHeader title="Oncoming Pilots — SIC" count={oncomingSics.length} color="bg-green-50 text-green-600" />
+          {oncomingSics.map((r, i) => <CrewRow key={`os-${i}`} crew={r.crew} tail={r.tail} direction={r.direction} />)}
+
+          <SectionHeader title="Offgoing Pilots — PIC" count={offgoingPics.length} color="bg-red-50 text-red-700" />
+          {offgoingPics.map((r, i) => <CrewRow key={`fp-${i}`} crew={r.crew} tail={r.tail} direction={r.direction} />)}
+
+          <SectionHeader title="Offgoing Pilots — SIC" count={offgoingSics.length} color="bg-red-50 text-red-600" />
+          {offgoingSics.map((r, i) => <CrewRow key={`fs-${i}`} crew={r.crew} tail={r.tail} direction={r.direction} />)}
+        </tbody>
+      </table>
+
+      {/* Unassigned */}
+      {unassigned.length > 0 && (
+        <div className="px-3 py-3 border-t bg-amber-50">
+          <div className="text-[10px] font-bold text-amber-700 uppercase mb-1.5">
+            Unassigned ({unassigned.length})
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {unassigned.map((c) => (
+              <span key={c.id} className="text-xs px-2 py-0.5 rounded-full bg-white text-amber-700 border border-amber-200">
+                {c.name} <span className="text-amber-400">({c.role})</span>
+                {c.home_airports?.length > 0 && (
+                  <span className="text-amber-400 ml-0.5">[{c.home_airports.join("/")}]</span>
+                )}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Details View (transport + scoring) ──────────────────────────────────────
+
+function SwapDetails({ plans, unassigned }: { plans: TailSwapPlan[]; unassigned: CrewMember[] }) {
+  return (
+    <div className="divide-y">
+      {plans.map((plan) => (
+        <div key={plan.tail_number} className="px-4 py-3">
+          <div className="flex items-center gap-3 mb-2">
+            <span className="font-mono font-bold text-gray-900">{plan.tail_number}</span>
+            {plan.aircraft_type && (() => {
+              const b = AIRCRAFT_BADGE[plan.aircraft_type];
+              return b ? <span className={`text-xs px-1.5 py-0.5 rounded ${b.cls}`}>{b.label}</span> : null;
+            })()}
+            <span className="text-xs text-gray-400">{plan.wednesday_legs.length} legs on Wed</span>
+          </div>
+
+          {/* Crew */}
+          <div className="grid grid-cols-2 gap-4 mb-3">
+            <div className="text-sm">
+              <span className="text-red-600 font-medium text-xs uppercase">Offgoing</span>
+              <div className="mt-0.5">
+                <span className="text-gray-700">{plan.offgoing_pic?.name ?? "—"}</span>
+                <span className="text-gray-400 text-xs ml-1">(PIC)</span>
+                {plan.offgoing_pic?.home_airports && (
+                  <span className="text-gray-400 text-xs ml-1">[{plan.offgoing_pic.home_airports.join("/")}]</span>
+                )}
+                {plan.offgoing_sic && (
+                  <>
+                    <span className="text-gray-300 mx-1">/</span>
+                    <span className="text-gray-700">{plan.offgoing_sic.name}</span>
+                    <span className="text-gray-400 text-xs ml-1">(SIC)</span>
+                    {plan.offgoing_sic.home_airports && (
+                      <span className="text-gray-400 text-xs ml-1">[{plan.offgoing_sic.home_airports.join("/")}]</span>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+            <div className="text-sm">
+              <span className="text-green-600 font-medium text-xs uppercase">Oncoming</span>
+              <div className="mt-0.5">
+                <span className="text-gray-700 font-medium">{plan.oncoming_pic?.name ?? "—"}</span>
+                <span className="text-gray-400 text-xs ml-1">(PIC)</span>
+                {plan.oncoming_pic?.home_airports && (
+                  <span className="text-gray-400 text-xs ml-1">[{plan.oncoming_pic.home_airports.join("/")}]</span>
+                )}
+                {plan.oncoming_sic && (
+                  <>
+                    <span className="text-gray-300 mx-1">/</span>
+                    <span className="text-gray-700 font-medium">{plan.oncoming_sic.name}</span>
+                    <span className="text-gray-400 text-xs ml-1">(SIC)</span>
+                    {plan.oncoming_sic.home_airports && (
+                      <span className="text-gray-400 text-xs ml-1">[{plan.oncoming_sic.home_airports.join("/")}]</span>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Best swap option */}
+          {plan.options.length > 0 && (() => {
+            const opt = plan.options[0];
+            return (
+              <div className="rounded-lg border border-green-200 bg-green-50 p-3 text-sm">
+                <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono font-bold">{opt.swap_airport}</span>
+                    {opt.swap_airport !== opt.commercial_airport && (
+                      <span className="text-xs text-gray-400">(comm: {opt.commercial_airport})</span>
+                    )}
+                    {opt.is_live_leg_adjacent && (
+                      <span className="text-xs px-1.5 py-0.5 rounded bg-green-100 text-green-700">Live Leg</span>
+                    )}
+                    {opt.gap_minutes > 0 && <span className="text-xs text-gray-400">{opt.gap_minutes}m gap</span>}
+                  </div>
+                  <span className={`text-xs font-bold px-2 py-0.5 rounded ${
+                    opt.score >= 70 ? "bg-green-100 text-green-700"
+                      : opt.score >= 50 ? "bg-yellow-100 text-yellow-700"
+                      : "bg-red-100 text-red-700"
+                  }`}>Score: {opt.score}</span>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <div className="text-[10px] font-medium text-green-600 uppercase mb-1">Oncoming Transport</div>
+                    {opt.oncoming_transport.length === 0 ? (
+                      <div className="text-xs text-gray-400 italic">No options found</div>
+                    ) : opt.oncoming_transport.map((t, j) => (
+                      <div key={j} className="text-xs text-gray-600 flex items-center gap-1.5 mb-0.5">
+                        <span className={`px-1 py-0.5 rounded text-[10px] font-medium ${
+                          t.type === "commercial_flight" ? "bg-blue-100 text-blue-600" : "bg-amber-100 text-amber-600"
+                        }`}>{t.type === "commercial_flight" ? "FLT" : "DRV"}</span>
+                        <span>{t.details}</span>
+                        <span className="text-gray-400">${Math.round(t.cost_estimate)}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div>
+                    <div className="text-[10px] font-medium text-red-600 uppercase mb-1">Offgoing Transport</div>
+                    {opt.offgoing_transport.length === 0 ? (
+                      <div className="text-xs text-gray-400 italic">No options found</div>
+                    ) : opt.offgoing_transport.map((t, j) => (
+                      <div key={j} className="text-xs text-gray-600 flex items-center gap-1.5 mb-0.5">
+                        <span className={`px-1 py-0.5 rounded text-[10px] font-medium ${
+                          t.type === "commercial_flight" ? "bg-blue-100 text-blue-600" : "bg-amber-100 text-amber-600"
+                        }`}>{t.type === "commercial_flight" ? "FLT" : "DRV"}</span>
+                        <span>{t.details}</span>
+                        <span className="text-gray-400">${Math.round(t.cost_estimate)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+
+          {plan.warnings.length > 0 && (
+            <div className="mt-2 space-y-1">
+              {plan.warnings.map((w, i) => (
+                <div key={i} className="text-xs text-amber-600 bg-amber-50 px-2 py-1 rounded">{w}</div>
+              ))}
+            </div>
+          )}
+        </div>
+      ))}
+
+      {unassigned.length > 0 && (
+        <div className="px-4 py-3">
+          <div className="text-xs font-medium text-gray-500 uppercase mb-2">Unassigned ({unassigned.length})</div>
+          <div className="flex flex-wrap gap-1.5">
+            {unassigned.map((c) => (
+              <span key={c.id} className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">
+                {c.name} ({c.role})
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Main Component ──────────────────────────────────────────────────────────
+
 export default function CrewSwap({ flights }: { flights: Flight[] }) {
   const [selectedWed, setSelectedWed] = useState<Date>(getNextWednesday());
   const [crew, setCrew] = useState<CrewMember[]>([]);
@@ -166,6 +438,7 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
   const [optimizing, setOptimizing] = useState(false);
   const [swapPlan, setSwapPlan] = useState<SwapPlanResult | null>(null);
   const [optimizeError, setOptimizeError] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<"sheet" | "details">("sheet");
 
   // Fetch crew roster
   const loadCrew = useCallback(async () => {
@@ -696,216 +969,39 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
         )}
 
         {swapPlan && (
-          <div className="divide-y">
-            {/* Summary bar */}
-            <div className="px-4 py-2 bg-green-50 text-sm text-green-700 flex items-center gap-4">
-              <span className="font-medium">
-                {swapPlan.plans.length} tails planned for {swapPlan.swap_date}
-              </span>
-              {swapPlan.commercial_flights_searched > 0 && (
-                <span className="text-green-500 text-xs">
-                  ({swapPlan.commercial_flights_searched} flight routes searched)
+          <div>
+            {/* Summary + view toggle */}
+            <div className="px-4 py-2 bg-green-50 border-b text-sm text-green-700 flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <span className="font-medium">
+                  {swapPlan.plans.length} tails planned for {swapPlan.swap_date}
                 </span>
-              )}
-              {swapPlan.unassigned_crew.length > 0 && (
-                <span className="text-amber-600 text-xs">
-                  {swapPlan.unassigned_crew.length} crew unassigned
-                </span>
-              )}
+                {swapPlan.commercial_flights_searched > 0 && (
+                  <span className="text-green-500 text-xs">
+                    ({swapPlan.commercial_flights_searched} routes searched)
+                  </span>
+                )}
+              </div>
+              <div className="flex gap-1">
+                <button
+                  onClick={() => setViewMode("sheet")}
+                  className={`px-2 py-1 text-xs rounded ${viewMode === "sheet" ? "bg-green-600 text-white" : "bg-white text-green-700 border border-green-300"}`}
+                >
+                  Swap Sheet
+                </button>
+                <button
+                  onClick={() => setViewMode("details")}
+                  className={`px-2 py-1 text-xs rounded ${viewMode === "details" ? "bg-green-600 text-white" : "bg-white text-green-700 border border-green-300"}`}
+                >
+                  Details
+                </button>
+              </div>
             </div>
 
-            {/* Per-tail plans */}
-            {swapPlan.plans.map((plan) => (
-              <div key={plan.tail_number} className="px-4 py-3">
-                {/* Tail header */}
-                <div className="flex items-center gap-3 mb-2">
-                  <span className="font-mono font-bold text-gray-900">{plan.tail_number}</span>
-                  {plan.aircraft_type && (
-                    <span className={`text-xs px-1.5 py-0.5 rounded ${
-                      plan.aircraft_type === "citation_x" ? "bg-green-100 text-green-700"
-                        : plan.aircraft_type === "challenger" ? "bg-yellow-100 text-yellow-700"
-                        : "bg-purple-100 text-purple-700"
-                    }`}>
-                      {plan.aircraft_type === "citation_x" ? "Cit X" : plan.aircraft_type === "challenger" ? "CL" : plan.aircraft_type}
-                    </span>
-                  )}
-                  <span className="text-xs text-gray-400">{plan.wednesday_legs.length} legs on Wed</span>
-                </div>
-
-                {/* Crew changeover */}
-                <div className="grid grid-cols-2 gap-4 mb-3">
-                  <div className="text-sm">
-                    <span className="text-red-600 font-medium text-xs uppercase">Offgoing</span>
-                    <div className="mt-0.5">
-                      <span className="text-gray-700">{plan.offgoing_pic?.name ?? "—"}</span>
-                      <span className="text-gray-400 text-xs ml-1">(PIC)</span>
-                      {plan.offgoing_pic?.home_airports && (
-                        <span className="text-gray-400 text-xs ml-1">
-                          [{plan.offgoing_pic.home_airports.join("/")}]
-                        </span>
-                      )}
-                      {plan.offgoing_sic && (
-                        <>
-                          <span className="text-gray-300 mx-1">/</span>
-                          <span className="text-gray-700">{plan.offgoing_sic.name}</span>
-                          <span className="text-gray-400 text-xs ml-1">(SIC)</span>
-                          {plan.offgoing_sic.home_airports && (
-                            <span className="text-gray-400 text-xs ml-1">
-                              [{plan.offgoing_sic.home_airports.join("/")}]
-                            </span>
-                          )}
-                        </>
-                      )}
-                    </div>
-                  </div>
-                  <div className="text-sm">
-                    <span className="text-green-600 font-medium text-xs uppercase">Oncoming</span>
-                    <div className="mt-0.5">
-                      <span className="text-gray-700 font-medium">{plan.oncoming_pic?.name ?? "—"}</span>
-                      <span className="text-gray-400 text-xs ml-1">(PIC)</span>
-                      {plan.oncoming_pic?.home_airports && (
-                        <span className="text-gray-400 text-xs ml-1">
-                          [{plan.oncoming_pic.home_airports.join("/")}]
-                        </span>
-                      )}
-                      {plan.oncoming_sic && (
-                        <>
-                          <span className="text-gray-300 mx-1">/</span>
-                          <span className="text-gray-700 font-medium">{plan.oncoming_sic.name}</span>
-                          <span className="text-gray-400 text-xs ml-1">(SIC)</span>
-                          {plan.oncoming_sic.home_airports && (
-                            <span className="text-gray-400 text-xs ml-1">
-                              [{plan.oncoming_sic.home_airports.join("/")}]
-                            </span>
-                          )}
-                        </>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Swap options (top 3) */}
-                {plan.options.length > 0 && (
-                  <div className="space-y-2">
-                    <div className="text-xs font-medium text-gray-500 uppercase">Swap Options (ranked)</div>
-                    {plan.options.slice(0, 3).map((opt, i) => (
-                      <div
-                        key={i}
-                        className={`rounded-lg border p-3 text-sm ${
-                          i === 0 ? "border-green-200 bg-green-50" : "border-gray-200 bg-gray-50"
-                        }`}
-                      >
-                        <div className="flex items-center justify-between mb-1">
-                          <div className="flex items-center gap-2">
-                            <span className="font-mono font-bold">{opt.swap_airport}</span>
-                            {opt.swap_airport !== opt.commercial_airport && (
-                              <span className="text-xs text-gray-400">
-                                (commercial: {opt.commercial_airport})
-                              </span>
-                            )}
-                            {opt.is_live_leg_adjacent && (
-                              <span className="text-xs px-1.5 py-0.5 rounded bg-green-100 text-green-700">
-                                Live Leg
-                              </span>
-                            )}
-                            {opt.gap_minutes > 0 && (
-                              <span className="text-xs text-gray-400">{opt.gap_minutes}m gap</span>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <span className={`text-xs font-bold px-2 py-0.5 rounded ${
-                              opt.score >= 70 ? "bg-green-100 text-green-700"
-                                : opt.score >= 50 ? "bg-yellow-100 text-yellow-700"
-                                : "bg-red-100 text-red-700"
-                            }`}>
-                              Score: {opt.score}
-                            </span>
-                          </div>
-                        </div>
-
-                        {/* Score breakdown */}
-                        <div className="flex gap-3 text-[10px] text-gray-400 mb-2">
-                          <span>Cost: {opt.score_breakdown.cost}</span>
-                          <span>Reliability: {opt.score_breakdown.reliability}</span>
-                          <span>Convenience: {opt.score_breakdown.convenience}</span>
-                          <span>Compliance: {opt.score_breakdown.compliance}</span>
-                        </div>
-
-                        {/* Transport options */}
-                        <div className="grid grid-cols-2 gap-3">
-                          <div>
-                            <div className="text-[10px] font-medium text-green-600 uppercase mb-1">Oncoming Transport</div>
-                            {opt.oncoming_transport.length === 0 ? (
-                              <div className="text-xs text-gray-400 italic">No options found</div>
-                            ) : (
-                              opt.oncoming_transport.map((t, j) => (
-                                <div key={j} className="text-xs text-gray-600 flex items-center gap-1.5 mb-0.5">
-                                  <span className={`px-1 py-0.5 rounded text-[10px] font-medium ${
-                                    t.type === "commercial_flight" ? "bg-blue-100 text-blue-600"
-                                      : t.type === "drive" ? "bg-amber-100 text-amber-600"
-                                      : "bg-purple-100 text-purple-600"
-                                  }`}>
-                                    {t.type === "commercial_flight" ? "FLT" : t.type === "drive" ? "DRV" : "POS"}
-                                  </span>
-                                  <span>{t.details}</span>
-                                  <span className="text-gray-400">${Math.round(t.cost_estimate)}</span>
-                                </div>
-                              ))
-                            )}
-                          </div>
-                          <div>
-                            <div className="text-[10px] font-medium text-red-600 uppercase mb-1">Offgoing Transport</div>
-                            {opt.offgoing_transport.length === 0 ? (
-                              <div className="text-xs text-gray-400 italic">No options found</div>
-                            ) : (
-                              opt.offgoing_transport.map((t, j) => (
-                                <div key={j} className="text-xs text-gray-600 flex items-center gap-1.5 mb-0.5">
-                                  <span className={`px-1 py-0.5 rounded text-[10px] font-medium ${
-                                    t.type === "commercial_flight" ? "bg-blue-100 text-blue-600"
-                                      : t.type === "drive" ? "bg-amber-100 text-amber-600"
-                                      : "bg-purple-100 text-purple-600"
-                                  }`}>
-                                    {t.type === "commercial_flight" ? "FLT" : t.type === "drive" ? "DRV" : "POS"}
-                                  </span>
-                                  <span>{t.details}</span>
-                                  <span className="text-gray-400">${Math.round(t.cost_estimate)}</span>
-                                </div>
-                              ))
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {/* Warnings */}
-                {plan.warnings.length > 0 && (
-                  <div className="mt-2 space-y-1">
-                    {plan.warnings.map((w, i) => (
-                      <div key={i} className="text-xs text-amber-600 bg-amber-50 px-2 py-1 rounded">
-                        {w}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))}
-
-            {/* Unassigned crew */}
-            {swapPlan.unassigned_crew.length > 0 && (
-              <div className="px-4 py-3">
-                <div className="text-xs font-medium text-gray-500 uppercase mb-2">
-                  Unassigned Crew ({swapPlan.unassigned_crew.length})
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {swapPlan.unassigned_crew.map((c) => (
-                    <span key={c.id} className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">
-                      {c.name} ({c.role})
-                    </span>
-                  ))}
-                </div>
-              </div>
+            {viewMode === "sheet" ? (
+              <SwapSheet plans={swapPlan.plans} unassigned={swapPlan.unassigned_crew} />
+            ) : (
+              <SwapDetails plans={swapPlan.plans} unassigned={swapPlan.unassigned_crew} />
             )}
           </div>
         )}
