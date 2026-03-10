@@ -1437,12 +1437,16 @@ export default function FuelPricesTable({
                       </td>
                       <td className="px-4 py-2.5 whitespace-nowrap text-right">
                         {row.wowChange != null ? (
-                          <span className={`font-mono text-xs font-medium ${wowColor}`}>
-                            {row.wowChange > 0 ? "+" : ""}{row.wowChange.toFixed(4)}
-                            <span className="text-[10px] ml-0.5 opacity-70">
-                              ({row.wowChangePct! >= 0 ? "+" : ""}{row.wowChangePct}%)
+                          absWow === 0 ? (
+                            <span className="text-xs text-gray-400 font-medium">No Change</span>
+                          ) : (
+                            <span className={`font-mono text-xs font-medium ${wowColor}`}>
+                              {row.wowChange > 0 ? "+" : ""}{row.wowChange.toFixed(4)}
+                              <span className="text-[10px] ml-0.5 opacity-70">
+                                ({row.wowChangePct! >= 0 ? "+" : ""}{row.wowChangePct}%)
+                              </span>
                             </span>
-                          </span>
+                          )
                         ) : (
                           <span className="text-gray-300 text-xs">{"\u2014"}</span>
                         )}
