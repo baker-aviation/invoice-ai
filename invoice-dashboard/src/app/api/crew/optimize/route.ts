@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin, isAuthed } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 import { buildSwapPlan, getRequiredFlightSearches, assignOncomingCrew, type CrewMember, type FlightLeg, type AirportAlias, type SwapAssignment, type OncomingPool } from "@/lib/swapOptimizer";
+import { DEFAULT_AIRPORT_ALIASES } from "@/lib/airportAliases";
 import { searchFlights, type FlightOffer } from "@/lib/amadeus";
 
 export const dynamic = "force-dynamic";
@@ -83,11 +84,17 @@ export async function POST(req: NextRequest) {
     priority: (c.priority as number) ?? 0,
   }));
 
-  const aliases: AirportAlias[] = (aliasRes.data ?? []).map((a) => ({
+  // Merge DB aliases with defaults (DB takes precedence)
+  const dbAliases: AirportAlias[] = (aliasRes.data ?? []).map((a) => ({
     fbo_icao: a.fbo_icao as string,
     commercial_icao: a.commercial_icao as string,
     preferred: (a.preferred as boolean) ?? false,
   }));
+  const dbFboKeys = new Set(dbAliases.map((a) => `${a.fbo_icao}|${a.commercial_icao}`));
+  const aliases: AirportAlias[] = [
+    ...dbAliases,
+    ...DEFAULT_AIRPORT_ALIASES.filter((a) => !dbFboKeys.has(`${a.fbo_icao}|${a.commercial_icao}`)),
+  ];
 
   // Use client-provided swap assignments (from Excel upload), or fall back to crew_rotations
   let swapAssignments: Record<string, SwapAssignment> = {};
@@ -150,7 +157,7 @@ export async function POST(req: NextRequest) {
       searchPairs.add(`${s.origin}-${s.destination}`);
     }
 
-    const pairsArray = Array.from(searchPairs).slice(0, 30);
+    const pairsArray = Array.from(searchPairs).slice(0, 80);
 
     for (let i = 0; i < pairsArray.length; i += 5) {
       const batch = pairsArray.slice(i, i + 5);
