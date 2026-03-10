@@ -488,8 +488,10 @@ function parseSignatureCSV(lines: string[], headers: string[], vendor: string, w
 
   for (let i = 1; i < lines.length; i++) {
     const fields = parseCSVLine(lines[i]);
-    const base = fields[baseIdx]?.trim().toUpperCase();
-    if (!base) continue;
+    const rawBase = fields[baseIdx]?.trim().toUpperCase();
+    if (!rawBase) continue;
+    // Strip trailing digits — Signature uses SAT2, HPN2, TEB4 etc. for multiple locations
+    const base = rawBase.replace(/\d+$/, "");
 
     const price = parsePrice(fields[totalIdx]);
     if (price === null || price <= 0) continue;
