@@ -534,39 +534,52 @@ export function buildSwapPlan(params: {
     // Sort options by score descending
     options.sort((a, b) => b.score - a.score);
 
-    // Assign best crew — even if no options, still pick closest qualified crew
+    // Assign best crew — only if there's a viable transport option
     const bestOption = options[0] ?? null;
     let oncomingPic: CrewMember | null = null;
     let oncomingSic: CrewMember | null = null;
 
-    // Use swap airport from best option, or fallback to first swap airport
-    const assignAirport = bestOption?.commercial_airport ?? swapAirports[0]?.airport ?? null;
+    // Only assign crew if at least one swap option has transport
+    const hasViableTransport = options.some(
+      (o) => o.oncoming_transport.length > 0 || o.offgoing_transport.length > 0,
+    );
 
-    if (qualifiedPics.length > 0 && assignAirport) {
-      const target = assignAirport.length === 3 ? `K${assignAirport}` : assignAirport;
-      const sorted = qualifiedPics.map((p) => {
-        const home = closestHomeAirport(p, target);
-        return { crew: p, miles: home.drive?.straight_line_miles ?? 9999 };
-      }).sort((a, b) => a.miles - b.miles);
-      oncomingPic = sorted[0]?.crew ?? null;
-      if (oncomingPic) assignedCrewIds.add(oncomingPic.id);
-    } else if (qualifiedPics.length > 0) {
-      // No swap airport known — pick by priority
-      oncomingPic = qualifiedPics.sort((a, b) => b.priority - a.priority)[0] ?? null;
-      if (oncomingPic) assignedCrewIds.add(oncomingPic.id);
+    if (hasViableTransport && qualifiedPics.length > 0) {
+      // Find the option with transport and pick crew closest to that airport
+      const viableOption = options.find((o) => o.oncoming_transport.length > 0) ?? bestOption;
+      const target = viableOption
+        ? (viableOption.commercial_airport.length === 3 ? `K${viableOption.commercial_airport}` : viableOption.commercial_airport)
+        : null;
+
+      if (target) {
+        const sorted = qualifiedPics.map((p) => {
+          const home = closestHomeAirport(p, target);
+          return { crew: p, miles: home.drive?.straight_line_miles ?? 9999 };
+        }).sort((a, b) => a.miles - b.miles);
+        // Only assign if the closest crew has a known distance (not 9999 fallback)
+        if (sorted[0] && sorted[0].miles < 9999) {
+          oncomingPic = sorted[0].crew;
+          assignedCrewIds.add(oncomingPic.id);
+        }
+      }
     }
 
-    if (qualifiedSics.length > 0 && assignAirport) {
-      const target = assignAirport.length === 3 ? `K${assignAirport}` : assignAirport;
-      const sorted = qualifiedSics.map((s) => {
-        const home = closestHomeAirport(s, target);
-        return { crew: s, miles: home.drive?.straight_line_miles ?? 9999 };
-      }).sort((a, b) => a.miles - b.miles);
-      oncomingSic = sorted[0]?.crew ?? null;
-      if (oncomingSic) assignedCrewIds.add(oncomingSic.id);
-    } else if (qualifiedSics.length > 0) {
-      oncomingSic = qualifiedSics.sort((a, b) => b.priority - a.priority)[0] ?? null;
-      if (oncomingSic) assignedCrewIds.add(oncomingSic.id);
+    if (hasViableTransport && qualifiedSics.length > 0) {
+      const viableOption = options.find((o) => o.oncoming_transport.length > 0) ?? bestOption;
+      const target = viableOption
+        ? (viableOption.commercial_airport.length === 3 ? `K${viableOption.commercial_airport}` : viableOption.commercial_airport)
+        : null;
+
+      if (target) {
+        const sorted = qualifiedSics.map((s) => {
+          const home = closestHomeAirport(s, target);
+          return { crew: s, miles: home.drive?.straight_line_miles ?? 9999 };
+        }).sort((a, b) => a.miles - b.miles);
+        if (sorted[0] && sorted[0].miles < 9999) {
+          oncomingSic = sorted[0].crew;
+          assignedCrewIds.add(oncomingSic.id);
+        }
+      }
     }
 
     if (!oncomingPic) {

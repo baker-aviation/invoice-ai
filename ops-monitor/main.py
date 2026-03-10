@@ -343,9 +343,9 @@ def _faa_to_icao(code: str) -> str:
     return code
 
 
-def _parse_flight_fields(component) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+def _parse_flight_fields(component) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str], Optional[str], Optional[str], Optional[int], Optional[str]]:
     """
-    Extract (departure_icao, arrival_icao, tail_number, flight_type) from a JetInsight VEVENT.
+    Extract (departure_icao, arrival_icao, tail_number, flight_type, pic, sic, pax_count, jetinsight_url) from a JetInsight VEVENT.
 
     JetInsight SUMMARY format:
         [N998CX] The Early Way (SDM - SNA) - Positioning flight
@@ -438,7 +438,7 @@ def _parse_flight_fields(component) -> Tuple[Optional[str], Optional[str], Optio
                 flight_type = keyword
                 break
 
-    return dep_icao, arr_icao, tail, flight_type
+    return dep_icao, arr_icao, tail, flight_type, pic, sic, pax_count, jetinsight_url
 
 
 # ─── Health ───────────────────────────────────────────────────────────────────
@@ -792,7 +792,7 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
                 skipped += 1
                 continue
 
-            dep_icao, arr_icao, tail, flight_type = _parse_flight_fields(component)
+            dep_icao, arr_icao, tail, flight_type, pic, sic, pax_count, jetinsight_url = _parse_flight_fields(component)
 
             # Debug: log first 5 events and any with null flight_type despite
             # having a summary that should parse (helps diagnose extraction bugs)
