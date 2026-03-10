@@ -86,12 +86,51 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   CYOW: [45.3225, -75.6692],   // Ottawa
   CYYC: [51.1215, -114.0076],  // Calgary
 
+  // New England / Northeast GA
+  KASH: [42.7817, -71.5148],   // Nashua/Boire (NH)
+  KPWM: [43.6462, -70.3093],   // Portland (ME)
+  KBTV: [44.4720, -73.1533],   // Burlington (VT)
+  KBDL: [41.9389, -72.6832],   // Hartford/Bradley
+  KSWF: [41.5041, -74.1048],   // Stewart/Newburgh
+  KISP: [40.7952, -73.1002],   // Long Island/Islip
+  KFRG: [40.7288, -73.4134],   // Farmingdale/Republic
+  KMHT: [42.9326, -71.4357],   // Manchester (NH)
+  KPVD: [41.7267, -71.4204],   // Providence
+
+  // Southeast GA / FBOs
+  KSUA: [27.1817, -80.2211],   // Stuart/Witham (FL)
+  KSDM: [32.5723, -116.9803],  // San Diego/Brown
+  KTMB: [25.6479, -80.4328],   // Miami/Tamiami
+  KBCT: [26.3785, -80.1077],   // Boca Raton
+  KAPF: [26.1526, -81.7753],   // Naples (FL)
+  KRSW: [26.5362, -81.7552],   // Fort Myers
+  KSRQ: [27.3954, -82.5544],   // Sarasota
+  KPIE: [27.9102, -82.6874],   // St. Pete/Clearwater
+
+  // Mid-Atlantic
+  KACY: [39.4576, -74.5772],   // Atlantic City
+  KMMU: [40.7994, -74.4149],   // Morristown (NJ)
+  KCDW: [40.8752, -74.2814],   // Caldwell/Essex (NJ)
+
   // Other
   KMSY: [29.9934, -90.2580],   // New Orleans
   KSTL: [38.7487, -90.3700],   // St. Louis
   KABQ: [35.0402, -106.6094],  // Albuquerque
   KTUL: [36.1984, -95.8881],   // Tulsa
   KOKC: [35.3931, -97.6007],   // Oklahoma City
+  KLIT: [34.7294, -92.2243],   // Little Rock
+  KJAN: [32.3112, -90.0759],   // Jackson (MS)
+  KBHM: [33.5629, -86.7535],   // Birmingham (AL)
+  KHSV: [34.6372, -86.7751],   // Huntsville (AL)
+  KCHS: [32.8986, -80.0405],   // Charleston (SC)
+  KSAV: [32.1276, -81.2021],   // Savannah (GA)
+  KRIC: [37.5052, -77.3197],   // Richmond (VA)
+  KORF: [36.8946, -76.2012],   // Norfolk (VA)
+  KPIT: [40.4915, -80.2329],   // Pittsburgh
+  KCLE: [41.4117, -81.8498],   // Cleveland
+  KCMH: [39.9980, -82.8919],   // Columbus (OH)
+  KMKE: [42.9472, -87.8966],   // Milwaukee
+  KDAB: [29.1799, -81.0581],   // Daytona Beach
 };
 
 // ─── Haversine ───────────────────────────────────────────────────────────────

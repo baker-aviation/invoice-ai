@@ -739,11 +739,21 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
                     <div className="mt-0.5">
                       <span className="text-gray-700">{plan.offgoing_pic?.name ?? "—"}</span>
                       <span className="text-gray-400 text-xs ml-1">(PIC)</span>
+                      {plan.offgoing_pic?.home_airports && (
+                        <span className="text-gray-400 text-xs ml-1">
+                          [{plan.offgoing_pic.home_airports.join("/")}]
+                        </span>
+                      )}
                       {plan.offgoing_sic && (
                         <>
                           <span className="text-gray-300 mx-1">/</span>
                           <span className="text-gray-700">{plan.offgoing_sic.name}</span>
                           <span className="text-gray-400 text-xs ml-1">(SIC)</span>
+                          {plan.offgoing_sic.home_airports && (
+                            <span className="text-gray-400 text-xs ml-1">
+                              [{plan.offgoing_sic.home_airports.join("/")}]
+                            </span>
+                          )}
                         </>
                       )}
                     </div>
