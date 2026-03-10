@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin, isAuthed } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
-import { buildSwapPlan, type CrewMember, type FlightLeg, type AirportAlias, type SwapAssignment } from "@/lib/swapOptimizer";
+import { buildSwapPlan, getRequiredFlightSearches, type CrewMember, type FlightLeg, type AirportAlias, type SwapAssignment } from "@/lib/swapOptimizer";
 import { searchFlights, type FlightOffer } from "@/lib/amadeus";
 
 export const dynamic = "force-dynamic";
@@ -123,34 +123,20 @@ export async function POST(req: NextRequest) {
   if (searchCommercial) {
     commercialFlights = new Map();
 
-    // Determine unique origin-destination pairs needed
+    // Use optimizer's smart search to only query routes we actually need
+    const activeAssignments = Object.keys(swapAssignments).length > 0 ? swapAssignments : undefined;
+    const requiredSearches = activeAssignments
+      ? getRequiredFlightSearches({ crewRoster, aliases, swapAssignments: activeAssignments, flights, swapDate })
+      : [];
+
+    // Deduplicate
     const searchPairs = new Set<string>();
-
-    // For each crew member's home airports → each swap candidate airport
-    const tailAirports = new Set<string>();
-    for (const f of flights) {
-      if (f.scheduled_departure.startsWith(swapDate)) {
-        if (f.departure_icao) tailAirports.add(f.departure_icao);
-        if (f.arrival_icao) tailAirports.add(f.arrival_icao);
-      }
-    }
-
-    for (const crew of crewRoster) {
-      for (const home of crew.home_airports) {
-        for (const apt of tailAirports) {
-          // Strip K prefix for IATA
-          const homeIata = home.length === 4 && home.startsWith("K") ? home.slice(1) : home;
-          const aptIata = apt.length === 4 && apt.startsWith("K") ? apt.slice(1) : apt;
-          if (homeIata !== aptIata) {
-            searchPairs.add(`${homeIata}-${aptIata}`);
-            searchPairs.add(`${aptIata}-${homeIata}`); // return trip
-          }
-        }
-      }
+    for (const s of requiredSearches) {
+      searchPairs.add(`${s.origin}-${s.destination}`);
     }
 
     // Limit searches to avoid burning API quota
-    const pairsArray = Array.from(searchPairs).slice(0, 20);
+    const pairsArray = Array.from(searchPairs).slice(0, 30);
 
     // Search in parallel (batches of 5)
     for (let i = 0; i < pairsArray.length; i += 5) {

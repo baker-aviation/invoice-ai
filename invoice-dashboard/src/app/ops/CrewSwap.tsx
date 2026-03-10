@@ -54,11 +54,15 @@ type CrewSwapRow = {
   cost_estimate: number | null;
   duration_minutes: number | null;
   available_time: string | null;
+  duty_on_time: string | null;
+  duty_off_time: string | null;
   is_checkairman: boolean;
   is_skillbridge: boolean;
   notes: string | null;
   warnings: string[];
   alt_flights: { flight_number: string; dep: string; arr: string; price: string }[];
+  backup_flight: string | null;
+  score: number;
 };
 
 type SwapPlanResult = {
@@ -67,6 +71,8 @@ type SwapPlanResult = {
   rows: CrewSwapRow[];
   warnings: string[];
   commercial_flights_searched: number;
+  total_cost: number;
+  plan_score: number;
 };
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -198,14 +204,21 @@ function SwapSheetRow({ row }: { row: CrewSwapRow }) {
       </td>
 
       {/* Notes / Warnings */}
-      <td className="px-3 py-1.5 text-xs max-w-[200px]">
-        {row.warnings.length > 0 ? (
-          <span className="text-amber-600">{row.warnings[0]}</span>
-        ) : row.notes ? (
-          <span className="text-gray-400">{row.notes}</span>
-        ) : row.alt_flights.length > 0 ? (
-          <span className="text-gray-400">+{row.alt_flights.length} alt flights</span>
-        ) : null}
+      <td className="px-3 py-1.5 text-xs max-w-[250px]">
+        <div className="space-y-0.5">
+          {row.warnings.length > 0 && (
+            <div className="text-amber-600">{row.warnings[0]}</div>
+          )}
+          {row.notes && !row.warnings.length && (
+            <div className="text-gray-500">{row.notes}</div>
+          )}
+          {row.backup_flight && (
+            <div className="text-blue-500">Backup: {row.backup_flight}</div>
+          )}
+          {row.alt_flights.length > 0 && !row.backup_flight && (
+            <div className="text-gray-400">+{row.alt_flights.length} alt flights</div>
+          )}
+        </div>
       </td>
     </tr>
   );
@@ -601,6 +614,20 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
                 <span className="font-medium">
                   {swapPlan.rows.length} crew planned for {swapPlan.swap_date}
                 </span>
+                {swapPlan.total_cost > 0 && (
+                  <span className="text-green-600 text-xs font-medium">
+                    Est. total: ${swapPlan.total_cost.toLocaleString()}
+                  </span>
+                )}
+                {swapPlan.plan_score > 0 && (
+                  <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${
+                    swapPlan.plan_score >= 70 ? "bg-green-100 text-green-700"
+                    : swapPlan.plan_score >= 50 ? "bg-yellow-100 text-yellow-700"
+                    : "bg-red-100 text-red-700"
+                  }`}>
+                    Score: {swapPlan.plan_score}
+                  </span>
+                )}
                 {swapPlan.commercial_flights_searched > 0 && (
                   <span className="text-green-500 text-xs">
                     ({swapPlan.commercial_flights_searched} routes searched)
