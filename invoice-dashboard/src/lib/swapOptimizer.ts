@@ -58,8 +58,8 @@ export type CrewSwapRow = {
   tail_number: string;           // aircraft they're assigned to
   swap_location: string | null;  // airport where they join/leave the aircraft
   // Travel details
-  travel_type: "commercial" | "drive" | "none";
-  flight_number: string | null;  // e.g. "UA1234" or "DRV"
+  travel_type: "commercial" | "uber" | "rental_car" | "drive" | "none";
+  flight_number: string | null;  // e.g. "UA1234", "UBER", "RENTAL", "DRIVE"
   departure_time: string | null; // ISO
   arrival_time: string | null;   // ISO
   travel_from: string | null;
@@ -263,7 +263,7 @@ export function buildSwapPlan(params: {
       // Determine swap location based on direction
       let swapLocation: string | null = null;
       let bestTravel: {
-        type: "commercial" | "drive" | "none";
+        type: "commercial" | "uber" | "rental_car" | "drive" | "none";
         flightNumber: string | null;
         depTime: string | null;
         arrTime: string | null;
@@ -333,20 +333,30 @@ export function buildSwapPlan(params: {
         if (homeIata && swapIcao) {
           const drive = estimateDriveTime(toIcao(homeIata), swapIcao);
           if (drive && drive.feasible) {
-            // Use drive if no commercial flight found, or if drive is cheaper/faster
-            if (bestTravel.type === "none") {
+            // Determine ground transport type by duration:
+            // <= 60 min: Uber/Lyft, 1-3 hours: rental car, > 3 hours: prefer commercial
+            const driveType: "uber" | "rental_car" | "drive" =
+              drive.estimated_drive_minutes <= 60 ? "uber"
+              : drive.estimated_drive_minutes <= 180 ? "rental_car"
+              : "drive";
+            const driveLabel = driveType === "uber" ? "UBER" : driveType === "rental_car" ? "RENTAL" : "DRIVE";
+
+            // Use ground transport if no commercial flight, or if <= 3 hours (prefer ground over flying for short distances)
+            if (bestTravel.type === "none" || (drive.estimated_drive_minutes <= 180 && bestTravel.type === "commercial")) {
               bestTravel = {
-                type: "drive",
-                flightNumber: "DRIVE",
+                type: driveType,
+                flightNumber: driveLabel,
                 depTime: null,
                 arrTime: null,
                 from: homeIata,
                 to: toIata(swapLocation ?? ""),
-                cost: Math.round(drive.estimated_drive_miles * 0.67),
+                cost: driveType === "uber"
+                  ? Math.round(drive.estimated_drive_miles * 2.5)  // ~$2.50/mile Uber estimate
+                  : Math.round(drive.estimated_drive_miles * 0.67), // IRS mileage rate
                 duration: drive.estimated_drive_minutes,
                 drive,
                 offer: null,
-                altFlights: [],
+                altFlights: bestTravel.altFlights ?? [],
                 availableTime: null,
               };
             }
@@ -408,19 +418,27 @@ export function buildSwapPlan(params: {
         if (homeIata && swapIcao) {
           const drive = estimateDriveTime(swapIcao, toIcao(homeIata));
           if (drive && drive.feasible) {
-            if (bestTravel.type === "none") {
+            const driveType: "uber" | "rental_car" | "drive" =
+              drive.estimated_drive_minutes <= 60 ? "uber"
+              : drive.estimated_drive_minutes <= 180 ? "rental_car"
+              : "drive";
+            const driveLabel = driveType === "uber" ? "UBER" : driveType === "rental_car" ? "RENTAL" : "DRIVE";
+
+            if (bestTravel.type === "none" || (drive.estimated_drive_minutes <= 180 && bestTravel.type === "commercial")) {
               bestTravel = {
-                type: "drive",
-                flightNumber: "DRIVE",
+                type: driveType,
+                flightNumber: driveLabel,
                 depTime: null,
                 arrTime: null,
                 from: toIata(swapLocation ?? ""),
                 to: homeIata,
-                cost: Math.round(drive.estimated_drive_miles * 0.67),
+                cost: driveType === "uber"
+                  ? Math.round(drive.estimated_drive_miles * 2.5)
+                  : Math.round(drive.estimated_drive_miles * 0.67),
                 duration: drive.estimated_drive_minutes,
                 drive,
                 offer: null,
-                altFlights: [],
+                altFlights: bestTravel.altFlights ?? [],
                 availableTime: null,
               };
             }

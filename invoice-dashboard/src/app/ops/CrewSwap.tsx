@@ -18,6 +18,13 @@ type CrewMember = {
   notes: string | null;
 };
 
+type SwapAssignment = {
+  oncoming_pic: string | null;
+  oncoming_sic: string | null;
+  offgoing_pic: string | null;
+  offgoing_sic: string | null;
+};
+
 type RosterUploadResult = {
   ok: boolean;
   total_parsed: number;
@@ -26,6 +33,7 @@ type RosterUploadResult = {
   rotations_created: number;
   errors?: string[];
   summary: Record<string, number>;
+  swap_assignments?: Record<string, SwapAssignment>;
 };
 
 // Matches CrewSwapRow from swapOptimizer.ts
@@ -37,7 +45,7 @@ type CrewSwapRow = {
   aircraft_type: string;
   tail_number: string;
   swap_location: string | null;
-  travel_type: "commercial" | "drive" | "none";
+  travel_type: "commercial" | "uber" | "rental_car" | "drive" | "none";
   flight_number: string | null;
   departure_time: string | null;
   arrival_time: string | null;
@@ -157,6 +165,10 @@ function SwapSheetRow({ row }: { row: CrewSwapRow }) {
       <td className="px-3 py-1.5 text-xs">
         {row.travel_type === "commercial" && row.flight_number ? (
           <span className="font-mono text-blue-700 font-medium">{row.flight_number}</span>
+        ) : row.travel_type === "uber" ? (
+          <span className="font-mono text-violet-700 font-medium">UBER</span>
+        ) : row.travel_type === "rental_car" ? (
+          <span className="font-mono text-orange-700 font-medium">RENTAL</span>
         ) : row.travel_type === "drive" ? (
           <span className="font-mono text-amber-700 font-medium">DRIVE</span>
         ) : (
@@ -272,6 +284,7 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
   const [swapPlan, setSwapPlan] = useState<SwapPlanResult | null>(null);
   const [optimizeError, setOptimizeError] = useState<string | null>(null);
   const [showSchedule, setShowSchedule] = useState(false);
+  const [swapAssignments, setSwapAssignments] = useState<Record<string, SwapAssignment> | null>(null);
 
   // Fetch crew roster
   const loadCrew = useCallback(async () => {
@@ -304,6 +317,9 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
         setUploadError(data.error ?? "Upload failed");
       } else {
         setUploadResult(data);
+        if (data.swap_assignments) {
+          setSwapAssignments(data.swap_assignments);
+        }
         await loadCrew();
       }
     } catch (e) {
@@ -347,6 +363,7 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
         body: JSON.stringify({
           swap_date: selectedWed.toISOString().slice(0, 10),
           search_flights: includeFlights,
+          swap_assignments: swapAssignments ?? undefined,
         }),
       });
       const data = await res.json();

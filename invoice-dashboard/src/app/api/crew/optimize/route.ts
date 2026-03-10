@@ -20,6 +20,8 @@ export async function POST(req: NextRequest) {
   const body = await req.json();
   const swapDate = body.swap_date as string;
   const searchCommercial = body.search_flights === true;
+  // Accept swap_assignments directly from client (parsed from Excel upload)
+  const clientSwapAssignments = body.swap_assignments as Record<string, SwapAssignment> | undefined;
 
   if (!swapDate || !/^\d{4}-\d{2}-\d{2}$/.test(swapDate)) {
     return NextResponse.json({ error: "swap_date required (YYYY-MM-DD)" }, { status: 400 });
@@ -41,10 +43,12 @@ export async function POST(req: NextRequest) {
       .order("scheduled_departure"),
     supa.from("crew_members").select("*").eq("active", true),
     supa.from("airport_aliases").select("fbo_icao, commercial_icao, preferred"),
-    // Get crew rotations to build swap assignments
-    supa.from("crew_rotations")
-      .select("crew_member_id, tail_number, rotation_start, rotation_end, crew_members(name, role)")
-      .order("rotation_start", { ascending: false }),
+    // Fallback: get crew rotations to build swap assignments if not provided by client
+    !clientSwapAssignments
+      ? supa.from("crew_rotations")
+          .select("crew_member_id, tail_number, rotation_start, rotation_end, crew_members(name, role)")
+          .order("rotation_start", { ascending: false })
+      : Promise.resolve({ data: null, error: null }),
   ]);
 
   if (flightsRes.error) {
@@ -83,9 +87,13 @@ export async function POST(req: NextRequest) {
     preferred: (a.preferred as boolean) ?? false,
   }));
 
-  // Build swap assignments from crew_rotations
-  const swapAssignments: Record<string, SwapAssignment> = {};
-  if (rotationsRes.data) {
+  // Use client-provided swap assignments (from Excel upload), or fall back to crew_rotations
+  let swapAssignments: Record<string, SwapAssignment> = {};
+
+  if (clientSwapAssignments && Object.keys(clientSwapAssignments).length > 0) {
+    swapAssignments = clientSwapAssignments;
+  } else if (rotationsRes.data) {
+    // Fallback: reconstruct from crew_rotations (less reliable)
     for (const rot of rotationsRes.data) {
       const tail = rot.tail_number as string;
       const memberArr = rot.crew_members as unknown as { name: string; role: string }[] | { name: string; role: string } | null;
@@ -100,11 +108,9 @@ export async function POST(req: NextRequest) {
       const isPic = member.role === "PIC";
 
       if (rotEnd) {
-        // Has rotation_end = offgoing crew
         if (isPic) sa.offgoing_pic = sa.offgoing_pic ?? member.name;
         else sa.offgoing_sic = sa.offgoing_sic ?? member.name;
       } else {
-        // No rotation_end = oncoming (current/active)
         if (isPic) sa.oncoming_pic = sa.oncoming_pic ?? member.name;
         else sa.oncoming_sic = sa.oncoming_sic ?? member.name;
       }
