@@ -109,11 +109,11 @@ export async function POST(req: NextRequest) {
     }
     rows = parseSignatureCSV(lines, headerFields, vendorOverride ?? detectedVendor, weekStart, batchId);
   } else if (format === "jet_aviation") {
-    // Jet Aviation format — no date column, extract from filename or default to current week
+    // Jet Aviation format — no date column, extract from filename or require week_start
     detectedVendor = "Jet Aviation";
-    const weekStart = resolveWeekStart(weekStartRaw, file.name) ?? normalizeToMonday(new Date().toISOString().split("T")[0]);
+    const weekStart = resolveWeekStart(weekStartRaw, file.name);
     if (!weekStart) {
-      return NextResponse.json({ error: "Could not determine week_start — please provide it" }, { status: 400 });
+      return NextResponse.json({ error: "Could not determine week_start from filename — please provide the 'Week Starting' date" }, { status: 400 });
     }
     rows = parseJetAviationCSV(lines, headerFields, vendorOverride ?? detectedVendor, weekStart, batchId);
   } else {
@@ -231,6 +231,18 @@ function extractDateFromFilename(name: string): string | null {
     const [, mm, dd, yyyy] = m;
     const d = new Date(`${yyyy}-${mm.padStart(2, "0")}-${dd.padStart(2, "0")}T12:00:00`);
     if (!isNaN(d.getTime())) return d.toISOString().split("T")[0];
+  }
+  // MMDDYY (6-digit, e.g. "030726" = 03/07/26 → 2026-03-07, "031026" = 03/10/26)
+  // Match 6-digit sequences that aren't part of a longer number
+  const mmddyy = name.match(/(?<!\d)(\d{2})(\d{2})(\d{2})(?!\d)/);
+  if (mmddyy) {
+    const [, mm2, dd2, yy] = mmddyy;
+    const month = Number(mm2);
+    const day = Number(dd2);
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      const d = new Date(`20${yy}-${mm2}-${dd2}T12:00:00`);
+      if (!isNaN(d.getTime())) return d.toISOString().split("T")[0];
+    }
   }
   return null;
 }
