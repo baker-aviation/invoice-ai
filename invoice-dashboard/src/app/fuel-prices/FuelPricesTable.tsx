@@ -244,12 +244,28 @@ function lookupBestRate(
   return best ? { price: best.price, vendor: best.fbo_vendor } : null;
 }
 
+/** Check if a gallon amount falls within a volume tier like "1-300" or "1201+" */
+function tierMatchesVolume(tier: string, gallons: number): boolean {
+  const plusMatch = tier.match(/^(\d+)\+$/);
+  if (plusMatch) return gallons >= parseInt(plusMatch[1], 10);
+  const rangeMatch = tier.match(/^(\d+)-(\d+)$/);
+  if (rangeMatch) return gallons >= parseInt(rangeMatch[1], 10) && gallons <= parseInt(rangeMatch[2], 10);
+  return true;
+}
+
 // ─── Advertised vs Actual comparison builder ─────────────────────────────────
+
+/** Extract FBO name from product field: "Jet (Atlantic Aviation - HOU)" → "Atlantic Aviation - HOU" */
+function extractFboName(product: string): string | null {
+  const m = product.match(/\(([^)]+)\)/);
+  return m ? m[1] : null;
+}
 
 type AdvVsActualRow = {
   key: string;
   airport: string;
   fboVendor: string;
+  fboName: string | null;  // specific FBO at airport (e.g. "Atlantic Aviation - HOU")
   volumeTier: string;
   tailNumbers: string | null;
   currentWeek: string;
@@ -268,7 +284,14 @@ type AdvVsActualRow = {
 function buildAdvVsActual(
   prices: FuelPriceRow[],
   advertisedPrices: AdvertisedPriceRow[],
+  volumeGallons: number | null,
 ): AdvVsActualRow[] {
+  // Strip leading K from US ICAO codes: KTEB→TEB, KHOU→HOU
+  function normAirport(code: string): string {
+    const up = code.toUpperCase();
+    return up.length === 4 && up.startsWith("K") ? up.slice(1) : up;
+  }
+
   // Normalize airport codes: KTEB↔TEB, KHOU↔HOU etc.
   // Returns all variants to check (e.g. ["KTEB","TEB"] or ["TEB","KTEB"])
   function airportVariants(code: string): string[] {
@@ -306,15 +329,20 @@ function buildAdvVsActual(
     }
   }
 
-  // Group advertised by vendor+airport — skip tail-specific rows, collapse tiers
-  // For each (vendor, airport, week), keep only the lowest-priced tier
+  // Group advertised by vendor+airport — skip tail-specific rows, filter by volume tier
+  let filteredAdv = advertisedPrices.filter((a) => !a.tail_numbers);
+  if (volumeGallons && volumeGallons > 0) {
+    // Keep only tiers that match the selected volume
+    const volumeFiltered = filteredAdv.filter((a) => tierMatchesVolume(a.volume_tier, volumeGallons));
+    if (volumeFiltered.length > 0) filteredAdv = volumeFiltered;
+  }
+  // For each (vendor, airport, FBO, week), keep only the best-matching tier
   const dedupedAdv: AdvertisedPriceRow[] = [];
   const seenByWeek = new Map<string, AdvertisedPriceRow>();
-  const sortedAdv = [...advertisedPrices]
-    .filter((a) => !a.tail_numbers)
-    .sort((a, b) => a.price - b.price); // lowest price first
+  const sortedAdv = [...filteredAdv].sort((a, b) => a.price - b.price);
   for (const adv of sortedAdv) {
-    const wk = `${adv.fbo_vendor}|${adv.airport_code}|${adv.week_start}`;
+    const fbo = extractFboName(adv.product) ?? "";
+    const wk = `${adv.fbo_vendor}|${normAirport(adv.airport_code)}|${fbo}|${adv.week_start}`;
     if (!seenByWeek.has(wk)) {
       seenByWeek.set(wk, adv);
       dedupedAdv.push(adv);
@@ -323,7 +351,8 @@ function buildAdvVsActual(
 
   const advByIdentity = new Map<string, AdvertisedPriceRow[]>();
   for (const adv of dedupedAdv) {
-    const key = `${adv.fbo_vendor}|${adv.airport_code}`;
+    const fbo = extractFboName(adv.product) ?? "";
+    const key = `${adv.fbo_vendor}|${normAirport(adv.airport_code)}|${fbo}`;
     if (!advByIdentity.has(key)) advByIdentity.set(key, []);
     advByIdentity.get(key)!.push(adv);
   }
@@ -380,8 +409,11 @@ function buildAdvVsActual(
 
     rows.push({
       key: `${latest.id}`,
-      airport: latest.airport_code,
+      airport: latest.airport_code.length === 4 && latest.airport_code.startsWith("K")
+        ? latest.airport_code.slice(1)
+        : latest.airport_code,
       fboVendor: latest.fbo_vendor,
+      fboName: extractFboName(latest.product),
       volumeTier: latest.volume_tier,
       tailNumbers: latest.tail_numbers,
       currentWeek: latest.week_start,
@@ -465,8 +497,10 @@ function ImportAdvertisedModal({ onClose }: { onClose: () => void }) {
           <ul className="list-disc ml-4 space-y-0.5 text-[11px]">
             <li><strong>AEG/Baker</strong> &mdash; auto-detected (ICAO, FUELER, TOTAL PRICE columns)</li>
             <li><strong>Everest Fuel</strong> &mdash; auto-detected (ICAO, FBO, TIER, PRICE columns)</li>
-            <li><strong>WFS (World Fuel)</strong> &mdash; auto-detected (ICAO, SUPPLIER, ESTIMATED TOTAL PRICE columns)</li>
-            <li><strong>Avfuel/BAKAV</strong> &mdash; auto-detected (ICAO, FIXED BASE OPERATOR, EFF DATE columns)</li>
+            <li><strong>WFS (World Fuel)</strong> &mdash; auto-detected (SUPPLIER, ESTIMATED TOTAL PRICE columns)</li>
+            <li><strong>Avfuel/BAKAV</strong> &mdash; auto-detected (FIXED BASE OPERATOR, EFF DATE columns)</li>
+            <li><strong>Titan Fuels</strong> &mdash; auto-detected (AIRPORT CODE, JET A WITH ADD PRICE PER UNIT columns)</li>
+            <li><strong>Signature</strong> &mdash; auto-detected (BASE, MIN QUANTITY, MAX QUANTITY, TOTAL columns)</li>
             <li><strong>Generic</strong> &mdash; Airport, Volume Tier, Product, Price, Tail Numbers</li>
           </ul>
           <p className="mt-1 text-blue-600">All named formats are auto-detected. Vendor name and week date are optional &mdash; date can be in filename or per-row.</p>
@@ -547,6 +581,7 @@ export default function FuelPricesTable({
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
   const [viewMode, setViewMode] = useState<ViewMode>("all");
   const [showImportModal, setShowImportModal] = useState(false);
+  const [volumeGallons, setVolumeGallons] = useState<string>("");
 
   // Document IDs that serve as baselines for other rows
   const baselineDocIds = useMemo(() => {
@@ -667,11 +702,46 @@ export default function FuelPricesTable({
     return lookup;
   }, [advertisedPrices]);
 
+  // Latest week per vendor (for freshness indicator)
+  const vendorFreshness = useMemo(() => {
+    const byVendor = new Map<string, { latestWeek: string; rowCount: number }>();
+    for (const adv of advertisedPrices) {
+      const existing = byVendor.get(adv.fbo_vendor);
+      if (!existing || adv.week_start > existing.latestWeek) {
+        byVendor.set(adv.fbo_vendor, {
+          latestWeek: adv.week_start,
+          rowCount: (existing?.rowCount ?? 0) + 1,
+        });
+      } else {
+        existing.rowCount++;
+      }
+    }
+    return [...byVendor.entries()]
+      .map(([vendor, info]) => ({ vendor, ...info }))
+      .sort((a, b) => a.vendor.localeCompare(b.vendor));
+  }, [advertisedPrices]);
+
   // Advertised vs Actual comparison rows
+  const parsedGallons = volumeGallons ? parseInt(volumeGallons, 10) : null;
   const advVsActual = useMemo(
-    () => buildAdvVsActual(initialPrices, advertisedPrices),
-    [initialPrices, advertisedPrices],
+    () => buildAdvVsActual(initialPrices, advertisedPrices, parsedGallons),
+    [initialPrices, advertisedPrices, parsedGallons],
   );
+
+  // Average WoW change per vendor
+  const vendorAvgWow = useMemo(() => {
+    const byVendor = new Map<string, number[]>();
+    for (const row of advVsActual) {
+      if (row.wowChangePct == null) continue;
+      if (!byVendor.has(row.fboVendor)) byVendor.set(row.fboVendor, []);
+      byVendor.get(row.fboVendor)!.push(row.wowChangePct);
+    }
+    const result = new Map<string, number>();
+    for (const [vendor, pcts] of byVendor) {
+      result.set(vendor, Math.round((pcts.reduce((a, b) => a + b, 0) / pcts.length) * 10) / 10);
+    }
+    return result;
+  }, [advVsActual]);
 
   // Latest invoice per airport (for linking from Adv vs Actual tab)
   const latestInvoiceByAirport = useMemo(() => {
@@ -737,12 +807,18 @@ export default function FuelPricesTable({
   // Filtered advertised vs actual
   const filteredAdvVsActual = useMemo(() => {
     let rows = advVsActual;
-    if (airportFilter) rows = rows.filter((r) => r.airport === airportFilter);
+    if (airportFilter) {
+      // Match both KSAN↔SAN variants
+      const normFilter = airportFilter.length === 4 && airportFilter.startsWith("K")
+        ? airportFilter.slice(1) : airportFilter;
+      const variants = new Set([airportFilter, normFilter, `K${normFilter}`]);
+      rows = rows.filter((r) => variants.has(r.airport));
+    }
     if (vendorFilter) rows = rows.filter((r) => r.fboVendor === vendorFilter);
     if (search) {
       const q = search.toLowerCase();
       rows = rows.filter((r) =>
-        [r.airport, r.fboVendor, r.tailNumbers]
+        [r.airport, r.fboVendor, r.fboName, r.tailNumbers]
           .filter(Boolean)
           .some((f) => String(f).toLowerCase().includes(q)),
       );
@@ -864,6 +940,17 @@ export default function FuelPricesTable({
               <option key={v} value={v}>{v}</option>
             ))}
           </select>
+        )}
+
+        {viewMode === "advertised" && (
+          <input
+            type="number"
+            placeholder="Gallons (e.g. 500)"
+            value={volumeGallons}
+            onChange={(e) => { setVolumeGallons(e.target.value); setPage(0); }}
+            className="rounded-md border px-3 py-1.5 text-sm bg-white w-44"
+            min={1}
+          />
         )}
 
         <input
@@ -1213,6 +1300,47 @@ export default function FuelPricesTable({
       {/* ─── Advertised vs Actual View ──────────────────────────────── */}
       {viewMode === "advertised" && (
         <>
+          {/* Vendor freshness */}
+          {vendorFreshness.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs font-medium text-gray-500">Data as of:</span>
+              {vendorFreshness.map(({ vendor, latestWeek }) => {
+                const weekDate = new Date(latestWeek + "T12:00:00");
+                const now = new Date();
+                const daysOld = Math.floor((now.getTime() - weekDate.getTime()) / (1000 * 60 * 60 * 24));
+                const isStale = daysOld > 10;
+                const isRecent = daysOld < 7;
+                return (
+                  <span
+                    key={vendor}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-full border ${
+                      isStale
+                        ? "bg-red-50 text-red-700 border-red-200"
+                        : isRecent
+                        ? "bg-green-50 text-green-700 border-green-200"
+                        : "bg-amber-50 text-amber-700 border-amber-200"
+                    }`}
+                  >
+                    <span className={`inline-block w-1.5 h-1.5 rounded-full ${
+                      isStale ? "bg-red-400" : isRecent ? "bg-green-400" : "bg-amber-400"
+                    }`} />
+                    <span className="font-medium">{vendor}</span>
+                    <span className="opacity-70">{fmtDate(latestWeek)}</span>
+                    {vendorAvgWow.has(vendor) && (() => {
+                      const avg = vendorAvgWow.get(vendor)!;
+                      const color = avg > 0.5 ? "text-red-600" : avg < -0.5 ? "text-green-600" : "text-gray-500";
+                      return (
+                        <span className={`font-mono font-semibold ${color}`}>
+                          {avg >= 0 ? "+" : ""}{avg}%
+                        </span>
+                      );
+                    })()}
+                  </span>
+                );
+              })}
+            </div>
+          )}
+
           <div className="rounded-xl border bg-white overflow-hidden shadow-sm overflow-x-auto">
             <table className="min-w-full text-sm">
               <thead>
@@ -1261,8 +1389,9 @@ export default function FuelPricesTable({
                       }`}
                     >
                       <td className="px-4 py-2.5 whitespace-nowrap font-semibold">{row.airport}</td>
-                      <td className="px-4 py-2.5 whitespace-nowrap max-w-[180px] truncate text-xs text-gray-600" title={row.fboVendor}>
-                        {row.fboVendor}
+                      <td className="px-4 py-2.5 whitespace-nowrap max-w-[220px] text-xs text-gray-600" title={row.fboName ? `${row.fboName} (${row.fboVendor})` : row.fboVendor}>
+                        <div className="truncate font-medium">{row.fboName ?? row.fboVendor}</div>
+                        {row.fboName && <div className="text-[10px] text-gray-400 truncate">{row.fboVendor}</div>}
                       </td>
                       <td className="px-4 py-2.5 whitespace-nowrap text-xs text-gray-500">{row.volumeTier}</td>
                       <td className="px-4 py-2.5 text-xs text-gray-500 max-w-[120px] truncate" title={row.tailNumbers || "All"}>{row.tailNumbers || "All"}</td>

@@ -7,7 +7,7 @@ import InvoicesTable from "./InvoicesTable";
 import { AutoRefresh } from "@/components/AutoRefresh";
 
 export default async function InvoicesPage() {
-  const data = await fetchInvoices({ limit: 200 });
+  const data = await fetchInvoices({ limit: 1000 });
   const invoices = data.invoices ?? [];
 
   return (

@@ -8,6 +8,7 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   // Texas
   KIAH: [29.9844, -95.3414],   // Houston Intercontinental
   KHOU: [29.6454, -95.2789],   // Houston Hobby
+  KDWH: [30.0618, -95.5528],   // David Wayne Hooks (FBO, near IAH)
   KDFW: [32.8968, -97.0380],   // Dallas/Fort Worth
   KDAL: [32.8471, -96.8518],   // Dallas Love Field
   KAUS: [30.1945, -97.6699],   // Austin
@@ -58,6 +59,8 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   KMDW: [41.7868, -87.7416],   // Chicago Midway
   KPWK: [42.1142, -87.9015],   // Chicago Executive (FBO)
   KDTW: [42.2124, -83.3534],   // Detroit
+  KGRR: [42.8808, -85.5228],   // Grand Rapids
+  KESC: [45.7227, -87.0937],   // Escanaba MI
   KMSP: [44.8820, -93.2218],   // Minneapolis
   KIND: [39.7173, -86.2944],   // Indianapolis
   KCVG: [39.0488, -84.6678],   // Cincinnati
@@ -68,14 +71,51 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   KLAS: [36.0840, -115.1537],  // Las Vegas
   KPHX: [33.4373, -112.0078],  // Phoenix
   KSDL: [33.6229, -111.9105],  // Scottsdale (FBO)
+  KPSP: [33.8297, -116.5067],  // Palm Springs
+  KTRM: [33.6267, -116.1597],  // Thermal/Jacqueline Cochran (FBO, near PSP)
   KSLC: [40.7884, -111.9778],  // Salt Lake City
   KASE: [39.2232, -106.8688],  // Aspen
   KEGE: [39.6426, -106.9159],  // Eagle/Vail
+  KCOS: [38.8058, -104.7007],  // Colorado Springs
+  KBOI: [43.5644, -116.2228],  // Boise
 
   // DC area
   KIAD: [38.9445, -77.4558],   // Dulles
   KDCA: [38.8512, -77.0402],   // Reagan National
   KBWI: [39.1754, -76.6683],   // Baltimore
+
+  // Canada
+  CYYZ: [43.6777, -79.6248],   // Toronto Pearson
+  CYUL: [45.4706, -73.7408],   // Montreal Trudeau
+  CYVR: [49.1947, -123.1839],  // Vancouver
+  CYOW: [45.3225, -75.6692],   // Ottawa
+  CYYC: [51.1215, -114.0076],  // Calgary
+
+  // New England / Northeast GA
+  KASH: [42.7817, -71.5148],   // Nashua/Boire (NH)
+  KPWM: [43.6462, -70.3093],   // Portland (ME)
+  KBTV: [44.4720, -73.1533],   // Burlington (VT)
+  KBDL: [41.9389, -72.6832],   // Hartford/Bradley
+  KSWF: [41.5041, -74.1048],   // Stewart/Newburgh
+  KISP: [40.7952, -73.1002],   // Long Island/Islip
+  KFRG: [40.7288, -73.4134],   // Farmingdale/Republic
+  KMHT: [42.9326, -71.4357],   // Manchester (NH)
+  KPVD: [41.7267, -71.4204],   // Providence
+
+  // Southeast GA / FBOs
+  KSUA: [27.1817, -80.2211],   // Stuart/Witham (FL)
+  KSDM: [32.5723, -116.9803],  // San Diego/Brown
+  KTMB: [25.6479, -80.4328],   // Miami/Tamiami
+  KBCT: [26.3785, -80.1077],   // Boca Raton
+  KAPF: [26.1526, -81.7753],   // Naples (FL)
+  KRSW: [26.5362, -81.7552],   // Fort Myers
+  KSRQ: [27.3954, -82.5544],   // Sarasota
+  KPIE: [27.9102, -82.6874],   // St. Pete/Clearwater
+
+  // Mid-Atlantic
+  KACY: [39.4576, -74.5772],   // Atlantic City
+  KMMU: [40.7994, -74.4149],   // Morristown (NJ)
+  KCDW: [40.8752, -74.2814],   // Caldwell/Essex (NJ)
 
   // Other
   KMSY: [29.9934, -90.2580],   // New Orleans
@@ -83,6 +123,19 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   KABQ: [35.0402, -106.6094],  // Albuquerque
   KTUL: [36.1984, -95.8881],   // Tulsa
   KOKC: [35.3931, -97.6007],   // Oklahoma City
+  KLIT: [34.7294, -92.2243],   // Little Rock
+  KJAN: [32.3112, -90.0759],   // Jackson (MS)
+  KBHM: [33.5629, -86.7535],   // Birmingham (AL)
+  KHSV: [34.6372, -86.7751],   // Huntsville (AL)
+  KCHS: [32.8986, -80.0405],   // Charleston (SC)
+  KSAV: [32.1276, -81.2021],   // Savannah (GA)
+  KRIC: [37.5052, -77.3197],   // Richmond (VA)
+  KORF: [36.8946, -76.2012],   // Norfolk (VA)
+  KPIT: [40.4915, -80.2329],   // Pittsburgh
+  KCLE: [41.4117, -81.8498],   // Cleveland
+  KCMH: [39.9980, -82.8919],   // Columbus (OH)
+  KMKE: [42.9472, -87.8966],   // Milwaukee
+  KDAB: [29.1799, -81.0581],   // Daytona Beach
 };
 
 // ─── Haversine ───────────────────────────────────────────────────────────────

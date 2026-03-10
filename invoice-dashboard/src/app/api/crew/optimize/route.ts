@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin, isAuthed } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
-import { buildSwapPlan, type CrewMember, type FlightLeg, type AirportAlias } from "@/lib/swapOptimizer";
+import { buildSwapPlan, getRequiredFlightSearches, getPoolFlightSearches, assignOncomingCrew, type CrewMember, type FlightLeg, type AirportAlias, type SwapAssignment, type OncomingPool } from "@/lib/swapOptimizer";
+import { DEFAULT_AIRPORT_ALIASES } from "@/lib/airportAliases";
 import { searchFlights, type FlightOffer } from "@/lib/amadeus";
+
+const BASE_URL_LOG = process.env.AMADEUS_BASE_URL?.includes("test") ? "TEST" : (process.env.AMADEUS_BASE_URL ? "PROD" : "TEST-default");
 
 export const dynamic = "force-dynamic";
 
@@ -20,6 +23,10 @@ export async function POST(req: NextRequest) {
   const body = await req.json();
   const swapDate = body.swap_date as string;
   const searchCommercial = body.search_flights === true;
+  // Accept swap_assignments directly from client (parsed from Excel upload)
+  const clientSwapAssignments = body.swap_assignments as Record<string, SwapAssignment> | undefined;
+  // Accept oncoming pool for crew-to-tail assignment
+  const clientOncomingPool = body.oncoming_pool as OncomingPool | undefined;
 
   if (!swapDate || !/^\d{4}-\d{2}-\d{2}$/.test(swapDate)) {
     return NextResponse.json({ error: "swap_date required (YYYY-MM-DD)" }, { status: 400 });
@@ -32,7 +39,7 @@ export async function POST(req: NextRequest) {
   const start = new Date(wedDate.getTime() - 3 * 24 * 60 * 60 * 1000).toISOString();
   const end = new Date(wedDate.getTime() + 3 * 24 * 60 * 60 * 1000).toISOString();
 
-  const [flightsRes, crewRes, aliasRes] = await Promise.all([
+  const [flightsRes, crewRes, aliasRes, rotationsRes] = await Promise.all([
     supa
       .from("flights")
       .select("id, tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, flight_type, pic, sic")
@@ -41,6 +48,12 @@ export async function POST(req: NextRequest) {
       .order("scheduled_departure"),
     supa.from("crew_members").select("*").eq("active", true),
     supa.from("airport_aliases").select("fbo_icao, commercial_icao, preferred"),
+    // Fallback: get crew rotations to build swap assignments if not provided by client
+    !clientSwapAssignments
+      ? supa.from("crew_rotations")
+          .select("crew_member_id, tail_number, rotation_start, rotation_end, crew_members(name, role)")
+          .order("rotation_start", { ascending: false })
+      : Promise.resolve({ data: null, error: null }),
   ]);
 
   if (flightsRes.error) {
@@ -73,57 +86,103 @@ export async function POST(req: NextRequest) {
     priority: (c.priority as number) ?? 0,
   }));
 
-  const aliases: AirportAlias[] = (aliasRes.data ?? []).map((a) => ({
+  // Merge DB aliases with defaults (DB takes precedence)
+  const dbAliases: AirportAlias[] = (aliasRes.data ?? []).map((a) => ({
     fbo_icao: a.fbo_icao as string,
     commercial_icao: a.commercial_icao as string,
     preferred: (a.preferred as boolean) ?? false,
   }));
+  const dbFboKeys = new Set(dbAliases.map((a) => `${a.fbo_icao}|${a.commercial_icao}`));
+  const aliases: AirportAlias[] = [
+    ...dbAliases,
+    ...DEFAULT_AIRPORT_ALIASES.filter((a) => !dbFboKeys.has(`${a.fbo_icao}|${a.commercial_icao}`)),
+  ];
 
-  // Optionally search for commercial flights
+  // Use client-provided swap assignments (from Excel upload), or fall back to crew_rotations
+  let swapAssignments: Record<string, SwapAssignment> = {};
+
+  if (clientSwapAssignments && Object.keys(clientSwapAssignments).length > 0) {
+    swapAssignments = clientSwapAssignments;
+  } else if (rotationsRes.data) {
+    // Fallback: reconstruct from crew_rotations (less reliable)
+    for (const rot of rotationsRes.data) {
+      const tail = rot.tail_number as string;
+      const memberArr = rot.crew_members as unknown as { name: string; role: string }[] | { name: string; role: string } | null;
+      const member = Array.isArray(memberArr) ? memberArr[0] : memberArr;
+      if (!member || !tail) continue;
+
+      if (!swapAssignments[tail]) {
+        swapAssignments[tail] = { oncoming_pic: null, oncoming_sic: null, offgoing_pic: null, offgoing_sic: null };
+      }
+      const sa = swapAssignments[tail];
+      const rotEnd = rot.rotation_end as string | null;
+      const isPic = member.role === "PIC";
+
+      if (rotEnd) {
+        if (isPic) sa.offgoing_pic = sa.offgoing_pic ?? member.name;
+        else sa.offgoing_sic = sa.offgoing_sic ?? member.name;
+      } else {
+        if (isPic) sa.oncoming_pic = sa.oncoming_pic ?? member.name;
+        else sa.oncoming_sic = sa.oncoming_sic ?? member.name;
+      }
+    }
+  }
+
+  const hasPool = clientOncomingPool && (clientOncomingPool.pic?.length > 0 || clientOncomingPool.sic?.length > 0);
+
+  // ── STEP 1: Search commercial flights ──────────────────────────────────────
+  // Search BEFORE assignment so we have real costs for crew-to-tail matching.
+  // For oncoming pool: search ALL pool crew home airports → ALL swap locations.
+  // For offgoing: search swap locations → home airports.
   let commercialFlights: Map<string, FlightOffer[]> | undefined;
 
   if (searchCommercial) {
     commercialFlights = new Map();
-
-    // Determine unique origin-destination pairs needed
     const searchPairs = new Set<string>();
 
-    // For each crew member's home airports → each swap candidate airport
-    const tailAirports = new Set<string>();
-    for (const f of flights) {
-      if (f.scheduled_departure.startsWith(swapDate)) {
-        if (f.departure_icao) tailAirports.add(f.departure_icao);
-        if (f.arrival_icao) tailAirports.add(f.arrival_icao);
+    // Pool searches: every pool member's home → every swap location
+    if (hasPool) {
+      const poolSearches = getPoolFlightSearches({
+        oncomingPool: clientOncomingPool!,
+        aliases,
+        swapAssignments,
+        flights,
+        swapDate,
+      });
+      for (const s of poolSearches) {
+        searchPairs.add(`${s.origin}-${s.destination}`);
       }
     }
 
-    for (const crew of crewRoster) {
-      for (const home of crew.home_airports) {
-        for (const apt of tailAirports) {
-          // Strip K prefix for IATA
-          const homeIata = home.length === 4 && home.startsWith("K") ? home.slice(1) : home;
-          const aptIata = apt.length === 4 && apt.startsWith("K") ? apt.slice(1) : apt;
-          if (homeIata !== aptIata) {
-            searchPairs.add(`${homeIata}-${aptIata}`);
-            searchPairs.add(`${aptIata}-${homeIata}`); // return trip
-          }
-        }
-      }
+    // Offgoing searches: swap locations → offgoing crew home airports
+    const offgoingSearches = getRequiredFlightSearches({
+      crewRoster,
+      aliases,
+      swapAssignments,
+      flights,
+      swapDate,
+    });
+    for (const s of offgoingSearches) {
+      searchPairs.add(`${s.origin}-${s.destination}`);
     }
 
-    // Limit searches to avoid burning API quota
-    const pairsArray = Array.from(searchPairs).slice(0, 20);
+    const pairsArray = Array.from(searchPairs).slice(0, 120);
+    let searchSuccessCount = 0;
+    let searchFailCount = 0;
 
-    // Search in parallel (batches of 5)
-    for (let i = 0; i < pairsArray.length; i += 5) {
-      const batch = pairsArray.slice(i, i + 5);
+    console.log(`[Swap Optimizer] Searching ${pairsArray.length} route pairs via Amadeus (${BASE_URL_LOG})`);
+
+    // Search in parallel (batches of 8)
+    for (let i = 0; i < pairsArray.length; i += 8) {
+      const batch = pairsArray.slice(i, i + 8);
       const results = await Promise.all(
         batch.map(async (pair) => {
           const [orig, dest] = pair.split("-");
           try {
             const result = await searchFlights({ origin: orig, destination: dest, date: swapDate, max: 5 });
             return { key: `${orig}-${dest}-${swapDate}`, offers: result.offers };
-          } catch {
+          } catch (e) {
+            console.warn(`[Swap Optimizer] Search failed ${orig}->${dest}:`, e instanceof Error ? e.message : e);
             return { key: `${orig}-${dest}-${swapDate}`, offers: [] };
           }
         }),
@@ -131,23 +190,49 @@ export async function POST(req: NextRequest) {
       for (const r of results) {
         if (r.offers.length > 0) {
           commercialFlights.set(r.key, r.offers);
+          searchSuccessCount++;
+        } else {
+          searchFailCount++;
         }
       }
     }
+
+    console.log(`[Swap Optimizer] Amadeus results: ${searchSuccessCount} routes with flights, ${searchFailCount} empty, ${commercialFlights.size} total cached`);
   }
 
-  // Run optimizer
+  // ── STEP 2: Assign oncoming crew using ACTUAL transport costs ──────────────
+  let assignmentResult: ReturnType<typeof assignOncomingCrew> | null = null;
+
+  if (hasPool) {
+    assignmentResult = assignOncomingCrew({
+      swapAssignments,
+      oncomingPool: clientOncomingPool!,
+      crewRoster,
+      flights,
+      swapDate,
+      aliases,
+      commercialFlights,
+    });
+    swapAssignments = assignmentResult.assignments;
+  }
+
+  // ── STEP 3: Run transport optimizer for all assigned crew ──────────────────
   const result = buildSwapPlan({
     flights,
     crewRoster,
     aliases,
     swapDate,
     commercialFlights,
+    swapAssignments: Object.keys(swapAssignments).length > 0 ? swapAssignments : undefined,
   });
 
   return NextResponse.json({
     ok: true,
     ...result,
     commercial_flights_searched: searchCommercial ? (commercialFlights?.size ?? 0) : 0,
+    crew_assignment: assignmentResult ? {
+      standby: assignmentResult.standby,
+      details: assignmentResult.details,
+    } : undefined,
   });
 }

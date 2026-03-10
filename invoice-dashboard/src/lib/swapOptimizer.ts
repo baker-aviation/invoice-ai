@@ -1,17 +1,31 @@
 /**
- * Crew Swap Optimizer
+ * Crew Swap Optimizer v3
  *
- * Given a Wednesday swap day, flight schedule, crew roster, and airport aliases:
- * 1. For each tail, determine where the aircraft will be on Wednesday
- * 2. Identify which crew is going off and which is coming on
- * 3. For each swap, find the best airport and transport options
- * 4. Score and rank swap plans by cost, reliability, and compliance
+ * Full crew swap planning engine. For each crew member, evaluates all viable
+ * transport options (commercial flights, Uber, rental car, drive), scores them
+ * on cost + reliability + duty efficiency, and picks the best combination.
+ *
+ * Enforces: 14hr duty day, midnight home deadline, FBO arrival buffers,
+ * backup flight requirements, aircraft never unattended, and more.
+ *
+ * See swapRules.ts for all constants.
  */
 
 import { estimateDriveTime, type DriveEstimate } from "./driveTime";
+import { getAirportTimezone } from "./airportTimezones";
 import type { FlightOffer } from "./amadeus";
+import {
+  MAX_DUTY_HOURS, DUTY_ON_BEFORE_COMMERCIAL, DEPLANE_BUFFER,
+  FBO_ARRIVAL_BUFFER, FBO_ARRIVAL_BUFFER_PREFERRED, DUTY_OFF_AFTER_LAST_LEG,
+  INTERNATIONAL_DUTY_OFF, AIRPORT_SECURITY_BUFFER, RENTAL_RETURN_BUFFER,
+  EARLIEST_DUTY_ON_HOUR, UBER_MAX_MINUTES, RENTAL_MAX_MINUTES,
+  BUDGET_CARRIERS, PREFERRED_HUBS, BACKUP_FLIGHT_MIN_GAP, MAX_CONNECTIONS,
+  EARLY_LATE_BONUS_PIC, EARLY_LATE_BONUS_SIC,
+} from "./swapRules";
 
-// ─── Types ───────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// LAYER 1: Types
+// ═══════════════════════════════════════════════════════════════════════════════
 
 export type CrewMember = {
   id: string;
@@ -43,159 +57,194 @@ export type AirportAlias = {
   preferred: boolean;
 };
 
-export type SwapOption = {
-  swap_airport: string;           // Where the swap happens (FBO airport)
-  commercial_airport: string;     // Nearest commercial airport
-  is_live_leg_adjacent: boolean;  // Adjacent to charter/revenue flight
-  gap_minutes: number;            // Time available for swap (-1 = no constraint)
-  // Transport options for oncoming crew
-  oncoming_transport: TransportOption[];
-  // Transport options for offgoing crew
-  offgoing_transport: TransportOption[];
-  // Drive from home to commercial airport
-  oncoming_drive: DriveEstimate | null;
-  offgoing_drive: DriveEstimate | null;
-  // Overall score (higher = better)
-  score: number;
-  score_breakdown: ScoreBreakdown;
+export type SwapAssignment = {
+  oncoming_pic: string | null;
+  oncoming_sic: string | null;
+  offgoing_pic: string | null;
+  offgoing_sic: string | null;
 };
 
-export type TransportOption = {
-  type: "commercial_flight" | "drive" | "positioning_flight";
-  from: string;
-  to: string;
-  departure_time?: string;
-  arrival_time?: string;
-  duration_minutes: number;
-  cost_estimate: number;
-  details: string;
-  flight_offer?: FlightOffer;
-};
-
-export type ScoreBreakdown = {
-  cost: number;          // Lower cost = higher score
-  reliability: number;   // More backup options = higher
-  convenience: number;   // Shorter travel = higher
-  compliance: number;    // Duty day / rest compliance
-  fairness: number;      // Standby rotation balance
-};
-
-export type TailSwapPlan = {
+/** One row in the swap sheet — one crew member's travel plan */
+export type CrewSwapRow = {
+  name: string;
+  home_airports: string[];
+  role: "PIC" | "SIC";
+  direction: "oncoming" | "offgoing";
+  aircraft_type: string;
   tail_number: string;
-  swap_date: string;
-  aircraft_type: string | null;
-  // Current crew going off
-  offgoing_pic: CrewMember | null;
-  offgoing_sic: CrewMember | null;
-  // Incoming crew coming on
-  oncoming_pic: CrewMember | null;
-  oncoming_sic: CrewMember | null;
-  // Wednesday schedule
-  wednesday_legs: FlightLeg[];
-  // Ranked swap options
-  options: SwapOption[];
-  // Warnings
+  swap_location: string | null;
+  travel_type: "commercial" | "uber" | "rental_car" | "drive" | "none";
+  flight_number: string | null;
+  departure_time: string | null;
+  arrival_time: string | null;
+  travel_from: string | null;
+  travel_to: string | null;
+  cost_estimate: number | null;
+  duration_minutes: number | null;
+  available_time: string | null;
+  duty_on_time: string | null;
+  duty_off_time: string | null;
+  is_checkairman: boolean;
+  is_skillbridge: boolean;
+  notes: string | null;
   warnings: string[];
+  drive_estimate: DriveEstimate | null;
+  flight_offer: FlightOffer | null;
+  alt_flights: { flight_number: string; dep: string; arr: string; price: string }[];
+  backup_flight: string | null;
+  score: number;
 };
 
 export type SwapPlanResult = {
   swap_date: string;
-  plans: TailSwapPlan[];
-  unassigned_crew: CrewMember[];
+  rows: CrewSwapRow[];
+  warnings: string[];
+  total_cost: number;
+  plan_score: number;
+};
+
+// ─── Internal Types ──────────────────────────────────────────────────────────
+
+type TransportCandidate = {
+  type: "commercial" | "uber" | "rental_car" | "drive" | "none";
+  flightNumber: string | null;
+  depTime: Date | null;
+  arrTime: Date | null;
+  from: string;
+  to: string;
+  cost: number;
+  durationMin: number;
+  isDirect: boolean;
+  isBudgetCarrier: boolean;
+  hubConnection: boolean;
+  connectionCount: number;
+  offer: FlightOffer | null;
+  drive: DriveEstimate | null;
+  fboArrivalTime: Date | null;
+  dutyOnTime: Date | null;
+  score: number;
+  backups: TransportCandidate[];
+};
+
+type SwapPoint = {
+  icao: string;
+  time: Date;
+  position: "before_live" | "after_live" | "between_legs" | "idle";
+  isAdjacentLive: boolean;
+};
+
+type CrewTask = {
+  name: string;
+  crewMember: CrewMember | null;
+  role: "PIC" | "SIC";
+  direction: "oncoming" | "offgoing";
+  tail: string;
+  aircraftType: string;
+  swapPoint: SwapPoint;
+  homeAirports: string[];
+  candidates: TransportCandidate[];
+  best: TransportCandidate | null;
   warnings: string[];
 };
 
-// ─── Constants ───────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// LAYER 2: Timing Engine
+// ═══════════════════════════════════════════════════════════════════════════════
 
 const LIVE_TYPES = new Set(["charter", "revenue", "owner"]);
-const MAX_DUTY_HOURS = 14;
-const MIN_REST_HOURS = 10;
-
-// Score weights
-const W_COST = 30;
-const W_RELIABILITY = 25;
-const W_CONVENIENCE = 25;
-const W_COMPLIANCE = 15;
-const W_FAIRNESS = 5;
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function isLiveType(type: string | null): boolean {
   return !!type && LIVE_TYPES.has(type.toLowerCase());
 }
 
-function isWednesday(iso: string, wedDate: string): boolean {
-  return iso.slice(0, 10) === wedDate;
+function ms(minutes: number): number { return minutes * 60_000; }
+
+/** Get local hour at an airport for a UTC timestamp */
+function getLocalHour(utcDate: Date, icao: string): number {
+  const tz = getAirportTimezone(icao) ?? "America/New_York";
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz, hour: "numeric", hour12: false,
+  }).formatToParts(utcDate);
+  return parseInt(parts.find(p => p.type === "hour")?.value ?? "12");
 }
 
-/** Find the commercial airport for an FBO airport using aliases */
-function findCommercialAirport(
-  fboIcao: string,
-  aliases: AirportAlias[],
-): string {
-  // Check aliases
-  const alias = aliases.find(
-    (a) => a.fbo_icao.toUpperCase() === fboIcao.toUpperCase() && a.preferred,
-  );
-  if (alias) return alias.commercial_icao;
+/** Get midnight local at an airport on the NEXT day after dateStr (i.e. end of that day) */
+function midnightUtc(icao: string, dateStr: string): Date {
+  const tz = getAirportTimezone(icao) ?? "America/New_York";
+  // We need to find UTC time for midnight local on the day AFTER dateStr
+  // (midnight = end of Wednesday = start of Thursday)
+  const nextDay = new Date(dateStr);
+  nextDay.setDate(nextDay.getDate() + 1);
+  const ndStr = nextDay.toISOString().slice(0, 10);
 
-  // Fallback: any alias
-  const anyAlias = aliases.find(
-    (a) => a.fbo_icao.toUpperCase() === fboIcao.toUpperCase(),
-  );
-  if (anyAlias) return anyAlias.commercial_icao;
-
-  // No alias — assume the airport itself has commercial service
-  return fboIcao;
+  // Get timezone offset at that local midnight
+  const refDate = new Date(`${ndStr}T00:00:00Z`);
+  const utcStr = refDate.toLocaleString("en-US", { timeZone: "UTC" });
+  const localStr = refDate.toLocaleString("en-US", { timeZone: tz });
+  const offsetMs = new Date(utcStr).getTime() - new Date(localStr).getTime();
+  return new Date(refDate.getTime() + offsetMs);
 }
 
-/** Find closest home airport for a crew member to a given airport */
-function closestHomeAirport(
-  crew: CrewMember,
-  targetIcao: string,
-): { airport: string; drive: DriveEstimate | null } {
-  let best: { airport: string; drive: DriveEstimate | null } = {
-    airport: crew.home_airports[0] ?? "???",
-    drive: null,
-  };
-  let bestMiles = Infinity;
-
-  for (const home of crew.home_airports) {
-    // Add K prefix for ICAO if needed
-    const homeIcao = home.length === 3 ? `K${home}` : home;
-    const drive = estimateDriveTime(homeIcao, targetIcao);
-    if (drive && drive.straight_line_miles < bestMiles) {
-      bestMiles = drive.straight_line_miles;
-      best = { airport: home, drive };
-    }
-  }
-  return best;
+/** Duty-on time for commercial flight from home airport */
+function dutyOnForCommercial(flightDepTime: Date): Date {
+  return new Date(flightDepTime.getTime() - ms(DUTY_ON_BEFORE_COMMERCIAL));
 }
 
-/** Normalize a name for fuzzy matching: lowercase, handle "Last, First" → "first last" */
+/** Duty-on with drive to non-home airport first */
+function dutyOnWithDrive(driveStartTime: Date): Date {
+  return driveStartTime;
+}
+
+/** Duty-off for offgoing crew */
+function dutyOff(lastLegArrival: Date, isInternational: boolean): Date {
+  const buffer = isInternational ? INTERNATIONAL_DUTY_OFF : DUTY_OFF_AFTER_LAST_LEG;
+  return new Date(lastLegArrival.getTime() + ms(buffer));
+}
+
+/** When crew arrives at FBO after commercial flight + deplane + ground transport */
+function fboArrivalAfterCommercial(
+  flightArrTime: Date,
+  driveToFboMin: number,
+): Date {
+  return new Date(flightArrTime.getTime() + ms(DEPLANE_BUFFER) + ms(driveToFboMin));
+}
+
+/** Latest departure time for offgoing crew to make it home by midnight */
+function latestDepartureForMidnight(
+  homeMidnight: Date,
+  flightDurationMin: number,
+  hasRentalReturn: boolean,
+): Date {
+  // Home arrival = flight arrival + deplane. Must be before midnight.
+  // So flight must arrive by midnight - deplane_buffer
+  // Flight departure = arrival - duration
+  const arrivalDeadline = new Date(homeMidnight.getTime() - ms(DEPLANE_BUFFER));
+  return new Date(arrivalDeadline.getTime() - ms(flightDurationMin));
+}
+
+/** Check 14hr duty day limit */
+function checkDutyDay(dutyOn: Date, dutyEnd: Date): { valid: boolean; hours: number } {
+  const hours = (dutyEnd.getTime() - dutyOn.getTime()) / (60 * 60_000);
+  return { valid: hours <= MAX_DUTY_HOURS, hours };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LAYER 3: Transport Candidate Builder
+// ═══════════════════════════════════════════════════════════════════════════════
+
 function normalizeName(name: string): string {
   let n = name.trim().toLowerCase();
-  // Handle "Last, First" or "Last,First"
   if (n.includes(",")) {
     const parts = n.split(",").map((p) => p.trim());
-    if (parts.length === 2) {
-      n = `${parts[1]} ${parts[0]}`;
-    }
+    if (parts.length === 2) n = `${parts[1]} ${parts[0]}`;
   }
-  // Remove extra whitespace
-  n = n.replace(/\s+/g, " ");
-  return n;
+  return n.replace(/\s+/g, " ");
 }
 
-/** Find crew member by fuzzy name match */
 function findCrewByName(roster: CrewMember[], name: string, role: "PIC" | "SIC"): CrewMember | null {
   const norm = normalizeName(name);
-
-  // 1. Exact normalized match
   const exact = roster.find((c) => c.role === role && normalizeName(c.name) === norm);
   if (exact) return exact;
-
-  // 2. Last name match (for "Williamson" matching "Wesley Williamson")
   const normParts = norm.split(" ");
   const lastName = normParts[normParts.length - 1];
   const lastNameMatches = roster.filter((c) => {
@@ -204,86 +253,965 @@ function findCrewByName(roster: CrewMember[], name: string, role: "PIC" | "SIC")
     return cParts[cParts.length - 1] === lastName;
   });
   if (lastNameMatches.length === 1) return lastNameMatches[0];
-
-  // 3. Contains match (either direction)
-  const contains = roster.find(
+  return roster.find(
     (c) => c.role === role && (normalizeName(c.name).includes(norm) || norm.includes(normalizeName(c.name))),
-  );
-  if (contains) return contains;
-
-  return null;
+  ) ?? null;
 }
 
-/** Check if crew member is qualified for an aircraft type */
-function isQualified(crew: CrewMember, aircraftType: string | null): boolean {
-  if (!aircraftType || aircraftType === "unknown") return true;
-  if (crew.aircraft_types.length === 0) return true;
-  return crew.aircraft_types.includes(aircraftType) || crew.aircraft_types.includes("dual");
+function findCommercialAirport(fboIcao: string, aliases: AirportAlias[]): string {
+  const upper = fboIcao.toUpperCase();
+  const preferred = aliases.find((a) => a.fbo_icao.toUpperCase() === upper && a.preferred);
+  if (preferred) return preferred.commercial_icao;
+  const any = aliases.find((a) => a.fbo_icao.toUpperCase() === upper);
+  return any ? any.commercial_icao : fboIcao;
 }
 
-// ─── Score computation ───────────────────────────────────────────────────────
-
-function computeScore(option: SwapOption): { score: number; breakdown: ScoreBreakdown } {
-  // Cost score: estimate total transport cost
-  const totalCost =
-    option.oncoming_transport.reduce((s, t) => s + t.cost_estimate, 0) +
-    option.offgoing_transport.reduce((s, t) => s + t.cost_estimate, 0);
-  // $0 = 100, $1000+ = 0
-  const costScore = Math.max(0, 100 - totalCost / 10);
-
-  // Reliability: live leg adjacency + gap time
-  let reliabilityScore = 50;
-  if (option.is_live_leg_adjacent) reliabilityScore += 30;
-  if (option.gap_minutes > 180) reliabilityScore += 20;
-  else if (option.gap_minutes > 120) reliabilityScore += 10;
-  reliabilityScore = Math.min(100, reliabilityScore);
-
-  // Convenience: total travel time
-  const totalMinutes =
-    option.oncoming_transport.reduce((s, t) => s + t.duration_minutes, 0) +
-    option.offgoing_transport.reduce((s, t) => s + t.duration_minutes, 0);
-  // 0 min = 100, 600+ min = 0
-  const convenienceScore = Math.max(0, 100 - totalMinutes / 6);
-
-  // Compliance: gap vs duty day
-  const complianceScore = option.gap_minutes >= 120 ? 100 : option.gap_minutes >= 60 ? 70 : 30;
-
-  // Fairness: placeholder (populated by optimizer when assigning crew)
-  const fairnessScore = 50;
-
-  const breakdown: ScoreBreakdown = {
-    cost: Math.round(costScore),
-    reliability: Math.round(reliabilityScore),
-    convenience: Math.round(convenienceScore),
-    compliance: Math.round(complianceScore),
-    fairness: fairnessScore,
-  };
-
-  const score =
-    (breakdown.cost * W_COST +
-      breakdown.reliability * W_RELIABILITY +
-      breakdown.convenience * W_CONVENIENCE +
-      breakdown.compliance * W_COMPLIANCE +
-      breakdown.fairness * W_FAIRNESS) /
-    (W_COST + W_RELIABILITY + W_CONVENIENCE + W_COMPLIANCE + W_FAIRNESS);
-
-  return { score: Math.round(score), breakdown };
+/** Get all commercial airports for an FBO (preferred first) */
+function findAllCommercialAirports(fboIcao: string, aliases: AirportAlias[]): string[] {
+  const upper = fboIcao.toUpperCase();
+  const matching = aliases.filter((a) => a.fbo_icao.toUpperCase() === upper);
+  if (matching.length === 0) return [fboIcao];
+  // Preferred first
+  const sorted = [...matching].sort((a, b) => (b.preferred ? 1 : 0) - (a.preferred ? 1 : 0));
+  return sorted.map((a) => a.commercial_icao);
 }
 
-// ─── Main optimizer ──────────────────────────────────────────────────────────
+const ICAO_IATA: Record<string, string> = {
+  CYYZ: "YYZ", CYUL: "YUL", CYVR: "YVR", CYOW: "YOW", CYYC: "YYC",
+  CYEG: "YEG", CYWG: "YWG", CYHZ: "YHZ", CYQB: "YQB",
+  MMMX: "MEX", MMUN: "CUN", MMMY: "MTY", MMGL: "GDL", MMSD: "SJD",
+  MBPV: "MHH", MYNN: "NAS", MKJP: "KIN", TJSJ: "SJU", TNCM: "SXM",
+  MROC: "SJO", MRLB: "LIR", MHTG: "TGU", MGGT: "GUA", MPTO: "PTY",
+  TXKF: "BDA", MYGF: "FPO",
+};
+
+function toIata(icao: string): string {
+  if (ICAO_IATA[icao]) return ICAO_IATA[icao];
+  return icao.length === 4 && icao.startsWith("K") ? icao.slice(1) : icao;
+}
+
+function toIcao(code: string): string {
+  return code.length === 3 ? `K${code}` : code;
+}
+
+function parseDuration(iso: string): number {
+  const m = iso.match(/PT(?:(\d+)H)?(?:(\d+)M)?/);
+  if (!m) return 0;
+  return (parseInt(m[1] ?? "0") * 60) + parseInt(m[2] ?? "0");
+}
+
+/** Build all transport candidates for a crew task */
+function buildCandidates(
+  task: CrewTask,
+  aliases: AirportAlias[],
+  commercialFlights: Map<string, FlightOffer[]> | undefined,
+  swapDate: string,
+): TransportCandidate[] {
+  const candidates: TransportCandidate[] = [];
+  const swapIcao = task.swapPoint.icao;
+  const commAirports = findAllCommercialAirports(swapIcao, aliases);
+
+  // Determine deadline/target times
+  const homeMidnight = task.homeAirports[0]
+    ? midnightUtc(toIcao(task.homeAirports[0]), swapDate)
+    : midnightUtc(swapIcao, swapDate);
+
+  for (const homeApt of task.homeAirports) {
+    const homeIata = toIata(homeApt);
+    const homeIcao = toIcao(homeApt);
+
+    // ── Ground transport options ──────────────────────────────────────────
+    const drive = estimateDriveTime(
+      task.direction === "oncoming" ? homeIcao : swapIcao,
+      task.direction === "oncoming" ? swapIcao : homeIcao,
+    );
+
+    if (drive && drive.estimated_drive_minutes <= RENTAL_MAX_MINUTES) {
+      const driveMin = drive.estimated_drive_minutes;
+      let type: "uber" | "rental_car" | "drive";
+      let label: string;
+      let cost: number;
+
+      if (driveMin <= UBER_MAX_MINUTES) {
+        type = "uber";
+        label = "UBER";
+        // Uber estimate: ~$2-3/mile for short rides
+        cost = Math.max(25, Math.round(drive.estimated_drive_miles * 2.0));
+      } else {
+        type = "rental_car";
+        label = "RENTAL";
+        // Rental: ~$80/day + $0.50/mile for gas
+        cost = 80 + Math.round(drive.estimated_drive_miles * 0.50);
+      }
+
+      // For oncoming: they need to arrive at FBO by the swap point time - buffer
+      let depTime: Date | null = null;
+      let arrTime: Date | null = null;
+      let fboArr: Date | null = null;
+      let dutyOn: Date | null = null;
+
+      if (task.direction === "oncoming") {
+        // Work backwards from when they need to be at FBO
+        const mustBeAtFbo = new Date(task.swapPoint.time.getTime() - ms(FBO_ARRIVAL_BUFFER));
+        arrTime = mustBeAtFbo;
+        depTime = new Date(arrTime.getTime() - ms(driveMin));
+        fboArr = arrTime;
+        // Duty-on: for Uber < 1hr from home, no adjustment. Otherwise, start of drive.
+        dutyOn = type === "uber" ? fboArr : depTime;
+      } else {
+        // Offgoing: leaving the aircraft, driving home
+        const earliestLeave = task.swapPoint.time;
+        depTime = earliestLeave;
+        arrTime = new Date(depTime.getTime() + ms(driveMin));
+        fboArr = null;
+        dutyOn = null;
+      }
+
+      candidates.push({
+        type,
+        flightNumber: label,
+        depTime,
+        arrTime,
+        from: task.direction === "oncoming" ? homeIata : toIata(swapIcao),
+        to: task.direction === "oncoming" ? toIata(swapIcao) : homeIata,
+        cost,
+        durationMin: driveMin,
+        isDirect: true,
+        isBudgetCarrier: false,
+        hubConnection: false,
+        connectionCount: 0,
+        offer: null,
+        drive,
+        fboArrivalTime: fboArr,
+        dutyOnTime: dutyOn,
+        score: 0,
+        backups: [],
+      });
+    }
+
+    // ── Commercial flight options ─────────────────────────────────────────
+    if (!commercialFlights) continue;
+
+    for (const commApt of commAirports) {
+      const commIata = toIata(commApt);
+      const driveToFbo = estimateDriveTime(
+        task.direction === "oncoming" ? toIcao(commIata) : swapIcao,
+        task.direction === "oncoming" ? swapIcao : toIcao(commIata),
+      );
+      const driveToFboMin = driveToFbo?.estimated_drive_minutes ?? 0;
+
+      let originIata: string;
+      let destIata: string;
+      if (task.direction === "oncoming") {
+        originIata = homeIata;
+        destIata = commIata;
+      } else {
+        originIata = commIata;
+        destIata = homeIata;
+      }
+
+      // Try exact date and also day before (for early arrivals)
+      const datesToTry = [swapDate];
+      const key = `${originIata}-${destIata}-${swapDate}`;
+      const offers = commercialFlights.get(key) ?? [];
+
+      for (const offer of offers) {
+        const segs = offer.itineraries[0]?.segments ?? [];
+        if (segs.length === 0) continue;
+
+        // Reject 2+ connections
+        if (segs.length - 1 > MAX_CONNECTIONS) continue;
+
+        const firstSeg = segs[0];
+        const lastSeg = segs[segs.length - 1];
+        const flightDep = new Date(firstSeg.departure.at);
+        const flightArr = new Date(lastSeg.arrival.at);
+        const totalDuration = segs.reduce((s, sg) => s + parseDuration(sg.duration), 0);
+        const flightNum = segs.map((s) => `${s.carrierCode}${s.number}`).join("/");
+        const isDirect = segs.length === 1;
+        const isBudget = segs.some((s) => BUDGET_CARRIERS.includes(s.carrierCode));
+        const isHub = segs.length > 1 && segs.some((s) =>
+          PREFERRED_HUBS.includes(s.arrival.iataCode) || PREFERRED_HUBS.includes(s.departure.iataCode),
+        );
+
+        let fboArr: Date | null = null;
+        let dutyOn: Date | null = null;
+        const cost = parseFloat(offer.price.total);
+
+        // Add ground transport cost to/from commercial airport
+        let groundCost = 0;
+        if (driveToFboMin > 0 && driveToFboMin <= UBER_MAX_MINUTES) {
+          groundCost = Math.max(25, Math.round((driveToFbo?.estimated_drive_miles ?? 0) * 2.0));
+        } else if (driveToFboMin > 0) {
+          groundCost = 80 + Math.round((driveToFbo?.estimated_drive_miles ?? 0) * 0.50);
+        }
+
+        if (task.direction === "oncoming") {
+          fboArr = fboArrivalAfterCommercial(flightArr, driveToFboMin);
+          dutyOn = dutyOnForCommercial(flightDep);
+
+          // Check: does crew arrive at FBO in time?
+          const mustBeAtFbo = new Date(task.swapPoint.time.getTime() - ms(FBO_ARRIVAL_BUFFER));
+          if (fboArr.getTime() > mustBeAtFbo.getTime()) {
+            continue; // Too late
+          }
+
+          // Check: duty-on not before 0400 local
+          const localHour = getLocalHour(dutyOn, homeIcao);
+          if (localHour < EARLIEST_DUTY_ON_HOUR && localHour >= 0) {
+            // Soft penalty, don't reject
+          }
+
+          // Check 14hr duty day (assuming they work until end of day ~2200L)
+          // We'll do a rough check; the full check happens with actual leg schedule
+        } else {
+          // Offgoing: check if they can make this flight
+          // They're released from duty at swap point time
+          const releaseTime = task.swapPoint.time;
+          // Need to get to commercial airport + security buffer
+          const buffer = driveToFboMin > UBER_MAX_MINUTES ? RENTAL_RETURN_BUFFER : AIRPORT_SECURITY_BUFFER;
+          const needAtAirport = new Date(flightDep.getTime() - ms(buffer));
+          const needLeaveAircraft = new Date(needAtAirport.getTime() - ms(driveToFboMin));
+
+          if (needLeaveAircraft.getTime() < releaseTime.getTime()) {
+            continue; // Can't make this flight
+          }
+
+          // Check midnight deadline
+          const homeArr = new Date(flightArr.getTime() + ms(DEPLANE_BUFFER));
+          if (homeArr.getTime() > homeMidnight.getTime()) {
+            // Skill-Bridge SIC gets Thursday
+            if (task.crewMember?.is_skillbridge && task.role === "SIC") {
+              const thurMidnight = new Date(homeMidnight.getTime() + 24 * 60 * 60_000);
+              if (homeArr.getTime() > thurMidnight.getTime()) continue;
+            } else {
+              continue; // Won't make midnight
+            }
+          }
+          fboArr = null;
+          dutyOn = null;
+        }
+
+        const candidate: TransportCandidate = {
+          type: "commercial",
+          flightNumber: flightNum,
+          depTime: flightDep,
+          arrTime: flightArr,
+          from: firstSeg.departure.iataCode,
+          to: lastSeg.arrival.iataCode,
+          cost: cost + groundCost,
+          durationMin: totalDuration,
+          isDirect,
+          isBudgetCarrier: isBudget,
+          hubConnection: isHub,
+          connectionCount: segs.length - 1,
+          offer,
+          drive: driveToFbo,
+          fboArrivalTime: fboArr,
+          dutyOnTime: dutyOn,
+          score: 0,
+          backups: [],
+        };
+
+        candidates.push(candidate);
+      }
+    }
+  }
+
+  // If no candidates found, add a "none" placeholder
+  if (candidates.length === 0) {
+    candidates.push({
+      type: "none",
+      flightNumber: null,
+      depTime: null,
+      arrTime: null,
+      from: task.homeAirports[0] ? toIata(task.homeAirports[0]) : "???",
+      to: toIata(task.swapPoint.icao),
+      cost: 0,
+      durationMin: 0,
+      isDirect: false,
+      isBudgetCarrier: false,
+      hubConnection: false,
+      connectionCount: 0,
+      offer: null,
+      drive: null,
+      fboArrivalTime: null,
+      dutyOnTime: null,
+      score: 0,
+      backups: [],
+    });
+  }
+
+  return candidates;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LAYER 4: Scoring Engine
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** Find backup flights for a commercial candidate */
+function findBackups(
+  primary: TransportCandidate,
+  allCandidates: TransportCandidate[],
+): TransportCandidate[] {
+  if (primary.type !== "commercial" || !primary.depTime) return [];
+
+  return allCandidates.filter((c) => {
+    if (c === primary) return false;
+    if (c.type !== "commercial") return false;
+    if (!c.depTime || !primary.depTime) return false;
+    // Backup must depart at least BACKUP_FLIGHT_MIN_GAP after primary
+    const gap = (c.depTime.getTime() - primary.depTime.getTime()) / 60_000;
+    return gap >= BACKUP_FLIGHT_MIN_GAP;
+  }).slice(0, 3);
+}
+
+/** Score a single transport candidate (0-100, higher = better) */
+function scoreCandidate(
+  c: TransportCandidate,
+  task: CrewTask,
+  pairCandidate: TransportCandidate | null, // PIC's choice, for SIC pairing bonus
+): number {
+  if (c.type === "none") return 0;
+
+  let score = 50; // baseline
+
+  // ── Cost scoring (lower cost = higher score) ───────────────────────────
+  // $0 = +25, $300 = +10, $600+ = 0
+  const costPenalty = Math.max(0, 25 - Math.round(c.cost / 25));
+  score += costPenalty;
+
+  // ── Reliability scoring ────────────────────────────────────────────────
+  if (c.type === "uber" || c.type === "rental_car") {
+    score += 15; // Ground transport is highly reliable
+  } else if (c.type === "commercial") {
+    if (c.isDirect) score += 12;
+    else if (c.hubConnection) score += 8;
+    else score += 3; // non-hub connection
+
+    if (c.isBudgetCarrier) score -= 8;
+
+    // Backup flight availability
+    if (c.backups.length >= 2) score += 8;
+    else if (c.backups.length === 1) score += 4;
+    else score -= 5; // No backup
+  }
+
+  // ── FBO arrival buffer (oncoming only) ─────────────────────────────────
+  if (task.direction === "oncoming" && c.fboArrivalTime) {
+    const bufferMin = (task.swapPoint.time.getTime() - c.fboArrivalTime.getTime()) / 60_000;
+    if (bufferMin >= FBO_ARRIVAL_BUFFER_PREFERRED) score += 5;
+    else if (bufferMin >= FBO_ARRIVAL_BUFFER) score += 2;
+    else score -= 10; // Cutting it close
+  }
+
+  // ── Duty-on timing (avoid before 0400L) ────────────────────────────────
+  if (c.dutyOnTime && task.homeAirports[0]) {
+    const localHour = getLocalHour(c.dutyOnTime, toIcao(task.homeAirports[0]));
+    if (localHour < EARLIEST_DUTY_ON_HOUR && localHour >= 0) {
+      score -= 10; // Early duty-on penalty
+    }
+  }
+
+  // ── PIC+SIC same flight bonus ──────────────────────────────────────────
+  if (pairCandidate && c.type === "commercial" && pairCandidate.type === "commercial") {
+    if (c.flightNumber === pairCandidate.flightNumber) {
+      score += 10; // Same flight = shared ground transport, easier coordination
+    } else if (c.depTime && pairCandidate.depTime) {
+      const timeDiff = Math.abs(c.depTime.getTime() - pairCandidate.depTime.getTime()) / 60_000;
+      if (timeDiff <= 120) score += 5; // Similar arrival times
+    }
+  }
+
+  // ── Offgoing: prefer later flights (1700-1800L ideal) ──────────────────
+  if (task.direction === "offgoing" && c.depTime) {
+    const localHour = getLocalHour(c.depTime, task.swapPoint.icao);
+    if (localHour >= 17 && localHour <= 18) score += 5;
+    else if (localHour >= 15 && localHour <= 20) score += 2;
+  }
+
+  // ── Swap adjacent to live leg bonus ────────────────────────────────────
+  if (task.swapPoint.isAdjacentLive) score += 5;
+
+  return Math.max(0, Math.min(100, score));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LAYER 5: Combination Optimizer
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** For each tail, find the best combination of transport for all crew */
+function optimizeTail(
+  tasks: CrewTask[],
+  aliases: AirportAlias[],
+  commercialFlights: Map<string, FlightOffer[]> | undefined,
+  swapDate: string,
+): void {
+  // Build candidates for each task
+  for (const task of tasks) {
+    task.candidates = buildCandidates(task, aliases, commercialFlights, swapDate);
+  }
+
+  // Separate by direction
+  const oncoming = tasks.filter((t) => t.direction === "oncoming");
+  const offgoing = tasks.filter((t) => t.direction === "offgoing");
+
+  // Score and select oncoming PIC first (to pair SIC with same flights)
+  const oncomingPic = oncoming.find((t) => t.role === "PIC");
+  const oncomingSic = oncoming.find((t) => t.role === "SIC");
+
+  if (oncomingPic) {
+    // Find backups for each candidate
+    for (const c of oncomingPic.candidates) {
+      c.backups = findBackups(c, oncomingPic.candidates);
+    }
+    // Score each candidate
+    for (const c of oncomingPic.candidates) {
+      c.score = scoreCandidate(c, oncomingPic, null);
+    }
+    // Select best
+    oncomingPic.candidates.sort((a, b) => b.score - a.score);
+    oncomingPic.best = oncomingPic.candidates[0] ?? null;
+  }
+
+  if (oncomingSic) {
+    for (const c of oncomingSic.candidates) {
+      c.backups = findBackups(c, oncomingSic.candidates);
+    }
+    // Score with PIC pairing consideration
+    const picBest = oncomingPic?.best ?? null;
+    for (const c of oncomingSic.candidates) {
+      c.score = scoreCandidate(c, oncomingSic, picBest);
+    }
+    oncomingSic.candidates.sort((a, b) => b.score - a.score);
+    oncomingSic.best = oncomingSic.candidates[0] ?? null;
+  }
+
+  // Offgoing crew: score independently
+  for (const task of offgoing) {
+    for (const c of task.candidates) {
+      c.backups = findBackups(c, task.candidates);
+      c.score = scoreCandidate(c, task, null);
+    }
+    task.candidates.sort((a, b) => b.score - a.score);
+    task.best = task.candidates[0] ?? null;
+  }
+
+  // ── Aircraft never unattended check ──────────────────────────────────
+  // Oncoming must arrive before offgoing departs
+  const oncomingArrivals = oncoming
+    .filter((t) => t.best?.fboArrivalTime)
+    .map((t) => t.best!.fboArrivalTime!.getTime());
+  const latestOncomingArrival = oncomingArrivals.length > 0 ? Math.max(...oncomingArrivals) : null;
+
+  if (latestOncomingArrival) {
+    for (const task of offgoing) {
+      if (task.best?.depTime && task.best.depTime.getTime() < latestOncomingArrival) {
+        task.warnings.push("Offgoing may depart before oncoming arrives — aircraft could be unattended");
+      }
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LAYER 6: Public API / Orchestrator
+// ═══════════════════════════════════════════════════════════════════════════════
 
 export function buildSwapPlan(params: {
   flights: FlightLeg[];
   crewRoster: CrewMember[];
   aliases: AirportAlias[];
-  swapDate: string; // YYYY-MM-DD (Wednesday)
-  // Optional: pre-fetched commercial flights keyed by "ORIG-DEST-DATE"
+  swapDate: string;
   commercialFlights?: Map<string, FlightOffer[]>;
+  swapAssignments?: Record<string, SwapAssignment>;
 }): SwapPlanResult {
-  const { flights, crewRoster, aliases, swapDate, commercialFlights } = params;
-  const warnings: string[] = [];
+  const { flights, crewRoster, aliases, swapDate, commercialFlights, swapAssignments } = params;
+  const globalWarnings: string[] = [];
+  const allTasks: CrewTask[] = [];
 
-  // Group flights by tail
+  if (!swapAssignments || Object.keys(swapAssignments).length === 0) {
+    globalWarnings.push("No swap assignments found. Upload the swap Excel document first.");
+    return { swap_date: swapDate, rows: [], warnings: globalWarnings, total_cost: 0, plan_score: 0 };
+  }
+
+  // ── Group flights by tail ──────────────────────────────────────────────
+  const byTail = new Map<string, FlightLeg[]>();
+  for (const f of flights) {
+    if (!f.tail_number) continue;
+    if (!byTail.has(f.tail_number)) byTail.set(f.tail_number, []);
+    byTail.get(f.tail_number)!.push(f);
+  }
+  for (const [, legs] of byTail) {
+    legs.sort((a, b) => new Date(a.scheduled_departure).getTime() - new Date(b.scheduled_departure).getTime());
+  }
+
+  // ── Process each tail ──────────────────────────────────────────────────
+  for (const [tail, assignment] of Object.entries(swapAssignments)) {
+    const legs = byTail.get(tail) ?? [];
+    const wedLegs = legs.filter((f) => f.scheduled_departure.slice(0, 10) === swapDate);
+    const liveWedLegs = wedLegs.filter((f) => isLiveType(f.flight_type));
+
+    // Determine aircraft type
+    const anyName = assignment.oncoming_pic ?? assignment.offgoing_pic ?? assignment.oncoming_sic ?? assignment.offgoing_sic;
+    const anyCrew = anyName ? (findCrewByName(crewRoster, anyName, "PIC") ?? findCrewByName(crewRoster, anyName, "SIC")) : null;
+    const aircraftType = anyCrew?.aircraft_types[0] ?? "unknown";
+
+    // Find key airports
+    const priorLegs = legs.filter(
+      (f) => new Date(f.scheduled_departure).getTime() < new Date(swapDate).getTime(),
+    );
+    const lastPrior = priorLegs[priorLegs.length - 1];
+    const overnightAirport = lastPrior?.arrival_icao ?? wedLegs[0]?.departure_icao ?? null;
+
+    // ── Build swap points ────────────────────────────────────────────────
+    // RULE: Extremely strong preference to swap before/after LIVE legs only
+    const swapPoints: SwapPoint[] = [];
+
+    if (liveWedLegs.length > 0) {
+      // Before first live leg
+      const firstLive = liveWedLegs[0];
+      swapPoints.push({
+        icao: firstLive.departure_icao,
+        time: new Date(firstLive.scheduled_departure),
+        position: "before_live",
+        isAdjacentLive: true,
+      });
+
+      // After last live leg
+      const lastLive = liveWedLegs[liveWedLegs.length - 1];
+      if (lastLive.arrival_icao && lastLive.scheduled_arrival) {
+        swapPoints.push({
+          icao: lastLive.arrival_icao,
+          time: new Date(lastLive.scheduled_arrival),
+          position: "after_live",
+          isAdjacentLive: true,
+        });
+      }
+    } else if (wedLegs.length > 0) {
+      // No live legs — use first departure and last arrival
+      swapPoints.push({
+        icao: wedLegs[0].departure_icao,
+        time: new Date(wedLegs[0].scheduled_departure),
+        position: "between_legs",
+        isAdjacentLive: false,
+      });
+      const lastWed = wedLegs[wedLegs.length - 1];
+      if (lastWed.arrival_icao && lastWed.scheduled_arrival) {
+        swapPoints.push({
+          icao: lastWed.arrival_icao,
+          time: new Date(lastWed.scheduled_arrival),
+          position: "between_legs",
+          isAdjacentLive: false,
+        });
+      }
+    } else if (overnightAirport) {
+      // No Wednesday legs — aircraft idle at last known position
+      swapPoints.push({
+        icao: overnightAirport,
+        time: new Date(`${swapDate}T12:00:00Z`),
+        position: "idle",
+        isAdjacentLive: false,
+      });
+    }
+
+    if (swapPoints.length === 0) {
+      globalWarnings.push(`${tail}: No swap points found — no flights and no known position`);
+      continue;
+    }
+
+    // Oncoming crew should target the FIRST swap point (need to be there before first leg)
+    const oncomingSwapPoint = swapPoints[0];
+    // Offgoing crew leaves from the LAST swap point (after last leg)
+    const offgoingSwapPoint = swapPoints[swapPoints.length - 1];
+
+    // ── Create crew tasks ────────────────────────────────────────────────
+    const tailTasks: CrewTask[] = [];
+
+    const entries: { name: string; role: "PIC" | "SIC"; direction: "oncoming" | "offgoing" }[] = [];
+    if (assignment.oncoming_pic) entries.push({ name: assignment.oncoming_pic, role: "PIC", direction: "oncoming" });
+    if (assignment.oncoming_sic) entries.push({ name: assignment.oncoming_sic, role: "SIC", direction: "oncoming" });
+    if (assignment.offgoing_pic) entries.push({ name: assignment.offgoing_pic, role: "PIC", direction: "offgoing" });
+    if (assignment.offgoing_sic) entries.push({ name: assignment.offgoing_sic, role: "SIC", direction: "offgoing" });
+
+    for (const entry of entries) {
+      const crewMember = findCrewByName(crewRoster, entry.name, entry.role);
+      const warnings: string[] = [];
+      if (!crewMember) warnings.push(`"${entry.name}" not found in roster`);
+
+      const swapPoint = entry.direction === "oncoming" ? oncomingSwapPoint : offgoingSwapPoint;
+
+      tailTasks.push({
+        name: crewMember?.name ?? entry.name,
+        crewMember,
+        role: entry.role,
+        direction: entry.direction,
+        tail,
+        aircraftType,
+        swapPoint,
+        homeAirports: crewMember?.home_airports ?? [],
+        candidates: [],
+        best: null,
+        warnings,
+      });
+    }
+
+    // Run optimizer for this tail
+    optimizeTail(tailTasks, aliases, commercialFlights, swapDate);
+    allTasks.push(...tailTasks);
+  }
+
+  // ── Convert tasks to CrewSwapRow[] ─────────────────────────────────────
+  const rows: CrewSwapRow[] = allTasks.map((task) => {
+    const best = task.best;
+    const altFlights = task.candidates
+      .filter((c) => c !== best && c.type === "commercial")
+      .slice(0, 3)
+      .map((c) => ({
+        flight_number: c.flightNumber ?? "",
+        dep: c.depTime?.toISOString() ?? "",
+        arr: c.arrTime?.toISOString() ?? "",
+        price: String(Math.round(c.cost)),
+      }));
+
+    const backupStr = best?.backups?.[0]?.flightNumber ?? null;
+
+    return {
+      name: task.name,
+      home_airports: task.homeAirports,
+      role: task.role,
+      direction: task.direction,
+      aircraft_type: task.aircraftType,
+      tail_number: task.tail,
+      swap_location: toIata(task.swapPoint.icao),
+      travel_type: best?.type ?? "none",
+      flight_number: best?.flightNumber ?? null,
+      departure_time: best?.depTime?.toISOString() ?? null,
+      arrival_time: best?.arrTime?.toISOString() ?? null,
+      travel_from: best?.from ?? null,
+      travel_to: best?.to ?? null,
+      cost_estimate: best ? Math.round(best.cost) : null,
+      duration_minutes: best?.durationMin ?? null,
+      available_time: best?.fboArrivalTime?.toISOString() ?? null,
+      duty_on_time: best?.dutyOnTime?.toISOString() ?? null,
+      duty_off_time: null,
+      is_checkairman: task.crewMember?.is_checkairman ?? false,
+      is_skillbridge: task.crewMember?.is_skillbridge ?? false,
+      notes: best?.type === "none"
+        ? `No viable transport from ${task.homeAirports[0] ?? "?"} to ${toIata(task.swapPoint.icao)}`
+        : null,
+      warnings: task.warnings,
+      drive_estimate: best?.drive ?? null,
+      flight_offer: best?.offer ?? null,
+      alt_flights: altFlights,
+      backup_flight: backupStr,
+      score: best?.score ?? 0,
+    };
+  });
+
+  // Sort: oncoming PIC, oncoming SIC, offgoing PIC, offgoing SIC
+  const sectionOrder = (r: CrewSwapRow) => {
+    if (r.direction === "oncoming" && r.role === "PIC") return 0;
+    if (r.direction === "oncoming" && r.role === "SIC") return 1;
+    if (r.direction === "offgoing" && r.role === "PIC") return 2;
+    return 3;
+  };
+  rows.sort((a, b) => sectionOrder(a) - sectionOrder(b) || a.name.localeCompare(b.name));
+
+  const totalCost = rows.reduce((s, r) => s + (r.cost_estimate ?? 0), 0);
+  const avgScore = rows.length > 0
+    ? Math.round(rows.reduce((s, r) => s + r.score, 0) / rows.length)
+    : 0;
+
+  return {
+    swap_date: swapDate,
+    rows,
+    warnings: globalWarnings,
+    total_cost: totalCost,
+    plan_score: avgScore,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CREW ASSIGNMENT: Assign oncoming crew from pool to tails
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export type OncomingPoolEntry = {
+  name: string;
+  aircraft_type: string;
+  home_airports: string[];
+  is_checkairman: boolean;
+  is_skillbridge: boolean;
+  early_volunteer: boolean;
+  late_volunteer: boolean;
+  standby_volunteer: boolean;
+  notes: string | null;
+};
+
+export type OncomingPool = {
+  pic: OncomingPoolEntry[];
+  sic: OncomingPoolEntry[];
+};
+
+/** Determine where a tail will be on swap day */
+function determineSwapLocation(
+  tail: string,
+  flights: FlightLeg[],
+  swapDate: string,
+): { icao: string; time: Date } | null {
+  const tailFlights = flights.filter((f) => f.tail_number === tail);
+  tailFlights.sort((a, b) => new Date(a.scheduled_departure).getTime() - new Date(b.scheduled_departure).getTime());
+
+  const wedLegs = tailFlights.filter((f) => f.scheduled_departure.slice(0, 10) === swapDate);
+  const liveWedLegs = wedLegs.filter((f) => isLiveType(f.flight_type));
+
+  if (liveWedLegs.length > 0) {
+    return { icao: liveWedLegs[0].departure_icao, time: new Date(liveWedLegs[0].scheduled_departure) };
+  }
+  if (wedLegs.length > 0) {
+    return { icao: wedLegs[0].departure_icao, time: new Date(wedLegs[0].scheduled_departure) };
+  }
+
+  const priorLegs = tailFlights.filter(
+    (f) => new Date(f.scheduled_departure).getTime() < new Date(swapDate).getTime(),
+  );
+  const lastPrior = priorLegs[priorLegs.length - 1];
+  if (lastPrior?.arrival_icao) {
+    return { icao: lastPrior.arrival_icao, time: new Date(`${swapDate}T12:00:00Z`) };
+  }
+
+  return null;
+}
+
+/**
+ * Estimate ACTUAL transport cost using real flight data + drive estimates.
+ * Checks drives (Uber/rental) AND commercial flights if available.
+ */
+function estimateTransportCost(
+  homeAirports: string[],
+  swapIcao: string,
+  aliases?: AirportAlias[],
+  commercialFlights?: Map<string, FlightOffer[]>,
+  swapDate?: string,
+): number {
+  let bestCost = 999; // high default = no viable option found
+
+  for (const home of homeAirports) {
+    const homeIcao = toIcao(home);
+
+    // ── Drive options ───────────────────────────────────────────────
+    const drive = estimateDriveTime(homeIcao, swapIcao);
+    if (drive) {
+      if (drive.estimated_drive_minutes <= UBER_MAX_MINUTES) {
+        bestCost = Math.min(bestCost, Math.max(25, Math.round(drive.estimated_drive_miles * 2.0)));
+      } else if (drive.estimated_drive_minutes <= RENTAL_MAX_MINUTES) {
+        bestCost = Math.min(bestCost, 80 + Math.round(drive.estimated_drive_miles * 0.50));
+      }
+    }
+
+    // ── Commercial flight options ───────────────────────────────────
+    if (commercialFlights && aliases && swapDate) {
+      const homeIata = toIata(home);
+      const commAirports = findAllCommercialAirports(swapIcao, aliases);
+      for (const comm of commAirports) {
+        const commIata = toIata(comm);
+        if (homeIata === commIata) continue;
+        const key = `${homeIata}-${commIata}-${swapDate}`;
+        const offers = commercialFlights.get(key) ?? [];
+        for (const offer of offers) {
+          const cost = parseFloat(offer.price.total);
+          if (!isNaN(cost)) bestCost = Math.min(bestCost, cost);
+        }
+      }
+    }
+  }
+
+  // If no real options found but we have a drive estimate beyond rental range,
+  // use distance-based estimate for commercial flight cost
+  if (bestCost >= 999) {
+    for (const home of homeAirports) {
+      const drive = estimateDriveTime(toIcao(home), swapIcao);
+      if (drive) {
+        bestCost = Math.min(bestCost, Math.round(100 + drive.estimated_drive_miles * 0.10));
+      }
+    }
+  }
+
+  return bestCost;
+}
+
+/** Check if crew member is qualified for an aircraft type */
+function isQualified(crewAircraftType: string, tailAircraftType: string): boolean {
+  if (tailAircraftType === "unknown" || crewAircraftType === "unknown") return true;
+  if (crewAircraftType === "dual") return true; // dual-qualified flies anything
+  if (tailAircraftType === "dual") return true; // dual-type aircraft accepts anyone
+  return crewAircraftType === tailAircraftType;
+}
+
+/**
+ * Assign oncoming crew from pool to tails that need them.
+ * Uses greedy min-cost assignment with ACTUAL transport costs:
+ * drive/Uber/rental + commercial flights when available.
+ */
+export function assignOncomingCrew(params: {
+  swapAssignments: Record<string, SwapAssignment>;
+  oncomingPool: OncomingPool;
+  crewRoster: CrewMember[];
+  flights: FlightLeg[];
+  swapDate: string;
+  aliases?: AirportAlias[];
+  commercialFlights?: Map<string, FlightOffer[]>;
+}): {
+  assignments: Record<string, SwapAssignment>;
+  standby: { pic: string[]; sic: string[] };
+  details: { name: string; tail: string; cost: number; reason: string }[];
+} {
+  const { swapAssignments, oncomingPool, crewRoster, flights, swapDate, aliases, commercialFlights } = params;
+  const result: Record<string, SwapAssignment> = JSON.parse(JSON.stringify(swapAssignments));
+  const details: { name: string; tail: string; cost: number; reason: string }[] = [];
+
+  // Determine swap locations and aircraft types for all tails
+  const tailLocations = new Map<string, { icao: string; time: Date }>();
+  const tailAircraftType = new Map<string, string>();
+
+  for (const tail of Object.keys(result)) {
+    const loc = determineSwapLocation(tail, flights, swapDate);
+    if (loc) tailLocations.set(tail, loc);
+
+    const sa = result[tail];
+    const offName = sa.offgoing_pic ?? sa.offgoing_sic;
+    if (offName) {
+      const crew = findCrewByName(crewRoster, offName, sa.offgoing_pic ? "PIC" : "SIC");
+      if (crew?.aircraft_types[0]) {
+        tailAircraftType.set(tail, crew.aircraft_types[0]);
+      }
+    }
+  }
+
+  // Assign PICs then SICs
+  assignRole("oncoming_pic", oncomingPool.pic, result, tailLocations, tailAircraftType, details, aliases, commercialFlights, swapDate);
+  assignRole("oncoming_sic", oncomingPool.sic, result, tailLocations, tailAircraftType, details, aliases, commercialFlights, swapDate);
+
+  // Remaining pool → standby
+  const assignedNames = new Set(details.map((d) => d.name));
+  const standby = {
+    pic: oncomingPool.pic.filter((p) => !assignedNames.has(p.name)).map((p) => p.name),
+    sic: oncomingPool.sic.filter((p) => !assignedNames.has(p.name)).map((p) => p.name),
+  };
+
+  return { assignments: result, standby, details };
+}
+
+function assignRole(
+  field: "oncoming_pic" | "oncoming_sic",
+  pool: OncomingPoolEntry[],
+  result: Record<string, SwapAssignment>,
+  tailLocations: Map<string, { icao: string; time: Date }>,
+  tailAircraftType: Map<string, string>,
+  details: { name: string; tail: string; cost: number; reason: string }[],
+  aliases?: AirportAlias[],
+  commercialFlights?: Map<string, FlightOffer[]>,
+  swapDate?: string,
+): void {
+  const needingTails = Object.keys(result).filter((tail) => !result[tail][field]);
+
+  type Option = { tail: string; name: string; cost: number };
+  const options: Option[] = [];
+
+  for (const tail of needingTails) {
+    const loc = tailLocations.get(tail);
+    if (!loc) continue;
+    const acType = tailAircraftType.get(tail) ?? "unknown";
+
+    for (const crew of pool) {
+      if (!isQualified(crew.aircraft_type, acType)) continue;
+      // Use ACTUAL transport costs (flights + drives), not just distance
+      const cost = estimateTransportCost(
+        crew.home_airports.map(toIcao),
+        loc.icao,
+        aliases,
+        commercialFlights,
+        swapDate,
+      );
+      options.push({ tail, name: crew.name, cost });
+    }
+  }
+
+  // Sort by cost ascending (cheapest real transport first)
+  options.sort((a, b) => a.cost - b.cost);
+
+  // Greedy assignment
+  const assignedCrews = new Set<string>();
+  const assignedTails = new Set<string>();
+
+  for (const opt of options) {
+    if (assignedCrews.has(opt.name) || assignedTails.has(opt.tail)) continue;
+    result[opt.tail][field] = opt.name;
+    assignedCrews.add(opt.name);
+    assignedTails.add(opt.tail);
+    details.push({
+      name: opt.name,
+      tail: opt.tail,
+      cost: opt.cost,
+      reason: `$${opt.cost} to ${tailLocations.get(opt.tail)?.icao ?? "?"}`,
+    });
+  }
+}
+
+// ─── Helper: get flight searches for ALL pool crew × ALL swap locations ───────
+
+/** Generate search pairs for the ENTIRE oncoming pool to ALL swap locations.
+ *  This runs BEFORE assignment so the optimizer has real flight data. */
+export function getPoolFlightSearches(params: {
+  oncomingPool: OncomingPool;
+  aliases: AirportAlias[];
+  swapAssignments: Record<string, SwapAssignment>;
+  flights: FlightLeg[];
+  swapDate: string;
+}): { origin: string; destination: string; date: string }[] {
+  const { oncomingPool, aliases, swapAssignments, flights, swapDate } = params;
+  const pairs = new Set<string>();
+
+  // Collect ALL unique swap locations from tails
+  const swapCommAirports = new Set<string>();
+  for (const tail of Object.keys(swapAssignments)) {
+    const loc = determineSwapLocation(tail, flights, swapDate);
+    if (!loc) continue;
+    for (const comm of findAllCommercialAirports(loc.icao, aliases)) {
+      swapCommAirports.add(toIata(comm));
+    }
+  }
+
+  // For each pool member, generate home → swap location pairs
+  const allPoolMembers = [...oncomingPool.pic, ...oncomingPool.sic];
+  for (const crew of allPoolMembers) {
+    for (const home of crew.home_airports) {
+      const homeIata = toIata(home);
+      for (const comm of swapCommAirports) {
+        if (homeIata !== comm) {
+          pairs.add(`${homeIata}-${comm}`);
+        }
+      }
+    }
+  }
+
+  return Array.from(pairs).map((p) => {
+    const [origin, destination] = p.split("-");
+    return { origin, destination, date: swapDate };
+  });
+}
+
+// ─── Helper: get flight searches for assigned crew (after assignment) ─────────
+
+export function getRequiredFlightSearches(params: {
+  crewRoster: CrewMember[];
+  aliases: AirportAlias[];
+  swapAssignments: Record<string, SwapAssignment>;
+  flights: FlightLeg[];
+  swapDate: string;
+}): { origin: string; destination: string; date: string }[] {
+  const { crewRoster, aliases, swapAssignments, flights, swapDate } = params;
+  const pairs = new Set<string>();
+
   const byTail = new Map<string, FlightLeg[]>();
   for (const f of flights) {
     if (!f.tail_number) continue;
@@ -291,317 +1219,55 @@ export function buildSwapPlan(params: {
     byTail.get(f.tail_number)!.push(f);
   }
 
-  // Sort each tail's flights chronologically
-  for (const [, legs] of byTail) {
-    legs.sort((a, b) => new Date(a.scheduled_departure).getTime() - new Date(b.scheduled_departure).getTime());
-  }
-
-  // Separate crew by role
-  const picPool = crewRoster.filter((c) => c.role === "PIC");
-  const sicPool = crewRoster.filter((c) => c.role === "SIC");
-
-  const plans: TailSwapPlan[] = [];
-  const assignedCrewIds = new Set<string>();
-
-  for (const [tail, legs] of byTail) {
-    const wedLegs = legs.filter((f) => isWednesday(f.scheduled_departure, swapDate));
-    const planWarnings: string[] = [];
-
-    // Determine current crew from most recent flight before Wednesday
+  for (const [tail, assignment] of Object.entries(swapAssignments)) {
+    const legs = byTail.get(tail) ?? [];
+    const wedLegs = legs.filter((f) => f.scheduled_departure.slice(0, 10) === swapDate);
     const priorLegs = legs.filter(
       (f) => new Date(f.scheduled_departure).getTime() < new Date(swapDate).getTime(),
     );
     const lastPrior = priorLegs[priorLegs.length - 1];
+    const overnightAirport = lastPrior?.arrival_icao ?? wedLegs[0]?.departure_icao ?? null;
 
-    const currentPicName = lastPrior?.pic ?? wedLegs[0]?.pic ?? null;
-    const currentSicName = lastPrior?.sic ?? wedLegs[0]?.sic ?? null;
-
-    // Find crew members by fuzzy name match
-    const offgoingPic = currentPicName
-      ? findCrewByName(crewRoster, currentPicName, "PIC")
-      : null;
-    const offgoingSic = currentSicName
-      ? findCrewByName(crewRoster, currentSicName, "SIC")
-      : null;
-
-    // Determine aircraft type from crew qualifications or flight data
-    const aircraftType = offgoingPic?.aircraft_types[0] ?? null;
-
-    // Find swap candidate airports
-    const swapAirports: {
-      airport: string;
-      isLive: boolean;
-      gapMinutes: number;
-    }[] = [];
-
-    if (wedLegs.length === 0) {
-      // Aircraft idle — swap at last known position
-      const lastAirport = lastPrior?.arrival_icao;
-      if (lastAirport) {
-        swapAirports.push({ airport: lastAirport, isLive: false, gapMinutes: -1 });
-      }
-    } else {
-      // Before first leg
-      swapAirports.push({
-        airport: wedLegs[0].departure_icao,
-        isLive: isLiveType(wedLegs[0].flight_type),
-        gapMinutes: -1,
-      });
-
-      // Between legs
-      for (let i = 0; i < wedLegs.length - 1; i++) {
-        const arr = wedLegs[i];
-        const dep = wedLegs[i + 1];
-        const gap =
-          (new Date(dep.scheduled_departure).getTime() -
-            new Date(arr.scheduled_arrival ?? arr.scheduled_departure).getTime()) /
-          60_000;
-        swapAirports.push({
-          airport: arr.arrival_icao,
-          isLive: isLiveType(arr.flight_type) || isLiveType(dep.flight_type),
-          gapMinutes: Math.round(gap),
-        });
-      }
-
-      // After last leg
-      const last = wedLegs[wedLegs.length - 1];
-      swapAirports.push({
-        airport: last.arrival_icao,
-        isLive: isLiveType(last.flight_type),
-        gapMinutes: -1,
-      });
-    }
-
-    // Find best oncoming crew candidates (exclude offgoing crew and already-assigned)
-    const qualifiedPics = picPool.filter(
-      (c) => isQualified(c, aircraftType) && !assignedCrewIds.has(c.id) && c.id !== offgoingPic?.id,
-    );
-    const qualifiedSics = sicPool.filter(
-      (c) => isQualified(c, aircraftType) && !assignedCrewIds.has(c.id) && c.id !== offgoingSic?.id,
-    );
-
-    // Build swap options for each candidate airport
-    const options: SwapOption[] = [];
-
-    for (const sa of swapAirports) {
-      const commercialAirport = findCommercialAirport(sa.airport, aliases);
-
-      // Build transport options for best oncoming PIC candidate
-      const oncomingTransport: TransportOption[] = [];
-      const offgoingTransport: TransportOption[] = [];
-
-      // Score each qualified PIC by proximity to swap airport
-      const picCandidates = qualifiedPics.map((pic) => {
-        const home = closestHomeAirport(pic, commercialAirport.length === 3 ? `K${commercialAirport}` : commercialAirport);
-        return { crew: pic, home, miles: home.drive?.straight_line_miles ?? 9999 };
-      }).sort((a, b) => a.miles - b.miles);
-
-      const bestPic = picCandidates[0] ?? null;
-      const bestSic = qualifiedSics.map((sic) => {
-        const home = closestHomeAirport(sic, commercialAirport.length === 3 ? `K${commercialAirport}` : commercialAirport);
-        return { crew: sic, home, miles: home.drive?.straight_line_miles ?? 9999 };
-      }).sort((a, b) => a.miles - b.miles)[0] ?? null;
-
-      // Oncoming PIC transport
-      if (bestPic) {
-        const homeIcao = bestPic.home.airport.length === 3 ? `K${bestPic.home.airport}` : bestPic.home.airport;
-
-        // Check for commercial flights
-        const flightKey = `${bestPic.home.airport}-${commercialAirport}-${swapDate}`;
-        const flights = commercialFlights?.get(flightKey);
-        if (flights && flights.length > 0) {
-          for (const offer of flights.slice(0, 3)) {
-            const seg = offer.itineraries[0]?.segments;
-            if (!seg) continue;
-            const firstSeg = seg[0];
-            const lastSeg = seg[seg.length - 1];
-            oncomingTransport.push({
-              type: "commercial_flight",
-              from: firstSeg.departure.iataCode,
-              to: lastSeg.arrival.iataCode,
-              departure_time: firstSeg.departure.at,
-              arrival_time: lastSeg.arrival.at,
-              duration_minutes: seg.reduce(
-                (s, sg) => {
-                  const m = sg.duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?/);
-                  return s + (parseInt(m?.[1] ?? "0") * 60 + parseInt(m?.[2] ?? "0"));
-                },
-                0,
-              ),
-              cost_estimate: parseFloat(offer.price.total),
-              details: seg.map((s) => `${s.carrierCode}${s.number}`).join(" → "),
-              flight_offer: offer,
-            });
-          }
-        }
-
-        // Drive option
-        const drive = estimateDriveTime(homeIcao, sa.airport.length === 3 ? `K${sa.airport}` : sa.airport);
-        if (drive && drive.feasible) {
-          oncomingTransport.push({
-            type: "drive",
-            from: bestPic.home.airport,
-            to: sa.airport,
-            duration_minutes: drive.estimated_drive_minutes,
-            cost_estimate: drive.estimated_drive_miles * 0.67, // IRS mileage rate
-            details: `${drive.estimated_drive_miles}mi drive (~${Math.round(drive.estimated_drive_minutes / 60)}h)`,
-          });
-        }
-      }
-
-      // Offgoing crew transport (reverse — from swap airport to home)
-      if (offgoingPic) {
-        const homeIcao = offgoingPic.home_airports[0]?.length === 3
-          ? `K${offgoingPic.home_airports[0]}` : offgoingPic.home_airports[0] ?? "";
-        const drive = estimateDriveTime(
-          sa.airport.length === 3 ? `K${sa.airport}` : sa.airport,
-          homeIcao,
-        );
-        if (drive && drive.feasible) {
-          offgoingTransport.push({
-            type: "drive",
-            from: sa.airport,
-            to: offgoingPic.home_airports[0] ?? "",
-            duration_minutes: drive.estimated_drive_minutes,
-            cost_estimate: drive.estimated_drive_miles * 0.67,
-            details: `${drive.estimated_drive_miles}mi drive (~${Math.round(drive.estimated_drive_minutes / 60)}h)`,
-          });
-        }
-
-        // Check for commercial flights home
-        const flightKey = `${commercialAirport}-${offgoingPic.home_airports[0] ?? ""}-${swapDate}`;
-        const returnFlights = commercialFlights?.get(flightKey);
-        if (returnFlights && returnFlights.length > 0) {
-          for (const offer of returnFlights.slice(0, 3)) {
-            const seg = offer.itineraries[0]?.segments;
-            if (!seg) continue;
-            const firstSeg = seg[0];
-            const lastSeg = seg[seg.length - 1];
-            offgoingTransport.push({
-              type: "commercial_flight",
-              from: firstSeg.departure.iataCode,
-              to: lastSeg.arrival.iataCode,
-              departure_time: firstSeg.departure.at,
-              arrival_time: lastSeg.arrival.at,
-              duration_minutes: seg.reduce(
-                (s, sg) => {
-                  const m = sg.duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?/);
-                  return s + (parseInt(m?.[1] ?? "0") * 60 + parseInt(m?.[2] ?? "0"));
-                },
-                0,
-              ),
-              cost_estimate: parseFloat(offer.price.total),
-              details: seg.map((s) => `${s.carrierCode}${s.number}`).join(" → "),
-              flight_offer: offer,
-            });
-          }
-        }
-      }
-
-      const oncomingDrive = bestPic
-        ? estimateDriveTime(
-            (bestPic.home.airport.length === 3 ? `K${bestPic.home.airport}` : bestPic.home.airport),
-            (commercialAirport.length === 3 ? `K${commercialAirport}` : commercialAirport),
-          )
-        : null;
-      const offgoingDrive = offgoingPic?.home_airports[0]
-        ? estimateDriveTime(
-            (commercialAirport.length === 3 ? `K${commercialAirport}` : commercialAirport),
-            (offgoingPic.home_airports[0].length === 3 ? `K${offgoingPic.home_airports[0]}` : offgoingPic.home_airports[0]),
-          )
-        : null;
-
-      const option: SwapOption = {
-        swap_airport: sa.airport,
-        commercial_airport: commercialAirport,
-        is_live_leg_adjacent: sa.isLive,
-        gap_minutes: sa.gapMinutes,
-        oncoming_transport: oncomingTransport,
-        offgoing_transport: offgoingTransport,
-        oncoming_drive: oncomingDrive,
-        offgoing_drive: offgoingDrive,
-        score: 0,
-        score_breakdown: { cost: 0, reliability: 0, convenience: 0, compliance: 0, fairness: 0 },
-      };
-
-      const { score, breakdown } = computeScore(option);
-      option.score = score;
-      option.score_breakdown = breakdown;
-
-      options.push(option);
-    }
-
-    // Sort options by score descending
-    options.sort((a, b) => b.score - a.score);
-
-    // Assign best crew — even if no options, still pick closest qualified crew
-    const bestOption = options[0] ?? null;
-    let oncomingPic: CrewMember | null = null;
-    let oncomingSic: CrewMember | null = null;
-
-    // Use swap airport from best option, or fallback to first swap airport
-    const assignAirport = bestOption?.commercial_airport ?? swapAirports[0]?.airport ?? null;
-
-    if (qualifiedPics.length > 0 && assignAirport) {
-      const target = assignAirport.length === 3 ? `K${assignAirport}` : assignAirport;
-      const sorted = qualifiedPics.map((p) => {
-        const home = closestHomeAirport(p, target);
-        return { crew: p, miles: home.drive?.straight_line_miles ?? 9999 };
-      }).sort((a, b) => a.miles - b.miles);
-      oncomingPic = sorted[0]?.crew ?? null;
-      if (oncomingPic) assignedCrewIds.add(oncomingPic.id);
-    } else if (qualifiedPics.length > 0) {
-      // No swap airport known — pick by priority
-      oncomingPic = qualifiedPics.sort((a, b) => b.priority - a.priority)[0] ?? null;
-      if (oncomingPic) assignedCrewIds.add(oncomingPic.id);
-    }
-
-    if (qualifiedSics.length > 0 && assignAirport) {
-      const target = assignAirport.length === 3 ? `K${assignAirport}` : assignAirport;
-      const sorted = qualifiedSics.map((s) => {
-        const home = closestHomeAirport(s, target);
-        return { crew: s, miles: home.drive?.straight_line_miles ?? 9999 };
-      }).sort((a, b) => a.miles - b.miles);
-      oncomingSic = sorted[0]?.crew ?? null;
-      if (oncomingSic) assignedCrewIds.add(oncomingSic.id);
-    } else if (qualifiedSics.length > 0) {
-      oncomingSic = qualifiedSics.sort((a, b) => b.priority - a.priority)[0] ?? null;
-      if (oncomingSic) assignedCrewIds.add(oncomingSic.id);
-    }
-
-    if (!oncomingPic) {
-      planWarnings.push(`No qualified PIC available (aircraft: ${aircraftType ?? "unknown"}, pool: ${picPool.length}, qualified: ${qualifiedPics.length}, offgoing: ${currentPicName ?? "none"})`);
-    }
-    if (!oncomingSic) {
-      planWarnings.push(`No qualified SIC available (aircraft: ${aircraftType ?? "unknown"}, pool: ${sicPool.length}, qualified: ${qualifiedSics.length}, offgoing: ${currentSicName ?? "none"})`);
-    }
-
-    // Duty day check
+    // Key airports for this tail
+    const swapAirports: string[] = [];
     if (wedLegs.length > 0) {
-      const firstDep = new Date(wedLegs[0].scheduled_departure);
-      const lastArr = new Date(wedLegs[wedLegs.length - 1].scheduled_arrival ?? wedLegs[wedLegs.length - 1].scheduled_departure);
-      const dutyHours = (lastArr.getTime() - firstDep.getTime()) / (60 * 60 * 1000);
-      if (dutyHours > MAX_DUTY_HOURS) {
-        planWarnings.push(`Duty day exceeds ${MAX_DUTY_HOURS}h (${Math.round(dutyHours * 10) / 10}h)`);
+      swapAirports.push(wedLegs[0].departure_icao);
+      swapAirports.push(wedLegs[wedLegs.length - 1].arrival_icao);
+    } else if (overnightAirport) {
+      swapAirports.push(overnightAirport);
+    }
+
+    const commAirports = new Set<string>();
+    for (const apt of swapAirports) {
+      for (const comm of findAllCommercialAirports(apt, aliases)) {
+        commAirports.add(toIata(comm));
       }
     }
 
-    plans.push({
-      tail_number: tail,
-      swap_date: swapDate,
-      aircraft_type: aircraftType,
-      offgoing_pic: offgoingPic,
-      offgoing_sic: offgoingSic,
-      oncoming_pic: oncomingPic,
-      oncoming_sic: oncomingSic,
-      wednesday_legs: wedLegs,
-      options,
-      warnings: planWarnings,
-    });
+    // For each crew member, get their home airports
+    const crewNames = [
+      assignment.oncoming_pic, assignment.oncoming_sic,
+      assignment.offgoing_pic, assignment.offgoing_sic,
+    ].filter(Boolean) as string[];
+
+    for (const name of crewNames) {
+      const member = findCrewByName(crewRoster, name, "PIC") ?? findCrewByName(crewRoster, name, "SIC");
+      if (!member) continue;
+
+      for (const home of member.home_airports) {
+        const homeIata = toIata(home);
+        for (const comm of commAirports) {
+          if (homeIata !== comm) {
+            pairs.add(`${homeIata}-${comm}`);
+            pairs.add(`${comm}-${homeIata}`);
+          }
+        }
+      }
+    }
   }
 
-  // Unassigned crew (available but not placed)
-  const unassigned = crewRoster.filter((c) => !assignedCrewIds.has(c.id));
-
-  return { swap_date: swapDate, plans, unassigned_crew: unassigned, warnings };
+  return Array.from(pairs).map((p) => {
+    const [origin, destination] = p.split("-");
+    return { origin, destination, date: swapDate };
+  });
 }
