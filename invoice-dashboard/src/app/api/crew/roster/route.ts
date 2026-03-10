@@ -281,6 +281,77 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // Build swap assignments: tail → { oncoming_pic, oncoming_sic, offgoing_pic, offgoing_sic }
+  type SwapAssignment = {
+    oncoming_pic: string | null;
+    oncoming_sic: string | null;
+    offgoing_pic: string | null;
+    offgoing_sic: string | null;
+  };
+  const swapByTail = new Map<string, SwapAssignment>();
+  for (const e of entries) {
+    if (!e.aircraft) continue;
+    const tail = e.aircraft;
+    if (!swapByTail.has(tail)) {
+      swapByTail.set(tail, { oncoming_pic: null, oncoming_sic: null, offgoing_pic: null, offgoing_sic: null });
+    }
+    const sa = swapByTail.get(tail)!;
+    if (e.section === "oncoming_pic") sa.oncoming_pic = e.name;
+    else if (e.section === "oncoming_sic") sa.oncoming_sic = e.name;
+    else if (e.section === "offgoing_pic") sa.offgoing_pic = e.name;
+    else if (e.section === "offgoing_sic") sa.offgoing_sic = e.name;
+  }
+
+  // Also store swap assignments in the DB for the optimizer to read
+  for (const [tail, sa] of swapByTail) {
+    try {
+      // Store as a JSON blob in crew_rotations or a swap_assignments approach
+      // For now, update crew_rotations with section info
+      // Mark oncoming rotations
+      for (const [section, name] of Object.entries(sa)) {
+        if (!name) continue;
+        const role = section.includes("pic") ? "PIC" : "SIC";
+        const isOncoming = section.startsWith("oncoming");
+        const { data: member } = await supa
+          .from("crew_members")
+          .select("id")
+          .eq("name", name)
+          .eq("role", role)
+          .limit(1);
+        if (!member || member.length === 0) continue;
+
+        // Upsert rotation with direction
+        if (isOncoming) {
+          // Set rotation_start to swap date, rotation_end null (active)
+          await supa.from("crew_rotations")
+            .upsert({
+              crew_member_id: member[0].id,
+              tail_number: tail,
+              rotation_start: new Date().toISOString().slice(0, 10),
+              rotation_end: null,
+            }, { onConflict: "crew_member_id,tail_number,rotation_start" })
+            .select();
+        } else {
+          // Set rotation_end to swap date
+          const { data: existingRot } = await supa
+            .from("crew_rotations")
+            .select("id")
+            .eq("crew_member_id", member[0].id)
+            .eq("tail_number", tail)
+            .is("rotation_end", null)
+            .limit(1);
+          if (existingRot && existingRot.length > 0) {
+            await supa.from("crew_rotations")
+              .update({ rotation_end: new Date().toISOString().slice(0, 10) })
+              .eq("id", existingRot[0].id);
+          }
+        }
+      }
+    } catch {
+      // Non-critical
+    }
+  }
+
   // Summary by section
   const summary = {
     oncoming_pic: entries.filter((e) => e.section === "oncoming_pic").length,
@@ -288,6 +359,12 @@ export async function POST(req: NextRequest) {
     offgoing_pic: entries.filter((e) => e.section === "offgoing_pic").length,
     offgoing_sic: entries.filter((e) => e.section === "offgoing_sic").length,
   };
+
+  // Convert swap assignments to plain object for JSON
+  const swapAssignments: Record<string, SwapAssignment> = {};
+  for (const [tail, sa] of swapByTail) {
+    swapAssignments[tail] = sa;
+  }
 
   return NextResponse.json({
     ok: true,
@@ -297,5 +374,6 @@ export async function POST(req: NextRequest) {
     rotations_created: rotationsCreated,
     errors: errors.length > 0 ? errors : undefined,
     summary,
+    swap_assignments: swapAssignments,
   });
 }

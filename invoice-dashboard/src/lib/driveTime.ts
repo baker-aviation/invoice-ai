@@ -71,11 +71,20 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   KSLC: [40.7884, -111.9778],  // Salt Lake City
   KASE: [39.2232, -106.8688],  // Aspen
   KEGE: [39.6426, -106.9159],  // Eagle/Vail
+  KCOS: [38.8058, -104.7007],  // Colorado Springs
+  KBOI: [43.5644, -116.2228],  // Boise
 
   // DC area
   KIAD: [38.9445, -77.4558],   // Dulles
   KDCA: [38.8512, -77.0402],   // Reagan National
   KBWI: [39.1754, -76.6683],   // Baltimore
+
+  // Canada
+  CYYZ: [43.6777, -79.6248],   // Toronto Pearson
+  CYUL: [45.4706, -73.7408],   // Montreal Trudeau
+  CYVR: [49.1947, -123.1839],  // Vancouver
+  CYOW: [45.3225, -75.6692],   // Ottawa
+  CYYC: [51.1215, -114.0076],  // Calgary
 
   // Other
   KMSY: [29.9934, -90.2580],   // New Orleans
