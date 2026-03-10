@@ -437,12 +437,21 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
       // Sanity check: if FA-derived duration is wildly longer than the ICS
       // scheduled duration, FA likely has bad data (common with international
       // flights / timezone mismatches).  Fall back to ICS scheduled times.
-      if (source !== "scheduled" && f.scheduled_arrival) {
-        const schedDur = (new Date(f.scheduled_arrival).getTime() - new Date(f.scheduled_departure).getTime()) / 60_000;
-        if (schedDur > 0 && durationMin > Math.max(schedDur * 2, schedDur + 120)) {
+      if (source !== "scheduled") {
+        if (f.scheduled_arrival) {
+          const schedDur = (new Date(f.scheduled_arrival).getTime() - new Date(f.scheduled_departure).getTime()) / 60_000;
+          if (schedDur > 0 && durationMin > Math.max(schedDur * 1.5, schedDur + 90)) {
+            source = "scheduled";
+            endMs = new Date(f.scheduled_arrival).getTime();
+            durationMin = (endMs - depMs) / 60_000;
+          }
+        } else if (durationMin > 360) {
+          // No scheduled arrival to compare — cap FA estimates at 6h.
+          // FA sometimes returns wildly wrong estimates for future legs.
+          // Use scheduled source with capped duration.
           source = "scheduled";
-          endMs = new Date(f.scheduled_arrival).getTime();
-          durationMin = (endMs - depMs) / 60_000;
+          durationMin = 360;
+          endMs = depMs + durationMin * 60_000;
         }
       }
 
