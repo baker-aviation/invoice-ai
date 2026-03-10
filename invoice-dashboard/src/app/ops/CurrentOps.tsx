@@ -1421,9 +1421,10 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                           const rate = bestFuelByAirport.get(arrCode) ?? bestFuelByAirport.get(arrCode.length === 4 && arrCode.startsWith("K") ? arrCode.slice(1) : `K${arrCode}`);
                           if (!rate) return <span className="text-xs text-gray-300">&mdash;</span>;
                           return (
-                            <span className="text-xs font-mono font-medium text-gray-900" title={rate.fbo ?? rate.vendor}>
-                              ${rate.price.toFixed(2)}
-                            </span>
+                            <div>
+                              <div className="text-[10px] text-gray-500 truncate">{rate.fbo ?? rate.vendor}</div>
+                              <span className="text-xs font-mono font-medium text-gray-900">${rate.price.toFixed(2)}</span>
+                            </div>
                           );
                         })()}
                       </td>
