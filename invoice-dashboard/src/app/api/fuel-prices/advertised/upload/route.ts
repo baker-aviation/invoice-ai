@@ -68,7 +68,11 @@ export async function POST(req: NextRequest) {
   if (format === "baker") {
     // Baker/AEG Fuels format
     detectedVendor = "AEG Fuels";
-    const weekStart = resolveWeekStart(weekStartRaw, file.name);
+    let weekStart = resolveWeekStart(weekStartRaw, file.name);
+    if (!weekStart) {
+      // Fallback: use the most recent UPDATED date from the CSV rows
+      weekStart = extractMostRecentDate(lines, headerFields, "UPDATED");
+    }
     if (!weekStart) {
       return NextResponse.json({ error: "Could not determine week_start — please provide it" }, { status: 400 });
     }
@@ -252,6 +256,21 @@ function resolveWeekStart(raw: string | null, filename: string): string | null {
   const dateStr = raw || extractDateFromFilename(filename);
   if (!dateStr) return null;
   return normalizeToMonday(dateStr);
+}
+
+/** Extract the most recent date from a named column across all CSV rows, normalized to Monday */
+function extractMostRecentDate(lines: string[], headers: string[], colName: string): string | null {
+  const idx = headers.indexOf(colName);
+  if (idx < 0) return null;
+  let latest: string | null = null;
+  for (let i = 1; i < lines.length; i++) {
+    const fields = parseCSVLine(lines[i]);
+    const raw = fields[idx]?.trim();
+    if (!raw) continue;
+    const iso = parseDate(raw);
+    if (iso && (!latest || iso > latest)) latest = iso;
+  }
+  return latest ? normalizeToMonday(latest) : null;
 }
 
 // --- Baker/AEG Fuels parser ---
