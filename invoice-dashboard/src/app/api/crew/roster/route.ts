@@ -164,7 +164,22 @@ export async function POST(req: NextRequest) {
     const role: "PIC" | "SIC" = currentSection.includes("pic") ? "PIC" : "SIC";
     const isSkillbridge = String(row[0] ?? "").trim().toUpperCase() === "TRUE";
     const volunteer = parseVolunteer(row[1]);
-    const aircraft = row[4] ? String(row[4]).trim() : null;
+
+    // Find aircraft/tail number: scan columns 3-6 for N-number pattern (e.g. N988TX, N125DZ)
+    let aircraft: string | null = null;
+    for (let col = 3; col <= 6 && col < row.length; col++) {
+      const val = String(row[col] ?? "").trim();
+      if (/^N\d{1,5}[A-Z]{0,2}$/i.test(val)) {
+        aircraft = val.toUpperCase();
+        break;
+      }
+    }
+    // Fallback: check row[4] as before (might not match N-number pattern)
+    if (!aircraft && row[4]) {
+      const val = String(row[4]).trim();
+      if (val.length >= 3) aircraft = val;
+    }
+
     const notes = row[10] ? String(row[10]).trim() : null;
 
     entries.push({
@@ -358,6 +373,27 @@ export async function POST(req: NextRequest) {
     oncoming_sic: entries.filter((e) => e.section === "oncoming_sic").length,
     offgoing_pic: entries.filter((e) => e.section === "offgoing_pic").length,
     offgoing_sic: entries.filter((e) => e.section === "offgoing_sic").length,
+  };
+
+  // Debug: show which entries have aircraft and which don't
+  const debug_aircraft = {
+    oncoming_pic_with_aircraft: entries.filter((e) => e.section === "oncoming_pic" && e.aircraft).length,
+    oncoming_pic_without: entries.filter((e) => e.section === "oncoming_pic" && !e.aircraft).map((e) => e.name),
+    oncoming_sic_with_aircraft: entries.filter((e) => e.section === "oncoming_sic" && e.aircraft).length,
+    oncoming_sic_without: entries.filter((e) => e.section === "oncoming_sic" && !e.aircraft).map((e) => e.name),
+    offgoing_pic_with_aircraft: entries.filter((e) => e.section === "offgoing_pic" && e.aircraft).length,
+    offgoing_sic_with_aircraft: entries.filter((e) => e.section === "offgoing_sic" && e.aircraft).length,
+    // Show first 3 raw rows for debugging column positions
+    sample_rows: rows.slice(0, 15).map((row, i) => ({
+      row_index: i,
+      col0: String(row[0] ?? "").slice(0, 20),
+      col1: String(row[1] ?? "").slice(0, 20),
+      col2: String(row[2] ?? "").slice(0, 30),
+      col3: String(row[3] ?? "").slice(0, 20),
+      col4: String(row[4] ?? "").slice(0, 20),
+      col5: String(row[5] ?? "").slice(0, 20),
+      col6: String(row[6] ?? "").slice(0, 20),
+    })),
   };
 
   // Convert swap assignments to plain object for JSON
