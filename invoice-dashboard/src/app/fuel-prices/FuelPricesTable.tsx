@@ -807,12 +807,18 @@ export default function FuelPricesTable({
   // Filtered advertised vs actual
   const filteredAdvVsActual = useMemo(() => {
     let rows = advVsActual;
-    if (airportFilter) rows = rows.filter((r) => r.airport === airportFilter);
+    if (airportFilter) {
+      // Match both KSAN↔SAN variants
+      const normFilter = airportFilter.length === 4 && airportFilter.startsWith("K")
+        ? airportFilter.slice(1) : airportFilter;
+      const variants = new Set([airportFilter, normFilter, `K${normFilter}`]);
+      rows = rows.filter((r) => variants.has(r.airport));
+    }
     if (vendorFilter) rows = rows.filter((r) => r.fboVendor === vendorFilter);
     if (search) {
       const q = search.toLowerCase();
       rows = rows.filter((r) =>
-        [r.airport, r.fboVendor, r.tailNumbers]
+        [r.airport, r.fboVendor, r.fboName, r.tailNumbers]
           .filter(Boolean)
           .some((f) => String(f).toLowerCase().includes(q)),
       );
