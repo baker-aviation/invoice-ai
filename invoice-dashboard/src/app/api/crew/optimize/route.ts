@@ -5,6 +5,8 @@ import { buildSwapPlan, getRequiredFlightSearches, getPoolFlightSearches, assign
 import { DEFAULT_AIRPORT_ALIASES } from "@/lib/airportAliases";
 import { searchFlights, type FlightOffer } from "@/lib/amadeus";
 
+const BASE_URL_LOG = process.env.AMADEUS_BASE_URL?.includes("test") ? "TEST" : (process.env.AMADEUS_BASE_URL ? "PROD" : "TEST-default");
+
 export const dynamic = "force-dynamic";
 
 /**
@@ -165,6 +167,10 @@ export async function POST(req: NextRequest) {
     }
 
     const pairsArray = Array.from(searchPairs).slice(0, 120);
+    let searchSuccessCount = 0;
+    let searchFailCount = 0;
+
+    console.log(`[Swap Optimizer] Searching ${pairsArray.length} route pairs via Amadeus (${BASE_URL_LOG})`);
 
     // Search in parallel (batches of 8)
     for (let i = 0; i < pairsArray.length; i += 8) {
@@ -175,7 +181,8 @@ export async function POST(req: NextRequest) {
           try {
             const result = await searchFlights({ origin: orig, destination: dest, date: swapDate, max: 5 });
             return { key: `${orig}-${dest}-${swapDate}`, offers: result.offers };
-          } catch {
+          } catch (e) {
+            console.warn(`[Swap Optimizer] Search failed ${orig}->${dest}:`, e instanceof Error ? e.message : e);
             return { key: `${orig}-${dest}-${swapDate}`, offers: [] };
           }
         }),
@@ -183,9 +190,14 @@ export async function POST(req: NextRequest) {
       for (const r of results) {
         if (r.offers.length > 0) {
           commercialFlights.set(r.key, r.offers);
+          searchSuccessCount++;
+        } else {
+          searchFailCount++;
         }
       }
     }
+
+    console.log(`[Swap Optimizer] Amadeus results: ${searchSuccessCount} routes with flights, ${searchFailCount} empty, ${commercialFlights.size} total cached`);
   }
 
   // ── STEP 2: Assign oncoming crew using ACTUAL transport costs ──────────────

@@ -4,8 +4,8 @@
 const API_KEY = process.env.AMADEUS_API_KEY!;
 const API_SECRET = process.env.AMADEUS_API_SECRET!;
 
-// Production API for real flight data. Set AMADEUS_BASE_URL=https://test.api.amadeus.com for sandbox.
-const BASE_URL = process.env.AMADEUS_BASE_URL ?? "https://api.amadeus.com";
+// Default to test API. Set AMADEUS_BASE_URL=https://api.amadeus.com when you have production credentials.
+const BASE_URL = process.env.AMADEUS_BASE_URL ?? "https://test.api.amadeus.com";
 
 // ─── Token management ────────────────────────────────────────────────────────
 
@@ -102,11 +102,11 @@ export async function searchFlights(params: {
 
   if (!res.ok) {
     const text = await res.text();
-    if (res.status === 400) {
-      console.warn(`Amadeus 400 for ${orig}->${dest} on ${date}: ${text.slice(0, 200)}`);
+    console.warn(`Amadeus ${res.status} for ${orig}->${dest} on ${date}: ${text.slice(0, 200)}`);
+    if (res.status === 400 || res.status === 401 || res.status === 429) {
+      // 400=invalid pair, 401=auth expired, 429=rate limit — return empty, don't throw
       return { origin: orig, destination: dest, date, offers: [], count: 0 };
     }
-    console.error(`Amadeus ${res.status} for ${orig}->${dest}: ${text.slice(0, 200)}`);
     throw new Error(`Amadeus search failed (${res.status}): ${text}`);
   }
 
