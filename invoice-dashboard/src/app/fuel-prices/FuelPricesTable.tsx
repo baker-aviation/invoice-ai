@@ -345,16 +345,40 @@ function buildAdvVsActual(
     const volumeFiltered = filteredAdv.filter((a) => tierMatchesVolume(a.volume_tier, volumeGallons));
     if (volumeFiltered.length > 0) filteredAdv = volumeFiltered;
   }
-  // For each (vendor, airport, FBO, week), keep only the best-matching tier
+  // For each (vendor, airport, FBO, week), keep the best-matching tier:
+  // - If volume is set: pick the tier whose min is closest to (but ≤) the volume
+  // - If no volume: pick the tier with the smallest minimum (retail/base tier)
   const dedupedAdv: AdvertisedPriceRow[] = [];
   const seenByWeek = new Map<string, AdvertisedPriceRow>();
-  const sortedAdv = [...filteredAdv].sort((a, b) => a.price - b.price);
-  for (const adv of sortedAdv) {
+  function tierMinGal(tier: string): number {
+    const m = tier.match(/^(\d+)/);
+    return m ? parseInt(m[1], 10) : 0;
+  }
+  for (const adv of filteredAdv) {
     const fbo = extractFboName(adv.product) ?? "";
     const wk = `${adv.fbo_vendor}|${normAirport(adv.airport_code)}|${normFboKey(fbo)}|${adv.week_start}`;
-    if (!seenByWeek.has(wk)) {
+    const existing = seenByWeek.get(wk);
+    if (!existing) {
       seenByWeek.set(wk, adv);
       dedupedAdv.push(adv);
+    } else {
+      const existMin = tierMinGal(existing.volume_tier);
+      const newMin = tierMinGal(adv.volume_tier);
+      let replace = false;
+      if (volumeGallons && volumeGallons > 0) {
+        // Prefer tier whose min is closest to volume without exceeding it
+        const existFit = existMin <= volumeGallons ? existMin : -1;
+        const newFit = newMin <= volumeGallons ? newMin : -1;
+        replace = newFit > existFit;
+      } else {
+        // No volume set — prefer smallest tier (retail price)
+        replace = newMin < existMin;
+      }
+      if (replace) {
+        seenByWeek.set(wk, adv);
+        const idx = dedupedAdv.indexOf(existing);
+        if (idx >= 0) dedupedAdv[idx] = adv;
+      }
     }
   }
 
