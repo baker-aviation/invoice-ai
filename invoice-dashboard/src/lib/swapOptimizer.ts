@@ -360,6 +360,10 @@ export function buildSwapPlan(params: {
         : null;
     }
 
+    // Mark offgoing crew as assigned so they don't appear in unassigned list
+    if (offgoingPic) assignedCrewIds.add(offgoingPic.id);
+    if (offgoingSic) assignedCrewIds.add(offgoingSic.id);
+
     // Determine aircraft type from crew qualifications or flight data
     const aircraftType = offgoingPic?.aircraft_types[0] ?? null;
 
@@ -665,8 +669,22 @@ export function buildSwapPlan(params: {
     });
   }
 
-  // Unassigned crew (available but not placed)
-  const unassigned = crewRoster.filter((c) => !assignedCrewIds.has(c.id));
+  // Unassigned crew — only show crew from the swap doc who weren't placed on a tail.
+  // If swap assignments exist, only include crew mentioned in them.
+  // Otherwise, don't show a giant "unassigned" list of the entire roster.
+  const swapCrewNames = new Set<string>();
+  if (swapAssignments) {
+    for (const sa of Object.values(swapAssignments)) {
+      if (sa.oncoming_pic) swapCrewNames.add(sa.oncoming_pic.toLowerCase());
+      if (sa.oncoming_sic) swapCrewNames.add(sa.oncoming_sic.toLowerCase());
+      if (sa.offgoing_pic) swapCrewNames.add(sa.offgoing_pic.toLowerCase());
+      if (sa.offgoing_sic) swapCrewNames.add(sa.offgoing_sic.toLowerCase());
+    }
+  }
+
+  const unassigned = swapCrewNames.size > 0
+    ? crewRoster.filter((c) => !assignedCrewIds.has(c.id) && swapCrewNames.has(c.name.toLowerCase()))
+    : [];
 
   return { swap_date: swapDate, plans, unassigned_crew: unassigned, warnings };
 }
