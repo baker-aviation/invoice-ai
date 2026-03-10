@@ -1270,7 +1270,7 @@ export default function FuelPricesTable({
                 const now = new Date();
                 const daysOld = Math.floor((now.getTime() - weekDate.getTime()) / (1000 * 60 * 60 * 24));
                 const isStale = daysOld > 10;
-                const isRecent = daysOld <= 3;
+                const isRecent = daysOld < 7;
                 return (
                   <span
                     key={vendor}
