@@ -9,11 +9,11 @@ import type { HiringStage, JobRow } from "@/lib/types";
 // ---------------------------------------------------------------------------
 
 const STAGES: { key: HiringStage; label: string; color: string }[] = [
-  { key: "new", label: "New", color: "bg-gray-100 border-gray-300" },
   { key: "screening", label: "Screening", color: "bg-blue-50 border-blue-300" },
   { key: "info_session", label: "Info Session", color: "bg-cyan-50 border-cyan-300" },
   { key: "prd_faa_review", label: "PRD / FAA Review", color: "bg-orange-50 border-orange-300" },
   { key: "interview", label: "Interview", color: "bg-violet-50 border-violet-300" },
+  { key: "pending_offer", label: "Pending Offer", color: "bg-pink-50 border-pink-300" },
   { key: "offer", label: "Offer", color: "bg-amber-50 border-amber-300" },
   { key: "hired", label: "Hired", color: "bg-emerald-50 border-emerald-300" },
 ];
@@ -61,17 +61,17 @@ export default function PipelineBoard({ initialJobs }: { initialJobs: JobRow[] }
       : jobs;
 
     const map: Record<HiringStage, JobRow[]> = {
-      new: [],
       screening: [],
       info_session: [],
       prd_faa_review: [],
       interview: [],
+      pending_offer: [],
       offer: [],
       hired: [],
     };
     for (const j of filtered) {
-      const stage = (j.hiring_stage ?? "new") as HiringStage;
-      (map[stage] ?? map.new).push(j);
+      const stage = (j.hiring_stage ?? "") as HiringStage;
+      if (map[stage]) map[stage].push(j);
     }
     return map;
   }, [jobs, q]);
@@ -337,7 +337,7 @@ function CreateModal({
       location,
       category,
       notes,
-      hiring_stage: "new",
+      hiring_stage: "screening",
     });
     setSaving(false);
   };

@@ -8,6 +8,7 @@ import AttachFileButton from "./AttachFileButton";
 import TypeRatingsEditor from "./TypeRatingsEditor";
 import ProfileEditor from "./ProfileEditor";
 import ReviewBadge from "./ReviewBadge";
+import PushToScreeningButton from "./PushToScreeningButton";
 
 function fmtDate(s: any) {
   return String(s ?? "").replace("T", " ").replace("+00:00", "Z");
@@ -160,6 +161,10 @@ export default async function JobDetailPage({
 
               <div className="flex items-center gap-2">
                 {isRejected && <Badge variant="danger">Rejected</Badge>}
+                <PushToScreeningButton
+                  applicationId={Number(applicationId)}
+                  currentStage={job?.pipeline_stage ?? null}
+                />
                 <ReviewBadge
                   applicationId={Number(applicationId)}
                   initialNeedsReview={job?.needs_review ?? false}
