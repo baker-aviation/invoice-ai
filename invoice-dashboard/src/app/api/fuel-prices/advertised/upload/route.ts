@@ -490,8 +490,9 @@ function parseSignatureCSV(lines: string[], headers: string[], vendor: string, w
     const fields = parseCSVLine(lines[i]);
     const rawBase = fields[baseIdx]?.trim().toUpperCase();
     if (!rawBase) continue;
-    // Strip trailing digits — Signature uses SAT2, HPN2, TEB4 etc. for multiple locations
-    const base = rawBase.replace(/\d+$/, "");
+    // Strip trailing digits only from 4+ char codes (3 letters + digit suffix)
+    // e.g. SAT2→SAT, TEB4→TEB, but keep AP3, DA5, BU1, SU2 as-is
+    const base = /^[A-Z]{3}\d+$/.test(rawBase) ? rawBase.replace(/\d+$/, "") : rawBase;
 
     const price = parsePrice(fields[totalIdx]);
     if (price === null || price <= 0) continue;
