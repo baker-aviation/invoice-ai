@@ -1123,17 +1123,17 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
       <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
         <table className="w-full text-sm">
           <colgroup>
-            <col style={{ width: "8%" }} />   {/* Status */}
+            <col style={{ width: "9%" }} />   {/* Status */}
             <col style={{ width: "7%" }} />   {/* Tail */}
-            <col style={{ width: "10%" }} />  {/* Route */}
+            <col style={{ width: "11%" }} />  {/* Route */}
             <col style={{ width: "12%" }} />  {/* Departure */}
             <col style={{ width: "12%" }} />  {/* Arrival */}
             <col style={{ width: "7%" }} />   {/* Type */}
             <col style={{ width: "5%" }} />   {/* 10/24 */}
             <col style={{ width: "5%" }} />   {/* Rest */}
-            <col style={{ width: "8%" }} />   {/* Fuel */}
+            <col style={{ width: "5%" }} />   {/* Fuel */}
             <col style={{ width: "5%" }} />   {/* Alerts */}
-            <col style={{ width: "8%" }} />   {/* Sales */}
+            <col style={{ width: "9%" }} />   {/* Sales */}
           </colgroup>
           <thead>
             <tr className="bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -1421,10 +1421,9 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                           const rate = bestFuelByAirport.get(arrCode) ?? bestFuelByAirport.get(arrCode.length === 4 && arrCode.startsWith("K") ? arrCode.slice(1) : `K${arrCode}`);
                           if (!rate) return <span className="text-xs text-gray-300">&mdash;</span>;
                           return (
-                            <div className="text-xs">
-                              <div className="text-[10px] text-gray-500 truncate">{rate.fbo ?? rate.vendor}</div>
-                              <span className="font-mono font-medium text-gray-900">${rate.price.toFixed(2)}</span>
-                            </div>
+                            <span className="text-xs font-mono font-medium text-gray-900" title={rate.fbo ?? rate.vendor}>
+                              ${rate.price.toFixed(2)}
+                            </span>
                           );
                         })()}
                       </td>
