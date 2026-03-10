@@ -408,6 +408,7 @@ def _openai_extract(resume_text: str) -> Dict[str, Any]:
             "candidate",
             "pilot_metrics",
             "type_ratings",
+            "experience",
             "notes",
             "confidence",
         ],
@@ -468,6 +469,15 @@ def _openai_extract(resume_text: str) -> Dict[str, Any]:
                     "raw_snippet": {"type": ["string", "null"]},
                 },
             },
+            "experience": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["has_part_135", "has_part_121"],
+                "properties": {
+                    "has_part_135": {"type": ["boolean", "null"]},
+                    "has_part_121": {"type": ["boolean", "null"]},
+                },
+            },
             "notes": {"type": ["string", "null"]},
             "confidence": {
                 "type": ["object", "null"],
@@ -524,6 +534,10 @@ Rules:
     Do NOT add CE-750 or CL-300 unless those exact codes appear. Do NOT normalize CE-500 to CE-750.
     Do NOT include ratings mentioned only in recommendation letters.
   - raw_snippet: copy the EXACT text from the resume's type ratings / certificates section verbatim.
+
+- experience:
+  - has_part_135: true if the applicant has Part 135 experience (on-demand charter, corporate aviation, air taxi, fractional ownership such as NetJets, Flexjet, XOJet, etc.). false if clearly no Part 135 background. null if not mentioned.
+  - has_part_121: true if the applicant has Part 121 experience (scheduled airlines, regional carriers, major airlines such as Delta, United, American, SkyWest, Republic, Envoy, etc.). false if clearly no Part 121 background. null if not mentioned.
 
 - notes:
   - short summary focused on TT, PIC, turbine, SIC, and aircraft type ratings.
@@ -625,6 +639,7 @@ def _upsert_parse_row(supa: Client, application_id: int, result: Dict[str, Any])
     candidate = result.get("candidate") or {}
     pm = result.get("pilot_metrics") or {}
     tr = result.get("type_ratings") or {}
+    exp = result.get("experience") or {}
 
     soft_gate_pic_met = result.get("soft_gate_pic_met")
     if soft_gate_pic_met is None:
@@ -658,6 +673,10 @@ def _upsert_parse_row(supa: Client, application_id: int, result: Dict[str, Any])
         "has_challenger_300_type_rating": tr.get("has_challenger_300"),
         "type_ratings": tr.get("ratings") or [],
         "type_ratings_raw": tr.get("raw_snippet"),
+
+        # experience
+        "has_part_135": exp.get("has_part_135"),
+        "has_part_121": exp.get("has_part_121"),
 
         # soft gate (soft_gate_pic_status is a generated column — do NOT set it)
         "soft_gate_pic_met": soft_gate_pic_met,

@@ -215,6 +215,8 @@ function AddCandidateModal({
         has_citation_x: null,
         has_challenger_300_type_rating: null,
         type_ratings: null,
+        has_part_135: null,
+        has_part_121: null,
         soft_gate_pic_met: null,
         soft_gate_pic_status: null,
         needs_review: false,
