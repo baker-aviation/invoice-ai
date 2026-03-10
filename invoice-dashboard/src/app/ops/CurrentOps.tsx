@@ -3,10 +3,12 @@
 import dynamic from "next/dynamic";
 import { useState, useEffect, useCallback, useMemo, Fragment } from "react";
 import type { Flight, OpsAlert } from "@/lib/opsApi";
+import type { AdvertisedPriceRow } from "@/lib/types";
 import type { AircraftPosition, FlightInfoMap } from "@/app/maintenance/MapView";
 import { fmtTimeInTz, type TzMode } from "@/lib/airportTimezones";
 import { getAirportInfo } from "@/lib/airportCoords";
 import { TRIPS } from "@/lib/maintenanceData";
+import { buildBestRateByAirport } from "@/lib/fuelLookup";
 
 const OpsMap = dynamic(() => import("./OpsMap"), {
   ssr: false,
@@ -363,7 +365,7 @@ type TripSalesperson = {
   customer: string | null;
 };
 
-export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Flight[]; onSwitchToDuty?: (tail?: string) => void }) {
+export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices = [] }: { flights: Flight[]; onSwitchToDuty?: (tail?: string) => void; advertisedPrices?: AdvertisedPriceRow[] }) {
   const [enRouteAircraft, setAircraftPosition] = useState<AircraftPosition[]>([]);
   const [flightInfo, setFlightInfo] = useState<Map<string, FlightInfoMap>>(new Map());
   const [tripSalespersons, setTripSalespersons] = useState<TripSalesperson[]>([]);
@@ -730,6 +732,9 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
 
   // Per-tail duty summary (24hr flight time + crew rest)
   const tailDuty = useMemo(() => computeTailDuty(flights, flightInfo), [flights, flightInfo]);
+
+  // Best advertised fuel rate per airport
+  const bestFuelByAirport = useMemo(() => buildBestRateByAirport(advertisedPrices), [advertisedPrices]);
 
   // Count airborne vs on-ground
   const airborne = enRouteAircraft.length;
@@ -1118,16 +1123,17 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
       <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
         <table className="w-full text-sm">
           <colgroup>
-            <col style={{ width: "9%" }} />   {/* Status */}
+            <col style={{ width: "8%" }} />   {/* Status */}
             <col style={{ width: "7%" }} />   {/* Tail */}
-            <col style={{ width: "11%" }} />  {/* Route */}
-            <col style={{ width: "13%" }} />  {/* Departure */}
-            <col style={{ width: "13%" }} />  {/* Arrival */}
+            <col style={{ width: "10%" }} />  {/* Route */}
+            <col style={{ width: "12%" }} />  {/* Departure */}
+            <col style={{ width: "12%" }} />  {/* Arrival */}
             <col style={{ width: "7%" }} />   {/* Type */}
             <col style={{ width: "5%" }} />   {/* 10/24 */}
             <col style={{ width: "5%" }} />   {/* Rest */}
+            <col style={{ width: "8%" }} />   {/* Fuel */}
             <col style={{ width: "5%" }} />   {/* Alerts */}
-            <col style={{ width: "9%" }} />   {/* Sales */}
+            <col style={{ width: "8%" }} />   {/* Sales */}
           </colgroup>
           <thead>
             <tr className="bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -1139,6 +1145,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
               <th className="px-3 py-3">Type</th>
               <th className="px-3 py-3">10/24</th>
               <th className="px-3 py-3">Rest</th>
+              <th className="px-3 py-3">Fuel</th>
               <th className="px-3 py-3">
                 <div className="flex flex-col gap-0.5">
                   <span>NOTAMs, PPRs & TFRs</span>
@@ -1174,7 +1181,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
           <tbody>
             {displayFlights.length === 0 ? (
               <tr>
-                <td colSpan={10} className="px-4 py-8 text-center text-gray-400">
+                <td colSpan={11} className="px-4 py-8 text-center text-gray-400">
                   No flights scheduled for selected filters
                 </td>
               </tr>
@@ -1408,6 +1415,20 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                         })()}
                       </td>
                       <td className="px-3 py-2.5">
+                        {(() => {
+                          const arrCode = f.arrival_icao?.toUpperCase();
+                          if (!arrCode) return <span className="text-xs text-gray-300">&mdash;</span>;
+                          const rate = bestFuelByAirport.get(arrCode) ?? bestFuelByAirport.get(arrCode.length === 4 && arrCode.startsWith("K") ? arrCode.slice(1) : `K${arrCode}`);
+                          if (!rate) return <span className="text-xs text-gray-300">&mdash;</span>;
+                          return (
+                            <div className="text-xs">
+                              <div className="text-[10px] text-gray-500 truncate">{rate.fbo ?? rate.vendor}</div>
+                              <span className="font-mono font-medium text-gray-900">${rate.price.toFixed(2)}</span>
+                            </div>
+                          );
+                        })()}
+                      </td>
+                      <td className="px-3 py-2.5">
                         {alertCount > 0 && (
                           <button
                             onClick={() => toggleExpanded(f.id)}
@@ -1432,7 +1453,7 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                     </tr>
                     {isExpanded && alerts.map((alert) => (
                       <tr key={alert.id} className={`border-t border-dashed border-gray-100 ${isAcked(alert) ? "bg-gray-50/40 opacity-60" : "bg-red-50/40"}`}>
-                        <td colSpan={10} className="px-4 py-3">
+                        <td colSpan={11} className="px-4 py-3">
                           <div className={`rounded-lg border p-3 text-xs ${isAcked(alert) ? "bg-gray-50 text-gray-700 border-gray-200" : SEVERITY_COLORS[alert.severity] || "bg-gray-50 text-gray-700 border-gray-200"}`}>
                             <div className="flex items-start justify-between gap-2">
                               <div className="space-y-1 flex-1">
