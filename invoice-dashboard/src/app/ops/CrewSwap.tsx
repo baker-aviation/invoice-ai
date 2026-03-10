@@ -25,15 +25,32 @@ type SwapAssignment = {
   offgoing_sic: string | null;
 };
 
+type OncomingPoolEntry = {
+  name: string;
+  aircraft_type: string;
+  home_airports: string[];
+  is_checkairman: boolean;
+  is_skillbridge: boolean;
+  early_volunteer: boolean;
+  late_volunteer: boolean;
+  standby_volunteer: boolean;
+  notes: string | null;
+};
+
+type OncomingPool = {
+  pic: OncomingPoolEntry[];
+  sic: OncomingPoolEntry[];
+};
+
 type RosterUploadResult = {
   ok: boolean;
   total_parsed: number;
   unique_crew: number;
   upserted: number;
-  rotations_created: number;
   errors?: string[];
   summary: Record<string, number>;
   swap_assignments?: Record<string, SwapAssignment>;
+  oncoming_pool?: OncomingPool;
 };
 
 // Matches CrewSwapRow from swapOptimizer.ts
@@ -73,6 +90,10 @@ type SwapPlanResult = {
   commercial_flights_searched: number;
   total_cost: number;
   plan_score: number;
+  crew_assignment?: {
+    standby: { pic: string[]; sic: string[] };
+    details: { name: string; tail: string; cost: number; reason: string }[];
+  };
 };
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -304,6 +325,13 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
       return stored ? JSON.parse(stored) : null;
     } catch { return null; }
   });
+  const [oncomingPool, setOncomingPool] = useState<OncomingPool | null>(() => {
+    if (typeof window === "undefined") return null;
+    try {
+      const stored = localStorage.getItem("oncoming_pool");
+      return stored ? JSON.parse(stored) : null;
+    } catch { return null; }
+  });
 
   // Fetch crew roster
   const loadCrew = useCallback(async () => {
@@ -339,6 +367,10 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
         if (data.swap_assignments) {
           setSwapAssignments(data.swap_assignments);
           try { localStorage.setItem("swap_assignments", JSON.stringify(data.swap_assignments)); } catch {}
+        }
+        if (data.oncoming_pool) {
+          setOncomingPool(data.oncoming_pool);
+          try { localStorage.setItem("oncoming_pool", JSON.stringify(data.oncoming_pool)); } catch {}
         }
         await loadCrew();
       }
@@ -384,6 +416,7 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
           swap_date: selectedWed.toISOString().slice(0, 10),
           search_flights: includeFlights,
           swap_assignments: swapAssignments ?? undefined,
+          oncoming_pool: oncomingPool ?? undefined,
         }),
       });
       const data = await res.json();
@@ -469,7 +502,6 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
             <span className="text-green-700 font-medium">Roster uploaded: </span>
             <span className="text-green-600">
               {uploadResult.total_parsed} parsed, {uploadResult.unique_crew} unique, {uploadResult.upserted} upserted
-              {uploadResult.rotations_created > 0 && `, ${uploadResult.rotations_created} rotations`}
             </span>
             {uploadResult.summary && (
               <span className="text-green-500 ml-2 text-xs">
@@ -479,8 +511,8 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
             )}
             {uploadResult.swap_assignments && (
               <span className="text-green-500 ml-2 text-xs">
-                | Swap assignments: {Object.keys(uploadResult.swap_assignments).length} tails
-                ({Object.values(uploadResult.swap_assignments).filter(a => a.oncoming_pic || a.oncoming_sic).length} w/ oncoming)
+                | {Object.keys(uploadResult.swap_assignments).length} tails
+                {uploadResult.oncoming_pool && ` | Pool: ${uploadResult.oncoming_pool.pic.length} PICs, ${uploadResult.oncoming_pool.sic.length} SICs to assign`}
               </span>
             )}
             {uploadResult.errors && uploadResult.errors.length > 0 && (
@@ -567,9 +599,9 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
             </h3>
             {swapAssignments && (
               <span className="text-[10px] px-2 py-0.5 rounded bg-blue-50 text-blue-600">
-                {Object.keys(swapAssignments).length} tails loaded
-                ({Object.values(swapAssignments).filter(a => a.oncoming_pic || a.oncoming_sic).length} oncoming,
-                {" "}{Object.values(swapAssignments).filter(a => a.offgoing_pic || a.offgoing_sic).length} offgoing)
+                {Object.keys(swapAssignments).length} tails
+                {oncomingPool && ` | Pool: ${oncomingPool.pic.length} PICs, ${oncomingPool.sic.length} SICs`}
+                {" | "}{Object.values(swapAssignments).filter(a => a.offgoing_pic || a.offgoing_sic).length} offgoing
               </span>
             )}
             {!swapAssignments && (
@@ -648,6 +680,28 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
                   <div key={i} className="text-xs text-amber-700">{w}</div>
                 ))}
               </div>
+            )}
+
+            {/* Standby crew (unassigned) */}
+            {swapPlan.crew_assignment?.standby && (
+              (swapPlan.crew_assignment.standby.pic.length > 0 || swapPlan.crew_assignment.standby.sic.length > 0) && (
+                <div className="px-4 py-2 bg-gray-50 border-b text-xs space-y-1">
+                  <span className="font-semibold text-gray-600">Standby (unassigned): </span>
+                  {swapPlan.crew_assignment.standby.pic.length > 0 && (
+                    <span className="text-gray-500">
+                      PICs: {swapPlan.crew_assignment.standby.pic.join(", ")}
+                    </span>
+                  )}
+                  {swapPlan.crew_assignment.standby.pic.length > 0 && swapPlan.crew_assignment.standby.sic.length > 0 && (
+                    <span className="text-gray-400 mx-1">|</span>
+                  )}
+                  {swapPlan.crew_assignment.standby.sic.length > 0 && (
+                    <span className="text-gray-500">
+                      SICs: {swapPlan.crew_assignment.standby.sic.join(", ")}
+                    </span>
+                  )}
+                </div>
+              )
             )}
 
             {/* The swap sheet */}

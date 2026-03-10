@@ -251,52 +251,10 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Build rotation assignments from entries that have aircraft assigned
-  const rotationEntries = entries.filter((e) => e.aircraft);
-  let rotationsCreated = 0;
+  // ─── Build swap data for optimizer ──────────────────────────────────────────
+  // Offgoing crew have tail numbers in the Excel → build offgoing assignments
+  // Oncoming crew mostly DON'T have tails → they go into a pool for optimizer to assign
 
-  for (const e of rotationEntries) {
-    try {
-      // Look up crew member ID
-      const { data: member } = await supa
-        .from("crew_members")
-        .select("id")
-        .eq("name", e.name)
-        .eq("role", e.role)
-        .limit(1);
-
-      if (!member || member.length === 0) continue;
-
-      // Determine rotation dates from the swap date (file name might hint at this)
-      // For now, use the section to determine if they're coming on or going off
-      const isOncoming = e.section.startsWith("oncoming");
-
-      // Check if rotation already exists
-      const { data: existingRot } = await supa
-        .from("crew_rotations")
-        .select("id")
-        .eq("crew_member_id", member[0].id)
-        .eq("tail_number", e.aircraft!)
-        .order("rotation_start", { ascending: false })
-        .limit(1);
-
-      if (!existingRot || existingRot.length === 0) {
-        await supa.from("crew_rotations").insert({
-          crew_member_id: member[0].id,
-          tail_number: e.aircraft,
-          rotation_start: new Date().toISOString().slice(0, 10),
-          is_early_volunteer: e.volunteer.isEarly,
-          is_late_volunteer: e.volunteer.isLate,
-          standby: e.volunteer.isStandby,
-        });
-        rotationsCreated++;
-      }
-    } catch {
-      // Non-critical
-    }
-  }
-
-  // Build swap assignments: tail → { oncoming_pic, oncoming_sic, offgoing_pic, offgoing_sic }
   type SwapAssignment = {
     oncoming_pic: string | null;
     oncoming_sic: string | null;
@@ -304,96 +262,72 @@ export async function POST(req: NextRequest) {
     offgoing_sic: string | null;
   };
   const swapByTail = new Map<string, SwapAssignment>();
-  for (const e of entries) {
-    if (!e.aircraft) continue;
-    const tail = e.aircraft;
+
+  // 1. Build offgoing assignments (they have aircraft in column 4)
+  for (const e of entries.filter((e) => e.section.startsWith("offgoing") && e.aircraft)) {
+    const tail = e.aircraft!;
+    if (!swapByTail.has(tail)) {
+      swapByTail.set(tail, { oncoming_pic: null, oncoming_sic: null, offgoing_pic: null, offgoing_sic: null });
+    }
+    const sa = swapByTail.get(tail)!;
+    if (e.section === "offgoing_pic") sa.offgoing_pic = e.name;
+    else if (e.section === "offgoing_sic") sa.offgoing_sic = e.name;
+  }
+
+  // 2. Handle rare oncoming crew WITH tails (e.g., "Staying on")
+  for (const e of entries.filter((e) => e.section.startsWith("oncoming") && e.aircraft)) {
+    const tail = e.aircraft!;
     if (!swapByTail.has(tail)) {
       swapByTail.set(tail, { oncoming_pic: null, oncoming_sic: null, offgoing_pic: null, offgoing_sic: null });
     }
     const sa = swapByTail.get(tail)!;
     if (e.section === "oncoming_pic") sa.oncoming_pic = e.name;
     else if (e.section === "oncoming_sic") sa.oncoming_sic = e.name;
-    else if (e.section === "offgoing_pic") sa.offgoing_pic = e.name;
-    else if (e.section === "offgoing_sic") sa.offgoing_sic = e.name;
   }
 
-  // Also store swap assignments in the DB for the optimizer to read
-  for (const [tail, sa] of swapByTail) {
-    try {
-      // Store as a JSON blob in crew_rotations or a swap_assignments approach
-      // For now, update crew_rotations with section info
-      // Mark oncoming rotations
-      for (const [section, name] of Object.entries(sa)) {
-        if (!name) continue;
-        const role = section.includes("pic") ? "PIC" : "SIC";
-        const isOncoming = section.startsWith("oncoming");
-        const { data: member } = await supa
-          .from("crew_members")
-          .select("id")
-          .eq("name", name)
-          .eq("role", role)
-          .limit(1);
-        if (!member || member.length === 0) continue;
+  // 3. Build oncoming pools (crew without tail assignments → optimizer assigns them)
+  type PoolEntry = {
+    name: string;
+    aircraft_type: string;
+    home_airports: string[];
+    is_checkairman: boolean;
+    is_skillbridge: boolean;
+    early_volunteer: boolean;
+    late_volunteer: boolean;
+    standby_volunteer: boolean;
+    notes: string | null;
+  };
 
-        // Upsert rotation with direction
-        if (isOncoming) {
-          // Set rotation_start to swap date, rotation_end null (active)
-          await supa.from("crew_rotations")
-            .upsert({
-              crew_member_id: member[0].id,
-              tail_number: tail,
-              rotation_start: new Date().toISOString().slice(0, 10),
-              rotation_end: null,
-            }, { onConflict: "crew_member_id,tail_number,rotation_start" })
-            .select();
-        } else {
-          // Set rotation_end to swap date
-          const { data: existingRot } = await supa
-            .from("crew_rotations")
-            .select("id")
-            .eq("crew_member_id", member[0].id)
-            .eq("tail_number", tail)
-            .is("rotation_end", null)
-            .limit(1);
-          if (existingRot && existingRot.length > 0) {
-            await supa.from("crew_rotations")
-              .update({ rotation_end: new Date().toISOString().slice(0, 10) })
-              .eq("id", existingRot[0].id);
-          }
-        }
-      }
-    } catch {
-      // Non-critical
-    }
+  const assignedOncomingNames = new Set<string>();
+  for (const [, sa] of swapByTail) {
+    if (sa.oncoming_pic) assignedOncomingNames.add(sa.oncoming_pic);
+    if (sa.oncoming_sic) assignedOncomingNames.add(sa.oncoming_sic);
   }
 
-  // Summary by section
+  const oncomingPool: { pic: PoolEntry[]; sic: PoolEntry[] } = { pic: [], sic: [] };
+  for (const e of entries.filter((e) => e.section.startsWith("oncoming") && !e.aircraft)) {
+    if (assignedOncomingNames.has(e.name)) continue;
+    const entry: PoolEntry = {
+      name: e.name,
+      aircraft_type: e.aircraftType,
+      home_airports: e.homeAirports,
+      is_checkairman: e.isCheckairman,
+      is_skillbridge: e.isSkillbridge,
+      early_volunteer: e.volunteer.isEarly,
+      late_volunteer: e.volunteer.isLate,
+      standby_volunteer: e.volunteer.isStandby,
+      notes: e.notes,
+    };
+    if (e.section === "oncoming_pic") oncomingPool.pic.push(entry);
+    else if (e.section === "oncoming_sic") oncomingPool.sic.push(entry);
+  }
+
+  // Summary
   const summary = {
     oncoming_pic: entries.filter((e) => e.section === "oncoming_pic").length,
     oncoming_sic: entries.filter((e) => e.section === "oncoming_sic").length,
     offgoing_pic: entries.filter((e) => e.section === "offgoing_pic").length,
     offgoing_sic: entries.filter((e) => e.section === "offgoing_sic").length,
-  };
-
-  // Debug: show which entries have aircraft and which don't
-  const debug_aircraft = {
-    oncoming_pic_with_aircraft: entries.filter((e) => e.section === "oncoming_pic" && e.aircraft).length,
-    oncoming_pic_without: entries.filter((e) => e.section === "oncoming_pic" && !e.aircraft).map((e) => e.name),
-    oncoming_sic_with_aircraft: entries.filter((e) => e.section === "oncoming_sic" && e.aircraft).length,
-    oncoming_sic_without: entries.filter((e) => e.section === "oncoming_sic" && !e.aircraft).map((e) => e.name),
-    offgoing_pic_with_aircraft: entries.filter((e) => e.section === "offgoing_pic" && e.aircraft).length,
-    offgoing_sic_with_aircraft: entries.filter((e) => e.section === "offgoing_sic" && e.aircraft).length,
-    // Show first 3 raw rows for debugging column positions
-    sample_rows: rows.slice(0, 15).map((row, i) => ({
-      row_index: i,
-      col0: String(row[0] ?? "").slice(0, 20),
-      col1: String(row[1] ?? "").slice(0, 20),
-      col2: String(row[2] ?? "").slice(0, 30),
-      col3: String(row[3] ?? "").slice(0, 20),
-      col4: String(row[4] ?? "").slice(0, 20),
-      col5: String(row[5] ?? "").slice(0, 20),
-      col6: String(row[6] ?? "").slice(0, 20),
-    })),
   };
 
   // Convert swap assignments to plain object for JSON
@@ -407,9 +341,9 @@ export async function POST(req: NextRequest) {
     total_parsed: entries.length,
     unique_crew: crewMap.size,
     upserted: upserted.length,
-    rotations_created: rotationsCreated,
     errors: errors.length > 0 ? errors : undefined,
     summary,
     swap_assignments: swapAssignments,
+    oncoming_pool: oncomingPool,
   });
 }

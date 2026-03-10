@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin, isAuthed } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
-import { buildSwapPlan, getRequiredFlightSearches, type CrewMember, type FlightLeg, type AirportAlias, type SwapAssignment } from "@/lib/swapOptimizer";
+import { buildSwapPlan, getRequiredFlightSearches, assignOncomingCrew, type CrewMember, type FlightLeg, type AirportAlias, type SwapAssignment, type OncomingPool } from "@/lib/swapOptimizer";
 import { searchFlights, type FlightOffer } from "@/lib/amadeus";
 
 export const dynamic = "force-dynamic";
@@ -22,6 +22,8 @@ export async function POST(req: NextRequest) {
   const searchCommercial = body.search_flights === true;
   // Accept swap_assignments directly from client (parsed from Excel upload)
   const clientSwapAssignments = body.swap_assignments as Record<string, SwapAssignment> | undefined;
+  // Accept oncoming pool for crew-to-tail assignment
+  const clientOncomingPool = body.oncoming_pool as OncomingPool | undefined;
 
   if (!swapDate || !/^\d{4}-\d{2}-\d{2}$/.test(swapDate)) {
     return NextResponse.json({ error: "swap_date required (YYYY-MM-DD)" }, { status: 400 });
@@ -117,28 +119,39 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Optionally search for commercial flights
+  // ── STEP 1: Assign oncoming crew from pool to tails ─────────────────────────
+  let assignmentResult: ReturnType<typeof assignOncomingCrew> | null = null;
+
+  if (clientOncomingPool && (clientOncomingPool.pic?.length > 0 || clientOncomingPool.sic?.length > 0)) {
+    assignmentResult = assignOncomingCrew({
+      swapAssignments,
+      oncomingPool: clientOncomingPool,
+      crewRoster,
+      flights,
+      swapDate,
+    });
+    // Use the completed assignments (with oncoming filled in)
+    swapAssignments = assignmentResult.assignments;
+  }
+
+  // ── STEP 2: Optionally search for commercial flights ───────────────────────
   let commercialFlights: Map<string, FlightOffer[]> | undefined;
 
   if (searchCommercial) {
     commercialFlights = new Map();
 
-    // Use optimizer's smart search to only query routes we actually need
     const activeAssignments = Object.keys(swapAssignments).length > 0 ? swapAssignments : undefined;
     const requiredSearches = activeAssignments
       ? getRequiredFlightSearches({ crewRoster, aliases, swapAssignments: activeAssignments, flights, swapDate })
       : [];
 
-    // Deduplicate
     const searchPairs = new Set<string>();
     for (const s of requiredSearches) {
       searchPairs.add(`${s.origin}-${s.destination}`);
     }
 
-    // Limit searches to avoid burning API quota
     const pairsArray = Array.from(searchPairs).slice(0, 30);
 
-    // Search in parallel (batches of 5)
     for (let i = 0; i < pairsArray.length; i += 5) {
       const batch = pairsArray.slice(i, i + 5);
       const results = await Promise.all(
@@ -160,7 +173,7 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Run optimizer
+  // ── STEP 3: Run transport optimizer ────────────────────────────────────────
   const result = buildSwapPlan({
     flights,
     crewRoster,
@@ -174,5 +187,9 @@ export async function POST(req: NextRequest) {
     ok: true,
     ...result,
     commercial_flights_searched: searchCommercial ? (commercialFlights?.size ?? 0) : 0,
+    crew_assignment: assignmentResult ? {
+      standby: assignmentResult.standby,
+      details: assignmentResult.details,
+    } : undefined,
   });
 }
