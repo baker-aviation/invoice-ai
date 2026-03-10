@@ -465,9 +465,11 @@ function ImportAdvertisedModal({ onClose }: { onClose: () => void }) {
           <ul className="list-disc ml-4 space-y-0.5 text-[11px]">
             <li><strong>AEG/Baker</strong> &mdash; auto-detected (ICAO, FUELER, TOTAL PRICE columns)</li>
             <li><strong>Everest Fuel</strong> &mdash; auto-detected (ICAO, FBO, TIER, PRICE columns)</li>
+            <li><strong>WFS (World Fuel)</strong> &mdash; auto-detected (ICAO, SUPPLIER, ESTIMATED TOTAL PRICE columns)</li>
+            <li><strong>Avfuel/BAKAV</strong> &mdash; auto-detected (ICAO, FIXED BASE OPERATOR, EFF DATE columns)</li>
             <li><strong>Generic</strong> &mdash; Airport, Volume Tier, Product, Price, Tail Numbers</li>
           </ul>
-          <p className="mt-1 text-blue-600">Baker &amp; Everest formats are auto-detected. Vendor name and week date are optional for those &mdash; date can be in filename (e.g. Everest Fuel_03_06_2026.csv).</p>
+          <p className="mt-1 text-blue-600">All named formats are auto-detected. Vendor name and week date are optional &mdash; date can be in filename or per-row.</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-3">
