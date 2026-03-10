@@ -612,7 +612,7 @@ export default function FuelPricesTable({
   const [airportFilter, setAirportFilter] = useState("");
   const [vendorFilter, setVendorFilter] = useState("");
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
-  const [viewMode, setViewMode] = useState<ViewMode>("all");
+  const [viewMode, setViewMode] = useState<ViewMode>("advertised");
   const [showImportModal, setShowImportModal] = useState(false);
   const [volumeGallons, setVolumeGallons] = useState<string>("");
   const [compareJetFbo, setCompareJetFbo] = useState(false);
