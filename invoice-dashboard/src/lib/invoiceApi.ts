@@ -342,12 +342,25 @@ export async function fetchFuelPrices(params: {
 
 export async function fetchAdvertisedPrices(): Promise<AdvertisedPriceRow[]> {
   const supa = createServiceClient();
-  const { data, error } = await supa
-    .from("fbo_advertised_prices")
-    .select("*")
-    .order("week_start", { ascending: false });
 
-  if (error) throw new Error(`fetchAdvertisedPrices failed: ${error.message}`);
+  // Fetch all records in pages (Supabase default limit is 1000)
+  const allData: any[] = [];
+  const pageSize = 1000;
+  let from = 0;
+  while (true) {
+    const { data, error } = await supa
+      .from("fbo_advertised_prices")
+      .select("*")
+      .order("week_start", { ascending: false })
+      .range(from, from + pageSize - 1);
+    if (error) throw new Error(`fetchAdvertisedPrices failed: ${error.message}`);
+    if (!data || data.length === 0) break;
+    allData.push(...data);
+    if (data.length < pageSize) break;
+    from += pageSize;
+  }
+
+  const data = allData;
 
   return (data ?? []).map((row) => ({
     id: row.id as number,
