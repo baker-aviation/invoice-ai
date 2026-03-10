@@ -255,10 +255,17 @@ function tierMatchesVolume(tier: string, gallons: number): boolean {
 
 // ─── Advertised vs Actual comparison builder ─────────────────────────────────
 
+/** Extract FBO name from product field: "Jet (Atlantic Aviation - HOU)" → "Atlantic Aviation - HOU" */
+function extractFboName(product: string): string | null {
+  const m = product.match(/\(([^)]+)\)/);
+  return m ? m[1] : null;
+}
+
 type AdvVsActualRow = {
   key: string;
   airport: string;
   fboVendor: string;
+  fboName: string | null;  // specific FBO at airport (e.g. "Atlantic Aviation - HOU")
   volumeTier: string;
   tailNumbers: string | null;
   currentWeek: string;
@@ -323,12 +330,13 @@ function buildAdvVsActual(
     const volumeFiltered = filteredAdv.filter((a) => tierMatchesVolume(a.volume_tier, volumeGallons));
     if (volumeFiltered.length > 0) filteredAdv = volumeFiltered;
   }
-  // For each (vendor, airport, week), keep only the best-matching tier
+  // For each (vendor, airport, FBO, week), keep only the best-matching tier
   const dedupedAdv: AdvertisedPriceRow[] = [];
   const seenByWeek = new Map<string, AdvertisedPriceRow>();
   const sortedAdv = [...filteredAdv].sort((a, b) => a.price - b.price);
   for (const adv of sortedAdv) {
-    const wk = `${adv.fbo_vendor}|${adv.airport_code}|${adv.week_start}`;
+    const fbo = extractFboName(adv.product) ?? "";
+    const wk = `${adv.fbo_vendor}|${adv.airport_code}|${fbo}|${adv.week_start}`;
     if (!seenByWeek.has(wk)) {
       seenByWeek.set(wk, adv);
       dedupedAdv.push(adv);
@@ -337,7 +345,8 @@ function buildAdvVsActual(
 
   const advByIdentity = new Map<string, AdvertisedPriceRow[]>();
   for (const adv of dedupedAdv) {
-    const key = `${adv.fbo_vendor}|${adv.airport_code}`;
+    const fbo = extractFboName(adv.product) ?? "";
+    const key = `${adv.fbo_vendor}|${adv.airport_code}|${fbo}`;
     if (!advByIdentity.has(key)) advByIdentity.set(key, []);
     advByIdentity.get(key)!.push(adv);
   }
@@ -396,6 +405,7 @@ function buildAdvVsActual(
       key: `${latest.id}`,
       airport: latest.airport_code,
       fboVendor: latest.fbo_vendor,
+      fboName: extractFboName(latest.product),
       volumeTier: latest.volume_tier,
       tailNumbers: latest.tail_numbers,
       currentWeek: latest.week_start,
@@ -1341,8 +1351,9 @@ export default function FuelPricesTable({
                       }`}
                     >
                       <td className="px-4 py-2.5 whitespace-nowrap font-semibold">{row.airport}</td>
-                      <td className="px-4 py-2.5 whitespace-nowrap max-w-[180px] truncate text-xs text-gray-600" title={row.fboVendor}>
-                        {row.fboVendor}
+                      <td className="px-4 py-2.5 whitespace-nowrap max-w-[220px] text-xs text-gray-600" title={row.fboName ? `${row.fboName} (${row.fboVendor})` : row.fboVendor}>
+                        <div className="truncate font-medium">{row.fboName ?? row.fboVendor}</div>
+                        {row.fboName && <div className="text-[10px] text-gray-400 truncate">{row.fboVendor}</div>}
                       </td>
                       <td className="px-4 py-2.5 whitespace-nowrap text-xs text-gray-500">{row.volumeTier}</td>
                       <td className="px-4 py-2.5 text-xs text-gray-500 max-w-[120px] truncate" title={row.tailNumbers || "All"}>{row.tailNumbers || "All"}</td>
