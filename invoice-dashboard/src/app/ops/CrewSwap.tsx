@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
+import { toPng } from "html-to-image";
 import type { Flight } from "@/lib/opsApi";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -318,6 +319,29 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
   const [swapPlan, setSwapPlan] = useState<SwapPlanResult | null>(null);
   const [optimizeError, setOptimizeError] = useState<string | null>(null);
   const [showSchedule, setShowSchedule] = useState(false);
+  const swapPlanRef = useRef<HTMLDivElement>(null);
+  const [exporting, setExporting] = useState(false);
+
+  async function exportToImage() {
+    if (!swapPlanRef.current) return;
+    setExporting(true);
+    try {
+      const dataUrl = await toPng(swapPlanRef.current, {
+        backgroundColor: "#ffffff",
+        pixelRatio: 2,
+        style: { overflow: "visible" },
+      });
+      const link = document.createElement("a");
+      link.download = `swap-plan-${selectedWed.toISOString().slice(0, 10)}.png`;
+      link.href = dataUrl;
+      link.click();
+    } catch (e) {
+      console.error("Export failed:", e);
+    } finally {
+      setExporting(false);
+    }
+  }
+
   const [swapAssignments, setSwapAssignments] = useState<Record<string, SwapAssignment> | null>(() => {
     if (typeof window === "undefined") return null;
     try {
@@ -629,6 +653,15 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
             >
               {optimizing ? "Searching..." : "Optimize + Flights (Amadeus)"}
             </button>
+            {swapPlan && (
+              <button
+                onClick={exportToImage}
+                disabled={exporting}
+                className="px-3 py-1.5 text-xs font-medium border rounded-lg bg-gray-50 text-gray-700 hover:bg-gray-100"
+              >
+                {exporting ? "Exporting..." : "Export PNG"}
+              </button>
+            )}
           </div>
         </div>
 
@@ -639,7 +672,7 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
         )}
 
         {swapPlan && (
-          <div>
+          <div ref={swapPlanRef}>
             {/* Summary bar */}
             <div className="px-4 py-2 bg-green-50 border-b text-sm text-green-700 flex items-center justify-between">
               <div className="flex items-center gap-4">
