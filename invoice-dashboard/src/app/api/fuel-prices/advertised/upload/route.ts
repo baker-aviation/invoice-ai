@@ -105,6 +105,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Could not determine week_start — please provide it" }, { status: 400 });
     }
     rows = parseSignatureCSV(lines, headerFields, vendorOverride ?? detectedVendor, weekStart, batchId);
+  } else if (format === "jet_aviation") {
+    // Jet Aviation format — no date column, extract from filename or default to current week
+    detectedVendor = "Jet Aviation";
+    const weekStart = resolveWeekStart(weekStartRaw, file.name) ?? normalizeToMonday(new Date().toISOString().split("T")[0]);
+    if (!weekStart) {
+      return NextResponse.json({ error: "Could not determine week_start — please provide it" }, { status: 400 });
+    }
+    rows = parseJetAviationCSV(lines, headerFields, vendorOverride ?? detectedVendor, weekStart, batchId);
   } else {
     // Original/generic format — vendor and week_start required
     if (!vendorOverride) return NextResponse.json({ error: "vendor is required for this CSV format" }, { status: 400 });
@@ -171,7 +179,7 @@ export async function POST(req: NextRequest) {
 
 // --- Format detection ---
 
-function detectFormat(headers: string[]): "baker" | "everest" | "wfs" | "avfuel" | "titan" | "signature" | "generic" {
+function detectFormat(headers: string[]): "baker" | "everest" | "wfs" | "avfuel" | "titan" | "signature" | "jet_aviation" | "generic" {
   // Baker/AEG: has ICAO, FUELER, TOTAL PRICE columns
   if (headers.includes("FUELER") && headers.includes("TOTAL PRICE")) return "baker";
   // Everest: has ICAO, FBO, TIER, PRICE columns
@@ -184,6 +192,8 @@ function detectFormat(headers: string[]): "baker" | "everest" | "wfs" | "avfuel"
   if (headers.includes("AIRPORT CODE") && headers.includes("JET A WITH ADD PRICE PER UNIT")) return "titan";
   // Signature: has BASE, MIN QUANTITY, MAX QUANTITY, TOTAL
   if (headers.includes("BASE") && headers.includes("MIN QUANTITY") && headers.includes("MAX QUANTITY") && headers.includes("TOTAL")) return "signature";
+  // Jet Aviation: has FBO, VOLUME TIER, PRODUCT, PRICE, TAIL NUMBERS
+  if (headers.includes("VOLUME TIER") && headers.includes("TAIL NUMBERS")) return "jet_aviation";
   return "generic";
 }
 
@@ -518,6 +528,66 @@ function parseSignatureCSV(lines: string[], headers: string[], vendor: string, w
       airport_code: base,
       volume_tier: volumeTier,
       product: "Jet-A",
+      price,
+      tail_numbers: tailNumbers,
+      week_start: weekStart,
+      upload_batch: batchId,
+    });
+  }
+
+  return rows;
+}
+
+// --- Jet Aviation parser ---
+
+function parseJetAviationCSV(lines: string[], headers: string[], vendor: string, weekStart: string, batchId: string): PriceRow[] {
+  const col = (name: string) => headers.indexOf(name);
+  const fboIdx = col("FBO");
+  const tierIdx = col("VOLUME TIER");
+  const productIdx = col("PRODUCT");
+  const priceIdx = col("PRICE");
+  const tailIdx = col("TAIL NUMBERS");
+
+  if (fboIdx < 0 || priceIdx < 0) return [];
+
+  const rows: PriceRow[] = [];
+  let lastAirport = "";
+
+  for (let i = 1; i < lines.length; i++) {
+    const fields = parseCSVLine(lines[i]);
+    // FBO column is the airport ICAO — blank means same airport as previous row
+    const rawAirport = fields[fboIdx]?.trim().toUpperCase();
+    if (rawAirport) lastAirport = rawAirport;
+    if (!lastAirport) continue;
+
+    const price = parsePrice(fields[priceIdx]);
+    if (price === null || price <= 0) continue;
+
+    // Volume tier: strip commas from numbers, normalize format
+    const rawTier = (fields[tierIdx] || "").replace(/,/g, "").trim();
+    let volumeTier = "1+";
+    if (rawTier) {
+      const range = rawTier.match(/(\d+)\s*-\s*(\d+)/);
+      if (range) {
+        volumeTier = `${Math.max(1, Number(range[1]))}-${range[2]}`;
+      } else if (/^\d+\+/.test(rawTier)) {
+        volumeTier = rawTier.replace(/\s/g, "");
+      } else {
+        volumeTier = rawTier;
+      }
+    }
+
+    const product = fields[productIdx]?.trim() || "Jet A";
+    // Skip SAF rows — only import Jet A
+    if (product.toUpperCase().includes("SAF")) continue;
+    const rawTails = fields[tailIdx]?.trim() || "";
+    const tailNumbers = (!rawTails || rawTails.toLowerCase() === "all tails") ? null : rawTails;
+
+    rows.push({
+      fbo_vendor: vendor,
+      airport_code: lastAirport,
+      volume_tier: volumeTier,
+      product,
       price,
       tail_numbers: tailNumbers,
       week_start: weekStart,

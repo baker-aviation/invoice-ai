@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState, useCallback } from "react";
 import type { Flight } from "@/lib/opsApi";
 
-// ─── Crew Types ─────────────────────────────────────────────────────────────
+// ─── Types ──────────────────────────────────────────────────────────────────
 
 type CrewMember = {
   id: string;
@@ -28,79 +28,37 @@ type RosterUploadResult = {
   summary: Record<string, number>;
 };
 
-// Optimizer result types (mirrors server types)
-type ScoreBreakdown = {
-  cost: number;
-  reliability: number;
-  convenience: number;
-  compliance: number;
-  fairness: number;
-};
-
-type TransportOption = {
-  type: "commercial_flight" | "drive" | "positioning_flight";
-  from: string;
-  to: string;
-  departure_time?: string;
-  arrival_time?: string;
-  duration_minutes: number;
-  cost_estimate: number;
-  details: string;
-};
-
-type SwapOption = {
-  swap_airport: string;
-  commercial_airport: string;
-  is_live_leg_adjacent: boolean;
-  gap_minutes: number;
-  oncoming_transport: TransportOption[];
-  offgoing_transport: TransportOption[];
-  score: number;
-  score_breakdown: ScoreBreakdown;
-};
-
-type TailSwapPlan = {
+// Matches CrewSwapRow from swapOptimizer.ts
+type CrewSwapRow = {
+  name: string;
+  home_airports: string[];
+  role: "PIC" | "SIC";
+  direction: "oncoming" | "offgoing";
+  aircraft_type: string;
   tail_number: string;
-  swap_date: string;
-  aircraft_type: string | null;
-  offgoing_pic: CrewMember | null;
-  offgoing_sic: CrewMember | null;
-  oncoming_pic: CrewMember | null;
-  oncoming_sic: CrewMember | null;
-  wednesday_legs: { departure_icao: string; arrival_icao: string; flight_type: string | null; scheduled_departure: string; scheduled_arrival: string | null }[];
-  options: SwapOption[];
+  swap_location: string | null;
+  travel_type: "commercial" | "drive" | "none";
+  flight_number: string | null;
+  departure_time: string | null;
+  arrival_time: string | null;
+  travel_from: string | null;
+  travel_to: string | null;
+  cost_estimate: number | null;
+  duration_minutes: number | null;
+  available_time: string | null;
+  is_checkairman: boolean;
+  is_skillbridge: boolean;
+  notes: string | null;
   warnings: string[];
+  alt_flights: { flight_number: string; dep: string; arr: string; price: string }[];
 };
 
 type SwapPlanResult = {
   ok: boolean;
   swap_date: string;
-  plans: TailSwapPlan[];
-  unassigned_crew: CrewMember[];
+  rows: CrewSwapRow[];
   warnings: string[];
   commercial_flights_searched: number;
-};
-
-// ─── Types ──────────────────────────────────────────────────────────────────
-
-type TailSchedule = {
-  tail: string;
-  flights: Flight[];
-  currentPic: string | null;
-  currentSic: string | null;
-  // Wednesday legs for this tail
-  wednesdayFlights: Flight[];
-  // Best swap candidates: airports between live legs (not positioning)
-  swapCandidates: SwapCandidate[];
-  lastKnownAirport: string | null;
-};
-
-type SwapCandidate = {
-  airport: string;
-  beforeFlight: Flight | null; // the leg arriving at this airport
-  afterFlight: Flight | null;  // the leg departing from this airport
-  isLiveLeg: boolean;          // adjacent to a revenue/charter leg
-  gapMinutes: number;          // time between arrival and next departure
 };
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -115,17 +73,6 @@ function getNextWednesday(): Date {
   return wed;
 }
 
-function isWednesday(iso: string, targetWed: Date): boolean {
-  const d = new Date(iso);
-  return d.toISOString().slice(0, 10) === targetWed.toISOString().slice(0, 10);
-}
-
-function isLiveFlightType(type: string | null): boolean {
-  if (!type) return false;
-  const live = ["charter", "revenue", "owner"];
-  return live.includes(type.toLowerCase());
-}
-
 function fmtTime(iso: string | null): string {
   if (!iso) return "—";
   return new Date(iso).toLocaleTimeString(undefined, {
@@ -135,14 +82,19 @@ function fmtTime(iso: string | null): string {
   });
 }
 
-function fmtDate(iso: string | null): string {
+function fmtShortTime(iso: string | null): string {
   if (!iso) return "—";
-  return new Date(iso).toLocaleDateString(undefined, {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
+  return new Date(iso).toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
   });
 }
+
+const AIRCRAFT_COLORS: Record<string, { bg: string; text: string; label: string }> = {
+  citation_x: { bg: "bg-green-100", text: "text-green-700", label: "Cit X" },
+  challenger: { bg: "bg-yellow-100", text: "text-yellow-700", label: "CL" },
+  dual: { bg: "bg-purple-100", text: "text-purple-700", label: "Dual" },
+};
 
 const FLIGHT_TYPE_COLORS: Record<string, string> = {
   Charter: "bg-blue-100 text-blue-700",
@@ -153,272 +105,153 @@ const FLIGHT_TYPE_COLORS: Record<string, string> = {
   "Ferry/Mx": "bg-gray-100 text-gray-700",
 };
 
-// ─── Component ──────────────────────────────────────────────────────────────
+function isWednesday(iso: string, targetWed: Date): boolean {
+  const d = new Date(iso);
+  return d.toISOString().slice(0, 10) === targetWed.toISOString().slice(0, 10);
+}
 
-// ─── Swap Sheet View (Excel-like) ────────────────────────────────────────────
+function isLiveFlightType(type: string | null): boolean {
+  if (!type) return false;
+  return ["charter", "revenue", "owner"].includes(type.toLowerCase());
+}
 
-const AIRCRAFT_BADGE: Record<string, { label: string; cls: string }> = {
-  citation_x: { label: "Cit X", cls: "bg-green-100 text-green-700" },
-  challenger: { label: "CL", cls: "bg-yellow-100 text-yellow-700" },
-  dual: { label: "Dual", cls: "bg-purple-100 text-purple-700" },
-};
+// ─── Swap Sheet (Excel-matching layout) ─────────────────────────────────────
 
-function CrewRow({ crew, tail, direction }: {
-  crew: CrewMember | null;
-  tail: string;
-  direction: "oncoming" | "offgoing";
-}) {
-  if (!crew) return null;
-  const dirColor = direction === "oncoming" ? "text-green-600" : "text-red-600";
+function SwapSheetRow({ row }: { row: CrewSwapRow }) {
+  const ac = AIRCRAFT_COLORS[row.aircraft_type];
+  const rowBg = ac ? `${ac.bg}/30` : "";
+
   return (
-    <tr className="hover:bg-gray-50 border-b border-gray-100">
-      <td className="px-3 py-1.5 text-sm font-medium text-gray-900">{crew.name}</td>
-      <td className="px-3 py-1.5">
-        <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
-          crew.role === "PIC" ? "bg-blue-100 text-blue-700" : "bg-purple-100 text-purple-700"
-        }`}>{crew.role}</span>
-      </td>
-      <td className="px-3 py-1.5 font-mono text-xs text-gray-600">
-        {crew.home_airports?.join("/") ?? "—"}
-      </td>
-      <td className="px-3 py-1.5 font-mono text-xs font-bold text-gray-800">{tail}</td>
-      <td className="px-3 py-1.5">
-        <span className={`text-xs font-medium ${dirColor}`}>
-          {direction === "oncoming" ? "ON" : "OFF"}
-        </span>
-      </td>
-      <td className="px-3 py-1.5">
-        <div className="flex gap-1">
-          {crew.aircraft_types?.map((t) => {
-            const b = AIRCRAFT_BADGE[t];
-            return b ? (
-              <span key={t} className={`text-[10px] px-1 py-0.5 rounded ${b.cls}`}>{b.label}</span>
-            ) : (
-              <span key={t} className="text-[10px] px-1 py-0.5 rounded bg-gray-100 text-gray-600">{t}</span>
-            );
-          })}
+    <tr className={`hover:bg-gray-50 border-b border-gray-100 ${rowBg}`}>
+      {/* Name (Home Base) */}
+      <td className="px-3 py-1.5 text-sm">
+        <div className="flex items-center gap-1.5">
+          {ac && (
+            <span className={`inline-block w-2.5 h-2.5 rounded-full ${ac.bg} border ${ac.text.replace("text-", "border-")}`} />
+          )}
+          <span className="font-medium text-gray-900">{row.name}</span>
+          <span className="text-gray-400 text-xs">
+            ({row.home_airports.join("/") || "??"})
+          </span>
+          {row.is_checkairman && <span className="text-[10px] px-1 py-0.5 rounded bg-amber-100 text-amber-700">CA</span>}
+          {row.is_skillbridge && <span className="text-[10px] px-1 py-0.5 rounded bg-teal-100 text-teal-700">SB</span>}
         </div>
       </td>
+
+      {/* Swap Location */}
+      <td className="px-3 py-1.5 font-mono text-xs text-gray-700 font-medium">
+        {row.swap_location ?? "—"}
+      </td>
+
+      {/* Aircraft (tail) */}
       <td className="px-3 py-1.5">
-        <div className="flex gap-1">
-          {crew.is_checkairman && <span className="text-[10px] px-1 py-0.5 rounded bg-amber-100 text-amber-700">CA</span>}
-          {crew.is_skillbridge && <span className="text-[10px] px-1 py-0.5 rounded bg-teal-100 text-teal-700">SB</span>}
+        <div className="flex items-center gap-1">
+          <span className="font-mono text-xs font-bold text-gray-800">{row.tail_number}</span>
+          {ac && (
+            <span className={`text-[10px] px-1 py-0.5 rounded ${ac.bg} ${ac.text}`}>{ac.label}</span>
+          )}
         </div>
+      </td>
+
+      {/* Flight Number */}
+      <td className="px-3 py-1.5 text-xs">
+        {row.travel_type === "commercial" && row.flight_number ? (
+          <span className="font-mono text-blue-700 font-medium">{row.flight_number}</span>
+        ) : row.travel_type === "drive" ? (
+          <span className="font-mono text-amber-700 font-medium">DRIVE</span>
+        ) : (
+          <span className="text-gray-400">—</span>
+        )}
+      </td>
+
+      {/* Dep Time */}
+      <td className="px-3 py-1.5 text-xs text-gray-600">
+        {row.departure_time ? fmtShortTime(row.departure_time) : (
+          row.travel_type === "drive" && row.duration_minutes
+            ? `~${Math.round(row.duration_minutes / 60 * 10) / 10}h`
+            : "—"
+        )}
+      </td>
+
+      {/* Available / Arrival Time */}
+      <td className="px-3 py-1.5 text-xs text-gray-600">
+        {row.available_time ? fmtShortTime(row.available_time)
+          : row.arrival_time ? fmtShortTime(row.arrival_time)
+          : "—"}
+      </td>
+
+      {/* Cost */}
+      <td className="px-3 py-1.5 text-xs text-gray-500">
+        {row.cost_estimate != null ? `$${row.cost_estimate}` : "—"}
+      </td>
+
+      {/* Notes / Warnings */}
+      <td className="px-3 py-1.5 text-xs max-w-[200px]">
+        {row.warnings.length > 0 ? (
+          <span className="text-amber-600">{row.warnings[0]}</span>
+        ) : row.notes ? (
+          <span className="text-gray-400">{row.notes}</span>
+        ) : row.alt_flights.length > 0 ? (
+          <span className="text-gray-400">+{row.alt_flights.length} alt flights</span>
+        ) : null}
       </td>
     </tr>
   );
 }
 
-function SwapSheet({ plans, unassigned }: { plans: TailSwapPlan[]; unassigned: CrewMember[] }) {
-  // Build rows grouped by section
-  type Row = { crew: CrewMember; tail: string; direction: "oncoming" | "offgoing" };
-  const oncomingPics: Row[] = [];
-  const oncomingSics: Row[] = [];
-  const offgoingPics: Row[] = [];
-  const offgoingSics: Row[] = [];
-
-  for (const plan of plans) {
-    if (plan.oncoming_pic) oncomingPics.push({ crew: plan.oncoming_pic, tail: plan.tail_number, direction: "oncoming" });
-    if (plan.oncoming_sic) oncomingSics.push({ crew: plan.oncoming_sic, tail: plan.tail_number, direction: "oncoming" });
-    if (plan.offgoing_pic) offgoingPics.push({ crew: plan.offgoing_pic, tail: plan.tail_number, direction: "offgoing" });
-    if (plan.offgoing_sic) offgoingSics.push({ crew: plan.offgoing_sic, tail: plan.tail_number, direction: "offgoing" });
-  }
+function SwapSheet({ rows }: { rows: CrewSwapRow[] }) {
+  const oncomingPics = rows.filter((r) => r.direction === "oncoming" && r.role === "PIC");
+  const oncomingSics = rows.filter((r) => r.direction === "oncoming" && r.role === "SIC");
+  const offgoingPics = rows.filter((r) => r.direction === "offgoing" && r.role === "PIC");
+  const offgoingSics = rows.filter((r) => r.direction === "offgoing" && r.role === "SIC");
 
   const SectionHeader = ({ title, count, color }: { title: string; count: number; color: string }) => (
     <tr>
-      <td colSpan={7} className={`px-3 py-2 text-xs font-bold uppercase tracking-wider ${color}`}>
+      <td colSpan={8} className={`px-3 py-2 text-xs font-bold uppercase tracking-wider ${color}`}>
         {title} ({count})
       </td>
+    </tr>
+  );
+
+  const columnHeaders = (
+    <tr className="text-[10px] text-gray-400 uppercase tracking-wider">
+      <th className="px-3 py-1.5 text-left font-medium">Name (Home Base)</th>
+      <th className="px-3 py-1.5 text-left font-medium">Swap Location</th>
+      <th className="px-3 py-1.5 text-left font-medium">Aircraft</th>
+      <th className="px-3 py-1.5 text-left font-medium">Flight Number</th>
+      <th className="px-3 py-1.5 text-left font-medium">Dep Time</th>
+      <th className="px-3 py-1.5 text-left font-medium">Avail Time</th>
+      <th className="px-3 py-1.5 text-left font-medium">Cost</th>
+      <th className="px-3 py-1.5 text-left font-medium">Notes</th>
     </tr>
   );
 
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
-        <thead className="bg-gray-50 text-left text-[10px] text-gray-500 uppercase tracking-wider">
-          <tr>
-            <th className="px-3 py-2 w-48">Name</th>
-            <th className="px-3 py-2 w-16">Role</th>
-            <th className="px-3 py-2 w-24">Home</th>
-            <th className="px-3 py-2 w-24">Aircraft</th>
-            <th className="px-3 py-2 w-12">Dir</th>
-            <th className="px-3 py-2 w-24">Type</th>
-            <th className="px-3 py-2 w-16">Flags</th>
-          </tr>
+        <thead className="bg-gray-50 border-b">
+          {columnHeaders}
         </thead>
         <tbody>
-          <SectionHeader title="Oncoming Pilots — PIC" count={oncomingPics.length} color="bg-green-50 text-green-700" />
-          {oncomingPics.map((r, i) => <CrewRow key={`op-${i}`} crew={r.crew} tail={r.tail} direction={r.direction} />)}
+          {/* ONCOMING PILOTS */}
+          <SectionHeader title="Oncoming Pilots — Pilot In-Command" count={oncomingPics.length} color="bg-green-50 text-green-700 border-t-2 border-green-300" />
+          {oncomingPics.map((r, i) => <SwapSheetRow key={`op-${i}`} row={r} />)}
 
-          <SectionHeader title="Oncoming Pilots — SIC" count={oncomingSics.length} color="bg-green-50 text-green-600" />
-          {oncomingSics.map((r, i) => <CrewRow key={`os-${i}`} crew={r.crew} tail={r.tail} direction={r.direction} />)}
+          <SectionHeader title="Oncoming Pilots — Second In-Command" count={oncomingSics.length} color="bg-green-50 text-green-600" />
+          {oncomingSics.map((r, i) => <SwapSheetRow key={`os-${i}`} row={r} />)}
 
-          <SectionHeader title="Offgoing Pilots — PIC" count={offgoingPics.length} color="bg-red-50 text-red-700" />
-          {offgoingPics.map((r, i) => <CrewRow key={`fp-${i}`} crew={r.crew} tail={r.tail} direction={r.direction} />)}
+          {/* OFFGOING PILOTS */}
+          <SectionHeader title="Offgoing Pilots — Pilot In-Command" count={offgoingPics.length} color="bg-red-50 text-red-700 border-t-2 border-red-300" />
+          {offgoingPics.map((r, i) => <SwapSheetRow key={`fp-${i}`} row={r} />)}
 
-          <SectionHeader title="Offgoing Pilots — SIC" count={offgoingSics.length} color="bg-red-50 text-red-600" />
-          {offgoingSics.map((r, i) => <CrewRow key={`fs-${i}`} crew={r.crew} tail={r.tail} direction={r.direction} />)}
+          <SectionHeader title="Offgoing Pilots — Second In-Command" count={offgoingSics.length} color="bg-red-50 text-red-600" />
+          {offgoingSics.map((r, i) => <SwapSheetRow key={`fs-${i}`} row={r} />)}
         </tbody>
       </table>
 
-      {/* Unassigned */}
-      {unassigned.length > 0 && (
-        <div className="px-3 py-3 border-t bg-amber-50">
-          <div className="text-[10px] font-bold text-amber-700 uppercase mb-1.5">
-            Unassigned ({unassigned.length})
-          </div>
-          <div className="flex flex-wrap gap-1.5">
-            {unassigned.map((c) => (
-              <span key={c.id} className="text-xs px-2 py-0.5 rounded-full bg-white text-amber-700 border border-amber-200">
-                {c.name} <span className="text-amber-400">({c.role})</span>
-                {c.home_airports?.length > 0 && (
-                  <span className="text-amber-400 ml-0.5">[{c.home_airports.join("/")}]</span>
-                )}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── Details View (transport + scoring) ──────────────────────────────────────
-
-function SwapDetails({ plans, unassigned }: { plans: TailSwapPlan[]; unassigned: CrewMember[] }) {
-  return (
-    <div className="divide-y">
-      {plans.map((plan) => (
-        <div key={plan.tail_number} className="px-4 py-3">
-          <div className="flex items-center gap-3 mb-2">
-            <span className="font-mono font-bold text-gray-900">{plan.tail_number}</span>
-            {plan.aircraft_type && (() => {
-              const b = AIRCRAFT_BADGE[plan.aircraft_type];
-              return b ? <span className={`text-xs px-1.5 py-0.5 rounded ${b.cls}`}>{b.label}</span> : null;
-            })()}
-            <span className="text-xs text-gray-400">{plan.wednesday_legs.length} legs on Wed</span>
-          </div>
-
-          {/* Crew */}
-          <div className="grid grid-cols-2 gap-4 mb-3">
-            <div className="text-sm">
-              <span className="text-red-600 font-medium text-xs uppercase">Offgoing</span>
-              <div className="mt-0.5">
-                <span className="text-gray-700">{plan.offgoing_pic?.name ?? "—"}</span>
-                <span className="text-gray-400 text-xs ml-1">(PIC)</span>
-                {plan.offgoing_pic?.home_airports && (
-                  <span className="text-gray-400 text-xs ml-1">[{plan.offgoing_pic.home_airports.join("/")}]</span>
-                )}
-                {plan.offgoing_sic && (
-                  <>
-                    <span className="text-gray-300 mx-1">/</span>
-                    <span className="text-gray-700">{plan.offgoing_sic.name}</span>
-                    <span className="text-gray-400 text-xs ml-1">(SIC)</span>
-                    {plan.offgoing_sic.home_airports && (
-                      <span className="text-gray-400 text-xs ml-1">[{plan.offgoing_sic.home_airports.join("/")}]</span>
-                    )}
-                  </>
-                )}
-              </div>
-            </div>
-            <div className="text-sm">
-              <span className="text-green-600 font-medium text-xs uppercase">Oncoming</span>
-              <div className="mt-0.5">
-                <span className="text-gray-700 font-medium">{plan.oncoming_pic?.name ?? "—"}</span>
-                <span className="text-gray-400 text-xs ml-1">(PIC)</span>
-                {plan.oncoming_pic?.home_airports && (
-                  <span className="text-gray-400 text-xs ml-1">[{plan.oncoming_pic.home_airports.join("/")}]</span>
-                )}
-                {plan.oncoming_sic && (
-                  <>
-                    <span className="text-gray-300 mx-1">/</span>
-                    <span className="text-gray-700 font-medium">{plan.oncoming_sic.name}</span>
-                    <span className="text-gray-400 text-xs ml-1">(SIC)</span>
-                    {plan.oncoming_sic.home_airports && (
-                      <span className="text-gray-400 text-xs ml-1">[{plan.oncoming_sic.home_airports.join("/")}]</span>
-                    )}
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* Best swap option */}
-          {plan.options.length > 0 && (() => {
-            const opt = plan.options[0];
-            return (
-              <div className="rounded-lg border border-green-200 bg-green-50 p-3 text-sm">
-                <div className="flex items-center justify-between mb-1">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono font-bold">{opt.swap_airport}</span>
-                    {opt.swap_airport !== opt.commercial_airport && (
-                      <span className="text-xs text-gray-400">(comm: {opt.commercial_airport})</span>
-                    )}
-                    {opt.is_live_leg_adjacent && (
-                      <span className="text-xs px-1.5 py-0.5 rounded bg-green-100 text-green-700">Live Leg</span>
-                    )}
-                    {opt.gap_minutes > 0 && <span className="text-xs text-gray-400">{opt.gap_minutes}m gap</span>}
-                  </div>
-                  <span className={`text-xs font-bold px-2 py-0.5 rounded ${
-                    opt.score >= 70 ? "bg-green-100 text-green-700"
-                      : opt.score >= 50 ? "bg-yellow-100 text-yellow-700"
-                      : "bg-red-100 text-red-700"
-                  }`}>Score: {opt.score}</span>
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <div className="text-[10px] font-medium text-green-600 uppercase mb-1">Oncoming Transport</div>
-                    {opt.oncoming_transport.length === 0 ? (
-                      <div className="text-xs text-gray-400 italic">No options found</div>
-                    ) : opt.oncoming_transport.map((t, j) => (
-                      <div key={j} className="text-xs text-gray-600 flex items-center gap-1.5 mb-0.5">
-                        <span className={`px-1 py-0.5 rounded text-[10px] font-medium ${
-                          t.type === "commercial_flight" ? "bg-blue-100 text-blue-600" : "bg-amber-100 text-amber-600"
-                        }`}>{t.type === "commercial_flight" ? "FLT" : "DRV"}</span>
-                        <span>{t.details}</span>
-                        <span className="text-gray-400">${Math.round(t.cost_estimate)}</span>
-                      </div>
-                    ))}
-                  </div>
-                  <div>
-                    <div className="text-[10px] font-medium text-red-600 uppercase mb-1">Offgoing Transport</div>
-                    {opt.offgoing_transport.length === 0 ? (
-                      <div className="text-xs text-gray-400 italic">No options found</div>
-                    ) : opt.offgoing_transport.map((t, j) => (
-                      <div key={j} className="text-xs text-gray-600 flex items-center gap-1.5 mb-0.5">
-                        <span className={`px-1 py-0.5 rounded text-[10px] font-medium ${
-                          t.type === "commercial_flight" ? "bg-blue-100 text-blue-600" : "bg-amber-100 text-amber-600"
-                        }`}>{t.type === "commercial_flight" ? "FLT" : "DRV"}</span>
-                        <span>{t.details}</span>
-                        <span className="text-gray-400">${Math.round(t.cost_estimate)}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            );
-          })()}
-
-          {plan.warnings.length > 0 && (
-            <div className="mt-2 space-y-1">
-              {plan.warnings.map((w, i) => (
-                <div key={i} className="text-xs text-amber-600 bg-amber-50 px-2 py-1 rounded">{w}</div>
-              ))}
-            </div>
-          )}
-        </div>
-      ))}
-
-      {unassigned.length > 0 && (
-        <div className="px-4 py-3">
-          <div className="text-xs font-medium text-gray-500 uppercase mb-2">Unassigned ({unassigned.length})</div>
-          <div className="flex flex-wrap gap-1.5">
-            {unassigned.map((c) => (
-              <span key={c.id} className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">
-                {c.name} ({c.role})
-              </span>
-            ))}
-          </div>
+      {rows.length === 0 && (
+        <div className="px-4 py-6 text-center text-sm text-gray-400">
+          No swap assignments found. Upload the swap Excel document first.
         </div>
       )}
     </div>
@@ -438,7 +271,7 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
   const [optimizing, setOptimizing] = useState(false);
   const [swapPlan, setSwapPlan] = useState<SwapPlanResult | null>(null);
   const [optimizeError, setOptimizeError] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<"sheet" | "details">("sheet");
+  const [showSchedule, setShowSchedule] = useState(false);
 
   // Fetch crew roster
   const loadCrew = useCallback(async () => {
@@ -453,7 +286,6 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
     }
   }, []);
 
-  // Load crew on first render
   useEffect(() => {
     loadCrew();
   }, [loadCrew]);
@@ -472,7 +304,6 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
         setUploadError(data.error ?? "Upload failed");
       } else {
         setUploadResult(data);
-        // Refresh crew list
         await loadCrew();
       }
     } catch (e) {
@@ -482,9 +313,8 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
     }
   }
 
-  // Build per-tail schedule focused on the selected Wednesday
+  // Build per-tail schedule for the Aircraft Schedule section
   const tailSchedules = useMemo(() => {
-    // Group flights by tail
     const byTail = new Map<string, Flight[]>();
     for (const f of flights) {
       if (!f.tail_number) continue;
@@ -492,133 +322,19 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
       byTail.get(f.tail_number)!.push(f);
     }
 
-    const schedules: TailSchedule[] = [];
+    const schedules: { tail: string; wedFlights: Flight[]; lastKnown: string | null }[] = [];
 
     for (const [tail, tailFlights] of byTail) {
-      // Sort by departure time
       const sorted = [...tailFlights].sort(
         (a, b) => new Date(a.scheduled_departure).getTime() - new Date(b.scheduled_departure).getTime(),
       );
-
-      // Get current crew from most recent flight with PIC/SIC
-      let currentPic: string | null = null;
-      let currentSic: string | null = null;
-      const now = Date.now();
-      for (const f of sorted) {
-        if (new Date(f.scheduled_departure).getTime() <= now) {
-          if (f.pic) currentPic = f.pic;
-          if (f.sic) currentSic = f.sic;
-        }
-      }
-
-      // Wednesday flights
       const wedFlights = sorted.filter((f) => isWednesday(f.scheduled_departure, selectedWed));
-
-      // Find swap candidates — airports between legs, preferring before/after live legs
-      const swapCandidates: SwapCandidate[] = [];
-
-      if (wedFlights.length === 0) {
-        // No Wednesday legs — use last known position
-        const lastFlight = sorted
-          .filter((f) => new Date(f.scheduled_departure).getTime() < selectedWed.getTime())
-          .pop();
-        if (lastFlight?.arrival_icao) {
-          swapCandidates.push({
-            airport: lastFlight.arrival_icao,
-            beforeFlight: null,
-            afterFlight: null,
-            isLiveLeg: false,
-            gapMinutes: -1,
-          });
-        }
-      } else {
-        // Before first Wednesday leg
-        swapCandidates.push({
-          airport: wedFlights[0].departure_icao ?? "?",
-          beforeFlight: null,
-          afterFlight: wedFlights[0],
-          isLiveLeg: isLiveFlightType(wedFlights[0].flight_type),
-          gapMinutes: -1,
-        });
-
-        // Between Wednesday legs
-        for (let i = 0; i < wedFlights.length - 1; i++) {
-          const arriving = wedFlights[i];
-          const departing = wedFlights[i + 1];
-          const gap =
-            (new Date(departing.scheduled_departure).getTime() -
-              new Date(arriving.scheduled_arrival ?? arriving.scheduled_departure).getTime()) /
-            60_000;
-          const isLive =
-            isLiveFlightType(arriving.flight_type) || isLiveFlightType(departing.flight_type);
-          swapCandidates.push({
-            airport: arriving.arrival_icao ?? "?",
-            beforeFlight: arriving,
-            afterFlight: departing,
-            isLiveLeg: isLive,
-            gapMinutes: Math.round(gap),
-          });
-        }
-
-        // After last Wednesday leg
-        const lastWed = wedFlights[wedFlights.length - 1];
-        swapCandidates.push({
-          airport: lastWed.arrival_icao ?? "?",
-          beforeFlight: lastWed,
-          afterFlight: null,
-          isLiveLeg: isLiveFlightType(lastWed.flight_type),
-          gapMinutes: -1,
-        });
-      }
-
-      // Sort: live legs first, then by gap time
-      swapCandidates.sort((a, b) => {
-        if (a.isLiveLeg !== b.isLiveLeg) return a.isLiveLeg ? -1 : 1;
-        return 0;
-      });
-
       const lastKnown = sorted.filter((f) => f.arrival_icao).pop()?.arrival_icao ?? null;
-
-      schedules.push({
-        tail,
-        flights: sorted,
-        currentPic,
-        currentSic,
-        wednesdayFlights: wedFlights,
-        swapCandidates,
-        lastKnownAirport: lastKnown,
-      });
+      schedules.push({ tail, wedFlights, lastKnown });
     }
 
     return schedules.sort((a, b) => a.tail.localeCompare(b.tail));
   }, [flights, selectedWed]);
-
-  // Detect crew changes: flights where PIC/SIC differs from previous flight on same tail
-  const crewChanges = useMemo(() => {
-    const changes: { tail: string; airport: string; oldPic: string | null; newPic: string | null; oldSic: string | null; newSic: string | null; flight: Flight }[] = [];
-    for (const ts of tailSchedules) {
-      for (const wf of ts.wednesdayFlights) {
-        // Find the previous flight on this tail
-        const idx = ts.flights.indexOf(wf);
-        if (idx <= 0) continue;
-        const prev = ts.flights[idx - 1];
-        const picChanged = prev.pic && wf.pic && prev.pic !== wf.pic;
-        const sicChanged = prev.sic && wf.sic && prev.sic !== wf.sic;
-        if (picChanged || sicChanged) {
-          changes.push({
-            tail: ts.tail,
-            airport: wf.departure_icao ?? "?",
-            oldPic: prev.pic,
-            newPic: wf.pic,
-            oldSic: prev.sic,
-            newSic: wf.sic,
-            flight: wf,
-          });
-        }
-      }
-    }
-    return changes;
-  }, [tailSchedules]);
 
   // Run swap optimizer
   async function runOptimizer(includeFlights: boolean) {
@@ -646,7 +362,6 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
     }
   }
 
-  // Navigate weeks
   function shiftWeek(delta: number) {
     setSelectedWed((prev) => {
       const next = new Date(prev);
@@ -675,134 +390,6 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
           <button onClick={() => shiftWeek(1)} className="px-3 py-1.5 text-sm font-medium border rounded-lg hover:bg-gray-50">
             Next Week
           </button>
-        </div>
-      </div>
-
-      {/* Detected Crew Changes */}
-      {crewChanges.length > 0 && (
-        <div>
-          <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-2">
-            Detected Crew Changes ({crewChanges.length})
-          </h3>
-          <div className="space-y-2">
-            {crewChanges.map((c, i) => (
-              <div key={i} className="rounded-lg border border-blue-200 bg-blue-50 p-3">
-                <div className="flex items-center gap-3">
-                  <span className="font-mono font-bold text-blue-900">{c.tail}</span>
-                  <span className="text-sm text-blue-700">at {c.airport}</span>
-                  <span className="text-xs text-blue-500">{fmtTime(c.flight.scheduled_departure)}</span>
-                </div>
-                <div className="mt-1 grid grid-cols-2 gap-4 text-sm">
-                  <div>
-                    <span className="text-red-600 font-medium">Off: </span>
-                    <span>{c.oldPic ?? "—"} (PIC)</span>
-                    {c.oldSic && <span className="ml-2 text-gray-500">/ {c.oldSic} (SIC)</span>}
-                  </div>
-                  <div>
-                    <span className="text-green-600 font-medium">On: </span>
-                    <span>{c.newPic ?? "—"} (PIC)</span>
-                    {c.newSic && <span className="ml-2 text-gray-500">/ {c.newSic} (SIC)</span>}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Per-Tail Swap Overview */}
-      <div>
-        <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-2">
-          Aircraft Schedule ({tailSchedules.length} tails)
-        </h3>
-        <div className="space-y-3">
-          {tailSchedules.map((ts) => (
-            <div key={ts.tail} className="rounded-lg border bg-white shadow-sm overflow-hidden">
-              {/* Tail header */}
-              <div className="px-4 py-2.5 bg-gray-50 border-b flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <span className="font-mono font-bold text-gray-900">{ts.tail}</span>
-                  <div className="flex gap-2 text-xs text-gray-500">
-                    {ts.currentPic && <span>PIC: <span className="text-gray-700 font-medium">{ts.currentPic}</span></span>}
-                    {ts.currentSic && <span>SIC: <span className="text-gray-700 font-medium">{ts.currentSic}</span></span>}
-                  </div>
-                </div>
-                <div className="text-xs text-gray-400">
-                  {ts.wednesdayFlights.length} legs on Wed
-                  {ts.wednesdayFlights.length === 0 && ts.lastKnownAirport && (
-                    <span className="ml-2 text-amber-600">Last: {ts.lastKnownAirport}</span>
-                  )}
-                </div>
-              </div>
-
-              {/* Wednesday legs */}
-              {ts.wednesdayFlights.length > 0 ? (
-                <div className="divide-y">
-                  {ts.wednesdayFlights.map((f) => {
-                    const typeColor = FLIGHT_TYPE_COLORS[f.flight_type ?? ""] ?? "bg-gray-100 text-gray-600";
-                    return (
-                      <div key={f.id} className="px-4 py-2 flex items-center gap-4 text-sm">
-                        <span className={`px-2 py-0.5 rounded text-xs font-medium ${typeColor}`}>
-                          {f.flight_type ?? "—"}
-                        </span>
-                        <span className="font-mono text-gray-700">
-                          {f.departure_icao} → {f.arrival_icao}
-                        </span>
-                        <span className="text-gray-500">{fmtTime(f.scheduled_departure)}</span>
-                        <span className="text-gray-400">→</span>
-                        <span className="text-gray-500">{fmtTime(f.scheduled_arrival)}</span>
-                        {f.pic && (
-                          <span className="text-xs text-gray-400 ml-auto">
-                            {f.pic}{f.sic ? ` / ${f.sic}` : ""}
-                          </span>
-                        )}
-                        {f.pax_count != null && f.pax_count > 0 && (
-                          <span className="text-xs bg-gray-100 px-1.5 py-0.5 rounded text-gray-600">
-                            {f.pax_count} pax
-                          </span>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                <div className="px-4 py-3 text-sm text-gray-400 italic">
-                  No flights scheduled — aircraft at {ts.lastKnownAirport ?? "unknown"}
-                </div>
-              )}
-
-              {/* Swap candidates */}
-              {ts.swapCandidates.length > 0 && (
-                <div className="px-4 py-2 bg-gray-50 border-t">
-                  <div className="text-xs font-medium text-gray-500 mb-1">Swap candidates:</div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {ts.swapCandidates.map((sc, i) => (
-                      <span
-                        key={i}
-                        className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                          sc.isLiveLeg
-                            ? "bg-green-100 text-green-700 ring-1 ring-green-300"
-                            : "bg-gray-100 text-gray-600"
-                        }`}
-                        title={
-                          sc.gapMinutes > 0
-                            ? `${sc.gapMinutes}min gap`
-                            : sc.beforeFlight === null
-                              ? "Before first leg"
-                              : "After last leg"
-                        }
-                      >
-                        {sc.airport}
-                        {sc.isLiveLeg && " *"}
-                        {sc.gapMinutes > 0 && ` (${sc.gapMinutes}m)`}
-                      </span>
-                    ))}
-                  </div>
-                  <div className="text-[10px] text-gray-400 mt-1">* Adjacent to live leg (preferred)</div>
-                </div>
-              )}
-            </div>
-          ))}
         </div>
       </div>
 
@@ -840,7 +427,6 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
           </div>
         </div>
 
-        {/* Upload result */}
         {uploadResult && (
           <div className="px-4 py-3 bg-green-50 border-b border-green-200 text-sm">
             <span className="text-green-700 font-medium">Roster uploaded: </span>
@@ -867,7 +453,6 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
           </div>
         )}
 
-        {/* Roster table */}
         {showRoster && crew.length > 0 && (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -896,25 +481,21 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
                       {c.home_airports.join(" / ")}
                     </td>
                     <td className="px-4 py-2 text-xs text-gray-600">
-                      {c.aircraft_types.map((t) => (
-                        <span key={t} className={`inline-block mr-1 px-1.5 py-0.5 rounded ${
-                          t === "citation_x" ? "bg-green-100 text-green-700"
-                            : t === "challenger" ? "bg-yellow-100 text-yellow-700"
-                            : t === "dual" ? "bg-purple-100 text-purple-700"
-                            : "bg-gray-100 text-gray-600"
-                        }`}>
-                          {t === "citation_x" ? "Cit X" : t === "challenger" ? "CL" : t === "dual" ? "Dual" : t}
-                        </span>
-                      ))}
+                      {c.aircraft_types.map((t) => {
+                        const ac = AIRCRAFT_COLORS[t];
+                        return (
+                          <span key={t} className={`inline-block mr-1 px-1.5 py-0.5 rounded ${
+                            ac ? `${ac.bg} ${ac.text}` : "bg-gray-100 text-gray-600"
+                          }`}>
+                            {ac ? ac.label : t}
+                          </span>
+                        );
+                      })}
                     </td>
                     <td className="px-4 py-2">
                       <div className="flex gap-1">
-                        {c.is_checkairman && (
-                          <span className="text-xs px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">CA</span>
-                        )}
-                        {c.is_skillbridge && (
-                          <span className="text-xs px-1.5 py-0.5 rounded bg-teal-100 text-teal-700">SB</span>
-                        )}
+                        {c.is_checkairman && <span className="text-xs px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">CA</span>}
+                        {c.is_skillbridge && <span className="text-xs px-1.5 py-0.5 rounded bg-teal-100 text-teal-700">SB</span>}
                       </div>
                     </td>
                     <td className="px-4 py-2 text-xs text-gray-400 max-w-[200px] truncate">
@@ -970,45 +551,104 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
 
         {swapPlan && (
           <div>
-            {/* Summary + view toggle */}
+            {/* Summary bar */}
             <div className="px-4 py-2 bg-green-50 border-b text-sm text-green-700 flex items-center justify-between">
               <div className="flex items-center gap-4">
                 <span className="font-medium">
-                  {swapPlan.plans.length} tails planned for {swapPlan.swap_date}
+                  {swapPlan.rows.length} crew planned for {swapPlan.swap_date}
                 </span>
                 {swapPlan.commercial_flights_searched > 0 && (
                   <span className="text-green-500 text-xs">
                     ({swapPlan.commercial_flights_searched} routes searched)
                   </span>
                 )}
-              </div>
-              <div className="flex gap-1">
-                <button
-                  onClick={() => setViewMode("sheet")}
-                  className={`px-2 py-1 text-xs rounded ${viewMode === "sheet" ? "bg-green-600 text-white" : "bg-white text-green-700 border border-green-300"}`}
-                >
-                  Swap Sheet
-                </button>
-                <button
-                  onClick={() => setViewMode("details")}
-                  className={`px-2 py-1 text-xs rounded ${viewMode === "details" ? "bg-green-600 text-white" : "bg-white text-green-700 border border-green-300"}`}
-                >
-                  Details
-                </button>
+                {swapPlan.warnings.length > 0 && (
+                  <span className="text-amber-600 text-xs">
+                    {swapPlan.warnings.length} warning(s)
+                  </span>
+                )}
               </div>
             </div>
 
-            {viewMode === "sheet" ? (
-              <SwapSheet plans={swapPlan.plans} unassigned={swapPlan.unassigned_crew} />
-            ) : (
-              <SwapDetails plans={swapPlan.plans} unassigned={swapPlan.unassigned_crew} />
+            {/* Global warnings */}
+            {swapPlan.warnings.length > 0 && (
+              <div className="px-4 py-2 bg-amber-50 border-b space-y-1">
+                {swapPlan.warnings.map((w, i) => (
+                  <div key={i} className="text-xs text-amber-700">{w}</div>
+                ))}
+              </div>
             )}
+
+            {/* The swap sheet */}
+            <SwapSheet rows={swapPlan.rows} />
           </div>
         )}
 
         {!swapPlan && !optimizeError && (
           <div className="px-4 py-6 text-center text-sm text-gray-400">
             Click optimize to generate swap recommendations for {selectedWed.toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+          </div>
+        )}
+      </div>
+
+      {/* Aircraft Schedule (collapsible) */}
+      <div className="rounded-lg border bg-white shadow-sm overflow-hidden">
+        <div
+          className="px-4 py-3 bg-gray-50 border-b flex items-center justify-between cursor-pointer"
+          onClick={() => setShowSchedule(!showSchedule)}
+        >
+          <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">
+            Aircraft Schedule ({tailSchedules.length} tails)
+          </h3>
+          <span className="text-xs text-gray-400">
+            {showSchedule ? "Hide" : "Show"}
+          </span>
+        </div>
+
+        {showSchedule && (
+          <div className="space-y-3 p-3">
+            {tailSchedules.map((ts) => (
+              <div key={ts.tail} className="rounded-lg border bg-white overflow-hidden">
+                <div className="px-4 py-2.5 bg-gray-50 border-b flex items-center justify-between">
+                  <span className="font-mono font-bold text-gray-900">{ts.tail}</span>
+                  <span className="text-xs text-gray-400">
+                    {ts.wedFlights.length} legs on Wed
+                    {ts.wedFlights.length === 0 && ts.lastKnown && (
+                      <span className="ml-2 text-amber-600">Last: {ts.lastKnown}</span>
+                    )}
+                  </span>
+                </div>
+                {ts.wedFlights.length > 0 ? (
+                  <div className="divide-y">
+                    {ts.wedFlights.map((f) => {
+                      const typeColor = FLIGHT_TYPE_COLORS[f.flight_type ?? ""] ?? "bg-gray-100 text-gray-600";
+                      return (
+                        <div key={f.id} className="px-4 py-2 flex items-center gap-4 text-sm">
+                          <span className={`px-2 py-0.5 rounded text-xs font-medium ${typeColor}`}>
+                            {f.flight_type ?? "—"}
+                          </span>
+                          <span className="font-mono text-gray-700">
+                            {f.departure_icao} → {f.arrival_icao}
+                          </span>
+                          <span className="text-gray-500">{fmtTime(f.scheduled_departure)}</span>
+                          <span className="text-gray-400">→</span>
+                          <span className="text-gray-500">{fmtTime(f.scheduled_arrival)}</span>
+                          {f.pic && (
+                            <span className="text-xs text-gray-400 ml-auto">
+                              {f.pic}{f.sic ? ` / ${f.sic}` : ""}
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="px-4 py-3 text-sm text-gray-400 italic">
+                    No flights — aircraft at {ts.lastKnown ?? "unknown"}
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
         )}
       </div>
