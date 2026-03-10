@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin, isAuthed } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
-import { buildSwapPlan, getRequiredFlightSearches, assignOncomingCrew, type CrewMember, type FlightLeg, type AirportAlias, type SwapAssignment, type OncomingPool } from "@/lib/swapOptimizer";
+import { buildSwapPlan, getRequiredFlightSearches, getPoolFlightSearches, assignOncomingCrew, type CrewMember, type FlightLeg, type AirportAlias, type SwapAssignment, type OncomingPool } from "@/lib/swapOptimizer";
 import { DEFAULT_AIRPORT_ALIASES } from "@/lib/airportAliases";
 import { searchFlights, type FlightOffer } from "@/lib/amadeus";
 
@@ -126,41 +126,49 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // ── STEP 1: Assign oncoming crew from pool to tails ─────────────────────────
-  let assignmentResult: ReturnType<typeof assignOncomingCrew> | null = null;
+  const hasPool = clientOncomingPool && (clientOncomingPool.pic?.length > 0 || clientOncomingPool.sic?.length > 0);
 
-  if (clientOncomingPool && (clientOncomingPool.pic?.length > 0 || clientOncomingPool.sic?.length > 0)) {
-    assignmentResult = assignOncomingCrew({
-      swapAssignments,
-      oncomingPool: clientOncomingPool,
-      crewRoster,
-      flights,
-      swapDate,
-    });
-    // Use the completed assignments (with oncoming filled in)
-    swapAssignments = assignmentResult.assignments;
-  }
-
-  // ── STEP 2: Optionally search for commercial flights ───────────────────────
+  // ── STEP 1: Search commercial flights ──────────────────────────────────────
+  // Search BEFORE assignment so we have real costs for crew-to-tail matching.
+  // For oncoming pool: search ALL pool crew home airports → ALL swap locations.
+  // For offgoing: search swap locations → home airports.
   let commercialFlights: Map<string, FlightOffer[]> | undefined;
 
   if (searchCommercial) {
     commercialFlights = new Map();
-
-    const activeAssignments = Object.keys(swapAssignments).length > 0 ? swapAssignments : undefined;
-    const requiredSearches = activeAssignments
-      ? getRequiredFlightSearches({ crewRoster, aliases, swapAssignments: activeAssignments, flights, swapDate })
-      : [];
-
     const searchPairs = new Set<string>();
-    for (const s of requiredSearches) {
+
+    // Pool searches: every pool member's home → every swap location
+    if (hasPool) {
+      const poolSearches = getPoolFlightSearches({
+        oncomingPool: clientOncomingPool!,
+        aliases,
+        swapAssignments,
+        flights,
+        swapDate,
+      });
+      for (const s of poolSearches) {
+        searchPairs.add(`${s.origin}-${s.destination}`);
+      }
+    }
+
+    // Offgoing searches: swap locations → offgoing crew home airports
+    const offgoingSearches = getRequiredFlightSearches({
+      crewRoster,
+      aliases,
+      swapAssignments,
+      flights,
+      swapDate,
+    });
+    for (const s of offgoingSearches) {
       searchPairs.add(`${s.origin}-${s.destination}`);
     }
 
-    const pairsArray = Array.from(searchPairs).slice(0, 80);
+    const pairsArray = Array.from(searchPairs).slice(0, 120);
 
-    for (let i = 0; i < pairsArray.length; i += 5) {
-      const batch = pairsArray.slice(i, i + 5);
+    // Search in parallel (batches of 8)
+    for (let i = 0; i < pairsArray.length; i += 8) {
+      const batch = pairsArray.slice(i, i + 8);
       const results = await Promise.all(
         batch.map(async (pair) => {
           const [orig, dest] = pair.split("-");
@@ -180,7 +188,23 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // ── STEP 3: Run transport optimizer ────────────────────────────────────────
+  // ── STEP 2: Assign oncoming crew using ACTUAL transport costs ──────────────
+  let assignmentResult: ReturnType<typeof assignOncomingCrew> | null = null;
+
+  if (hasPool) {
+    assignmentResult = assignOncomingCrew({
+      swapAssignments,
+      oncomingPool: clientOncomingPool!,
+      crewRoster,
+      flights,
+      swapDate,
+      aliases,
+      commercialFlights,
+    });
+    swapAssignments = assignmentResult.assignments;
+  }
+
+  // ── STEP 3: Run transport optimizer for all assigned crew ──────────────────
   const result = buildSwapPlan({
     flights,
     crewRoster,

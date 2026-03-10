@@ -972,23 +972,60 @@ function determineSwapLocation(
   return null;
 }
 
-/** Estimate transport cost from home to swap location (for assignment scoring) */
-function estimateTransportCost(homeAirports: string[], swapIcao: string): number {
-  let bestCost = 500; // default for unknown distance
+/**
+ * Estimate ACTUAL transport cost using real flight data + drive estimates.
+ * Checks drives (Uber/rental) AND commercial flights if available.
+ */
+function estimateTransportCost(
+  homeAirports: string[],
+  swapIcao: string,
+  aliases?: AirportAlias[],
+  commercialFlights?: Map<string, FlightOffer[]>,
+  swapDate?: string,
+): number {
+  let bestCost = 999; // high default = no viable option found
+
   for (const home of homeAirports) {
-    const drive = estimateDriveTime(toIcao(home), swapIcao);
-    if (!drive) continue;
-    let cost: number;
-    if (drive.estimated_drive_minutes <= UBER_MAX_MINUTES) {
-      cost = Math.max(25, Math.round(drive.estimated_drive_miles * 2.0));
-    } else if (drive.estimated_drive_minutes <= RENTAL_MAX_MINUTES) {
-      cost = 80 + Math.round(drive.estimated_drive_miles * 0.50);
-    } else {
-      // Beyond driving — estimate commercial cost based on distance
-      cost = Math.round(100 + drive.estimated_drive_miles * 0.10);
+    const homeIcao = toIcao(home);
+
+    // ── Drive options ───────────────────────────────────────────────
+    const drive = estimateDriveTime(homeIcao, swapIcao);
+    if (drive) {
+      if (drive.estimated_drive_minutes <= UBER_MAX_MINUTES) {
+        bestCost = Math.min(bestCost, Math.max(25, Math.round(drive.estimated_drive_miles * 2.0)));
+      } else if (drive.estimated_drive_minutes <= RENTAL_MAX_MINUTES) {
+        bestCost = Math.min(bestCost, 80 + Math.round(drive.estimated_drive_miles * 0.50));
+      }
     }
-    if (cost < bestCost) bestCost = cost;
+
+    // ── Commercial flight options ───────────────────────────────────
+    if (commercialFlights && aliases && swapDate) {
+      const homeIata = toIata(home);
+      const commAirports = findAllCommercialAirports(swapIcao, aliases);
+      for (const comm of commAirports) {
+        const commIata = toIata(comm);
+        if (homeIata === commIata) continue;
+        const key = `${homeIata}-${commIata}-${swapDate}`;
+        const offers = commercialFlights.get(key) ?? [];
+        for (const offer of offers) {
+          const cost = parseFloat(offer.price.total);
+          if (!isNaN(cost)) bestCost = Math.min(bestCost, cost);
+        }
+      }
+    }
   }
+
+  // If no real options found but we have a drive estimate beyond rental range,
+  // use distance-based estimate for commercial flight cost
+  if (bestCost >= 999) {
+    for (const home of homeAirports) {
+      const drive = estimateDriveTime(toIcao(home), swapIcao);
+      if (drive) {
+        bestCost = Math.min(bestCost, Math.round(100 + drive.estimated_drive_miles * 0.10));
+      }
+    }
+  }
+
   return bestCost;
 }
 
@@ -1002,8 +1039,8 @@ function isQualified(crewAircraftType: string, tailAircraftType: string): boolea
 
 /**
  * Assign oncoming crew from pool to tails that need them.
- * Uses greedy min-cost assignment: for each role, compute cost for each
- * (crew, tail) pair, sort by cost, and assign cheapest first.
+ * Uses greedy min-cost assignment with ACTUAL transport costs:
+ * drive/Uber/rental + commercial flights when available.
  */
 export function assignOncomingCrew(params: {
   swapAssignments: Record<string, SwapAssignment>;
@@ -1011,12 +1048,14 @@ export function assignOncomingCrew(params: {
   crewRoster: CrewMember[];
   flights: FlightLeg[];
   swapDate: string;
+  aliases?: AirportAlias[];
+  commercialFlights?: Map<string, FlightOffer[]>;
 }): {
   assignments: Record<string, SwapAssignment>;
   standby: { pic: string[]; sic: string[] };
   details: { name: string; tail: string; cost: number; reason: string }[];
 } {
-  const { swapAssignments, oncomingPool, crewRoster, flights, swapDate } = params;
+  const { swapAssignments, oncomingPool, crewRoster, flights, swapDate, aliases, commercialFlights } = params;
   const result: Record<string, SwapAssignment> = JSON.parse(JSON.stringify(swapAssignments));
   const details: { name: string; tail: string; cost: number; reason: string }[] = [];
 
@@ -1028,7 +1067,6 @@ export function assignOncomingCrew(params: {
     const loc = determineSwapLocation(tail, flights, swapDate);
     if (loc) tailLocations.set(tail, loc);
 
-    // Determine aircraft type from offgoing crew
     const sa = result[tail];
     const offName = sa.offgoing_pic ?? sa.offgoing_sic;
     if (offName) {
@@ -1039,11 +1077,9 @@ export function assignOncomingCrew(params: {
     }
   }
 
-  // Assign PICs
-  assignRole("PIC", "oncoming_pic", oncomingPool.pic, result, tailLocations, tailAircraftType, details);
-
-  // Assign SICs
-  assignRole("SIC", "oncoming_sic", oncomingPool.sic, result, tailLocations, tailAircraftType, details);
+  // Assign PICs then SICs
+  assignRole("oncoming_pic", oncomingPool.pic, result, tailLocations, tailAircraftType, details, aliases, commercialFlights, swapDate);
+  assignRole("oncoming_sic", oncomingPool.sic, result, tailLocations, tailAircraftType, details, aliases, commercialFlights, swapDate);
 
   // Remaining pool → standby
   const assignedNames = new Set(details.map((d) => d.name));
@@ -1056,18 +1092,18 @@ export function assignOncomingCrew(params: {
 }
 
 function assignRole(
-  _role: "PIC" | "SIC",
   field: "oncoming_pic" | "oncoming_sic",
   pool: OncomingPoolEntry[],
   result: Record<string, SwapAssignment>,
   tailLocations: Map<string, { icao: string; time: Date }>,
   tailAircraftType: Map<string, string>,
   details: { name: string; tail: string; cost: number; reason: string }[],
+  aliases?: AirportAlias[],
+  commercialFlights?: Map<string, FlightOffer[]>,
+  swapDate?: string,
 ): void {
-  // Find tails needing this role
   const needingTails = Object.keys(result).filter((tail) => !result[tail][field]);
 
-  // Build all (tail, crew) options with costs
   type Option = { tail: string; name: string; cost: number };
   const options: Option[] = [];
 
@@ -1078,12 +1114,19 @@ function assignRole(
 
     for (const crew of pool) {
       if (!isQualified(crew.aircraft_type, acType)) continue;
-      const cost = estimateTransportCost(crew.home_airports.map(toIcao), loc.icao);
+      // Use ACTUAL transport costs (flights + drives), not just distance
+      const cost = estimateTransportCost(
+        crew.home_airports.map(toIcao),
+        loc.icao,
+        aliases,
+        commercialFlights,
+        swapDate,
+      );
       options.push({ tail, name: crew.name, cost });
     }
   }
 
-  // Sort by cost ascending (cheapest assignments first)
+  // Sort by cost ascending (cheapest real transport first)
   options.sort((a, b) => a.cost - b.cost);
 
   // Greedy assignment
@@ -1099,12 +1142,55 @@ function assignRole(
       name: opt.name,
       tail: opt.tail,
       cost: opt.cost,
-      reason: `~$${opt.cost} transport to ${tailLocations.get(opt.tail)?.icao ?? "?"}`,
+      reason: `$${opt.cost} to ${tailLocations.get(opt.tail)?.icao ?? "?"}`,
     });
   }
 }
 
-// ─── Helper for API route: get required flight search pairs ──────────────────
+// ─── Helper: get flight searches for ALL pool crew × ALL swap locations ───────
+
+/** Generate search pairs for the ENTIRE oncoming pool to ALL swap locations.
+ *  This runs BEFORE assignment so the optimizer has real flight data. */
+export function getPoolFlightSearches(params: {
+  oncomingPool: OncomingPool;
+  aliases: AirportAlias[];
+  swapAssignments: Record<string, SwapAssignment>;
+  flights: FlightLeg[];
+  swapDate: string;
+}): { origin: string; destination: string; date: string }[] {
+  const { oncomingPool, aliases, swapAssignments, flights, swapDate } = params;
+  const pairs = new Set<string>();
+
+  // Collect ALL unique swap locations from tails
+  const swapCommAirports = new Set<string>();
+  for (const tail of Object.keys(swapAssignments)) {
+    const loc = determineSwapLocation(tail, flights, swapDate);
+    if (!loc) continue;
+    for (const comm of findAllCommercialAirports(loc.icao, aliases)) {
+      swapCommAirports.add(toIata(comm));
+    }
+  }
+
+  // For each pool member, generate home → swap location pairs
+  const allPoolMembers = [...oncomingPool.pic, ...oncomingPool.sic];
+  for (const crew of allPoolMembers) {
+    for (const home of crew.home_airports) {
+      const homeIata = toIata(home);
+      for (const comm of swapCommAirports) {
+        if (homeIata !== comm) {
+          pairs.add(`${homeIata}-${comm}`);
+        }
+      }
+    }
+  }
+
+  return Array.from(pairs).map((p) => {
+    const [origin, destination] = p.split("-");
+    return { origin, destination, date: swapDate };
+  });
+}
+
+// ─── Helper: get flight searches for assigned crew (after assignment) ─────────
 
 export function getRequiredFlightSearches(params: {
   crewRoster: CrewMember[];
