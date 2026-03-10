@@ -120,6 +120,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Could not determine week_start from filename — please provide the 'Week Starting' date" }, { status: 400 });
     }
     rows = parseJetAviationCSV(lines, headerFields, vendorOverride ?? detectedVendor, weekStart, batchId);
+  } else if (format === "atlantic") {
+    // Atlantic Aviation format — AIRPORTCODE, PRODUCT, POSTEDOTDPRICE, DISCOUNT, CUSTOMEROTDPRICE
+    detectedVendor = "Atlantic Aviation";
+    const weekStart = resolveWeekStart(weekStartRaw, file.name);
+    if (!weekStart) {
+      return NextResponse.json({ error: "Could not determine week_start — please provide it" }, { status: 400 });
+    }
+    rows = parseAtlanticCSV(lines, headerFields, vendorOverride ?? detectedVendor, weekStart, batchId);
   } else {
     // Original/generic format — vendor and week_start required
     if (!vendorOverride) return NextResponse.json({ error: "vendor is required for this CSV format" }, { status: 400 });
@@ -195,7 +203,7 @@ export async function POST(req: NextRequest) {
 
 // --- Format detection ---
 
-function detectFormat(headers: string[]): "baker" | "everest" | "wfs" | "avfuel" | "titan" | "signature" | "jet_aviation" | "generic" {
+function detectFormat(headers: string[]): "baker" | "everest" | "wfs" | "avfuel" | "titan" | "signature" | "jet_aviation" | "atlantic" | "generic" {
   // Baker/AEG: has ICAO, FUELER, TOTAL PRICE columns
   if (headers.includes("FUELER") && headers.includes("TOTAL PRICE")) return "baker";
   // Everest: has ICAO, FBO, TIER, PRICE columns
@@ -210,6 +218,8 @@ function detectFormat(headers: string[]): "baker" | "everest" | "wfs" | "avfuel"
   if (headers.includes("BASE") && headers.includes("MIN QUANTITY") && headers.includes("MAX QUANTITY") && headers.includes("TOTAL")) return "signature";
   // Jet Aviation: has FBO, VOLUME TIER, PRODUCT, PRICE, TAIL NUMBERS
   if (headers.includes("VOLUME TIER") && headers.includes("TAIL NUMBERS")) return "jet_aviation";
+  // Atlantic: has AIRPORTCODE, PRODUCT, POSTEDOTDPRICE, DISCOUNT, CUSTOMEROTDPRICE
+  if (headers.includes("AIRPORTCODE") && headers.includes("CUSTOMEROTDPRICE")) return "atlantic";
   return "generic";
 }
 
@@ -641,6 +651,43 @@ function parseJetAviationCSV(lines: string[], headers: string[], vendor: string,
   return rows;
 }
 
+// --- Atlantic Aviation parser ---
+
+function parseAtlanticCSV(lines: string[], headers: string[], vendor: string, weekStart: string, batchId: string): PriceRow[] {
+  const col = (name: string) => headers.indexOf(name);
+  const airportIdx = col("AIRPORTCODE");
+  const productIdx = col("PRODUCT");
+  const priceIdx = col("CUSTOMEROTDPRICE");
+
+  if (airportIdx < 0 || priceIdx < 0) return [];
+
+  const rows: PriceRow[] = [];
+
+  for (let i = 1; i < lines.length; i++) {
+    const fields = parseCSVLine(lines[i]);
+    const airport = fields[airportIdx]?.trim().toUpperCase();
+    if (!airport) continue;
+
+    const price = parsePrice(fields[priceIdx]);
+    if (price === null || price <= 0) continue;
+
+    const product = fields[productIdx]?.trim() || "Jet-A";
+
+    rows.push({
+      fbo_vendor: vendor,
+      airport_code: airport,
+      volume_tier: "1+",
+      product,
+      price,
+      tail_numbers: null,
+      week_start: weekStart,
+      upload_batch: batchId,
+    });
+  }
+
+  return rows;
+}
+
 // --- Generic CSV parser (original format) ---
 
 function parseGenericCSV(lines: string[], vendor: string, weekStart: string, batchId: string): PriceRow[] {
@@ -717,6 +764,8 @@ const VENDOR_ALIASES: Record<string, string> = {
   "titan": "Titan Fuels",
   "jet aviation": "Jet Aviation",
   "avfuel": "Avfuel",
+  "atlantic": "Atlantic Aviation",
+  "atlantic aviation": "Atlantic Aviation",
 };
 
 function normalizeVendorName(vendor: string): string {
