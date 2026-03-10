@@ -261,6 +261,15 @@ function extractFboName(product: string): string | null {
   return m ? m[1] : null;
 }
 
+/** Normalize FBO name for grouping — fix typos, collapse whitespace */
+function normFboKey(fbo: string): string {
+  return fbo
+    .toLowerCase()
+    .replace(/avaition/g, "aviation")  // common typo in Avfuel data
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 type AdvVsActualRow = {
   key: string;
   airport: string;
@@ -336,23 +345,47 @@ function buildAdvVsActual(
     const volumeFiltered = filteredAdv.filter((a) => tierMatchesVolume(a.volume_tier, volumeGallons));
     if (volumeFiltered.length > 0) filteredAdv = volumeFiltered;
   }
-  // For each (vendor, airport, FBO, week), keep only the best-matching tier
+  // For each (vendor, airport, FBO, week), keep the best-matching tier:
+  // - If volume is set: pick the tier whose min is closest to (but ≤) the volume
+  // - If no volume: pick the tier with the smallest minimum (retail/base tier)
   const dedupedAdv: AdvertisedPriceRow[] = [];
   const seenByWeek = new Map<string, AdvertisedPriceRow>();
-  const sortedAdv = [...filteredAdv].sort((a, b) => a.price - b.price);
-  for (const adv of sortedAdv) {
+  function tierMinGal(tier: string): number {
+    const m = tier.match(/^(\d+)/);
+    return m ? parseInt(m[1], 10) : 0;
+  }
+  for (const adv of filteredAdv) {
     const fbo = extractFboName(adv.product) ?? "";
-    const wk = `${adv.fbo_vendor}|${normAirport(adv.airport_code)}|${fbo}|${adv.week_start}`;
-    if (!seenByWeek.has(wk)) {
+    const wk = `${adv.fbo_vendor}|${normAirport(adv.airport_code)}|${normFboKey(fbo)}|${adv.week_start}`;
+    const existing = seenByWeek.get(wk);
+    if (!existing) {
       seenByWeek.set(wk, adv);
       dedupedAdv.push(adv);
+    } else {
+      const existMin = tierMinGal(existing.volume_tier);
+      const newMin = tierMinGal(adv.volume_tier);
+      let replace = false;
+      if (volumeGallons && volumeGallons > 0) {
+        // Prefer tier whose min is closest to volume without exceeding it
+        const existFit = existMin <= volumeGallons ? existMin : -1;
+        const newFit = newMin <= volumeGallons ? newMin : -1;
+        replace = newFit > existFit;
+      } else {
+        // No volume set — prefer smallest tier (retail price)
+        replace = newMin < existMin;
+      }
+      if (replace) {
+        seenByWeek.set(wk, adv);
+        const idx = dedupedAdv.indexOf(existing);
+        if (idx >= 0) dedupedAdv[idx] = adv;
+      }
     }
   }
 
   const advByIdentity = new Map<string, AdvertisedPriceRow[]>();
   for (const adv of dedupedAdv) {
     const fbo = extractFboName(adv.product) ?? "";
-    const key = `${adv.fbo_vendor}|${normAirport(adv.airport_code)}|${fbo}`;
+    const key = `${adv.fbo_vendor}|${normAirport(adv.airport_code)}|${normFboKey(fbo)}`;
     if (!advByIdentity.has(key)) advByIdentity.set(key, []);
     advByIdentity.get(key)!.push(adv);
   }
@@ -1453,11 +1486,20 @@ export default function FuelPricesTable({
                       </td>
                       <td className="px-4 py-2.5 whitespace-nowrap text-xs text-gray-500">{row.volumeTier}</td>
                       <td className="px-4 py-2.5 text-xs text-gray-500 max-w-[120px] truncate" title={row.tailNumbers || "All"}>{row.tailNumbers || "All"}</td>
-                      <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono font-medium text-purple-700">
-                        <span className={isCheapest ? "inline-flex items-center gap-1" : ""}>
-                          {fmt$(row.currentPrice)}
-                          {isCheapest && <span className="text-[9px] font-semibold px-1 py-0.5 rounded bg-green-200 text-green-800">BEST</span>}
-                        </span>
+                      <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono font-medium">
+                        {(() => {
+                          const weekDate = new Date(row.currentWeek + "T12:00:00");
+                          const now = new Date();
+                          const diffDays = Math.floor((now.getTime() - weekDate.getTime()) / 86400000);
+                          const isStale = diffDays > 6;
+                          return (
+                            <span className={`${isCheapest ? "inline-flex items-center gap-1" : ""} ${isStale ? "text-amber-600" : "text-green-700"}`}>
+                              {fmt$(row.currentPrice)}
+                              {isStale && <span className="text-[9px] ml-1 opacity-70">({fmtDate(row.currentWeek)})</span>}
+                              {isCheapest && <span className="text-[9px] font-semibold px-1 py-0.5 rounded bg-green-200 text-green-800">BEST</span>}
+                            </span>
+                          );
+                        })()}
                       </td>
                       <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono text-gray-400">
                         {row.prevPrice != null ? fmt$(row.prevPrice) : <span className="text-gray-300">{"\u2014"}</span>}

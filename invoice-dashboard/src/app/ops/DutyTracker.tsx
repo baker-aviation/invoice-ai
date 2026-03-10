@@ -748,11 +748,11 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
                                   )}
                                   <span className={`px-1 py-0.5 text-[9px] font-medium rounded ${sourceBadgeClass(leg.source)}`}>{sourceLabel(leg.source)}</span>
                                   {isBreach && (
-                                    <span className="text-[10px] font-semibold text-red-600">10h limit</span>
+                                    <span className={`text-[10px] font-semibold ${isRed ? "text-red-600" : "text-amber-600"}`}>limiting leg</span>
                                   )}
                                   {isBreach && td.suggestion && (
                                     <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-100 font-medium">
-                                      {td.suggestion}
+                                      {isRed ? td.suggestion : td.suggestion.replace(/^Slide/, "May need to slide").replace(/^Consider/, "May need to consider")}
                                     </span>
                                   )}
                                 </div>
