@@ -284,7 +284,13 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
   const [swapPlan, setSwapPlan] = useState<SwapPlanResult | null>(null);
   const [optimizeError, setOptimizeError] = useState<string | null>(null);
   const [showSchedule, setShowSchedule] = useState(false);
-  const [swapAssignments, setSwapAssignments] = useState<Record<string, SwapAssignment> | null>(null);
+  const [swapAssignments, setSwapAssignments] = useState<Record<string, SwapAssignment> | null>(() => {
+    if (typeof window === "undefined") return null;
+    try {
+      const stored = localStorage.getItem("swap_assignments");
+      return stored ? JSON.parse(stored) : null;
+    } catch { return null; }
+  });
 
   // Fetch crew roster
   const loadCrew = useCallback(async () => {
@@ -319,6 +325,7 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
         setUploadResult(data);
         if (data.swap_assignments) {
           setSwapAssignments(data.swap_assignments);
+          try { localStorage.setItem("swap_assignments", JSON.stringify(data.swap_assignments)); } catch {}
         }
         await loadCrew();
       }
@@ -457,6 +464,12 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
                  Off-PIC: {uploadResult.summary.offgoing_pic ?? 0}, Off-SIC: {uploadResult.summary.offgoing_sic ?? 0})
               </span>
             )}
+            {uploadResult.swap_assignments && (
+              <span className="text-green-500 ml-2 text-xs">
+                | Swap assignments: {Object.keys(uploadResult.swap_assignments).length} tails
+                ({Object.values(uploadResult.swap_assignments).filter(a => a.oncoming_pic || a.oncoming_sic).length} w/ oncoming)
+              </span>
+            )}
             {uploadResult.errors && uploadResult.errors.length > 0 && (
               <div className="mt-1 text-xs text-red-600">
                 Errors: {uploadResult.errors.join("; ")}
@@ -535,9 +548,23 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
       {/* Swap Optimizer */}
       <div className="rounded-lg border bg-white shadow-sm overflow-hidden">
         <div className="px-4 py-3 bg-gray-50 border-b flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">
-            Swap Optimizer
-          </h3>
+          <div className="flex items-center gap-3">
+            <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">
+              Swap Optimizer
+            </h3>
+            {swapAssignments && (
+              <span className="text-[10px] px-2 py-0.5 rounded bg-blue-50 text-blue-600">
+                {Object.keys(swapAssignments).length} tails loaded
+                ({Object.values(swapAssignments).filter(a => a.oncoming_pic || a.oncoming_sic).length} oncoming,
+                {" "}{Object.values(swapAssignments).filter(a => a.offgoing_pic || a.offgoing_sic).length} offgoing)
+              </span>
+            )}
+            {!swapAssignments && (
+              <span className="text-[10px] px-2 py-0.5 rounded bg-amber-50 text-amber-600">
+                No swap assignments — upload Excel first
+              </span>
+            )}
+          </div>
           <div className="flex items-center gap-2">
             <button
               onClick={() => runOptimizer(false)}
