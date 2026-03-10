@@ -1422,7 +1422,7 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                           if (!rate) return <span className="text-xs text-gray-300">&mdash;</span>;
                           return (
                             <div>
-                              <div className="text-[10px] text-gray-500 truncate">{rate.fbo ?? rate.vendor}</div>
+                              <div className="text-[10px] text-gray-500 truncate">{rate.fbo || `(${rate.vendor})`}</div>
                               <span className="text-xs font-mono font-medium text-gray-900">${rate.price.toFixed(2)}</span>
                             </div>
                           );
