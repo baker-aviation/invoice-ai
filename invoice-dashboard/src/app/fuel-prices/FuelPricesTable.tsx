@@ -261,6 +261,15 @@ function extractFboName(product: string): string | null {
   return m ? m[1] : null;
 }
 
+/** Normalize FBO name for grouping — fix typos, collapse whitespace */
+function normFboKey(fbo: string): string {
+  return fbo
+    .toLowerCase()
+    .replace(/avaition/g, "aviation")  // common typo in Avfuel data
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 type AdvVsActualRow = {
   key: string;
   airport: string;
@@ -342,7 +351,7 @@ function buildAdvVsActual(
   const sortedAdv = [...filteredAdv].sort((a, b) => a.price - b.price);
   for (const adv of sortedAdv) {
     const fbo = extractFboName(adv.product) ?? "";
-    const wk = `${adv.fbo_vendor}|${normAirport(adv.airport_code)}|${fbo}|${adv.week_start}`;
+    const wk = `${adv.fbo_vendor}|${normAirport(adv.airport_code)}|${normFboKey(fbo)}|${adv.week_start}`;
     if (!seenByWeek.has(wk)) {
       seenByWeek.set(wk, adv);
       dedupedAdv.push(adv);
@@ -352,7 +361,7 @@ function buildAdvVsActual(
   const advByIdentity = new Map<string, AdvertisedPriceRow[]>();
   for (const adv of dedupedAdv) {
     const fbo = extractFboName(adv.product) ?? "";
-    const key = `${adv.fbo_vendor}|${normAirport(adv.airport_code)}|${fbo}`;
+    const key = `${adv.fbo_vendor}|${normAirport(adv.airport_code)}|${normFboKey(fbo)}`;
     if (!advByIdentity.has(key)) advByIdentity.set(key, []);
     advByIdentity.get(key)!.push(adv);
   }
