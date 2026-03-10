@@ -272,6 +272,13 @@ function computeScore(option: SwapOption): { score: number; breakdown: ScoreBrea
 
 // ─── Main optimizer ──────────────────────────────────────────────────────────
 
+export type SwapAssignment = {
+  oncoming_pic: string | null;
+  oncoming_sic: string | null;
+  offgoing_pic: string | null;
+  offgoing_sic: string | null;
+};
+
 export function buildSwapPlan(params: {
   flights: FlightLeg[];
   crewRoster: CrewMember[];
@@ -279,8 +286,10 @@ export function buildSwapPlan(params: {
   swapDate: string; // YYYY-MM-DD (Wednesday)
   // Optional: pre-fetched commercial flights keyed by "ORIG-DEST-DATE"
   commercialFlights?: Map<string, FlightOffer[]>;
+  // Optional: swap assignments from Excel upload (tail → crew names)
+  swapAssignments?: Record<string, SwapAssignment>;
 }): SwapPlanResult {
-  const { flights, crewRoster, aliases, swapDate, commercialFlights } = params;
+  const { flights, crewRoster, aliases, swapDate, commercialFlights, swapAssignments } = params;
   const warnings: string[] = [];
 
   // Group flights by tail
@@ -307,25 +316,58 @@ export function buildSwapPlan(params: {
     const wedLegs = legs.filter((f) => isWednesday(f.scheduled_departure, swapDate));
     const planWarnings: string[] = [];
 
-    // Determine current crew from most recent flight before Wednesday
-    const priorLegs = legs.filter(
-      (f) => new Date(f.scheduled_departure).getTime() < new Date(swapDate).getTime(),
-    );
-    const lastPrior = priorLegs[priorLegs.length - 1];
+    // Use Excel swap assignments if available, otherwise fall back to ICS flight data
+    const excelAssignment = swapAssignments?.[tail] ?? null;
 
-    const currentPicName = lastPrior?.pic ?? wedLegs[0]?.pic ?? null;
-    const currentSicName = lastPrior?.sic ?? wedLegs[0]?.sic ?? null;
+    let offgoingPic: CrewMember | null = null;
+    let offgoingSic: CrewMember | null = null;
+    let directOncomingPic: CrewMember | null = null;
+    let directOncomingSic: CrewMember | null = null;
+    let currentPicName: string | null = null;
+    let currentSicName: string | null = null;
 
-    // Find crew members by fuzzy name match
-    const offgoingPic = currentPicName
-      ? findCrewByName(crewRoster, currentPicName, "PIC")
-      : null;
-    const offgoingSic = currentSicName
-      ? findCrewByName(crewRoster, currentSicName, "SIC")
-      : null;
+    if (excelAssignment) {
+      // Excel swap doc is the source of truth
+      if (excelAssignment.offgoing_pic) {
+        offgoingPic = findCrewByName(crewRoster, excelAssignment.offgoing_pic, "PIC");
+        currentPicName = excelAssignment.offgoing_pic;
+      }
+      if (excelAssignment.offgoing_sic) {
+        offgoingSic = findCrewByName(crewRoster, excelAssignment.offgoing_sic, "SIC");
+        currentSicName = excelAssignment.offgoing_sic;
+      }
+      if (excelAssignment.oncoming_pic) {
+        directOncomingPic = findCrewByName(crewRoster, excelAssignment.oncoming_pic, "PIC");
+      }
+      if (excelAssignment.oncoming_sic) {
+        directOncomingSic = findCrewByName(crewRoster, excelAssignment.oncoming_sic, "SIC");
+      }
+    } else {
+      // Fallback: determine current crew from most recent ICS flight before Wednesday
+      const priorLegs = legs.filter(
+        (f) => new Date(f.scheduled_departure).getTime() < new Date(swapDate).getTime(),
+      );
+      const lastPrior = priorLegs[priorLegs.length - 1];
+
+      currentPicName = lastPrior?.pic ?? wedLegs[0]?.pic ?? null;
+      currentSicName = lastPrior?.sic ?? wedLegs[0]?.sic ?? null;
+
+      offgoingPic = currentPicName
+        ? findCrewByName(crewRoster, currentPicName, "PIC")
+        : null;
+      offgoingSic = currentSicName
+        ? findCrewByName(crewRoster, currentSicName, "SIC")
+        : null;
+    }
 
     // Determine aircraft type from crew qualifications or flight data
     const aircraftType = offgoingPic?.aircraft_types[0] ?? null;
+
+    // Find last flight before Wednesday (for idle aircraft position)
+    const allPriorLegs = legs.filter(
+      (f) => new Date(f.scheduled_departure).getTime() < new Date(swapDate).getTime(),
+    );
+    const lastPriorLeg = allPriorLegs[allPriorLegs.length - 1] ?? null;
 
     // Find swap candidate airports
     const swapAirports: {
@@ -336,7 +378,7 @@ export function buildSwapPlan(params: {
 
     if (wedLegs.length === 0) {
       // Aircraft idle — swap at last known position
-      const lastAirport = lastPrior?.arrival_icao;
+      const lastAirport = lastPriorLeg?.arrival_icao;
       if (lastAirport) {
         swapAirports.push({ airport: lastAirport, isLive: false, gapMinutes: -1 });
       }
@@ -534,59 +576,69 @@ export function buildSwapPlan(params: {
     // Sort options by score descending
     options.sort((a, b) => b.score - a.score);
 
-    // Assign best crew — only if there's a viable transport option
+    // Assign oncoming crew — prefer Excel swap assignments, then optimize by proximity
     const bestOption = options[0] ?? null;
-    let oncomingPic: CrewMember | null = null;
-    let oncomingSic: CrewMember | null = null;
+    let oncomingPic: CrewMember | null = directOncomingPic;
+    let oncomingSic: CrewMember | null = directOncomingSic;
 
-    // Only assign crew if at least one swap option has transport
-    const hasViableTransport = options.some(
-      (o) => o.oncoming_transport.length > 0 || o.offgoing_transport.length > 0,
-    );
+    // Mark direct assignments as used
+    if (oncomingPic) assignedCrewIds.add(oncomingPic.id);
+    if (oncomingSic) assignedCrewIds.add(oncomingSic.id);
 
-    if (hasViableTransport && qualifiedPics.length > 0) {
-      // Find the option with transport and pick crew closest to that airport
-      const viableOption = options.find((o) => o.oncoming_transport.length > 0) ?? bestOption;
-      const target = viableOption
-        ? (viableOption.commercial_airport.length === 3 ? `K${viableOption.commercial_airport}` : viableOption.commercial_airport)
-        : null;
+    // If no Excel assignment, try to find best crew by proximity (only if transport exists)
+    if (!oncomingPic) {
+      const hasViableTransport = options.some(
+        (o) => o.oncoming_transport.length > 0 || o.offgoing_transport.length > 0,
+      );
 
-      if (target) {
-        const sorted = qualifiedPics.map((p) => {
-          const home = closestHomeAirport(p, target);
-          return { crew: p, miles: home.drive?.straight_line_miles ?? 9999 };
-        }).sort((a, b) => a.miles - b.miles);
-        // Only assign if the closest crew has a known distance (not 9999 fallback)
-        if (sorted[0] && sorted[0].miles < 9999) {
-          oncomingPic = sorted[0].crew;
-          assignedCrewIds.add(oncomingPic.id);
+      if (hasViableTransport && qualifiedPics.length > 0) {
+        const viableOption = options.find((o) => o.oncoming_transport.length > 0) ?? bestOption;
+        const target = viableOption
+          ? (viableOption.commercial_airport.length === 3 ? `K${viableOption.commercial_airport}` : viableOption.commercial_airport)
+          : null;
+
+        if (target) {
+          const sorted = qualifiedPics.map((p) => {
+            const home = closestHomeAirport(p, target);
+            return { crew: p, miles: home.drive?.straight_line_miles ?? 9999 };
+          }).sort((a, b) => a.miles - b.miles);
+          if (sorted[0] && sorted[0].miles < 9999) {
+            oncomingPic = sorted[0].crew;
+            assignedCrewIds.add(oncomingPic.id);
+          }
         }
       }
     }
 
-    if (hasViableTransport && qualifiedSics.length > 0) {
-      const viableOption = options.find((o) => o.oncoming_transport.length > 0) ?? bestOption;
-      const target = viableOption
-        ? (viableOption.commercial_airport.length === 3 ? `K${viableOption.commercial_airport}` : viableOption.commercial_airport)
-        : null;
+    if (!oncomingSic) {
+      const hasViableTransport = options.some(
+        (o) => o.oncoming_transport.length > 0 || o.offgoing_transport.length > 0,
+      );
 
-      if (target) {
-        const sorted = qualifiedSics.map((s) => {
-          const home = closestHomeAirport(s, target);
-          return { crew: s, miles: home.drive?.straight_line_miles ?? 9999 };
-        }).sort((a, b) => a.miles - b.miles);
-        if (sorted[0] && sorted[0].miles < 9999) {
-          oncomingSic = sorted[0].crew;
-          assignedCrewIds.add(oncomingSic.id);
+      if (hasViableTransport && qualifiedSics.length > 0) {
+        const viableOption = options.find((o) => o.oncoming_transport.length > 0) ?? bestOption;
+        const target = viableOption
+          ? (viableOption.commercial_airport.length === 3 ? `K${viableOption.commercial_airport}` : viableOption.commercial_airport)
+          : null;
+
+        if (target) {
+          const sorted = qualifiedSics.map((s) => {
+            const home = closestHomeAirport(s, target);
+            return { crew: s, miles: home.drive?.straight_line_miles ?? 9999 };
+          }).sort((a, b) => a.miles - b.miles);
+          if (sorted[0] && sorted[0].miles < 9999) {
+            oncomingSic = sorted[0].crew;
+            assignedCrewIds.add(oncomingSic.id);
+          }
         }
       }
     }
 
     if (!oncomingPic) {
-      planWarnings.push(`No qualified PIC available (aircraft: ${aircraftType ?? "unknown"}, pool: ${picPool.length}, qualified: ${qualifiedPics.length}, offgoing: ${currentPicName ?? "none"})`);
+      planWarnings.push(`No qualified PIC available (aircraft: ${aircraftType ?? "unknown"}, pool: ${picPool.length}, qualified: ${qualifiedPics.length}, offgoing: ${currentPicName ?? "none"}, excel: ${excelAssignment?.oncoming_pic ?? "none"})`);
     }
     if (!oncomingSic) {
-      planWarnings.push(`No qualified SIC available (aircraft: ${aircraftType ?? "unknown"}, pool: ${sicPool.length}, qualified: ${qualifiedSics.length}, offgoing: ${currentSicName ?? "none"})`);
+      planWarnings.push(`No qualified SIC available (aircraft: ${aircraftType ?? "unknown"}, pool: ${sicPool.length}, qualified: ${qualifiedSics.length}, offgoing: ${currentSicName ?? "none"}, excel: ${excelAssignment?.oncoming_sic ?? "none"})`);
     }
 
     // Duty day check

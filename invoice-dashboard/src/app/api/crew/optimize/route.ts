@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin, isAuthed } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
-import { buildSwapPlan, type CrewMember, type FlightLeg, type AirportAlias } from "@/lib/swapOptimizer";
+import { buildSwapPlan, type CrewMember, type FlightLeg, type AirportAlias, type SwapAssignment } from "@/lib/swapOptimizer";
 import { searchFlights, type FlightOffer } from "@/lib/amadeus";
 
 export const dynamic = "force-dynamic";
@@ -32,7 +32,7 @@ export async function POST(req: NextRequest) {
   const start = new Date(wedDate.getTime() - 3 * 24 * 60 * 60 * 1000).toISOString();
   const end = new Date(wedDate.getTime() + 3 * 24 * 60 * 60 * 1000).toISOString();
 
-  const [flightsRes, crewRes, aliasRes] = await Promise.all([
+  const [flightsRes, crewRes, aliasRes, rotationsRes] = await Promise.all([
     supa
       .from("flights")
       .select("id, tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, flight_type, pic, sic")
@@ -41,6 +41,10 @@ export async function POST(req: NextRequest) {
       .order("scheduled_departure"),
     supa.from("crew_members").select("*").eq("active", true),
     supa.from("airport_aliases").select("fbo_icao, commercial_icao, preferred"),
+    // Get crew rotations to build swap assignments
+    supa.from("crew_rotations")
+      .select("crew_member_id, tail_number, rotation_start, rotation_end, crew_members(name, role)")
+      .order("rotation_start", { ascending: false }),
   ]);
 
   if (flightsRes.error) {
@@ -78,6 +82,34 @@ export async function POST(req: NextRequest) {
     commercial_icao: a.commercial_icao as string,
     preferred: (a.preferred as boolean) ?? false,
   }));
+
+  // Build swap assignments from crew_rotations
+  const swapAssignments: Record<string, SwapAssignment> = {};
+  if (rotationsRes.data) {
+    for (const rot of rotationsRes.data) {
+      const tail = rot.tail_number as string;
+      const memberArr = rot.crew_members as unknown as { name: string; role: string }[] | { name: string; role: string } | null;
+      const member = Array.isArray(memberArr) ? memberArr[0] : memberArr;
+      if (!member || !tail) continue;
+
+      if (!swapAssignments[tail]) {
+        swapAssignments[tail] = { oncoming_pic: null, oncoming_sic: null, offgoing_pic: null, offgoing_sic: null };
+      }
+      const sa = swapAssignments[tail];
+      const rotEnd = rot.rotation_end as string | null;
+      const isPic = member.role === "PIC";
+
+      if (rotEnd) {
+        // Has rotation_end = offgoing crew
+        if (isPic) sa.offgoing_pic = sa.offgoing_pic ?? member.name;
+        else sa.offgoing_sic = sa.offgoing_sic ?? member.name;
+      } else {
+        // No rotation_end = oncoming (current/active)
+        if (isPic) sa.oncoming_pic = sa.oncoming_pic ?? member.name;
+        else sa.oncoming_sic = sa.oncoming_sic ?? member.name;
+      }
+    }
+  }
 
   // Optionally search for commercial flights
   let commercialFlights: Map<string, FlightOffer[]> | undefined;
@@ -143,6 +175,7 @@ export async function POST(req: NextRequest) {
     aliases,
     swapDate,
     commercialFlights,
+    swapAssignments: Object.keys(swapAssignments).length > 0 ? swapAssignments : undefined,
   });
 
   return NextResponse.json({
