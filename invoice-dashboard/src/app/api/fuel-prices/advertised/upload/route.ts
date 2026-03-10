@@ -119,8 +119,18 @@ export async function POST(req: NextRequest) {
   }
 
   const supa = createServiceClient();
+  const vendor = vendorOverride ?? detectedVendor ?? "";
 
-  // Insert in batches of 500, upsert with ignoreDuplicates
+  // Delete old records for this vendor before inserting fresh data
+  const { error: delError } = await supa
+    .from("fbo_advertised_prices")
+    .delete()
+    .eq("fbo_vendor", vendor);
+  if (delError) {
+    console.error("[advertised/upload] Delete old records failed:", delError);
+  }
+
+  // Insert in batches of 500
   let inserted = 0;
   let skipped = 0;
   const batchSize = 500;
