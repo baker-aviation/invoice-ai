@@ -518,6 +518,108 @@ function buildCandidates(
     }
   }
 
+  // ── Estimated commercial flights (fallback when Amadeus has no data) ──────
+  // If we have no commercial candidates and no drive/Uber/rental options, or if
+  // drive options are very long, add estimated commercial flight candidates so the
+  // optimizer can recommend "book a flight" with approximate cost/time.
+  const hasCommercialCandidate = candidates.some((c) => c.type === "commercial");
+  const hasDriveCandidate = candidates.some((c) => c.type === "uber" || c.type === "rental_car" || c.type === "drive");
+
+  if (!hasCommercialCandidate) {
+    for (const homeApt of task.homeAirports) {
+      const homeIcao = toIcao(homeApt);
+      const homeIata = toIata(homeApt);
+
+      for (const commApt of commAirports) {
+        const commIata = toIata(commApt);
+        if (homeIata === commIata) continue;
+
+        // Use drive estimate for distance (straight-line miles)
+        const driveEst = estimateDriveTime(homeIcao, toIcao(commApt));
+        if (!driveEst) continue;
+
+        const miles = driveEst.straight_line_miles;
+        // Only add estimated flights for distances beyond rental range (~150+ miles)
+        if (miles < 100) continue;
+
+        // Estimate cost: ~$0.20/mile with $100 minimum, $600 cap
+        const estCost = Math.min(600, Math.max(100, Math.round(miles * 0.20)));
+        // Estimate flight time: ~500 mph cruising + 60 min for taxi/etc
+        const estFlightMin = Math.round((miles / 500) * 60 + 60);
+
+        // Drive from commercial airport to FBO
+        const driveToFbo = estimateDriveTime(
+          task.direction === "oncoming" ? toIcao(commIata) : swapIcao,
+          task.direction === "oncoming" ? swapIcao : toIcao(commIata),
+        );
+        const driveToFboMin = driveToFbo?.estimated_drive_minutes ?? 0;
+
+        // Ground transport cost
+        let groundCost = 0;
+        if (driveToFboMin > 0 && driveToFboMin <= UBER_MAX_MINUTES) {
+          groundCost = Math.max(25, Math.round((driveToFbo?.estimated_drive_miles ?? 0) * 2.0));
+        } else if (driveToFboMin > 0) {
+          groundCost = 80 + Math.round((driveToFbo?.estimated_drive_miles ?? 0) * 0.50);
+        }
+
+        let depTime: Date | null = null;
+        let arrTime: Date | null = null;
+        let fboArr: Date | null = null;
+        let dutyOn: Date | null = null;
+
+        if (task.direction === "oncoming") {
+          // Work backwards: must be at FBO by swap point - buffer
+          const mustBeAtFbo = new Date(task.swapPoint.time.getTime() - ms(FBO_ARRIVAL_BUFFER));
+          fboArr = mustBeAtFbo;
+          arrTime = new Date(fboArr.getTime() - ms(DEPLANE_BUFFER) - ms(driveToFboMin));
+          depTime = new Date(arrTime.getTime() - ms(estFlightMin));
+          dutyOn = dutyOnForCommercial(depTime);
+
+          // Skip if departure would be before 4am local
+          const localHour = getLocalHour(depTime, homeIcao);
+          if (localHour < EARLIEST_DUTY_ON_HOUR && localHour >= 0) {
+            // Still include — optimizer may accept early departure
+          }
+        } else {
+          // Offgoing: leave after swap point
+          const releaseTime = task.swapPoint.time;
+          const buffer = driveToFboMin > UBER_MAX_MINUTES ? RENTAL_RETURN_BUFFER : AIRPORT_SECURITY_BUFFER;
+          depTime = new Date(releaseTime.getTime() + ms(driveToFboMin) + ms(buffer));
+          arrTime = new Date(depTime.getTime() + ms(estFlightMin));
+
+          // Check midnight deadline
+          const homeArr = new Date(arrTime.getTime() + ms(DEPLANE_BUFFER));
+          const homeMn = task.homeAirports[0]
+            ? midnightUtc(toIcao(task.homeAirports[0]), swapDate)
+            : midnightUtc(swapIcao, swapDate);
+          if (homeArr.getTime() > homeMn.getTime()) continue;
+        }
+
+        candidates.push({
+          type: "commercial",
+          flightNumber: `EST ${homeIata}-${commIata}`,
+          depTime,
+          arrTime,
+          from: task.direction === "oncoming" ? homeIata : commIata,
+          to: task.direction === "oncoming" ? commIata : homeIata,
+          cost: estCost + groundCost,
+          durationMin: estFlightMin,
+          isDirect: true,
+          isBudgetCarrier: false,
+          hubConnection: false,
+          connectionCount: 0,
+          offer: null,
+          drive: driveToFbo,
+          fboArrivalTime: fboArr,
+          dutyOnTime: dutyOn,
+          score: 0,
+          backups: [],
+        });
+        break; // One estimated flight per home airport per commercial airport is enough
+      }
+    }
+  }
+
   // If no candidates found, add a "none" placeholder
   if (candidates.length === 0) {
     candidates.push({
@@ -898,7 +1000,9 @@ export function buildSwapPlan(params: {
       is_skillbridge: task.crewMember?.is_skillbridge ?? false,
       notes: best?.type === "none"
         ? `No viable transport from ${task.homeAirports[0] ?? "?"} to ${toIata(task.swapPoint.icao)}`
-        : null,
+        : (best?.flightNumber?.startsWith("EST ")
+          ? "Estimated — book actual flight on this route"
+          : null),
       warnings: task.warnings,
       drive_estimate: best?.drive ?? null,
       flight_offer: best?.offer ?? null,
