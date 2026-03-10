@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/service";
+import { getAirportTimezone } from "@/lib/airportTimezones";
 
 /**
  * POST /api/cron/trip-notifications/check
@@ -88,7 +89,7 @@ export async function POST(req: NextRequest) {
       }
 
       // 6. Format and send DM
-      const depTime = formatTimeLocal(flight.scheduled_departure);
+      const depTime = formatTimeLocal(flight.scheduled_departure, flight.departure_icao);
       const depIcao = formatIcao(flight.departure_icao);
       const arrIcao = formatIcao(flight.arrival_icao);
       const broker = trip.customer || "Unknown";
@@ -145,13 +146,24 @@ export async function POST(req: NextRequest) {
   });
 }
 
-function formatTimeLocal(iso: string): string {
+function formatTimeLocal(iso: string, airportIcao: string | null): string {
   const d = new Date(iso);
-  const h = parseInt(d.toLocaleString("en-US", { hour: "numeric", hour12: true, timeZone: "America/New_York" }));
-  const m = d.toLocaleString("en-US", { minute: "2-digit", timeZone: "America/New_York" });
-  const ampm = d.toLocaleString("en-US", { hour: "numeric", hour12: true, timeZone: "America/New_York" }).slice(-2).toLowerCase();
-  const timeStr = m === "00" ? `${h}${ampm}` : `${h}:${m}${ampm}`;
-  return `${timeStr} Aircraft Time`;
+  const tz = getAirportTimezone(airportIcao) ?? "America/New_York";
+
+  const parts = new Intl.DateTimeFormat("en-US", {
+    hour: "numeric", minute: "2-digit", hour12: true, timeZone: tz,
+  }).formatToParts(d);
+
+  const hour = parts.find((p) => p.type === "hour")?.value ?? "12";
+  const minute = parts.find((p) => p.type === "minute")?.value ?? "00";
+  const dayPeriod = parts.find((p) => p.type === "dayPeriod")?.value?.toLowerCase() ?? "am";
+  const timeStr = minute === "00" ? `${hour}${dayPeriod}` : `${hour}:${minute}${dayPeriod}`;
+
+  const tzAbbr = new Intl.DateTimeFormat("en-US", {
+    timeZoneName: "short", timeZone: tz,
+  }).formatToParts(d).find((p) => p.type === "timeZoneName")?.value ?? "ET";
+
+  return `${timeStr} ${tzAbbr}`;
 }
 
 function formatIcao(icao: string | null): string {

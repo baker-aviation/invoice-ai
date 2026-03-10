@@ -97,6 +97,7 @@ export async function POST(req: NextRequest) {
 
   // 5. Send DMs
   let sent = 0;
+  let skipped = 0;
   const errors: string[] = [];
   const sentDetails: { salesperson: string; legCount: number }[] = [];
 
@@ -104,6 +105,18 @@ export async function POST(req: NextRequest) {
     const displayName =
       slackMap.find((m) => m.salesperson_name.toLowerCase() === spNameLower)
         ?.salesperson_name ?? spNameLower;
+
+    // Skip if already sent for this date
+    const { data: alreadySent } = await supa
+      .from("salesperson_summary_sent")
+      .select("id")
+      .eq("salesperson_name", displayName)
+      .eq("summary_date", tomorrowStr)
+      .limit(1);
+    if (alreadySent && alreadySent.length > 0) {
+      skipped++;
+      continue;
+    }
 
     const firstName = displayName.split(" ")[0];
     const personLegs = liveLegsByPerson.get(spNameLower);
