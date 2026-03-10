@@ -684,6 +684,25 @@ export default function FuelPricesTable({
     return lookup;
   }, [advertisedPrices]);
 
+  // Latest week per vendor (for freshness indicator)
+  const vendorFreshness = useMemo(() => {
+    const byVendor = new Map<string, { latestWeek: string; rowCount: number }>();
+    for (const adv of advertisedPrices) {
+      const existing = byVendor.get(adv.fbo_vendor);
+      if (!existing || adv.week_start > existing.latestWeek) {
+        byVendor.set(adv.fbo_vendor, {
+          latestWeek: adv.week_start,
+          rowCount: (existing?.rowCount ?? 0) + 1,
+        });
+      } else {
+        existing.rowCount++;
+      }
+    }
+    return [...byVendor.entries()]
+      .map(([vendor, info]) => ({ vendor, ...info }))
+      .sort((a, b) => a.vendor.localeCompare(b.vendor));
+  }, [advertisedPrices]);
+
   // Advertised vs Actual comparison rows
   const parsedGallons = volumeGallons ? parseInt(volumeGallons, 10) : null;
   const advVsActual = useMemo(
@@ -1242,6 +1261,38 @@ export default function FuelPricesTable({
       {/* ─── Advertised vs Actual View ──────────────────────────────── */}
       {viewMode === "advertised" && (
         <>
+          {/* Vendor freshness */}
+          {vendorFreshness.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs font-medium text-gray-500">Data as of:</span>
+              {vendorFreshness.map(({ vendor, latestWeek }) => {
+                const weekDate = new Date(latestWeek + "T12:00:00");
+                const now = new Date();
+                const daysOld = Math.floor((now.getTime() - weekDate.getTime()) / (1000 * 60 * 60 * 24));
+                const isStale = daysOld > 10;
+                const isRecent = daysOld <= 3;
+                return (
+                  <span
+                    key={vendor}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-full border ${
+                      isStale
+                        ? "bg-red-50 text-red-700 border-red-200"
+                        : isRecent
+                        ? "bg-green-50 text-green-700 border-green-200"
+                        : "bg-amber-50 text-amber-700 border-amber-200"
+                    }`}
+                  >
+                    <span className={`inline-block w-1.5 h-1.5 rounded-full ${
+                      isStale ? "bg-red-400" : isRecent ? "bg-green-400" : "bg-amber-400"
+                    }`} />
+                    <span className="font-medium">{vendor}</span>
+                    <span className="opacity-70">{fmtDate(latestWeek)}</span>
+                  </span>
+                );
+              })}
+            </div>
+          )}
+
           <div className="rounded-xl border bg-white overflow-hidden shadow-sm overflow-x-auto">
             <table className="min-w-full text-sm">
               <thead>
