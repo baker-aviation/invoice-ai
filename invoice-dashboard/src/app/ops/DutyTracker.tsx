@@ -483,11 +483,24 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
     for (const [tail, legs] of result) {
       legs.sort((a, b) => a.startMs - b.startMs);
       // Dedup: remove legs with same route and overlapping times (ICS sometimes has duplicate entries)
+      // Also deduplicate when a leg was flown earlier than scheduled — prefer actual/fa-estimate over scheduled
       const deduped: LegInterval[] = [];
       for (const leg of legs) {
         const prev = deduped[deduped.length - 1];
-        if (prev && prev.departure_icao === leg.departure_icao && prev.arrival_icao === leg.arrival_icao && Math.abs(prev.startMs - leg.startMs) < 5 * 60_000) {
-          continue; // skip duplicate
+        const sameRoute = prev && prev.departure_icao === leg.departure_icao && prev.arrival_icao === leg.arrival_icao;
+        if (sameRoute && Math.abs(prev.startMs - leg.startMs) < 5 * 60_000) {
+          continue; // skip near-duplicate
+        }
+        // If this scheduled leg duplicates an actual leg already in deduped, skip it
+        if (leg.source === "scheduled" && deduped.some((d) => d.departure_icao === leg.departure_icao && d.arrival_icao === leg.arrival_icao && (d.source === "actual" || d.source === "fa-estimate"))) {
+          continue;
+        }
+        // If this actual/fa-estimate leg duplicates a scheduled leg already in deduped, replace the scheduled one
+        if (leg.source === "actual" || leg.source === "fa-estimate") {
+          const schedIdx = deduped.findIndex((d) => d.departure_icao === leg.departure_icao && d.arrival_icao === leg.arrival_icao && d.source === "scheduled");
+          if (schedIdx !== -1) {
+            deduped.splice(schedIdx, 1);
+          }
         }
         deduped.push(leg);
       }
