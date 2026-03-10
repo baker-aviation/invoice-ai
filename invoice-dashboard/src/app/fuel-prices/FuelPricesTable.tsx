@@ -720,6 +720,21 @@ export default function FuelPricesTable({
     [initialPrices, advertisedPrices, parsedGallons],
   );
 
+  // Average WoW change per vendor
+  const vendorAvgWow = useMemo(() => {
+    const byVendor = new Map<string, number[]>();
+    for (const row of advVsActual) {
+      if (row.wowChangePct == null) continue;
+      if (!byVendor.has(row.fboVendor)) byVendor.set(row.fboVendor, []);
+      byVendor.get(row.fboVendor)!.push(row.wowChangePct);
+    }
+    const result = new Map<string, number>();
+    for (const [vendor, pcts] of byVendor) {
+      result.set(vendor, Math.round((pcts.reduce((a, b) => a + b, 0) / pcts.length) * 10) / 10);
+    }
+    return result;
+  }, [advVsActual]);
+
   // Latest invoice per airport (for linking from Adv vs Actual tab)
   const latestInvoiceByAirport = useMemo(() => {
     const lookup = new Map<string, { docId: string; date: string }>();
@@ -1297,6 +1312,15 @@ export default function FuelPricesTable({
                     }`} />
                     <span className="font-medium">{vendor}</span>
                     <span className="opacity-70">{fmtDate(latestWeek)}</span>
+                    {vendorAvgWow.has(vendor) && (() => {
+                      const avg = vendorAvgWow.get(vendor)!;
+                      const color = avg > 0.5 ? "text-red-600" : avg < -0.5 ? "text-green-600" : "text-gray-500";
+                      return (
+                        <span className={`font-mono font-semibold ${color}`}>
+                          {avg >= 0 ? "+" : ""}{avg}%
+                        </span>
+                      );
+                    })()}
                   </span>
                 );
               })}
