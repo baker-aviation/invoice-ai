@@ -70,8 +70,8 @@ export default function PipelineBoard({ initialJobs }: { initialJobs: JobRow[] }
       hired: [],
     };
     for (const j of filtered) {
-      const stage = (j.hiring_stage ?? "screening") as HiringStage;
-      (map[stage] ?? map.screening).push(j);
+      const stage = (j.hiring_stage ?? "") as HiringStage;
+      if (map[stage]) map[stage].push(j);
     }
     return map;
   }, [jobs, q]);

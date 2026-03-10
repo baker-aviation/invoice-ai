@@ -491,11 +491,8 @@ export default function PipelineBoard({
   }
   const qLower = search.toLowerCase().trim();
   for (const job of jobs) {
-    const stage = (PIPELINE_STAGES as readonly string[]).includes(
-      job.pipeline_stage ?? "",
-    )
-      ? (job.pipeline_stage as PipelineStage)
-      : "screening";
+    if (!(PIPELINE_STAGES as readonly string[]).includes(job.pipeline_stage ?? "")) continue;
+    const stage = job.pipeline_stage as PipelineStage;
     if (qLower) {
       const haystack = [
         job.candidate_name,

@@ -74,7 +74,7 @@ export async function fetchJobs(
 
   let jobs = (data ?? []).map((row: any) => ({
     ...row,
-    pipeline_stage: row.pipeline_stage ?? "screening",
+    pipeline_stage: row.pipeline_stage ?? null,
   })) as JobRow[];
 
   // Text search (matches backend behavior)
@@ -185,7 +185,7 @@ export async function fetchJobDetail(applicationId: string | number): Promise<Jo
 
   if (jobErr) throw new Error(`fetchJobDetail failed: ${jobErr.message}`);
   if (!jobRow) throw new Error("Job application not found");
-  if (!jobRow.pipeline_stage) jobRow.pipeline_stage = "screening";
+  // Leave pipeline_stage as-is (may be null for candidates not yet in pipeline)
 
   // Fetch file metadata from Supabase (include GCS location for signing)
   const { data: fileRows } = await supa
