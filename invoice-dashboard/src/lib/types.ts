@@ -133,6 +133,9 @@ export type JobRow = {
   has_challenger_300_type_rating: boolean | null;
   type_ratings: string[] | null;
 
+  has_part_135: boolean | null;
+  has_part_121: boolean | null;
+
   soft_gate_pic_met: boolean | null;
   soft_gate_pic_status: string | null;
   needs_review: boolean | null;

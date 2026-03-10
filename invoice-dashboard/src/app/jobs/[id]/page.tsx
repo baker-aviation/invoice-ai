@@ -53,6 +53,24 @@ function ratingLabel(code: string): string {
   return code;
 }
 
+function detectPart135(job: any): boolean {
+  if (job.has_part_135 === true) return true;
+  if (job.has_part_135 === false) return false;
+  const haystack = [job.notes, ...(Array.isArray(job.type_ratings) ? job.type_ratings : [])]
+    .join(" ")
+    .toLowerCase();
+  return /part\s?135|far\s?135|on-demand|charter/.test(haystack);
+}
+
+function detectPart121(job: any): boolean {
+  if (job.has_part_121 === true) return true;
+  if (job.has_part_121 === false) return false;
+  const haystack = [job.notes, ...(Array.isArray(job.type_ratings) ? job.type_ratings : [])]
+    .join(" ")
+    .toLowerCase();
+  return /part\s?121|far\s?121|airline|air carrier/.test(haystack);
+}
+
 export default async function JobDetailPage({
   params,
 }: {
@@ -210,6 +228,22 @@ export default async function JobDetailPage({
                       initialCategory={job?.category ?? null}
                     />
                   </div>
+
+                  {(detectPart135(job) || detectPart121(job)) && (
+                    <div className="md:col-span-4 flex items-center gap-2">
+                      <span className="text-gray-500">Experience:</span>
+                      {detectPart135(job) && (
+                        <span className="inline-block rounded-full border border-orange-200 bg-orange-50 text-orange-700 px-2 py-0.5 text-xs font-semibold">
+                          Part 135
+                        </span>
+                      )}
+                      {detectPart121(job) && (
+                        <span className="inline-block rounded-full border border-indigo-200 bg-indigo-50 text-indigo-700 px-2 py-0.5 text-xs font-semibold">
+                          Part 121
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </>
               )}
 

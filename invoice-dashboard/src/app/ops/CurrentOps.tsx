@@ -3,10 +3,12 @@
 import dynamic from "next/dynamic";
 import { useState, useEffect, useCallback, useMemo, Fragment } from "react";
 import type { Flight, OpsAlert } from "@/lib/opsApi";
+import type { AdvertisedPriceRow } from "@/lib/types";
 import type { AircraftPosition, FlightInfoMap } from "@/app/maintenance/MapView";
 import { fmtTimeInTz, type TzMode } from "@/lib/airportTimezones";
 import { getAirportInfo } from "@/lib/airportCoords";
 import { TRIPS } from "@/lib/maintenanceData";
+import { buildBestRateByAirport } from "@/lib/fuelLookup";
 
 const OpsMap = dynamic(() => import("./OpsMap"), {
   ssr: false,
@@ -363,7 +365,7 @@ type TripSalesperson = {
   customer: string | null;
 };
 
-export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Flight[]; onSwitchToDuty?: (tail?: string) => void }) {
+export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices = [] }: { flights: Flight[]; onSwitchToDuty?: (tail?: string) => void; advertisedPrices?: AdvertisedPriceRow[] }) {
   const [enRouteAircraft, setAircraftPosition] = useState<AircraftPosition[]>([]);
   const [flightInfo, setFlightInfo] = useState<Map<string, FlightInfoMap>>(new Map());
   const [tripSalespersons, setTripSalespersons] = useState<TripSalesperson[]>([]);
@@ -731,6 +733,9 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
   // Per-tail duty summary (24hr flight time + crew rest)
   const tailDuty = useMemo(() => computeTailDuty(flights, flightInfo), [flights, flightInfo]);
 
+  // Best advertised fuel rate per airport
+  const bestFuelByAirport = useMemo(() => buildBestRateByAirport(advertisedPrices), [advertisedPrices]);
+
   // Count airborne vs on-ground
   const airborne = enRouteAircraft.length;
   const onGround = parkedAircraft.length;
@@ -1067,6 +1072,19 @@ export default function CurrentOps({ flights, onSwitchToDuty }: { flights: Fligh
                                     <div className="h-full bg-blue-500 rounded-full" style={{ width: `${fi.progress_percent}%` }} />
                                   </div>
                                 )}
+                                {(() => {
+                                  const arrCode = f.arrival_icao?.toUpperCase();
+                                  if (!arrCode) return null;
+                                  const rate = bestFuelByAirport.get(arrCode) ?? bestFuelByAirport.get(arrCode.length === 4 && arrCode.startsWith("K") ? arrCode.slice(1) : `K${arrCode}`);
+                                  if (!rate) return null;
+                                  return (
+                                    <div className="ml-auto border-l border-gray-200 pl-3 text-right shrink-0">
+                                      <div className="text-xs font-semibold text-gray-600">{rate.fbo ?? rate.vendor}</div>
+                                      {rate.fbo && <div className="text-[10px] text-gray-400">{rate.vendor}</div>}
+                                      <div className="text-xs font-mono font-medium text-gray-900">${rate.price.toFixed(2)}</div>
+                                    </div>
+                                  );
+                                })()}
                                 {(() => {
                                   const schedMs = new Date(f.scheduled_departure).getTime();
                                   const now = Date.now();

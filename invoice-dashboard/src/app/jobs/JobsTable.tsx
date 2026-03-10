@@ -94,6 +94,24 @@ function hasChallenger(j: any): boolean {
   });
 }
 
+function hasPart135(j: any): boolean {
+  if (j.has_part_135 === true) return true;
+  if (j.has_part_135 === false) return false;
+  const haystack = [j.notes, ...(Array.isArray(j.type_ratings) ? j.type_ratings : [])]
+    .join(" ")
+    .toLowerCase();
+  return /part\s?135|far\s?135|on-demand|charter/.test(haystack);
+}
+
+function hasPart121(j: any): boolean {
+  if (j.has_part_121 === true) return true;
+  if (j.has_part_121 === false) return false;
+  const haystack = [j.notes, ...(Array.isArray(j.type_ratings) ? j.type_ratings : [])]
+    .join(" ")
+    .toLowerCase();
+  return /part\s?121|far\s?121|airline|air carrier/.test(haystack);
+}
+
 function picGateShort(status: string | null, met: boolean | null | undefined): { label: string; cls: string } | null {
   if (status) {
     const s = status.toLowerCase();
@@ -179,6 +197,8 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
   const [citation, setCitation] = useState("ALL");
   const [challenger, setChallenger] = useState("ALL");
   const [skillbridge, setSkillbridge] = useState("ALL");
+  const [part135, setPart135] = useState("ALL");
+  const [part121, setPart121] = useState("ALL");
   const [showRejected, setShowRejected] = useState(false);
   const [page, setPage] = useState(0);
 
@@ -234,6 +254,12 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
       if (skillbridge === "YES" && !hasSkillbridge(j)) return false;
       if (skillbridge === "NO" && hasSkillbridge(j)) return false;
 
+      if (part135 === "YES" && !hasPart135(j)) return false;
+      if (part135 === "NO" && hasPart135(j)) return false;
+
+      if (part121 === "YES" && !hasPart121(j)) return false;
+      if (part121 === "NO" && hasPart121(j)) return false;
+
       if (!query) return true;
 
       const haystack = [
@@ -253,12 +279,12 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
 
       return haystack.includes(query);
     });
-  }, [initialJobs, q, category, softGate, citation, challenger, skillbridge, showRejected]);
+  }, [initialJobs, q, category, softGate, citation, challenger, skillbridge, part135, part121, showRejected]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const paged = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
 
-  const hasActiveFilters = category !== "ALL" || softGate !== "ALL" || citation !== "ALL" || challenger !== "ALL" || skillbridge !== "ALL" || showRejected || q !== "";
+  const hasActiveFilters = category !== "ALL" || softGate !== "ALL" || citation !== "ALL" || challenger !== "ALL" || skillbridge !== "ALL" || part135 !== "ALL" || part121 !== "ALL" || showRejected || q !== "";
 
   const clear = () => {
     setQ("");
@@ -267,6 +293,8 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
     setCitation("ALL");
     setChallenger("ALL");
     setSkillbridge("ALL");
+    setPart135("ALL");
+    setPart121("ALL");
     setShowRejected(false);
     setPage(0);
   };
@@ -319,6 +347,8 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
           <TogglePill label="CE-750" value={citation} onChange={(v) => { setCitation(v); setPage(0); }} />
           <TogglePill label="CL-300" value={challenger} onChange={(v) => { setChallenger(v); setPage(0); }} />
           <TogglePill label="SkillBridge" value={skillbridge} onChange={(v) => { setSkillbridge(v); setPage(0); }} />
+          <TogglePill label="Part 135" value={part135} onChange={(v) => { setPart135(v); setPage(0); }} />
+          <TogglePill label="Airline" value={part121} onChange={(v) => { setPart121(v); setPage(0); }} />
           <div className="w-px h-5 bg-gray-200" />
           <button
             type="button"
@@ -424,6 +454,16 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
                         {hasSkillbridge(j) && (
                           <span className="inline-block rounded border border-purple-200 bg-purple-50 text-purple-700 px-1.5 py-0.5 text-[10px] font-semibold">
                             SB
+                          </span>
+                        )}
+                        {hasPart135(j) && (
+                          <span className="inline-block rounded border border-orange-200 bg-orange-50 text-orange-700 px-1.5 py-0.5 text-[10px] font-semibold">
+                            135
+                          </span>
+                        )}
+                        {hasPart121(j) && (
+                          <span className="inline-block rounded border border-indigo-200 bg-indigo-50 text-indigo-700 px-1.5 py-0.5 text-[10px] font-semibold">
+                            121
                           </span>
                         )}
                       </div>
