@@ -82,13 +82,16 @@ export async function POST(req: NextRequest) {
     }
     rows = parseEverestCSV(lines, headerFields, vendorOverride ?? detectedVendor, weekStart, batchId);
   } else if (format === "wfs") {
-    // World Fuel Services format — each row has its own Exp Date
+    // World Fuel Services format — use filename date as week_start (per-row Exp Date may be stale)
     detectedVendor = "World Fuel Services";
-    rows = parseWfsCSV(lines, headerFields, vendorOverride ?? detectedVendor, weekStartRaw, batchId);
+    const wfsWeekStart = resolveWeekStart(weekStartRaw, file.name);
+    rows = parseWfsCSV(lines, headerFields, vendorOverride ?? detectedVendor, wfsWeekStart ?? weekStartRaw, batchId);
   } else if (format === "avfuel") {
-    // Avfuel/BAKAV format — each row has its own EFF DATE
+    // Avfuel/BAKAV format — use filename date as week_start so all rows share the same week
+    // (individual EFF DATEs may be stale if pricing hasn't changed)
     detectedVendor = "Avfuel";
-    rows = parseAvfuelCSV(lines, headerFields, vendorOverride ?? detectedVendor, weekStartRaw, batchId);
+    const avfuelWeekStart = resolveWeekStart(weekStartRaw, file.name);
+    rows = parseAvfuelCSV(lines, headerFields, vendorOverride ?? detectedVendor, avfuelWeekStart ?? weekStartRaw, batchId);
   } else if (format === "titan") {
     // Titan Fuels format — no date column, extract from filename
     detectedVendor = "Titan Fuels";

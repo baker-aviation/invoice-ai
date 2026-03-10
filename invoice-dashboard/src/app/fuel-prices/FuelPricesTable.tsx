@@ -582,6 +582,7 @@ export default function FuelPricesTable({
   const [viewMode, setViewMode] = useState<ViewMode>("all");
   const [showImportModal, setShowImportModal] = useState(false);
   const [volumeGallons, setVolumeGallons] = useState<string>("");
+  const [compareJetFbo, setCompareJetFbo] = useState(false);
 
   // Document IDs that serve as baselines for other rows
   const baselineDocIds = useMemo(() => {
@@ -815,6 +816,25 @@ export default function FuelPricesTable({
       rows = rows.filter((r) => variants.has(r.airport));
     }
     if (vendorFilter) rows = rows.filter((r) => r.fboVendor === vendorFilter);
+    if (compareJetFbo) {
+      // Find airports where Jet Aviation has pricing
+      const jetAirports = new Set(
+        rows
+          .filter((r) => r.fboVendor === "Jet Aviation")
+          .map((r) => r.airport),
+      );
+      // Filter to those airports only
+      rows = rows.filter((r) => jetAirports.has(r.airport));
+      // Keep only Jet Aviation, Atlantic (by fboName or vendor), and Signature rows
+      rows = rows.filter((r) => {
+        if (r.fboVendor === "Jet Aviation") return true;
+        if (r.fboVendor === "Signature Flight Support") return true;
+        // Atlantic Aviation may appear as fboName via Avfuel
+        const name = (r.fboName ?? "").toLowerCase();
+        if (name.includes("atlantic")) return true;
+        return false;
+      });
+    }
     if (search) {
       const q = search.toLowerCase();
       rows = rows.filter((r) =>
@@ -824,7 +844,7 @@ export default function FuelPricesTable({
       );
     }
     return rows;
-  }, [advVsActual, airportFilter, vendorFilter, search]);
+  }, [advVsActual, airportFilter, vendorFilter, search, compareJetFbo]);
 
   const pageRows = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
@@ -943,14 +963,28 @@ export default function FuelPricesTable({
         )}
 
         {viewMode === "advertised" && (
-          <input
-            type="number"
-            placeholder="Gallons (e.g. 500)"
-            value={volumeGallons}
-            onChange={(e) => { setVolumeGallons(e.target.value); setPage(0); }}
-            className="rounded-md border px-3 py-1.5 text-sm bg-white w-44"
-            min={1}
-          />
+          <>
+            <input
+              type="number"
+              placeholder="Gallons (e.g. 500)"
+              value={volumeGallons}
+              onChange={(e) => { setVolumeGallons(e.target.value); setPage(0); }}
+              className="rounded-md border px-3 py-1.5 text-sm bg-white w-44"
+              min={1}
+            />
+            <button
+              type="button"
+              onClick={() => { setCompareJetFbo((v) => !v); setPage(0); }}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md border transition-colors ${
+                compareJetFbo
+                  ? "bg-indigo-100 text-indigo-800 border-indigo-300"
+                  : "bg-white text-gray-600 border-gray-200 hover:border-gray-400 hover:bg-gray-50"
+              }`}
+              title="Compare Jet Aviation, Atlantic, and Signature at airports where Jet Aviation has pricing"
+            >
+              Compare FBOs
+            </button>
+          </>
         )}
 
         <input
