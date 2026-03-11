@@ -4,6 +4,10 @@
     {
       "path": "/api/cron/trip-notifications",
       "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/fuel-prices/advertised/pull-mailbox",
+      "schedule": "*/30 * * * *"
     }
   ]
 }

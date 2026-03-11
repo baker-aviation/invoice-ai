@@ -327,3 +327,27 @@ export async function fetchMxNotes(): Promise<MxNote[]> {
     };
   });
 }
+
+// ---------------------------------------------------------------------------
+// Aircraft Tags — conformity / long-term MX tags
+// ---------------------------------------------------------------------------
+
+export type AircraftTag = {
+  id: string;
+  tail_number: string;
+  tag: string;
+  note: string | null;
+  created_by: string | null;
+  created_at: string;
+};
+
+export async function fetchAircraftTags(): Promise<AircraftTag[]> {
+  const supa = createServiceClient();
+  const { data, error } = await supa
+    .from("aircraft_tags")
+    .select("id, tail_number, tag, note, created_by, created_at")
+    .order("created_at", { ascending: false });
+
+  if (error || !data) return [];
+  return data as AircraftTag[];
+}

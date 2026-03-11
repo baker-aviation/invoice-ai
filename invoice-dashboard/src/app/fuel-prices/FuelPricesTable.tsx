@@ -918,8 +918,91 @@ export default function FuelPricesTable({
   const activeTotalPages = viewMode === "compare" ? compTotalPages : viewMode === "advertised" ? advTotalPages : totalPages;
   const activeCount = viewMode === "compare" ? filteredComparisons.length : viewMode === "advertised" ? filteredAdvVsActual.length : filtered.length;
 
+  // ─── Price sheet health indicator ───────────────────────────────────────────
+  const EXPECTED_VENDORS = ["AEG Fuels", "Atlantic Aviation", "Avfuel", "EVO", "Everest Fuel", "Jet Aviation", "Signature Flight Support", "Titan Fuels", "World Fuel Services"];
+
+  const vendorHealth = useMemo(() => {
+    const now = new Date();
+    const byVendor = new Map<string, { latestWeek: string; rowCount: number; latestUpload: string }>();
+    for (const adv of advertisedPrices) {
+      const existing = byVendor.get(adv.fbo_vendor);
+      if (!existing || adv.week_start > existing.latestWeek) {
+        byVendor.set(adv.fbo_vendor, {
+          latestWeek: adv.week_start,
+          rowCount: (existing?.rowCount ?? 0) + 1,
+          latestUpload: adv.created_at > (existing?.latestUpload ?? "") ? adv.created_at : (existing?.latestUpload ?? adv.created_at),
+        });
+      } else {
+        existing.rowCount++;
+        if (adv.created_at > existing.latestUpload) existing.latestUpload = adv.created_at;
+      }
+    }
+    return EXPECTED_VENDORS.map((vendor) => {
+      const info = byVendor.get(vendor);
+      if (!info) return { vendor, status: "missing" as const, latestWeek: null, daysOld: null, rowCount: 0 };
+      const weekDate = new Date(info.latestWeek + "T12:00:00");
+      const daysOld = Math.floor((now.getTime() - weekDate.getTime()) / (1000 * 60 * 60 * 24));
+      const status = daysOld <= 7 ? "current" as const : daysOld <= 14 ? "aging" as const : "stale" as const;
+      return { vendor, status, latestWeek: info.latestWeek, daysOld, rowCount: info.rowCount };
+    });
+  }, [advertisedPrices]);
+
+  const healthCounts = useMemo(() => {
+    let current = 0, aging = 0, missing = 0;
+    for (const v of vendorHealth) {
+      if (v.status === "current") current++;
+      else if (v.status === "aging") aging++;
+      else missing++;
+    }
+    return { current, aging, missing };
+  }, [vendorHealth]);
+
   return (
     <div className="space-y-4">
+      {/* Price sheet health bar */}
+      <div className="rounded-lg border bg-white px-4 py-3 shadow-sm">
+        <div className="flex items-center gap-3 mb-2">
+          <span className="text-xs font-semibold text-gray-700">Price Sheet Health</span>
+          <span className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full ${
+            healthCounts.missing + healthCounts.aging === 0
+              ? "bg-green-100 text-green-700"
+              : healthCounts.missing > 0
+              ? "bg-red-100 text-red-700"
+              : "bg-amber-100 text-amber-700"
+          }`}>
+            {healthCounts.current}/{EXPECTED_VENDORS.length} current
+          </span>
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {vendorHealth.map(({ vendor, status, latestWeek, rowCount }) => (
+            <span
+              key={vendor}
+              title={status === "missing"
+                ? `${vendor}: No data uploaded`
+                : `${vendor}: ${rowCount} prices, week of ${fmtDate(latestWeek)}`}
+              className={`inline-flex items-center gap-1 px-2 py-0.5 text-[11px] rounded-full border ${
+                status === "current"
+                  ? "bg-green-50 text-green-700 border-green-200"
+                  : status === "aging"
+                  ? "bg-amber-50 text-amber-700 border-amber-200"
+                  : status === "stale"
+                  ? "bg-red-50 text-red-700 border-red-200"
+                  : "bg-gray-50 text-gray-400 border-gray-200 border-dashed"
+              }`}
+            >
+              <span className={`inline-block w-1.5 h-1.5 rounded-full ${
+                status === "current" ? "bg-green-400"
+                  : status === "aging" ? "bg-amber-400"
+                  : status === "stale" ? "bg-red-400"
+                  : "bg-gray-300"
+              }`} />
+              {vendor.replace("Flight Support", "").replace("Aviation", "Avn").replace("Services", "Svc").trim()}
+              {latestWeek && <span className="opacity-60">{fmtDate(latestWeek)}</span>}
+            </span>
+          ))}
+        </div>
+      </div>
+
       {/* View mode tabs + source filters */}
       <div className="flex flex-wrap items-center gap-4">
         {/* View toggle */}
