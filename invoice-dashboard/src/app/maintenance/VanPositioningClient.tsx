@@ -2578,13 +2578,11 @@ export default function VanPositioningClient({ initialFlights, mxNotes }: { init
   }, [mxNotes]);
 
   // ── MX Conflict Detection ──────────────────────────────────────────────
-  // Flag flights that conflict with planned maintenance events:
-  // - Flight departs FROM the MX airport during the MX window (takes aircraft away)
-  // - Flight arrives at a DIFFERENT airport during the MX window (aircraft won't be at MX location)
+  // For each MX note, check if the aircraft visits the MX airport at any point
+  // during the MX window. If it never touches that airport → alert.
   type MxConflict = {
     tail: string;
     mxNote: MxNote;
-    flight: Flight;
     reason: string;
   };
 
@@ -2597,37 +2595,49 @@ export default function VanPositioningClient({ initialFlights, mxNotes }: { init
     for (const note of mxNotes) {
       if (!note.tail_number || !note.start_time) continue;
       const mxStart = new Date(note.start_time).getTime();
-      const mxEnd = note.end_time ? new Date(note.end_time).getTime() + 24 * 60 * 60 * 1000 : mxStart + 24 * 60 * 60 * 1000; // end of end_time day
+      const mxEnd = note.end_time ? new Date(note.end_time).getTime() + 24 * 60 * 60 * 1000 : mxStart + 24 * 60 * 60 * 1000;
       // Only check MX within 7 days
       if (mxStart - now > weekMs) continue;
       const mxIcao = note.airport_icao?.toUpperCase();
+      if (!mxIcao) continue;
 
-      for (const f of activeFlights) {
-        if (f.tail_number !== note.tail_number) continue;
+      // Check if the aircraft is ever at the MX airport during the window
+      const tailFlights = activeFlights.filter((f) => f.tail_number === note.tail_number);
+      const windowFlights = tailFlights.filter((f) => {
         const depTime = new Date(f.scheduled_departure).getTime();
         const arrTime = f.scheduled_arrival ? new Date(f.scheduled_arrival).getTime() : depTime;
+        // Flight overlaps with MX window
+        return depTime < mxEnd && arrTime > mxStart;
+      });
 
-        // Flight overlaps with MX window?
-        if (depTime >= mxEnd || arrTime <= mxStart) continue;
+      // Does the aircraft arrive at or depart from the MX airport during the window?
+      const touchesMxAirport = windowFlights.some((f) =>
+        f.arrival_icao?.toUpperCase() === mxIcao || f.departure_icao?.toUpperCase() === mxIcao
+      );
 
-        // Flight departs FROM MX airport — takes aircraft away during MX
-        if (mxIcao && f.departure_icao?.toUpperCase() === mxIcao) {
-          conflicts.push({
-            tail: note.tail_number,
-            mxNote: note,
-            flight: f,
-            reason: `departs ${f.departure_icao} during MX`,
-          });
+      // Also check: if no flights in window, where was the aircraft last?
+      // (it might already be sitting at the MX airport)
+      let alreadyThere = false;
+      if (windowFlights.length === 0) {
+        const priorFlights = tailFlights
+          .filter((f) => new Date(f.scheduled_departure).getTime() < mxStart)
+          .sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure));
+        const lastFlight = priorFlights[priorFlights.length - 1];
+        if (lastFlight?.arrival_icao?.toUpperCase() === mxIcao) {
+          alreadyThere = true;
         }
-        // Flight arrives at different airport — aircraft not at MX location
-        else if (mxIcao && f.arrival_icao?.toUpperCase() !== mxIcao) {
-          conflicts.push({
-            tail: note.tail_number,
-            mxNote: note,
-            flight: f,
-            reason: `arrives ${f.arrival_icao} (MX at ${note.airport_icao})`,
-          });
-        }
+      }
+
+      if (!touchesMxAirport && !alreadyThere) {
+        // Figure out where the aircraft actually is during the window
+        const locations = windowFlights.map((f) => f.arrival_icao).filter(Boolean);
+        const lastLoc = locations[locations.length - 1] ?? "unknown";
+        const mxDate = new Date(note.start_time!).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+        conflicts.push({
+          tail: note.tail_number,
+          mxNote: note,
+          reason: `not at ${note.airport_icao} — scheduled at ${lastLoc} (MX: ${mxDate})`,
+        });
       }
     }
     return conflicts;
@@ -2918,9 +2928,6 @@ export default function VanPositioningClient({ initialFlights, mxNotes }: { init
         {mxConflicts.length > 0 && (
           <div className="flex flex-col gap-2 ml-[52px]">
             {mxConflicts.map((c, i) => {
-              const depTime = new Date(c.flight.scheduled_departure).toLocaleString("en-US", {
-                month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC",
-              });
               const mxDateStr = c.mxNote.start_time
                 ? new Date(c.mxNote.start_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })
                 : "";
@@ -2932,12 +2939,9 @@ export default function VanPositioningClient({ initialFlights, mxNotes }: { init
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-xs font-bold text-red-800">{c.tail}</span>
                     <span className="text-xs text-red-600">{c.reason}</span>
-                    <span className="text-[11px] text-gray-500 ml-auto shrink-0">{depTime}Z</span>
                   </div>
-                  <div className="flex items-center gap-2 mt-1 text-[11px] text-gray-600">
-                    <span>Flight: {c.flight.departure_icao} → {c.flight.arrival_icao}</span>
-                    <span className="text-gray-300">|</span>
-                    <span className="text-orange-600">MX: {c.mxNote.body} ({mxDateStr}{mxEndStr})</span>
+                  <div className="text-[11px] text-orange-600 mt-1">
+                    MX: {c.mxNote.body} ({mxDateStr}{mxEndStr})
                   </div>
                 </div>
               );
