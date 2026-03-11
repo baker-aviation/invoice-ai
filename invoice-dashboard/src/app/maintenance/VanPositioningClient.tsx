@@ -2540,6 +2540,18 @@ export default function VanPositioningClient({ initialFlights, mxNotes }: { init
   const [viewMode, setViewMode] = useState<"map" | "list">("map");
   const [selectedVan, setSelectedVan] = useState<number | null>(null);
   const [mxNotesOpen, setMxNotesOpen] = useState(false);
+  const [dismissedMxIds, setDismissedMxIds] = useState<Set<string>>(new Set());
+
+  const dismissMxNote = useCallback(async (id: string) => {
+    // Optimistic UI update
+    setDismissedMxIds((prev) => new Set(prev).add(id));
+    try {
+      await fetch(`/api/ops/alerts/${id}/acknowledge`, { method: "POST" });
+    } catch {
+      // Revert on failure
+      setDismissedMxIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
+    }
+  }, []);
   const [schedTypeFilter, setSchedTypeFilter] = useState<string>("all");
 
   const selectedDate = dates[dayIdx];
@@ -2961,7 +2973,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes }: { init
               !
             </div>
             <div className="text-base font-bold text-orange-800 flex-1">
-              Maintenance Notes ({mxNotes.length})
+              Maintenance Notes ({(mxNotes ?? []).filter((n) => !dismissedMxIds.has(n.id)).length})
             </div>
             <svg
               className={`w-5 h-5 text-orange-600 transition-transform ${mxNotesOpen ? "rotate-180" : ""}`}
@@ -2972,7 +2984,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes }: { init
           </button>
           {mxNotesOpen && (
             <div className="flex flex-col gap-2 ml-[52px] mt-2">
-              {mxNotes.map((note) => (
+              {(mxNotes ?? []).filter((n) => !dismissedMxIds.has(n.id)).map((note) => (
                 <div key={note.id} className="bg-white border border-orange-200 rounded-lg px-3 py-2">
                   <div className="flex items-center gap-2">
                     <span className="text-xs font-bold text-orange-800">{note.tail_number}</span>
@@ -2983,6 +2995,13 @@ export default function VanPositioningClient({ initialFlights, mxNotes }: { init
                         {note.end_time && ` – ${new Date(note.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`}
                       </span>
                     )}
+                    <button
+                      onClick={(e) => { e.stopPropagation(); dismissMxNote(note.id); }}
+                      className="text-gray-400 hover:text-red-600 text-xs ml-2 shrink-0"
+                      title="Dismiss"
+                    >
+                      &times;
+                    </button>
                   </div>
                   <div className="text-sm text-gray-700 mt-0.5">{note.body}</div>
                 </div>
