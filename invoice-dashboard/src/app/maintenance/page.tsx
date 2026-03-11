@@ -7,7 +7,7 @@ import VanPositioningClient from "./VanPositioningClient";
 
 export default async function MaintenancePage() {
   const [flightData, mxNotes, aircraftTags] = await Promise.all([
-    fetchFlights({ lookahead_hours: 72, lookback_hours: 168 }).catch(() => ({
+    fetchFlights({ lookahead_hours: 720, lookback_hours: 168 }).catch(() => ({
       ok: false,
       flights: [],
       count: 0,
