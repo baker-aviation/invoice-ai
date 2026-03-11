@@ -94,3 +94,30 @@ CREATE POLICY "Service role full access on airport_aliases"
 ALTER VIEW public.latest_parsed_invoices SET (security_invoker = on);
 ALTER VIEW public.job_unparsed_files SET (security_invoker = on);
 ALTER VIEW public.actionable_alerts SET (security_invoker = on);
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- PART 3: Fuel mailbox processed messages tracking
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS public.fuel_mailbox_processed (
+  id           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  message_id   TEXT NOT NULL UNIQUE,
+  subject      TEXT,
+  received_at  TIMESTAMPTZ,
+  sender       TEXT,
+  attachments_found  INT DEFAULT 0,
+  attachments_parsed INT DEFAULT 0,
+  status       TEXT NOT NULL DEFAULT 'pending',  -- no_csv, parsed, failed
+  details      JSONB,
+  created_at   TIMESTAMPTZ DEFAULT now()
+);
+
+ALTER TABLE public.fuel_mailbox_processed ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Authenticated users can read fuel_mailbox_processed"
+  ON public.fuel_mailbox_processed FOR SELECT
+  TO authenticated USING (true);
+
+CREATE POLICY "Service role full access on fuel_mailbox_processed"
+  ON public.fuel_mailbox_processed FOR ALL
+  TO service_role USING (true) WITH CHECK (true);
