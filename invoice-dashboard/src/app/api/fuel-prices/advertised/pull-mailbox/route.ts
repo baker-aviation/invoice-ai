@@ -90,7 +90,13 @@ async function handlePull(req: NextRequest) {
         try {
           const csvText = await downloadAttachmentText(token, msg.id, att.id, att.contentBytes);
           const batchId = `auto-${Date.now()}-fuel-mailbox`;
-          const parsed = parseFuelCSV(csvText, att.name, batchId);
+          let parsed = parseFuelCSV(csvText, att.name, batchId);
+
+          // If week_start couldn't be determined from filename, fall back to email received date
+          if (parsed.error?.includes("week_start")) {
+            const emailDate = msg.receivedDateTime?.split("T")[0] ?? null;
+            parsed = parseFuelCSV(csvText, att.name, batchId, null, emailDate);
+          }
 
           if (parsed.error) {
             fileResults.push({ name: att.name, vendor: parsed.vendor, format: parsed.format, rows: 0, error: parsed.error });
