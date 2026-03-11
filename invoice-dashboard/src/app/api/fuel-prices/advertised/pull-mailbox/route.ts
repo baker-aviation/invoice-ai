@@ -5,7 +5,7 @@ import { parseFuelCSV } from "@/lib/fuelParsers";
 const FUEL_MAILBOX = "fuel@baker-aviation.com";
 
 /**
- * POST /api/fuel-prices/advertised/pull-mailbox
+ * GET|POST /api/fuel-prices/advertised/pull-mailbox
  *
  * Pulls new emails from fuel@baker-aviation.com, downloads CSV attachments,
  * auto-detects vendor format, parses, and upserts into fbo_advertised_prices.
@@ -15,15 +15,32 @@ const FUEL_MAILBOX = "fuel@baker-aviation.com";
  *   max_messages (default 50) — max emails to process
  *
  * Requires MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET env vars.
- * Secured by CRON_SECRET header check (for Vercel Cron) or service auth.
+ * Secured by CRON_SECRET header check (Vercel Cron sends this automatically).
  */
-export async function POST(req: NextRequest) {
-  // Auth: check CRON_SECRET or internal service token
-  const authHeader = req.headers.get("authorization");
+
+function checkAuth(req: NextRequest): NextResponse | null {
   const cronSecret = process.env.CRON_SECRET;
-  if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
+  if (!cronSecret) return NextResponse.json({ error: "CRON_SECRET not configured" }, { status: 503 });
+  const authHeader = req.headers.get("authorization");
+  if (authHeader !== `Bearer ${cronSecret}`) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+  return null;
+}
+
+// Vercel Cron calls GET
+export async function GET(req: NextRequest) {
+  return handlePull(req);
+}
+
+// Manual triggers use POST
+export async function POST(req: NextRequest) {
+  return handlePull(req);
+}
+
+async function handlePull(req: NextRequest) {
+  const authError = checkAuth(req);
+  if (authError) return authError;
 
   const lookbackMinutes = Number(req.nextUrl.searchParams.get("lookback_minutes") || "120");
   const maxMessages = Number(req.nextUrl.searchParams.get("max_messages") || "50");
