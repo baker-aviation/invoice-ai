@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic";
 
 import { Topbar } from "@/components/Topbar";
 import { AutoRefresh } from "@/components/AutoRefresh";
-import { fetchFlights, fetchMxNotes, fetchAircraftTags } from "@/lib/opsApi";
+import { fetchFlights, fetchMxNotes } from "@/lib/opsApi";
 import { fetchAdvertisedPrices } from "@/lib/invoiceApi";
 import { createClient } from "@/lib/supabase/server";
 import OpsTabs from "./OpsTabs";
@@ -11,14 +11,13 @@ export default async function OpsPage() {
   let error: string | null = null;
   // lookback 48h so "Today" filter never loses earlier flights as the UTC day progresses,
   // and duty tracking can see yesterday's legs for rolling-24hr calculations.
-  const [data, advertisedPrices, mxNotes, aircraftTags, supabase] = await Promise.all([
+  const [data, advertisedPrices, mxNotes, supabase] = await Promise.all([
     fetchFlights({ lookahead_hours: 720, lookback_hours: 48 }).catch((e) => {
       error = String(e);
       return { ok: false, flights: [] as any[], count: 0, error: null as string | null };
     }),
     fetchAdvertisedPrices().catch(() => []),
     fetchMxNotes().catch(() => []),
-    fetchAircraftTags().catch(() => []),
     createClient(),
   ]);
 
@@ -39,7 +38,7 @@ export default async function OpsPage() {
           <strong>API error:</strong> {displayError}
         </div>
       )}
-      <OpsTabs flights={data.flights} bakerPprAirports={bakerPprAirports} advertisedPrices={advertisedPrices} mxNotes={mxNotes} aircraftTags={aircraftTags} />
+      <OpsTabs flights={data.flights} bakerPprAirports={bakerPprAirports} advertisedPrices={advertisedPrices} mxNotes={mxNotes} />
     </>
   );
 }

@@ -2,7 +2,7 @@
 
 import dynamic from "next/dynamic";
 import { useState, useEffect, useCallback, useMemo, Fragment } from "react";
-import type { Flight, OpsAlert, MxNote, AircraftTag } from "@/lib/opsApi";
+import type { Flight, OpsAlert, MxNote } from "@/lib/opsApi";
 import type { AdvertisedPriceRow } from "@/lib/types";
 import { FALLBACK_TAILS } from "@/lib/maintenanceData";
 import type { AircraftPosition, FlightInfoMap } from "@/app/maintenance/MapView";
@@ -375,7 +375,7 @@ export type LongTermMxAircraft = {
   endDate: string | null;
 };
 
-export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices = [], mxNotes = [], aircraftTags = [] }: { flights: Flight[]; onSwitchToDuty?: (tail?: string) => void; advertisedPrices?: AdvertisedPriceRow[]; mxNotes?: MxNote[]; aircraftTags?: AircraftTag[] }) {
+export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices = [], mxNotes = [] }: { flights: Flight[]; onSwitchToDuty?: (tail?: string) => void; advertisedPrices?: AdvertisedPriceRow[]; mxNotes?: MxNote[] }) {
   const [enRouteAircraft, setAircraftPosition] = useState<AircraftPosition[]>([]);
   const [flightInfo, setFlightInfo] = useState<Map<string, FlightInfoMap>>(new Map());
   const [tripSalespersons, setTripSalespersons] = useState<TripSalesperson[]>([]);
@@ -390,53 +390,6 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
   const [tzMode, setTzMode] = useState<TzMode>("local");
   const [showActual, setShowActual] = useState(false);
   const [viewMode, setViewMode] = useState<"table" | "aircraft">("table");
-
-  // Conformity tags — optimistic local state backed by server data
-  const [localTags, setLocalTags] = useState<Map<string, AircraftTag>>(new Map());
-  const [removedTags, setRemovedTags] = useState<Set<string>>(new Set());
-
-  // Merge server tags + optimistic local adds - optimistic removes
-  const effectiveTags = useMemo(() => {
-    const map = new Map<string, AircraftTag>();
-    for (const t of aircraftTags) {
-      if (!removedTags.has(t.tail_number + "|" + t.tag)) {
-        map.set(t.tail_number + "|" + t.tag, t);
-      }
-    }
-    for (const [key, t] of localTags) {
-      map.set(key, t);
-    }
-    return map;
-  }, [aircraftTags, localTags, removedTags]);
-
-  const toggleConformity = useCallback(async (tail: string) => {
-    const key = tail + "|Conformity";
-    const hasTag = effectiveTags.has(key);
-    if (hasTag) {
-      // Optimistic remove
-      setRemovedTags((prev) => new Set(prev).add(key));
-      setLocalTags((prev) => { const next = new Map(prev); next.delete(key); return next; });
-      try {
-        await fetch("/api/ops/aircraft-tags", {
-          method: "DELETE",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ tail_number: tail, tag: "Conformity" }),
-        });
-      } catch { /* revert on error would be ideal but keeping simple */ }
-    } else {
-      // Optimistic add
-      const optimistic: AircraftTag = { id: "local-" + Date.now(), tail_number: tail, tag: "Conformity", note: null, created_by: null, created_at: new Date().toISOString() };
-      setLocalTags((prev) => new Map(prev).set(key, optimistic));
-      setRemovedTags((prev) => { const next = new Set(prev); next.delete(key); return next; });
-      try {
-        await fetch("/api/ops/aircraft-tags", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ tail_number: tail, tag: "Conformity" }),
-        });
-      } catch { /* ignore */ }
-    }
-  }, [effectiveTags]);
 
   // Shorthand for formatting times — uses departure or arrival airport TZ
   const fmt = useCallback(
@@ -1733,71 +1686,6 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
       </div>
       )}
 
-      {/* ── Long-Term Maintenance section ── */}
-      {longTermMxAircraft.length > 0 && (
-        <div className="space-y-3">
-          <div className="flex items-center gap-2">
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-purple-50 border border-purple-200">
-              <span className="w-2 h-2 rounded-full bg-purple-400" />
-              <span className="text-sm font-semibold text-purple-800">Long-Term Maintenance</span>
-              <span className="text-xs text-purple-500">{longTermMxAircraft.length} aircraft</span>
-            </div>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {longTermMxAircraft.map((ac) => {
-              const hasConformity = effectiveTags.has(ac.tail + "|Conformity");
-              return (
-                <div key={ac.tail} className="rounded-xl border border-gray-200 bg-white overflow-hidden">
-                  <div className="flex items-center justify-between px-4 py-2.5 bg-purple-50/60 border-b border-purple-100">
-                    <span className="font-mono font-bold text-gray-900">{ac.tail}</span>
-                    <div className="flex items-center gap-2">
-                      {ac.airport && (
-                        <span className="text-xs font-mono text-gray-500">{ac.airport}</span>
-                      )}
-                      <span className="px-1.5 py-0.5 text-[10px] font-medium rounded-full bg-purple-100 text-purple-700">
-                        MX
-                      </span>
-                    </div>
-                  </div>
-                  <div className="px-4 py-3 space-y-2">
-                    <div className="text-xs text-gray-600">{ac.reason}</div>
-                    {ac.mxDescription && (
-                      <div className="text-xs text-gray-500 truncate" title={ac.mxDescription}>
-                        {ac.mxDescription}
-                      </div>
-                    )}
-                    {(ac.startDate || ac.endDate) && (
-                      <div className="text-[10px] text-gray-400">
-                        {ac.startDate && new Date(ac.startDate).toLocaleDateString()}
-                        {ac.startDate && ac.endDate && " – "}
-                        {ac.endDate && new Date(ac.endDate).toLocaleDateString()}
-                      </div>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => toggleConformity(ac.tail)}
-                      className={`mt-1 inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-full transition-colors ${
-                        hasConformity
-                          ? "bg-green-100 text-green-700 border border-green-300 hover:bg-green-200"
-                          : "bg-white text-gray-500 border border-gray-300 hover:bg-gray-50 hover:text-gray-700"
-                      }`}
-                    >
-                      {hasConformity ? (
-                        <>
-                          <span className="text-green-600">&#10003;</span>
-                          Conformity
-                        </>
-                      ) : (
-                        "Add Conformity"
-                      )}
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
     </div>
   );
 }

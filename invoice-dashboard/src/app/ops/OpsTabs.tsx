@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { Flight, MxNote, AircraftTag } from "@/lib/opsApi";
+import type { Flight, MxNote } from "@/lib/opsApi";
 import type { AdvertisedPriceRow } from "@/lib/types";
 import CurrentOps from "./CurrentOps";
 import OpsBoard from "./OpsBoard";
@@ -11,7 +11,7 @@ import CrewSwap from "./CrewSwap";
 const TABS = ["Current Ops", "Flight Time & Rest", "NOTAMs & PPRs", "Crew Swap"] as const;
 type Tab = (typeof TABS)[number];
 
-export default function OpsTabs({ flights, bakerPprAirports, advertisedPrices, mxNotes = [], aircraftTags = [] }: { flights: Flight[]; bakerPprAirports: string[]; advertisedPrices: AdvertisedPriceRow[]; mxNotes?: MxNote[]; aircraftTags?: AircraftTag[] }) {
+export default function OpsTabs({ flights, bakerPprAirports, advertisedPrices, mxNotes = [] }: { flights: Flight[]; bakerPprAirports: string[]; advertisedPrices: AdvertisedPriceRow[]; mxNotes?: MxNote[] }) {
   const [tab, setTab] = useState<Tab>("Current Ops");
   const [scrollToTail, setScrollToTail] = useState<string | null>(null);
 
@@ -41,7 +41,7 @@ export default function OpsTabs({ flights, bakerPprAirports, advertisedPrices, m
 
       {/* Tab content */}
       {tab === "Current Ops" ? (
-        <CurrentOps flights={flights} onSwitchToDuty={switchToDuty} advertisedPrices={advertisedPrices} mxNotes={mxNotes} aircraftTags={aircraftTags} />
+        <CurrentOps flights={flights} onSwitchToDuty={switchToDuty} advertisedPrices={advertisedPrices} mxNotes={mxNotes} />
       ) : tab === "Flight Time & Rest" ? (
         <DutyTracker flights={flights} scrollToTail={scrollToTail} onScrollComplete={() => setScrollToTail(null)} />
       ) : tab === "NOTAMs & PPRs" ? (
