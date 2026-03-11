@@ -2910,8 +2910,8 @@ export default function VanPositioningClient({ initialFlights, mxNotes }: { init
           </div>
           <div className={`text-base font-bold ${mxConflicts.length > 0 ? "text-red-800" : "text-green-800"}`}>
             {mxConflicts.length > 0
-              ? `Jawad's Ops Changes that Affect James's Plane (${mxConflicts.length})`
-              : "Jawad's Ops Changes that Affect James's Plane — 0 alerts"
+              ? `Jawad's Ops Changes that Affect James's Plan (${mxConflicts.length})`
+              : "Jawad's Ops Changes that Affect James's Plan — 0 alerts"
             }
           </div>
         </div>
