@@ -2895,16 +2895,27 @@ export default function VanPositioningClient({ initialFlights, mxNotes }: { init
       })()}
 
       {/* ── MX Conflict Alerts ── */}
-      {mxConflicts.length > 0 && (
-        <div className="rounded-xl border-2 border-red-300 bg-red-50 px-5 py-4 shadow-sm space-y-2">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full flex items-center justify-center text-xl shrink-0 bg-red-100 text-red-600 font-bold">
-              !!
-            </div>
-            <div className="text-base font-bold text-red-800">
-              Schedule / MX Conflicts ({mxConflicts.length})
-            </div>
+      <div className={`rounded-xl border-2 px-5 py-4 shadow-sm space-y-2 ${
+        mxConflicts.length > 0
+          ? "border-red-300 bg-red-50"
+          : "border-green-300 bg-green-50"
+      }`}>
+        <div className="flex items-center gap-3">
+          <div className={`w-10 h-10 rounded-full flex items-center justify-center text-xl shrink-0 font-bold ${
+            mxConflicts.length > 0
+              ? "bg-red-100 text-red-600"
+              : "bg-green-100 text-green-600"
+          }`}>
+            {mxConflicts.length > 0 ? "!!" : "\u2713"}
           </div>
+          <div className={`text-base font-bold ${mxConflicts.length > 0 ? "text-red-800" : "text-green-800"}`}>
+            {mxConflicts.length > 0
+              ? `Jawad's Ops Changes that Affect James's Plane (${mxConflicts.length})`
+              : "Jawad's Ops Changes that Affect James's Plane — 0 alerts"
+            }
+          </div>
+        </div>
+        {mxConflicts.length > 0 && (
           <div className="flex flex-col gap-2 ml-[52px]">
             {mxConflicts.map((c, i) => {
               const depTime = new Date(c.flight.scheduled_departure).toLocaleString("en-US", {
@@ -2932,8 +2943,8 @@ export default function VanPositioningClient({ initialFlights, mxNotes }: { init
               );
             })}
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       {/* ── MX Notes from JetInsight (accordion) ── */}
       {mxNotes && mxNotes.length > 0 && (
