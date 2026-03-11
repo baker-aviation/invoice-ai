@@ -1001,10 +1001,17 @@ function SlackShareModal({
 // ---------------------------------------------------------------------------
 
 function MxNoteInline({ notes }: { notes: MxNote[] }) {
-  if (notes.length === 0) return null;
+  // Hide MX notes more than 7 days away
+  const now = Date.now();
+  const weekMs = 7 * 24 * 60 * 60 * 1000;
+  const visible = notes.filter((n) => {
+    if (!n.start_time) return true; // no date = always show
+    return new Date(n.start_time).getTime() - now <= weekMs;
+  });
+  if (visible.length === 0) return null;
   return (
     <div className="ml-8 mt-1 space-y-1">
-      {notes.map((n) => (
+      {visible.map((n) => (
         <div key={n.id} className="flex items-start gap-2 bg-orange-50 border border-orange-200 rounded-lg px-3 py-1.5">
           <span className="text-orange-500 font-bold text-xs mt-0.5 shrink-0">MX</span>
           <div className="min-w-0">
@@ -2570,6 +2577,72 @@ export default function VanPositioningClient({ initialFlights, mxNotes }: { init
     return map;
   }, [mxNotes]);
 
+  // ── MX Conflict Detection ──────────────────────────────────────────────
+  // For each MX note, check if the aircraft visits the MX airport at any point
+  // during the MX window. If it never touches that airport → alert.
+  type MxConflict = {
+    tail: string;
+    mxNote: MxNote;
+    reason: string;
+  };
+
+  const mxConflicts = useMemo<MxConflict[]>(() => {
+    if (!mxNotes || mxNotes.length === 0) return [];
+    const conflicts: MxConflict[] = [];
+    const weekMs = 7 * 24 * 60 * 60 * 1000;
+    const now = Date.now();
+
+    for (const note of mxNotes) {
+      if (!note.tail_number || !note.start_time) continue;
+      const mxStart = new Date(note.start_time).getTime();
+      const mxEnd = note.end_time ? new Date(note.end_time).getTime() + 24 * 60 * 60 * 1000 : mxStart + 24 * 60 * 60 * 1000;
+      // Only check MX within 7 days
+      if (mxStart - now > weekMs) continue;
+      const mxIcao = note.airport_icao?.toUpperCase();
+      if (!mxIcao) continue;
+
+      // Check if the aircraft is ever at the MX airport during the window
+      const tailFlights = activeFlights.filter((f) => f.tail_number === note.tail_number);
+      const windowFlights = tailFlights.filter((f) => {
+        const depTime = new Date(f.scheduled_departure).getTime();
+        const arrTime = f.scheduled_arrival ? new Date(f.scheduled_arrival).getTime() : depTime;
+        // Flight overlaps with MX window
+        return depTime < mxEnd && arrTime > mxStart;
+      });
+
+      // Does the aircraft arrive at or depart from the MX airport during the window?
+      const touchesMxAirport = windowFlights.some((f) =>
+        f.arrival_icao?.toUpperCase() === mxIcao || f.departure_icao?.toUpperCase() === mxIcao
+      );
+
+      // Also check: if no flights in window, where was the aircraft last?
+      // (it might already be sitting at the MX airport)
+      let alreadyThere = false;
+      if (windowFlights.length === 0) {
+        const priorFlights = tailFlights
+          .filter((f) => new Date(f.scheduled_departure).getTime() < mxStart)
+          .sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure));
+        const lastFlight = priorFlights[priorFlights.length - 1];
+        if (lastFlight?.arrival_icao?.toUpperCase() === mxIcao) {
+          alreadyThere = true;
+        }
+      }
+
+      if (!touchesMxAirport && !alreadyThere) {
+        // Figure out where the aircraft actually is during the window
+        const locations = windowFlights.map((f) => f.arrival_icao).filter(Boolean);
+        const lastLoc = locations[locations.length - 1] ?? "unknown";
+        const mxDate = new Date(note.start_time!).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+        conflicts.push({
+          tail: note.tail_number,
+          mxNote: note,
+          reason: `not at ${note.airport_icao} — scheduled at ${lastLoc} (MX: ${mxDate})`,
+        });
+      }
+    }
+    return conflicts;
+  }, [mxNotes, activeFlights]);
+
   // Flights arriving on the selected date (for stats bar) — only active types
   // Use ET date matching so evening flights show on the correct day
   const flightsForDay = useMemo(
@@ -2830,6 +2903,52 @@ export default function VanPositioningClient({ initialFlights, mxNotes }: { init
           </div>
         );
       })()}
+
+      {/* ── MX Conflict Alerts ── */}
+      <div className={`rounded-xl border-2 px-5 py-4 shadow-sm space-y-2 ${
+        mxConflicts.length > 0
+          ? "border-red-300 bg-red-50"
+          : "border-green-300 bg-green-50"
+      }`}>
+        <div className="flex items-center gap-3">
+          <div className={`w-10 h-10 rounded-full flex items-center justify-center text-xl shrink-0 font-bold ${
+            mxConflicts.length > 0
+              ? "bg-red-100 text-red-600"
+              : "bg-green-100 text-green-600"
+          }`}>
+            {mxConflicts.length > 0 ? "!!" : "\u2713"}
+          </div>
+          <div className={`text-base font-bold ${mxConflicts.length > 0 ? "text-red-800" : "text-green-800"}`}>
+            {mxConflicts.length > 0
+              ? `Jawad's Ops Changes that Affect James's Plan (${mxConflicts.length})`
+              : "Jawad's Ops Changes that Affect James's Plan — 0 alerts"
+            }
+          </div>
+        </div>
+        {mxConflicts.length > 0 && (
+          <div className="flex flex-col gap-2 ml-[52px]">
+            {mxConflicts.map((c, i) => {
+              const mxDateStr = c.mxNote.start_time
+                ? new Date(c.mxNote.start_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })
+                : "";
+              const mxEndStr = c.mxNote.end_time && c.mxNote.end_time !== c.mxNote.start_time
+                ? ` – ${new Date(c.mxNote.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`
+                : "";
+              return (
+                <div key={`mx-conflict-${i}`} className="bg-white border border-red-200 rounded-lg px-3 py-2">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs font-bold text-red-800">{c.tail}</span>
+                    <span className="text-xs text-red-600">{c.reason}</span>
+                  </div>
+                  <div className="text-[11px] text-orange-600 mt-1">
+                    MX: {c.mxNote.body} ({mxDateStr}{mxEndStr})
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
 
       {/* ── MX Notes from JetInsight (accordion) ── */}
       {mxNotes && mxNotes.length > 0 && (

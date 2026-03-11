@@ -370,6 +370,7 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
   const [flightInfo, setFlightInfo] = useState<Map<string, FlightInfoMap>>(new Map());
   const [tripSalespersons, setTripSalespersons] = useState<TripSalesperson[]>([]);
   const [visibleTypes, setVisibleTypes] = useState<Set<string>>(DEFAULT_TYPES);
+  const [statusFilter, setStatusFilter] = useState<"all" | "scheduled" | "enroute" | "arrived">("all");
   const [timeRange, setTimeRange] = useState<TimeRange>("Today");
   const [expandedFlights, setExpandedFlights] = useState<Set<string>>(new Set());
   const [localAckedIds, setLocalAckedIds] = useState<Set<string>>(new Set());
@@ -463,7 +464,7 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
   const allTypes = useMemo(() => {
     const types = new Set<string>();
     for (const f of flights) {
-      if (f.flight_type) types.add(f.flight_type);
+      if (f.flight_type && f.flight_type !== "Other") types.add(f.flight_type);
     }
     return [...types].sort();
   }, [flights]);
@@ -475,6 +476,7 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
     return flights
       .filter((f) => {
         const type = f.flight_type || "Other";
+        if (type === "Other") return false;
         if (!visibleTypes.has(type)) return false;
         const dep = new Date(f.scheduled_departure);
         if (dep < start || dep >= end) return false;
@@ -589,6 +591,35 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
     return { displayFlights: all, supersededMap: superseded };
   }, [filteredFlights, flightInfo]);
 
+  // Compute flight status for each displayed flight (used for status filter + rendering)
+  const flightStatusMap = useMemo(() => {
+    const map = new Map<string, "scheduled" | "enroute" | "arrived">();
+    const now = new Date();
+    for (const f of displayFlights) {
+      const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
+      const fi = f.tail_number ? matchFlightInfo(flightInfo, routeKey, f.tail_number, f.departure_icao, f.scheduled_departure) : undefined;
+      const arrivalDate = f.scheduled_arrival ? new Date(f.scheduled_arrival) : null;
+      const arrivalPassed = arrivalDate && arrivalDate < now;
+
+      if (fi?.diverted || supersededMap.has(f.id)) {
+        map.set(f.id, "arrived"); // treat cancelled/diverted as "arrived" bucket
+      } else if (fi?.status?.includes("En Route") || (f.tail_number && holdingTails.has(f.tail_number) && fi?.status?.includes("En Route"))) {
+        map.set(f.id, "enroute");
+      } else if (fi?.status?.includes("Arrived") || fi?.status?.includes("Landed") || fi?.actual_arrival || arrivalPassed) {
+        map.set(f.id, "arrived");
+      } else {
+        map.set(f.id, "scheduled");
+      }
+    }
+    return map;
+  }, [displayFlights, flightInfo, supersededMap, holdingTails]);
+
+  // Apply status filter to displayFlights
+  const statusFilteredFlights = useMemo(() => {
+    if (statusFilter === "all") return displayFlights;
+    return displayFlights.filter((f) => flightStatusMap.get(f.id) === statusFilter);
+  }, [displayFlights, statusFilter, flightStatusMap]);
+
   // Build tail → fleet type lookup from FlightAware data
   const tailFleetType = useMemo(() => {
     const map = new Map<string, string>();
@@ -604,7 +635,7 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
   const flightsByFleetType = useMemo(() => {
     // First group by tail
     const byTail = new Map<string, Flight[]>();
-    for (const f of displayFlights) {
+    for (const f of statusFilteredFlights) {
       const tail = f.tail_number || "Unassigned";
       if (!byTail.has(tail)) byTail.set(tail, []);
       byTail.get(tail)!.push(f);
@@ -627,7 +658,7 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
       (a, b) => (FLEET_ORDER.indexOf(a[0]) === -1 ? 99 : FLEET_ORDER.indexOf(a[0]))
               - (FLEET_ORDER.indexOf(b[0]) === -1 ? 99 : FLEET_ORDER.indexOf(b[0]))
     );
-  }, [displayFlights, tailFleetType]);
+  }, [statusFilteredFlights, tailFleetType]);
 
   function toggleExpanded(flightId: string) {
     setExpandedFlights((prev) => {
@@ -774,7 +805,7 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
             <span className="text-gray-500">{onGround} on ground</span>
           </span>
           <span className="text-gray-400">·</span>
-          <span className="text-gray-400">{displayFlights.length} flights scheduled</span>
+          <span className="text-gray-400">{statusFilteredFlights.length} flights{statusFilter !== "all" ? ` (${statusFilter})` : ""}</span>
         </div>
         {lastUpdate && (
           <span className="ml-auto text-xs text-gray-400">
@@ -925,6 +956,29 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
               </button>
             );
           })}
+        </div>
+
+        <span className="text-gray-300">|</span>
+
+        {/* Status filter */}
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Status:</span>
+          {([["all", "All"], ["scheduled", "Scheduled"], ["enroute", "En Route"], ["arrived", "Arrived"]] as const).map(([val, label]) => (
+            <button
+              key={val}
+              onClick={() => setStatusFilter(val)}
+              className={`px-3 py-1 text-xs font-medium rounded-full transition-all ${
+                statusFilter === val
+                  ? val === "enroute" ? "bg-blue-100 text-blue-700"
+                  : val === "arrived" ? "bg-green-100 text-green-700"
+                  : val === "scheduled" ? "bg-gray-200 text-gray-700"
+                  : "bg-gray-800 text-white"
+                  : "bg-gray-100 text-gray-400 opacity-50"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
         </div>
       </div>
 
@@ -1190,14 +1244,14 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
             </tr>
           </thead>
           <tbody>
-            {displayFlights.length === 0 ? (
+            {statusFilteredFlights.length === 0 ? (
               <tr>
                 <td colSpan={10} className="px-4 py-8 text-center text-gray-400">
                   No flights scheduled for selected filters
                 </td>
               </tr>
             ) : (
-              displayFlights.map((f) => {
+              statusFilteredFlights.map((f) => {
                 // Look up FlightAware info by route-specific key first, then fall back to tail-only
                 const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
                 const fi = f.tail_number
