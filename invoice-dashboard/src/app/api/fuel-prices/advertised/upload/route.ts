@@ -120,6 +120,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Could not determine week_start from filename — please provide the 'Week Starting' date" }, { status: 400 });
     }
     rows = parseJetAviationCSV(lines, headerFields, vendorOverride ?? detectedVendor, weekStart, batchId);
+  } else if (format === "evo") {
+    // EVO format — has EFFECTIVE DATE per row, or extract from filename
+    detectedVendor = "EVO";
+    const evoWeekStart = resolveWeekStart(weekStartRaw, file.name);
+    rows = parseEvoCSV(lines, headerFields, vendorOverride ?? detectedVendor, evoWeekStart ?? weekStartRaw, batchId);
   } else if (format === "atlantic") {
     // Atlantic Aviation format — AIRPORTCODE, PRODUCT, POSTEDOTDPRICE, DISCOUNT, CUSTOMEROTDPRICE
     detectedVendor = "Atlantic Aviation";
@@ -203,9 +208,11 @@ export async function POST(req: NextRequest) {
 
 // --- Format detection ---
 
-function detectFormat(headers: string[]): "baker" | "everest" | "wfs" | "avfuel" | "titan" | "signature" | "jet_aviation" | "atlantic" | "generic" {
+function detectFormat(headers: string[]): "baker" | "everest" | "wfs" | "avfuel" | "titan" | "signature" | "jet_aviation" | "atlantic" | "evo" | "generic" {
   // Baker/AEG: has ICAO, FUELER, TOTAL PRICE columns
   if (headers.includes("FUELER") && headers.includes("TOTAL PRICE")) return "baker";
+  // EVO: has BASE_PRICE, TOTAL PRICE USD, EFFECTIVE DATE (must check before Everest)
+  if (headers.includes("BASE_PRICE") && headers.includes("TOTAL PRICE USD")) return "evo";
   // Everest: has ICAO, FBO, TIER, PRICE columns
   if (headers.includes("FBO") && headers.includes("TIER") && headers.includes("PRICE")) return "everest";
   // WFS (World Fuel Services): has SUPPLIER, GAL FROM, GAL TO, ESTIMATED TOTAL PRICE
@@ -312,7 +319,7 @@ function parseBakerCSV(lines: string[], headers: string[], vendor: string, weekS
 
     rows.push({
       fbo_vendor: vendor,
-      airport_code: icao,
+      airport_code: normalizeAirportCode(icao),
       volume_tier: volumeTier,
       product: fueler ? `Jet-A (${fueler})` : "Jet-A",
       price,
@@ -351,7 +358,7 @@ function parseEverestCSV(lines: string[], headers: string[], vendor: string, wee
 
     rows.push({
       fbo_vendor: vendor,
-      airport_code: icao,
+      airport_code: normalizeAirportCode(icao),
       volume_tier: `${tier}+`,
       product: fbo ? `Jet-A (${fbo})` : "Jet-A",
       price,
@@ -406,7 +413,7 @@ function parseWfsCSV(lines: string[], headers: string[], vendor: string, weekSta
 
     rows.push({
       fbo_vendor: vendor,
-      airport_code: icao,
+      airport_code: normalizeAirportCode(icao),
       volume_tier: volumeTier,
       product: supplier ? `Jet-A (${supplier})` : "Jet-A",
       price,
@@ -466,7 +473,7 @@ function parseAvfuelCSV(lines: string[], headers: string[], vendor: string, week
 
     rows.push({
       fbo_vendor: vendor,
-      airport_code: icao,
+      airport_code: normalizeAirportCode(icao),
       volume_tier: volumeTier,
       product: fbo ? `${product} (${fbo})` : product,
       price,
@@ -530,7 +537,7 @@ function parseTitanCSV(lines: string[], headers: string[], vendor: string, weekS
 
       rows.push({
         fbo_vendor: vendor,
-        airport_code: airport,
+        airport_code: normalizeAirportCode(airport),
         volume_tier: volumeTier,
         product: fbo ? `${productLabel} (${fbo})` : productLabel,
         price,
@@ -578,7 +585,7 @@ function parseSignatureCSV(lines: string[], headers: string[], vendor: string, w
 
     rows.push({
       fbo_vendor: vendor,
-      airport_code: base,
+      airport_code: normalizeAirportCode(base),
       volume_tier: volumeTier,
       product: "Jet-A",
       price,
@@ -638,7 +645,7 @@ function parseJetAviationCSV(lines: string[], headers: string[], vendor: string,
 
     rows.push({
       fbo_vendor: vendor,
-      airport_code: lastAirport,
+      airport_code: normalizeAirportCode(lastAirport),
       volume_tier: volumeTier,
       product,
       price,
@@ -675,9 +682,64 @@ function parseAtlanticCSV(lines: string[], headers: string[], vendor: string, we
 
     rows.push({
       fbo_vendor: vendor,
-      airport_code: airport,
+      airport_code: normalizeAirportCode(airport),
       volume_tier: "1+",
       product,
+      price,
+      tail_numbers: null,
+      week_start: weekStart,
+      upload_batch: batchId,
+    });
+  }
+
+  return rows;
+}
+
+// --- EVO parser ---
+
+function parseEvoCSV(lines: string[], headers: string[], vendor: string, weekStartOverride: string | null, batchId: string): PriceRow[] {
+  const col = (name: string) => headers.indexOf(name);
+  const icaoIdx = col("ICAO");
+  const supplierIdx = col("SUPPLIER");
+  const usgFromIdx = col("USG_FROM");
+  const usgToIdx = col("USG_TO");
+  const totalPriceIdx = col("TOTAL PRICE USD");
+  const effDateIdx = col("EFFECTIVE DATE");
+
+  if (icaoIdx < 0 || totalPriceIdx < 0) return [];
+
+  const rows: PriceRow[] = [];
+
+  for (let i = 1; i < lines.length; i++) {
+    const fields = parseCSVLine(lines[i]);
+    const icao = fields[icaoIdx]?.trim().toUpperCase();
+    if (!icao) continue;
+
+    const price = parsePrice(fields[totalPriceIdx]);
+    if (price === null || price <= 0) continue;
+
+    // Determine week_start: use override, or per-row EFFECTIVE DATE
+    let weekStart: string | null = null;
+    if (weekStartOverride) {
+      weekStart = normalizeToMonday(weekStartOverride);
+    } else if (effDateIdx >= 0) {
+      const effRaw = fields[effDateIdx]?.trim();
+      if (effRaw) {
+        weekStart = normalizeToMonday(effRaw);
+      }
+    }
+    if (!weekStart) continue;
+
+    const galFrom = fields[usgFromIdx]?.trim() || "1";
+    const galTo = fields[usgToIdx]?.trim() || "";
+    const volumeTier = galTo && galTo !== "99999" && galTo !== "999999999" ? `${galFrom}-${galTo}` : `${galFrom}+`;
+    const supplier = supplierIdx >= 0 ? fields[supplierIdx]?.trim() || "" : "";
+
+    rows.push({
+      fbo_vendor: vendor,
+      airport_code: normalizeAirportCode(icao),
+      volume_tier: volumeTier,
+      product: supplier ? `Jet-A (${supplier})` : "Jet-A",
       price,
       tail_numbers: null,
       week_start: weekStart,
@@ -711,7 +773,7 @@ function parseGenericCSV(lines: string[], vendor: string, weekStart: string, bat
 
     rows.push({
       fbo_vendor: vendor,
-      airport_code: lastAirport,
+      airport_code: normalizeAirportCode(lastAirport),
       volume_tier: volumeTier,
       product,
       price,
@@ -766,10 +828,31 @@ const VENDOR_ALIASES: Record<string, string> = {
   "avfuel": "Avfuel",
   "atlantic": "Atlantic Aviation",
   "atlantic aviation": "Atlantic Aviation",
+  "evo": "EVO",
 };
 
 function normalizeVendorName(vendor: string): string {
   return VENDOR_ALIASES[vendor.toLowerCase().trim()] ?? vendor;
+}
+
+/**
+ * Normalize airport codes to a consistent format for storage.
+ * US 3-letter codes → K-prefix (TEB → KTEB)
+ * Already 4-letter K-prefixed → keep (KTEB → KTEB)
+ * Non-US ICAO (4-letter, non-K) → keep (TQPF, EGLL)
+ * FAA LIDs with digits → keep (07FA, 9TE2)
+ * IATA 3-letter that happen to be non-US → keep as-is (no K-prefix for international)
+ */
+function normalizeAirportCode(raw: string): string {
+  const code = raw.trim().toUpperCase();
+  if (!code) return code;
+  // If it contains digits, it's an FAA LID — keep as-is
+  if (/\d/.test(code)) return code;
+  // Already 4+ letters — keep (KTEB, TQPF, EGLL, etc.)
+  if (code.length >= 4) return code;
+  // 3 uppercase letters — assume US, add K-prefix
+  if (/^[A-Z]{3}$/.test(code)) return `K${code}`;
+  return code;
 }
 
 function parsePrice(raw: string): number | null {
