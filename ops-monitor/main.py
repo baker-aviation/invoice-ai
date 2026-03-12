@@ -337,6 +337,9 @@ def _faa_to_icao(code: str) -> str:
     if len(code) == 4:
         return code
     if len(code) == 3:
+        # FAA LIDs starting with a digit (e.g. 3T5) don't get a K prefix
+        if code[0].isdigit():
+            return code
         # Canadian airports typically already come as 4-letter (CYYZ etc.)
         # US domestic: prepend K
         return "K" + code
@@ -385,13 +388,13 @@ def _parse_flight_fields(component) -> Tuple[Optional[str], Optional[str], Optio
 
     # ── Airport pair: (SDM - SNA) or (KSDM - KSNA) in summary ───────────────
     dep_icao = arr_icao = None
-    paren_m = re.search(r"\(([A-Z]{3,4})\s*[-–]\s*([A-Z]{3,4})\)", summary)
+    paren_m = re.search(r"\(([A-Z0-9]{3,4})\s*[-–]\s*([A-Z0-9]{3,4})\)", summary)
     if paren_m:
         dep_icao = _faa_to_icao(paren_m.group(1))
         arr_icao = _faa_to_icao(paren_m.group(2))
 
     # ── Fallback: LOCATION field → departure ─────────────────────────────────
-    if not dep_icao and location and re.match(r"^[A-Z]{3,4}$", location):
+    if not dep_icao and location and re.match(r"^[A-Z0-9]{3,4}$", location):
         dep_icao = _faa_to_icao(location)
 
     # ── Flight type: extract from CATEGORIES property or SUMMARY suffix ──────

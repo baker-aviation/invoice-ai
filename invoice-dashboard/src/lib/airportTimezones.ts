@@ -90,6 +90,7 @@ const AIRPORT_TZ: Record<string, string> = {
   KTEB: "America/New_York",   // Teterboro, NJ
   KTIX: "America/New_York",   // Titusville, FL
   KTMB: "America/New_York",   // Kendall-Tamiami, FL
+  "3T5": "America/New_York",  // Smoky Mountain, Sevierville, TN
   KTPA: "America/New_York",   // Tampa, FL
   KTTN: "America/New_York",   // Trenton, NJ
   KVNC: "America/New_York",   // Venice, FL
