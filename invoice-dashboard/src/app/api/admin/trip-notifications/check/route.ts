@@ -9,13 +9,9 @@ import { getAirportTimezone } from "@/lib/airportTimezones";
  * Check for flights departing within ~1 hour and send Slack DMs to
  * the assigned salesperson. Deduplicates via salesperson_notifications_sent.
  *
- * Logic:
- * 1. Query flights with scheduled_departure between now and now + 75 min
- * 2. Match to trip_salespersons on tail_number + date overlap
- * 3. Skip if already in salesperson_notifications_sent
- * 4. Look up Slack user ID from salesperson_slack_map
- * 5. Send DM via chat.postMessage
- * 6. Record in salesperson_notifications_sent
+ * Alert timing: fires ~1hr before the earliest leg in the chain.
+ * If a positioning/repo leg feeds into the client leg on the same tail,
+ * the alert fires 1hr before the repo departs (not the client leg).
  */
 export async function POST(req: NextRequest) {
   const auth = await requireAdmin(req);
@@ -33,36 +29,38 @@ export async function POST(req: NextRequest) {
   const now = new Date();
   const windowEnd = new Date(now.getTime() + 75 * 60 * 1000);
 
-  // 1. Find live flights departing within the next 75 minutes (skip positioning/ferry/maintenance)
+  // 1. Get all today's flights (all types) for prior-leg lookups
+  const todayStart = new Date(now);
+  todayStart.setHours(0, 0, 0, 0);
+  const todayEnd = new Date(now);
+  todayEnd.setHours(23, 59, 59, 999);
+
   const LIVE_TYPES = ["Revenue", "Owner", "Charter"];
-  const { data: flights, error: flightsErr } = await supa
-    .from("flights")
-    .select("id, tail_number, departure_icao, arrival_icao, scheduled_departure, flight_type, summary, jetinsight_url")
-    .gte("scheduled_departure", now.toISOString())
-    .lte("scheduled_departure", windowEnd.toISOString())
-    .not("tail_number", "is", null)
-    .in("flight_type", LIVE_TYPES);
+
+  const [{ data: allTodayFlights }, { data: liveTodayFlights, error: flightsErr }] = await Promise.all([
+    supa
+      .from("flights")
+      .select("id, tail_number, departure_icao, arrival_icao, scheduled_departure, flight_type, jetinsight_url")
+      .gte("scheduled_departure", todayStart.toISOString())
+      .lte("scheduled_departure", todayEnd.toISOString())
+      .not("tail_number", "is", null)
+      .order("scheduled_departure", { ascending: true }),
+    supa
+      .from("flights")
+      .select("id, tail_number, departure_icao, arrival_icao, scheduled_departure, flight_type, summary, jetinsight_url")
+      .gte("scheduled_departure", todayStart.toISOString())
+      .lte("scheduled_departure", todayEnd.toISOString())
+      .not("tail_number", "is", null)
+      .in("flight_type", LIVE_TYPES),
+  ]);
 
   if (flightsErr) {
     return NextResponse.json({ error: "Failed to query flights", detail: flightsErr.message }, { status: 500 });
   }
 
-  if (!flights || flights.length === 0) {
-    return NextResponse.json({ ok: true, checked: 0, sent: 0, skipped: 0, message: "No flights departing within window" });
+  if (!liveTodayFlights || liveTodayFlights.length === 0) {
+    return NextResponse.json({ ok: true, checked: 0, sent: 0, skipped: 0, message: "No live flights today" });
   }
-
-  // Pre-fetch today's flights for prior leg detection
-  const todayStart = new Date(now);
-  todayStart.setHours(0, 0, 0, 0);
-  const todayEnd = new Date(now);
-  todayEnd.setHours(23, 59, 59, 999);
-  const { data: allTodayFlights } = await supa
-    .from("flights")
-    .select("tail_number, departure_icao, arrival_icao, scheduled_departure, flight_type, jetinsight_url")
-    .gte("scheduled_departure", todayStart.toISOString())
-    .lte("scheduled_departure", todayEnd.toISOString())
-    .not("tail_number", "is", null)
-    .order("scheduled_departure", { ascending: true });
 
   // 2. Load all salesperson-slack mappings
   const { data: slackMap } = await supa
@@ -76,11 +74,24 @@ export async function POST(req: NextRequest) {
 
   let sent = 0;
   let skipped = 0;
+  let checked = 0;
   const errors: string[] = [];
   const sentDetails: { salesperson: string; tail: string; route: string; time: string }[] = [];
 
-  for (const flight of flights) {
-    // 3. Find matching trip_salespersons: exact leg match (tail + origin + dest)
+  for (const flight of liveTodayFlights) {
+    // 3. Find prior positioning/repo leg on same tail arriving at this leg's departure
+    const priorLeg = findPriorLeg(allTodayFlights ?? [], flight.tail_number, flight.departure_icao, flight.scheduled_departure);
+
+    // Alert trigger = repo departure if exists, else live leg departure
+    const alertTriggerTime = priorLeg
+      ? new Date(priorLeg.scheduled_departure)
+      : new Date(flight.scheduled_departure);
+
+    // Only process if the trigger time falls within the 75-min window
+    if (alertTriggerTime < now || alertTriggerTime > windowEnd) continue;
+    checked++;
+
+    // 4. Find matching trip_salespersons
     const { data: trips } = await supa
       .from("trip_salespersons")
       .select("trip_id, salesperson_name, origin_icao, destination_icao, customer")
@@ -91,7 +102,7 @@ export async function POST(req: NextRequest) {
     if (!trips || trips.length === 0) continue;
 
     for (const trip of trips) {
-      // 4. Check dedup
+      // 5. Check dedup (keyed on live flight, so alert only fires once per leg)
       const { data: existing } = await supa
         .from("salesperson_notifications_sent")
         .select("id")
@@ -104,7 +115,6 @@ export async function POST(req: NextRequest) {
         continue;
       }
 
-      // 5. Look up Slack user ID
       const slackUserId = slackLookup.get(trip.salesperson_name.toLowerCase());
       if (!slackUserId) {
         skipped++;
@@ -117,11 +127,8 @@ export async function POST(req: NextRequest) {
       const arrIcao = formatIcao(flight.arrival_icao);
       const broker = trip.customer || "Unknown";
 
-      // Prior leg alert
-      const priorLeg = findPriorLeg(allTodayFlights ?? [], flight.tail_number, flight.departure_icao, flight.scheduled_departure);
-
       const lines = [
-        `You have a trip departing in ~1hr (${depTime}) on tail *${flight.tail_number}* going ${depIcao} - ${arrIcao}.`,
+        `You have a trip departing ${priorLeg ? "soon" : "in ~1hr"} (${depTime}) on tail *${flight.tail_number}* going ${depIcao} - ${arrIcao}.`,
         `Broker is ${broker}.`,
       ];
       if (priorLeg) {
@@ -145,10 +152,7 @@ export async function POST(req: NextRequest) {
             Authorization: `Bearer ${slackToken}`,
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({
-            channel: slackUserId,
-            text: message,
-          }),
+          body: JSON.stringify({ channel: slackUserId, text: message }),
         });
         const slackData = await slackRes.json();
 
@@ -157,7 +161,6 @@ export async function POST(req: NextRequest) {
           continue;
         }
 
-        // 7. Record sent notification
         await supa.from("salesperson_notifications_sent").insert({
           flight_id: flight.id,
           trip_id: trip.trip_id,
@@ -179,7 +182,7 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({
     ok: true,
-    checked: flights.length,
+    checked,
     sent,
     skipped,
     sentDetails,
