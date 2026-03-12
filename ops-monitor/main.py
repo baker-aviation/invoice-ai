@@ -1968,8 +1968,8 @@ def debug_swim_positions():
     """Show recent SWIM positions for Baker fleet."""
     supa = sb()
     result = supa.table("swim_positions").select(
-        "acid, tail_number, departure_icao, arrival_icao, event_type, event_time, latitude, longitude, altitude_ft, groundspeed_kt"
-    ).order("event_time", desc=True).limit(20).execute()
+        "acid, tail_number, departure_icao, arrival_icao, event_type, event_time, latitude, longitude, altitude_ft, groundspeed_kt, raw_xml"
+    ).order("event_time", desc=True).limit(5).execute()
     return {"count": len(result.data), "positions": result.data}
 
 
