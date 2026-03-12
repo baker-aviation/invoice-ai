@@ -42,7 +42,7 @@ async function handlePull(req: NextRequest) {
   const authError = checkAuth(req);
   if (authError) return authError;
 
-  const lookbackMinutes = Number(req.nextUrl.searchParams.get("lookback_minutes") || "120");
+  const lookbackMinutes = Number(req.nextUrl.searchParams.get("lookback_minutes") || "720");
   const maxMessages = Number(req.nextUrl.searchParams.get("max_messages") || "50");
 
   try {

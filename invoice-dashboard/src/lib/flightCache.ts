@@ -12,6 +12,19 @@ import { createServiceClient } from "./supabase/service";
  */
 
 let memCache: { data: FlightInfo[]; ts: number } | null = null;
+let _isRefreshing = false;
+
+export function isRefreshing(): boolean {
+  return _isRefreshing;
+}
+
+export function markRefreshing(): void {
+  _isRefreshing = true;
+}
+
+export function clearRefreshing(): void {
+  _isRefreshing = false;
+}
 
 // Dynamic TTL: poll every 5 min when aircraft are airborne, 2h otherwise.
 // Webhooks handle discrete events (filed, departure, arrival) but frequent

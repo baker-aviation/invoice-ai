@@ -21,10 +21,14 @@ let lastRefreshMs = 0;
 const REFRESH_INTERVAL_MS = 30 * 60 * 1000; // 30 min — check for unregistered tails periodically
 
 /**
- * Register FA webhook alerts for any tails that don't have one yet.
+ * Register FA webhook alerts for active tails (flights in next 48h) and
+ * deregister alerts for idle tails to reduce push delivery costs.
  * Fire-and-forget — errors are logged but don't propagate.
+ *
+ * @param tails      Full fleet tail list (unused, kept for backwards compat)
+ * @param activeTails Tails with flights in the next 48h — only these get alerts
  */
-export async function refreshAlerts(tails: string[]): Promise<void> {
+export async function refreshAlerts(tails: string[], activeTails: string[]): Promise<void> {
   // Skip if checked recently
   if (Date.now() - lastRefreshMs < REFRESH_INTERVAL_MS) {
     console.log("[FA Alerts] Skipped — checked", Math.round((Date.now() - lastRefreshMs) / 60000), "min ago");
@@ -54,17 +58,55 @@ export async function refreshAlerts(tails: string[]): Promise<void> {
 
   try {
     const supa = createServiceClient();
+    const activeSet = new Set(activeTails);
 
-    // Get tails that already have active alerts
+    // Get all tails that currently have active alerts
     const { data: existing } = await supa
       .from("fa_alert_registrations")
-      .select("tail")
+      .select("tail, alert_id")
       .eq("active", true);
 
-    const registered = new Set((existing ?? []).map((r) => r.tail));
-    const missing = tails.filter((t) => !registered.has(t));
+    const registeredRows = existing ?? [];
+    const registeredSet = new Set(registeredRows.map((r) => r.tail));
 
-    if (missing.length === 0) return;
+    // --- Deregister idle tails (active in DB but not in activeTails) ---
+    const toDeregister = registeredRows.filter((r) => !activeSet.has(r.tail));
+    if (toDeregister.length > 0) {
+      console.log(`[FA Alerts] Deregistering ${toDeregister.length} idle tails: ${toDeregister.map((r) => r.tail).join(", ")}`);
+    }
+
+    for (const row of toDeregister) {
+      try {
+        const res = await fetch(`${FA_BASE}/alerts/${row.alert_id}`, {
+          method: "DELETE",
+          headers: faHeaders(),
+          signal: AbortSignal.timeout(10000),
+        });
+
+        if (res.ok || res.status === 404) {
+          // 404 means already deleted on FA side — still mark inactive locally
+          await supa
+            .from("fa_alert_registrations")
+            .update({ active: false })
+            .eq("tail", row.tail);
+          console.log(`[FA Alerts] Deregistered ${row.tail} (alert ${row.alert_id})`);
+        } else {
+          console.warn(`[FA Alerts] Deregister failed for ${row.tail}: ${res.status}`);
+        }
+
+        await new Promise((r) => setTimeout(r, 500));
+      } catch (err) {
+        console.warn(`[FA Alerts] Deregister error for ${row.tail}:`, err);
+      }
+    }
+
+    // --- Register active tails that don't have alerts yet ---
+    const missing = activeTails.filter((t) => !registeredSet.has(t));
+
+    if (missing.length === 0) {
+      console.log(`[FA Alerts] All ${activeTails.length} active tails already registered`);
+      return;
+    }
 
     console.log(`[FA Alerts] Auto-registering ${missing.length} new tails: ${missing.join(", ")}`);
 
