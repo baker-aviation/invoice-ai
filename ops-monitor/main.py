@@ -1963,6 +1963,16 @@ def debug_tfr_test():
     return result
 
 
+@app.get("/debug/swim_positions")
+def debug_swim_positions():
+    """Show recent SWIM positions for Baker fleet."""
+    supa = sb()
+    result = supa.table("swim_positions").select(
+        "acid, tail_number, departure_icao, arrival_icao, event_type, event_time, latitude, longitude, altitude_ft, groundspeed_kt"
+    ).order("event_time", desc=True).limit(20).execute()
+    return {"count": len(result.data), "positions": result.data}
+
+
 def _fetch_notams(icao: str, token: str) -> List[Dict]:
     """Return list of GeoJSON feature dicts from the NMS API for a given ICAO.
     Accepts a pre-fetched token so all workers share one auth call.
