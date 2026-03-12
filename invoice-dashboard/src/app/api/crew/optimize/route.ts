@@ -171,9 +171,9 @@ export async function POST(req: NextRequest) {
 
     console.log(`[Swap Optimizer] Searching ${pairsArray.length} route pairs via HasData`);
 
-    // Search in parallel (batches of 8)
-    for (let i = 0; i < pairsArray.length; i += 8) {
-      const batch = pairsArray.slice(i, i + 8);
+    // Search sequentially (HasData free tier: 1 concurrent request)
+    for (let i = 0; i < pairsArray.length; i += 1) {
+      const batch = pairsArray.slice(i, i + 1);
       const results = await Promise.all(
         batch.map(async (pair) => {
           const [orig, dest] = pair.split("-");

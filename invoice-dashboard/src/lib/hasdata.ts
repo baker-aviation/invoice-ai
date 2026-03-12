@@ -87,6 +87,7 @@ export async function searchFlights(params: {
   }
 
   const data: HdResponse = await res.json();
+  console.log(`[HasData] ${orig}->${dest} ${date}: status=${data.requestMetadata?.status} best=${(data.bestFlights ?? []).length} other=${(data.otherFlights ?? []).length}`);
 
   // Combine bestFlights + otherFlights, take up to max
   const all = [...(data.bestFlights ?? []), ...(data.otherFlights ?? [])];
