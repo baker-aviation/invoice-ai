@@ -19,7 +19,7 @@
  * See swapRules.ts for all constants.
  */
 
-import { estimateDriveTime, type DriveEstimate } from "./driveTime";
+import { estimateDriveTime, findNearbyCommercialAirports, type DriveEstimate } from "./driveTime";
 import { getAirportTimezone } from "./airportTimezones";
 import type { FlightOffer } from "./amadeus";
 import {
@@ -274,14 +274,26 @@ function findCommercialAirport(fboIcao: string, aliases: AirportAlias[]): string
   return any ? any.commercial_icao : fboIcao;
 }
 
-/** Get all commercial airports for an FBO (preferred first) */
+/** Get all commercial airports for an FBO (aliases first, then nearby within 30mi) */
 function findAllCommercialAirports(fboIcao: string, aliases: AirportAlias[]): string[] {
   const upper = fboIcao.toUpperCase();
+  const result = new Set<string>();
+
+  // 1. Check alias table (preferred first)
   const matching = aliases.filter((a) => a.fbo_icao.toUpperCase() === upper);
-  if (matching.length === 0) return [fboIcao];
-  // Preferred first
   const sorted = [...matching].sort((a, b) => (b.preferred ? 1 : 0) - (a.preferred ? 1 : 0));
-  return sorted.map((a) => a.commercial_icao);
+  for (const a of sorted) result.add(a.commercial_icao);
+
+  // 2. Find nearby commercial airports within 30 miles
+  const nearby = findNearbyCommercialAirports(upper, 30);
+  for (const n of nearby) {
+    if (!result.has(n.icao)) result.add(n.icao);
+  }
+
+  // 3. Fallback: if nothing found, use the FBO code itself
+  if (result.size === 0) result.add(fboIcao);
+
+  return Array.from(result);
 }
 
 const ICAO_IATA: Record<string, string> = {
