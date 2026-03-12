@@ -2,7 +2,7 @@
 
 import dynamic from "next/dynamic";
 import { useState, useEffect, useCallback, useMemo, Fragment } from "react";
-import type { Flight, OpsAlert, MxNote } from "@/lib/opsApi";
+import type { Flight, OpsAlert, MxNote, SwimFlowEvent } from "@/lib/opsApi";
 import type { AdvertisedPriceRow } from "@/lib/types";
 import { FALLBACK_TAILS, BAKER_FLEET } from "@/lib/maintenanceData";
 import type { AircraftPosition, FlightInfoMap } from "@/app/maintenance/MapView";
@@ -411,7 +411,7 @@ export type LongTermMxAircraft = {
   endDate: string | null;
 };
 
-export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices = [], mxNotes = [] }: { flights: Flight[]; onSwitchToDuty?: (tail?: string) => void; advertisedPrices?: AdvertisedPriceRow[]; mxNotes?: MxNote[] }) {
+export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices = [], mxNotes = [], swimFlow = [] }: { flights: Flight[]; onSwitchToDuty?: (tail?: string) => void; advertisedPrices?: AdvertisedPriceRow[]; mxNotes?: MxNote[]; swimFlow?: SwimFlowEvent[] }) {
   const [enRouteAircraft, setAircraftPosition] = useState<AircraftPosition[]>([]);
   const [faFlightsRaw, setFaFlightsRaw] = useState<FlightInfoMap[]>([]);
   const [flightInfo, setFlightInfo] = useState<Map<string, FlightInfoMap>>(new Map());
@@ -1011,6 +1011,39 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                   >
                     Ack
                   </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── SWIM Flow Control (GDP, Ground Stops, CTOPs) ── */}
+      {swimFlow.length > 0 && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3">
+          <div className="flex items-center gap-2 mb-2 text-sm">
+            <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse" />
+            <span className="font-semibold text-red-800">
+              {swimFlow.length} Active Flow Control{swimFlow.length !== 1 ? " Events" : " Event"}
+            </span>
+            <span className="ml-auto text-xs text-red-400">via FAA SWIM</span>
+          </div>
+          <div className="space-y-1.5">
+            {swimFlow.map((ev) => (
+              <div key={ev.id} className="flex items-center gap-3 text-sm text-red-900">
+                <span className={`px-1.5 py-0.5 rounded text-xs font-bold uppercase ${
+                  ev.event_type === "GROUND_STOP" ? "bg-red-200 text-red-800" :
+                  ev.event_type === "GDP" ? "bg-amber-200 text-amber-800" :
+                  "bg-orange-200 text-orange-800"
+                }`}>
+                  {ev.event_type.replace(/_/g, " ")}
+                </span>
+                {ev.airport_icao && <span className="font-medium">{ev.airport_icao}</span>}
+                <span className="text-red-700">{ev.subject}</span>
+                {ev.expires_at && (
+                  <span className="ml-auto text-xs text-red-400">
+                    until {new Date(ev.expires_at).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", timeZoneName: "short" })}
+                  </span>
                 )}
               </div>
             ))}

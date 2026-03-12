@@ -341,6 +341,40 @@ export type AircraftTag = {
   created_at: string;
 };
 
+// ---------------------------------------------------------------------------
+// SWIM Flow Control — GDP, Ground Stops, CTOPs from FAA SWIM/TFMS
+// ---------------------------------------------------------------------------
+
+export type SwimFlowEvent = {
+  id: string;
+  event_type: string;
+  airport_icao: string | null;
+  status: string;
+  severity: string;
+  subject: string;
+  body: string | null;
+  effective_at: string | null;
+  expires_at: string | null;
+  created_at: string;
+};
+
+export async function fetchSwimFlowControl(): Promise<SwimFlowEvent[]> {
+  const supa = createServiceClient();
+  const { data, error } = await supa
+    .from("swim_flow_control")
+    .select("id, event_type, airport_icao, status, severity, subject, body, effective_at, expires_at, created_at")
+    .eq("status", "active")
+    .order("created_at", { ascending: false })
+    .limit(50);
+
+  if (error || !data) return [];
+  return data as SwimFlowEvent[];
+}
+
+// ---------------------------------------------------------------------------
+// Aircraft Tags — conformity / long-term MX tags
+// ---------------------------------------------------------------------------
+
 export async function fetchAircraftTags(): Promise<AircraftTag[]> {
   const supa = createServiceClient();
   const { data, error } = await supa
