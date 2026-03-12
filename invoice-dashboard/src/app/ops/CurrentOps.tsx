@@ -4,7 +4,7 @@ import dynamic from "next/dynamic";
 import { useState, useEffect, useCallback, useMemo, Fragment } from "react";
 import type { Flight, OpsAlert, MxNote } from "@/lib/opsApi";
 import type { AdvertisedPriceRow } from "@/lib/types";
-import { FALLBACK_TAILS } from "@/lib/maintenanceData";
+import { FALLBACK_TAILS, BAKER_FLEET } from "@/lib/maintenanceData";
 import type { AircraftPosition, FlightInfoMap } from "@/app/maintenance/MapView";
 import { fmtTimeInTz, type TzMode } from "@/lib/airportTimezones";
 import { getAirportInfo } from "@/lib/airportCoords";
@@ -649,7 +649,7 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
     const qualifiedTails = new Set<string>();
 
     // Collect all known fleet tails
-    const allTails = new Set<string>(FALLBACK_TAILS);
+    const allTails = new Set<string>([...FALLBACK_TAILS, ...BAKER_FLEET]);
     for (const f of flights) {
       if (f.tail_number) allTails.add(f.tail_number);
     }

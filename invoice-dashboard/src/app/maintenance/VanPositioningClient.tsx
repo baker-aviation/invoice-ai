@@ -12,6 +12,7 @@ import {
   haversineKm,
   FIXED_VAN_ZONES,
   FALLBACK_TAILS,
+  BAKER_FLEET,
   VanAssignment,
   AircraftOvernightPosition,
 } from "@/lib/maintenanceData";
@@ -1424,21 +1425,28 @@ function VanScheduleCard({
                     </div>
                     {/* Day's other legs for this aircraft */}
                     {extraLegs.length > 0 && (
-                      <div className="ml-8 mt-1 space-y-0 border-l-2 pl-3" style={{ borderColor: color + "40" }}>
+                      <div className="ml-8 mt-1 space-y-0.5">
                         {extraLegs.map((f) => {
                           const ft = inferFlightType(f);
                           const cat = getFilterCategory(ft);
                           const dep = f.departure_icao?.replace(/^K/, "") ?? "?";
                           const arrIcao = f.arrival_icao?.replace(/^K/, "") ?? "?";
                           const isNext = nextDep && f.id === nextDep.id;
+                          const isRevenue = cat === "charter";
+                          const borderColor = cat === "charter" ? "border-green-400"
+                            : cat === "positioning" ? "border-purple-300"
+                            : cat === "maintenance" ? "border-orange-300"
+                            : "border-gray-200";
                           return (
-                            <div key={f.id} className={`flex items-center gap-2 text-xs py-px ${isNext ? "text-gray-500" : "text-gray-400"}`}>
-                              <span className="font-mono text-gray-500">{dep} → {arrIcao}</span>
+                            <div key={f.id} className={`flex items-center gap-2 text-xs pl-3 border-l-2 ${borderColor} ${
+                              isRevenue ? "py-1 bg-green-50/60 rounded-r font-medium text-gray-700" : "py-px text-gray-400"
+                            }`}>
+                              <span className={`font-mono ${isRevenue ? "text-gray-700" : "text-gray-500"}`}>{dep} → {arrIcao}</span>
                               <span>{fmtUtcHM(f.scheduled_departure, f.departure_icao)}{f.scheduled_arrival ? ` – ${fmtUtcHM(f.scheduled_arrival, f.arrival_icao)}` : ""}</span>
                               {ft && (
                                 <span className={`rounded px-1 py-0.5 text-[10px] font-medium ${
                                   cat === "positioning" ? "bg-purple-50 text-purple-500"
-                                  : cat === "charter" ? "bg-green-50 text-green-500"
+                                  : cat === "charter" ? "bg-green-100 text-green-700"
                                   : cat === "maintenance" ? "bg-orange-50 text-orange-500"
                                   : ft === "Owner" ? "bg-blue-50 text-blue-500"
                                   : "bg-gray-50 text-gray-400"
@@ -2570,7 +2578,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
     const result: LongTermMxAircraft[] = [];
     const qualifiedTails = new Set<string>();
 
-    const allTails = new Set<string>(FALLBACK_TAILS);
+    const allTails = new Set<string>([...FALLBACK_TAILS, ...BAKER_FLEET]);
     for (const f of initialFlights) {
       if (f.tail_number) allTails.add(f.tail_number);
     }

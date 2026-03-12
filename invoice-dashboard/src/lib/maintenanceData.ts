@@ -187,6 +187,15 @@ export const TRIPS: Trip[] = [
 /** All unique tail numbers from TRIPS — used as the fallback fleet roster. */
 export const FALLBACK_TAILS: string[] = Array.from(new Set(TRIPS.map((t) => t.tail))).sort();
 
+/** Full Baker Aviation fleet roster — authoritative list of all managed tails. */
+export const BAKER_FLEET: string[] = [
+  "N51GB",  "N102VR", "N106PC", "N125DZ", "N125TH", "N187CR", "N201HR",
+  "N301HR", "N371DB", "N416F",  "N513JB", "N519FX", "N521FX", "N533FX",
+  "N548FX", "N552FX", "N553FX", "N555FX", "N700LH", "N703TX", "N733FL",
+  "N818CF", "N860TX", "N883TR", "N910E",  "N939TX", "N954JS", "N955GH",
+  "N957JS", "N971JS", "N988TX", "N992MG", "N998CX",
+];
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
