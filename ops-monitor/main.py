@@ -18,7 +18,6 @@ from slowapi.util import get_remote_address
 
 from supa import sb, log_pipeline_run
 from auth_middleware import add_auth_middleware
-from swim_client import pull_swim
 
 app = FastAPI()
 add_auth_middleware(app)
@@ -2124,6 +2123,7 @@ def _notam_severity(msg: str) -> str:
 @app.post("/jobs/pull_swim")
 def job_pull_swim():
     """Drain FAA SWIM SCDS queues (TFMS, STDDS, NOTAM) and write to Supabase."""
+    from swim_client import pull_swim  # Lazy import — solace-pubsubplus is heavy
     t0 = time.time()
     try:
         stats = pull_swim()
