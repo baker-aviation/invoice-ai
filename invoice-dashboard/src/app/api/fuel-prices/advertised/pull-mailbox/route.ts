@@ -50,6 +50,7 @@ async function handlePull(req: NextRequest) {
 
   const lookbackMinutes = Number(req.nextUrl.searchParams.get("lookback_minutes") || "720");
   const maxMessages = Number(req.nextUrl.searchParams.get("max_messages") || "50");
+  const force = req.nextUrl.searchParams.get("force") === "true";
 
   try {
     const token = await getGraphToken();
@@ -62,14 +63,16 @@ async function handlePull(req: NextRequest) {
     let messagesProcessed = 0;
 
     for (const msg of messages) {
-      // Check if already processed
-      const { data: existing } = await supa
-        .from("fuel_mailbox_processed")
-        .select("id")
-        .eq("message_id", msg.id)
-        .maybeSingle();
+      // Check if already processed (skip unless force=true)
+      if (!force) {
+        const { data: existing } = await supa
+          .from("fuel_mailbox_processed")
+          .select("id")
+          .eq("message_id", msg.id)
+          .maybeSingle();
 
-      if (existing) continue;
+        if (existing) continue;
+      }
 
       const attachments = await listAttachments(token, msg.id);
       const csvAttachments = attachments.filter((a) =>

@@ -623,7 +623,7 @@ export default function FuelPricesTable({
     setIsPulling(true);
     setPullResult(null);
     try {
-      const res = await fetch("/api/fuel-prices/advertised/pull-mailbox", { method: "POST" });
+      const res = await fetch("/api/fuel-prices/advertised/pull-mailbox?force=true", { method: "POST" });
       const data = await res.json();
       if (!res.ok) {
         setPullResult(`Error: ${data.error ?? res.statusText}`);
