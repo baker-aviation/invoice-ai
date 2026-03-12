@@ -10,14 +10,8 @@ import { createServiceClient } from "@/lib/supabase/service";
 type DashboardStats = {
   flights7d: number;
   flightsToday: number;
-  activeAlerts24h: number;
-  activeEdcts: number;
-  airborne: number;
   totalInvoices: number;
-  invoicesPending: number;
-  feeAlertsPending: number;
   jobApplications: number;
-  jobsNeedReview: number;
 };
 
 async function fetchStats(): Promise<DashboardStats> {
@@ -29,19 +23,11 @@ async function fetchStats(): Promise<DashboardStats> {
   todayEnd.setUTCDate(todayEnd.getUTCDate() + 1);
   const weekOut = new Date(now.getTime() + 7 * 24 * 3600_000);
 
-  const ago24h = new Date(now.getTime() - 24 * 3600_000);
-
   const [
     flights7dRes,
     flightsTodayRes,
-    activeAlerts24hRes,
-    activeEdctsRes,
-    airborneRes,
     totalInvoicesRes,
-    invoicesPendingRes,
-    feeAlertsPendingRes,
     jobApplicationsRes,
-    jobsNeedReviewRes,
   ] = await Promise.all([
     supa.from("flights").select("id", { count: "exact", head: true })
       .gte("scheduled_departure", now.toISOString())
@@ -49,35 +35,15 @@ async function fetchStats(): Promise<DashboardStats> {
     supa.from("flights").select("id", { count: "exact", head: true })
       .gte("scheduled_departure", todayStart.toISOString())
       .lt("scheduled_departure", todayEnd.toISOString()),
-    supa.from("ops_alerts").select("id", { count: "exact", head: true })
-      .is("acknowledged_at", null)
-      .gte("created_at", ago24h.toISOString()),
-    supa.from("ops_alerts").select("id", { count: "exact", head: true })
-      .is("acknowledged_at", null)
-      .eq("alert_type", "EDCT"),
-    supa.from("flights").select("id", { count: "exact", head: true })
-      .eq("status", "airborne"),
     supa.from("documents").select("id", { count: "exact", head: true }),
-    supa.from("documents").select("id", { count: "exact", head: true })
-      .in("status", ["uploaded", "processing"]),
-    supa.from("invoice_alerts").select("id", { count: "exact", head: true })
-      .eq("status", "pending"),
     supa.from("job_applications").select("id", { count: "exact", head: true }),
-    supa.from("job_application_parse").select("id", { count: "exact", head: true })
-      .eq("needs_review", true),
   ]);
 
   return {
     flights7d: flights7dRes.count ?? 0,
     flightsToday: flightsTodayRes.count ?? 0,
-    activeAlerts24h: activeAlerts24hRes.count ?? 0,
-    activeEdcts: activeEdctsRes.count ?? 0,
-    airborne: airborneRes.count ?? 0,
     totalInvoices: totalInvoicesRes.count ?? 0,
-    invoicesPending: invoicesPendingRes.count ?? 0,
-    feeAlertsPending: feeAlertsPendingRes.count ?? 0,
     jobApplications: jobApplicationsRes.count ?? 0,
-    jobsNeedReview: jobsNeedReviewRes.count ?? 0,
   };
 }
 
@@ -184,10 +150,6 @@ export default async function HomePage() {
           {stats && (
             <p className="text-sm text-gray-400 mt-1">
               {stats.flightsToday} flight{stats.flightsToday !== 1 ? "s" : ""} today
-              {" · "}
-              {stats.activeEdcts} active EDCT{stats.activeEdcts !== 1 ? "s" : ""}
-              {" · "}
-              {stats.feeAlertsPending} pending alert{stats.feeAlertsPending !== 1 ? "s" : ""}
             </p>
           )}
         </div>
@@ -206,8 +168,6 @@ export default async function HomePage() {
               stats={stats ? [
                 { label: "Today", value: stats.flightsToday },
                 { label: "Next 7 days", value: stats.flights7d },
-                { label: "Airborne", value: stats.airborne, accent: stats.airborne > 0 ? "text-green-600" : "text-gray-400" },
-                { label: "Active EDCTs", value: stats.activeEdcts, accent: stats.activeEdcts > 0 ? "text-red-600" : "text-gray-400" },
               ] : undefined}
             />
 
@@ -244,7 +204,6 @@ export default async function HomePage() {
               iconBgClass="bg-indigo-100 text-indigo-700"
               stats={stats ? [
                 { label: "Total", value: stats.totalInvoices },
-                { label: "Processing", value: stats.invoicesPending, accent: stats.invoicesPending > 0 ? "text-amber-600" : "text-gray-400" },
               ] : undefined}
             />
 
@@ -255,9 +214,6 @@ export default async function HomePage() {
               iconLetter="!"
               borderClass="border-l-amber-500"
               iconBgClass="bg-amber-100 text-amber-700"
-              stats={stats ? [
-                { label: "Pending", value: stats.feeAlertsPending, accent: stats.feeAlertsPending > 0 ? "text-amber-600" : "text-gray-400" },
-              ] : undefined}
             />
 
             <StatCard
@@ -284,7 +240,6 @@ export default async function HomePage() {
               iconBgClass="bg-cyan-100 text-cyan-700"
               stats={stats ? [
                 { label: "Total", value: stats.jobApplications },
-                { label: "Need review", value: stats.jobsNeedReview, accent: stats.jobsNeedReview > 0 ? "text-amber-600" : "text-gray-400" },
               ] : undefined}
             />
 
