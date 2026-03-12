@@ -54,8 +54,8 @@ NNUM_RE = re.compile(r"N\d{1,5}[A-Z]{0,2}")
 
 # Maximum messages to drain per queue per run (prevent runaway)
 MAX_MESSAGES_PER_QUEUE = 5000
-# Per-queue overrides (TFMS is ~50 msg/sec firehose)
-MAX_MESSAGES_OVERRIDE = {"TFMS": 2000}
+# Per-queue overrides (TFMS is ~50 msg/sec firehose, but string pre-filter is fast)
+MAX_MESSAGES_OVERRIDE = {"TFMS": 5000}
 # Max seconds to spend draining a single queue
 MAX_DRAIN_SECS = 30
 # Receive timeout per message (ms) — stop draining when queue is empty
@@ -405,29 +405,39 @@ def pull_swim() -> Dict[str, Any]:
     positions_batch: List[Dict[str, Any]] = []
     flow_batch: List[Dict[str, Any]] = []
 
-    for raw in tfms_raw:
-        # Try flight data first
-        flight = parse_tfms_flight_message(raw)
-        if flight and _is_baker_flight(flight):
-            source_id = f"swim-tfms-{flight['acid']}-{flight['event_time']}"
-            positions_batch.append({
-                **flight,
-                "source_id": source_id,
-                "raw_xml": raw[:4000],  # Cap stored XML
-            })
-            stats["tfms_flight_messages"] += 1
-            continue
+    # Flow data keywords — cheap string check before XML parse
+    FLOW_KEYWORDS = ("GroundDelay", "GroundStop", "GDP", "CTOP", "AirspaceFlow", "AFP")
 
-        # Try flow data
-        flow = parse_tfms_flow_message(raw)
-        if flow and flow["event_type"] != "UNKNOWN":
-            source_id = f"swim-flow-{flow['event_type']}-{flow.get('airport_icao', 'UNK')}-{flow.get('effective_at', '')}"
-            flow_batch.append({
-                **flow,
-                "source_id": source_id,
-                "raw_xml": raw[:4000],
-            })
-            stats["tfms_flow_messages"] += 1
+    for raw in tfms_raw:
+        # Fast pre-filter: skip XML parse unless message might be relevant
+        has_baker_tail = any(t in raw for t in BAKER_TAILS_SET)
+        has_flow_keyword = any(kw in raw for kw in FLOW_KEYWORDS)
+
+        if not has_baker_tail and not has_flow_keyword:
+            continue  # Skip — not a Baker flight and not flow control
+
+        if has_baker_tail:
+            flight = parse_tfms_flight_message(raw)
+            if flight and _is_baker_flight(flight):
+                source_id = f"swim-tfms-{flight['acid']}-{flight['event_time']}"
+                positions_batch.append({
+                    **flight,
+                    "source_id": source_id,
+                    "raw_xml": raw[:4000],
+                })
+                stats["tfms_flight_messages"] += 1
+                continue
+
+        if has_flow_keyword:
+            flow = parse_tfms_flow_message(raw)
+            if flow and flow["event_type"] != "UNKNOWN":
+                source_id = f"swim-flow-{flow['event_type']}-{flow.get('airport_icao', 'UNK')}-{flow.get('effective_at', '')}"
+                flow_batch.append({
+                    **flow,
+                    "source_id": source_id,
+                    "raw_xml": raw[:4000],
+                })
+                stats["tfms_flow_messages"] += 1
 
     # ── 2. STDDS: Terminal Automation + Departure Events ──────────────────────
     try:
@@ -442,6 +452,9 @@ def pull_swim() -> Dict[str, Any]:
         stats["errors"] += 1
 
     for raw in stdds_raw:
+        # Fast pre-filter: skip unless a Baker tail appears in the raw XML
+        if not any(t in raw for t in BAKER_TAILS_SET):
+            continue
         flight = parse_tfms_flight_message(raw)  # STDDS uses similar FIXM structure
         if flight and _is_baker_flight(flight):
             source_id = f"swim-stdds-{flight['acid']}-{flight['event_time']}"
