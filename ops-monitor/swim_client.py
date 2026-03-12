@@ -72,12 +72,12 @@ NNUM_RE = re.compile(r"N\d{1,5}[A-Z]{0,2}")
 
 # Maximum messages to drain per queue per run (prevent runaway)
 MAX_MESSAGES_PER_QUEUE = 5000
-# Per-queue overrides (TFMS is ~50 msg/sec firehose, but string pre-filter is fast)
-MAX_MESSAGES_OVERRIDE = {"TFMS": 5000}
+# Per-queue overrides (TFMS is ~50 msg/sec firehose — need high cap to catch all Baker flights)
+MAX_MESSAGES_OVERRIDE = {"TFMS": 20000}
 # Max seconds to spend draining a single queue
-MAX_DRAIN_SECS = 30
+MAX_DRAIN_SECS = 90
 # Receive timeout per message (ms) — stop draining when queue is empty
-RECEIVE_TIMEOUT_MS = 3000
+RECEIVE_TIMEOUT_MS = 2000
 
 
 # ── Solace Connection ─────────────────────────────────────────────────────────
@@ -337,6 +337,19 @@ def parse_tfms_flight_message(xml_str: str) -> Optional[Dict[str, Any]]:
 
     tail = _extract_tail_number(acid or "")
 
+    # Extra fields: aircraft model, flight status, ETD, ETA
+    aircraft_type = _get_attr(root, "aircraftModel") or _safe_text(_find_any(root, "aircraftModel"))
+    flight_status = _safe_text(_find_any(root, "flightStatus"))
+
+    # ETD/ETA — check timeValue attribute on etd/eta elements
+    etd = eta = None
+    for el in root.iter():
+        local = el.tag.split("}")[-1] if "}" in el.tag else el.tag
+        if local == "etd" and not etd:
+            etd = el.get("timeValue")
+        elif local == "eta" and not eta:
+            eta = el.get("timeValue")
+
     return {
         "acid": acid,
         "tail_number": tail,
@@ -348,6 +361,10 @@ def parse_tfms_flight_message(xml_str: str) -> Optional[Dict[str, Any]]:
         "groundspeed_kt": spd,
         "event_type": event_type,
         "event_time": event_time,
+        "aircraft_type": aircraft_type,
+        "flight_status": flight_status,
+        "etd": etd,
+        "eta": eta,
     }
 
 
