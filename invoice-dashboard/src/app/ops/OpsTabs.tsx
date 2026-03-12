@@ -14,10 +14,33 @@ type Tab = (typeof TABS)[number];
 export default function OpsTabs({ flights, bakerPprAirports, advertisedPrices, mxNotes = [] }: { flights: Flight[]; bakerPprAirports: string[]; advertisedPrices: AdvertisedPriceRow[]; mxNotes?: MxNote[] }) {
   const [tab, setTab] = useState<Tab>("Current Ops");
   const [scrollToTail, setScrollToTail] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
 
   function switchToDuty(tail?: string) {
     setScrollToTail(tail ?? null);
     setTab("Flight Time & Rest");
+  }
+
+  async function handleResync() {
+    setSyncing(true);
+    setSyncMsg(null);
+    try {
+      const res = await fetch("/api/ops/sync-schedule", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        setSyncMsg(data.error ?? "Sync failed");
+        return;
+      }
+      const upserted = data.upserted ?? 0;
+      const skipped = data.skipped ?? 0;
+      setSyncMsg(`${upserted} upserted, ${skipped} skipped`);
+      setTimeout(() => window.location.reload(), 1500);
+    } catch (err) {
+      setSyncMsg(err instanceof Error ? err.message : "Network error");
+    } finally {
+      setSyncing(false);
+    }
   }
 
   return (
@@ -37,6 +60,16 @@ export default function OpsTabs({ flights, bakerPprAirports, advertisedPrices, m
             {t}
           </button>
         ))}
+        <div className="ml-auto flex items-center gap-2 pb-1">
+          {syncMsg && <span className="text-xs text-gray-500">{syncMsg}</span>}
+          <button
+            onClick={handleResync}
+            disabled={syncing}
+            className="px-2.5 py-1 text-xs font-medium text-gray-500 bg-gray-100 hover:bg-gray-200 rounded transition-colors disabled:opacity-50"
+          >
+            {syncing ? "Syncing…" : "Resync JI"}
+          </button>
+        </div>
       </div>
 
       {/* Tab content */}
