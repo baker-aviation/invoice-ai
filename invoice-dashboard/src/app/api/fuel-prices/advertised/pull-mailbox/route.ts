@@ -174,6 +174,13 @@ async function handlePull(req: NextRequest) {
       items: totalInserted,
     });
 
+    // Cleanup: delete advertised prices older than 30 days
+    const cutoff30d = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+    await supa
+      .from("fbo_advertised_prices")
+      .delete()
+      .lt("week_start", cutoff30d);
+
     return NextResponse.json({
       ok: true,
       messagesScanned: messages.length,
