@@ -197,6 +197,48 @@ def _get_attr(root: ET.Element, attr_name: str) -> Optional[str]:
     return None
 
 
+def _parse_dms_position(root: ET.Element) -> tuple[Optional[float], Optional[float]]:
+    """Extract lat/lon from TFMS DMS format (degrees/minutes/seconds/direction)."""
+    lat = lon = None
+    for el in root.iter():
+        local = el.tag.split("}")[-1] if "}" in el.tag else el.tag
+        if local == "latitudeDMS":
+            try:
+                d = int(el.get("degrees", "0"))
+                m = int(el.get("minutes", "0"))
+                s = int(el.get("seconds", "0"))
+                lat = d + m / 60 + s / 3600
+                if el.get("direction") == "SOUTH":
+                    lat = -lat
+            except (ValueError, TypeError):
+                pass
+        elif local == "longitudeDMS":
+            try:
+                d = int(el.get("degrees", "0"))
+                m = int(el.get("minutes", "0"))
+                s = int(el.get("seconds", "0"))
+                lon = d + m / 60 + s / 3600
+                if el.get("direction") == "WEST":
+                    lon = -lon
+            except (ValueError, TypeError):
+                pass
+    return lat, lon
+
+
+def _parse_simple_altitude(root: ET.Element) -> Optional[int]:
+    """Parse TFMS simpleAltitude like '430C' → 43000 ft."""
+    el = _find_any(root, "simpleAltitude")
+    text = _safe_text(el)
+    if not text:
+        return None
+    # Strip trailing letter (C=cruise, B=block, etc.)
+    cleaned = re.sub(r"[A-Z]$", "", text.upper())
+    try:
+        return int(cleaned) * 100  # FL430 → 43000
+    except ValueError:
+        return None
+
+
 def parse_tfms_flight_message(xml_str: str) -> Optional[Dict[str, Any]]:
     """Parse a TFMS R14 Flight Data message.
 
@@ -234,7 +276,15 @@ def parse_tfms_flight_message(xml_str: str) -> Optional[Dict[str, Any]]:
     lat = float(_safe_text(lat_el)) if _safe_text(lat_el) else None
     lon = float(_safe_text(lon_el)) if _safe_text(lon_el) else None
 
-    # Also check latitudeDecimal/longitudeDecimal attributes (TFMS trackInfo format)
+    # Try DMS format (TFMS trackInformation position)
+    if lat is None or lon is None:
+        dms_lat, dms_lon = _parse_dms_position(root)
+        if dms_lat is not None:
+            lat = dms_lat
+        if dms_lon is not None:
+            lon = dms_lon
+
+    # Fallback: latitudeDecimal/longitudeDecimal attributes (nextEvent)
     if lat is None or lon is None:
         for el in root.iter():
             lat_attr = el.get("latitudeDecimal") or el.get("latitude")
@@ -252,6 +302,8 @@ def parse_tfms_flight_message(xml_str: str) -> Optional[Dict[str, Any]]:
             alt = int(float(_safe_text(alt_el)))
         except ValueError:
             pass
+    if alt is None:
+        alt = _parse_simple_altitude(root)
     spd = None
     if _safe_text(spd_el):
         try:
@@ -262,14 +314,16 @@ def parse_tfms_flight_message(xml_str: str) -> Optional[Dict[str, Any]]:
     # Event type — check msgType attribute (TFMS), then root tag
     msg_type = (_get_attr(root, "msgType") or "").lower()
     event_type = "POSITION"
-    if "departure" in msg_type or "depart" in msg_type:
+    if "track" in msg_type:
+        event_type = "TRACK"
+    elif "departure" in msg_type or "depart" in msg_type:
         event_type = "DEPARTURE"
     elif "arrival" in msg_type or "arrive" in msg_type:
         event_type = "ARRIVAL"
     elif "create" in msg_type or "plan" in msg_type:
         event_type = "FLIGHT_PLAN"
-    elif "modify" in msg_type or "update" in msg_type:
-        event_type = "POSITION"
+    elif "flighttimes" in msg_type:
+        event_type = "FLIGHT_TIMES"
     elif "cancel" in msg_type:
         event_type = "CANCEL"
 
