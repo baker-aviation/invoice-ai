@@ -1497,6 +1497,7 @@ function ScheduleTab({
   vanZoneNames,
   flightInfoMap,
   mxNotesByTail,
+  longTermMxTails,
 }: {
   allFlights: Flight[];
   date: string;
@@ -1505,6 +1506,7 @@ function ScheduleTab({
   vanZoneNames: Map<number, string>;
   flightInfoMap: Map<string, FlightInfoEntry>;
   mxNotesByTail: Map<string, MxNote[]>;
+  longTermMxTails: Set<string>;
 }) {
   const hasLive = liveVanPositions.size > 0;
 
@@ -2138,7 +2140,7 @@ function ScheduleTab({
       {(() => {
         // Filter out tails already assigned to a van via unscheduledOverrides
         const visibleUnscheduled = unscheduledAircraft.filter(
-          (a) => !unscheduledOverrides.has(a.tail),
+          (a) => !unscheduledOverrides.has(a.tail) && !longTermMxTails.has(a.tail),
         );
         if (visibleUnscheduled.length === 0) return null;
 
@@ -2640,6 +2642,11 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
 
     return result;
   }, [initialFlights, mxNotes]);
+
+  const longTermMxTails = useMemo(
+    () => new Set(longTermMxAircraft.map((a) => a.tail)),
+    [longTermMxAircraft],
+  );
 
   // ── Conformity tags ─────────────────────────────────────────────────────
   const [localTags, setLocalTags] = useState<Map<string, AircraftTag>>(new Map());
@@ -3358,7 +3365,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
 
       {/* ── Schedule tab ── */}
       {activeTab === "schedule" && (
-        <ScheduleTab allFlights={activeFlights} date={selectedDate} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} flightInfoMap={flightInfoMap} mxNotesByTail={mxNotesByTail} />
+        <ScheduleTab allFlights={activeFlights} date={selectedDate} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} flightInfoMap={flightInfoMap} mxNotesByTail={mxNotesByTail} longTermMxTails={longTermMxTails} />
       )}
 
       {/* ── Flight Schedule tab — grouped by aircraft ── */}
