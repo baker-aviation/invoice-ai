@@ -1037,6 +1037,7 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
             existing = supa.table(FLIGHTS_TABLE) \
                 .select("id, ics_uid") \
                 .gte("scheduled_departure", now.isoformat()) \
+                .limit(10000) \
                 .execute()
             stale_ids = [
                 row["id"] for row in (existing.data or [])
