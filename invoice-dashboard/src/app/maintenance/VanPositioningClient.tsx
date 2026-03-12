@@ -12,6 +12,7 @@ import {
   haversineKm,
   FIXED_VAN_ZONES,
   FALLBACK_TAILS,
+  BAKER_FLEET,
   VanAssignment,
   AircraftOvernightPosition,
 } from "@/lib/maintenanceData";
@@ -1424,21 +1425,28 @@ function VanScheduleCard({
                     </div>
                     {/* Day's other legs for this aircraft */}
                     {extraLegs.length > 0 && (
-                      <div className="ml-8 mt-1 space-y-0 border-l-2 pl-3" style={{ borderColor: color + "40" }}>
+                      <div className="ml-8 mt-1 space-y-0.5">
                         {extraLegs.map((f) => {
                           const ft = inferFlightType(f);
                           const cat = getFilterCategory(ft);
                           const dep = f.departure_icao?.replace(/^K/, "") ?? "?";
                           const arrIcao = f.arrival_icao?.replace(/^K/, "") ?? "?";
                           const isNext = nextDep && f.id === nextDep.id;
+                          const isRevenue = cat === "charter";
+                          const borderColor = cat === "charter" ? "border-green-400"
+                            : cat === "positioning" ? "border-purple-300"
+                            : cat === "maintenance" ? "border-orange-300"
+                            : "border-gray-200";
                           return (
-                            <div key={f.id} className={`flex items-center gap-2 text-xs py-px ${isNext ? "text-gray-500" : "text-gray-400"}`}>
-                              <span className="font-mono text-gray-500">{dep} → {arrIcao}</span>
+                            <div key={f.id} className={`flex items-center gap-2 text-xs pl-3 border-l-2 ${borderColor} ${
+                              isRevenue ? "py-1 bg-green-50/60 rounded-r font-medium text-gray-700" : "py-px text-gray-400"
+                            }`}>
+                              <span className={`font-mono ${isRevenue ? "text-gray-700" : "text-gray-500"}`}>{dep} → {arrIcao}</span>
                               <span>{fmtUtcHM(f.scheduled_departure, f.departure_icao)}{f.scheduled_arrival ? ` – ${fmtUtcHM(f.scheduled_arrival, f.arrival_icao)}` : ""}</span>
                               {ft && (
                                 <span className={`rounded px-1 py-0.5 text-[10px] font-medium ${
                                   cat === "positioning" ? "bg-purple-50 text-purple-500"
-                                  : cat === "charter" ? "bg-green-50 text-green-500"
+                                  : cat === "charter" ? "bg-green-100 text-green-700"
                                   : cat === "maintenance" ? "bg-orange-50 text-orange-500"
                                   : ft === "Owner" ? "bg-blue-50 text-blue-500"
                                   : "bg-gray-50 text-gray-400"
@@ -2570,7 +2578,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
     const result: LongTermMxAircraft[] = [];
     const qualifiedTails = new Set<string>();
 
-    const allTails = new Set<string>(FALLBACK_TAILS);
+    const allTails = new Set<string>([...FALLBACK_TAILS, ...BAKER_FLEET]);
     for (const f of initialFlights) {
       if (f.tail_number) allTails.add(f.tail_number);
     }
@@ -2644,6 +2652,38 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
     for (const [key, t] of localTags) map.set(key, t);
     return map;
   }, [aircraftTags, localTags, removedTags]);
+
+  // MX airport — read saved values from tags, allow inline editing
+  const mxAirportFromTags = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const t of aircraftTags) {
+      if (t.tag === "MX_Airport" && t.note) map.set(t.tail_number, t.note);
+    }
+    for (const [key, t] of localTags) {
+      if (t.tag === "MX_Airport" && t.note) map.set(t.tail_number, t.note);
+    }
+    return map;
+  }, [aircraftTags, localTags]);
+
+  const [editingMxAirport, setEditingMxAirport] = useState<string | null>(null);
+  const [mxAirportDraft, setMxAirportDraft] = useState("");
+
+  const saveMxAirport = useCallback(async (tail: string, airport: string) => {
+    const code = airport.trim().toUpperCase();
+    const key = tail + "|MX_Airport";
+    if (!code) {
+      // Remove
+      setRemovedTags((prev) => new Set(prev).add(key));
+      setLocalTags((prev) => { const next = new Map(prev); next.delete(key); return next; });
+      try { await fetch("/api/ops/aircraft-tags", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tail_number: tail, tag: "MX_Airport" }) }); } catch { /* ignore */ }
+    } else {
+      const optimistic: AircraftTag = { id: "local-" + Date.now(), tail_number: tail, tag: "MX_Airport", note: code, created_by: null, created_at: new Date().toISOString() };
+      setLocalTags((prev) => new Map(prev).set(key, optimistic));
+      setRemovedTags((prev) => { const next = new Set(prev); next.delete(key); return next; });
+      try { await fetch("/api/ops/aircraft-tags", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tail_number: tail, tag: "MX_Airport", note: code }) }); } catch { /* ignore */ }
+    }
+    setEditingMxAirport(null);
+  }, []);
 
   const toggleConformity = useCallback(async (tail: string) => {
     const key = tail + "|Conformity";
@@ -3502,13 +3542,35 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {longTermMxAircraft.map((ac) => {
               const hasConformity = effectiveTags.has(ac.tail + "|Conformity");
+              const displayAirport = ac.airport || mxAirportFromTags.get(ac.tail) || null;
+              const isEditingAirport = editingMxAirport === ac.tail;
               return (
                 <div key={ac.tail} className="rounded-xl border border-gray-200 bg-white overflow-hidden">
                   <div className="flex items-center justify-between px-4 py-2.5 bg-purple-50/60 border-b border-purple-100">
                     <span className="font-mono font-bold text-gray-900">{ac.tail}</span>
                     <div className="flex items-center gap-2">
-                      {ac.airport && (
-                        <span className="text-xs font-mono text-gray-500">{ac.airport}</span>
+                      {isEditingAirport ? (
+                        <input
+                          autoFocus
+                          className="w-16 text-xs font-mono text-gray-700 border border-purple-300 rounded px-1.5 py-0.5 bg-white focus:outline-none focus:ring-1 focus:ring-purple-400 uppercase"
+                          placeholder="ICAO"
+                          maxLength={4}
+                          defaultValue={displayAirport ?? ""}
+                          onBlur={(e) => saveMxAirport(ac.tail, e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") saveMxAirport(ac.tail, (e.target as HTMLInputElement).value);
+                            if (e.key === "Escape") setEditingMxAirport(null);
+                          }}
+                        />
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => { setEditingMxAirport(ac.tail); setMxAirportDraft(displayAirport ?? ""); }}
+                          className="text-xs font-mono text-gray-500 hover:text-purple-600 hover:underline cursor-pointer"
+                          title="Click to set MX airport"
+                        >
+                          {displayAirport || "+ airport"}
+                        </button>
                       )}
                       <span className="px-1.5 py-0.5 text-[10px] font-medium rounded-full bg-purple-100 text-purple-700">
                         MX
