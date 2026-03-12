@@ -167,9 +167,19 @@ def _extract_tail_number(text: str) -> Optional[str]:
     return None
 
 
-def parse_tfms_flight_message(xml_str: str) -> Optional[Dict[str, Any]]:
-    """Parse a TFMS R14 Flight Data message (FIXM XML).
+def _get_attr(root: ET.Element, attr_name: str) -> Optional[str]:
+    """Search for an attribute by name across all elements."""
+    for el in root.iter():
+        val = el.get(attr_name)
+        if val:
+            return val
+    return None
 
+
+def parse_tfms_flight_message(xml_str: str) -> Optional[Dict[str, Any]]:
+    """Parse a TFMS R14 Flight Data message.
+
+    Handles both FIXM and TFMS tfmDataService formats.
     Extracts: aircraft ID, tail, departure/arrival airports, position, event type.
     """
     try:
@@ -177,15 +187,21 @@ def parse_tfms_flight_message(xml_str: str) -> Optional[Dict[str, Any]]:
     except ET.ParseError:
         return None
 
-    # Try to find aircraft identification
-    acid_el = _find_any(root, "aircraftIdentification", "acid")
-    acid = _safe_text(acid_el)
+    # Aircraft ID — check attribute first (TFMS format: <fltdMessage acid="KOW519">)
+    acid = _get_attr(root, "acid")
+    if not acid:
+        acid_el = _find_any(root, "aircraftIdentification", "aircraftId")
+        acid = _safe_text(acid_el)
 
-    # Find departure/arrival airports
-    dep_el = _find_any(root, "departureAerodrome", "departurePoint", "origin")
-    arr_el = _find_any(root, "arrivalAerodrome", "destinationPoint", "destination")
-    dep_icao = _safe_text(dep_el) or (dep_el.get("code") if dep_el is not None else None)
-    arr_icao = _safe_text(arr_el) or (arr_el.get("code") if arr_el is not None else None)
+    # Departure/arrival — check attributes first, then elements
+    dep_icao = _get_attr(root, "depArpt")
+    arr_icao = _get_attr(root, "arrArpt")
+    if not dep_icao:
+        dep_el = _find_any(root, "departureAerodrome", "departurePoint", "airport")
+        dep_icao = _safe_text(dep_el) or (dep_el.get("code") if dep_el is not None else None)
+    if not arr_icao:
+        arr_el = _find_any(root, "arrivalAerodrome", "destinationPoint", "airport")
+        arr_icao = _safe_text(arr_el) or (arr_el.get("code") if arr_el is not None else None)
 
     # Position data
     lat_el = _find_any(root, "latitude", "lat")
@@ -208,20 +224,25 @@ def parse_tfms_flight_message(xml_str: str) -> Optional[Dict[str, Any]]:
         except ValueError:
             pass
 
-    # Event type from message type or root tag
-    root_tag = root.tag.split("}")[-1] if "}" in root.tag else root.tag
+    # Event type — check msgType attribute (TFMS), then root tag
+    msg_type = (_get_attr(root, "msgType") or "").lower()
     event_type = "POSITION"
-    tag_lower = root_tag.lower()
-    if "departure" in tag_lower:
+    if "departure" in msg_type or "depart" in msg_type:
         event_type = "DEPARTURE"
-    elif "arrival" in tag_lower:
+    elif "arrival" in msg_type or "arrive" in msg_type:
         event_type = "ARRIVAL"
-    elif "flightplan" in tag_lower or "flightPlan" in tag_lower:
+    elif "create" in msg_type or "plan" in msg_type:
         event_type = "FLIGHT_PLAN"
+    elif "modify" in msg_type or "update" in msg_type:
+        event_type = "POSITION"
+    elif "cancel" in msg_type:
+        event_type = "CANCEL"
 
-    # Timestamp
-    time_el = _find_any(root, "timestamp", "timeOfDeparture", "timeOfArrival", "time")
-    event_time = _safe_text(time_el)
+    # Timestamp — check sourceTimeStamp attribute, then elements
+    event_time = _get_attr(root, "sourceTimeStamp")
+    if not event_time:
+        time_el = _find_any(root, "timestamp", "timeOfDeparture", "timeOfArrival", "timeValue")
+        event_time = _safe_text(time_el)
     if not event_time:
         event_time = datetime.now(timezone.utc).isoformat()
 
@@ -414,11 +435,6 @@ def pull_swim() -> Dict[str, Any]:
 
     # Flow data keywords — cheap string check before XML parse
     FLOW_KEYWORDS = ("GroundDelay", "GroundStop", "GDP", "CTOP", "AirspaceFlow", "AFP")
-
-    # Debug: log first message fully (up to 2000 chars)
-    if tfms_raw:
-        print(f"[SWIM] TFMS sample (first 2000 chars): {tfms_raw[0][:2000]}", flush=True)
-        print(f"[SWIM] TFMS total drained: {len(tfms_raw)}", flush=True)
 
     for raw in tfms_raw:
         # Fast pre-filter: skip XML parse unless message might be relevant
