@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/service";
+import { requireAuth, isAuthed } from "@/lib/api-auth";
 import { parseFuelCSV } from "@/lib/fuelParsers";
 
 const FUEL_MAILBOX = "fuel@baker-aviation.com";
@@ -11,21 +12,26 @@ const FUEL_MAILBOX = "fuel@baker-aviation.com";
  * auto-detects vendor format, parses, and upserts into fbo_advertised_prices.
  *
  * Query params:
- *   lookback_minutes (default 120) — how far back to scan
+ *   lookback_minutes (default 720) — how far back to scan
  *   max_messages (default 50) — max emails to process
  *
  * Requires MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET env vars.
- * Secured by CRON_SECRET header check (Vercel Cron sends this automatically).
+ * Auth: CRON_SECRET (Vercel Cron) OR authenticated user session (manual pull).
  */
 
-function checkAuth(req: NextRequest): NextResponse | null {
+async function checkAuth(req: NextRequest): Promise<NextResponse | null> {
+  // Accept CRON_SECRET (Vercel Cron)
   const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret) return NextResponse.json({ error: "CRON_SECRET not configured" }, { status: 503 });
   const authHeader = req.headers.get("authorization");
-  if (authHeader !== `Bearer ${cronSecret}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (cronSecret && authHeader === `Bearer ${cronSecret}`) {
+    return null;
   }
-  return null;
+
+  // Accept regular user auth (manual "Pull Now" from dashboard)
+  const auth = await requireAuth(req);
+  if (isAuthed(auth)) return null;
+
+  return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 }
 
 // Vercel Cron calls GET
@@ -39,7 +45,7 @@ export async function POST(req: NextRequest) {
 }
 
 async function handlePull(req: NextRequest) {
-  const authError = checkAuth(req);
+  const authError = await checkAuth(req);
   if (authError) return authError;
 
   const lookbackMinutes = Number(req.nextUrl.searchParams.get("lookback_minutes") || "720");

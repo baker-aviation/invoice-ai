@@ -616,6 +616,29 @@ export default function FuelPricesTable({
   const [showImportModal, setShowImportModal] = useState(false);
   const [volumeGallons, setVolumeGallons] = useState<string>("");
   const [compareJetFbo, setCompareJetFbo] = useState(false);
+  const [isPulling, setIsPulling] = useState(false);
+  const [pullResult, setPullResult] = useState<string | null>(null);
+
+  async function handlePullNow() {
+    setIsPulling(true);
+    setPullResult(null);
+    try {
+      const res = await fetch("/api/fuel-prices/advertised/pull-mailbox", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        setPullResult(`Error: ${data.error ?? res.statusText}`);
+      } else if (data.totalInserted > 0) {
+        setPullResult(`Pulled ${data.totalInserted} prices from ${data.messagesProcessed} email(s). Refreshing...`);
+        setTimeout(() => window.location.reload(), 2000);
+      } else {
+        setPullResult(`Scanned ${data.messagesScanned} emails — no new rate sheets found`);
+      }
+    } catch (e) {
+      setPullResult(`Error: ${String(e)}`);
+    } finally {
+      setIsPulling(false);
+    }
+  }
 
   // Document IDs that serve as baselines for other rows
   const baselineDocIds = useMemo(() => {
@@ -972,6 +995,19 @@ export default function FuelPricesTable({
           }`}>
             {healthCounts.current}/{EXPECTED_VENDORS.length} current
           </span>
+          <button
+            type="button"
+            onClick={handlePullNow}
+            disabled={isPulling}
+            className="ml-auto px-3 py-1 text-xs font-medium rounded-md border border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100 disabled:opacity-50 transition-colors"
+          >
+            {isPulling ? "Pulling..." : "Pull Emails Now"}
+          </button>
+          {pullResult && (
+            <span className={`text-[10px] ${pullResult.startsWith("Error") ? "text-red-600" : "text-green-600"}`}>
+              {pullResult}
+            </span>
+          )}
         </div>
         <div className="flex flex-wrap gap-1.5">
           {vendorHealth.map(({ vendor, status, latestWeek, rowCount }) => (
