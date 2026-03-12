@@ -150,7 +150,7 @@ export async function POST(req: NextRequest) {
           const pArr = formatIcao(priorLeg.arrival_icao);
           const pTime = formatDepTime(priorLeg.scheduled_departure, priorLeg.departure_icao);
           const pType = priorLeg.flight_type || "Positioning";
-          legLines.push(`  ⚠️ Prior leg: ${pDep}-${pArr} dep ${pTime} (${pType})`);
+          legLines.push(`  Prior leg: ${pDep}-${pArr} dep ${pTime} (${pType})`);
         }
 
         // JetInsight link
