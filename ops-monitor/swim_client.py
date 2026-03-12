@@ -39,8 +39,15 @@ SWIM_QUEUES = {
     },
 }
 
-# Baker Aviation tail numbers to filter for
-BAKER_TAILS = re.compile(r"N\d{1,5}[A-Z]{0,2}")
+# Baker Aviation fleet — must match BAKER_FLEET in maintenanceData.ts
+BAKER_TAILS_SET = {
+    "N51GB",  "N102VR", "N106PC", "N125DZ", "N125TH", "N187CR", "N201HR",
+    "N301HR", "N371DB", "N416F",  "N513JB", "N519FX", "N521FX", "N533FX",
+    "N548FX", "N552FX", "N553FX", "N555FX", "N700LH", "N703TX", "N733FL",
+    "N818CF", "N860TX", "N883TR", "N910E",  "N939TX", "N954JS", "N955GH",
+    "N957JS", "N971JS", "N988TX", "N992MG", "N998CX",
+}
+NNUM_RE = re.compile(r"N\d{1,5}[A-Z]{0,2}")
 
 # Maximum messages to drain per queue per run (prevent runaway)
 MAX_MESSAGES_PER_QUEUE = 5000
@@ -140,9 +147,11 @@ def _find_any(root: ET.Element, *tags: str) -> Optional[ET.Element]:
 
 
 def _extract_tail_number(text: str) -> Optional[str]:
-    """Extract N-number from text."""
-    m = BAKER_TAILS.search(text or "")
-    return m.group(0) if m else None
+    """Extract Baker N-number from text."""
+    m = NNUM_RE.search(text or "")
+    if m and m.group(0) in BAKER_TAILS_SET:
+        return m.group(0)
+    return None
 
 
 def parse_tfms_flight_message(xml_str: str) -> Optional[Dict[str, Any]]:
@@ -340,11 +349,12 @@ def parse_notam_message(xml_str: str) -> Optional[Dict[str, Any]]:
 def _is_baker_flight(msg: Dict[str, Any]) -> bool:
     """Check if a flight message involves a Baker Aviation aircraft."""
     tail = msg.get("tail_number")
+    if tail and tail in BAKER_TAILS_SET:
+        return True
+    # Check if callsign contains a Baker N-number
     acid = msg.get("acid") or ""
-    if tail:
-        return True  # Already matched N-number pattern
-    # Check if callsign contains an N-number
-    return bool(BAKER_TAILS.search(acid))
+    m = NNUM_RE.search(acid)
+    return bool(m and m.group(0) in BAKER_TAILS_SET)
 
 
 def pull_swim() -> Dict[str, Any]:
