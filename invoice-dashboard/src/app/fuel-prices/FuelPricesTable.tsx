@@ -651,6 +651,12 @@ export default function FuelPricesTable({
     }
   }
 
+  // Filter out advertised prices older than 8 days
+  const freshAdvertisedPrices = useMemo(() => {
+    const cutoff = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+    return advertisedPrices.filter((a) => a.week_start >= cutoff);
+  }, [advertisedPrices]);
+
   // Document IDs that serve as baselines for other rows
   const baselineDocIds = useMemo(() => {
     const ids = new Set<string>();
@@ -737,29 +743,29 @@ export default function FuelPricesTable({
   // Advertised price lookup: key = "vendor_lower|airport|week_monday" → rows
   const advLookup = useMemo(() => {
     const lookup = new Map<string, AdvertisedPriceRow[]>();
-    for (const adv of advertisedPrices) {
+    for (const adv of freshAdvertisedPrices) {
       const key = `${adv.fbo_vendor.toLowerCase()}|${adv.airport_code}|${adv.week_start}`;
       if (!lookup.has(key)) lookup.set(key, []);
       lookup.get(key)!.push(adv);
     }
     return lookup;
-  }, [advertisedPrices]);
+  }, [freshAdvertisedPrices]);
 
   // Best-rate lookup: key = "airport|week_monday" → all vendor rows for that airport+week
   const advByAirportWeek = useMemo(() => {
     const lookup = new Map<string, AdvertisedPriceRow[]>();
-    for (const adv of advertisedPrices) {
+    for (const adv of freshAdvertisedPrices) {
       const key = `${adv.airport_code}|${adv.week_start}`;
       if (!lookup.has(key)) lookup.set(key, []);
       lookup.get(key)!.push(adv);
     }
     return lookup;
-  }, [advertisedPrices]);
+  }, [freshAdvertisedPrices]);
 
   // Fallback lookup: airport → all weeks sorted newest first (for when exact week has no match)
   const advByAirport = useMemo(() => {
     const lookup = new Map<string, AdvertisedPriceRow[]>();
-    for (const adv of advertisedPrices) {
+    for (const adv of freshAdvertisedPrices) {
       if (!lookup.has(adv.airport_code)) lookup.set(adv.airport_code, []);
       lookup.get(adv.airport_code)!.push(adv);
     }
@@ -768,12 +774,12 @@ export default function FuelPricesTable({
       rows.sort((a, b) => b.week_start.localeCompare(a.week_start));
     }
     return lookup;
-  }, [advertisedPrices]);
+  }, [freshAdvertisedPrices]);
 
   // Latest week per vendor (for freshness indicator)
   const vendorFreshness = useMemo(() => {
     const byVendor = new Map<string, { latestWeek: string; rowCount: number }>();
-    for (const adv of advertisedPrices) {
+    for (const adv of freshAdvertisedPrices) {
       const existing = byVendor.get(adv.fbo_vendor);
       if (!existing || adv.week_start > existing.latestWeek) {
         byVendor.set(adv.fbo_vendor, {
@@ -787,13 +793,13 @@ export default function FuelPricesTable({
     return [...byVendor.entries()]
       .map(([vendor, info]) => ({ vendor, ...info }))
       .sort((a, b) => a.vendor.localeCompare(b.vendor));
-  }, [advertisedPrices]);
+  }, [freshAdvertisedPrices]);
 
   // Advertised vs Actual comparison rows
   const parsedGallons = volumeGallons ? parseInt(volumeGallons, 10) : null;
   const advVsActual = useMemo(
-    () => buildAdvVsActual(initialPrices, advertisedPrices, parsedGallons),
-    [initialPrices, advertisedPrices, parsedGallons],
+    () => buildAdvVsActual(initialPrices, freshAdvertisedPrices, parsedGallons),
+    [initialPrices, freshAdvertisedPrices, parsedGallons],
   );
 
   // Average WoW change per vendor
@@ -947,7 +953,7 @@ export default function FuelPricesTable({
 
   const hasBothSources = sourceCounts.invoice > 0 && sourceCounts.jetinsight > 0;
   const hasJetInsight = sourceCounts.jetinsight > 0;
-  const hasAdvertised = advertisedPrices.length > 0;
+  const hasAdvertised = freshAdvertisedPrices.length > 0;
 
   const activeTotalPages = viewMode === "compare" ? compTotalPages : viewMode === "advertised" ? advTotalPages : totalPages;
   const activeCount = viewMode === "compare" ? filteredComparisons.length : viewMode === "advertised" ? filteredAdvVsActual.length : filtered.length;
