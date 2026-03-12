@@ -52,6 +52,20 @@ BAKER_TAILS_SET = {
 }
 # Baker ICAO callsign prefix (e.g. KOW519, KOW553)
 BAKER_CALLSIGN_PREFIX = "KOW"
+# KOW callsign → tail number mapping
+KOW_TO_TAIL = {
+    "KOW51":  "N51GB",  "KOW102": "N102VR", "KOW106": "N106PC",
+    "KOW125": "N125DZ", "KOW187": "N187CR", "KOW201": "N201HR",
+    "KOW301": "N301HR", "KOW371": "N371DB", "KOW416": "N416F",
+    "KOW513": "N513JB", "KOW519": "N519FX", "KOW521": "N521FX",
+    "KOW533": "N533FX", "KOW548": "N548FX", "KOW552": "N552FX",
+    "KOW553": "N553FX", "KOW555": "N555FX", "KOW700": "N700LH",
+    "KOW703": "N703TX", "KOW733": "N733FL", "KOW818": "N818CF",
+    "KOW860": "N860TX", "KOW883": "N883TR", "KOW910": "N910E",
+    "KOW939": "N939TX", "KOW954": "N954JS", "KOW955": "N955GH",
+    "KOW957": "N957JS", "KOW971": "N971JS", "KOW988": "N988TX",
+    "KOW992": "N992MG", "KOW998": "N998CX",
+}
 # Combined set for fast string pre-filtering
 BAKER_IDENTIFIERS = BAKER_TAILS_SET | {BAKER_CALLSIGN_PREFIX}
 NNUM_RE = re.compile(r"N\d{1,5}[A-Z]{0,2}")
@@ -160,8 +174,15 @@ def _find_any(root: ET.Element, *tags: str) -> Optional[ET.Element]:
 
 
 def _extract_tail_number(text: str) -> Optional[str]:
-    """Extract Baker N-number from text."""
-    m = NNUM_RE.search(text or "")
+    """Extract Baker tail number from text (N-number or KOW callsign)."""
+    if not text:
+        return None
+    # Check KOW callsign first
+    upper = text.upper()
+    if upper.startswith(BAKER_CALLSIGN_PREFIX):
+        return KOW_TO_TAIL.get(upper)
+    # Check N-number
+    m = NNUM_RE.search(text)
     if m and m.group(0) in BAKER_TAILS_SET:
         return m.group(0)
     return None
@@ -203,14 +224,28 @@ def parse_tfms_flight_message(xml_str: str) -> Optional[Dict[str, Any]]:
         arr_el = _find_any(root, "arrivalAerodrome", "destinationPoint", "airport")
         arr_icao = _safe_text(arr_el) or (arr_el.get("code") if arr_el is not None else None)
 
-    # Position data
+    # Position data — check both element text and attributes
+    # TFMS nests position in trackInformation/reportedAltitude etc.
     lat_el = _find_any(root, "latitude", "lat")
     lon_el = _find_any(root, "longitude", "lon")
-    alt_el = _find_any(root, "altitude", "assignedAltitude")
-    spd_el = _find_any(root, "groundSpeed", "groundspeed")
+    alt_el = _find_any(root, "altitude", "assignedAltitude", "reportedAltitude")
+    spd_el = _find_any(root, "speed", "groundSpeed", "groundspeed", "reportedSpeed")
 
     lat = float(_safe_text(lat_el)) if _safe_text(lat_el) else None
     lon = float(_safe_text(lon_el)) if _safe_text(lon_el) else None
+
+    # Also check latitudeDecimal/longitudeDecimal attributes (TFMS trackInfo format)
+    if lat is None or lon is None:
+        for el in root.iter():
+            lat_attr = el.get("latitudeDecimal") or el.get("latitude")
+            lon_attr = el.get("longitudeDecimal") or el.get("longitude")
+            if lat_attr and lon_attr:
+                try:
+                    lat = float(lat_attr)
+                    lon = float(lon_attr)
+                    break
+                except ValueError:
+                    pass
     alt = None
     if _safe_text(alt_el):
         try:
