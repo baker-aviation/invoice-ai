@@ -27,7 +27,7 @@ export async function POST(req: NextRequest) {
   const LIVE_TYPES = ["Revenue", "Owner", "Charter"];
   const { data: flights, error: flightsErr } = await supa
     .from("flights")
-    .select("id, tail_number, departure_icao, arrival_icao, scheduled_departure, flight_type, summary")
+    .select("id, tail_number, departure_icao, arrival_icao, scheduled_departure, flight_type, summary, jetinsight_url")
     .gte("scheduled_departure", now.toISOString())
     .lte("scheduled_departure", windowEnd.toISOString())
     .not("tail_number", "is", null)
@@ -40,6 +40,19 @@ export async function POST(req: NextRequest) {
   if (!flights || flights.length === 0) {
     return NextResponse.json({ ok: true, checked: 0, sent: 0, skipped: 0, message: "No flights departing within window" });
   }
+
+  // Pre-fetch today's flights for prior leg detection
+  const todayStart = new Date(now);
+  todayStart.setHours(0, 0, 0, 0);
+  const todayEnd = new Date(now);
+  todayEnd.setHours(23, 59, 59, 999);
+  const { data: allTodayFlights } = await supa
+    .from("flights")
+    .select("tail_number, departure_icao, arrival_icao, scheduled_departure, flight_type, jetinsight_url")
+    .gte("scheduled_departure", todayStart.toISOString())
+    .lte("scheduled_departure", todayEnd.toISOString())
+    .not("tail_number", "is", null)
+    .order("scheduled_departure", { ascending: true });
 
   // 2. Load all salesperson-slack mappings
   const { data: slackMap } = await supa
@@ -94,12 +107,26 @@ export async function POST(req: NextRequest) {
       const arrIcao = formatIcao(flight.arrival_icao);
       const broker = trip.customer || "Unknown";
 
-      const message = [
+      // Prior leg alert
+      const priorLeg = findPriorLeg(allTodayFlights ?? [], flight.tail_number, flight.departure_icao, flight.scheduled_departure);
+
+      const lines = [
         `You have a trip departing in ~1hr (${depTime}) on tail *${flight.tail_number}* going ${depIcao} - ${arrIcao}.`,
         `Broker is ${broker}.`,
-        `Crew should be at the FBO now.`,
-        `Please check in and manage.`,
-      ].join("\n");
+      ];
+      if (priorLeg) {
+        const pDep = formatIcao(priorLeg.departure_icao);
+        const pArr = formatIcao(priorLeg.arrival_icao);
+        const pTime = formatDepTimeMilitary(priorLeg.scheduled_departure, priorLeg.departure_icao);
+        const pType = priorLeg.flight_type || "Positioning";
+        lines.push(`⚠️ Prior leg: ${pDep}-${pArr} dep ${pTime} (${pType}) — must land first`);
+      }
+      lines.push(`Crew should be at the FBO now.`);
+      lines.push(`Please check in and manage.`);
+      if (flight.jetinsight_url) {
+        lines.push(`<${flight.jetinsight_url}|Open in JetInsight>`);
+      }
+      const message = lines.join("\n");
 
       try {
         const slackRes = await fetch("https://slack.com/api/chat.postMessage", {
@@ -170,4 +197,39 @@ function formatIcao(icao: string | null): string {
   if (!icao) return "???";
   if (icao.length === 4 && icao.startsWith("K")) return icao.slice(1);
   return icao;
+}
+
+function formatDepTimeMilitary(iso: string | null, originIcao: string | null): string {
+  if (!iso) return "TBD";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "TBD";
+  const tz = getAirportTimezone(originIcao) ?? "America/New_York";
+  const parts = new Intl.DateTimeFormat("en-US", {
+    hour: "numeric", minute: "2-digit", hour12: false, timeZone: tz,
+  }).formatToParts(d);
+  const hour = parts.find((p) => p.type === "hour")?.value ?? "00";
+  const minute = parts.find((p) => p.type === "minute")?.value ?? "00";
+  const timeNum = `${hour.padStart(2, "0")}${minute}`;
+  const tzAbbr = new Intl.DateTimeFormat("en-US", {
+    timeZoneName: "short", timeZone: tz,
+  }).formatToParts(d).find((p) => p.type === "timeZoneName")?.value ?? "ET";
+  return `${timeNum}${tzAbbr}`;
+}
+
+function findPriorLeg(
+  allFlights: { tail_number: string; departure_icao: string; arrival_icao: string; scheduled_departure: string; flight_type: string | null; jetinsight_url: string | null }[],
+  tailNumber: string,
+  departureIcao: string,
+  scheduledDeparture: string | null,
+): typeof allFlights[number] | null {
+  if (!scheduledDeparture) return null;
+  const depTime = new Date(scheduledDeparture).getTime();
+  const candidates = allFlights.filter(
+    (f) =>
+      f.tail_number === tailNumber &&
+      f.arrival_icao === departureIcao &&
+      new Date(f.scheduled_departure).getTime() < depTime,
+  );
+  if (candidates.length === 0) return null;
+  return candidates[candidates.length - 1];
 }

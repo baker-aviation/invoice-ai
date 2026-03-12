@@ -203,6 +203,8 @@ function parseWfsCSV(lines: string[], headers: string[], vendor: string, weekSta
     if (!icao) continue;
     const price = parsePrice(fields[totalPriceIdx]);
     if (price === null || price <= 0) continue;
+    // Skip placeholder prices (99999 = "call for quote") and sub-$2 tax-only rows
+    if (price < 2 || price > 50) continue;
     let weekStart: string | null = null;
     if (weekStartOverride) {
       weekStart = normalizeToMonday(weekStartOverride);

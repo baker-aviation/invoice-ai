@@ -72,13 +72,13 @@ export async function POST(req: NextRequest) {
   // Filter to live legs only by checking against flights table
   const liveLegsByPerson = new Map<string, typeof filteredLegs>();
   type LegRow = NonNullable<typeof legs>[number];
-  const filteredLegs: (LegRow & { flight_type?: string })[] = [];
+  const filteredLegs: (LegRow & { flight_type?: string; jetinsight_url?: string | null })[] = [];
 
   for (const leg of legs ?? []) {
     // Check if there's a matching flight with a live type
     const { data: matchingFlights } = await supa
       .from("flights")
-      .select("flight_type")
+      .select("flight_type, jetinsight_url")
       .eq("tail_number", leg.tail_number)
       .eq("departure_icao", leg.origin_icao)
       .eq("arrival_icao", leg.destination_icao)
@@ -88,9 +88,18 @@ export async function POST(req: NextRequest) {
       .limit(1);
 
     if (matchingFlights && matchingFlights.length > 0) {
-      filteredLegs.push({ ...leg, flight_type: matchingFlights[0].flight_type });
+      filteredLegs.push({ ...leg, flight_type: matchingFlights[0].flight_type, jetinsight_url: matchingFlights[0].jetinsight_url });
     }
   }
+
+  // Pre-fetch all flights for tomorrow to find prior legs
+  const { data: allTomorrowFlights } = await supa
+    .from("flights")
+    .select("tail_number, departure_icao, arrival_icao, scheduled_departure, flight_type, jetinsight_url")
+    .gte("scheduled_departure", tomorrowStart.toISOString())
+    .lte("scheduled_departure", tomorrowEnd.toISOString())
+    .not("tail_number", "is", null)
+    .order("scheduled_departure", { ascending: true });
 
   // 3. Group legs by salesperson (lowercase for matching)
   for (const leg of filteredLegs) {
@@ -125,18 +134,34 @@ export async function POST(req: NextRequest) {
     if (!personLegs || personLegs.length === 0) {
       message = `Good Evening ${firstName},\n\nFor ${dateLabel}, you have no sold legs.`;
     } else {
-      const legLines = personLegs.map((leg) => {
+      const legLines: string[] = [];
+      for (const leg of personLegs) {
         const dep = formatIcao(leg.origin_icao);
         const arr = formatIcao(leg.destination_icao);
         const time = formatDepTime(leg.scheduled_departure, leg.origin_icao);
         const broker = leg.customer || "Unknown";
-        return `• ${dep}-${arr} ${time} ${leg.tail_number} Broker - ${broker}`;
-      });
+        legLines.push(`• ${dep}-${arr} ${time} ${leg.tail_number} Broker - ${broker}`);
+
+        // Prior leg alert
+        const priorLeg = findPriorLeg(allTomorrowFlights ?? [], leg.tail_number, leg.origin_icao, leg.scheduled_departure);
+        if (priorLeg) {
+          const pDep = formatIcao(priorLeg.departure_icao);
+          const pArr = formatIcao(priorLeg.arrival_icao);
+          const pTime = formatDepTime(priorLeg.scheduled_departure, priorLeg.departure_icao);
+          const pType = priorLeg.flight_type || "Positioning";
+          legLines.push(`  ⚠️ Prior leg: ${pDep}-${pArr} dep ${pTime} (${pType})`);
+        }
+
+        if (leg.jetinsight_url) {
+          legLines.push(`  <${leg.jetinsight_url}|Open in JetInsight>`);
+        }
+      }
 
       message = [
         `Good Evening ${firstName},`,
         "",
         `Tomorrow you have sold the following legs:`,
+        "",
         ...legLines,
       ].join("\n");
     }
@@ -241,4 +266,22 @@ function formatIcao(icao: string | null): string {
   if (!icao) return "???";
   if (icao.length === 4 && icao.startsWith("K")) return icao.slice(1);
   return icao;
+}
+
+function findPriorLeg(
+  allFlights: { tail_number: string; departure_icao: string; arrival_icao: string; scheduled_departure: string; flight_type: string | null; jetinsight_url: string | null }[],
+  tailNumber: string,
+  departureIcao: string,
+  scheduledDeparture: string | null,
+): typeof allFlights[number] | null {
+  if (!scheduledDeparture) return null;
+  const depTime = new Date(scheduledDeparture).getTime();
+  const candidates = allFlights.filter(
+    (f) =>
+      f.tail_number === tailNumber &&
+      f.arrival_icao === departureIcao &&
+      new Date(f.scheduled_departure).getTime() < depTime,
+  );
+  if (candidates.length === 0) return null;
+  return candidates[candidates.length - 1];
 }
