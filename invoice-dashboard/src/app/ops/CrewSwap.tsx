@@ -651,7 +651,7 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
                 optimizing ? "bg-gray-100 text-gray-400" : "bg-blue-50 text-blue-700 hover:bg-blue-100 border-blue-200"
               }`}
             >
-              {optimizing ? "Searching..." : "Optimize + Flights (Amadeus)"}
+              {optimizing ? "Searching..." : "Optimize + Flights"}
             </button>
             {swapPlan && (
               <button

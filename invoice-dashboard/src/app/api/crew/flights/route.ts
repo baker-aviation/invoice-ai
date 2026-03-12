@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin, isAuthed } from "@/lib/api-auth";
-import { searchFlights } from "@/lib/amadeus";
+import { searchFlights } from "@/lib/hasdata";
 
 export const dynamic = "force-dynamic";
 
