@@ -106,6 +106,8 @@ const FLEET_ORDER = ["Challenger 300", "Challenger 350", "Citation X", "Other"];
 const DUTY_FLIGHT_TYPES = new Set(["revenue", "owner", "positioning", "ferry", "charter"]);
 const MAX_LEG_DURATION_MIN = 12 * 60;
 const MIN_REST_GAP_MS = 8 * 60 * 60 * 1000;
+const LEAD_TIME_MS = 60 * 60 * 1000;  // 60min pre-duty (matches DutyTracker)
+const POST_TIME_MS = 30 * 60 * 1000;  // 30min post-duty (matches DutyTracker)
 
 type TailDutySummary = {
   flightTimeMin: number;
@@ -237,12 +239,16 @@ function computeTailDuty(
     // --- Crew rest: find the most recent completed rest period ---
     // Walk backwards to find the last rest gap (≥8h) before a leg that has started.
     // This shows how much rest the crew got before their current/most recent duty period.
+    // Rest = dutyOff (prev arrival + 30min post) to dutyOn (next departure - 60min lead)
+    // to match DutyTracker's calculation.
     let restMin: number | null = null;
     for (let i = intervals.length - 2; i >= 0; i--) {
       const gapMs = intervals[i + 1].startMs - intervals[i].endMs;
       if (gapMs < MIN_REST_GAP_MS) continue;
       if (intervals[i + 1].startMs <= nowMs) {
-        restMin = gapMs / 60_000;
+        const dutyOffMs = intervals[i].endMs + POST_TIME_MS;
+        const dutyOnMs = intervals[i + 1].startMs - LEAD_TIME_MS;
+        restMin = Math.max(0, (dutyOnMs - dutyOffMs) / 60_000);
         break;
       }
     }
@@ -251,7 +257,9 @@ function computeTailDuty(
       for (let i = 0; i < intervals.length - 1; i++) {
         const gapMs = intervals[i + 1].startMs - intervals[i].endMs;
         if (gapMs >= MIN_REST_GAP_MS && intervals[i + 1].startMs > nowMs) {
-          restMin = gapMs / 60_000;
+          const dutyOffMs = intervals[i].endMs + POST_TIME_MS;
+          const dutyOnMs = intervals[i + 1].startMs - LEAD_TIME_MS;
+          restMin = Math.max(0, (dutyOnMs - dutyOffMs) / 60_000);
           break;
         }
       }
