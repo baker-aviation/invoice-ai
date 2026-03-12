@@ -1,9 +1,17 @@
 /**
- * Crew Swap Optimizer v3
+ * Crew Swap Optimizer v4 — Transport-First Assignment
  *
  * Full crew swap planning engine. For each crew member, evaluates all viable
  * transport options (commercial flights, Uber, rental car, drive), scores them
  * on cost + reliability + duty efficiency, and picks the best combination.
+ *
+ * KEY CHANGE from v3: Crew assignment is now TRANSPORT-FIRST.
+ * Instead of estimating costs with a heuristic and then discovering infeasible
+ * routes, we now:
+ *   1. Build swap points for every tail
+ *   2. Run full buildCandidates() + scoreCandidate() for every crew × tail combo
+ *   3. Only assign crew where transport is PROVEN viable
+ *   4. Run final transport plan with pre-validated assignments
  *
  * Enforces: 14hr duty day, midnight home deadline, FBO arrival buffers,
  * backup flight requirements, aircraft never unattended, and more.
@@ -714,7 +722,75 @@ function optimizeTail(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// LAYER 6: Public API / Orchestrator
+// LAYER 6: Swap Point Extraction
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** Extract swap points for a tail on a given date. Reusable by both
+ *  buildSwapPlan and the feasibility matrix builder. */
+function extractSwapPoints(
+  tail: string,
+  byTail: Map<string, FlightLeg[]>,
+  swapDate: string,
+): { swapPoints: SwapPoint[]; overnightAirport: string | null; aircraftType: string } {
+  const legs = byTail.get(tail) ?? [];
+  const wedLegs = legs.filter((f) => f.scheduled_departure.slice(0, 10) === swapDate);
+  const liveWedLegs = wedLegs.filter((f) => isLiveType(f.flight_type));
+
+  const priorLegs = legs.filter(
+    (f) => new Date(f.scheduled_departure).getTime() < new Date(swapDate).getTime(),
+  );
+  const lastPrior = priorLegs[priorLegs.length - 1];
+  const overnightAirport = lastPrior?.arrival_icao ?? wedLegs[0]?.departure_icao ?? null;
+
+  const swapPoints: SwapPoint[] = [];
+
+  if (liveWedLegs.length > 0) {
+    const firstLive = liveWedLegs[0];
+    swapPoints.push({
+      icao: firstLive.departure_icao,
+      time: new Date(firstLive.scheduled_departure),
+      position: "before_live",
+      isAdjacentLive: true,
+    });
+    const lastLive = liveWedLegs[liveWedLegs.length - 1];
+    if (lastLive.arrival_icao && lastLive.scheduled_arrival) {
+      swapPoints.push({
+        icao: lastLive.arrival_icao,
+        time: new Date(lastLive.scheduled_arrival),
+        position: "after_live",
+        isAdjacentLive: true,
+      });
+    }
+  } else if (wedLegs.length > 0) {
+    swapPoints.push({
+      icao: wedLegs[0].departure_icao,
+      time: new Date(wedLegs[0].scheduled_departure),
+      position: "between_legs",
+      isAdjacentLive: false,
+    });
+    const lastWed = wedLegs[wedLegs.length - 1];
+    if (lastWed.arrival_icao && lastWed.scheduled_arrival) {
+      swapPoints.push({
+        icao: lastWed.arrival_icao,
+        time: new Date(lastWed.scheduled_arrival),
+        position: "between_legs",
+        isAdjacentLive: false,
+      });
+    }
+  } else if (overnightAirport) {
+    swapPoints.push({
+      icao: overnightAirport,
+      time: new Date(`${swapDate}T12:00:00Z`),
+      position: "idle",
+      isAdjacentLive: false,
+    });
+  }
+
+  return { swapPoints, overnightAirport, aircraftType: "unknown" };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LAYER 7: Public API / Orchestrator
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export function buildSwapPlan(params: {
@@ -747,72 +823,13 @@ export function buildSwapPlan(params: {
 
   // ── Process each tail ──────────────────────────────────────────────────
   for (const [tail, assignment] of Object.entries(swapAssignments)) {
-    const legs = byTail.get(tail) ?? [];
-    const wedLegs = legs.filter((f) => f.scheduled_departure.slice(0, 10) === swapDate);
-    const liveWedLegs = wedLegs.filter((f) => isLiveType(f.flight_type));
-
     // Determine aircraft type
     const anyName = assignment.oncoming_pic ?? assignment.offgoing_pic ?? assignment.oncoming_sic ?? assignment.offgoing_sic;
     const anyCrew = anyName ? (findCrewByName(crewRoster, anyName, "PIC") ?? findCrewByName(crewRoster, anyName, "SIC")) : null;
     const aircraftType = anyCrew?.aircraft_types[0] ?? "unknown";
 
-    // Find key airports
-    const priorLegs = legs.filter(
-      (f) => new Date(f.scheduled_departure).getTime() < new Date(swapDate).getTime(),
-    );
-    const lastPrior = priorLegs[priorLegs.length - 1];
-    const overnightAirport = lastPrior?.arrival_icao ?? wedLegs[0]?.departure_icao ?? null;
-
-    // ── Build swap points ────────────────────────────────────────────────
-    // RULE: Extremely strong preference to swap before/after LIVE legs only
-    const swapPoints: SwapPoint[] = [];
-
-    if (liveWedLegs.length > 0) {
-      // Before first live leg
-      const firstLive = liveWedLegs[0];
-      swapPoints.push({
-        icao: firstLive.departure_icao,
-        time: new Date(firstLive.scheduled_departure),
-        position: "before_live",
-        isAdjacentLive: true,
-      });
-
-      // After last live leg
-      const lastLive = liveWedLegs[liveWedLegs.length - 1];
-      if (lastLive.arrival_icao && lastLive.scheduled_arrival) {
-        swapPoints.push({
-          icao: lastLive.arrival_icao,
-          time: new Date(lastLive.scheduled_arrival),
-          position: "after_live",
-          isAdjacentLive: true,
-        });
-      }
-    } else if (wedLegs.length > 0) {
-      // No live legs — use first departure and last arrival
-      swapPoints.push({
-        icao: wedLegs[0].departure_icao,
-        time: new Date(wedLegs[0].scheduled_departure),
-        position: "between_legs",
-        isAdjacentLive: false,
-      });
-      const lastWed = wedLegs[wedLegs.length - 1];
-      if (lastWed.arrival_icao && lastWed.scheduled_arrival) {
-        swapPoints.push({
-          icao: lastWed.arrival_icao,
-          time: new Date(lastWed.scheduled_arrival),
-          position: "between_legs",
-          isAdjacentLive: false,
-        });
-      }
-    } else if (overnightAirport) {
-      // No Wednesday legs — aircraft idle at last known position
-      swapPoints.push({
-        icao: overnightAirport,
-        time: new Date(`${swapDate}T12:00:00Z`),
-        position: "idle",
-        isAdjacentLive: false,
-      });
-    }
+    // Use extracted swap-point builder
+    const { swapPoints } = extractSwapPoints(tail, byTail, swapDate);
 
     if (swapPoints.length === 0) {
       globalWarnings.push(`${tail}: No swap points found — no flights and no known position`);
@@ -982,63 +999,6 @@ function determineSwapLocation(
   return null;
 }
 
-/**
- * Estimate ACTUAL transport cost using real flight data + drive estimates.
- * Checks drives (Uber/rental) AND commercial flights if available.
- */
-function estimateTransportCost(
-  homeAirports: string[],
-  swapIcao: string,
-  aliases?: AirportAlias[],
-  commercialFlights?: Map<string, FlightOffer[]>,
-  swapDate?: string,
-): number {
-  let bestCost = 999; // high default = no viable option found
-
-  for (const home of homeAirports) {
-    const homeIcao = toIcao(home);
-
-    // ── Drive options ───────────────────────────────────────────────
-    const drive = estimateDriveTime(homeIcao, swapIcao);
-    if (drive) {
-      if (drive.estimated_drive_minutes <= UBER_MAX_MINUTES) {
-        bestCost = Math.min(bestCost, Math.max(25, Math.round(drive.estimated_drive_miles * 2.0)));
-      } else if (drive.estimated_drive_minutes <= RENTAL_MAX_MINUTES) {
-        bestCost = Math.min(bestCost, 80 + Math.round(drive.estimated_drive_miles * 0.50));
-      }
-    }
-
-    // ── Commercial flight options ───────────────────────────────────
-    if (commercialFlights && aliases && swapDate) {
-      const homeIata = toIata(home);
-      const commAirports = findAllCommercialAirports(swapIcao, aliases);
-      for (const comm of commAirports) {
-        const commIata = toIata(comm);
-        if (homeIata === commIata) continue;
-        const key = `${homeIata}-${commIata}-${swapDate}`;
-        const offers = commercialFlights.get(key) ?? [];
-        for (const offer of offers) {
-          const cost = parseFloat(offer.price.total);
-          if (!isNaN(cost)) bestCost = Math.min(bestCost, cost);
-        }
-      }
-    }
-  }
-
-  // If no real options found but we have a drive estimate beyond rental range,
-  // use distance-based estimate for commercial flight cost
-  if (bestCost >= 999) {
-    for (const home of homeAirports) {
-      const drive = estimateDriveTime(toIcao(home), swapIcao);
-      if (drive) {
-        bestCost = Math.min(bestCost, Math.round(100 + drive.estimated_drive_miles * 0.10));
-      }
-    }
-  }
-
-  return bestCost;
-}
-
 /** Check if crew member is qualified for an aircraft type */
 function isQualified(crewAircraftType: string, tailAircraftType: string): boolean {
   if (tailAircraftType === "unknown" || crewAircraftType === "unknown") return true;
@@ -1047,10 +1007,110 @@ function isQualified(crewAircraftType: string, tailAircraftType: string): boolea
   return crewAircraftType === tailAircraftType;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// TRANSPORT-FIRST ASSIGNMENT (v4)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+type FeasibilityEntry = {
+  crewName: string;
+  tail: string;
+  viable: boolean;
+  bestScore: number;
+  bestCost: number;
+  bestType: string;
+  candidateCount: number;
+  rank: number; // weighted blend of cost + reliability (lower = better)
+};
+
+/** Build a feasibility matrix: for every crew × tail, run the REAL transport
+ *  evaluation (buildCandidates + scoreCandidate) to determine which assignments
+ *  are actually viable with timing constraints, not just cost heuristics. */
+function buildFeasibilityMatrix(params: {
+  pool: OncomingPoolEntry[];
+  role: "PIC" | "SIC";
+  tails: string[];
+  byTail: Map<string, FlightLeg[]>;
+  swapDate: string;
+  aliases: AirportAlias[];
+  commercialFlights?: Map<string, FlightOffer[]>;
+  crewRoster: CrewMember[];
+  tailAircraftType: Map<string, string>;
+}): FeasibilityEntry[] {
+  const { pool, role, tails, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType } = params;
+  const matrix: FeasibilityEntry[] = [];
+
+  for (const tail of tails) {
+    const { swapPoints } = extractSwapPoints(tail, byTail, swapDate);
+    if (swapPoints.length === 0) continue;
+
+    const oncomingSwapPoint = swapPoints[0];
+    const acType = tailAircraftType.get(tail) ?? "unknown";
+
+    for (const poolEntry of pool) {
+      if (!isQualified(poolEntry.aircraft_type, acType)) {
+        matrix.push({ crewName: poolEntry.name, tail, viable: false, bestScore: 0, bestCost: 999, bestType: "none", candidateCount: 0, rank: 999 });
+        continue;
+      }
+
+      // Find or create a CrewMember from the roster for this pool entry
+      const crewMember = findCrewByName(crewRoster, poolEntry.name, role);
+
+      // Build a temporary CrewTask for this crew × tail combination
+      const task: CrewTask = {
+        name: poolEntry.name,
+        crewMember,
+        role,
+        direction: "oncoming",
+        tail,
+        aircraftType: acType,
+        swapPoint: oncomingSwapPoint,
+        homeAirports: poolEntry.home_airports,
+        candidates: [],
+        best: null,
+        warnings: [],
+      };
+
+      // Run the REAL candidate builder with full timing constraints
+      const candidates = buildCandidates(task, aliases, commercialFlights, swapDate);
+
+      // Score each candidate
+      for (const c of candidates) {
+        c.backups = findBackups(c, candidates);
+        c.score = scoreCandidate(c, task, null);
+      }
+      candidates.sort((a, b) => b.score - a.score);
+
+      const best = candidates[0];
+      const viable = best ? best.type !== "none" : false;
+
+      const entryCost = viable ? best!.cost : 999;
+      const entryScore = best?.score ?? 0;
+      // Weighted rank: 60% cost, 40% reliability (lower = better)
+      const costNorm = Math.min(100, (entryCost / 500) * 50);
+      const reliabilityNorm = 100 - entryScore;
+      const rank = costNorm * 0.6 + reliabilityNorm * 0.4;
+
+      matrix.push({
+        crewName: poolEntry.name,
+        tail,
+        viable,
+        bestScore: entryScore,
+        bestCost: entryCost,
+        bestType: best?.type ?? "none",
+        candidateCount: candidates.filter((c) => c.type !== "none").length,
+        rank,
+      });
+    }
+  }
+
+  return matrix;
+}
+
 /**
- * Assign oncoming crew from pool to tails that need them.
- * Uses greedy min-cost assignment with ACTUAL transport costs:
- * drive/Uber/rental + commercial flights when available.
+ * Assign oncoming crew from pool to tails using TRANSPORT-FIRST approach.
+ * Instead of estimating costs with a heuristic, we run the full transport
+ * evaluation (buildCandidates + scoring) for every crew × tail combination,
+ * then assign based on proven feasibility.
  */
 export function assignOncomingCrew(params: {
   swapAssignments: Record<string, SwapAssignment>;
@@ -1065,18 +1125,24 @@ export function assignOncomingCrew(params: {
   standby: { pic: string[]; sic: string[] };
   details: { name: string; tail: string; cost: number; reason: string }[];
 } {
-  const { swapAssignments, oncomingPool, crewRoster, flights, swapDate, aliases, commercialFlights } = params;
+  const { swapAssignments, oncomingPool, crewRoster, flights, swapDate, aliases = [], commercialFlights } = params;
   const result: Record<string, SwapAssignment> = JSON.parse(JSON.stringify(swapAssignments));
   const details: { name: string; tail: string; cost: number; reason: string }[] = [];
 
-  // Determine swap locations and aircraft types for all tails
-  const tailLocations = new Map<string, { icao: string; time: Date }>();
+  // Group flights by tail (needed for extractSwapPoints)
+  const byTail = new Map<string, FlightLeg[]>();
+  for (const f of flights) {
+    if (!f.tail_number) continue;
+    if (!byTail.has(f.tail_number)) byTail.set(f.tail_number, []);
+    byTail.get(f.tail_number)!.push(f);
+  }
+  for (const [, legs] of byTail) {
+    legs.sort((a, b) => new Date(a.scheduled_departure).getTime() - new Date(b.scheduled_departure).getTime());
+  }
+
+  // Determine aircraft types for all tails
   const tailAircraftType = new Map<string, string>();
-
   for (const tail of Object.keys(result)) {
-    const loc = determineSwapLocation(tail, flights, swapDate);
-    if (loc) tailLocations.set(tail, loc);
-
     const sa = result[tail];
     const offName = sa.offgoing_pic ?? sa.offgoing_sic;
     if (offName) {
@@ -1087,9 +1153,9 @@ export function assignOncomingCrew(params: {
     }
   }
 
-  // Assign PICs then SICs
-  assignRole("oncoming_pic", oncomingPool.pic, result, tailLocations, tailAircraftType, details, aliases, commercialFlights, swapDate);
-  assignRole("oncoming_sic", oncomingPool.sic, result, tailLocations, tailAircraftType, details, aliases, commercialFlights, swapDate);
+  // Assign PICs then SICs using feasibility matrix
+  assignRoleWithMatrix("oncoming_pic", oncomingPool.pic, "PIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details);
+  assignRoleWithMatrix("oncoming_sic", oncomingPool.sic, "SIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details);
 
   // Remaining pool → standby
   const assignedNames = new Set(details.map((d) => d.name));
@@ -1101,58 +1167,59 @@ export function assignOncomingCrew(params: {
   return { assignments: result, standby, details };
 }
 
-function assignRole(
+function assignRoleWithMatrix(
   field: "oncoming_pic" | "oncoming_sic",
   pool: OncomingPoolEntry[],
+  role: "PIC" | "SIC",
   result: Record<string, SwapAssignment>,
-  tailLocations: Map<string, { icao: string; time: Date }>,
+  byTail: Map<string, FlightLeg[]>,
+  swapDate: string,
+  aliases: AirportAlias[],
+  commercialFlights: Map<string, FlightOffer[]> | undefined,
+  crewRoster: CrewMember[],
   tailAircraftType: Map<string, string>,
   details: { name: string; tail: string; cost: number; reason: string }[],
-  aliases?: AirportAlias[],
-  commercialFlights?: Map<string, FlightOffer[]>,
-  swapDate?: string,
 ): void {
   const needingTails = Object.keys(result).filter((tail) => !result[tail][field]);
+  if (needingTails.length === 0 || pool.length === 0) return;
 
-  type Option = { tail: string; name: string; cost: number };
-  const options: Option[] = [];
+  // Build full feasibility matrix — the key v4 change
+  const matrix = buildFeasibilityMatrix({
+    pool,
+    role,
+    tails: needingTails,
+    byTail,
+    swapDate,
+    aliases,
+    commercialFlights,
+    crewRoster,
+    tailAircraftType,
+  });
 
-  for (const tail of needingTails) {
-    const loc = tailLocations.get(tail);
-    if (!loc) continue;
-    const acType = tailAircraftType.get(tail) ?? "unknown";
+  // Only consider viable options (where real transport exists)
+  const viableOptions = matrix.filter((m) => m.viable);
 
-    for (const crew of pool) {
-      if (!isQualified(crew.aircraft_type, acType)) continue;
-      // Use ACTUAL transport costs (flights + drives), not just distance
-      const cost = estimateTransportCost(
-        crew.home_airports.map(toIcao),
-        loc.icao,
-        aliases,
-        commercialFlights,
-        swapDate,
-      );
-      options.push({ tail, name: crew.name, cost });
-    }
-  }
+  // Sort by rank: weighted blend of cost (60%) and reliability (40%).
+  // Keeps costs down while preferring direct flights with backups
+  // over sketchy connections at similar price points.
+  viableOptions.sort((a, b) => a.rank - b.rank);
 
-  // Sort by cost ascending (cheapest real transport first)
-  options.sort((a, b) => a.cost - b.cost);
-
-  // Greedy assignment
+  // Greedy assignment from best-ranked options (lowest rank = cheapest + most reliable)
   const assignedCrews = new Set<string>();
   const assignedTails = new Set<string>();
 
-  for (const opt of options) {
-    if (assignedCrews.has(opt.name) || assignedTails.has(opt.tail)) continue;
-    result[opt.tail][field] = opt.name;
-    assignedCrews.add(opt.name);
+  for (const opt of viableOptions) {
+    if (assignedCrews.has(opt.crewName) || assignedTails.has(opt.tail)) continue;
+    result[opt.tail][field] = opt.crewName;
+    assignedCrews.add(opt.crewName);
     assignedTails.add(opt.tail);
+
+    const loc = extractSwapPoints(opt.tail, byTail, swapDate).swapPoints[0];
     details.push({
-      name: opt.name,
+      name: opt.crewName,
       tail: opt.tail,
-      cost: opt.cost,
-      reason: `$${opt.cost} to ${tailLocations.get(opt.tail)?.icao ?? "?"}`,
+      cost: Math.round(opt.bestCost),
+      reason: `${opt.bestType} $${Math.round(opt.bestCost)} score=${opt.bestScore} to ${loc ? toIata(loc.icao) : "?"} (${opt.candidateCount} options)`,
     });
   }
 }
