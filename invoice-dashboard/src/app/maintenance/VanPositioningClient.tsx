@@ -2653,6 +2653,38 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
     return map;
   }, [aircraftTags, localTags, removedTags]);
 
+  // MX airport — read saved values from tags, allow inline editing
+  const mxAirportFromTags = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const t of aircraftTags) {
+      if (t.tag === "MX_Airport" && t.note) map.set(t.tail_number, t.note);
+    }
+    for (const [key, t] of localTags) {
+      if (t.tag === "MX_Airport" && t.note) map.set(t.tail_number, t.note);
+    }
+    return map;
+  }, [aircraftTags, localTags]);
+
+  const [editingMxAirport, setEditingMxAirport] = useState<string | null>(null);
+  const [mxAirportDraft, setMxAirportDraft] = useState("");
+
+  const saveMxAirport = useCallback(async (tail: string, airport: string) => {
+    const code = airport.trim().toUpperCase();
+    const key = tail + "|MX_Airport";
+    if (!code) {
+      // Remove
+      setRemovedTags((prev) => new Set(prev).add(key));
+      setLocalTags((prev) => { const next = new Map(prev); next.delete(key); return next; });
+      try { await fetch("/api/ops/aircraft-tags", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tail_number: tail, tag: "MX_Airport" }) }); } catch { /* ignore */ }
+    } else {
+      const optimistic: AircraftTag = { id: "local-" + Date.now(), tail_number: tail, tag: "MX_Airport", note: code, created_by: null, created_at: new Date().toISOString() };
+      setLocalTags((prev) => new Map(prev).set(key, optimistic));
+      setRemovedTags((prev) => { const next = new Set(prev); next.delete(key); return next; });
+      try { await fetch("/api/ops/aircraft-tags", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tail_number: tail, tag: "MX_Airport", note: code }) }); } catch { /* ignore */ }
+    }
+    setEditingMxAirport(null);
+  }, []);
+
   const toggleConformity = useCallback(async (tail: string) => {
     const key = tail + "|Conformity";
     const hasTag = effectiveTags.has(key);
@@ -3510,13 +3542,35 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {longTermMxAircraft.map((ac) => {
               const hasConformity = effectiveTags.has(ac.tail + "|Conformity");
+              const displayAirport = ac.airport || mxAirportFromTags.get(ac.tail) || null;
+              const isEditingAirport = editingMxAirport === ac.tail;
               return (
                 <div key={ac.tail} className="rounded-xl border border-gray-200 bg-white overflow-hidden">
                   <div className="flex items-center justify-between px-4 py-2.5 bg-purple-50/60 border-b border-purple-100">
                     <span className="font-mono font-bold text-gray-900">{ac.tail}</span>
                     <div className="flex items-center gap-2">
-                      {ac.airport && (
-                        <span className="text-xs font-mono text-gray-500">{ac.airport}</span>
+                      {isEditingAirport ? (
+                        <input
+                          autoFocus
+                          className="w-16 text-xs font-mono text-gray-700 border border-purple-300 rounded px-1.5 py-0.5 bg-white focus:outline-none focus:ring-1 focus:ring-purple-400 uppercase"
+                          placeholder="ICAO"
+                          maxLength={4}
+                          defaultValue={displayAirport ?? ""}
+                          onBlur={(e) => saveMxAirport(ac.tail, e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") saveMxAirport(ac.tail, (e.target as HTMLInputElement).value);
+                            if (e.key === "Escape") setEditingMxAirport(null);
+                          }}
+                        />
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => { setEditingMxAirport(ac.tail); setMxAirportDraft(displayAirport ?? ""); }}
+                          className="text-xs font-mono text-gray-500 hover:text-purple-600 hover:underline cursor-pointer"
+                          title="Click to set MX airport"
+                        >
+                          {displayAirport || "+ airport"}
+                        </button>
                       )}
                       <span className="px-1.5 py-0.5 text-[10px] font-medium rounded-full bg-purple-100 text-purple-700">
                         MX
