@@ -137,7 +137,8 @@ function computeTailDuty(
   }
 
   // Build intervals per tail (only duty-relevant flight types)
-  const tailIntervals = new Map<string, { startMs: number; endMs: number }[]>();
+  type DutyInterval = { startMs: number; endMs: number; depIcao: string | null; arrIcao: string | null; source: "actual" | "fa-estimate" | "scheduled" };
+  const tailIntervals = new Map<string, DutyInterval[]>();
   for (const f of flights) {
     if (!f.tail_number) continue;
     const ft = (f.flight_type ?? "").toLowerCase();
@@ -169,13 +170,18 @@ function computeTailDuty(
 
     const depMs = new Date(actualDep ?? f.scheduled_departure).getTime();
     let endMs: number;
+    let source: "actual" | "fa-estimate" | "scheduled";
     if (actualArr) {
+      source = "actual";
       endMs = new Date(actualArr).getTime();
     } else if (actualDep && !actualArr) {
+      source = estimatedArr ? "fa-estimate" : "actual";
       endMs = estimatedArr ? new Date(estimatedArr).getTime() : nowMs;
     } else if (estimatedArr) {
+      source = "fa-estimate";
       endMs = new Date(estimatedArr).getTime();
     } else {
+      source = "scheduled";
       endMs = f.scheduled_arrival ? new Date(f.scheduled_arrival).getTime() : depMs;
     }
 
@@ -184,15 +190,17 @@ function computeTailDuty(
     // Sanity check: if FA-derived duration is wildly longer than scheduled,
     // FA likely has bad data (timezone issues, wrong flight match). Fall back to ICS.
     // Thresholds match DutyTracker: 1.5x or +90min.
-    if (fi) {
+    if (source !== "scheduled") {
       if (f.scheduled_arrival) {
         const schedDur = (new Date(f.scheduled_arrival).getTime() - new Date(f.scheduled_departure).getTime()) / 60_000;
         if (schedDur > 0 && durMin > Math.max(schedDur * 1.5, schedDur + 90)) {
+          source = "scheduled";
           endMs = new Date(f.scheduled_arrival).getTime();
           durMin = (endMs - depMs) / 60_000;
         }
       } else if (durMin > 360) {
         // No scheduled arrival to compare — cap FA estimates at 6h (matches DutyTracker)
+        source = "scheduled";
         durMin = 360;
         endMs = depMs + durMin * 60_000;
       }
@@ -207,24 +215,37 @@ function computeTailDuty(
     if (endMs < windowStart || depMs > windowEnd) continue;
 
     if (!tailIntervals.has(f.tail_number)) tailIntervals.set(f.tail_number, []);
-    tailIntervals.get(f.tail_number)!.push({ startMs: depMs, endMs });
+    tailIntervals.get(f.tail_number)!.push({ startMs: depMs, endMs, depIcao: f.departure_icao, arrIcao: f.arrival_icao, source });
   }
 
   const result = new Map<string, TailDutySummary>();
 
   for (const [tail, intervals] of tailIntervals) {
     intervals.sort((a, b) => a.startMs - b.startMs);
-    // Dedup: remove legs with same start time (ICS sometimes has duplicate entries)
-    for (let i = intervals.length - 1; i > 0; i--) {
-      if (Math.abs(intervals[i].startMs - intervals[i - 1].startMs) < 5 * 60_000 &&
-          Math.abs(intervals[i].endMs - intervals[i - 1].endMs) < 5 * 60_000) {
-        intervals.splice(i, 1);
+    // Dedup: matches DutyTracker — prefer actual/fa-estimate over scheduled for same route
+    const deduped: DutyInterval[] = [];
+    for (const leg of intervals) {
+      const prev = deduped[deduped.length - 1];
+      const sameRoute = prev && prev.depIcao === leg.depIcao && prev.arrIcao === leg.arrIcao;
+      if (sameRoute && Math.abs(prev.startMs - leg.startMs) < 5 * 60_000) {
+        continue; // skip near-duplicate
       }
+      if (leg.source === "scheduled" && deduped.some((d) => d.depIcao === leg.depIcao && d.arrIcao === leg.arrIcao && (d.source === "actual" || d.source === "fa-estimate"))) {
+        continue;
+      }
+      if (leg.source === "actual" || leg.source === "fa-estimate") {
+        const schedIdx = deduped.findIndex((d) => d.depIcao === leg.depIcao && d.arrIcao === leg.arrIcao && d.source === "scheduled");
+        if (schedIdx !== -1) {
+          deduped.splice(schedIdx, 1);
+        }
+      }
+      deduped.push(leg);
     }
+    const finalIntervals = deduped;
 
     // --- Rolling 24hr flight time (Part 135.267: ANY 24 consecutive hours) ---
     const checkPoints = new Set<number>();
-    for (const leg of intervals) {
+    for (const leg of finalIntervals) {
       checkPoints.add(leg.startMs);
       checkPoints.add(leg.endMs);
       checkPoints.add(leg.startMs + WINDOW_MS);
@@ -235,7 +256,7 @@ function computeTailDuty(
     for (const wp of checkPoints) {
       const ws = wp - WINDOW_MS;
       let totalMs = 0;
-      for (const leg of intervals) {
+      for (const leg of finalIntervals) {
         const os = Math.max(leg.startMs, ws);
         const oe = Math.min(leg.endMs, wp);
         if (oe > os) totalMs += oe - os;
@@ -249,23 +270,23 @@ function computeTailDuty(
     // Rest = dutyOff (prev arrival + 30min post) to dutyOn (next departure - 60min lead)
     // to match DutyTracker's calculation.
     let restMin: number | null = null;
-    for (let i = intervals.length - 2; i >= 0; i--) {
-      const gapMs = intervals[i + 1].startMs - intervals[i].endMs;
+    for (let i = finalIntervals.length - 2; i >= 0; i--) {
+      const gapMs = finalIntervals[i + 1].startMs - finalIntervals[i].endMs;
       if (gapMs < MIN_REST_GAP_MS) continue;
-      if (intervals[i + 1].startMs <= nowMs) {
-        const dutyOffMs = intervals[i].endMs + POST_TIME_MS;
-        const dutyOnMs = intervals[i + 1].startMs - LEAD_TIME_MS;
+      if (finalIntervals[i + 1].startMs <= nowMs) {
+        const dutyOffMs = finalIntervals[i].endMs + POST_TIME_MS;
+        const dutyOnMs = finalIntervals[i + 1].startMs - LEAD_TIME_MS;
         restMin = Math.max(0, (dutyOnMs - dutyOffMs) / 60_000);
         break;
       }
     }
     // Fallback: if no past rest found, show the upcoming rest
     if (restMin == null) {
-      for (let i = 0; i < intervals.length - 1; i++) {
-        const gapMs = intervals[i + 1].startMs - intervals[i].endMs;
-        if (gapMs >= MIN_REST_GAP_MS && intervals[i + 1].startMs > nowMs) {
-          const dutyOffMs = intervals[i].endMs + POST_TIME_MS;
-          const dutyOnMs = intervals[i + 1].startMs - LEAD_TIME_MS;
+      for (let i = 0; i < finalIntervals.length - 1; i++) {
+        const gapMs = finalIntervals[i + 1].startMs - finalIntervals[i].endMs;
+        if (gapMs >= MIN_REST_GAP_MS && finalIntervals[i + 1].startMs > nowMs) {
+          const dutyOffMs = finalIntervals[i].endMs + POST_TIME_MS;
+          const dutyOnMs = finalIntervals[i + 1].startMs - LEAD_TIME_MS;
           restMin = Math.max(0, (dutyOnMs - dutyOffMs) / 60_000);
           break;
         }
