@@ -73,6 +73,9 @@ def drain_queue(queue_name: str, vpn_name: str, max_messages: int = MAX_MESSAGES
     broker, username, password = _get_swim_config()
 
     # Build messaging service for this VPN
+    # Some SCDS VPNs require username to NOT include the VPN suffix,
+    # while others do. Log the connection attempt for debugging.
+    print(f"[SWIM] Connecting: vpn={vpn_name}, user={username}, broker={broker}", flush=True)
     broker_props = {
         "solace.messaging.transport.host": broker,
         "solace.messaging.service.vpn-name": vpn_name,
@@ -370,9 +373,13 @@ def pull_swim() -> Dict[str, Any]:
             SWIM_QUEUES["TFMS"]["vpn"],
         )
     except Exception as e:
-        print(f"[SWIM] TFMS drain error: {e}", flush=True)
+        print(f"[SWIM] TFMS drain error: {type(e).__name__}: {e}", flush=True)
+        # Log full exception details for auth debugging
+        import traceback
+        traceback.print_exc()
         tfms_raw = []
         stats["errors"] += 1
+        stats["tfms_error"] = str(e)
 
     positions_batch: List[Dict[str, Any]] = []
     flow_batch: List[Dict[str, Any]] = []
