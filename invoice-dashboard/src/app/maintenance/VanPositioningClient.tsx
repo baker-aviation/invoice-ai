@@ -2548,6 +2548,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
   const [viewMode, setViewMode] = useState<"map" | "list">("map");
   const [selectedVan, setSelectedVan] = useState<number | null>(null);
   const [mxNotesOpen, setMxNotesOpen] = useState(false);
+  const [mxConflictsOpen, setMxConflictsOpen] = useState(true);
   const [dismissedMxIds, setDismissedMxIds] = useState<Set<string>>(new Set());
 
   const dismissMxNote = useCallback(async (id: string) => {
@@ -3062,13 +3063,16 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
         );
       })()}
 
-      {/* ── MX Conflict Alerts ── */}
-      <div className={`rounded-xl border-2 px-5 py-4 shadow-sm space-y-2 ${
+      {/* ── MX Conflict Alerts (accordion) ── */}
+      <div className={`rounded-xl border-2 px-5 py-4 shadow-sm ${
         mxConflicts.length > 0
           ? "border-red-300 bg-red-50"
           : "border-green-300 bg-green-50"
       }`}>
-        <div className="flex items-center gap-3">
+        <button
+          onClick={() => setMxConflictsOpen((v) => !v)}
+          className="flex items-center gap-3 w-full text-left"
+        >
           <div className={`w-10 h-10 rounded-full flex items-center justify-center text-xl shrink-0 font-bold ${
             mxConflicts.length > 0
               ? "bg-red-100 text-red-600"
@@ -3076,15 +3080,23 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
           }`}>
             {mxConflicts.length > 0 ? "!!" : "\u2713"}
           </div>
-          <div className={`text-base font-bold ${mxConflicts.length > 0 ? "text-red-800" : "text-green-800"}`}>
+          <div className={`text-base font-bold flex-1 ${mxConflicts.length > 0 ? "text-red-800" : "text-green-800"}`}>
             {mxConflicts.length > 0
               ? `Jawad's Ops Changes that Affect James's Plan (${mxConflicts.length})`
               : "Jawad's Ops Changes that Affect James's Plan — 0 alerts"
             }
           </div>
-        </div>
-        {mxConflicts.length > 0 && (
-          <div className="flex flex-col gap-2 ml-[52px]">
+          {mxConflicts.length > 0 && (
+            <svg
+              className={`w-5 h-5 text-red-600 transition-transform ${mxConflictsOpen ? "rotate-180" : ""}`}
+              fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+            </svg>
+          )}
+        </button>
+        {mxConflicts.length > 0 && mxConflictsOpen && (
+          <div className="flex flex-col gap-2 ml-[52px] mt-2">
             {mxConflicts.map((c, i) => {
               const mxDateStr = c.mxNote.start_time
                 ? new Date(c.mxNote.start_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })
