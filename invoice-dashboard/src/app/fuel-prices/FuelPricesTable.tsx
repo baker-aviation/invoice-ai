@@ -1005,7 +1005,7 @@ export default function FuelPricesTable({
     const fiveWeeksAgo = new Date(now.getTime() - 35 * 86400000).toISOString().split("T")[0];
 
     return EXPECTED_VENDORS.map((vendor) => {
-      const rows = advertisedPrices.filter((a) => a.fbo_vendor === vendor && !a.tail_numbers);
+      const rows = advertisedPrices.filter((a) => a.fbo_vendor === vendor && !a.tail_numbers && a.price >= 2 && a.price <= 15);
 
       // Current = latest week (within 7 days)
       const currentRows = rows.filter((a) => a.week_start >= oneWeekAgo);
@@ -1088,7 +1088,7 @@ export default function FuelPricesTable({
     return TARGET_AIRPORTS.map((airport) => {
       const variants = airportVariants(airport);
       const airportRows = advertisedPrices.filter(
-        (a) => !a.tail_numbers && variants.includes(a.airport_code.toUpperCase()),
+        (a) => !a.tail_numbers && a.price >= 2 && a.price <= 15 && variants.includes(a.airport_code.toUpperCase()),
       );
 
       const currentRows = airportRows.filter((a) => a.week_start >= oneWeekAgo);
