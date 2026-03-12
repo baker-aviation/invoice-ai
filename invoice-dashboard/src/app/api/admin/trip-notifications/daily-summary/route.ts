@@ -25,16 +25,20 @@ export async function POST(req: NextRequest) {
 
   const supa = createServiceClient();
 
-  // "Tomorrow" in EST = next calendar day from 6pm EST perspective
+  // Determine target day: "today" or "tomorrow" (default: tomorrow)
+  const dayParam = new URL(req.url).searchParams.get("day");
   const estNow = new Date(
     new Date().toLocaleString("en-US", { timeZone: "America/New_York" })
   );
-  const tomorrow = new Date(estNow);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  const tomorrowStr = tomorrow.toISOString().slice(0, 10); // YYYY-MM-DD
-
-  // Format date for the message: "MAR 9th"
-  const dateLabel = formatDateLabel(tomorrow);
+  const targetDate = new Date(estNow);
+  if (dayParam !== "today") {
+    targetDate.setDate(targetDate.getDate() + 1);
+  }
+  const tomorrowStr = targetDate.toISOString().slice(0, 10); // YYYY-MM-DD
+  const dateLabel = formatDateLabel(targetDate);
+  const isToday = dayParam === "today";
+  const greeting = isToday ? "Good Morning" : "Good Evening";
+  const intro = isToday ? "Today" : "Tomorrow";
 
   // 1. Load all salesperson → Slack mappings (these are the people we DM)
   const { data: slackMap } = await supa
@@ -132,7 +136,7 @@ export async function POST(req: NextRequest) {
     let message: string;
 
     if (!personLegs || personLegs.length === 0) {
-      message = `Good Evening ${firstName},\n\nFor ${dateLabel}, you have no sold legs.`;
+      message = `${greeting} ${firstName},\n\nFor ${dateLabel}, you have no sold legs.`;
     } else {
       const legLines: string[] = [];
       for (const leg of personLegs) {
@@ -158,9 +162,9 @@ export async function POST(req: NextRequest) {
       }
 
       message = [
-        `Good Evening ${firstName},`,
+        `${greeting} ${firstName},`,
         "",
-        `Tomorrow you have sold the following legs:`,
+        `${intro} you have sold the following legs:`,
         "",
         ...legLines,
       ].join("\n");

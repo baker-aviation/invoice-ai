@@ -267,11 +267,11 @@ export default function SettingsPage() {
     }
   }
 
-  async function handleDailySummary() {
+  async function handleDailySummary(day: "today" | "tomorrow") {
     setSummaryChecking(true);
     setSummaryResult(null);
     try {
-      const res = await fetch("/api/admin/trip-notifications/daily-summary", { method: "POST" });
+      const res = await fetch(`/api/admin/trip-notifications/daily-summary?day=${day}`, { method: "POST" });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
       let msg = `Daily summary for ${data.date}: sent ${data.sent}/${data.total} DMs.`;
@@ -834,19 +834,29 @@ export default function SettingsPage() {
       <hr className="my-8 border-gray-200" />
       <h2 className="text-lg font-semibold text-slate-900 mb-1">Daily Evening Summary</h2>
       <p className="text-sm text-gray-500 mb-4">
-        Send each salesperson a Slack DM with their sold legs for tomorrow.
+        Send each salesperson a Slack DM with their sold legs for today or tomorrow.
         Salespersons with no legs get a &quot;no sold legs&quot; message.
-        Runs automatically at 6pm EST daily.
+        Automated cron runs at 6pm EST daily (tomorrow&apos;s legs).
       </p>
 
-      <button
-        type="button"
-        onClick={handleDailySummary}
-        disabled={summaryChecking}
-        className="bg-slate-900 text-white rounded-md px-5 py-2 text-sm font-medium hover:bg-slate-700 disabled:opacity-50"
-      >
-        {summaryChecking ? "Sending…" : "Send Daily Summary Now"}
-      </button>
+      <div className="flex gap-3">
+        <button
+          type="button"
+          onClick={() => handleDailySummary("today")}
+          disabled={summaryChecking}
+          className="bg-slate-900 text-white rounded-md px-5 py-2 text-sm font-medium hover:bg-slate-700 disabled:opacity-50"
+        >
+          {summaryChecking ? "Sending…" : "Send for Today"}
+        </button>
+        <button
+          type="button"
+          onClick={() => handleDailySummary("tomorrow")}
+          disabled={summaryChecking}
+          className="bg-slate-700 text-white rounded-md px-5 py-2 text-sm font-medium hover:bg-slate-600 disabled:opacity-50"
+        >
+          {summaryChecking ? "Sending…" : "Send for Tomorrow"}
+        </button>
+      </div>
 
       {summaryResult && (
         <div className="mt-3 px-4 py-2 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-700 whitespace-pre-line">
