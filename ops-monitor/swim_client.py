@@ -341,6 +341,27 @@ def parse_tfms_flight_message(xml_str: str) -> Optional[Dict[str, Any]]:
     aircraft_type = _get_attr(root, "aircraftModel") or _safe_text(_find_any(root, "aircraftModel"))
     flight_status = _safe_text(_find_any(root, "flightStatus"))
 
+    # fdTrigger — the real event indicator
+    fd_trigger = _get_attr(root, "fdTrigger") or ""
+
+    # Refine event_type using fdTrigger (more reliable than msgType)
+    trigger_lower = fd_trigger.lower()
+    if "actual_departure" in trigger_lower or "actual_off" in trigger_lower:
+        event_type = "DEPARTURE"
+    elif "actual_arrival" in trigger_lower or "actual_on" in trigger_lower:
+        event_type = "ARRIVAL"
+    elif "taxi_out" in trigger_lower:
+        event_type = "TAXI_OUT"
+    elif "taxi_in" in trigger_lower:
+        event_type = "TAXI_IN"
+
+    # Diversion detection
+    diversion_el = _find_any(root, "diversionIndicator")
+    diversion = _safe_text(diversion_el)
+    is_diversion = diversion is not None and diversion != "NO_DIVERSION"
+    if is_diversion:
+        event_type = "DIVERSION"
+
     # ETD/ETA — check timeValue attribute on etd/eta elements
     etd = eta = None
     for el in root.iter():
@@ -365,6 +386,7 @@ def parse_tfms_flight_message(xml_str: str) -> Optional[Dict[str, Any]]:
         "flight_status": flight_status,
         "etd": etd,
         "eta": eta,
+        "fd_trigger": fd_trigger,
     }
 
 
@@ -634,6 +656,61 @@ def pull_swim() -> Dict[str, Any]:
             stats["positions_upserted"] += len(chunk)
         except Exception as e:
             print(f"[SWIM] positions upsert error: {e}", flush=True)
+            stats["errors"] += 1
+
+    # ── 5. Create ops_alerts for key flight events ────────────────────────────
+    ALERT_EVENT_TYPES = {"DEPARTURE", "ARRIVAL", "TAXI_OUT", "TAXI_IN", "DIVERSION"}
+    ALERT_TYPE_MAP = {
+        "DEPARTURE": "SWIM_TAKEOFF",
+        "ARRIVAL": "SWIM_LANDING",
+        "TAXI_OUT": "SWIM_TAXI_OUT",
+        "TAXI_IN": "SWIM_TAXI_IN",
+        "DIVERSION": "SWIM_DIVERSION",
+    }
+    SEVERITY_MAP = {
+        "DEPARTURE": "info",
+        "ARRIVAL": "info",
+        "TAXI_OUT": "info",
+        "TAXI_IN": "info",
+        "DIVERSION": "critical",
+    }
+    SUBJECT_MAP = {
+        "DEPARTURE": "Departed",
+        "ARRIVAL": "Landed",
+        "TAXI_OUT": "Taxi out",
+        "TAXI_IN": "Taxi in",
+        "DIVERSION": "DIVERSION",
+    }
+
+    alerts_batch: List[Dict[str, Any]] = []
+    for pos in positions_batch:
+        evt = pos.get("event_type", "")
+        if evt not in ALERT_EVENT_TYPES:
+            continue
+        tail = pos.get("tail_number") or pos.get("acid", "")
+        dep = pos.get("departure_icao") or ""
+        arr = pos.get("arrival_icao") or ""
+        route = f"{dep} → {arr}" if dep and arr else dep or arr or ""
+        subject = f"{SUBJECT_MAP[evt]} {tail} {route}".strip()
+
+        alerts_batch.append({
+            "alert_type": ALERT_TYPE_MAP[evt],
+            "severity": SEVERITY_MAP[evt],
+            "tail_number": pos.get("tail_number"),
+            "departure_icao": pos.get("departure_icao"),
+            "arrival_icao": pos.get("arrival_icao"),
+            "airport_icao": pos.get("arrival_icao") if evt in ("ARRIVAL", "TAXI_IN") else pos.get("departure_icao"),
+            "subject": subject,
+            "body": f"Via FAA SWIM at {pos.get('event_time', '')}",
+        })
+
+    for i in range(0, len(alerts_batch), CHUNK):
+        chunk = alerts_batch[i : i + CHUNK]
+        try:
+            supa.table("ops_alerts").insert(chunk).execute()
+            stats["alerts_created"] = stats.get("alerts_created", 0) + len(chunk)
+        except Exception as e:
+            print(f"[SWIM] alerts insert error: {e}", flush=True)
             stats["errors"] += 1
 
     # Flow control (GDP, ground stops, etc.) — keep ALL, not just Baker flights
