@@ -119,7 +119,7 @@ export async function POST(req: NextRequest) {
         const pArr = formatIcao(priorLeg.arrival_icao);
         const pTime = formatDepTimeMilitary(priorLeg.scheduled_departure, priorLeg.departure_icao);
         const pType = priorLeg.flight_type || "Positioning";
-        lines.push(`⚠️ Prior leg: ${pDep}-${pArr} dep ${pTime} (${pType}) — must land first`);
+        lines.push(`Prior leg: ${pDep}-${pArr} dep ${pTime} (${pType}) — must land first`);
       }
       lines.push(`Crew should be at the FBO now.`);
       lines.push(`Please check in and manage.`);
