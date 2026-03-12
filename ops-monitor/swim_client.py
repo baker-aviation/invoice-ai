@@ -28,14 +28,17 @@ SWIM_QUEUES = {
     "TFMS": {
         "queue": "charlie.airninetwo.com.TFMS.e5109ea9-f16e-41a7-a88f-f33caee601cd.OUT",
         "vpn": "TFMS",
+        "broker": "tcps://ems1.swim.faa.gov:55443",
     },
     "STDDS": {
         "queue": "charlie.airninetwo.com.STDDS.d858d975-ab44-4ac3-b5dc-0ac869fb057b.OUT",
         "vpn": "STDDS",
+        "broker": None,  # uses default SWIM_BROKER_URL
     },
     "NOTAM": {
         "queue": "charlie.airninetwo.com.AIM_FNS.7539384d-dc7d-4104-9f36-7c2823bd6884.OUT",
         "vpn": "AIM_FNS",
+        "broker": None,
     },
 }
 
@@ -69,7 +72,7 @@ def _get_swim_config():
     return broker, username, password
 
 
-def drain_queue(queue_name: str, vpn_name: str, max_messages: int = MAX_MESSAGES_PER_QUEUE) -> List[str]:
+def drain_queue(queue_name: str, vpn_name: str, max_messages: int = MAX_MESSAGES_PER_QUEUE, broker_override: Optional[str] = None) -> List[str]:
     """Connect to a SCDS Solace queue and drain all pending messages.
 
     Returns a list of raw XML message bodies.
@@ -77,11 +80,9 @@ def drain_queue(queue_name: str, vpn_name: str, max_messages: int = MAX_MESSAGES
     from solace.messaging.messaging_service import MessagingService, RetryStrategy
     from solace.messaging.resources.queue import Queue
 
-    broker, username, password = _get_swim_config()
+    default_broker, username, password = _get_swim_config()
+    broker = broker_override or default_broker
 
-    # Build messaging service for this VPN
-    # Some SCDS VPNs require username to NOT include the VPN suffix,
-    # while others do. Log the connection attempt for debugging.
     print(f"[SWIM] Connecting: vpn={vpn_name}, user={username}, broker={broker}", flush=True)
     broker_props = {
         "solace.messaging.transport.host": broker,
@@ -381,6 +382,7 @@ def pull_swim() -> Dict[str, Any]:
         tfms_raw = drain_queue(
             SWIM_QUEUES["TFMS"]["queue"],
             SWIM_QUEUES["TFMS"]["vpn"],
+            broker_override=SWIM_QUEUES["TFMS"].get("broker"),
         )
     except Exception as e:
         print(f"[SWIM] TFMS drain error: {type(e).__name__}: {e}", flush=True)
@@ -423,6 +425,7 @@ def pull_swim() -> Dict[str, Any]:
         stdds_raw = drain_queue(
             SWIM_QUEUES["STDDS"]["queue"],
             SWIM_QUEUES["STDDS"]["vpn"],
+            broker_override=SWIM_QUEUES["STDDS"].get("broker"),
         )
     except Exception as e:
         print(f"[SWIM] STDDS drain error: {e}", flush=True)
@@ -445,6 +448,7 @@ def pull_swim() -> Dict[str, Any]:
         notam_raw = drain_queue(
             SWIM_QUEUES["NOTAM"]["queue"],
             SWIM_QUEUES["NOTAM"]["vpn"],
+            broker_override=SWIM_QUEUES["NOTAM"].get("broker"),
         )
     except Exception as e:
         print(f"[SWIM] NOTAM drain error: {e}", flush=True)
