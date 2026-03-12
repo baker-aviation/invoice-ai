@@ -54,7 +54,7 @@ function getWeekMonday(dateStr: string): string {
 // ─── Data source labels & colors ─────────────────────────────────────────────
 
 type SourceFilter = "all" | "invoice" | "jetinsight";
-type ViewMode = "compare" | "all" | "advertised";
+type ViewMode = "compare" | "all" | "advertised" | "stats";
 
 const SOURCE_BADGE: Record<string, { label: string; classes: string }> = {
   invoice:    { label: "Invoice",    classes: "bg-blue-100 text-blue-800" },
@@ -301,26 +301,25 @@ type AdvVsActualRow = {
   recent7dCount: number;         // number of entries in last 7 days
 };
 
+/** Strip leading K from US ICAO codes: KTEB→TEB, KHOU→HOU */
+function normAirport(code: string): string {
+  const up = code.toUpperCase();
+  return up.length === 4 && up.startsWith("K") ? up.slice(1) : up;
+}
+
+/** Normalize airport codes: KTEB↔TEB, KHOU↔HOU etc. */
+function airportVariants(code: string): string[] {
+  const up = code.toUpperCase();
+  if (up.length === 4 && up.startsWith("K")) return [up, up.slice(1)];
+  if (up.length === 3) return [up, `K${up}`];
+  return [up];
+}
+
 function buildAdvVsActual(
   prices: FuelPriceRow[],
   advertisedPrices: AdvertisedPriceRow[],
   volumeGallons: number | null,
 ): AdvVsActualRow[] {
-  // Strip leading K from US ICAO codes: KTEB→TEB, KHOU→HOU
-  function normAirport(code: string): string {
-    const up = code.toUpperCase();
-    return up.length === 4 && up.startsWith("K") ? up.slice(1) : up;
-  }
-
-  // Normalize airport codes: KTEB↔TEB, KHOU↔HOU etc.
-  // Returns all variants to check (e.g. ["KTEB","TEB"] or ["TEB","KTEB"])
-  function airportVariants(code: string): string[] {
-    const up = code.toUpperCase();
-    if (up.length === 4 && up.startsWith("K")) return [up, up.slice(1)];
-    if (up.length === 3) return [up, `K${up}`];
-    return [up];
-  }
-
   // Group invoice data by (vendor_lower, airport) — all time for "actual" avg
   const invoiceBuckets = new Map<string, { prices: number[]; count: number }>();
   // Build per-airport list of (date, price) for flexible date-range lookups
@@ -997,6 +996,144 @@ export default function FuelPricesTable({
     return { current, aging, missing };
   }, [vendorHealth]);
 
+  // ─── Stats: Vendor price change stats ──────────────────────────────────────
+  const vendorPriceStats = useMemo(() => {
+    const now = new Date();
+    const oneWeekAgo = new Date(now.getTime() - 7 * 86400000).toISOString().split("T")[0];
+    const twoWeeksAgo = new Date(now.getTime() - 14 * 86400000).toISOString().split("T")[0];
+    const fourWeeksAgo = new Date(now.getTime() - 28 * 86400000).toISOString().split("T")[0];
+    const fiveWeeksAgo = new Date(now.getTime() - 35 * 86400000).toISOString().split("T")[0];
+
+    return EXPECTED_VENDORS.map((vendor) => {
+      const rows = advertisedPrices.filter((a) => a.fbo_vendor === vendor && !a.tail_numbers);
+
+      // Current = latest week (within 7 days)
+      const currentRows = rows.filter((a) => a.week_start >= oneWeekAgo);
+      const prevWeekRows = rows.filter((a) => a.week_start >= twoWeeksAgo && a.week_start < oneWeekAgo);
+      const monthAgoRows = rows.filter((a) => a.week_start >= fiveWeeksAgo && a.week_start < fourWeeksAgo);
+
+      const avg = (arr: typeof rows) => {
+        if (arr.length === 0) return null;
+        return arr.reduce((s, r) => s + r.price, 0) / arr.length;
+      };
+
+      const currentAvg = avg(currentRows);
+      const prevWeekAvg = avg(prevWeekRows);
+      const monthAgoAvg = avg(monthAgoRows);
+
+      let weekChange$: number | null = null;
+      let weekChangePct: number | null = null;
+      if (currentAvg != null && prevWeekAvg != null) {
+        weekChange$ = Math.round((currentAvg - prevWeekAvg) * 10000) / 10000;
+        if (prevWeekAvg > 0) weekChangePct = Math.round(((currentAvg - prevWeekAvg) / prevWeekAvg) * 1000) / 10;
+      }
+
+      let monthChange$: number | null = null;
+      let monthChangePct: number | null = null;
+      if (currentAvg != null && monthAgoAvg != null) {
+        monthChange$ = Math.round((currentAvg - monthAgoAvg) * 10000) / 10000;
+        if (monthAgoAvg > 0) monthChangePct = Math.round(((currentAvg - monthAgoAvg) / monthAgoAvg) * 1000) / 10;
+      }
+
+      return {
+        vendor,
+        currentAvg,
+        weekChange$,
+        weekChangePct,
+        monthChange$,
+        monthChangePct,
+        rowCount: currentRows.length,
+      };
+    });
+  }, [advertisedPrices]);
+
+  // ─── Stats: VNY & TEB Jet Aviation vs cheapest ────────────────────────────
+  const airportJetComparisons = useMemo(() => {
+    const TARGET_AIRPORTS = ["VNY", "TEB"];
+    const now = new Date();
+    const oneWeekAgo = new Date(now.getTime() - 7 * 86400000).toISOString().split("T")[0];
+    const twoWeeksAgo = new Date(now.getTime() - 14 * 86400000).toISOString().split("T")[0];
+    const fourWeeksAgo = new Date(now.getTime() - 28 * 86400000).toISOString().split("T")[0];
+    const fiveWeeksAgo = new Date(now.getTime() - 35 * 86400000).toISOString().split("T")[0];
+
+    return TARGET_AIRPORTS.map((airport) => {
+      const variants = airportVariants(airport);
+      const airportRows = advertisedPrices.filter(
+        (a) => !a.tail_numbers && variants.includes(a.airport_code.toUpperCase()),
+      );
+
+      const currentRows = airportRows.filter((a) => a.week_start >= oneWeekAgo);
+      const prevWeekRows = airportRows.filter((a) => a.week_start >= twoWeeksAgo && a.week_start < oneWeekAgo);
+      const monthAgoRows = airportRows.filter((a) => a.week_start >= fiveWeeksAgo && a.week_start < fourWeeksAgo);
+
+      // Jet Aviation
+      const isJet = (r: AdvertisedPriceRow) => r.fbo_vendor.toLowerCase() === "jet aviation";
+      const jetCurrent = currentRows.filter(isJet);
+      const jetPrev = prevWeekRows.filter(isJet);
+      const jetMonth = monthAgoRows.filter(isJet);
+
+      const avg = (arr: AdvertisedPriceRow[]) =>
+        arr.length === 0 ? null : arr.reduce((s, r) => s + r.price, 0) / arr.length;
+
+      const jetCurrentAvg = avg(jetCurrent);
+      const jetPrevAvg = avg(jetPrev);
+      const jetMonthAvg = avg(jetMonth);
+
+      // Cheapest vendor (current week, excluding Jet Aviation)
+      const nonJetCurrent = currentRows.filter((r) => !isJet(r));
+      let cheapestVendor: string | null = null;
+      let cheapestPrice: number | null = null;
+      for (const r of nonJetCurrent) {
+        if (cheapestPrice == null || r.price < cheapestPrice) {
+          cheapestPrice = r.price;
+          cheapestVendor = r.fbo_vendor;
+        }
+      }
+
+      // Cheapest vendor's prev/month prices (same vendor)
+      const cheapPrev = cheapestVendor
+        ? prevWeekRows.filter((r) => r.fbo_vendor === cheapestVendor)
+        : [];
+      const cheapMonth = cheapestVendor
+        ? monthAgoRows.filter((r) => r.fbo_vendor === cheapestVendor)
+        : [];
+      const cheapPrevAvg = avg(cheapPrev);
+      const cheapMonthAvg = avg(cheapMonth);
+
+      const trend = (curr: number | null, prev: number | null) => {
+        if (curr == null || prev == null || prev === 0) return { $: null as number | null, pct: null as number | null };
+        return {
+          $: Math.round((curr - prev) * 10000) / 10000,
+          pct: Math.round(((curr - prev) / prev) * 1000) / 10,
+        };
+      };
+
+      let savings$: number | null = null;
+      let savingsPct: number | null = null;
+      if (jetCurrentAvg != null && cheapestPrice != null) {
+        savings$ = Math.round((jetCurrentAvg - cheapestPrice) * 10000) / 10000;
+        if (cheapestPrice > 0) savingsPct = Math.round(((jetCurrentAvg - cheapestPrice) / cheapestPrice) * 1000) / 10;
+      }
+
+      return {
+        airport,
+        jet: {
+          currentAvg: jetCurrentAvg,
+          weekTrend: trend(jetCurrentAvg, jetPrevAvg),
+          monthTrend: trend(jetCurrentAvg, jetMonthAvg),
+        },
+        cheapest: {
+          vendor: cheapestVendor,
+          currentPrice: cheapestPrice,
+          weekTrend: trend(cheapestPrice, cheapPrevAvg),
+          monthTrend: trend(cheapestPrice, cheapMonthAvg),
+        },
+        savings$,
+        savingsPct,
+      };
+    });
+  }, [advertisedPrices]);
+
   return (
     <div className="space-y-4">
       {/* Price sheet health bar */}
@@ -1070,6 +1207,7 @@ export default function FuelPricesTable({
               { key: "all" as const, label: "Live Feed" },
               ...(hasBothSources ? [{ key: "compare" as const, label: "Compare by Airport" }] : []),
               ...(hasAdvertised ? [{ key: "advertised" as const, label: "Advertised vs Actual" }] : []),
+              ...(hasAdvertised ? [{ key: "stats" as const, label: "Stats" }] : []),
             ]
           ).map(({ key, label }) => (
             <button
@@ -1133,8 +1271,8 @@ export default function FuelPricesTable({
         </button>
       </div>
 
-      {/* Filters */}
-      <div className="flex flex-wrap items-center gap-3">
+      {/* Filters (hidden on stats tab) */}
+      {viewMode !== "stats" && <div className="flex flex-wrap items-center gap-3">
         <select
           value={airportFilter}
           onChange={(e) => { setAirportFilter(e.target.value); setPage(0); }}
@@ -1195,7 +1333,7 @@ export default function FuelPricesTable({
         <span className="ml-auto text-xs text-gray-500">
           {activeCount} {viewMode === "compare" ? "airports" : viewMode === "advertised" ? "price rows" : "records"}
         </span>
-      </div>
+      </div>}
 
       {showImportModal && <ImportAdvertisedModal onClose={() => setShowImportModal(false)} />}
 
@@ -1727,8 +1865,157 @@ export default function FuelPricesTable({
         </>
       )}
 
+      {/* ─── Stats View ──────────────────────────────────────────── */}
+      {viewMode === "stats" && (
+        <>
+          {/* Vendor Price Changes Table */}
+          <div className="rounded-xl border bg-white overflow-hidden shadow-sm overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <th className="px-4 py-3">Vendor</th>
+                  <th className="px-4 py-3 text-right">Current Avg $/gal</th>
+                  <th className="px-4 py-3 text-right">1-Week Change</th>
+                  <th className="px-4 py-3 text-right">1-Month Change</th>
+                  <th className="px-4 py-3 text-right text-[10px] normal-case">Prices This Week</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {vendorPriceStats.map((v) => (
+                  <tr key={v.vendor} className="hover:bg-gray-50">
+                    <td className="px-4 py-2.5 whitespace-nowrap font-medium">{v.vendor}</td>
+                    <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono font-medium">
+                      {v.currentAvg != null ? fmt$(v.currentAvg) : <span className="text-gray-300">{"\u2014"}</span>}
+                    </td>
+                    <td className="px-4 py-2.5 whitespace-nowrap text-right">
+                      {v.weekChange$ != null ? (
+                        <span className={`font-mono text-xs font-medium ${
+                          v.weekChange$ > 0 ? "text-red-600" : v.weekChange$ < 0 ? "text-green-600" : "text-gray-500"
+                        }`}>
+                          {v.weekChange$ > 0 ? "+" : ""}{v.weekChange$.toFixed(4)}
+                          {v.weekChangePct != null && (
+                            <span className="text-[10px] ml-1 opacity-70">
+                              ({v.weekChangePct >= 0 ? "+" : ""}{v.weekChangePct}%)
+                            </span>
+                          )}
+                        </span>
+                      ) : (
+                        <span className="text-gray-300 text-xs">{"\u2014"}</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2.5 whitespace-nowrap text-right">
+                      {v.monthChange$ != null ? (
+                        <span className={`font-mono text-xs font-medium ${
+                          v.monthChange$ > 0 ? "text-red-600" : v.monthChange$ < 0 ? "text-green-600" : "text-gray-500"
+                        }`}>
+                          {v.monthChange$ > 0 ? "+" : ""}{v.monthChange$.toFixed(4)}
+                          {v.monthChangePct != null && (
+                            <span className="text-[10px] ml-1 opacity-70">
+                              ({v.monthChangePct >= 0 ? "+" : ""}{v.monthChangePct}%)
+                            </span>
+                          )}
+                        </span>
+                      ) : (
+                        <span className="text-gray-300 text-xs">{"\u2014"}</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2.5 whitespace-nowrap text-right text-xs text-gray-500">
+                      {v.rowCount}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* VNY & TEB: Jet Aviation vs Cheapest */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {airportJetComparisons.map((comp) => (
+              <div key={comp.airport} className="rounded-xl border bg-white shadow-sm p-5">
+                <h3 className="text-sm font-semibold text-gray-800 mb-3">{comp.airport}</h3>
+
+                <div className="grid grid-cols-2 gap-4">
+                  {/* Jet Aviation */}
+                  <div>
+                    <div className="text-[10px] uppercase font-semibold text-gray-400 mb-1">Jet Aviation</div>
+                    <div className="text-lg font-mono font-bold text-gray-900">
+                      {comp.jet.currentAvg != null ? fmt$(comp.jet.currentAvg) : "\u2014"}
+                    </div>
+                    <div className="mt-1 space-y-0.5">
+                      <div className="text-xs">
+                        <span className="text-gray-500">1 wk: </span>
+                        {comp.jet.weekTrend.$ != null ? (
+                          <span className={`font-mono font-medium ${comp.jet.weekTrend.$ > 0 ? "text-red-600" : comp.jet.weekTrend.$ < 0 ? "text-green-600" : "text-gray-500"}`}>
+                            {comp.jet.weekTrend.$ > 0 ? "+" : ""}{comp.jet.weekTrend.$.toFixed(4)}
+                            {comp.jet.weekTrend.pct != null && <span className="opacity-70"> ({comp.jet.weekTrend.pct >= 0 ? "+" : ""}{comp.jet.weekTrend.pct}%)</span>}
+                          </span>
+                        ) : <span className="text-gray-300">{"\u2014"}</span>}
+                      </div>
+                      <div className="text-xs">
+                        <span className="text-gray-500">1 mo: </span>
+                        {comp.jet.monthTrend.$ != null ? (
+                          <span className={`font-mono font-medium ${comp.jet.monthTrend.$ > 0 ? "text-red-600" : comp.jet.monthTrend.$ < 0 ? "text-green-600" : "text-gray-500"}`}>
+                            {comp.jet.monthTrend.$ > 0 ? "+" : ""}{comp.jet.monthTrend.$.toFixed(4)}
+                            {comp.jet.monthTrend.pct != null && <span className="opacity-70"> ({comp.jet.monthTrend.pct >= 0 ? "+" : ""}{comp.jet.monthTrend.pct}%)</span>}
+                          </span>
+                        ) : <span className="text-gray-300">{"\u2014"}</span>}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Cheapest */}
+                  <div>
+                    <div className="text-[10px] uppercase font-semibold text-gray-400 mb-1">
+                      Cheapest{comp.cheapest.vendor ? ` (${comp.cheapest.vendor})` : ""}
+                    </div>
+                    <div className="text-lg font-mono font-bold text-green-700">
+                      {comp.cheapest.currentPrice != null ? fmt$(comp.cheapest.currentPrice) : "\u2014"}
+                    </div>
+                    <div className="mt-1 space-y-0.5">
+                      <div className="text-xs">
+                        <span className="text-gray-500">1 wk: </span>
+                        {comp.cheapest.weekTrend.$ != null ? (
+                          <span className={`font-mono font-medium ${comp.cheapest.weekTrend.$ > 0 ? "text-red-600" : comp.cheapest.weekTrend.$ < 0 ? "text-green-600" : "text-gray-500"}`}>
+                            {comp.cheapest.weekTrend.$ > 0 ? "+" : ""}{comp.cheapest.weekTrend.$.toFixed(4)}
+                            {comp.cheapest.weekTrend.pct != null && <span className="opacity-70"> ({comp.cheapest.weekTrend.pct >= 0 ? "+" : ""}{comp.cheapest.weekTrend.pct}%)</span>}
+                          </span>
+                        ) : <span className="text-gray-300">{"\u2014"}</span>}
+                      </div>
+                      <div className="text-xs">
+                        <span className="text-gray-500">1 mo: </span>
+                        {comp.cheapest.monthTrend.$ != null ? (
+                          <span className={`font-mono font-medium ${comp.cheapest.monthTrend.$ > 0 ? "text-red-600" : comp.cheapest.monthTrend.$ < 0 ? "text-green-600" : "text-gray-500"}`}>
+                            {comp.cheapest.monthTrend.$ > 0 ? "+" : ""}{comp.cheapest.monthTrend.$.toFixed(4)}
+                            {comp.cheapest.monthTrend.pct != null && <span className="opacity-70"> ({comp.cheapest.monthTrend.pct >= 0 ? "+" : ""}{comp.cheapest.monthTrend.pct}%)</span>}
+                          </span>
+                        ) : <span className="text-gray-300">{"\u2014"}</span>}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Savings callout */}
+                {comp.savings$ != null && (
+                  <div className={`mt-3 rounded-lg px-3 py-2 text-xs font-medium ${
+                    comp.savings$ > 0
+                      ? "bg-amber-50 text-amber-800 border border-amber-200"
+                      : "bg-green-50 text-green-800 border border-green-200"
+                  }`}>
+                    {comp.savings$ > 0
+                      ? `Jet Aviation is ${fmt$(comp.savings$)}/gal more expensive (${fmtPct(comp.savingsPct)})`
+                      : comp.savings$ < 0
+                      ? `Jet Aviation is ${fmt$(Math.abs(comp.savings$))}/gal cheaper`
+                      : "Same price as cheapest option"}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
       {/* Pagination */}
-      {activeTotalPages > 1 && (
+      {activeTotalPages > 1 && viewMode !== "stats" && (
         <div className="flex items-center justify-between text-sm">
           <button
             disabled={page === 0}
