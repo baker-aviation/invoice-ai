@@ -118,7 +118,7 @@ type TailDutySummary = {
  *  Uses same 3-day window (yesterday→end of tomorrow) and FA matching as DutyTracker. */
 function computeTailDuty(
   flights: Flight[],
-  faMap: Map<string, FlightInfoMap>,
+  faFlights: FlightInfoMap[],
 ): Map<string, TailDutySummary> {
   const nowMs = Date.now();
   const WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -128,9 +128,9 @@ function computeTailDuty(
   const windowStart = todayUtc - WINDOW_MS;
   const windowEnd = todayUtc + 2 * WINDOW_MS;
 
-  // Group FA data by tail for better matching
+  // Group FA data by tail (array per tail, matches DutyTracker)
   const faByTail = new Map<string, FlightInfoMap[]>();
-  for (const fi of faMap.values()) {
+  for (const fi of faFlights) {
     if (!fi.tail) continue;
     if (!faByTail.has(fi.tail)) faByTail.set(fi.tail, []);
     faByTail.get(fi.tail)!.push(fi);
@@ -183,11 +183,18 @@ function computeTailDuty(
 
     // Sanity check: if FA-derived duration is wildly longer than scheduled,
     // FA likely has bad data (timezone issues, wrong flight match). Fall back to ICS.
-    if (fi && f.scheduled_arrival) {
-      const schedDur = (new Date(f.scheduled_arrival).getTime() - new Date(f.scheduled_departure).getTime()) / 60_000;
-      if (schedDur > 0 && durMin > Math.max(schedDur * 2, schedDur + 120)) {
-        endMs = new Date(f.scheduled_arrival).getTime();
-        durMin = (endMs - depMs) / 60_000;
+    // Thresholds match DutyTracker: 1.5x or +90min.
+    if (fi) {
+      if (f.scheduled_arrival) {
+        const schedDur = (new Date(f.scheduled_arrival).getTime() - new Date(f.scheduled_departure).getTime()) / 60_000;
+        if (schedDur > 0 && durMin > Math.max(schedDur * 1.5, schedDur + 90)) {
+          endMs = new Date(f.scheduled_arrival).getTime();
+          durMin = (endMs - depMs) / 60_000;
+        }
+      } else if (durMin > 360) {
+        // No scheduled arrival to compare — cap FA estimates at 6h (matches DutyTracker)
+        durMin = 360;
+        endMs = depMs + durMin * 60_000;
       }
     }
 
@@ -385,6 +392,7 @@ export type LongTermMxAircraft = {
 
 export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices = [], mxNotes = [] }: { flights: Flight[]; onSwitchToDuty?: (tail?: string) => void; advertisedPrices?: AdvertisedPriceRow[]; mxNotes?: MxNote[] }) {
   const [enRouteAircraft, setAircraftPosition] = useState<AircraftPosition[]>([]);
+  const [faFlightsRaw, setFaFlightsRaw] = useState<FlightInfoMap[]>([]);
   const [flightInfo, setFlightInfo] = useState<Map<string, FlightInfoMap>>(new Map());
   const [tripSalespersons, setTripSalespersons] = useState<TripSalesperson[]>([]);
   const [visibleTypes, setVisibleTypes] = useState<Set<string>>(DEFAULT_TYPES);
@@ -451,6 +459,7 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
             });
           }
         }
+        setFaFlightsRaw(data.flights ?? []);
         setFlightInfo(map);
         setAircraftPosition(positions);
         setLastUpdate(new Date());
@@ -893,7 +902,7 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
   const allMapAircraft = useMemo(() => [...enRouteAircraft, ...parkedAircraft], [enRouteAircraft, parkedAircraft]);
 
   // Per-tail duty summary (24hr flight time + crew rest)
-  const tailDuty = useMemo(() => computeTailDuty(flights, flightInfo), [flights, flightInfo]);
+  const tailDuty = useMemo(() => computeTailDuty(flights, faFlightsRaw), [flights, faFlightsRaw]);
 
   // Best advertised fuel rate per airport
   const bestFuelByAirport = useMemo(() => buildBestRateByAirport(advertisedPrices), [advertisedPrices]);
