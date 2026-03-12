@@ -1,5 +1,6 @@
-// Drive time estimates using straight-line (haversine) distance + speed heuristic.
-// No external API needed — good enough for crew swap planning.
+// Drive time estimates for crew swap planning.
+// Uses Google Maps Distance Matrix API for real drive times when available,
+// falls back to haversine straight-line estimate if no API key.
 
 // ─── Airport coordinates (US airports commonly used by Baker) ────────────────
 // ICAO → [lat, lon]. Add more as needed.
@@ -150,6 +151,51 @@ function haversineMiles(lat1: number, lon1: number, lat2: number, lon2: number):
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+// ─── Google Maps Distance Matrix API ────────────────────────────────────────
+
+const GMAPS_KEY = process.env.GOOGLE_MAPS_API_KEY;
+
+// Cache Google Maps results for the lifetime of the process (serverless = per invocation)
+const gmapsCache = new Map<string, { driveMiles: number; driveMinutes: number } | null>();
+
+/** Fetch real drive distance/time from Google Maps Distance Matrix API.
+ *  Returns null on any failure (missing key, API error, no route). */
+async function googleMapsDistance(
+  origLat: number, origLon: number,
+  destLat: number, destLon: number,
+  cacheKey: string,
+): Promise<{ driveMiles: number; driveMinutes: number } | null> {
+  if (!GMAPS_KEY) return null;
+  if (gmapsCache.has(cacheKey)) return gmapsCache.get(cacheKey) ?? null;
+
+  try {
+    const url = `https://maps.googleapis.com/maps/api/distancematrix/json?origins=${origLat},${origLon}&destinations=${destLat},${destLon}&units=imperial&key=${GMAPS_KEY}`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      console.warn(`[DriveTime] Google Maps API ${res.status}`);
+      gmapsCache.set(cacheKey, null);
+      return null;
+    }
+
+    const data = await res.json();
+    const element = data.rows?.[0]?.elements?.[0];
+    if (!element || element.status !== "OK") {
+      gmapsCache.set(cacheKey, null);
+      return null;
+    }
+
+    const driveMiles = Math.round((element.distance.value / 1609.344)); // meters → miles
+    const driveMinutes = Math.round(element.duration.value / 60); // seconds → minutes
+    const result = { driveMiles, driveMinutes };
+    gmapsCache.set(cacheKey, result);
+    return result;
+  } catch (e) {
+    console.warn(`[DriveTime] Google Maps error:`, e instanceof Error ? e.message : e);
+    gmapsCache.set(cacheKey, null);
+    return null;
+  }
+}
+
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 export type DriveEstimate = {
@@ -159,20 +205,39 @@ export type DriveEstimate = {
   estimated_drive_miles: number;
   estimated_drive_minutes: number;
   feasible: boolean; // < 4 hours (typical crew transport cutoff)
+  source: "google_maps" | "haversine";
 };
 
 /**
- * Estimate drive time between two airports using straight-line distance.
- * Uses 1.3x multiplier for road vs straight-line, 45 mph average speed.
+ * Estimate drive time between two airports.
+ * Tries Google Maps Distance Matrix API first for real drive times,
+ * falls back to haversine estimate (1.3x straight-line, 45 mph).
  */
-export function estimateDriveTime(originIcao: string, destIcao: string): DriveEstimate | null {
+export async function estimateDriveTimeAsync(originIcao: string, destIcao: string): Promise<DriveEstimate | null> {
   const orig = AIRPORT_COORDS[originIcao.toUpperCase()];
   const dest = AIRPORT_COORDS[destIcao.toUpperCase()];
   if (!orig || !dest) return null;
 
   const straightMiles = haversineMiles(orig[0], orig[1], dest[0], dest[1]);
-  const driveMiles = straightMiles * 1.3; // road distance multiplier
-  const driveMinutes = (driveMiles / 45) * 60; // 45 mph average
+  const cacheKey = `${originIcao.toUpperCase()}-${destIcao.toUpperCase()}`;
+
+  // Try Google Maps first
+  const gmaps = await googleMapsDistance(orig[0], orig[1], dest[0], dest[1], cacheKey);
+  if (gmaps) {
+    return {
+      origin: originIcao.toUpperCase(),
+      destination: destIcao.toUpperCase(),
+      straight_line_miles: Math.round(straightMiles),
+      estimated_drive_miles: gmaps.driveMiles,
+      estimated_drive_minutes: gmaps.driveMinutes,
+      feasible: gmaps.driveMinutes <= 240,
+      source: "google_maps",
+    };
+  }
+
+  // Fall back to haversine
+  const driveMiles = straightMiles * 1.3;
+  const driveMinutes = (driveMiles / 45) * 60;
 
   return {
     origin: originIcao.toUpperCase(),
@@ -180,7 +245,49 @@ export function estimateDriveTime(originIcao: string, destIcao: string): DriveEs
     straight_line_miles: Math.round(straightMiles),
     estimated_drive_miles: Math.round(driveMiles),
     estimated_drive_minutes: Math.round(driveMinutes),
-    feasible: driveMinutes <= 240, // 4 hour cutoff
+    feasible: driveMinutes <= 240,
+    source: "haversine",
+  };
+}
+
+/**
+ * Synchronous drive time estimate. Uses cached Google Maps data if available
+ * (populated by preWarmDriveTimes), otherwise falls back to haversine.
+ */
+export function estimateDriveTime(originIcao: string, destIcao: string): DriveEstimate | null {
+  const orig = AIRPORT_COORDS[originIcao.toUpperCase()];
+  const dest = AIRPORT_COORDS[destIcao.toUpperCase()];
+  if (!orig || !dest) return null;
+
+  const straightMiles = haversineMiles(orig[0], orig[1], dest[0], dest[1]);
+  const cacheKey = `${originIcao.toUpperCase()}-${destIcao.toUpperCase()}`;
+
+  // Check if Google Maps data was pre-warmed
+  const cached = gmapsCache.get(cacheKey);
+  if (cached) {
+    return {
+      origin: originIcao.toUpperCase(),
+      destination: destIcao.toUpperCase(),
+      straight_line_miles: Math.round(straightMiles),
+      estimated_drive_miles: cached.driveMiles,
+      estimated_drive_minutes: cached.driveMinutes,
+      feasible: cached.driveMinutes <= 240,
+      source: "google_maps",
+    };
+  }
+
+  // Fall back to haversine
+  const driveMiles = straightMiles * 1.3;
+  const driveMinutes = (driveMiles / 45) * 60;
+
+  return {
+    origin: originIcao.toUpperCase(),
+    destination: destIcao.toUpperCase(),
+    straight_line_miles: Math.round(straightMiles),
+    estimated_drive_miles: Math.round(driveMiles),
+    estimated_drive_minutes: Math.round(driveMinutes),
+    feasible: driveMinutes <= 240,
+    source: "haversine",
   };
 }
 
@@ -241,4 +348,45 @@ export function findNearbyCommercialAirports(
 
   results.sort((a, b) => a.distanceMiles - b.distanceMiles);
   return results;
+}
+
+/**
+ * Pre-warm the Google Maps cache for a batch of airport pairs.
+ * Call this before the optimizer runs to batch-fetch all drive times.
+ * Runs up to 10 concurrent requests for speed.
+ */
+export async function preWarmDriveTimes(
+  pairs: { origin: string; destination: string }[],
+): Promise<{ fetched: number; cached: number; failed: number }> {
+  if (!GMAPS_KEY) return { fetched: 0, cached: 0, failed: 0 };
+
+  let fetched = 0;
+  let cached = 0;
+  let failed = 0;
+
+  // Deduplicate pairs
+  const uniquePairs = new Map<string, { origin: string; destination: string }>();
+  for (const p of pairs) {
+    const key = `${p.origin.toUpperCase()}-${p.destination.toUpperCase()}`;
+    if (!uniquePairs.has(key)) uniquePairs.set(key, p);
+  }
+
+  const toFetch = Array.from(uniquePairs.values()).filter((p) => {
+    const key = `${p.origin.toUpperCase()}-${p.destination.toUpperCase()}`;
+    if (gmapsCache.has(key)) { cached++; return false; }
+    return true;
+  });
+
+  // Batch in groups of 10
+  for (let i = 0; i < toFetch.length; i += 10) {
+    const batch = toFetch.slice(i, i + 10);
+    await Promise.all(batch.map(async (p) => {
+      const result = await estimateDriveTimeAsync(p.origin, p.destination);
+      if (result?.source === "google_maps") fetched++;
+      else failed++;
+    }));
+  }
+
+  console.log(`[DriveTime] Pre-warmed: ${fetched} Google Maps, ${cached} cached, ${failed} haversine fallback`);
+  return { fetched, cached, failed };
 }

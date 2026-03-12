@@ -4,6 +4,7 @@ import { createServiceClient } from "@/lib/supabase/service";
 import { buildSwapPlan, getRequiredFlightSearches, getPoolFlightSearches, assignOncomingCrew, type CrewMember, type FlightLeg, type AirportAlias, type SwapAssignment, type OncomingPool } from "@/lib/swapOptimizer";
 import { DEFAULT_AIRPORT_ALIASES } from "@/lib/airportAliases";
 import { searchFlights } from "@/lib/hasdata";
+import { preWarmDriveTimes } from "@/lib/driveTime";
 import type { FlightOffer } from "@/lib/amadeus";
 
 export const dynamic = "force-dynamic";
@@ -196,7 +197,54 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    console.log(`[Swap Optimizer] Amadeus results: ${searchSuccessCount} routes with flights, ${searchFailCount} empty, ${commercialFlights.size} total cached`);
+    console.log(`[Swap Optimizer] Flight search results: ${searchSuccessCount} routes with flights, ${searchFailCount} empty, ${commercialFlights.size} total cached`);
+  }
+
+  // ── STEP 1b: Pre-warm Google Maps drive times ─────────────────────────────
+  // Fetch real drive times for all ground transport pairs the optimizer will evaluate.
+  // This populates the cache so estimateDriveTime calls during optimization are instant.
+  {
+    const drivePairs: { origin: string; destination: string }[] = [];
+    // Collect all crew home airports and swap locations
+    const swapLocations = new Set<string>();
+    const homeAirports = new Set<string>();
+
+    for (const [tail, sa] of Object.entries(swapAssignments)) {
+      // Get swap location for this tail
+      const tailFlights = flights.filter((f) => f.tail_number === tail);
+      const wedLegs = tailFlights.filter((f) => f.scheduled_departure.slice(0, 10) === swapDate);
+      if (wedLegs.length > 0) {
+        swapLocations.add(wedLegs[0].departure_icao);
+        const last = wedLegs[wedLegs.length - 1];
+        if (last.arrival_icao) swapLocations.add(last.arrival_icao);
+      }
+
+      // Crew home airports
+      const names = [sa.oncoming_pic, sa.oncoming_sic, sa.offgoing_pic, sa.offgoing_sic].filter(Boolean) as string[];
+      for (const name of names) {
+        const crew = crewRoster.find((c) => c.name.toLowerCase().includes(name.toLowerCase()));
+        if (crew) for (const h of crew.home_airports) homeAirports.add(h);
+      }
+    }
+
+    // Pool home airports
+    if (clientOncomingPool) {
+      for (const p of [...(clientOncomingPool.pic ?? []), ...(clientOncomingPool.sic ?? [])]) {
+        for (const h of p.home_airports) homeAirports.add(h);
+      }
+    }
+
+    // Generate pairs: home ↔ swap location (both directions for oncoming/offgoing)
+    for (const home of homeAirports) {
+      for (const swap of swapLocations) {
+        drivePairs.push({ origin: home, destination: swap });
+        drivePairs.push({ origin: swap, destination: home });
+      }
+    }
+
+    if (drivePairs.length > 0) {
+      await preWarmDriveTimes(drivePairs);
+    }
   }
 
   // ── STEP 2: Assign oncoming crew using ACTUAL transport costs ──────────────
