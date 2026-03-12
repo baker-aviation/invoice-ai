@@ -54,8 +54,12 @@ NNUM_RE = re.compile(r"N\d{1,5}[A-Z]{0,2}")
 
 # Maximum messages to drain per queue per run (prevent runaway)
 MAX_MESSAGES_PER_QUEUE = 5000
+# Per-queue overrides (TFMS is ~50 msg/sec firehose)
+MAX_MESSAGES_OVERRIDE = {"TFMS": 2000}
+# Max seconds to spend draining a single queue
+MAX_DRAIN_SECS = 30
 # Receive timeout per message (ms) — stop draining when queue is empty
-RECEIVE_TIMEOUT_MS = 5000
+RECEIVE_TIMEOUT_MS = 3000
 
 
 # ── Solace Connection ─────────────────────────────────────────────────────────
@@ -111,7 +115,11 @@ def drain_queue(queue_name: str, vpn_name: str, max_messages: int = MAX_MESSAGES
         receiver.start()
 
         messages: List[str] = []
+        t_start = time.time()
         for _ in range(max_messages):
+            if time.time() - t_start > MAX_DRAIN_SECS:
+                print(f"[SWIM] {vpn_name}: hit {MAX_DRAIN_SECS}s time limit", flush=True)
+                break
             msg = receiver.receive_message(timeout=RECEIVE_TIMEOUT_MS)
             if msg is None:
                 break  # Queue is empty
@@ -121,7 +129,7 @@ def drain_queue(queue_name: str, vpn_name: str, max_messages: int = MAX_MESSAGES
             messages.append(payload)
             receiver.ack(msg)
 
-        print(f"[SWIM] Drained {len(messages)} messages from {vpn_name}", flush=True)
+        print(f"[SWIM] Drained {len(messages)} messages from {vpn_name} in {time.time()-t_start:.1f}s", flush=True)
         return messages
 
     finally:
@@ -382,6 +390,7 @@ def pull_swim() -> Dict[str, Any]:
         tfms_raw = drain_queue(
             SWIM_QUEUES["TFMS"]["queue"],
             SWIM_QUEUES["TFMS"]["vpn"],
+            max_messages=MAX_MESSAGES_OVERRIDE.get("TFMS", MAX_MESSAGES_PER_QUEUE),
             broker_override=SWIM_QUEUES["TFMS"].get("broker"),
         )
     except Exception as e:
