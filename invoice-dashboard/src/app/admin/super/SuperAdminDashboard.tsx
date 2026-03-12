@@ -109,6 +109,16 @@ const QUEUE_LABELS: Record<string, string> = {
 
 // ─── Component ───────────────────────────────────────────────────────────────
 
+type IcsSource = {
+  id: number;
+  label: string;
+  url: string;
+  enabled: boolean;
+  last_sync_at: string | null;
+  last_sync_ok: boolean | null;
+  created_at: string;
+};
+
 export default function SuperAdminDashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -116,6 +126,18 @@ export default function SuperAdminDashboard() {
   const [triggering, setTriggering] = useState<string | null>(null);
   const [triggerResult, setTriggerResult] = useState<{ slug: string; ok: boolean } | null>(null);
   const [roleUpdating, setRoleUpdating] = useState<string | null>(null);
+
+  // ICS Sources state
+  const [icsSources, setIcsSources] = useState<IcsSource[]>([]);
+  const [icsLoading, setIcsLoading] = useState(true);
+  const [icsError, setIcsError] = useState<string | null>(null);
+  const [icsNewLabel, setIcsNewLabel] = useState("");
+  const [icsNewUrl, setIcsNewUrl] = useState("");
+  const [icsAdding, setIcsAdding] = useState(false);
+  const [icsEditId, setIcsEditId] = useState<number | null>(null);
+  const [icsEditLabel, setIcsEditLabel] = useState("");
+  const [icsEditUrl, setIcsEditUrl] = useState("");
+  const [icsSaving, setIcsSaving] = useState(false);
 
   const fetchData = useCallback(async () => {
     try {
@@ -181,6 +203,98 @@ export default function SuperAdminDashboard() {
       }
     } finally {
       setRoleUpdating(null);
+    }
+  }
+
+  // ── ICS Sources ───────────────────────────────────────────────────────────
+
+  const fetchIcsSources = useCallback(async () => {
+    try {
+      const res = await fetch("/api/admin/ics-sources");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      setIcsSources(json.sources ?? []);
+      setIcsError(null);
+    } catch (err) {
+      setIcsError(err instanceof Error ? err.message : "Failed to load");
+    } finally {
+      setIcsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchIcsSources();
+  }, [fetchIcsSources]);
+
+  async function handleIcsAdd(e: React.FormEvent) {
+    e.preventDefault();
+    if (!icsNewLabel.trim() || !icsNewUrl.trim()) return;
+    setIcsAdding(true);
+    try {
+      const res = await fetch("/api/admin/ics-sources", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label: icsNewLabel.trim(), url: icsNewUrl.trim() }),
+      });
+      if (!res.ok) {
+        const d = await res.json();
+        throw new Error(d.error ?? `HTTP ${res.status}`);
+      }
+      setIcsNewLabel("");
+      setIcsNewUrl("");
+      await fetchIcsSources();
+    } catch (err) {
+      setIcsError(err instanceof Error ? err.message : "Failed to add");
+    } finally {
+      setIcsAdding(false);
+    }
+  }
+
+  async function handleIcsToggle(source: IcsSource) {
+    try {
+      const res = await fetch("/api/admin/ics-sources", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: source.id, enabled: !source.enabled }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await fetchIcsSources();
+    } catch (err) {
+      setIcsError(err instanceof Error ? err.message : "Failed to update");
+    }
+  }
+
+  async function handleIcsSaveEdit() {
+    if (icsEditId === null || !icsEditLabel.trim() || !icsEditUrl.trim()) return;
+    setIcsSaving(true);
+    try {
+      const res = await fetch("/api/admin/ics-sources", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: icsEditId, label: icsEditLabel.trim(), url: icsEditUrl.trim() }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setIcsEditId(null);
+      await fetchIcsSources();
+    } catch (err) {
+      setIcsError(err instanceof Error ? err.message : "Failed to save");
+    } finally {
+      setIcsSaving(false);
+    }
+  }
+
+  async function handleIcsDelete(id: number) {
+    if (!confirm("Remove this ICS source? The URL will be deleted.")) return;
+    try {
+      const res = await fetch("/api/admin/ics-sources", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await fetchIcsSources();
+    } catch (err) {
+      setIcsError(err instanceof Error ? err.message : "Failed to delete");
     }
   }
 
@@ -456,6 +570,189 @@ export default function SuperAdminDashboard() {
                 })}
             </tbody>
           </table>
+        </div>
+      </div>
+
+      {/* ICS Sources */}
+      <div>
+        <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-3">ICS Calendar Sources</h2>
+        <p className="text-xs text-gray-500 mb-3">
+          JetInsight ICS feeds sync flight schedules every 30 min. Add a new aircraft by pasting its ICS URL.
+        </p>
+
+        {icsError && (
+          <div className="mb-3 px-4 py-2 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+            {icsError}
+            <button onClick={() => setIcsError(null)} className="ml-2 text-red-400 hover:text-red-600">&times;</button>
+          </div>
+        )}
+
+        <form onSubmit={handleIcsAdd} className="mb-4 flex flex-col sm:flex-row gap-2">
+          <input
+            type="text"
+            value={icsNewLabel}
+            onChange={(e) => setIcsNewLabel(e.target.value)}
+            placeholder="Label (e.g. N936BA)"
+            className="border border-gray-300 rounded-md px-3 py-2 text-sm w-40 focus:outline-none focus:ring-2 focus:ring-slate-500"
+          />
+          <input
+            type="url"
+            value={icsNewUrl}
+            onChange={(e) => setIcsNewUrl(e.target.value)}
+            placeholder="ICS URL"
+            className="border border-gray-300 rounded-md px-3 py-2 text-sm flex-1 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-slate-500"
+          />
+          <button
+            type="submit"
+            disabled={icsAdding || !icsNewLabel.trim() || !icsNewUrl.trim()}
+            className="bg-slate-900 text-white rounded-md px-5 py-2 text-sm font-medium hover:bg-slate-700 disabled:opacity-50 whitespace-nowrap"
+          >
+            {icsAdding ? "Adding..." : "Add Source"}
+          </button>
+        </form>
+
+        {icsLoading ? (
+          <div className="text-sm text-gray-400 py-6 text-center">Loading...</div>
+        ) : icsSources.length === 0 ? (
+          <div className="text-sm text-gray-400 py-6 text-center border border-dashed border-gray-300 rounded-lg">
+            No ICS sources configured.
+          </div>
+        ) : (
+          <div className="rounded-lg border bg-white shadow-sm overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="text-left px-4 py-2 text-xs font-medium text-gray-500 w-8">On</th>
+                  <th className="text-left px-4 py-2 text-xs font-medium text-gray-500">Label</th>
+                  <th className="text-left px-4 py-2 text-xs font-medium text-gray-500">URL</th>
+                  <th className="text-left px-4 py-2 text-xs font-medium text-gray-500 w-28">Last Sync</th>
+                  <th className="text-right px-4 py-2 text-xs font-medium text-gray-500 w-24">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {icsSources.map((s) => (
+                  <tr key={s.id} className={`hover:bg-gray-50 ${!s.enabled ? "opacity-50" : ""}`}>
+                    <td className="px-4 py-2">
+                      <button
+                        type="button"
+                        onClick={() => handleIcsToggle(s)}
+                        className={`w-8 h-5 rounded-full relative transition-colors ${
+                          s.enabled ? "bg-green-500" : "bg-gray-300"
+                        }`}
+                      >
+                        <span
+                          className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${
+                            s.enabled ? "left-3.5" : "left-0.5"
+                          }`}
+                        />
+                      </button>
+                    </td>
+                    <td className="px-4 py-2">
+                      {icsEditId === s.id ? (
+                        <input
+                          type="text"
+                          value={icsEditLabel}
+                          onChange={(e) => setIcsEditLabel(e.target.value)}
+                          className="border border-gray-300 rounded px-2 py-1 text-sm w-32 focus:outline-none focus:ring-2 focus:ring-slate-500"
+                        />
+                      ) : (
+                        <span className="font-mono font-semibold text-gray-800">{s.label}</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2">
+                      {icsEditId === s.id ? (
+                        <input
+                          type="url"
+                          value={icsEditUrl}
+                          onChange={(e) => setIcsEditUrl(e.target.value)}
+                          className="border border-gray-300 rounded px-2 py-1 text-xs font-mono w-full focus:outline-none focus:ring-2 focus:ring-slate-500"
+                        />
+                      ) : (
+                        <span className="text-xs text-gray-500 font-mono truncate block max-w-[300px]" title={s.url}>
+                          {s.url.split("?")[0]}
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2">
+                      <div className="flex items-center gap-1.5">
+                        {s.last_sync_ok === true && <span className="w-2 h-2 rounded-full bg-green-500" />}
+                        {s.last_sync_ok === false && <span className="w-2 h-2 rounded-full bg-red-500" />}
+                        {s.last_sync_ok === null && <span className="w-2 h-2 rounded-full bg-gray-300" />}
+                        <span className="text-xs text-gray-500">{fmtTs(s.last_sync_at)}</span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-2 text-right">
+                      {icsEditId === s.id ? (
+                        <div className="flex items-center justify-end gap-1">
+                          <button
+                            type="button"
+                            onClick={handleIcsSaveEdit}
+                            disabled={icsSaving}
+                            className="text-xs text-green-700 hover:text-green-900 font-medium px-2 py-1 rounded hover:bg-green-50"
+                          >
+                            {icsSaving ? "..." : "Save"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setIcsEditId(null)}
+                            className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1 rounded hover:bg-gray-50"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-end gap-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setIcsEditId(s.id);
+                              setIcsEditLabel(s.label);
+                              setIcsEditUrl(s.url);
+                            }}
+                            className="text-xs text-gray-500 hover:text-slate-800 px-2 py-1 rounded hover:bg-gray-50"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleIcsDelete(s.id)}
+                            className="text-xs text-gray-400 hover:text-red-600 px-2 py-1 rounded hover:bg-red-50"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        <div className="mt-3 flex items-center gap-4 flex-wrap">
+          <button
+            type="button"
+            onClick={async () => {
+              if (!confirm("Import ICS URLs from the ops-monitor environment variable into this table?")) return;
+              setIcsError(null);
+              try {
+                const res = await fetch("/api/admin/ics-sources/seed", { method: "POST" });
+                const d = await res.json();
+                if (!res.ok) throw new Error(d.error ?? `HTTP ${res.status}`);
+                await fetchIcsSources();
+                alert(`Seeded ${d.seeded} new source(s), ${d.skipped} already existed.`);
+              } catch (err) {
+                setIcsError(err instanceof Error ? err.message : "Seed failed");
+              }
+            }}
+            className="text-xs border border-gray-300 rounded-md px-3 py-1.5 text-gray-600 hover:bg-gray-50 hover:border-gray-400 transition-colors"
+          >
+            Import from env var
+          </button>
+          <p className="text-xs text-gray-400">
+            Changes take effect on the next ops-monitor sync (every 30 min).
+          </p>
         </div>
       </div>
 
