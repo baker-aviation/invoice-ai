@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin, isAuthed } from "@/lib/api-auth";
+import { cloudRunFetch } from "@/lib/cloud-run-fetch";
 
 export async function POST(req: NextRequest) {
   const auth = await requireAdmin(req);
@@ -13,12 +14,11 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  const url = `${opsUrl.replace(/\/$/, "")}/jobs/sync_schedule`;
+
   try {
-    const res = await fetch(`${opsUrl}/jobs/sync_schedule`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-    });
-    const data = await res.json();
+    const res = await cloudRunFetch(url, { method: "POST", cache: "no-store" });
+    const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       return NextResponse.json({ error: data.detail ?? "Sync failed" }, { status: res.status });
     }
