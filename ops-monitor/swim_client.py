@@ -50,6 +50,10 @@ BAKER_TAILS_SET = {
     "N818CF", "N860TX", "N883TR", "N910E",  "N939TX", "N954JS", "N955GH",
     "N957JS", "N971JS", "N988TX", "N992MG", "N998CX",
 }
+# Baker ICAO callsign prefix (e.g. KOW519, KOW553)
+BAKER_CALLSIGN_PREFIX = "KOW"
+# Combined set for fast string pre-filtering
+BAKER_IDENTIFIERS = BAKER_TAILS_SET | {BAKER_CALLSIGN_PREFIX}
 NNUM_RE = re.compile(r"N\d{1,5}[A-Z]{0,2}")
 
 # Maximum messages to drain per queue per run (prevent runaway)
@@ -360,8 +364,11 @@ def _is_baker_flight(msg: Dict[str, Any]) -> bool:
     tail = msg.get("tail_number")
     if tail and tail in BAKER_TAILS_SET:
         return True
+    acid = (msg.get("acid") or "").upper()
+    # Check KOW callsign prefix
+    if acid.startswith(BAKER_CALLSIGN_PREFIX):
+        return True
     # Check if callsign contains a Baker N-number
-    acid = msg.get("acid") or ""
     m = NNUM_RE.search(acid)
     return bool(m and m.group(0) in BAKER_TAILS_SET)
 
@@ -410,7 +417,7 @@ def pull_swim() -> Dict[str, Any]:
 
     for raw in tfms_raw:
         # Fast pre-filter: skip XML parse unless message might be relevant
-        has_baker_tail = any(t in raw for t in BAKER_TAILS_SET)
+        has_baker_tail = any(t in raw for t in BAKER_IDENTIFIERS)
         has_flow_keyword = any(kw in raw for kw in FLOW_KEYWORDS)
 
         if not has_baker_tail and not has_flow_keyword:
@@ -453,7 +460,7 @@ def pull_swim() -> Dict[str, Any]:
 
     for raw in stdds_raw:
         # Fast pre-filter: skip unless a Baker tail appears in the raw XML
-        if not any(t in raw for t in BAKER_TAILS_SET):
+        if not any(t in raw for t in BAKER_IDENTIFIERS):
             continue
         flight = parse_tfms_flight_message(raw)  # STDDS uses similar FIXM structure
         if flight and _is_baker_flight(flight):
