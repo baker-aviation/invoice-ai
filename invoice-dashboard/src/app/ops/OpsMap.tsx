@@ -38,11 +38,13 @@ function acDivIcon(track: number | null, color: string, onGround: boolean, alert
 }
 
 /** Map label — tail number + optional DIVERTED/HOLDING alert */
-function acDataLabel(ac: AircraftPosition, _fi: FlightInfoMap | undefined, fleetLookup: Map<string, string>, alertLabel?: string): string {
+function acDataLabel(ac: AircraftPosition, _fi: FlightInfoMap | undefined, fleetLookup: Map<string, string>, alertLabel?: string, dark?: boolean): string {
   const color = getAcColor(fleetLookup, ac.tail, ac.on_ground);
-  const shadow = "text-shadow: 0 1px 3px rgba(0,0,0,0.9), 0 0 6px rgba(0,0,0,0.6)";
-  const alertHtml = alertLabel ? ` <span style="color:#ef4444;font-size:9px;font-weight:bold">${alertLabel}</span>` : "";
-  return `<div style="color:${color};font-family:ui-monospace,monospace;font-size:10px;white-space:nowrap;${shadow}"><b>${ac.tail}</b>${alertHtml}</div>`;
+  const alertHtml = alertLabel ? ` <span style="color:#ef4444;font-size:10px;font-weight:bold">${alertLabel}</span>` : "";
+  const bg = dark
+    ? "text-shadow: 0 1px 3px rgba(0,0,0,0.9), 0 0 6px rgba(0,0,0,0.6)"
+    : "background:rgba(255,255,255,0.85);padding:1px 4px;border-radius:3px;border:1px solid rgba(0,0,0,0.12)";
+  return `<div style="color:${color};font-family:ui-monospace,monospace;font-size:11px;font-weight:700;white-space:nowrap;${bg};line-height:1.3">${ac.tail}${alertHtml}</div>`;
 }
 
 function fmtEta(iso: string | null | undefined): string {
@@ -493,7 +495,7 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
               zIndexOffset={ac.on_ground ? 1000 : 2000}
             >
               <Tooltip permanent direction="right" offset={[12, 0]} className="fa-data-tooltip">
-                <div dangerouslySetInnerHTML={{ __html: acDataLabel(ac, fi, fleetLookup, alertLabel) }} />
+                <div dangerouslySetInnerHTML={{ __html: acDataLabel(ac, fi, fleetLookup, alertLabel, darkMode) }} />
               </Tooltip>
               <Popup>
                 <div className="text-sm space-y-1">

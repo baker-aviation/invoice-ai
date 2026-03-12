@@ -28,19 +28,29 @@ SWIM_QUEUES = {
     "TFMS": {
         "queue": "charlie.airninetwo.com.TFMS.e5109ea9-f16e-41a7-a88f-f33caee601cd.OUT",
         "vpn": "TFMS",
+        "broker": "tcps://ems1.swim.faa.gov:55443",
     },
     "STDDS": {
         "queue": "charlie.airninetwo.com.STDDS.d858d975-ab44-4ac3-b5dc-0ac869fb057b.OUT",
         "vpn": "STDDS",
+        "broker": None,  # uses default SWIM_BROKER_URL
     },
     "NOTAM": {
         "queue": "charlie.airninetwo.com.AIM_FNS.7539384d-dc7d-4104-9f36-7c2823bd6884.OUT",
         "vpn": "AIM_FNS",
+        "broker": None,
     },
 }
 
-# Baker Aviation tail numbers to filter for
-BAKER_TAILS = re.compile(r"N\d{1,5}[A-Z]{0,2}")
+# Baker Aviation fleet — must match BAKER_FLEET in maintenanceData.ts
+BAKER_TAILS_SET = {
+    "N51GB",  "N102VR", "N106PC", "N125DZ", "N125TH", "N187CR", "N201HR",
+    "N301HR", "N371DB", "N416F",  "N513JB", "N519FX", "N521FX", "N533FX",
+    "N548FX", "N552FX", "N553FX", "N555FX", "N700LH", "N703TX", "N733FL",
+    "N818CF", "N860TX", "N883TR", "N910E",  "N939TX", "N954JS", "N955GH",
+    "N957JS", "N971JS", "N988TX", "N992MG", "N998CX",
+}
+NNUM_RE = re.compile(r"N\d{1,5}[A-Z]{0,2}")
 
 # Maximum messages to drain per queue per run (prevent runaway)
 MAX_MESSAGES_PER_QUEUE = 5000
@@ -62,7 +72,7 @@ def _get_swim_config():
     return broker, username, password
 
 
-def drain_queue(queue_name: str, vpn_name: str, max_messages: int = MAX_MESSAGES_PER_QUEUE) -> List[str]:
+def drain_queue(queue_name: str, vpn_name: str, max_messages: int = MAX_MESSAGES_PER_QUEUE, broker_override: Optional[str] = None) -> List[str]:
     """Connect to a SCDS Solace queue and drain all pending messages.
 
     Returns a list of raw XML message bodies.
@@ -70,9 +80,10 @@ def drain_queue(queue_name: str, vpn_name: str, max_messages: int = MAX_MESSAGES
     from solace.messaging.messaging_service import MessagingService, RetryStrategy
     from solace.messaging.resources.queue import Queue
 
-    broker, username, password = _get_swim_config()
+    default_broker, username, password = _get_swim_config()
+    broker = broker_override or default_broker
 
-    # Build messaging service for this VPN
+    print(f"[SWIM] Connecting: vpn={vpn_name}, user={username}, broker={broker}", flush=True)
     broker_props = {
         "solace.messaging.transport.host": broker,
         "solace.messaging.service.vpn-name": vpn_name,
@@ -137,9 +148,11 @@ def _find_any(root: ET.Element, *tags: str) -> Optional[ET.Element]:
 
 
 def _extract_tail_number(text: str) -> Optional[str]:
-    """Extract N-number from text."""
-    m = BAKER_TAILS.search(text or "")
-    return m.group(0) if m else None
+    """Extract Baker N-number from text."""
+    m = NNUM_RE.search(text or "")
+    if m and m.group(0) in BAKER_TAILS_SET:
+        return m.group(0)
+    return None
 
 
 def parse_tfms_flight_message(xml_str: str) -> Optional[Dict[str, Any]]:
@@ -337,11 +350,12 @@ def parse_notam_message(xml_str: str) -> Optional[Dict[str, Any]]:
 def _is_baker_flight(msg: Dict[str, Any]) -> bool:
     """Check if a flight message involves a Baker Aviation aircraft."""
     tail = msg.get("tail_number")
+    if tail and tail in BAKER_TAILS_SET:
+        return True
+    # Check if callsign contains a Baker N-number
     acid = msg.get("acid") or ""
-    if tail:
-        return True  # Already matched N-number pattern
-    # Check if callsign contains an N-number
-    return bool(BAKER_TAILS.search(acid))
+    m = NNUM_RE.search(acid)
+    return bool(m and m.group(0) in BAKER_TAILS_SET)
 
 
 def pull_swim() -> Dict[str, Any]:
@@ -368,11 +382,16 @@ def pull_swim() -> Dict[str, Any]:
         tfms_raw = drain_queue(
             SWIM_QUEUES["TFMS"]["queue"],
             SWIM_QUEUES["TFMS"]["vpn"],
+            broker_override=SWIM_QUEUES["TFMS"].get("broker"),
         )
     except Exception as e:
-        print(f"[SWIM] TFMS drain error: {e}", flush=True)
+        print(f"[SWIM] TFMS drain error: {type(e).__name__}: {e}", flush=True)
+        # Log full exception details for auth debugging
+        import traceback
+        traceback.print_exc()
         tfms_raw = []
         stats["errors"] += 1
+        stats["tfms_error"] = str(e)
 
     positions_batch: List[Dict[str, Any]] = []
     flow_batch: List[Dict[str, Any]] = []
@@ -406,6 +425,7 @@ def pull_swim() -> Dict[str, Any]:
         stdds_raw = drain_queue(
             SWIM_QUEUES["STDDS"]["queue"],
             SWIM_QUEUES["STDDS"]["vpn"],
+            broker_override=SWIM_QUEUES["STDDS"].get("broker"),
         )
     except Exception as e:
         print(f"[SWIM] STDDS drain error: {e}", flush=True)
@@ -428,6 +448,7 @@ def pull_swim() -> Dict[str, Any]:
         notam_raw = drain_queue(
             SWIM_QUEUES["NOTAM"]["queue"],
             SWIM_QUEUES["NOTAM"]["vpn"],
+            broker_override=SWIM_QUEUES["NOTAM"].get("broker"),
         )
     except Exception as e:
         print(f"[SWIM] NOTAM drain error: {e}", flush=True)
