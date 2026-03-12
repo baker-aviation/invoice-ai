@@ -1038,6 +1038,8 @@ export default function FuelPricesTable({
       return {
         vendor,
         currentAvg,
+        prevWeekAvg,
+        monthAgoAvg,
         weekChange$,
         weekChangePct,
         monthChange$,
@@ -1046,6 +1048,33 @@ export default function FuelPricesTable({
       };
     });
   }, [advertisedPrices]);
+
+  // Overall average across all vendors with data
+  const overallStats = useMemo(() => {
+    const withCurrent = vendorPriceStats.filter((v) => v.currentAvg != null);
+    const withWeek = vendorPriceStats.filter((v) => v.weekChange$ != null);
+    const withMonth = vendorPriceStats.filter((v) => v.monthChange$ != null);
+
+    const avgCurrent = withCurrent.length > 0
+      ? withCurrent.reduce((s, v) => s + v.currentAvg!, 0) / withCurrent.length : null;
+    const avgWeek$ = withWeek.length > 0
+      ? withWeek.reduce((s, v) => s + v.weekChange$!, 0) / withWeek.length : null;
+    const avgWeekPct = withWeek.length > 0
+      ? withWeek.reduce((s, v) => s + v.weekChangePct!, 0) / withWeek.length : null;
+    const avgMonth$ = withMonth.length > 0
+      ? withMonth.reduce((s, v) => s + v.monthChange$!, 0) / withMonth.length : null;
+    const avgMonthPct = withMonth.length > 0
+      ? withMonth.reduce((s, v) => s + v.monthChangePct!, 0) / withMonth.length : null;
+
+    return {
+      currentAvg: avgCurrent != null ? Math.round(avgCurrent * 10000) / 10000 : null,
+      weekChange$: avgWeek$ != null ? Math.round(avgWeek$ * 10000) / 10000 : null,
+      weekChangePct: avgWeekPct != null ? Math.round(avgWeekPct * 10) / 10 : null,
+      monthChange$: avgMonth$ != null ? Math.round(avgMonth$ * 10000) / 10000 : null,
+      monthChangePct: avgMonthPct != null ? Math.round(avgMonthPct * 10) / 10 : null,
+      vendorCount: withCurrent.length,
+    };
+  }, [vendorPriceStats]);
 
   // ─── Stats: VNY & TEB Jet Aviation vs cheapest ────────────────────────────
   const airportJetComparisons = useMemo(() => {
@@ -1868,6 +1897,45 @@ export default function FuelPricesTable({
       {/* ─── Stats View ──────────────────────────────────────────── */}
       {viewMode === "stats" && (
         <>
+          {/* Overall summary banner */}
+          <div className="rounded-xl border bg-slate-50 shadow-sm px-5 py-4">
+            <div className="flex flex-wrap items-center gap-6">
+              <div>
+                <div className="text-[10px] uppercase font-semibold text-gray-400">Overall Avg</div>
+                <div className="text-lg font-mono font-bold text-gray-900">
+                  {overallStats.currentAvg != null ? fmt$(overallStats.currentAvg) : "\u2014"}
+                </div>
+                <div className="text-[10px] text-gray-400">{overallStats.vendorCount} vendors</div>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase font-semibold text-gray-400">1-Week Change</div>
+                {overallStats.weekChange$ != null ? (
+                  <div className={`text-lg font-mono font-bold ${
+                    overallStats.weekChange$ > 0 ? "text-red-600" : overallStats.weekChange$ < 0 ? "text-green-600" : "text-gray-700"
+                  }`}>
+                    {overallStats.weekChange$ > 0 ? "+" : ""}{overallStats.weekChange$.toFixed(4)}
+                    <span className="text-sm ml-1 opacity-70">
+                      ({overallStats.weekChangePct! >= 0 ? "+" : ""}{overallStats.weekChangePct}%)
+                    </span>
+                  </div>
+                ) : <div className="text-lg text-gray-300">{"\u2014"}</div>}
+              </div>
+              <div>
+                <div className="text-[10px] uppercase font-semibold text-gray-400">1-Month Change</div>
+                {overallStats.monthChange$ != null ? (
+                  <div className={`text-lg font-mono font-bold ${
+                    overallStats.monthChange$ > 0 ? "text-red-600" : overallStats.monthChange$ < 0 ? "text-green-600" : "text-gray-700"
+                  }`}>
+                    {overallStats.monthChange$ > 0 ? "+" : ""}{overallStats.monthChange$.toFixed(4)}
+                    <span className="text-sm ml-1 opacity-70">
+                      ({overallStats.monthChangePct! >= 0 ? "+" : ""}{overallStats.monthChangePct}%)
+                    </span>
+                  </div>
+                ) : <div className="text-lg text-gray-300">{"\u2014"}</div>}
+              </div>
+            </div>
+          </div>
+
           {/* Vendor Price Changes Table */}
           <div className="rounded-xl border bg-white overflow-hidden shadow-sm overflow-x-auto">
             <table className="min-w-full text-sm">
@@ -1889,32 +1957,46 @@ export default function FuelPricesTable({
                     </td>
                     <td className="px-4 py-2.5 whitespace-nowrap text-right">
                       {v.weekChange$ != null ? (
-                        <span className={`font-mono text-xs font-medium ${
-                          v.weekChange$ > 0 ? "text-red-600" : v.weekChange$ < 0 ? "text-green-600" : "text-gray-500"
-                        }`}>
-                          {v.weekChange$ > 0 ? "+" : ""}{v.weekChange$.toFixed(4)}
-                          {v.weekChangePct != null && (
-                            <span className="text-[10px] ml-1 opacity-70">
-                              ({v.weekChangePct >= 0 ? "+" : ""}{v.weekChangePct}%)
-                            </span>
+                        <div>
+                          <span className={`font-mono text-xs font-medium ${
+                            v.weekChange$ > 0 ? "text-red-600" : v.weekChange$ < 0 ? "text-green-600" : "text-gray-500"
+                          }`}>
+                            {v.weekChange$ > 0 ? "+" : ""}{v.weekChange$.toFixed(4)}
+                            {v.weekChangePct != null && (
+                              <span className="text-[10px] ml-1 opacity-70">
+                                ({v.weekChangePct >= 0 ? "+" : ""}{v.weekChangePct}%)
+                              </span>
+                            )}
+                          </span>
+                          {v.prevWeekAvg != null && (
+                            <div className="text-[10px] text-gray-400 font-mono">
+                              was {fmt$(v.prevWeekAvg)}
+                            </div>
                           )}
-                        </span>
+                        </div>
                       ) : (
                         <span className="text-gray-300 text-xs">{"\u2014"}</span>
                       )}
                     </td>
                     <td className="px-4 py-2.5 whitespace-nowrap text-right">
                       {v.monthChange$ != null ? (
-                        <span className={`font-mono text-xs font-medium ${
-                          v.monthChange$ > 0 ? "text-red-600" : v.monthChange$ < 0 ? "text-green-600" : "text-gray-500"
-                        }`}>
-                          {v.monthChange$ > 0 ? "+" : ""}{v.monthChange$.toFixed(4)}
-                          {v.monthChangePct != null && (
-                            <span className="text-[10px] ml-1 opacity-70">
-                              ({v.monthChangePct >= 0 ? "+" : ""}{v.monthChangePct}%)
-                            </span>
+                        <div>
+                          <span className={`font-mono text-xs font-medium ${
+                            v.monthChange$ > 0 ? "text-red-600" : v.monthChange$ < 0 ? "text-green-600" : "text-gray-500"
+                          }`}>
+                            {v.monthChange$ > 0 ? "+" : ""}{v.monthChange$.toFixed(4)}
+                            {v.monthChangePct != null && (
+                              <span className="text-[10px] ml-1 opacity-70">
+                                ({v.monthChangePct >= 0 ? "+" : ""}{v.monthChangePct}%)
+                              </span>
+                            )}
+                          </span>
+                          {v.monthAgoAvg != null && (
+                            <div className="text-[10px] text-gray-400 font-mono">
+                              was {fmt$(v.monthAgoAvg)}
+                            </div>
                           )}
-                        </span>
+                        </div>
                       ) : (
                         <span className="text-gray-300 text-xs">{"\u2014"}</span>
                       )}
