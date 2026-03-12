@@ -3,6 +3,7 @@ import json
 import math
 import os
 import re
+import time
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 from datetime import datetime, timezone, timedelta
@@ -17,6 +18,7 @@ from slowapi.util import get_remote_address
 
 from supa import sb, log_pipeline_run
 from auth_middleware import add_auth_middleware
+from swim_client import pull_swim
 
 app = FastAPI()
 add_auth_middleware(app)
@@ -2115,3 +2117,30 @@ def _notam_severity(msg: str) -> str:
     if re.search(r"(\bAD\b|AERODROME|AIRPORT).{0,30}(RSTD|RESTRICTED)", m):
         return "critical"
     return "warning"
+
+
+# ─── SWIM Feed ────────────────────────────────────────────────────────────────
+
+@app.post("/jobs/pull_swim")
+def job_pull_swim():
+    """Drain FAA SWIM SCDS queues (TFMS, STDDS, NOTAM) and write to Supabase."""
+    t0 = time.time()
+    try:
+        stats = pull_swim()
+    except Exception as e:
+        print(f"[pull_swim] exception: {e}", flush=True)
+        log_pipeline_run("swim-pull", status="error", message=str(e)[:200])
+        raise HTTPException(500, detail=f"SWIM pull failed: {e}")
+    duration_ms = int((time.time() - t0) * 1000)
+    total_items = (
+        stats.get("positions_upserted", 0)
+        + stats.get("flow_control_upserted", 0)
+        + stats.get("notams_upserted", 0)
+    )
+    log_pipeline_run(
+        "swim-pull",
+        items=total_items,
+        duration_ms=duration_ms,
+        message=f"pos={stats.get('positions_upserted',0)} flow={stats.get('flow_control_upserted',0)} notams={stats.get('notams_upserted',0)}",
+    )
+    return {"ok": True, **stats}
