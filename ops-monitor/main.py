@@ -1965,12 +1965,22 @@ def debug_tfr_test():
 
 @app.get("/debug/swim_positions")
 def debug_swim_positions():
-    """Show recent SWIM positions for Baker fleet."""
+    """Show recent SWIM positions for Baker fleet — latest per tail."""
     supa = sb()
+    # Get all recent positions
     result = supa.table("swim_positions").select(
-        "acid, tail_number, departure_icao, arrival_icao, event_type, event_time, latitude, longitude, altitude_ft, groundspeed_kt, raw_xml"
-    ).order("event_time", desc=True).limit(5).execute()
-    return {"count": len(result.data), "positions": result.data}
+        "acid, tail_number, departure_icao, arrival_icao, event_type, event_time, "
+        "latitude, longitude, altitude_ft, groundspeed_kt, aircraft_type, flight_status, etd, eta"
+    ).order("event_time", desc=True).limit(50).execute()
+    # Dedupe to latest per tail
+    seen = set()
+    latest = []
+    for p in result.data:
+        key = p.get("acid") or p.get("tail_number")
+        if key and key not in seen:
+            seen.add(key)
+            latest.append(p)
+    return {"count": len(latest), "positions": latest}
 
 
 def _fetch_notams(icao: str, token: str) -> List[Dict]:
