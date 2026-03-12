@@ -78,6 +78,7 @@ def drain_queue(queue_name: str, vpn_name: str, max_messages: int = MAX_MESSAGES
         "solace.messaging.service.vpn-name": vpn_name,
         "solace.messaging.authentication.scheme.basic.username": username,
         "solace.messaging.authentication.scheme.basic.password": password,
+        "solace.messaging.tls.trust-store-path": "/etc/ssl/certs/",
     }
 
     messaging_service = (

@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libxml2-dev libxslt1-dev gcc && \
+    libxml2-dev libxslt1-dev gcc ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
