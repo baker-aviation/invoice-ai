@@ -117,6 +117,16 @@ export default function VanDriverClient({
   const [refreshing, setRefreshing] = useState(false);
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
   const [, setTick] = useState(0); // force re-render for countdowns
+  const [dismissedMxIds, setDismissedMxIds] = useState<Set<string>>(new Set());
+
+  const dismissMxNote = useCallback(async (id: string) => {
+    setDismissedMxIds((prev) => new Set(prev).add(id));
+    try {
+      await fetch(`/api/ops/alerts/${id}/acknowledge`, { method: "POST" });
+    } catch {
+      setDismissedMxIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
+    }
+  }, []);
 
   // ---------------------------------------------------------------------------
   // Fetch FlightAware data
@@ -300,6 +310,8 @@ export default function VanDriverClient({
                 : undefined}
               flightInfoMap={flightInfoMap}
               tailMxNotes={mxNotesByTail.get(item.arrFlight.tail_number ?? "") ?? []}
+              dismissedMxIds={dismissedMxIds}
+              onDismissMx={dismissMxNote}
             />
           ))}
         </div>
@@ -394,6 +406,8 @@ function StopCard({
   fi,
   flightInfoMap,
   tailMxNotes,
+  dismissedMxIds,
+  onDismissMx,
 }: {
   item: VanFlightItem;
   index: number;
@@ -401,6 +415,8 @@ function StopCard({
   fi: FlightInfoEntry | undefined;
   flightInfoMap: Map<string, FlightInfoEntry>;
   tailMxNotes: MxNote[];
+  dismissedMxIds: Set<string>;
+  onDismissMx: (id: string) => void;
 }) {
   const tail = item.arrFlight.tail_number ?? "TBD";
   const dep = item.arrFlight.departure_icao?.replace(/^K/, "") ?? "???";
@@ -494,14 +510,23 @@ function StopCard({
         </div>
 
         {/* MX notes */}
-        {tailMxNotes.length > 0 && (
+        {tailMxNotes.filter((n) => !dismissedMxIds.has(n.id)).length > 0 && (
           <div className="ml-7 mt-3 space-y-1.5">
-            {tailMxNotes.map((n) => (
+            {tailMxNotes.filter((n) => !dismissedMxIds.has(n.id)).map((n) => (
               <div key={n.id} className="bg-orange-50 dark:bg-orange-900/30 border border-orange-200 dark:border-orange-800 rounded-lg px-3 py-2">
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-orange-600 dark:text-orange-400 font-bold text-xs shrink-0">MX</span>
                   <span className="text-xs font-medium text-orange-700 dark:text-orange-300">{n.airport_icao}</span>
-                  <span className="text-sm text-gray-700 dark:text-gray-300">{n.body}</span>
+                  <span className="text-sm text-gray-700 dark:text-gray-300 flex-1">{n.body}</span>
+                  <button
+                    onClick={() => onDismissMx(n.id)}
+                    className="shrink-0 min-w-[44px] min-h-[44px] flex items-center justify-center text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300"
+                    aria-label="Dismiss MX note"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
                 </div>
                 {n.start_time && (
                   <div className="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5">

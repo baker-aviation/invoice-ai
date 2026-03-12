@@ -2546,11 +2546,11 @@ const haversineKmClient = (lat1: number, lon1: number, lat2: number, lon2: numbe
 export default function VanPositioningClient({ initialFlights, mxNotes, aircraftTags = [] }: { initialFlights: Flight[]; mxNotes?: MxNote[]; aircraftTags?: AircraftTag[] }) {
   const dates = useMemo(() => getDateRange(7), []); // 7-day window
   const [dayIdx, setDayIdx] = useState(0);
-  const [activeTab, setActiveTab] = useState<"map" | "schedule" | "flights">("map");
+  const [activeTab, setActiveTab] = useState<"map" | "schedule" | "flights">("schedule");
   const [viewMode, setViewMode] = useState<"map" | "list">("map");
   const [selectedVan, setSelectedVan] = useState<number | null>(null);
   const [mxNotesOpen, setMxNotesOpen] = useState(false);
-  const [mxConflictsOpen, setMxConflictsOpen] = useState(true);
+  const [mxConflictsOpen, setMxConflictsOpen] = useState(false);
   const [dismissedMxIds, setDismissedMxIds] = useState<Set<string>>(new Set());
 
   const dismissMxNote = useCallback(async (id: string) => {
