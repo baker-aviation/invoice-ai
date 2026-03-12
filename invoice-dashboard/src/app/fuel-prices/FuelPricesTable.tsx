@@ -31,6 +31,17 @@ function fmtDate(d: string | null | undefined): string {
   }
 }
 
+function fmtTimeAgo(isoDate: string): string {
+  const diff = Date.now() - new Date(isoDate).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  return `${days}d ago`;
+}
+
 /** Get the Monday of the week containing a date string */
 function getWeekMonday(dateStr: string): string {
   const d = new Date(dateStr + "T12:00:00");
@@ -962,11 +973,11 @@ export default function FuelPricesTable({
     }
     return EXPECTED_VENDORS.map((vendor) => {
       const info = byVendor.get(vendor);
-      if (!info) return { vendor, status: "missing" as const, latestWeek: null, daysOld: null, rowCount: 0 };
+      if (!info) return { vendor, status: "missing" as const, latestWeek: null, daysOld: null, rowCount: 0, latestUpload: null };
       const weekDate = new Date(info.latestWeek + "T12:00:00");
       const daysOld = Math.floor((now.getTime() - weekDate.getTime()) / (1000 * 60 * 60 * 24));
       const status = daysOld <= 7 ? "current" as const : daysOld <= 14 ? "aging" as const : "stale" as const;
-      return { vendor, status, latestWeek: info.latestWeek, daysOld, rowCount: info.rowCount };
+      return { vendor, status, latestWeek: info.latestWeek, daysOld, rowCount: info.rowCount, latestUpload: info.latestUpload };
     });
   }, [advertisedPrices]);
 
@@ -1010,12 +1021,14 @@ export default function FuelPricesTable({
           )}
         </div>
         <div className="flex flex-wrap gap-1.5">
-          {vendorHealth.map(({ vendor, status, latestWeek, rowCount }) => (
+          {vendorHealth.map(({ vendor, status, latestWeek, rowCount, latestUpload }) => {
+            const uploadAge = latestUpload ? fmtTimeAgo(latestUpload) : null;
+            return (
             <span
               key={vendor}
               title={status === "missing"
                 ? `${vendor}: No data uploaded`
-                : `${vendor}: ${rowCount} prices, week of ${fmtDate(latestWeek)}`}
+                : `${vendor}: ${rowCount} prices, week of ${fmtDate(latestWeek)}${uploadAge ? `, updated ${uploadAge}` : ""}`}
               className={`inline-flex items-center gap-1 px-2 py-0.5 text-[11px] rounded-full border ${
                 status === "current"
                   ? "bg-green-50 text-green-700 border-green-200"
@@ -1033,9 +1046,12 @@ export default function FuelPricesTable({
                   : "bg-gray-300"
               }`} />
               {vendor.replace("Flight Support", "").replace("Aviation", "Avn").replace("Services", "Svc").trim()}
-              {latestWeek && <span className="opacity-60">{fmtDate(latestWeek)}</span>}
+              {uploadAge
+                ? <span className="opacity-60">{uploadAge}</span>
+                : latestWeek && <span className="opacity-60">{fmtDate(latestWeek)}</span>}
             </span>
-          ))}
+            );
+          })}
         </div>
       </div>
 
