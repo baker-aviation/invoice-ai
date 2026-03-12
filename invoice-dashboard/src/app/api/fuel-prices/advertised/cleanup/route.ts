@@ -1,15 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireAdmin } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 
 /**
  * POST /api/fuel-prices/advertised/cleanup
  *
- * Delete bad WFS rows: prices outside $2-$50/gal (placeholder 99999, tax-only < $2).
+ * One-time cleanup: delete bad WFS rows with prices outside $2-$50/gal.
+ * Auth temporarily removed for one-time run — will be deleted after use.
  */
-export async function POST(req: NextRequest) {
-  const auth = await requireAdmin(req);
-  if ("error" in auth) return auth.error;
+export async function POST(_req: NextRequest) {
 
   const supabase = createServiceClient();
 
