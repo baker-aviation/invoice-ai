@@ -415,9 +415,10 @@ def pull_swim() -> Dict[str, Any]:
     # Flow data keywords — cheap string check before XML parse
     FLOW_KEYWORDS = ("GroundDelay", "GroundStop", "GDP", "CTOP", "AirspaceFlow", "AFP")
 
-    # Debug: log first 3 messages so we can see the format
-    for i, raw in enumerate(tfms_raw[:3]):
-        print(f"[SWIM] TFMS sample #{i+1} (first 500 chars): {raw[:500]}", flush=True)
+    # Debug: log first message fully (up to 2000 chars)
+    if tfms_raw:
+        print(f"[SWIM] TFMS sample (first 2000 chars): {tfms_raw[0][:2000]}", flush=True)
+        print(f"[SWIM] TFMS total drained: {len(tfms_raw)}", flush=True)
 
     for raw in tfms_raw:
         # Fast pre-filter: skip XML parse unless message might be relevant
