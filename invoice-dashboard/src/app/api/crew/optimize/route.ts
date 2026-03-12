@@ -165,7 +165,7 @@ export async function POST(req: NextRequest) {
       searchPairs.add(`${s.origin}-${s.destination}`);
     }
 
-    const pairsArray = Array.from(searchPairs).slice(0, 120);
+    const pairsArray = Array.from(searchPairs);
     let searchSuccessCount = 0;
     let searchFailCount = 0;
 
