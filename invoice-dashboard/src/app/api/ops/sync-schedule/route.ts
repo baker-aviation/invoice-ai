@@ -18,9 +18,18 @@ export async function POST(req: NextRequest) {
 
   try {
     const res = await cloudRunFetch(url, { method: "POST", cache: "no-store" });
-    const data = await res.json().catch(() => ({}));
+    const text = await res.text();
+    let data: Record<string, unknown>;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      return NextResponse.json(
+        { error: `Unexpected response (${res.status}): ${text.slice(0, 200)}` },
+        { status: 502 },
+      );
+    }
     if (!res.ok) {
-      return NextResponse.json({ error: data.detail ?? "Sync failed" }, { status: res.status });
+      return NextResponse.json({ error: data.detail ?? `Sync failed (${res.status})` }, { status: res.status });
     }
     return NextResponse.json(data);
   } catch (err) {
