@@ -64,6 +64,7 @@ type CrewSwapRow = {
   aircraft_type: string;
   tail_number: string;
   swap_location: string | null;
+  all_swap_points?: string[];
   travel_type: "commercial" | "uber" | "rental_car" | "drive" | "none";
   flight_number: string | null;
   departure_time: string | null;
@@ -403,7 +404,14 @@ function SwapSheetByTail({ rows }: { rows: CrewSwapRow[] }) {
               <div className="flex items-center gap-2">
                 <span className="font-mono font-bold text-gray-900">{tail}</span>
                 {ac && <span className={`text-[10px] px-1.5 py-0.5 rounded ${ac.bg} ${ac.text}`}>{ac.label}</span>}
-                <span className="font-mono text-xs text-gray-500">@ {swapLoc}</span>
+                <span className="font-mono text-xs text-gray-500">
+                  @ {swapLoc}
+                  {(() => {
+                    const allPts = onPic?.all_swap_points ?? onSic?.all_swap_points ?? [];
+                    const others = [...new Set(allPts.filter(p => p !== swapLoc))];
+                    return others.length > 0 ? ` (also ${others.join(", ")})` : "";
+                  })()}
+                </span>
               </div>
               <div className="flex items-center gap-3">
                 {gapMinutes !== null && (
