@@ -153,8 +153,10 @@ export async function POST(req: NextRequest) {
           legLines.push(`  Prior leg: ${pDep}-${pArr} dep ${pTime} (${pType})`);
         }
 
-        // JetInsight link
-        if (leg.jetinsight_url) {
+        // Always use the salesperson's trip_id for the URL (not the flight's jetinsight_url)
+        if (leg.trip_id) {
+          legLines.push(`  <https://portal.jetinsight.com/trips/${leg.trip_id}|Open in JetInsight>`);
+        } else if (leg.jetinsight_url) {
           legLines.push(`  <${leg.jetinsight_url}|Open in JetInsight>`);
         }
       }
