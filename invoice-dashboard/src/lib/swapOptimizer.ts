@@ -694,8 +694,8 @@ function buildCandidates(
       flightNumber: null,
       depTime: null,
       arrTime: null,
-      from: task.homeAirports[0] ? toIata(task.homeAirports[0]) : "???",
-      to: toIata(task.swapPoint.icao),
+      from: task.direction === "offgoing" ? toIata(task.swapPoint.icao) : (task.homeAirports[0] ? toIata(task.homeAirports[0]) : "???"),
+      to: task.direction === "offgoing" ? (task.homeAirports[0] ? toIata(task.homeAirports[0]) : "???") : toIata(task.swapPoint.icao),
       cost: 0,
       durationMin: 0,
       isDirect: false,
@@ -735,11 +735,14 @@ function findBackups(
     const gap = (c.depTime.getTime() - primary.depTime.getTime()) / 60_000;
     if (gap < BACKUP_FLIGHT_MIN_GAP) return false;
 
-    // Backup must still satisfy swap timing constraints
+    // Backup must still arrive at FBO before 1800 local (offgoing crew holds until then)
     if (task?.direction === "oncoming" && c.fboArrivalTime) {
-      // Must arrive at FBO before the hard deadline (1800L)
-      // Use swap point time + 6hrs as a generous deadline proxy
-      const hardDeadline = new Date(task.swapPoint.time.getTime() + 6 * 60 * 60_000);
+      const tz = getAirportTimezone(task.swapPoint.icao) ?? "America/New_York";
+      const deadline1800 = new Date(`${task.swapPoint.time.toISOString().slice(0, 10)}T18:00:00`);
+      const utcStr = deadline1800.toLocaleString("en-US", { timeZone: "UTC" });
+      const localStr = deadline1800.toLocaleString("en-US", { timeZone: tz });
+      const offsetMs = new Date(utcStr).getTime() - new Date(localStr).getTime();
+      const hardDeadline = new Date(deadline1800.getTime() + offsetMs);
       if (c.fboArrivalTime.getTime() > hardDeadline.getTime()) return false;
     }
 
@@ -907,11 +910,15 @@ function optimizeTail(
     }
   }
 
-  // ── Compute latest oncoming arrival for aircraft-unattended constraint ──
+  // ── Compute oncoming PIC arrival for aircraft-unattended constraint ──
+  // One PIC at the FBO = aircraft is attended. Use PIC arrival, not latest of PIC+SIC.
+  // If no PIC, fall back to earliest oncoming arrival.
+  const oncomingPicArrival = oncomingPic?.best?.fboArrivalTime?.getTime() ?? null;
   const oncomingArrivals = oncoming
     .filter((t) => t.best?.fboArrivalTime)
     .map((t) => t.best!.fboArrivalTime!.getTime());
-  const latestOncomingArrival = oncomingArrivals.length > 0 ? Math.max(...oncomingArrivals) : null;
+  const oncomingArrivalForConstraint = oncomingPicArrival
+    ?? (oncomingArrivals.length > 0 ? Math.min(...oncomingArrivals) : null);
 
   // ── Rental car handoff: reduce offgoing ground cost when sharing oncoming's rental ──
   const oncomingRentalBest = oncoming.find((t) => t.best?.type === "rental_car")?.best ?? null;
@@ -925,8 +932,10 @@ function optimizeTail(
           // Check if this candidate's commercial airport is in the shared set
           const commIcao = toIcao(c.from);
           if (!sharedCommAirports.has(commIcao) && !sharedCommAirports.has(c.from)) continue;
-          // Validate timing: car available at oncoming FBO arrival → drive to commercial → arrive before flight - RENTAL_RETURN_BUFFER
-          const carAvailableAt = oncomingRentalBest.fboArrivalTime;
+          // Validate timing: car available after handoff → drive to commercial → arrive before flight - RENTAL_RETURN_BUFFER
+          const carAvailableAt = oncomingRentalBest.fboArrivalTime
+            ? new Date(oncomingRentalBest.fboArrivalTime.getTime() + ms(HANDOFF_BUFFER_MINUTES))
+            : null;
           if (!carAvailableAt || !c.depTime) continue;
           const driveToComm = estimateDriveTime(swapIcao, commIcao);
           const driveMin = driveToComm?.estimated_drive_minutes ?? 0;
@@ -945,60 +954,61 @@ function optimizeTail(
     }
   }
 
-  // ── Aircraft never unattended — HARD constraint ─────────────────────
-  // Use fboLeaveTime (when crew physically leaves FBO), not depTime (commercial departure).
-  // Require oncoming arrival + handoff buffer BEFORE offgoing leaves.
-  if (latestOncomingArrival) {
-    const earliestOffgoingLeave = latestOncomingArrival + ms(HANDOFF_BUFFER_MINUTES);
+  // ── Aircraft never unattended — constraint ──────────────────────────
+  // Uses oncoming PIC arrival (one PIC = aircraft attended).
+  // For commercial flights: use fboLeaveTime (when crew physically leaves FBO).
+  // For ground transport (uber/rental/drive): departure is flexible — crew leaves
+  //   after handoff, so adjust depTime to oncoming arrival instead of filtering out.
+  // Graceful degradation: if all options fail, keep them with a warning.
+  if (oncomingArrivalForConstraint) {
+    const earliestOffgoingLeave = oncomingArrivalForConstraint + ms(HANDOFF_BUFFER_MINUTES);
     for (const task of offgoing) {
-      const filtered = task.candidates.filter((c) => {
-        if (c.type === "none") return true;
-        // Use fboLeaveTime for accurate FBO departure; fall back to depTime
+      const adjusted: TransportCandidate[] = [];
+      for (const c of task.candidates) {
+        if (c.type === "none") { adjusted.push(c); continue; }
+
+        // Ground transport: departure is flexible — crew waits for handoff then leaves
+        if (c.type === "uber" || c.type === "rental_car" || c.type === "drive") {
+          if (c.fboLeaveTime && c.fboLeaveTime.getTime() < earliestOffgoingLeave) {
+            // Adjust departure to after handoff
+            const delay = earliestOffgoingLeave - c.fboLeaveTime.getTime();
+            c.depTime = new Date((c.depTime?.getTime() ?? 0) + delay);
+            c.arrTime = new Date((c.arrTime?.getTime() ?? 0) + delay);
+            c.fboLeaveTime = new Date(earliestOffgoingLeave);
+          }
+          adjusted.push(c);
+          continue;
+        }
+
+        // Commercial flights: check fboLeaveTime (when crew must leave FBO for airport)
         const leaveTime = c.fboLeaveTime ?? c.depTime;
-        if (!leaveTime) return true; // No timing info — keep but will score low
-        return leaveTime.getTime() >= earliestOffgoingLeave;
-      });
-      if (filtered.length > 0 && filtered.some((c) => c.type !== "none")) {
-        task.candidates = filtered;
+        if (!leaveTime) { adjusted.push(c); continue; }
+        if (leaveTime.getTime() >= earliestOffgoingLeave) {
+          adjusted.push(c); // Passes constraint
+        }
+        // else: filtered out — crew must leave FBO before oncoming arrives
+      }
+
+      if (adjusted.length > 0 && adjusted.some((c) => c.type !== "none")) {
+        task.candidates = adjusted;
       } else {
-        // HARD CONSTRAINT: no viable options. Replace with "none" + hard warning.
-        // Find the best (latest-leaving) candidate for the warning message.
+        // Graceful degradation: keep ALL original candidates with a warning.
+        // Better to show a timing-conflict option than "none".
         const sorted = task.candidates
           .filter((c) => c.type !== "none" && (c.fboLeaveTime ?? c.depTime))
           .sort((a, b) => {
-            const aT = (a.fboLeaveTime ?? a.depTime)!.getTime();
             const bT = (b.fboLeaveTime ?? b.depTime)!.getTime();
-            return bT - aT; // latest first
+            const aT = (a.fboLeaveTime ?? a.depTime)!.getTime();
+            return bT - aT; // latest-leaving first
           });
-        const latestOption = sorted[0];
-        const gapMin = latestOption
-          ? Math.round((earliestOffgoingLeave - (latestOption.fboLeaveTime ?? latestOption.depTime)!.getTime()) / 60_000)
+        const gapMin = sorted[0]
+          ? Math.round((earliestOffgoingLeave - (sorted[0].fboLeaveTime ?? sorted[0].depTime)!.getTime()) / 60_000)
           : 0;
-        task.candidates = [{
-          type: "none",
-          flightNumber: null,
-          depTime: null,
-          arrTime: null,
-          from: task.homeAirports[0] ? toIata(task.homeAirports[0]) : "???",
-          to: toIata(task.swapPoint.icao),
-          cost: 0,
-          durationMin: 0,
-          isDirect: false,
-          isBudgetCarrier: false,
-          hubConnection: false,
-          connectionCount: 0,
-          offer: null,
-          drive: null,
-          fboArrivalTime: null,
-          fboLeaveTime: null,
-          dutyOnTime: null,
-          score: -100,
-          backups: [],
-        }];
         task.warnings.push(
-          `HARD CONFLICT: Aircraft unattended — all offgoing flights require leaving FBO before oncoming arrives + ${HANDOFF_BUFFER_MINUTES}min handoff` +
-          (gapMin > 0 ? ` (best option misses by ${gapMin} min)` : "")
+          `Aircraft unattended risk: offgoing must leave FBO before oncoming PIC arrives + ${HANDOFF_BUFFER_MINUTES}min handoff` +
+          (gapMin > 0 ? ` (best option misses by ${gapMin} min)` : ""),
         );
+        // Keep originals — scorer will still rank them, user sees the warning
       }
     }
   }
@@ -1427,7 +1437,7 @@ export function buildSwapPlan(params: {
           ...sicVolFlags,
         });
       } else {
-        // Offgoing SIC: use same swap point as oncoming SIC (or PIC swap point)
+        // Offgoing SIC or oncoming SIC with single swap point
         const oncomingSicTask = tailTasks.find((t) => t.role === "SIC" && t.direction === "oncoming");
         const sicSwapPoint = oncomingSicTask?.swapPoint ?? picSwapPoint;
 
@@ -1435,6 +1445,7 @@ export function buildSwapPlan(params: {
           name: crewMember?.name ?? name, crewMember, role: "SIC", direction, tail,
           aircraftType, swapPoint: sicSwapPoint, homeAirports,
           candidates: [], best: null, warnings,
+          ...sicVolFlags,
         });
       }
     }
