@@ -1285,7 +1285,7 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                           // Check SWIM status first — try route-specific, then tail-only
                           const swimEntry = swimStatus.get(routeKey) ?? (f.tail_number ? swimStatus.get(`${f.tail_number}||`) : undefined);
                           if (swimEntry?.status === "Filed") {
-                            status = "Filed"; isFiled = true; statusColor = "text-indigo-600 font-medium";
+                            status = "Scheduled"; isFiled = true; statusColor = "text-gray-500";
                           } else if (swimEntry?.status === "En Route") {
                             status = "En Route"; statusColor = "text-blue-600 font-medium";
                           } else if (swimEntry?.status === "Arrived") {
@@ -1362,7 +1362,10 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                                   {type}
                                 </span>
                                 <span className={`text-xs ${statusColor}`}>{status}</span>
-                                {isFiled && fi?.departure_time && (
+                                {isFiled && swimEntry?.event_time && (
+                                  <span className="text-[10px] text-indigo-500">IFR Filed</span>
+                                )}
+                                {isFiled && !swimEntry?.event_time && fi?.departure_time && (
                                   <span className="text-[10px] text-indigo-500">ETD {fmt(fi.departure_time, f.departure_icao)}</span>
                                 )}
                                 {isFaSourced && (
@@ -1515,11 +1518,24 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                 let status = "Scheduled";
                 let statusColor = "text-gray-500";
                 let isFiled = false;
+                const swimEntry = swimStatus.get(routeKey) ?? (f.tail_number ? swimStatus.get(`${f.tail_number}||`) : undefined);
 
                 const arrivalDate = f.scheduled_arrival ? new Date(f.scheduled_arrival) : null;
                 const now = new Date();
                 const arrivalPassed = arrivalDate && arrivalDate < now;
 
+                // Check ForeFlight/SWIM status first
+                if (swimEntry?.status === "Filed") {
+                  status = "Scheduled"; isFiled = true;
+                } else if (swimEntry?.status === "En Route") {
+                  status = "En Route"; statusColor = "text-blue-600 font-medium";
+                } else if (swimEntry?.status === "Arrived") {
+                  status = "Arrived"; statusColor = "text-green-600 font-medium";
+                } else if (swimEntry?.status === "Cancelled") {
+                  status = "Cancelled"; statusColor = "text-red-600 font-medium";
+                }
+
+                // FA overrides if it has better data
                 if (fi?.actual_arrival) {
                   // FA confirms landed — always takes priority
                   status = "Arrived";
@@ -1587,9 +1603,9 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                       <td className="px-3 py-2.5 overflow-visible">
                         <div className="flex flex-col gap-0.5">
                           <span className={`text-xs font-medium ${statusColor}`}>{status}</span>
-                          {isFiled && fi?.departure_time && (
-                            <span className="text-[10px] text-indigo-500">
-                              ETD {fmt(fi.departure_time, f.departure_icao)}
+                          {isFiled && (
+                            <span className="text-[10px] text-indigo-500 font-medium">
+                              IFR Filed
                             </span>
                           )}
                           {isFaSourced && (
