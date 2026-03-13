@@ -1213,11 +1213,44 @@ export function buildSwapPlan(params: {
     }
 
     // Swap point logic:
-    // - PIC (oncoming + offgoing) swaps at swapPoints[0] (before first leg)
-    // - SIC can swap at ANY swap point — PIC covers SIC seat for early legs
-    //   until oncoming SIC arrives. Try all swap points, pick best transport.
+    // - PIC evaluates ALL swap points — prefers easier commercial airports.
+    //   For EGE→VNY: VNY (near BUR/LAX) >> EGE (remote, only DEN).
+    //   On swap day, can fly with 2 PICs so mid-day handoff is fine.
+    // - SIC can swap at ANY swap point — PIC covers SIC seat for early legs.
     // - Offgoing leaves from the SAME swap point as their oncoming counterpart.
-    const picSwapPoint = swapPoints[0];
+
+    // Score swap points by commercial accessibility (more options = easier)
+    let picSwapPoint = swapPoints[0]; // default
+    if (swapPoints.length > 1) {
+      let bestAccessScore = -1;
+      let bestTransportScore = -1;
+      for (const sp of swapPoints) {
+        const commOptions = findAllCommercialAirports(sp.icao, aliases);
+        const accessScore = commOptions.length;
+        // Also check transport viability for the oncoming PIC
+        const oncomingPicName = assignment.oncoming_pic;
+        let transportScore = 0;
+        if (oncomingPicName) {
+          const { crewMember, homeAirports } = resolveCrewMember(oncomingPicName, "PIC");
+          const tempTask: CrewTask = {
+            name: crewMember?.name ?? oncomingPicName, crewMember, role: "PIC",
+            direction: "oncoming", tail, aircraftType, swapPoint: sp,
+            homeAirports, candidates: [], best: null, warnings: [],
+          };
+          const candidates = buildCandidates(tempTask, aliases, commercialFlights, swapDate, byTail.get(tail));
+          for (const c of candidates) {
+            c.score = scoreCandidate(c, tempTask, null);
+          }
+          transportScore = candidates.reduce((max, c) => Math.max(max, c.score), 0);
+        }
+        // Prefer: (1) better transport score, (2) more commercial options as tiebreaker
+        if (transportScore > bestTransportScore || (transportScore === bestTransportScore && accessScore > bestAccessScore)) {
+          bestTransportScore = transportScore;
+          bestAccessScore = accessScore;
+          picSwapPoint = sp;
+        }
+      }
+    }
 
     // Validate: never 2 SICs on the same tail (2 PICs is OK on swap day)
     const hasOncomingPic = !!assignment.oncoming_pic;
@@ -1290,7 +1323,7 @@ export function buildSwapPlan(params: {
     // ── Create crew tasks ────────────────────────────────────────────────
     const tailTasks: CrewTask[] = [];
 
-    // PIC tasks — always at the first swap point
+    // PIC tasks — at the best-scored swap point
     for (const [name, direction] of [
       [assignment.oncoming_pic, "oncoming"] as const,
       [assignment.offgoing_pic, "offgoing"] as const,
@@ -1299,6 +1332,10 @@ export function buildSwapPlan(params: {
       const { crewMember, homeAirports, warnings } = resolveCrewMember(name, "PIC");
       if (homeAirports.length === 0) {
         console.warn(`[SwapOptimizer] No home airports for "${name}" (PIC, ${tail})`);
+      }
+      // Note when PIC swaps at a non-default location (not the first swap point)
+      if (picSwapPoint !== swapPoints[0]) {
+        warnings.push(`PIC swaps at ${toIata(picSwapPoint.icao)} (${picSwapPoint.position}) — easier commercial access than ${toIata(swapPoints[0].icao)}`);
       }
       const volFlags = direction === "oncoming" ? getVolunteerFlags(name, "PIC") : { earlyVolunteer: false, lateVolunteer: false };
       tailTasks.push({
