@@ -1560,6 +1560,33 @@ function ScheduleTab({
   onHideMxForToday: (id: string) => void;
 }) {
   const hasLive = liveVanPositions.size > 0;
+
+  // Build dropdown labels that match van box headers (live GPS city → Samsara name → static)
+  const vanDropdownLabels = useMemo(() => {
+    const map = new Map<number, string>();
+    for (const z of FIXED_VAN_ZONES) {
+      let label = z.name; // fallback
+      const samsaraName = vanZoneNames.get(z.vanId);
+      if (samsaraName) {
+        const parsed = parseVanDisplayName(samsaraName);
+        if (parsed) label = parsed;
+      }
+      const addr = liveVanAddresses.get(z.vanId);
+      if (addr) {
+        const parts = addr.split(",").map((p) => p.trim());
+        for (let i = 1; i < parts.length; i++) {
+          const stateMatch = parts[i].match(/^([A-Z]{2})$/);
+          if (stateMatch && i >= 1) {
+            label = `${parts[i - 1]}, ${stateMatch[1]}`;
+            break;
+          }
+        }
+      }
+      map.set(z.vanId, label);
+    }
+    return map;
+  }, [liveVanAddresses, vanZoneNames]);
+
   const [unassignedOpen, setUnassignedOpen] = useState(false);
   const [unscheduledOpen, setUnscheduledOpen] = useState(false);
   const unassignedDragTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -2172,7 +2199,7 @@ function ScheduleTab({
                         <option value="">Assign…</option>
                         {FIXED_VAN_ZONES.map((z) => (
                           <option key={z.vanId} value={z.vanId}>
-                            V{z.vanId} – {z.city}
+                            V{z.vanId} – {vanDropdownLabels.get(z.vanId) ?? z.city}
                           </option>
                         ))}
                       </select>
@@ -2299,7 +2326,7 @@ function ScheduleTab({
                       <option value="">Assign...</option>
                       {FIXED_VAN_ZONES.map((z) => (
                         <option key={z.vanId} value={z.vanId}>
-                          V{z.vanId} – {z.city}
+                          V{z.vanId} – {vanDropdownLabels.get(z.vanId) ?? z.city}
                         </option>
                       ))}
                     </select>
