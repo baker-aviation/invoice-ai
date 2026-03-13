@@ -1242,6 +1242,7 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
 
                           let status = "Scheduled";
                           let statusColor = "text-gray-500";
+                          let isFiled = false;
                           const arrivalDate = f.scheduled_arrival ? new Date(f.scheduled_arrival) : null;
                           const now = new Date();
                           const arrivalPassed = arrivalDate && arrivalDate < now;
@@ -1249,6 +1250,7 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                             status = fi.status;
                             if (fi.status.includes("En Route")) statusColor = "text-blue-600 font-medium";
                             if (fi.status.includes("Arrived") || fi.status.includes("Landed")) statusColor = "text-green-600 font-medium";
+                            if (fi.status === "Filed") { isFiled = true; statusColor = "text-indigo-600 font-medium"; }
                           } else if (fi?.actual_arrival) {
                             status = "Arrived";
                             statusColor = "text-green-600 font-medium";
@@ -1312,6 +1314,9 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                                   {type}
                                 </span>
                                 <span className={`text-xs ${statusColor}`}>{status}</span>
+                                {isFiled && fi?.departure_time && (
+                                  <span className="text-[10px] text-indigo-500">ETD {fmt(fi.departure_time, f.departure_icao)}</span>
+                                )}
                                 {isFaSourced && (
                                   <span className="px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-blue-100 text-blue-700">FA</span>
                                 )}
@@ -1461,6 +1466,7 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                 // Determine status
                 let status = "Scheduled";
                 let statusColor = "text-gray-500";
+                let isFiled = false;
 
                 const arrivalDate = f.scheduled_arrival ? new Date(f.scheduled_arrival) : null;
                 const now = new Date();
@@ -1483,6 +1489,7 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                   status = fi.status;
                   if (fi.status.includes("En Route")) statusColor = "text-blue-600 font-medium";
                   if (fi.status.includes("Arrived") || fi.status.includes("Landed")) statusColor = "text-green-600 font-medium";
+                  if (fi.status === "Filed") { isFiled = true; statusColor = "text-indigo-600 font-medium"; }
                 } else if (arrivalPassed && !fi) {
                   // No FA data, but scheduled arrival is past — assume arrived
                   status = "Arrived";
@@ -1532,6 +1539,11 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                       <td className="px-3 py-2.5 overflow-visible">
                         <div className="flex flex-col gap-0.5">
                           <span className={`text-xs font-medium ${statusColor}`}>{status}</span>
+                          {isFiled && fi?.departure_time && (
+                            <span className="text-[10px] text-indigo-500">
+                              ETD {fmt(fi.departure_time, f.departure_icao)}
+                            </span>
+                          )}
                           {isFaSourced && (
                             <span className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-blue-100 text-blue-700">
                               FA Source

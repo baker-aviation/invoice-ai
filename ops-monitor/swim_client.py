@@ -54,8 +54,8 @@ BAKER_TAILS_SET = {
 BAKER_CALLSIGN_PREFIX = "KOW"
 # KOW callsign → tail number mapping
 KOW_TO_TAIL = {
-    "KOW51":  "N51GB",  "KOW102": "N102VR", "KOW106": "N106PC",
-    "KOW125": "N125DZ", "KOW187": "N187CR", "KOW201": "N201HR",
+    "KOW25":  "N125DZ", "KOW51":  "N51GB",  "KOW102": "N102VR", "KOW106": "N106PC",
+    "KOW125": "N125TH", "KOW187": "N187CR", "KOW201": "N201HR",
     "KOW301": "N301HR", "KOW371": "N371DB", "KOW416": "N416F",
     "KOW513": "N513JB", "KOW519": "N519FX", "KOW521": "N521FX",
     "KOW533": "N533FX", "KOW548": "N548FX", "KOW552": "N552FX",
@@ -341,6 +341,27 @@ def parse_tfms_flight_message(xml_str: str) -> Optional[Dict[str, Any]]:
     aircraft_type = _get_attr(root, "aircraftModel") or _safe_text(_find_any(root, "aircraftModel"))
     flight_status = _safe_text(_find_any(root, "flightStatus"))
 
+    # fdTrigger — the real event indicator
+    fd_trigger = _get_attr(root, "fdTrigger") or ""
+
+    # Refine event_type using fdTrigger (more reliable than msgType)
+    trigger_lower = fd_trigger.lower()
+    if "actual_departure" in trigger_lower or "actual_off" in trigger_lower:
+        event_type = "DEPARTURE"
+    elif "actual_arrival" in trigger_lower or "actual_on" in trigger_lower:
+        event_type = "ARRIVAL"
+    elif "taxi_out" in trigger_lower:
+        event_type = "TAXI_OUT"
+    elif "taxi_in" in trigger_lower:
+        event_type = "TAXI_IN"
+
+    # Diversion detection
+    diversion_el = _find_any(root, "diversionIndicator")
+    diversion = _safe_text(diversion_el)
+    is_diversion = diversion is not None and diversion != "NO_DIVERSION"
+    if is_diversion:
+        event_type = "DIVERSION"
+
     # ETD/ETA — check timeValue attribute on etd/eta elements
     etd = eta = None
     for el in root.iter():
@@ -365,6 +386,7 @@ def parse_tfms_flight_message(xml_str: str) -> Optional[Dict[str, Any]]:
         "flight_status": flight_status,
         "etd": etd,
         "eta": eta,
+        "fd_trigger": fd_trigger,
     }
 
 
@@ -554,10 +576,12 @@ def pull_swim() -> Dict[str, Any]:
             flight = parse_tfms_flight_message(raw)
             if flight and _is_baker_flight(flight):
                 source_id = f"swim-tfms-{flight['acid']}-{flight['event_time']}"
+                fd_trigger = flight.pop("fd_trigger", "")
                 positions_batch.append({
                     **flight,
                     "source_id": source_id,
                     "raw_xml": raw[:4000],
+                    "_fd_trigger": fd_trigger,  # kept for alert creation, stripped before DB write
                 })
                 stats["tfms_flight_messages"] += 1
                 continue
@@ -592,10 +616,12 @@ def pull_swim() -> Dict[str, Any]:
         flight = parse_tfms_flight_message(raw)  # STDDS uses similar FIXM structure
         if flight and _is_baker_flight(flight):
             source_id = f"swim-stdds-{flight['acid']}-{flight['event_time']}"
+            fd_trigger = flight.pop("fd_trigger", "")
             positions_batch.append({
                 **flight,
                 "source_id": source_id,
                 "raw_xml": raw[:4000],
+                "_fd_trigger": fd_trigger,
             })
             stats["stdds_messages"] += 1
 
@@ -624,9 +650,9 @@ def pull_swim() -> Dict[str, Any]:
     # ── 4. Write to Supabase ──────────────────────────────────────────────────
     CHUNK = 50
 
-    # Positions
+    # Positions — strip internal fields before DB write
     for i in range(0, len(positions_batch), CHUNK):
-        chunk = positions_batch[i : i + CHUNK]
+        chunk = [{k: v for k, v in p.items() if not k.startswith("_")} for p in positions_batch[i : i + CHUNK]]
         try:
             supa.table("swim_positions").upsert(
                 chunk, on_conflict="source_id"
@@ -634,6 +660,61 @@ def pull_swim() -> Dict[str, Any]:
             stats["positions_upserted"] += len(chunk)
         except Exception as e:
             print(f"[SWIM] positions upsert error: {e}", flush=True)
+            stats["errors"] += 1
+
+    # ── 5. Create ops_alerts for key flight events ────────────────────────────
+    ALERT_EVENT_TYPES = {"DEPARTURE", "ARRIVAL", "TAXI_OUT", "TAXI_IN", "DIVERSION"}
+    ALERT_TYPE_MAP = {
+        "DEPARTURE": "SWIM_TAKEOFF",
+        "ARRIVAL": "SWIM_LANDING",
+        "TAXI_OUT": "SWIM_TAXI_OUT",
+        "TAXI_IN": "SWIM_TAXI_IN",
+        "DIVERSION": "SWIM_DIVERSION",
+    }
+    SEVERITY_MAP = {
+        "DEPARTURE": "info",
+        "ARRIVAL": "info",
+        "TAXI_OUT": "info",
+        "TAXI_IN": "info",
+        "DIVERSION": "critical",
+    }
+    SUBJECT_MAP = {
+        "DEPARTURE": "Departed",
+        "ARRIVAL": "Landed",
+        "TAXI_OUT": "Taxi out",
+        "TAXI_IN": "Taxi in",
+        "DIVERSION": "DIVERSION",
+    }
+
+    alerts_batch: List[Dict[str, Any]] = []
+    for pos in positions_batch:
+        evt = pos.get("event_type", "")
+        if evt not in ALERT_EVENT_TYPES:
+            continue
+        tail = pos.get("tail_number") or pos.get("acid", "")
+        dep = pos.get("departure_icao") or ""
+        arr = pos.get("arrival_icao") or ""
+        route = f"{dep} → {arr}" if dep and arr else dep or arr or ""
+        subject = f"{SUBJECT_MAP[evt]} {tail} {route}".strip()
+
+        alerts_batch.append({
+            "alert_type": ALERT_TYPE_MAP[evt],
+            "severity": SEVERITY_MAP[evt],
+            "tail_number": pos.get("tail_number"),
+            "departure_icao": pos.get("departure_icao"),
+            "arrival_icao": pos.get("arrival_icao"),
+            "airport_icao": pos.get("arrival_icao") if evt in ("ARRIVAL", "TAXI_IN") else pos.get("departure_icao"),
+            "subject": subject,
+            "body": f"Via FAA SWIM at {pos.get('event_time', '')}",
+        })
+
+    for i in range(0, len(alerts_batch), CHUNK):
+        chunk = alerts_batch[i : i + CHUNK]
+        try:
+            supa.table("ops_alerts").insert(chunk).execute()
+            stats["alerts_created"] = stats.get("alerts_created", 0) + len(chunk)
+        except Exception as e:
+            print(f"[SWIM] alerts insert error: {e}", flush=True)
             stats["errors"] += 1
 
     # Flow control (GDP, ground stops, etc.) — keep ALL, not just Baker flights

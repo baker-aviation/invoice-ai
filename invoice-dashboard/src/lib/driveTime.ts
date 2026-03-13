@@ -197,3 +197,48 @@ export function hasCoords(icao: string): boolean {
 export function knownAirports(): string[] {
   return Object.keys(AIRPORT_COORDS);
 }
+
+// Major commercial airports — these have scheduled airline service.
+// Used by findNearbyCommercialAirports to filter results.
+const COMMERCIAL_AIRPORTS = new Set([
+  "KATL", "KBOS", "KBWI", "KCLT", "KCLE", "KCMH", "KCVG",
+  "KDAL", "KDCA", "KDEN", "KDFW", "KDTW", "KELP",
+  "KEWR", "KFLL", "KHOU", "KIAH", "KIND", "KJAX", "KJFK",
+  "KLAS", "KLAX", "KLGA", "KLIT", "KMCO", "KMDW", "KMEM",
+  "KMIA", "KMKE", "KMSP", "KMSY", "KOAK", "KOKC", "KORD",
+  "KORF", "KPBI", "KPHL", "KPHX", "KPIT", "KPSP", "KPVD",
+  "KRDU", "KRIC", "KRSW", "KSAN", "KSAT", "KSAV", "KSDL",
+  "KSFO", "KSJC", "KSLC", "KSNA", "KSRQ", "KSTL", "KTPA",
+  "KTUL", "KAUS", "KBDL", "KBNA", "KBHM", "KBOI", "KBUR",
+  "KABQ", "KACY", "KCHS", "KDAB", "KHSV", "KJAN", "KPIE",
+  "KASE", "KEGE", "KCOS",
+  "CYYZ", "CYUL", "CYVR", "CYOW", "CYYC",
+]);
+
+/**
+ * Find commercial airports within a given radius of an airport.
+ * Returns ICAO codes sorted by distance (nearest first).
+ */
+export function findNearbyCommercialAirports(
+  icao: string,
+  radiusMiles: number = 30,
+): { icao: string; distanceMiles: number }[] {
+  const origin = AIRPORT_COORDS[icao.toUpperCase()];
+  if (!origin) return [];
+
+  const results: { icao: string; distanceMiles: number }[] = [];
+
+  for (const code of COMMERCIAL_AIRPORTS) {
+    if (code === icao.toUpperCase()) continue;
+    const coords = AIRPORT_COORDS[code];
+    if (!coords) continue;
+
+    const dist = haversineMiles(origin[0], origin[1], coords[0], coords[1]);
+    if (dist <= radiusMiles) {
+      results.push({ icao: code, distanceMiles: Math.round(dist) });
+    }
+  }
+
+  results.sort((a, b) => a.distanceMiles - b.distanceMiles);
+  return results;
+}

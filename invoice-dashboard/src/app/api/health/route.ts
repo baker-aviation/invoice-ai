@@ -32,6 +32,7 @@ const PIPELINES: {
   { slug: "fuel-price-extract",name: "Fuel Price Extract", description: "Invoice fuel prices → fuel_prices table (every 15 min)",warnAfterMins: 30 },
   { slug: "job-ingest",        name: "Job Ingest",        description: "Outlook → job applications (hourly)",                   warnAfterMins: 90 },
   { slug: "job-parse",         name: "Job Parse",         description: "Resumes → OpenAI extraction (hourly)",                  warnAfterMins: 90 },
+  { slug: "swim-pull",         name: "SWIM Pull",         description: "FAA SWIM TFMS/STDDS/NOTAM → positions + alerts (every 5 min)", warnAfterMins: 15 },
 ];
 
 /**

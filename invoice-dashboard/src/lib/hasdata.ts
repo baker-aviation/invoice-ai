@@ -3,6 +3,7 @@
 // Scrapes Google Flights and returns structured flight data with real pricing.
 
 import type { FlightOffer, FlightSearchResult } from "./amadeus";
+import { getAirportTimezone } from "./airportTimezones";
 
 const API_KEY = process.env.HASDATA_API_KEY!;
 const BASE_URL = "https://api.hasdata.com/scrape/google/flights";
@@ -77,16 +78,24 @@ export async function searchFlights(params: {
     },
   });
 
+  const text = await res.text();
+
   if (!res.ok) {
-    const text = await res.text();
     console.warn(`HasData ${res.status} for ${orig}->${dest} on ${date}: ${text.slice(0, 200)}`);
-    if (res.status === 400 || res.status === 401 || res.status === 429) {
+    if (res.status === 400 || res.status === 401 || res.status === 429 || res.status === 402) {
       return { origin: orig, destination: dest, date, offers: [], count: 0 };
     }
-    throw new Error(`HasData search failed (${res.status}): ${text}`);
+    throw new Error(`HasData search failed (${res.status}): ${text.slice(0, 200)}`);
   }
 
-  const data: HdResponse = await res.json();
+  let data: HdResponse;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    console.warn(`HasData returned non-JSON for ${orig}->${dest}: ${text.slice(0, 200)}`);
+    return { origin: orig, destination: dest, date, offers: [], count: 0 };
+  }
+
   console.log(`[HasData] ${orig}->${dest} ${date}: status=${data.requestMetadata?.status} best=${(data.bestFlights ?? []).length} other=${(data.otherFlights ?? []).length}`);
 
   // Combine bestFlights + otherFlights, take up to max
@@ -101,11 +110,11 @@ export async function searchFlights(params: {
       segments: r.flights.map((f) => ({
         departure: {
           iataCode: f.departureAirport.id,
-          at: parseHdTime(f.departureAirport.time),
+          at: parseHdTime(f.departureAirport.time, f.departureAirport.id),
         },
         arrival: {
           iataCode: f.arrivalAirport.id,
-          at: parseHdTime(f.arrivalAirport.time),
+          at: parseHdTime(f.arrivalAirport.time, f.arrivalAirport.id),
         },
         carrierCode: f.flightNumber.split(" ")[0] ?? f.airline,
         number: f.flightNumber.split(" ")[1] ?? "",
@@ -121,12 +130,52 @@ export async function searchFlights(params: {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/** Convert "2026-03-15 5:50" to ISO string "2026-03-15T05:50:00" */
-function parseHdTime(timeStr: string): string {
+/** Convert "2026-03-15 5:50" (local airport time) to UTC ISO string.
+ *  HasData returns times in the airport's local timezone. We need UTC
+ *  so the optimizer's timing calculations are correct. */
+function parseHdTime(timeStr: string, airportIata: string): string {
   const [datePart, timePart] = timeStr.split(" ");
-  if (!timePart) return `${datePart}T00:00:00`;
+  if (!timePart) return `${datePart}T00:00:00Z`;
   const [h, m] = timePart.split(":");
-  return `${datePart}T${h.padStart(2, "0")}:${m.padStart(2, "0")}:00`;
+  const localStr = `${datePart}T${h.padStart(2, "0")}:${m.padStart(2, "0")}:00`;
+
+  // Look up airport timezone (try IATA as-is, then with K prefix for US airports)
+  const tz = getAirportTimezone(`K${airportIata}`) ?? getAirportTimezone(airportIata);
+  if (!tz) {
+    // No timezone found — assume US Eastern as fallback
+    return localToUtc(localStr, "America/New_York");
+  }
+  return localToUtc(localStr, tz);
+}
+
+/** Convert a local datetime string to UTC ISO string using IANA timezone.
+ *  Uses iterative approach: treat local time as UTC, check what local time
+ *  that corresponds to, then adjust by the difference. */
+function localToUtc(localIso: string, tz: string): string {
+  const [date, time] = localIso.split("T");
+  const [y, mo, d] = date.split("-").map(Number);
+  const [hr, mi] = (time ?? "00:00").split(":").map(Number);
+
+  // Guess: assume local time = UTC, then see what local time that produces
+  const guess = new Date(Date.UTC(y, mo - 1, d, hr, mi, 0));
+
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hour12: false,
+  });
+  const parts = fmt.formatToParts(guess);
+  const get = (t: string) => parseInt(parts.find((p) => p.type === t)?.value ?? "0");
+  const localH = get("hour") === 24 ? 0 : get("hour");
+  const localM = get("minute");
+  const localD = get("day");
+
+  // Offset in minutes between what we wanted (hr:mi) and what we got (localH:localM)
+  const wantedMin = d * 1440 + hr * 60 + mi;
+  const gotMin = localD * 1440 + localH * 60 + localM;
+  const diffMs = (wantedMin - gotMin) * 60_000;
+
+  const utc = new Date(guess.getTime() + diffMs);
+  return utc.toISOString();
 }
 
 /** Convert minutes to ISO 8601 duration: 141 → "PT2H21M" */

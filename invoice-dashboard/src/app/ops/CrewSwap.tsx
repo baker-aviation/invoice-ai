@@ -443,7 +443,14 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
           oncoming_pool: oncomingPool ?? undefined,
         }),
       });
-      const data = await res.json();
+      const text = await res.text();
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        setOptimizeError(`Server error: ${text.slice(0, 200)}`);
+        return;
+      }
       if (!res.ok) {
         setOptimizeError(data.error ?? "Optimization failed");
       } else {

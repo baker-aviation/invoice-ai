@@ -7,6 +7,7 @@ import { searchFlights } from "@/lib/hasdata";
 import type { FlightOffer } from "@/lib/amadeus";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 300; // 5 min — flight searches + feasibility matrix take time
 
 /**
  * POST /api/crew/optimize
@@ -19,6 +20,7 @@ export async function POST(req: NextRequest) {
   const auth = await requireAdmin(req);
   if (!isAuthed(auth)) return auth.error;
 
+  try {
   const body = await req.json();
   const swapDate = body.swap_date as string;
   const searchCommercial = body.search_flights === true;
@@ -171,9 +173,9 @@ export async function POST(req: NextRequest) {
 
     console.log(`[Swap Optimizer] Searching ${pairsArray.length} route pairs via HasData`);
 
-    // Search sequentially (HasData free tier: 1 concurrent request)
-    for (let i = 0; i < pairsArray.length; i += 1) {
-      const batch = pairsArray.slice(i, i + 1);
+    // Search in batches of 15 (HasData Pro: 15 concurrent requests)
+    for (let i = 0; i < pairsArray.length; i += 15) {
+      const batch = pairsArray.slice(i, i + 15);
       const results = await Promise.all(
         batch.map(async (pair) => {
           const [orig, dest] = pair.split("-");
@@ -196,7 +198,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    console.log(`[Swap Optimizer] Amadeus results: ${searchSuccessCount} routes with flights, ${searchFailCount} empty, ${commercialFlights.size} total cached`);
+    console.log(`[Swap Optimizer] Flight search results: ${searchSuccessCount} routes with flights, ${searchFailCount} empty, ${commercialFlights.size} total cached`);
   }
 
   // ── STEP 2: Assign oncoming crew using ACTUAL transport costs ──────────────
@@ -234,4 +236,12 @@ export async function POST(req: NextRequest) {
       details: assignmentResult.details,
     } : undefined,
   });
+
+  } catch (e) {
+    console.error("[Swap Optimizer] Unhandled error:", e);
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : "Optimization failed" },
+      { status: 500 },
+    );
+  }
 }

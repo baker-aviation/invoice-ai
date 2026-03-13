@@ -181,3 +181,61 @@ export type JobDetailResponse = {
   files: JobFile[];
 };
 
+/* =========================
+   Pilots
+========================= */
+
+export type PilotProfile = {
+  id: number;
+  user_id: string | null;
+  crew_member_id: string | null;
+  application_id: number | null;
+  full_name: string;
+  email: string | null;
+  phone: string | null;
+  role: "PIC" | "SIC";
+  home_airports: string[];
+  aircraft_types: string[];
+  hire_date: string | null;
+  employee_id: string | null;
+  medical_class: string | null;
+  medical_expiry: string | null;
+  passport_expiry: string | null;
+  onboarding_complete: boolean;
+  available_to_fly: boolean;
+  created_at: string;
+  updated_at: string;
+  // joined fields
+  onboarding_items?: OnboardingItem[];
+  onboarding_progress?: { completed: number; total: number };
+};
+
+export type OnboardingItem = {
+  id: number;
+  pilot_profile_id: number;
+  item_key: string;
+  item_label: string;
+  required_for: "all" | "pic_only";
+  completed: boolean;
+  completed_at: string | null;
+  completed_by: string | null;
+  notes: string | null;
+};
+
+export type TimeOffRequest = {
+  id: number;
+  pilot_profile_id: number;
+  request_type: "time_off" | "standby";
+  start_date: string;
+  end_date: string;
+  reason: string | null;
+  status: "pending" | "approved" | "denied";
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  review_notes: string | null;
+  created_at: string;
+  updated_at: string;
+  // joined
+  pilot_name?: string;
+};
+

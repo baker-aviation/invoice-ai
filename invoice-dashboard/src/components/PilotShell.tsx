@@ -14,6 +14,8 @@ const PILOT_NAV = [
   { href: "/pilot/tanker", label: "Tanker Planner", exact: false },
   { href: "/pilot/training", label: "Training", exact: false },
   { href: "/pilot/logbook", label: "Logbook", exact: false },
+  { href: "/pilot/time-off", label: "Time Off", exact: false },
+  { href: "/pilot/schedule", label: "My Schedule", exact: false },
 ];
 
 export function PilotShell({ children }: { children: React.ReactNode }) {
