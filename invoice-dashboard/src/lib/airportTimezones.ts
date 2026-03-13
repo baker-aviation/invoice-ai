@@ -72,6 +72,7 @@ const AIRPORT_TZ: Record<string, string> = {
   KOSU: "America/New_York",   // Columbus, OH
   KOXC: "America/New_York",   // Oxford, CT
   KPBI: "America/New_York",   // Palm Beach, FL
+  KPDK: "America/New_York",   // DeKalb-Peachtree, GA
   KPGD: "America/New_York",   // Punta Gorda, FL
   KPGV: "America/New_York",   // Greenville, NC
   KPHL: "America/New_York",   // Philadelphia, PA
@@ -117,6 +118,8 @@ const AIRPORT_TZ: Record<string, string> = {
   KDWH: "America/Chicago",    // Houston Hooks, TX
   KEDC: "America/Chicago",    // Austin Exec, TX
   KESC: "America/Chicago",    // Escanaba, MI (Central part)
+  KFAY: "America/New_York",   // Fayetteville, NC
+  KFSD: "America/Chicago",    // Sioux Falls, SD
   KFTW: "America/Chicago",    // Fort Worth Meacham, TX
   KGDJ: "America/Chicago",    // Granbury, TX
   KGRB: "America/Chicago",    // Green Bay, WI
@@ -131,8 +134,10 @@ const AIRPORT_TZ: Record<string, string> = {
   KIXD: "America/Chicago",    // Olathe, KS
   KJAN: "America/Chicago",    // Jackson, MS
   KMCC: "America/Los_Angeles", // McClellan, CA
+  KMDT: "America/New_York",   // Harrisburg, PA
   KMDW: "America/Chicago",    // Chicago Midway, IL
   KMCI: "America/Chicago",    // Kansas City, MO
+  KMQT: "America/New_York",   // Marquette, MI (Eastern)
   KMKC: "America/Chicago",    // Kansas City Downtown, MO
   KMSY: "America/Chicago",    // New Orleans, LA
   KOKC: "America/Chicago",    // Oklahoma City, OK
@@ -146,6 +151,7 @@ const AIRPORT_TZ: Record<string, string> = {
   KSUS: "America/Chicago",    // Spirit of St. Louis, MO
   KTME: "America/Chicago",    // Houston Exec, TX
   KTUL: "America/Chicago",    // Tulsa, OK
+  KTWF: "America/Boise",      // Twin Falls, ID
   KUES: "America/Chicago",    // Waukesha, WI
 
   // ── US — Mountain ────────────────────────────────

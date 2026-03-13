@@ -51,7 +51,7 @@ export const EARLIEST_DUTY_ON_HOUR = 4; // 0400L
 export const UBER_MAX_MINUTES = 60;
 
 /** Drive over UBER_MAX and under this = rental car */
-export const RENTAL_MAX_MINUTES = 240; // 4 hours max reasonable drive
+export const RENTAL_MAX_MINUTES = 330; // 5.5 hours — covers mountain drives (COS→ASE, BOI→TWF)
 
 /** Drives between these are rental car territory */
 export const RENTAL_MIN_MINUTES = 60;

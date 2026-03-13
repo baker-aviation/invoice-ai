@@ -476,7 +476,16 @@ function buildCandidates(
         }
       } else {
         // Offgoing: leaving the aircraft, driving home
-        const earliestLeave = task.swapPoint.time;
+        // For before_live/idle, use early morning — Step 2 constraint adjusts real timing
+        let earliestLeave = task.swapPoint.time;
+        if (task.swapPoint.position === "before_live" || task.swapPoint.position === "idle") {
+          const tz = getAirportTimezone(task.swapPoint.icao) ?? "America/New_York";
+          const earlyLocal = new Date(`${swapDate}T05:00:00`);
+          const utcStr = earlyLocal.toLocaleString("en-US", { timeZone: "UTC" });
+          const localStr = earlyLocal.toLocaleString("en-US", { timeZone: tz });
+          const offsetMs = new Date(utcStr).getTime() - new Date(localStr).getTime();
+          earliestLeave = new Date(earlyLocal.getTime() + offsetMs);
+        }
         depTime = earliestLeave;
         arrTime = new Date(depTime.getTime() + ms(driveMin));
         fboArr = null;
@@ -603,8 +612,19 @@ function buildCandidates(
           }
         } else {
           // Offgoing: check if they can make this flight
-          // They're released from duty at swap point time
-          const releaseTime = task.swapPoint.time;
+          // For before_live and idle swap points, offgoing crew can leave as soon
+          // as oncoming arrives — use early morning as candidate filter, then the
+          // aircraft-unattended constraint (Step 2) enforces the real timing.
+          // For after_live/between_legs, the crew works through that leg first.
+          let releaseTime = task.swapPoint.time;
+          if (task.swapPoint.position === "before_live" || task.swapPoint.position === "idle") {
+            const tz = getAirportTimezone(task.swapPoint.icao) ?? "America/New_York";
+            const earlyLocal = new Date(`${swapDate}T05:00:00`);
+            const utcStr = earlyLocal.toLocaleString("en-US", { timeZone: "UTC" });
+            const localStr = earlyLocal.toLocaleString("en-US", { timeZone: tz });
+            const offsetMs = new Date(utcStr).getTime() - new Date(localStr).getTime();
+            releaseTime = new Date(earlyLocal.getTime() + offsetMs);
+          }
           // Need to get to commercial airport + security buffer
           const buffer = driveToFboMin > UBER_MAX_MINUTES ? RENTAL_RETURN_BUFFER : AIRPORT_SECURITY_BUFFER;
           const needAtAirport = new Date(flightDep.getTime() - ms(buffer));
@@ -850,6 +870,20 @@ function optimizeTail(
     oncomingSic.best = oncomingSic.candidates[0] ?? null;
   }
 
+  // ── Shared rental: halve cost when oncoming PIC+SIC both rent to same FBO ──
+  if (oncomingPic?.best?.type === "rental_car" && oncomingSic?.best?.type === "rental_car") {
+    const picTo = oncomingPic.best.to;
+    const sicTo = oncomingSic.best.to;
+    if (picTo === sicTo) {
+      oncomingPic.best.cost = Math.round(oncomingPic.best.cost / 2);
+      oncomingSic.best.cost = Math.round(oncomingSic.best.cost / 2);
+      const sicName = oncomingSic.name.split(" ").pop() ?? oncomingSic.name;
+      const picName = oncomingPic.name.split(" ").pop() ?? oncomingPic.name;
+      oncomingPic.best.flightNumber = `Rental w/ ${sicName}`;
+      oncomingSic.best.flightNumber = `Rental w/ ${picName}`;
+    }
+  }
+
   // ── Compute latest oncoming arrival for aircraft-unattended constraint ──
   const oncomingArrivals = oncoming
     .filter((t) => t.best?.fboArrivalTime)
@@ -931,6 +965,20 @@ function optimizeTail(
     }
     offgoingSic.candidates.sort((a, b) => b.score - a.score);
     offgoingSic.best = offgoingSic.candidates[0] ?? null;
+  }
+
+  // ── Shared rental for offgoing PIC+SIC going home ──
+  if (offgoingPic?.best?.type === "rental_car" && offgoingSic?.best?.type === "rental_car") {
+    const picFrom = offgoingPic.best.from;
+    const sicFrom = offgoingSic.best.from;
+    if (picFrom === sicFrom) {
+      offgoingPic.best.cost = Math.round(offgoingPic.best.cost / 2);
+      offgoingSic.best.cost = Math.round(offgoingSic.best.cost / 2);
+      const sicName = offgoingSic.name.split(" ").pop() ?? offgoingSic.name;
+      const picName = offgoingPic.name.split(" ").pop() ?? offgoingPic.name;
+      offgoingPic.best.flightNumber = `Rental w/ ${sicName}`;
+      offgoingSic.best.flightNumber = `Rental w/ ${picName}`;
+    }
   }
 
   // Handle any remaining offgoing tasks (edge case: extra roles)
@@ -1285,6 +1333,41 @@ export function buildSwapPlan(params: {
     }
   }
 
+  // ── Helper: generate helpful transport notes like the human does ────────
+  function generateTransportNote(best: TransportCandidate | null, task: CrewTask): string | null {
+    if (!best || best.type === "none") return null;
+    const swapLoc = toIata(task.swapPoint.icao);
+    const parts: string[] = [];
+
+    if (task.direction === "oncoming") {
+      // "Uber LAX to VNY", "Grab rental to TEB, be on site by 0930L"
+      if (best.type === "commercial" && best.to !== swapLoc) {
+        parts.push(`Uber ${best.to} to ${swapLoc}`);
+      } else if (best.type === "rental_car") {
+        parts.push(`Grab rental to ${swapLoc}`);
+      } else if (best.type === "uber") {
+        parts.push(`Uber to ${swapLoc}`);
+      }
+      if (best.fboArrivalTime) {
+        const tz = getAirportTimezone(task.swapPoint.icao) ?? "America/New_York";
+        const localStr = best.fboArrivalTime.toLocaleTimeString("en-US", {
+          timeZone: tz, hour: "2-digit", minute: "2-digit", hour12: false,
+        });
+        parts.push(`be on site by ${localStr}L`);
+      }
+    } else {
+      // "Uber to LAX for departure", "Uber to EWR for departure"
+      if (best.type === "commercial" && best.from !== swapLoc) {
+        parts.push(`Uber to ${best.from} for departure`);
+      } else if (best.type === "rental_car") {
+        parts.push(`Drive to ${best.to}`);
+      } else if (best.type === "uber") {
+        parts.push(`Uber to ${best.to}`);
+      }
+    }
+    return parts.length > 0 ? parts.join(", ") : null;
+  }
+
   // ── Convert tasks to CrewSwapRow[] ─────────────────────────────────────
   const rows: CrewSwapRow[] = allTasks.map((task) => {
     const best = task.best;
@@ -1325,7 +1408,7 @@ export function buildSwapPlan(params: {
         ? task.direction === "oncoming"
           ? `No viable transport from ${task.homeAirports[0] ?? "?"} to ${toIata(task.swapPoint.icao)}`
           : `No viable transport from ${toIata(task.swapPoint.icao)} to ${task.homeAirports[0] ?? "?"}`
-        : null,
+        : generateTransportNote(best, task),
       warnings: task.warnings,
       drive_estimate: best?.drive ?? null,
       flight_offer: best?.offer ?? null,

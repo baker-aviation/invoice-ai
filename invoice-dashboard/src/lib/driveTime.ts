@@ -62,6 +62,9 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   KDTW: [42.2124, -83.3534],   // Detroit
   KGRR: [42.8808, -85.5228],   // Grand Rapids
   KESC: [45.7227, -87.0937],   // Escanaba MI
+  KMQT: [46.5336, -87.5614],   // Marquette MI (Sawyer Intl)
+  KTVC: [44.7414, -85.5822],   // Traverse City MI
+  KFSD: [43.5820, -96.7419],   // Sioux Falls SD
   KMSP: [44.8820, -93.2218],   // Minneapolis
   KIND: [39.7173, -86.2944],   // Indianapolis
   KCVG: [39.0488, -84.6678],   // Cincinnati
@@ -80,6 +83,7 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   KEGE: [39.6426, -106.9159],  // Eagle/Vail
   KCOS: [38.8058, -104.7007],  // Colorado Springs
   KBOI: [43.5644, -116.2228],  // Boise
+  KTWF: [42.4818, -114.4877],  // Twin Falls ID
 
   // DC area
   KIAD: [38.9445, -77.4558],   // Dulles
@@ -170,6 +174,7 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   // ── Northeast / Mid-Atlantic (additional) ────────────────────────────────
   KABE: [40.6521, -75.4408],   // Allentown, PA
   KALB: [42.7483, -73.8017],   // Albany, NY
+  KMDT: [40.1935, -76.7634],   // Harrisburg PA
   KAVP: [41.3385, -75.7234],   // Wilkes-Barre/Scranton, PA
   KBLM: [40.1868, -74.1249],   // Belmar/Monmouth, NJ
   KFOK: [40.8437, -72.6318],   // Westhampton Beach, NY
@@ -188,6 +193,7 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   KAUO: [32.6151, -85.4340],   // Auburn, AL
   KANB: [33.5882, -85.8581],   // Anniston, AL
   KBUY: [36.0485, -79.4749],   // Burlington, NC
+  KFAY: [34.9912, -78.8803],   // Fayetteville NC
   KCRE: [33.8117, -78.7239],   // Myrtle Beach (Grand Strand)
   KGSO: [36.0978, -79.9373],   // Greensboro, NC
   KHKY: [35.7411, -81.3896],   // Hickory, NC
@@ -373,7 +379,9 @@ const COMMERCIAL_AIRPORTS = new Set([
   "KSFO", "KSJC", "KSLC", "KSNA", "KSRQ", "KSTL", "KTPA",
   "KTUL", "KAUS", "KBDL", "KBNA", "KBHM", "KBOI", "KBUR",
   "KABQ", "KACY", "KCHS", "KDAB", "KHSV", "KJAN", "KPIE",
-  "KASE", "KEGE", "KCOS",
+  "KASE", "KEGE", "KCOS", "KGRR", "KMQT", "KTVC", "KFSD",
+  "KICT", "KFAY", "KMDT", "KTWF", "KECP", "KMLB", "KGNV",
+  "KMCI", "KDSM", "KGRB", "KSGF",
   "CYYZ", "CYUL", "CYVR", "CYOW", "CYYC",
 ]);
 
