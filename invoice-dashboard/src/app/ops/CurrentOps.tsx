@@ -419,7 +419,10 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
 
   // SWIM flight status
   type SwimFlightStatus = { tail_number: string; departure_icao: string | null; arrival_icao: string | null; status: string; event_time: string; etd: string | null; eta: string | null };
+  type FeedStatus = { name: string; status: "ok" | "error" | "off"; count: number; updated_at?: string; error?: string };
   const [swimStatus, setSwimStatus] = useState<Map<string, SwimFlightStatus>>(new Map());
+  const [feedStatuses, setFeedStatuses] = useState<FeedStatus[]>([]);
+  const [faFeedStatus, setFaFeedStatus] = useState<FeedStatus>({ name: "FlightAware", status: "off", count: 0 });
   const [visibleTypes, setVisibleTypes] = useState<Set<string>>(DEFAULT_TYPES);
   const [statusFilter, setStatusFilter] = useState<"all" | "scheduled" | "enroute" | "arrived">("all");
   const [timeRange, setTimeRange] = useState<TimeRange>("Today");
@@ -488,8 +491,13 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
         setFlightInfo(map);
         setAircraftPosition(positions);
         setLastUpdate(new Date());
+        setFaFeedStatus({ name: "FlightAware", status: "ok", count: (data.flights ?? []).length, updated_at: new Date().toISOString() });
+      } else {
+        setFaFeedStatus({ name: "FlightAware", status: "error", count: 0, updated_at: new Date().toISOString(), error: `HTTP ${res.status}` });
       }
-    } catch { /* ignore */ }
+    } catch (err) {
+      setFaFeedStatus({ name: "FlightAware", status: "error", count: 0, updated_at: new Date().toISOString(), error: String(err) });
+    }
   }, []);
 
   // Fetch SWIM flight status
@@ -525,6 +533,7 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
           }
         }
         setSwimStatus(map);
+        if (data.feeds) setFeedStatuses(data.feeds);
       }
     } catch { /* ignore */ }
   }, []);
@@ -1027,48 +1036,74 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
         )}
       </div>
 
-      {/* ── EDCT Status ── */}
-      {edctAlerts.length === 0 ? (
-        <div className="flex items-center gap-2 rounded-lg border border-green-200 bg-green-50 px-4 py-2.5 text-sm">
-          <span className="w-2.5 h-2.5 rounded-full bg-green-500" />
-          <span className="font-medium text-green-800">No active EDCTs</span>
-        </div>
-      ) : (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
+      {/* ── EDCT + Feed Status side by side ── */}
+      <div className="grid grid-cols-2 gap-3">
+        {/* EDCT Status */}
+        {edctAlerts.length === 0 ? (
+          <div className="flex items-center gap-2 rounded-lg border border-green-200 bg-green-50 px-4 py-2.5 text-sm">
+            <span className="w-2.5 h-2.5 rounded-full bg-green-500" />
+            <span className="font-medium text-green-800">No active EDCTs</span>
+          </div>
+        ) : (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
+            <div className="flex items-center gap-2 mb-2 text-sm">
+              <span className="w-2.5 h-2.5 rounded-full bg-amber-500" />
+              <span className="font-semibold text-amber-800">
+                {edctAlerts.length} Active EDCT{edctAlerts.length !== 1 ? "s" : ""}
+              </span>
+            </div>
+            <div className="space-y-1.5">
+              {edctAlerts.map((a) => (
+                <div key={a.id} className={`flex items-center gap-3 text-sm text-amber-900 ${isAcked(a) ? "opacity-50" : ""}`}>
+                  <span className="font-medium">{a.route}</span>
+                  {a.tail_number && <span className="text-amber-600">{a.tail_number}</span>}
+                  <span className="text-sm">
+                    {(a.original_departure_time || a.fallback_departure) && (
+                      <span className="text-amber-500 line-through">{fmt(a.original_departure_time ?? a.fallback_departure ?? "", a.airport_icao)}</span>
+                    )}
+                    {(a.original_departure_time || a.fallback_departure) && <span className="text-amber-400 mx-0.5">→</span>}
+                    <span className="text-amber-800 font-bold">{a.edct_time ? fmt(a.edct_time, a.airport_icao) : "—"}</span>
+                  </span>
+                  {isAcked(a) ? (
+                    <span className="ml-auto text-xs text-gray-400 bg-gray-100 rounded px-1.5 py-0.5">Ack'd</span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => handleAck(a.id)}
+                      className="ml-auto text-xs text-gray-500 hover:text-green-700 hover:bg-green-50 border border-gray-200 hover:border-green-300 rounded px-1.5 py-0.5 transition-colors"
+                    >
+                      Ack
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Feed Status */}
+        <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
           <div className="flex items-center gap-2 mb-2 text-sm">
-            <span className="w-2.5 h-2.5 rounded-full bg-amber-500" />
-            <span className="font-semibold text-amber-800">
-              {edctAlerts.length} Active EDCT{edctAlerts.length !== 1 ? "s" : ""}
-            </span>
+            <span className="font-semibold text-gray-700">Feed Status</span>
           </div>
           <div className="space-y-1.5">
-            {edctAlerts.map((a) => (
-              <div key={a.id} className={`flex items-center gap-3 text-sm text-amber-900 ${isAcked(a) ? "opacity-50" : ""}`}>
-                <span className="font-medium">{a.route}</span>
-                {a.tail_number && <span className="text-amber-600">{a.tail_number}</span>}
-                <span className="text-sm">
-                  {(a.original_departure_time || a.fallback_departure) && (
-                    <span className="text-amber-500 line-through">{fmt(a.original_departure_time ?? a.fallback_departure ?? "", a.airport_icao)}</span>
-                  )}
-                  {(a.original_departure_time || a.fallback_departure) && <span className="text-amber-400 mx-0.5">→</span>}
-                  <span className="text-amber-800 font-bold">{a.edct_time ? fmt(a.edct_time, a.airport_icao) : "—"}</span>
-                </span>
-                {isAcked(a) ? (
-                  <span className="ml-auto text-xs text-gray-400 bg-gray-100 rounded px-1.5 py-0.5">Ack'd</span>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => handleAck(a.id)}
-                    className="ml-auto text-xs text-gray-500 hover:text-green-700 hover:bg-green-50 border border-gray-200 hover:border-green-300 rounded px-1.5 py-0.5 transition-colors"
-                  >
-                    Ack
-                  </button>
-                )}
-              </div>
-            ))}
+            {[...feedStatuses, faFeedStatus].map((feed) => {
+              const fmtTime = feed.updated_at ? new Date(feed.updated_at).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : null;
+              const dotColor = feed.status === "ok" ? "bg-green-500" : feed.status === "error" ? "bg-red-500" : "bg-gray-300";
+              const textColor = feed.status === "ok" ? "text-green-600" : feed.status === "error" ? "text-red-500" : "text-gray-400";
+              return (
+                <div key={feed.name} className="flex items-center gap-2 text-sm">
+                  <span className={`w-2 h-2 rounded-full ${dotColor}`} />
+                  <span className="font-medium text-gray-700">{feed.name}</span>
+                  <span className={`text-xs ml-auto ${textColor}`}>
+                    {feed.status === "ok" && fmtTime ? fmtTime : feed.status === "error" ? "Error" : "—"}
+                  </span>
+                </div>
+              );
+            })}
           </div>
         </div>
-      )}
+      </div>
 
       {/* ── SWIM Flow Control (GDP, Ground Stops, CTOPs) ── */}
       {swimFlow.length > 0 && (
@@ -1319,7 +1354,12 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                           } else if (fi?.actual_arrival) {
                             status = "Arrived";
                             statusColor = "text-green-600 font-medium";
-                          } else if (arrivalPassed && !fi) {
+                          } else if (status === "Scheduled" && f.tail_number && enRouteAircraft.some((p) => p.tail === f.tail_number)) {
+                            status = "En Route";
+                            statusColor = "text-blue-600 font-medium";
+                          }
+                          // If scheduled arrival has passed and still Scheduled/En Route, it arrived
+                          if (arrivalPassed && (status === "Scheduled" || status === "En Route")) {
                             status = "Arrived";
                             statusColor = "text-green-600 font-medium";
                           }
@@ -1589,8 +1629,14 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                   if (fi.status.includes("En Route")) statusColor = "text-blue-600 font-medium";
                   if (fi.status.includes("Arrived") || fi.status.includes("Landed")) statusColor = "text-green-600 font-medium";
                   if (fi.status === "Filed") { isFiled = true; statusColor = "text-indigo-600 font-medium"; }
-                } else if (arrivalPassed && !fi) {
-                  // No FA data, but scheduled arrival is past — assume arrived
+                } else if (status === "Scheduled" && f.tail_number && enRouteAircraft.some((p) => p.tail === f.tail_number)) {
+                  // Aircraft has a live position on the map — it's flying
+                  status = "En Route";
+                  statusColor = "text-blue-600 font-medium";
+                }
+
+                // If scheduled arrival has passed and we're still showing Scheduled, it arrived
+                if (arrivalPassed && (status === "Scheduled" || status === "En Route")) {
                   status = "Arrived";
                   statusColor = "text-green-600 font-medium";
                 }

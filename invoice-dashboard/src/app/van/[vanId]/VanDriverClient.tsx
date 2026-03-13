@@ -104,6 +104,7 @@ export default function VanDriverClient({
   publishedFlightIds,
   publishedAt,
   mxNotes,
+  fboMap,
 }: {
   vanId: number;
   zone: VanZone;
@@ -111,7 +112,14 @@ export default function VanDriverClient({
   publishedFlightIds: string[] | null;
   publishedAt: string | null;
   mxNotes?: MxNote[];
+  fboMap?: Record<string, string>;
 }) {
+  /** Look up destination FBO for a flight from trip_salespersons data */
+  const lookupFbo = useCallback((f: Flight): string | null => {
+    if (!fboMap || !f.tail_number || !f.arrival_icao) return null;
+    return fboMap[`${f.tail_number}:${f.arrival_icao}`] ?? null;
+  }, [fboMap]);
+
   const [flights, setFlights] = useState<Flight[]>(initialFlights);
   const [flightInfoMap, setFlightInfoMap] = useState<Map<string, FlightInfoEntry>>(new Map());
   const [refreshing, setRefreshing] = useState(false);
@@ -266,17 +274,6 @@ export default function VanDriverClient({
         </div>
       )}
 
-      {/* Hero card — next stop */}
-      {nextStopIdx >= 0 && stops[nextStopIdx] && (
-        <NextStopHero
-          item={stops[nextStopIdx]}
-          fi={stops[nextStopIdx].arrFlight.tail_number
-            ? flightInfoMap.get(stops[nextStopIdx].arrFlight.tail_number!)
-            : undefined}
-          flightInfoMap={flightInfoMap}
-        />
-      )}
-
       {/* Route summary */}
       {stops.length > 0 && (
         <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 px-4 py-3 mb-4 shadow-sm">
@@ -312,84 +309,10 @@ export default function VanDriverClient({
               tailMxNotes={mxNotesByTail.get(item.arrFlight.tail_number ?? "") ?? []}
               dismissedMxIds={dismissedMxIds}
               onDismissMx={dismissMxNote}
+              fbo={lookupFbo(item.arrFlight)}
             />
           ))}
         </div>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Hero card for next stop
-// ---------------------------------------------------------------------------
-
-function NextStopHero({
-  item,
-  fi,
-  flightInfoMap,
-}: {
-  item: VanFlightItem;
-  fi: FlightInfoEntry | undefined;
-  flightInfoMap: Map<string, FlightInfoEntry>;
-}) {
-  const tail = item.arrFlight.tail_number ?? "TBD";
-  const dep = item.arrFlight.departure_icao?.replace(/^K/, "") ?? "???";
-  const arr = item.airport;
-  const status = getFlightStatus(item, fi);
-  const effectiveArr = getEffectiveArrival(item, flightInfoMap);
-  const countdown = effectiveArr ? fmtTimeUntil(effectiveArr) : "";
-  const arrTime = effectiveArr ? fmtUtcHM(effectiveArr) : "\u2014";
-
-  const navUrl = item.airportInfo
-    ? `https://www.google.com/maps/dir/?api=1&destination=${item.airportInfo.lat},${item.airportInfo.lon}`
-    : null;
-
-  return (
-    <div className={`bg-white dark:bg-gray-800 rounded-xl border-2 border-blue-200 dark:border-blue-800 px-5 py-5 mb-4 shadow-md`}>
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-xs font-semibold text-blue-600 dark:text-blue-400 uppercase tracking-wide">
-          Next Stop
-        </span>
-        <span className={`text-sm font-semibold ${status.accent}`}>
-          {status.label}
-        </span>
-      </div>
-
-      <div className="flex items-baseline gap-3 mb-1">
-        <span className="text-2xl font-bold font-mono text-slate-800 dark:text-white">
-          {tail}
-        </span>
-        <span className="text-base text-gray-500 dark:text-gray-400">
-          {dep} &rarr; {arr}
-        </span>
-      </div>
-
-      <div className="flex items-center gap-4 mb-4">
-        {countdown && (
-          <span className="text-lg font-semibold text-blue-700 dark:text-blue-300">
-            Landing {countdown}
-          </span>
-        )}
-        {!countdown && effectiveArr && (
-          <span className="text-lg text-gray-600 dark:text-gray-400">
-            ETA {arrTime}
-          </span>
-        )}
-        <span className="text-sm text-gray-400 dark:text-gray-500">
-          {fmtDriveTime(item.distKm)}
-        </span>
-      </div>
-
-      {navUrl && (
-        <a
-          href={navUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="block w-full text-center bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-semibold py-4 rounded-xl text-base transition-colors min-h-[56px] flex items-center justify-center"
-        >
-          Navigate to {arr}
-        </a>
       )}
     </div>
   );
@@ -408,6 +331,7 @@ function StopCard({
   tailMxNotes,
   dismissedMxIds,
   onDismissMx,
+  fbo,
 }: {
   item: VanFlightItem;
   index: number;
@@ -417,6 +341,7 @@ function StopCard({
   tailMxNotes: MxNote[];
   dismissedMxIds: Set<string>;
   onDismissMx: (id: string) => void;
+  fbo: string | null;
 }) {
   const [expanded, setExpanded] = useState(false);
   const tail = item.arrFlight.tail_number ?? "TBD";
@@ -448,26 +373,35 @@ function StopCard({
     >
       {/* Collapsed header — always visible, tap to toggle */}
       <div
-        className="px-4 py-3 flex items-center justify-between cursor-pointer"
+        className="px-4 py-3 cursor-pointer"
         onClick={() => setExpanded((v) => !v)}
       >
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-medium text-gray-400 dark:text-gray-500 w-5 text-center">
-            {index + 1}
-          </span>
-          <span className="text-lg font-bold font-mono text-slate-800 dark:text-white">
-            {tail}
-          </span>
-          <span className="text-sm text-gray-500 dark:text-gray-400">
-            {dep} &rarr; {arr}
-          </span>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium text-gray-400 dark:text-gray-500 w-5 text-center">
+              {index + 1}
+            </span>
+            <span className="text-lg font-bold font-mono text-slate-800 dark:text-white">
+              {tail}
+            </span>
+            <span className="text-sm text-gray-500 dark:text-gray-400">
+              {dep} &rarr; {arr}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className={`text-sm font-semibold ${status.accent}`}>
+              {status.label}
+            </span>
+            <span className="text-gray-400 text-xs">{expanded ? "▲" : "▼"}</span>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <span className={`text-sm font-semibold ${status.accent}`}>
-            {status.label}
-          </span>
-          <span className="text-gray-400 text-xs">{expanded ? "▲" : "▼"}</span>
-        </div>
+        {fbo && (
+          <div className="ml-7 mt-0.5">
+            <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
+              {arr} {fbo}
+            </span>
+          </div>
+        )}
       </div>
 
       {expanded && <div className="px-4 pb-4">

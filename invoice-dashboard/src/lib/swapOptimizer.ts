@@ -723,6 +723,7 @@ function buildCandidates(
 function findBackups(
   primary: TransportCandidate,
   allCandidates: TransportCandidate[],
+  task?: CrewTask,
 ): TransportCandidate[] {
   if (primary.type !== "commercial" || !primary.depTime) return [];
 
@@ -732,7 +733,17 @@ function findBackups(
     if (!c.depTime || !primary.depTime) return false;
     // Backup must depart at least BACKUP_FLIGHT_MIN_GAP after primary
     const gap = (c.depTime.getTime() - primary.depTime.getTime()) / 60_000;
-    return gap >= BACKUP_FLIGHT_MIN_GAP;
+    if (gap < BACKUP_FLIGHT_MIN_GAP) return false;
+
+    // Backup must still satisfy swap timing constraints
+    if (task?.direction === "oncoming" && c.fboArrivalTime) {
+      // Must arrive at FBO before the hard deadline (1800L)
+      // Use swap point time + 6hrs as a generous deadline proxy
+      const hardDeadline = new Date(task.swapPoint.time.getTime() + 6 * 60 * 60_000);
+      if (c.fboArrivalTime.getTime() > hardDeadline.getTime()) return false;
+    }
+
+    return true;
   }).slice(0, 3);
 }
 
@@ -858,7 +869,7 @@ function optimizeTail(
   if (oncomingPic) {
     // Find backups for each candidate
     for (const c of oncomingPic.candidates) {
-      c.backups = findBackups(c, oncomingPic.candidates);
+      c.backups = findBackups(c, oncomingPic.candidates, oncomingPic);
     }
     // Score each candidate
     for (const c of oncomingPic.candidates) {
@@ -871,7 +882,7 @@ function optimizeTail(
 
   if (oncomingSic) {
     for (const c of oncomingSic.candidates) {
-      c.backups = findBackups(c, oncomingSic.candidates);
+      c.backups = findBackups(c, oncomingSic.candidates, oncomingSic);
     }
     // Score with PIC pairing consideration
     const picBest = oncomingPic?.best ?? null;
@@ -998,7 +1009,7 @@ function optimizeTail(
 
   if (offgoingPic) {
     for (const c of offgoingPic.candidates) {
-      c.backups = findBackups(c, offgoingPic.candidates);
+      c.backups = findBackups(c, offgoingPic.candidates, offgoingPic);
     }
     for (const c of offgoingPic.candidates) {
       c.score = scoreCandidate(c, offgoingPic, null);
@@ -1009,7 +1020,7 @@ function optimizeTail(
 
   if (offgoingSic) {
     for (const c of offgoingSic.candidates) {
-      c.backups = findBackups(c, offgoingSic.candidates);
+      c.backups = findBackups(c, offgoingSic.candidates, offgoingSic);
     }
     const offPicBest = offgoingPic?.best ?? null;
     for (const c of offgoingSic.candidates) {
@@ -1037,7 +1048,7 @@ function optimizeTail(
   for (const task of offgoing) {
     if (task === offgoingPic || task === offgoingSic) continue;
     for (const c of task.candidates) {
-      c.backups = findBackups(c, task.candidates);
+      c.backups = findBackups(c, task.candidates, task);
       c.score = scoreCandidate(c, task, null);
     }
     task.candidates.sort((a, b) => b.score - a.score);
@@ -1248,34 +1259,28 @@ export function buildSwapPlan(params: {
     // - SIC can swap at ANY swap point — PIC covers SIC seat for early legs.
     // - Offgoing leaves from the SAME swap point as their oncoming counterpart.
 
-    // Score swap points by commercial accessibility (more options = easier)
+    // Pick PIC swap point by commercial accessibility (cheap — drive time only, no candidate building)
+    // For EGE→VNY: VNY (15min to BUR/LAX) beats EGE (3hr to DEN)
     let picSwapPoint = swapPoints[0]; // default
     if (swapPoints.length > 1) {
-      let bestAccessScore = -1;
-      let bestTransportScore = -1;
+      let bestEase = -Infinity;
       for (const sp of swapPoints) {
-        const commOptions = findAllCommercialAirports(sp.icao, aliases);
-        const accessScore = commOptions.length;
-        // Also check transport viability for the oncoming PIC
-        const oncomingPicName = assignment.oncoming_pic;
-        let transportScore = 0;
-        if (oncomingPicName) {
-          const { crewMember, homeAirports } = resolveCrewMember(oncomingPicName, "PIC");
-          const tempTask: CrewTask = {
-            name: crewMember?.name ?? oncomingPicName, crewMember, role: "PIC",
-            direction: "oncoming", tail, aircraftType, swapPoint: sp,
-            homeAirports, candidates: [], best: null, warnings: [],
-          };
-          const candidates = buildCandidates(tempTask, aliases, commercialFlights, swapDate, byTail.get(tail));
-          for (const c of candidates) {
-            c.score = scoreCandidate(c, tempTask, null);
-          }
-          transportScore = candidates.reduce((max, c) => Math.max(max, c.score), 0);
+        const commAirports = findAllCommercialAirports(sp.icao, aliases);
+        const selfCommercial = aliases.some(
+          (a) => a.fbo_icao.toUpperCase() === sp.icao.toUpperCase()
+            && a.commercial_icao.toUpperCase() === sp.icao.toUpperCase(),
+        );
+        let minDrive = Infinity;
+        for (const c of commAirports) {
+          if (c.toUpperCase() === sp.icao.toUpperCase()) { minDrive = 0; break; }
+          const d = estimateDriveTime(sp.icao, c);
+          if (d) minDrive = Math.min(minDrive, d.estimated_drive_minutes);
         }
-        // Prefer: (1) better transport score, (2) more commercial options as tiebreaker
-        if (transportScore > bestTransportScore || (transportScore === bestTransportScore && accessScore > bestAccessScore)) {
-          bestTransportScore = transportScore;
-          bestAccessScore = accessScore;
+        if (minDrive === Infinity) minDrive = 999;
+        // Ease score: lower drive = easier, self-commercial = bonus, more options = bonus
+        const ease = -minDrive + (selfCommercial ? 30 : 0) + (commAirports.length * 2);
+        if (ease > bestEase) {
+          bestEase = ease;
           picSwapPoint = sp;
         }
       }

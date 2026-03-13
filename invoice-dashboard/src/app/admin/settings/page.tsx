@@ -382,10 +382,10 @@ export default function SettingsPage() {
 
       {/* ── Trip Salesperson CSV Upload ─────────────────────────────────────── */}
       <hr className="my-8 border-gray-200" />
-      <h2 className="text-lg font-semibold text-slate-900 mb-1">Trip Salesperson CSV Upload</h2>
+      <h2 className="text-lg font-semibold text-slate-900 mb-1">JetInsight Import</h2>
       <p className="text-sm text-gray-500 mb-4">
         Upload a JetInsight Aircraft Activity CSV. Expected columns:
-        Start Z, Start time Z, End time Z, Tail #, Trip, Salesperson, Customer, Orig, Dest.
+        Start Z, Start time Z, End time Z, Tail #, Trip, Salesperson, Customer, Orig, Orig FBO, Dest, Dest FBO.
       </p>
 
       <form onSubmit={handleCsvUpload} className="mb-4 flex gap-2 items-center">

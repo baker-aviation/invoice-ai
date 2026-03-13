@@ -2172,7 +2172,7 @@ function ScheduleTab({
                         <option value="">Assign…</option>
                         {FIXED_VAN_ZONES.map((z) => (
                           <option key={z.vanId} value={z.vanId}>
-                            V{z.vanId} – {z.name}
+                            V{z.vanId} – {z.city}
                           </option>
                         ))}
                       </select>
@@ -2299,7 +2299,7 @@ function ScheduleTab({
                       <option value="">Assign...</option>
                       {FIXED_VAN_ZONES.map((z) => (
                         <option key={z.vanId} value={z.vanId}>
-                          V{z.vanId} – {z.name}
+                          V{z.vanId} – {z.city}
                         </option>
                       ))}
                     </select>

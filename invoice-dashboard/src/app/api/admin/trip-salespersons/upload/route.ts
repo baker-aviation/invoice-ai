@@ -9,7 +9,7 @@ import { createServiceClient } from "@/lib/supabase/service";
  * FormData: file (CSV)
  *
  * Expected CSV columns:
- *   Start Z, Start time Z, End time Z, Tail #, Trip, Salesperson, Customer, Orig, Dest
+ *   Start Z, Start time Z, End time Z, Tail #, Trip, Salesperson, Customer, Orig, Orig FBO, Dest, Dest FBO
  */
 export async function POST(req: NextRequest) {
   const auth = await requireAdmin(req);
@@ -45,7 +45,7 @@ export async function POST(req: NextRequest) {
   const colMap = findColumns(headerFields);
   if (!colMap) {
     return NextResponse.json(
-      { error: "CSV missing required columns. Expected: Start Z, Start time Z, End time Z, Tail #, Trip, Salesperson, Customer, Orig, Dest" },
+      { error: "CSV missing required columns. Expected: Start Z, Start time Z, End time Z, Tail #, Trip, Salesperson, Customer, Orig, Dest (Orig FBO and Dest FBO are optional)" },
       { status: 400 },
     );
   }
@@ -70,6 +70,8 @@ export async function POST(req: NextRequest) {
     const originIcao = toIcao(originRaw);
     const destIcao = toIcao(destRaw);
     const customer = fields[colMap.customer]?.trim() ?? null;
+    const originFbo = colMap.origFbo !== -1 ? (fields[colMap.origFbo]?.trim() || null) : null;
+    const destFbo = colMap.destFbo !== -1 ? (fields[colMap.destFbo]?.trim() || null) : null;
 
     const departure = parseZuluDateTime(startDate, startTime);
     const arrival = endTime ? parseZuluDateTime(startDate, endTime, departure) : null;
@@ -83,6 +85,8 @@ export async function POST(req: NextRequest) {
       scheduled_arrival: arrival,
       salesperson_name: salesperson,
       customer,
+      origin_fbo: originFbo,
+      destination_fbo: destFbo,
       updated_at: new Date().toISOString(),
     });
   }
@@ -156,6 +160,8 @@ type ColMap = {
   customer: number;
   orig: number;
   dest: number;
+  origFbo: number;
+  destFbo: number;
 };
 
 function findColumns(headers: string[]): ColMap | null {
@@ -169,11 +175,13 @@ function findColumns(headers: string[]): ColMap | null {
   const customer = norm.findIndex((h) => h === "customer");
   const orig = norm.findIndex((h) => h === "orig");
   const dest = norm.findIndex((h) => h === "dest");
+  const origFbo = norm.findIndex((h) => h === "orig fbo");
+  const destFbo = norm.findIndex((h) => h === "dest fbo");
 
   if ([startZ, startTimeZ, endTimeZ, tail, trip, salesperson, customer, orig, dest].some((i) => i === -1)) {
     return null;
   }
-  return { startZ, startTimeZ, endTimeZ, tail, trip, salesperson, customer, orig, dest };
+  return { startZ, startTimeZ, endTimeZ, tail, trip, salesperson, customer, orig, dest, origFbo, destFbo };
 }
 
 /**
