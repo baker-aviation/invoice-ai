@@ -1064,30 +1064,6 @@ function buildFeasibilityMatrix(params: {
         continue;
       }
 
-      // Quick reachability check: skip if no drive route AND no commercial flights
-      // This avoids running expensive buildCandidates for impossible combos
-      const swapIcao = oncomingSwapPoint.icao;
-      const commAirports = findAllCommercialAirports(swapIcao, aliases);
-      let hasAnyRoute = false;
-      for (const home of poolEntry.home_airports) {
-        const homeIcao = toIcao(home);
-        const drive = estimateDriveTime(homeIcao, swapIcao);
-        if (drive && drive.feasible) { hasAnyRoute = true; break; }
-        if (commercialFlights) {
-          const homeIata = toIata(home);
-          for (const comm of commAirports) {
-            const commIata = toIata(comm);
-            const key = `${homeIata}-${commIata}-${swapDate}`;
-            if (commercialFlights.has(key)) { hasAnyRoute = true; break; }
-          }
-          if (hasAnyRoute) break;
-        }
-      }
-      if (!hasAnyRoute) {
-        matrix.push({ crewName: poolEntry.name, tail, viable: false, bestScore: 0, bestCost: 999, bestType: "none", candidateCount: 0, rank: 999 });
-        continue;
-      }
-
       // Find or create a CrewMember from the roster for this pool entry
       const crewMember = findCrewByName(crewRoster, poolEntry.name, role);
 
