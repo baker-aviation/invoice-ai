@@ -1022,9 +1022,12 @@ function MxNoteInline({ notes, hiddenIds, onHideForToday }: { notes: MxNote[]; h
   // Hide MX notes more than 7 days away + hidden-for-today
   const now = Date.now();
   const weekMs = 7 * 24 * 60 * 60 * 1000;
+  const dayMs = 24 * 60 * 60 * 1000;
   const visible = notes.filter((n) => {
     if (hiddenIds?.has(n.id)) return false;
     if (!n.start_time) return true; // no date = always show
+    const end = n.end_time ? new Date(n.end_time).getTime() + dayMs : new Date(n.start_time).getTime() + dayMs;
+    if (end < now - dayMs) return false; // hide if >24h past end date
     return new Date(n.start_time).getTime() - now <= weekMs;
   });
   if (visible.length === 0) return null;
@@ -3697,9 +3700,9 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
                         })}
                       </div>
                       {/* MX notes from JetInsight */}
-                      {(mxNotesByTail.get(tail ?? "") ?? []).filter((n) => !hiddenTodayMxIds.has(n.id)).length > 0 && (
+                      {(mxNotesByTail.get(tail ?? "") ?? []).filter((n) => { if (hiddenTodayMxIds.has(n.id)) return false; if (!n.start_time) return true; const e = n.end_time ? new Date(n.end_time).getTime() + 86400000 : new Date(n.start_time).getTime() + 86400000; return e >= Date.now() - 86400000; }).length > 0 && (
                         <div className="border-t border-orange-100 px-4 py-2 space-y-1">
-                          {(mxNotesByTail.get(tail ?? "") ?? []).filter((n) => !hiddenTodayMxIds.has(n.id)).map((n) => {
+                          {(mxNotesByTail.get(tail ?? "") ?? []).filter((n) => { if (hiddenTodayMxIds.has(n.id)) return false; if (!n.start_time) return true; const e = n.end_time ? new Date(n.end_time).getTime() + 86400000 : new Date(n.start_time).getTime() + 86400000; return e >= Date.now() - 86400000; }).map((n) => {
                             const mel = isMel(n);
                             const timeLeft = mel ? fmtTimeRemaining(n.end_time) : null;
                             return (

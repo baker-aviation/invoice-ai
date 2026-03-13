@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect, useCallback } from "react";
+import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import type { Flight, MxNote } from "@/lib/opsApi";
 import type { VanZone } from "@/lib/maintenanceData";
 import {
@@ -418,6 +418,7 @@ function StopCard({
   dismissedMxIds: Set<string>;
   onDismissMx: (id: string) => void;
 }) {
+  const [expanded, setExpanded] = useState(isNext);
   const tail = item.arrFlight.tail_number ?? "TBD";
   const dep = item.arrFlight.departure_icao?.replace(/^K/, "") ?? "???";
   const arr = item.airport;
@@ -427,6 +428,13 @@ function StopCard({
   const arrTime = effectiveArr ? fmtUtcHM(effectiveArr) : "\u2014";
   const badge = flightTypeBadge(item.arrFlight);
   const turnLabel = getTurnLabel(item);
+
+  // Auto-expand when this becomes the next stop
+  const prevIsNext = useRef(isNext);
+  useEffect(() => {
+    if (isNext && !prevIsNext.current) setExpanded(true);
+    prevIsNext.current = isNext;
+  }, [isNext]);
 
   const navUrl = item.airportInfo
     ? `https://www.google.com/maps/dir/?api=1&destination=${item.airportInfo.lat},${item.airportInfo.lon}`
@@ -438,7 +446,31 @@ function StopCard({
         isNext ? "ring-2 ring-blue-300 dark:ring-blue-700" : ""
       }`}
     >
-      <div className="px-4 py-4">
+      {/* Collapsed header — always visible, tap to toggle */}
+      <div
+        className="px-4 py-3 flex items-center justify-between cursor-pointer"
+        onClick={() => setExpanded((v) => !v)}
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium text-gray-400 dark:text-gray-500 w-5 text-center">
+            {index + 1}
+          </span>
+          <span className="text-lg font-bold font-mono text-slate-800 dark:text-white">
+            {tail}
+          </span>
+          <span className="text-sm text-gray-500 dark:text-gray-400">
+            {dep} &rarr; {arr}
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className={`text-sm font-semibold ${status.accent}`}>
+            {status.label}
+          </span>
+          <span className="text-gray-400 text-xs">{expanded ? "▲" : "▼"}</span>
+        </div>
+      </div>
+
+      {expanded && <div className="px-4 pb-4">
         {/* Top row: index + tail + status */}
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2">
@@ -559,7 +591,7 @@ function StopCard({
             Navigate
           </a>
         )}
-      </div>
+      </div>}
     </div>
   );
 }

@@ -124,6 +124,11 @@ export const RENTAL_HANDOFF_FUEL_COST = 20;
  * System must account for rental return time before old crew's flight.
  */
 
+// ─── Crew Handoff ──────────────────────────────────────────────────────────
+
+/** Minimum overlap at FBO: oncoming must arrive this many minutes BEFORE offgoing leaves */
+export const HANDOFF_BUFFER_MINUTES = 30;
+
 // ─── Staggered Arrivals ─────────────────────────────────────────────────────
 
 /** Warn if two oncoming crews arrive at the same airport within this gap */

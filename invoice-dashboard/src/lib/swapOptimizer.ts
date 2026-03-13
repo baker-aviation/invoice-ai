@@ -29,7 +29,7 @@ import {
   EARLIEST_DUTY_ON_HOUR, UBER_MAX_MINUTES, RENTAL_MAX_MINUTES,
   BUDGET_CARRIERS, PREFERRED_HUBS, BACKUP_FLIGHT_MIN_GAP, MAX_CONNECTIONS,
   EARLY_LATE_BONUS_PIC, EARLY_LATE_BONUS_SIC,
-  RENTAL_HANDOFF_FUEL_COST, STAGGER_MIN_GAP_HOURS,
+  RENTAL_HANDOFF_FUEL_COST, STAGGER_MIN_GAP_HOURS, HANDOFF_BUFFER_MINUTES,
 } from "./swapRules";
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -132,6 +132,8 @@ type TransportCandidate = {
   offer: FlightOffer | null;
   drive: DriveEstimate | null;
   fboArrivalTime: Date | null;
+  /** Offgoing only: when crew physically leaves the FBO (depTime for ground, earlier for commercial) */
+  fboLeaveTime: Date | null;
   dutyOnTime: Date | null;
   score: number;
   backups: TransportCandidate[];
@@ -515,6 +517,7 @@ function buildCandidates(
         offer: null,
         drive,
         fboArrivalTime: fboArr,
+        fboLeaveTime: task.direction === "offgoing" ? depTime : null,
         dutyOnTime: dutyOn,
         score: 0,
         backups: [],
@@ -649,6 +652,13 @@ function buildCandidates(
           dutyOn = null;
         }
 
+        // For offgoing commercial: compute when crew physically leaves the FBO
+        let fboLeave: Date | null = null;
+        if (task.direction === "offgoing") {
+          const buffer = driveToFboMin > UBER_MAX_MINUTES ? RENTAL_RETURN_BUFFER : AIRPORT_SECURITY_BUFFER;
+          fboLeave = new Date(flightDep.getTime() - ms(buffer) - ms(driveToFboMin));
+        }
+
         const candidate: TransportCandidate = {
           type: "commercial",
           flightNumber: flightNum,
@@ -665,6 +675,7 @@ function buildCandidates(
           offer,
           drive: driveToFbo,
           fboArrivalTime: fboArr,
+          fboLeaveTime: fboLeave,
           dutyOnTime: dutyOn,
           score: 0,
           backups: [],
@@ -694,6 +705,7 @@ function buildCandidates(
       offer: null,
       drive: null,
       fboArrivalTime: null,
+      fboLeaveTime: null,
       dutyOnTime: null,
       score: 0,
       backups: [],
@@ -922,20 +934,60 @@ function optimizeTail(
     }
   }
 
-  // ── Aircraft never unattended — hard constraint ──────────────────────
-  // Filter offgoing candidates to only those departing AFTER oncoming arrives
+  // ── Aircraft never unattended — HARD constraint ─────────────────────
+  // Use fboLeaveTime (when crew physically leaves FBO), not depTime (commercial departure).
+  // Require oncoming arrival + handoff buffer BEFORE offgoing leaves.
   if (latestOncomingArrival) {
+    const earliestOffgoingLeave = latestOncomingArrival + ms(HANDOFF_BUFFER_MINUTES);
     for (const task of offgoing) {
       const filtered = task.candidates.filter((c) => {
         if (c.type === "none") return true;
-        if (!c.depTime) return true; // Keep if no dep time (ground transport estimated)
-        return c.depTime.getTime() >= latestOncomingArrival;
+        // Use fboLeaveTime for accurate FBO departure; fall back to depTime
+        const leaveTime = c.fboLeaveTime ?? c.depTime;
+        if (!leaveTime) return true; // No timing info — keep but will score low
+        return leaveTime.getTime() >= earliestOffgoingLeave;
       });
       if (filtered.length > 0 && filtered.some((c) => c.type !== "none")) {
         task.candidates = filtered;
       } else {
-        // Graceful degradation: keep originals but warn
-        task.warnings.push("All offgoing options depart before oncoming arrives — aircraft may be unattended");
+        // HARD CONSTRAINT: no viable options. Replace with "none" + hard warning.
+        // Find the best (latest-leaving) candidate for the warning message.
+        const sorted = task.candidates
+          .filter((c) => c.type !== "none" && (c.fboLeaveTime ?? c.depTime))
+          .sort((a, b) => {
+            const aT = (a.fboLeaveTime ?? a.depTime)!.getTime();
+            const bT = (b.fboLeaveTime ?? b.depTime)!.getTime();
+            return bT - aT; // latest first
+          });
+        const latestOption = sorted[0];
+        const gapMin = latestOption
+          ? Math.round((earliestOffgoingLeave - (latestOption.fboLeaveTime ?? latestOption.depTime)!.getTime()) / 60_000)
+          : 0;
+        task.candidates = [{
+          type: "none",
+          flightNumber: null,
+          depTime: null,
+          arrTime: null,
+          from: task.homeAirports[0] ? toIata(task.homeAirports[0]) : "???",
+          to: toIata(task.swapPoint.icao),
+          cost: 0,
+          durationMin: 0,
+          isDirect: false,
+          isBudgetCarrier: false,
+          hubConnection: false,
+          connectionCount: 0,
+          offer: null,
+          drive: null,
+          fboArrivalTime: null,
+          fboLeaveTime: null,
+          dutyOnTime: null,
+          score: -100,
+          backups: [],
+        }];
+        task.warnings.push(
+          `HARD CONFLICT: Aircraft unattended — all offgoing flights require leaving FBO before oncoming arrives + ${HANDOFF_BUFFER_MINUTES}min handoff` +
+          (gapMin > 0 ? ` (best option misses by ${gapMin} min)` : "")
+        );
       }
     }
   }
@@ -1131,8 +1183,22 @@ export function buildSwapPlan(params: {
     legs.sort((a, b) => new Date(a.scheduled_departure).getTime() - new Date(b.scheduled_departure).getTime());
   }
 
-  // ── Process each tail ──────────────────────────────────────────────────
-  for (const [tail, assignment] of Object.entries(swapAssignments)) {
+  // ── Sort tails by difficulty: hardest swap locations first ────────────
+  // Remote airports (fewer commercial options) get first pick of flights/crews.
+  // Hubs like VNY (near BUR, LAX) can work with whatever's left.
+  const tailEntries = Object.entries(swapAssignments);
+  const tailDifficulty = new Map<string, number>();
+  for (const [tail] of tailEntries) {
+    const { swapPoints } = extractSwapPoints(tail, byTail, swapDate);
+    const swapIcao = swapPoints[0]?.icao ?? "";
+    const commercialOptions = findAllCommercialAirports(swapIcao, aliases);
+    // Fewer options = harder = lower score = sorted first
+    tailDifficulty.set(tail, commercialOptions.length);
+  }
+  tailEntries.sort((a, b) => (tailDifficulty.get(a[0]) ?? 0) - (tailDifficulty.get(b[0]) ?? 0));
+
+  // ── Process each tail (hardest first) ───────────────────────────────
+  for (const [tail, assignment] of tailEntries) {
     // Determine aircraft type
     const anyName = assignment.oncoming_pic ?? assignment.offgoing_pic ?? assignment.oncoming_sic ?? assignment.offgoing_sic;
     const anyCrew = anyName ? (findCrewByName(crewRoster, anyName, "PIC") ?? findCrewByName(crewRoster, anyName, "SIC")) : null;
