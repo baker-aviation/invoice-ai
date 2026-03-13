@@ -1001,11 +1001,12 @@ function SlackShareModal({
 // MxNoteInline — JetInsight maintenance alerts per aircraft
 // ---------------------------------------------------------------------------
 
-function MxNoteInline({ notes }: { notes: MxNote[] }) {
-  // Hide MX notes more than 7 days away
+function MxNoteInline({ notes, hiddenIds, onHideForToday }: { notes: MxNote[]; hiddenIds?: Set<string>; onHideForToday?: (id: string) => void }) {
+  // Hide MX notes more than 7 days away + hidden-for-today
   const now = Date.now();
   const weekMs = 7 * 24 * 60 * 60 * 1000;
   const visible = notes.filter((n) => {
+    if (hiddenIds?.has(n.id)) return false;
     if (!n.start_time) return true; // no date = always show
     return new Date(n.start_time).getTime() - now <= weekMs;
   });
@@ -1015,7 +1016,7 @@ function MxNoteInline({ notes }: { notes: MxNote[] }) {
       {visible.map((n) => (
         <div key={n.id} className="flex items-start gap-2 bg-orange-50 border border-orange-200 rounded-lg px-3 py-1.5">
           <span className="text-orange-500 font-bold text-xs mt-0.5 shrink-0">MX</span>
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-xs font-medium text-orange-700">{n.airport_icao}</span>
               <span className="text-xs text-gray-700">{n.body}</span>
@@ -1026,6 +1027,14 @@ function MxNoteInline({ notes }: { notes: MxNote[] }) {
                 </span>
               )}
             </div>
+            {onHideForToday && (
+              <button
+                onClick={() => onHideForToday(n.id)}
+                className="text-[10px] font-medium text-orange-400 hover:text-orange-700 hover:bg-orange-50 border border-orange-200 rounded px-2 py-0.5 mt-1 transition-colors"
+              >
+                Hide for Today
+              </button>
+            )}
           </div>
         </div>
       ))}
@@ -1141,6 +1150,8 @@ function VanScheduleCard({
   flightInfoMap,
   legNotes,
   mxNotesByTail,
+  hiddenTodayMxIds,
+  onHideMxForToday,
   onSaveNote,
   onDragStart,
   onDragOver,
@@ -1161,6 +1172,8 @@ function VanScheduleCard({
   flightInfoMap: Map<string, FlightInfoEntry>;
   legNotes: Map<string, string>;
   mxNotesByTail: Map<string, MxNote[]>;
+  hiddenTodayMxIds: Set<string>;
+  onHideMxForToday: (id: string) => void;
   onSaveNote: (flightId: string, tailNumber: string | null, note: string) => void;
   onDragStart: (e: React.DragEvent, flightId: string, fromVanId: number) => void;
   onDragOver: (e: React.DragEvent) => void;
@@ -1461,7 +1474,7 @@ function VanScheduleCard({
                       </div>
                     )}
                     {/* MX notes from JetInsight */}
-                    <MxNoteInline notes={mxNotesByTail.get(arrFlight.tail_number ?? "") ?? []} />
+                    <MxNoteInline notes={mxNotesByTail.get(arrFlight.tail_number ?? "") ?? []} hiddenIds={hiddenTodayMxIds} onHideForToday={onHideMxForToday} />
                     {/* MX director note */}
                     <LegNoteInline
                       flightId={arrFlight.id}
@@ -1498,6 +1511,8 @@ function ScheduleTab({
   flightInfoMap,
   mxNotesByTail,
   longTermMxTails,
+  hiddenTodayMxIds,
+  onHideMxForToday,
 }: {
   allFlights: Flight[];
   date: string;
@@ -1507,6 +1522,8 @@ function ScheduleTab({
   flightInfoMap: Map<string, FlightInfoEntry>;
   mxNotesByTail: Map<string, MxNote[]>;
   longTermMxTails: Set<string>;
+  hiddenTodayMxIds: Set<string>;
+  onHideMxForToday: (id: string) => void;
 }) {
   const hasLive = liveVanPositions.size > 0;
 
@@ -2127,7 +2144,7 @@ function ScheduleTab({
                       )}
                     </div>
                     {/* MX notes from JetInsight */}
-                    <MxNoteInline notes={mxNotesByTail.get(tail ?? "") ?? []} />
+                    <MxNoteInline notes={mxNotesByTail.get(tail ?? "") ?? []} hiddenIds={hiddenTodayMxIds} onHideForToday={onHideMxForToday} />
                   </div>
                 );
               })}
@@ -2208,7 +2225,7 @@ function ScheduleTab({
                       {ac.airportInfo.name}, {ac.airportInfo.state}
                     </div>
                   )}
-                  <MxNoteInline notes={mxNotesByTail.get(ac.tail) ?? []} />
+                  <MxNoteInline notes={mxNotesByTail.get(ac.tail) ?? []} hiddenIds={hiddenTodayMxIds} onHideForToday={onHideMxForToday} />
                 </div>
               ))}
             </div>
@@ -2238,6 +2255,8 @@ function ScheduleTab({
               flightInfoMap={flightInfoMap}
               legNotes={legNotes}
               mxNotesByTail={mxNotesByTail}
+              hiddenTodayMxIds={hiddenTodayMxIds}
+              onHideMxForToday={onHideMxForToday}
               onSaveNote={saveLegNote}
               onDragStart={handleDragStart}
               onDragOver={handleDragOver}
@@ -2566,6 +2585,26 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
   const [schedTypeFilter, setSchedTypeFilter] = useState<string>("all");
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
+
+  // "Hide for Today" — stored in localStorage, auto-expires next day
+  const [hiddenTodayMxIds, setHiddenTodayMxIds] = useState<Set<string>>(() => {
+    if (typeof window === "undefined") return new Set();
+    try {
+      const stored = JSON.parse(localStorage.getItem("hiddenTodayMx") ?? "{}");
+      const today = new Date().toISOString().slice(0, 10);
+      if (stored.date === today) return new Set(stored.ids ?? []);
+      localStorage.removeItem("hiddenTodayMx");
+    } catch { /* ignore */ }
+    return new Set();
+  });
+  const hideMxForToday = useCallback((id: string) => {
+    setHiddenTodayMxIds((prev) => {
+      const next = new Set(prev).add(id);
+      const today = new Date().toISOString().slice(0, 10);
+      localStorage.setItem("hiddenTodayMx", JSON.stringify({ date: today, ids: [...next] }));
+      return next;
+    });
+  }, []);
 
   async function handleResync() {
     setSyncing(true);
@@ -3419,7 +3458,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
 
       {/* ── Schedule tab ── */}
       {activeTab === "schedule" && (
-        <ScheduleTab allFlights={activeFlights} date={selectedDate} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} flightInfoMap={flightInfoMap} mxNotesByTail={mxNotesByTail} longTermMxTails={longTermMxTails} />
+        <ScheduleTab allFlights={activeFlights} date={selectedDate} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} flightInfoMap={flightInfoMap} mxNotesByTail={mxNotesByTail} longTermMxTails={longTermMxTails} hiddenTodayMxIds={hiddenTodayMxIds} onHideMxForToday={hideMxForToday} />
       )}
 
       {/* ── Flight Schedule tab — grouped by aircraft ── */}
@@ -3574,20 +3613,28 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
                         })}
                       </div>
                       {/* MX notes from JetInsight */}
-                      {(mxNotesByTail.get(tail ?? "") ?? []).length > 0 && (
+                      {(mxNotesByTail.get(tail ?? "") ?? []).filter((n) => !hiddenTodayMxIds.has(n.id)).length > 0 && (
                         <div className="border-t border-orange-100 px-4 py-2 space-y-1">
-                          {(mxNotesByTail.get(tail ?? "") ?? []).map((n) => (
+                          {(mxNotesByTail.get(tail ?? "") ?? []).filter((n) => !hiddenTodayMxIds.has(n.id)).map((n) => (
                             <div key={n.id} className="flex items-start gap-2 bg-orange-50 border border-orange-200 rounded-lg px-3 py-1.5">
                               <span className="text-orange-500 font-bold text-xs mt-0.5 shrink-0">MX</span>
-                              <div className="flex items-center gap-2 flex-wrap min-w-0 flex-1">
-                                <span className="text-xs font-medium text-orange-700">{n.airport_icao}</span>
-                                <span className="text-xs text-gray-700">{n.body}</span>
-                                {n.start_time && (
-                                  <span className="text-[11px] text-gray-400 ml-auto shrink-0">
-                                    {new Date(n.start_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-                                    {n.end_time && n.end_time !== n.start_time && ` – ${new Date(n.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`}
-                                  </span>
-                                )}
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="text-xs font-medium text-orange-700">{n.airport_icao}</span>
+                                  <span className="text-xs text-gray-700">{n.body}</span>
+                                  {n.start_time && (
+                                    <span className="text-[11px] text-gray-400 ml-auto shrink-0">
+                                      {new Date(n.start_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                                      {n.end_time && n.end_time !== n.start_time && ` – ${new Date(n.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`}
+                                    </span>
+                                  )}
+                                </div>
+                                <button
+                                  onClick={() => hideMxForToday(n.id)}
+                                  className="text-[10px] font-medium text-orange-400 hover:text-orange-700 hover:bg-orange-50 border border-orange-200 rounded px-2 py-0.5 mt-1 transition-colors"
+                                >
+                                  Hide for Today
+                                </button>
                               </div>
                             </div>
                           ))}
