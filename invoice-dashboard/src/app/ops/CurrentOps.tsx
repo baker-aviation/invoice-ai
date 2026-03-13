@@ -500,8 +500,13 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
         const data = await res.json();
         const map = new Map<string, SwimFlightStatus>();
         for (const s of data.statuses ?? []) {
+          // Route-specific key
           const key = `${s.tail_number}|${s.departure_icao ?? ""}|${s.arrival_icao ?? ""}`;
           map.set(key, s);
+          // Also store tail-only key (fallback when SWIM route differs from JetInsight)
+          // Only set if no existing tail-only entry or this one is newer
+          const tailKey = `${s.tail_number}||`;
+          if (!map.has(tailKey)) map.set(tailKey, s);
         }
         setSwimStatus(map);
       }
@@ -671,8 +676,8 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
       const arrivalDate = f.scheduled_arrival ? new Date(f.scheduled_arrival) : null;
       const arrivalPassed = arrivalDate && arrivalDate < now;
 
-      // Check SWIM status first (before FA)
-      const swim = swimStatus.get(routeKey);
+      // Check SWIM status first (before FA) — try route-specific, then tail-only fallback
+      const swim = swimStatus.get(routeKey) ?? (f.tail_number ? swimStatus.get(`${f.tail_number}||`) : undefined);
 
       if (fi?.diverted || supersededMap.has(f.id)) {
         map.set(f.id, "arrived"); // treat cancelled/diverted as "arrived" bucket
@@ -1277,8 +1282,8 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                           const arrivalDate = f.scheduled_arrival ? new Date(f.scheduled_arrival) : null;
                           const now = new Date();
                           const arrivalPassed = arrivalDate && arrivalDate < now;
-                          // Check SWIM status first
-                          const swimEntry = swimStatus.get(routeKey);
+                          // Check SWIM status first — try route-specific, then tail-only
+                          const swimEntry = swimStatus.get(routeKey) ?? (f.tail_number ? swimStatus.get(`${f.tail_number}||`) : undefined);
                           if (swimEntry?.status === "Filed") {
                             status = "Filed"; isFiled = true; statusColor = "text-indigo-600 font-medium";
                           } else if (swimEntry?.status === "En Route") {

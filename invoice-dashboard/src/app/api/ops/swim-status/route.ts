@@ -38,7 +38,8 @@ function deriveStatus(eventType: SwimEventType, altitudeFt: number | null): stri
       return "Arrived";
     case "POSITION":
     case "TRACK":
-      return altitudeFt != null && altitudeFt > 0 ? "En Route" : "Arrived";
+      // SWIM only sends position updates for airborne flights — altitude may be null
+      return "En Route";
     case "CANCEL":
       return "Cancelled";
     case "DIVERSION":
