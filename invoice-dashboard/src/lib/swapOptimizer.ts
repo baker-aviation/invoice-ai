@@ -1184,18 +1184,47 @@ export function buildSwapPlan(params: {
   }
 
   // ── Sort tails by difficulty: hardest swap locations first ────────────
-  // Remote airports (fewer commercial options) get first pick of flights/crews.
-  // Hubs like VNY (near BUR, LAX) can work with whatever's left.
+  // Difficulty = how hard is it to get crew to/from this location commercially.
+  // Primary: drive time to nearest commercial airport (longer = harder).
+  // Secondary: whether the FBO itself has commercial service (much easier).
+  // Tertiary: number of reachable commercial airports (more options = easier).
+  // Uses the EASIEST swap point per tail — for EGE→VNY, VNY drives the score.
   const tailEntries = Object.entries(swapAssignments);
   const tailDifficulty = new Map<string, number>();
   for (const [tail] of tailEntries) {
     const { swapPoints } = extractSwapPoints(tail, byTail, swapDate);
-    const swapIcao = swapPoints[0]?.icao ?? "";
-    const commercialOptions = findAllCommercialAirports(swapIcao, aliases);
-    // Fewer options = harder = lower score = sorted first
-    tailDifficulty.set(tail, commercialOptions.length);
+    let easiestScore = Infinity;
+    for (const sp of swapPoints) {
+      const spIcao = sp.icao;
+      const commAirports = findAllCommercialAirports(spIcao, aliases);
+
+      // Does the FBO itself have commercial service? (self-alias like KASE→KASE)
+      const selfCommercial = aliases.some(
+        (a) => a.fbo_icao.toUpperCase() === spIcao.toUpperCase()
+          && a.commercial_icao.toUpperCase() === spIcao.toUpperCase(),
+      );
+
+      // Shortest drive time to any commercial airport
+      let minDriveMin = Infinity;
+      for (const commIcao of commAirports) {
+        if (commIcao.toUpperCase() === spIcao.toUpperCase()) {
+          minDriveMin = 0; // IS a commercial airport
+          break;
+        }
+        const drive = estimateDriveTime(spIcao, commIcao);
+        if (drive) minDriveMin = Math.min(minDriveMin, drive.estimated_drive_minutes);
+      }
+      if (minDriveMin === Infinity) minDriveMin = 999;
+
+      // Difficulty score: higher = harder. Drive time dominates.
+      // Self-commercial gets a 30min bonus, each extra option subtracts 2.
+      const score = minDriveMin - (selfCommercial ? 30 : 0) - (commAirports.length * 2);
+      easiestScore = Math.min(easiestScore, score);
+    }
+    tailDifficulty.set(tail, easiestScore);
   }
-  tailEntries.sort((a, b) => (tailDifficulty.get(a[0]) ?? 0) - (tailDifficulty.get(b[0]) ?? 0));
+  // Higher difficulty = processed first
+  tailEntries.sort((a, b) => (tailDifficulty.get(b[0]) ?? 0) - (tailDifficulty.get(a[0]) ?? 0));
 
   // ── Process each tail (hardest first) ───────────────────────────────
   for (const [tail, assignment] of tailEntries) {
