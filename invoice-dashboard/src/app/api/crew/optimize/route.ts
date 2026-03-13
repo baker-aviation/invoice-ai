@@ -197,6 +197,7 @@ export async function POST(req: NextRequest) {
     }
 
     console.log(`[Swap Optimizer] Searching ${pairsArray.length} route pairs × ${searchDates.length} date(s) (${searchDates.join(", ")}) = ${allSearches.length} searches via HasData`);
+    const flightSearchStart = Date.now();
 
     // Search in batches of 30 (HasData Pro: 30 concurrent requests)
     for (let i = 0; i < allSearches.length; i += 30) {
@@ -223,13 +224,14 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    console.log(`[Swap Optimizer] Flight search results: ${searchSuccessCount} routes with flights, ${searchFailCount} empty, ${commercialFlights.size} total cached`);
+    console.log(`[Swap Optimizer] Flight search results: ${searchSuccessCount} routes with flights, ${searchFailCount} empty, ${commercialFlights.size} total cached (${((Date.now() - flightSearchStart) / 1000).toFixed(1)}s)`);
   }
 
   // ── STEP 2: Assign oncoming crew using ACTUAL transport costs ──────────────
   let assignmentResult: ReturnType<typeof assignOncomingCrew> | null = null;
 
   if (hasPool) {
+    const assignStart = Date.now();
     assignmentResult = assignOncomingCrew({
       swapAssignments,
       oncomingPool: clientOncomingPool!,
@@ -240,9 +242,11 @@ export async function POST(req: NextRequest) {
       commercialFlights,
     });
     swapAssignments = assignmentResult.assignments;
+    console.log(`[Swap Optimizer] Assignment took ${((Date.now() - assignStart) / 1000).toFixed(1)}s`);
   }
 
   // ── STEP 3: Run transport optimizer for all assigned crew ──────────────────
+  const transportStart = Date.now();
   const result = buildSwapPlan({
     flights,
     crewRoster,
@@ -252,6 +256,8 @@ export async function POST(req: NextRequest) {
     swapAssignments: Object.keys(swapAssignments).length > 0 ? swapAssignments : undefined,
     oncomingPool: clientOncomingPool,
   });
+
+  console.log(`[Swap Optimizer] Transport plan took ${((Date.now() - transportStart) / 1000).toFixed(1)}s`);
 
   return NextResponse.json({
     ok: true,
