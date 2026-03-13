@@ -411,7 +411,17 @@ export type LongTermMxAircraft = {
   endDate: string | null;
 };
 
-export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices = [], mxNotes = [], swimFlow = [] }: { flights: Flight[]; onSwitchToDuty?: (tail?: string) => void; advertisedPrices?: AdvertisedPriceRow[]; mxNotes?: MxNote[]; swimFlow?: SwimFlowEvent[] }) {
+// Lookahead hours needed per time range
+const RANGE_LOOKAHEAD: Record<TimeRange, number> = {
+  "Today": 48, "Today + Tomorrow": 48, "Tomorrow": 48, "Week": 168, "Month": 744,
+};
+
+export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, advertisedPrices = [], mxNotes = [], swimFlow = [] }: { flights: Flight[]; onSwitchToDuty?: (tail?: string) => void; advertisedPrices?: AdvertisedPriceRow[]; mxNotes?: MxNote[]; swimFlow?: SwimFlowEvent[] }) {
+  const [extendedFlights, setExtendedFlights] = useState<Flight[] | null>(null);
+  const [extendedLoading, setExtendedLoading] = useState(false);
+  const [loadedLookahead, setLoadedLookahead] = useState(48); // server sends 48h
+  const flights = extendedFlights ?? initialFlights;
+
   const [enRouteAircraft, setAircraftPosition] = useState<AircraftPosition[]>([]);
   const [faFlightsRaw, setFaFlightsRaw] = useState<FlightInfoMap[]>([]);
   const [flightInfo, setFlightInfo] = useState<Map<string, FlightInfoMap>>(new Map());
@@ -570,6 +580,26 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
     const spInterval = setInterval(fetchTripSalespersons, 300_000);
     return () => { clearInterval(interval); clearInterval(swimInterval); clearInterval(spInterval); };
   }, [fetchFlightInfo, fetchSwimStatus, fetchTripSalespersons]);
+
+  // Lazy-load extended flights when switching to Week/Month
+  useEffect(() => {
+    const needed = RANGE_LOOKAHEAD[timeRange];
+    if (needed <= loadedLookahead) return; // already have enough data
+    let cancelled = false;
+    setExtendedLoading(true);
+    fetch(`/api/ops/flights?lookahead_hours=${needed}&lookback_hours=48`, { cache: "no-store" })
+      .then((res) => res.json())
+      .then((data) => {
+        if (cancelled) return;
+        if (data.flights) {
+          setExtendedFlights(data.flights);
+          setLoadedLookahead(needed);
+        }
+      })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setExtendedLoading(false); });
+    return () => { cancelled = true; };
+  }, [timeRange, loadedLookahead]);
 
   // Get all unique flight types
   const allTypes = useMemo(() => {
@@ -1168,7 +1198,7 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                   : "bg-gray-100 text-gray-500 hover:bg-gray-200"
               }`}
             >
-              {r}
+              {r}{extendedLoading && timeRange === r && RANGE_LOOKAHEAD[r] > loadedLookahead ? "…" : ""}
             </button>
           ))}
         </div>
