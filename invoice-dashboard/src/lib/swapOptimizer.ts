@@ -1697,8 +1697,24 @@ function buildFeasibilityMatrix(params: {
     const { swapPoints } = extractSwapPoints(tail, byTail, swapDate);
     if (swapPoints.length === 0) continue;
 
-    // Both PIC and SIC try all swap points — best one wins
-    const swapPointsToTry = swapPoints;
+    // Both PIC and SIC try multiple swap points — but cap PIC at top 2 by
+    // commercial accessibility to avoid blowing function timeout on tails with 4+ points
+    let swapPointsToTry = swapPoints;
+    if (role === "PIC" && swapPoints.length > 2) {
+      // Rank by ease of commercial access (same logic as buildSwapPlan's picSwapPoint selection)
+      const scored = swapPoints.map((sp) => {
+        const commAirports = findAllCommercialAirports(sp.icao, aliases);
+        let minDrive = Infinity;
+        for (const c of commAirports) {
+          if (c.toUpperCase() === sp.icao.toUpperCase()) { minDrive = 0; break; }
+          const d = estimateDriveTime(sp.icao, c);
+          if (d) minDrive = Math.min(minDrive, d.estimated_drive_minutes);
+        }
+        return { sp, ease: -(minDrive === Infinity ? 999 : minDrive) + commAirports.length * 2 };
+      });
+      scored.sort((a, b) => b.ease - a.ease);
+      swapPointsToTry = scored.slice(0, 2).map((s) => s.sp);
+    }
     const acType = tailAircraftType.get(tail) ?? "unknown";
 
     for (const poolEntry of pool) {
