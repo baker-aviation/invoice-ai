@@ -22,7 +22,7 @@ const FLIGHT_TIME_RED_MIN = 600; // 10 hours — hard limit
 const FLIGHT_TIME_YELLOW_MIN = 540; // 9 hours — caution (within 1hr of limit)
 const REST_RED_HOURS = 10; // minimum required rest
 const REST_YELLOW_HOURS = 11; // within 1hr of minimum
-const MAX_LEG_DURATION_MIN = 12 * 60; // cap any single leg at 12h (sanity)
+const MAX_LEG_DURATION_MIN = 8 * 60; // cap any single leg at 8h (sanity — longest Baker legs are ~5h)
 const MIN_REST_GAP_MS = 8 * 60 * 60 * 1000; // 8h minimum to split duty periods
 const LEAD_TIME_MIN = 60; // duty starts 60min before first leg
 const POST_TIME_MIN = 30; // duty ends 30min after last leg
@@ -456,6 +456,11 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
       }
 
       if (durationMin < 0) durationMin = 0;
+      // ICS sometimes sets arrival to end-of-duty rather than actual landing.
+      // Cap scheduled-source legs at 6h; if still over, use a flat 3h estimate.
+      if (source === "scheduled" && durationMin > 360) {
+        durationMin = 180; // ~3h fallback for clearly bogus ICS arrival times
+      }
       if (durationMin > MAX_LEG_DURATION_MIN) durationMin = MAX_LEG_DURATION_MIN;
       endMs = depMs + durationMin * 60_000;
 
