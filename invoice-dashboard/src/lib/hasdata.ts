@@ -77,16 +77,24 @@ export async function searchFlights(params: {
     },
   });
 
+  const text = await res.text();
+
   if (!res.ok) {
-    const text = await res.text();
     console.warn(`HasData ${res.status} for ${orig}->${dest} on ${date}: ${text.slice(0, 200)}`);
-    if (res.status === 400 || res.status === 401 || res.status === 429) {
+    if (res.status === 400 || res.status === 401 || res.status === 429 || res.status === 402) {
       return { origin: orig, destination: dest, date, offers: [], count: 0 };
     }
-    throw new Error(`HasData search failed (${res.status}): ${text}`);
+    throw new Error(`HasData search failed (${res.status}): ${text.slice(0, 200)}`);
   }
 
-  const data: HdResponse = await res.json();
+  let data: HdResponse;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    console.warn(`HasData returned non-JSON for ${orig}->${dest}: ${text.slice(0, 200)}`);
+    return { origin: orig, destination: dest, date, offers: [], count: 0 };
+  }
+
   console.log(`[HasData] ${orig}->${dest} ${date}: status=${data.requestMetadata?.status} best=${(data.bestFlights ?? []).length} other=${(data.otherFlights ?? []).length}`);
 
   // Combine bestFlights + otherFlights, take up to max
