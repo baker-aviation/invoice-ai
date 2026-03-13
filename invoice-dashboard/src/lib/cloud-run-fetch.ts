@@ -17,7 +17,7 @@ let _auth: GoogleAuth | null = null;
 function getAuth(): GoogleAuth {
   if (_auth) return _auth;
 
-  const raw = process.env.GCP_SA_KEY;
+  const raw = process.env.GCP_SA_KEY ?? process.env.GCP_SERVICE_ACCOUNT_KEY;
   if (raw) {
     // Accept both raw JSON (starts with "{") and base64-encoded JSON
     const json = raw.trimStart().startsWith("{")
