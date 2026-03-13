@@ -1357,7 +1357,9 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                           } else if (status === "Scheduled" && f.tail_number && enRouteAircraft.some((p) => p.tail === f.tail_number)) {
                             status = "En Route";
                             statusColor = "text-blue-600 font-medium";
-                          } else if (arrivalPassed && !fi) {
+                          }
+                          // If scheduled arrival has passed and still Scheduled/En Route, it arrived
+                          if (arrivalPassed && (status === "Scheduled" || status === "En Route")) {
                             status = "Arrived";
                             statusColor = "text-green-600 font-medium";
                           }
@@ -1631,8 +1633,10 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                   // Aircraft has a live position on the map — it's flying
                   status = "En Route";
                   statusColor = "text-blue-600 font-medium";
-                } else if (arrivalPassed && !fi) {
-                  // No FA data, but scheduled arrival is past — assume arrived
+                }
+
+                // If scheduled arrival has passed and we're still showing Scheduled, it arrived
+                if (arrivalPassed && (status === "Scheduled" || status === "En Route")) {
                   status = "Arrived";
                   statusColor = "text-green-600 font-medium";
                 }
