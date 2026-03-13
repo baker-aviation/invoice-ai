@@ -69,6 +69,7 @@ export async function POST(req: NextRequest) {
       departure,
       destination,
       aircraftRegistration,
+      cruiseProfileUUID,
       alternate,
       route,
       altitude,
@@ -90,6 +91,7 @@ export async function POST(req: NextRequest) {
         destination,
         aircraftRegistration,
         scheduledTimeOfDeparture: new Date(Date.now() + 3600_000).toISOString(), // 1hr from now
+        ...(cruiseProfileUUID && { cruiseProfileUUID }),
         ...(alternate && { alternate }),
         ...(route && {
           routeToDestination: {

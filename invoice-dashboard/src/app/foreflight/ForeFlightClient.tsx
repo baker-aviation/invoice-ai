@@ -90,6 +90,7 @@ export default function ForeFlightClient() {
   const [departure, setDeparture] = useState("");
   const [destination, setDestination] = useState("");
   const [selectedAircraft, setSelectedAircraft] = useState("");
+  const [cruiseProfileUUID, setCruiseProfileUUID] = useState("");
   const [alternate, setAlternate] = useState("");
   const [route, setRoute] = useState("");
   const [altitude, setAltitude] = useState("");
@@ -120,6 +121,17 @@ export default function ForeFlightClient() {
       .catch((err) => setAircraftError(String(err)));
   }, []);
 
+  // Get cruise profiles for selected aircraft
+  const selectedAc = aircraft.find((a) => a.aircraftRegistration === selectedAircraft);
+  const cruiseProfiles = selectedAc?.cruiseProfiles ?? [];
+
+  // Auto-select first cruise profile when aircraft changes (prefer "Long Range" if available)
+  useEffect(() => {
+    if (cruiseProfiles.length === 0) { setCruiseProfileUUID(""); return; }
+    const lrc = cruiseProfiles.find((p) => /long.range/i.test(p.profileName));
+    setCruiseProfileUUID(lrc?.uuid ?? cruiseProfiles[0].uuid);
+  }, [selectedAircraft]);
+
   const handleSubmit = useCallback(async () => {
     if (!departure || !destination || !selectedAircraft) return;
     setLoading(true);
@@ -135,6 +147,7 @@ export default function ForeFlightClient() {
           departure: departure.toUpperCase(),
           destination: destination.toUpperCase(),
           aircraftRegistration: selectedAircraft,
+          cruiseProfileUUID: cruiseProfileUUID || undefined,
           alternate: alternate || undefined,
           route: route || undefined,
           altitude: altitude || undefined,
@@ -158,7 +171,7 @@ export default function ForeFlightClient() {
     } finally {
       setLoading(false);
     }
-  }, [departure, destination, selectedAircraft, alternate, route, altitude, people, cargo]);
+  }, [departure, destination, selectedAircraft, cruiseProfileUUID, alternate, route, altitude, people, cargo]);
 
   const perf = result?.performance;
   const fuel = perf?.fuel;
@@ -169,6 +182,9 @@ export default function ForeFlightClient() {
   const flightData = result?.flightData as Record<string, unknown> | undefined;
   const ffRoute = (flightData?.routeToDestination as Record<string, unknown> | undefined)?.route as string | undefined;
   const ffAltitude = (flightData?.routeToDestination as Record<string, unknown> | undefined)?.altitude as Record<string, unknown> | undefined;
+  const ffCruiseProfile = (perf as unknown as Record<string, unknown>)?.destinationRouteInformation
+    ? ((perf as unknown as Record<string, unknown>).destinationRouteInformation as Record<string, unknown>)?.cruiseProfile as string | undefined
+    : undefined;
 
   return (
     <div className="px-6 py-6 space-y-6">
@@ -212,6 +228,21 @@ export default function ForeFlightClient() {
               {aircraft.map((a) => (
                 <option key={a.aircraftRegistration} value={a.aircraftRegistration}>
                   {a.aircraftRegistration} ({a.aircraftModelCode})
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Cruise Profile</label>
+            <select
+              value={cruiseProfileUUID}
+              onChange={(e) => setCruiseProfileUUID(e.target.value)}
+              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+            >
+              {cruiseProfiles.length === 0 && <option value="">—</option>}
+              {cruiseProfiles.map((p) => (
+                <option key={p.uuid} value={p.uuid}>
+                  {p.profileName}
                 </option>
               ))}
             </select>
@@ -282,14 +313,17 @@ export default function ForeFlightClient() {
       {/* Results */}
       {perf && (
         <div className="space-y-4">
-          {/* Route */}
-          {ffRoute && (
+          {/* Route + Cruise Profile */}
+          {(ffRoute || ffCruiseProfile) && (
             <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-medium text-blue-600 uppercase tracking-wide">ForeFlight Route</span>
-                {ffAltitude && <span className="text-xs font-mono text-blue-500">FL{String(ffAltitude.altitude ?? "")}</span>}
+                <div className="flex items-center gap-3">
+                  {ffCruiseProfile && <span className="text-xs font-medium text-blue-500">{ffCruiseProfile}</span>}
+                  {ffAltitude && <span className="text-xs font-mono text-blue-500">FL{String(ffAltitude.altitude ?? "")}</span>}
+                </div>
               </div>
-              <p className="mt-1 font-mono text-sm text-blue-900">{ffRoute}</p>
+              {ffRoute && <p className="mt-1 font-mono text-sm text-blue-900">{ffRoute}</p>}
             </div>
           )}
           {/* Fuel Breakdown */}
