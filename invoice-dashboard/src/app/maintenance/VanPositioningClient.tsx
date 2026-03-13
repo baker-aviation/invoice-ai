@@ -1209,8 +1209,9 @@ function VanScheduleCard({
   onDragLeave: (e: React.DragEvent) => void;
   onRemove: (flightId: string) => void;  // delete aircraft from this van
 }) {
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(false);
   const [showSlackModal, setShowSlackModal] = useState(false);
+  const dragTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const now = new Date();
 
   const totalDistKm = routeDistKm(items);
@@ -1223,8 +1224,13 @@ function VanScheduleCard({
         isDropTarget ? "ring-2 ring-blue-400 border-blue-300 bg-blue-50/30" : ""
       }`}
       onDragOver={onDragOver}
-      onDrop={(e) => onDrop(e, zone.vanId)}
-      onDragLeave={onDragLeave}
+      onDragEnter={() => {
+        if (!expanded) {
+          dragTimerRef.current = setTimeout(() => setExpanded(true), 800);
+        }
+      }}
+      onDrop={(e) => { if (dragTimerRef.current) clearTimeout(dragTimerRef.current); onDrop(e, zone.vanId); }}
+      onDragLeave={(e) => { if (dragTimerRef.current) clearTimeout(dragTimerRef.current); onDragLeave(e); }}
     >
       {showSlackModal && (
         <SlackShareModal
@@ -1554,6 +1560,10 @@ function ScheduleTab({
   onHideMxForToday: (id: string) => void;
 }) {
   const hasLive = liveVanPositions.size > 0;
+  const [unassignedOpen, setUnassignedOpen] = useState(false);
+  const [unscheduledOpen, setUnscheduledOpen] = useState(false);
+  const unassignedDragTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const unscheduledDragTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Manual overrides: flightId → target vanId (moves) + removed flight IDs
   const [overrides, setOverrides] = useState<Map<string, number>>(new Map());
@@ -2052,8 +2062,20 @@ function ScheduleTab({
         const uncoveredTails = Array.from(uncoveredByTail.keys());
 
         return (
-          <div className="border-2 border-dashed border-red-200 rounded-xl bg-red-50/50 overflow-hidden">
-            <div className="px-4 py-3 flex items-center justify-between">
+          <div
+            className="border-2 border-dashed border-red-200 rounded-xl bg-red-50/50 overflow-hidden"
+            onDragOver={(e) => e.preventDefault()}
+            onDragEnter={() => {
+              if (!unassignedOpen) {
+                unassignedDragTimerRef.current = setTimeout(() => setUnassignedOpen(true), 800);
+              }
+            }}
+            onDragLeave={() => { if (unassignedDragTimerRef.current) clearTimeout(unassignedDragTimerRef.current); }}
+          >
+            <div
+              className="px-4 py-3 flex items-center justify-between cursor-pointer hover:bg-red-50"
+              onClick={() => setUnassignedOpen((v) => !v)}
+            >
               <div className="flex items-center gap-2">
                 <div className="w-6 h-6 rounded-full bg-red-100 flex items-center justify-center text-xs">
                   !
@@ -2061,14 +2083,18 @@ function ScheduleTab({
                 <div>
                   <div className="text-sm font-semibold text-red-800">
                     Unassigned Aircraft
+                    <span className="ml-1.5 text-xs font-normal text-red-600">({uncoveredTails.filter((t) => t !== "_no_tail").length})</span>
                   </div>
-                  <div className="text-xs text-red-600">
-                    {uncoveredTails.filter((t) => t !== "_no_tail").length} aircraft not covered by any van — drag into a van to assign
-                  </div>
+                  {!unassignedOpen && (
+                    <div className="text-xs text-red-600">
+                      drag into a van to assign
+                    </div>
+                  )}
                 </div>
               </div>
+              <span className="text-gray-400 text-sm">{unassignedOpen ? "▲" : "▼"}</span>
             </div>
-            <div className="border-t border-red-200 divide-y divide-red-100">
+            {unassignedOpen && <div className="border-t border-red-200 divide-y divide-red-100">
               {uncoveredTails.map((tailKey) => {
                 const items = uncoveredByTail.get(tailKey) ?? [];
                 const tail = items[0].arrFlight.tail_number;
@@ -2176,7 +2202,7 @@ function ScheduleTab({
                   </div>
                 );
               })}
-            </div>
+            </div>}
           </div>
         );
       })()}
@@ -2190,8 +2216,20 @@ function ScheduleTab({
         if (visibleUnscheduled.length === 0) return null;
 
         return (
-          <div className={`border-2 border-dashed border-amber-200 rounded-xl bg-amber-50/50 overflow-hidden ${!isAfter5pmET ? "opacity-60" : ""}`}>
-            <div className="px-4 py-3 flex items-center justify-between">
+          <div
+            className={`border-2 border-dashed border-amber-200 rounded-xl bg-amber-50/50 overflow-hidden ${!isAfter5pmET ? "opacity-60" : ""}`}
+            onDragOver={(e) => e.preventDefault()}
+            onDragEnter={() => {
+              if (!unscheduledOpen) {
+                unscheduledDragTimerRef.current = setTimeout(() => setUnscheduledOpen(true), 800);
+              }
+            }}
+            onDragLeave={() => { if (unscheduledDragTimerRef.current) clearTimeout(unscheduledDragTimerRef.current); }}
+          >
+            <div
+              className="px-4 py-3 flex items-center justify-between cursor-pointer hover:bg-amber-50"
+              onClick={() => setUnscheduledOpen((v) => !v)}
+            >
               <div className="flex items-center gap-2">
                 <div className="w-6 h-6 rounded-full bg-amber-100 flex items-center justify-center text-xs text-amber-700 font-bold">
                   ?
@@ -2201,15 +2239,18 @@ function ScheduleTab({
                     Unscheduled Aircraft
                     <span className="ml-1.5 text-xs font-normal text-amber-600">({visibleUnscheduled.length})</span>
                   </div>
-                  <div className="text-xs text-amber-600">
-                    {isAfter5pmET
-                      ? "No flights today — drag into a van to assign"
-                      : "Available after 5pm ET — drag into a van to assign early"}
-                  </div>
+                  {!unscheduledOpen && (
+                    <div className="text-xs text-amber-600">
+                      {isAfter5pmET
+                        ? "No flights today — drag into a van to assign"
+                        : "Available after 5pm ET — drag into a van to assign early"}
+                    </div>
+                  )}
                 </div>
               </div>
+              <span className="text-gray-400 text-sm">{unscheduledOpen ? "▲" : "▼"}</span>
             </div>
-            <div className="border-t border-amber-200 divide-y divide-amber-100">
+            {unscheduledOpen && <div className="border-t border-amber-200 divide-y divide-amber-100">
               {visibleUnscheduled.map((ac) => (
                 <div
                   key={ac.tail}
@@ -2256,7 +2297,7 @@ function ScheduleTab({
                   <MxNoteInline notes={mxNotesByTail.get(ac.tail) ?? []} hiddenIds={hiddenTodayMxIds} onHideForToday={onHideMxForToday} />
                 </div>
               ))}
-            </div>
+            </div>}
           </div>
         );
       })()}
