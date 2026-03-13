@@ -171,20 +171,31 @@ export async function POST(req: NextRequest) {
     let searchSuccessCount = 0;
     let searchFailCount = 0;
 
-    console.log(`[Swap Optimizer] Searching ${pairsArray.length} route pairs via HasData`);
+    // Also search day-before flights for oncoming crew (overnight travel)
+    const dayBefore = new Date(new Date(swapDate + "T12:00:00Z").getTime() - 86_400_000)
+      .toISOString().slice(0, 10);
+
+    // Build full search list: swap-day + day-before for all pairs
+    const allSearches: { pair: string; date: string }[] = [];
+    for (const pair of pairsArray) {
+      allSearches.push({ pair, date: swapDate });
+      allSearches.push({ pair, date: dayBefore });
+    }
+
+    console.log(`[Swap Optimizer] Searching ${pairsArray.length} route pairs × 2 dates (${swapDate}, ${dayBefore}) via HasData`);
 
     // Search in batches of 15 (HasData Pro: 15 concurrent requests)
-    for (let i = 0; i < pairsArray.length; i += 15) {
-      const batch = pairsArray.slice(i, i + 15);
+    for (let i = 0; i < allSearches.length; i += 15) {
+      const batch = allSearches.slice(i, i + 15);
       const results = await Promise.all(
-        batch.map(async (pair) => {
+        batch.map(async ({ pair, date }) => {
           const [orig, dest] = pair.split("-");
           try {
-            const result = await searchFlights({ origin: orig, destination: dest, date: swapDate, max: 5 });
-            return { key: `${orig}-${dest}-${swapDate}`, offers: result.offers };
+            const result = await searchFlights({ origin: orig, destination: dest, date, max: 5 });
+            return { key: `${orig}-${dest}-${date}`, offers: result.offers };
           } catch (e) {
-            console.warn(`[Swap Optimizer] Search failed ${orig}->${dest}:`, e instanceof Error ? e.message : e);
-            return { key: `${orig}-${dest}-${swapDate}`, offers: [] };
+            console.warn(`[Swap Optimizer] Search failed ${orig}->${dest} ${date}:`, e instanceof Error ? e.message : e);
+            return { key: `${orig}-${dest}-${date}`, offers: [] };
           }
         }),
       );

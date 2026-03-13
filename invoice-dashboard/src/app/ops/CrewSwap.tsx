@@ -91,6 +91,8 @@ type SwapPlanResult = {
   commercial_flights_searched: number;
   total_cost: number;
   plan_score: number;
+  solved_count?: number;
+  unsolved_count?: number;
   crew_assignment?: {
     standby: { pic: string[]; sic: string[] };
     details: { name: string; tail: string; cost: number; reason: string }[];
@@ -698,6 +700,11 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
                     : "bg-red-100 text-red-700"
                   }`}>
                     Score: {swapPlan.plan_score}
+                  </span>
+                )}
+                {(swapPlan.unsolved_count ?? 0) > 0 && (
+                  <span className="text-xs font-medium px-1.5 py-0.5 rounded bg-orange-100 text-orange-700">
+                    {swapPlan.unsolved_count} unsolved
                   </span>
                 )}
                 {swapPlan.commercial_flights_searched > 0 && (
