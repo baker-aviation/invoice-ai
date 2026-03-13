@@ -1362,11 +1362,10 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                                   {type}
                                 </span>
                                 <span className={`text-xs ${statusColor}`}>{status}</span>
-                                {isFiled && swimEntry?.event_time && (
-                                  <span className="text-[10px] text-indigo-500">IFR Filed</span>
-                                )}
-                                {isFiled && !swimEntry?.event_time && fi?.departure_time && (
-                                  <span className="text-[10px] text-indigo-500">ETD {fmt(fi.departure_time, f.departure_icao)}</span>
+                                {isFiled && (
+                                  <span className="text-[10px] text-indigo-500">
+                                    IFR Filed{swimEntry?.etd ? ` ${fmt(swimEntry.etd, f.departure_icao)}` : ""}
+                                  </span>
                                 )}
                                 {isFaSourced && (
                                   <span className="px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-blue-100 text-blue-700">FA</span>
@@ -1605,7 +1604,7 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                           <span className={`text-xs font-medium ${statusColor}`}>{status}</span>
                           {isFiled && (
                             <span className="text-[10px] text-indigo-500 font-medium">
-                              IFR Filed
+                              IFR Filed{swimEntry?.etd ? ` ${fmt(swimEntry.etd, f.departure_icao)}` : ""}
                             </span>
                           )}
                           {isFaSourced && (
