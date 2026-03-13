@@ -1,0 +1,290 @@
+/**
+ * IATA → ICAO mapping for North & South America airports
+ * where ICAO ≠ "K" + IATA (i.e. non-standard US prefix pattern).
+ * Source: OpenFlights / datasets/airport-codes (large + medium airports).
+ * US domestic airports with K-prefix are handled by the toIcao() fallback.
+ */
+const IATA_TO_ICAO: Record<string, string> = {
+  // 07
+  OCA: "07FA",
+  // Greenland
+  JEG: "BGAA", UAK: "BGBW", CNP: "BGCO", GOH: "BGGH", JAV: "BGJN", KUS: "BGKK", NAQ: "BGQQ",
+  SFJ: "BGSF", JHS: "BGSS", THU: "BGTL",
+  // Canada (small)
+  YAA: "CAJ4", XQU: "CAT4", YZA: "CAZ5",
+  // CB
+  ZEL: "CBBC",
+  // Canada
+  YAG: "CYAG", YAH: "CYAH", YAM: "CYAM", XKS: "CYAQ", YAY: "CYAY", YAZ: "CYAZ", YBC: "CYBC",
+  QBC: "CYBD", YBY: "CYBF", YBG: "CYBG", YBK: "CYBK", YBL: "CYBL", YBR: "CYBR", YBX: "CYBX",
+  YCB: "CYCB", YCC: "CYCC", YCD: "CYCD", YCE: "CYCE", YCG: "CYCG", YCH: "CYCH", YCL: "CYCL",
+  YCN: "CYCN", YCQ: "CYCQ", YDA: "CYDA", YDB: "CYDB", YDF: "CYDF", XRR: "CYDM", YDN: "CYDN",
+  YDO: "CYDO", YDQ: "CYDQ", YEG: "CYEG", YEL: "CYEL", YEM: "CYEM", YEN: "CYEN", YET: "CYET",
+  YEV: "CYEV", YEY: "CYEY", YFB: "CYFB", YFC: "CYFC", YFE: "CYFE", YTM: "CYFJ", YFR: "CYFR",
+  YFS: "CYFS", YGK: "CYGK", YGL: "CYGL", YGM: "CYGM", YGP: "CYGP", YGQ: "CYGQ", YGR: "CYGR",
+  YGV: "CYGV", YGW: "CYGW", YHD: "CYHD", YHF: "CYHF", YHM: "CYHM", YHN: "CYHN", YHT: "CYHT",
+  YHU: "CYHU", YHY: "CYHY", YHZ: "CYHZ", YIB: "CYIB", YDG: "CYID", YIF: "CYIF", YIV: "CYIV",
+  YJF: "CYJF", YJN: "CYJN", YJT: "CYJT", YKA: "CYKA", YKF: "CYKF", YKJ: "CYKJ", YKL: "CYKL",
+  YKD: "CYKM", YKX: "CYKX", YKY: "CYKY", YLD: "CYLD", YLJ: "CYLJ", YLL: "CYLL", YLR: "CYLR",
+  YLK: "CYLS", YLT: "CYLT", YLW: "CYLW", YMA: "CYMA", YME: "CYME", YMG: "CYMG", YMJ: "CYMJ",
+  YML: "CYML", YMM: "CYMM", YMO: "CYMO", YMT: "CYMT", YMX: "CYMX", YNA: "CYNA", YND: "CYND",
+  YLY: "CYNJ", YNL: "CYNL", YNM: "CYNM", YOA: "CYOA", YOD: "CYOD", YOJ: "CYOJ", YOO: "CYOO",
+  YOP: "CYOP", YOS: "CYOS", YOW: "CYOW", YPA: "CYPA", YPS: "CYPD", YPE: "CYPE", YPG: "CYPG",
+  YPL: "CYPL", YPN: "CYPN", YPQ: "CYPQ", YPR: "CYPR", YPW: "CYPW", YPX: "CYPX", YPY: "CYPY",
+  YPZ: "CYPZ", YQA: "CYQA", YQB: "CYQB", YQD: "CYQD", YQF: "CYQF", YQG: "CYQG", YQH: "CYQH",
+  YQI: "CYQI", YQK: "CYQK", YQL: "CYQL", YQM: "CYQM", YQN: "CYQN", YQQ: "CYQQ", YQR: "CYQR",
+  YQS: "CYQS", YQT: "CYQT", YQU: "CYQU", YQV: "CYQV", YQW: "CYQW", YQX: "CYQX", YQY: "CYQY",
+  YQZ: "CYQZ", YRB: "CYRB", YRI: "CYRI", YRJ: "CYRJ", YRL: "CYRL", YRO: "CYRO", YRQ: "CYRQ",
+  YRT: "CYRT", YRV: "CYRV", YSB: "CYSB", YSC: "CYSC", YSF: "CYSF", YSH: "CYSH", YSJ: "CYSJ",
+  YSL: "CYSL", YSM: "CYSM", YCM: "CYSN", YSP: "CYSP", YSU: "CYSU", YTA: "CYTA", YTF: "CYTF",
+  YTH: "CYTH", YTR: "CYTR", YTS: "CYTS", YTZ: "CYTZ", YUL: "CYUL", YUX: "CYUX", YUY: "CYUY",
+  YVB: "CYVB", YVC: "CYVC", YVE: "CYVK", YVO: "CYVO", YVP: "CYVP", YVQ: "CYVQ", YVR: "CYVR",
+  YVV: "CYVV", YWG: "CYWG", YWK: "CYWK", YWL: "CYWL", YWY: "CYWY", YXC: "CYXC", YXE: "CYXE",
+  YXH: "CYXH", YXJ: "CYXJ", YXK: "CYXK", YXL: "CYXL", YXQ: "CYXQ", YXR: "CYXR", YXS: "CYXS",
+  YXT: "CYXT", YXU: "CYXU", YXX: "CYXX", YXY: "CYXY", YXZ: "CYXZ", YYB: "CYYB", YYC: "CYYC",
+  YYD: "CYYD", YYE: "CYYE", YYF: "CYYF", YYG: "CYYG", YYJ: "CYYJ", YYL: "CYYL", YYN: "CYYN",
+  YYQ: "CYYQ", YYR: "CYYR", YYT: "CYYT", YYU: "CYYU", YYW: "CYYW", YYY: "CYYY", YYZ: "CYYZ",
+  YZE: "CYZE", YZF: "CYZF", YZH: "CYZH", YZP: "CYZP", YZR: "CYZR", YZS: "CYZS", YZT: "CYZT",
+  YZU: "CYZU", YZV: "CYZV", YZW: "CYZW", YZX: "CYZX",
+  // Canada (other)
+  YSN: "CZAM", YDT: "CZBB", ZBF: "CZBF", ZBM: "CZBM", KES: "CZEE", ZFA: "CZFA", ZGF: "CZGF",
+  ZJG: "CZJG", ZJN: "CZJN", YTD: "CZLQ", PIW: "CZMN", ZMT: "CZMT", WPC: "CZPC", ZSJ: "CZSJ",
+  ZST: "CZST", ZUC: "CZUC",
+  // UK territories
+  MPN: "EGYP",
+  // K6
+  BLD: "K61B", MFH: "K67L",
+  // KA
+  ADT: "KADH", AKC: "KAKR",
+  // KB
+  CLU: "KBAK", BKG: "KBBG", BFK: "KBKF", WMH: "KBPK", BFP: "KBVI", NHZ: "KBXM",
+  // KC
+  CLD: "KCRQ", CSN: "KCXP",
+  // KD
+  DSI: "KDTS",
+  // KE
+  LYU: "KELO",
+  // KF
+  FRD: "KFHR",
+  // KG
+  FCA: "KGPI", PNX: "KGYI",
+  // KH
+  MNZ: "KHEF", HHH: "KHXD", JFN: "KHZY",
+  // KI
+  AZA: "KIWA",
+  // KJ
+  USA: "KJQF",
+  // KL
+  LJN: "KLBX",
+  // KN
+  FWH: "KNFW", YUM: "KNYL",
+  // KO
+  OCN: "KOKB", NCO: "KOQU", ESD: "KORS", OCE: "KOXB",
+  // KP
+  PWY: "KPNA",
+  // KS
+  MQT: "KSAW", UST: "KSGJ", TSM: "KSKX", RUI: "KSRR",
+  // KT
+  TKF: "KTRK",
+  // KU
+  SCE: "KUNV", HTV: "KUTS", NPT: "KUUU",
+  // French territories
+  FSP: "LFVP",
+  // Turks & Caicos
+  GDT: "MBGT", NCA: "MBNC", PLS: "MBPV", XSC: "MBSC",
+  // Dominican Republic
+  BRX: "MDBH", CBJ: "MDCR", AZS: "MDCY", JBQ: "MDJB", LRM: "MDLR", PUJ: "MDPC", POP: "MDPP",
+  SDQ: "MDSD", STI: "MDST",
+  // Guatemala
+  CBV: "MGCB", GUA: "MGGT", PBR: "MGPB", RUV: "MGRB", RER: "MGRT", GSJ: "MGSJ", FRS: "MGTK",
+  // Honduras
+  LCE: "MHLC", SAP: "MHLM", GJA: "MHNJ", XPL: "MHPR", RTB: "MHRO", TEA: "MHTE", TGU: "MHTG",
+  TJI: "MHTJ",
+  // Jamaica
+  OCJ: "MKBS", KIN: "MKJP", MBJ: "MKJS", POT: "MKKJ", KTP: "MKTP",
+  // Mexico
+  ACA: "MMAA", NTR: "MMAN", AGU: "MMAS", HUX: "MMBT", CVJ: "MMCB", ACN: "MMCC", CME: "MMCE",
+  CUL: "MMCL", CTM: "MMCM", CEN: "MMCN", CPE: "MMCP", CJS: "MMCS", CUU: "MMCU", CVM: "MMCV",
+  CYW: "MMCY", CZM: "MMCZ", DGO: "MMDO", TPQ: "MMEP", ESE: "MMES", GDL: "MMGL", GYM: "MMGM",
+  HMO: "MMHO", CLQ: "MMIA", SLW: "MMIO", IZT: "MMIT", JAL: "MMJA", LZC: "MMLC", LMM: "MMLM",
+  BJX: "MMLO", LAP: "MMLP", LTO: "MMLT", MAM: "MMMA", MID: "MMMD", MXL: "MMML", MLM: "MMMM",
+  MTT: "MMMT", LOV: "MMMV", MEX: "MMMX", MTY: "MMMY", MZT: "MMMZ", NOG: "MMNG", NLD: "MMNL",
+  OAX: "MMOX", PAZ: "MMPA", PBC: "MMPB", PDS: "MMPG", UPN: "MMPN", PVR: "MMPR", PXM: "MMPS",
+  QRO: "MMQT", REX: "MMRX", SJD: "MMSD", CSW: "MMSL", NLU: "MMSM", SLP: "MMSP", TRC: "MMTC",
+  TGZ: "MMTG", TIJ: "MMTJ", TQO: "MMTL", TAM: "MMTM", TLC: "MMTO", TAP: "MMTP", CUN: "MMUN",
+  VSA: "MMVA", VER: "MMVR", ZCL: "MMZC", ZIH: "MMZH", ZLO: "MMZO",
+  // Nicaragua
+  BEF: "MNBL", MGA: "MNMG", PUZ: "MNPC",
+  // Panama
+  BOC: "MPBO", CTD: "MPCE", CHX: "MPCH", DAV: "MPDA", ONX: "MPEJ", PAC: "MPMG", SYP: "MPSA",
+  PTY: "MPTO",
+  // Costa Rica
+  FON: "MRAN", BAI: "MRBA", BCL: "MRBC", OTR: "MRCC", GLF: "MRGF", GPL: "MRGP", LIR: "MRLB",
+  LSL: "MRLC", LIO: "MRLM", NOB: "MRNS", SJO: "MROC", PJM: "MRPJ", PMZ: "MRPM", SYQ: "MRPV",
+  XQP: "MRQP", UPL: "MRUP",
+  // El Salvador
+  SAL: "MSLP", ILS: "MSSS",
+  // Haiti
+  CYA: "MTCA", CAP: "MTCH", JAK: "MTJA", JEE: "MTJE", PAP: "MTPP", PAX: "MTPX",
+  // Cuba
+  BCA: "MUBA", BYM: "MUBY", AVI: "MUCA", CCC: "MUCC", CFG: "MUCF", CYO: "MUCL", CMW: "MUCM",
+  SCU: "MUCU", NBW: "MUGM", GAO: "MUGT", HAV: "MUHA", HOG: "MUHG", VRO: "MUKW", MOA: "MUMO",
+  MZO: "MUMZ", GER: "MUNG", UPB: "MUPB", SNU: "MUSC", SNJ: "MUSJ", SZJ: "MUSN", TND: "MUTD",
+  VRA: "MUVR", VTU: "MUVT",
+  // Cayman Islands
+  CYB: "MWCB", LYB: "MWCL", GCM: "MWCR",
+  // Bahamas
+  MAY: "MYAB", ASD: "MYAF", TZN: "MYAK", MHH: "MYAM", SAQ: "MYAN", AXP: "MYAP", TCB: "MYAT",
+  CCZ: "MYBC", GHC: "MYBG", BIM: "MYBS", ATC: "MYCA", TBI: "MYCB", CRI: "MYCI", GGT: "MYEF",
+  ELH: "MYEH", GHB: "MYEM", NMC: "MYEN", RSD: "MYER", TYM: "MYES", FPO: "MYGF", IGA: "MYIG",
+  LGI: "MYLD", SML: "MYLS", MYG: "MYMM", NAS: "MYNN", DCT: "MYRD", ZSA: "MYSM",
+  // Belize
+  BZE: "MZBZ", PLJ: "MZPL",
+  // Alaska
+  PAQ: "PAAQ", BTI: "PABA", BET: "PABE", BIG: "PABI", BRW: "PABR", CDB: "PACD", CDV: "PACV",
+  CZF: "PACZ", DRG: "PADE", ADK: "PADK", DLG: "PADL", ADQ: "PADQ", DUT: "PADU", EDF: "PAED",
+  EHM: "PAEH", EIL: "PAEI", EMK: "PAEM", ENA: "PAEN", FAI: "PAFA", FBK: "PAFB", ABL: "PAFM",
+  GAL: "PAGA", GKN: "PAGK", GAM: "PAGM", GST: "PAGS", HCR: "PAHC", HSL: "PAHL", HNS: "PAHN",
+  HOM: "PAHO", EGX: "PAII", IAN: "PAIK", ILI: "PAIL", UTO: "PAIM", JNU: "PAJN", AKN: "PAKN",
+  AKP: "PAKP", KTN: "PAKT", KLW: "PAKW", LUR: "PALU", MCG: "PAMC", MRI: "PAMR", MYU: "PAMY",
+  ANC: "PANC", ANI: "PANI", ENN: "PANN", ANN: "PANT", ANV: "PANV", OME: "PAOM", ORT: "PAOR",
+  OTZ: "PAOT", STG: "PAPB", KPC: "PAPC", PSG: "PAPG", PTH: "PAPH", PTU: "PAPM", NUI: "PAQT",
+  ARC: "PARC", RBY: "PARY", SVA: "PASA", SCC: "PASC", SDP: "PASD", SIT: "PASI", SNP: "PASN",
+  SVW: "PASV", SXQ: "PASX", SYA: "PASY", TKA: "PATK", TLJ: "PATL", ATK: "PATQ", UNK: "PAUN",
+  VDZ: "PAVD", SWD: "PAWD", WRG: "PAWG", AIN: "PAWI", WWA: "PAWS", YAK: "PAYA",
+  // PF
+  FYU: "PFYU",
+  // Hawaii
+  HNL: "PHNL",
+  // US Pacific
+  PIZ: "PPIZ",
+  // Argentina
+  COC: "SAAC", GHU: "SAAG", PRA: "SAAP", ROS: "SAAR", SFN: "SAAV", AEP: "SABE", COR: "SACO",
+  LPG: "SADL", EPA: "SADP", EZE: "SAEZ", RDS: "SAHS", APZ: "SAHZ", MDZ: "SAME", LGS: "SAMM",
+  AFA: "SAMR", CTC: "SANC", SDE: "SANE", IRJ: "SANL", RHD: "SANR", TUC: "SANT", UAQ: "SANU",
+  RCU: "SAOC", VDR: "SAOD", VME: "SAOR", LUQ: "SAOU", CNQ: "SARC", RES: "SARE", FMA: "SARF",
+  IGR: "SARI", AOL: "SARL", MCS: "SARM", PSS: "SARP", SLA: "SASA", JUJ: "SASJ", ORA: "SASO",
+  TTG: "SAST", OYA: "SATG", RCQ: "SATR", UZU: "SATU", EHL: "SAVB", CRD: "SAVC", EQS: "SAVE",
+  LHS: "SAVH", REL: "SAVT", VDM: "SAVV", PMY: "SAVY", FTE: "SAWC", PUD: "SAWD", RGA: "SAWE",
+  RGL: "SAWG", USH: "SAWH", ULA: "SAWJ", PMQ: "SAWP", RZA: "SAWU", BHI: "SAZB", GPO: "SAZG",
+  OYO: "SAZH", SST: "SAZL", MDQ: "SAZM", NQN: "SAZN", NEC: "SAZO", PEH: "SAZP", RSA: "SAZR",
+  BRC: "SAZS", TDL: "SAZT", VLG: "SAZV", CUT: "SAZW", CPC: "SAZY",
+  // Brazil
+  CDJ: "SBAA", ARX: "SBAC", JTC: "SBAE", AQA: "SBAQ", AJU: "SBAR", AFL: "SBAT", ARU: "SBAU",
+  AAX: "SBAX", BEL: "SBBE", BGX: "SBBG", PLU: "SBBH", BFH: "SBBI", BSB: "SBBR", BAT: "SBBT",
+  BVB: "SBBV", BPG: "SBBW", BZC: "SBBZ", CAC: "SBCA", CNF: "SBCF", CGR: "SBCG", XAP: "SBCH",
+  CLN: "SBCI", CKS: "SBCJ", CCM: "SBCM", QNS: "SBCO", CAW: "SBCP", CMG: "SBCR", CWB: "SBCT",
+  CRQ: "SBCV", CXJ: "SBCX", CGB: "SBCY", CZS: "SBCZ", PPB: "SBDN", MAO: "SBEG", JCR: "SBEK",
+  IGU: "SBFI", FLN: "SBFL", FEN: "SBFN", FOR: "SBFZ", GIG: "SBGL", GJM: "SBGM", GYN: "SBGO",
+  GRU: "SBGR", GVR: "SBGV", GUJ: "SBGW", ATM: "SBHT", ITA: "SBIC", ITB: "SBIH", IOS: "SBIL",
+  IPN: "SBIP", IMP: "SBIZ", JJD: "SBJE", JDF: "SBJF", JHF: "SBJH", JPA: "SBJP", RRJ: "SBJR",
+  JOI: "SBJV", CPV: "SBKG", VCP: "SBKP", LAJ: "SBLJ", LIP: "SBLN", LDB: "SBLO", LAZ: "SBLP",
+  MAB: "SBMA", MQH: "SBMC", MEU: "SBMD", MEA: "SBME", MGF: "SBMG", MOC: "SBMK", MII: "SBML",
+  PLL: "SBMN", MCZ: "SBMO", MCP: "SBMQ", MVF: "SBMS", RTE: "SBMT", MNX: "SBMY", NVT: "SBNF",
+  GEL: "SBNM", OYK: "SBOI", POA: "SBPA", PHB: "SBPB", POO: "SBPC", PFB: "SBPF", PGZ: "SBPG",
+  PMW: "SBPJ", PET: "SBPK", PNZ: "SBPL", PNB: "SBPN", PMG: "SBPP", BPS: "SBPS", PVH: "SBPV",
+  RBR: "SBRB", ROO: "SBRD", REC: "SBRF", SDU: "SBRJ", RAO: "SBRP", SNZ: "SBSC", NAT: "SBSG",
+  SJK: "SBSJ", SLZ: "SBSL", RIA: "SBSM", STM: "SBSN", CGH: "SBSP", SJP: "SBSR", SSZ: "SBST",
+  SSA: "SBSV", TMT: "SBTB", THE: "SBTE", TFF: "SBTF", TRQ: "SBTK", TEC: "SBTL", TBT: "SBTT",
+  TUR: "SBTU", SJL: "SBUA", PAV: "SBUF", URG: "SBUG", UDI: "SBUL", UBA: "SBUR", VDC: "SBVC",
+  VAG: "SBVG", BVH: "SBVH", VIX: "SBVT", QPS: "SBYS", IZA: "SBZM",
+  // Chile
+  ARI: "SCAR", CPO: "SCAT", BBA: "SCBA", TOQ: "SCBE", CCH: "SCCC", CJC: "SCCF", YAI: "SCCH",
+  PUQ: "SCCI", GXQ: "SCCY", IQQ: "SCDA", SCL: "SCEL", ESR: "SCES", ANF: "SCFA", WPR: "SCFM",
+  WPU: "SCGZ", LGR: "SCHR", CCP: "SCIE", IPC: "SCIP", ZOS: "SCJO", VLR: "SCLL", PNT: "SCNT",
+  ZCO: "SCQP", CNR: "SCRA", LSC: "SCSE", PZS: "SCTC", PMC: "SCTE", TLX: "SCTL", WCH: "SCTN",
+  ZIC: "SCTO", TTC: "SCTT", ZAL: "SCVD", KNA: "SCVM",
+  // Brazil (other)
+  FEC: "SDIY",
+  // Ecuador
+  ATF: "SEAM", OCC: "SECO", CUE: "SECU", GPS: "SEGS", GYE: "SEGU", TNW: "SEJD", LTX: "SELT",
+  MRR: "SEMA", XMS: "SEMC", MEC: "SEMT", PVO: "SEPV", UIO: "SEQM", ETR: "SERO", SNC: "SESA",
+  ESM: "SETN", TPC: "SETR", TUA: "SETU",
+  // Paraguay
+  ASU: "SGAS", AYO: "SGAY", CIO: "SGCO", ENO: "SGEN", AGT: "SGES", ESG: "SGME", PIL: "SGPI",
+  PJC: "SGPJ",
+  // Colombia
+  API: "SKAP", AXM: "SKAR", PUU: "SKAS", ELB: "SKBC", BGA: "SKBG", BOG: "SKBO", BAQ: "SKBQ",
+  BSC: "SKBS", BUN: "SKBU", CUC: "SKCC", CTG: "SKCG", CLO: "SKCL", TCO: "SKCO", CAQ: "SKCU",
+  CVE: "SKCV", CZU: "SKCZ", EBG: "SKEB", EJA: "SKEJ", FLA: "SKFL", GIR: "SKGI", CRC: "SKGO",
+  GPI: "SKGP", IBE: "SKIB", IPI: "SKIP", APO: "SKLC", MCJ: "SKLM", LET: "SKLT", EOH: "SKMD",
+  MGN: "SKMG", MTR: "SKMR", MVP: "SKMU", MZL: "SKMZ", NVA: "SKNV", OCV: "SKOC", PCR: "SKPC",
+  PDA: "SKPD", PEI: "SKPE", PTX: "SKPI", PPN: "SKPP", PAL: "SKPQ", PSO: "SKPS", PVA: "SKPV",
+  PZA: "SKPZ", MQU: "SKQU", MDE: "SKRG", RCH: "SKRH", SJE: "SKSJ", SMR: "SKSM", ADZ: "SKSP",
+  SVI: "SKSV", TME: "SKTM", TQS: "SKTQ", AUC: "SKUC", UIB: "SKUI", ULQ: "SKUL", VUP: "SKVP",
+  VVC: "SKVV", EYP: "SKYP",
+  // Bolivia
+  SRE: "SLAL", BJO: "SLBJ", CBB: "SLCB", CIJ: "SLCO", SRZ: "SLET", GYA: "SLGM", LPB: "SLLP",
+  ORU: "SLOR", POI: "SLPO", PSZ: "SLPS", RIB: "SLRI", SBL: "SLSA", TJA: "SLTJ", TDD: "SLTR",
+  VLM: "SLVM", VVI: "SLVR", BYC: "SLYA",
+  // Suriname
+  PBM: "SMJP",
+  // Brazil (other)
+  JSO: "SN6L", EEA: "SNCP", LHN: "SNLN",
+  // French Guiana
+  CAY: "SOCA", MPY: "SOOA", OYP: "SOOG", LDX: "SOOM",
+  // Peru
+  AYX: "SPAY", IBP: "SPBR", PCL: "SPCL", CHM: "SPEO", CIX: "SPHI", AYP: "SPHO", ATA: "SPHZ",
+  RIJ: "SPJA", LIM: "SPJC", JAE: "SPJE", JJI: "SPJI", JAU: "SPJJ", JUL: "SPJL", CJA: "SPJR",
+  ILQ: "SPLO", TBP: "SPME", YMS: "SPMS", HUU: "SPNC", CHH: "SPPY", IQT: "SPQT", AQP: "SPQU",
+  TRU: "SPRU", PIO: "SPSO", TPP: "SPST", TCQ: "SPTN", PEM: "SPTU", PIU: "SPUR", TYL: "SPYL",
+  NZC: "SPZA", CUZ: "SPZO",
+  // Uruguay
+  DZO: "SUDU", PDP: "SULS", MVD: "SUMU", PDU: "SUPU", RVY: "SURV", STY: "SUSO",
+  // Venezuela
+  AGV: "SVAC", AAO: "SVAN", BLA: "SVBC", BNS: "SVBI", BRM: "SVBM", MYC: "SVBS", CBL: "SVCB",
+  CXA: "SVCD", CLZ: "SVCL", CAJ: "SVCN", CUP: "SVCP", CZE: "SVCR", CUM: "SVCU", EOR: "SVED",
+  EOZ: "SVEZ", GDO: "SVGD", GUI: "SVGI", GUQ: "SVGU", LSP: "SVJC", LFR: "SVLF", MAR: "SVMC",
+  MRD: "SVMD", PMV: "SVMG", CCS: "SVMI", MUN: "SVMT", PYH: "SVPA", PBL: "SVPC", SCI: "SVPM",
+  PZO: "SVPR", PTM: "SVPT", SVZ: "SVSA", SNV: "SVSE", STD: "SVSO", SNF: "SVSP", SFD: "SVSR",
+  SOM: "SVST", STB: "SVSZ", TUV: "SVTC", TMO: "SVTM", VLN: "SVVA", VIG: "SVVG", VLV: "SVVL",
+  VDP: "SVVP",
+  // Brazil (other)
+  AUX: "SWGN",
+  // Guyana
+  GEO: "SYCJ", OGL: "SYEC", KAI: "SYKA", LTM: "SYLT",
+  // Antigua
+  ANU: "TAPA", BBQ: "TAPB",
+  // Barbados
+  BGI: "TBPB",
+  // Dominica
+  DCF: "TDCF", DOM: "TDPD",
+  // French Antilles
+  FDF: "TFFF", SFG: "TFFG", SBH: "TFFJ", GBJ: "TFFM", PTP: "TFFR",
+  // Grenada
+  GND: "TGPY",
+  // US Virgin Islands
+  STT: "TIST", STX: "TISX",
+  // Puerto Rico
+  ARE: "TJAB", BQN: "TJBQ", CPX: "TJCP", SIG: "TJIG", MAZ: "TJMZ", PSE: "TJPS", NRR: "TJRV",
+  SJU: "TJSJ", VQS: "TJVQ",
+  // St Kitts/Nevis
+  SKB: "TKPK", NEV: "TKPN",
+  // St Lucia
+  SLU: "TLPC", UVF: "TLPL",
+  // Dutch Caribbean
+  AUA: "TNCA", BON: "TNCB", CUR: "TNCC", EUX: "TNCE", SXM: "TNCM", SAB: "TNCS",
+  // Anguilla
+  AXA: "TQPF",
+  // Montserrat
+  MNI: "TRPG",
+  // Trinidad & Tobago
+  TAB: "TTCP", POS: "TTPP",
+  // British Virgin Islands
+  EIS: "TUPJ", VIJ: "TUPW",
+  // St Vincent
+  SVD: "TVSA", BQU: "TVSB", CIW: "TVSC", MQS: "TVSM", UNI: "TVSU",
+  // Bermuda
+  BDA: "TXKF",
+};
+
+/** Convert a ForeFlight/IATA airport code to ICAO. US airports get "K" prefix. */
+export function toIcao(code: string | null | undefined): string | null {
+  if (!code) return null;
+  const upper = code.toUpperCase().trim();
+  if (upper.length === 4) return upper; // Already ICAO
+  if (IATA_TO_ICAO[upper]) return IATA_TO_ICAO[upper];
+  // US domestic: 3-letter IATA → "K" + IATA
+  if (upper.length === 3 && /^[A-Z]{3}$/.test(upper)) return `K${upper}`;
+  return upper;
+}

@@ -1,56 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, isAuthed } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
+import { toIcao } from "@/lib/iataToIcao";
 
 export const dynamic = "force-dynamic";
-
-// ── IATA → ICAO conversion ──
-// ForeFlight returns IATA codes (SJU, TEB) but JetInsight uses ICAO (KSJU, KTEB).
-const IATA_TO_ICAO: Record<string, string> = {
-  // Puerto Rico / USVI
-  SJU: "TJSJ", STT: "TIST", STX: "TISX", BQN: "TJBQ", PSE: "TJPS",
-  // Bahamas
-  NAS: "MYNN", FPO: "MYGF", GGT: "MYEG", ELH: "MYEH", MHH: "MYAM",
-  // Dutch Caribbean
-  AUA: "TNCA", CUR: "TNCC", SXM: "TNCM", BON: "TNCB",
-  // Dominican Republic
-  PUJ: "MDPC", SDQ: "MDSD", STI: "MDST", LRM: "MDLR",
-  // Jamaica
-  MBJ: "MKJS", KIN: "MKJP",
-  // Cayman Islands
-  GCM: "MWCR", CIW: "MWCB",
-  // Turks & Caicos
-  PLS: "MBPV", NCA: "MBNC",
-  // Bermuda
-  BDA: "TXKF",
-  // Antigua
-  ANU: "TAPA",
-  // Cuba
-  HAV: "MUHA", VRA: "MUVR",
-  // Mexico
-  CUN: "MMUN", MEX: "MMMX", SJD: "MMSD", GDL: "MMGL", PVR: "MMPR",
-  MTY: "MMMY", MID: "MMMD",
-  // Central America
-  PTY: "MPTO", LIR: "MRLB", SJO: "MROC",
-  TGU: "MHTG", GUA: "MGGT", SAL: "MSLP", MGA: "MNMG",
-  // Canada
-  YYZ: "CYYZ", YUL: "CYUL", YVR: "CYVR", YOW: "CYOW", YHZ: "CYHZ",
-  YYC: "CYYC", YEG: "CYEG", YWG: "CYWG",
-  // Europe
-  LHR: "EGLL", CDG: "LFPG", FRA: "EDDF", AMS: "EHAM", ZRH: "LSZH",
-  FCO: "LIRF", BCN: "LEBL", MAD: "LEMD",
-};
-
-/** Convert a ForeFlight airport code to ICAO. US airports get "K" prefix. */
-function toIcao(code: string | null | undefined): string | null {
-  if (!code) return null;
-  const upper = code.toUpperCase().trim();
-  if (upper.length === 4) return upper; // Already ICAO
-  if (IATA_TO_ICAO[upper]) return IATA_TO_ICAO[upper];
-  // US domestic: 3-letter IATA → "K" + IATA
-  if (upper.length === 3 && /^[A-Z]{3}$/.test(upper)) return `K${upper}`;
-  return upper;
-}
 
 // ── ForeFlight API types ──
 
