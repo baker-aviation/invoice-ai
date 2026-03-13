@@ -102,17 +102,22 @@ export default function ForeFlightClient() {
   const [showRaw, setShowRaw] = useState(false);
 
   // Load aircraft list
+  const [aircraftError, setAircraftError] = useState<string | null>(null);
   useEffect(() => {
     fetch("/api/foreflight?action=aircraft")
       .then((r) => r.json())
       .then((data) => {
+        if (data.error) {
+          setAircraftError(data.error);
+          return;
+        }
         const list = Array.isArray(data) ? data : data.aircraft ?? [];
         setAircraft(list);
         if (list.length > 0 && !selectedAircraft) {
           setSelectedAircraft(list[0].aircraftRegistration);
         }
       })
-      .catch(() => {});
+      .catch((err) => setAircraftError(String(err)));
   }, []);
 
   const handleSubmit = useCallback(async () => {
@@ -167,6 +172,11 @@ export default function ForeFlightClient() {
 
   return (
     <div className="px-6 py-6 space-y-6">
+      {aircraftError && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+          <strong>ForeFlight API:</strong> {aircraftError}
+        </div>
+      )}
       {/* Input Form */}
       <div className="rounded-lg border border-gray-200 bg-white p-6">
         <h2 className="text-lg font-semibold text-gray-900 mb-4">Fuel Burn Calculator</h2>

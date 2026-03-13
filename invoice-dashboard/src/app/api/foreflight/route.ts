@@ -24,7 +24,10 @@ export async function GET(req: NextRequest) {
       const res = await fetch(`${FF_BASE}/aircraft`, {
         headers: { "x-api-key": apiKey() },
       });
-      if (!res.ok) return NextResponse.json({ error: `ForeFlight ${res.status}` }, { status: res.status });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        return NextResponse.json({ error: `ForeFlight ${res.status}: ${text}` }, { status: res.status });
+      }
       const data = await res.json();
       return NextResponse.json(data);
     }
@@ -35,7 +38,10 @@ export async function GET(req: NextRequest) {
       const res = await fetch(`${FF_BASE}/Flights/${encodeURIComponent(flightId)}`, {
         headers: { "x-api-key": apiKey() },
       });
-      if (!res.ok) return NextResponse.json({ error: `ForeFlight ${res.status}` }, { status: res.status });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        return NextResponse.json({ error: `ForeFlight ${res.status}: ${text}` }, { status: res.status });
+      }
       const data = await res.json();
       return NextResponse.json(data);
     }
