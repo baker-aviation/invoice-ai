@@ -1697,12 +1697,15 @@ function buildFeasibilityMatrix(params: {
     const { swapPoints } = extractSwapPoints(tail, byTail, swapDate);
     if (swapPoints.length === 0) continue;
 
-    // Both PIC and SIC try multiple swap points — but cap PIC at top 2 by
-    // commercial accessibility to avoid blowing function timeout on tails with 4+ points
+    // SIC tries all swap points (can swap at intermediate airports).
+    // PIC tries only the BEST swap point by commercial accessibility — keeps
+    // matrix perf identical to pre-overhaul while picking the smartest point
+    // (buildSwapPlan re-evaluates all swap points for PIC after assignment anyway).
     let swapPointsToTry = swapPoints;
-    if (role === "PIC" && swapPoints.length > 2) {
-      // Rank by ease of commercial access (same logic as buildSwapPlan's picSwapPoint selection)
-      const scored = swapPoints.map((sp) => {
+    if (role === "PIC" && swapPoints.length > 1) {
+      let bestSp = swapPoints[0];
+      let bestEase = -Infinity;
+      for (const sp of swapPoints) {
         const commAirports = findAllCommercialAirports(sp.icao, aliases);
         let minDrive = Infinity;
         for (const c of commAirports) {
@@ -1710,10 +1713,10 @@ function buildFeasibilityMatrix(params: {
           const d = estimateDriveTime(sp.icao, c);
           if (d) minDrive = Math.min(minDrive, d.estimated_drive_minutes);
         }
-        return { sp, ease: -(minDrive === Infinity ? 999 : minDrive) + commAirports.length * 2 };
-      });
-      scored.sort((a, b) => b.ease - a.ease);
-      swapPointsToTry = scored.slice(0, 2).map((s) => s.sp);
+        const ease = -(minDrive === Infinity ? 999 : minDrive) + commAirports.length * 2;
+        if (ease > bestEase) { bestEase = ease; bestSp = sp; }
+      }
+      swapPointsToTry = [bestSp];
     }
     const acType = tailAircraftType.get(tail) ?? "unknown";
 
