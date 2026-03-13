@@ -161,6 +161,9 @@ export default function ForeFlightClient() {
   const weights = perf?.weights;
   const weather = perf?.weather;
   const distances = perf?.distances;
+  const flightData = result?.flightData as Record<string, unknown> | undefined;
+  const ffRoute = (flightData?.routeToDestination as Record<string, unknown> | undefined)?.route as string | undefined;
+  const ffAltitude = (flightData?.routeToDestination as Record<string, unknown> | undefined)?.altitude as Record<string, unknown> | undefined;
 
   return (
     <div className="px-6 py-6 space-y-6">
@@ -269,6 +272,16 @@ export default function ForeFlightClient() {
       {/* Results */}
       {perf && (
         <div className="space-y-4">
+          {/* Route */}
+          {ffRoute && (
+            <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium text-blue-600 uppercase tracking-wide">ForeFlight Route</span>
+                {ffAltitude && <span className="text-xs font-mono text-blue-500">FL{String(ffAltitude.altitude ?? "")}</span>}
+              </div>
+              <p className="mt-1 font-mono text-sm text-blue-900">{ffRoute}</p>
+            </div>
+          )}
           {/* Fuel Breakdown */}
           <div className="rounded-lg border border-gray-200 bg-white p-6">
             <h3 className="text-md font-semibold text-gray-900 mb-3">Fuel Breakdown ({fuel?.unit})</h3>
