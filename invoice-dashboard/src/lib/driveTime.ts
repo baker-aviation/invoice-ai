@@ -23,6 +23,7 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   KTPA: [27.9755, -82.5332],   // Tampa
   KMCO: [28.4294, -81.3090],   // Orlando
   KJAX: [30.4941, -81.6879],   // Jacksonville
+  KGNV: [29.6900, -82.2718],   // Gainesville (FL)
   KFXE: [26.1973, -80.1707],   // Fort Lauderdale Executive
 
   // Northeast
@@ -69,6 +70,7 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   KDEN: [39.8561, -104.6737],  // Denver
   KAPA: [39.5701, -104.8493],  // Centennial (FBO)
   KLAS: [36.0840, -115.1537],  // Las Vegas
+  KRNO: [39.4991, -119.7681],  // Reno-Tahoe
   KPHX: [33.4373, -112.0078],  // Phoenix
   KSDL: [33.6229, -111.9105],  // Scottsdale (FBO)
   KPSP: [33.8297, -116.5067],  // Palm Springs

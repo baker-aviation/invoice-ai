@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { toPng } from "html-to-image";
+import * as XLSX from "xlsx";
 import type { Flight } from "@/lib/opsApi";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -248,7 +249,12 @@ function SwapSheetRow({ row }: { row: CrewSwapRow }) {
   );
 }
 
-function SwapSheet({ rows }: { rows: CrewSwapRow[] }) {
+function SwapSheet({ rows, view }: { rows: CrewSwapRow[]; view: "role" | "aircraft" }) {
+  if (view === "aircraft") return <SwapSheetByTail rows={rows} />;
+  return <SwapSheetByRole rows={rows} />;
+}
+
+function SwapSheetByRole({ rows }: { rows: CrewSwapRow[] }) {
   const oncomingPics = rows.filter((r) => r.direction === "oncoming" && r.role === "PIC");
   const oncomingSics = rows.filter((r) => r.direction === "oncoming" && r.role === "SIC");
   const offgoingPics = rows.filter((r) => r.direction === "offgoing" && r.role === "PIC");
@@ -282,22 +288,163 @@ function SwapSheet({ rows }: { rows: CrewSwapRow[] }) {
           {columnHeaders}
         </thead>
         <tbody>
-          {/* ONCOMING PILOTS */}
           <SectionHeader title="Oncoming Pilots — Pilot In-Command" count={oncomingPics.length} color="bg-green-50 text-green-700 border-t-2 border-green-300" />
           {oncomingPics.map((r, i) => <SwapSheetRow key={`op-${i}`} row={r} />)}
-
           <SectionHeader title="Oncoming Pilots — Second In-Command" count={oncomingSics.length} color="bg-green-50 text-green-600" />
           {oncomingSics.map((r, i) => <SwapSheetRow key={`os-${i}`} row={r} />)}
-
-          {/* OFFGOING PILOTS */}
           <SectionHeader title="Offgoing Pilots — Pilot In-Command" count={offgoingPics.length} color="bg-red-50 text-red-700 border-t-2 border-red-300" />
           {offgoingPics.map((r, i) => <SwapSheetRow key={`fp-${i}`} row={r} />)}
-
           <SectionHeader title="Offgoing Pilots — Second In-Command" count={offgoingSics.length} color="bg-red-50 text-red-600" />
           {offgoingSics.map((r, i) => <SwapSheetRow key={`fs-${i}`} row={r} />)}
         </tbody>
       </table>
+      {rows.length === 0 && (
+        <div className="px-4 py-6 text-center text-sm text-gray-400">
+          No swap assignments found. Upload the swap Excel document first.
+        </div>
+      )}
+    </div>
+  );
+}
 
+function SwapSheetByTail({ rows }: { rows: CrewSwapRow[] }) {
+  // Group by tail number
+  const byTail = new Map<string, CrewSwapRow[]>();
+  for (const r of rows) {
+    if (!byTail.has(r.tail_number)) byTail.set(r.tail_number, []);
+    byTail.get(r.tail_number)!.push(r);
+  }
+  const tails = Array.from(byTail.entries()).sort(([a], [b]) => a.localeCompare(b));
+
+  return (
+    <div className="space-y-3 p-3">
+      {tails.map(([tail, tailRows]) => {
+        const onPic = tailRows.find((r) => r.direction === "oncoming" && r.role === "PIC");
+        const onSic = tailRows.find((r) => r.direction === "oncoming" && r.role === "SIC");
+        const offPic = tailRows.find((r) => r.direction === "offgoing" && r.role === "PIC");
+        const offSic = tailRows.find((r) => r.direction === "offgoing" && r.role === "SIC");
+        const ac = AIRCRAFT_COLORS[onPic?.aircraft_type ?? onSic?.aircraft_type ?? offPic?.aircraft_type ?? ""];
+        const tailCost = tailRows.reduce((s, r) => s + (r.cost_estimate ?? 0), 0);
+        const swapLoc = onPic?.swap_location ?? onSic?.swap_location ?? offPic?.swap_location ?? "?";
+        const allWarnings = tailRows.flatMap((r) => r.warnings);
+
+        // Timing analysis: check aircraft never unattended
+        const latestOnArrival = [onPic, onSic]
+          .filter((r) => r?.available_time)
+          .map((r) => new Date(r!.available_time!).getTime())
+          .sort((a, b) => b - a)[0] ?? null;
+        const earliestOffDep = [offPic, offSic]
+          .filter((r) => r?.departure_time)
+          .map((r) => new Date(r!.departure_time!).getTime())
+          .sort((a, b) => a - b)[0] ?? null;
+        const hasGap = latestOnArrival && earliestOffDep && earliestOffDep >= latestOnArrival;
+        const gapMinutes = latestOnArrival && earliestOffDep
+          ? Math.round((earliestOffDep - latestOnArrival) / 60_000)
+          : null;
+
+        function CrewSlot({ label, color, row }: { label: string; color: string; row: CrewSwapRow | undefined }) {
+          if (!row) return (
+            <div className="flex items-center gap-2 py-1.5 px-3 rounded bg-gray-50">
+              <span className={`text-[10px] font-bold uppercase ${color} w-14`}>{label}</span>
+              <span className="text-xs text-gray-400">— not assigned —</span>
+            </div>
+          );
+          return (
+            <div className="flex items-center gap-2 py-1.5 px-3 rounded bg-gray-50/50">
+              <span className={`text-[10px] font-bold uppercase ${color} w-14 shrink-0`}>{label}</span>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-sm font-medium text-gray-900 truncate">{row.name}</span>
+                  <span className="text-[10px] text-gray-400">({row.home_airports.join("/")})</span>
+                  {row.is_checkairman && <span className="text-[9px] px-1 py-0.5 rounded bg-amber-100 text-amber-700">CA</span>}
+                  {row.is_skillbridge && <span className="text-[9px] px-1 py-0.5 rounded bg-teal-100 text-teal-700">SB</span>}
+                </div>
+                <div className="flex items-center gap-3 mt-0.5">
+                  {row.travel_type === "commercial" && row.flight_number ? (
+                    <span className="font-mono text-[11px] text-blue-700 font-medium">{row.flight_number}</span>
+                  ) : row.travel_type === "uber" ? (
+                    <span className="font-mono text-[11px] text-violet-700 font-medium">UBER</span>
+                  ) : row.travel_type === "rental_car" ? (
+                    <span className="font-mono text-[11px] text-orange-700 font-medium">RENTAL</span>
+                  ) : row.travel_type === "drive" ? (
+                    <span className="font-mono text-[11px] text-amber-700 font-medium">DRIVE</span>
+                  ) : (
+                    <span className="text-[11px] text-red-500 font-medium">NO TRANSPORT</span>
+                  )}
+                  {row.departure_time && (
+                    <span className="text-[11px] text-gray-500">dep {fmtShortTime(row.departure_time)}</span>
+                  )}
+                  {(row.available_time ?? row.arrival_time) && (
+                    <span className="text-[11px] text-gray-500">
+                      {row.direction === "oncoming" ? "avail" : "arr"} {fmtShortTime(row.available_time ?? row.arrival_time)}
+                    </span>
+                  )}
+                  {row.cost_estimate != null && (
+                    <span className="text-[11px] text-gray-400">${row.cost_estimate}</span>
+                  )}
+                  {row.backup_flight && (
+                    <span className="text-[10px] text-blue-400">backup: {row.backup_flight}</span>
+                  )}
+                </div>
+              </div>
+              {row.warnings.length > 0 && (
+                <span className="text-amber-500 text-[10px] shrink-0" title={row.warnings.join("\n")}>
+                  {row.warnings.length} warn
+                </span>
+              )}
+            </div>
+          );
+        }
+
+        return (
+          <div key={tail} className="rounded-lg border bg-white overflow-hidden">
+            {/* Tail header */}
+            <div className="px-4 py-2 bg-gray-50 border-b flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="font-mono font-bold text-gray-900">{tail}</span>
+                {ac && <span className={`text-[10px] px-1.5 py-0.5 rounded ${ac.bg} ${ac.text}`}>{ac.label}</span>}
+                <span className="font-mono text-xs text-gray-500">@ {swapLoc}</span>
+              </div>
+              <div className="flex items-center gap-3">
+                {gapMinutes !== null && (
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                    hasGap ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"
+                  }`}>
+                    {hasGap ? `${gapMinutes}min overlap` : `${Math.abs(gapMinutes)}min gap — unattended`}
+                  </span>
+                )}
+                {tailCost > 0 && (
+                  <span className="text-xs text-gray-500">${tailCost.toLocaleString()}</span>
+                )}
+              </div>
+            </div>
+
+            {/* Crew grid: oncoming on left, offgoing on right */}
+            <div className="grid grid-cols-2 divide-x">
+              <div className="p-2 space-y-1">
+                <div className="text-[10px] font-bold uppercase text-green-600 px-3 pb-1">Oncoming</div>
+                <CrewSlot label="PIC" color="text-green-700" row={onPic} />
+                <CrewSlot label="SIC" color="text-green-600" row={onSic} />
+              </div>
+              <div className="p-2 space-y-1">
+                <div className="text-[10px] font-bold uppercase text-red-600 px-3 pb-1">Offgoing</div>
+                <CrewSlot label="PIC" color="text-red-700" row={offPic} />
+                <CrewSlot label="SIC" color="text-red-600" row={offSic} />
+              </div>
+            </div>
+
+            {/* Tail-level warnings */}
+            {allWarnings.length > 0 && (
+              <div className="px-4 py-1.5 bg-amber-50 border-t text-[10px] text-amber-700 space-y-0.5">
+                {[...new Set(allWarnings)].slice(0, 3).map((w, i) => (
+                  <div key={i}>{w}</div>
+                ))}
+                {allWarnings.length > 3 && <div>+{allWarnings.length - 3} more</div>}
+              </div>
+            )}
+          </div>
+        );
+      })}
       {rows.length === 0 && (
         <div className="px-4 py-6 text-center text-sm text-gray-400">
           No swap assignments found. Upload the swap Excel document first.
@@ -323,6 +470,7 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
   const [showSchedule, setShowSchedule] = useState(false);
   const swapPlanRef = useRef<HTMLDivElement>(null);
   const [exporting, setExporting] = useState(false);
+  const [swapView, setSwapView] = useState<"role" | "aircraft">("aircraft");
 
   async function exportToImage() {
     if (!swapPlanRef.current) return;
@@ -342,6 +490,112 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
     } finally {
       setExporting(false);
     }
+  }
+
+  function exportToExcel() {
+    if (!swapPlan) return;
+    const rows = swapPlan.rows;
+    const oncomingPics = rows.filter((r) => r.direction === "oncoming" && r.role === "PIC");
+    const oncomingSics = rows.filter((r) => r.direction === "oncoming" && r.role === "SIC");
+    const offgoingPics = rows.filter((r) => r.direction === "offgoing" && r.role === "PIC");
+    const offgoingSics = rows.filter((r) => r.direction === "offgoing" && r.role === "SIC");
+
+    const AIRCRAFT_EMOJI: Record<string, string> = {
+      citation_x: "\u{1F7E2}", // green circle
+      challenger: "\u{1F7E1}", // yellow circle
+      dual: "\u{1F7E3}",       // purple circle
+    };
+
+    function crewCell(r: CrewSwapRow): string {
+      const emoji = AIRCRAFT_EMOJI[r.aircraft_type] ?? "";
+      const home = r.home_airports.length > 0 ? ` (${r.home_airports.join("/")})` : "";
+      const ca = r.is_checkairman ? " \u2714" : "";
+      return `${emoji} ${r.name}${home}${ca}`.trim();
+    }
+
+    function fmtLocal(iso: string | null): string {
+      if (!iso) return "";
+      return new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", timeZoneName: "short" });
+    }
+
+    function travelLabel(r: CrewSwapRow): string {
+      if (r.travel_type === "commercial" && r.flight_number) return r.flight_number;
+      if (r.travel_type === "uber") return "UBER";
+      if (r.travel_type === "rental_car") return "RENTAL";
+      if (r.travel_type === "drive") return "DRIVE";
+      return "";
+    }
+
+    // Header row matches the import format columns + optimizer result columns
+    const HEADER = [
+      "SB", "Vol", "Name (Home Base)", "", "Tail", "",
+      "Swap Location", "Transport", "Dep Time", "Avail/Arr Time",
+      "Cost", "Backup", "Notes/Warnings",
+    ];
+
+    function dataRow(r: CrewSwapRow): (string | number | null)[] {
+      return [
+        r.is_skillbridge ? "TRUE" : "",
+        "", // volunteer flag not stored on result rows
+        crewCell(r),
+        "",
+        r.tail_number,
+        "",
+        r.swap_location ?? "",
+        travelLabel(r),
+        fmtLocal(r.departure_time),
+        fmtLocal(r.available_time ?? r.arrival_time),
+        r.cost_estimate != null ? `$${r.cost_estimate}` : "",
+        r.backup_flight ?? "",
+        [...r.warnings, r.notes ?? ""].filter(Boolean).join("; "),
+      ];
+    }
+
+    const sheetData: (string | number | null)[][] = [];
+
+    // ONCOMING PILOTS
+    sheetData.push(["", "", "ONCOMING PILOTS", "", "", "", "", "", "", "", "", "", ""]);
+    sheetData.push(["", "", "PILOT IN-COMMAND", "", "", "", "", "", "", "", "", "", ""]);
+    sheetData.push(HEADER);
+    for (const r of oncomingPics) sheetData.push(dataRow(r));
+    sheetData.push([]);
+    sheetData.push(["", "", "SECOND IN-COMMAND", "", "", "", "", "", "", "", "", "", ""]);
+    sheetData.push(HEADER);
+    for (const r of oncomingSics) sheetData.push(dataRow(r));
+    sheetData.push([]);
+
+    // OFFGOING PILOTS
+    sheetData.push(["", "", "OFFGOING PILOTS", "", "", "", "", "", "", "", "", "", ""]);
+    sheetData.push(["", "", "PILOT IN-COMMAND", "", "", "", "", "", "", "", "", "", ""]);
+    sheetData.push(HEADER);
+    for (const r of offgoingPics) sheetData.push(dataRow(r));
+    sheetData.push([]);
+    sheetData.push(["", "", "SECOND IN-COMMAND", "", "", "", "", "", "", "", "", "", ""]);
+    sheetData.push(HEADER);
+    for (const r of offgoingSics) sheetData.push(dataRow(r));
+
+    // Summary row
+    sheetData.push([]);
+    sheetData.push(["", "", `Total Est. Cost: $${swapPlan.total_cost.toLocaleString()}`, "", "", "",
+      `Score: ${swapPlan.plan_score}`, `Solved: ${swapPlan.solved_count ?? 0}`,
+      `Unsolved: ${swapPlan.unsolved_count ?? 0}`, "", "", "", ""]);
+    if (swapPlan.warnings.length > 0) {
+      sheetData.push(["", "", "WARNINGS:", "", "", "", "", "", "", "", "", "", ""]);
+      for (const w of swapPlan.warnings) {
+        sheetData.push(["", "", w, "", "", "", "", "", "", "", "", "", ""]);
+      }
+    }
+
+    const ws = XLSX.utils.aoa_to_sheet(sheetData);
+    // Set column widths
+    ws["!cols"] = [
+      { wch: 5 }, { wch: 4 }, { wch: 30 }, { wch: 3 }, { wch: 10 }, { wch: 3 },
+      { wch: 12 }, { wch: 18 }, { wch: 14 }, { wch: 14 },
+      { wch: 8 }, { wch: 14 }, { wch: 40 },
+    ];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Swap Plan");
+    XLSX.writeFile(wb, `swap-plan-${selectedWed.toISOString().slice(0, 10)}.xlsx`);
   }
 
   const [swapAssignments, setSwapAssignments] = useState<Record<string, SwapAssignment> | null>(() => {
@@ -663,13 +917,35 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
               {optimizing ? "Searching..." : "Optimize + Flights"}
             </button>
             {swapPlan && (
-              <button
-                onClick={exportToImage}
-                disabled={exporting}
-                className="px-3 py-1.5 text-xs font-medium border rounded-lg bg-gray-50 text-gray-700 hover:bg-gray-100"
-              >
-                {exporting ? "Exporting..." : "Export PNG"}
-              </button>
+              <>
+                <div className="flex rounded-lg border overflow-hidden">
+                  <button
+                    onClick={() => setSwapView("aircraft")}
+                    className={`px-2.5 py-1.5 text-xs font-medium ${swapView === "aircraft" ? "bg-blue-50 text-blue-700" : "bg-white text-gray-500 hover:bg-gray-50"}`}
+                  >
+                    By Aircraft
+                  </button>
+                  <button
+                    onClick={() => setSwapView("role")}
+                    className={`px-2.5 py-1.5 text-xs font-medium border-l ${swapView === "role" ? "bg-blue-50 text-blue-700" : "bg-white text-gray-500 hover:bg-gray-50"}`}
+                  >
+                    By Role
+                  </button>
+                </div>
+                <button
+                  onClick={exportToImage}
+                  disabled={exporting}
+                  className="px-3 py-1.5 text-xs font-medium border rounded-lg bg-gray-50 text-gray-700 hover:bg-gray-100"
+                >
+                  {exporting ? "Exporting..." : "Export PNG"}
+                </button>
+                <button
+                  onClick={exportToExcel}
+                  className="px-3 py-1.5 text-xs font-medium border rounded-lg bg-gray-50 text-gray-700 hover:bg-gray-100"
+                >
+                  Export Excel
+                </button>
+              </>
             )}
           </div>
         </div>
@@ -752,7 +1028,7 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
             )}
 
             {/* The swap sheet */}
-            <SwapSheet rows={swapPlan.rows} />
+            <SwapSheet rows={swapPlan.rows} view={swapView} />
           </div>
         )}
 

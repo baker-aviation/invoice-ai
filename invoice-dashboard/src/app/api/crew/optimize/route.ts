@@ -171,17 +171,36 @@ export async function POST(req: NextRequest) {
     let searchSuccessCount = 0;
     let searchFailCount = 0;
 
-    // Search swap-day (Wednesday) only
-    const allSearches: { pair: string; date: string }[] = [];
-    for (const pair of pairsArray) {
-      allSearches.push({ pair, date: swapDate });
+    // Determine search dates: swap-day (Wednesday) + Tue/Thu if volunteers exist
+    const searchDates = [swapDate];
+    if (clientOncomingPool) {
+      const allPoolMembers = [...(clientOncomingPool.pic ?? []), ...(clientOncomingPool.sic ?? [])];
+      const hasEarly = allPoolMembers.some((m) => m.early_volunteer);
+      const hasLate = allPoolMembers.some((m) => m.late_volunteer);
+      if (hasEarly) {
+        const dayBefore = new Date(swapDate);
+        dayBefore.setDate(dayBefore.getDate() - 1);
+        searchDates.unshift(dayBefore.toISOString().slice(0, 10));
+      }
+      if (hasLate) {
+        const dayAfter = new Date(swapDate);
+        dayAfter.setDate(dayAfter.getDate() + 1);
+        searchDates.push(dayAfter.toISOString().slice(0, 10));
+      }
     }
 
-    console.log(`[Swap Optimizer] Searching ${pairsArray.length} route pairs for ${swapDate} via HasData`);
+    const allSearches: { pair: string; date: string }[] = [];
+    for (const pair of pairsArray) {
+      for (const date of searchDates) {
+        allSearches.push({ pair, date });
+      }
+    }
 
-    // Search in batches of 15 (HasData Pro: 15 concurrent requests)
-    for (let i = 0; i < allSearches.length; i += 15) {
-      const batch = allSearches.slice(i, i + 15);
+    console.log(`[Swap Optimizer] Searching ${pairsArray.length} route pairs × ${searchDates.length} date(s) (${searchDates.join(", ")}) = ${allSearches.length} searches via HasData`);
+
+    // Search in batches of 30 (HasData Pro: 30 concurrent requests)
+    for (let i = 0; i < allSearches.length; i += 30) {
+      const batch = allSearches.slice(i, i + 30);
       const results = await Promise.all(
         batch.map(async ({ pair, date }) => {
           const [orig, dest] = pair.split("-");
@@ -231,6 +250,7 @@ export async function POST(req: NextRequest) {
     swapDate,
     commercialFlights,
     swapAssignments: Object.keys(swapAssignments).length > 0 ? swapAssignments : undefined,
+    oncomingPool: clientOncomingPool,
   });
 
   return NextResponse.json({

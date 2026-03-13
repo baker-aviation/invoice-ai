@@ -1001,11 +1001,12 @@ function SlackShareModal({
 // MxNoteInline — JetInsight maintenance alerts per aircraft
 // ---------------------------------------------------------------------------
 
-function MxNoteInline({ notes }: { notes: MxNote[] }) {
-  // Hide MX notes more than 7 days away
+function MxNoteInline({ notes, hiddenIds, onHideForToday }: { notes: MxNote[]; hiddenIds?: Set<string>; onHideForToday?: (id: string) => void }) {
+  // Hide MX notes more than 7 days away + hidden-for-today
   const now = Date.now();
   const weekMs = 7 * 24 * 60 * 60 * 1000;
   const visible = notes.filter((n) => {
+    if (hiddenIds?.has(n.id)) return false;
     if (!n.start_time) return true; // no date = always show
     return new Date(n.start_time).getTime() - now <= weekMs;
   });
@@ -1015,7 +1016,7 @@ function MxNoteInline({ notes }: { notes: MxNote[] }) {
       {visible.map((n) => (
         <div key={n.id} className="flex items-start gap-2 bg-orange-50 border border-orange-200 rounded-lg px-3 py-1.5">
           <span className="text-orange-500 font-bold text-xs mt-0.5 shrink-0">MX</span>
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-xs font-medium text-orange-700">{n.airport_icao}</span>
               <span className="text-xs text-gray-700">{n.body}</span>
@@ -1026,6 +1027,14 @@ function MxNoteInline({ notes }: { notes: MxNote[] }) {
                 </span>
               )}
             </div>
+            {onHideForToday && (
+              <button
+                onClick={() => onHideForToday(n.id)}
+                className="text-[10px] font-medium text-orange-400 hover:text-orange-700 hover:bg-orange-50 border border-orange-200 rounded px-2 py-0.5 mt-1 transition-colors"
+              >
+                Hide for Today
+              </button>
+            )}
           </div>
         </div>
       ))}
@@ -1141,6 +1150,8 @@ function VanScheduleCard({
   flightInfoMap,
   legNotes,
   mxNotesByTail,
+  hiddenTodayMxIds,
+  onHideMxForToday,
   onSaveNote,
   onDragStart,
   onDragOver,
@@ -1161,6 +1172,8 @@ function VanScheduleCard({
   flightInfoMap: Map<string, FlightInfoEntry>;
   legNotes: Map<string, string>;
   mxNotesByTail: Map<string, MxNote[]>;
+  hiddenTodayMxIds: Set<string>;
+  onHideMxForToday: (id: string) => void;
   onSaveNote: (flightId: string, tailNumber: string | null, note: string) => void;
   onDragStart: (e: React.DragEvent, flightId: string, fromVanId: number) => void;
   onDragOver: (e: React.DragEvent) => void;
@@ -1461,7 +1474,7 @@ function VanScheduleCard({
                       </div>
                     )}
                     {/* MX notes from JetInsight */}
-                    <MxNoteInline notes={mxNotesByTail.get(arrFlight.tail_number ?? "") ?? []} />
+                    <MxNoteInline notes={mxNotesByTail.get(arrFlight.tail_number ?? "") ?? []} hiddenIds={hiddenTodayMxIds} onHideForToday={onHideMxForToday} />
                     {/* MX director note */}
                     <LegNoteInline
                       flightId={arrFlight.id}
@@ -1498,6 +1511,8 @@ function ScheduleTab({
   flightInfoMap,
   mxNotesByTail,
   longTermMxTails,
+  hiddenTodayMxIds,
+  onHideMxForToday,
 }: {
   allFlights: Flight[];
   date: string;
@@ -1507,6 +1522,8 @@ function ScheduleTab({
   flightInfoMap: Map<string, FlightInfoEntry>;
   mxNotesByTail: Map<string, MxNote[]>;
   longTermMxTails: Set<string>;
+  hiddenTodayMxIds: Set<string>;
+  onHideMxForToday: (id: string) => void;
 }) {
   const hasLive = liveVanPositions.size > 0;
 
@@ -2127,7 +2144,7 @@ function ScheduleTab({
                       )}
                     </div>
                     {/* MX notes from JetInsight */}
-                    <MxNoteInline notes={mxNotesByTail.get(tail ?? "") ?? []} />
+                    <MxNoteInline notes={mxNotesByTail.get(tail ?? "") ?? []} hiddenIds={hiddenTodayMxIds} onHideForToday={onHideMxForToday} />
                   </div>
                 );
               })}
@@ -2208,7 +2225,7 @@ function ScheduleTab({
                       {ac.airportInfo.name}, {ac.airportInfo.state}
                     </div>
                   )}
-                  <MxNoteInline notes={mxNotesByTail.get(ac.tail) ?? []} />
+                  <MxNoteInline notes={mxNotesByTail.get(ac.tail) ?? []} hiddenIds={hiddenTodayMxIds} onHideForToday={onHideMxForToday} />
                 </div>
               ))}
             </div>
@@ -2238,6 +2255,8 @@ function ScheduleTab({
               flightInfoMap={flightInfoMap}
               legNotes={legNotes}
               mxNotesByTail={mxNotesByTail}
+              hiddenTodayMxIds={hiddenTodayMxIds}
+              onHideMxForToday={onHideMxForToday}
               onSaveNote={saveLegNote}
               onDragStart={handleDragStart}
               onDragOver={handleDragOver}
@@ -2564,6 +2583,49 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
     }
   }, []);
   const [schedTypeFilter, setSchedTypeFilter] = useState<string>("all");
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
+
+  // "Hide for Today" — stored in localStorage, auto-expires next day
+  const [hiddenTodayMxIds, setHiddenTodayMxIds] = useState<Set<string>>(() => {
+    if (typeof window === "undefined") return new Set();
+    try {
+      const stored = JSON.parse(localStorage.getItem("hiddenTodayMx") ?? "{}");
+      const today = new Date().toISOString().slice(0, 10);
+      if (stored.date === today) return new Set(stored.ids ?? []);
+      localStorage.removeItem("hiddenTodayMx");
+    } catch { /* ignore */ }
+    return new Set();
+  });
+  const hideMxForToday = useCallback((id: string) => {
+    setHiddenTodayMxIds((prev) => {
+      const next = new Set(prev).add(id);
+      const today = new Date().toISOString().slice(0, 10);
+      localStorage.setItem("hiddenTodayMx", JSON.stringify({ date: today, ids: [...next] }));
+      return next;
+    });
+  }, []);
+
+  async function handleResync() {
+    setSyncing(true);
+    setSyncMsg(null);
+    try {
+      const res = await fetch("/api/ops/sync-schedule", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        setSyncMsg(data.error ?? "Sync failed");
+        return;
+      }
+      const upserted = data.upserted ?? 0;
+      const skipped = data.skipped ?? 0;
+      setSyncMsg(`${upserted} upserted, ${skipped} skipped`);
+      setTimeout(() => window.location.reload(), 1500);
+    } catch (err) {
+      setSyncMsg(err instanceof Error ? err.message : "Network error");
+    } finally {
+      setSyncing(false);
+    }
+  }
 
   // ── Long-Term Maintenance detection ──────────────────────────────────────
   type LongTermMxAircraft = {
@@ -2758,10 +2820,14 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
     const weekMs = 7 * 24 * 60 * 60 * 1000;
     const now = Date.now();
 
+    const DAY_MS = 24 * 60 * 60 * 1000;
+
     for (const note of mxNotes) {
       if (!note.tail_number || !note.start_time) continue;
       const mxStart = new Date(note.start_time).getTime();
-      const mxEnd = note.end_time ? new Date(note.end_time).getTime() + 24 * 60 * 60 * 1000 : mxStart + 24 * 60 * 60 * 1000;
+      const mxEnd = note.end_time ? new Date(note.end_time).getTime() + DAY_MS : mxStart + DAY_MS;
+      // Auto-hide MX notes older than 24h
+      if (mxEnd < now - DAY_MS) continue;
       // Only check MX within 7 days
       if (mxStart - now > weekMs) continue;
       const mxIcao = note.airport_icao?.toUpperCase();
@@ -3024,8 +3090,22 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
         onSelect={(i) => { setDayIdx(i); setSelectedVan(null); }}
       />
 
-      {/* ── Stats ── */}
-      <StatsBar positions={positions} vans={vans} flightCount={flightsForDay.length} aogVanCount={aogSamsaraVans.length} />
+      {/* ── Stats + Resync ── */}
+      <div className="flex items-center gap-3">
+        <div className="flex-1">
+          <StatsBar positions={positions} vans={vans} flightCount={flightsForDay.length} aogVanCount={aogSamsaraVans.length} />
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {syncMsg && <span className="text-xs text-gray-500">{syncMsg}</span>}
+          <button
+            onClick={handleResync}
+            disabled={syncing}
+            className="px-2.5 py-1 text-xs font-medium text-gray-500 bg-gray-100 hover:bg-gray-200 rounded transition-colors disabled:opacity-50"
+          >
+            {syncing ? "Syncing..." : "Resync JI"}
+          </button>
+        </div>
+      </div>
 
       {/* ── Van Status — vehicle health ── */}
       {(() => {
@@ -3071,8 +3151,11 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
       })()}
 
       {/* ── MX Conflict Alerts (accordion) ── */}
+      {(() => {
+        const visibleConflicts = mxConflicts.filter((c) => !dismissedMxIds.has(c.mxNote.id));
+        return (
       <div className={`rounded-xl border-2 px-5 py-4 shadow-sm ${
-        mxConflicts.length > 0
+        visibleConflicts.length > 0
           ? "border-red-300 bg-red-50"
           : "border-green-300 bg-green-50"
       }`}>
@@ -3081,19 +3164,19 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
           className="flex items-center gap-3 w-full text-left"
         >
           <div className={`w-10 h-10 rounded-full flex items-center justify-center text-xl shrink-0 font-bold ${
-            mxConflicts.length > 0
+            visibleConflicts.length > 0
               ? "bg-red-100 text-red-600"
               : "bg-green-100 text-green-600"
           }`}>
-            {mxConflicts.length > 0 ? "!!" : "\u2713"}
+            {visibleConflicts.length > 0 ? "!!" : "\u2713"}
           </div>
-          <div className={`text-base font-bold flex-1 ${mxConflicts.length > 0 ? "text-red-800" : "text-green-800"}`}>
-            {mxConflicts.length > 0
-              ? `Jawad's Ops Changes that Affect James's Plan (${mxConflicts.length})`
+          <div className={`text-base font-bold flex-1 ${visibleConflicts.length > 0 ? "text-red-800" : "text-green-800"}`}>
+            {visibleConflicts.length > 0
+              ? `Jawad's Ops Changes that Affect James's Plan (${visibleConflicts.length})`
               : "Jawad's Ops Changes that Affect James's Plan — 0 alerts"
             }
           </div>
-          {mxConflicts.length > 0 && (
+          {visibleConflicts.length > 0 && (
             <svg
               className={`w-5 h-5 text-red-600 transition-transform ${mxConflictsOpen ? "rotate-180" : ""}`}
               fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
@@ -3102,9 +3185,9 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
             </svg>
           )}
         </button>
-        {mxConflicts.length > 0 && mxConflictsOpen && (
+        {visibleConflicts.length > 0 && mxConflictsOpen && (
           <div className="flex flex-col gap-2 ml-[52px] mt-2">
-            {mxConflicts.map((c, i) => {
+            {visibleConflicts.map((c, i) => {
               const mxDateStr = c.mxNote.start_time
                 ? new Date(c.mxNote.start_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })
                 : "";
@@ -3117,8 +3200,16 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
                     <span className="text-xs font-bold text-red-800">{c.tail}</span>
                     <span className="text-xs text-red-600">{c.reason}</span>
                   </div>
-                  <div className="text-[11px] text-orange-600 mt-1">
-                    MX: {c.mxNote.body} ({mxDateStr}{mxEndStr})
+                  <div className="flex items-center justify-between gap-2 mt-1">
+                    <div className="text-[11px] text-orange-600">
+                      MX: {c.mxNote.body} ({mxDateStr}{mxEndStr})
+                    </div>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); dismissMxNote(c.mxNote.id); }}
+                      className="text-[10px] font-medium text-red-400 hover:text-red-700 hover:bg-red-50 border border-red-200 rounded px-2 py-0.5 shrink-0 transition-colors"
+                    >
+                      Permanently Dismiss
+                    </button>
                   </div>
                 </div>
               );
@@ -3126,6 +3217,8 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
           </div>
         )}
       </div>
+        );
+      })()}
 
       {/* ── MX Notes from JetInsight (accordion) ── */}
       {mxNotes && mxNotes.length > 0 && (
@@ -3365,7 +3458,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
 
       {/* ── Schedule tab ── */}
       {activeTab === "schedule" && (
-        <ScheduleTab allFlights={activeFlights} date={selectedDate} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} flightInfoMap={flightInfoMap} mxNotesByTail={mxNotesByTail} longTermMxTails={longTermMxTails} />
+        <ScheduleTab allFlights={activeFlights} date={selectedDate} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} flightInfoMap={flightInfoMap} mxNotesByTail={mxNotesByTail} longTermMxTails={longTermMxTails} hiddenTodayMxIds={hiddenTodayMxIds} onHideMxForToday={hideMxForToday} />
       )}
 
       {/* ── Flight Schedule tab — grouped by aircraft ── */}
@@ -3520,20 +3613,28 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
                         })}
                       </div>
                       {/* MX notes from JetInsight */}
-                      {(mxNotesByTail.get(tail ?? "") ?? []).length > 0 && (
+                      {(mxNotesByTail.get(tail ?? "") ?? []).filter((n) => !hiddenTodayMxIds.has(n.id)).length > 0 && (
                         <div className="border-t border-orange-100 px-4 py-2 space-y-1">
-                          {(mxNotesByTail.get(tail ?? "") ?? []).map((n) => (
+                          {(mxNotesByTail.get(tail ?? "") ?? []).filter((n) => !hiddenTodayMxIds.has(n.id)).map((n) => (
                             <div key={n.id} className="flex items-start gap-2 bg-orange-50 border border-orange-200 rounded-lg px-3 py-1.5">
                               <span className="text-orange-500 font-bold text-xs mt-0.5 shrink-0">MX</span>
-                              <div className="flex items-center gap-2 flex-wrap min-w-0 flex-1">
-                                <span className="text-xs font-medium text-orange-700">{n.airport_icao}</span>
-                                <span className="text-xs text-gray-700">{n.body}</span>
-                                {n.start_time && (
-                                  <span className="text-[11px] text-gray-400 ml-auto shrink-0">
-                                    {new Date(n.start_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-                                    {n.end_time && n.end_time !== n.start_time && ` – ${new Date(n.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`}
-                                  </span>
-                                )}
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="text-xs font-medium text-orange-700">{n.airport_icao}</span>
+                                  <span className="text-xs text-gray-700">{n.body}</span>
+                                  {n.start_time && (
+                                    <span className="text-[11px] text-gray-400 ml-auto shrink-0">
+                                      {new Date(n.start_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                                      {n.end_time && n.end_time !== n.start_time && ` – ${new Date(n.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`}
+                                    </span>
+                                  )}
+                                </div>
+                                <button
+                                  onClick={() => hideMxForToday(n.id)}
+                                  className="text-[10px] font-medium text-orange-400 hover:text-orange-700 hover:bg-orange-50 border border-orange-200 rounded px-2 py-0.5 mt-1 transition-colors"
+                                >
+                                  Hide for Today
+                                </button>
                               </div>
                             </div>
                           ))}

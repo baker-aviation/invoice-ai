@@ -69,8 +69,11 @@ const RAW: [string, string, boolean][] = [
   ["KPDK", "KATL", true],   // DeKalb-Peachtree → Atlanta
   ["KRYY", "KATL", true],   // McCollum → Atlanta
   ["KSGJ", "KJAX", true],   // St. Augustine → Jacksonville
+  ["KGNV", "KGNV", true],   // Gainesville FL (has limited commercial)
+  ["KGNV", "KJAX", false],  // Gainesville FL → Jacksonville (backup)
   ["KORL", "KMCO", true],   // Orlando Exec → Orlando Intl
   ["KSFB", "KMCO", true],   // Sanford → Orlando Intl
+  ["KISM", "KMCO", true],   // Kissimmee Gateway → Orlando Intl
   ["KSRQ", "KTPA", true],   // Sarasota → Tampa
   ["KMLB", "KMCO", true],   // Melbourne FL → Orlando
 
@@ -82,15 +85,19 @@ const RAW: [string, string, boolean][] = [
   ["KDVT", "KPHX", true],   // Deer Valley → Phoenix
 
   // Mountain / Northwest
-  ["KASE", "KDEN", true],   // Aspen → Denver (limited Aspen service)
+  ["KASE", "KASE", true],   // Aspen (has United Express commercial)
+  ["KASE", "KDEN", false],  // Aspen → Denver (backup / more options)
   ["KEGE", "KDEN", true],   // Eagle/Vail → Denver
   ["KGJT", "KDEN", true],   // Grand Junction → Denver
   ["KAPA", "KDEN", true],   // Centennial → Denver
   ["KBJC", "KDEN", true],   // Rocky Mountain Metro → Denver
+  ["KRNO", "KRNO", true],   // Reno (IS commercial)
 
   // Michigan / Great Lakes
-  ["KESC", "KGRR", true],   // Escanaba → Grand Rapids (closest major)
-  ["KTVC", "KGRR", true],   // Traverse City → Grand Rapids
+  ["KESC", "KMQT", true],   // Escanaba → Marquette (closest UP airport)
+  ["KESC", "KGRR", false],  // Escanaba → Grand Rapids (backup)
+  ["KTVC", "KTVC", true],   // Traverse City (IS commercial)
+  ["KTVC", "KGRR", false],  // Traverse City → Grand Rapids (backup)
 
   // Idaho
   ["KTWF", "KBOI", true],   // Twin Falls → Boise
@@ -154,8 +161,11 @@ const RAW: [string, string, boolean][] = [
   ["CYYZ", "CYYZ", true],   // Toronto Pearson (IS commercial)
   ["MROC", "MROC", true],   // San Jose Costa Rica (IS commercial)
   ["MRLB", "MRLB", true],   // Liberia Costa Rica (IS commercial)
-  ["MBPV", "MBPV", true],   // Marsh Harbour Bahamas (IS commercial)
+  ["MBPV", "KMIA", true],   // Marsh Harbour Bahamas → Miami (main connection)
+  ["MBPV", "KFLL", false],  // Marsh Harbour Bahamas → Fort Lauderdale
+  ["MBPV", "MBPV", false],  // Marsh Harbour (has limited Bahamasair)
   ["MYNN", "MYNN", true],   // Nassau Bahamas (IS commercial)
+  ["MYNN", "KMIA", false],  // Nassau → Miami (backup)
   ["MPTO", "MPTO", true],   // Panama City (IS commercial)
 ];
 
