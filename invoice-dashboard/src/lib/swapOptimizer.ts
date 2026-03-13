@@ -723,6 +723,7 @@ function buildCandidates(
 function findBackups(
   primary: TransportCandidate,
   allCandidates: TransportCandidate[],
+  task?: CrewTask,
 ): TransportCandidate[] {
   if (primary.type !== "commercial" || !primary.depTime) return [];
 
@@ -732,7 +733,17 @@ function findBackups(
     if (!c.depTime || !primary.depTime) return false;
     // Backup must depart at least BACKUP_FLIGHT_MIN_GAP after primary
     const gap = (c.depTime.getTime() - primary.depTime.getTime()) / 60_000;
-    return gap >= BACKUP_FLIGHT_MIN_GAP;
+    if (gap < BACKUP_FLIGHT_MIN_GAP) return false;
+
+    // Backup must still satisfy swap timing constraints
+    if (task?.direction === "oncoming" && c.fboArrivalTime) {
+      // Must arrive at FBO before the hard deadline (1800L)
+      // Use swap point time + 6hrs as a generous deadline proxy
+      const hardDeadline = new Date(task.swapPoint.time.getTime() + 6 * 60 * 60_000);
+      if (c.fboArrivalTime.getTime() > hardDeadline.getTime()) return false;
+    }
+
+    return true;
   }).slice(0, 3);
 }
 
@@ -858,7 +869,7 @@ function optimizeTail(
   if (oncomingPic) {
     // Find backups for each candidate
     for (const c of oncomingPic.candidates) {
-      c.backups = findBackups(c, oncomingPic.candidates);
+      c.backups = findBackups(c, oncomingPic.candidates, oncomingPic);
     }
     // Score each candidate
     for (const c of oncomingPic.candidates) {
@@ -871,7 +882,7 @@ function optimizeTail(
 
   if (oncomingSic) {
     for (const c of oncomingSic.candidates) {
-      c.backups = findBackups(c, oncomingSic.candidates);
+      c.backups = findBackups(c, oncomingSic.candidates, oncomingSic);
     }
     // Score with PIC pairing consideration
     const picBest = oncomingPic?.best ?? null;
@@ -998,7 +1009,7 @@ function optimizeTail(
 
   if (offgoingPic) {
     for (const c of offgoingPic.candidates) {
-      c.backups = findBackups(c, offgoingPic.candidates);
+      c.backups = findBackups(c, offgoingPic.candidates, offgoingPic);
     }
     for (const c of offgoingPic.candidates) {
       c.score = scoreCandidate(c, offgoingPic, null);
@@ -1009,7 +1020,7 @@ function optimizeTail(
 
   if (offgoingSic) {
     for (const c of offgoingSic.candidates) {
-      c.backups = findBackups(c, offgoingSic.candidates);
+      c.backups = findBackups(c, offgoingSic.candidates, offgoingSic);
     }
     const offPicBest = offgoingPic?.best ?? null;
     for (const c of offgoingSic.candidates) {
@@ -1037,7 +1048,7 @@ function optimizeTail(
   for (const task of offgoing) {
     if (task === offgoingPic || task === offgoingSic) continue;
     for (const c of task.candidates) {
-      c.backups = findBackups(c, task.candidates);
+      c.backups = findBackups(c, task.candidates, task);
       c.score = scoreCandidate(c, task, null);
     }
     task.candidates.sort((a, b) => b.score - a.score);
