@@ -11,16 +11,21 @@ export default async function OpsPage() {
   let error: string | null = null;
   // lookback 48h so "Today" filter never loses earlier flights as the UTC day progresses,
   // and duty tracking can see yesterday's legs for rolling-24hr calculations.
+  const t0 = Date.now();
+  const timed = <T,>(label: string, p: Promise<T>): Promise<T> =>
+    p.then((r) => { console.log(`[ops/page] ${label}: ${Date.now() - t0}ms`); return r; });
+
   const [data, advertisedPrices, mxNotes, swimFlow, pprRows] = await Promise.all([
-    fetchFlights({ lookahead_hours: 48, lookback_hours: 48 }).catch((e) => {
+    timed("fetchFlights", fetchFlights({ lookahead_hours: 48, lookback_hours: 48 }).catch((e) => {
       error = String(e);
       return { ok: false, flights: [] as any[], count: 0, error: null as string | null };
-    }),
-    fetchAdvertisedPrices().catch(() => []),
-    fetchMxNotes().catch(() => []),
-    fetchSwimFlowControl().catch(() => []),
-    createClient().then((s) => s.from("baker_ppr_airports").select("icao")).then((r) => r.data).catch(() => []),
+    })),
+    timed("fetchAdvertisedPrices", fetchAdvertisedPrices().catch(() => [])),
+    timed("fetchMxNotes", fetchMxNotes().catch(() => [])),
+    timed("fetchSwimFlowControl", fetchSwimFlowControl().catch(() => [])),
+    timed("pprRows", createClient().then((s) => s.from("baker_ppr_airports").select("icao")).then((r) => r.data).catch(() => [])),
   ]);
+  console.log(`[ops/page] total server render: ${Date.now() - t0}ms`);
   const bakerPprAirports: string[] = (pprRows ?? []).map((r: { icao: string }) => r.icao);
 
   const displayError = error || (data.ok === false && (data as any).error ? (data as any).error : null);
