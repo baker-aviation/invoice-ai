@@ -463,10 +463,21 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
         const positions: AircraftPosition[] = [];
         for (const fi of data.flights ?? []) {
           const key = `${fi.tail}|${fi.origin_icao ?? ""}|${fi.destination_icao ?? ""}`;
-          map.set(key, fi);
-          // Also store by tail-only for fallback
+          // Prefer the entry that's actively flying (has position or actual departure)
+          const existing = map.get(key);
+          const isMoreActive = !existing || fi.latitude != null || fi.actual_departure != null;
+          if (isMoreActive) map.set(key, fi);
+          // Also store by tail-only for fallback — prefer one with position
           if (!map.has(fi.tail) || (fi.latitude != null && fi.longitude != null)) {
             map.set(fi.tail, fi);
+          }
+          // Also index by ident (callsign) so lookups work either way
+          if (fi.ident && fi.ident !== fi.tail) {
+            const identKey = `${fi.ident}|${fi.origin_icao ?? ""}|${fi.destination_icao ?? ""}`;
+            if (!map.has(identKey) || fi.latitude != null) map.set(identKey, fi);
+            if (!map.has(fi.ident) || (fi.latitude != null && fi.longitude != null)) {
+              map.set(fi.ident, fi);
+            }
           }
           // Synthesize map positions from en-route flights
           if (fi.latitude != null && fi.longitude != null) {
