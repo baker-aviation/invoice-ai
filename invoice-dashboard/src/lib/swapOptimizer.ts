@@ -1235,12 +1235,23 @@ function assignRoleWithMatrix(
   // Only consider viable options (where real transport exists)
   const viableOptions = matrix.filter((m) => m.viable);
 
-  // Sort by rank: weighted blend of cost (60%) and reliability (40%).
-  // Keeps costs down while preferring direct flights with backups
-  // over sketchy connections at similar price points.
-  viableOptions.sort((a, b) => a.rank - b.rank);
+  // Count viable crew per tail — fewer options = more constrained = assign first
+  const viableCrewPerTail = new Map<string, number>();
+  for (const opt of viableOptions) {
+    viableCrewPerTail.set(opt.tail, (viableCrewPerTail.get(opt.tail) ?? 0) + 1);
+  }
 
-  // Greedy assignment from best-ranked options (lowest rank = cheapest + most reliable)
+  // Sort: most constrained tails first (fewest viable crew), then by rank within.
+  // Tough airports (remote FBOs with 1-2 options) get assigned before
+  // easy airports (major hubs with 20+ options) can steal their only viable crew.
+  viableOptions.sort((a, b) => {
+    const aConstraint = viableCrewPerTail.get(a.tail) ?? 999;
+    const bConstraint = viableCrewPerTail.get(b.tail) ?? 999;
+    if (aConstraint !== bConstraint) return aConstraint - bConstraint;
+    return a.rank - b.rank;
+  });
+
+  // Greedy assignment — constrained tails first, best rank within each
   const assignedCrews = new Set<string>();
   const assignedTails = new Set<string>();
 
@@ -1251,11 +1262,12 @@ function assignRoleWithMatrix(
     assignedTails.add(opt.tail);
 
     const loc = extractSwapPoints(opt.tail, byTail, swapDate).swapPoints[0];
+    const constraint = viableCrewPerTail.get(opt.tail) ?? 0;
     details.push({
       name: opt.crewName,
       tail: opt.tail,
       cost: Math.round(opt.bestCost),
-      reason: `${opt.bestType} $${Math.round(opt.bestCost)} score=${opt.bestScore} to ${loc ? toIata(loc.icao) : "?"} (${opt.candidateCount} options)`,
+      reason: `${opt.bestType} $${Math.round(opt.bestCost)} score=${opt.bestScore} to ${loc ? toIata(loc.icao) : "?"} (${constraint} viable crew)`,
     });
   }
 }
