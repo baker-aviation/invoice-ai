@@ -1382,6 +1382,20 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                                     <div className="h-full bg-blue-500 rounded-full" style={{ width: `${fi.progress_percent}%` }} />
                                   </div>
                                 )}
+                                {/* ForeFlight progress fallback */}
+                                {!isCancelled && !(fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100) && swimEntry?.status === "En Route" && swimEntry?.etd && swimEntry?.eta && (() => {
+                                  const dep = new Date(swimEntry.etd!).getTime();
+                                  const arr = new Date(swimEntry.eta!).getTime();
+                                  const total = arr - dep;
+                                  const elapsed = Date.now() - dep;
+                                  if (total <= 0 || elapsed <= 0) return null;
+                                  const pct = Math.min(Math.max(Math.round((elapsed / total) * 100), 1), 99);
+                                  return (
+                                    <div className="w-16 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                                      <div className="h-full bg-blue-500 rounded-full" style={{ width: `${pct}%` }} />
+                                    </div>
+                                  );
+                                })()}
                                 {(() => {
                                   const arrCode = f.arrival_icao?.toUpperCase();
                                   if (!arrCode) return null;
@@ -1687,6 +1701,30 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                             })()}
                           </div>
                         )}
+                        {/* ForeFlight progress fallback when FA has no data */}
+                        {!isCancelled && !(fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100) && swimEntry?.status === "En Route" && swimEntry?.etd && swimEntry?.eta && (() => {
+                          const dep = new Date(swimEntry.etd!).getTime();
+                          const arr = new Date(swimEntry.eta!).getTime();
+                          const now = Date.now();
+                          const total = arr - dep;
+                          const elapsed = now - dep;
+                          if (total <= 0 || elapsed <= 0) return null;
+                          const pct = Math.min(Math.max(Math.round((elapsed / total) * 100), 1), 99);
+                          const remaining = Math.round((arr - now) / 60000);
+                          if (remaining <= 0) return null;
+                          const hrs = Math.floor(remaining / 60);
+                          const mins = remaining % 60;
+                          return (
+                            <div className="mt-1 flex items-center gap-2">
+                              <div className="w-20 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                                <div className="h-full bg-blue-500 rounded-full" style={{ width: `${pct}%` }} />
+                              </div>
+                              <span className="text-[10px] text-blue-600 font-medium whitespace-nowrap">
+                                {hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`} remaining
+                              </span>
+                            </div>
+                          );
+                        })()}
                       </td>
                       <td className="px-3 py-2.5 text-gray-600">
                         <div>{fmt(f.scheduled_departure, f.departure_icao)}</div>
