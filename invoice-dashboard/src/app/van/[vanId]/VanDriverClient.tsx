@@ -418,7 +418,7 @@ function StopCard({
   dismissedMxIds: Set<string>;
   onDismissMx: (id: string) => void;
 }) {
-  const [expanded, setExpanded] = useState(isNext);
+  const [expanded, setExpanded] = useState(false);
   const tail = item.arrFlight.tail_number ?? "TBD";
   const dep = item.arrFlight.departure_icao?.replace(/^K/, "") ?? "???";
   const arr = item.airport;
@@ -471,35 +471,17 @@ function StopCard({
       </div>
 
       {expanded && <div className="px-4 pb-4">
-        {/* Top row: index + tail + status */}
-        <div className="flex items-center justify-between mb-2">
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-medium text-gray-400 dark:text-gray-500 w-5 text-center">
-              {index + 1}
-            </span>
-            <span className="text-xl font-bold font-mono text-slate-800 dark:text-white">
-              {tail}
+        {/* Airport name */}
+        {item.airportInfo && (
+          <div className="mb-2">
+            <span className="text-xs text-gray-400 dark:text-gray-500">
+              {item.airportInfo.name}
             </span>
           </div>
-          <span className={`text-sm font-semibold ${status.accent}`}>
-            {status.label}
-          </span>
-        </div>
-
-        {/* Route */}
-        <div className="flex items-center gap-2 mb-2 ml-7">
-          <span className="text-sm text-gray-600 dark:text-gray-400">
-            {dep} &rarr; {arr}
-          </span>
-          {item.airportInfo && (
-            <span className="text-xs text-gray-400 dark:text-gray-500">
-              ({item.airportInfo.name})
-            </span>
-          )}
-        </div>
+        )}
 
         {/* Time info */}
-        <div className="flex items-center gap-3 mb-2 ml-7 flex-wrap">
+        <div className="flex items-center gap-3 mb-2 flex-wrap">
           <span className="text-xs text-gray-500 dark:text-gray-400">
             Dep {fmtUtcHM(fi?.departure_time ?? item.arrFlight.scheduled_departure)}
           </span>
@@ -519,7 +501,7 @@ function StopCard({
         </div>
 
         {/* Badges row */}
-        <div className="flex items-center gap-2 ml-7 flex-wrap">
+        <div className="flex items-center gap-2 flex-wrap">
           <span className={`text-xs px-2 py-1 rounded-full font-medium ${badge.color}`}>
             {badge.label}
           </span>
@@ -541,35 +523,60 @@ function StopCard({
           )}
         </div>
 
-        {/* MX notes */}
-        {tailMxNotes.filter((n) => !dismissedMxIds.has(n.id)).length > 0 && (
-          <div className="ml-7 mt-3 space-y-1.5">
-            {tailMxNotes.filter((n) => !dismissedMxIds.has(n.id)).map((n) => (
-              <div key={n.id} className="bg-orange-50 dark:bg-orange-900/30 border border-orange-200 dark:border-orange-800 rounded-lg px-3 py-2">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-orange-600 dark:text-orange-400 font-bold text-xs shrink-0">MX</span>
-                  <span className="text-xs font-medium text-orange-700 dark:text-orange-300">{n.airport_icao}</span>
-                  <span className="text-sm text-gray-700 dark:text-gray-300 flex-1">{n.body}</span>
-                  <button
-                    onClick={() => onDismissMx(n.id)}
-                    className="shrink-0 min-w-[44px] min-h-[44px] flex items-center justify-center text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300"
-                    aria-label="Dismiss MX note"
-                  >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
-                </div>
-                {n.start_time && (
-                  <div className="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5">
-                    {new Date(n.start_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-                    {n.end_time && n.end_time !== n.start_time && ` – ${new Date(n.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`}
+        {/* MX notes — hide dismissed + older than 24h */}
+        {(() => {
+          const now = Date.now();
+          const DAY = 86_400_000;
+          const visible = tailMxNotes.filter((n) => {
+            if (dismissedMxIds.has(n.id)) return false;
+            const end = n.end_time ? new Date(n.end_time).getTime() : n.start_time ? new Date(n.start_time).getTime() : 0;
+            if (end && end + DAY < now) return false;
+            return true;
+          });
+          if (!visible.length) return null;
+          return (
+            <div className="mt-3 space-y-1.5">
+              {visible.map((n) => {
+                const isMel = n.body?.toLowerCase().startsWith("mel ");
+                return (
+                  <div key={n.id} className={isMel
+                    ? "bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-200 dark:border-yellow-800 rounded-lg px-3 py-2"
+                    : "bg-orange-50 dark:bg-orange-900/30 border border-orange-200 dark:border-orange-800 rounded-lg px-3 py-2"
+                  }>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className={`font-bold text-xs shrink-0 ${isMel ? "text-yellow-600 dark:text-yellow-400" : "text-orange-600 dark:text-orange-400"}`}>
+                        {isMel ? "MEL" : "MX"}
+                      </span>
+                      <span className={`text-xs font-medium ${isMel ? "text-yellow-700 dark:text-yellow-300" : "text-orange-700 dark:text-orange-300"}`}>{n.airport_icao}</span>
+                      <span className="text-sm text-gray-700 dark:text-gray-300 flex-1">{n.body}</span>
+                      {isMel && n.end_time && (() => {
+                        const ms = new Date(n.end_time).getTime() - now;
+                        if (ms <= 0) return <span className="text-xs font-semibold text-red-600 dark:text-red-400 shrink-0">EXPIRED</span>;
+                        const days = Math.ceil(ms / DAY);
+                        return <span className={`text-xs font-semibold shrink-0 ${days <= 3 ? "text-red-600 dark:text-red-400" : days <= 7 ? "text-amber-600 dark:text-amber-400" : "text-gray-500 dark:text-gray-400"}`}>{days}d left</span>;
+                      })()}
+                      <button
+                        onClick={() => onDismissMx(n.id)}
+                        className="shrink-0 min-w-[44px] min-h-[44px] flex items-center justify-center text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300"
+                        aria-label="Dismiss MX note"
+                      >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    </div>
+                    {n.start_time && (
+                      <div className="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5">
+                        {new Date(n.start_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                        {n.end_time && n.end_time !== n.start_time && ` – ${new Date(n.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`}
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
+                );
+              })}
+            </div>
+          );
+        })()}
 
         {/* Navigate button */}
         {navUrl && (
@@ -577,7 +584,7 @@ function StopCard({
             href={navUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="mt-3 ml-7 inline-flex items-center gap-2 text-sm font-medium text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 min-h-[48px] min-w-[48px]"
+            className="mt-3 inline-flex items-center gap-2 text-sm font-medium text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 min-h-[48px] min-w-[48px]"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path

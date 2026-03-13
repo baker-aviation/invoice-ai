@@ -153,39 +153,73 @@ export async function GET(req: NextRequest) {
   if (!isAuthed(auth)) return auth.error;
 
   try {
-    // Try ForeFlight first if API key is configured
+    // Merge ForeFlight (filing status) + SWIM (live tracking) into one response.
+    // ForeFlight: Filed / Cancelled. SWIM: En Route / Arrived / Diverted.
+    // SWIM tracking data takes priority over ForeFlight's "Scheduled".
+
+    const STATUS_PRIORITY: Record<string, number> = {
+      "En Route": 5, "Diverted": 4, "Arrived": 3, "Cancelled": 2, "Filed": 1, "Scheduled": 0,
+    };
+
+    const merged = new Map<string, {
+      tail_number: string; departure_icao: string | null; arrival_icao: string | null;
+      status: string; event_time: string; etd: string | null; eta: string | null;
+    }>();
+
+    // 1. ForeFlight — filing status + ETD/ETA
     if (process.env.FOREFLIGHT_API_KEY) {
       try {
         const flights = await fetchForeFlight();
         const now = new Date();
         const windowMs = 24 * 60 * 60 * 1000;
 
-        // Filter to flights within ±24h of now
         const relevant = flights.filter((f) => {
           const dep = new Date(f.departureTime);
           return Math.abs(dep.getTime() - now.getTime()) <= windowMs;
         });
 
-        const statuses = relevant.map((f) => ({
-          tail_number: f.aircraftRegistration,
-          departure_icao: toIcao(f.departure),
-          arrival_icao: toIcao(f.destination),
-          status: deriveForeFlightStatus(f),
-          event_time: f.timeUpdated,
-          etd: f.departureTime,
-          eta: f.arrivalTime,
-        }));
-
-        return NextResponse.json({ statuses });
+        for (const f of relevant) {
+          const key = `${f.aircraftRegistration}|${toIcao(f.departure)}|${toIcao(f.destination)}`;
+          merged.set(key, {
+            tail_number: f.aircraftRegistration,
+            departure_icao: toIcao(f.departure),
+            arrival_icao: toIcao(f.destination),
+            status: deriveForeFlightStatus(f),
+            event_time: f.timeUpdated,
+            etd: f.departureTime,
+            eta: f.arrivalTime,
+          });
+        }
       } catch (err) {
-        console.error("[swim-status] ForeFlight error, falling back to SWIM:", err);
-        // Fall through to SWIM
+        console.error("[swim-status] ForeFlight error:", err);
       }
     }
 
-    // SWIM fallback
-    const statuses = await fetchSwimStatuses();
-    return NextResponse.json({ statuses });
+    // 2. SWIM — live tracking (overrides ForeFlight if higher priority status)
+    try {
+      const swimStatuses = await fetchSwimStatuses();
+      for (const s of swimStatuses) {
+        const key = `${s.tail_number}|${s.departure_icao}|${s.arrival_icao}`;
+        const existing = merged.get(key);
+        const swimPri = STATUS_PRIORITY[s.status] ?? 0;
+        const existPri = existing ? (STATUS_PRIORITY[existing.status] ?? 0) : -1;
+
+        if (swimPri > existPri) {
+          merged.set(key, {
+            ...s,
+            // Keep ForeFlight ETD/ETA if SWIM doesn't have them
+            etd: s.etd ?? existing?.etd ?? null,
+            eta: s.eta ?? existing?.eta ?? null,
+          });
+        } else if (!existing) {
+          merged.set(key, s);
+        }
+      }
+    } catch (err) {
+      console.error("[swim-status] SWIM error:", err);
+    }
+
+    return NextResponse.json({ statuses: Array.from(merged.values()) });
   } catch (err) {
     console.error("[swim-status] GET error:", err);
     return NextResponse.json({ error: "Failed to fetch flight status" }, { status: 500 });
