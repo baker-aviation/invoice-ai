@@ -1032,7 +1032,7 @@ function MxNoteInline({ notes, hiddenIds, onHideForToday }: { notes: MxNote[]; h
     <div className="ml-8 mt-1 space-y-1">
       {visible.map((n) => {
         const mel = isMel(n);
-        const timeLeft = fmtTimeRemaining(n.end_time);
+        const timeLeft = mel ? fmtTimeRemaining(n.end_time) : null;
         return (
         <div key={n.id} className={`flex items-start gap-2 rounded-lg px-3 py-1.5 ${mel ? "bg-yellow-50 border border-yellow-300" : "bg-orange-50 border border-orange-200"}`}>
           <span className={`font-bold text-xs mt-0.5 shrink-0 ${mel ? "text-yellow-600" : "text-orange-500"}`}>{mel ? "MEL" : "MX"}</span>
@@ -1042,7 +1042,7 @@ function MxNoteInline({ notes, hiddenIds, onHideForToday }: { notes: MxNote[]; h
               <span className="text-xs text-gray-700">{n.body}</span>
               <span className="flex items-center gap-1.5 ml-auto shrink-0">
                 {timeLeft && (
-                  <span className={`text-[10px] font-semibold rounded-full px-1.5 py-0.5 ${timeLeft === "overdue" ? "bg-red-100 text-red-700" : mel ? "bg-yellow-100 text-yellow-700" : "bg-orange-100 text-orange-700"}`}>
+                  <span className={`text-[10px] font-semibold rounded-full px-1.5 py-0.5 ${timeLeft === "overdue" ? "bg-red-100 text-red-700" : "bg-yellow-100 text-yellow-700"}`}>
                     {timeLeft}
                   </span>
                 )}
@@ -1209,8 +1209,9 @@ function VanScheduleCard({
   onDragLeave: (e: React.DragEvent) => void;
   onRemove: (flightId: string) => void;  // delete aircraft from this van
 }) {
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(false);
   const [showSlackModal, setShowSlackModal] = useState(false);
+  const dragTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const now = new Date();
 
   const totalDistKm = routeDistKm(items);
@@ -1223,8 +1224,13 @@ function VanScheduleCard({
         isDropTarget ? "ring-2 ring-blue-400 border-blue-300 bg-blue-50/30" : ""
       }`}
       onDragOver={onDragOver}
-      onDrop={(e) => onDrop(e, zone.vanId)}
-      onDragLeave={onDragLeave}
+      onDragEnter={() => {
+        if (!expanded) {
+          dragTimerRef.current = setTimeout(() => setExpanded(true), 800);
+        }
+      }}
+      onDrop={(e) => { if (dragTimerRef.current) clearTimeout(dragTimerRef.current); onDrop(e, zone.vanId); }}
+      onDragLeave={(e) => { if (dragTimerRef.current) clearTimeout(dragTimerRef.current); onDragLeave(e); }}
     >
       {showSlackModal && (
         <SlackShareModal
@@ -1554,6 +1560,10 @@ function ScheduleTab({
   onHideMxForToday: (id: string) => void;
 }) {
   const hasLive = liveVanPositions.size > 0;
+  const [unassignedOpen, setUnassignedOpen] = useState(false);
+  const [unscheduledOpen, setUnscheduledOpen] = useState(false);
+  const unassignedDragTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const unscheduledDragTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Manual overrides: flightId → target vanId (moves) + removed flight IDs
   const [overrides, setOverrides] = useState<Map<string, number>>(new Map());
@@ -2052,8 +2062,20 @@ function ScheduleTab({
         const uncoveredTails = Array.from(uncoveredByTail.keys());
 
         return (
-          <div className="border-2 border-dashed border-red-200 rounded-xl bg-red-50/50 overflow-hidden">
-            <div className="px-4 py-3 flex items-center justify-between">
+          <div
+            className="border-2 border-dashed border-red-200 rounded-xl bg-red-50/50 overflow-hidden"
+            onDragOver={(e) => e.preventDefault()}
+            onDragEnter={() => {
+              if (!unassignedOpen) {
+                unassignedDragTimerRef.current = setTimeout(() => setUnassignedOpen(true), 800);
+              }
+            }}
+            onDragLeave={() => { if (unassignedDragTimerRef.current) clearTimeout(unassignedDragTimerRef.current); }}
+          >
+            <div
+              className="px-4 py-3 flex items-center justify-between cursor-pointer hover:bg-red-50"
+              onClick={() => setUnassignedOpen((v) => !v)}
+            >
               <div className="flex items-center gap-2">
                 <div className="w-6 h-6 rounded-full bg-red-100 flex items-center justify-center text-xs">
                   !
@@ -2061,14 +2083,18 @@ function ScheduleTab({
                 <div>
                   <div className="text-sm font-semibold text-red-800">
                     Unassigned Aircraft
+                    <span className="ml-1.5 text-xs font-normal text-red-600">({uncoveredTails.filter((t) => t !== "_no_tail").length})</span>
                   </div>
-                  <div className="text-xs text-red-600">
-                    {uncoveredTails.filter((t) => t !== "_no_tail").length} aircraft not covered by any van — drag into a van to assign
-                  </div>
+                  {!unassignedOpen && (
+                    <div className="text-xs text-red-600">
+                      drag into a van to assign
+                    </div>
+                  )}
                 </div>
               </div>
+              <span className="text-gray-400 text-sm">{unassignedOpen ? "▲" : "▼"}</span>
             </div>
-            <div className="border-t border-red-200 divide-y divide-red-100">
+            {unassignedOpen && <div className="border-t border-red-200 divide-y divide-red-100">
               {uncoveredTails.map((tailKey) => {
                 const items = uncoveredByTail.get(tailKey) ?? [];
                 const tail = items[0].arrFlight.tail_number;
@@ -2176,7 +2202,7 @@ function ScheduleTab({
                   </div>
                 );
               })}
-            </div>
+            </div>}
           </div>
         );
       })()}
@@ -2190,8 +2216,20 @@ function ScheduleTab({
         if (visibleUnscheduled.length === 0) return null;
 
         return (
-          <div className={`border-2 border-dashed border-amber-200 rounded-xl bg-amber-50/50 overflow-hidden ${!isAfter5pmET ? "opacity-60" : ""}`}>
-            <div className="px-4 py-3 flex items-center justify-between">
+          <div
+            className={`border-2 border-dashed border-amber-200 rounded-xl bg-amber-50/50 overflow-hidden ${!isAfter5pmET ? "opacity-60" : ""}`}
+            onDragOver={(e) => e.preventDefault()}
+            onDragEnter={() => {
+              if (!unscheduledOpen) {
+                unscheduledDragTimerRef.current = setTimeout(() => setUnscheduledOpen(true), 800);
+              }
+            }}
+            onDragLeave={() => { if (unscheduledDragTimerRef.current) clearTimeout(unscheduledDragTimerRef.current); }}
+          >
+            <div
+              className="px-4 py-3 flex items-center justify-between cursor-pointer hover:bg-amber-50"
+              onClick={() => setUnscheduledOpen((v) => !v)}
+            >
               <div className="flex items-center gap-2">
                 <div className="w-6 h-6 rounded-full bg-amber-100 flex items-center justify-center text-xs text-amber-700 font-bold">
                   ?
@@ -2201,15 +2239,18 @@ function ScheduleTab({
                     Unscheduled Aircraft
                     <span className="ml-1.5 text-xs font-normal text-amber-600">({visibleUnscheduled.length})</span>
                   </div>
-                  <div className="text-xs text-amber-600">
-                    {isAfter5pmET
-                      ? "No flights today — drag into a van to assign"
-                      : "Available after 5pm ET — drag into a van to assign early"}
-                  </div>
+                  {!unscheduledOpen && (
+                    <div className="text-xs text-amber-600">
+                      {isAfter5pmET
+                        ? "No flights today — drag into a van to assign"
+                        : "Available after 5pm ET — drag into a van to assign early"}
+                    </div>
+                  )}
                 </div>
               </div>
+              <span className="text-gray-400 text-sm">{unscheduledOpen ? "▲" : "▼"}</span>
             </div>
-            <div className="border-t border-amber-200 divide-y divide-amber-100">
+            {unscheduledOpen && <div className="border-t border-amber-200 divide-y divide-amber-100">
               {visibleUnscheduled.map((ac) => (
                 <div
                   key={ac.tail}
@@ -2256,7 +2297,7 @@ function ScheduleTab({
                   <MxNoteInline notes={mxNotesByTail.get(ac.tail) ?? []} hiddenIds={hiddenTodayMxIds} onHideForToday={onHideMxForToday} />
                 </div>
               ))}
-            </div>
+            </div>}
           </div>
         );
       })()}
@@ -3231,8 +3272,8 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
                     <div className="text-[11px] text-orange-600">
                       <span className={`font-bold ${isMel(c.mxNote) ? "text-yellow-600" : "text-orange-600"}`}>{isMel(c.mxNote) ? "MEL" : "MX"}:</span>{" "}
                       {c.mxNote.body} ({mxDateStr}{mxEndStr})
-                      {fmtTimeRemaining(c.mxNote.end_time) && (
-                        <span className={`ml-1.5 text-[10px] font-semibold rounded-full px-1.5 py-0.5 ${fmtTimeRemaining(c.mxNote.end_time) === "overdue" ? "bg-red-100 text-red-700" : "bg-orange-100 text-orange-700"}`}>
+                      {isMel(c.mxNote) && fmtTimeRemaining(c.mxNote.end_time) && (
+                        <span className={`ml-1.5 text-[10px] font-semibold rounded-full px-1.5 py-0.5 ${fmtTimeRemaining(c.mxNote.end_time) === "overdue" ? "bg-red-100 text-red-700" : "bg-yellow-100 text-yellow-700"}`}>
                           {fmtTimeRemaining(c.mxNote.end_time)}
                         </span>
                       )}
@@ -3277,7 +3318,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
             <div className="flex flex-col gap-2 ml-[52px] mt-2">
               {(mxNotes ?? []).filter((n) => !dismissedMxIds.has(n.id)).map((note) => {
                 const mel = isMel(note);
-                const timeLeft = fmtTimeRemaining(note.end_time);
+                const timeLeft = mel ? fmtTimeRemaining(note.end_time) : null;
                 return (
                 <div key={note.id} className={`bg-white rounded-lg px-3 py-2 ${mel ? "border border-yellow-300" : "border border-orange-200"}`}>
                   <div className="flex items-center gap-2">
@@ -3285,7 +3326,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
                     <span className="text-xs font-bold text-orange-800">{note.tail_number}</span>
                     <span className="text-xs text-orange-600">{note.airport_icao}</span>
                     {timeLeft && (
-                      <span className={`text-[10px] font-semibold rounded-full px-1.5 py-0.5 ${timeLeft === "overdue" ? "bg-red-100 text-red-700" : mel ? "bg-yellow-100 text-yellow-700" : "bg-orange-100 text-orange-700"}`}>
+                      <span className={`text-[10px] font-semibold rounded-full px-1.5 py-0.5 ${timeLeft === "overdue" ? "bg-red-100 text-red-700" : "bg-yellow-100 text-yellow-700"}`}>
                         {timeLeft}
                       </span>
                     )}
@@ -3660,7 +3701,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
                         <div className="border-t border-orange-100 px-4 py-2 space-y-1">
                           {(mxNotesByTail.get(tail ?? "") ?? []).filter((n) => !hiddenTodayMxIds.has(n.id)).map((n) => {
                             const mel = isMel(n);
-                            const timeLeft = fmtTimeRemaining(n.end_time);
+                            const timeLeft = mel ? fmtTimeRemaining(n.end_time) : null;
                             return (
                             <div key={n.id} className={`flex items-start gap-2 rounded-lg px-3 py-1.5 ${mel ? "bg-yellow-50 border border-yellow-300" : "bg-orange-50 border border-orange-200"}`}>
                               <span className={`font-bold text-xs mt-0.5 shrink-0 ${mel ? "text-yellow-600" : "text-orange-500"}`}>{mel ? "MEL" : "MX"}</span>
@@ -3670,7 +3711,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
                                   <span className="text-xs text-gray-700">{n.body}</span>
                                   <span className="flex items-center gap-1.5 ml-auto shrink-0">
                                     {timeLeft && (
-                                      <span className={`text-[10px] font-semibold rounded-full px-1.5 py-0.5 ${timeLeft === "overdue" ? "bg-red-100 text-red-700" : mel ? "bg-yellow-100 text-yellow-700" : "bg-orange-100 text-orange-700"}`}>
+                                      <span className={`text-[10px] font-semibold rounded-full px-1.5 py-0.5 ${timeLeft === "overdue" ? "bg-red-100 text-red-700" : "bg-yellow-100 text-yellow-700"}`}>
                                         {timeLeft}
                                       </span>
                                     )}
