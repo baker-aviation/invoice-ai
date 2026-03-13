@@ -12,7 +12,7 @@ export async function GET(req: NextRequest) {
   const supa = createServiceClient();
   const { data, error } = await supa
     .from("crew_rotations")
-    .select("*, crew_members(name, role)")
+    .select("*, crew_members(name, role, rotation_group)")
     .order("rotation_start", { ascending: false });
 
   if (error) {

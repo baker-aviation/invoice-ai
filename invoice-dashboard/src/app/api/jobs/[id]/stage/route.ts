@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin, isAuthed, isRateLimited } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 import { PIPELINE_STAGES } from "@/lib/types";
+import { getItemsForRole } from "@/lib/onboardingItems";
 
 const SAFE_ID_RE = /^\d+$/;
 
@@ -46,6 +47,62 @@ export async function PATCH(
 
     if (!data || data.length === 0) {
       return NextResponse.json({ error: "Application not found" }, { status: 404 });
+    }
+
+    // Auto-create pilot profile when moved to "hired"
+    if (stage === "hired") {
+      try {
+        // Fetch the candidate info
+        const { data: app } = await supa
+          .from("job_application_parse")
+          .select("candidate_name, email, phone, category")
+          .eq("application_id", Number(id))
+          .single();
+
+        if (app?.candidate_name) {
+          // Guard: skip if pilot_profiles already exists for this application_id
+          const { data: existing } = await supa
+            .from("pilot_profiles")
+            .select("id")
+            .eq("application_id", Number(id))
+            .maybeSingle();
+
+          if (!existing) {
+            const role = app.category?.toLowerCase().includes("pic") ? "PIC" : "SIC";
+
+            const { data: pilot } = await supa
+              .from("pilot_profiles")
+              .insert({
+                full_name: app.candidate_name,
+                email: app.email ?? null,
+                phone: app.phone ?? null,
+                role,
+                application_id: Number(id),
+                hire_date: new Date().toISOString().split("T")[0],
+                home_airports: [],
+                aircraft_types: [],
+              })
+              .select()
+              .single();
+
+            if (pilot) {
+              const items = getItemsForRole(role);
+              const rows = items.map((item) => ({
+                pilot_profile_id: pilot.id,
+                item_key: item.key,
+                item_label: item.label,
+                required_for: item.required_for,
+              }));
+              if (rows.length > 0) {
+                await supa.from("pilot_onboarding_items").insert(rows);
+              }
+            }
+          }
+        }
+      } catch (err) {
+        // Log but don't fail the stage update
+        console.error("[jobs/stage] Failed to auto-create pilot profile:", err);
+      }
     }
 
     return NextResponse.json({ ok: true, stage });

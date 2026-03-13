@@ -12,7 +12,7 @@ type Rotation = {
   tail_number: string;
   rotation_start: string;
   rotation_end: string | null;
-  crew_members?: { name: string; role: string } | null;
+  crew_members?: { name: string; role: string; rotation_group?: string | null } | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -226,6 +226,94 @@ function AddRotationModal({
 }
 
 // ---------------------------------------------------------------------------
+// Add Time Off Modal
+// ---------------------------------------------------------------------------
+
+function AddTimeOffModal({
+  pilots,
+  onClose,
+  onCreated,
+}: {
+  pilots: PilotProfile[];
+  onClose: () => void;
+  onCreated: () => void;
+}) {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setSaving(true);
+    setError("");
+
+    const fd = new FormData(e.currentTarget);
+    const body = {
+      pilot_profile_id: Number(fd.get("pilot_profile_id")),
+      request_type: fd.get("request_type"),
+      start_date: fd.get("start_date"),
+      end_date: fd.get("end_date"),
+      reason: fd.get("reason") || null,
+    };
+
+    const res = await fetch("/api/pilots/time-off", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const data = await res.json();
+    setSaving(false);
+    if (!data.ok) {
+      setError(data.error ?? "Failed to create time off request");
+      return;
+    }
+    onCreated();
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6">
+        <h2 className="text-lg font-semibold mb-4">Add Time Off</h2>
+        {error && <div className="text-sm text-red-600 mb-3">{error}</div>}
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Pilot *</label>
+            <select name="pilot_profile_id" required className="w-full border rounded-lg px-3 py-2 text-sm">
+              <option value="">Select pilot...</option>
+              {pilots.map((p) => (
+                <option key={p.id} value={p.id}>{p.full_name} ({p.role})</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Type *</label>
+            <select name="request_type" required className="w-full border rounded-lg px-3 py-2 text-sm">
+              <option value="time_off">Time Off</option>
+              <option value="standby">Standby</option>
+            </select>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Start Date *</label>
+              <input name="start_date" type="date" required className="w-full border rounded-lg px-3 py-2 text-sm" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">End Date *</label>
+              <input name="end_date" type="date" required className="w-full border rounded-lg px-3 py-2 text-sm" />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Reason</label>
+            <input name="reason" className="w-full border rounded-lg px-3 py-2 text-sm" placeholder="Optional" />
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800">Cancel</button>
+            <button type="submit" disabled={saving} className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50">
+              {saving ? "Creating..." : "Create Request"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main Component
 // ---------------------------------------------------------------------------
 
@@ -237,6 +325,7 @@ export default function PilotsClient() {
   const [loading, setLoading] = useState(true);
   const [showAddPilot, setShowAddPilot] = useState(false);
   const [showAddRotation, setShowAddRotation] = useState(false);
+  const [showAddTimeOff, setShowAddTimeOff] = useState(false);
 
   const fetchPilots = useCallback(async () => {
     const res = await fetch("/api/pilots");
@@ -272,6 +361,16 @@ export default function PilotsClient() {
 
   async function handleDeleteRotation(id: number) {
     await fetch(`/api/pilots/rotations/${id}`, { method: "DELETE" });
+    fetchRotations();
+  }
+
+  async function handleRotationGroupCycle(crewMemberId: number, current: string | null | undefined) {
+    const next = !current ? "A" : current === "A" ? "B" : null;
+    await fetch("/api/pilots/rotation-group", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ crew_member_id: crewMemberId, rotation_group: next }),
+    });
     fetchRotations();
   }
 
@@ -423,6 +522,7 @@ export default function PilotsClient() {
                 <tr className="bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   <th className="px-4 py-3">Crew Member</th>
                   <th className="px-4 py-3">Role</th>
+                  <th className="px-4 py-3">Group</th>
                   <th className="px-4 py-3">Aircraft</th>
                   <th className="px-4 py-3">Start</th>
                   <th className="px-4 py-3">End</th>
@@ -434,6 +534,21 @@ export default function PilotsClient() {
                   <tr key={r.id} className="hover:bg-gray-50">
                     <td className="px-4 py-3 font-medium">{r.crew_members?.name ?? `#${r.crew_member_id}`}</td>
                     <td className="px-4 py-3">{r.crew_members?.role ?? "—"}</td>
+                    <td className="px-4 py-3">
+                      <button
+                        onClick={() => handleRotationGroupCycle(r.crew_member_id, r.crew_members?.rotation_group)}
+                        className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium cursor-pointer hover:opacity-80 transition-opacity"
+                        title="Click to cycle: — → A → B → —"
+                      >
+                        {r.crew_members?.rotation_group ? (
+                          <span className={r.crew_members.rotation_group === "A" ? "bg-purple-100 text-purple-800 rounded-full px-2 py-0.5" : "bg-amber-100 text-amber-800 rounded-full px-2 py-0.5"}>
+                            {r.crew_members.rotation_group}
+                          </span>
+                        ) : (
+                          <span className="bg-gray-100 text-gray-400 rounded-full px-2 py-0.5">—</span>
+                        )}
+                      </button>
+                    </td>
                     <td className="px-4 py-3">{r.tail_number}</td>
                     <td className="px-4 py-3 text-gray-500">{r.rotation_start}</td>
                     <td className="px-4 py-3 text-gray-500">{r.rotation_end ?? "Ongoing"}</td>
@@ -449,7 +564,7 @@ export default function PilotsClient() {
                 ))}
                 {rotations.length === 0 && (
                   <tr>
-                    <td colSpan={6} className="px-4 py-8 text-center text-gray-400">
+                    <td colSpan={7} className="px-4 py-8 text-center text-gray-400">
                       No rotations found.
                     </td>
                   </tr>
@@ -463,7 +578,15 @@ export default function PilotsClient() {
       {/* Time Off Tab */}
       {tab === "time_off" && (
         <div>
-          <h2 className="text-sm font-semibold text-gray-700 mb-4">Time Off Requests</h2>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-sm font-semibold text-gray-700">Time Off Requests</h2>
+            <button
+              onClick={() => setShowAddTimeOff(true)}
+              className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+            >
+              + Add Time Off
+            </button>
+          </div>
           <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
             <table className="w-full text-sm">
               <thead>
@@ -539,6 +662,13 @@ export default function PilotsClient() {
           pilots={pilots}
           onClose={() => setShowAddRotation(false)}
           onCreated={() => { setShowAddRotation(false); fetchRotations(); }}
+        />
+      )}
+      {showAddTimeOff && (
+        <AddTimeOffModal
+          pilots={pilots}
+          onClose={() => setShowAddTimeOff(false)}
+          onCreated={() => { setShowAddTimeOff(false); fetchTimeOff(); }}
         />
       )}
     </div>
