@@ -4,6 +4,40 @@ import { createServiceClient } from "@/lib/supabase/service";
 
 export const dynamic = "force-dynamic";
 
+// ── IATA → ICAO conversion ──
+// ForeFlight returns IATA codes (SJU, TEB) but JetInsight uses ICAO (KSJU, KTEB).
+const IATA_TO_ICAO: Record<string, string> = {
+  // Caribbean / international
+  SJU: "TJSJ", STT: "TIST", STX: "TISX", BQN: "TJBQ", PSE: "TJPS",
+  NAS: "MYNN", FPO: "MYGF", GGT: "MYEG", ELH: "MYEH", MHH: "MYAM",
+  AUA: "TNCA", CUR: "TNCC", SXM: "TNCM", BON: "TNCB",
+  PUJ: "MDPC", SDQ: "MDSD", STI: "MDST",
+  MBJ: "MKJS", KIN: "MKJP",
+  GCM: "MWCR", CIW: "MWCB",
+  PLS: "MBPV", NCA: "MBNC",
+  BDA: "TXKF",
+  HAV: "MUHA", VRA: "MUVR",
+  CUN: "MMUN", MEX: "MMMX", SJD: "MMSD", GDL: "MMGL", PVR: "MMPR",
+  PTY: "MPTO",
+  // Canada
+  YYZ: "CYYZ", YUL: "CYUL", YVR: "CYVR", YOW: "CYOW", YHZ: "CYHZ",
+  YYC: "CYYC", YEG: "CYEG", YWG: "CYWG",
+  // Europe
+  LHR: "EGLL", CDG: "LFPG", FRA: "EDDF", AMS: "EHAM", ZRH: "LSZH",
+  FCO: "LIRF", BCN: "LEBL", MAD: "LEMD",
+};
+
+/** Convert a ForeFlight airport code to ICAO. US airports get "K" prefix. */
+function toIcao(code: string | null | undefined): string | null {
+  if (!code) return null;
+  const upper = code.toUpperCase().trim();
+  if (upper.length === 4) return upper; // Already ICAO
+  if (IATA_TO_ICAO[upper]) return IATA_TO_ICAO[upper];
+  // US domestic: 3-letter IATA → "K" + IATA
+  if (upper.length === 3 && /^[A-Z]{3}$/.test(upper)) return `K${upper}`;
+  return upper;
+}
+
 // ── ForeFlight API types ──
 
 interface ForeFlightFlight {
@@ -174,8 +208,8 @@ export async function GET(req: NextRequest) {
 
         const statuses = relevant.map((f) => ({
           tail_number: f.aircraftRegistration,
-          departure_icao: f.departure,
-          arrival_icao: f.destination,
+          departure_icao: toIcao(f.departure),
+          arrival_icao: toIcao(f.destination),
           status: deriveForeFlightStatus(f),
           event_time: f.timeUpdated,
           etd: f.departureTime,
