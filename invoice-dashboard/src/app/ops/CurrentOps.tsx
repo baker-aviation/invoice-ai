@@ -498,15 +498,18 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
       const res = await fetch("/api/ops/swim-status", { cache: "no-store" });
       if (res.ok) {
         const data = await res.json();
+        const STATUS_PRIORITY: Record<string, number> = { "En Route": 4, "Filed": 3, "Scheduled": 2, "Arrived": 1, "Cancelled": 0 };
         const map = new Map<string, SwimFlightStatus>();
         for (const s of data.statuses ?? []) {
           // Route-specific key
           const key = `${s.tail_number}|${s.departure_icao ?? ""}|${s.arrival_icao ?? ""}`;
           map.set(key, s);
-          // Also store tail-only key (fallback when SWIM route differs from JetInsight)
-          // Only set if no existing tail-only entry or this one is newer
+          // Tail-only key — prefer the most active status (En Route > Filed > etc.)
           const tailKey = `${s.tail_number}||`;
-          if (!map.has(tailKey)) map.set(tailKey, s);
+          const existing = map.get(tailKey);
+          if (!existing || (STATUS_PRIORITY[s.status] ?? 0) > (STATUS_PRIORITY[existing.status] ?? 0)) {
+            map.set(tailKey, s);
+          }
         }
         setSwimStatus(map);
       }
