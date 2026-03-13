@@ -198,9 +198,9 @@ export async function POST(req: NextRequest) {
 
     console.log(`[Swap Optimizer] Searching ${pairsArray.length} route pairs × ${searchDates.length} date(s) (${searchDates.join(", ")}) = ${allSearches.length} searches via HasData`);
 
-    // Search in batches of 15 (HasData Pro: 15 concurrent requests)
-    for (let i = 0; i < allSearches.length; i += 15) {
-      const batch = allSearches.slice(i, i + 15);
+    // Search in batches of 30 (HasData Pro: 30 concurrent requests)
+    for (let i = 0; i < allSearches.length; i += 30) {
+      const batch = allSearches.slice(i, i + 30);
       const results = await Promise.all(
         batch.map(async ({ pair, date }) => {
           const [orig, dest] = pair.split("-");
