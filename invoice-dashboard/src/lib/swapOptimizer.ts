@@ -1183,8 +1183,22 @@ export function buildSwapPlan(params: {
     legs.sort((a, b) => new Date(a.scheduled_departure).getTime() - new Date(b.scheduled_departure).getTime());
   }
 
-  // ── Process each tail ──────────────────────────────────────────────────
-  for (const [tail, assignment] of Object.entries(swapAssignments)) {
+  // ── Sort tails by difficulty: hardest swap locations first ────────────
+  // Remote airports (fewer commercial options) get first pick of flights/crews.
+  // Hubs like VNY (near BUR, LAX) can work with whatever's left.
+  const tailEntries = Object.entries(swapAssignments);
+  const tailDifficulty = new Map<string, number>();
+  for (const [tail] of tailEntries) {
+    const { swapPoints } = extractSwapPoints(tail, byTail, swapDate);
+    const swapIcao = swapPoints[0]?.icao ?? "";
+    const commercialOptions = findAllCommercialAirports(swapIcao, aliases);
+    // Fewer options = harder = lower score = sorted first
+    tailDifficulty.set(tail, commercialOptions.length);
+  }
+  tailEntries.sort((a, b) => (tailDifficulty.get(a[0]) ?? 0) - (tailDifficulty.get(b[0]) ?? 0));
+
+  // ── Process each tail (hardest first) ───────────────────────────────
+  for (const [tail, assignment] of tailEntries) {
     // Determine aircraft type
     const anyName = assignment.oncoming_pic ?? assignment.offgoing_pic ?? assignment.oncoming_sic ?? assignment.offgoing_sic;
     const anyCrew = anyName ? (findCrewByName(crewRoster, anyName, "PIC") ?? findCrewByName(crewRoster, anyName, "SIC")) : null;
