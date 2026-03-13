@@ -175,14 +175,28 @@ export async function POST(req: NextRequest) {
     const dayBefore = new Date(new Date(swapDate + "T12:00:00Z").getTime() - 86_400_000)
       .toISOString().slice(0, 10);
 
-    // Build full search list: swap-day + day-before for all pairs
+    // Check if any pool members are early/late volunteers — if so, search extra dates
+    const hasEarlyVol = hasPool && [...clientOncomingPool!.pic, ...clientOncomingPool!.sic].some(p => p.early_volunteer);
+    const hasLateVol = hasPool && [...clientOncomingPool!.pic, ...clientOncomingPool!.sic].some(p => p.late_volunteer);
+    const twoDaysBefore = hasEarlyVol
+      ? new Date(new Date(swapDate + "T12:00:00Z").getTime() - 2 * 86_400_000).toISOString().slice(0, 10)
+      : null;
+    const dayAfter = hasLateVol
+      ? new Date(new Date(swapDate + "T12:00:00Z").getTime() + 86_400_000).toISOString().slice(0, 10)
+      : null;
+
+    // Build full search list: swap-day + day-before + optional Tue/Thu for volunteers
+    const searchDates = [swapDate, dayBefore];
+    if (twoDaysBefore) searchDates.push(twoDaysBefore);
+    if (dayAfter) searchDates.push(dayAfter);
     const allSearches: { pair: string; date: string }[] = [];
     for (const pair of pairsArray) {
-      allSearches.push({ pair, date: swapDate });
-      allSearches.push({ pair, date: dayBefore });
+      for (const date of searchDates) {
+        allSearches.push({ pair, date });
+      }
     }
 
-    console.log(`[Swap Optimizer] Searching ${pairsArray.length} route pairs × 2 dates (${swapDate}, ${dayBefore}) via HasData`);
+    console.log(`[Swap Optimizer] Searching ${pairsArray.length} route pairs × ${searchDates.length} dates (${searchDates.join(", ")}) via HasData`);
 
     // Search in batches of 15 (HasData Pro: 15 concurrent requests)
     for (let i = 0; i < allSearches.length; i += 15) {

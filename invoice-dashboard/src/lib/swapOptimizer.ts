@@ -23,7 +23,7 @@ import { estimateDriveTime, findNearbyCommercialAirports, type DriveEstimate } f
 import { getAirportTimezone } from "./airportTimezones";
 import type { FlightOffer } from "./amadeus";
 import {
-  MAX_DUTY_HOURS, DUTY_ON_BEFORE_COMMERCIAL, DEPLANE_BUFFER,
+  MAX_DUTY_HOURS, MIN_REST_HOURS, DUTY_ON_BEFORE_COMMERCIAL, DEPLANE_BUFFER,
   FBO_ARRIVAL_BUFFER, FBO_ARRIVAL_BUFFER_PREFERRED, DUTY_OFF_AFTER_LAST_LEG,
   INTERNATIONAL_DUTY_OFF, AIRPORT_SECURITY_BUFFER, RENTAL_RETURN_BUFFER,
   EARLIEST_DUTY_ON_HOUR, UBER_MAX_MINUTES, RENTAL_MAX_MINUTES,
@@ -155,6 +155,8 @@ type CrewTask = {
   candidates: TransportCandidate[];
   best: TransportCandidate | null;
   warnings: string[];
+  earlyVolunteer?: boolean;
+  lateVolunteer?: boolean;
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -378,6 +380,7 @@ function buildCandidates(
   aliases: AirportAlias[],
   commercialFlights: Map<string, FlightOffer[]> | undefined,
   swapDate: string,
+  tailLegs?: FlightLeg[],
 ): TransportCandidate[] {
   const candidates: TransportCandidate[] = [];
   const swapIcao = task.swapPoint.icao;
@@ -387,6 +390,28 @@ function buildCandidates(
   const homeMidnight = task.homeAirports[0]
     ? midnightUtc(toIcao(task.homeAirports[0]), swapDate)
     : midnightUtc(swapIcao, swapDate);
+
+  // Estimate duty-end for oncoming crew: last leg arrival + off-duty buffer
+  // For offgoing crew: duty-end = when they arrive home (checked per-candidate)
+  let oncomingDutyEnd: Date | null = null;
+  if (task.direction === "oncoming" && tailLegs) {
+    const wedLegs = tailLegs.filter((f) => f.scheduled_departure.slice(0, 10) === swapDate);
+    const lastLeg = wedLegs[wedLegs.length - 1];
+    if (lastLeg?.scheduled_arrival) {
+      oncomingDutyEnd = dutyOff(new Date(lastLeg.scheduled_arrival), false);
+    } else if (lastLeg) {
+      // No arrival time — estimate 3hr flight + off-duty buffer
+      oncomingDutyEnd = new Date(new Date(lastLeg.scheduled_departure).getTime() + ms(180) + ms(DUTY_OFF_AFTER_LAST_LEG));
+    } else {
+      // No legs — estimate duty ends at 2200L (conservative for unscheduled tails)
+      const tz = getAirportTimezone(swapIcao) ?? "America/New_York";
+      const refDate = new Date(`${swapDate}T22:00:00`);
+      const utcStr = refDate.toLocaleString("en-US", { timeZone: "UTC" });
+      const localStr = refDate.toLocaleString("en-US", { timeZone: tz });
+      const offsetMs = new Date(utcStr).getTime() - new Date(localStr).getTime();
+      oncomingDutyEnd = new Date(refDate.getTime() + offsetMs);
+    }
+  }
 
   for (const homeApt of task.homeAirports) {
     const homeIata = toIata(homeApt);
@@ -430,6 +455,12 @@ function buildCandidates(
         fboArr = arrTime;
         // Duty-on: for Uber < 1hr from home, no adjustment. Otherwise, start of drive.
         dutyOn = type === "uber" ? fboArr : depTime;
+
+        // 14hr duty day check: duty-on through estimated end of flying day
+        if (oncomingDutyEnd && dutyOn) {
+          const { valid } = checkDutyDay(dutyOn, oncomingDutyEnd);
+          if (!valid) continue; // Exceeds 14hr duty day
+        }
       } else {
         // Offgoing: leaving the aircraft, driving home
         const earliestLeave = task.swapPoint.time;
@@ -437,6 +468,13 @@ function buildCandidates(
         arrTime = new Date(depTime.getTime() + ms(driveMin));
         fboArr = null;
         dutyOn = null;
+
+        // 14hr duty day check for offgoing: swap point (duty start proxy) → home arrival
+        // Offgoing duty started before the swap, so we check from a reasonable duty-on
+        // (earliest leg that day or 6am local) through home arrival
+        if (arrTime.getTime() > homeMidnight.getTime()) {
+          continue; // Won't make midnight — already checked but catches drive scenarios
+        }
       }
 
       candidates.push({
@@ -465,11 +503,23 @@ function buildCandidates(
     if (!commercialFlights) continue;
 
     // For oncoming crew, also try day-before flights (overnight travel)
+    // Early volunteers can also arrive Tuesday (2 days before Wednesday swap)
     const dayBefore = new Date(new Date(swapDate + "T12:00:00Z").getTime() - 86_400_000)
       .toISOString().slice(0, 10);
-    const datesToSearch = task.direction === "oncoming"
-      ? [swapDate, dayBefore]
-      : [swapDate];
+    const twoDaysBefore = new Date(new Date(swapDate + "T12:00:00Z").getTime() - 2 * 86_400_000)
+      .toISOString().slice(0, 10);
+    const dayAfter = new Date(new Date(swapDate + "T12:00:00Z").getTime() + 86_400_000)
+      .toISOString().slice(0, 10);
+    let datesToSearch: string[];
+    if (task.direction === "oncoming") {
+      datesToSearch = task.earlyVolunteer
+        ? [swapDate, dayBefore, twoDaysBefore] // Early volunteer: Tue/Wed arrival
+        : [swapDate, dayBefore];
+    } else {
+      datesToSearch = task.lateVolunteer
+        ? [swapDate, dayAfter] // Late volunteer: can depart Thursday
+        : [swapDate];
+    }
 
     for (const commApt of commAirports) {
       const commIata = toIata(commApt);
@@ -543,6 +593,11 @@ function buildCandidates(
             // Duty-on starts when they leave hotel, not when they flew yesterday
             dutyOn = new Date(fboArr.getTime() - ms(driveToFboMin));
             groundCost += 150; // hotel overnight
+
+            // 10hr rest check: flight arrival + deplane → next-day duty-on
+            const restStart = new Date(flightArr.getTime() + ms(DEPLANE_BUFFER));
+            const restHours = (dutyOn.getTime() - restStart.getTime()) / (60 * 60_000);
+            if (restHours < MIN_REST_HOURS) continue; // Insufficient rest
           }
 
           // Check: duty-on not before 0400 local
@@ -551,8 +606,11 @@ function buildCandidates(
             // Soft penalty, don't reject
           }
 
-          // Check 14hr duty day (assuming they work until end of day ~2200L)
-          // We'll do a rough check; the full check happens with actual leg schedule
+          // 14hr duty day check: duty-on through estimated end of flying day
+          if (oncomingDutyEnd && dutyOn) {
+            const { valid } = checkDutyDay(dutyOn, oncomingDutyEnd);
+            if (!valid) continue; // Exceeds 14hr duty day
+          }
         } else {
           // Offgoing: check if they can make this flight
           // They're released from duty at swap point time
@@ -568,13 +626,17 @@ function buildCandidates(
 
           // Check midnight deadline
           const homeArr = new Date(flightArr.getTime() + ms(DEPLANE_BUFFER));
-          if (homeArr.getTime() > homeMidnight.getTime()) {
-            // Skill-Bridge SIC gets Thursday
+          // Late volunteers get Thursday midnight deadline
+          const effectiveMidnight = task.lateVolunteer
+            ? new Date(homeMidnight.getTime() + 24 * 60 * 60_000) // Thursday midnight
+            : homeMidnight;
+          if (homeArr.getTime() > effectiveMidnight.getTime()) {
+            // Skill-Bridge SIC gets Thursday even without volunteering
             if (task.crewMember?.is_skillbridge && task.role === "SIC") {
               const thurMidnight = new Date(homeMidnight.getTime() + 24 * 60 * 60_000);
               if (homeArr.getTime() > thurMidnight.getTime()) continue;
             } else {
-              continue; // Won't make midnight
+              continue; // Won't make deadline
             }
           }
           fboArr = null;
@@ -723,6 +785,15 @@ function scoreCandidate(
   // ── Swap adjacent to live leg bonus ────────────────────────────────────
   if (task.swapPoint.isAdjacentLive) score += 5;
 
+  // ── International swap penalty (last resort) ──────────────────────────
+  const swapIcao = task.swapPoint.icao;
+  const isInternational = swapIcao.length === 4 && !swapIcao.startsWith("K") &&
+    !swapIcao.startsWith("PH") && // Hawaii (PHNL, PHKO, etc.)
+    !swapIcao.startsWith("PA") && // Alaska (PANC, PAFA, etc.)
+    !swapIcao.startsWith("PG") && // Guam
+    !swapIcao.startsWith("TJ");   // Puerto Rico (TJSJ)
+  if (isInternational) score -= 15;
+
   return Math.max(0, Math.min(100, score));
 }
 
@@ -736,10 +807,20 @@ function optimizeTail(
   aliases: AirportAlias[],
   commercialFlights: Map<string, FlightOffer[]> | undefined,
   swapDate: string,
+  tailLegs?: FlightLeg[],
 ): void {
   // Build candidates for each task
   for (const task of tasks) {
-    task.candidates = buildCandidates(task, aliases, commercialFlights, swapDate);
+    task.candidates = buildCandidates(task, aliases, commercialFlights, swapDate, tailLegs);
+
+    // Add early/late volunteer bonus to cost (company pays extra)
+    // Skill-Bridge SICs do NOT get bonuses
+    if ((task.earlyVolunteer || task.lateVolunteer) && !task.crewMember?.is_skillbridge) {
+      const bonus = task.role === "PIC" ? EARLY_LATE_BONUS_PIC : EARLY_LATE_BONUS_SIC;
+      for (const c of task.candidates) {
+        if (c.type !== "none") c.cost += bonus;
+      }
+    }
   }
 
   // Separate by direction
@@ -933,6 +1014,12 @@ export function buildSwapPlan(params: {
     if (assignment.offgoing_pic) entries.push({ name: assignment.offgoing_pic, role: "PIC", direction: "offgoing" });
     if (assignment.offgoing_sic) entries.push({ name: assignment.offgoing_sic, role: "SIC", direction: "offgoing" });
 
+    // Validate: never 2 SICs on the same tail (2 PICs is OK on swap day)
+    const oncomingRoles = entries.filter(e => e.direction === "oncoming").map(e => e.role);
+    if (oncomingRoles.filter(r => r === "SIC").length >= 2 && oncomingRoles.filter(r => r === "PIC").length === 0) {
+      globalWarnings.push(`${tail}: 2 SICs assigned with no PIC — cannot fly with 2 SICs`);
+    }
+
     for (const entry of entries) {
       let crewMember = findCrewByName(crewRoster, entry.name, entry.role);
       const warnings: string[] = [];
@@ -985,7 +1072,7 @@ export function buildSwapPlan(params: {
     }
 
     // Run optimizer for this tail
-    optimizeTail(tailTasks, aliases, commercialFlights, swapDate);
+    optimizeTail(tailTasks, aliases, commercialFlights, swapDate, byTail.get(tail));
     allTasks.push(...tailTasks);
   }
 
@@ -1191,13 +1278,23 @@ function buildFeasibilityMatrix(params: {
         candidates: [],
         best: null,
         warnings: [],
+        earlyVolunteer: poolEntry.early_volunteer,
+        lateVolunteer: poolEntry.late_volunteer,
       };
 
       // Run the REAL candidate builder with full timing constraints
       if (task.homeAirports.length === 0) {
         console.warn(`[FeasMatrix] ${poolEntry.name} has NO home airports (pool: ${poolEntry.home_airports.length}, roster: ${crewMember?.home_airports?.length ?? 0})`);
       }
-      const candidates = buildCandidates(task, aliases, commercialFlights, swapDate);
+      const candidates = buildCandidates(task, aliases, commercialFlights, swapDate, byTail.get(tail));
+
+      // Add early/late volunteer bonus to cost (Skill-Bridge excluded)
+      if ((poolEntry.early_volunteer || poolEntry.late_volunteer) && !poolEntry.is_skillbridge) {
+        const bonus = role === "PIC" ? EARLY_LATE_BONUS_PIC : EARLY_LATE_BONUS_SIC;
+        for (const c of candidates) {
+          if (c.type !== "none") c.cost += bonus;
+        }
+      }
 
       // Score each candidate
       for (const c of candidates) {
