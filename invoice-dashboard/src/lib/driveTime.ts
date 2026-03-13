@@ -136,6 +136,166 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   KCMH: [39.9980, -82.8919],   // Columbus (OH)
   KMKE: [42.9472, -87.8966],   // Milwaukee
   KDAB: [29.1799, -81.0581],   // Daytona Beach
+
+  // ── Texas (additional) ──────────────────────────────────────────────────
+  KACT: [31.6113, -97.2305],   // Waco
+  KADS: [32.9686, -96.8364],   // Addison
+  KAFW: [32.9876, -97.3189],   // Fort Worth Alliance
+  KCLL: [30.5886, -96.3638],   // College Station
+  KEDC: [30.3985, -97.5664],   // Austin Executive
+  KFTW: [32.8198, -97.3624],   // Fort Worth Meacham
+  KGTU: [30.6788, -97.6794],   // Georgetown
+  KSGR: [29.6222, -95.6565],   // Sugar Land
+  KTME: [29.8070, -95.8979],   // Houston Executive
+  KIKG: [27.5508, -97.7437],   // Kleberg County (Kingsville)
+  KGDJ: [32.4444, -97.8169],   // Granbury
+
+  // ── Florida (additional) ─────────────────────────────────────────────────
+  KBKV: [28.4736, -82.4554],   // Brooksville
+  KDED: [29.0670, -81.2837],   // DeLand
+  KECP: [30.3571, -85.7955],   // Panama City (NW Florida Beaches)
+  KFMY: [26.5866, -81.8632],   // Fort Myers (Page Field)
+  KISM: [28.2898, -81.4371],   // Kissimmee Gateway
+  KMKY: [25.9950, -81.6725],   // Marco Island
+  KORL: [28.5455, -81.3329],   // Orlando Executive
+  KPGD: [26.9202, -81.9905],   // Punta Gorda
+  KTIX: [28.5148, -80.7992],   // Titusville/Space Coast
+  KVNC: [27.0716, -82.4403],   // Venice
+  KVRB: [27.6556, -80.4179],   // Vero Beach
+  KCEW: [30.7788, -86.5221],   // Crestview (FL panhandle)
+  KDTS: [30.4001, -86.4715],   // Destin (FL panhandle)
+
+  // ── Northeast / Mid-Atlantic (additional) ────────────────────────────────
+  KABE: [40.6521, -75.4408],   // Allentown, PA
+  KALB: [42.7483, -73.8017],   // Albany, NY
+  KAVP: [41.3385, -75.7234],   // Wilkes-Barre/Scranton, PA
+  KBLM: [40.1868, -74.1249],   // Belmar/Monmouth, NJ
+  KFOK: [40.8437, -72.6318],   // Westhampton Beach, NY
+  KILG: [39.6787, -75.6065],   // Wilmington, DE
+  KIPT: [41.2418, -76.9211],   // Williamsport, PA
+  KJYO: [39.0780, -77.5575],   // Leesburg, VA
+  KOKV: [39.1435, -78.1444],   // Winchester, VA
+  KOXC: [41.4786, -73.1352],   // Oxford, CT
+  KPNE: [40.0819, -75.0106],   // Philadelphia NE
+  KSHD: [38.2638, -78.8964],   // Staunton/Shenandoah, VA
+  KTTN: [40.2767, -74.8135],   // Trenton, NJ
+  KFCI: [37.5065, -77.5254],   // Richmond (Chesterfield), VA
+  KOFP: [37.7091, -77.4361],   // Hanover County, VA
+
+  // ── Carolinas / Southeast GA (additional) ─────────────────────────────────
+  KAUO: [32.6151, -85.4340],   // Auburn, AL
+  KANB: [33.5882, -85.8581],   // Anniston, AL
+  KBUY: [36.0485, -79.4749],   // Burlington, NC
+  KCRE: [33.8117, -78.7239],   // Myrtle Beach (Grand Strand)
+  KGSO: [36.0978, -79.9373],   // Greensboro, NC
+  KHKY: [35.7411, -81.3896],   // Hickory, NC
+  KHXD: [32.2244, -80.6975],   // Hilton Head, SC
+  KILM: [34.2706, -77.9026],   // Wilmington, NC
+  KINT: [36.1337, -80.2220],   // Winston-Salem, NC
+  KJQF: [35.3878, -80.7091],   // Concord, NC
+  KPGV: [35.6352, -77.3853],   // Greenville, NC
+  KSIG: [36.8937, -76.2893],   // Norfolk (Bravo), VA
+  KSOP: [35.2374, -79.3913],   // Pinehurst/Southern Pines, NC
+  KSSI: [31.1518, -81.3913],   // Brunswick (St. Simons), GA
+
+  // ── Midwest (additional) ──────────────────────────────────────────────────
+  KATW: [44.2581, -88.5191],   // Appleton, WI
+  KCID: [41.8847, -91.7108],   // Cedar Rapids, IA
+  KCMI: [40.0392, -88.2781],   // Champaign, IL
+  KDAY: [39.9024, -84.2194],   // Dayton, OH
+  KDSM: [41.5340, -93.6631],   // Des Moines, IA
+  KFNT: [42.9655, -83.7436],   // Flint, MI
+  KGRB: [44.4851, -88.1296],   // Green Bay, WI
+  KGYY: [41.6163, -87.4128],   // Gary, IN
+  KICT: [37.6499, -97.4331],   // Wichita, KS
+  KIXD: [38.8309, -94.8903],   // Olathe (New Century), KS
+  KMCI: [39.2976, -94.7139],   // Kansas City, MO
+  KMKC: [39.1232, -94.5928],   // Kansas City Downtown, MO
+  KOSU: [40.0798, -83.0730],   // Columbus (OSU), OH
+  KSGF: [37.2457, -93.3886],   // Springfield, MO
+  KSUS: [38.6621, -90.6521],   // Spirit of St. Louis, MO
+  KUES: [43.0411, -88.2370],   // Waukesha, WI
+  KAMW: [41.9921, -93.6218],   // Ames, IA
+
+  // ── South Central (additional) ────────────────────────────────────────────
+  KBTR: [30.5332, -91.1496],   // Baton Rouge, LA
+  KBVO: [36.7625, -96.0112],   // Bartlesville, OK
+  KHCR: [35.5114, -91.5656],   // Heber Springs, AR
+  KSHV: [32.4466, -93.8256],   // Shreveport, LA
+
+  // ── Mountain / West (additional) ──────────────────────────────────────────
+  KAVQ: [32.4096, -111.2185],  // Tucson/Marana, AZ
+  KBJC: [39.9088, -105.1172],  // Broomfield/Rocky Mtn Metro, CO
+  KBZN: [45.7775, -111.1530],  // Bozeman, MT
+  KCEZ: [37.3030, -108.6281],  // Cortez, CO
+  KGPI: [48.3105, -114.2560],  // Glacier Park (Kalispell), MT
+  KHDN: [40.4812, -107.2178],  // Hayden/Steamboat Springs, CO
+  KHII: [34.5711, -114.3583],  // Lake Havasu, AZ
+  KIWA: [33.3078, -111.6551],  // Phoenix-Mesa Gateway, AZ
+  KJAC: [43.6073, -110.7377],  // Jackson Hole, WY
+  KSUN: [43.5044, -114.2962],  // Sun Valley (Hailey), ID
+
+  // ── Pacific (additional) ──────────────────────────────────────────────────
+  KAPC: [38.2132, -122.2807],  // Napa, CA
+  KBFI: [47.5300, -122.3019],  // Boeing Field (Seattle), WA
+  KBVS: [48.4709, -122.4209],  // Burlington (Skagit), WA
+  KCCR: [37.9897, -122.0569],  // Concord, CA
+  KCMA: [34.2137, -119.0943],  // Camarillo, CA
+  KCRQ: [33.1283, -117.2803],  // Carlsbad (McClellan-Palomar), CA
+  KLGB: [33.8177, -118.1516],  // Long Beach, CA
+  KONT: [34.0560, -117.6012],  // Ontario, CA
+  KPDX: [45.5887, -122.5975],  // Portland, OR
+  KSBA: [34.4262, -119.8404],  // Santa Barbara, CA
+  KSBD: [34.0954, -117.2349],  // San Bernardino, CA
+  KSEA: [47.4502, -122.3088],  // Seattle-Tacoma, WA
+  KUDD: [33.7484, -116.2748],  // Bermuda Dunes, CA
+  KMCC: [38.6676, -121.4008],  // McClellan, CA
+  KHWD: [37.6592, -122.1217],  // Hayward, CA
+  KNUQ: [37.4161, -122.0490],  // Moffett Field, CA
+
+  // ── Alaska / Hawaii / Territories ─────────────────────────────────────────
+  PANC: [61.1744, -149.9964],  // Anchorage, AK
+  PHNL: [21.3187, -157.9225],  // Honolulu, HI
+  KSJU: [18.4394, -66.0018],   // San Juan, PR
+  KSTT: [18.3373, -64.9734],   // St. Thomas, USVI
+  TJSJ: [18.4394, -66.0018],   // San Juan (ICAO), PR
+
+  // ── Canada (additional) ───────────────────────────────────────────────────
+  CYEG: [53.3097, -113.5800],  // Edmonton, AB
+  CYWG: [49.9100, -97.2399],   // Winnipeg, MB
+  CYHZ: [44.8808, -63.5086],   // Halifax, NS
+  CYQB: [46.7911, -71.3933],   // Quebec City, QC
+  CYYT: [47.6186, -52.7519],   // St. John's, NL
+
+  // ── Mexico ────────────────────────────────────────────────────────────────
+  MMMX: [19.4363, -99.0721],   // Mexico City
+  MMUN: [21.0365, -86.8771],   // Cancun
+  MMMY: [25.7785, -100.1069],  // Monterrey
+  MMGL: [20.5218, -103.3111],  // Guadalajara
+  MMSD: [23.1518, -109.7215],  // Los Cabos (San Jose del Cabo)
+  MMPR: [20.6801, -105.2544],  // Puerto Vallarta
+  MMTO: [19.3371, -99.5660],   // Toluca
+  MMSL: [22.2543, -100.9308],  // San Luis Potosi
+
+  // ── Caribbean / Central America ───────────────────────────────────────────
+  MBPV: [21.7736, -72.2659],   // Providenciales, Turks & Caicos
+  MYNN: [25.0390, -77.4662],   // Nassau, Bahamas
+  MYAM: [26.5114, -77.0836],   // Marsh Harbour, Bahamas
+  MYEH: [25.4749, -76.6831],   // Eleuthera, Bahamas
+  MYGF: [26.5587, -78.6956],   // Freeport, Bahamas
+  MKJP: [17.9357, -76.7875],   // Kingston, Jamaica
+  MDPC: [18.5674, -68.3634],   // Punta Cana, DR
+  MWCR: [19.2928, -81.3577],   // Grand Cayman
+  TNCM: [18.0410, -63.1089],   // St. Maarten
+  TQPF: [18.2048, -63.0551],   // Anguilla
+  TBPB: [13.0746, -59.4925],   // Barbados
+  TVSA: [13.1444, -61.2110],   // St. Vincent
+  MROC: [9.9939, -84.2088],    // San Jose, Costa Rica
+  MRLB: [10.5933, -85.5444],   // Liberia, Costa Rica
+  MPTO: [9.0714, -79.3835],    // Panama City (Tocumen)
+  MHTG: [14.0609, -87.2172],   // Tegucigalpa, Honduras
+  MGGT: [14.5833, -90.5275],   // Guatemala City
+  TXKF: [32.3640, -64.6787],   // Bermuda
 };
 
 // ─── Haversine ───────────────────────────────────────────────────────────────
