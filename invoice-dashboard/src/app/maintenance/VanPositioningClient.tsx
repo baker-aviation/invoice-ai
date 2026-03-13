@@ -1018,19 +1018,31 @@ function fmtTimeRemaining(endTime: string | null): string | null {
   return "<1h left";
 }
 
-function MxNoteInline({ notes, hiddenIds, onHideForToday }: { notes: MxNote[]; hiddenIds?: Set<string>; onHideForToday?: (id: string) => void }) {
-  // Hide MX notes more than 7 days away + hidden-for-today
-  const now = Date.now();
-  const weekMs = 7 * 24 * 60 * 60 * 1000;
-  const dayMs = 24 * 60 * 60 * 1000;
+function MxNoteInline({ notes, hiddenIds, onHideForToday, showNoMxTag }: { notes: MxNote[]; hiddenIds?: Set<string>; onHideForToday?: (id: string) => void; showNoMxTag?: boolean }) {
+  // MEL items: always show. MX items: only today/tomorrow.
+  const todayEt = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  const tomorrowEt = (() => { const d = new Date(); d.setDate(d.getDate() + 1); return d.toLocaleDateString("en-CA", { timeZone: "America/New_York" }); })();
   const visible = notes.filter((n) => {
     if (hiddenIds?.has(n.id)) return false;
+    if (isMel(n)) return true; // MEL items always shown
     if (!n.start_time) return true; // no date = always show
-    const end = n.end_time ? new Date(n.end_time).getTime() + dayMs : new Date(n.start_time).getTime() + dayMs;
-    if (end < now - dayMs) return false; // hide if >24h past end date
-    return new Date(n.start_time).getTime() - now <= weekMs;
+    // MX items: show if start or end date overlaps today or tomorrow
+    const startDate = n.start_time.slice(0, 10);
+    const endDate = n.end_time ? n.end_time.slice(0, 10) : startDate;
+    return endDate >= todayEt && startDate <= tomorrowEt;
   });
-  if (visible.length === 0) return null;
+  if (visible.length === 0) {
+    if (showNoMxTag) {
+      return (
+        <div className="ml-8 mt-1">
+          <span className="text-[11px] bg-green-50 text-green-600 border border-green-200 rounded-full px-2.5 py-0.5 font-medium">
+            No Scheduled Maintenance
+          </span>
+        </div>
+      );
+    }
+    return null;
+  }
   return (
     <div className="ml-8 mt-1 space-y-1">
       {visible.map((n) => {
@@ -1508,7 +1520,7 @@ function VanScheduleCard({
                       </div>
                     )}
                     {/* MX notes from JetInsight */}
-                    <MxNoteInline notes={mxNotesByTail.get(arrFlight.tail_number ?? "") ?? []} hiddenIds={hiddenTodayMxIds} onHideForToday={onHideMxForToday} />
+                    <MxNoteInline notes={mxNotesByTail.get(arrFlight.tail_number ?? "") ?? []} hiddenIds={hiddenTodayMxIds} onHideForToday={onHideMxForToday} showNoMxTag />
                     {/* MX director note */}
                     <LegNoteInline
                       flightId={arrFlight.id}
@@ -2240,7 +2252,7 @@ function ScheduleTab({
                       )}
                     </div>
                     {/* MX notes from JetInsight */}
-                    <MxNoteInline notes={mxNotesByTail.get(tail ?? "") ?? []} hiddenIds={hiddenTodayMxIds} onHideForToday={onHideMxForToday} />
+                    <MxNoteInline notes={mxNotesByTail.get(tail ?? "") ?? []} hiddenIds={hiddenTodayMxIds} onHideForToday={onHideMxForToday} showNoMxTag />
                   </div>
                 );
               })}
@@ -2336,7 +2348,7 @@ function ScheduleTab({
                       {ac.airportInfo.name}, {ac.airportInfo.state}
                     </div>
                   )}
-                  <MxNoteInline notes={mxNotesByTail.get(ac.tail) ?? []} hiddenIds={hiddenTodayMxIds} onHideForToday={onHideMxForToday} />
+                  <MxNoteInline notes={mxNotesByTail.get(ac.tail) ?? []} hiddenIds={hiddenTodayMxIds} onHideForToday={onHideMxForToday} showNoMxTag />
                 </div>
               ))}
             </div>}
