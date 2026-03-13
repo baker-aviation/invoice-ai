@@ -1359,6 +1359,10 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                                     <div className="text-[10px] text-blue-600 font-medium">
                                       ETA: {fmt(fi.arrival_time, f.arrival_icao)}
                                     </div>
+                                  ) : !isCancelled && swimEntry?.eta && swimEntry?.status === "En Route" ? (
+                                    <div className="text-[10px] text-blue-600 font-medium">
+                                      ETA: {fmt(swimEntry.eta, f.arrival_icao)}
+                                    </div>
                                   ) : null}
                                 </div>
                                 <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded-full ${typeColor}`}>
@@ -1708,6 +1712,10 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                         ) : !isCancelled && fi?.arrival_time && fi?.actual_departure && !fi?.actual_arrival ? (
                           <div className="text-[10px] text-blue-600 font-medium mt-0.5">
                             ETA: {fmt(fi.arrival_time, f.arrival_icao)}
+                          </div>
+                        ) : !isCancelled && swimEntry?.eta && swimEntry?.status === "En Route" ? (
+                          <div className="text-[10px] text-blue-600 font-medium mt-0.5">
+                            ETA: {fmt(swimEntry.eta, f.arrival_icao)}
                           </div>
                         ) : null}
                       </td>
