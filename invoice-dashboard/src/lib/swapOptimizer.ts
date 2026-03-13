@@ -1260,23 +1260,24 @@ export function buildSwapPlan(params: {
   }
 
   // ── Staggered arrivals check ──────────────────────────────────────────
-  // Group oncoming tasks by swap airport and warn if arrivals cluster too closely
-  const oncomingTasks = allTasks.filter((t) => t.direction === "oncoming" && t.best?.fboArrivalTime);
+  // Group oncoming PICs by swap airport (one per tail) — only compare across tails.
+  // Same-tail PIC+SIC arriving close together is expected and not worth warning about.
+  const oncomingPics = allTasks.filter((t) => t.direction === "oncoming" && t.role === "PIC" && t.best?.fboArrivalTime);
   const byAirport = new Map<string, CrewTask[]>();
-  for (const t of oncomingTasks) {
+  for (const t of oncomingPics) {
     const icao = t.swapPoint.icao;
     if (!byAirport.has(icao)) byAirport.set(icao, []);
     byAirport.get(icao)!.push(t);
   }
-  for (const [icao, tasks] of byAirport) {
-    if (tasks.length < 2) continue;
-    tasks.sort((a, b) => a.best!.fboArrivalTime!.getTime() - b.best!.fboArrivalTime!.getTime());
-    for (let i = 1; i < tasks.length; i++) {
-      const prev = tasks[i - 1];
-      const curr = tasks[i];
+  for (const [icao, picTasks] of byAirport) {
+    if (picTasks.length < 2) continue;
+    picTasks.sort((a, b) => a.best!.fboArrivalTime!.getTime() - b.best!.fboArrivalTime!.getTime());
+    for (let i = 1; i < picTasks.length; i++) {
+      const prev = picTasks[i - 1];
+      const curr = picTasks[i];
       const gapHours = (curr.best!.fboArrivalTime!.getTime() - prev.best!.fboArrivalTime!.getTime()) / (60 * 60_000);
       if (gapHours < STAGGER_MIN_GAP_HOURS) {
-        const warnMsg = `Arrivals at ${toIata(icao)} within ${Math.round(gapHours * 60)}min: ${prev.name} and ${curr.name} — consider staggering`;
+        const warnMsg = `${toIata(icao)}: ${prev.tail} and ${curr.tail} oncoming within ${Math.round(gapHours * 60)}min — consider staggering`;
         curr.warnings.push(warnMsg);
         prev.warnings.push(warnMsg);
         globalWarnings.push(warnMsg);
