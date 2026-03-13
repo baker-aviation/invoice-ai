@@ -11,6 +11,18 @@ function apiKey(): string {
   return key;
 }
 
+/** Safely parse a ForeFlight response — they sometimes return text errors even on 200 */
+async function safeParseFF(res: Response): Promise<{ ok: boolean; data?: unknown; error?: string; status: number }> {
+  const text = await res.text();
+  try {
+    const data = JSON.parse(text);
+    if (!res.ok) return { ok: false, error: `ForeFlight ${res.status}: ${JSON.stringify(data)}`, status: res.status };
+    return { ok: true, data, status: res.status };
+  } catch {
+    return { ok: false, error: `ForeFlight ${res.status}: ${text}`, status: res.status };
+  }
+}
+
 /** GET /api/foreflight?action=aircraft — list aircraft */
 /** GET /api/foreflight?action=flight&flightId=xxx — get flight details */
 export async function GET(req: NextRequest) {
@@ -24,12 +36,9 @@ export async function GET(req: NextRequest) {
       const res = await fetch(`${FF_BASE}/aircraft`, {
         headers: { "x-api-key": apiKey() },
       });
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        return NextResponse.json({ error: `ForeFlight ${res.status}: ${text}` }, { status: res.status });
-      }
-      const data = await res.json();
-      return NextResponse.json(data);
+      const parsed = await safeParseFF(res);
+      if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: parsed.status });
+      return NextResponse.json(parsed.data);
     }
 
     if (action === "flight") {
@@ -38,12 +47,9 @@ export async function GET(req: NextRequest) {
       const res = await fetch(`${FF_BASE}/Flights/${encodeURIComponent(flightId)}`, {
         headers: { "x-api-key": apiKey() },
       });
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        return NextResponse.json({ error: `ForeFlight ${res.status}: ${text}` }, { status: res.status });
-      }
-      const data = await res.json();
-      return NextResponse.json(data);
+      const parsed = await safeParseFF(res);
+      if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: parsed.status });
+      return NextResponse.json(parsed.data);
     }
 
     return NextResponse.json({ error: "action required: aircraft | flight" }, { status: 400 });
@@ -117,17 +123,17 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify(flightReq),
     });
 
-    const data = await res.json();
-
-    if (!res.ok) {
+    const parsed = await safeParseFF(res);
+    if (!parsed.ok) {
       return NextResponse.json(
-        { error: `ForeFlight ${res.status}`, details: data, request: flightReq },
-        { status: res.status },
+        { error: parsed.error, request: flightReq },
+        { status: parsed.status },
       );
     }
+    const data = parsed.data as Record<string, unknown>;
 
     // Clean up — delete the flight we just created so it doesn't clutter dispatch
-    const flightId = data.flightId;
+    const flightId = data.flightId as string | undefined;
     if (flightId) {
       fetch(`${FF_BASE}/Flights/${encodeURIComponent(flightId)}`, {
         method: "DELETE",

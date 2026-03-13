@@ -55,14 +55,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <Image src="/logo3.png" alt="Baker Aviation" width={150} height={47} priority />
           </Link>
 
-          <nav className="flex items-center gap-1 text-sm">
+          <nav className="flex items-center gap-0.5 text-sm">
             {NAV.filter(({ href, adminOnly }) => adminOnly ? isAdmin : (isAdmin || hasAccessToPath(permissions, href))).map(({ href, label, exact }) => {
               const isActive = exact ? pathname === href : pathname.startsWith(href);
               return (
                 <Link
                   key={href}
                   href={href}
-                  className={`rounded-md px-3 py-1.5 font-medium transition-colors ${
+                  className={`whitespace-nowrap rounded-md px-2.5 py-1.5 font-medium transition-colors ${
                     isActive
                       ? "bg-white/20 text-white"
                       : "text-slate-300 hover:bg-white/10 hover:text-white"
