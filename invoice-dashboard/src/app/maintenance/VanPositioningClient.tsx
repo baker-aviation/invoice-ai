@@ -1214,6 +1214,7 @@ function VanScheduleCard({
 }) {
   const [expanded, setExpanded] = useState(false);
   const [showSlackModal, setShowSlackModal] = useState(false);
+  const [showLocation, setShowLocation] = useState(false);
   const dragTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const now = new Date();
 
@@ -1263,7 +1264,6 @@ function VanScheduleCard({
               let liveCityState: string | null = null;
               if (liveAddress) {
                 const parts = liveAddress.split(",").map((p) => p.trim());
-                // Find state abbreviation (2 uppercase letters, possibly followed by zip)
                 for (let i = 1; i < parts.length; i++) {
                   const stateMatch = parts[i].match(/^([A-Z]{2})$/);
                   if (stateMatch && i >= 1) {
@@ -1272,35 +1272,35 @@ function VanScheduleCard({
                   }
                 }
               }
+              const vanLabel = liveCityState ? `${liveCityState} Van` : ((samsaraVanName && parseVanDisplayName(samsaraVanName)) || zone.name);
               return (
-                <>
-                  <div className="font-semibold text-sm">
-                    {liveCityState ? `${liveCityState} Van` : ((samsaraVanName && parseVanDisplayName(samsaraVanName)) || zone.name)}
-                  </div>
-                  {samsaraVanName && (
-                    <div className="text-[10px] text-gray-400 -mt-0.5">{samsaraVanName}</div>
-                  )}
-                  {!liveCityState && (
-                    <div className="text-xs text-gray-500">
-                      {zone.city}
-                    </div>
-                  )}
-                </>
+                <div className="font-semibold text-sm">
+                  {vanLabel} <span className="text-gray-400 font-normal">({items.length} aircraft{items.length !== 1 ? "" : ""})</span>
+                </div>
               );
             })()}
-            {liveAddress ? (
+            {showLocation && liveAddress ? (
               <div className="text-xs text-green-600 mt-0.5 flex items-center gap-1">
                 <span className="w-1.5 h-1.5 rounded-full bg-green-500 inline-block flex-shrink-0" />
-                <span className="font-medium text-gray-500">Van Location:</span> {liveAddress}
+                {liveAddress}
               </div>
-            ) : liveVanPos ? (
-              <div className="text-xs text-gray-400 mt-0.5 flex items-center gap-1">
-                <span className="font-medium text-gray-500">Van Location:</span> {liveVanPos.lat.toFixed(3)}, {liveVanPos.lon.toFixed(3)}
+            ) : showLocation && liveVanPos ? (
+              <div className="text-xs text-gray-400 mt-0.5">
+                {liveVanPos.lat.toFixed(3)}, {liveVanPos.lon.toFixed(3)}
               </div>
             ) : null}
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap justify-end">
+          {(liveAddress || liveVanPos) && (
+            <button
+              onClick={(e) => { e.stopPropagation(); setShowLocation((v) => !v); }}
+              className={`text-xs border rounded-lg px-2 py-1 transition-colors font-medium ${showLocation ? "text-green-700 bg-green-50 border-green-300" : "text-gray-400 hover:text-green-600 hover:bg-green-50 border-gray-200 hover:border-green-300"}`}
+              title={showLocation ? "Hide location" : "Show van location"}
+            >
+              <svg className="w-3.5 h-3.5 inline -mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+            </button>
+          )}
           <button
             onClick={(e) => { e.stopPropagation(); setShowSlackModal(true); }}
             className="text-xs text-gray-500 hover:text-purple-700 hover:bg-purple-50 border border-gray-200 hover:border-purple-300 rounded-lg px-2 py-1 transition-colors font-medium"
@@ -1318,9 +1318,6 @@ function VanScheduleCard({
               {fmtDriveTime(totalDistKm)}{overLimit ? " ⚠" : ""}
             </span>
           )}
-          <span className="text-xs bg-slate-100 text-slate-700 rounded-full px-2 py-0.5 font-medium">
-            {items.length} arrival{items.length !== 1 ? "s" : ""}
-          </span>
           <span className="text-gray-400 text-sm">{expanded ? "▲" : "▼"}</span>
         </div>
       </div>
