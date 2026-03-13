@@ -343,24 +343,17 @@ export async function fetchFuelPrices(params: {
 export async function fetchAdvertisedPrices(): Promise<AdvertisedPriceRow[]> {
   const supa = createServiceClient();
 
-  // Fetch all records in pages (Supabase default limit is 1000)
-  const allData: any[] = [];
-  const pageSize = 1000;
-  let from = 0;
-  while (true) {
-    const { data, error } = await supa
-      .from("fbo_advertised_prices")
-      .select("*")
-      .order("id", { ascending: true })
-      .range(from, from + pageSize - 1);
-    if (error) throw new Error(`fetchAdvertisedPrices failed: ${error.message}`);
-    if (!data || data.length === 0) break;
-    allData.push(...data);
-    if (data.length < pageSize) break;
-    from += pageSize;
-  }
+  // Only fetch the last 4 weeks of data — no need for full historical table scan
+  const fourWeeksAgo = new Date(Date.now() - 28 * 86400000).toISOString().split("T")[0];
 
-  const data = allData;
+  const { data, error } = await supa
+    .from("fbo_advertised_prices")
+    .select("id, fbo_vendor, airport_code, volume_tier, product, price, tail_numbers, week_start, upload_batch, created_at")
+    .gte("week_start", fourWeeksAgo)
+    .order("week_start", { ascending: false })
+    .limit(5000);
+
+  if (error) throw new Error(`fetchAdvertisedPrices failed: ${error.message}`);
 
   return (data ?? []).map((row) => ({
     id: row.id as number,

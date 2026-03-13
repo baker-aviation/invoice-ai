@@ -146,21 +146,35 @@ export async function fetchFlights(params: {
     return { ok: true, flights: [], count: 0 };
   }
 
-  // Fetch alerts for these flights (batch by 200)
+  // Fetch alerts for these flights (all batches in parallel)
   const flightIds = flightRows.map((f) => f.id as string);
   const alertsByFlight = new Map<string, OpsAlert[]>();
 
+  const alertBatches: string[][] = [];
   for (let i = 0; i < flightIds.length; i += 200) {
-    const batch = flightIds.slice(i, i + 200);
-    const { data: alertRows, error: alertErr } = await supa
+    alertBatches.push(flightIds.slice(i, i + 200));
+  }
+
+  // Orphan EDCT query runs in parallel with alert batches
+  const edctPast = new Date(now.getTime() - 48 * 60 * 60 * 1000).toISOString();
+  const [alertResults, { data: orphanRows }] = await Promise.all([
+    Promise.all(alertBatches.map((batch) =>
+      supa.from("ops_alerts").select(ALERT_COLUMNS).in("flight_id", batch)
+    )),
+    supa
       .from("ops_alerts")
       .select(ALERT_COLUMNS)
-      .in("flight_id", batch);
+      .eq("alert_type", "EDCT")
+      .is("flight_id", null)
+      .is("acknowledged_at", null)
+      .gte("created_at", edctPast)
+      .order("created_at", { ascending: false })
+      .limit(50),
+  ]);
 
+  for (const { data: alertRows, error: alertErr } of alertResults) {
     if (alertErr) throw new Error(`fetchFlights alerts failed: ${alertErr.message}`);
-
     for (const row of alertRows ?? []) {
-      // Filter noise NOTAMs
       if (isNoiseNotam(row as { alert_type: string; body: string | null })) continue;
 
       const alert: OpsAlert = {
@@ -187,18 +201,6 @@ export async function fetchFlights(params: {
       alertsByFlight.get(fid)!.push(alert);
     }
   }
-
-  // Fetch orphan EDCT alerts (no flight_id) so they still show up — look back 48h
-  const edctPast = new Date(now.getTime() - 48 * 60 * 60 * 1000).toISOString();
-  const { data: orphanRows } = await supa
-    .from("ops_alerts")
-    .select(ALERT_COLUMNS)
-    .eq("alert_type", "EDCT")
-    .is("flight_id", null)
-    .is("acknowledged_at", null)
-    .gte("created_at", edctPast)
-    .order("created_at", { ascending: false })
-    .limit(50);
 
   const orphanAlerts: OpsAlert[] = (orphanRows ?? []).map((row) => ({
     id: row.id as string,
