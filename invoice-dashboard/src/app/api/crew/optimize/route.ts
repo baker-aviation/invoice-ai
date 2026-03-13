@@ -231,6 +231,7 @@ export async function POST(req: NextRequest) {
     swapDate,
     commercialFlights,
     swapAssignments: Object.keys(swapAssignments).length > 0 ? swapAssignments : undefined,
+    oncomingPool: clientOncomingPool,
   });
 
   return NextResponse.json({

@@ -69,6 +69,8 @@ const RAW: [string, string, boolean][] = [
   ["KPDK", "KATL", true],   // DeKalb-Peachtree → Atlanta
   ["KRYY", "KATL", true],   // McCollum → Atlanta
   ["KSGJ", "KJAX", true],   // St. Augustine → Jacksonville
+  ["KGNV", "KGNV", true],   // Gainesville FL (has limited commercial)
+  ["KGNV", "KJAX", false],  // Gainesville FL → Jacksonville (backup)
   ["KORL", "KMCO", true],   // Orlando Exec → Orlando Intl
   ["KSFB", "KMCO", true],   // Sanford → Orlando Intl
   ["KSRQ", "KTPA", true],   // Sarasota → Tampa
@@ -87,6 +89,7 @@ const RAW: [string, string, boolean][] = [
   ["KGJT", "KDEN", true],   // Grand Junction → Denver
   ["KAPA", "KDEN", true],   // Centennial → Denver
   ["KBJC", "KDEN", true],   // Rocky Mountain Metro → Denver
+  ["KRNO", "KRNO", true],   // Reno (IS commercial)
 
   // Michigan / Great Lakes
   ["KESC", "KGRR", true],   // Escanaba → Grand Rapids (closest major)

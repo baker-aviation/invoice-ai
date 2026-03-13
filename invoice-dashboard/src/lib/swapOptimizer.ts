@@ -980,8 +980,9 @@ export function buildSwapPlan(params: {
   swapDate: string;
   commercialFlights?: Map<string, FlightOffer[]>;
   swapAssignments?: Record<string, SwapAssignment>;
+  oncomingPool?: OncomingPool;
 }): SwapPlanResult {
-  const { flights, crewRoster, aliases, swapDate, commercialFlights, swapAssignments } = params;
+  const { flights, crewRoster, aliases, swapDate, commercialFlights, swapAssignments, oncomingPool } = params;
   _warnedFlightKeys.clear(); // Reset per-run to avoid stale warnings
   const globalWarnings: string[] = [];
   const allTasks: CrewTask[] = [];
@@ -1032,7 +1033,7 @@ export function buildSwapPlan(params: {
     }
 
     // ── Helper: resolve crew member from name ────────────────────────────
-    function resolveCrewMember(name: string, role: "PIC" | "SIC"): { crewMember: CrewMember | null; warnings: string[] } {
+    function resolveCrewMember(name: string, role: "PIC" | "SIC"): { crewMember: CrewMember | null; homeAirports: string[]; warnings: string[] } {
       const warnings: string[] = [];
       let crewMember = findCrewByName(crewRoster, name, role);
       if (!crewMember) {
@@ -1058,7 +1059,23 @@ export function buildSwapPlan(params: {
           }
         }
       }
-      return { crewMember, warnings };
+
+      // Resolve home airports: roster first, then fall back to oncoming pool data
+      let homeAirports = crewMember?.home_airports ?? [];
+      if (homeAirports.length === 0 && oncomingPool) {
+        const poolList = role === "PIC" ? oncomingPool.pic : oncomingPool.sic;
+        // Also check the opposite role's pool
+        const altPoolList = role === "PIC" ? oncomingPool.sic : oncomingPool.pic;
+        const normName = name.trim().toLowerCase().replace(/\s+/g, " ");
+        const poolEntry = [...poolList, ...altPoolList].find((p) =>
+          p.name.trim().toLowerCase().replace(/\s+/g, " ") === normName
+        );
+        if (poolEntry?.home_airports?.length) {
+          homeAirports = poolEntry.home_airports;
+        }
+      }
+
+      return { crewMember, homeAirports, warnings };
     }
 
     // ── Create crew tasks ────────────────────────────────────────────────
@@ -1070,8 +1087,7 @@ export function buildSwapPlan(params: {
       [assignment.offgoing_pic, "offgoing"] as const,
     ]) {
       if (!name) continue;
-      const { crewMember, warnings } = resolveCrewMember(name, "PIC");
-      const homeAirports = crewMember?.home_airports ?? [];
+      const { crewMember, homeAirports, warnings } = resolveCrewMember(name, "PIC");
       if (homeAirports.length === 0) {
         console.warn(`[SwapOptimizer] No home airports for "${name}" (PIC, ${tail})`);
       }
@@ -1088,8 +1104,7 @@ export function buildSwapPlan(params: {
       [assignment.offgoing_sic, "offgoing"] as const,
     ]) {
       if (!name) continue;
-      const { crewMember, warnings } = resolveCrewMember(name, "SIC");
-      const homeAirports = crewMember?.home_airports ?? [];
+      const { crewMember, homeAirports, warnings } = resolveCrewMember(name, "SIC");
       if (homeAirports.length === 0) {
         console.warn(`[SwapOptimizer] No home airports for "${name}" (SIC, ${tail})`);
       }
