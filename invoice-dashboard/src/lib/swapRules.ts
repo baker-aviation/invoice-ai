@@ -114,12 +114,20 @@ export const BACKUP_FLIGHT_MIN_GAP = 60;
 
 // ─── Rental Car Handoff ──────────────────────────────────────────────────────
 
+/** When offgoing crew takes oncoming's rental car, ground cost = fuel only */
+export const RENTAL_HANDOFF_FUEL_COST = 20;
+
 /**
  * New crew rents car, drives to regional FBO.
  * Old crew takes that car back to commercial airport for their flight home.
  * Saves money vs two separate Uber/rental trips.
  * System must account for rental return time before old crew's flight.
  */
+
+// ─── Staggered Arrivals ─────────────────────────────────────────────────────
+
+/** Warn if two oncoming crews arrive at the same airport within this gap */
+export const STAGGER_MIN_GAP_HOURS = 2;
 
 // ─── Unscheduled Aircraft Rules ──────────────────────────────────────────────
 

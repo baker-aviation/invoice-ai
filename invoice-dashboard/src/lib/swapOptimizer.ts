@@ -29,6 +29,7 @@ import {
   EARLIEST_DUTY_ON_HOUR, UBER_MAX_MINUTES, RENTAL_MAX_MINUTES,
   BUDGET_CARRIERS, PREFERRED_HUBS, BACKUP_FLIGHT_MIN_GAP, MAX_CONNECTIONS,
   EARLY_LATE_BONUS_PIC, EARLY_LATE_BONUS_SIC,
+  RENTAL_HANDOFF_FUEL_COST, STAGGER_MIN_GAP_HOURS,
 } from "./swapRules";
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -514,8 +515,18 @@ function buildCandidates(
     // ── Commercial flight options ─────────────────────────────────────────
     if (!commercialFlights) continue;
 
-    // Search swap-day (Wednesday) only
+    // Build search dates: swap-day (Wednesday), plus day-before/after for volunteers
     const datesToSearch = [swapDate];
+    if (task.earlyVolunteer) {
+      const dayBefore = new Date(swapDate);
+      dayBefore.setDate(dayBefore.getDate() - 1);
+      datesToSearch.unshift(dayBefore.toISOString().slice(0, 10));
+    }
+    if (task.lateVolunteer) {
+      const dayAfter = new Date(swapDate);
+      dayAfter.setDate(dayAfter.getDate() + 1);
+      datesToSearch.push(dayAfter.toISOString().slice(0, 10));
+    }
 
     for (const commApt of commAirports) {
       const commIata = toIata(commApt);
@@ -839,29 +850,98 @@ function optimizeTail(
     oncomingSic.best = oncomingSic.candidates[0] ?? null;
   }
 
-  // Offgoing crew: score independently
+  // ── Compute latest oncoming arrival for aircraft-unattended constraint ──
+  const oncomingArrivals = oncoming
+    .filter((t) => t.best?.fboArrivalTime)
+    .map((t) => t.best!.fboArrivalTime!.getTime());
+  const latestOncomingArrival = oncomingArrivals.length > 0 ? Math.max(...oncomingArrivals) : null;
+
+  // ── Rental car handoff: reduce offgoing ground cost when sharing oncoming's rental ──
+  const oncomingRentalBest = oncoming.find((t) => t.best?.type === "rental_car")?.best ?? null;
+  if (oncomingRentalBest) {
+    const swapIcao = offgoing[0]?.swapPoint?.icao;
+    if (swapIcao) {
+      const sharedCommAirports = new Set(findAllCommercialAirports(swapIcao, aliases));
+      for (const task of offgoing) {
+        for (const c of task.candidates) {
+          if (c.type !== "commercial") continue;
+          // Check if this candidate's commercial airport is in the shared set
+          const commIcao = toIcao(c.from);
+          if (!sharedCommAirports.has(commIcao) && !sharedCommAirports.has(c.from)) continue;
+          // Validate timing: car available at oncoming FBO arrival → drive to commercial → arrive before flight - RENTAL_RETURN_BUFFER
+          const carAvailableAt = oncomingRentalBest.fboArrivalTime;
+          if (!carAvailableAt || !c.depTime) continue;
+          const driveToComm = estimateDriveTime(swapIcao, commIcao);
+          const driveMin = driveToComm?.estimated_drive_minutes ?? 0;
+          const arriveAtCommercial = new Date(carAvailableAt.getTime() + ms(driveMin));
+          const mustBeAtAirport = new Date(c.depTime.getTime() - ms(RENTAL_RETURN_BUFFER));
+          if (arriveAtCommercial.getTime() <= mustBeAtAirport.getTime()) {
+            // Timing works — replace ground transport cost with fuel-only
+            const originalGroundCost = driveMin > UBER_MAX_MINUTES
+              ? 80 + Math.round((driveToComm?.estimated_drive_miles ?? 0) * 0.50)
+              : Math.max(25, Math.round((driveToComm?.estimated_drive_miles ?? 0) * 2.0));
+            c.cost = c.cost - originalGroundCost + RENTAL_HANDOFF_FUEL_COST;
+            c.flightNumber = (c.flightNumber ?? "") + " (handoff)";
+          }
+        }
+      }
+    }
+  }
+
+  // ── Aircraft never unattended — hard constraint ──────────────────────
+  // Filter offgoing candidates to only those departing AFTER oncoming arrives
+  if (latestOncomingArrival) {
+    for (const task of offgoing) {
+      const filtered = task.candidates.filter((c) => {
+        if (c.type === "none") return true;
+        if (!c.depTime) return true; // Keep if no dep time (ground transport estimated)
+        return c.depTime.getTime() >= latestOncomingArrival;
+      });
+      if (filtered.length > 0 && filtered.some((c) => c.type !== "none")) {
+        task.candidates = filtered;
+      } else {
+        // Graceful degradation: keep originals but warn
+        task.warnings.push("All offgoing options depart before oncoming arrives — aircraft may be unattended");
+      }
+    }
+  }
+
+  // ── Score offgoing PIC first → use as pairCandidate for SIC ──────────
+  const offgoingPic = offgoing.find((t) => t.role === "PIC");
+  const offgoingSic = offgoing.find((t) => t.role === "SIC");
+
+  if (offgoingPic) {
+    for (const c of offgoingPic.candidates) {
+      c.backups = findBackups(c, offgoingPic.candidates);
+    }
+    for (const c of offgoingPic.candidates) {
+      c.score = scoreCandidate(c, offgoingPic, null);
+    }
+    offgoingPic.candidates.sort((a, b) => b.score - a.score);
+    offgoingPic.best = offgoingPic.candidates[0] ?? null;
+  }
+
+  if (offgoingSic) {
+    for (const c of offgoingSic.candidates) {
+      c.backups = findBackups(c, offgoingSic.candidates);
+    }
+    const offPicBest = offgoingPic?.best ?? null;
+    for (const c of offgoingSic.candidates) {
+      c.score = scoreCandidate(c, offgoingSic, offPicBest);
+    }
+    offgoingSic.candidates.sort((a, b) => b.score - a.score);
+    offgoingSic.best = offgoingSic.candidates[0] ?? null;
+  }
+
+  // Handle any remaining offgoing tasks (edge case: extra roles)
   for (const task of offgoing) {
+    if (task === offgoingPic || task === offgoingSic) continue;
     for (const c of task.candidates) {
       c.backups = findBackups(c, task.candidates);
       c.score = scoreCandidate(c, task, null);
     }
     task.candidates.sort((a, b) => b.score - a.score);
     task.best = task.candidates[0] ?? null;
-  }
-
-  // ── Aircraft never unattended check ──────────────────────────────────
-  // Oncoming must arrive before offgoing departs
-  const oncomingArrivals = oncoming
-    .filter((t) => t.best?.fboArrivalTime)
-    .map((t) => t.best!.fboArrivalTime!.getTime());
-  const latestOncomingArrival = oncomingArrivals.length > 0 ? Math.max(...oncomingArrivals) : null;
-
-  if (latestOncomingArrival) {
-    for (const task of offgoing) {
-      if (task.best?.depTime && task.best.depTime.getTime() < latestOncomingArrival) {
-        task.warnings.push("Offgoing may depart before oncoming arrives — aircraft could be unattended");
-      }
-    }
   }
 }
 
@@ -1078,6 +1158,21 @@ export function buildSwapPlan(params: {
       return { crewMember, homeAirports, warnings };
     }
 
+    // ── Helper: look up volunteer flags from oncoming pool ──────────────
+    function getVolunteerFlags(name: string, role: "PIC" | "SIC"): { earlyVolunteer: boolean; lateVolunteer: boolean } {
+      if (!oncomingPool) return { earlyVolunteer: false, lateVolunteer: false };
+      const poolList = role === "PIC" ? oncomingPool.pic : oncomingPool.sic;
+      const altPoolList = role === "PIC" ? oncomingPool.sic : oncomingPool.pic;
+      const normName = name.trim().toLowerCase().replace(/\s+/g, " ");
+      const entry = [...poolList, ...altPoolList].find((p) =>
+        p.name.trim().toLowerCase().replace(/\s+/g, " ") === normName
+      );
+      return {
+        earlyVolunteer: entry?.early_volunteer ?? false,
+        lateVolunteer: entry?.late_volunteer ?? false,
+      };
+    }
+
     // ── Create crew tasks ────────────────────────────────────────────────
     const tailTasks: CrewTask[] = [];
 
@@ -1091,10 +1186,12 @@ export function buildSwapPlan(params: {
       if (homeAirports.length === 0) {
         console.warn(`[SwapOptimizer] No home airports for "${name}" (PIC, ${tail})`);
       }
+      const volFlags = direction === "oncoming" ? getVolunteerFlags(name, "PIC") : { earlyVolunteer: false, lateVolunteer: false };
       tailTasks.push({
         name: crewMember?.name ?? name, crewMember, role: "PIC", direction, tail,
         aircraftType, swapPoint: picSwapPoint, homeAirports,
         candidates: [], best: null, warnings,
+        ...volFlags,
       });
     }
 
@@ -1109,6 +1206,8 @@ export function buildSwapPlan(params: {
         console.warn(`[SwapOptimizer] No home airports for "${name}" (SIC, ${tail})`);
       }
 
+      const sicVolFlags = direction === "oncoming" ? getVolunteerFlags(name, "SIC") : { earlyVolunteer: false, lateVolunteer: false };
+
       if (direction === "oncoming" && swapPoints.length > 1) {
         // Try each swap point — run buildCandidates for each, pick the best
         let bestSwapPoint = picSwapPoint; // default to same as PIC
@@ -1119,6 +1218,7 @@ export function buildSwapPlan(params: {
             name: crewMember?.name ?? name, crewMember, role: "SIC",
             direction: "oncoming", tail, aircraftType, swapPoint: sp,
             homeAirports, candidates: [], best: null, warnings: [],
+            ...sicVolFlags,
           };
           const candidates = buildCandidates(tempTask, aliases, commercialFlights, swapDate, byTail.get(tail));
           for (const c of candidates) {
@@ -1139,6 +1239,7 @@ export function buildSwapPlan(params: {
           name: crewMember?.name ?? name, crewMember, role: "SIC", direction, tail,
           aircraftType, swapPoint: bestSwapPoint, homeAirports,
           candidates: [], best: null, warnings,
+          ...sicVolFlags,
         });
       } else {
         // Offgoing SIC: use same swap point as oncoming SIC (or PIC swap point)
@@ -1156,6 +1257,31 @@ export function buildSwapPlan(params: {
     // Run optimizer for this tail
     optimizeTail(tailTasks, aliases, commercialFlights, swapDate, byTail.get(tail));
     allTasks.push(...tailTasks);
+  }
+
+  // ── Staggered arrivals check ──────────────────────────────────────────
+  // Group oncoming tasks by swap airport and warn if arrivals cluster too closely
+  const oncomingTasks = allTasks.filter((t) => t.direction === "oncoming" && t.best?.fboArrivalTime);
+  const byAirport = new Map<string, CrewTask[]>();
+  for (const t of oncomingTasks) {
+    const icao = t.swapPoint.icao;
+    if (!byAirport.has(icao)) byAirport.set(icao, []);
+    byAirport.get(icao)!.push(t);
+  }
+  for (const [icao, tasks] of byAirport) {
+    if (tasks.length < 2) continue;
+    tasks.sort((a, b) => a.best!.fboArrivalTime!.getTime() - b.best!.fboArrivalTime!.getTime());
+    for (let i = 1; i < tasks.length; i++) {
+      const prev = tasks[i - 1];
+      const curr = tasks[i];
+      const gapHours = (curr.best!.fboArrivalTime!.getTime() - prev.best!.fboArrivalTime!.getTime()) / (60 * 60_000);
+      if (gapHours < STAGGER_MIN_GAP_HOURS) {
+        const warnMsg = `Arrivals at ${toIata(icao)} within ${Math.round(gapHours * 60)}min: ${prev.name} and ${curr.name} — consider staggering`;
+        curr.warnings.push(warnMsg);
+        prev.warnings.push(warnMsg);
+        globalWarnings.push(warnMsg);
+      }
+    }
   }
 
   // ── Convert tasks to CrewSwapRow[] ─────────────────────────────────────
