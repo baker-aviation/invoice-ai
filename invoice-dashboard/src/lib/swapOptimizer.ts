@@ -1246,6 +1246,56 @@ function assignRoleWithMatrix(
       reason: `${opt.bestType} $${Math.round(opt.bestCost)} score=${opt.bestScore} to ${loc ? toIata(loc.icao) : "?"} (${constraint} viable crew)`,
     });
   }
+
+  // ── Fallback: assign remaining pool to remaining tails even without proven transport.
+  // Every tail needs crew — transport can be arranged manually if the optimizer
+  // can't find a viable route. Prefer crew with closest home airports.
+  const unassignedTails = needingTails.filter((t) => !assignedTails.has(t));
+  const unassignedPool = pool.filter((p) => !assignedCrews.has(p.name));
+
+  if (unassignedTails.length > 0 && unassignedPool.length > 0) {
+    // For each remaining tail, find the closest unassigned crew by haversine
+    for (const tail of unassignedTails) {
+      if (unassignedPool.length === 0) break;
+
+      const { swapPoints } = extractSwapPoints(tail, byTail, swapDate);
+      const swapIcao = swapPoints[0]?.icao;
+      const acType = tailAircraftType.get(tail) ?? "unknown";
+
+      // Find best remaining crew (qualified, closest)
+      let bestIdx = -1;
+      let bestDist = Infinity;
+      for (let i = 0; i < unassignedPool.length; i++) {
+        const crew = unassignedPool[i];
+        if (!isQualified(crew.aircraft_type, acType)) continue;
+        if (swapIcao) {
+          for (const home of crew.home_airports) {
+            const drive = estimateDriveTime(toIcao(home), swapIcao);
+            const dist = drive?.straight_line_miles ?? 9999;
+            if (dist < bestDist) { bestDist = dist; bestIdx = i; }
+          }
+        } else if (bestIdx === -1) {
+          bestIdx = i;
+        }
+      }
+
+      if (bestIdx >= 0) {
+        const crew = unassignedPool[bestIdx];
+        result[tail][field] = crew.name;
+        assignedCrews.add(crew.name);
+        assignedTails.add(tail);
+        unassignedPool.splice(bestIdx, 1);
+
+        const loc = swapPoints[0];
+        details.push({
+          name: crew.name,
+          tail,
+          cost: 0,
+          reason: `fallback assign to ${loc ? toIata(loc.icao) : "?"} — transport TBD`,
+        });
+      }
+    }
+  }
 }
 
 // ─── Helper: get flight searches for ALL pool crew × ALL swap locations ───────
