@@ -46,6 +46,21 @@ export default async function VanPage({ params }: { params: Promise<{ vanId: str
 
   const mxNotes = await fetchMxNotes().catch(() => []);
 
+  // Build FBO lookup from trip_salespersons (tail:dest_icao → fbo name)
+  const { data: fboRows } = await supa
+    .from("trip_salespersons")
+    .select("tail_number, destination_icao, destination_fbo")
+    .not("destination_fbo", "is", null)
+    .gte("scheduled_departure", past)
+    .lte("scheduled_departure", future);
+
+  const fboMap: Record<string, string> = {};
+  for (const row of fboRows ?? []) {
+    if (row.tail_number && row.destination_icao && row.destination_fbo) {
+      fboMap[`${row.tail_number}:${row.destination_icao}`] = row.destination_fbo;
+    }
+  }
+
   return (
     <VanDriverClient
       vanId={vanId}
@@ -54,6 +69,7 @@ export default async function VanPage({ params }: { params: Promise<{ vanId: str
       publishedFlightIds={publishedFlightIds}
       publishedAt={publishedAtStr}
       mxNotes={mxNotes}
+      fboMap={fboMap}
     />
   );
 }

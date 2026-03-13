@@ -1259,34 +1259,28 @@ export function buildSwapPlan(params: {
     // - SIC can swap at ANY swap point — PIC covers SIC seat for early legs.
     // - Offgoing leaves from the SAME swap point as their oncoming counterpart.
 
-    // Score swap points by commercial accessibility (more options = easier)
+    // Pick PIC swap point by commercial accessibility (cheap — drive time only, no candidate building)
+    // For EGE→VNY: VNY (15min to BUR/LAX) beats EGE (3hr to DEN)
     let picSwapPoint = swapPoints[0]; // default
     if (swapPoints.length > 1) {
-      let bestAccessScore = -1;
-      let bestTransportScore = -1;
+      let bestEase = -Infinity;
       for (const sp of swapPoints) {
-        const commOptions = findAllCommercialAirports(sp.icao, aliases);
-        const accessScore = commOptions.length;
-        // Also check transport viability for the oncoming PIC
-        const oncomingPicName = assignment.oncoming_pic;
-        let transportScore = 0;
-        if (oncomingPicName) {
-          const { crewMember, homeAirports } = resolveCrewMember(oncomingPicName, "PIC");
-          const tempTask: CrewTask = {
-            name: crewMember?.name ?? oncomingPicName, crewMember, role: "PIC",
-            direction: "oncoming", tail, aircraftType, swapPoint: sp,
-            homeAirports, candidates: [], best: null, warnings: [],
-          };
-          const candidates = buildCandidates(tempTask, aliases, commercialFlights, swapDate, byTail.get(tail));
-          for (const c of candidates) {
-            c.score = scoreCandidate(c, tempTask, null);
-          }
-          transportScore = candidates.reduce((max, c) => Math.max(max, c.score), 0);
+        const commAirports = findAllCommercialAirports(sp.icao, aliases);
+        const selfCommercial = aliases.some(
+          (a) => a.fbo_icao.toUpperCase() === sp.icao.toUpperCase()
+            && a.commercial_icao.toUpperCase() === sp.icao.toUpperCase(),
+        );
+        let minDrive = Infinity;
+        for (const c of commAirports) {
+          if (c.toUpperCase() === sp.icao.toUpperCase()) { minDrive = 0; break; }
+          const d = estimateDriveTime(sp.icao, c);
+          if (d) minDrive = Math.min(minDrive, d.estimated_drive_minutes);
         }
-        // Prefer: (1) better transport score, (2) more commercial options as tiebreaker
-        if (transportScore > bestTransportScore || (transportScore === bestTransportScore && accessScore > bestAccessScore)) {
-          bestTransportScore = transportScore;
-          bestAccessScore = accessScore;
+        if (minDrive === Infinity) minDrive = 999;
+        // Ease score: lower drive = easier, self-commercial = bonus, more options = bonus
+        const ease = -minDrive + (selfCommercial ? 30 : 0) + (commAirports.length * 2);
+        if (ease > bestEase) {
+          bestEase = ease;
           picSwapPoint = sp;
         }
       }
