@@ -140,7 +140,10 @@ export async function POST(req: NextRequest) {
       }
       lines.push(`Crew should be at the FBO now.`);
       lines.push(`Please check in and manage.`);
-      if (flight.jetinsight_url) {
+      // Always use the salesperson's trip_id for the URL (not the flight's jetinsight_url)
+      if (trip.trip_id) {
+        lines.push(`<https://portal.jetinsight.com/trips/${trip.trip_id}|Open in JetInsight>`);
+      } else if (flight.jetinsight_url) {
         lines.push(`<${flight.jetinsight_url}|Open in JetInsight>`);
       }
       const message = lines.join("\n");
