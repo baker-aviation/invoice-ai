@@ -576,10 +576,12 @@ def pull_swim() -> Dict[str, Any]:
             flight = parse_tfms_flight_message(raw)
             if flight and _is_baker_flight(flight):
                 source_id = f"swim-tfms-{flight['acid']}-{flight['event_time']}"
+                fd_trigger = flight.pop("fd_trigger", "")
                 positions_batch.append({
                     **flight,
                     "source_id": source_id,
                     "raw_xml": raw[:4000],
+                    "_fd_trigger": fd_trigger,  # kept for alert creation, stripped before DB write
                 })
                 stats["tfms_flight_messages"] += 1
                 continue
@@ -614,10 +616,12 @@ def pull_swim() -> Dict[str, Any]:
         flight = parse_tfms_flight_message(raw)  # STDDS uses similar FIXM structure
         if flight and _is_baker_flight(flight):
             source_id = f"swim-stdds-{flight['acid']}-{flight['event_time']}"
+            fd_trigger = flight.pop("fd_trigger", "")
             positions_batch.append({
                 **flight,
                 "source_id": source_id,
                 "raw_xml": raw[:4000],
+                "_fd_trigger": fd_trigger,
             })
             stats["stdds_messages"] += 1
 
@@ -646,9 +650,9 @@ def pull_swim() -> Dict[str, Any]:
     # ── 4. Write to Supabase ──────────────────────────────────────────────────
     CHUNK = 50
 
-    # Positions
+    # Positions — strip internal fields before DB write
     for i in range(0, len(positions_batch), CHUNK):
-        chunk = positions_batch[i : i + CHUNK]
+        chunk = [{k: v for k, v in p.items() if not k.startswith("_")} for p in positions_batch[i : i + CHUNK]]
         try:
             supa.table("swim_positions").upsert(
                 chunk, on_conflict="source_id"
