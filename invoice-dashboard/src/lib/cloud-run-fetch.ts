@@ -9,6 +9,7 @@ import { GoogleAuth } from "google-auth-library";
  *
  * Env vars (pick one):
  *   GCP_SA_KEY — base64-encoded OR raw JSON key for the service account
+ *   GCP_SERVICE_ACCOUNT_KEY — same (legacy name)
  *               (omit if running on GCP with default credentials)
  */
 
