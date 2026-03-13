@@ -1286,7 +1286,8 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                           const now = new Date();
                           const arrivalPassed = arrivalDate && arrivalDate < now;
                           // Check SWIM status first — try route-specific, then tail-only
-                          const swimEntry = swimStatus.get(routeKey) ?? (f.tail_number ? swimStatus.get(`${f.tail_number}||`) : undefined);
+                          const swimRouteMatch = swimStatus.get(routeKey);
+                          const swimEntry = swimRouteMatch ?? (f.tail_number ? swimStatus.get(`${f.tail_number}||`) : undefined);
                           if (swimEntry?.status === "Filed") {
                             status = "Scheduled"; isFiled = true; statusColor = "text-gray-500";
                           } else if (swimEntry?.status === "En Route") {
@@ -1359,9 +1360,9 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                                     <div className="text-[10px] text-blue-600 font-medium">
                                       ETA: {fmt(fi.arrival_time, f.arrival_icao)}
                                     </div>
-                                  ) : !isCancelled && swimEntry?.eta && swimEntry?.status === "En Route" ? (
+                                  ) : !isCancelled && swimRouteMatch?.eta && swimRouteMatch?.status === "En Route" ? (
                                     <div className="text-[10px] text-blue-600 font-medium">
-                                      ETA: {fmt(swimEntry.eta, f.arrival_icao)}
+                                      ETA: {fmt(swimRouteMatch.eta, f.arrival_icao)}
                                     </div>
                                   ) : null}
                                 </div>
@@ -1382,10 +1383,10 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                                     <div className="h-full bg-blue-500 rounded-full" style={{ width: `${fi.progress_percent}%` }} />
                                   </div>
                                 )}
-                                {/* ForeFlight progress fallback */}
-                                {!isCancelled && !(fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100) && swimEntry?.status === "En Route" && swimEntry?.etd && swimEntry?.eta && (() => {
-                                  const dep = new Date(swimEntry.etd!).getTime();
-                                  const arr = new Date(swimEntry.eta!).getTime();
+                                {/* ForeFlight progress fallback — only for route-matched entries */}
+                                {!isCancelled && !(fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100) && swimRouteMatch?.status === "En Route" && swimRouteMatch?.etd && swimRouteMatch?.eta && (() => {
+                                  const dep = new Date(swimRouteMatch.etd!).getTime();
+                                  const arr = new Date(swimRouteMatch.eta!).getTime();
                                   const total = arr - dep;
                                   const elapsed = Date.now() - dep;
                                   if (total <= 0 || elapsed <= 0) return null;
@@ -1538,7 +1539,8 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                 let status = "Scheduled";
                 let statusColor = "text-gray-500";
                 let isFiled = false;
-                const swimEntry = swimStatus.get(routeKey) ?? (f.tail_number ? swimStatus.get(`${f.tail_number}||`) : undefined);
+                const swimRouteMatch = swimStatus.get(routeKey);
+                const swimEntry = swimRouteMatch ?? (f.tail_number ? swimStatus.get(`${f.tail_number}||`) : undefined);
 
                 const arrivalDate = f.scheduled_arrival ? new Date(f.scheduled_arrival) : null;
                 const now = new Date();
@@ -1701,10 +1703,10 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                             })()}
                           </div>
                         )}
-                        {/* ForeFlight progress fallback when FA has no data */}
-                        {!isCancelled && !(fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100) && swimEntry?.status === "En Route" && swimEntry?.etd && swimEntry?.eta && (() => {
-                          const dep = new Date(swimEntry.etd!).getTime();
-                          const arr = new Date(swimEntry.eta!).getTime();
+                        {/* ForeFlight progress fallback — only for route-matched entries */}
+                        {!isCancelled && !(fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100) && swimRouteMatch?.status === "En Route" && swimRouteMatch?.etd && swimRouteMatch?.eta && (() => {
+                          const dep = new Date(swimRouteMatch.etd!).getTime();
+                          const arr = new Date(swimRouteMatch.eta!).getTime();
                           const now = Date.now();
                           const total = arr - dep;
                           const elapsed = now - dep;
@@ -1751,9 +1753,9 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                           <div className="text-[10px] text-blue-600 font-medium mt-0.5">
                             ETA: {fmt(fi.arrival_time, f.arrival_icao)}
                           </div>
-                        ) : !isCancelled && swimEntry?.eta && swimEntry?.status === "En Route" ? (
+                        ) : !isCancelled && swimRouteMatch?.eta && swimRouteMatch?.status === "En Route" ? (
                           <div className="text-[10px] text-blue-600 font-medium mt-0.5">
-                            ETA: {fmt(swimEntry.eta, f.arrival_icao)}
+                            ETA: {fmt(swimRouteMatch.eta, f.arrival_icao)}
                           </div>
                         ) : null}
                       </td>
