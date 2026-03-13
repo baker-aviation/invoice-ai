@@ -167,7 +167,7 @@ export async function GET(req: NextRequest) {
     }>();
 
     // Track feed health
-    const feeds: { name: string; status: "ok" | "error" | "off"; count: number; error?: string }[] = [];
+    const feeds: { name: string; status: "ok" | "error" | "off"; count: number; updated_at: string; error?: string }[] = [];
 
     // 1. ForeFlight — filing status + ETD/ETA
     if (process.env.FOREFLIGHT_API_KEY) {
@@ -193,13 +193,13 @@ export async function GET(req: NextRequest) {
             eta: f.arrivalTime,
           });
         }
-        feeds.push({ name: "ForeFlight", status: "ok", count: relevant.length });
+        feeds.push({ name: "ForeFlight", status: "ok", count: relevant.length, updated_at: new Date().toISOString() });
       } catch (err) {
         console.error("[swim-status] ForeFlight error:", err);
-        feeds.push({ name: "ForeFlight", status: "error", count: 0, error: String(err) });
+        feeds.push({ name: "ForeFlight", status: "error", count: 0, updated_at: new Date().toISOString(), error: String(err) });
       }
     } else {
-      feeds.push({ name: "ForeFlight", status: "off", count: 0 });
+      feeds.push({ name: "ForeFlight", status: "off", count: 0, updated_at: "" });
     }
 
     // 2. SWIM — live tracking (overrides ForeFlight if higher priority status)
@@ -222,10 +222,10 @@ export async function GET(req: NextRequest) {
           merged.set(key, s);
         }
       }
-      feeds.push({ name: "FAA SWIM", status: "ok", count: swimStatuses.length });
+      feeds.push({ name: "FAA SWIM", status: "ok", count: swimStatuses.length, updated_at: new Date().toISOString() });
     } catch (err) {
       console.error("[swim-status] SWIM error:", err);
-      feeds.push({ name: "FAA SWIM", status: "error", count: 0, error: String(err) });
+      feeds.push({ name: "FAA SWIM", status: "error", count: 0, updated_at: new Date().toISOString(), error: String(err) });
     }
 
     return NextResponse.json({ statuses: Array.from(merged.values()), feeds });

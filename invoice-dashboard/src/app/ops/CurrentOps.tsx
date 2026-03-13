@@ -419,7 +419,7 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
 
   // SWIM flight status
   type SwimFlightStatus = { tail_number: string; departure_icao: string | null; arrival_icao: string | null; status: string; event_time: string; etd: string | null; eta: string | null };
-  type FeedStatus = { name: string; status: "ok" | "error" | "off"; count: number; error?: string };
+  type FeedStatus = { name: string; status: "ok" | "error" | "off"; count: number; updated_at?: string; error?: string };
   const [swimStatus, setSwimStatus] = useState<Map<string, SwimFlightStatus>>(new Map());
   const [feedStatuses, setFeedStatuses] = useState<FeedStatus[]>([]);
   const [faFeedStatus, setFaFeedStatus] = useState<FeedStatus>({ name: "FlightAware", status: "off", count: 0 });
@@ -491,12 +491,12 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
         setFlightInfo(map);
         setAircraftPosition(positions);
         setLastUpdate(new Date());
-        setFaFeedStatus({ name: "FlightAware", status: "ok", count: (data.flights ?? []).length });
+        setFaFeedStatus({ name: "FlightAware", status: "ok", count: (data.flights ?? []).length, updated_at: new Date().toISOString() });
       } else {
-        setFaFeedStatus({ name: "FlightAware", status: "error", count: 0, error: `HTTP ${res.status}` });
+        setFaFeedStatus({ name: "FlightAware", status: "error", count: 0, updated_at: new Date().toISOString(), error: `HTTP ${res.status}` });
       }
     } catch (err) {
-      setFaFeedStatus({ name: "FlightAware", status: "error", count: 0, error: String(err) });
+      setFaFeedStatus({ name: "FlightAware", status: "error", count: 0, updated_at: new Date().toISOString(), error: String(err) });
     }
   }, []);
 
@@ -1087,25 +1087,20 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
             <span className="font-semibold text-gray-700">Feed Status</span>
           </div>
           <div className="space-y-1.5">
-            {[...feedStatuses, faFeedStatus].map((feed) => (
-              <div key={feed.name} className="flex items-center gap-2 text-sm">
-                <span className={`w-2 h-2 rounded-full ${
-                  feed.status === "ok" ? "bg-green-500" :
-                  feed.status === "error" ? "bg-red-500" :
-                  "bg-gray-300"
-                }`} />
-                <span className="font-medium text-gray-700">{feed.name}</span>
-                {feed.status === "ok" && (
-                  <span className="text-xs text-gray-400">{feed.count} flights</span>
-                )}
-                {feed.status === "error" && (
-                  <span className="text-xs text-red-500">Error</span>
-                )}
-                {feed.status === "off" && (
-                  <span className="text-xs text-gray-400">Not configured</span>
-                )}
-              </div>
-            ))}
+            {[...feedStatuses, faFeedStatus].map((feed) => {
+              const fmtTime = feed.updated_at ? new Date(feed.updated_at).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : null;
+              const dotColor = feed.status === "ok" ? "bg-green-500" : feed.status === "error" ? "bg-red-500" : "bg-gray-300";
+              const textColor = feed.status === "ok" ? "text-green-600" : feed.status === "error" ? "text-red-500" : "text-gray-400";
+              return (
+                <div key={feed.name} className="flex items-center gap-2 text-sm">
+                  <span className={`w-2 h-2 rounded-full ${dotColor}`} />
+                  <span className="font-medium text-gray-700">{feed.name}</span>
+                  <span className={`text-xs ml-auto ${textColor}`}>
+                    {feed.status === "ok" && fmtTime ? fmtTime : feed.status === "error" ? "Error" : "—"}
+                  </span>
+                </div>
+              );
+            })}
           </div>
         </div>
       </div>
