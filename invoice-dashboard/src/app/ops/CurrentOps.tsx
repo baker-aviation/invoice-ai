@@ -1360,7 +1360,7 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                                     <div className="text-[10px] text-blue-600 font-medium">
                                       ETA: {fmt(fi.arrival_time, f.arrival_icao)}
                                     </div>
-                                  ) : !isCancelled && swimRouteMatch?.eta && swimRouteMatch?.status === "En Route" ? (
+                                  ) : !isCancelled && status === "En Route" && swimRouteMatch?.eta ? (
                                     <div className="text-[10px] text-blue-600 font-medium">
                                       ETA: {fmt(swimRouteMatch.eta, f.arrival_icao)}
                                     </div>
@@ -1383,8 +1383,8 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                                     <div className="h-full bg-blue-500 rounded-full" style={{ width: `${fi.progress_percent}%` }} />
                                   </div>
                                 )}
-                                {/* ForeFlight progress fallback — only for route-matched entries */}
-                                {!isCancelled && !(fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100) && swimRouteMatch?.status === "En Route" && swimRouteMatch?.etd && swimRouteMatch?.eta && (() => {
+                                {/* ForeFlight progress fallback — only when displayed status is En Route */}
+                                {!isCancelled && status === "En Route" && !(fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100) && swimRouteMatch?.etd && swimRouteMatch?.eta && (() => {
                                   const dep = new Date(swimRouteMatch.etd!).getTime();
                                   const arr = new Date(swimRouteMatch.eta!).getTime();
                                   const total = arr - dep;
@@ -1703,8 +1703,8 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                             })()}
                           </div>
                         )}
-                        {/* ForeFlight progress fallback — only for route-matched entries */}
-                        {!isCancelled && !(fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100) && swimRouteMatch?.status === "En Route" && swimRouteMatch?.etd && swimRouteMatch?.eta && (() => {
+                        {/* ForeFlight progress fallback — only when displayed status is En Route */}
+                        {!isCancelled && status === "En Route" && !(fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100) && swimRouteMatch?.etd && swimRouteMatch?.eta && (() => {
                           const dep = new Date(swimRouteMatch.etd!).getTime();
                           const arr = new Date(swimRouteMatch.eta!).getTime();
                           const now = Date.now();
@@ -1753,7 +1753,7 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                           <div className="text-[10px] text-blue-600 font-medium mt-0.5">
                             ETA: {fmt(fi.arrival_time, f.arrival_icao)}
                           </div>
-                        ) : !isCancelled && swimRouteMatch?.eta && swimRouteMatch?.status === "En Route" ? (
+                        ) : !isCancelled && status === "En Route" && swimRouteMatch?.eta ? (
                           <div className="text-[10px] text-blue-600 font-medium mt-0.5">
                             ETA: {fmt(swimRouteMatch.eta, f.arrival_icao)}
                           </div>
