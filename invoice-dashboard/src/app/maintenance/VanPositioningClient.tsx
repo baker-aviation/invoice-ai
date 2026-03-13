@@ -1032,7 +1032,7 @@ function MxNoteInline({ notes, hiddenIds, onHideForToday }: { notes: MxNote[]; h
     <div className="ml-8 mt-1 space-y-1">
       {visible.map((n) => {
         const mel = isMel(n);
-        const timeLeft = fmtTimeRemaining(n.end_time);
+        const timeLeft = mel ? fmtTimeRemaining(n.end_time) : null;
         return (
         <div key={n.id} className={`flex items-start gap-2 rounded-lg px-3 py-1.5 ${mel ? "bg-yellow-50 border border-yellow-300" : "bg-orange-50 border border-orange-200"}`}>
           <span className={`font-bold text-xs mt-0.5 shrink-0 ${mel ? "text-yellow-600" : "text-orange-500"}`}>{mel ? "MEL" : "MX"}</span>
@@ -1042,7 +1042,7 @@ function MxNoteInline({ notes, hiddenIds, onHideForToday }: { notes: MxNote[]; h
               <span className="text-xs text-gray-700">{n.body}</span>
               <span className="flex items-center gap-1.5 ml-auto shrink-0">
                 {timeLeft && (
-                  <span className={`text-[10px] font-semibold rounded-full px-1.5 py-0.5 ${timeLeft === "overdue" ? "bg-red-100 text-red-700" : mel ? "bg-yellow-100 text-yellow-700" : "bg-orange-100 text-orange-700"}`}>
+                  <span className={`text-[10px] font-semibold rounded-full px-1.5 py-0.5 ${timeLeft === "overdue" ? "bg-red-100 text-red-700" : "bg-yellow-100 text-yellow-700"}`}>
                     {timeLeft}
                   </span>
                 )}
@@ -3231,8 +3231,8 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
                     <div className="text-[11px] text-orange-600">
                       <span className={`font-bold ${isMel(c.mxNote) ? "text-yellow-600" : "text-orange-600"}`}>{isMel(c.mxNote) ? "MEL" : "MX"}:</span>{" "}
                       {c.mxNote.body} ({mxDateStr}{mxEndStr})
-                      {fmtTimeRemaining(c.mxNote.end_time) && (
-                        <span className={`ml-1.5 text-[10px] font-semibold rounded-full px-1.5 py-0.5 ${fmtTimeRemaining(c.mxNote.end_time) === "overdue" ? "bg-red-100 text-red-700" : "bg-orange-100 text-orange-700"}`}>
+                      {isMel(c.mxNote) && fmtTimeRemaining(c.mxNote.end_time) && (
+                        <span className={`ml-1.5 text-[10px] font-semibold rounded-full px-1.5 py-0.5 ${fmtTimeRemaining(c.mxNote.end_time) === "overdue" ? "bg-red-100 text-red-700" : "bg-yellow-100 text-yellow-700"}`}>
                           {fmtTimeRemaining(c.mxNote.end_time)}
                         </span>
                       )}
@@ -3277,7 +3277,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
             <div className="flex flex-col gap-2 ml-[52px] mt-2">
               {(mxNotes ?? []).filter((n) => !dismissedMxIds.has(n.id)).map((note) => {
                 const mel = isMel(note);
-                const timeLeft = fmtTimeRemaining(note.end_time);
+                const timeLeft = mel ? fmtTimeRemaining(note.end_time) : null;
                 return (
                 <div key={note.id} className={`bg-white rounded-lg px-3 py-2 ${mel ? "border border-yellow-300" : "border border-orange-200"}`}>
                   <div className="flex items-center gap-2">
@@ -3285,7 +3285,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
                     <span className="text-xs font-bold text-orange-800">{note.tail_number}</span>
                     <span className="text-xs text-orange-600">{note.airport_icao}</span>
                     {timeLeft && (
-                      <span className={`text-[10px] font-semibold rounded-full px-1.5 py-0.5 ${timeLeft === "overdue" ? "bg-red-100 text-red-700" : mel ? "bg-yellow-100 text-yellow-700" : "bg-orange-100 text-orange-700"}`}>
+                      <span className={`text-[10px] font-semibold rounded-full px-1.5 py-0.5 ${timeLeft === "overdue" ? "bg-red-100 text-red-700" : "bg-yellow-100 text-yellow-700"}`}>
                         {timeLeft}
                       </span>
                     )}
@@ -3660,7 +3660,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
                         <div className="border-t border-orange-100 px-4 py-2 space-y-1">
                           {(mxNotesByTail.get(tail ?? "") ?? []).filter((n) => !hiddenTodayMxIds.has(n.id)).map((n) => {
                             const mel = isMel(n);
-                            const timeLeft = fmtTimeRemaining(n.end_time);
+                            const timeLeft = mel ? fmtTimeRemaining(n.end_time) : null;
                             return (
                             <div key={n.id} className={`flex items-start gap-2 rounded-lg px-3 py-1.5 ${mel ? "bg-yellow-50 border border-yellow-300" : "bg-orange-50 border border-orange-200"}`}>
                               <span className={`font-bold text-xs mt-0.5 shrink-0 ${mel ? "text-yellow-600" : "text-orange-500"}`}>{mel ? "MEL" : "MX"}</span>
@@ -3670,7 +3670,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
                                   <span className="text-xs text-gray-700">{n.body}</span>
                                   <span className="flex items-center gap-1.5 ml-auto shrink-0">
                                     {timeLeft && (
-                                      <span className={`text-[10px] font-semibold rounded-full px-1.5 py-0.5 ${timeLeft === "overdue" ? "bg-red-100 text-red-700" : mel ? "bg-yellow-100 text-yellow-700" : "bg-orange-100 text-orange-700"}`}>
+                                      <span className={`text-[10px] font-semibold rounded-full px-1.5 py-0.5 ${timeLeft === "overdue" ? "bg-red-100 text-red-700" : "bg-yellow-100 text-yellow-700"}`}>
                                         {timeLeft}
                                       </span>
                                     )}
