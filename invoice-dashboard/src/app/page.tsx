@@ -253,6 +253,15 @@ export default async function HomePage() {
             />
 
             <StatCard
+              href="/pilots"
+              title="Pilots"
+              subtitle="Roster, onboarding, rotations"
+              iconLetter="W"
+              borderClass="border-l-teal-500"
+              iconBgClass="bg-teal-100 text-teal-700"
+            />
+
+            <StatCard
               href="/tanker"
               title="Tanker Planner"
               subtitle="Optimize fuel tankering"
