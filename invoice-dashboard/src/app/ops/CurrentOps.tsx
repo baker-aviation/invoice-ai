@@ -499,11 +499,24 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
       if (res.ok) {
         const data = await res.json();
         const STATUS_PRIORITY: Record<string, number> = { "En Route": 4, "Filed": 3, "Scheduled": 2, "Arrived": 1, "Cancelled": 0 };
+        // JetInsight uses K-prefix for some airports that have different real ICAO codes
+        // (e.g. KSJU instead of TJSJ). Generate alternate keys to match.
+        const ICAO_ALIASES: Record<string, string> = {
+          TJSJ: "KSJU", TIST: "KSTT", TISX: "KSTX", TJBQ: "KBQN", TJPS: "KPSE",
+          MYNN: "KNAS", MWCR: "KGCM", TXKF: "KBDA", TAPA: "KANU",
+        };
         const map = new Map<string, SwimFlightStatus>();
         for (const s of data.statuses ?? []) {
           // Route-specific key
           const key = `${s.tail_number}|${s.departure_icao ?? ""}|${s.arrival_icao ?? ""}`;
           map.set(key, s);
+          // Also store with JetInsight K-prefix aliases
+          const altDep = ICAO_ALIASES[s.departure_icao ?? ""];
+          const altArr = ICAO_ALIASES[s.arrival_icao ?? ""];
+          if (altDep || altArr) {
+            const altKey = `${s.tail_number}|${altDep ?? s.departure_icao ?? ""}|${altArr ?? s.arrival_icao ?? ""}`;
+            if (!map.has(altKey)) map.set(altKey, s);
+          }
           // Tail-only key — prefer the most active status (En Route > Filed > etc.)
           const tailKey = `${s.tail_number}||`;
           const existing = map.get(tailKey);

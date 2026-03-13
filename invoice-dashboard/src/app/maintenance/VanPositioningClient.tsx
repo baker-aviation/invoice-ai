@@ -1635,6 +1635,8 @@ function ScheduleTab({
 
   // Compute base items for every zone, then deduplicate across zones
   // so each aircraft only appears in the closest van's card.
+  // MX preference: if an aircraft has MX notes at an airport within a zone,
+  // prefer that zone over pure distance (end-of-day MX servicing).
   const baseItemsByVan = useMemo(() => {
     const raw = new Map<number, VanFlightItem[]>();
     for (const zone of FIXED_VAN_ZONES) {
@@ -1642,17 +1644,30 @@ function ScheduleTab({
       const baseLon = liveVanPositions.get(zone.vanId)?.lon ?? zone.lon;
       raw.set(zone.vanId, computeZoneItems(zone, allFlights, date, baseLat, baseLon));
     }
-    // Deduplicate: if an aircraft appears in multiple zones, keep only the closest
+    // Deduplicate: if an aircraft appears in multiple zones, prefer zones
+    // where the tail has MX notes at nearby airports, then fallback to closest distance
     const claimedFlights = new Set<string>();
-    // Build a list of (vanId, flightId, distance) for all assignments
-    const assignments: { vanId: number; flightId: string; distKm: number; item: VanFlightItem }[] = [];
+    const assignments: { vanId: number; flightId: string; distKm: number; item: VanFlightItem; hasMxInZone: boolean }[] = [];
     for (const [vanId, items] of raw) {
+      const zone = FIXED_VAN_ZONES.find((z) => z.vanId === vanId);
       for (const item of items) {
-        assignments.push({ vanId, flightId: item.arrFlight.id, distKm: item.distKm, item });
+        // Check if this tail has MX notes at an airport within this zone
+        const tail = item.arrFlight.tail_number;
+        const tailNotes = tail ? (mxNotesByTail.get(tail) ?? []) : [];
+        const hasMxInZone = zone ? tailNotes.some((n) => {
+          if (!n.airport_icao) return false;
+          const iata = n.airport_icao.replace(/^K/, "");
+          const info = getAirportInfo(iata);
+          return info ? haversineKm(zone.lat, zone.lon, info.lat, info.lon) <= SCHEDULE_ARRIVAL_RADIUS_KM : false;
+        }) : false;
+        assignments.push({ vanId, flightId: item.arrFlight.id, distKm: item.distKm, item, hasMxInZone });
       }
     }
-    // Sort by distance so closest van wins
-    assignments.sort((a, b) => a.distKm - b.distKm);
+    // Sort: MX-in-zone first, then by distance
+    assignments.sort((a, b) => {
+      if (a.hasMxInZone !== b.hasMxInZone) return a.hasMxInZone ? -1 : 1;
+      return a.distKm - b.distKm;
+    });
     const map = new Map<number, VanFlightItem[]>();
     for (const zone of FIXED_VAN_ZONES) map.set(zone.vanId, []);
     for (const { vanId, flightId, item } of assignments) {
@@ -1661,7 +1676,7 @@ function ScheduleTab({
       map.get(vanId)!.push(item);
     }
     return map;
-  }, [allFlights, date, liveVanPositions]);
+  }, [allFlights, date, liveVanPositions, mxNotesByTail]);
 
   // All arrivals today (no zone filter) — used for the uncovered pool
   const allDayArrivals = useMemo(
