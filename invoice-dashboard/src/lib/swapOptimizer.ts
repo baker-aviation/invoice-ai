@@ -1076,13 +1076,16 @@ function buildFeasibilityMatrix(params: {
         tail,
         aircraftType: acType,
         swapPoint: oncomingSwapPoint,
-        homeAirports: poolEntry.home_airports,
+        homeAirports: crewMember?.home_airports?.length ? crewMember.home_airports : poolEntry.home_airports,
         candidates: [],
         best: null,
         warnings: [],
       };
 
       // Run the REAL candidate builder with full timing constraints
+      if (task.homeAirports.length === 0) {
+        console.warn(`[FeasMatrix] ${poolEntry.name} has NO home airports (pool: ${poolEntry.home_airports.length}, roster: ${crewMember?.home_airports?.length ?? 0})`);
+      }
       const candidates = buildCandidates(task, aliases, commercialFlights, swapDate);
 
       // Score each candidate
@@ -1114,6 +1117,12 @@ function buildFeasibilityMatrix(params: {
       });
     }
   }
+
+  const viableCount = matrix.filter((m) => m.viable).length;
+  const totalCombos = matrix.length;
+  const uniqueTails = new Set(matrix.filter((m) => m.viable).map((m) => m.tail)).size;
+  const uniqueCrew = new Set(matrix.filter((m) => m.viable).map((m) => m.crewName)).size;
+  console.log(`[FeasMatrix] ${role}: ${viableCount}/${totalCombos} viable combos, ${uniqueTails} tails w/viable crew, ${uniqueCrew} crew w/viable tails`);
 
   return matrix;
 }
@@ -1152,15 +1161,29 @@ export function assignOncomingCrew(params: {
     legs.sort((a, b) => new Date(a.scheduled_departure).getTime() - new Date(b.scheduled_departure).getTime());
   }
 
-  // Determine aircraft types for all tails
+  // Determine aircraft types for all tails — check offgoing, oncoming, and flight legs
   const tailAircraftType = new Map<string, string>();
   for (const tail of Object.keys(result)) {
     const sa = result[tail];
-    const offName = sa.offgoing_pic ?? sa.offgoing_sic;
-    if (offName) {
-      const crew = findCrewByName(crewRoster, offName, sa.offgoing_pic ? "PIC" : "SIC");
+    // Try all assigned crew names to find aircraft type
+    const names = [sa.offgoing_pic, sa.offgoing_sic, sa.oncoming_pic, sa.oncoming_sic].filter(Boolean) as string[];
+    for (const nm of names) {
+      const crew = findCrewByName(crewRoster, nm, "PIC") ?? findCrewByName(crewRoster, nm, "SIC");
       if (crew?.aircraft_types[0]) {
         tailAircraftType.set(tail, crew.aircraft_types[0]);
+        break;
+      }
+    }
+    // Fallback: check PIC/SIC from flight legs for this tail
+    if (!tailAircraftType.has(tail)) {
+      const legs = byTail.get(tail) ?? [];
+      for (const leg of legs) {
+        const legCrew = (leg.pic ? findCrewByName(crewRoster, leg.pic, "PIC") : null) ??
+                        (leg.sic ? findCrewByName(crewRoster, leg.sic, "SIC") : null);
+        if (legCrew?.aircraft_types[0]) {
+          tailAircraftType.set(tail, legCrew.aircraft_types[0]);
+          break;
+        }
       }
     }
   }
