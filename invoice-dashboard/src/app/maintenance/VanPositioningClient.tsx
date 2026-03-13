@@ -1001,6 +1001,23 @@ function SlackShareModal({
 // MxNoteInline — JetInsight maintenance alerts per aircraft
 // ---------------------------------------------------------------------------
 
+function isMel(note: MxNote): boolean {
+  const text = (note.body ?? note.subject ?? "").trim().toLowerCase();
+  return text.startsWith("mel ");
+}
+
+function fmtTimeRemaining(endTime: string | null): string | null {
+  if (!endTime) return null;
+  const end = new Date(endTime).getTime() + 24 * 60 * 60 * 1000; // end of that day
+  const diff = end - Date.now();
+  if (diff <= 0) return "overdue";
+  const days = Math.floor(diff / (24 * 60 * 60 * 1000));
+  if (days > 1) return `${days}d left`;
+  const hours = Math.floor(diff / (60 * 60 * 1000));
+  if (hours > 0) return `${hours}h left`;
+  return "<1h left";
+}
+
 function MxNoteInline({ notes, hiddenIds, onHideForToday }: { notes: MxNote[]; hiddenIds?: Set<string>; onHideForToday?: (id: string) => void }) {
   // Hide MX notes more than 7 days away + hidden-for-today
   const now = Date.now();
@@ -1013,19 +1030,29 @@ function MxNoteInline({ notes, hiddenIds, onHideForToday }: { notes: MxNote[]; h
   if (visible.length === 0) return null;
   return (
     <div className="ml-8 mt-1 space-y-1">
-      {visible.map((n) => (
-        <div key={n.id} className="flex items-start gap-2 bg-orange-50 border border-orange-200 rounded-lg px-3 py-1.5">
-          <span className="text-orange-500 font-bold text-xs mt-0.5 shrink-0">MX</span>
+      {visible.map((n) => {
+        const mel = isMel(n);
+        const timeLeft = fmtTimeRemaining(n.end_time);
+        return (
+        <div key={n.id} className={`flex items-start gap-2 rounded-lg px-3 py-1.5 ${mel ? "bg-yellow-50 border border-yellow-300" : "bg-orange-50 border border-orange-200"}`}>
+          <span className={`font-bold text-xs mt-0.5 shrink-0 ${mel ? "text-yellow-600" : "text-orange-500"}`}>{mel ? "MEL" : "MX"}</span>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-xs font-medium text-orange-700">{n.airport_icao}</span>
+              <span className={`text-xs font-medium ${mel ? "text-yellow-700" : "text-orange-700"}`}>{n.airport_icao}</span>
               <span className="text-xs text-gray-700">{n.body}</span>
-              {n.start_time && (
-                <span className="text-[11px] text-gray-400 ml-auto shrink-0">
-                  {new Date(n.start_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-                  {n.end_time && n.end_time !== n.start_time && ` – ${new Date(n.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`}
-                </span>
-              )}
+              <span className="flex items-center gap-1.5 ml-auto shrink-0">
+                {timeLeft && (
+                  <span className={`text-[10px] font-semibold rounded-full px-1.5 py-0.5 ${timeLeft === "overdue" ? "bg-red-100 text-red-700" : mel ? "bg-yellow-100 text-yellow-700" : "bg-orange-100 text-orange-700"}`}>
+                    {timeLeft}
+                  </span>
+                )}
+                {n.start_time && (
+                  <span className="text-[11px] text-gray-400">
+                    {new Date(n.start_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                    {n.end_time && n.end_time !== n.start_time && ` – ${new Date(n.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`}
+                  </span>
+                )}
+              </span>
             </div>
             {onHideForToday && (
               <button
@@ -1037,7 +1064,8 @@ function MxNoteInline({ notes, hiddenIds, onHideForToday }: { notes: MxNote[]; h
             )}
           </div>
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -2563,7 +2591,7 @@ const haversineKmClient = (lat1: number, lon1: number, lat2: number, lon2: numbe
 // ---------------------------------------------------------------------------
 
 export default function VanPositioningClient({ initialFlights, mxNotes, aircraftTags = [] }: { initialFlights: Flight[]; mxNotes?: MxNote[]; aircraftTags?: AircraftTag[] }) {
-  const dates = useMemo(() => getDateRange(7), []); // 7-day window
+  const dates = useMemo(() => getDateRange(2), []); // today + tomorrow
   const [dayIdx, setDayIdx] = useState(0);
   const [activeTab, setActiveTab] = useState<"map" | "schedule" | "flights">("schedule");
   const [viewMode, setViewMode] = useState<"map" | "list">("map");
@@ -2817,19 +2845,18 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
   const mxConflicts = useMemo<MxConflict[]>(() => {
     if (!mxNotes || mxNotes.length === 0) return [];
     const conflicts: MxConflict[] = [];
-    const weekMs = 7 * 24 * 60 * 60 * 1000;
     const now = Date.now();
-
     const DAY_MS = 24 * 60 * 60 * 1000;
+    // Only show conflicts for yesterday, today, tomorrow
+    const windowStart = now - DAY_MS;
+    const windowEnd = now + 2 * DAY_MS;
 
     for (const note of mxNotes) {
       if (!note.tail_number || !note.start_time) continue;
       const mxStart = new Date(note.start_time).getTime();
       const mxEnd = note.end_time ? new Date(note.end_time).getTime() + DAY_MS : mxStart + DAY_MS;
-      // Auto-hide MX notes older than 24h
-      if (mxEnd < now - DAY_MS) continue;
-      // Only check MX within 7 days
-      if (mxStart - now > weekMs) continue;
+      // Only show if MX window overlaps yesterday–tomorrow
+      if (mxEnd < windowStart || mxStart > windowEnd) continue;
       const mxIcao = note.airport_icao?.toUpperCase();
       if (!mxIcao) continue;
 
@@ -3202,7 +3229,13 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
                   </div>
                   <div className="flex items-center justify-between gap-2 mt-1">
                     <div className="text-[11px] text-orange-600">
-                      MX: {c.mxNote.body} ({mxDateStr}{mxEndStr})
+                      <span className={`font-bold ${isMel(c.mxNote) ? "text-yellow-600" : "text-orange-600"}`}>{isMel(c.mxNote) ? "MEL" : "MX"}:</span>{" "}
+                      {c.mxNote.body} ({mxDateStr}{mxEndStr})
+                      {fmtTimeRemaining(c.mxNote.end_time) && (
+                        <span className={`ml-1.5 text-[10px] font-semibold rounded-full px-1.5 py-0.5 ${fmtTimeRemaining(c.mxNote.end_time) === "overdue" ? "bg-red-100 text-red-700" : "bg-orange-100 text-orange-700"}`}>
+                          {fmtTimeRemaining(c.mxNote.end_time)}
+                        </span>
+                      )}
                     </div>
                     <button
                       onClick={(e) => { e.stopPropagation(); dismissMxNote(c.mxNote.id); }}
@@ -3242,11 +3275,20 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
           </button>
           {mxNotesOpen && (
             <div className="flex flex-col gap-2 ml-[52px] mt-2">
-              {(mxNotes ?? []).filter((n) => !dismissedMxIds.has(n.id)).map((note) => (
-                <div key={note.id} className="bg-white border border-orange-200 rounded-lg px-3 py-2">
+              {(mxNotes ?? []).filter((n) => !dismissedMxIds.has(n.id)).map((note) => {
+                const mel = isMel(note);
+                const timeLeft = fmtTimeRemaining(note.end_time);
+                return (
+                <div key={note.id} className={`bg-white rounded-lg px-3 py-2 ${mel ? "border border-yellow-300" : "border border-orange-200"}`}>
                   <div className="flex items-center gap-2">
+                    <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${mel ? "bg-yellow-100 text-yellow-700" : "bg-orange-100 text-orange-700"}`}>{mel ? "MEL" : "MX"}</span>
                     <span className="text-xs font-bold text-orange-800">{note.tail_number}</span>
                     <span className="text-xs text-orange-600">{note.airport_icao}</span>
+                    {timeLeft && (
+                      <span className={`text-[10px] font-semibold rounded-full px-1.5 py-0.5 ${timeLeft === "overdue" ? "bg-red-100 text-red-700" : mel ? "bg-yellow-100 text-yellow-700" : "bg-orange-100 text-orange-700"}`}>
+                        {timeLeft}
+                      </span>
+                    )}
                     {note.start_time && (
                       <span className="text-[11px] text-gray-500 ml-auto">
                         {new Date(note.start_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
@@ -3263,7 +3305,8 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
                   </div>
                   <div className="text-sm text-gray-700 mt-0.5">{note.body}</div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -3615,19 +3658,29 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
                       {/* MX notes from JetInsight */}
                       {(mxNotesByTail.get(tail ?? "") ?? []).filter((n) => !hiddenTodayMxIds.has(n.id)).length > 0 && (
                         <div className="border-t border-orange-100 px-4 py-2 space-y-1">
-                          {(mxNotesByTail.get(tail ?? "") ?? []).filter((n) => !hiddenTodayMxIds.has(n.id)).map((n) => (
-                            <div key={n.id} className="flex items-start gap-2 bg-orange-50 border border-orange-200 rounded-lg px-3 py-1.5">
-                              <span className="text-orange-500 font-bold text-xs mt-0.5 shrink-0">MX</span>
+                          {(mxNotesByTail.get(tail ?? "") ?? []).filter((n) => !hiddenTodayMxIds.has(n.id)).map((n) => {
+                            const mel = isMel(n);
+                            const timeLeft = fmtTimeRemaining(n.end_time);
+                            return (
+                            <div key={n.id} className={`flex items-start gap-2 rounded-lg px-3 py-1.5 ${mel ? "bg-yellow-50 border border-yellow-300" : "bg-orange-50 border border-orange-200"}`}>
+                              <span className={`font-bold text-xs mt-0.5 shrink-0 ${mel ? "text-yellow-600" : "text-orange-500"}`}>{mel ? "MEL" : "MX"}</span>
                               <div className="flex-1 min-w-0">
                                 <div className="flex items-center gap-2 flex-wrap">
-                                  <span className="text-xs font-medium text-orange-700">{n.airport_icao}</span>
+                                  <span className={`text-xs font-medium ${mel ? "text-yellow-700" : "text-orange-700"}`}>{n.airport_icao}</span>
                                   <span className="text-xs text-gray-700">{n.body}</span>
-                                  {n.start_time && (
-                                    <span className="text-[11px] text-gray-400 ml-auto shrink-0">
-                                      {new Date(n.start_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-                                      {n.end_time && n.end_time !== n.start_time && ` – ${new Date(n.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`}
-                                    </span>
-                                  )}
+                                  <span className="flex items-center gap-1.5 ml-auto shrink-0">
+                                    {timeLeft && (
+                                      <span className={`text-[10px] font-semibold rounded-full px-1.5 py-0.5 ${timeLeft === "overdue" ? "bg-red-100 text-red-700" : mel ? "bg-yellow-100 text-yellow-700" : "bg-orange-100 text-orange-700"}`}>
+                                        {timeLeft}
+                                      </span>
+                                    )}
+                                    {n.start_time && (
+                                      <span className="text-[11px] text-gray-400">
+                                        {new Date(n.start_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                                        {n.end_time && n.end_time !== n.start_time && ` – ${new Date(n.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`}
+                                      </span>
+                                    )}
+                                  </span>
                                 </div>
                                 <button
                                   onClick={() => hideMxForToday(n.id)}
@@ -3637,7 +3690,8 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
                                 </button>
                               </div>
                             </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       )}
                     </div>
