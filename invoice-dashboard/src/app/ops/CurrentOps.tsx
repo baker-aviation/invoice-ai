@@ -1383,7 +1383,7 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                                   {type}
                                 </span>
                                 <span className={`text-xs ${statusColor}`}>{status}</span>
-                                {isFiled && (
+                                {isFiled && status === "Scheduled" && (
                                   <span className="text-[10px] text-indigo-500">
                                     IFR Filed{swimEntry?.etd ? ` ${fmt(swimEntry.etd, f.departure_icao)}` : ""}
                                   </span>
@@ -1638,7 +1638,7 @@ export default function CurrentOps({ flights, onSwitchToDuty, advertisedPrices =
                       <td className="px-3 py-2.5 overflow-visible">
                         <div className="flex flex-col gap-0.5">
                           <span className={`text-xs font-medium ${statusColor}`}>{status}</span>
-                          {isFiled && (
+                          {isFiled && status === "Scheduled" && (
                             <span className="text-[10px] text-indigo-500 font-medium">
                               IFR Filed{swimEntry?.etd ? ` ${fmt(swimEntry.etd, f.departure_icao)}` : ""}
                             </span>
