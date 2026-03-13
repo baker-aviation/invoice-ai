@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { toPng } from "html-to-image";
+import * as XLSX from "xlsx";
 import type { Flight } from "@/lib/opsApi";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -344,6 +345,112 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
     }
   }
 
+  function exportToExcel() {
+    if (!swapPlan) return;
+    const rows = swapPlan.rows;
+    const oncomingPics = rows.filter((r) => r.direction === "oncoming" && r.role === "PIC");
+    const oncomingSics = rows.filter((r) => r.direction === "oncoming" && r.role === "SIC");
+    const offgoingPics = rows.filter((r) => r.direction === "offgoing" && r.role === "PIC");
+    const offgoingSics = rows.filter((r) => r.direction === "offgoing" && r.role === "SIC");
+
+    const AIRCRAFT_EMOJI: Record<string, string> = {
+      citation_x: "\u{1F7E2}", // green circle
+      challenger: "\u{1F7E1}", // yellow circle
+      dual: "\u{1F7E3}",       // purple circle
+    };
+
+    function crewCell(r: CrewSwapRow): string {
+      const emoji = AIRCRAFT_EMOJI[r.aircraft_type] ?? "";
+      const home = r.home_airports.length > 0 ? ` (${r.home_airports.join("/")})` : "";
+      const ca = r.is_checkairman ? " \u2714" : "";
+      return `${emoji} ${r.name}${home}${ca}`.trim();
+    }
+
+    function fmtLocal(iso: string | null): string {
+      if (!iso) return "";
+      return new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", timeZoneName: "short" });
+    }
+
+    function travelLabel(r: CrewSwapRow): string {
+      if (r.travel_type === "commercial" && r.flight_number) return r.flight_number;
+      if (r.travel_type === "uber") return "UBER";
+      if (r.travel_type === "rental_car") return "RENTAL";
+      if (r.travel_type === "drive") return "DRIVE";
+      return "";
+    }
+
+    // Header row matches the import format columns + optimizer result columns
+    const HEADER = [
+      "SB", "Vol", "Name (Home Base)", "", "Tail", "",
+      "Swap Location", "Transport", "Dep Time", "Avail/Arr Time",
+      "Cost", "Backup", "Notes/Warnings",
+    ];
+
+    function dataRow(r: CrewSwapRow): (string | number | null)[] {
+      return [
+        r.is_skillbridge ? "TRUE" : "",
+        "", // volunteer flag not stored on result rows
+        crewCell(r),
+        "",
+        r.tail_number,
+        "",
+        r.swap_location ?? "",
+        travelLabel(r),
+        fmtLocal(r.departure_time),
+        fmtLocal(r.available_time ?? r.arrival_time),
+        r.cost_estimate != null ? `$${r.cost_estimate}` : "",
+        r.backup_flight ?? "",
+        [...r.warnings, r.notes ?? ""].filter(Boolean).join("; "),
+      ];
+    }
+
+    const sheetData: (string | number | null)[][] = [];
+
+    // ONCOMING PILOTS
+    sheetData.push(["", "", "ONCOMING PILOTS", "", "", "", "", "", "", "", "", "", ""]);
+    sheetData.push(["", "", "PILOT IN-COMMAND", "", "", "", "", "", "", "", "", "", ""]);
+    sheetData.push(HEADER);
+    for (const r of oncomingPics) sheetData.push(dataRow(r));
+    sheetData.push([]);
+    sheetData.push(["", "", "SECOND IN-COMMAND", "", "", "", "", "", "", "", "", "", ""]);
+    sheetData.push(HEADER);
+    for (const r of oncomingSics) sheetData.push(dataRow(r));
+    sheetData.push([]);
+
+    // OFFGOING PILOTS
+    sheetData.push(["", "", "OFFGOING PILOTS", "", "", "", "", "", "", "", "", "", ""]);
+    sheetData.push(["", "", "PILOT IN-COMMAND", "", "", "", "", "", "", "", "", "", ""]);
+    sheetData.push(HEADER);
+    for (const r of offgoingPics) sheetData.push(dataRow(r));
+    sheetData.push([]);
+    sheetData.push(["", "", "SECOND IN-COMMAND", "", "", "", "", "", "", "", "", "", ""]);
+    sheetData.push(HEADER);
+    for (const r of offgoingSics) sheetData.push(dataRow(r));
+
+    // Summary row
+    sheetData.push([]);
+    sheetData.push(["", "", `Total Est. Cost: $${swapPlan.total_cost.toLocaleString()}`, "", "", "",
+      `Score: ${swapPlan.plan_score}`, `Solved: ${swapPlan.solved_count ?? 0}`,
+      `Unsolved: ${swapPlan.unsolved_count ?? 0}`, "", "", "", ""]);
+    if (swapPlan.warnings.length > 0) {
+      sheetData.push(["", "", "WARNINGS:", "", "", "", "", "", "", "", "", "", ""]);
+      for (const w of swapPlan.warnings) {
+        sheetData.push(["", "", w, "", "", "", "", "", "", "", "", "", ""]);
+      }
+    }
+
+    const ws = XLSX.utils.aoa_to_sheet(sheetData);
+    // Set column widths
+    ws["!cols"] = [
+      { wch: 5 }, { wch: 4 }, { wch: 30 }, { wch: 3 }, { wch: 10 }, { wch: 3 },
+      { wch: 12 }, { wch: 18 }, { wch: 14 }, { wch: 14 },
+      { wch: 8 }, { wch: 14 }, { wch: 40 },
+    ];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Swap Plan");
+    XLSX.writeFile(wb, `swap-plan-${selectedWed.toISOString().slice(0, 10)}.xlsx`);
+  }
+
   const [swapAssignments, setSwapAssignments] = useState<Record<string, SwapAssignment> | null>(() => {
     if (typeof window === "undefined") return null;
     try {
@@ -663,13 +770,21 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
               {optimizing ? "Searching..." : "Optimize + Flights"}
             </button>
             {swapPlan && (
-              <button
-                onClick={exportToImage}
-                disabled={exporting}
-                className="px-3 py-1.5 text-xs font-medium border rounded-lg bg-gray-50 text-gray-700 hover:bg-gray-100"
-              >
-                {exporting ? "Exporting..." : "Export PNG"}
-              </button>
+              <>
+                <button
+                  onClick={exportToImage}
+                  disabled={exporting}
+                  className="px-3 py-1.5 text-xs font-medium border rounded-lg bg-gray-50 text-gray-700 hover:bg-gray-100"
+                >
+                  {exporting ? "Exporting..." : "Export PNG"}
+                </button>
+                <button
+                  onClick={exportToExcel}
+                  className="px-3 py-1.5 text-xs font-medium border rounded-lg bg-gray-50 text-gray-700 hover:bg-gray-100"
+                >
+                  Export Excel
+                </button>
+              </>
             )}
           </div>
         </div>
