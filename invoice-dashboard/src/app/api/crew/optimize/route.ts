@@ -171,16 +171,13 @@ export async function POST(req: NextRequest) {
     let searchSuccessCount = 0;
     let searchFailCount = 0;
 
-    // Search swap-day (Wednesday) + day-before (Tuesday evening) for oncoming crew
-    const dayBefore = new Date(new Date(swapDate + "T12:00:00Z").getTime() - 86_400_000)
-      .toISOString().slice(0, 10);
+    // Search swap-day (Wednesday) only
     const allSearches: { pair: string; date: string }[] = [];
     for (const pair of pairsArray) {
       allSearches.push({ pair, date: swapDate });
-      allSearches.push({ pair, date: dayBefore });
     }
 
-    console.log(`[Swap Optimizer] Searching ${pairsArray.length} route pairs × 2 dates (${swapDate}, ${dayBefore}) via HasData`);
+    console.log(`[Swap Optimizer] Searching ${pairsArray.length} route pairs for ${swapDate} via HasData`);
 
     // Search in batches of 15 (HasData Pro: 15 concurrent requests)
     for (let i = 0; i < allSearches.length; i += 15) {

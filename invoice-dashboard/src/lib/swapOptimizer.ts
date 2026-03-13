@@ -23,7 +23,7 @@ import { estimateDriveTime, findNearbyCommercialAirports, type DriveEstimate } f
 import { getAirportTimezone } from "./airportTimezones";
 import type { FlightOffer } from "./amadeus";
 import {
-  MAX_DUTY_HOURS, MIN_REST_HOURS, DUTY_ON_BEFORE_COMMERCIAL, DEPLANE_BUFFER,
+  MAX_DUTY_HOURS, DUTY_ON_BEFORE_COMMERCIAL, DEPLANE_BUFFER,
   FBO_ARRIVAL_BUFFER, FBO_ARRIVAL_BUFFER_PREFERRED, DUTY_OFF_AFTER_LAST_LEG,
   INTERNATIONAL_DUTY_OFF, AIRPORT_SECURITY_BUFFER, RENTAL_RETURN_BUFFER,
   EARLIEST_DUTY_ON_HOUR, UBER_MAX_MINUTES, RENTAL_MAX_MINUTES,
@@ -391,6 +391,18 @@ function buildCandidates(
     ? midnightUtc(toIcao(task.homeAirports[0]), swapDate)
     : midnightUtc(swapIcao, swapDate);
 
+  // Oncoming hard deadline: 1800L at the swap airport (offgoing crew holds until then)
+  // The ideal is arriving before the first leg, but it's a scoring preference, not a hard cutoff.
+  let oncomingHardDeadline: Date | null = null;
+  if (task.direction === "oncoming") {
+    const tz = getAirportTimezone(swapIcao) ?? "America/New_York";
+    const sixPmLocal = new Date(`${swapDate}T18:00:00`);
+    const utcStr = sixPmLocal.toLocaleString("en-US", { timeZone: "UTC" });
+    const localStr = sixPmLocal.toLocaleString("en-US", { timeZone: tz });
+    const offsetMs = new Date(utcStr).getTime() - new Date(localStr).getTime();
+    oncomingHardDeadline = new Date(sixPmLocal.getTime() + offsetMs);
+  }
+
   // Estimate duty-end for oncoming crew: last leg arrival + off-duty buffer
   // For offgoing crew: duty-end = when they arrive home (checked per-candidate)
   let oncomingDutyEnd: Date | null = null;
@@ -502,12 +514,8 @@ function buildCandidates(
     // ── Commercial flight options ─────────────────────────────────────────
     if (!commercialFlights) continue;
 
-    // Search swap-day (Wednesday) + day-before (Tuesday) for oncoming overnight travel
-    const dayBefore = new Date(new Date(swapDate + "T12:00:00Z").getTime() - 86_400_000)
-      .toISOString().slice(0, 10);
-    const datesToSearch = task.direction === "oncoming"
-      ? [swapDate, dayBefore]
-      : [swapDate];
+    // Search swap-day (Wednesday) only
+    const datesToSearch = [swapDate];
 
     for (const commApt of commAirports) {
       const commIata = toIata(commApt);
@@ -565,27 +573,10 @@ function buildCandidates(
           fboArr = fboArrivalAfterCommercial(flightArr, driveToFboMin);
           dutyOn = dutyOnForCommercial(flightDep);
 
-          // Check: does crew arrive at FBO in time?
-          const mustBeAtFbo = new Date(task.swapPoint.time.getTime() - ms(FBO_ARRIVAL_BUFFER));
-          if (fboArr.getTime() > mustBeAtFbo.getTime()) {
-            continue; // Too late
-          }
-
-          // Day-before flight: crew flies in evening before, stays at hotel,
-          // drives to FBO fresh next morning. Separate duty period.
-          const swapDayStart = new Date(swapDate + "T00:00:00Z");
-          const isDayBefore = flightArr.getTime() < swapDayStart.getTime();
-          if (isDayBefore) {
-            // FBO arrival = next morning with comfortable 90min buffer
-            fboArr = new Date(task.swapPoint.time.getTime() - ms(FBO_ARRIVAL_BUFFER_PREFERRED));
-            // Duty-on starts when they leave hotel, not when they flew yesterday
-            dutyOn = new Date(fboArr.getTime() - ms(driveToFboMin));
-            groundCost += 150; // hotel overnight
-
-            // 10hr rest check: flight arrival + deplane → next-day duty-on
-            const restStart = new Date(flightArr.getTime() + ms(DEPLANE_BUFFER));
-            const restHours = (dutyOn.getTime() - restStart.getTime()) / (60 * 60_000);
-            if (restHours < MIN_REST_HOURS) continue; // Insufficient rest
+          // Hard deadline: must arrive at FBO by 1800L (offgoing crew holds until then)
+          // Arriving before first leg is a scoring PREFERENCE, not a hard requirement
+          if (oncomingHardDeadline && fboArr.getTime() > oncomingHardDeadline.getTime()) {
+            continue; // Too late — even offgoing can't hold this long
           }
 
           // Check: duty-on not before 0400 local
@@ -733,19 +724,25 @@ function scoreCandidate(
     else score -= 5; // No backup
   }
 
-  // ── FBO arrival buffer (oncoming only) ─────────────────────────────────
+  // ── FBO arrival timing (oncoming only) ──────────────────────────────
+  // Arriving before the first leg is ideal but not required.
+  // Offgoing crew holds until oncoming arrives.
   if (task.direction === "oncoming" && c.fboArrivalTime) {
     const bufferMin = (task.swapPoint.time.getTime() - c.fboArrivalTime.getTime()) / 60_000;
-    if (bufferMin >= FBO_ARRIVAL_BUFFER_PREFERRED) score += 5;
-    else if (bufferMin >= FBO_ARRIVAL_BUFFER) score += 2;
-    else score -= 10; // Cutting it close
+    if (bufferMin >= FBO_ARRIVAL_BUFFER_PREFERRED) score += 10; // 90+ min early — ideal
+    else if (bufferMin >= FBO_ARRIVAL_BUFFER) score += 7;       // 60+ min early — good
+    else if (bufferMin >= 0) score += 3;                         // Before swap point — OK
+    else if (bufferMin >= -120) score -= 2;                      // Up to 2hr late — acceptable
+    else if (bufferMin >= -240) score -= 5;                      // Up to 4hr late — less ideal
+    else score -= 10;                                             // 4+ hr late — poor
   }
 
   // ── Duty-on timing (avoid before 0400L) ────────────────────────────────
+  // Humans routinely book 0400-0500L flights on swap day — mild penalty only
   if (c.dutyOnTime && task.homeAirports[0]) {
     const localHour = getLocalHour(c.dutyOnTime, toIcao(task.homeAirports[0]));
     if (localHour < EARLIEST_DUTY_ON_HOUR && localHour >= 0) {
-      score -= 10; // Early duty-on penalty
+      score -= 3; // Mild penalty — early flights are normal on swap day
     }
   }
 
