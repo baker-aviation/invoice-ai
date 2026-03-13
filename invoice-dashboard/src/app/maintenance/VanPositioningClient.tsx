@@ -2564,6 +2564,29 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
     }
   }, []);
   const [schedTypeFilter, setSchedTypeFilter] = useState<string>("all");
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
+
+  async function handleResync() {
+    setSyncing(true);
+    setSyncMsg(null);
+    try {
+      const res = await fetch("/api/ops/sync-schedule", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        setSyncMsg(data.error ?? "Sync failed");
+        return;
+      }
+      const upserted = data.upserted ?? 0;
+      const skipped = data.skipped ?? 0;
+      setSyncMsg(`${upserted} upserted, ${skipped} skipped`);
+      setTimeout(() => window.location.reload(), 1500);
+    } catch (err) {
+      setSyncMsg(err instanceof Error ? err.message : "Network error");
+    } finally {
+      setSyncing(false);
+    }
+  }
 
   // ── Long-Term Maintenance detection ──────────────────────────────────────
   type LongTermMxAircraft = {
@@ -2758,10 +2781,14 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
     const weekMs = 7 * 24 * 60 * 60 * 1000;
     const now = Date.now();
 
+    const DAY_MS = 24 * 60 * 60 * 1000;
+
     for (const note of mxNotes) {
       if (!note.tail_number || !note.start_time) continue;
       const mxStart = new Date(note.start_time).getTime();
-      const mxEnd = note.end_time ? new Date(note.end_time).getTime() + 24 * 60 * 60 * 1000 : mxStart + 24 * 60 * 60 * 1000;
+      const mxEnd = note.end_time ? new Date(note.end_time).getTime() + DAY_MS : mxStart + DAY_MS;
+      // Auto-hide MX notes older than 24h
+      if (mxEnd < now - DAY_MS) continue;
       // Only check MX within 7 days
       if (mxStart - now > weekMs) continue;
       const mxIcao = note.airport_icao?.toUpperCase();
@@ -3024,8 +3051,22 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
         onSelect={(i) => { setDayIdx(i); setSelectedVan(null); }}
       />
 
-      {/* ── Stats ── */}
-      <StatsBar positions={positions} vans={vans} flightCount={flightsForDay.length} aogVanCount={aogSamsaraVans.length} />
+      {/* ── Stats + Resync ── */}
+      <div className="flex items-center gap-3">
+        <div className="flex-1">
+          <StatsBar positions={positions} vans={vans} flightCount={flightsForDay.length} aogVanCount={aogSamsaraVans.length} />
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {syncMsg && <span className="text-xs text-gray-500">{syncMsg}</span>}
+          <button
+            onClick={handleResync}
+            disabled={syncing}
+            className="px-2.5 py-1 text-xs font-medium text-gray-500 bg-gray-100 hover:bg-gray-200 rounded transition-colors disabled:opacity-50"
+          >
+            {syncing ? "Syncing..." : "Resync JI"}
+          </button>
+        </div>
+      </div>
 
       {/* ── Van Status — vehicle health ── */}
       {(() => {
@@ -3071,8 +3112,11 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
       })()}
 
       {/* ── MX Conflict Alerts (accordion) ── */}
+      {(() => {
+        const visibleConflicts = mxConflicts.filter((c) => !dismissedMxIds.has(c.mxNote.id));
+        return (
       <div className={`rounded-xl border-2 px-5 py-4 shadow-sm ${
-        mxConflicts.length > 0
+        visibleConflicts.length > 0
           ? "border-red-300 bg-red-50"
           : "border-green-300 bg-green-50"
       }`}>
@@ -3081,19 +3125,19 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
           className="flex items-center gap-3 w-full text-left"
         >
           <div className={`w-10 h-10 rounded-full flex items-center justify-center text-xl shrink-0 font-bold ${
-            mxConflicts.length > 0
+            visibleConflicts.length > 0
               ? "bg-red-100 text-red-600"
               : "bg-green-100 text-green-600"
           }`}>
-            {mxConflicts.length > 0 ? "!!" : "\u2713"}
+            {visibleConflicts.length > 0 ? "!!" : "\u2713"}
           </div>
-          <div className={`text-base font-bold flex-1 ${mxConflicts.length > 0 ? "text-red-800" : "text-green-800"}`}>
-            {mxConflicts.length > 0
-              ? `Jawad's Ops Changes that Affect James's Plan (${mxConflicts.length})`
+          <div className={`text-base font-bold flex-1 ${visibleConflicts.length > 0 ? "text-red-800" : "text-green-800"}`}>
+            {visibleConflicts.length > 0
+              ? `Jawad's Ops Changes that Affect James's Plan (${visibleConflicts.length})`
               : "Jawad's Ops Changes that Affect James's Plan — 0 alerts"
             }
           </div>
-          {mxConflicts.length > 0 && (
+          {visibleConflicts.length > 0 && (
             <svg
               className={`w-5 h-5 text-red-600 transition-transform ${mxConflictsOpen ? "rotate-180" : ""}`}
               fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
@@ -3102,9 +3146,9 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
             </svg>
           )}
         </button>
-        {mxConflicts.length > 0 && mxConflictsOpen && (
+        {visibleConflicts.length > 0 && mxConflictsOpen && (
           <div className="flex flex-col gap-2 ml-[52px] mt-2">
-            {mxConflicts.map((c, i) => {
+            {visibleConflicts.map((c, i) => {
               const mxDateStr = c.mxNote.start_time
                 ? new Date(c.mxNote.start_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })
                 : "";
@@ -3116,6 +3160,13 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-xs font-bold text-red-800">{c.tail}</span>
                     <span className="text-xs text-red-600">{c.reason}</span>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); dismissMxNote(c.mxNote.id); }}
+                      className="text-gray-400 hover:text-red-600 text-xs ml-auto shrink-0"
+                      title="Dismiss"
+                    >
+                      &times;
+                    </button>
                   </div>
                   <div className="text-[11px] text-orange-600 mt-1">
                     MX: {c.mxNote.body} ({mxDateStr}{mxEndStr})
@@ -3126,6 +3177,8 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
           </div>
         )}
       </div>
+        );
+      })()}
 
       {/* ── MX Notes from JetInsight (accordion) ── */}
       {mxNotes && mxNotes.length > 0 && (
