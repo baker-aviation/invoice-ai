@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 
-type Aircraft = { registration: string; modelCode: string; [key: string]: unknown };
+type Aircraft = { aircraftRegistration: string; aircraftModelCode: string; cruiseProfiles?: { uuid: string; profileName: string }[]; [key: string]: unknown };
 
 type FuelPerf = {
   unit: string;
@@ -109,7 +109,7 @@ export default function ForeFlightClient() {
         const list = Array.isArray(data) ? data : data.aircraft ?? [];
         setAircraft(list);
         if (list.length > 0 && !selectedAircraft) {
-          setSelectedAircraft(list[0].registration);
+          setSelectedAircraft(list[0].aircraftRegistration);
         }
       })
       .catch(() => {});
@@ -197,8 +197,8 @@ export default function ForeFlightClient() {
             >
               {aircraft.length === 0 && <option value="">Loading...</option>}
               {aircraft.map((a) => (
-                <option key={a.registration} value={a.registration}>
-                  {a.registration} ({a.modelCode})
+                <option key={a.aircraftRegistration} value={a.aircraftRegistration}>
+                  {a.aircraftRegistration} ({a.aircraftModelCode})
                 </option>
               ))}
             </select>
