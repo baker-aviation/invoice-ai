@@ -3160,16 +3160,17 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-xs font-bold text-red-800">{c.tail}</span>
                     <span className="text-xs text-red-600">{c.reason}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2 mt-1">
+                    <div className="text-[11px] text-orange-600">
+                      MX: {c.mxNote.body} ({mxDateStr}{mxEndStr})
+                    </div>
                     <button
                       onClick={(e) => { e.stopPropagation(); dismissMxNote(c.mxNote.id); }}
-                      className="text-gray-400 hover:text-red-600 text-xs ml-auto shrink-0"
-                      title="Dismiss"
+                      className="text-[10px] font-medium text-red-400 hover:text-red-700 hover:bg-red-50 border border-red-200 rounded px-2 py-0.5 shrink-0 transition-colors"
                     >
-                      &times;
+                      Permanently Dismiss
                     </button>
-                  </div>
-                  <div className="text-[11px] text-orange-600 mt-1">
-                    MX: {c.mxNote.body} ({mxDateStr}{mxEndStr})
                   </div>
                 </div>
               );
