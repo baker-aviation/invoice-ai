@@ -56,21 +56,13 @@ async function fetchForeFlight(): Promise<ForeFlightFlight[]> {
   return flights;
 }
 
+/**
+ * ForeFlight only tells us about filing status — it doesn't do live tracking.
+ * Leave En Route / Arrived to FlightAware and SWIM which have radar/ADS-B data.
+ */
 function deriveForeFlightStatus(f: ForeFlightFlight): string {
-  const now = new Date();
-  const arr = new Date(f.arrivalTime);
-
   if (f.filingStatus === "Cancelled") return "Cancelled";
-
-  if (f.filingStatus === "Filed") {
-    if (arr < now) return "Arrived";
-    // Only mark "En Route" if ATC has released the flight or atcStatus confirms it.
-    // Just having a departure time in the past does NOT mean the plane left.
-    if (f.released || (f.atcStatus && f.atcStatus !== "")) return "En Route";
-    return "Filed";
-  }
-
-  // filingStatus === "None"
+  if (f.filingStatus === "Filed") return "Filed";
   return "Scheduled";
 }
 
