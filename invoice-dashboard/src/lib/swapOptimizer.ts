@@ -502,24 +502,8 @@ function buildCandidates(
     // ── Commercial flight options ─────────────────────────────────────────
     if (!commercialFlights) continue;
 
-    // For oncoming crew, also try day-before flights (overnight travel)
-    // Early volunteers can also arrive Tuesday (2 days before Wednesday swap)
-    const dayBefore = new Date(new Date(swapDate + "T12:00:00Z").getTime() - 86_400_000)
-      .toISOString().slice(0, 10);
-    const twoDaysBefore = new Date(new Date(swapDate + "T12:00:00Z").getTime() - 2 * 86_400_000)
-      .toISOString().slice(0, 10);
-    const dayAfter = new Date(new Date(swapDate + "T12:00:00Z").getTime() + 86_400_000)
-      .toISOString().slice(0, 10);
-    let datesToSearch: string[];
-    if (task.direction === "oncoming") {
-      datesToSearch = task.earlyVolunteer
-        ? [swapDate, dayBefore, twoDaysBefore] // Early volunteer: Tue/Wed arrival
-        : [swapDate, dayBefore];
-    } else {
-      datesToSearch = task.lateVolunteer
-        ? [swapDate, dayAfter] // Late volunteer: can depart Thursday
-        : [swapDate];
-    }
+    // Search swap-day (Wednesday) only for now
+    const datesToSearch = [swapDate];
 
     for (const commApt of commAirports) {
       const commIata = toIata(commApt);
@@ -626,17 +610,13 @@ function buildCandidates(
 
           // Check midnight deadline
           const homeArr = new Date(flightArr.getTime() + ms(DEPLANE_BUFFER));
-          // Late volunteers get Thursday midnight deadline
-          const effectiveMidnight = task.lateVolunteer
-            ? new Date(homeMidnight.getTime() + 24 * 60 * 60_000) // Thursday midnight
-            : homeMidnight;
-          if (homeArr.getTime() > effectiveMidnight.getTime()) {
-            // Skill-Bridge SIC gets Thursday even without volunteering
+          if (homeArr.getTime() > homeMidnight.getTime()) {
+            // Skill-Bridge SIC gets Thursday midnight
             if (task.crewMember?.is_skillbridge && task.role === "SIC") {
               const thurMidnight = new Date(homeMidnight.getTime() + 24 * 60 * 60_000);
               if (homeArr.getTime() > thurMidnight.getTime()) continue;
             } else {
-              continue; // Won't make deadline
+              continue; // Won't make midnight
             }
           }
           fboArr = null;

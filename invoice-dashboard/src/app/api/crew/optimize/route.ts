@@ -171,32 +171,13 @@ export async function POST(req: NextRequest) {
     let searchSuccessCount = 0;
     let searchFailCount = 0;
 
-    // Also search day-before flights for oncoming crew (overnight travel)
-    const dayBefore = new Date(new Date(swapDate + "T12:00:00Z").getTime() - 86_400_000)
-      .toISOString().slice(0, 10);
-
-    // Check if any pool members are early/late volunteers — if so, search extra dates
-    const hasEarlyVol = hasPool && [...clientOncomingPool!.pic, ...clientOncomingPool!.sic].some(p => p.early_volunteer);
-    const hasLateVol = hasPool && [...clientOncomingPool!.pic, ...clientOncomingPool!.sic].some(p => p.late_volunteer);
-    const twoDaysBefore = hasEarlyVol
-      ? new Date(new Date(swapDate + "T12:00:00Z").getTime() - 2 * 86_400_000).toISOString().slice(0, 10)
-      : null;
-    const dayAfter = hasLateVol
-      ? new Date(new Date(swapDate + "T12:00:00Z").getTime() + 86_400_000).toISOString().slice(0, 10)
-      : null;
-
-    // Build full search list: swap-day + day-before + optional Tue/Thu for volunteers
-    const searchDates = [swapDate, dayBefore];
-    if (twoDaysBefore) searchDates.push(twoDaysBefore);
-    if (dayAfter) searchDates.push(dayAfter);
+    // Search swap-day (Wednesday) only
     const allSearches: { pair: string; date: string }[] = [];
     for (const pair of pairsArray) {
-      for (const date of searchDates) {
-        allSearches.push({ pair, date });
-      }
+      allSearches.push({ pair, date: swapDate });
     }
 
-    console.log(`[Swap Optimizer] Searching ${pairsArray.length} route pairs × ${searchDates.length} dates (${searchDates.join(", ")}) via HasData`);
+    console.log(`[Swap Optimizer] Searching ${pairsArray.length} route pairs for ${swapDate} via HasData`);
 
     // Search in batches of 15 (HasData Pro: 15 concurrent requests)
     for (let i = 0; i < allSearches.length; i += 15) {
