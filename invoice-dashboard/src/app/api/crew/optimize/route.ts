@@ -19,6 +19,7 @@ export async function POST(req: NextRequest) {
   const auth = await requireAdmin(req);
   if (!isAuthed(auth)) return auth.error;
 
+  try {
   const body = await req.json();
   const swapDate = body.swap_date as string;
   const searchCommercial = body.search_flights === true;
@@ -234,4 +235,12 @@ export async function POST(req: NextRequest) {
       details: assignmentResult.details,
     } : undefined,
   });
+
+  } catch (e) {
+    console.error("[Swap Optimizer] Unhandled error:", e);
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : "Optimization failed" },
+      { status: 500 },
+    );
+  }
 }
