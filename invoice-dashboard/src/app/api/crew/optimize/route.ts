@@ -7,6 +7,7 @@ import { searchFlights } from "@/lib/hasdata";
 import type { FlightOffer } from "@/lib/amadeus";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 300; // 5 min — flight searches + feasibility matrix take time
 
 /**
  * POST /api/crew/optimize
