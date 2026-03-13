@@ -297,12 +297,19 @@ function findAllCommercialAirports(fboIcao: string, aliases: AirportAlias[]): st
 }
 
 const ICAO_IATA: Record<string, string> = {
+  // Canada
   CYYZ: "YYZ", CYUL: "YUL", CYVR: "YVR", CYOW: "YOW", CYYC: "YYC",
   CYEG: "YEG", CYWG: "YWG", CYHZ: "YHZ", CYQB: "YQB",
+  // Mexico
   MMMX: "MEX", MMUN: "CUN", MMMY: "MTY", MMGL: "GDL", MMSD: "SJD",
-  MBPV: "MHH", MYNN: "NAS", MKJP: "KIN", TJSJ: "SJU", TNCM: "SXM",
-  MROC: "SJO", MRLB: "LIR", MHTG: "TGU", MGGT: "GUA", MPTO: "PTY",
-  TXKF: "BDA", MYGF: "FPO",
+  MMPR: "PVR", MMMD: "MID",
+  // Caribbean
+  MBPV: "MHH", MYNN: "NAS", MKJP: "KIN", TIST: "STT", TJSJ: "SJU",
+  TNCM: "SXM", TFFR: "PTP", TAPA: "ANU",
+  TXKF: "BDA", MYGF: "FPO", MYEH: "ELH",
+  // Central America
+  MROC: "SJO", MRLB: "LIR", MHTG: "TGU", MGGT: "GUA",
+  MSLP: "SAL", MNMG: "MGA", MPTO: "PTY",
 };
 
 function toIata(icao: string): string {
@@ -318,6 +325,49 @@ function parseDuration(iso: string): number {
   const m = iso.match(/PT(?:(\d+)H)?(?:(\d+)M)?/);
   if (!m) return 0;
   return (parseInt(m[1] ?? "0") * 60) + parseInt(m[2] ?? "0");
+}
+
+/** Track keys we've already warned about to avoid log spam */
+const _warnedFlightKeys = new Set<string>();
+
+/** Look up commercial flights by key, trying alternate ICAO/IATA conversions */
+function lookupFlights(
+  commercialFlights: Map<string, FlightOffer[]>,
+  origin: string,
+  dest: string,
+  date: string,
+): FlightOffer[] {
+  // Try primary key (already IATA-converted)
+  const key = `${origin}-${dest}-${date}`;
+  const primary = commercialFlights.get(key);
+  if (primary) return primary;
+
+  // Try raw ICAO keys (K-prefixed for US airports)
+  const originIcao = origin.length === 3 ? `K${origin}` : origin;
+  const destIcao = dest.length === 3 ? `K${dest}` : dest;
+  const icaoKey = `${originIcao}-${destIcao}-${date}`;
+  if (icaoKey !== key) {
+    const icaoResult = commercialFlights.get(icaoKey);
+    if (icaoResult) return icaoResult;
+  }
+
+  // Try mixed keys (one IATA, one ICAO)
+  const mixedKey1 = `${originIcao}-${dest}-${date}`;
+  const mixedKey2 = `${origin}-${destIcao}-${date}`;
+  for (const mk of [mixedKey1, mixedKey2]) {
+    if (mk !== key && mk !== icaoKey) {
+      const mixedResult = commercialFlights.get(mk);
+      if (mixedResult) return mixedResult;
+    }
+  }
+
+  // Log a warning (once per unique key)
+  if (!_warnedFlightKeys.has(key)) {
+    _warnedFlightKeys.add(key);
+    console.warn(`[SwapOptimizer] No commercial flights found for key "${key}" (map has ${commercialFlights.size} entries)`);
+  }
+
+  return [];
 }
 
 /** Build all transport candidates for a crew task */
@@ -430,10 +480,7 @@ function buildCandidates(
         destIata = homeIata;
       }
 
-      // Try exact date and also day before (for early arrivals)
-      const datesToTry = [swapDate];
-      const key = `${originIata}-${destIata}-${swapDate}`;
-      const offers = commercialFlights.get(key) ?? [];
+      const offers = lookupFlights(commercialFlights, originIata, destIata, swapDate);
 
       for (const offer of offers) {
         const segs = offer.itineraries[0]?.segments ?? [];
@@ -814,6 +861,7 @@ export function buildSwapPlan(params: {
   swapAssignments?: Record<string, SwapAssignment>;
 }): SwapPlanResult {
   const { flights, crewRoster, aliases, swapDate, commercialFlights, swapAssignments } = params;
+  _warnedFlightKeys.clear(); // Reset per-run to avoid stale warnings
   const globalWarnings: string[] = [];
   const allTasks: CrewTask[] = [];
 
@@ -863,9 +911,38 @@ export function buildSwapPlan(params: {
     if (assignment.offgoing_sic) entries.push({ name: assignment.offgoing_sic, role: "SIC", direction: "offgoing" });
 
     for (const entry of entries) {
-      const crewMember = findCrewByName(crewRoster, entry.name, entry.role);
+      let crewMember = findCrewByName(crewRoster, entry.name, entry.role);
       const warnings: string[] = [];
-      if (!crewMember) warnings.push(`"${entry.name}" not found in roster`);
+      if (!crewMember) {
+        // Try opposite role — crew may be listed as SIC in roster but PIC in the Excel (or vice versa)
+        const oppositeRole = entry.role === "PIC" ? "SIC" : "PIC";
+        crewMember = findCrewByName(crewRoster, entry.name, oppositeRole);
+        if (crewMember) {
+          warnings.push(`"${entry.name}" found in roster as ${oppositeRole} instead of ${entry.role}`);
+        } else {
+          // Last resort: search by last name with either role
+          const norm = entry.name.trim().toLowerCase().replace(/\s+/g, " ");
+          const parts = norm.includes(",")
+            ? norm.split(",").map((p) => p.trim()).reverse()
+            : norm.split(" ");
+          const lastName = parts[parts.length - 1];
+          const lastNameMatch = crewRoster.find((c) => {
+            const cParts = c.name.trim().toLowerCase().replace(/\s+/g, " ").split(" ");
+            return cParts[cParts.length - 1] === lastName;
+          });
+          if (lastNameMatch) {
+            crewMember = lastNameMatch;
+            warnings.push(`"${entry.name}" matched to "${lastNameMatch.name}" (${lastNameMatch.role}) by last name`);
+          } else {
+            warnings.push(`"${entry.name}" not found in roster`);
+          }
+        }
+      }
+
+      const homeAirports = crewMember?.home_airports ?? [];
+      if (homeAirports.length === 0) {
+        console.warn(`[SwapOptimizer] No home airports for "${entry.name}" (${entry.role}, ${tail}) — buildCandidates will return no results`);
+      }
 
       const swapPoint = entry.direction === "oncoming" ? oncomingSwapPoint : offgoingSwapPoint;
 
@@ -877,7 +954,7 @@ export function buildSwapPlan(params: {
         tail,
         aircraftType,
         swapPoint,
-        homeAirports: crewMember?.home_airports ?? [],
+        homeAirports,
         candidates: [],
         best: null,
         warnings,
