@@ -889,6 +889,7 @@ function extractSwapPoints(
   const swapPoints: SwapPoint[] = [];
 
   if (liveWedLegs.length > 0) {
+    // Before first live leg
     const firstLive = liveWedLegs[0];
     swapPoints.push({
       icao: firstLive.departure_icao,
@@ -896,6 +897,20 @@ function extractSwapPoints(
       position: "before_live",
       isAdjacentLive: true,
     });
+    // Between live legs — SIC can swap at intermediate airports
+    // (PIC covers SIC seat for legs before the SIC arrives)
+    for (let i = 0; i < liveWedLegs.length - 1; i++) {
+      const leg = liveWedLegs[i];
+      if (leg.arrival_icao && leg.scheduled_arrival) {
+        swapPoints.push({
+          icao: leg.arrival_icao,
+          time: new Date(leg.scheduled_arrival),
+          position: "between_legs",
+          isAdjacentLive: true,
+        });
+      }
+    }
+    // After last live leg
     const lastLive = liveWedLegs[liveWedLegs.length - 1];
     if (lastLive.arrival_icao && lastLive.scheduled_arrival) {
       swapPoints.push({
@@ -912,6 +927,18 @@ function extractSwapPoints(
       position: "between_legs",
       isAdjacentLive: false,
     });
+    // Include intermediate airports for non-live legs too
+    for (let i = 0; i < wedLegs.length - 1; i++) {
+      const leg = wedLegs[i];
+      if (leg.arrival_icao && leg.scheduled_arrival) {
+        swapPoints.push({
+          icao: leg.arrival_icao,
+          time: new Date(leg.scheduled_arrival),
+          position: "between_legs",
+          isAdjacentLive: false,
+        });
+      }
+    }
     const lastWed = wedLegs[wedLegs.length - 1];
     if (lastWed.arrival_icao && lastWed.scheduled_arrival) {
       swapPoints.push({
@@ -990,38 +1017,31 @@ export function buildSwapPlan(params: {
       continue;
     }
 
-    // Oncoming crew should target the FIRST swap point (need to be there before first leg)
-    const oncomingSwapPoint = swapPoints[0];
-    // Offgoing crew leaves from the LAST swap point (after last leg)
-    const offgoingSwapPoint = swapPoints[swapPoints.length - 1];
-
-    // ── Create crew tasks ────────────────────────────────────────────────
-    const tailTasks: CrewTask[] = [];
-
-    const entries: { name: string; role: "PIC" | "SIC"; direction: "oncoming" | "offgoing" }[] = [];
-    if (assignment.oncoming_pic) entries.push({ name: assignment.oncoming_pic, role: "PIC", direction: "oncoming" });
-    if (assignment.oncoming_sic) entries.push({ name: assignment.oncoming_sic, role: "SIC", direction: "oncoming" });
-    if (assignment.offgoing_pic) entries.push({ name: assignment.offgoing_pic, role: "PIC", direction: "offgoing" });
-    if (assignment.offgoing_sic) entries.push({ name: assignment.offgoing_sic, role: "SIC", direction: "offgoing" });
+    // Swap point logic:
+    // - PIC (oncoming + offgoing) swaps at swapPoints[0] (before first leg)
+    // - SIC can swap at ANY swap point — PIC covers SIC seat for early legs
+    //   until oncoming SIC arrives. Try all swap points, pick best transport.
+    // - Offgoing leaves from the SAME swap point as their oncoming counterpart.
+    const picSwapPoint = swapPoints[0];
 
     // Validate: never 2 SICs on the same tail (2 PICs is OK on swap day)
-    const oncomingRoles = entries.filter(e => e.direction === "oncoming").map(e => e.role);
-    if (oncomingRoles.filter(r => r === "SIC").length >= 2 && oncomingRoles.filter(r => r === "PIC").length === 0) {
-      globalWarnings.push(`${tail}: 2 SICs assigned with no PIC — cannot fly with 2 SICs`);
+    const hasOncomingPic = !!assignment.oncoming_pic;
+    const hasOncomingSic = !!assignment.oncoming_sic;
+    if (!hasOncomingPic && hasOncomingSic) {
+      // SIC-only swap is fine — PIC stays on the aircraft
     }
 
-    for (const entry of entries) {
-      let crewMember = findCrewByName(crewRoster, entry.name, entry.role);
+    // ── Helper: resolve crew member from name ────────────────────────────
+    function resolveCrewMember(name: string, role: "PIC" | "SIC"): { crewMember: CrewMember | null; warnings: string[] } {
       const warnings: string[] = [];
+      let crewMember = findCrewByName(crewRoster, name, role);
       if (!crewMember) {
-        // Try opposite role — crew may be listed as SIC in roster but PIC in the Excel (or vice versa)
-        const oppositeRole = entry.role === "PIC" ? "SIC" : "PIC";
-        crewMember = findCrewByName(crewRoster, entry.name, oppositeRole);
+        const oppositeRole = role === "PIC" ? "SIC" : "PIC";
+        crewMember = findCrewByName(crewRoster, name, oppositeRole);
         if (crewMember) {
-          warnings.push(`"${entry.name}" found in roster as ${oppositeRole} instead of ${entry.role}`);
+          warnings.push(`"${name}" found in roster as ${oppositeRole} instead of ${role}`);
         } else {
-          // Last resort: search by last name with either role
-          const norm = entry.name.trim().toLowerCase().replace(/\s+/g, " ");
+          const norm = name.trim().toLowerCase().replace(/\s+/g, " ");
           const parts = norm.includes(",")
             ? norm.split(",").map((p) => p.trim()).reverse()
             : norm.split(" ");
@@ -1032,33 +1052,90 @@ export function buildSwapPlan(params: {
           });
           if (lastNameMatch) {
             crewMember = lastNameMatch;
-            warnings.push(`"${entry.name}" matched to "${lastNameMatch.name}" (${lastNameMatch.role}) by last name`);
+            warnings.push(`"${name}" matched to "${lastNameMatch.name}" (${lastNameMatch.role}) by last name`);
           } else {
-            warnings.push(`"${entry.name}" not found in roster`);
+            warnings.push(`"${name}" not found in roster`);
           }
         }
       }
+      return { crewMember, warnings };
+    }
 
+    // ── Create crew tasks ────────────────────────────────────────────────
+    const tailTasks: CrewTask[] = [];
+
+    // PIC tasks — always at the first swap point
+    for (const [name, direction] of [
+      [assignment.oncoming_pic, "oncoming"] as const,
+      [assignment.offgoing_pic, "offgoing"] as const,
+    ]) {
+      if (!name) continue;
+      const { crewMember, warnings } = resolveCrewMember(name, "PIC");
       const homeAirports = crewMember?.home_airports ?? [];
       if (homeAirports.length === 0) {
-        console.warn(`[SwapOptimizer] No home airports for "${entry.name}" (${entry.role}, ${tail}) — buildCandidates will return no results`);
+        console.warn(`[SwapOptimizer] No home airports for "${name}" (PIC, ${tail})`);
+      }
+      tailTasks.push({
+        name: crewMember?.name ?? name, crewMember, role: "PIC", direction, tail,
+        aircraftType, swapPoint: picSwapPoint, homeAirports,
+        candidates: [], best: null, warnings,
+      });
+    }
+
+    // SIC tasks — try ALL swap points, pick the one with best transport
+    for (const [name, direction] of [
+      [assignment.oncoming_sic, "oncoming"] as const,
+      [assignment.offgoing_sic, "offgoing"] as const,
+    ]) {
+      if (!name) continue;
+      const { crewMember, warnings } = resolveCrewMember(name, "SIC");
+      const homeAirports = crewMember?.home_airports ?? [];
+      if (homeAirports.length === 0) {
+        console.warn(`[SwapOptimizer] No home airports for "${name}" (SIC, ${tail})`);
       }
 
-      const swapPoint = entry.direction === "oncoming" ? oncomingSwapPoint : offgoingSwapPoint;
+      if (direction === "oncoming" && swapPoints.length > 1) {
+        // Try each swap point — run buildCandidates for each, pick the best
+        let bestSwapPoint = picSwapPoint; // default to same as PIC
+        let bestScore = -1;
 
-      tailTasks.push({
-        name: crewMember?.name ?? entry.name,
-        crewMember,
-        role: entry.role,
-        direction: entry.direction,
-        tail,
-        aircraftType,
-        swapPoint,
-        homeAirports,
-        candidates: [],
-        best: null,
-        warnings,
-      });
+        for (const sp of swapPoints) {
+          const tempTask: CrewTask = {
+            name: crewMember?.name ?? name, crewMember, role: "SIC",
+            direction: "oncoming", tail, aircraftType, swapPoint: sp,
+            homeAirports, candidates: [], best: null, warnings: [],
+          };
+          const candidates = buildCandidates(tempTask, aliases, commercialFlights, swapDate, byTail.get(tail));
+          for (const c of candidates) {
+            c.score = scoreCandidate(c, tempTask, null);
+          }
+          const topScore = candidates.reduce((max, c) => Math.max(max, c.score), 0);
+          if (topScore > bestScore) {
+            bestScore = topScore;
+            bestSwapPoint = sp;
+          }
+        }
+
+        if (bestSwapPoint !== picSwapPoint) {
+          warnings.push(`SIC swaps at ${toIata(bestSwapPoint.icao)} (after ${bestSwapPoint.position}) — PIC covers SIC seat for earlier legs`);
+        }
+
+        tailTasks.push({
+          name: crewMember?.name ?? name, crewMember, role: "SIC", direction, tail,
+          aircraftType, swapPoint: bestSwapPoint, homeAirports,
+          candidates: [], best: null, warnings,
+        });
+      } else {
+        // Offgoing SIC: use same swap point as oncoming SIC (or PIC swap point)
+        const oncomingSicTask = tailTasks.find((t) => t.role === "SIC" && t.direction === "oncoming");
+        const sicSwapPoint = oncomingSicTask?.swapPoint ?? picSwapPoint;
+
+        tailTasks.push({
+          name: crewMember?.name ?? name, crewMember, role: "SIC", direction, tail,
+          aircraftType, swapPoint: sicSwapPoint, homeAirports,
+          candidates: [], best: null, warnings,
+        });
+      }
     }
 
     // Run optimizer for this tail
@@ -1243,7 +1320,8 @@ function buildFeasibilityMatrix(params: {
     const { swapPoints } = extractSwapPoints(tail, byTail, swapDate);
     if (swapPoints.length === 0) continue;
 
-    const oncomingSwapPoint = swapPoints[0];
+    // SIC can swap at any swap point; PIC uses the first
+    const swapPointsToTry = role === "SIC" ? swapPoints : [swapPoints[0]];
     const acType = tailAircraftType.get(tail) ?? "unknown";
 
     for (const poolEntry of pool) {
@@ -1254,29 +1332,32 @@ function buildFeasibilityMatrix(params: {
 
       // Find or create a CrewMember from the roster for this pool entry
       const crewMember = findCrewByName(crewRoster, poolEntry.name, role);
+      const homeAirports = crewMember?.home_airports?.length ? crewMember.home_airports : poolEntry.home_airports;
 
-      // Build a temporary CrewTask for this crew × tail combination
-      const task: CrewTask = {
-        name: poolEntry.name,
-        crewMember,
-        role,
-        direction: "oncoming",
-        tail,
-        aircraftType: acType,
-        swapPoint: oncomingSwapPoint,
-        homeAirports: crewMember?.home_airports?.length ? crewMember.home_airports : poolEntry.home_airports,
-        candidates: [],
-        best: null,
-        warnings: [],
-        earlyVolunteer: poolEntry.early_volunteer,
-        lateVolunteer: poolEntry.late_volunteer,
-      };
-
-      // Run the REAL candidate builder with full timing constraints
-      if (task.homeAirports.length === 0) {
+      if (homeAirports.length === 0) {
         console.warn(`[FeasMatrix] ${poolEntry.name} has NO home airports (pool: ${poolEntry.home_airports.length}, roster: ${crewMember?.home_airports?.length ?? 0})`);
       }
-      const candidates = buildCandidates(task, aliases, commercialFlights, swapDate, byTail.get(tail));
+
+      // Try all viable swap points, keep best result
+      let allCandidates: TransportCandidate[] = [];
+
+      for (const sp of swapPointsToTry) {
+        const task: CrewTask = {
+          name: poolEntry.name, crewMember, role, direction: "oncoming",
+          tail, aircraftType: acType, swapPoint: sp, homeAirports,
+          candidates: [], best: null, warnings: [],
+          earlyVolunteer: poolEntry.early_volunteer,
+          lateVolunteer: poolEntry.late_volunteer,
+        };
+        const spCandidates = buildCandidates(task, aliases, commercialFlights, swapDate, byTail.get(tail));
+        for (const c of spCandidates) {
+          c.score = scoreCandidate(c, task, null);
+        }
+        allCandidates.push(...spCandidates);
+      }
+
+      // Deduplicate: keep only the best-scoring version of each candidate
+      const candidates = allCandidates;
 
       // Add early/late volunteer bonus to cost (Skill-Bridge excluded)
       if ((poolEntry.early_volunteer || poolEntry.late_volunteer) && !poolEntry.is_skillbridge) {
@@ -1286,11 +1367,7 @@ function buildFeasibilityMatrix(params: {
         }
       }
 
-      // Score each candidate
-      for (const c of candidates) {
-        c.backups = findBackups(c, candidates);
-        c.score = scoreCandidate(c, task, null);
-      }
+      // Candidates already scored in the swap-point loop above
       candidates.sort((a, b) => b.score - a.score);
 
       const best = candidates[0];
