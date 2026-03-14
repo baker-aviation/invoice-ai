@@ -88,6 +88,7 @@ function getTurnLabel(item: VanFlightItem): string | null {
   const schedArr = item.arrFlight.scheduled_arrival;
   if (schedArr && schedDep) {
     const groundMin = (new Date(schedDep).getTime() - new Date(schedArr).getTime()) / 60000;
+    if (groundMin >= 240) return "Done for day";
     if (groundMin < 120) return "Quickturn";
   }
   return null;
@@ -494,9 +495,11 @@ function StopCard({
     prevIsNext.current = isNext;
   }, [isNext]);
 
-  const navUrl = item.airportInfo
-    ? `https://www.google.com/maps/dir/?api=1&destination=${item.airportInfo.lat},${item.airportInfo.lon}`
-    : null;
+  const navUrl = fbo && item.airportInfo
+    ? `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(fbo + " " + (item.airportInfo.name ?? item.airport))}`
+    : item.airportInfo
+      ? `https://www.google.com/maps/dir/?api=1&destination=${item.airportInfo.lat},${item.airportInfo.lon}`
+      : null;
 
   return (
     <div
