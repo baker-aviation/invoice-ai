@@ -302,8 +302,9 @@ export async function POST(req: NextRequest) {
 }
 
 /**
- * Nuke all alerts: register endpoint first, then list from FA API and delete everything.
- * Falls back to DB-based deletion if API listing returns empty.
+ * Nuke all alerts using paginated delete loop.
+ * GET /alerts times out when there are 1000+ alerts, so we fetch one page
+ * at a time (max_pages=1), delete those, and repeat until clean.
  */
 async function nukeAlerts(
   supa: ReturnType<typeof createServiceClient>,
@@ -324,105 +325,116 @@ async function nukeAlerts(
       status: endpointRes.status,
       url: webhookUrl.replace(webhookSecret, "***"),
     });
-    console.log(`[FA Alerts] Nuke: endpoint registered (${endpointRes.status})`);
   } catch (err) {
     results.details.push({ step: "endpoint_error", error: String(err) });
-    console.warn("[FA Alerts] Nuke: endpoint registration failed:", err);
   }
 
-  // Step 2: List all alerts from FA API (long timeout — may have hundreds)
-  let faAlerts: { id: number }[] = [];
-  try {
-    const listRes = await fetch(`${FA_BASE}/alerts`, {
-      headers: faHeaders(),
-      signal: AbortSignal.timeout(60000),
-    });
+  // Step 2: Paginated delete loop — fetch one page, delete, repeat
+  let totalDeleted = 0;
+  let totalFailed = 0;
+  let rounds = 0;
+  const MAX_ROUNDS = 100; // Safety limit (~1500 alerts at 15/page)
 
-    if (listRes.ok) {
-      const listRaw = await listRes.json();
-      faAlerts = extractAlerts(listRaw);
-      results.details.push({
-        step: "listed_fa_alerts",
-        count: faAlerts.length,
-        raw_type: Array.isArray(listRaw) ? "array" : typeof listRaw,
-        raw_keys: listRaw && typeof listRaw === "object" && !Array.isArray(listRaw) ? Object.keys(listRaw) : null,
-        sample: faAlerts.slice(0, 3),
+  while (rounds < MAX_ROUNDS) {
+    rounds++;
+
+    // Try to list one page of alerts
+    let alerts: { id: number }[] = [];
+    let listError: string | null = null;
+
+    try {
+      const listRes = await fetch(`${FA_BASE}/alerts?max_pages=1`, {
+        headers: faHeaders(),
+        signal: AbortSignal.timeout(30000),
       });
-      console.log(`[FA Alerts] Nuke: found ${faAlerts.length} alerts from FA API`);
-    } else {
-      const errText = await listRes.text();
-      results.details.push({ step: "list_failed", status: listRes.status, error: errText });
-    }
-  } catch (err) {
-    results.details.push({ step: "list_error", error: String(err) });
-  }
 
-  // Step 3: Also get alert IDs from our DB (in case FA listing misses some)
-  const { data: dbRegs } = await supa
-    .from("fa_alert_registrations")
-    .select("tail, alert_id")
-    .eq("active", true);
+      if (listRes.ok) {
+        const raw = await listRes.json();
+        alerts = extractAlerts(raw);
 
-  const dbAlertIds = new Set((dbRegs ?? []).map((r) => r.alert_id));
-  const faAlertIds = new Set(faAlerts.map((a) => a.id));
-
-  // Merge: all FA alert IDs + any DB-only alert IDs
-  const allIds = [...new Set([...faAlertIds, ...dbAlertIds])].filter((id) => id != null);
-  results.details.push({
-    step: "merged_alert_ids",
-    from_fa: faAlertIds.size,
-    from_db: dbAlertIds.size,
-    total_unique: allIds.length,
-  });
-
-  // Step 4: Delete all alerts
-  let deleted = 0;
-  let failed = 0;
-  const errors: { id: number; status: number; error: string }[] = [];
-
-  for (let i = 0; i < allIds.length; i += 5) {
-    const batch = allIds.slice(i, i + 5);
-    const delResults = await Promise.allSettled(
-      batch.map(async (alertId) => {
-        const res = await fetch(`${FA_BASE}/alerts/${alertId}`, {
-          method: "DELETE",
-          headers: faHeaders(),
-          signal: AbortSignal.timeout(10000),
-        });
-        return { alertId, status: res.status, ok: res.ok || res.status === 404 };
-      })
-    );
-
-    for (const result of delResults) {
-      if (result.status === "fulfilled" && result.value.ok) {
-        deleted++;
+        // First round: log diagnostic info
+        if (rounds === 1) {
+          results.details.push({
+            step: "first_page",
+            count: alerts.length,
+            raw_type: Array.isArray(raw) ? "array" : typeof raw,
+            raw_keys: raw && typeof raw === "object" && !Array.isArray(raw) ? Object.keys(raw) : null,
+            sample: alerts.slice(0, 2),
+          });
+        }
       } else {
-        failed++;
-        if (result.status === "fulfilled") {
-          errors.push({ id: result.value.alertId, status: result.value.status, error: "delete failed" });
+        listError = `${listRes.status}: ${await listRes.text()}`;
+      }
+    } catch (err) {
+      listError = String(err);
+    }
+
+    // If listing failed or returned 0, we're done (or stuck)
+    if (listError) {
+      results.details.push({ step: "list_error", round: rounds, error: listError });
+      break;
+    }
+
+    if (alerts.length === 0) {
+      results.details.push({ step: "all_clear", rounds_taken: rounds });
+      break;
+    }
+
+    // Delete this batch
+    let batchDeleted = 0;
+    for (let i = 0; i < alerts.length; i += 5) {
+      const batch = alerts.slice(i, i + 5);
+      const delResults = await Promise.allSettled(
+        batch.map(async (alert) => {
+          const res = await fetch(`${FA_BASE}/alerts/${alert.id}`, {
+            method: "DELETE",
+            headers: faHeaders(),
+            signal: AbortSignal.timeout(10000),
+          });
+          return { ok: res.ok || res.status === 404 };
+        })
+      );
+
+      for (const r of delResults) {
+        if (r.status === "fulfilled" && r.value.ok) {
+          batchDeleted++;
+          totalDeleted++;
         } else {
-          errors.push({ id: 0, status: 0, error: String(result.reason) });
+          totalFailed++;
         }
       }
     }
 
-    // Brief pause between batches
-    if (i + 5 < allIds.length) {
-      await new Promise((r) => setTimeout(r, 200));
-    }
+    console.log(`[FA Alerts] Nuke round ${rounds}: listed ${alerts.length}, deleted ${batchDeleted}`);
+
+    // Brief pause between rounds
+    await new Promise((r) => setTimeout(r, 300));
   }
 
-  // Step 5: Clear DB registrations
+  // Step 3: Also delete any DB-tracked alerts that FA listing might have missed
+  const { data: dbRegs } = await supa
+    .from("fa_alert_registrations")
+    .select("alert_id")
+    .eq("active", true);
+
+  for (const reg of dbRegs ?? []) {
+    try {
+      const res = await fetch(`${FA_BASE}/alerts/${reg.alert_id}`, {
+        method: "DELETE",
+        headers: faHeaders(),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (res.ok || res.status === 404) totalDeleted++;
+    } catch { /* ignore */ }
+  }
+
+  // Step 4: Clear all DB registrations
   await supa.from("fa_alert_registrations").update({ active: false }).eq("active", true);
 
-  if (errors.length > 0) {
-    results.details.push({ step: "delete_errors", errors: errors.slice(0, 10) });
-  }
-
-  console.log(`[FA Alerts] Nuke complete: deleted ${deleted}, failed ${failed}`);
+  console.log(`[FA Alerts] Nuke complete: ${totalDeleted} deleted, ${totalFailed} failed, ${rounds} rounds`);
 
   return NextResponse.json({
     ...results,
-    summary: { deleted, failed, total_found: allIds.length },
+    summary: { deleted: totalDeleted, failed: totalFailed, rounds },
   });
 }
