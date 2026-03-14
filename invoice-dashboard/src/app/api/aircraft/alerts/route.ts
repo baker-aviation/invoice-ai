@@ -17,6 +17,21 @@ function faHeaders() {
   };
 }
 
+/** Extract alerts array from FA API response, handling various formats */
+function extractAlerts(data: unknown): { id: number }[] {
+  if (Array.isArray(data)) return data;
+  if (data && typeof data === "object") {
+    const obj = data as Record<string, unknown>;
+    // Try common field names
+    for (const key of ["alerts", "data", "results"]) {
+      if (Array.isArray(obj[key])) return obj[key] as { id: number }[];
+    }
+    // If the object has an "id" field, it might be a single alert
+    if ("id" in obj) return [obj as unknown as { id: number }];
+  }
+  return [];
+}
+
 /**
  * GET /api/aircraft/alerts — list current FA alert registrations
  */
@@ -34,19 +49,24 @@ export async function GET(req: NextRequest) {
 
   // Also fetch current alerts from FA API
   let faAlerts = null;
+  let faRaw = null;
   try {
     const res = await fetch(`${FA_BASE}/alerts`, {
       headers: faHeaders(),
       signal: AbortSignal.timeout(10000),
     });
     if (res.ok) {
-      faAlerts = await res.json();
+      faRaw = await res.json();
+      faAlerts = extractAlerts(faRaw);
     }
   } catch { /* ignore */ }
 
   return NextResponse.json({
     registrations: registrations ?? [],
     fa_alerts: faAlerts,
+    fa_raw_keys: faRaw ? Object.keys(faRaw) : null,
+    fa_raw_type: faRaw === null ? "null" : Array.isArray(faRaw) ? "array" : typeof faRaw,
+    fa_alert_count: faAlerts?.length ?? 0,
   });
 }
 
@@ -100,39 +120,12 @@ export async function POST(req: NextRequest) {
 
   const results: { action: string; details: unknown[] } = { action, details: [] };
 
-  if (action === "teardown") {
-    return await teardownAlerts(supa, results);
+  // "nuke" = delete ALL alerts from FA (DB + API), ignoring what's in our DB
+  if (action === "nuke" || action === "teardown") {
+    return await nukeAlerts(supa, webhookUrl, webhookSecret, results);
   }
 
-  // For setup: delete ALL existing alerts from FA first (including orphaned ones not in our DB)
-  if (action === "setup") {
-    try {
-      const listRes = await fetch(`${FA_BASE}/alerts`, { headers: faHeaders(), signal: AbortSignal.timeout(10000) });
-      if (listRes.ok) {
-        const listData = await listRes.json();
-        const allAlerts = listData.alerts ?? [];
-        // Delete in parallel batches of 5 for speed
-        let cleaned = 0;
-        for (let i = 0; i < allAlerts.length; i += 5) {
-          const batch = allAlerts.slice(i, i + 5);
-          const delResults = await Promise.allSettled(
-            batch.map((alert: { id: number }) =>
-              fetch(`${FA_BASE}/alerts/${alert.id}`, { method: "DELETE", headers: faHeaders(), signal: AbortSignal.timeout(10000) })
-            )
-          );
-          cleaned += delResults.filter((r) => r.status === "fulfilled").length;
-        }
-        // Clear our DB registrations too
-        await supa.from("fa_alert_registrations").update({ active: false }).eq("active", true);
-        results.details.push({ step: "cleanup", deleted: cleaned, total_found: allAlerts.length });
-        console.log(`[FA Alerts] Setup cleanup: deleted ${cleaned}/${allAlerts.length} existing alerts`);
-      }
-    } catch (err) {
-      results.details.push({ step: "cleanup_error", error: String(err) });
-    }
-  }
-
-  // Step 1: Register webhook endpoint with FA
+  // Step 1: Register webhook endpoint with FA FIRST (needed before listing alerts)
   try {
     const endpointRes = await fetch(`${FA_BASE}/alerts/endpoint`, {
       method: "PUT",
@@ -157,6 +150,38 @@ export async function POST(req: NextRequest) {
       error: "Failed to connect to FlightAware",
       detail: String(err),
     }, { status: 502 });
+  }
+
+  // Step 1b: For setup, delete ALL existing alerts from FA (now that endpoint is registered)
+  if (action === "setup") {
+    try {
+      const listRes = await fetch(`${FA_BASE}/alerts`, { headers: faHeaders(), signal: AbortSignal.timeout(10000) });
+      if (listRes.ok) {
+        const listRaw = await listRes.json();
+        const allAlerts = extractAlerts(listRaw);
+        console.log(`[FA Alerts] Listed ${allAlerts.length} alerts (raw type: ${Array.isArray(listRaw) ? "array" : typeof listRaw}, keys: ${Object.keys(listRaw ?? {})})`);
+
+        let cleaned = 0;
+        for (let i = 0; i < allAlerts.length; i += 5) {
+          const batch = allAlerts.slice(i, i + 5);
+          const delResults = await Promise.allSettled(
+            batch.map((alert) =>
+              fetch(`${FA_BASE}/alerts/${alert.id}`, { method: "DELETE", headers: faHeaders(), signal: AbortSignal.timeout(10000) })
+            )
+          );
+          cleaned += delResults.filter((r) => r.status === "fulfilled").length;
+        }
+        // Clear our DB registrations too
+        await supa.from("fa_alert_registrations").update({ active: false }).eq("active", true);
+        results.details.push({ step: "cleanup", deleted: cleaned, total_found: allAlerts.length, raw_type: Array.isArray(listRaw) ? "array" : typeof listRaw });
+        console.log(`[FA Alerts] Setup cleanup: deleted ${cleaned}/${allAlerts.length} existing alerts`);
+      } else {
+        const errText = await listRes.text();
+        results.details.push({ step: "cleanup_list_failed", status: listRes.status, error: errText });
+      }
+    } catch (err) {
+      results.details.push({ step: "cleanup_error", error: String(err) });
+    }
   }
 
   // Step 2: Get fleet tail numbers
@@ -208,7 +233,7 @@ export async function POST(req: NextRequest) {
           aircraft_type: null,
           start: null,
           end: null,
-          max_weekly: 200,
+          max_weekly: 50,
           events: {
             arrival: false,
             departure: false,
@@ -275,48 +300,128 @@ export async function POST(req: NextRequest) {
   });
 }
 
-async function teardownAlerts(
+/**
+ * Nuke all alerts: register endpoint first, then list from FA API and delete everything.
+ * Falls back to DB-based deletion if API listing returns empty.
+ */
+async function nukeAlerts(
   supa: ReturnType<typeof createServiceClient>,
+  webhookUrl: string,
+  webhookSecret: string,
   results: { action: string; details: unknown[] },
 ) {
-  // Get all active registrations
-  const { data: regs } = await supa
+  // Step 1: Register endpoint so FA returns our alerts in the listing
+  try {
+    const endpointRes = await fetch(`${FA_BASE}/alerts/endpoint`, {
+      method: "PUT",
+      headers: faHeaders(),
+      body: JSON.stringify({ url: webhookUrl }),
+      signal: AbortSignal.timeout(10000),
+    });
+    results.details.push({
+      step: "endpoint_registered",
+      status: endpointRes.status,
+      url: webhookUrl.replace(webhookSecret, "***"),
+    });
+    console.log(`[FA Alerts] Nuke: endpoint registered (${endpointRes.status})`);
+  } catch (err) {
+    results.details.push({ step: "endpoint_error", error: String(err) });
+    console.warn("[FA Alerts] Nuke: endpoint registration failed:", err);
+  }
+
+  // Step 2: List all alerts from FA API
+  let faAlerts: { id: number }[] = [];
+  try {
+    const listRes = await fetch(`${FA_BASE}/alerts`, {
+      headers: faHeaders(),
+      signal: AbortSignal.timeout(15000),
+    });
+
+    if (listRes.ok) {
+      const listRaw = await listRes.json();
+      faAlerts = extractAlerts(listRaw);
+      results.details.push({
+        step: "listed_fa_alerts",
+        count: faAlerts.length,
+        raw_type: Array.isArray(listRaw) ? "array" : typeof listRaw,
+        raw_keys: listRaw && typeof listRaw === "object" && !Array.isArray(listRaw) ? Object.keys(listRaw) : null,
+        sample: faAlerts.slice(0, 3),
+      });
+      console.log(`[FA Alerts] Nuke: found ${faAlerts.length} alerts from FA API`);
+    } else {
+      const errText = await listRes.text();
+      results.details.push({ step: "list_failed", status: listRes.status, error: errText });
+    }
+  } catch (err) {
+    results.details.push({ step: "list_error", error: String(err) });
+  }
+
+  // Step 3: Also get alert IDs from our DB (in case FA listing misses some)
+  const { data: dbRegs } = await supa
     .from("fa_alert_registrations")
     .select("tail, alert_id")
     .eq("active", true);
 
+  const dbAlertIds = new Set((dbRegs ?? []).map((r) => r.alert_id));
+  const faAlertIds = new Set(faAlerts.map((a) => a.id));
+
+  // Merge: all FA alert IDs + any DB-only alert IDs
+  const allIds = [...new Set([...faAlertIds, ...dbAlertIds])].filter((id) => id != null);
+  results.details.push({
+    step: "merged_alert_ids",
+    from_fa: faAlertIds.size,
+    from_db: dbAlertIds.size,
+    total_unique: allIds.length,
+  });
+
+  // Step 4: Delete all alerts
   let deleted = 0;
   let failed = 0;
+  const errors: { id: number; status: number; error: string }[] = [];
 
-  for (const reg of regs ?? []) {
-    try {
-      const res = await fetch(`${FA_BASE}/alerts/${reg.alert_id}`, {
-        method: "DELETE",
-        headers: faHeaders(),
-        signal: AbortSignal.timeout(10000),
-      });
+  for (let i = 0; i < allIds.length; i += 5) {
+    const batch = allIds.slice(i, i + 5);
+    const delResults = await Promise.allSettled(
+      batch.map(async (alertId) => {
+        const res = await fetch(`${FA_BASE}/alerts/${alertId}`, {
+          method: "DELETE",
+          headers: faHeaders(),
+          signal: AbortSignal.timeout(10000),
+        });
+        return { alertId, status: res.status, ok: res.ok || res.status === 404 };
+      })
+    );
 
-      if (res.ok || res.status === 404) {
-        await supa
-          .from("fa_alert_registrations")
-          .update({ active: false })
-          .eq("alert_id", reg.alert_id);
+    for (const result of delResults) {
+      if (result.status === "fulfilled" && result.value.ok) {
         deleted++;
-        results.details.push({ step: "alert_deleted", tail: reg.tail, alert_id: reg.alert_id });
       } else {
         failed++;
-        results.details.push({ step: "delete_failed", tail: reg.tail, status: res.status });
+        if (result.status === "fulfilled") {
+          errors.push({ id: result.value.alertId, status: result.value.status, error: "delete failed" });
+        } else {
+          errors.push({ id: 0, status: 0, error: String(result.reason) });
+        }
       }
+    }
 
-      await new Promise((r) => setTimeout(r, 300));
-    } catch (err) {
-      failed++;
-      results.details.push({ step: "delete_error", tail: reg.tail, error: String(err) });
+    // Brief pause between batches
+    if (i + 5 < allIds.length) {
+      await new Promise((r) => setTimeout(r, 200));
     }
   }
 
+  // Step 5: Clear DB registrations
+  await supa.from("fa_alert_registrations").update({ active: false }).eq("active", true);
+
+  if (errors.length > 0) {
+    results.details.push({ step: "delete_errors", errors: errors.slice(0, 10) });
+  }
+
+  console.log(`[FA Alerts] Nuke complete: deleted ${deleted}, failed ${failed}`);
+
   return NextResponse.json({
     ...results,
-    summary: { deleted, failed },
+    summary: { deleted, failed, total_found: allIds.length },
   });
 }
