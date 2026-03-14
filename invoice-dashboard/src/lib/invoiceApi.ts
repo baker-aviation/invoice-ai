@@ -347,15 +347,15 @@ export async function fetchAdvertisedPrices(opts?: { recentWeeks?: number }): Pr
     .from("fbo_advertised_prices")
     .select("id, fbo_vendor, airport_code, volume_tier, product, price, tail_numbers, week_start, upload_batch, created_at");
 
-  // Ops page passes recentWeeks=4 for speed; fuel prices page gets everything
-  if (opts?.recentWeeks) {
-    const cutoff = new Date(Date.now() - opts.recentWeeks * 7 * 86400000).toISOString().split("T")[0];
-    query = query.gte("week_start", cutoff);
-  }
+  // Filter by time window — default to 4 weeks which covers all vendor cadences
+  const weeks = opts?.recentWeeks ?? 4;
+  const cutoff = new Date(Date.now() - weeks * 7 * 86400000).toISOString();
+  // Use created_at (never null) as fallback when week_start might be null
+  query = query.or(`week_start.gte.${cutoff.split("T")[0]},created_at.gte.${cutoff}`);
 
   const { data, error } = await query
     .order("week_start", { ascending: false })
-    .limit(10000);
+    .limit(20000);
 
   if (error) throw new Error(`fetchAdvertisedPrices failed: ${error.message}`);
 
