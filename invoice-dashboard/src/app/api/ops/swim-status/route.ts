@@ -129,14 +129,17 @@ async function fetchSwimStatuses() {
   const latest = new Map<string, SwimRow>();
   // Track actual departure/arrival times from SWIM events
   const actuals = new Map<string, { actual_departure: string | null; actual_arrival: string | null }>();
+  // Track earliest event per route (for inferring departure from TRACK data)
+  const earliest = new Map<string, string>();
 
+  // Data is ordered DESC (newest first)
   for (const row of (data ?? []) as SwimRow[]) {
     if (!row.tail_number) continue;
     const key = `${row.tail_number}|${row.departure_icao ?? ""}|${row.arrival_icao ?? ""}`;
     if (!latest.has(key)) {
       latest.set(key, row);
     }
-    // Collect actual times from DEPARTURE/ARRIVAL events
+    // Collect actual times from explicit DEPARTURE/ARRIVAL events
     if (row.event_type === "DEPARTURE" || row.event_type === "ARRIVAL") {
       const prev = actuals.get(key) ?? { actual_departure: null, actual_arrival: null };
       if (row.event_type === "DEPARTURE" && !prev.actual_departure) {
@@ -146,19 +149,34 @@ async function fetchSwimStatuses() {
       }
       actuals.set(key, prev);
     }
+    // Track earliest event per route (iterating newest-first, so keep overwriting)
+    if (row.event_type === "TRACK" || row.event_type === "POSITION" || row.event_type === "DEPARTURE") {
+      earliest.set(key, row.event_time);
+    }
   }
 
-  return Array.from(latest.entries()).map(([key, row]) => ({
-    tail_number: row.tail_number,
-    departure_icao: row.departure_icao,
-    arrival_icao: row.arrival_icao,
-    status: deriveSwimStatus(row.event_type, row.altitude_ft),
-    event_time: row.event_time,
-    etd: row.etd,
-    eta: row.eta,
-    actual_departure: actuals.get(key)?.actual_departure ?? null,
-    actual_arrival: actuals.get(key)?.actual_arrival ?? null,
-  }));
+  return Array.from(latest.entries()).map(([key, row]) => {
+    const act = actuals.get(key);
+    // Infer departure from earliest TRACK/POSITION if no explicit DEPARTURE event
+    const inferredDep = act?.actual_departure ?? earliest.get(key) ?? null;
+    // Infer arrival: if status is Arrived (latest event is ARRIVAL/TAXI_IN) but no
+    // explicit ARRIVAL event, use the latest event time
+    const latestRow = latest.get(key)!;
+    const isArrived = latestRow.event_type === "ARRIVAL" || latestRow.event_type === "TAXI_IN";
+    const inferredArr = act?.actual_arrival ?? (isArrived ? latestRow.event_time : null);
+
+    return {
+      tail_number: row.tail_number,
+      departure_icao: row.departure_icao,
+      arrival_icao: row.arrival_icao,
+      status: deriveSwimStatus(row.event_type, row.altitude_ft),
+      event_time: row.event_time,
+      etd: row.etd,
+      eta: row.eta,
+      actual_departure: inferredDep,
+      actual_arrival: inferredArr,
+    };
+  });
 }
 
 // ── Route handler ──
