@@ -127,11 +127,13 @@ function FlightTracks({
   flightInfo,
   fleetLookup,
   onHoldingDetected,
+  onLatestPositions,
 }: {
   aircraft: AircraftPosition[];
   flightInfo: Map<string, FlightInfoMap>;
   fleetLookup: Map<string, string>;
   onHoldingDetected: (tails: Set<string>) => void;
+  onLatestPositions: (positions: Map<string, [number, number]>) => void;
 }) {
   const [tracks, setTracks] = useState<Map<string, [number, number][]>>(new Map());
   const [fallbacks, setFallbacks] = useState<Map<string, [number, number][]>>(new Map());
@@ -166,7 +168,7 @@ function FlightTracks({
         enRoute.push(fi);
       }
     }
-    if (enRoute.length === 0) { setTracks(new Map()); setFallbacks(new Map()); onHoldingDetected(new Set()); return; }
+    if (enRoute.length === 0) { setTracks(new Map()); setFallbacks(new Map()); onHoldingDetected(new Set()); onLatestPositions(new Map()); return; }
 
     const controller = new AbortController();
     lastFetchRef.current = Date.now();
@@ -174,6 +176,7 @@ function FlightTracks({
       const newTracks = new Map<string, [number, number][]>();
       const newFallbacks = new Map<string, [number, number][]>();
       const holdingTails = new Set<string>();
+      const latestPositions = new Map<string, [number, number]>();
       for (const fi of enRoute) {
         try {
           const res = await fetch(`/api/aircraft/track/${encodeURIComponent(fi.fa_flight_id!)}`, {
@@ -187,6 +190,8 @@ function FlightTracks({
               .map((p) => [p.latitude, p.longitude] as [number, number]);
             if (positions.length > 1) {
               newTracks.set(fi.tail, positions);
+              // Use the last track point as the most recent position
+              latestPositions.set(fi.tail, positions[positions.length - 1]);
             } else {
               // No track data — build fallback route line
               const fb = buildFallbackRoute(fi, acByTail.get(fi.tail));
@@ -201,6 +206,7 @@ function FlightTracks({
         setTracks(newTracks);
         setFallbacks(newFallbacks);
         onHoldingDetected(holdingTails);
+        onLatestPositions(latestPositions);
       }
     })();
     return () => controller.abort();
@@ -422,6 +428,7 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
   const [showRadar, setShowRadar] = useState(false);
   const [showVans, setShowVans] = useState(false);
   const [holdingTails, setHoldingTails] = useState<Set<string>>(new Set());
+  const [trackLatest, setTrackLatest] = useState<Map<string, [number, number]>>(new Map());
   const radarUrl = useRadarUrl(showRadar);
   const vanPositions = useVanPositions(showVans);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -478,7 +485,7 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
           <TileLayer key={`radar-${radarUrl}`} url={radarUrl} opacity={0.65} zIndex={300} />
         )}
 
-        <FlightTracks aircraft={aircraft} flightInfo={flightInfo} fleetLookup={fleetLookup} onHoldingDetected={handleHoldingDetected} />
+        <FlightTracks aircraft={aircraft} flightInfo={flightInfo} fleetLookup={fleetLookup} onHoldingDetected={handleHoldingDetected} onLatestPositions={setTrackLatest} />
 
         {aircraft.map((ac) => {
           const fi = flightInfo.get(ac.tail);
@@ -487,10 +494,14 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
           const isHolding = holdingTails.has(ac.tail);
           const hasAlert = isDiverted || isHolding;
           const alertLabel = isDiverted ? "DIVERTED" : isHolding ? "HOLDING" : undefined;
+          // Use latest track position if available (more recent than ADSB poll)
+          const trackPos = trackLatest.get(ac.tail);
+          const markerLat = trackPos ? trackPos[0] : ac.lat;
+          const markerLon = trackPos ? trackPos[1] : ac.lon;
           return (
             <Marker
               key={`ac-${ac.tail}`}
-              position={[ac.lat, ac.lon]}
+              position={[markerLat, markerLon]}
               icon={acDivIcon(ac.track, color, ac.on_ground, hasAlert)}
               zIndexOffset={ac.on_ground ? 1000 : 2000}
             >
