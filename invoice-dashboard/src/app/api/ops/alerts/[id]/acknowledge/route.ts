@@ -48,3 +48,38 @@ export async function POST(
     return NextResponse.json({ error: "Database error" }, { status: 500 });
   }
 }
+
+/**
+ * DELETE /api/ops/alerts/[id]/acknowledge
+ * Un-acknowledge (restore) a previously dismissed alert.
+ */
+export async function DELETE(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const auth = await requireAuth(req);
+  if (!isAuthed(auth)) return auth.error;
+
+  const { id } = await params;
+  if (!UUID_RE.test(id)) {
+    return NextResponse.json({ error: "Invalid alert ID" }, { status: 400 });
+  }
+
+  try {
+    const supa = createServiceClient();
+    const { error } = await supa
+      .from("ops_alerts")
+      .update({ acknowledged_at: null, acknowledged_by: null })
+      .eq("id", id);
+
+    if (error) {
+      console.error("[ops/unacknowledge] Update error:", error);
+      return NextResponse.json({ error: "Database error" }, { status: 500 });
+    }
+
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    console.error("[ops/unacknowledge] Database error:", err);
+    return NextResponse.json({ error: "Database error" }, { status: 500 });
+  }
+}
