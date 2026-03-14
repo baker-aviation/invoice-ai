@@ -355,6 +355,10 @@ def parse_tfms_flight_message(xml_str: str) -> Optional[Dict[str, Any]]:
     elif "taxi_in" in trigger_lower:
         event_type = "TAXI_IN"
 
+    # Detect EDCT-related trigger
+    is_edct_trigger = any(k in trigger_lower for k in ("edct", "expected_departure_clearance",
+                                                        "controlled_time", "tm_initiative"))
+
     # Diversion detection
     diversion_el = _find_any(root, "diversionIndicator")
     diversion = _safe_text(diversion_el)
@@ -370,6 +374,17 @@ def parse_tfms_flight_message(xml_str: str) -> Optional[Dict[str, Any]]:
             etd = el.get("timeValue")
         elif local == "eta" and not eta:
             eta = el.get("timeValue")
+
+    # Controlled departure time (EDCT) — search FIXM/TFMS tag variants
+    controlled_dep = None
+    for el in root.iter():
+        local = (el.tag.split("}")[-1] if "}" in el.tag else el.tag).lower()
+        if any(k in local for k in ("controlledtime", "controlleddeparture", "edct",
+                                     "approveddeparture", "expectedclearance", "ctot")):
+            val = el.get("timeValue") or _safe_text(el)
+            if val:
+                controlled_dep = val
+                break
 
     return {
         "acid": acid,
@@ -387,6 +402,8 @@ def parse_tfms_flight_message(xml_str: str) -> Optional[Dict[str, Any]]:
         "etd": etd,
         "eta": eta,
         "fd_trigger": fd_trigger,
+        "controlled_departure_time": controlled_dep,
+        "is_edct_trigger": is_edct_trigger,
     }
 
 
@@ -577,11 +594,15 @@ def pull_swim() -> Dict[str, Any]:
             if flight and _is_baker_flight(flight):
                 source_id = f"swim-tfms-{flight['acid']}-{flight['event_time']}"
                 fd_trigger = flight.pop("fd_trigger", "")
+                controlled_dep = flight.pop("controlled_departure_time", None)
+                is_edct = flight.pop("is_edct_trigger", False)
                 positions_batch.append({
                     **flight,
                     "source_id": source_id,
                     "raw_xml": raw[:4000],
                     "_fd_trigger": fd_trigger,  # kept for alert creation, stripped before DB write
+                    "_controlled_departure_time": controlled_dep,
+                    "_is_edct_trigger": is_edct,
                 })
                 stats["tfms_flight_messages"] += 1
                 continue
@@ -617,11 +638,15 @@ def pull_swim() -> Dict[str, Any]:
         if flight and _is_baker_flight(flight):
             source_id = f"swim-stdds-{flight['acid']}-{flight['event_time']}"
             fd_trigger = flight.pop("fd_trigger", "")
+            controlled_dep = flight.pop("controlled_departure_time", None)
+            is_edct = flight.pop("is_edct_trigger", False)
             positions_batch.append({
                 **flight,
                 "source_id": source_id,
                 "raw_xml": raw[:4000],
                 "_fd_trigger": fd_trigger,
+                "_controlled_departure_time": controlled_dep,
+                "_is_edct_trigger": is_edct,
             })
             stats["stdds_messages"] += 1
 
@@ -706,15 +731,43 @@ def pull_swim() -> Dict[str, Any]:
             "airport_icao": pos.get("arrival_icao") if evt in ("ARRIVAL", "TAXI_IN") else pos.get("departure_icao"),
             "subject": subject,
             "body": f"Via FAA SWIM at {pos.get('event_time', '')}",
+            "source_message_id": f"swim-evt-{ALERT_TYPE_MAP[evt]}-{pos.get('source_id', '')}",
         })
+
+    # ── 5b. Create EDCT alerts from SWIM controlled departure times ────────
+    for pos in positions_batch:
+        controlled_time = pos.get("_controlled_departure_time")
+        is_edct = pos.get("_is_edct_trigger", False)
+        if not controlled_time and not is_edct:
+            continue
+
+        tail = pos.get("tail_number") or pos.get("acid", "")
+        dep = pos.get("departure_icao") or ""
+        arr = pos.get("arrival_icao") or ""
+        route = f"{dep} → {arr}" if dep and arr else dep or arr or ""
+
+        alerts_batch.append({
+            "alert_type": "EDCT",
+            "severity": "warning",
+            "tail_number": pos.get("tail_number"),
+            "departure_icao": dep,
+            "arrival_icao": arr,
+            "airport_icao": dep,
+            "subject": f"EDCT {tail} {route}",
+            "body": f"Via FAA SWIM at {pos.get('event_time', '')}",
+            "edct_time": controlled_time,
+            "original_departure_time": pos.get("etd"),
+            "source_message_id": f"swim-edct-{pos.get('source_id', '')}",
+        })
+        stats["edct_alerts"] = stats.get("edct_alerts", 0) + 1
 
     for i in range(0, len(alerts_batch), CHUNK):
         chunk = alerts_batch[i : i + CHUNK]
         try:
-            supa.table("ops_alerts").insert(chunk).execute()
+            supa.table("ops_alerts").upsert(chunk, on_conflict="source_message_id").execute()
             stats["alerts_created"] = stats.get("alerts_created", 0) + len(chunk)
         except Exception as e:
-            print(f"[SWIM] alerts insert error: {e}", flush=True)
+            print(f"[SWIM] alerts upsert error: {e}", flush=True)
             stats["errors"] += 1
 
     # Flow control (GDP, ground stops, etc.) — keep ALL, not just Baker flights
