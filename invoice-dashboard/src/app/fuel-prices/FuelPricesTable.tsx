@@ -650,9 +650,10 @@ export default function FuelPricesTable({
     }
   }
 
-  // Filter out advertised prices older than 8 days
+  // Filter out advertised prices older than 14 days (some vendors have effective dates
+  // up to ~12 days before the current date, e.g. Avfuel EFF DATE of 3/4 on 3/14)
   const freshAdvertisedPrices = useMemo(() => {
-    const cutoff = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+    const cutoff = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
     return activeAdvertisedPrices.filter((a) => a.week_start >= cutoff);
   }, [activeAdvertisedPrices]);
 
