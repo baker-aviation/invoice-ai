@@ -4,7 +4,7 @@ import { createServiceClient } from "@/lib/supabase/service";
 import { TRIPS } from "@/lib/maintenanceData";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 120; // Allow up to 2 min for nuke (many alerts to list+delete)
+export const maxDuration = 300; // Allow up to 5 min for nuke (many alerts to list+delete)
 
 const FA_BASE = "https://aeroapi.flightaware.com/aeroapi";
 
@@ -330,17 +330,22 @@ async function nukeAlerts(
   }
 
   // Step 2: Paginated delete loop — fetch one page, delete, repeat
+  // Handles 429 rate limits with backoff instead of giving up
   let totalDeleted = 0;
   let totalFailed = 0;
   let rounds = 0;
-  const MAX_ROUNDS = 100; // Safety limit (~1500 alerts at 15/page)
+  let rateLimitHits = 0;
+  const MAX_ROUNDS = 200;
+  const startTime = Date.now();
+  const MAX_RUNTIME_MS = 270_000; // 4.5 min (leave buffer for DB cleanup)
 
-  while (rounds < MAX_ROUNDS) {
+  while (rounds < MAX_ROUNDS && Date.now() - startTime < MAX_RUNTIME_MS) {
     rounds++;
 
     // Try to list one page of alerts
     let alerts: { id: number }[] = [];
     let listError: string | null = null;
+    let isRateLimit = false;
 
     try {
       const listRes = await fetch(`${FA_BASE}/alerts?max_pages=1`, {
@@ -352,16 +357,17 @@ async function nukeAlerts(
         const raw = await listRes.json();
         alerts = extractAlerts(raw);
 
-        // First round: log diagnostic info
         if (rounds === 1) {
           results.details.push({
             step: "first_page",
             count: alerts.length,
             raw_type: Array.isArray(raw) ? "array" : typeof raw,
             raw_keys: raw && typeof raw === "object" && !Array.isArray(raw) ? Object.keys(raw) : null,
-            sample: alerts.slice(0, 2),
           });
         }
+      } else if (listRes.status === 429) {
+        isRateLimit = true;
+        rateLimitHits++;
       } else {
         listError = `${listRes.status}: ${await listRes.text()}`;
       }
@@ -369,7 +375,17 @@ async function nukeAlerts(
       listError = String(err);
     }
 
-    // If listing failed or returned 0, we're done (or stuck)
+    // Rate limited — wait 15s and retry (up to 10 times)
+    if (isRateLimit) {
+      if (rateLimitHits > 10) {
+        results.details.push({ step: "rate_limit_exhausted", total_429s: rateLimitHits });
+        break;
+      }
+      console.log(`[FA Alerts] Nuke: rate limited (${rateLimitHits}), waiting 15s...`);
+      await new Promise((r) => setTimeout(r, 15000));
+      continue;
+    }
+
     if (listError) {
       results.details.push({ step: "list_error", round: rounds, error: listError });
       break;
@@ -380,35 +396,37 @@ async function nukeAlerts(
       break;
     }
 
-    // Delete this batch
+    // Delete this batch — sequential to avoid rate limits
     let batchDeleted = 0;
-    for (let i = 0; i < alerts.length; i += 5) {
-      const batch = alerts.slice(i, i + 5);
-      const delResults = await Promise.allSettled(
-        batch.map(async (alert) => {
-          const res = await fetch(`${FA_BASE}/alerts/${alert.id}`, {
-            method: "DELETE",
-            headers: faHeaders(),
-            signal: AbortSignal.timeout(10000),
-          });
-          return { ok: res.ok || res.status === 404 };
-        })
-      );
-
-      for (const r of delResults) {
-        if (r.status === "fulfilled" && r.value.ok) {
+    for (const alert of alerts) {
+      try {
+        const res = await fetch(`${FA_BASE}/alerts/${alert.id}`, {
+          method: "DELETE",
+          headers: faHeaders(),
+          signal: AbortSignal.timeout(10000),
+        });
+        if (res.ok || res.status === 404) {
           batchDeleted++;
           totalDeleted++;
+        } else if (res.status === 429) {
+          // Rate limited during delete — pause and continue
+          rateLimitHits++;
+          console.log(`[FA Alerts] Nuke: rate limited during delete, waiting 15s...`);
+          await new Promise((r) => setTimeout(r, 15000));
         } else {
           totalFailed++;
         }
+      } catch {
+        totalFailed++;
       }
+      // Small pause between deletes to stay under rate limit
+      await new Promise((r) => setTimeout(r, 200));
     }
 
     console.log(`[FA Alerts] Nuke round ${rounds}: listed ${alerts.length}, deleted ${batchDeleted}`);
 
-    // Brief pause between rounds
-    await new Promise((r) => setTimeout(r, 300));
+    // Pause between rounds
+    await new Promise((r) => setTimeout(r, 1000));
   }
 
   // Step 3: Also delete any DB-tracked alerts that FA listing might have missed
