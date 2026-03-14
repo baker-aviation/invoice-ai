@@ -3218,6 +3218,34 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
       setDismissedMxIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
     }
   }, []);
+
+  // Dismissed MX notes — fetch from API for restore UI
+  const [dismissedNotes, setDismissedNotes] = useState<Array<{
+    id: string; tail_number: string | null; airport_icao: string | null;
+    body: string | null; end_time: string | null; acknowledged_at: string;
+  }>>([]);
+  const [dismissedOpen, setDismissedOpen] = useState(false);
+  const [dismissedLoaded, setDismissedLoaded] = useState(false);
+
+  const loadDismissed = useCallback(async () => {
+    if (dismissedLoaded) { setDismissedOpen((v) => !v); return; }
+    try {
+      const res = await fetch("/api/ops/alerts/dismissed");
+      const json = await res.json();
+      setDismissedNotes(json.notes ?? []);
+      setDismissedLoaded(true);
+      setDismissedOpen(true);
+    } catch { /* ignore */ }
+  }, [dismissedLoaded]);
+
+  const restoreMxNote = useCallback(async (id: string) => {
+    try {
+      await fetch(`/api/ops/alerts/${id}/acknowledge`, { method: "DELETE" });
+      setDismissedNotes((prev) => prev.filter((n) => n.id !== id));
+      setDismissedMxIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
+    } catch { /* ignore */ }
+  }, []);
+
   const [schedTypeFilter, setSchedTypeFilter] = useState<string>("all");
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
@@ -3957,6 +3985,56 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
           </>
         );
       })()}
+
+      {/* ── Dismissed MX Notes (restore) ── */}
+      <div className="rounded-xl border-2 border-gray-200 bg-white px-5 py-4 shadow-sm">
+        <button
+          onClick={loadDismissed}
+          className="flex items-center gap-3 w-full text-left"
+        >
+          <div className="w-10 h-10 rounded-full flex items-center justify-center text-lg shrink-0 bg-gray-100 text-gray-500">
+            &#x21A9;
+          </div>
+          <div className="text-base font-bold text-gray-600 flex-1">
+            {dismissedOpen ? "Dismissed MX Notes" : "Dismissed MX Notes"} {dismissedLoaded && `(${dismissedNotes.length})`}
+          </div>
+          <svg
+            className={`w-5 h-5 text-gray-400 transition-transform ${dismissedOpen ? "rotate-180" : ""}`}
+            fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+        {dismissedOpen && (
+          <div className="ml-[52px] mt-2">
+            {dismissedNotes.length === 0 ? (
+              <div className="text-xs text-gray-400 py-2">No dismissed items in the last 30 days</div>
+            ) : (
+              <div className="flex flex-col gap-1.5 max-h-64 overflow-y-auto">
+                {dismissedNotes.map((note) => (
+                  <div key={note.id} className="flex items-center gap-2 bg-gray-50 rounded-lg px-3 py-1.5 border border-gray-200">
+                    <span className="text-xs font-bold text-gray-400">MX</span>
+                    <span className="text-xs font-mono font-semibold text-gray-600">{note.tail_number}</span>
+                    <span className="text-xs text-gray-500">{note.airport_icao}</span>
+                    <span className="text-xs text-gray-600 flex-1">{note.body}</span>
+                    {note.end_time && (
+                      <span className="text-[11px] text-gray-400 shrink-0">
+                        Due {new Date(note.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                      </span>
+                    )}
+                    <button
+                      onClick={() => restoreMxNote(note.id)}
+                      className="text-xs font-semibold text-blue-600 hover:text-blue-800 border border-blue-200 rounded px-2.5 py-1 shrink-0 transition-colors hover:bg-blue-50"
+                    >
+                      Restore
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* ── Tab bar ── */}
       <div className="flex gap-3">
