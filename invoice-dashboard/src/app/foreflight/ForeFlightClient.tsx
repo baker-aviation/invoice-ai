@@ -25,6 +25,11 @@ interface FboOption {
   estimatedCost: number;
 }
 
+interface CruiseProfileOption {
+  uuid: string;
+  profileName: string;
+}
+
 interface CheckResult {
   aircraft: {
     registration: string;
@@ -32,6 +37,8 @@ interface CheckResult {
     mach: string;
     altitude: string;
     cruiseProfile: string;
+    cruiseProfileUUID: string | null;
+    availableProfiles: CruiseProfileOption[];
   };
   route: { departure: string; destination: string };
   fuel: FuelData;
@@ -41,6 +48,8 @@ interface CheckResult {
   fboOptions: FboOption[];
   warnings: string[];
   errors: string[];
+  _raw?: unknown;
+  _request?: unknown;
 }
 
 function fmtNum(n: number | null | undefined, decimals = 0): string {
@@ -59,9 +68,9 @@ function fmtDollars(n: number): string {
   return n.toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2 });
 }
 
-const AIRCRAFT_CONFIG: Record<AircraftType, { label: string; tail: string; mach: string }> = {
-  citation: { label: "Citation X (N106PC)", tail: "N106PC", mach: "M.85" },
-  challenger: { label: "Challenger 300 (N520FX)", tail: "N520FX", mach: "M.78" },
+const AIRCRAFT_CONFIG: Record<AircraftType, { label: string; tail: string; mach: string; defaultAlt: number }> = {
+  citation: { label: "Citation X (N106PC)", tail: "N106PC", mach: "M.85", defaultAlt: 470 },
+  challenger: { label: "Challenger 300 (N520FX)", tail: "N520FX", mach: "M.78", defaultAlt: 470 },
 };
 
 export default function ForeFlightClient() {
@@ -71,6 +80,12 @@ export default function ForeFlightClient() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<CheckResult | null>(null);
+
+  // Expert mode
+  const [expertMode, setExpertMode] = useState(false);
+  const [altitudeOverride, setAltitudeOverride] = useState("");
+  const [cruiseProfileOverride, setCruiseProfileOverride] = useState("");
+  const [showRawJson, setShowRawJson] = useState(false);
 
   const config = AIRCRAFT_CONFIG[aircraftType];
 
@@ -88,6 +103,8 @@ export default function ForeFlightClient() {
           departure: departure.toUpperCase(),
           destination: destination.toUpperCase(),
           aircraftType,
+          ...(altitudeOverride && { altitudeOverride: Number(altitudeOverride) }),
+          ...(cruiseProfileOverride && { cruiseProfileOverride }),
         }),
       });
 
@@ -102,7 +119,7 @@ export default function ForeFlightClient() {
     } finally {
       setLoading(false);
     }
-  }, [departure, destination, aircraftType]);
+  }, [departure, destination, aircraftType, altitudeOverride, cruiseProfileOverride]);
 
   const fuel = result?.fuel;
   const bestFbo = result?.fboOptions?.[0];
@@ -111,7 +128,19 @@ export default function ForeFlightClient() {
     <div className="px-6 py-6 space-y-6 max-w-4xl mx-auto">
       {/* Input Form */}
       <div className="rounded-lg border border-gray-200 bg-white p-6">
-        <h2 className="text-lg font-semibold text-gray-900 mb-1">FBO Fuel Check</h2>
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="text-lg font-semibold text-gray-900">FBO Fuel Check</h2>
+          <button
+            onClick={() => setExpertMode(!expertMode)}
+            className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
+              expertMode
+                ? "bg-amber-100 border-amber-300 text-amber-700"
+                : "bg-gray-100 border-gray-200 text-gray-500 hover:bg-gray-200"
+            }`}
+          >
+            {expertMode ? "Expert ON" : "Expert"}
+          </button>
+        </div>
         <p className="text-sm text-gray-500 mb-5">
           Calculate fuel burn and find the cheapest FBO fuel option at your destination.
         </p>
@@ -166,12 +195,56 @@ export default function ForeFlightClient() {
           </div>
         </div>
 
+        {/* Expert Mode Overrides */}
+        {expertMode && (
+          <div className="mt-4 pt-4 border-t border-amber-200 bg-amber-50 -mx-6 px-6 pb-4 rounded-b-lg">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-medium text-amber-700 mb-1">Altitude Override (FL)</label>
+                <input
+                  type="text"
+                  value={altitudeOverride}
+                  onChange={(e) => setAltitudeOverride(e.target.value.replace(/\D/g, ""))}
+                  placeholder={String(config.defaultAlt)}
+                  className="w-full rounded-md border border-amber-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-amber-500 focus:border-amber-500 bg-white"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-amber-700 mb-1">Cruise Profile Override</label>
+                {result?.aircraft?.availableProfiles && result.aircraft.availableProfiles.length > 0 ? (
+                  <select
+                    value={cruiseProfileOverride}
+                    onChange={(e) => setCruiseProfileOverride(e.target.value)}
+                    className="w-full rounded-md border border-amber-300 px-3 py-2 text-sm focus:ring-2 focus:ring-amber-500 focus:border-amber-500 bg-white"
+                  >
+                    <option value="">Default ({result.aircraft.cruiseProfile})</option>
+                    {result.aircraft.availableProfiles.map((p) => (
+                      <option key={p.uuid} value={p.uuid}>{p.profileName}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    type="text"
+                    value={cruiseProfileOverride}
+                    onChange={(e) => setCruiseProfileOverride(e.target.value)}
+                    placeholder="Run a check first to see profiles"
+                    className="w-full rounded-md border border-amber-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-amber-500 focus:border-amber-500 bg-white"
+                    disabled={!result}
+                  />
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Aircraft Info */}
-        <div className="mt-3 flex items-center gap-4 text-xs text-gray-400">
-          <span>{config.tail}</span>
-          <span>FL470</span>
-          <span>{config.mach}</span>
-        </div>
+        {!expertMode && (
+          <div className="mt-3 flex items-center gap-4 text-xs text-gray-400">
+            <span>{config.tail}</span>
+            <span>FL{config.defaultAlt}</span>
+            <span>{config.mach}</span>
+          </div>
+        )}
 
         <div className="mt-4">
           <button
@@ -324,6 +397,44 @@ export default function ForeFlightClient() {
               {result.warnings.map((w, i) => (
                 <p key={`w${i}`} className="text-sm text-amber-700">{w}</p>
               ))}
+            </div>
+          )}
+
+          {/* Expert: Raw JSON */}
+          {expertMode && (
+            <div className="rounded-lg border border-amber-200 bg-white p-4">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-medium text-amber-700 uppercase">Expert: API Response</span>
+                <button
+                  onClick={() => setShowRawJson(!showRawJson)}
+                  className="text-xs text-amber-600 hover:text-amber-800"
+                >
+                  {showRawJson ? "Hide JSON" : "Show JSON"}
+                </button>
+              </div>
+              {!showRawJson && (
+                <div className="text-xs text-gray-500 space-y-1">
+                  <p><strong>Cruise Profile UUID:</strong> <span className="font-mono">{result.aircraft.cruiseProfileUUID ?? "none"}</span></p>
+                  <p><strong>Available Profiles:</strong> {result.aircraft.availableProfiles?.map(p => p.profileName).join(", ") || "none loaded"}</p>
+                  <p><strong>Altitude:</strong> {result.aircraft.altitude}</p>
+                </div>
+              )}
+              {showRawJson && (
+                <>
+                  <div className="mb-2">
+                    <span className="text-xs text-gray-400">Request:</span>
+                    <pre className="mt-1 rounded border border-gray-200 bg-gray-50 p-3 text-xs font-mono text-gray-700 overflow-x-auto max-h-[300px] overflow-y-auto">
+                      {JSON.stringify(result._request, null, 2)}
+                    </pre>
+                  </div>
+                  <div>
+                    <span className="text-xs text-gray-400">ForeFlight Response:</span>
+                    <pre className="mt-1 rounded border border-gray-200 bg-gray-50 p-3 text-xs font-mono text-gray-700 overflow-x-auto max-h-[600px] overflow-y-auto">
+                      {JSON.stringify(result._raw, null, 2)}
+                    </pre>
+                  </div>
+                </>
+              )}
             </div>
           )}
         </div>

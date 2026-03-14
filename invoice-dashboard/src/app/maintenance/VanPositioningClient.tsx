@@ -1050,10 +1050,9 @@ function MxNoteRow({ note, onHideForToday }: { note: MxNote; onHideForToday?: (i
                 <svg className={`w-2.5 h-2.5 inline ml-0.5 transition-transform ${descOpen ? "rotate-180" : ""}`} fill="none" viewBox="0 0 10 10" stroke="currentColor" strokeWidth={2}><path d="M2.5 3.5l2.5 2.5 2.5-2.5" /></svg>
               </button>
             )}
-            {note.start_time && (
+            {note.end_time && (
               <span className="text-[11px] text-gray-400 ml-auto shrink-0">
-                {new Date(note.start_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-                {note.end_time && note.end_time !== note.start_time && ` – ${new Date(note.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`}
+                Due {new Date(note.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
               </span>
             )}
           </div>
@@ -1225,10 +1224,9 @@ function VanMaintenanceAccordion({ items, mxNotesByTail, hiddenIds, onHideForTod
                             {timeLeft}
                           </span>
                         )}
-                        {n.start_time && (
+                        {n.end_time && (
                           <span className="text-[11px] text-gray-400">
-                            {new Date(n.start_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-                            {n.end_time && n.end_time !== n.start_time && ` – ${new Date(n.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`}
+                            Due {new Date(n.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
                           </span>
                         )}
                       </span>
@@ -1825,16 +1823,7 @@ function VanScheduleCard({
               })}
             </div>
           )}
-          {/* Van-level Maintenance Notes + Service Checklist */}
-          {items.length > 0 && (
-            <VanMaintenanceAccordion
-              items={items}
-              mxNotesByTail={mxNotesByTail}
-              hiddenIds={hiddenTodayMxIds}
-              onHideForToday={onHideMxForToday}
-              flightInfoMap={flightInfoMap}
-            />
-          )}
+          {/* Maintenance Notes + Service Checklists moved to van driver view (/van/[vanId]) */}
           {isDropTarget && items.length > 0 && (
             <div className="px-4 py-2 text-xs text-blue-500 font-medium text-center bg-blue-50/50 border-t border-dashed border-blue-200">
               Drop aircraft here
@@ -3215,6 +3204,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
   const [viewMode, setViewMode] = useState<"map" | "list">("map");
   const [selectedVan, setSelectedVan] = useState<number | null>(null);
   const [mxNotesOpen, setMxNotesOpen] = useState(false);
+  const [melAccordionOpen, setMelAccordionOpen] = useState(false);
   const [mxConflictsOpen, setMxConflictsOpen] = useState(false);
   const [dismissedMxIds, setDismissedMxIds] = useState<Set<string>>(new Set());
 
@@ -3833,12 +3823,12 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
         {visibleConflicts.length > 0 && mxConflictsOpen && (
           <div className="flex flex-col gap-2 ml-[52px] mt-2">
             {visibleConflicts.map((c, i) => {
-              const mxDateStr = c.mxNote.start_time
-                ? new Date(c.mxNote.start_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })
-                : "";
-              const mxEndStr = c.mxNote.end_time && c.mxNote.end_time !== c.mxNote.start_time
-                ? ` – ${new Date(c.mxNote.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`
-                : "";
+              const mxDateStr = c.mxNote.end_time
+                ? `Due ${new Date(c.mxNote.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`
+                : c.mxNote.start_time
+                  ? new Date(c.mxNote.start_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })
+                  : "";
+              const mxEndStr = "";
               return (
                 <div key={`mx-conflict-${i}`} className="bg-white border border-red-200 rounded-lg px-3 py-2">
                   <div className="flex items-center gap-2 flex-wrap">
@@ -3872,63 +3862,101 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
       })()}
 
       {/* ── MX Notes from JetInsight (accordion) ── */}
-      {mxNotes && mxNotes.length > 0 && (
-        <div className="rounded-xl border-2 border-orange-300 bg-orange-50 px-5 py-4 shadow-sm">
-          <button
-            onClick={() => setMxNotesOpen((v) => !v)}
-            className="flex items-center gap-3 w-full text-left"
-          >
-            <div className="w-10 h-10 rounded-full flex items-center justify-center text-xl shrink-0 bg-orange-100">
-              !
-            </div>
-            <div className="text-base font-bold text-orange-800 flex-1">
-              Maintenance Notes ({(mxNotes ?? []).filter((n) => !dismissedMxIds.has(n.id)).length})
-            </div>
-            <svg
-              className={`w-5 h-5 text-orange-600 transition-transform ${mxNotesOpen ? "rotate-180" : ""}`}
-              fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+      {(() => {
+        const visibleNotes = (mxNotes ?? []).filter((n) => !dismissedMxIds.has(n.id));
+        const mxOnly = visibleNotes.filter((n) => !isMel(n));
+        const melOnly = visibleNotes.filter((n) => isMel(n));
+        if (visibleNotes.length === 0) return null;
+        return (
+          <>
+          {/* MX Notes accordion */}
+          {mxOnly.length > 0 && (
+          <div className="rounded-xl border-2 border-orange-300 bg-orange-50 px-5 py-4 shadow-sm">
+            <button
+              onClick={() => setMxNotesOpen((v) => !v)}
+              className="flex items-center gap-3 w-full text-left"
             >
-              <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-            </svg>
-          </button>
-          {mxNotesOpen && (
-            <div className="flex flex-col gap-2 ml-[52px] mt-2">
-              {(mxNotes ?? []).filter((n) => !dismissedMxIds.has(n.id)).map((note) => {
-                const mel = isMel(note);
-                const timeLeft = mel ? fmtTimeRemaining(note.end_time) : null;
-                return (
-                <div key={note.id} className={`bg-white rounded-lg px-3 py-2 ${mel ? "border border-yellow-300" : "border border-orange-200"}`}>
-                  <div className="flex items-center gap-2">
-                    <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${mel ? "bg-yellow-100 text-yellow-700" : "bg-orange-100 text-orange-700"}`}>{mel ? "MEL" : "MX"}</span>
-                    <span className="text-xs font-bold text-orange-800">{note.tail_number}</span>
-                    <span className="text-xs text-orange-600">{note.airport_icao}</span>
-                    {timeLeft && (
-                      <span className={`text-[10px] font-semibold rounded-full px-1.5 py-0.5 ${timeLeft === "overdue" ? "bg-red-100 text-red-700" : "bg-yellow-100 text-yellow-700"}`}>
-                        {timeLeft}
-                      </span>
-                    )}
-                    {note.start_time && (
-                      <span className="text-[11px] text-gray-500 ml-auto">
-                        {new Date(note.start_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-                        {note.end_time && ` – ${new Date(note.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`}
-                      </span>
-                    )}
-                    <button
-                      onClick={(e) => { e.stopPropagation(); dismissMxNote(note.id); }}
-                      className="text-gray-400 hover:text-red-600 text-xs ml-2 shrink-0"
-                      title="Dismiss"
-                    >
-                      &times;
-                    </button>
+              <div className="w-10 h-10 rounded-full flex items-center justify-center text-xl shrink-0 bg-orange-100">!</div>
+              <div className="text-base font-bold text-orange-800 flex-1">
+                Maintenance Notes ({mxOnly.length})
+              </div>
+              <svg className={`w-5 h-5 text-orange-600 transition-transform ${mxNotesOpen ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+            {mxNotesOpen && (
+              <div className="flex flex-col gap-2 ml-[52px] mt-2">
+                {mxOnly.map((note) => (
+                  <div key={note.id} className="bg-white rounded-lg px-3 py-2 border border-orange-200">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-orange-100 text-orange-700">MX</span>
+                      <span className="text-xs font-bold text-orange-800">{note.tail_number}</span>
+                      <span className="text-xs text-orange-600">{note.airport_icao}</span>
+                      {note.end_time && (
+                        <span className="text-[11px] text-gray-500 ml-auto">
+                          Due {new Date(note.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                        </span>
+                      )}
+                      <button onClick={(e) => { e.stopPropagation(); dismissMxNote(note.id); }} className="text-gray-400 hover:text-red-600 text-xs ml-2 shrink-0" title="Dismiss">&times;</button>
+                    </div>
+                    <div className="text-sm text-gray-700 mt-0.5">{note.body}</div>
                   </div>
-                  <div className="text-sm text-gray-700 mt-0.5">{note.body}</div>
-                </div>
-                );
-              })}
-            </div>
+                ))}
+              </div>
+            )}
+          </div>
           )}
-        </div>
-      )}
+
+          {/* MEL accordion */}
+          {melOnly.length > 0 && (
+          <div className="rounded-xl border-2 border-yellow-300 bg-yellow-50 px-5 py-4 shadow-sm">
+            <button
+              onClick={() => setMelAccordionOpen((v) => !v)}
+              className="flex items-center gap-3 w-full text-left"
+            >
+              <div className="w-10 h-10 rounded-full flex items-center justify-center text-xl shrink-0 bg-yellow-100 text-yellow-700 font-bold">!</div>
+              <div className="text-base font-bold text-yellow-800 flex-1">
+                MEL Items ({melOnly.length})
+              </div>
+              <svg className={`w-5 h-5 text-yellow-600 transition-transform ${melAccordionOpen ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+            {melAccordionOpen && (
+              <div className="flex flex-col gap-2 ml-[52px] mt-2">
+                {melOnly.map((note) => {
+                  const timeLeft = fmtTimeRemaining(note.end_time);
+                  const days = daysRemaining(note.end_time);
+                  const isUrgent = days < 5;
+                  return (
+                    <div key={note.id} className={`bg-white rounded-lg px-3 py-2 ${isUrgent ? "border border-red-300" : "border border-green-300"}`}>
+                      <div className="flex items-center gap-2">
+                        <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${isUrgent ? "bg-red-100 text-red-700" : "bg-green-100 text-green-700"}`}>MEL</span>
+                        <span className="text-xs font-bold text-gray-800">{note.tail_number}</span>
+                        <span className="text-xs text-gray-600">{note.airport_icao}</span>
+                        {timeLeft && (
+                          <span className={`text-[10px] font-semibold rounded-full px-1.5 py-0.5 ${timeLeft === "overdue" ? "bg-red-100 text-red-700" : isUrgent ? "bg-red-100 text-red-700" : "bg-green-100 text-green-700"}`}>
+                            {timeLeft}
+                          </span>
+                        )}
+                        {note.end_time && (
+                          <span className="text-[11px] text-gray-500 ml-auto">
+                            Due {new Date(note.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                          </span>
+                        )}
+                        <button onClick={(e) => { e.stopPropagation(); dismissMxNote(note.id); }} className="text-gray-400 hover:text-red-600 text-xs ml-2 shrink-0" title="Dismiss">&times;</button>
+                      </div>
+                      <div className="text-sm text-gray-700 mt-0.5">{note.body}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          )}
+          </>
+        );
+      })()}
 
       {/* ── Tab bar ── */}
       <div className="flex gap-3">

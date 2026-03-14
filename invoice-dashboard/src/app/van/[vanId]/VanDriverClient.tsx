@@ -367,10 +367,95 @@ function MxNoteCard({ note, isMel, now, DAY, onDismiss }: {
           {note.description}
         </div>
       )}
-      {note.start_time && (
+      {note.end_time && (
         <div className="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5">
-          {new Date(note.start_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-          {note.end_time && note.end_time !== note.start_time && ` – ${new Date(note.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`}
+          Due {new Date(note.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Per-aircraft-type service checklists (ICAO type code → steps)
+const SERVICE_CHECKLISTS: Record<string, { label: string; steps: string[] }> = {
+  C750: {
+    label: "Citation X",
+    steps: [
+      "Meet pilots",
+      "Check fluids and gases",
+      "Stock bag pit",
+      "Check tire tread",
+      "Check black binder for MELs/open 1008s",
+      "Report back here",
+      "Clean instruments face plates and panel",
+      "Drop pics here",
+    ],
+  },
+  CL30: {
+    label: "Challenger 300",
+    steps: [
+      "Meet pilots",
+      "Service ENGs and APU",
+      "Empty ecolo bottle",
+      "Check tire tread",
+      "Check fluids and gases",
+      "Check black binder for MELs/open 1008s",
+      "Report back here",
+      "Clean instruments face plates and panel",
+      "Drop pics here",
+    ],
+  },
+  CL35: {
+    label: "Challenger 350",
+    steps: [
+      "Meet pilots",
+      "Service ENGs and APU",
+      "Empty ecolo bottle",
+      "Check tire tread",
+      "Check fluids and gases",
+      "Check black binder for MELs/open 1008s",
+      "Report back here",
+      "Clean instruments face plates and panel",
+      "Drop pics here",
+    ],
+  },
+};
+
+// Known tail → type mapping
+const TAIL_TYPE_MAP: Record<string, string> = {
+  N519FX: "C750", N521FX: "C750", N533FX: "C750", N548FX: "C750",
+  N552FX: "C750", N553FX: "C750", N555FX: "C750", N998CX: "C750",
+  N371DB: "CL30", N513JB: "CL30", N883TR: "CL30", N988TX: "CL30",
+  N860TX: "CL30", N703TX: "CL30", N939TX: "CL30",
+  N954JS: "CL35", N955GH: "CL35", N957JS: "CL35", N971JS: "CL35", N992MG: "CL35",
+};
+
+function getDriverServiceChecklists(): Record<string, { label: string; steps: string[] }> {
+  try {
+    const saved = typeof window !== "undefined" ? localStorage.getItem("vanServiceChecklists") : null;
+    if (saved) return JSON.parse(saved);
+  } catch {}
+  return SERVICE_CHECKLISTS;
+}
+
+function ServiceChecklistAccordion({ label, steps }: { label: string; steps: string[] }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mt-3 border border-green-200 dark:border-green-800 rounded-lg overflow-hidden">
+      <button
+        onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
+        className="w-full px-3 py-2 flex items-center justify-between text-sm font-semibold text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-900/30 min-h-[44px]"
+      >
+        <span>Service Check — {label}</span>
+        <span className="text-green-400">{open ? "▲" : "▼"}</span>
+      </button>
+      {open && (
+        <div className="px-3 py-2 bg-white dark:bg-gray-800">
+          <ol className="space-y-1 list-decimal list-inside text-sm text-gray-700 dark:text-gray-300">
+            {steps.map((step, i) => (
+              <li key={i} className="py-0.5">{step}</li>
+            ))}
+          </ol>
         </div>
       )}
     </div>
@@ -532,6 +617,17 @@ function StopCard({
                 );
               })}
             </div>
+          );
+        })()}
+
+        {/* Service checklist per aircraft type */}
+        {(() => {
+          const checklists = getDriverServiceChecklists();
+          const typeCode = TAIL_TYPE_MAP[tail];
+          const cl = typeCode ? checklists[typeCode] : null;
+          if (!cl) return null;
+          return (
+            <ServiceChecklistAccordion label={cl.label} steps={cl.steps} />
           );
         })()}
 

@@ -95,16 +95,30 @@ async function getFboOptions(airportCode: string): Promise<
   });
 }
 
+/** Recursively search for a key in a nested object */
+function deepFind(obj: unknown, key: string): unknown {
+  if (!obj || typeof obj !== "object") return undefined;
+  const rec = obj as Record<string, unknown>;
+  if (key in rec) return rec[key];
+  for (const v of Object.values(rec)) {
+    const found = deepFind(v, key);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
 export async function POST(req: NextRequest) {
   const auth = await requireAuth(req);
   if (!isAuthed(auth)) return auth.error;
 
   try {
     const body = await req.json();
-    const { departure, destination, aircraftType } = body as {
+    const { departure, destination, aircraftType, altitudeOverride, cruiseProfileOverride } = body as {
       departure: string;
       destination: string;
       aircraftType: "citation" | "challenger";
+      altitudeOverride?: number;
+      cruiseProfileOverride?: string;
     };
 
     if (!departure || !destination || !aircraftType) {
@@ -118,22 +132,26 @@ export async function POST(req: NextRequest) {
       ? { registration: "N106PC", mach: ".85", altitude: 470 }
       : { registration: "N520FX", mach: ".78", altitude: 470 };
 
+    const altitude = altitudeOverride ?? config.altitude;
+
     // Fetch cruise profile and FBO options in parallel
     const [profile, fboOptions] = await Promise.all([
       findCruiseProfile(config.registration, config.mach),
       getFboOptions(destination.toUpperCase()),
     ]);
 
-    // Build ForeFlight flight plan
-    const flightReq = {
+    const cruiseUUID = cruiseProfileOverride || profile?.uuid;
+
+    // Build ForeFlight flight plan — let ForeFlight auto-route (don't set routeToDestination.route)
+    const flightReq: Record<string, unknown> = {
       flight: {
         departure: departure.toUpperCase(),
         destination: destination.toUpperCase(),
         aircraftRegistration: config.registration,
         scheduledTimeOfDeparture: new Date(Date.now() + 3600_000).toISOString(),
-        ...(profile && { cruiseProfileUUID: profile.uuid }),
+        ...(cruiseUUID && { cruiseProfileUUID: cruiseUUID }),
         routeToDestination: {
-          altitude: { altitude: config.altitude, unit: "FL" },
+          altitude: { altitude, unit: "FL" },
         },
         load: { people: 4 },
         windOptions: { windModel: "Forecasted" },
@@ -165,12 +183,12 @@ export async function POST(req: NextRequest) {
       }).catch(() => {});
     }
 
-    // Extract fuel data
-    const perf = data.performance as Record<string, unknown> | undefined;
-    const fuel = perf?.fuel as Record<string, number> | undefined;
-    const times = perf?.times as Record<string, unknown> | undefined;
-    const distances = perf?.distances as Record<string, number> | undefined;
-    const weather = perf?.weather as Record<string, number> | undefined;
+    // Extract fuel data — search deeply in case ForeFlight nests it
+    const perf = (data.performance ?? deepFind(data, "performance")) as Record<string, unknown> | undefined;
+    const fuel = (perf?.fuel ?? deepFind(data, "fuel")) as Record<string, number> | undefined;
+    const times = (perf?.times ?? deepFind(data, "times")) as Record<string, unknown> | undefined;
+    const distances = (perf?.distances ?? deepFind(data, "distances")) as Record<string, number> | undefined;
+    const weather = (perf?.weather ?? deepFind(data, "weather")) as Record<string, number> | undefined;
 
     const fuelToDestLbs = fuel?.fuelToDestination ?? 0;
     const totalFuelLbs = fuel?.totalFuel ?? 0;
@@ -184,13 +202,29 @@ export async function POST(req: NextRequest) {
       estimatedCost: Math.round(fuelToDestGal * fbo.price * 100) / 100,
     }));
 
+    // Get available cruise profiles for expert mode
+    const allProfiles = await (async () => {
+      try {
+        const r = await fetch(`${FF_BASE}/aircraft`, { headers: { "x-api-key": apiKey() } });
+        const p = await safeParseFF(r);
+        if (!p.ok) return [];
+        const list = Array.isArray(p.data) ? p.data : (p.data as Record<string, unknown>)?.aircraft ?? [];
+        const ac = (list as Record<string, unknown>[]).find(
+          (a) => (a.aircraftRegistration as string)?.toUpperCase() === config.registration.toUpperCase(),
+        );
+        return (ac?.cruiseProfiles ?? []) as CruiseProfile[];
+      } catch { return []; }
+    })();
+
     return NextResponse.json({
       aircraft: {
         registration: config.registration,
         type: aircraftType,
         mach: config.mach,
-        altitude: `FL${config.altitude}`,
+        altitude: `FL${altitude}`,
         cruiseProfile: profile?.profileName ?? "Default",
+        cruiseProfileUUID: cruiseUUID ?? null,
+        availableProfiles: allProfiles,
       },
       route: {
         departure: departure.toUpperCase(),
@@ -225,6 +259,8 @@ export async function POST(req: NextRequest) {
       fboOptions: fboWithCost,
       warnings: (perf?.warnings as string[]) ?? [],
       errors: (perf?.errors as string[]) ?? [],
+      _raw: data,
+      _request: flightReq,
     });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
