@@ -236,8 +236,8 @@ export async function POST(req: NextRequest) {
           end: null,
           max_weekly: 50,
           events: {
-            arrival: false,
-            departure: false,
+            arrival: true,
+            departure: true,
             cancelled: true,
             diverted: true,
             filed: false,

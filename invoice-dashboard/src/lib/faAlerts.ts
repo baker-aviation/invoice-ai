@@ -127,8 +127,8 @@ export async function refreshAlerts(tails: string[], activeTails: string[]): Pro
             end: null,
             max_weekly: 50,
             events: {
-              arrival: false,
-              departure: false,
+              arrival: true,
+              departure: true,
               cancelled: true,
               diverted: true,
               filed: false,
