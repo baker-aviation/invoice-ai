@@ -1177,11 +1177,16 @@ def _parse_edct_email(subject: str, body: str, msg_id: str) -> Dict[str, Any]:
         dep_icao = route_m.group(1).upper()
         arr_icao = route_m.group(2).upper()
 
-    # Tail number
+    # Tail number — check N-number first, then KOW callsign
     tail = None
     tail_m = re.search(r"\b(N\d{1,5}[A-Z]{0,2})\b", combined)
     if tail_m:
         tail = tail_m.group(1).upper()
+    if not tail:
+        kow_m = re.search(r"\b(KOW\d{2,4})\b", combined, re.I)
+        if kow_m:
+            from swim_client import KOW_TO_TAIL
+            tail = KOW_TO_TAIL.get(kow_m.group(1).upper())
 
     # EDCT time  e.g. "EDCT: 1845Z" or "EDCT 02/26/2026 1845Z"
     #            or ForeFlight: "EDCT: Sun Mar 01 07:34 EST 2026"
