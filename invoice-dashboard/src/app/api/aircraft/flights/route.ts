@@ -4,7 +4,7 @@ import { requireAuth, isAuthed } from "@/lib/api-auth";
 import { getActiveFlights } from "@/lib/flightaware";
 import { TRIPS } from "@/lib/maintenanceData";
 import { createServiceClient } from "@/lib/supabase/service";
-import { getCache, setCache, isCacheFresh, isRefreshing, markRefreshing, clearRefreshing } from "@/lib/flightCache";
+import { getCache, setCache, isCacheFresh, isRefreshing, tryClaimRefresh, clearRefreshing } from "@/lib/flightCache";
 import { refreshAlerts } from "@/lib/faAlerts";
 
 export const dynamic = "force-dynamic";
@@ -60,23 +60,27 @@ export async function GET(req: NextRequest) {
   const cachedResult = await getCache();
 
   // Stale-while-revalidate: return stale cache immediately, refresh in background
-  if (!forceRefresh && cachedResult && !cacheFresh && !isRefreshing()) {
-    markRefreshing();
-    // Kick off background refresh via after() — runs after response is sent
-    after(async () => {
-      try {
-        const { allTails, activeTails } = await getTails();
-        console.log("[SWR] Background refresh starting for", activeTails.length, "active tails (of", allTails.length, "total)");
-        const flights = await getActiveFlights(activeTails);
-        await setCache(flights);
-        console.log("[SWR] Background refresh complete,", flights.length, "flights");
-        await refreshAlerts(allTails, activeTails).catch(() => {});
-      } catch (err) {
-        console.error("[SWR] Background refresh failed:", err);
-      } finally {
-        clearRefreshing();
-      }
-    });
+  // Uses atomic Supabase lock so only one Vercel instance refreshes at a time
+  const refreshing = await isRefreshing();
+  if (!forceRefresh && cachedResult && !cacheFresh && !refreshing) {
+    const claimed = await tryClaimRefresh();
+    if (claimed) {
+      // This instance won the lock — kick off background refresh
+      after(async () => {
+        try {
+          const { allTails, activeTails } = await getTails();
+          console.log("[SWR] Background refresh starting for", activeTails.length, "active tails (of", allTails.length, "total)");
+          const flights = await getActiveFlights(activeTails);
+          await setCache(flights);
+          console.log("[SWR] Background refresh complete,", flights.length, "flights");
+          await refreshAlerts(allTails, activeTails).catch(() => {});
+        } catch (err) {
+          console.error("[SWR] Background refresh failed:", err);
+        } finally {
+          await clearRefreshing();
+        }
+      });
+    }
 
     return NextResponse.json({
       flights: cachedResult.data,
@@ -114,7 +118,7 @@ export async function GET(req: NextRequest) {
   try {
     const flights = await getActiveFlights(activeTails);
     await setCache(flights);
-    clearRefreshing(); // in case a background refresh was somehow flagged
+    await clearRefreshing(); // in case a background refresh was somehow flagged
 
     // Auto-register FA webhook alerts for active tails only — runs after response is sent
     after(async () => {

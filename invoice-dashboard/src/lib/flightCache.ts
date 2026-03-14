@@ -12,18 +12,68 @@ import { createServiceClient } from "./supabase/service";
  */
 
 let memCache: { data: FlightInfo[]; ts: number } | null = null;
-let _isRefreshing = false;
 
-export function isRefreshing(): boolean {
-  return _isRefreshing;
+// Stale lock timeout — if an instance crashes mid-refresh, the lock auto-expires
+const LOCK_TIMEOUT_MS = 3 * 60_000; // 3 minutes
+
+/**
+ * Check if another instance is currently refreshing (shared across all Vercel instances).
+ */
+export async function isRefreshing(): Promise<boolean> {
+  try {
+    const supa = createServiceClient();
+    const { data: row } = await supa
+      .from("flight_cache")
+      .select("refreshing_since")
+      .eq("id", 1)
+      .single();
+
+    if (!row?.refreshing_since) return false;
+    const elapsed = Date.now() - new Date(row.refreshing_since).getTime();
+    return elapsed < LOCK_TIMEOUT_MS;
+  } catch {
+    return false; // On error, allow refresh
+  }
 }
 
-export function markRefreshing(): void {
-  _isRefreshing = true;
+/**
+ * Atomically claim the refresh lock. Returns true if THIS instance won the lock.
+ * Uses a conditional update so only one instance can claim it.
+ */
+export async function tryClaimRefresh(): Promise<boolean> {
+  try {
+    const supa = createServiceClient();
+    const staleThreshold = new Date(Date.now() - LOCK_TIMEOUT_MS).toISOString();
+
+    // Atomic: only claim if no one holds a non-stale lock
+    // Uses .or() to match: no lock set, OR lock is stale
+    const { data, error } = await supa
+      .from("flight_cache")
+      .update({ refreshing_since: new Date().toISOString() })
+      .eq("id", 1)
+      .or(`refreshing_since.is.null,refreshing_since.lt.${staleThreshold}`)
+      .select("id");
+
+    if (error || !data || data.length === 0) return false;
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-export function clearRefreshing(): void {
-  _isRefreshing = false;
+/**
+ * Release the refresh lock.
+ */
+export async function clearRefreshing(): Promise<void> {
+  try {
+    const supa = createServiceClient();
+    await supa
+      .from("flight_cache")
+      .update({ refreshing_since: null })
+      .eq("id", 1);
+  } catch {
+    // Non-fatal
+  }
 }
 
 // Dynamic TTL: poll every 5 min when aircraft are airborne, 2h otherwise.
