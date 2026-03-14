@@ -345,7 +345,9 @@ function delayColorClass(scheduledIso: string, actualIso: string): string {
   return "text-green-600";
 }
 
-/** Look up FA data: try route-specific key first, fall back to tail-only if route matches */
+/** Look up FA data: try route-specific key first, fall back to tail-only if route matches.
+ *  Both paths reject stale FA data (>6h from scheduled departure) to avoid
+ *  showing yesterday's actuals on today's leg of the same route. */
 function matchFlightInfo(
   map: Map<string, FlightInfoMap>,
   routeKey: string,
@@ -353,16 +355,17 @@ function matchFlightInfo(
   departureIcao: string | null,
   scheduledDep?: string,
 ): FlightInfoMap | undefined {
+  const isStale = (fi: FlightInfoMap) => {
+    if (!scheduledDep) return false;
+    const faDep = fi.actual_departure ?? fi.departure_time;
+    if (!faDep) return false;
+    return Math.abs(new Date(faDep).getTime() - new Date(scheduledDep).getTime()) > 6 * 3600_000;
+  };
   const byRoute = map.get(routeKey);
-  if (byRoute) return byRoute;
-  // Tail-only fallback: only use if the FA flight's origin matches AND departure is within 6h
+  if (byRoute && !isStale(byRoute)) return byRoute;
+  // Tail-only fallback: only use if the FA flight's origin matches AND not stale
   const byTail = map.get(tail);
-  if (byTail && departureIcao && byTail.origin_icao === departureIcao) {
-    if (scheduledDep && byTail.departure_time) {
-      const schedMs = new Date(scheduledDep).getTime();
-      const faDepMs = new Date(byTail.departure_time).getTime();
-      if (Math.abs(schedMs - faDepMs) > 6 * 3600_000) return undefined;
-    }
+  if (byTail && departureIcao && byTail.origin_icao === departureIcao && !isStale(byTail)) {
     return byTail;
   }
   return undefined;
@@ -456,9 +459,16 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
   const [viewMode, setViewMode] = useState<"table" | "aircraft">("table");
 
   // Shorthand for formatting times — uses departure or arrival airport TZ
+  // Strips today's date prefix so "Mar 14, 15:12 PDT" → "15:12 PDT" when today is Mar 14
   const fmt = useCallback(
-    (iso: string | null | undefined, icao?: string | null) =>
-      fmtTimeInTz(iso, icao, true, tzMode),
+    (iso: string | null | undefined, icao?: string | null) => {
+      const full = fmtTimeInTz(iso, icao, true, tzMode);
+      const todayPrefix = new Date().toLocaleString("en-US", { month: "short", day: "numeric" });
+      if (full.startsWith(todayPrefix + ", ")) {
+        return full.slice(todayPrefix.length + 2);
+      }
+      return full;
+    },
     [tzMode],
   );
 
