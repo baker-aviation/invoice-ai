@@ -238,11 +238,7 @@ function lookupBestRate(
   // Filter to applicable volume tiers based on gallons purchased
   let candidates = allMatches.filter((m) => !m.tail_numbers);
   if (gallons && gallons > 0) {
-    // Parse tier like "1+", "251+", "1001+", "1201-1500"
-    const applicable = candidates.filter((m) => {
-      const tierNum = parseInt(m.volume_tier, 10);
-      return !isNaN(tierNum) && gallons >= tierNum;
-    });
+    const applicable = candidates.filter((m) => tierMatchesVolume(m.volume_tier, gallons));
     if (applicable.length > 0) candidates = applicable;
   }
   if (candidates.length === 0) candidates = allMatches;
@@ -637,8 +633,7 @@ export default function FuelPricesTable({
     setIsPulling(true);
     setPullResult(null);
     try {
-      // Pull from all folders, 2 weeks back, to catch emails in subfolders
-      const res = await fetch("/api/fuel-prices/advertised/pull-mailbox?force=true&lookback_minutes=20160&max_messages=300&all_folders=true", { method: "POST" });
+      const res = await fetch("/api/fuel-prices/advertised/pull-mailbox?force=true", { method: "POST" });
       const data = await res.json();
       if (!res.ok) {
         setPullResult(`Error: ${data.error ?? res.statusText}`);
