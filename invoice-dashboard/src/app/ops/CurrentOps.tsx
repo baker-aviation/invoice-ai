@@ -1097,7 +1097,21 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
               {edctAlerts.map((a) => (
                 <div key={a.id} className={`flex items-center gap-3 text-sm text-amber-900 ${isAcked(a) ? "opacity-50" : ""}`}>
                   <span className="font-medium">{a.route}</span>
-                  {a.tail_number && <span className="text-amber-600">{a.tail_number}</span>}
+                  {(() => {
+                    // Extract the filed identifier (KOW callsign or N-number) from subject
+                    const filedAs = a.subject?.match(/\((KOW\d+|N\d+[A-Z]*)\)/i)?.[1]
+                      ?? a.subject?.match(/EDCT\s+(KOW\d+|N\d+[A-Z]*)/i)?.[1]
+                      ?? null;
+                    const tail = a.tail_number;
+                    const showFiledAs = filedAs && tail && filedAs.toUpperCase() !== tail.toUpperCase();
+                    return tail ? (
+                      <span className="text-amber-600">
+                        {tail}{showFiledAs && <span className="text-amber-400 text-xs ml-0.5">({filedAs})</span>}
+                      </span>
+                    ) : filedAs ? (
+                      <span className="text-amber-600">{filedAs}</span>
+                    ) : null;
+                  })()}
                   <span className={`text-[10px] font-bold rounded px-1 py-0.5 ${
                     (a.source_message_id ?? "").startsWith("swim-edct-")
                       ? "bg-blue-100 text-blue-700"
