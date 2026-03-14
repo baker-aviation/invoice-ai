@@ -255,16 +255,16 @@ async function listRecentMessages(token: string, lookbackMinutes: number, maxMes
   let nextUrl: string | null = url.toString();
 
   while (nextUrl && allMessages.length < maxMessages) {
-    const res = await fetch(nextUrl, {
+    const pageRes: Response = await fetch(nextUrl, {
       headers: { Authorization: `Bearer ${token}` },
     });
 
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Graph list messages failed: ${res.status} ${text}`);
+    if (!pageRes.ok) {
+      const text = await pageRes.text();
+      throw new Error(`Graph list messages failed: ${pageRes.status} ${text}`);
     }
 
-    const json = await res.json();
+    const json = await pageRes.json();
     const page: GraphMessage[] = json.value ?? [];
     allMessages.push(...page);
     nextUrl = json["@odata.nextLink"] ?? null;
