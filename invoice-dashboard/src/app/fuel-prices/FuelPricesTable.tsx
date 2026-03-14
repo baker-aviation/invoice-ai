@@ -923,10 +923,12 @@ export default function FuelPricesTable({
     return rows;
   }, [advVsActual, airportFilter, vendorFilter, search, compareJetFbo]);
 
-  // Cheapest price per airport — compare across all current vendor rows
+  // Cheapest price per airport — only rows with data ≤8 days old
   const cheapestByAirport = useMemo(() => {
+    const cutoff = new Date(Date.now() - 8 * 86400000).toISOString().split("T")[0];
     const best = new Map<string, number>();
     for (const r of filteredAdvVsActual) {
+      if (r.currentWeek < cutoff) continue;
       const existing = best.get(r.airport);
       if (existing == null || r.currentPrice < existing) {
         best.set(r.airport, r.currentPrice);
