@@ -347,15 +347,14 @@ export async function fetchAdvertisedPrices(opts?: { recentWeeks?: number }): Pr
     .from("fbo_advertised_prices")
     .select("id, fbo_vendor, airport_code, volume_tier, product, price, tail_numbers, week_start, upload_batch, created_at");
 
-  // Filter by time window — default to 4 weeks which covers all vendor cadences
-  const weeks = opts?.recentWeeks ?? 4;
-  const cutoff = new Date(Date.now() - weeks * 7 * 86400000).toISOString();
-  // Use created_at (never null) as fallback when week_start might be null
-  query = query.or(`week_start.gte.${cutoff.split("T")[0]},created_at.gte.${cutoff}`);
+  // Filter to recent weeks — default 2 weeks (current + prev for WOW)
+  const weeks = opts?.recentWeeks ?? 2;
+  const cutoff = new Date(Date.now() - weeks * 7 * 86400000).toISOString().split("T")[0];
+  query = query.gte("week_start", cutoff);
 
   const { data, error } = await query
     .order("week_start", { ascending: false })
-    .limit(20000);
+    .limit(50000);
 
   if (error) throw new Error(`fetchAdvertisedPrices failed: ${error.message}`);
 
