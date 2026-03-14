@@ -340,18 +340,22 @@ export async function fetchFuelPrices(params: {
 // Advertised Fuel Prices — fbo_advertised_prices table
 // ---------------------------------------------------------------------------
 
-export async function fetchAdvertisedPrices(): Promise<AdvertisedPriceRow[]> {
+export async function fetchAdvertisedPrices(opts?: { recentWeeks?: number }): Promise<AdvertisedPriceRow[]> {
   const supa = createServiceClient();
 
-  // Only fetch the last 4 weeks of data — no need for full historical table scan
-  const fourWeeksAgo = new Date(Date.now() - 28 * 86400000).toISOString().split("T")[0];
-
-  const { data, error } = await supa
+  let query = supa
     .from("fbo_advertised_prices")
-    .select("id, fbo_vendor, airport_code, volume_tier, product, price, tail_numbers, week_start, upload_batch, created_at")
-    .gte("week_start", fourWeeksAgo)
+    .select("id, fbo_vendor, airport_code, volume_tier, product, price, tail_numbers, week_start, upload_batch, created_at");
+
+  // Ops page passes recentWeeks=4 for speed; fuel prices page gets everything
+  if (opts?.recentWeeks) {
+    const cutoff = new Date(Date.now() - opts.recentWeeks * 7 * 86400000).toISOString().split("T")[0];
+    query = query.gte("week_start", cutoff);
+  }
+
+  const { data, error } = await query
     .order("week_start", { ascending: false })
-    .limit(5000);
+    .limit(10000);
 
   if (error) throw new Error(`fetchAdvertisedPrices failed: ${error.message}`);
 

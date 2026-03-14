@@ -16,7 +16,7 @@ export default async function OpsPage() {
       error = String(e);
       return { ok: false, flights: [] as any[], count: 0, error: null as string | null };
     }),
-    fetchAdvertisedPrices().catch(() => []),
+    fetchAdvertisedPrices({ recentWeeks: 4 }).catch(() => []),
     fetchMxNotes().catch(() => []),
     fetchSwimFlowControl().catch(() => []),
     createClient().then((s) => s.from("baker_ppr_airports").select("icao")).then((r) => r.data).catch(() => []),

@@ -9,7 +9,8 @@ import FuelPricesTable from "./FuelPricesTable";
 export default async function FuelPricesPage() {
   const [data, advertisedPrices] = await Promise.all([
     fetchFuelPrices({ limit: 2500 }),
-    fetchAdvertisedPrices().catch(() => []),
+    // Default: ~2 weeks of advertised prices (current + previous week for WOW)
+    fetchAdvertisedPrices({ recentWeeks: 2 }).catch(() => []),
   ]);
   const fuelPrices = data.fuel_prices ?? [];
 

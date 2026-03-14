@@ -628,6 +628,10 @@ export default function FuelPricesTable({
   const [compareJetFbo, setCompareJetFbo] = useState(false);
   const [isPulling, setIsPulling] = useState(false);
   const [pullResult, setPullResult] = useState<string | null>(null);
+  const [extendedAdv, setExtendedAdv] = useState<AdvertisedPriceRow[] | null>(null);
+  const [loadingExtended, setLoadingExtended] = useState(false);
+
+  const activeAdvertisedPrices = extendedAdv ?? advertisedPrices;
 
   async function handlePullNow() {
     setIsPulling(true);
@@ -653,8 +657,8 @@ export default function FuelPricesTable({
   // Filter out advertised prices older than 8 days
   const freshAdvertisedPrices = useMemo(() => {
     const cutoff = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
-    return advertisedPrices.filter((a) => a.week_start >= cutoff);
-  }, [advertisedPrices]);
+    return activeAdvertisedPrices.filter((a) => a.week_start >= cutoff);
+  }, [activeAdvertisedPrices]);
 
   // Document IDs that serve as baselines for other rows
   const baselineDocIds = useMemo(() => {
@@ -963,7 +967,7 @@ export default function FuelPricesTable({
   const vendorHealth = useMemo(() => {
     const now = new Date();
     const byVendor = new Map<string, { latestWeek: string; rowCount: number; latestUpload: string }>();
-    for (const adv of advertisedPrices) {
+    for (const adv of activeAdvertisedPrices) {
       const existing = byVendor.get(adv.fbo_vendor);
       if (!existing || adv.week_start > existing.latestWeek) {
         byVendor.set(adv.fbo_vendor, {
@@ -984,7 +988,7 @@ export default function FuelPricesTable({
       const status = daysOld <= 7 ? "current" as const : daysOld <= 14 ? "aging" as const : "stale" as const;
       return { vendor, status, latestWeek: info.latestWeek, daysOld, rowCount: info.rowCount, latestUpload: info.latestUpload };
     });
-  }, [advertisedPrices]);
+  }, [activeAdvertisedPrices]);
 
   const healthCounts = useMemo(() => {
     let current = 0, aging = 0, missing = 0;
@@ -1005,7 +1009,7 @@ export default function FuelPricesTable({
     const fiveWeeksAgo = new Date(now.getTime() - 35 * 86400000).toISOString().split("T")[0];
 
     return EXPECTED_VENDORS.map((vendor) => {
-      const rows = advertisedPrices.filter((a) => a.fbo_vendor === vendor && !a.tail_numbers && a.price >= 2 && a.price <= 15);
+      const rows = activeAdvertisedPrices.filter((a) => a.fbo_vendor === vendor && !a.tail_numbers && a.price >= 2 && a.price <= 15);
 
       // Current = latest week (within 7 days)
       const currentRows = rows.filter((a) => a.week_start >= oneWeekAgo);
@@ -1047,7 +1051,7 @@ export default function FuelPricesTable({
         rowCount: currentRows.length,
       };
     });
-  }, [advertisedPrices]);
+  }, [activeAdvertisedPrices]);
 
   // Overall average across all vendors with data
   const overallStats = useMemo(() => {
@@ -1087,7 +1091,7 @@ export default function FuelPricesTable({
 
     return TARGET_AIRPORTS.map((airport) => {
       const variants = airportVariants(airport);
-      const airportRows = advertisedPrices.filter(
+      const airportRows = activeAdvertisedPrices.filter(
         (a) => !a.tail_numbers && a.price >= 2 && a.price <= 15 && variants.includes(a.airport_code.toUpperCase()),
       );
 
@@ -1161,7 +1165,19 @@ export default function FuelPricesTable({
         savingsPct,
       };
     });
-  }, [advertisedPrices]);
+  }, [activeAdvertisedPrices]);
+
+  // Load extended advertised prices (30 days) for WOW/month comparisons
+  async function loadExtendedPrices() {
+    if (extendedAdv || loadingExtended) return;
+    setLoadingExtended(true);
+    try {
+      const res = await fetch("/api/fuel-prices/advertised?weeks=8");
+      const data = await res.json();
+      if (data.prices) setExtendedAdv(data.prices);
+    } catch { /* ignore */ }
+    finally { setLoadingExtended(false); }
+  }
 
   return (
     <div className="space-y-4">
@@ -1242,7 +1258,7 @@ export default function FuelPricesTable({
             <button
               key={key}
               type="button"
-              onClick={() => { setViewMode(key); setPage(0); }}
+              onClick={() => { setViewMode(key); setPage(0); if (key === "stats" && !extendedAdv) loadExtendedPrices(); }}
               className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
                 viewMode === key
                   ? "bg-white text-gray-900 shadow-sm"
@@ -1348,6 +1364,16 @@ export default function FuelPricesTable({
             >
               Compare FBOs
             </button>
+            {!extendedAdv && (
+              <button
+                type="button"
+                onClick={loadExtendedPrices}
+                disabled={loadingExtended}
+                className="px-3 py-1.5 text-xs font-medium rounded-md border bg-white text-gray-600 border-gray-200 hover:border-gray-400 hover:bg-gray-50 transition-colors disabled:opacity-50"
+              >
+                {loadingExtended ? "Loading..." : "30 Day Comparison"}
+              </button>
+            )}
           </>
         )}
 
