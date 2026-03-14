@@ -389,6 +389,16 @@ const SEVERITY_COLORS: Record<string, string> = {
   low: "bg-blue-100 text-blue-800 border-blue-200",
 };
 
+/** Find the active (unacknowledged) EDCT alert for a flight */
+function getActiveEdct(f: Flight): OpsAlert | null {
+  return f.alerts?.find(a => a.alert_type === "EDCT" && a.edct_time && !a.acknowledged_at) ?? null;
+}
+
+/** EDCT source: SWIM vs ForeFlight */
+function edctSourceTag(alert: OpsAlert): string {
+  return (alert.source_message_id ?? "").startsWith("swim-edct-") ? "SWIM" : "FF";
+}
+
 /* ── component ──────────────────────────────────────── */
 
 type TripSalesperson = {
@@ -449,6 +459,25 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
   const fmt = useCallback(
     (iso: string | null | undefined, icao?: string | null) =>
       fmtTimeInTz(iso, icao, true, tzMode),
+    [tzMode],
+  );
+
+  // EDCT time formatter: time only when same calendar day as scheduled departure
+  const fmtEdctTime = useCallback(
+    (edctIso: string, schedIso: string, icao?: string | null): string => {
+      const edctFull = fmtTimeInTz(edctIso, icao, true, tzMode);
+      const schedFull = fmtTimeInTz(schedIso, icao, true, tzMode);
+      const edctComma = edctFull.indexOf(", ");
+      const schedComma = schedFull.indexOf(", ");
+      if (edctComma > 0 && schedComma > 0) {
+        const edctDate = edctFull.slice(0, edctComma);
+        const schedDate = schedFull.slice(0, schedComma);
+        if (edctDate === schedDate) {
+          return edctFull.slice(edctComma + 2); // time + tz only
+        }
+      }
+      return edctFull; // different day — show full
+    },
     [tzMode],
   );
 
@@ -1048,6 +1077,25 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
   // Per-tail duty summary (24hr flight time + crew rest)
   const tailDuty = useMemo(() => computeTailDuty(flights, faFlightsRaw), [flights, faFlightsRaw]);
 
+  // EDCT-adjusted duty: shift departure/arrival on legs with active EDCTs
+  const tailDutyEdct = useMemo(() => {
+    const hasAnyEdct = flights.some(f => getActiveEdct(f) != null);
+    if (!hasAnyEdct) return null;
+    const edctFlights = flights.map(f => {
+      const edct = getActiveEdct(f);
+      if (!edct?.edct_time) return f;
+      const deltaMs = new Date(edct.edct_time).getTime() - new Date(f.scheduled_departure).getTime();
+      return {
+        ...f,
+        scheduled_departure: edct.edct_time,
+        scheduled_arrival: f.scheduled_arrival
+          ? new Date(new Date(f.scheduled_arrival).getTime() + deltaMs).toISOString()
+          : f.scheduled_arrival,
+      };
+    });
+    return computeTailDuty(edctFlights, faFlightsRaw);
+  }, [flights, faFlightsRaw]);
+
   // Best advertised fuel rate per airport
   const bestFuelByAirport = useMemo(() => buildBestRateByAirport(advertisedPrices), [advertisedPrices]);
 
@@ -1373,32 +1421,60 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           })()}
                         </span>
                         <div className="flex items-center gap-2">
-                          {duty && (
-                            <>
-                              <button
-                                onClick={() => onSwitchToDuty?.(tail)}
-                                className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-mono font-medium rounded cursor-pointer hover:opacity-80 transition-opacity ${dutyColor(duty.flightTimeMin)}`}
-                                title="View detailed 10/24 breakdown"
-                              >
-                                <span className="text-[10px]">{LEVEL_ICONS[dutyLevel(duty.flightTimeMin)]}</span>
-                                {fmtHM(duty.flightTimeMin)}
-                              </button>
-                              {duty.restMin != null && (() => {
-                                const rl = restLevel(duty.restMin);
-                                if (!rl) return null;
-                                return (
+                          {duty && (() => {
+                            const edctDuty = tailDutyEdct?.get(tail);
+                            const dutyDiffers = edctDuty && Math.abs(edctDuty.flightTimeMin - duty.flightTimeMin) > 5;
+                            const restDiffers = edctDuty && edctDuty.restMin != null && duty.restMin != null && Math.abs(edctDuty.restMin - duty.restMin) > 5;
+                            return (
+                              <>
+                                <div className="flex flex-col items-end gap-0.5">
                                   <button
                                     onClick={() => onSwitchToDuty?.(tail)}
-                                    className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-mono font-medium rounded cursor-pointer hover:opacity-80 transition-opacity ${LEVEL_COLORS[rl]}`}
-                                    title="View detailed crew rest breakdown"
+                                    className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-mono font-medium rounded cursor-pointer hover:opacity-80 transition-opacity ${dutyColor(duty.flightTimeMin)}`}
+                                    title="View detailed 10/24 breakdown"
                                   >
-                                    <span className="text-[10px]">{LEVEL_ICONS[rl]}</span>
-                                    R:{fmtHM(duty.restMin!)}
+                                    <span className="text-[10px]">{LEVEL_ICONS[dutyLevel(duty.flightTimeMin)]}</span>
+                                    {fmtHM(duty.flightTimeMin)}
                                   </button>
-                                );
-                              })()}
-                            </>
-                          )}
+                                  {dutyDiffers && (() => {
+                                    const el = dutyLevel(edctDuty.flightTimeMin);
+                                    return (
+                                      <span className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[9px] font-mono font-medium rounded ${LEVEL_COLORS[el]}`}>
+                                        <span className="text-[9px]">{LEVEL_ICONS[el]}</span>
+                                        {fmtHM(edctDuty.flightTimeMin)} <span className="opacity-70">(EDCT)</span>
+                                      </span>
+                                    );
+                                  })()}
+                                </div>
+                                {duty.restMin != null && (() => {
+                                  const rl = restLevel(duty.restMin);
+                                  if (!rl) return null;
+                                  return (
+                                    <div className="flex flex-col items-end gap-0.5">
+                                      <button
+                                        onClick={() => onSwitchToDuty?.(tail)}
+                                        className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-mono font-medium rounded cursor-pointer hover:opacity-80 transition-opacity ${LEVEL_COLORS[rl]}`}
+                                        title="View detailed crew rest breakdown"
+                                      >
+                                        <span className="text-[10px]">{LEVEL_ICONS[rl]}</span>
+                                        R:{fmtHM(duty.restMin!)}
+                                      </button>
+                                      {restDiffers && (() => {
+                                        const erl = restLevel(edctDuty.restMin!);
+                                        if (!erl) return null;
+                                        return (
+                                          <span className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[9px] font-mono font-medium rounded ${LEVEL_COLORS[erl]}`}>
+                                            <span className="text-[9px]">{LEVEL_ICONS[erl]}</span>
+                                            R:{fmtHM(edctDuty.restMin!)} <span className="opacity-70">(EDCT)</span>
+                                          </span>
+                                        );
+                                      })()}
+                                    </div>
+                                  );
+                                })()}
+                              </>
+                            );
+                          })()}
                         </div>
                       </div>
                       <div className="divide-y divide-gray-100">
@@ -1480,7 +1556,16 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                                     <div className={`text-[10px] font-medium ${delayColorClass(f.scheduled_departure, actualDepIso)}`}>
                                       Actual: {fmt(actualDepIso, f.departure_icao)}
                                     </div>
-                                  ) : null}
+                                  ) : (() => {
+                                    const edctAlert = getActiveEdct(f);
+                                    if (!edctAlert || isCancelled) return null;
+                                    return (
+                                      <div className="text-[10px] font-medium text-amber-700">
+                                        EDCT: {fmtEdctTime(edctAlert.edct_time!, f.scheduled_departure, f.departure_icao)}
+                                        <span className="ml-1 px-1 py-px rounded bg-amber-100 text-amber-600 text-[9px] font-medium">{edctSourceTag(edctAlert)}</span>
+                                      </div>
+                                    );
+                                  })()}
                                 </div>
                                 <div className="w-36 shrink-0">
                                   <div className="text-gray-500">
@@ -1498,13 +1583,45 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                                     <div className="text-[10px] text-blue-600 font-medium">
                                       ETA: {fmt(swimRouteMatch.eta, f.arrival_icao)}
                                     </div>
-                                  ) : null}
+                                  ) : (() => {
+                                    const edctAlert = getActiveEdct(f);
+                                    if (!edctAlert || !f.scheduled_arrival || isCancelled) return null;
+                                    const deltaMs = new Date(edctAlert.edct_time!).getTime() - new Date(f.scheduled_departure).getTime();
+                                    const edctEtaIso = new Date(new Date(f.scheduled_arrival).getTime() + deltaMs).toISOString();
+                                    return (
+                                      <div className="text-[10px] font-medium text-amber-700">
+                                        EDCT ETA: {fmtEdctTime(edctEtaIso, f.scheduled_departure, f.arrival_icao)}
+                                      </div>
+                                    );
+                                  })()}
                                 </div>
                                 <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded-full ${typeColor}`}>
                                   {type}
                                 </span>
-                                <span className={`text-xs ${statusColor}`}>{status}</span>
-                                {isFiled && status === "Scheduled" && (
+                                {(() => {
+                                  const edctAlert = getActiveEdct(f);
+                                  if (edctAlert && status === "Scheduled") {
+                                    return (
+                                      <span className="text-xs">
+                                        <span className="font-medium text-amber-600">EDCT</span>
+                                        <span className="ml-1 text-[10px] text-amber-700">
+                                          {fmtEdctTime(edctAlert.edct_time!, f.scheduled_departure, f.departure_icao)}
+                                          <span className="ml-1 px-1 py-px rounded bg-amber-100 text-amber-600 text-[9px] font-medium">{edctSourceTag(edctAlert)}</span>
+                                        </span>
+                                      </span>
+                                    );
+                                  }
+                                  if (edctAlert && status === "En Route") {
+                                    return (
+                                      <span className="text-xs">
+                                        <span className={statusColor}>{status}</span>
+                                        <span className="ml-1 text-[10px] text-amber-600 font-medium">EDCT</span>
+                                      </span>
+                                    );
+                                  }
+                                  return <span className={`text-xs ${statusColor}`}>{status}</span>;
+                                })()}
+                                {isFiled && status === "Scheduled" && !getActiveEdct(f) && (
                                   <span className="text-[10px] text-indigo-500">
                                     IFR Filed{swimEntry?.etd ? ` ${fmt(swimEntry.etd, f.departure_icao)}` : ""}
                                   </span>
@@ -1764,8 +1881,30 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                     >
                       <td className="px-3 py-2.5 overflow-visible">
                         <div className="flex flex-col gap-0.5">
-                          <span className={`text-xs font-medium ${statusColor}`}>{status}</span>
-                          {isFiled && status === "Scheduled" && (
+                          {(() => {
+                            const edctAlert = getActiveEdct(f);
+                            if (edctAlert && status === "Scheduled") {
+                              return (
+                                <>
+                                  <span className="text-xs font-medium text-amber-600">EDCT</span>
+                                  <div className="text-[10px] text-amber-700">
+                                    {fmtEdctTime(edctAlert.edct_time!, f.scheduled_departure, f.departure_icao)}
+                                    <span className="ml-1 px-1 py-px rounded bg-amber-100 text-amber-600 text-[9px] font-medium">{edctSourceTag(edctAlert)}</span>
+                                  </div>
+                                </>
+                              );
+                            }
+                            if (edctAlert && status === "En Route") {
+                              return (
+                                <>
+                                  <span className={`text-xs font-medium ${statusColor}`}>{status}</span>
+                                  <span className="text-[10px] text-amber-600 font-medium">EDCT</span>
+                                </>
+                              );
+                            }
+                            return <span className={`text-xs font-medium ${statusColor}`}>{status}</span>;
+                          })()}
+                          {isFiled && status === "Scheduled" && !getActiveEdct(f) && (
                             <span className="text-[10px] text-indigo-500 font-medium">
                               IFR Filed{swimEntry?.etd ? ` ${fmt(swimEntry.etd, f.departure_icao)}` : ""}
                             </span>
@@ -1778,7 +1917,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           {(() => {
                             const schedMs = new Date(f.scheduled_departure).getTime();
                             const nowMs = Date.now();
-                            if (schedMs < nowMs && !fi?.actual_departure && status === "Scheduled") {
+                            if (schedMs < nowMs && !fi?.actual_departure && status === "Scheduled" && !getActiveEdct(f)) {
                               const lateMin = Math.round((nowMs - schedMs) / 60_000);
                               return (
                                 <span className={`inline-flex items-center px-1.5 py-0.5 text-[10px] font-bold rounded-full ${lateMin > 30 ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"}`}>
@@ -1787,15 +1926,6 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                               );
                             }
                             return null;
-                          })()}
-                          {(() => {
-                            const edct = alerts.find((a) => a.alert_type === "EDCT");
-                            if (!edct?.edct_time) return null;
-                            return (
-                              <div className="text-[10px] font-medium text-amber-700">
-                                EDCT {fmt(edct.edct_time, f.departure_icao)}
-                              </div>
-                            );
                           })()}
                         </div>
                       </td>
@@ -1875,12 +2005,23 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                             Actual: {fmt((fi?.actual_departure ?? swimEntry?.actual_departure)!, f.departure_icao)}
                           </div>
                         ) : !isCancelled ? (() => {
+                          const edctAlert = getActiveEdct(f);
                           const estColor = fi?.departure_time ? depEstColorClass(f.scheduled_departure, fi.departure_time) : null;
-                          return estColor ? (
-                            <div className={`text-[10px] font-medium mt-0.5 ${estColor}`}>
-                              Est: {fmt(fi!.departure_time!, f.departure_icao)}
-                            </div>
-                          ) : null;
+                          return (
+                            <>
+                              {edctAlert && (
+                                <div className="text-[10px] font-medium mt-0.5 text-amber-700">
+                                  EDCT: {fmtEdctTime(edctAlert.edct_time!, f.scheduled_departure, f.departure_icao)}
+                                  <span className="ml-1 px-1 py-px rounded bg-amber-100 text-amber-600 text-[9px] font-medium">{edctSourceTag(edctAlert)}</span>
+                                </div>
+                              )}
+                              {estColor && (
+                                <div className={`text-[10px] font-medium mt-0.5 ${estColor}`}>
+                                  Est: {fmt(fi!.departure_time!, f.departure_icao)}
+                                </div>
+                              )}
+                            </>
+                          );
                         })() : null}
                       </td>
                       <td className="px-3 py-2.5 text-gray-600">
@@ -1897,7 +2038,17 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           <div className="text-[10px] text-blue-600 font-medium mt-0.5">
                             ETA: {fmt(swimRouteMatch.eta, f.arrival_icao)}
                           </div>
-                        ) : null}
+                        ) : (() => {
+                          const edctAlert = getActiveEdct(f);
+                          if (!edctAlert || !f.scheduled_arrival || isCancelled) return null;
+                          const deltaMs = new Date(edctAlert.edct_time!).getTime() - new Date(f.scheduled_departure).getTime();
+                          const edctEtaIso = new Date(new Date(f.scheduled_arrival).getTime() + deltaMs).toISOString();
+                          return (
+                            <div className="text-[10px] font-medium mt-0.5 text-amber-700">
+                              EDCT ETA: {fmtEdctTime(edctEtaIso, f.scheduled_departure, f.arrival_icao)}
+                            </div>
+                          );
+                        })()}
                       </td>
                       <td className="px-3 py-2.5">
                         <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded-full ${typeColor}`}>
@@ -1909,15 +2060,28 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           const duty = f.tail_number ? tailDuty.get(f.tail_number) : null;
                           if (!duty) return <span className="text-xs text-gray-300">--</span>;
                           const level = dutyLevel(duty.flightTimeMin);
+                          const edctDuty = f.tail_number && tailDutyEdct ? tailDutyEdct.get(f.tail_number) : null;
+                          const edctDiffers = edctDuty && Math.abs(edctDuty.flightTimeMin - duty.flightTimeMin) > 5;
                           return (
-                            <button
-                              onClick={() => onSwitchToDuty?.(f.tail_number ?? undefined)}
-                              className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-xs font-mono font-medium rounded cursor-pointer hover:opacity-80 transition-opacity ${LEVEL_COLORS[level]}`}
-                              title="View detailed 10/24 breakdown"
-                            >
-                              <span className="text-[10px]">{LEVEL_ICONS[level]}</span>
-                              {fmtHM(duty.flightTimeMin)}
-                            </button>
+                            <div className="flex flex-col gap-0.5">
+                              <button
+                                onClick={() => onSwitchToDuty?.(f.tail_number ?? undefined)}
+                                className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-xs font-mono font-medium rounded cursor-pointer hover:opacity-80 transition-opacity ${LEVEL_COLORS[level]}`}
+                                title="View detailed 10/24 breakdown"
+                              >
+                                <span className="text-[10px]">{LEVEL_ICONS[level]}</span>
+                                {fmtHM(duty.flightTimeMin)}
+                              </button>
+                              {edctDiffers && (() => {
+                                const el = dutyLevel(edctDuty.flightTimeMin);
+                                return (
+                                  <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-mono font-medium rounded ${LEVEL_COLORS[el]}`}>
+                                    <span className="text-[10px]">{LEVEL_ICONS[el]}</span>
+                                    {fmtHM(edctDuty.flightTimeMin)} <span className="text-[9px] opacity-70">(EDCT)</span>
+                                  </span>
+                                );
+                              })()}
+                            </div>
                           );
                         })()}
                       </td>
@@ -1927,15 +2091,29 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           if (!duty || duty.restMin == null) return <span className="text-xs text-gray-300">--</span>;
                           const level = restLevel(duty.restMin);
                           if (!level) return <span className="text-xs text-gray-300">--</span>;
+                          const edctDuty = f.tail_number && tailDutyEdct ? tailDutyEdct.get(f.tail_number) : null;
+                          const edctDiffers = edctDuty && edctDuty.restMin != null && duty.restMin != null && Math.abs(edctDuty.restMin - duty.restMin) > 5;
                           return (
-                            <button
-                              onClick={() => onSwitchToDuty?.(f.tail_number ?? undefined)}
-                              className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-xs font-mono font-medium rounded cursor-pointer hover:opacity-80 transition-opacity ${LEVEL_COLORS[level]}`}
-                              title="View detailed crew rest breakdown"
-                            >
-                              <span className="text-[10px]">{LEVEL_ICONS[level]}</span>
-                              {fmtHM(duty.restMin)}
-                            </button>
+                            <div className="flex flex-col gap-0.5">
+                              <button
+                                onClick={() => onSwitchToDuty?.(f.tail_number ?? undefined)}
+                                className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-xs font-mono font-medium rounded cursor-pointer hover:opacity-80 transition-opacity ${LEVEL_COLORS[level]}`}
+                                title="View detailed crew rest breakdown"
+                              >
+                                <span className="text-[10px]">{LEVEL_ICONS[level]}</span>
+                                {fmtHM(duty.restMin)}
+                              </button>
+                              {edctDiffers && (() => {
+                                const el = restLevel(edctDuty.restMin!);
+                                if (!el) return null;
+                                return (
+                                  <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-mono font-medium rounded ${LEVEL_COLORS[el]}`}>
+                                    <span className="text-[10px]">{LEVEL_ICONS[el]}</span>
+                                    {fmtHM(edctDuty.restMin!)} <span className="text-[9px] opacity-70">(EDCT)</span>
+                                  </span>
+                                );
+                              })()}
+                            </div>
                           );
                         })()}
                       </td>
