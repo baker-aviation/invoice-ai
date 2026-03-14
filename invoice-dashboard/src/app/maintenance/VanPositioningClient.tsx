@@ -3509,7 +3509,10 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
       if (!note.tail_number || !note.start_time) continue;
       const mxStart = new Date(note.start_time).getTime();
       const mxEnd = note.end_time ? new Date(note.end_time).getTime() + DAY_MS : mxStart + DAY_MS;
-      // Only show if MX window overlaps yesterday–tomorrow
+      // Skip MX notes whose due date has already passed (overdue items
+      // shouldn't generate position conflicts — they need manual resolution)
+      if (mxEnd < now) continue;
+      // Only show if MX window overlaps today–tomorrow
       if (mxEnd < windowStart || mxStart > windowEnd) continue;
       const mxIcao = note.airport_icao?.toUpperCase();
       if (!mxIcao) continue;
