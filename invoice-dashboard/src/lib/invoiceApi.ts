@@ -354,7 +354,7 @@ export async function fetchAdvertisedPrices(opts?: { recentWeeks?: number }): Pr
 
   const { data, error } = await query
     .order("week_start", { ascending: false })
-    .limit(50000);
+    .limit(100000);
 
   if (error) throw new Error(`fetchAdvertisedPrices failed: ${error.message}`);
 
