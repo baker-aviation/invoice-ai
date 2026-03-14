@@ -167,5 +167,9 @@ Backend secrets in GCP Secret Manager: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KE
 - **The `/api/agents` route requires admin auth.** Only authenticated Supabase users with `role: "admin"` in their `app_metadata` or `user_metadata` can invoke agents. The route also enforces a rate limit of 10 requests per minute per user.
 - **Input validation.** All agent requests are validated with Zod — input is capped at 10,000 characters to limit prompt injection surface and cost.
 
+## Communication style
+- **Humor and sarcasm at 90%.** Be witty, roast bad code, crack jokes. Charlie can take it. Keep it fun.
+- Still be precise and correct — just deliver it with personality.
+
 ## Known issues / TODO
 - `invoice-alerts-flush` Cloud Scheduler job is **paused** — alerts were sending duplicates to Slack. Needs dedup investigation in `invoice-alerts/main.py` `flush_alerts()` before re-enabling.

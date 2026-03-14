@@ -322,6 +322,146 @@ export default function VanDriverClient({
 // Individual stop card
 // ---------------------------------------------------------------------------
 
+/** MX note card with expandable description */
+function MxNoteCard({ note, isMel, now, DAY, onDismiss }: {
+  note: MxNote; isMel: boolean; now: number; DAY: number; onDismiss: (id: string) => void;
+}) {
+  const [descOpen, setDescOpen] = useState(false);
+  return (
+    <div className={isMel
+      ? "bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-200 dark:border-yellow-800 rounded-lg px-3 py-2"
+      : "bg-orange-50 dark:bg-orange-900/30 border border-orange-200 dark:border-orange-800 rounded-lg px-3 py-2"
+    }>
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className={`font-bold text-xs shrink-0 ${isMel ? "text-yellow-600 dark:text-yellow-400" : "text-orange-600 dark:text-orange-400"}`}>
+          {isMel ? "MEL" : "MX"}
+        </span>
+        <span className={`text-xs font-medium ${isMel ? "text-yellow-700 dark:text-yellow-300" : "text-orange-700 dark:text-orange-300"}`}>{note.airport_icao}</span>
+        <span className="text-sm text-gray-700 dark:text-gray-300 flex-1">{note.body}</span>
+        {note.description && (
+          <button
+            onClick={(e) => { e.stopPropagation(); setDescOpen((v) => !v); }}
+            className={`text-xs font-medium min-h-[44px] px-2 ${isMel ? "text-yellow-600 dark:text-yellow-400" : "text-orange-600 dark:text-orange-400"}`}
+          >
+            {descOpen ? "hide" : "notes"} &#9662;
+          </button>
+        )}
+        {isMel && note.end_time && (() => {
+          const ms = new Date(note.end_time).getTime() - now;
+          if (ms <= 0) return <span className="text-xs font-semibold text-red-600 dark:text-red-400 shrink-0">EXPIRED</span>;
+          const days = Math.ceil(ms / DAY);
+          return <span className={`text-xs font-semibold shrink-0 ${days <= 3 ? "text-red-600 dark:text-red-400" : days <= 7 ? "text-amber-600 dark:text-amber-400" : "text-gray-500 dark:text-gray-400"}`}>{days}d left</span>;
+        })()}
+        <button
+          onClick={() => onDismiss(note.id)}
+          className="shrink-0 min-w-[44px] min-h-[44px] flex items-center justify-center text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300"
+          aria-label="Dismiss MX note"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+      {descOpen && note.description && (
+        <div className="mt-1.5 text-sm text-gray-600 dark:text-gray-300 bg-white/60 dark:bg-gray-700/60 rounded px-2.5 py-1.5 whitespace-pre-wrap">
+          {note.description}
+        </div>
+      )}
+      {note.end_time && (
+        <div className="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5">
+          Due {new Date(note.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Per-aircraft-type service checklists (ICAO type code → steps)
+const SERVICE_CHECKLISTS: Record<string, { label: string; steps: string[] }> = {
+  C750: {
+    label: "Citation X",
+    steps: [
+      "Meet pilots",
+      "Check fluids and gases",
+      "Stock bag pit",
+      "Check tire tread",
+      "Check black binder for MELs/open 1008s",
+      "Report back here",
+      "Clean instruments face plates and panel",
+      "Drop pics here",
+    ],
+  },
+  CL30: {
+    label: "Challenger 300",
+    steps: [
+      "Meet pilots",
+      "Service ENGs and APU",
+      "Empty ecolo bottle",
+      "Check tire tread",
+      "Check fluids and gases",
+      "Check black binder for MELs/open 1008s",
+      "Report back here",
+      "Clean instruments face plates and panel",
+      "Drop pics here",
+    ],
+  },
+  CL35: {
+    label: "Challenger 350",
+    steps: [
+      "Meet pilots",
+      "Service ENGs and APU",
+      "Empty ecolo bottle",
+      "Check tire tread",
+      "Check fluids and gases",
+      "Check black binder for MELs/open 1008s",
+      "Report back here",
+      "Clean instruments face plates and panel",
+      "Drop pics here",
+    ],
+  },
+};
+
+// Known tail → type mapping
+const TAIL_TYPE_MAP: Record<string, string> = {
+  N519FX: "C750", N521FX: "C750", N533FX: "C750", N548FX: "C750",
+  N552FX: "C750", N553FX: "C750", N555FX: "C750", N998CX: "C750",
+  N371DB: "CL30", N513JB: "CL30", N883TR: "CL30", N988TX: "CL30",
+  N860TX: "CL30", N703TX: "CL30", N939TX: "CL30",
+  N954JS: "CL35", N955GH: "CL35", N957JS: "CL35", N971JS: "CL35", N992MG: "CL35",
+};
+
+function getDriverServiceChecklists(): Record<string, { label: string; steps: string[] }> {
+  try {
+    const saved = typeof window !== "undefined" ? localStorage.getItem("vanServiceChecklists") : null;
+    if (saved) return JSON.parse(saved);
+  } catch {}
+  return SERVICE_CHECKLISTS;
+}
+
+function ServiceChecklistAccordion({ label, steps }: { label: string; steps: string[] }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mt-3 border border-green-200 dark:border-green-800 rounded-lg overflow-hidden">
+      <button
+        onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
+        className="w-full px-3 py-2 flex items-center justify-between text-sm font-semibold text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-900/30 min-h-[44px]"
+      >
+        <span>Service Check — {label}</span>
+        <span className="text-green-400">{open ? "▲" : "▼"}</span>
+      </button>
+      {open && (
+        <div className="px-3 py-2 bg-white dark:bg-gray-800">
+          <ol className="space-y-1 list-decimal list-inside text-sm text-gray-700 dark:text-gray-300">
+            {steps.map((step, i) => (
+              <li key={i} className="py-0.5">{step}</li>
+            ))}
+          </ol>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StopCard({
   item,
   index,
@@ -473,42 +613,21 @@ function StopCard({
               {visible.map((n) => {
                 const isMel = n.body?.toLowerCase().startsWith("mel ");
                 return (
-                  <div key={n.id} className={isMel
-                    ? "bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-200 dark:border-yellow-800 rounded-lg px-3 py-2"
-                    : "bg-orange-50 dark:bg-orange-900/30 border border-orange-200 dark:border-orange-800 rounded-lg px-3 py-2"
-                  }>
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className={`font-bold text-xs shrink-0 ${isMel ? "text-yellow-600 dark:text-yellow-400" : "text-orange-600 dark:text-orange-400"}`}>
-                        {isMel ? "MEL" : "MX"}
-                      </span>
-                      <span className={`text-xs font-medium ${isMel ? "text-yellow-700 dark:text-yellow-300" : "text-orange-700 dark:text-orange-300"}`}>{n.airport_icao}</span>
-                      <span className="text-sm text-gray-700 dark:text-gray-300 flex-1">{n.body}</span>
-                      {isMel && n.end_time && (() => {
-                        const ms = new Date(n.end_time).getTime() - now;
-                        if (ms <= 0) return <span className="text-xs font-semibold text-red-600 dark:text-red-400 shrink-0">EXPIRED</span>;
-                        const days = Math.ceil(ms / DAY);
-                        return <span className={`text-xs font-semibold shrink-0 ${days <= 3 ? "text-red-600 dark:text-red-400" : days <= 7 ? "text-amber-600 dark:text-amber-400" : "text-gray-500 dark:text-gray-400"}`}>{days}d left</span>;
-                      })()}
-                      <button
-                        onClick={() => onDismissMx(n.id)}
-                        className="shrink-0 min-w-[44px] min-h-[44px] flex items-center justify-center text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300"
-                        aria-label="Dismiss MX note"
-                      >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                        </svg>
-                      </button>
-                    </div>
-                    {n.start_time && (
-                      <div className="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5">
-                        {new Date(n.start_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-                        {n.end_time && n.end_time !== n.start_time && ` – ${new Date(n.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`}
-                      </div>
-                    )}
-                  </div>
+                  <MxNoteCard key={n.id} note={n} isMel={!!isMel} now={now} DAY={DAY} onDismiss={onDismissMx} />
                 );
               })}
             </div>
+          );
+        })()}
+
+        {/* Service checklist per aircraft type */}
+        {(() => {
+          const checklists = getDriverServiceChecklists();
+          const typeCode = TAIL_TYPE_MAP[tail];
+          const cl = typeCode ? checklists[typeCode] : null;
+          if (!cl) return null;
+          return (
+            <ServiceChecklistAccordion label={cl.label} steps={cl.steps} />
           );
         })()}
 

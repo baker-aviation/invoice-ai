@@ -811,6 +811,16 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
             if dep_icao and arr_icao and dep_icao == arr_icao:
                 if flight_type and flight_type.lower() == "maintenance" and tail:
                     mx_note = _extract_mx_note(summary)
+                    # Extract non-standard lines from DESCRIPTION (skip PIC/SIC/PAX)
+                    raw_desc = str(component.get("DESCRIPTION", ""))
+                    desc_notes = []
+                    for dline in raw_desc.splitlines():
+                        dline = dline.strip()
+                        if not dline:
+                            continue
+                        if dline.upper().startswith(("PIC:", "SIC:", "PAX:")):
+                            continue
+                        desc_notes.append(dline)
                     mx_alerts_batch.append({
                         "alert_type": "MX_NOTE",
                         "severity": "info",
@@ -824,6 +834,7 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
                             "end_time": arr_dt.isoformat() if arr_dt else None,
                             "ics_uid": uid,
                             "summary": summary,
+                            "description": "\n".join(desc_notes) if desc_notes else None,
                         },
                     })
                 skipped += 1

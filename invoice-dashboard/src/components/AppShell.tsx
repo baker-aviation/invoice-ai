@@ -17,7 +17,7 @@ const NAV = [
   { href: "/maintenance", label: "AOG Vans", exact: false, adminOnly: false },
   { href: "/vehicles", label: "Vehicles", exact: false, adminOnly: false },
   // { href: "/fees", label: "Fees", exact: false, adminOnly: false },
-  { href: "/foreflight", label: "ForeFlight", exact: false, adminOnly: false },
+  { href: "/foreflight", label: "FBO FUEL Check", exact: false, adminOnly: false },
   { href: "/pilots", label: "Pilots", exact: false, adminOnly: false },
   { href: "/health", label: "Health", exact: false, adminOnly: true },
   { href: "/admin/settings", label: "Admin", exact: false, adminOnly: true },

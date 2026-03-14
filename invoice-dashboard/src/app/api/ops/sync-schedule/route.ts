@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin, isAuthed } from "@/lib/api-auth";
+import { cloudRunFetch } from "@/lib/cloud-run-fetch";
 
 export async function POST(req: NextRequest) {
   const auth = await requireAdmin(req);
@@ -16,8 +17,8 @@ export async function POST(req: NextRequest) {
   const url = `${opsUrl.replace(/\/$/, "")}/jobs/sync_schedule`;
 
   try {
-    // Call ops-monitor directly (service allows unauthenticated invocations)
-    const res = await fetch(url, { method: "POST", cache: "no-store" });
+    // Call ops-monitor with OIDC token (Cloud Run requires IAM auth)
+    const res = await cloudRunFetch(url, { method: "POST", cache: "no-store" });
     const text = await res.text();
     let data: Record<string, unknown>;
     try {

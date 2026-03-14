@@ -4,7 +4,7 @@ import ForeFlightClient from "./ForeFlightClient";
 export default function ForeFlightPage() {
   return (
     <>
-      <Topbar title="ForeFlight" />
+      <Topbar title="FBO FUEL Check" />
       <ForeFlightClient />
     </>
   );

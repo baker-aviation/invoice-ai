@@ -1,73 +1,56 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useCallback } from "react";
 
-type Aircraft = { aircraftRegistration: string; aircraftModelCode: string; cruiseProfiles?: { uuid: string; profileName: string }[]; [key: string]: unknown };
+type AircraftType = "citation" | "challenger";
 
-type FuelPerf = {
-  unit: string;
-  flightFuel: number;
-  taxiFuel: number;
-  fuelToDestination: number;
-  landingFuel: number;
-  alternateFuel: number;
-  reserveFuel: number;
-  extraFuel: number;
-  contingencyFuel: number;
-  additionalFuel: number;
-  totalFuel: number;
-  maxTotalFuel: number;
-  discretionaryFuel: number;
-  co2Emission: number;
-};
+interface FuelData {
+  fuelToDestLbs: number;
+  fuelToDestGal: number;
+  totalFuelLbs: number;
+  totalFuelGal: number;
+  flightFuelLbs: number;
+  taxiFuelLbs: number;
+  reserveFuelLbs: number;
+  ppg: number;
+}
 
-type TimesPerf = {
-  taxiTimeMinutes: number;
-  timeToDestinationMinutes: number;
-  alternateTimeMinutes: number;
-  reserveTimeMinutes: number;
-  totalTimeMinutes: number;
-  estimatedArrivalTime: string;
-  estimatedArrivalTimeLocal: string;
-  departureTimeZone: string;
-  arrivalTimeZone: string;
-};
+interface FboOption {
+  vendor: string;
+  fbo: string | null;
+  price: number;
+  volume_tier: string;
+  product: string;
+  week_start: string;
+  estimatedCost: number;
+}
 
-type WeightsPerf = {
-  unit: string;
-  rampWeight: number;
-  maxRampWeight: number;
-  takeOffWeight: number;
-  maxTakeOffWeight: number;
-  zeroFuelWeight: number;
-  maxZeroFuelWeight: number;
-  landingWeight: number;
-  maxLandingWeight: number;
-};
+interface CruiseProfileOption {
+  uuid: string;
+  profileName: string;
+}
 
-type WeatherPerf = {
-  averageWindComponent: number;
-  averageWindDirection: number;
-  averageWindVelocity: number;
-  averageISADeviation: number;
-};
-
-type DistancesPerf = {
-  destination: number;
-  gcdDestination: number;
-  alternate: number;
-  gcdAlternate: number;
-};
-
-type Performance = {
-  fuel: FuelPerf;
-  times: TimesPerf;
-  weights: WeightsPerf;
-  weather: WeatherPerf;
-  distances: DistancesPerf;
-  errors: string[];
+interface CheckResult {
+  aircraft: {
+    registration: string;
+    type: AircraftType;
+    mach: string;
+    altitude: string;
+    cruiseProfile: string;
+    cruiseProfileUUID: string | null;
+    availableProfiles: CruiseProfileOption[];
+  };
+  route: { departure: string; destination: string };
+  fuel: FuelData;
+  times: { flightMinutes: number; totalMinutes: number; etaLocal: string | null };
+  distances: { routeNm: number; greatCircleNm: number };
+  weather: { windComponent: number; windDirection: number; windVelocity: number; isaDeviation: number };
+  fboOptions: FboOption[];
   warnings: string[];
-};
+  errors: string[];
+  _raw?: unknown;
+  _request?: unknown;
+}
 
 function fmtNum(n: number | null | undefined, decimals = 0): string {
   if (n == null) return "—";
@@ -75,136 +58,103 @@ function fmtNum(n: number | null | undefined, decimals = 0): string {
 }
 
 function fmtMin(min: number | null | undefined): string {
-  if (min == null) return "—";
+  if (min == null || min === 0) return "—";
   const h = Math.floor(min / 60);
   const m = Math.round(min % 60);
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
-export default function ForeFlightClient() {
-  const [aircraft, setAircraft] = useState<Aircraft[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+function fmtDollars(n: number): string {
+  return n.toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2 });
+}
 
-  // Form
+const AIRCRAFT_CONFIG: Record<AircraftType, { label: string; tail: string; mach: string; defaultAlt: number }> = {
+  citation: { label: "Citation X (N106PC)", tail: "N106PC", mach: "M.85", defaultAlt: 470 },
+  challenger: { label: "Challenger 300 (N520FX)", tail: "N520FX", mach: "M.78", defaultAlt: 470 },
+};
+
+export default function ForeFlightClient() {
   const [departure, setDeparture] = useState("");
   const [destination, setDestination] = useState("");
-  const [selectedAircraft, setSelectedAircraft] = useState("");
-  const [cruiseProfileUUID, setCruiseProfileUUID] = useState("");
-  const [alternate, setAlternate] = useState("");
-  const [route, setRoute] = useState("");
-  const [altitude, setAltitude] = useState("");
-  const [people, setPeople] = useState("4");
-  const [cargo, setCargo] = useState("");
+  const [aircraftType, setAircraftType] = useState<AircraftType>("citation");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<CheckResult | null>(null);
 
-  // Results
-  const [result, setResult] = useState<{ performance: Performance; _request: unknown; [key: string]: unknown } | null>(null);
-  const [rawJson, setRawJson] = useState<string | null>(null);
-  const [showRaw, setShowRaw] = useState(false);
+  // Expert mode
+  const [expertMode, setExpertMode] = useState(false);
+  const [altitudeOverride, setAltitudeOverride] = useState("");
+  const [cruiseProfileOverride, setCruiseProfileOverride] = useState("");
+  const [showRawJson, setShowRawJson] = useState(false);
 
-  // Load aircraft list
-  const [aircraftError, setAircraftError] = useState<string | null>(null);
-  useEffect(() => {
-    fetch("/api/foreflight?action=aircraft")
-      .then((r) => r.json())
-      .then((data) => {
-        if (data.error) {
-          setAircraftError(data.error);
-          return;
-        }
-        const list = Array.isArray(data) ? data : data.aircraft ?? [];
-        setAircraft(list);
-        if (list.length > 0 && !selectedAircraft) {
-          setSelectedAircraft(list[0].aircraftRegistration);
-        }
-      })
-      .catch((err) => setAircraftError(String(err)));
-  }, []);
+  const config = AIRCRAFT_CONFIG[aircraftType];
 
-  // Get cruise profiles for selected aircraft
-  const selectedAc = aircraft.find((a) => a.aircraftRegistration === selectedAircraft);
-  const cruiseProfiles = selectedAc?.cruiseProfiles ?? [];
-
-  // Auto-select first cruise profile when aircraft changes (prefer "Long Range" if available)
-  useEffect(() => {
-    if (cruiseProfiles.length === 0) { setCruiseProfileUUID(""); return; }
-    const lrc = cruiseProfiles.find((p) => /long.range/i.test(p.profileName));
-    setCruiseProfileUUID(lrc?.uuid ?? cruiseProfiles[0].uuid);
-  }, [selectedAircraft]);
-
-  const handleSubmit = useCallback(async () => {
-    if (!departure || !destination || !selectedAircraft) return;
+  const handleCheck = useCallback(async () => {
+    if (!departure || !destination) return;
     setLoading(true);
     setError(null);
     setResult(null);
-    setRawJson(null);
 
     try {
-      const res = await fetch("/api/foreflight", {
+      const res = await fetch("/api/fbo-fuel-check", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           departure: departure.toUpperCase(),
           destination: destination.toUpperCase(),
-          aircraftRegistration: selectedAircraft,
-          cruiseProfileUUID: cruiseProfileUUID || undefined,
-          alternate: alternate || undefined,
-          route: route || undefined,
-          altitude: altitude || undefined,
-          people: people || undefined,
-          cargo: cargo || undefined,
+          aircraftType,
+          ...(altitudeOverride && { altitudeOverride: Number(altitudeOverride) }),
+          ...(cruiseProfileOverride && { cruiseProfileOverride }),
         }),
       });
 
       const data = await res.json();
-      const json = JSON.stringify(data, null, 2);
-      setRawJson(json);
-
       if (!res.ok) {
         setError(data.error ?? `HTTP ${res.status}`);
         return;
       }
-
       setResult(data);
     } catch (err) {
       setError(String(err));
     } finally {
       setLoading(false);
     }
-  }, [departure, destination, selectedAircraft, cruiseProfileUUID, alternate, route, altitude, people, cargo]);
+  }, [departure, destination, aircraftType, altitudeOverride, cruiseProfileOverride]);
 
-  const perf = result?.performance;
-  const fuel = perf?.fuel;
-  const times = perf?.times;
-  const weights = perf?.weights;
-  const weather = perf?.weather;
-  const distances = perf?.distances;
-  const flightData = result?.flightData as Record<string, unknown> | undefined;
-  const ffRoute = (flightData?.routeToDestination as Record<string, unknown> | undefined)?.route as string | undefined;
-  const ffAltitude = (flightData?.routeToDestination as Record<string, unknown> | undefined)?.altitude as Record<string, unknown> | undefined;
-  const ffCruiseProfile = (perf as unknown as Record<string, unknown>)?.destinationRouteInformation
-    ? ((perf as unknown as Record<string, unknown>).destinationRouteInformation as Record<string, unknown>)?.cruiseProfile as string | undefined
-    : undefined;
+  const fuel = result?.fuel;
+  const bestFbo = result?.fboOptions?.[0];
 
   return (
-    <div className="px-6 py-6 space-y-6">
-      {aircraftError && (
-        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-          <strong>ForeFlight API:</strong> {aircraftError}
-        </div>
-      )}
+    <div className="px-6 py-6 space-y-6 max-w-4xl mx-auto">
       {/* Input Form */}
       <div className="rounded-lg border border-gray-200 bg-white p-6">
-        <h2 className="text-lg font-semibold text-gray-900 mb-4">Fuel Burn Calculator</h2>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="text-lg font-semibold text-gray-900">FBO Fuel Check</h2>
+          <button
+            onClick={() => setExpertMode(!expertMode)}
+            className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
+              expertMode
+                ? "bg-amber-100 border-amber-300 text-amber-700"
+                : "bg-gray-100 border-gray-200 text-gray-500 hover:bg-gray-200"
+            }`}
+          >
+            {expertMode ? "Expert ON" : "Expert"}
+          </button>
+        </div>
+        <p className="text-sm text-gray-500 mb-5">
+          Calculate fuel burn and find the cheapest FBO fuel option at your destination.
+        </p>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div>
             <label className="block text-xs font-medium text-gray-500 mb-1">Departure</label>
             <input
               type="text"
               value={departure}
-              onChange={(e) => setDeparture(e.target.value)}
+              onChange={(e) => setDeparture(e.target.value.toUpperCase())}
               placeholder="KBNA"
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm font-mono uppercase"
+              className="w-full rounded-md border border-gray-300 px-3 py-2.5 text-sm font-mono uppercase focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              onKeyDown={(e) => e.key === "Enter" && handleCheck()}
             />
           </div>
           <div>
@@ -212,290 +162,280 @@ export default function ForeFlightClient() {
             <input
               type="text"
               value={destination}
-              onChange={(e) => setDestination(e.target.value)}
+              onChange={(e) => setDestination(e.target.value.toUpperCase())}
               placeholder="KTEB"
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm font-mono uppercase"
+              className="w-full rounded-md border border-gray-300 px-3 py-2.5 text-sm font-mono uppercase focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              onKeyDown={(e) => e.key === "Enter" && handleCheck()}
             />
           </div>
           <div>
             <label className="block text-xs font-medium text-gray-500 mb-1">Aircraft</label>
-            <select
-              value={selectedAircraft}
-              onChange={(e) => setSelectedAircraft(e.target.value)}
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
-            >
-              {aircraft.length === 0 && <option value="">Loading...</option>}
-              {aircraft.map((a) => (
-                <option key={a.aircraftRegistration} value={a.aircraftRegistration}>
-                  {a.aircraftRegistration} ({a.aircraftModelCode})
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">Cruise Profile</label>
-            <select
-              value={cruiseProfileUUID}
-              onChange={(e) => setCruiseProfileUUID(e.target.value)}
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
-            >
-              {cruiseProfiles.length === 0 && <option value="">—</option>}
-              {cruiseProfiles.map((p) => (
-                <option key={p.uuid} value={p.uuid}>
-                  {p.profileName}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">Alternate</label>
-            <input
-              type="text"
-              value={alternate}
-              onChange={(e) => setAlternate(e.target.value)}
-              placeholder="KEWR"
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm font-mono uppercase"
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">Route</label>
-            <input
-              type="text"
-              value={route}
-              onChange={(e) => setRoute(e.target.value)}
-              placeholder="DCT J6 SBJ"
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm font-mono uppercase"
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">Altitude (FL)</label>
-            <input
-              type="text"
-              value={altitude}
-              onChange={(e) => setAltitude(e.target.value)}
-              placeholder="430"
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm font-mono"
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">Passengers</label>
-            <input
-              type="text"
-              value={people}
-              onChange={(e) => setPeople(e.target.value)}
-              placeholder="4"
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">Cargo (lbs)</label>
-            <input
-              type="text"
-              value={cargo}
-              onChange={(e) => setCargo(e.target.value)}
-              placeholder="200"
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
-            />
+            <div className="flex rounded-md overflow-hidden border border-gray-300">
+              <button
+                onClick={() => setAircraftType("citation")}
+                className={`flex-1 px-3 py-2.5 text-sm font-medium transition-colors ${
+                  aircraftType === "citation"
+                    ? "bg-blue-600 text-white"
+                    : "bg-white text-gray-700 hover:bg-gray-50"
+                }`}
+              >
+                Citation
+              </button>
+              <button
+                onClick={() => setAircraftType("challenger")}
+                className={`flex-1 px-3 py-2.5 text-sm font-medium transition-colors border-l border-gray-300 ${
+                  aircraftType === "challenger"
+                    ? "bg-blue-600 text-white"
+                    : "bg-white text-gray-700 hover:bg-gray-50"
+                }`}
+              >
+                Challenger
+              </button>
+            </div>
           </div>
         </div>
-        <div className="mt-4 flex items-center gap-3">
+
+        {/* Expert Mode Overrides */}
+        {expertMode && (
+          <div className="mt-4 pt-4 border-t border-amber-200 bg-amber-50 -mx-6 px-6 pb-4 rounded-b-lg">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-medium text-amber-700 mb-1">Altitude Override (FL)</label>
+                <input
+                  type="text"
+                  value={altitudeOverride}
+                  onChange={(e) => setAltitudeOverride(e.target.value.replace(/\D/g, ""))}
+                  placeholder={String(config.defaultAlt)}
+                  className="w-full rounded-md border border-amber-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-amber-500 focus:border-amber-500 bg-white"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-amber-700 mb-1">Cruise Profile Override</label>
+                {result?.aircraft?.availableProfiles && result.aircraft.availableProfiles.length > 0 ? (
+                  <select
+                    value={cruiseProfileOverride}
+                    onChange={(e) => setCruiseProfileOverride(e.target.value)}
+                    className="w-full rounded-md border border-amber-300 px-3 py-2 text-sm focus:ring-2 focus:ring-amber-500 focus:border-amber-500 bg-white"
+                  >
+                    <option value="">Default ({result.aircraft.cruiseProfile})</option>
+                    {result.aircraft.availableProfiles.map((p) => (
+                      <option key={p.uuid} value={p.uuid}>{p.profileName}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    type="text"
+                    value={cruiseProfileOverride}
+                    onChange={(e) => setCruiseProfileOverride(e.target.value)}
+                    placeholder="Run a check first to see profiles"
+                    className="w-full rounded-md border border-amber-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-amber-500 focus:border-amber-500 bg-white"
+                    disabled={!result}
+                  />
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Aircraft Info */}
+        {!expertMode && (
+          <div className="mt-3 flex items-center gap-4 text-xs text-gray-400">
+            <span>{config.tail}</span>
+            <span>FL{config.defaultAlt}</span>
+            <span>{config.mach}</span>
+          </div>
+        )}
+
+        <div className="mt-4">
           <button
-            onClick={handleSubmit}
-            disabled={loading || !departure || !destination || !selectedAircraft}
-            className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-500 disabled:opacity-50 transition-colors"
+            onClick={handleCheck}
+            disabled={loading || !departure || !destination}
+            className="px-5 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-500 disabled:opacity-50 transition-colors"
           >
-            {loading ? "Calculating..." : "Calculate Fuel"}
+            {loading ? "Calculating..." : "Check Fuel & FBOs"}
           </button>
-          {error && <span className="text-sm text-red-600">{error}</span>}
+          {error && <span className="ml-3 text-sm text-red-600">{error}</span>}
         </div>
       </div>
 
       {/* Results */}
-      {perf && (
+      {result && fuel && (
         <div className="space-y-4">
-          {/* Route + Cruise Profile */}
-          {(ffRoute || ffCruiseProfile) && (
-            <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-medium text-blue-600 uppercase tracking-wide">ForeFlight Route</span>
-                <div className="flex items-center gap-3">
-                  {ffCruiseProfile && <span className="text-xs font-medium text-blue-500">{ffCruiseProfile}</span>}
-                  {ffAltitude && <span className="text-xs font-mono text-blue-500">FL{String(ffAltitude.altitude ?? "")}</span>}
-                </div>
+          {/* Flight Summary Bar */}
+          <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <div className="flex items-center gap-3">
+                <span className="text-lg font-bold text-blue-900">
+                  {result.route.departure} → {result.route.destination}
+                </span>
+                <span className="text-sm text-blue-600">{result.aircraft.registration}</span>
               </div>
-              {ffRoute && <p className="mt-1 font-mono text-sm text-blue-900">{ffRoute}</p>}
+              <div className="flex items-center gap-4 text-sm text-blue-700">
+                <span>{result.aircraft.cruiseProfile}</span>
+                <span>{result.aircraft.altitude}</span>
+                <span>{fmtMin(result.times.flightMinutes)} flight</span>
+                <span>{fmtNum(result.distances.routeNm)} NM</span>
+              </div>
             </div>
-          )}
-          {/* Fuel Breakdown */}
+          </div>
+
+          {/* Fuel Summary */}
           <div className="rounded-lg border border-gray-200 bg-white p-6">
-            <h3 className="text-md font-semibold text-gray-900 mb-3">Fuel Breakdown ({fuel?.unit})</h3>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-y-3 gap-x-6 text-sm">
-              <div className="flex justify-between">
-                <span className="text-gray-500">Flight Fuel</span>
-                <span className="font-mono font-medium">{fmtNum(fuel?.flightFuel)}</span>
+            <h3 className="text-md font-semibold text-gray-900 mb-4">Fuel Required</h3>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+              <div className="text-center">
+                <div className="text-2xl font-bold text-gray-900">{fmtNum(fuel.fuelToDestLbs)}</div>
+                <div className="text-xs text-gray-500 mt-1">lbs to destination</div>
               </div>
-              <div className="flex justify-between">
-                <span className="text-gray-500">Taxi Fuel</span>
-                <span className="font-mono font-medium">{fmtNum(fuel?.taxiFuel)}</span>
+              <div className="text-center">
+                <div className="text-2xl font-bold text-gray-900">{fmtNum(fuel.fuelToDestGal)}</div>
+                <div className="text-xs text-gray-500 mt-1">gallons to destination</div>
               </div>
-              <div className="flex justify-between">
-                <span className="text-gray-500">Fuel to Dest</span>
-                <span className="font-mono font-medium">{fmtNum(fuel?.fuelToDestination)}</span>
+              <div className="text-center">
+                <div className="text-2xl font-bold text-gray-900">{fmtNum(fuel.totalFuelLbs)}</div>
+                <div className="text-xs text-gray-500 mt-1">lbs total fuel</div>
               </div>
-              <div className="flex justify-between">
-                <span className="text-gray-500">Landing Fuel</span>
-                <span className="font-mono font-medium">{fmtNum(fuel?.landingFuel)}</span>
+              <div className="text-center">
+                <div className="text-2xl font-bold text-gray-900">{fmtNum(fuel.totalFuelGal)}</div>
+                <div className="text-xs text-gray-500 mt-1">gallons total fuel</div>
               </div>
-              <div className="flex justify-between">
-                <span className="text-gray-500">Alternate Fuel</span>
-                <span className="font-mono font-medium">{fmtNum(fuel?.alternateFuel)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-gray-500">Reserve Fuel</span>
-                <span className="font-mono font-medium">{fmtNum(fuel?.reserveFuel)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-gray-500">Contingency</span>
-                <span className="font-mono font-medium">{fmtNum(fuel?.contingencyFuel)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-gray-500">Extra/Additional</span>
-                <span className="font-mono font-medium">{fmtNum((fuel?.extraFuel ?? 0) + (fuel?.additionalFuel ?? 0))}</span>
-              </div>
-              <div className="flex justify-between border-t border-gray-200 pt-2 col-span-2 md:col-span-4">
-                <span className="text-gray-900 font-semibold">Total Fuel Required</span>
-                <span className="font-mono font-bold text-lg">{fmtNum(fuel?.totalFuel)}</span>
-              </div>
-              <div className="flex justify-between col-span-2 md:col-span-4">
-                <span className="text-gray-500">Max Total Fuel</span>
-                <span className="font-mono font-medium">{fmtNum(fuel?.maxTotalFuel)}</span>
-              </div>
-              <div className="flex justify-between col-span-2 md:col-span-4">
-                <span className="text-gray-500">Discretionary Fuel</span>
-                <span className="font-mono font-medium">{fmtNum(fuel?.discretionaryFuel)}</span>
-              </div>
-              {fuel?.co2Emission != null && (
-                <div className="flex justify-between col-span-2 md:col-span-4">
-                  <span className="text-gray-500">CO2 Emission</span>
-                  <span className="font-mono font-medium">{fmtNum(fuel.co2Emission)} kg</span>
-                </div>
-              )}
+            </div>
+            <div className="mt-4 pt-3 border-t border-gray-100 flex items-center gap-6 text-sm text-gray-500">
+              <span>Flight: {fmtNum(fuel.flightFuelLbs)} lbs</span>
+              <span>Taxi: {fmtNum(fuel.taxiFuelLbs)} lbs</span>
+              <span>Reserve: {fmtNum(fuel.reserveFuelLbs)} lbs</span>
+              <span className="text-gray-400">({fuel.ppg.toFixed(2)} lbs/gal)</span>
             </div>
           </div>
 
-          {/* Times + Distance + Weather */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {/* Times */}
-            <div className="rounded-lg border border-gray-200 bg-white p-6">
-              <h3 className="text-md font-semibold text-gray-900 mb-3">Times</h3>
-              <div className="space-y-2 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Flight Time</span>
-                  <span className="font-mono font-medium">{fmtMin(times?.timeToDestinationMinutes)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Taxi</span>
-                  <span className="font-mono font-medium">{fmtMin(times?.taxiTimeMinutes)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-500">To Alternate</span>
-                  <span className="font-mono font-medium">{fmtMin(times?.alternateTimeMinutes)}</span>
-                </div>
-                <div className="flex justify-between border-t border-gray-200 pt-2">
-                  <span className="text-gray-900 font-semibold">Total</span>
-                  <span className="font-mono font-bold">{fmtMin(times?.totalTimeMinutes)}</span>
-                </div>
-                {times?.estimatedArrivalTimeLocal && (
-                  <div className="flex justify-between pt-1">
-                    <span className="text-gray-500">ETA (local)</span>
-                    <span className="font-mono text-xs">{new Date(times.estimatedArrivalTimeLocal).toLocaleTimeString()}</span>
+          {/* FBO Options */}
+          <div className="rounded-lg border border-gray-200 bg-white p-6">
+            <h3 className="text-md font-semibold text-gray-900 mb-1">FBO Fuel Options at {result.route.destination}</h3>
+            <p className="text-xs text-gray-400 mb-4">
+              Based on {fmtNum(fuel.fuelToDestGal)} gal fuel to destination. Prices from advertised rates.
+            </p>
+
+            {result.fboOptions.length === 0 ? (
+              <div className="text-center py-8 text-gray-400">
+                <p className="text-sm">No advertised fuel prices found for {result.route.destination}</p>
+                <p className="text-xs mt-1">Upload vendor fuel sheets on the Fuel Prices page to see options here.</p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-xs text-gray-500 border-b border-gray-100">
+                      <th className="pb-2 pr-4">#</th>
+                      <th className="pb-2 pr-4">Vendor</th>
+                      <th className="pb-2 pr-4">FBO</th>
+                      <th className="pb-2 pr-4 text-right">Price/gal</th>
+                      <th className="pb-2 pr-4">Volume Tier</th>
+                      <th className="pb-2 text-right">Est. Cost</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {result.fboOptions.map((fbo, i) => (
+                      <tr
+                        key={`${fbo.vendor}-${fbo.price}-${i}`}
+                        className={`border-b border-gray-50 ${i === 0 ? "bg-green-50" : ""}`}
+                      >
+                        <td className="py-2.5 pr-4 text-gray-400">{i + 1}</td>
+                        <td className="py-2.5 pr-4 font-medium text-gray-900">{fbo.vendor}</td>
+                        <td className="py-2.5 pr-4 text-gray-600">{fbo.fbo ?? "—"}</td>
+                        <td className="py-2.5 pr-4 text-right font-mono">
+                          {fmtDollars(fbo.price)}
+                        </td>
+                        <td className="py-2.5 pr-4 text-gray-500 text-xs">{fbo.volume_tier}</td>
+                        <td className="py-2.5 text-right font-mono font-semibold">
+                          {i === 0 ? (
+                            <span className="text-green-700">{fmtDollars(fbo.estimatedCost)}</span>
+                          ) : (
+                            <span>
+                              {fmtDollars(fbo.estimatedCost)}
+                              <span className="text-xs text-red-500 ml-1">
+                                +{fmtDollars(fbo.estimatedCost - (bestFbo?.estimatedCost ?? 0))}
+                              </span>
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {result.fboOptions[0] && (
+                  <div className="mt-3 text-xs text-gray-400">
+                    Prices as of week {result.fboOptions[0].week_start}
                   </div>
                 )}
               </div>
-            </div>
+            )}
+          </div>
 
-            {/* Distances */}
-            <div className="rounded-lg border border-gray-200 bg-white p-6">
-              <h3 className="text-md font-semibold text-gray-900 mb-3">Distances (NM)</h3>
-              <div className="space-y-2 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Route Distance</span>
-                  <span className="font-mono font-medium">{fmtNum(distances?.destination)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Great Circle</span>
-                  <span className="font-mono font-medium">{fmtNum(distances?.gcdDestination)}</span>
-                </div>
-                {distances?.alternate != null && distances.alternate > 0 && (
-                  <div className="flex justify-between">
-                    <span className="text-gray-500">To Alternate</span>
-                    <span className="font-mono font-medium">{fmtNum(distances.alternate)}</span>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Weather + Weights */}
-            <div className="rounded-lg border border-gray-200 bg-white p-6">
-              <h3 className="text-md font-semibold text-gray-900 mb-3">Weather & Weights</h3>
-              <div className="space-y-2 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Wind Component</span>
-                  <span className="font-mono font-medium">{fmtNum(weather?.averageWindComponent)} kt</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Avg Wind</span>
-                  <span className="font-mono font-medium">{fmtNum(weather?.averageWindDirection)}&deg; / {fmtNum(weather?.averageWindVelocity)} kt</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-500">ISA Dev</span>
-                  <span className="font-mono font-medium">{weather?.averageISADeviation != null ? `${weather.averageISADeviation > 0 ? "+" : ""}${fmtNum(weather.averageISADeviation)}&deg;C` : "—"}</span>
-                </div>
-                <div className="border-t border-gray-200 pt-2 space-y-2">
-                  <div className="flex justify-between">
-                    <span className="text-gray-500">Ramp Wt</span>
-                    <span className="font-mono font-medium">{fmtNum(weights?.rampWeight)} / {fmtNum(weights?.maxRampWeight)}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-500">Takeoff Wt</span>
-                    <span className="font-mono font-medium">{fmtNum(weights?.takeOffWeight)} / {fmtNum(weights?.maxTakeOffWeight)}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-500">Landing Wt</span>
-                    <span className="font-mono font-medium">{fmtNum(weights?.landingWeight)} / {fmtNum(weights?.maxLandingWeight)}</span>
-                  </div>
-                </div>
-              </div>
+          {/* Weather */}
+          <div className="rounded-lg border border-gray-200 bg-white p-4">
+            <div className="flex items-center gap-6 text-sm text-gray-600">
+              <span className="text-xs font-medium text-gray-400 uppercase">Wind</span>
+              <span>
+                {fmtNum(result.weather.windDirection)}&deg; / {fmtNum(result.weather.windVelocity)} kt
+                <span className="text-gray-400 ml-1">
+                  ({result.weather.windComponent > 0 ? "+" : ""}{fmtNum(result.weather.windComponent)} kt component)
+                </span>
+              </span>
+              <span className="text-xs font-medium text-gray-400 uppercase ml-4">ISA</span>
+              <span>
+                {result.weather.isaDeviation > 0 ? "+" : ""}{fmtNum(result.weather.isaDeviation)}&deg;C
+              </span>
             </div>
           </div>
 
-          {/* Warnings / Errors */}
-          {(perf.warnings?.length > 0 || perf.errors?.length > 0) && (
+          {/* Warnings */}
+          {(result.warnings.length > 0 || result.errors.length > 0) && (
             <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
-              {perf.errors?.map((e, i) => (
+              {result.errors.map((e, i) => (
                 <p key={`e${i}`} className="text-sm text-red-700 font-medium">{e}</p>
               ))}
-              {perf.warnings?.map((w, i) => (
+              {result.warnings.map((w, i) => (
                 <p key={`w${i}`} className="text-sm text-amber-700">{w}</p>
               ))}
             </div>
           )}
-        </div>
-      )}
 
-      {/* Raw JSON toggle */}
-      {rawJson && (
-        <div>
-          <button
-            onClick={() => setShowRaw(!showRaw)}
-            className="text-xs text-gray-400 hover:text-gray-600 font-mono"
-          >
-            {showRaw ? "Hide" : "Show"} raw JSON response
-          </button>
-          {showRaw && (
-            <pre className="mt-2 rounded-lg border border-gray-200 bg-gray-50 p-4 text-xs font-mono text-gray-700 overflow-x-auto max-h-[600px] overflow-y-auto">
-              {rawJson}
-            </pre>
+          {/* Expert: Raw JSON */}
+          {expertMode && (
+            <div className="rounded-lg border border-amber-200 bg-white p-4">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-medium text-amber-700 uppercase">Expert: API Response</span>
+                <button
+                  onClick={() => setShowRawJson(!showRawJson)}
+                  className="text-xs text-amber-600 hover:text-amber-800"
+                >
+                  {showRawJson ? "Hide JSON" : "Show JSON"}
+                </button>
+              </div>
+              {!showRawJson && (
+                <div className="text-xs text-gray-500 space-y-1">
+                  <p><strong>Cruise Profile UUID:</strong> <span className="font-mono">{result.aircraft.cruiseProfileUUID ?? "none"}</span></p>
+                  <p><strong>Available Profiles:</strong> {result.aircraft.availableProfiles?.map(p => p.profileName).join(", ") || "none loaded"}</p>
+                  <p><strong>Altitude:</strong> {result.aircraft.altitude}</p>
+                </div>
+              )}
+              {showRawJson && (
+                <>
+                  <div className="mb-2">
+                    <span className="text-xs text-gray-400">Request:</span>
+                    <pre className="mt-1 rounded border border-gray-200 bg-gray-50 p-3 text-xs font-mono text-gray-700 overflow-x-auto max-h-[300px] overflow-y-auto">
+                      {JSON.stringify(result._request, null, 2)}
+                    </pre>
+                  </div>
+                  <div>
+                    <span className="text-xs text-gray-400">ForeFlight Response:</span>
+                    <pre className="mt-1 rounded border border-gray-200 bg-gray-50 p-3 text-xs font-mono text-gray-700 overflow-x-auto max-h-[600px] overflow-y-auto">
+                      {JSON.stringify(result._raw, null, 2)}
+                    </pre>
+                  </div>
+                </>
+              )}
+            </div>
           )}
         </div>
       )}
