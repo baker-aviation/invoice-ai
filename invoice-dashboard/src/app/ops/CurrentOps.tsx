@@ -468,10 +468,11 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
       const res = await fetch("/api/aircraft/flights", { cache: "no-store" });
       if (res.ok) {
         const data = await res.json();
-        // JetInsight uses K-prefix for Caribbean airports that have different real ICAO codes
+        // JetInsight uses K-prefix or non-standard codes for some airports
         const FA_ALIASES: Record<string, string> = {
           TJSJ: "KSJU", TIST: "KSTT", TISX: "KSTX", TJBQ: "KBQN", TJPS: "KPSE",
           MYNN: "KNAS", MWCR: "KGCM", TXKF: "KBDA", TAPA: "KANU",
+          TUPJ: "MBPV",  // Beef Island / Tortola BVI
         };
         // Key by tail|origin|dest so each scheduled leg can find its FA match
         const map = new Map<string, FlightInfoMap>();
@@ -482,12 +483,20 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
           const existing = map.get(key);
           const isMoreActive = !existing || fi.latitude != null || fi.actual_departure != null;
           if (isMoreActive) map.set(key, fi);
-          // Also index with JetInsight K-prefix aliases so TJSJ↔KSJU, MYNN↔KNAS etc. match
+          // Index all alias combinations (origin/dest independently)
           const altOrig = FA_ALIASES[fi.origin_icao ?? ""];
           const altDest = FA_ALIASES[fi.destination_icao ?? ""];
           if (altOrig || altDest) {
-            const altKey = `${fi.tail}|${altOrig ?? fi.origin_icao ?? ""}|${altDest ?? fi.destination_icao ?? ""}`;
-            if (!map.has(altKey) || isMoreActive) map.set(altKey, fi);
+            const origins = [fi.origin_icao ?? ""];
+            const dests = [fi.destination_icao ?? ""];
+            if (altOrig) origins.push(altOrig);
+            if (altDest) dests.push(altDest);
+            for (const o of origins) {
+              for (const d of dests) {
+                const k = `${fi.tail}|${o}|${d}`;
+                if (!map.has(k) || isMoreActive) map.set(k, fi);
+              }
+            }
           }
           // Also store by tail-only for fallback — prefer one with position
           if (!map.has(fi.tail) || (fi.latitude != null && fi.longitude != null)) {
