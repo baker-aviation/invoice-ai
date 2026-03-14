@@ -343,31 +343,47 @@ export async function fetchFuelPrices(params: {
 export async function fetchAdvertisedPrices(opts?: { recentWeeks?: number }): Promise<AdvertisedPriceRow[]> {
   const supa = createServiceClient();
 
-  let query = supa
-    .from("fbo_advertised_prices")
-    .select("id, fbo_vendor, airport_code, volume_tier, product, price, tail_numbers, week_start, upload_batch, created_at");
+  const columns = "id, fbo_vendor, airport_code, volume_tier, product, price, tail_numbers, week_start, upload_batch, created_at";
 
   // Filter to recent weeks — default 2 weeks (current + prev for WOW)
   const weeks = opts?.recentWeeks ?? 2;
   const cutoff = new Date(Date.now() - weeks * 7 * 86400000).toISOString().split("T")[0];
-  query = query.gte("week_start", cutoff);
 
-  const { data, error } = await query
-    .order("week_start", { ascending: false })
-    .limit(100000);
+  // Supabase PostgREST caps results at max-rows (typically 10K).
+  // Paginate with .range() to fetch the full dataset.
+  const PAGE = 10000;
+  const allRows: AdvertisedPriceRow[] = [];
+  let offset = 0;
 
-  if (error) throw new Error(`fetchAdvertisedPrices failed: ${error.message}`);
+  while (true) {
+    const { data, error } = await supa
+      .from("fbo_advertised_prices")
+      .select(columns)
+      .gte("week_start", cutoff)
+      .order("week_start", { ascending: false })
+      .range(offset, offset + PAGE - 1);
 
-  return (data ?? []).map((row) => ({
-    id: row.id as number,
-    fbo_vendor: row.fbo_vendor as string,
-    airport_code: row.airport_code as string,
-    volume_tier: row.volume_tier as string,
-    product: row.product as string,
-    price: Number(row.price),
-    tail_numbers: (row.tail_numbers as string | null) ?? null,
-    week_start: row.week_start as string,
-    upload_batch: (row.upload_batch as string | null) ?? null,
-    created_at: row.created_at as string,
-  }));
+    if (error) throw new Error(`fetchAdvertisedPrices failed: ${error.message}`);
+    if (!data || data.length === 0) break;
+
+    for (const row of data) {
+      allRows.push({
+        id: row.id as number,
+        fbo_vendor: row.fbo_vendor as string,
+        airport_code: row.airport_code as string,
+        volume_tier: row.volume_tier as string,
+        product: row.product as string,
+        price: Number(row.price),
+        tail_numbers: (row.tail_numbers as string | null) ?? null,
+        week_start: row.week_start as string,
+        upload_batch: (row.upload_batch as string | null) ?? null,
+        created_at: row.created_at as string,
+      });
+    }
+
+    if (data.length < PAGE) break; // Last page
+    offset += PAGE;
+  }
+
+  return allRows;
 }
