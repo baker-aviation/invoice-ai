@@ -637,7 +637,8 @@ export default function FuelPricesTable({
     setIsPulling(true);
     setPullResult(null);
     try {
-      const res = await fetch("/api/fuel-prices/advertised/pull-mailbox?force=true", { method: "POST" });
+      // Pull from all folders, 2 weeks back, to catch emails in subfolders
+      const res = await fetch("/api/fuel-prices/advertised/pull-mailbox?force=true&lookback_minutes=20160&max_messages=300&all_folders=true", { method: "POST" });
       const data = await res.json();
       if (!res.ok) {
         setPullResult(`Error: ${data.error ?? res.statusText}`);

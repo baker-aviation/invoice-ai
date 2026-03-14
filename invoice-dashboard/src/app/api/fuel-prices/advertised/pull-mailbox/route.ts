@@ -50,11 +50,12 @@ async function handlePull(req: NextRequest) {
 
   const lookbackMinutes = Number(req.nextUrl.searchParams.get("lookback_minutes") || "720");
   const maxMessages = Number(req.nextUrl.searchParams.get("max_messages") || "50");
+  const allFolders = req.nextUrl.searchParams.get("all_folders") === "true";
   const force = req.nextUrl.searchParams.get("force") === "true";
 
   try {
     const token = await getGraphToken();
-    const messages = await listRecentMessages(token, lookbackMinutes, maxMessages);
+    const messages = await listRecentMessages(token, lookbackMinutes, maxMessages, allFolders);
 
     const supa = createServiceClient();
     const results: { messageId: string; subject: string; files: { name: string; vendor: string; format: string; rows: number; error?: string }[] }[] = [];
@@ -235,30 +236,44 @@ type GraphMessage = {
   from?: { emailAddress?: { address?: string } };
 };
 
-async function listRecentMessages(token: string, lookbackMinutes: number, maxMessages: number): Promise<GraphMessage[]> {
+async function listRecentMessages(token: string, lookbackMinutes: number, maxMessages: number, allFolders = false): Promise<GraphMessage[]> {
   const since = new Date(Date.now() - lookbackMinutes * 60 * 1000);
   const sinceIso = since.toISOString();
 
-  const url = new URL(`https://graph.microsoft.com/v1.0/users/${FUEL_MAILBOX}/mailFolders/Inbox/messages`);
-  url.searchParams.set("$top", String(Math.min(maxMessages, 100)));
+  // Search all folders (including subfolders) or just Inbox
+  const endpoint = allFolders
+    ? `https://graph.microsoft.com/v1.0/users/${FUEL_MAILBOX}/messages`
+    : `https://graph.microsoft.com/v1.0/users/${FUEL_MAILBOX}/mailFolders/Inbox/messages`;
+  const url = new URL(endpoint);
+  const pageSize = Math.min(maxMessages, 100);
+  url.searchParams.set("$top", String(pageSize));
   url.searchParams.set("$orderby", "receivedDateTime desc");
   url.searchParams.set("$filter", `receivedDateTime ge ${sinceIso}`);
   url.searchParams.set("$select", "id,subject,receivedDateTime,from,hasAttachments");
 
-  const res = await fetch(url.toString(), {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  const allMessages: GraphMessage[] = [];
+  let nextUrl: string | null = url.toString();
 
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Graph list messages failed: ${res.status} ${text}`);
+  while (nextUrl && allMessages.length < maxMessages) {
+    const res = await fetch(nextUrl, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Graph list messages failed: ${res.status} ${text}`);
+    }
+
+    const json = await res.json();
+    const page: GraphMessage[] = json.value ?? [];
+    allMessages.push(...page);
+    nextUrl = json["@odata.nextLink"] ?? null;
   }
 
-  const json = await res.json();
-  const messages: GraphMessage[] = json.value ?? [];
-
   // Only return messages that have attachments
-  return messages.filter((m: GraphMessage & { hasAttachments?: boolean }) => m.hasAttachments);
+  return allMessages
+    .slice(0, maxMessages)
+    .filter((m: GraphMessage & { hasAttachments?: boolean }) => m.hasAttachments);
 }
 
 type GraphAttachment = {
