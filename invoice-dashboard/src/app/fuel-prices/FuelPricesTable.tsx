@@ -345,6 +345,12 @@ function buildAdvVsActual(
   }
 
   // Group advertised by vendor+airport — skip tail-specific rows, filter by volume tier
+  const avfuelKmmu = advertisedPrices.filter((a) => a.fbo_vendor === "Avfuel" && a.airport_code.includes("MMU") && !a.airport_code.includes("MMUN"));
+  if (avfuelKmmu.length > 0) {
+    console.log("[DEBUG] Avfuel KMMU in advertisedPrices:", avfuelKmmu.length, "tail_numbers:", avfuelKmmu.map(a => a.tail_numbers));
+  } else {
+    console.log("[DEBUG] NO Avfuel KMMU in advertisedPrices. Total:", advertisedPrices.length, "Avfuel total:", advertisedPrices.filter(a => a.fbo_vendor === "Avfuel").length);
+  }
   let filteredAdv = advertisedPrices.filter((a) => !a.tail_numbers);
   if (volumeGallons && volumeGallons > 0) {
     // Keep only tiers that match the selected volume
