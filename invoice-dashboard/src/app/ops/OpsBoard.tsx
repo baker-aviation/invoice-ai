@@ -374,7 +374,9 @@ function EdctRow({ alert, flight, onDismiss, fmtTime }: {
   const programStart = body.match(/Program Start Time:\s*(.+)/i)?.[1]?.trim();
   const programEnd = body.match(/Program End Time:\s*(.+)/i)?.[1]?.trim();
   const expectedArrival = body.match(/Expected Arrival Time:\s*(.+)/i)?.[1]?.trim();
-  const source = "ForeFlight"; // TODO: derive from alert metadata when other sources added
+  const sourceTag = (alert.source_message_id ?? "").startsWith("swim-edct-")
+    ? "SWIM"
+    : "FF";
 
   return (
     <div className="bg-white rounded-lg border border-orange-200 text-sm overflow-hidden">
@@ -397,6 +399,9 @@ function EdctRow({ alert, flight, onDismiss, fmtTime }: {
         {(alert.tail_number || flight?.tail_number) && (
           <span className="font-mono text-xs text-gray-600 bg-gray-100 rounded px-1.5 py-0.5">{alert.tail_number || flight?.tail_number}</span>
         )}
+        <span className={`text-[10px] font-bold rounded px-1.5 py-0.5 ${
+          sourceTag === "SWIM" ? "bg-blue-100 text-blue-700" : "bg-amber-100 text-amber-700"
+        }`}>{sourceTag}</span>
         <span className="text-xs">
           {(alert.original_departure_time || flight?.scheduled_departure) && (
             <span className="text-gray-500 line-through">{alert.original_departure_time ?? fmtTime(flight?.scheduled_departure ?? "")}</span>
@@ -417,7 +422,7 @@ function EdctRow({ alert, flight, onDismiss, fmtTime }: {
           {alert.subject && (
             <div className="col-span-2 sm:col-span-3 text-gray-800 font-medium truncate">{alert.subject}</div>
           )}
-          <div><span className="text-gray-400">Source:</span> {source}</div>
+          <div><span className="text-gray-400">Source:</span> {sourceTag === "SWIM" ? "FAA SWIM" : "ForeFlight"}</div>
           <div><span className="text-gray-400">Received:</span> {fmtTime(alert.created_at)}</div>
           {(alert.tail_number || flight?.tail_number) && (
             <div><span className="text-gray-400">Tail:</span> {alert.tail_number || flight?.tail_number}</div>
@@ -1076,7 +1081,7 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
             </>
           )}
           <span className="ml-auto text-xs text-gray-400">
-            Checked every 5 min via ForeFlight
+            ForeFlight + FAA SWIM
           </span>
         </div>
         {edctAlerts.length > 0 ? (

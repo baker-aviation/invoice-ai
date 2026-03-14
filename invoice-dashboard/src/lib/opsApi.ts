@@ -27,6 +27,7 @@ export type OpsAlert = {
   acknowledged_by: string | null;
   created_at: string;
   notam_dates: NotamDates | null;
+  source_message_id: string | null;
 };
 
 export type Flight = {
@@ -119,7 +120,7 @@ function extractNotamDates(rawData: unknown): NotamDates | null {
 // ---------------------------------------------------------------------------
 
 const ALERT_COLUMNS =
-  "id, flight_id, alert_type, severity, airport_icao, departure_icao, arrival_icao, tail_number, subject, body, edct_time, original_departure_time, acknowledged_at, acknowledged_by, created_at, raw_data";
+  "id, flight_id, alert_type, severity, airport_icao, departure_icao, arrival_icao, tail_number, subject, body, edct_time, original_departure_time, acknowledged_at, acknowledged_by, created_at, raw_data, source_message_id";
 
 export async function fetchFlights(params: {
   lookahead_hours?: number;
