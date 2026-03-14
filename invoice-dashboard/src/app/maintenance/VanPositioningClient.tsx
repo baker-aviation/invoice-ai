@@ -1130,32 +1130,22 @@ const DEFAULT_SERVICE_CHECKLISTS: Record<string, { label: string; steps: string[
       "Drop pics here",
     ],
   },
-  CL35: {
-    label: "Challenger 350",
-    steps: [
-      "Meet pilots",
-      "Service ENGs and APU",
-      "Empty ecolo bottle",
-      "Check tire tread",
-      "Check fluids and gases",
-      "Check black binder for MELs/open 1008s",
-      "Report back here",
-      "Clean instruments face plates and panel",
-      "Drop pics here",
-    ],
-  },
 };
 
 // Known tail → type mapping for when FlightAware data isn't available
 const TAIL_TYPE_MAP: Record<string, string> = {
-  // Citation X (C750)
-  N519FX: "C750", N521FX: "C750", N533FX: "C750", N548FX: "C750",
-  N552FX: "C750", N553FX: "C750", N555FX: "C750", N998CX: "C750",
   // Challenger 300 (CL30)
-  N371DB: "CL30", N513JB: "CL30", N883TR: "CL30", N988TX: "CL30",
-  N860TX: "CL30", N703TX: "CL30", N939TX: "CL30",
-  // Challenger 350 (CL35)
-  N954JS: "CL35", N955GH: "CL35", N957JS: "CL35", N971JS: "CL35", N992MG: "CL35",
+  N520FX: "CL30", N541FX: "CL30", N533FX: "CL30", N526FX: "CL30",
+  N548FX: "CL30", N555FX: "CL30", N554FX: "CL30", N521FX: "CL30",
+  N371BD: "CL30", N883TR: "CL30", N416F: "CL30", N519FX: "CL30",
+  N552FX: "CL30", N553FX: "CL30",
+  // Cessna Citation X (C750)
+  N992MG: "C750", N513JB: "C750", N957JS: "C750", N954JS: "C750",
+  N860TX: "C750", N700LH: "C750", N106PC: "C750", N818CF: "C750",
+  N733FL: "C750", N988TX: "C750", N703TX: "C750", N910E: "C750",
+  N102VR: "C750", N998CX: "C750", N51GB: "C750", N939TX: "C750",
+  N301HR: "C750", N971JS: "C750", N125DZ: "C750", N955GH: "C750",
+  N125TH: "C750", N201HR: "C750",
 };
 
 function getServiceChecklists(): Record<string, { label: string; steps: string[] }> {
