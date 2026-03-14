@@ -4,6 +4,7 @@ import { createServiceClient } from "@/lib/supabase/service";
 import { TRIPS } from "@/lib/maintenanceData";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 120; // Allow up to 2 min for nuke (many alerts to list+delete)
 
 const FA_BASE = "https://aeroapi.flightaware.com/aeroapi";
 
@@ -329,12 +330,12 @@ async function nukeAlerts(
     console.warn("[FA Alerts] Nuke: endpoint registration failed:", err);
   }
 
-  // Step 2: List all alerts from FA API
+  // Step 2: List all alerts from FA API (long timeout — may have hundreds)
   let faAlerts: { id: number }[] = [];
   try {
     const listRes = await fetch(`${FA_BASE}/alerts`, {
       headers: faHeaders(),
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(60000),
     });
 
     if (listRes.ok) {
