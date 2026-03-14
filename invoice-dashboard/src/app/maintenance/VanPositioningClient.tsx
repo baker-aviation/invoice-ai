@@ -3246,6 +3246,34 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
     } catch { /* ignore */ }
   }, []);
 
+  // Snooze conflicts for 1 hour (localStorage with timestamps)
+  const [snoozedConflictIds, setSnoozedConflictIds] = useState<Set<string>>(() => {
+    if (typeof window === "undefined") return new Set();
+    try {
+      const stored: Record<string, number> = JSON.parse(localStorage.getItem("snoozedConflicts") ?? "{}");
+      const now = Date.now();
+      const active = new Set<string>();
+      const cleaned: Record<string, number> = {};
+      for (const [id, expiry] of Object.entries(stored)) {
+        if (expiry > now) { active.add(id); cleaned[id] = expiry; }
+      }
+      localStorage.setItem("snoozedConflicts", JSON.stringify(cleaned));
+      return active;
+    } catch { return new Set(); }
+  });
+
+  const snoozeConflict = useCallback((id: string) => {
+    setSnoozedConflictIds((prev) => {
+      const next = new Set(prev).add(id);
+      try {
+        const stored: Record<string, number> = JSON.parse(localStorage.getItem("snoozedConflicts") ?? "{}");
+        stored[id] = Date.now() + 60 * 60 * 1000; // 1 hour
+        localStorage.setItem("snoozedConflicts", JSON.stringify(stored));
+      } catch { /* ignore */ }
+      return next;
+    });
+  }, []);
+
   const [schedTypeFilter, setSchedTypeFilter] = useState<string>("all");
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
@@ -3815,7 +3843,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
 
       {/* ── MX Conflict Alerts (accordion) ── */}
       {(() => {
-        const visibleConflicts = mxConflicts.filter((c) => !dismissedMxIds.has(c.mxNote.id));
+        const visibleConflicts = mxConflicts.filter((c) => !snoozedConflictIds.has(c.mxNote.id));
         return (
       <div className={`rounded-xl border-2 px-5 py-4 shadow-sm ${
         visibleConflicts.length > 0
@@ -3874,10 +3902,10 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
                       )}
                     </div>
                     <button
-                      onClick={(e) => { e.stopPropagation(); dismissMxNote(c.mxNote.id); }}
+                      onClick={(e) => { e.stopPropagation(); snoozeConflict(c.mxNote.id); }}
                       className="text-[10px] font-medium text-red-400 hover:text-red-700 hover:bg-red-50 border border-red-200 rounded px-2 py-0.5 shrink-0 transition-colors"
                     >
-                      Permanently Dismiss
+                      Snooze 1hr
                     </button>
                   </div>
                 </div>
