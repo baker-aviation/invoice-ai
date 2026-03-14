@@ -195,6 +195,7 @@ export async function fetchFlights(params: {
         acknowledged_by: row.acknowledged_by as string | null,
         created_at: row.created_at as string,
         notam_dates: extractNotamDates(row.raw_data),
+        source_message_id: row.source_message_id as string | null,
       };
 
       const fid = alert.flight_id ?? "";
@@ -220,6 +221,7 @@ export async function fetchFlights(params: {
     acknowledged_by: row.acknowledged_by as string | null,
     created_at: row.created_at as string,
     notam_dates: extractNotamDates(row.raw_data),
+    source_message_id: row.source_message_id as string | null,
   }));
 
   // Assemble flights with nested alerts
