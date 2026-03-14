@@ -543,6 +543,7 @@ type FlightInfoEntry = {
   destination_icao: string | null; destination_name: string | null; status: string | null;
   progress_percent: number | null; departure_time: string | null; arrival_time: string | null;
   route_distance_nm: number | null; diverted: boolean;
+  aircraft_type?: string | null; // ICAO type code e.g. "C750", "CL30"
   latitude?: number | null; longitude?: number | null; altitude?: number | null;
   groundspeed?: number | null; heading?: number | null;
 };
@@ -1101,26 +1102,80 @@ function MxNoteInline({ notes, hiddenIds, onHideForToday }: { notes: MxNote[]; h
 // Van-level Maintenance Notes accordion — collects all MEL items across aircraft
 // ---------------------------------------------------------------------------
 
-const SERVICE_CHECKLIST = [
-  "Meet pilots",
-  "Service ENGs and APU",
-  "Empty ecolo bottle",
-  "Check tire tread",
-  "Check fluids and gases",
-  "Check black binder for MELs/open 1008s",
-  "Report back here",
-  "Clean instruments face plates and panel",
-  "Drop pics here",
-];
+// Per-aircraft-type service checklists (ICAO type code → steps)
+const DEFAULT_SERVICE_CHECKLISTS: Record<string, { label: string; steps: string[] }> = {
+  C750: {
+    label: "Citation X",
+    steps: [
+      "Meet pilots",
+      "Check fluids and gases",
+      "Stock bag pit",
+      "Check tire tread",
+      "Check black binder for MELs/open 1008s",
+      "Report back here",
+      "Clean instruments face plates and panel",
+      "Drop pics here",
+    ],
+  },
+  CL30: {
+    label: "Challenger 300",
+    steps: [
+      "Meet pilots",
+      "Service ENGs and APU",
+      "Empty ecolo bottle",
+      "Check tire tread",
+      "Check fluids and gases",
+      "Check black binder for MELs/open 1008s",
+      "Report back here",
+      "Clean instruments face plates and panel",
+      "Drop pics here",
+    ],
+  },
+  CL35: {
+    label: "Challenger 350",
+    steps: [
+      "Meet pilots",
+      "Service ENGs and APU",
+      "Empty ecolo bottle",
+      "Check tire tread",
+      "Check fluids and gases",
+      "Check black binder for MELs/open 1008s",
+      "Report back here",
+      "Clean instruments face plates and panel",
+      "Drop pics here",
+    ],
+  },
+};
 
-function VanMaintenanceAccordion({ items, mxNotesByTail, hiddenIds, onHideForToday }: {
+// Known tail → type mapping for when FlightAware data isn't available
+const TAIL_TYPE_MAP: Record<string, string> = {
+  // Citation X (C750)
+  N519FX: "C750", N521FX: "C750", N533FX: "C750", N548FX: "C750",
+  N552FX: "C750", N553FX: "C750", N555FX: "C750", N998CX: "C750",
+  // Challenger 300 (CL30)
+  N371DB: "CL30", N513JB: "CL30", N883TR: "CL30", N988TX: "CL30",
+  N860TX: "CL30", N703TX: "CL30", N939TX: "CL30",
+  // Challenger 350 (CL35)
+  N954JS: "CL35", N955GH: "CL35", N957JS: "CL35", N971JS: "CL35", N992MG: "CL35",
+};
+
+function getServiceChecklists(): Record<string, { label: string; steps: string[] }> {
+  try {
+    const saved = localStorage.getItem("vanServiceChecklists");
+    if (saved) return JSON.parse(saved);
+  } catch {}
+  return DEFAULT_SERVICE_CHECKLISTS;
+}
+
+function VanMaintenanceAccordion({ items, mxNotesByTail, hiddenIds, onHideForToday, flightInfoMap }: {
   items: VanFlightItem[];
   mxNotesByTail: Map<string, MxNote[]>;
   hiddenIds: Set<string>;
   onHideForToday: (id: string) => void;
+  flightInfoMap: Map<string, FlightInfoEntry>;
 }) {
   const [melOpen, setMelOpen] = useState(false);
-  const [checklistOpen, setChecklistOpen] = useState(false);
+  const [checklistOpen, setChecklistOpen] = useState<string | null>(null);
 
   // Collect all MEL items across all aircraft in this van
   const allMels: { tail: string; note: MxNote }[] = [];
@@ -1192,25 +1247,49 @@ function VanMaintenanceAccordion({ items, mxNotesByTail, hiddenIds, onHideForTod
         </div>
       )}
 
-      {/* Regular Service Check accordion */}
-      <button
-        onClick={() => setChecklistOpen((v) => !v)}
-        className="w-full px-4 py-2 flex items-center justify-between text-xs font-semibold text-gray-600 hover:bg-gray-50 transition-colors border-t"
-      >
-        <span className="flex items-center gap-1.5">
-          <span className="text-green-600">Regular Service Check</span>
-        </span>
-        <span className="text-gray-400">{checklistOpen ? "▲" : "▼"}</span>
-      </button>
-      {checklistOpen && (
-        <div className="px-4 pb-3">
-          <ol className="space-y-1 list-decimal list-inside text-xs text-gray-600">
-            {SERVICE_CHECKLIST.map((step, i) => (
-              <li key={i} className="py-0.5">{step}</li>
-            ))}
-          </ol>
-        </div>
-      )}
+      {/* Per-type Regular Service Checklists */}
+      {(() => {
+        const checklists = getServiceChecklists();
+        // Determine unique aircraft types in this van
+        const typesInVan = new Map<string, string>(); // typeCode → label
+        for (const item of items) {
+          const tail = item.arrFlight.tail_number ?? "";
+          const fi = flightInfoMap.get(tail);
+          const typeCode = fi?.aircraft_type ?? TAIL_TYPE_MAP[tail];
+          if (typeCode && checklists[typeCode]) {
+            typesInVan.set(typeCode, checklists[typeCode].label);
+          }
+        }
+        // Fallback: show CL30 (Challenger 300) if no type detected
+        if (typesInVan.size === 0 && items.length > 0) {
+          typesInVan.set("CL30", "Challenger 300");
+        }
+        return [...typesInVan.entries()].map(([typeCode, label]) => {
+          const cl = checklists[typeCode];
+          if (!cl) return null;
+          const isOpen = checklistOpen === typeCode;
+          return (
+            <div key={typeCode}>
+              <button
+                onClick={() => setChecklistOpen(isOpen ? null : typeCode)}
+                className="w-full px-4 py-2 flex items-center justify-between text-xs font-semibold text-gray-600 hover:bg-gray-50 transition-colors border-t"
+              >
+                <span className="text-green-600">Regular Service Check — {label}</span>
+                <span className="text-gray-400">{isOpen ? "▲" : "▼"}</span>
+              </button>
+              {isOpen && (
+                <div className="px-4 pb-3">
+                  <ol className="space-y-1 list-decimal list-inside text-xs text-gray-600">
+                    {cl.steps.map((step, i) => (
+                      <li key={i} className="py-0.5">{step}</li>
+                    ))}
+                  </ol>
+                </div>
+              )}
+            </div>
+          );
+        });
+      })()}
     </div>
   );
 }
@@ -1753,6 +1832,7 @@ function VanScheduleCard({
               mxNotesByTail={mxNotesByTail}
               hiddenIds={hiddenTodayMxIds}
               onHideForToday={onHideMxForToday}
+              flightInfoMap={flightInfoMap}
             />
           )}
           {isDropTarget && items.length > 0 && (
@@ -1827,10 +1907,49 @@ function ScheduleTab({
   const unscheduledDragTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Manual overrides: flightId → target vanId (moves) + removed flight IDs
-  const [overrides, setOverrides] = useState<Map<string, number>>(new Map());
-  const [removals, setRemovals] = useState<Set<string>>(new Set());
+  // Initialize from localStorage for persistence across reloads
+  const [overrides, setOverrides] = useState<Map<string, number>>(() => {
+    try {
+      const saved = localStorage.getItem(`vanOverrides-${date}`);
+      if (saved) return new Map(JSON.parse(saved));
+    } catch {}
+    return new Map();
+  });
+  const [removals, setRemovals] = useState<Set<string>>(() => {
+    try {
+      const saved = localStorage.getItem(`vanRemovals-${date}`);
+      if (saved) return new Set(JSON.parse(saved));
+    } catch {}
+    return new Set();
+  });
   // Unscheduled aircraft assigned to vans: tail → vanId
-  const [unscheduledOverrides, setUnscheduledOverrides] = useState<Map<string, number>>(new Map());
+  const [unscheduledOverrides, setUnscheduledOverrides] = useState<Map<string, number>>(() => {
+    try {
+      const saved = localStorage.getItem(`vanUnscheduled-${date}`);
+      if (saved) return new Map(JSON.parse(saved));
+    } catch {}
+    return new Map();
+  });
+
+  // Persist overrides to localStorage on every change
+  useEffect(() => {
+    try {
+      if (overrides.size > 0) localStorage.setItem(`vanOverrides-${date}`, JSON.stringify([...overrides]));
+      else localStorage.removeItem(`vanOverrides-${date}`);
+    } catch {}
+  }, [overrides, date]);
+  useEffect(() => {
+    try {
+      if (removals.size > 0) localStorage.setItem(`vanRemovals-${date}`, JSON.stringify([...removals]));
+      else localStorage.removeItem(`vanRemovals-${date}`);
+    } catch {}
+  }, [removals, date]);
+  useEffect(() => {
+    try {
+      if (unscheduledOverrides.size > 0) localStorage.setItem(`vanUnscheduled-${date}`, JSON.stringify([...unscheduledOverrides]));
+      else localStorage.removeItem(`vanUnscheduled-${date}`);
+    } catch {}
+  }, [unscheduledOverrides, date]);
 
   // Publish state
   const [publishedAt, setPublishedAt] = useState<string | null>(null);
@@ -1847,15 +1966,25 @@ function ScheduleTab({
   // Published assignments used to restore overrides
   const [publishedAssignments, setPublishedAssignments] = useState<{ vanId: number; flightIds: string[] }[]>([]);
 
-  // Check existing publish status + load notes on mount / date change
+  // Check existing publish status + load notes + restore overrides on mount / date change
   useEffect(() => {
     setPublishedAt(null);
     setPublishError(null);
     setPublishedEditsSnapshot("");
     setPublishedAssignments([]);
-    setOverrides(new Map());
-    setRemovals(new Set());
-    setUnscheduledOverrides(new Map());
+    // Restore overrides from localStorage for this date
+    try {
+      const savedO = localStorage.getItem(`vanOverrides-${date}`);
+      setOverrides(savedO ? new Map(JSON.parse(savedO)) : new Map());
+    } catch { setOverrides(new Map()); }
+    try {
+      const savedR = localStorage.getItem(`vanRemovals-${date}`);
+      setRemovals(savedR ? new Set(JSON.parse(savedR)) : new Set());
+    } catch { setRemovals(new Set()); }
+    try {
+      const savedU = localStorage.getItem(`vanUnscheduled-${date}`);
+      setUnscheduledOverrides(savedU ? new Map(JSON.parse(savedU)) : new Map());
+    } catch { setUnscheduledOverrides(new Map()); }
     fetch(`/api/vans/publish?date=${date}`)
       .then((r) => r.json())
       .then((d) => {
@@ -1940,17 +2069,17 @@ function ScheduleTab({
     return map;
   }, [allFlights, date, liveVanPositions, mxNotesByTail]);
 
-  // Restore overrides from published assignments once base items are available
+  // Fallback: restore overrides from published assignments if localStorage was empty
   const overridesRestoredRef = useRef<string>("");
   useEffect(() => {
     if (publishedAssignments.length === 0 || baseItemsByVan.size === 0) return;
-    // Only restore once per date
     if (overridesRestoredRef.current === date) return;
     overridesRestoredRef.current = date;
+    // Skip if localStorage already had overrides for this date
+    if (overrides.size > 0) return;
     const newOverrides = new Map<string, number>();
     for (const a of publishedAssignments) {
       for (const fid of a.flightIds) {
-        // Find which van this flight was auto-assigned to
         let baseVanId: number | undefined;
         for (const [vanId, items] of baseItemsByVan) {
           if (items.some((item) => item.arrFlight.id === fid)) {
@@ -1964,6 +2093,7 @@ function ScheduleTab({
       }
     }
     if (newOverrides.size > 0) setOverrides(newOverrides);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [publishedAssignments, baseItemsByVan, date]);
 
   // All arrivals today (no zone filter) — used for the uncovered pool
@@ -2322,7 +2452,10 @@ function ScheduleTab({
         <div className="flex items-center gap-2 flex-wrap">
           {totalEdits > 0 && (
             <button
-              onClick={() => { setOverrides(new Map()); setRemovals(new Set()); setUnscheduledOverrides(new Map()); }}
+              onClick={() => {
+                setOverrides(new Map()); setRemovals(new Set()); setUnscheduledOverrides(new Map());
+                try { localStorage.removeItem(`vanOverrides-${date}`); localStorage.removeItem(`vanRemovals-${date}`); localStorage.removeItem(`vanUnscheduled-${date}`); } catch {}
+              }}
               className="text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5 hover:bg-amber-100 transition-colors"
             >
               Reset all edits ({totalEdits})
@@ -2978,10 +3111,107 @@ const haversineKmClient = (lat1: number, lon1: number, lat2: number, lon2: numbe
 // Main client component
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// MX Admin Tab — manage per-type service checklists
+// ---------------------------------------------------------------------------
+
+function MxAdminTab() {
+  const [checklists, setChecklists] = useState(() => getServiceChecklists());
+  const [editingType, setEditingType] = useState<string | null>(null);
+  const [editText, setEditText] = useState("");
+  const [saved, setSaved] = useState(false);
+
+  function startEdit(typeCode: string) {
+    setEditingType(typeCode);
+    setEditText(checklists[typeCode]?.steps.join("\n") ?? "");
+    setSaved(false);
+  }
+
+  function saveEdit() {
+    if (!editingType) return;
+    const steps = editText.split("\n").map((s) => s.replace(/^\d+[\.\-\)]\s*/, "").trim()).filter(Boolean);
+    const updated = {
+      ...checklists,
+      [editingType]: { ...checklists[editingType], steps },
+    };
+    setChecklists(updated);
+    try { localStorage.setItem("vanServiceChecklists", JSON.stringify(updated)); } catch {}
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  }
+
+  function resetToDefaults() {
+    setChecklists(DEFAULT_SERVICE_CHECKLISTS);
+    try { localStorage.removeItem("vanServiceChecklists"); } catch {}
+    setEditingType(null);
+    setSaved(false);
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-semibold text-gray-700">Service Checklists by Aircraft Type</h3>
+        <button
+          onClick={resetToDefaults}
+          className="text-xs text-gray-500 hover:text-red-600 border border-gray-200 hover:border-red-200 rounded px-2 py-1 transition-colors"
+        >
+          Reset to Defaults
+        </button>
+      </div>
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+        {Object.entries(checklists).map(([typeCode, cl]) => (
+          <div key={typeCode} className="border border-gray-200 rounded-xl p-4 bg-white">
+            <div className="flex items-center justify-between mb-2">
+              <div>
+                <span className="text-sm font-semibold text-gray-800">{cl.label}</span>
+                <span className="text-xs text-gray-400 ml-2">({typeCode})</span>
+              </div>
+              <button
+                onClick={() => editingType === typeCode ? setEditingType(null) : startEdit(typeCode)}
+                className="text-xs text-blue-600 hover:text-blue-800 font-medium"
+              >
+                {editingType === typeCode ? "Cancel" : "Edit"}
+              </button>
+            </div>
+            {editingType === typeCode ? (
+              <div className="space-y-2">
+                <textarea
+                  value={editText}
+                  onChange={(e) => setEditText(e.target.value)}
+                  className="w-full text-xs border border-gray-200 rounded-lg p-2 h-40 font-mono focus:outline-none focus:ring-1 focus:ring-blue-400"
+                  placeholder="One step per line..."
+                />
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={saveEdit}
+                    className="text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded px-3 py-1 transition-colors"
+                  >
+                    Save
+                  </button>
+                  {saved && <span className="text-xs text-green-600 font-medium">Saved!</span>}
+                </div>
+              </div>
+            ) : (
+              <ol className="space-y-0.5 list-decimal list-inside text-xs text-gray-600">
+                {cl.steps.map((step, i) => (
+                  <li key={i} className="py-0.5">{step}</li>
+                ))}
+              </ol>
+            )}
+          </div>
+        ))}
+      </div>
+      <div className="text-xs text-gray-400">
+        Checklists are stored locally in your browser. Changes apply immediately to the Regular Service Check section in each van.
+      </div>
+    </div>
+  );
+}
+
 export default function VanPositioningClient({ initialFlights, mxNotes, aircraftTags = [] }: { initialFlights: Flight[]; mxNotes?: MxNote[]; aircraftTags?: AircraftTag[] }) {
   const dates = useMemo(() => getDateRange(2), []); // today + tomorrow
   const [dayIdx, setDayIdx] = useState(0);
-  const [activeTab, setActiveTab] = useState<"map" | "schedule" | "flights">("schedule");
+  const [activeTab, setActiveTab] = useState<"map" | "schedule" | "flights" | "mx-admin">("schedule");
   const [viewMode, setViewMode] = useState<"map" | "list">("map");
   const [selectedVan, setSelectedVan] = useState<number | null>(null);
   const [mxNotesOpen, setMxNotesOpen] = useState(false);
@@ -3725,6 +3955,9 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
             </span>
           )}
         </TabBtn>
+        <TabBtn active={activeTab === "mx-admin"} onClick={() => setActiveTab("mx-admin")}>
+          MX Admin
+        </TabBtn>
       </div>
 
       {/* ── Van Map tab ── */}
@@ -4090,6 +4323,11 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
           </div>
         );
       })()}
+
+      {/* ── MX Admin tab ── */}
+      {activeTab === "mx-admin" && (
+        <MxAdminTab />
+      )}
 
       {/* ── Long-Term Maintenance section ── */}
       {longTermMxAircraft.length > 0 && (

@@ -345,12 +345,6 @@ function buildAdvVsActual(
   }
 
   // Group advertised by vendor+airport — skip tail-specific rows, filter by volume tier
-  const avfuelKmmu = advertisedPrices.filter((a) => a.fbo_vendor === "Avfuel" && a.airport_code.includes("MMU") && !a.airport_code.includes("MMUN"));
-  if (avfuelKmmu.length > 0) {
-    console.log("[DEBUG] Avfuel KMMU in advertisedPrices:", avfuelKmmu.length, "tail_numbers:", avfuelKmmu.map(a => a.tail_numbers));
-  } else {
-    console.log("[DEBUG] NO Avfuel KMMU in advertisedPrices. Total:", advertisedPrices.length, "Avfuel total:", advertisedPrices.filter(a => a.fbo_vendor === "Avfuel").length);
-  }
   let filteredAdv = advertisedPrices.filter((a) => !a.tail_numbers);
   if (volumeGallons && volumeGallons > 0) {
     // Keep only tiers that match the selected volume
@@ -929,23 +923,16 @@ export default function FuelPricesTable({
     return rows;
   }, [advVsActual, airportFilter, vendorFilter, search, compareJetFbo]);
 
-  // Cheapest price per airport — only compare rows from the latest week
-  const { cheapestByAirport, latestWeek: advLatestWeek } = useMemo(() => {
-    // Find the latest week across all visible rows
-    let latestWeek = "";
-    for (const r of filteredAdvVsActual) {
-      if (r.currentWeek > latestWeek) latestWeek = r.currentWeek;
-    }
-    // Only compare prices from that latest week
+  // Cheapest price per airport — compare across all current vendor rows
+  const cheapestByAirport = useMemo(() => {
     const best = new Map<string, number>();
     for (const r of filteredAdvVsActual) {
-      if (r.currentWeek !== latestWeek) continue;
       const existing = best.get(r.airport);
       if (existing == null || r.currentPrice < existing) {
         best.set(r.airport, r.currentPrice);
       }
     }
-    return { cheapestByAirport: best, latestWeek };
+    return best;
   }, [filteredAdvVsActual]);
 
   const pageRows = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
@@ -1808,7 +1795,7 @@ export default function FuelPricesTable({
                     : "text-red-600";
                   const overActual = row.vsActualPct != null && row.vsActualPct > 2;
                   const underActual = row.vsActualPct != null && row.vsActualPct < -2;
-                  const isCheapest = row.currentWeek === advLatestWeek && cheapestByAirport.get(row.airport) === row.currentPrice;
+                  const isCheapest = cheapestByAirport.get(row.airport) === row.currentPrice;
                   return (
                     <tr
                       key={row.key}
