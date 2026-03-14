@@ -635,8 +635,8 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
     fetchFlightInfo();
     fetchSwimStatus();
     fetchTripSalespersons();
-    const interval = setInterval(fetchFlightInfo, 150_000); // 2.5 min — server cache is 3min
-    const swimInterval = setInterval(fetchSwimStatus, 150_000); // 2.5 min same as FA
+    const interval = setInterval(fetchFlightInfo, 300_000); // 5 min — matches server cache TTL
+    const swimInterval = setInterval(fetchSwimStatus, 300_000); // 5 min same as FA
     const spInterval = setInterval(fetchTripSalespersons, 300_000);
     return () => { clearInterval(interval); clearInterval(swimInterval); clearInterval(spInterval); };
   }, [fetchFlightInfo, fetchSwimStatus, fetchTripSalespersons]);

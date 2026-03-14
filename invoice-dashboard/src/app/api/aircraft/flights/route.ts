@@ -66,8 +66,8 @@ export async function GET(req: NextRequest) {
     after(async () => {
       try {
         const { allTails, activeTails } = await getTails();
-        console.log("[SWR] Background refresh starting for", allTails.length, "tails");
-        const flights = await getActiveFlights(allTails);
+        console.log("[SWR] Background refresh starting for", activeTails.length, "active tails (of", allTails.length, "total)");
+        const flights = await getActiveFlights(activeTails);
         await setCache(flights);
         console.log("[SWR] Background refresh complete,", flights.length, "flights");
         await refreshAlerts(allTails, activeTails).catch(() => {});
@@ -108,10 +108,11 @@ export async function GET(req: NextRequest) {
   }
 
   // No cache at all (first load) or force refresh — block and fetch
+  // Only query tails with flights in ±48h to reduce FA API costs
   const { allTails: tails, activeTails } = await getTails();
 
   try {
-    const flights = await getActiveFlights(tails);
+    const flights = await getActiveFlights(activeTails);
     await setCache(flights);
     clearRefreshing(); // in case a background refresh was somehow flagged
 

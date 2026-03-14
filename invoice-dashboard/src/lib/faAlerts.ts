@@ -125,7 +125,7 @@ export async function refreshAlerts(tails: string[], activeTails: string[]): Pro
             aircraft_type: null,
             start: null,
             end: null,
-            max_weekly: 200,
+            max_weekly: 50,
             events: {
               arrival: false,
               departure: false,
