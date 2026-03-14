@@ -293,6 +293,7 @@ export type MxNote = {
   airport_icao: string | null;
   subject: string | null;
   body: string | null;
+  description: string | null; // free-text notes from JetInsight DESCRIPTION field
   start_time: string | null;
   end_time: string | null;
   created_at: string;
@@ -314,10 +315,12 @@ export async function fetchMxNotes(): Promise<MxNote[]> {
   return data.map((row) => {
     let startTime: string | null = null;
     let endTime: string | null = null;
+    let description: string | null = null;
     try {
       const rd = typeof row.raw_data === "string" ? JSON.parse(row.raw_data) : row.raw_data;
       startTime = rd?.start_time ?? null;
       endTime = rd?.end_time ?? null;
+      description = rd?.description ?? null;
     } catch { /* ignore */ }
     return {
       id: row.id as string,
@@ -325,6 +328,7 @@ export async function fetchMxNotes(): Promise<MxNote[]> {
       airport_icao: row.airport_icao as string | null,
       subject: row.subject as string | null,
       body: row.body as string | null,
+      description,
       start_time: startTime,
       end_time: endTime,
       created_at: row.created_at as string,

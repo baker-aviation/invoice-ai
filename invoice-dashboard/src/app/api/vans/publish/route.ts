@@ -36,13 +36,16 @@ export async function GET(req: NextRequest) {
   const supa = createServiceClient();
   const { data } = await supa
     .from("van_published_schedules")
-    .select("published_at")
+    .select("van_id, flight_ids, published_at")
     .eq("schedule_date", date)
-    .order("published_at", { ascending: false })
-    .limit(1);
+    .order("published_at", { ascending: false });
 
   const publishedAt = data?.[0]?.published_at ?? null;
-  return NextResponse.json({ published_at: publishedAt });
+  const assignments = (data ?? []).map((row: { van_id: number; flight_ids: string[] }) => ({
+    vanId: row.van_id,
+    flightIds: row.flight_ids ?? [],
+  }));
+  return NextResponse.json({ published_at: publishedAt, assignments });
 }
 
 export async function POST(req: NextRequest) {

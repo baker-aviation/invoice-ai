@@ -824,6 +824,41 @@ function routeDistKm(items: VanFlightItem[]): number {
 // ---------------------------------------------------------------------------
 
 type SlackChannel = { id: string; name: string };
+/** Build Slack-ready item payloads from VanFlightItems. Used by single share and bulk share. */
+function buildSlackItems(items: VanFlightItem[], flightInfoMap: Map<string, FlightInfoEntry>) {
+  return items.map((item) => {
+    const fi = flightInfoMap.get(item.arrFlight.tail_number ?? "");
+    const arrMs = item.arrFlight.scheduled_arrival ? new Date(item.arrFlight.scheduled_arrival).getTime() : null;
+    const gapMs = item.nextDep && arrMs
+      ? new Date(item.nextDep.scheduled_departure).getTime() - arrMs : Infinity;
+    const turnLabel = !item.nextDep || gapMs >= 6 * 3600000
+      ? "Done for day"
+      : gapMs < 2 * 3600000 ? "Quickturn" : undefined;
+    let slackStatus: string;
+    if (fi?.diverted) {
+      slackStatus = "DIVERTED";
+    } else if (fi?.status?.includes("Landed")) {
+      slackStatus = "Landed";
+    } else if (fi?.status?.includes("En Route")) {
+      const eta = fi.arrival_time ? fmtTimeUntil(fi.arrival_time) : "";
+      slackStatus = eta ? `En Route (ETA ${eta})` : "En Route";
+    } else if (item.arrFlight.scheduled_arrival && new Date(item.arrFlight.scheduled_arrival) < new Date()) {
+      slackStatus = "~Landed";
+    } else {
+      slackStatus = "Scheduled";
+    }
+    return {
+      tail: item.arrFlight.tail_number ?? "—",
+      route: `${item.arrFlight.departure_icao?.replace(/^K/, "") ?? "?"} → ${item.airport}`,
+      arrivalTime: item.arrFlight.scheduled_arrival ? fmtUtcHM(item.arrFlight.scheduled_arrival, item.arrFlight.arrival_icao) : "—",
+      status: slackStatus,
+      nextDep: item.nextDep ? `Flying again ${fmtUtcHM(item.nextDep.scheduled_departure, item.nextDep.departure_icao)} → ${item.nextDep.arrival_icao?.replace(/^K/, "") ?? "?"}` : undefined,
+      turnStatus: turnLabel,
+      driveTime: item.distKm > 0 ? fmtDriveTime(item.distKm) : undefined,
+    };
+  });
+}
+
 type SlackShareState = "idle" | "loading-channels" | "picking" | "sending" | "success" | "error";
 
 function SlackShareModal({
@@ -877,38 +912,7 @@ function SlackShareModal({
         vanId,
         homeAirport,
         date,
-        items: items.map((item) => {
-          const fi = flightInfoMap.get(item.arrFlight.tail_number ?? "");
-          const arrMs = item.arrFlight.scheduled_arrival ? new Date(item.arrFlight.scheduled_arrival).getTime() : null;
-          const gapMs = item.nextDep && arrMs
-            ? new Date(item.nextDep.scheduled_departure).getTime() - arrMs : Infinity;
-          const turnLabel = !item.nextDep || gapMs >= 6 * 3600000
-            ? "Done for day"
-            : gapMs < 2 * 3600000 ? "Quickturn" : undefined;
-          // Determine status from FA data when available
-          let slackStatus: string;
-          if (fi?.diverted) {
-            slackStatus = "DIVERTED";
-          } else if (fi?.status?.includes("Landed")) {
-            slackStatus = "Landed";
-          } else if (fi?.status?.includes("En Route")) {
-            const eta = fi.arrival_time ? fmtTimeUntil(fi.arrival_time) : "";
-            slackStatus = eta ? `En Route (ETA ${eta})` : "En Route";
-          } else if (item.arrFlight.scheduled_arrival && new Date(item.arrFlight.scheduled_arrival) < new Date()) {
-            slackStatus = "~Landed";
-          } else {
-            slackStatus = "Scheduled";
-          }
-          return {
-            tail: item.arrFlight.tail_number ?? "—",
-            route: `${item.arrFlight.departure_icao?.replace(/^K/, "") ?? "?"} → ${item.airport}`,
-            arrivalTime: item.arrFlight.scheduled_arrival ? fmtUtcHM(item.arrFlight.scheduled_arrival, item.arrFlight.arrival_icao) : "—",
-            status: slackStatus,
-            nextDep: item.nextDep ? `Flying again ${fmtUtcHM(item.nextDep.scheduled_departure, item.nextDep.departure_icao)} → ${item.nextDep.arrival_icao?.replace(/^K/, "") ?? "?"}` : undefined,
-            turnStatus: turnLabel,
-            driveTime: item.distKm > 0 ? fmtDriveTime(item.distKm) : undefined,
-          };
-        }),
+        items: buildSlackItems(items, flightInfoMap),
       };
       const res = await fetch("/api/vans/share-slack", {
         method: "POST",
@@ -1018,69 +1022,195 @@ function fmtTimeRemaining(endTime: string | null): string | null {
   return "<1h left";
 }
 
-function MxNoteInline({ notes, hiddenIds, onHideForToday, showNoMxTag }: { notes: MxNote[]; hiddenIds?: Set<string>; onHideForToday?: (id: string) => void; showNoMxTag?: boolean }) {
-  // MEL items: always show. MX items: only today/tomorrow.
+/** Returns days remaining until midnight of end_time day. Negative = overdue. */
+function daysRemaining(endTime: string | null): number {
+  if (!endTime) return Infinity;
+  const end = new Date(endTime).getTime() + 24 * 60 * 60 * 1000;
+  return Math.floor((end - Date.now()) / (24 * 60 * 60 * 1000));
+}
+
+/** Single MX note row with expandable description */
+function MxNoteRow({ note, onHideForToday }: { note: MxNote; onHideForToday?: (id: string) => void }) {
+  const [descOpen, setDescOpen] = useState(false);
+  return (
+    <div className="rounded-lg px-3 py-1.5 bg-orange-50 border border-orange-200">
+      <div className="flex items-start gap-2">
+        <span className="font-bold text-xs mt-0.5 shrink-0 text-orange-500">MX</span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs font-medium text-orange-700">{note.airport_icao}</span>
+            <span className="text-xs text-gray-700">{note.body}</span>
+            {note.description && (
+              <button
+                onClick={() => setDescOpen((v) => !v)}
+                className="text-[10px] font-medium text-orange-500 hover:text-orange-700 transition-colors"
+              >
+                {descOpen ? "hide notes" : "notes"}
+                <svg className={`w-2.5 h-2.5 inline ml-0.5 transition-transform ${descOpen ? "rotate-180" : ""}`} fill="none" viewBox="0 0 10 10" stroke="currentColor" strokeWidth={2}><path d="M2.5 3.5l2.5 2.5 2.5-2.5" /></svg>
+              </button>
+            )}
+            {note.start_time && (
+              <span className="text-[11px] text-gray-400 ml-auto shrink-0">
+                {new Date(note.start_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                {note.end_time && note.end_time !== note.start_time && ` – ${new Date(note.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`}
+              </span>
+            )}
+          </div>
+          {descOpen && note.description && (
+            <div className="mt-1 text-xs text-gray-600 bg-white/60 rounded px-2 py-1 whitespace-pre-wrap border border-orange-100">
+              {note.description}
+            </div>
+          )}
+          {onHideForToday && (
+            <button
+              onClick={() => onHideForToday(note.id)}
+              className="text-[10px] font-medium text-orange-400 hover:text-orange-700 hover:bg-orange-50 border border-orange-200 rounded px-2 py-0.5 mt-1 transition-colors"
+            >
+              Hide for Today
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Inline MX notes per aircraft — only non-MEL MX items (MELs moved to van-level accordion) */
+function MxNoteInline({ notes, hiddenIds, onHideForToday }: { notes: MxNote[]; hiddenIds?: Set<string>; onHideForToday?: (id: string) => void }) {
   const todayEt = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
   const tomorrowEt = (() => { const d = new Date(); d.setDate(d.getDate() + 1); return d.toLocaleDateString("en-CA", { timeZone: "America/New_York" }); })();
   const visible = notes.filter((n) => {
     if (hiddenIds?.has(n.id)) return false;
-    if (isMel(n)) return true; // MEL items always shown
-    if (!n.start_time) return true; // no date = always show
-    // MX items: show if start or end date overlaps today or tomorrow
+    if (isMel(n)) return false;
+    if (!n.start_time) return true;
     const startDate = n.start_time.slice(0, 10);
     const endDate = n.end_time ? n.end_time.slice(0, 10) : startDate;
     return endDate >= todayEt && startDate <= tomorrowEt;
   });
-  if (visible.length === 0) {
-    if (showNoMxTag) {
-      return (
-        <div className="ml-8 mt-1">
-          <span className="text-[11px] bg-green-50 text-green-600 border border-green-200 rounded-full px-2.5 py-0.5 font-medium">
-            No Scheduled Maintenance
-          </span>
-        </div>
-      );
-    }
-    return null;
-  }
+  if (visible.length === 0) return null;
   return (
     <div className="ml-8 mt-1 space-y-1">
-      {visible.map((n) => {
-        const mel = isMel(n);
-        const timeLeft = mel ? fmtTimeRemaining(n.end_time) : null;
-        return (
-        <div key={n.id} className={`flex items-start gap-2 rounded-lg px-3 py-1.5 ${mel ? "bg-yellow-50 border border-yellow-300" : "bg-orange-50 border border-orange-200"}`}>
-          <span className={`font-bold text-xs mt-0.5 shrink-0 ${mel ? "text-yellow-600" : "text-orange-500"}`}>{mel ? "MEL" : "MX"}</span>
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className={`text-xs font-medium ${mel ? "text-yellow-700" : "text-orange-700"}`}>{n.airport_icao}</span>
-              <span className="text-xs text-gray-700">{n.body}</span>
-              <span className="flex items-center gap-1.5 ml-auto shrink-0">
-                {timeLeft && (
-                  <span className={`text-[10px] font-semibold rounded-full px-1.5 py-0.5 ${timeLeft === "overdue" ? "bg-red-100 text-red-700" : "bg-yellow-100 text-yellow-700"}`}>
-                    {timeLeft}
-                  </span>
-                )}
-                {n.start_time && (
-                  <span className="text-[11px] text-gray-400">
-                    {new Date(n.start_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-                    {n.end_time && n.end_time !== n.start_time && ` – ${new Date(n.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`}
-                  </span>
-                )}
-              </span>
-            </div>
-            {onHideForToday && (
-              <button
-                onClick={() => onHideForToday(n.id)}
-                className="text-[10px] font-medium text-orange-400 hover:text-orange-700 hover:bg-orange-50 border border-orange-200 rounded px-2 py-0.5 mt-1 transition-colors"
-              >
-                Hide for Today
-              </button>
-            )}
-          </div>
+      {visible.map((n) => (
+        <MxNoteRow key={n.id} note={n} onHideForToday={onHideForToday} />
+      ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Van-level Maintenance Notes accordion — collects all MEL items across aircraft
+// ---------------------------------------------------------------------------
+
+const SERVICE_CHECKLIST = [
+  "Meet pilots",
+  "Service ENGs and APU",
+  "Empty ecolo bottle",
+  "Check tire tread",
+  "Check fluids and gases",
+  "Check black binder for MELs/open 1008s",
+  "Report back here",
+  "Clean instruments face plates and panel",
+  "Drop pics here",
+];
+
+function VanMaintenanceAccordion({ items, mxNotesByTail, hiddenIds, onHideForToday }: {
+  items: VanFlightItem[];
+  mxNotesByTail: Map<string, MxNote[]>;
+  hiddenIds: Set<string>;
+  onHideForToday: (id: string) => void;
+}) {
+  const [melOpen, setMelOpen] = useState(false);
+  const [checklistOpen, setChecklistOpen] = useState(false);
+
+  // Collect all MEL items across all aircraft in this van
+  const allMels: { tail: string; note: MxNote }[] = [];
+  for (const item of items) {
+    const tail = item.arrFlight.tail_number ?? "";
+    const notes = mxNotesByTail.get(tail) ?? [];
+    for (const n of notes) {
+      if (hiddenIds.has(n.id)) continue;
+      if (isMel(n)) allMels.push({ tail, note: n });
+    }
+  }
+
+  return (
+    <div className="border-t">
+      {/* Maintenance Notes (MEL) accordion */}
+      <button
+        onClick={() => setMelOpen((v) => !v)}
+        className="w-full px-4 py-2 flex items-center justify-between text-xs font-semibold text-gray-600 hover:bg-gray-50 transition-colors"
+      >
+        <span>Maintenance Notes {allMels.length > 0 && `(${allMels.length})`}</span>
+        <span className="text-gray-400">{melOpen ? "▲" : "▼"}</span>
+      </button>
+      {melOpen && (
+        <div className="px-4 pb-2 space-y-1">
+          {allMels.length === 0 ? (
+            <div className="text-xs text-gray-400 py-1">No active MELs</div>
+          ) : (
+            allMels.map(({ tail, note: n }) => {
+              const days = daysRemaining(n.end_time);
+              const timeLeft = fmtTimeRemaining(n.end_time);
+              const isUrgent = days < 5;
+              return (
+                <div key={n.id} className={`flex items-start gap-2 rounded-lg px-3 py-1.5 ${isUrgent ? "bg-red-50 border border-red-200" : "bg-green-50 border border-green-200"}`}>
+                  <span className={`font-bold text-xs mt-0.5 shrink-0 ${isUrgent ? "text-red-600" : "text-green-600"}`}>MEL</span>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs font-mono font-semibold text-gray-700">{tail}</span>
+                      <span className={`text-xs font-medium ${isUrgent ? "text-red-700" : "text-green-700"}`}>{n.airport_icao}</span>
+                      <span className="text-xs text-gray-700">{n.body}</span>
+                      <span className="flex items-center gap-1.5 ml-auto shrink-0">
+                        {timeLeft && (
+                          <span className={`text-[10px] font-semibold rounded-full px-1.5 py-0.5 ${
+                            timeLeft === "overdue" ? "bg-red-100 text-red-700"
+                            : isUrgent ? "bg-red-100 text-red-700"
+                            : "bg-green-100 text-green-700"
+                          }`}>
+                            {timeLeft}
+                          </span>
+                        )}
+                        {n.start_time && (
+                          <span className="text-[11px] text-gray-400">
+                            {new Date(n.start_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                            {n.end_time && n.end_time !== n.start_time && ` – ${new Date(n.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`}
+                          </span>
+                        )}
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => onHideForToday(n.id)}
+                      className={`text-[10px] font-medium ${isUrgent ? "text-red-400 hover:text-red-700" : "text-green-500 hover:text-green-700"} border ${isUrgent ? "border-red-200" : "border-green-200"} rounded px-2 py-0.5 mt-1 transition-colors`}
+                    >
+                      Hide for Today
+                    </button>
+                  </div>
+                </div>
+              );
+            })
+          )}
         </div>
-        );
-      })}
+      )}
+
+      {/* Regular Service Check accordion */}
+      <button
+        onClick={() => setChecklistOpen((v) => !v)}
+        className="w-full px-4 py-2 flex items-center justify-between text-xs font-semibold text-gray-600 hover:bg-gray-50 transition-colors border-t"
+      >
+        <span className="flex items-center gap-1.5">
+          <span className="text-green-600">Regular Service Check</span>
+        </span>
+        <span className="text-gray-400">{checklistOpen ? "▲" : "▼"}</span>
+      </button>
+      {checklistOpen && (
+        <div className="px-4 pb-3">
+          <ol className="space-y-1 list-decimal list-inside text-xs text-gray-600">
+            {SERVICE_CHECKLIST.map((step, i) => (
+              <li key={i} className="py-0.5">{step}</li>
+            ))}
+          </ol>
+        </div>
+      )}
     </div>
   );
 }
@@ -1171,6 +1301,216 @@ function LegNoteInline({
       >
         Cancel
       </button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// AircraftCompactRow — compact default with expandable detail
+// ---------------------------------------------------------------------------
+
+function AircraftCompactRow({
+  arrFlight, nextDep, isRepo, nextIsRepo, airport, airportInfo, distKm,
+  fi, arrTime, hasLanded, delayMin, isEnRoute, faLanded,
+  doneForDay, isQuickturn, hasMaintenance, extraLegs,
+  color, zone, date,
+  mxNotes, hiddenTodayMxIds, onHideMxForToday,
+  legNote, onSaveNote, onDragStart, onRemove,
+}: {
+  arrFlight: Flight;
+  nextDep: Flight | null;
+  isRepo: boolean;
+  nextIsRepo: boolean;
+  airport: string;
+  airportInfo: ReturnType<typeof getAirportInfo>;
+  distKm: number;
+  fi: FlightInfoEntry | null;
+  arrTime: Date | null;
+  hasLanded: boolean;
+  delayMin: number;
+  isEnRoute: boolean;
+  faLanded: boolean;
+  doneForDay: boolean;
+  isQuickturn: boolean;
+  hasMaintenance: boolean;
+  extraLegs: Flight[];
+  color: string;
+  zone: (typeof FIXED_VAN_ZONES)[number];
+  date: string;
+  mxNotes: MxNote[];
+  hiddenTodayMxIds: Set<string>;
+  onHideMxForToday: (id: string) => void;
+  legNote: string;
+  onSaveNote: (flightId: string, tailNumber: string | null, note: string) => void;
+  onDragStart: (e: React.DragEvent, flightId: string, fromVanId: number) => void;
+  onRemove: (flightId: string) => void;
+}) {
+  const [detailOpen, setDetailOpen] = useState(false);
+
+  return (
+    <div
+      draggable
+      onDragStart={(e) => onDragStart(e, arrFlight.id, zone.vanId)}
+      className="px-4 py-2 cursor-grab active:cursor-grabbing hover:bg-gray-50/50"
+    >
+      {/* ── Compact row: tail + airport + ETA/schedule + drive time + status + remove ── */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="flex items-center gap-1.5 flex-shrink-0">
+            <div className="w-2.5 h-2.5 rounded-full" style={{ background: color }} />
+            <svg className="w-3 h-3 text-gray-300 cursor-pointer" fill="none" viewBox="0 0 12 12" stroke="currentColor" strokeWidth={2}>
+              <path d="M2 4h8M2 8h8" />
+            </svg>
+          </div>
+          <span className="font-mono font-semibold text-sm">{arrFlight.tail_number ?? "—"}</span>
+          <span className="text-xs text-gray-500">{airport}{airportInfo ? ` · ${airportInfo.city}, ${airportInfo.state}` : ""}</span>
+          <span className="text-xs text-gray-400">· {fmtDriveTime(distKm)}</span>
+          {isQuickturn && (
+            <span className="text-xs font-semibold bg-amber-100 text-amber-700 rounded-full px-2 py-0.5">Quickturn</span>
+          )}
+          {doneForDay && (
+            <span className="text-xs font-semibold bg-green-100 text-green-700 rounded-full px-2 py-0.5">Done for day</span>
+          )}
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {/* Schedule times + ETA */}
+          <div className="text-right text-xs whitespace-nowrap">
+            {arrFlight.scheduled_departure && (
+              <span className="text-gray-400">{fmtUtcHM(arrFlight.scheduled_departure, arrFlight.departure_icao)}</span>
+            )}
+            {arrTime && (
+              <span className="text-gray-400">{" → "}<span className="font-medium text-gray-700">{fmtUtcHM(arrFlight.scheduled_arrival!, arrFlight.arrival_icao)}</span></span>
+            )}
+            {isEnRoute && fi?.arrival_time && !faLanded && (() => {
+              const countdown = fmtTimeUntil(fi.arrival_time!);
+              const etaColorClass = delayMin > 30 ? "text-red-600" : delayMin > 15 ? "text-amber-600" : delayMin < -5 ? "text-green-600" : "text-blue-600";
+              return countdown ? (
+                <span className={`ml-1 font-medium ${etaColorClass}`}>
+                  ETA {countdown}
+                </span>
+              ) : null;
+            })()}
+          </div>
+          {/* Status badge */}
+          {fi?.diverted ? (
+            <span className="text-xs font-semibold rounded-full px-2 py-0.5 bg-red-100 text-red-700">DIVERTED</span>
+          ) : faLanded ? (
+            <span className="text-xs font-semibold rounded-full px-2 py-0.5 bg-green-100 text-green-700">Landed</span>
+          ) : isEnRoute ? (
+            <span className="text-xs font-semibold rounded-full px-2 py-0.5 bg-blue-100 text-blue-700">
+              En Route{fi?.progress_percent != null ? ` ${fi.progress_percent}%` : ""}
+            </span>
+          ) : (
+            <span className={`text-xs font-semibold rounded-full px-2 py-0.5 ${hasLanded ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-600"}`}>
+              {hasLanded ? "~Landed" : "Scheduled"}
+            </span>
+          )}
+          {!fi?.diverted && delayMin > 30 && (
+            <span className="text-xs font-semibold rounded-full px-2 py-0.5 bg-red-100 text-red-700">Delayed ~{delayMin}m</span>
+          )}
+          {!fi?.diverted && delayMin > 15 && delayMin <= 30 && (
+            <span className="text-xs font-semibold rounded-full px-2 py-0.5 bg-amber-100 text-amber-700">Delayed ~{delayMin}m</span>
+          )}
+          {/* Expand/collapse detail */}
+          <button
+            onClick={(e) => { e.stopPropagation(); setDetailOpen((v) => !v); }}
+            className="p-1 rounded-md text-gray-300 hover:text-gray-600 hover:bg-gray-100 transition-colors"
+            title="Toggle details"
+          >
+            <svg className={`w-3 h-3 transition-transform ${detailOpen ? "rotate-180" : ""}`} fill="none" viewBox="0 0 12 12" stroke="currentColor" strokeWidth={2}>
+              <path d="M3 4.5l3 3 3-3" />
+            </svg>
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); onRemove(arrFlight.id); }}
+            className="p-1 rounded-md text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors"
+            title="Remove from this van"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 14 14" stroke="currentColor" strokeWidth={2}>
+              <path d="M3 3l8 8M11 3l-8 8" />
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      {/* Next departure (always visible — key for driver) */}
+      {nextDep && (
+        <div className="ml-8 mt-0.5 text-xs">
+          <span className={nextIsRepo ? "text-purple-600 font-medium" : "text-blue-600 font-medium"}>
+            Flying again {fmtTimeUntil(nextDep.scheduled_departure) && `${fmtTimeUntil(nextDep.scheduled_departure)} · `}{fmtUtcHM(nextDep.scheduled_departure, nextDep.departure_icao)} → {nextDep.arrival_icao?.replace(/^K/, "") ?? "?"}
+            {nextIsRepo && <span className="text-purple-400 font-normal"> (repo)</span>}
+          </span>
+        </div>
+      )}
+
+      {/* MX notes from JetInsight (non-MEL only — MELs in van accordion) */}
+      <MxNoteInline notes={mxNotes} hiddenIds={hiddenTodayMxIds} onHideForToday={onHideMxForToday} />
+
+      {/* ── Expandable detail section ── */}
+      {detailOpen && (
+        <div className="ml-8 mt-1.5 space-y-1 border-l-2 border-gray-200 pl-3">
+          {/* Route + flight type */}
+          <div className="flex items-center gap-2 text-xs">
+            <span className="text-gray-500 font-mono">
+              {arrFlight.departure_icao?.replace(/^K/, "") ?? "?"} → {airport}
+            </span>
+            {inferFlightType(arrFlight) === "Maintenance" ? (
+              <span className="text-xs bg-orange-100 text-orange-700 rounded px-1.5 py-0.5">Maintenance</span>
+            ) : isRepo ? (
+              <span className="text-xs bg-purple-100 text-purple-700 rounded px-1.5 py-0.5">Positioning</span>
+            ) : (
+              <span className="text-xs bg-green-100 text-green-700 rounded px-1.5 py-0.5">Revenue</span>
+            )}
+            {hasMaintenance && (
+              <span className="text-xs font-semibold bg-orange-100 text-orange-700 rounded-full px-2 py-0.5">Maint</span>
+            )}
+          </div>
+          {/* Day's other legs */}
+          {extraLegs.length > 0 && (
+            <div className="space-y-0.5">
+              {extraLegs.map((f) => {
+                const ft = inferFlightType(f);
+                const cat = getFilterCategory(ft);
+                const dep = f.departure_icao?.replace(/^K/, "") ?? "?";
+                const arrIcao = f.arrival_icao?.replace(/^K/, "") ?? "?";
+                const isNext = nextDep && f.id === nextDep.id;
+                const isRevenue = cat === "charter";
+                const borderColor = cat === "charter" ? "border-green-400"
+                  : cat === "positioning" ? "border-purple-300"
+                  : cat === "maintenance" ? "border-orange-300"
+                  : "border-gray-200";
+                return (
+                  <div key={f.id} className={`flex items-center gap-2 text-xs pl-3 border-l-2 ${borderColor} ${
+                    isRevenue ? "py-1 bg-green-50/60 rounded-r font-medium text-gray-700" : "py-px text-gray-400"
+                  }`}>
+                    <span className={`font-mono ${isRevenue ? "text-gray-700" : "text-gray-500"}`}>{dep} → {arrIcao}</span>
+                    <span>{fmtUtcHM(f.scheduled_departure, f.departure_icao)}{f.scheduled_arrival ? ` – ${fmtUtcHM(f.scheduled_arrival, f.arrival_icao)}` : ""}</span>
+                    {ft && (
+                      <span className={`rounded px-1 py-0.5 text-[10px] font-medium ${
+                        cat === "positioning" ? "bg-purple-50 text-purple-500"
+                        : cat === "charter" ? "bg-green-100 text-green-700"
+                        : cat === "maintenance" ? "bg-orange-50 text-orange-500"
+                        : ft === "Owner" ? "bg-blue-50 text-blue-500"
+                        : "bg-gray-50 text-gray-400"
+                      }`}>
+                        {ft}
+                      </span>
+                    )}
+                    {isNext && <span className="text-blue-500 font-medium">← next</span>}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {/* MX director note */}
+          <LegNoteInline
+            flightId={arrFlight.id}
+            tailNumber={arrFlight.tail_number ?? null}
+            note={legNote}
+            onSave={onSaveNote}
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -1346,7 +1686,6 @@ function VanScheduleCard({
                 const fi = flightInfoMap.get(arrFlight.tail_number ?? "");
                 const arrTime = arrFlight.scheduled_arrival ? new Date(arrFlight.scheduled_arrival) : null;
                 const hasLanded = arrTime !== null && arrTime < now;
-                // Compute delay from FA data
                 const faEtaMs = fi?.arrival_time ? new Date(fi.arrival_time).getTime() : null;
                 const schedMs = arrTime ? arrTime.getTime() : null;
                 const delayMs = (faEtaMs != null && schedMs != null) ? faEtaMs - schedMs : 0;
@@ -1358,7 +1697,6 @@ function VanScheduleCard({
                   : Infinity;
                 const doneForDay = !nextDep || groundMs >= 6 * 3600000;
                 const isQuickturn = !!nextDep && groundMs < 2 * 3600000;
-                // Find same-day legs for this aircraft (exclude "other" type)
                 const extraLegs = (allFlights && arrFlight.tail_number)
                   ? allFlights.filter((f) => {
                       if (f.tail_number !== arrFlight.tail_number) return false;
@@ -1367,7 +1705,6 @@ function VanScheduleCard({
                       return getFilterCategory(inferFlightType(f)) !== "other";
                     }).sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure))
                   : [];
-                // Check if this aircraft has a maintenance event scheduled
                 const hasMaintenance = !!(allFlights && arrFlight.tail_number) && allFlights.some((f) =>
                   f.tail_number === arrFlight.tail_number &&
                   f.departure_icao && f.arrival_icao &&
@@ -1375,163 +1712,48 @@ function VanScheduleCard({
                   (isOnEtDate(f.scheduled_departure, date) || isOnEtDate(f.scheduled_arrival, date))
                 );
                 return (
-                  <div
+                  <AircraftCompactRow
                     key={arrFlight.id}
-                    draggable
-                    onDragStart={(e) => onDragStart(e, arrFlight.id, zone.vanId)}
-                    className="px-4 py-2 cursor-grab active:cursor-grabbing hover:bg-gray-50/50"
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      {/* Left: color dot + tail + route + badges */}
-                      <div className="flex items-center gap-2 min-w-0">
-                        <div className="flex items-center gap-1.5 flex-shrink-0">
-                          <div className="w-2.5 h-2.5 rounded-full" style={{ background: color }} />
-                          <svg className="w-3 h-3 text-gray-300" fill="none" viewBox="0 0 12 12" stroke="currentColor" strokeWidth={2}>
-                            <path d="M2 4h8M2 8h8" />
-                          </svg>
-                        </div>
-                        <span className="font-mono font-semibold text-sm">{arrFlight.tail_number ?? "—"}</span>
-                        <span className="text-xs text-gray-500 font-mono">
-                          {arrFlight.departure_icao?.replace(/^K/, "") ?? "?"} → {airport}
-                        </span>
-                        {inferFlightType(arrFlight) === "Maintenance" ? (
-                          <span className="text-xs bg-orange-100 text-orange-700 rounded px-1.5 py-0.5">Maintenance</span>
-                        ) : isRepo ? (
-                          <span className="text-xs bg-purple-100 text-purple-700 rounded px-1.5 py-0.5">Positioning</span>
-                        ) : (
-                          <span className="text-xs bg-green-100 text-green-700 rounded px-1.5 py-0.5">Revenue</span>
-                        )}
-                        {isQuickturn && (
-                          <span className="text-xs font-semibold bg-amber-100 text-amber-700 rounded-full px-2 py-0.5">Quickturn</span>
-                        )}
-                        {doneForDay && (
-                          <span className="text-xs font-semibold bg-green-100 text-green-700 rounded-full px-2 py-0.5">Done for day</span>
-                        )}
-                        {hasMaintenance && (
-                          <span className="text-xs font-semibold bg-orange-100 text-orange-700 rounded-full px-2 py-0.5">Maint</span>
-                        )}
-                      </div>
-                      {/* Right: times + status + countdown + remove */}
-                      <div className="flex items-center gap-2 shrink-0">
-                        <div className="text-right text-xs whitespace-nowrap">
-                          {arrFlight.scheduled_departure && (
-                            <span className="text-gray-400">{fmtUtcHM(arrFlight.scheduled_departure, arrFlight.departure_icao)}</span>
-                          )}
-                          {arrTime && (
-                            <span className="text-gray-400">{" → "}<span className="font-medium text-gray-700">{fmtUtcHM(arrFlight.scheduled_arrival!, arrFlight.arrival_icao)}</span></span>
-                          )}
-                          {/* Landing countdown when en route with FA ETA */}
-                          {isEnRoute && fi?.arrival_time && !faLanded && (() => {
-                            const countdown = fmtTimeUntil(fi.arrival_time!);
-                            const etaColorClass = delayMin > 30 ? "text-red-600" : delayMin > 15 ? "text-amber-600" : delayMin < -5 ? "text-green-600" : "text-blue-600";
-                            return countdown ? (
-                              <span className={`ml-1 font-medium ${etaColorClass}`}>
-                                Landing {countdown}
-                              </span>
-                            ) : null;
-                          })()}
-                        </div>
-                        {/* FA-powered status badge */}
-                        {fi?.diverted ? (
-                          <span className="text-xs font-semibold rounded-full px-2 py-0.5 bg-red-100 text-red-700">DIVERTED</span>
-                        ) : faLanded ? (
-                          <span className="text-xs font-semibold rounded-full px-2 py-0.5 bg-green-100 text-green-700">Landed</span>
-                        ) : isEnRoute ? (
-                          <span className="text-xs font-semibold rounded-full px-2 py-0.5 bg-blue-100 text-blue-700">
-                            En Route{fi?.progress_percent != null ? ` ${fi.progress_percent}%` : ""}
-                          </span>
-                        ) : (
-                          <span className={`text-xs font-semibold rounded-full px-2 py-0.5 ${hasLanded ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-600"}`}>
-                            {hasLanded ? "~Landed" : "Scheduled"}
-                          </span>
-                        )}
-                        {/* Delay alert badges (diversion already shown in status badge above) */}
-                        {!fi?.diverted && delayMin > 30 && (
-                          <span className="text-xs font-semibold rounded-full px-2 py-0.5 bg-red-100 text-red-700">Delayed ~{delayMin}m</span>
-                        )}
-                        {!fi?.diverted && delayMin > 15 && delayMin <= 30 && (
-                          <span className="text-xs font-semibold rounded-full px-2 py-0.5 bg-amber-100 text-amber-700">Delayed ~{delayMin}m</span>
-                        )}
-                        <button
-                          onClick={(e) => { e.stopPropagation(); onRemove(arrFlight.id); }}
-                          className="p-1 rounded-md text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors"
-                          title="Remove from this van"
-                        >
-                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 14 14" stroke="currentColor" strokeWidth={2}>
-                            <path d="M3 3l8 8M11 3l-8 8" />
-                          </svg>
-                        </button>
-                      </div>
-                    </div>
-                    {/* Sub-info line: airport city + drive time + FA ETA + flying again */}
-                    <div className="ml-8 mt-0.5 flex items-center gap-2 text-xs text-gray-400 flex-wrap">
-                      <span>
-                        {airport}{airportInfo ? ` · ${airportInfo.city}, ${airportInfo.state}` : ""} · {fmtDriveTime(distKm)}
-                        {isEnRoute && fi?.arrival_time && !faLanded && (() => {
-                          const etaStr = fmtTimeUntil(fi.arrival_time!);
-                          return etaStr ? ` · ETA ${etaStr}` : "";
-                        })()}
-                      </span>
-                      {nextDep && (
-                        <>
-                          <span className="text-gray-300">|</span>
-                          <span className={nextIsRepo ? "text-purple-600 font-medium" : "text-blue-600 font-medium"}>
-                            Flying again {fmtTimeUntil(nextDep.scheduled_departure) && `${fmtTimeUntil(nextDep.scheduled_departure)} · `}{fmtUtcHM(nextDep.scheduled_departure, nextDep.departure_icao)} → {nextDep.arrival_icao?.replace(/^K/, "") ?? "?"}
-                            {nextIsRepo && <span className="text-purple-400 font-normal"> (repo)</span>}
-                          </span>
-                        </>
-                      )}
-                    </div>
-                    {/* Day's other legs for this aircraft */}
-                    {extraLegs.length > 0 && (
-                      <div className="ml-8 mt-1 space-y-0.5">
-                        {extraLegs.map((f) => {
-                          const ft = inferFlightType(f);
-                          const cat = getFilterCategory(ft);
-                          const dep = f.departure_icao?.replace(/^K/, "") ?? "?";
-                          const arrIcao = f.arrival_icao?.replace(/^K/, "") ?? "?";
-                          const isNext = nextDep && f.id === nextDep.id;
-                          const isRevenue = cat === "charter";
-                          const borderColor = cat === "charter" ? "border-green-400"
-                            : cat === "positioning" ? "border-purple-300"
-                            : cat === "maintenance" ? "border-orange-300"
-                            : "border-gray-200";
-                          return (
-                            <div key={f.id} className={`flex items-center gap-2 text-xs pl-3 border-l-2 ${borderColor} ${
-                              isRevenue ? "py-1 bg-green-50/60 rounded-r font-medium text-gray-700" : "py-px text-gray-400"
-                            }`}>
-                              <span className={`font-mono ${isRevenue ? "text-gray-700" : "text-gray-500"}`}>{dep} → {arrIcao}</span>
-                              <span>{fmtUtcHM(f.scheduled_departure, f.departure_icao)}{f.scheduled_arrival ? ` – ${fmtUtcHM(f.scheduled_arrival, f.arrival_icao)}` : ""}</span>
-                              {ft && (
-                                <span className={`rounded px-1 py-0.5 text-[10px] font-medium ${
-                                  cat === "positioning" ? "bg-purple-50 text-purple-500"
-                                  : cat === "charter" ? "bg-green-100 text-green-700"
-                                  : cat === "maintenance" ? "bg-orange-50 text-orange-500"
-                                  : ft === "Owner" ? "bg-blue-50 text-blue-500"
-                                  : "bg-gray-50 text-gray-400"
-                                }`}>
-                                  {ft}
-                                </span>
-                              )}
-                              {isNext && <span className="text-blue-500 font-medium">← next</span>}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                    {/* MX notes from JetInsight */}
-                    <MxNoteInline notes={mxNotesByTail.get(arrFlight.tail_number ?? "") ?? []} hiddenIds={hiddenTodayMxIds} onHideForToday={onHideMxForToday} showNoMxTag />
-                    {/* MX director note */}
-                    <LegNoteInline
-                      flightId={arrFlight.id}
-                      tailNumber={arrFlight.tail_number ?? null}
-                      note={legNotes.get(arrFlight.id) ?? ""}
-                      onSave={onSaveNote}
-                    />
-                  </div>
+                    arrFlight={arrFlight}
+                    nextDep={nextDep}
+                    isRepo={isRepo}
+                    nextIsRepo={nextIsRepo}
+                    airport={airport}
+                    airportInfo={airportInfo}
+                    distKm={distKm}
+                    fi={fi ?? null}
+                    arrTime={arrTime}
+                    hasLanded={hasLanded}
+                    delayMin={delayMin}
+                    isEnRoute={isEnRoute}
+                    faLanded={faLanded}
+                    doneForDay={doneForDay}
+                    isQuickturn={isQuickturn}
+                    hasMaintenance={hasMaintenance}
+                    extraLegs={extraLegs}
+                    color={color}
+                    zone={zone}
+                    date={date}
+                    mxNotes={mxNotesByTail.get(arrFlight.tail_number ?? "") ?? []}
+                    hiddenTodayMxIds={hiddenTodayMxIds}
+                    onHideMxForToday={onHideMxForToday}
+                    legNote={legNotes.get(arrFlight.id) ?? ""}
+                    onSaveNote={onSaveNote}
+                    onDragStart={onDragStart}
+                    onRemove={onRemove}
+                  />
                 );
               })}
             </div>
+          )}
+          {/* Van-level Maintenance Notes + Service Checklist */}
+          {items.length > 0 && (
+            <VanMaintenanceAccordion
+              items={items}
+              mxNotesByTail={mxNotesByTail}
+              hiddenIds={hiddenTodayMxIds}
+              onHideForToday={onHideMxForToday}
+            />
           )}
           {isDropTarget && items.length > 0 && (
             <div className="px-4 py-2 text-xs text-blue-500 font-medium text-center bg-blue-50/50 border-t border-dashed border-blue-200">
@@ -1616,18 +1838,30 @@ function ScheduleTab({
   const [publishError, setPublishError] = useState<string | null>(null);
   // Snapshot of edits at last publish — used to detect unpublished changes
   const [publishedEditsSnapshot, setPublishedEditsSnapshot] = useState<string>("");
+  // Slack bulk share state
+  const [slackBulkStatus, setSlackBulkStatus] = useState<"idle" | "sending" | "success" | "error">("idle");
 
   // MX director notes per leg
   const [legNotes, setLegNotes] = useState<Map<string, string>>(new Map());
+
+  // Published assignments used to restore overrides
+  const [publishedAssignments, setPublishedAssignments] = useState<{ vanId: number; flightIds: string[] }[]>([]);
 
   // Check existing publish status + load notes on mount / date change
   useEffect(() => {
     setPublishedAt(null);
     setPublishError(null);
     setPublishedEditsSnapshot("");
+    setPublishedAssignments([]);
+    setOverrides(new Map());
+    setRemovals(new Set());
+    setUnscheduledOverrides(new Map());
     fetch(`/api/vans/publish?date=${date}`)
       .then((r) => r.json())
-      .then((d) => { if (d.published_at) setPublishedAt(d.published_at); })
+      .then((d) => {
+        if (d.published_at) setPublishedAt(d.published_at);
+        if (d.assignments) setPublishedAssignments(d.assignments);
+      })
       .catch(() => {});
     // Load existing notes
     fetch(`/api/vans/notes?date=${date}`)
@@ -1639,14 +1873,6 @@ function ScheduleTab({
       })
       .catch(() => {});
   }, [date]);
-  // Reset overrides when date changes
-  const prevDateRef = useRef(date);
-  if (prevDateRef.current !== date) {
-    prevDateRef.current = date;
-    if (overrides.size > 0) setOverrides(new Map());
-    if (removals.size > 0) setRemovals(new Set());
-    if (unscheduledOverrides.size > 0) setUnscheduledOverrides(new Map());
-  }
 
   const totalEdits = overrides.size + removals.size + unscheduledOverrides.size;
 
@@ -1713,6 +1939,32 @@ function ScheduleTab({
     }
     return map;
   }, [allFlights, date, liveVanPositions, mxNotesByTail]);
+
+  // Restore overrides from published assignments once base items are available
+  const overridesRestoredRef = useRef<string>("");
+  useEffect(() => {
+    if (publishedAssignments.length === 0 || baseItemsByVan.size === 0) return;
+    // Only restore once per date
+    if (overridesRestoredRef.current === date) return;
+    overridesRestoredRef.current = date;
+    const newOverrides = new Map<string, number>();
+    for (const a of publishedAssignments) {
+      for (const fid of a.flightIds) {
+        // Find which van this flight was auto-assigned to
+        let baseVanId: number | undefined;
+        for (const [vanId, items] of baseItemsByVan) {
+          if (items.some((item) => item.arrFlight.id === fid)) {
+            baseVanId = vanId;
+            break;
+          }
+        }
+        if (baseVanId !== undefined && baseVanId !== a.vanId) {
+          newOverrides.set(fid, a.vanId);
+        }
+      }
+    }
+    if (newOverrides.size > 0) setOverrides(newOverrides);
+  }, [publishedAssignments, baseItemsByVan, date]);
 
   // All arrivals today (no zone filter) — used for the uncovered pool
   const allDayArrivals = useMemo(
@@ -1995,6 +2247,38 @@ function ScheduleTab({
 
   const hasUnpublishedChanges = publishedAt && currentEditsFingerprint !== publishedEditsSnapshot;
 
+  const shareAllToSlack = useCallback(async () => {
+    setSlackBulkStatus("sending");
+    try {
+      const vans = FIXED_VAN_ZONES
+        .map((zone) => {
+          const items = finalItemsByVan.get(zone.vanId) ?? [];
+          if (items.length === 0) return null;
+          return {
+            vanName: zone.name,
+            vanId: zone.vanId,
+            homeAirport: zone.homeAirport,
+            items: buildSlackItems(items, flightInfoMap),
+          };
+        })
+        .filter(Boolean);
+      if (vans.length === 0) {
+        setSlackBulkStatus("idle");
+        return;
+      }
+      const res = await fetch("/api/vans/share-slack-bulk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date, vans }),
+      });
+      const data = await res.json();
+      setSlackBulkStatus(data.ok ? "success" : "error");
+      if (data.ok) setTimeout(() => setSlackBulkStatus("idle"), 3000);
+    } catch {
+      setSlackBulkStatus("error");
+    }
+  }, [date, finalItemsByVan, flightInfoMap]);
+
   const handlePublish = useCallback(async () => {
     setPublishing(true);
     setPublishError(null);
@@ -2014,12 +2298,14 @@ function ScheduleTab({
       } else {
         setPublishedAt(data.published_at);
         setPublishedEditsSnapshot(currentEditsFingerprint);
+        // Auto-post all vans to Slack after successful publish
+        shareAllToSlack();
       }
     } catch {
       setPublishError("Network error");
     }
     setPublishing(false);
-  }, [date, finalItemsByVan, currentEditsFingerprint]);
+  }, [date, finalItemsByVan, currentEditsFingerprint, shareAllToSlack]);
 
   return (
     <div className="space-y-3">
@@ -2042,6 +2328,13 @@ function ScheduleTab({
               Reset all edits ({totalEdits})
             </button>
           )}
+          <button
+            onClick={shareAllToSlack}
+            disabled={slackBulkStatus === "sending"}
+            className="text-sm font-medium text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 hover:border-purple-300 disabled:opacity-50 rounded-lg px-3 py-1.5 transition-colors"
+          >
+            {slackBulkStatus === "sending" ? "Sharing…" : slackBulkStatus === "success" ? "Shared!" : "Share All to Slack"}
+          </button>
           <button
             onClick={handlePublish}
             disabled={publishing}
@@ -2252,7 +2545,7 @@ function ScheduleTab({
                       )}
                     </div>
                     {/* MX notes from JetInsight */}
-                    <MxNoteInline notes={mxNotesByTail.get(tail ?? "") ?? []} hiddenIds={hiddenTodayMxIds} onHideForToday={onHideMxForToday} showNoMxTag />
+                    <MxNoteInline notes={mxNotesByTail.get(tail ?? "") ?? []} hiddenIds={hiddenTodayMxIds} onHideForToday={onHideMxForToday} />
                   </div>
                 );
               })}
@@ -2348,7 +2641,7 @@ function ScheduleTab({
                       {ac.airportInfo.name}, {ac.airportInfo.state}
                     </div>
                   )}
-                  <MxNoteInline notes={mxNotesByTail.get(ac.tail) ?? []} hiddenIds={hiddenTodayMxIds} onHideForToday={onHideMxForToday} showNoMxTag />
+                  <MxNoteInline notes={mxNotesByTail.get(ac.tail) ?? []} hiddenIds={hiddenTodayMxIds} onHideForToday={onHideMxForToday} />
                 </div>
               ))}
             </div>}

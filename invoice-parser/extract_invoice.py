@@ -95,6 +95,19 @@ def read_pdf_text(path: str) -> str:
         return unglue_money_columns(text)
 
 
+def pdf_to_images(path: str, dpi: int = 200) -> List[str]:
+    """Convert PDF pages to base64-encoded PNGs for Vision API."""
+    from pdf2image import convert_from_path
+    import base64, io
+    images = convert_from_path(path, dpi=dpi)
+    result = []
+    for img in images:
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        result.append(base64.b64encode(buf.getvalue()).decode())
+    return result
+
+
 def read_pdf_pages_text(path: str) -> List[str]:
     """
     Returns a list of per-page extracted text (unglued), without the --- PAGE --- headers.
@@ -198,6 +211,29 @@ def llm_extract_json(client: OpenAI, model: str, messages: List[dict], schema_bu
             text={"format": _schema_format_legacy(schema_bundle)},
         )
         return json.loads(_extract_text_from_response(resp))
+
+
+def llm_extract_json_vision(
+    client: OpenAI, model: str, messages: List[dict], schema_bundle: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Vision-capable extraction using chat completions API with structured output.
+    Used for scanned/image-only PDFs where text extraction yields nothing.
+    """
+    resp = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": schema_bundle["name"],
+                "schema": schema_bundle["schema"],
+                "strict": True,
+            },
+        },
+        max_tokens=4096,
+    )
+    return json.loads(resp.choices[0].message.content)
 
 
 # ============================================================
@@ -740,6 +776,24 @@ def build_normal_messages(pdf_text: str) -> List[dict]:
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
+def build_vision_messages(image_b64_list: List[str]) -> List[dict]:
+    """Build messages for vision-based extraction of scanned PDFs."""
+    system = build_normal_messages("")  # grab the system prompt
+    system_text = system[0]["content"]
+
+    content: List[dict] = [{"type": "text", "text": "Extract the invoice fields from this scanned document:"}]
+    for b64 in image_b64_list:
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/png;base64,{b64}", "detail": "high"},
+        })
+
+    return [
+        {"role": "system", "content": system_text},
+        {"role": "user", "content": content},
+    ]
+
+
 def build_rescue_messages(pdf_text: str, first_pass: Dict[str, Any], reason: str) -> List[dict]:
     totals_in_doc = extract_total_lines(pdf_text)
     final_total_hint = str(totals_in_doc[-1]) if totals_in_doc else None
@@ -923,67 +977,96 @@ def extract_one_pdf(
     if pdf_text is None:
         pdf_text = read_pdf_text(pdf_path)
 
-    # 1) First pass extraction
-    data1 = llm_extract_json(
-        client=client,
-        model=model,
-        messages=build_normal_messages(pdf_text),
-        schema_bundle=schema_bundle,
-    )
-    data1 = normalize_extraction(data1)
-    data1 = apply_invoice_number_override(data1, pdf_text)
-    data1 = fix_section_subtotal_totals(data1)
+    # Detect scanned/image-only PDF: very little extractable text
+    stripped = re.sub(r"---\s*PAGE\s+\d+\s*---", "", pdf_text).strip()
+    is_scan = len(stripped) < 50
 
-    # 1b) Deterministic post-fixes from PDF text (safe + improves "On Contract" cases)
-    data1 = apply_amount_on_contract_total(data1, pdf_text)
-    data1 = null_prices_for_on_contract_rows(data1, pdf_text)
-    data1 = normalize_extraction(data1)
+    if is_scan:
+        # Vision path: convert PDF to images, send to GPT-4o
+        images = pdf_to_images(pdf_path)
+        if not images:
+            return normalize_extraction({
+                "vendor": None, "invoice_number": None, "invoice_date": None,
+                "due_date": None, "airport_code": None, "tail_number": None,
+                "totals": {"subtotal": None, "tax": None, "total_amount": None},
+                "line_items": [], "warnings": ["SCAN_EMPTY_IMAGES"],
+            })
+        messages = build_vision_messages(images)
+        data = llm_extract_json_vision(
+            client=client, model="gpt-4o", messages=messages, schema_bundle=schema_bundle,
+        )
+        data = normalize_extraction(data)
+        # Deterministic post-processing still runs (gracefully handles empty pdf_text)
+        data = apply_invoice_number_override(data, pdf_text)
+        data = fix_section_subtotal_totals(data)
+        data = apply_amount_on_contract_total(data, pdf_text)
+        data = null_prices_for_on_contract_rows(data, pdf_text)
+        data = normalize_extraction(data)
+        data = add_detected_keywords_warnings(data, pdf_text)
+        data = infer_airport_code(data, pdf_text)
+    else:
+        # Standard text-based path
+        # 1) First pass extraction
+        data1 = llm_extract_json(
+            client=client,
+            model=model,
+            messages=build_normal_messages(pdf_text),
+            schema_bundle=schema_bundle,
+        )
+        data1 = normalize_extraction(data1)
+        data1 = apply_invoice_number_override(data1, pdf_text)
+        data1 = fix_section_subtotal_totals(data1)
 
-    # 2) Optional rescue pass
-    if rescue:
-        do_rescue, reason = should_rescue(data1, pdf_text)
-        if do_rescue:
-            data2 = llm_extract_json(
-                client=client,
-                model=model,
-                messages=build_rescue_messages(pdf_text, data1, reason),
-                schema_bundle=schema_bundle,
-            )
-            data2 = normalize_extraction(data2)
-            data2 = apply_invoice_number_override(data2, pdf_text)
-            data2 = fix_section_subtotal_totals(data2)
+        # 1b) Deterministic post-fixes from PDF text (safe + improves "On Contract" cases)
+        data1 = apply_amount_on_contract_total(data1, pdf_text)
+        data1 = null_prices_for_on_contract_rows(data1, pdf_text)
+        data1 = normalize_extraction(data1)
 
-            # Apply same deterministic post-fixes to rescue output
-            data2 = apply_amount_on_contract_total(data2, pdf_text)
-            data2 = null_prices_for_on_contract_rows(data2, pdf_text)
-            data2 = normalize_extraction(data2)
+        # 2) Optional rescue pass
+        if rescue:
+            do_rescue, reason = should_rescue(data1, pdf_text)
+            if do_rescue:
+                data2 = llm_extract_json(
+                    client=client,
+                    model=model,
+                    messages=build_rescue_messages(pdf_text, data1, reason),
+                    schema_bundle=schema_bundle,
+                )
+                data2 = normalize_extraction(data2)
+                data2 = apply_invoice_number_override(data2, pdf_text)
+                data2 = fix_section_subtotal_totals(data2)
 
-            def score(d: Dict[str, Any]) -> Decimal:
-                totals = d.get("totals") or {}
-                t = totals.get("total_amount")
-                if t is None:
-                    return Decimal("999999999")
-                return abs(sum_line_totals(d) - D(t))
+                # Apply same deterministic post-fixes to rescue output
+                data2 = apply_amount_on_contract_total(data2, pdf_text)
+                data2 = null_prices_for_on_contract_rows(data2, pdf_text)
+                data2 = normalize_extraction(data2)
 
-            data = data2 if score(data2) <= score(data1) else data1
+                def score(d: Dict[str, Any]) -> Decimal:
+                    totals = d.get("totals") or {}
+                    t = totals.get("total_amount")
+                    if t is None:
+                        return Decimal("999999999")
+                    return abs(sum_line_totals(d) - D(t))
+
+                data = data2 if score(data2) <= score(data1) else data1
+            else:
+                data = data1
         else:
             data = data1
-    else:
-        data = data1
 
-    # 3) Multi-section override (World Fuel statements etc.)
-    data = override_with_section_totals_if_valid(data, pdf_text)
+        # 3) Multi-section override (World Fuel statements etc.)
+        data = override_with_section_totals_if_valid(data, pdf_text)
 
-    # 3b) Re-apply deterministic post-fixes after overrides (cheap + safe)
-    data = apply_amount_on_contract_total(data, pdf_text)
-    data = null_prices_for_on_contract_rows(data, pdf_text)
+        # 3b) Re-apply deterministic post-fixes after overrides (cheap + safe)
+        data = apply_amount_on_contract_total(data, pdf_text)
+        data = null_prices_for_on_contract_rows(data, pdf_text)
 
-    # Final normalization (dates, arrays, invoice_number guards)
-    data = normalize_extraction(data)
-    data = add_detected_keywords_warnings(data, pdf_text)
+        # Final normalization (dates, arrays, invoice_number guards)
+        data = normalize_extraction(data)
+        data = add_detected_keywords_warnings(data, pdf_text)
 
-    # 4) Infer airport code if LLM missed it
-    data = infer_airport_code(data, pdf_text)
+        # 4) Infer airport code if LLM missed it
+        data = infer_airport_code(data, pdf_text)
 
     # 5) Normalize ICAO K-prefix → FAA 3-letter (KBOS → BOS)
     ac = (data.get("airport_code") or "").strip().upper()
