@@ -428,7 +428,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
   const [tripSalespersons, setTripSalespersons] = useState<TripSalesperson[]>([]);
 
   // SWIM flight status
-  type SwimFlightStatus = { tail_number: string; departure_icao: string | null; arrival_icao: string | null; status: string; event_time: string; etd: string | null; eta: string | null };
+  type SwimFlightStatus = { tail_number: string; departure_icao: string | null; arrival_icao: string | null; status: string; event_time: string; etd: string | null; eta: string | null; actual_departure: string | null; actual_arrival: string | null };
   type FeedStatus = { name: string; status: "ok" | "error" | "off"; count: number; updated_at?: string; error?: string };
   const [swimStatus, setSwimStatus] = useState<Map<string, SwimFlightStatus>>(new Map());
   const [feedStatuses, setFeedStatuses] = useState<FeedStatus[]>([]);
@@ -1098,6 +1098,11 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                 <div key={a.id} className={`flex items-center gap-3 text-sm text-amber-900 ${isAcked(a) ? "opacity-50" : ""}`}>
                   <span className="font-medium">{a.route}</span>
                   {a.tail_number && <span className="text-amber-600">{a.tail_number}</span>}
+                  <span className={`text-[10px] font-bold rounded px-1 py-0.5 ${
+                    (a.source_message_id ?? "").startsWith("swim-edct-")
+                      ? "bg-blue-100 text-blue-700"
+                      : "bg-amber-100 text-amber-700"
+                  }`}>{(a.source_message_id ?? "").startsWith("swim-edct-") ? "SWIM" : "FF"}</span>
                   <span className="text-sm">
                     {(a.original_departure_time || a.fallback_departure) && (
                       <span className="text-amber-500 line-through">{fmt(a.original_departure_time ?? a.fallback_departure ?? "", a.airport_icao)}</span>
@@ -1415,8 +1420,8 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                             statusColor = "text-red-600 font-medium";
                           }
 
-                          const actualDepIso = isCancelled ? null : (fi?.actual_departure ?? null);
-                          const actualArrIso = isCancelled ? null : (fi?.actual_arrival ?? null);
+                          const actualDepIso = isCancelled ? null : (fi?.actual_departure ?? swimEntry?.actual_departure ?? null);
+                          const actualArrIso = isCancelled ? null : (fi?.actual_arrival ?? swimEntry?.actual_arrival ?? null);
 
                           return (
                             <div key={f.id} className={`px-4 py-2 text-xs ${isCancelled ? "opacity-50 bg-gray-50" : ""} ${isFaSourced ? "bg-blue-50/40" : ""}`}>
@@ -1830,9 +1835,9 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                       </td>
                       <td className="px-3 py-2.5 text-gray-600">
                         <div>{fmt(f.scheduled_departure, f.departure_icao)}</div>
-                        {!isCancelled && fi?.actual_departure ? (
-                          <div className={`text-[10px] font-medium mt-0.5 ${delayColorClass(f.scheduled_departure, fi.actual_departure)}`}>
-                            Actual: {fmt(fi.actual_departure, f.departure_icao)}
+                        {!isCancelled && (fi?.actual_departure ?? swimEntry?.actual_departure) ? (
+                          <div className={`text-[10px] font-medium mt-0.5 ${delayColorClass(f.scheduled_departure, (fi?.actual_departure ?? swimEntry?.actual_departure)!)}`}>
+                            Actual: {fmt((fi?.actual_departure ?? swimEntry?.actual_departure)!, f.departure_icao)}
                           </div>
                         ) : !isCancelled ? (() => {
                           const estColor = fi?.departure_time ? depEstColorClass(f.scheduled_departure, fi.departure_time) : null;
@@ -1845,9 +1850,9 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                       </td>
                       <td className="px-3 py-2.5 text-gray-600">
                         <div>{fmt(f.scheduled_arrival, f.arrival_icao)}</div>
-                        {!isCancelled && fi?.actual_arrival && f.scheduled_arrival ? (
-                          <div className={`text-[10px] font-medium mt-0.5 ${delayColorClass(f.scheduled_arrival, fi.actual_arrival)}`}>
-                            Actual: {fmt(fi.actual_arrival, f.arrival_icao)}
+                        {!isCancelled && (fi?.actual_arrival ?? swimEntry?.actual_arrival) && f.scheduled_arrival ? (
+                          <div className={`text-[10px] font-medium mt-0.5 ${delayColorClass(f.scheduled_arrival, (fi?.actual_arrival ?? swimEntry?.actual_arrival)!)}`}>
+                            Actual: {fmt((fi?.actual_arrival ?? swimEntry?.actual_arrival)!, f.arrival_icao)}
                           </div>
                         ) : !isCancelled && fi?.arrival_time && fi?.actual_departure && !fi?.actual_arrival ? (
                           <div className="text-[10px] text-blue-600 font-medium mt-0.5">

@@ -127,15 +127,28 @@ async function fetchSwimStatuses() {
   if (error) throw error;
 
   const latest = new Map<string, SwimRow>();
+  // Track actual departure/arrival times from SWIM events
+  const actuals = new Map<string, { actual_departure: string | null; actual_arrival: string | null }>();
+
   for (const row of (data ?? []) as SwimRow[]) {
     if (!row.tail_number) continue;
     const key = `${row.tail_number}|${row.departure_icao ?? ""}|${row.arrival_icao ?? ""}`;
     if (!latest.has(key)) {
       latest.set(key, row);
     }
+    // Collect actual times from DEPARTURE/ARRIVAL events
+    if (row.event_type === "DEPARTURE" || row.event_type === "ARRIVAL") {
+      const prev = actuals.get(key) ?? { actual_departure: null, actual_arrival: null };
+      if (row.event_type === "DEPARTURE" && !prev.actual_departure) {
+        prev.actual_departure = row.event_time;
+      } else if (row.event_type === "ARRIVAL" && !prev.actual_arrival) {
+        prev.actual_arrival = row.event_time;
+      }
+      actuals.set(key, prev);
+    }
   }
 
-  return Array.from(latest.entries()).map(([, row]) => ({
+  return Array.from(latest.entries()).map(([key, row]) => ({
     tail_number: row.tail_number,
     departure_icao: row.departure_icao,
     arrival_icao: row.arrival_icao,
@@ -143,6 +156,8 @@ async function fetchSwimStatuses() {
     event_time: row.event_time,
     etd: row.etd,
     eta: row.eta,
+    actual_departure: actuals.get(key)?.actual_departure ?? null,
+    actual_arrival: actuals.get(key)?.actual_arrival ?? null,
   }));
 }
 
