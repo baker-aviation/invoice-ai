@@ -1647,10 +1647,13 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                                     <div className="h-full bg-blue-500 rounded-full" style={{ width: `${fi.progress_percent}%` }} />
                                   </div>
                                 )}
-                                {/* ForeFlight progress fallback — only when displayed status is En Route */}
-                                {!isCancelled && status === "En Route" && !(fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100) && swimRouteMatch?.etd && swimRouteMatch?.eta && (() => {
-                                  const dep = new Date(swimRouteMatch.etd!).getTime();
-                                  const arr = new Date(swimRouteMatch.eta!).getTime();
+                                {/* Progress bar fallback — SWIM or FA actual_departure + ETA */}
+                                {!isCancelled && status === "En Route" && !(fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100) && (() => {
+                                  const depStr = swimRouteMatch?.etd ?? fi?.actual_departure ?? swimEntry?.actual_departure;
+                                  const arrStr = swimRouteMatch?.eta ?? fi?.arrival_time ?? swimEntry?.eta;
+                                  if (!depStr || !arrStr) return null;
+                                  const dep = new Date(depStr).getTime();
+                                  const arr = new Date(arrStr).getTime();
                                   const total = arr - dep;
                                   const elapsed = Date.now() - dep;
                                   if (total <= 0 || elapsed <= 0) return null;
@@ -1988,10 +1991,13 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                             })()}
                           </div>
                         )}
-                        {/* ForeFlight progress fallback — only when displayed status is En Route */}
-                        {!isCancelled && status === "En Route" && !(fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100) && swimRouteMatch?.etd && swimRouteMatch?.eta && (() => {
-                          const dep = new Date(swimRouteMatch.etd!).getTime();
-                          const arr = new Date(swimRouteMatch.eta!).getTime();
+                        {/* Progress bar fallback — SWIM or FA actual_departure + ETA */}
+                        {!isCancelled && status === "En Route" && !(fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100) && (() => {
+                          const depStr = swimRouteMatch?.etd ?? fi?.actual_departure ?? swimEntry?.actual_departure;
+                          const arrStr = swimRouteMatch?.eta ?? fi?.arrival_time ?? swimEntry?.eta;
+                          if (!depStr || !arrStr) return null;
+                          const dep = new Date(depStr).getTime();
+                          const arr = new Date(arrStr).getTime();
                           const now = Date.now();
                           const total = arr - dep;
                           const elapsed = now - dep;
