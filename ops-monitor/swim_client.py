@@ -596,6 +596,8 @@ def pull_swim() -> Dict[str, Any]:
                 fd_trigger = flight.pop("fd_trigger", "")
                 controlled_dep = flight.pop("controlled_departure_time", None)
                 is_edct = flight.pop("is_edct_trigger", False)
+                # Debug: log trigger types and EDCT data for every Baker TFMS message
+                print(f"[SWIM] TFMS Baker flight: {flight['acid']} {flight.get('departure_icao','?')}→{flight.get('arrival_icao','?')} trigger={fd_trigger!r} edct_trigger={is_edct} controlled_dep={controlled_dep} evt={flight.get('event_type','?')}", flush=True)
                 positions_batch.append({
                     **flight,
                     "source_id": source_id,
@@ -640,6 +642,8 @@ def pull_swim() -> Dict[str, Any]:
             fd_trigger = flight.pop("fd_trigger", "")
             controlled_dep = flight.pop("controlled_departure_time", None)
             is_edct = flight.pop("is_edct_trigger", False)
+            # Debug: log trigger types and EDCT data for every Baker STDDS message
+            print(f"[SWIM] STDDS Baker flight: {flight['acid']} {flight.get('departure_icao','?')}→{flight.get('arrival_icao','?')} trigger={fd_trigger!r} edct_trigger={is_edct} controlled_dep={controlled_dep} evt={flight.get('event_type','?')}", flush=True)
             positions_batch.append({
                 **flight,
                 "source_id": source_id,
