@@ -27,8 +27,9 @@ const REFRESH_INTERVAL_MS = 30 * 60 * 1000; // 30 min — check for unregistered
  *
  * @param tails      Full fleet tail list (unused, kept for backwards compat)
  * @param activeTails Tails with flights in the next 48h — only these get alerts
+ * @param callsignMap Optional map of tail → callsign for LADD-blocked aircraft
  */
-export async function refreshAlerts(tails: string[], activeTails: string[]): Promise<void> {
+export async function refreshAlerts(tails: string[], activeTails: string[], callsignMap?: Map<string, string>): Promise<void> {
   // Skip if checked recently
   if (Date.now() - lastRefreshMs < REFRESH_INTERVAL_MS) {
     console.log("[FA Alerts] Skipped — checked", Math.round((Date.now() - lastRefreshMs) / 60000), "min ago");
@@ -115,11 +116,13 @@ export async function refreshAlerts(tails: string[], activeTails: string[]): Pro
 
     for (const tail of missing) {
       try {
+        // Use callsign for LADD-blocked aircraft so FA matches the filed ident
+        const ident = callsignMap?.get(tail) ?? tail;
         const res = await fetch(`${FA_BASE}/alerts`, {
           method: "POST",
           headers: faHeaders(),
           body: JSON.stringify({
-            ident: tail,
+            ident,
             origin: null,
             destination: null,
             aircraft_type: null,
@@ -163,9 +166,9 @@ export async function refreshAlerts(tails: string[], activeTails: string[]): Pro
               console.error(`[FA Alerts] DB upsert failed for ${tail}:`, upsertErr.message);
             }
           }
-          console.log(`[FA Alerts] Auto-registered ${tail} (id: ${alertId})`);
+          console.log(`[FA Alerts] Auto-registered ${tail} as ${ident} (id: ${alertId})`);
         } else {
-          console.warn(`[FA Alerts] Auto-register failed for ${tail}: ${res.status}`);
+          console.warn(`[FA Alerts] Auto-register failed for ${tail} (${ident}): ${res.status}`);
         }
 
         await new Promise((r) => setTimeout(r, 500));

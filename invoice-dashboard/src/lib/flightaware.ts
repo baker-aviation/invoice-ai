@@ -123,21 +123,22 @@ export type FlightInfo = {
 // API calls
 // ---------------------------------------------------------------------------
 
-// LADD/PIA-blocked aircraft: registration lookup returns nothing,
-// so we fall back to querying by callsign (operator + fleet number).
-const CALLSIGN_FALLBACKS: Record<string, string> = {
-  N301HR: "KOW301",
-};
-
 /**
  * Get recent and upcoming flights for a registration (tail number).
- * Returns the most recent / current / upcoming flights.
- * Falls back to callsign lookup for LADD/PIA-blocked aircraft.
+ * If a DB callsign exists, queries by callsign directly (skips N-number).
+ * Otherwise queries by N-number with auto-derived KOW fallback.
+ *
+ * @param callsignMap — optional map of registration → callsign from ics_sources DB table
  */
 export async function getFlightsByRegistration(
   registration: string,
+  callsignMap?: Map<string, string>,
 ): Promise<FaFlight[]> {
-  const url = `${BASE}/flights/${encodeURIComponent(registration)}`;
+  const dbCallsign = callsignMap?.get(registration);
+
+  // If we have a known callsign, query by callsign directly — saves a wasted N-number call
+  const primaryIdent = dbCallsign ?? registration;
+  const url = `${BASE}/flights/${encodeURIComponent(primaryIdent)}`;
   const res = await fetch(url, {
     headers: headers(),
     signal: AbortSignal.timeout(10000),
@@ -149,24 +150,31 @@ export async function getFlightsByRegistration(
   }
   const data = await res.json();
   let flights = (data.flights ?? []) as FaFlight[];
-  console.log(`[FA] ${registration}: ${flights.length} flights returned`);
+  console.log(`[FA] ${primaryIdent}${dbCallsign ? ` (${registration})` : ""}: ${flights.length} flights`);
 
-  // Fallback: try callsign for blocked aircraft
-  if (flights.length === 0 && CALLSIGN_FALLBACKS[registration]) {
-    const callsign = CALLSIGN_FALLBACKS[registration];
-    console.log(`[FA] ${registration}: trying callsign fallback ${callsign}`);
-    const csUrl = `${BASE}/flights/${encodeURIComponent(callsign)}`;
-    try {
-      const csRes = await fetch(csUrl, {
-        headers: headers(),
-        signal: AbortSignal.timeout(10000),
-      });
-      if (csRes.ok) {
-        const csData = await csRes.json();
-        flights = (csData.flights ?? []) as FaFlight[];
-        console.log(`[FA] ${callsign}: ${flights.length} flights returned (callsign fallback)`);
-      }
-    } catch { /* ignore callsign fallback errors */ }
+  // Fallback: try the other ident if primary returned nothing
+  if (flights.length === 0) {
+    // If we queried by callsign, try N-number (crew may have filed under registration)
+    // If we queried by N-number, try auto-derived KOW callsign
+    const fallbackIdent = dbCallsign ? registration : (() => {
+      const digits = registration.replace(/\D/g, "");
+      return digits ? `KOW${digits}` : null;
+    })();
+    if (fallbackIdent) {
+      console.log(`[FA] ${registration}: trying fallback ${fallbackIdent}`);
+      const fbUrl = `${BASE}/flights/${encodeURIComponent(fallbackIdent)}`;
+      try {
+        const fbRes = await fetch(fbUrl, {
+          headers: headers(),
+          signal: AbortSignal.timeout(10000),
+        });
+        if (fbRes.ok) {
+          const fbData = await fbRes.json();
+          flights = (fbData.flights ?? []) as FaFlight[];
+          console.log(`[FA] ${fallbackIdent}: ${flights.length} flights (fallback for ${registration})`);
+        }
+      } catch { /* ignore fallback errors */ }
+    }
   }
 
   return flights;
@@ -257,6 +265,7 @@ export async function getFlightTrack(
  */
 export async function getActiveFlights(
   tails: string[],
+  callsignMap?: Map<string, string>,
 ): Promise<FlightInfo[]> {
   const results: FlightInfo[] = [];
   const now = Date.now();
@@ -268,7 +277,7 @@ export async function getActiveFlights(
     const batchResults = await Promise.all(
       batch.map(async (tail) => {
         try {
-          const flights = await getFlightsByRegistration(tail);
+          const flights = await getFlightsByRegistration(tail, callsignMap);
           const recent: FlightInfo[] = [];
 
           for (const f of flights) {
