@@ -31,11 +31,10 @@ CREATE TABLE pilot_routes (
   backup_flight   text,                    -- backup flight number if available
 
   -- Metadata
-  searched_at     timestamptz NOT NULL DEFAULT now(),
-
-  UNIQUE(crew_member_id, swap_date, destination_icao, route_type, COALESCE(flight_number, ''))
+  searched_at     timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE UNIQUE INDEX pilot_routes_uq ON pilot_routes(crew_member_id, swap_date, destination_icao, route_type, COALESCE(flight_number, ''));
 CREATE INDEX pilot_routes_lookup ON pilot_routes(swap_date, destination_icao);
 CREATE INDEX pilot_routes_crew ON pilot_routes(crew_member_id, swap_date);
 
