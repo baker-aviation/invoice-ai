@@ -36,7 +36,7 @@ export function buildVanSlackBlocks(
           if (item.status === "~Landed" || item.status === "Landed") line += " _(Landed)_";
           else if (item.status.startsWith("En Route")) line += ` _(${item.status})_`;
           if (item.driveTime) line += ` · ${item.driveTime}`;
-          if (item.nextDep) line += `\n  ↳ ${item.nextDep}`;
+          if (item.nextDep) line += `\n  ↳ _${item.nextDep}_`;
           return line;
         });
 
