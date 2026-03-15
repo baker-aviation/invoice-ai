@@ -12,6 +12,20 @@ export const dynamic = "force-dynamic";
 // Fallback tail numbers
 const FALLBACK_TAILS = [...new Set(TRIPS.map((t) => t.tail))];
 
+/** Load callsign mappings from ics_sources table (label → callsign). */
+async function getCallsignMap(): Promise<Map<string, string>> {
+  const supa = createServiceClient();
+  const { data } = await supa
+    .from("ics_sources")
+    .select("label, callsign")
+    .not("callsign", "is", null);
+  const map = new Map<string, string>();
+  for (const row of data ?? []) {
+    if (row.label && row.callsign) map.set(row.label, row.callsign);
+  }
+  return map;
+}
+
 /** Fetch tail numbers from DB + fallback list.
  *  Returns { allTails, activeTails } where activeTails are tails with flights
  *  in the ±48h window (used for FA alert registration to limit push costs). */
@@ -68,9 +82,9 @@ export async function GET(req: NextRequest) {
       // This instance won the lock — kick off background refresh
       after(async () => {
         try {
-          const { allTails, activeTails } = await getTails();
+          const [{ allTails, activeTails }, csMap] = await Promise.all([getTails(), getCallsignMap()]);
           console.log("[SWR] Background refresh starting for", activeTails.length, "active tails (of", allTails.length, "total)");
-          const flights = await getActiveFlights(activeTails);
+          const flights = await getActiveFlights(activeTails, csMap);
           await setCache(flights);
           console.log("[SWR] Background refresh complete,", flights.length, "flights");
           await refreshAlerts(allTails, activeTails).catch(() => {});
@@ -113,10 +127,10 @@ export async function GET(req: NextRequest) {
 
   // No cache at all (first load) or force refresh — block and fetch
   // Only query tails with flights in ±48h to reduce FA API costs
-  const { allTails: tails, activeTails } = await getTails();
+  const [{ allTails: tails, activeTails }, callsignMap] = await Promise.all([getTails(), getCallsignMap()]);
 
   try {
-    const flights = await getActiveFlights(activeTails);
+    const flights = await getActiveFlights(activeTails, callsignMap);
     await setCache(flights);
     await clearRefreshing(); // in case a background refresh was somehow flagged
 

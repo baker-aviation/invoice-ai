@@ -123,29 +123,16 @@ export type FlightInfo = {
 // API calls
 // ---------------------------------------------------------------------------
 
-// LADD/PIA-blocked aircraft: registration lookup returns nothing,
-// so we fall back to querying by callsign (operator + fleet number).
-// Explicit overrides take priority; auto-derivation (KOW + digits) is used as fallback.
-const CALLSIGN_OVERRIDES: Record<string, string> = {
-  // Add explicit mappings here if the auto-derived KOW{digits} doesn't match
-};
-
-/** Derive potential callsigns from a registration.
- *  Baker Aviation operates under Kalitta Charters (ICAO: KOW). */
-function deriveCallsigns(registration: string): string[] {
-  if (CALLSIGN_OVERRIDES[registration]) return [CALLSIGN_OVERRIDES[registration]];
-  const digits = registration.replace(/\D/g, "");
-  if (!digits) return [];
-  return [`KOW${digits}`];
-}
-
 /**
  * Get recent and upcoming flights for a registration (tail number).
  * Returns the most recent / current / upcoming flights.
  * Falls back to callsign lookup for LADD/PIA-blocked aircraft.
+ *
+ * @param callsignMap — optional map of registration → callsign from ics_sources DB table
  */
 export async function getFlightsByRegistration(
   registration: string,
+  callsignMap?: Map<string, string>,
 ): Promise<FaFlight[]> {
   const url = `${BASE}/flights/${encodeURIComponent(registration)}`;
   const res = await fetch(url, {
@@ -161,10 +148,12 @@ export async function getFlightsByRegistration(
   let flights = (data.flights ?? []) as FaFlight[];
   console.log(`[FA] ${registration}: ${flights.length} flights returned`);
 
-  // Fallback: try callsign(s) for LADD/PIA-blocked aircraft
+  // Fallback: try callsign for LADD/PIA-blocked aircraft
   if (flights.length === 0) {
-    const callsigns = deriveCallsigns(registration);
-    for (const callsign of callsigns) {
+    // Use DB callsign if available, otherwise derive KOW + digits
+    const callsign = callsignMap?.get(registration)
+      ?? (() => { const d = registration.replace(/\D/g, ""); return d ? `KOW${d}` : null; })();
+    if (callsign) {
       console.log(`[FA] ${registration}: trying callsign fallback ${callsign}`);
       const csUrl = `${BASE}/flights/${encodeURIComponent(callsign)}`;
       try {
@@ -176,7 +165,6 @@ export async function getFlightsByRegistration(
           const csData = await csRes.json();
           flights = (csData.flights ?? []) as FaFlight[];
           console.log(`[FA] ${callsign}: ${flights.length} flights returned (callsign fallback for ${registration})`);
-          if (flights.length > 0) break;
         }
       } catch { /* ignore callsign fallback errors */ }
     }
@@ -270,6 +258,7 @@ export async function getFlightTrack(
  */
 export async function getActiveFlights(
   tails: string[],
+  callsignMap?: Map<string, string>,
 ): Promise<FlightInfo[]> {
   const results: FlightInfo[] = [];
   const now = Date.now();
@@ -281,7 +270,7 @@ export async function getActiveFlights(
     const batchResults = await Promise.all(
       batch.map(async (tail) => {
         try {
-          const flights = await getFlightsByRegistration(tail);
+          const flights = await getFlightsByRegistration(tail, callsignMap);
           const recent: FlightInfo[] = [];
 
           for (const f of flights) {
