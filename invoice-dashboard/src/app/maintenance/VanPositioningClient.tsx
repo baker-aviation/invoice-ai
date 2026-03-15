@@ -2402,10 +2402,11 @@ function ScheduleTab({
 
   const hasUnpublishedChanges = publishedAt && currentEditsFingerprint !== publishedEditsSnapshot;
 
-  const shareAllToSlack = useCallback(async () => {
+  const shareVansToSlack = useCallback(async (vanIds?: number[]) => {
     setSlackBulkStatus("sending");
     try {
       const vans = FIXED_VAN_ZONES
+        .filter((zone) => !vanIds || vanIds.includes(zone.vanId))
         .map((zone) => {
           const items = finalItemsByVan.get(zone.vanId) ?? [];
           if (items.length === 0) return null;
@@ -2433,6 +2434,8 @@ function ScheduleTab({
       setSlackBulkStatus("error");
     }
   }, [date, finalItemsByVan, flightInfoMap]);
+
+  const shareAllToSlack = useCallback(() => shareVansToSlack(), [shareVansToSlack]);
 
   const handlePublish = useCallback(async () => {
     setPublishing(true);
@@ -2486,6 +2489,14 @@ function ScheduleTab({
               Reset all edits ({totalEdits})
             </button>
           )}
+          <button
+            onClick={() => shareVansToSlack([1])}
+            disabled={slackBulkStatus === "sending"}
+            className="text-xs font-medium text-gray-600 bg-gray-50 hover:bg-gray-100 border border-gray-200 hover:border-gray-300 disabled:opacity-50 rounded-lg px-2 py-1.5 transition-colors"
+            title="Test: Send only Van 1 (North FL) to Slack"
+          >
+            Test Van 1
+          </button>
           <button
             onClick={shareAllToSlack}
             disabled={slackBulkStatus === "sending"}
