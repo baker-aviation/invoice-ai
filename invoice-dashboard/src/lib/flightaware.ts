@@ -287,6 +287,14 @@ export async function getActiveFlights(
               const landedMs = new Date(landed).getTime();
               if (landedMs < now - 4 * 3600_000) continue;
             }
+            // Also filter flights that departed >12h ago with no landing recorded.
+            // FA sometimes loses track of a flight (no actual_on/actual_in) so it
+            // stays "En Route" forever. No Baker flight is 12+ hours enroute.
+            const actualDep = f.actual_out ?? f.actual_off;
+            if (actualDep && !landed) {
+              const actualDepMs = new Date(actualDep).getTime();
+              if (actualDepMs < now - 12 * 3600_000) continue;
+            }
 
             const info = toFlightInfo(tail, f);
 
