@@ -175,6 +175,13 @@ else
     --description "Check FAA NOTAM API for upcoming flight airports" \
     --oidc-service-account-email "$SA_EMAIL" \
     --oidc-token-audience "$OPS_URL"
+
+  # Pull FAA SWIM EDCT / position / flow control data (every 5 min)
+  upsert_job "ops-pull-swim" "*/5 * * * *" \
+    "${OPS_URL}/jobs/pull_swim" \
+    --description "Drain FAA SWIM SCDS queues (TFMS, STDDS) for EDCTs and positions" \
+    --oidc-service-account-email "$SA_EMAIL" \
+    --oidc-token-audience "$OPS_URL"
 fi
 
 echo ""
