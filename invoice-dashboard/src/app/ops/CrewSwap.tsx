@@ -55,6 +55,15 @@ type RosterUploadResult = {
   oncoming_pool?: OncomingPool;
 };
 
+type RouteStatus = {
+  swap_date: string;
+  total_routes: number;
+  crew_count: number;
+  destination_count: number;
+  last_computed: string | null;
+  is_stale: boolean;
+};
+
 // Matches CrewSwapRow from swapOptimizer.ts
 type CrewSwapRow = {
   name: string;
@@ -90,7 +99,8 @@ type SwapPlanResult = {
   swap_date: string;
   rows: CrewSwapRow[];
   warnings: string[];
-  commercial_flights_searched: number;
+  routes_used: number;
+  rotation_source?: string;
   total_cost: number;
   plan_score: number;
   solved_count?: number;
@@ -479,6 +489,10 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
   const swapPlanRef = useRef<HTMLDivElement>(null);
   const [exporting, setExporting] = useState(false);
   const [swapView, setSwapView] = useState<"role" | "aircraft">("aircraft");
+  const [routeStatus, setRouteStatus] = useState<RouteStatus | null>(null);
+  const [computingRoutes, setComputingRoutes] = useState(false);
+  const [detectingRotation, setDetectingRotation] = useState(false);
+  const [rotationSource, setRotationSource] = useState<string | null>(null);
 
   async function exportToImage() {
     if (!swapPlanRef.current) return;
@@ -638,6 +652,76 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
     loadCrew();
   }, [loadCrew]);
 
+  // Fetch route computation status for the selected Wednesday
+  const loadRouteStatus = useCallback(async () => {
+    try {
+      const dateStr = selectedWed.toISOString().slice(0, 10);
+      const res = await fetch(`/api/crew/routes?date=${dateStr}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setRouteStatus(data);
+    } catch {
+      // ignore
+    }
+  }, [selectedWed]);
+
+  useEffect(() => {
+    loadRouteStatus();
+  }, [loadRouteStatus]);
+
+  // Trigger route computation
+  async function computeRoutes() {
+    setComputingRoutes(true);
+    try {
+      const res = await fetch("/api/crew/routes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ swap_date: selectedWed.toISOString().slice(0, 10) }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        await loadRouteStatus();
+      } else {
+        setOptimizeError(data.error ?? "Route computation failed");
+      }
+    } catch (e) {
+      setOptimizeError(e instanceof Error ? e.message : "Route computation failed");
+    } finally {
+      setComputingRoutes(false);
+    }
+  }
+
+  // Auto-detect rotation from JetInsight flights
+  async function detectRotation() {
+    setDetectingRotation(true);
+    setOptimizeError(null);
+    try {
+      const dateStr = selectedWed.toISOString().slice(0, 10);
+      const res = await fetch(`/api/crew/detect-rotation?date=${dateStr}`);
+      const data = await res.json();
+      if (!res.ok) {
+        setOptimizeError(data.error ?? "Rotation detection failed");
+        return;
+      }
+      if (data.swap_assignments) {
+        setSwapAssignments(data.swap_assignments);
+        try { localStorage.setItem("swap_assignments", JSON.stringify(data.swap_assignments)); } catch {}
+      }
+      if (data.oncoming_pool) {
+        setOncomingPool(data.oncoming_pool);
+        try { localStorage.setItem("oncoming_pool", JSON.stringify(data.oncoming_pool)); } catch {}
+      }
+      setRotationSource("auto_detect");
+      if (data.unmatched_names?.length > 0) {
+        setOptimizeError(`Auto-detected rotation. ${data.unmatched_names.length} JetInsight names unmatched: ${data.unmatched_names.join(", ")}`);
+      }
+    } catch (e) {
+      setOptimizeError(e instanceof Error ? e.message : "Rotation detection failed");
+    } finally {
+      setDetectingRotation(false);
+    }
+  }
+
   // Upload Excel roster
   async function handleUpload(file: File) {
     setUploading(true);
@@ -660,7 +744,10 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
           setOncomingPool(data.oncoming_pool);
           try { localStorage.setItem("oncoming_pool", JSON.stringify(data.oncoming_pool)); } catch {}
         }
+        setRotationSource("excel");
         await loadCrew();
+        // Auto-trigger route computation in background
+        computeRoutes();
       }
     } catch (e) {
       setUploadError(e instanceof Error ? e.message : "Upload failed");
@@ -692,8 +779,8 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
     return schedules.sort((a, b) => a.tail.localeCompare(b.tail));
   }, [flights, selectedWed]);
 
-  // Run swap optimizer
-  async function runOptimizer(includeFlights: boolean) {
+  // Run swap optimizer (uses pre-computed routes from pilot_routes table)
+  async function runOptimizer() {
     setOptimizing(true);
     setOptimizeError(null);
     try {
@@ -702,7 +789,6 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           swap_date: selectedWed.toISOString().slice(0, 10),
-          search_flights: includeFlights,
           swap_assignments: swapAssignments ?? undefined,
           oncoming_pool: oncomingPool ?? undefined,
         }),
@@ -897,32 +983,51 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
                 {Object.keys(swapAssignments).length} tails
                 {oncomingPool && ` | Pool: ${oncomingPool.pic.length} PICs, ${oncomingPool.sic.length} SICs`}
                 {" | "}{Object.values(swapAssignments).filter(a => a.offgoing_pic || a.offgoing_sic).length} offgoing
+                {rotationSource === "auto_detect" && " (auto-detected)"}
               </span>
             )}
             {!swapAssignments && (
               <span className="text-[10px] px-2 py-0.5 rounded bg-amber-50 text-amber-600">
-                No swap assignments — upload Excel first
+                No swap assignments — upload Excel or auto-detect
               </span>
             )}
           </div>
           <div className="flex items-center gap-2">
+            {routeStatus && routeStatus.total_routes > 0 && (
+              <span className={`text-[10px] px-2 py-0.5 rounded ${
+                routeStatus.is_stale ? "bg-amber-50 text-amber-600" : "bg-green-50 text-green-600"
+              }`}>
+                {routeStatus.total_routes} routes cached
+                {routeStatus.last_computed && ` (${new Date(routeStatus.last_computed).toLocaleString(undefined, { hour: "2-digit", minute: "2-digit" })})`}
+                {routeStatus.is_stale && " — stale"}
+              </span>
+            )}
             <button
-              onClick={() => runOptimizer(false)}
-              disabled={optimizing}
+              onClick={detectRotation}
+              disabled={detectingRotation || optimizing}
               className={`px-3 py-1.5 text-xs font-medium border rounded-lg ${
-                optimizing ? "bg-gray-100 text-gray-400" : "bg-green-50 text-green-700 hover:bg-green-100 border-green-200"
+                detectingRotation ? "bg-gray-100 text-gray-400" : "bg-green-50 text-green-700 hover:bg-green-100 border-green-200"
               }`}
             >
-              {optimizing ? "Optimizing..." : "Optimize (Drive Only)"}
+              {detectingRotation ? "Detecting..." : "Auto-Detect Rotation"}
             </button>
             <button
-              onClick={() => runOptimizer(true)}
-              disabled={optimizing}
+              onClick={computeRoutes}
+              disabled={computingRoutes || optimizing}
+              className={`px-3 py-1.5 text-xs font-medium border rounded-lg ${
+                computingRoutes ? "bg-gray-100 text-gray-400" : "bg-amber-50 text-amber-700 hover:bg-amber-100 border-amber-200"
+              }`}
+            >
+              {computingRoutes ? "Computing Routes..." : "Refresh Routes"}
+            </button>
+            <button
+              onClick={() => runOptimizer()}
+              disabled={optimizing || computingRoutes}
               className={`px-3 py-1.5 text-xs font-medium border rounded-lg ${
                 optimizing ? "bg-gray-100 text-gray-400" : "bg-blue-50 text-blue-700 hover:bg-blue-100 border-blue-200"
               }`}
             >
-              {optimizing ? "Searching..." : "Optimize + Flights"}
+              {optimizing ? "Optimizing..." : "Optimize"}
             </button>
             {swapPlan && (
               <>
@@ -991,9 +1096,9 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
                     {swapPlan.unsolved_count} unsolved
                   </span>
                 )}
-                {swapPlan.commercial_flights_searched > 0 && (
+                {swapPlan.routes_used > 0 && (
                   <span className="text-green-500 text-xs">
-                    ({swapPlan.commercial_flights_searched} routes searched)
+                    ({swapPlan.routes_used} cached routes used)
                   </span>
                 )}
                 {swapPlan.warnings.length > 0 && (
@@ -1042,7 +1147,10 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
 
         {!swapPlan && !optimizeError && (
           <div className="px-4 py-6 text-center text-sm text-gray-400">
-            Click optimize to generate swap recommendations for {selectedWed.toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+            {routeStatus && routeStatus.total_routes > 0
+              ? `${routeStatus.total_routes} routes cached for ${routeStatus.crew_count} crew. Click Optimize to run.`
+              : `Upload roster then click Refresh Routes to pre-compute routes for ${selectedWed.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`
+            }
           </div>
         )}
       </div>

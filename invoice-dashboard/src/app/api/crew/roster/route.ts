@@ -210,6 +210,44 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // ─── Determine rotation_group mapping ────────────────────────────────────────
+  // Check existing rotation_group values to maintain consistency across uploads.
+  // If a crew member in the "oncoming" section already has rotation_group "B",
+  // then oncoming = B and offgoing = A (not the default).
+  const oncomingNames = entries.filter((e) => e.section.startsWith("oncoming")).map((e) => e.name);
+  const offgoingNames = entries.filter((e) => e.section.startsWith("offgoing")).map((e) => e.name);
+
+  let oncomingGroup: "A" | "B" = "A";
+  let offgoingGroup: "A" | "B" = "B";
+
+  // Look up existing rotation_groups for crew in this Excel
+  const allNames = [...new Set([...oncomingNames, ...offgoingNames])];
+  if (allNames.length > 0) {
+    const { data: existingCrew } = await supa
+      .from("crew_members")
+      .select("name, rotation_group")
+      .in("name", allNames)
+      .not("rotation_group", "is", null);
+
+    if (existingCrew && existingCrew.length > 0) {
+      // Check if any oncoming crew already has a rotation_group
+      const oncomingSet = new Set(oncomingNames);
+      const offgoingSet = new Set(offgoingNames);
+      for (const c of existingCrew) {
+        if (oncomingSet.has(c.name)) {
+          oncomingGroup = c.rotation_group as "A" | "B";
+          offgoingGroup = oncomingGroup === "A" ? "B" : "A";
+          break;
+        }
+        if (offgoingSet.has(c.name)) {
+          offgoingGroup = c.rotation_group as "A" | "B";
+          oncomingGroup = offgoingGroup === "A" ? "B" : "A";
+          break;
+        }
+      }
+    }
+  }
+
   const upserted: string[] = [];
   const errors: string[] = [];
 
@@ -223,6 +261,9 @@ export async function POST(req: NextRequest) {
         .eq("role", crew.role)
         .limit(1);
 
+      // Determine rotation group from Excel section
+      const rotGroup = crew.section.startsWith("oncoming") ? oncomingGroup : offgoingGroup;
+
       const record = {
         name: crew.name,
         role: crew.role,
@@ -230,6 +271,7 @@ export async function POST(req: NextRequest) {
         aircraft_types: [crew.aircraftType],
         is_checkairman: crew.isCheckairman,
         is_skillbridge: crew.isSkillbridge,
+        rotation_group: rotGroup,
         active: true,
         notes: crew.notes,
         updated_at: new Date().toISOString(),
@@ -343,6 +385,7 @@ export async function POST(req: NextRequest) {
     upserted: upserted.length,
     errors: errors.length > 0 ? errors : undefined,
     summary,
+    rotation_groups: { oncoming: oncomingGroup, offgoing: offgoingGroup },
     swap_assignments: swapAssignments,
     oncoming_pool: oncomingPool,
   });

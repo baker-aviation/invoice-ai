@@ -21,7 +21,9 @@
 
 import { estimateDriveTime, findNearbyCommercialAirports, type DriveEstimate } from "./driveTime";
 import { getAirportTimezone } from "./airportTimezones";
+import { getCrewDifficulty } from "./airportTiers";
 import type { FlightOffer } from "./amadeus";
+import type { PilotRoute } from "./pilotRoutes";
 import {
   MAX_DUTY_HOURS, DUTY_ON_BEFORE_COMMERCIAL, DEPLANE_BUFFER,
   FBO_ARRIVAL_BUFFER, FBO_ARRIVAL_BUFFER_PREFERRED, DUTY_OFF_AFTER_LAST_LEG,
@@ -46,6 +48,7 @@ export type CrewMember = {
   is_skillbridge: boolean;
   priority: number;
   standby_count?: number;
+  rotation_group?: "A" | "B" | null;
 };
 
 export type FlightLeg = {
@@ -1722,9 +1725,10 @@ type FeasibilityEntry = {
   minDriveMiles: number;  // shortest home→swap distance (for fallback tiebreak)
 };
 
-/** Build a feasibility matrix: for every crew × tail, run the REAL transport
- *  evaluation (buildCandidates + scoreCandidate) to determine which assignments
- *  are actually viable with timing constraints, not just cost heuristics. */
+/** Build a feasibility matrix: for every crew × tail, determine which assignments
+ *  are viable. When preComputedRoutes is provided, uses cached route data from
+ *  pilot_routes table (instant). Otherwise falls back to runtime evaluation
+ *  (buildCandidates + scoreCandidate). */
 function buildFeasibilityMatrix(params: {
   pool: OncomingPoolEntry[];
   role: "PIC" | "SIC";
@@ -1735,19 +1739,23 @@ function buildFeasibilityMatrix(params: {
   commercialFlights?: Map<string, FlightOffer[]>;
   crewRoster: CrewMember[];
   tailAircraftType: Map<string, string>;
+  preComputedRoutes?: Map<string, PilotRoute[]>;  // crewMemberId → routes
 }): FeasibilityEntry[] {
-  const { pool, role, tails, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType } = params;
+  const { pool, role, tails, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, preComputedRoutes } = params;
   const matrix: FeasibilityEntry[] = [];
 
   for (const tail of tails) {
     const { swapPoints } = extractSwapPoints(tail, byTail, swapDate);
     if (swapPoints.length === 0) continue;
 
+    // Determine the FBO airports this tail can swap at
+    const tailSwapIcaos = new Set(swapPoints.map((sp) => sp.icao.toUpperCase()));
+
     // SIC tries all swap points (can swap at intermediate airports).
     // PIC: in drive-only mode, try ALL swap points (commercial accessibility irrelevant).
     // With flights, pick BEST swap point by commercial accessibility for perf.
     let swapPointsToTry = swapPoints;
-    if (role === "PIC" && swapPoints.length > 1 && commercialFlights) {
+    if (role === "PIC" && swapPoints.length > 1 && (commercialFlights || preComputedRoutes)) {
       let bestSp = swapPoints[0];
       let bestEase = -Infinity;
       for (const sp of swapPoints) {
@@ -1779,7 +1787,65 @@ function buildFeasibilityMatrix(params: {
         console.warn(`[FeasMatrix] ${poolEntry.name} has NO home airports (pool: ${poolEntry.home_airports.length}, roster: ${crewMember?.home_airports?.length ?? 0})`);
       }
 
-      // Try all viable swap points, keep best result
+      // ── PRE-COMPUTED ROUTES PATH (instant) ──────────────────────────────
+      if (preComputedRoutes && crewMember?.id) {
+        const crewRoutes = preComputedRoutes.get(crewMember.id) ?? [];
+
+        // Filter routes to destinations matching this tail's swap airports
+        const relevantRoutes = crewRoutes.filter((r) =>
+          tailSwapIcaos.has(r.destination_icao.toUpperCase()),
+        );
+
+        const viableRoutes = relevantRoutes.filter((r) => r.score > 0);
+        const best = viableRoutes.sort((a, b) => b.score - a.score)[0] ?? null;
+        const viable = viableRoutes.length > 0;
+
+        const bestSwapIcao = best?.destination_icao ?? (swapPoints[0]?.icao ?? "");
+
+        // Compute proximity
+        let minDriveMin = 999;
+        let minDriveMiles = 9999;
+        for (const home of homeAirports) {
+          const drive = estimateDriveTime(toIcao(home), bestSwapIcao);
+          if (drive) {
+            if (drive.estimated_drive_minutes < minDriveMin) minDriveMin = drive.estimated_drive_minutes;
+            if (drive.straight_line_miles < minDriveMiles) minDriveMiles = drive.straight_line_miles;
+          }
+        }
+
+        let entryCost = viable ? best!.cost_estimate : 999;
+        // Add early/late volunteer bonus to cost
+        if ((poolEntry.early_volunteer || poolEntry.late_volunteer) && !poolEntry.is_skillbridge) {
+          const bonus = role === "PIC" ? EARLY_LATE_BONUS_PIC : EARLY_LATE_BONUS_SIC;
+          if (viable) entryCost += bonus;
+        }
+
+        const entryScore = best?.score ?? 0;
+
+        // Weighted rank with crew difficulty factor
+        const crewDiff = getCrewDifficulty(homeAirports);
+        const costNorm = Math.min(100, (entryCost / 500) * 50);
+        const reliabilityNorm = 100 - entryScore;
+        const proximityNorm = Math.min(100, (minDriveMin / 300) * 50);
+        // Crew difficulty slightly reduces rank (constrained crew get priority in sort)
+        const rank = costNorm * 0.40 + reliabilityNorm * 0.25 + proximityNorm * 0.20 + crewDiff * 0.15;
+
+        matrix.push({
+          crewName: poolEntry.name,
+          tail,
+          viable,
+          bestScore: entryScore,
+          bestCost: entryCost,
+          bestType: best?.route_type ?? "none",
+          candidateCount: viableRoutes.length,
+          rank,
+          bestSwapIcao,
+          minDriveMiles,
+        });
+        continue;
+      }
+
+      // ── RUNTIME EVALUATION PATH (fallback — original buildCandidates) ───
       let allCandidates: TransportCandidate[] = [];
 
       for (const sp of swapPointsToTry) {
@@ -1904,12 +1970,13 @@ export function assignOncomingCrew(params: {
   swapDate: string;
   aliases?: AirportAlias[];
   commercialFlights?: Map<string, FlightOffer[]>;
+  preComputedRoutes?: Map<string, PilotRoute[]>;
 }): {
   assignments: Record<string, SwapAssignment>;
   standby: { pic: string[]; sic: string[] };
   details: { name: string; tail: string; cost: number; reason: string }[];
 } {
-  const { swapAssignments, oncomingPool, crewRoster, flights, swapDate, aliases = [], commercialFlights } = params;
+  const { swapAssignments, oncomingPool, crewRoster, flights, swapDate, aliases = [], commercialFlights, preComputedRoutes } = params;
   const result: Record<string, SwapAssignment> = JSON.parse(JSON.stringify(swapAssignments));
   const details: { name: string; tail: string; cost: number; reason: string }[] = [];
 
@@ -1952,8 +2019,8 @@ export function assignOncomingCrew(params: {
   }
 
   // Assign PICs then SICs using feasibility matrix
-  assignRoleWithMatrix("oncoming_pic", oncomingPool.pic, "PIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details);
-  assignRoleWithMatrix("oncoming_sic", oncomingPool.sic, "SIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details);
+  assignRoleWithMatrix("oncoming_pic", oncomingPool.pic, "PIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes);
+  assignRoleWithMatrix("oncoming_sic", oncomingPool.sic, "SIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes);
 
   // Remaining pool → standby
   const assignedNames = new Set(details.map((d) => d.name));
@@ -1977,11 +2044,12 @@ function assignRoleWithMatrix(
   crewRoster: CrewMember[],
   tailAircraftType: Map<string, string>,
   details: { name: string; tail: string; cost: number; reason: string }[],
+  preComputedRoutes?: Map<string, PilotRoute[]>,
 ): void {
   const needingTails = Object.keys(result).filter((tail) => !result[tail][field]);
   if (needingTails.length === 0 || pool.length === 0) return;
 
-  // Build full feasibility matrix — the key v4 change
+  // Build full feasibility matrix — uses pre-computed routes when available
   const matrix = buildFeasibilityMatrix({
     pool,
     role,
@@ -1992,6 +2060,7 @@ function assignRoleWithMatrix(
     commercialFlights,
     crewRoster,
     tailAircraftType,
+    preComputedRoutes,
   });
 
   // Only consider viable options (where real transport exists)
