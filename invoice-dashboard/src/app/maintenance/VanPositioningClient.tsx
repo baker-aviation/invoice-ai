@@ -1995,6 +1995,7 @@ function ScheduleTab({
   const [publishedEditsSnapshot, setPublishedEditsSnapshot] = useState<string>("");
   // Slack bulk share state
   const [slackBulkStatus, setSlackBulkStatus] = useState<"idle" | "sending" | "success" | "error">("idle");
+  const [slackTestStatus, setSlackTestStatus] = useState<"idle" | "sending" | "success" | "error">("idle");
 
   // MX director notes per leg
   const [legNotes, setLegNotes] = useState<Map<string, string>>(new Map());
@@ -2402,13 +2403,16 @@ function ScheduleTab({
 
   const hasUnpublishedChanges = publishedAt && currentEditsFingerprint !== publishedEditsSnapshot;
 
-  const shareAllToSlack = useCallback(async () => {
+  const shareVansToSlack = useCallback(async (vanIds?: number[]) => {
     setSlackBulkStatus("sending");
     try {
+      const isTest = !!vanIds;
       const vans = FIXED_VAN_ZONES
+        .filter((zone) => !vanIds || vanIds.includes(zone.vanId))
         .map((zone) => {
           const items = finalItemsByVan.get(zone.vanId) ?? [];
-          if (items.length === 0) return null;
+          // For targeted test pushes, send even if empty so we verify Slack works
+          if (!isTest && items.length === 0) return null;
           return {
             vanName: zone.name,
             vanId: zone.vanId,
@@ -2431,6 +2435,37 @@ function ScheduleTab({
       if (data.ok) setTimeout(() => setSlackBulkStatus("idle"), 3000);
     } catch {
       setSlackBulkStatus("error");
+    }
+  }, [date, finalItemsByVan, flightInfoMap]);
+
+  const shareAllToSlack = useCallback(() => shareVansToSlack(), [shareVansToSlack]);
+
+  const testVanToSlack = useCallback(async (vanId: number) => {
+    setSlackTestStatus("sending");
+    try {
+      const zone = FIXED_VAN_ZONES.find((z) => z.vanId === vanId);
+      if (!zone) { setSlackTestStatus("error"); return; }
+      const items = finalItemsByVan.get(vanId) ?? [];
+      const res = await fetch("/api/vans/share-slack-bulk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          date,
+          vans: [{
+            vanName: zone.name,
+            vanId: zone.vanId,
+            homeAirport: zone.homeAirport,
+            items: buildSlackItems(items, flightInfoMap),
+          }],
+        }),
+      });
+      const data = await res.json();
+      setSlackTestStatus(data.ok ? "success" : "error");
+      if (!data.ok) console.error("Slack test failed:", data);
+      if (data.ok) setTimeout(() => setSlackTestStatus("idle"), 3000);
+    } catch (err) {
+      console.error("Slack test error:", err);
+      setSlackTestStatus("error");
     }
   }, [date, finalItemsByVan, flightInfoMap]);
 
@@ -2486,6 +2521,18 @@ function ScheduleTab({
               Reset all edits ({totalEdits})
             </button>
           )}
+          <button
+            onClick={() => testVanToSlack(1)}
+            disabled={slackTestStatus === "sending"}
+            className={`text-xs font-medium border rounded-lg px-2 py-1.5 transition-colors ${
+              slackTestStatus === "success" ? "text-green-700 bg-green-50 border-green-200" :
+              slackTestStatus === "error" ? "text-red-700 bg-red-50 border-red-200" :
+              "text-gray-600 bg-gray-50 hover:bg-gray-100 border-gray-200 hover:border-gray-300"
+            } disabled:opacity-50`}
+            title="Test: Send only Van 1 (North FL) to Slack"
+          >
+            {slackTestStatus === "sending" ? "Sending…" : slackTestStatus === "success" ? "Sent!" : slackTestStatus === "error" ? "Failed" : "Test Van 1"}
+          </button>
           <button
             onClick={shareAllToSlack}
             disabled={slackBulkStatus === "sending"}
