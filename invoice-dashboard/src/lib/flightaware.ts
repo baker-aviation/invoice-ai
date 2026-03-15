@@ -419,15 +419,13 @@ export type ScheduledFlight = {
   duration_minutes: number;
 };
 
-type FaScheduleResponse = {
-  scheduled: FaFlight[];
-  links?: { next?: string | null } | null;
-  num_pages?: number;
-};
+// AeroAPI v4 response shape — field names may vary by endpoint version
+// { scheduled_departures: FaFlight[], links?: { next?: string } }
 
 /**
  * Fetch all scheduled departures from an airport on a specific date.
- * Uses GET /schedules/{start}/{end}?origin={ICAO}
+ * Uses GET /airports/{ICAO}/flights/scheduled_departures?start=...&end=...
+ * AeroAPI v4 docs: https://www.flightaware.com/aeroapi/portal/documentation
  */
 export async function fetchScheduledDepartures(
   originIcao: string,
@@ -439,10 +437,12 @@ export async function fetchScheduledDepartures(
   let cursor: string | null = null;
   let page = 0;
 
+  let url: string = `${BASE}/airports/${originIcao}/flights/scheduled_departures?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&max_pages=5`;
+
   do {
-    const url = cursor
-      ? `${BASE}${cursor}`
-      : `${BASE}/schedules/${start}/${end}?origin=${originIcao}&max_pages=5`;
+    if (cursor) {
+      url = cursor.startsWith("http") ? cursor : `${BASE}${cursor}`;
+    }
 
     const res = await fetch(url, {
       headers: headers(),
@@ -461,32 +461,39 @@ export async function fetchScheduledDepartures(
       break;
     }
 
-    const data: FaScheduleResponse = await res.json();
+    const data = await res.json();
+    // AeroAPI v4 returns { scheduled_departures: [...], links: { next } }
+    const scheduled: FaFlight[] = data.scheduled_departures ?? data.scheduled ?? data.flights ?? [];
 
-    for (const f of data.scheduled ?? []) {
-      if (!f.origin?.code || !f.destination?.code) continue;
-      if (!f.scheduled_out || !f.scheduled_in) continue;
+    for (const f of scheduled) {
+      if (!f.origin?.code && !f.origin?.code_icao) continue;
+      if (!f.destination?.code && !f.destination?.code_icao) continue;
+      const depTime = f.scheduled_out ?? f.scheduled_off;
+      const arrTime = f.scheduled_in ?? f.scheduled_on;
+      if (!depTime || !arrTime) continue;
 
       const flightNum = f.ident ?? "???";
       const airlineIata = flightNum.replace(/\d+$/, "").slice(0, 2);
 
-      const depMs = new Date(f.scheduled_out).getTime();
-      const arrMs = new Date(f.scheduled_in).getTime();
+      const depMs = new Date(depTime).getTime();
+      const arrMs = new Date(arrTime).getTime();
       const durationMin = Math.round((arrMs - depMs) / 60_000);
       if (durationMin <= 0 || durationMin > 720) continue;
 
-      const originIata = f.origin.code_iata ?? icaoToIata(f.origin.code);
-      const destIata = f.destination.code_iata ?? icaoToIata(f.destination.code);
+      const origCode = f.origin?.code_icao ?? f.origin?.code ?? originIcao;
+      const destCode = f.destination?.code_icao ?? f.destination?.code ?? "";
+      const originIata = f.origin?.code_iata ?? icaoToIata(origCode);
+      const destIata = f.destination?.code_iata ?? icaoToIata(destCode);
 
       flights.push({
         flight_number: flightNum,
         airline_iata: airlineIata,
-        origin_icao: f.origin.code,
+        origin_icao: origCode,
         origin_iata: originIata,
-        destination_icao: f.destination.code,
+        destination_icao: destCode,
         destination_iata: destIata,
-        scheduled_departure: f.scheduled_out,
-        scheduled_arrival: f.scheduled_in,
+        scheduled_departure: depTime,
+        scheduled_arrival: arrTime,
         aircraft_type: f.aircraft_type ?? null,
         duration_minutes: durationMin,
       });

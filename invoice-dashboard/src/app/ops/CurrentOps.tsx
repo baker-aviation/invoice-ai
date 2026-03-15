@@ -1571,13 +1571,28 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                                     </div>
                                   ) : (() => {
                                     const edctAlert = getActiveEdct(f);
-                                    if (!edctAlert || isCancelled) return null;
-                                    return (
-                                      <div className="text-[10px] font-medium text-amber-700">
-                                        EDCT: {fmtEdctTime(edctAlert.edct_time!, f.scheduled_departure, f.departure_icao)}
-                                        <span className="ml-1 px-1 py-px rounded bg-amber-100 text-amber-600 text-[9px] font-medium">{edctSourceTag(edctAlert)}</span>
-                                      </div>
-                                    );
+                                    if (edctAlert && !isCancelled) {
+                                      return (
+                                        <div className="text-[10px] font-medium text-amber-700">
+                                          EDCT: {fmtEdctTime(edctAlert.edct_time!, f.scheduled_departure, f.departure_icao)}
+                                          <span className="ml-1 px-1 py-px rounded bg-amber-100 text-amber-600 text-[9px] font-medium">{edctSourceTag(edctAlert)}</span>
+                                        </div>
+                                      );
+                                    }
+                                    // Show FA estimated departure when available and differs from schedule
+                                    if (!isCancelled && fi?.departure_time && !fi.actual_departure) {
+                                      const faDepMs = new Date(fi.departure_time).getTime();
+                                      const schedMs = new Date(f.scheduled_departure).getTime();
+                                      const diffMin = Math.round((faDepMs - schedMs) / 60_000);
+                                      if (Math.abs(diffMin) >= 5) {
+                                        return (
+                                          <div className={`text-[10px] font-medium ${diffMin > 15 ? "text-red-600" : diffMin > 0 ? "text-amber-600" : "text-green-600"}`}>
+                                            FA Est: {fmt(fi.departure_time, f.departure_icao)}
+                                          </div>
+                                        );
+                                      }
+                                    }
+                                    return null;
                                   })()}
                                 </div>
                                 <div className="w-36 shrink-0">
@@ -1588,7 +1603,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                                     <div className={`text-[10px] font-medium ${delayColorClass(f.scheduled_arrival, actualArrIso)}`}>
                                       Actual: {fmt(actualArrIso, f.arrival_icao)}
                                     </div>
-                                  ) : !isCancelled && fi?.arrival_time && fi?.actual_departure && !actualArrIso ? (
+                                  ) : !isCancelled && fi?.arrival_time && (fi?.actual_departure || fi?.departure_time) && !actualArrIso ? (
                                     <div className="text-[10px] text-blue-600 font-medium">
                                       ETA: {fmt(fi.arrival_time, f.arrival_icao)}
                                     </div>
@@ -1615,13 +1630,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                                   const edctAlert = getActiveEdct(f);
                                   if (edctAlert && status === "Scheduled") {
                                     return (
-                                      <span className="text-xs">
-                                        <span className="font-medium text-amber-600">EDCT</span>
-                                        <span className="ml-1 text-[10px] text-amber-700">
-                                          {fmtEdctTime(edctAlert.edct_time!, f.scheduled_departure, f.departure_icao)}
-                                          <span className="ml-1 px-1 py-px rounded bg-amber-100 text-amber-600 text-[9px] font-medium">{edctSourceTag(edctAlert)}</span>
-                                        </span>
-                                      </span>
+                                      <span className="text-xs font-medium text-amber-600">EDCT</span>
                                     );
                                   }
                                   if (edctAlert && status === "En Route") {
@@ -1635,7 +1644,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                                   return <span className={`text-xs ${statusColor}`}>{status}</span>;
                                 })()}
                                 {isFiled && status === "Scheduled" && !getActiveEdct(f) && (
-                                  <span className="text-[10px] text-indigo-500">
+                                  <span className="text-[10px] text-indigo-500 whitespace-nowrap">
                                     IFR Filed{swimEntry?.etd ? ` ${fmt(swimEntry.etd, f.departure_icao)}` : ""}
                                   </span>
                                 )}
@@ -1649,7 +1658,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                                 )}
                                 {/* Progress bar fallback — SWIM or FA actual_departure + ETA */}
                                 {!isCancelled && status === "En Route" && !(fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100) && (() => {
-                                  const depStr = swimRouteMatch?.etd ?? fi?.actual_departure ?? swimEntry?.actual_departure;
+                                  const depStr = swimRouteMatch?.etd ?? fi?.actual_departure ?? fi?.departure_time ?? swimEntry?.actual_departure;
                                   const arrStr = swimRouteMatch?.eta ?? fi?.arrival_time ?? swimEntry?.eta;
                                   if (!depStr || !arrStr) return null;
                                   const dep = new Date(depStr).getTime();
@@ -1923,7 +1932,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                             return <span className={`text-xs font-medium ${statusColor}`}>{status}</span>;
                           })()}
                           {isFiled && status === "Scheduled" && !getActiveEdct(f) && (
-                            <span className="text-[10px] text-indigo-500 font-medium">
+                            <span className="text-[10px] text-indigo-500 font-medium whitespace-nowrap">
                               IFR Filed{swimEntry?.etd ? ` ${fmt(swimEntry.etd, f.departure_icao)}` : ""}
                             </span>
                           )}
@@ -1993,7 +2002,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                         )}
                         {/* Progress bar fallback — SWIM or FA actual_departure + ETA */}
                         {!isCancelled && status === "En Route" && !(fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100) && (() => {
-                          const depStr = swimRouteMatch?.etd ?? fi?.actual_departure ?? swimEntry?.actual_departure;
+                          const depStr = swimRouteMatch?.etd ?? fi?.actual_departure ?? fi?.departure_time ?? swimEntry?.actual_departure;
                           const arrStr = swimRouteMatch?.eta ?? fi?.arrival_time ?? swimEntry?.eta;
                           if (!depStr || !arrStr) return null;
                           const dep = new Date(depStr).getTime();
@@ -2027,7 +2036,8 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           </div>
                         ) : !isCancelled ? (() => {
                           const edctAlert = getActiveEdct(f);
-                          const estColor = fi?.departure_time ? depEstColorClass(f.scheduled_departure, fi.departure_time) : null;
+                          const faEstDiff = fi?.departure_time ? Math.round((new Date(fi.departure_time).getTime() - new Date(f.scheduled_departure).getTime()) / 60_000) : 0;
+                          const showFaEst = fi?.departure_time && Math.abs(faEstDiff) >= 5;
                           return (
                             <>
                               {edctAlert && (
@@ -2036,9 +2046,9 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                                   <span className="ml-1 px-1 py-px rounded bg-amber-100 text-amber-600 text-[9px] font-medium">{edctSourceTag(edctAlert)}</span>
                                 </div>
                               )}
-                              {estColor && (
-                                <div className={`text-[10px] font-medium mt-0.5 ${estColor}`}>
-                                  Est: {fmt(fi!.departure_time!, f.departure_icao)}
+                              {showFaEst && (
+                                <div className={`text-[10px] font-medium mt-0.5 ${faEstDiff > 15 ? "text-red-600" : faEstDiff > 0 ? "text-amber-600" : "text-green-600"}`}>
+                                  FA Est: {fmt(fi!.departure_time!, f.departure_icao)}
                                 </div>
                               )}
                             </>
@@ -2051,7 +2061,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           <div className={`text-[10px] font-medium mt-0.5 ${delayColorClass(f.scheduled_arrival, (fi?.actual_arrival ?? swimEntry?.actual_arrival)!)}`}>
                             Actual: {fmt((fi?.actual_arrival ?? swimEntry?.actual_arrival)!, f.arrival_icao)}
                           </div>
-                        ) : !isCancelled && fi?.arrival_time && fi?.actual_departure && !fi?.actual_arrival ? (
+                        ) : !isCancelled && fi?.arrival_time && (fi?.actual_departure || fi?.departure_time) && !fi?.actual_arrival ? (
                           <div className="text-[10px] text-blue-600 font-medium mt-0.5">
                             ETA: {fmt(fi.arrival_time, f.arrival_icao)}
                           </div>
