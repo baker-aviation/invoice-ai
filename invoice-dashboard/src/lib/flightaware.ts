@@ -287,13 +287,21 @@ export async function getActiveFlights(
               const landedMs = new Date(landed).getTime();
               if (landedMs < now - 4 * 3600_000) continue;
             }
-            // Also filter flights that departed >12h ago with no landing recorded.
-            // FA sometimes loses track of a flight (no actual_on/actual_in) so it
-            // stays "En Route" forever. No Baker flight is 12+ hours enroute.
+            // Filter flights whose estimated arrival passed >2h ago with no
+            // actual landing recorded — FA lost track, flight is done.
+            if (!landed) {
+              const estArr = f.estimated_on ?? f.scheduled_on;
+              if (estArr) {
+                const estArrMs = new Date(estArr).getTime();
+                if (estArrMs < now - 2 * 3600_000) continue;
+              }
+            }
+            // Also filter flights that departed >6h ago with no landing recorded.
+            // No Baker charter exceeds 6 hours enroute.
             const actualDep = f.actual_out ?? f.actual_off;
             if (actualDep && !landed) {
               const actualDepMs = new Date(actualDep).getTime();
-              if (actualDepMs < now - 12 * 3600_000) continue;
+              if (actualDepMs < now - 6 * 3600_000) continue;
             }
 
             const info = toFlightInfo(tail, f);
@@ -419,13 +427,32 @@ export type ScheduledFlight = {
   duration_minutes: number;
 };
 
-// AeroAPI v4 response shape — field names may vary by endpoint version
-// { scheduled_departures: FaFlight[], links?: { next?: string } }
+/**
+ * A single flight from the /schedules/ endpoint.
+ * Fields are FLAT (origin is a string "KDFW", not an object),
+ * unlike the /flights/ endpoints which use nested FaAirport objects.
+ */
+type FaScheduleEntry = {
+  ident: string;               // e.g. "AAL1489" or codeshare "GFA4220"
+  ident_iata?: string;         // e.g. "AA1489"
+  actual_ident?: string | null; // operating carrier if this is a codeshare
+  fa_flight_id?: string;
+  aircraft_type?: string | null;
+  origin: string;              // ICAO e.g. "KDFW"
+  origin_icao: string;
+  origin_iata: string;
+  destination: string;
+  destination_icao: string;
+  destination_iata: string;
+  scheduled_out: string;       // ISO 8601
+  scheduled_in: string;
+};
 
 /**
  * Fetch all scheduled departures from an airport on a specific date.
- * Uses GET /airports/{ICAO}/flights/scheduled_departures?start=...&end=...
- * AeroAPI v4 docs: https://www.flightaware.com/aeroapi/portal/documentation
+ * Uses GET /schedules/{start}/{end}?origin={ICAO}
+ * This endpoint supports future dates (unlike /airports/.../scheduled_departures
+ * which is limited to 2 days ahead).
  */
 export async function fetchScheduledDepartures(
   originIcao: string,
@@ -434,10 +461,11 @@ export async function fetchScheduledDepartures(
   const start = `${date}T00:00:00Z`;
   const end = `${date}T23:59:59Z`;
   const flights: ScheduledFlight[] = [];
+  const seenFlightIds = new Set<string>(); // dedupe codeshares
   let cursor: string | null = null;
   let page = 0;
 
-  let url: string = `${BASE}/airports/${originIcao}/flights/scheduled_departures?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&max_pages=5`;
+  let url: string = `${BASE}/schedules/${start}/${end}?origin=${originIcao}&max_pages=5`;
 
   do {
     if (cursor) {
@@ -462,38 +490,38 @@ export async function fetchScheduledDepartures(
     }
 
     const data = await res.json();
-    // AeroAPI v4 returns { scheduled_departures: [...], links: { next } }
-    const scheduled: FaFlight[] = data.scheduled_departures ?? data.scheduled ?? data.flights ?? [];
+    const scheduled: FaScheduleEntry[] = data.scheduled ?? [];
 
     for (const f of scheduled) {
-      if (!f.origin?.code && !f.origin?.code_icao) continue;
-      if (!f.destination?.code && !f.destination?.code_icao) continue;
-      const depTime = f.scheduled_out ?? f.scheduled_off;
-      const arrTime = f.scheduled_in ?? f.scheduled_on;
-      if (!depTime || !arrTime) continue;
+      if (!f.scheduled_out || !f.scheduled_in) continue;
+      if (!f.destination_icao) continue;
 
-      const flightNum = f.ident ?? "???";
-      const airlineIata = flightNum.replace(/\d+$/, "").slice(0, 2);
+      // Skip codeshares — only keep the operating carrier's entry
+      // A codeshare has actual_ident set (the real operating flight)
+      if (f.actual_ident) continue;
 
-      const depMs = new Date(depTime).getTime();
-      const arrMs = new Date(arrTime).getTime();
+      // Dedupe by fa_flight_id
+      if (f.fa_flight_id && seenFlightIds.has(f.fa_flight_id)) continue;
+      if (f.fa_flight_id) seenFlightIds.add(f.fa_flight_id);
+
+      const depMs = new Date(f.scheduled_out).getTime();
+      const arrMs = new Date(f.scheduled_in).getTime();
       const durationMin = Math.round((arrMs - depMs) / 60_000);
       if (durationMin <= 0 || durationMin > 720) continue;
 
-      const origCode = f.origin?.code_icao ?? f.origin?.code ?? originIcao;
-      const destCode = f.destination?.code_icao ?? f.destination?.code ?? "";
-      const originIata = f.origin?.code_iata ?? icaoToIata(origCode);
-      const destIata = f.destination?.code_iata ?? icaoToIata(destCode);
+      // Use ident_iata for a cleaner flight number (e.g. "AA1489" not "AAL1489")
+      const flightNum = f.ident_iata ?? f.ident ?? "???";
+      const airlineIata = flightNum.replace(/\d+$/, "").slice(0, 2);
 
       flights.push({
         flight_number: flightNum,
         airline_iata: airlineIata,
-        origin_icao: origCode,
-        origin_iata: originIata,
-        destination_icao: destCode,
-        destination_iata: destIata,
-        scheduled_departure: depTime,
-        scheduled_arrival: arrTime,
+        origin_icao: f.origin_icao ?? f.origin,
+        origin_iata: f.origin_iata ?? icaoToIata(f.origin_icao ?? f.origin),
+        destination_icao: f.destination_icao ?? f.destination,
+        destination_iata: f.destination_iata ?? icaoToIata(f.destination_icao ?? f.destination),
+        scheduled_departure: f.scheduled_out,
+        scheduled_arrival: f.scheduled_in,
         aircraft_type: f.aircraft_type ?? null,
         duration_minutes: durationMin,
       });
