@@ -577,7 +577,7 @@ function AlertCard({ alert, onAck, acked, ackedByName }: { alert: OpsAlert; onAc
 
 // ─── Client alert card (KJAC/KSNA/after-hours — localStorage dismiss) ───────
 
-function ClientAlertCard({ alert, onDismiss, dismissed }: { alert: ClientAlert; onDismiss: (key: string) => void; dismissed?: boolean }) {
+function ClientAlertCard({ alert, onDismiss, dismissed, dismissedByName }: { alert: ClientAlert; onDismiss: (key: string) => void; dismissed?: boolean; dismissedByName?: string | null }) {
   const [dismissing, setDismissing] = useState(false);
 
   function handleDismiss(e: React.MouseEvent) {
@@ -612,7 +612,9 @@ function ClientAlertCard({ alert, onDismiss, dismissed }: { alert: ClientAlert; 
         <span className="text-xs text-gray-700">{alert.message}</span>
         <div className="ml-auto shrink-0">
           {dismissed ? (
-            <span className="text-xs text-gray-400 bg-gray-100 rounded px-1.5 py-0.5">Dismissed</span>
+            <span className="text-xs text-gray-400 bg-gray-100 rounded px-1.5 py-0.5">
+              Ack'd{dismissedByName ? ` by ${dismissedByName}` : ""}
+            </span>
           ) : (
             <button
               type="button"
@@ -632,7 +634,7 @@ function ClientAlertCard({ alert, onDismiss, dismissed }: { alert: ClientAlert; 
 // ─── Flight card ──────────────────────────────────────────────────────────────
 
 function FlightCard({
-  flight, isAcked, showAcknowledged, onAck, clientAlerts, dismissedClientAlerts, onDismissClient, userMap,
+  flight, isAcked, showAcknowledged, onAck, clientAlerts, dismissedClientAlerts, onDismissClient, userMap, dismissedByMap,
 }: {
   flight: Flight;
   isAcked: (a: OpsAlert) => boolean;
@@ -642,6 +644,7 @@ function FlightCard({
   dismissedClientAlerts: Set<string>;
   onDismissClient: (key: string) => void;
   userMap: Map<string, string>;
+  dismissedByMap: Map<string, string>;
 }) {
   const visibleAlerts = (flight.alerts ?? []).filter((a) => showAcknowledged || !isAcked(a));
   const alerts = visibleAlerts;
@@ -723,7 +726,7 @@ function FlightCard({
         <div className="px-3 pb-3 space-y-1.5">
           {alerts.map((a) => <AlertCard key={a.id} alert={a} onAck={onAck} acked={isAcked(a)} ackedByName={showAcknowledged && a.acknowledged_by ? userMap.get(a.acknowledged_by) ?? null : null} />)}
           {activeClientAlerts.map((ca) => (
-            <ClientAlertCard key={ca.key} alert={ca} onDismiss={onDismissClient} dismissed={dismissedClientAlerts.has(ca.key)} />
+            <ClientAlertCard key={ca.key} alert={ca} onDismiss={onDismissClient} dismissed={dismissedClientAlerts.has(ca.key)} dismissedByName={showAcknowledged && dismissedByMap.has(ca.key) ? userMap.get(dismissedByMap.get(ca.key)!) ?? null : null} />
           ))}
         </div>
       )}
@@ -790,11 +793,32 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
   const [localAckedIds, setLocalAckedIds] = useState<Set<string>>(new Set());
   const [showAcknowledged, setShowAcknowledged] = useState(false);
   const [dismissedClientAlerts, setDismissedClientAlerts] = useState<Set<string>>(new Set());
+  const [dismissedByMap, setDismissedByMap] = useState<Map<string, string>>(new Map()); // alert_key → userId
   const [userMap, setUserMap] = useState<Map<string, string>>(new Map());
 
-  // Load dismissed client alerts from localStorage on mount
+  // Load dismissed client alerts from server on mount
   useEffect(() => {
-    setDismissedClientAlerts(loadDismissed());
+    fetch("/api/ops/alerts/client-dismiss")
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        if (!data?.dismissals) {
+          // Fallback to localStorage if server table doesn't exist yet
+          setDismissedClientAlerts(loadDismissed());
+          return;
+        }
+        const keys = new Set<string>();
+        const byMap = new Map<string, string>();
+        for (const d of data.dismissals as { alert_key: string; dismissed_by: string }[]) {
+          keys.add(d.alert_key);
+          byMap.set(d.alert_key, d.dismissed_by);
+        }
+        setDismissedClientAlerts(keys);
+        setDismissedByMap(byMap);
+      })
+      .catch(() => {
+        // Fallback to localStorage
+        setDismissedClientAlerts(loadDismissed());
+      });
   }, []);
 
   // Fetch user map when "All" (show acknowledged) is toggled on
@@ -822,11 +846,16 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
   const isAcked = useCallback((a: OpsAlert) => a.acknowledged_at != null || localAckedIds.has(a.id), [localAckedIds]);
 
   const handleDismissClient = useCallback((key: string) => {
-    setDismissedClientAlerts((prev) => {
-      const next = new Set(prev).add(key);
-      saveDismissed(next);
-      return next;
-    });
+    // Optimistic update
+    setDismissedClientAlerts((prev) => new Set(prev).add(key));
+    // Also save to localStorage as fallback
+    setDismissedClientAlerts((prev) => { saveDismissed(prev); return prev; });
+    // Persist to server
+    fetch("/api/ops/alerts/client-dismiss", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key }),
+    }).catch(() => {});
   }, []);
 
   // Apply alert type filtering
@@ -1380,6 +1409,7 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
                       dismissedClientAlerts={dismissedClientAlerts}
                       onDismissClient={handleDismissClient}
                       userMap={userMap}
+                      dismissedByMap={dismissedByMap}
                     />
                   ))}
                 </div>
