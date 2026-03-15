@@ -165,8 +165,10 @@ function computeTailDuty(
     }
 
     const actualDep = fi?.actual_departure ?? null;
-    const actualArr = fi?.actual_arrival ?? null;
-    const estimatedArr = fi?.arrival_time ?? null;
+    // Only use FA arrival data if the destination matches (chained flights have wrong arrival)
+    const fiDestMatch = fi && fi.destination_icao === f.arrival_icao;
+    const actualArr = fiDestMatch ? (fi?.actual_arrival ?? null) : null;
+    const estimatedArr = fiDestMatch ? (fi?.arrival_time ?? null) : null;
 
     const depMs = new Date(actualDep ?? f.scheduled_departure).getTime();
     let endMs: number;
@@ -1637,7 +1639,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                                     <div className={`text-[10px] font-medium ${delayColorClass(f.scheduled_arrival, actualArrIso)}`}>
                                       Actual: {fmt(actualArrIso, f.arrival_icao)}
                                     </div>
-                                  ) : !isCancelled && fi?.arrival_time && (fi?.actual_departure || fi?.departure_time) && !actualArrIso ? (
+                                  ) : !isCancelled && fiRouteMatch && fi?.arrival_time && (fi?.actual_departure || fi?.departure_time) && !actualArrIso ? (
                                     <div className="text-[10px] text-blue-600 font-medium">
                                       ETA: {fmt(fi.arrival_time, f.arrival_icao)}
                                     </div>
@@ -1693,7 +1695,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                                 {/* Progress bar fallback — SWIM or FA actual_departure + ETA */}
                                 {!isCancelled && status === "En Route" && !(fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100) && (() => {
                                   const depStr = (!swimRouteStale ? swimRouteMatch?.etd : null) ?? fi?.actual_departure ?? fi?.departure_time ?? (!swimEntryStale ? swimEntry?.actual_departure : null);
-                                  let arrStr = (!swimRouteStale ? swimRouteMatch?.eta : null) ?? fi?.arrival_time ?? (!swimEntryStale ? swimEntry?.eta : null);
+                                  let arrStr = (!swimRouteStale ? swimRouteMatch?.eta : null) ?? (fiRouteMatch ? fi?.arrival_time : null) ?? (!swimEntryStale ? swimEntry?.eta : null);
                                   if (!arrStr && f.scheduled_arrival && f.scheduled_departure && depStr) {
                                     const delayMs = new Date(depStr).getTime() - new Date(f.scheduled_departure).getTime();
                                     arrStr = new Date(new Date(f.scheduled_arrival).getTime() + delayMs).toISOString();
@@ -2045,7 +2047,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                         {!isCancelled && status === "En Route" && !(fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100) && (() => {
                           const depStr = (!swimRouteStale ? swimRouteMatch?.etd : null) ?? fi?.actual_departure ?? fi?.departure_time ?? (!swimEntryStale ? swimEntry?.actual_departure : null);
                           // Fall back to scheduled arrival shifted by departure delay
-                          let arrStr = (!swimRouteStale ? swimRouteMatch?.eta : null) ?? fi?.arrival_time ?? (!swimEntryStale ? swimEntry?.eta : null);
+                          let arrStr = (!swimRouteStale ? swimRouteMatch?.eta : null) ?? (fiRouteMatch ? fi?.arrival_time : null) ?? (!swimEntryStale ? swimEntry?.eta : null);
                           if (!arrStr && f.scheduled_arrival && f.scheduled_departure && depStr) {
                             const delayMs = new Date(depStr).getTime() - new Date(f.scheduled_departure).getTime();
                             arrStr = new Date(new Date(f.scheduled_arrival).getTime() + delayMs).toISOString();
@@ -2107,7 +2109,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           <div className={`text-[10px] font-medium mt-0.5 ${delayColorClass(f.scheduled_arrival, (fi?.actual_arrival ?? swimEntry?.actual_arrival)!)}`}>
                             Actual: {fmt((fi?.actual_arrival ?? swimEntry?.actual_arrival)!, f.arrival_icao)}
                           </div>
-                        ) : !isCancelled && fi?.arrival_time && (fi?.actual_departure || fi?.departure_time) && !fi?.actual_arrival ? (
+                        ) : !isCancelled && fiRouteMatch && fi?.arrival_time && (fi?.actual_departure || fi?.departure_time) && !fi?.actual_arrival ? (
                           <div className="text-[10px] text-blue-600 font-medium mt-0.5">
                             ETA: {fmt(fi.arrival_time, f.arrival_icao)}
                           </div>

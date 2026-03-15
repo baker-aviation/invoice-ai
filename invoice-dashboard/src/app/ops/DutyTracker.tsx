@@ -409,8 +409,10 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
       }
 
       const actualDep = fi?.actual_departure ?? null;
-      const actualArr = fi?.actual_arrival ?? null;
-      const estimatedArr = fi?.arrival_time ?? null;
+      // Only use FA arrival data when destination matches (chained flights have wrong arrival)
+      const fiDestMatch = fi && fi.destination_icao === f.arrival_icao;
+      const actualArr = fiDestMatch ? (fi?.actual_arrival ?? null) : null;
+      const estimatedArr = fiDestMatch ? (fi?.arrival_time ?? null) : null;
       // FA departure_time = best available (actual > estimated > scheduled)
       const faDep = fi?.departure_time ?? null;
 
