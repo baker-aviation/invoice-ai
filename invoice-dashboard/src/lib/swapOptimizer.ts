@@ -1466,6 +1466,31 @@ export function buildSwapPlan(params: {
     // Run optimizer for this tail
     optimizeTail(tailTasks, aliases, commercialFlights, swapDate, byTail.get(tail));
     allTasks.push(...tailTasks);
+
+    // Emit placeholder rows for unassigned oncoming slots
+    // So every tail appears in the output — unassigned slots show "needs flights"
+    for (const [slotName, role] of [
+      ["oncoming_pic", "PIC"] as const,
+      ["oncoming_sic", "SIC"] as const,
+    ]) {
+      if (!assignment[slotName]) {
+        allTasks.push({
+          name: `[UNASSIGNED ${role}]`,
+          crewMember: null,
+          role,
+          direction: "oncoming" as const,
+          tail,
+          aircraftType,
+          swapPoint: swapPoints[0],
+          homeAirports: [],
+          candidates: [],
+          best: null,
+          warnings: [`No ${role} assigned — run Optimize + Flights`],
+          earlyVolunteer: false,
+          lateVolunteer: false,
+        });
+      }
+    }
   }
 
   // ── Staggered arrivals check ──────────────────────────────────────────
@@ -1566,11 +1591,13 @@ export function buildSwapPlan(params: {
       duty_off_time: null,
       is_checkairman: task.crewMember?.is_checkairman ?? false,
       is_skillbridge: task.crewMember?.is_skillbridge ?? false,
-      notes: best?.type === "none"
-        ? task.direction === "oncoming"
-          ? `No viable transport from ${task.homeAirports[0] ?? "?"} to ${toIata(task.swapPoint.icao)}`
-          : `No viable transport from ${toIata(task.swapPoint.icao)} to ${task.homeAirports[0] ?? "?"}`
-        : generateTransportNote(best, task),
+      notes: task.name.startsWith("[UNASSIGNED")
+        ? `Needs crew — run Optimize + Flights`
+        : best?.type === "none"
+          ? task.direction === "oncoming"
+            ? `No viable transport from ${task.homeAirports[0] ?? "?"} to ${toIata(task.swapPoint.icao)}`
+            : `No viable transport from ${toIata(task.swapPoint.icao)} to ${task.homeAirports[0] ?? "?"}`
+          : generateTransportNote(best, task),
       warnings: task.warnings,
       drive_estimate: best?.drive ?? null,
       flight_offer: best?.offer ?? null,
@@ -2029,58 +2056,8 @@ function assignRoleWithMatrix(
     });
   }
 
-  // ── Fallback: assign closest qualified crew to remaining tails ──────────
-  // Every tail needs crew — aircraft can never be unattended.
-  // Mark as "needs_flight" so the user knows to run Optimize + Flights.
-  const unassignedTails = needingTails.filter((t) => !assignedTails.has(t));
-  const unassignedPool = pool.filter((p) => !assignedCrews.has(p.name));
-
-  if (unassignedTails.length > 0 && unassignedPool.length > 0) {
-    for (const tail of unassignedTails) {
-      if (unassignedPool.length === 0) break;
-
-      const { swapPoints } = extractSwapPoints(tail, byTail, swapDate);
-      const swapIcao = swapPoints[0]?.icao;
-      const acType = tailAircraftType.get(tail) ?? "unknown";
-
-      // Find best remaining crew (qualified, closest)
-      let bestIdx = -1;
-      let bestDist = Infinity;
-      for (let i = 0; i < unassignedPool.length; i++) {
-        const crew = unassignedPool[i];
-        if (!isQualified(crew.aircraft_type, acType)) continue;
-        if (swapIcao) {
-          for (const home of crew.home_airports) {
-            const drive = estimateDriveTime(toIcao(home), swapIcao);
-            const dist = drive?.straight_line_miles ?? 9999;
-            if (dist < bestDist) { bestDist = dist; bestIdx = i; }
-          }
-        } else if (bestIdx === -1) {
-          bestIdx = i;
-        }
-      }
-
-      if (bestIdx >= 0) {
-        const crew = unassignedPool[bestIdx];
-        result[tail][field] = crew.name;
-        assignedCrews.add(crew.name);
-        assignedTails.add(tail);
-        unassignedPool.splice(bestIdx, 1);
-
-        const loc = swapPoints[0];
-        const distStr = bestDist < 9999 ? `${Math.round(bestDist)}mi` : "?mi";
-        const reason = `NEEDS FLIGHT to ${loc ? toIata(loc.icao) : "?"} (${distStr} away) — run Optimize + Flights`;
-        console.log(`[Assignment] ${role} ${crew.name} → ${tail} (fallback): ${reason}`);
-
-        details.push({
-          name: crew.name,
-          tail,
-          cost: 0,
-          reason,
-        });
-      }
-    }
-  }
+  // No fallback — only assign crew with proven transport.
+  // Unassigned tails show up in buildSwapPlan output with clear "needs flights" status.
 }
 
 // ─── Helper: get flight searches for ALL pool crew × ALL swap locations ───────
