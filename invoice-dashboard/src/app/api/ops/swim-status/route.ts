@@ -88,6 +88,9 @@ interface SwimRow {
   altitude_ft: number | null;
   etd: string | null;
   eta: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  groundspeed_kt: number | null;
 }
 
 function deriveSwimStatus(eventType: SwimEventType, altitudeFt: number | null): string {
@@ -120,7 +123,7 @@ async function fetchSwimStatuses() {
 
   const { data, error } = await supa
     .from("swim_positions")
-    .select("tail_number, departure_icao, arrival_icao, event_type, event_time, altitude_ft, etd, eta")
+    .select("tail_number, departure_icao, arrival_icao, event_type, event_time, altitude_ft, etd, eta, latitude, longitude, groundspeed_kt")
     .gte("event_time", since)
     .order("event_time", { ascending: false });
 
@@ -165,6 +168,9 @@ async function fetchSwimStatuses() {
     const isArrived = latestRow.event_type === "ARRIVAL" || latestRow.event_type === "TAXI_IN";
     const inferredArr = act?.actual_arrival ?? (isArrived ? latestRow.event_time : null);
 
+    // Use position from the latest TRACK/POSITION event for this route
+    const posRow = row.event_type === "TRACK" || row.event_type === "POSITION" ? row : null;
+
     return {
       tail_number: row.tail_number,
       departure_icao: row.departure_icao,
@@ -175,6 +181,9 @@ async function fetchSwimStatuses() {
       eta: row.eta,
       actual_departure: inferredDep,
       actual_arrival: inferredArr,
+      latitude: posRow?.latitude ?? null,
+      longitude: posRow?.longitude ?? null,
+      groundspeed_kt: posRow?.groundspeed_kt ?? null,
     };
   });
 }
@@ -197,6 +206,7 @@ export async function GET(req: NextRequest) {
     const merged = new Map<string, {
       tail_number: string; departure_icao: string | null; arrival_icao: string | null;
       status: string; event_time: string; etd: string | null; eta: string | null;
+      latitude?: number | null; longitude?: number | null; groundspeed_kt?: number | null;
     }>();
 
     // Track feed health
@@ -253,6 +263,11 @@ export async function GET(req: NextRequest) {
           });
         } else if (!existing) {
           merged.set(key, s);
+        } else if (s.latitude != null && s.longitude != null && existing.latitude == null) {
+          // Existing entry has higher status priority but no position — add SWIM position
+          existing.latitude = s.latitude;
+          existing.longitude = s.longitude;
+          existing.groundspeed_kt = s.groundspeed_kt;
         }
       }
       feeds.push({ name: "FAA SWIM", status: "ok", count: swimStatuses.length, updated_at: new Date().toISOString() });

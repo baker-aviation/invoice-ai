@@ -465,7 +465,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
   const [tripSalespersons, setTripSalespersons] = useState<TripSalesperson[]>([]);
 
   // SWIM flight status
-  type SwimFlightStatus = { tail_number: string; departure_icao: string | null; arrival_icao: string | null; status: string; event_time: string; etd: string | null; eta: string | null; actual_departure: string | null; actual_arrival: string | null };
+  type SwimFlightStatus = { tail_number: string; departure_icao: string | null; arrival_icao: string | null; status: string; event_time: string; etd: string | null; eta: string | null; actual_departure: string | null; actual_arrival: string | null; latitude?: number | null; longitude?: number | null; groundspeed_kt?: number | null };
   type FeedStatus = { name: string; status: "ok" | "error" | "off"; count: number; updated_at?: string; error?: string };
   const [swimStatus, setSwimStatus] = useState<Map<string, SwimFlightStatus>>(new Map());
   const [feedStatuses, setFeedStatuses] = useState<FeedStatus[]>([]);
@@ -1046,6 +1046,12 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
   // Compute parked aircraft positions from schedule + FA data
   const parkedAircraft = useMemo(() => {
     const flyingTails = new Set(enRouteAircraft.map((a) => a.tail));
+    // Also exclude tails that SWIM shows as En Route with position (they'll appear via enrichedEnRoute)
+    for (const [, swim] of swimStatus) {
+      if (swim.status === "En Route" && swim.latitude != null && swim.longitude != null && swim.tail_number) {
+        flyingTails.add(swim.tail_number);
+      }
+    }
     const now = new Date();
     const parked: AircraftPosition[] = [];
     // For each tail, find its most likely current location:
@@ -1121,10 +1127,44 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
       }
     }
     return parked;
-  }, [flights, enRouteAircraft]);
+  }, [flights, enRouteAircraft, swimStatus]);
+
+  // Supplement FA positions with SWIM positions for tails FA can't track (e.g. LADD-blocked)
+  const enrichedEnRoute = useMemo(() => {
+    const faTails = new Set(enRouteAircraft.map((a) => a.tail));
+    const swimPositions: AircraftPosition[] = [];
+    for (const [, swim] of swimStatus) {
+      if (
+        swim.status === "En Route" &&
+        swim.latitude != null &&
+        swim.longitude != null &&
+        swim.tail_number &&
+        !faTails.has(swim.tail_number)
+      ) {
+        // Avoid duplicates from multiple SWIM route entries for same tail
+        if (swimPositions.some((p) => p.tail === swim.tail_number)) continue;
+        swimPositions.push({
+          tail: swim.tail_number,
+          lat: swim.latitude,
+          lon: swim.longitude,
+          alt_baro: null,
+          gs: swim.groundspeed_kt ?? null,
+          track: null,
+          baro_rate: null,
+          on_ground: false,
+          squawk: null,
+          flight: null,
+          seen: null,
+          aircraft_type: null,
+          description: null,
+        });
+      }
+    }
+    return [...enRouteAircraft, ...swimPositions];
+  }, [enRouteAircraft, swimStatus]);
 
   // Combine flying + parked for the map
-  const allMapAircraft = useMemo(() => [...enRouteAircraft, ...parkedAircraft], [enRouteAircraft, parkedAircraft]);
+  const allMapAircraft = useMemo(() => [...enrichedEnRoute, ...parkedAircraft], [enrichedEnRoute, parkedAircraft]);
 
   // Per-tail duty summary (24hr flight time + crew rest)
   const tailDuty = useMemo(() => computeTailDuty(flights, faFlightsRaw), [flights, faFlightsRaw]);
@@ -1152,7 +1192,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
   const bestFuelByAirport = useMemo(() => buildBestRateByAirport(advertisedPrices), [advertisedPrices]);
 
   // Count airborne vs on-ground
-  const airborne = enRouteAircraft.length;
+  const airborne = enrichedEnRoute.length;
   const onGround = parkedAircraft.length;
 
   // Collect same-day EDCT alerts across all flights
