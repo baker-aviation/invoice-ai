@@ -125,8 +125,8 @@ export type FlightInfo = {
 
 /**
  * Get recent and upcoming flights for a registration (tail number).
- * Returns the most recent / current / upcoming flights.
- * Falls back to callsign lookup for LADD/PIA-blocked aircraft.
+ * If a DB callsign exists, queries by callsign directly (skips N-number).
+ * Otherwise queries by N-number with auto-derived KOW fallback.
  *
  * @param callsignMap — optional map of registration → callsign from ics_sources DB table
  */
@@ -134,7 +134,11 @@ export async function getFlightsByRegistration(
   registration: string,
   callsignMap?: Map<string, string>,
 ): Promise<FaFlight[]> {
-  const url = `${BASE}/flights/${encodeURIComponent(registration)}`;
+  const dbCallsign = callsignMap?.get(registration);
+
+  // If we have a known callsign, query by callsign directly — saves a wasted N-number call
+  const primaryIdent = dbCallsign ?? registration;
+  const url = `${BASE}/flights/${encodeURIComponent(primaryIdent)}`;
   const res = await fetch(url, {
     headers: headers(),
     signal: AbortSignal.timeout(10000),
@@ -146,15 +150,14 @@ export async function getFlightsByRegistration(
   }
   const data = await res.json();
   let flights = (data.flights ?? []) as FaFlight[];
-  console.log(`[FA] ${registration}: ${flights.length} flights returned`);
+  console.log(`[FA] ${primaryIdent}${dbCallsign ? ` (${registration})` : ""}: ${flights.length} flights`);
 
-  // Fallback: try callsign for LADD/PIA-blocked aircraft
-  if (flights.length === 0) {
-    // Use DB callsign if available, otherwise derive KOW + digits
-    const callsign = callsignMap?.get(registration)
-      ?? (() => { const d = registration.replace(/\D/g, ""); return d ? `KOW${d}` : null; })();
-    if (callsign) {
-      console.log(`[FA] ${registration}: trying callsign fallback ${callsign}`);
+  // Fallback: if N-number returned nothing (no DB callsign), try auto-derived KOW + digits
+  if (flights.length === 0 && !dbCallsign) {
+    const digits = registration.replace(/\D/g, "");
+    if (digits) {
+      const callsign = `KOW${digits}`;
+      console.log(`[FA] ${registration}: trying auto-derived callsign ${callsign}`);
       const csUrl = `${BASE}/flights/${encodeURIComponent(callsign)}`;
       try {
         const csRes = await fetch(csUrl, {
@@ -164,9 +167,9 @@ export async function getFlightsByRegistration(
         if (csRes.ok) {
           const csData = await csRes.json();
           flights = (csData.flights ?? []) as FaFlight[];
-          console.log(`[FA] ${callsign}: ${flights.length} flights returned (callsign fallback for ${registration})`);
+          console.log(`[FA] ${callsign}: ${flights.length} flights (auto-derived for ${registration})`);
         }
-      } catch { /* ignore callsign fallback errors */ }
+      } catch { /* ignore fallback errors */ }
     }
   }
 
