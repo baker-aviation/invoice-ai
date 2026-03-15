@@ -2405,11 +2405,13 @@ function ScheduleTab({
   const shareVansToSlack = useCallback(async (vanIds?: number[]) => {
     setSlackBulkStatus("sending");
     try {
+      const isTest = !!vanIds;
       const vans = FIXED_VAN_ZONES
         .filter((zone) => !vanIds || vanIds.includes(zone.vanId))
         .map((zone) => {
           const items = finalItemsByVan.get(zone.vanId) ?? [];
-          if (items.length === 0) return null;
+          // For targeted test pushes, send even if empty so we verify Slack works
+          if (!isTest && items.length === 0) return null;
           return {
             vanName: zone.name,
             vanId: zone.vanId,
