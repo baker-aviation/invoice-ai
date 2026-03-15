@@ -314,9 +314,11 @@ export async function getActiveFlights(
             const info = toFlightInfo(tail, f);
 
             // Fetch position for any en-route flight missing last_position
+            // Check actual_off (wheels off) OR actual_out (gate departure) — FA
+            // sometimes returns only actual_out without actual_off.
             if (
               info.latitude == null &&
-              f.actual_off != null &&
+              (f.actual_off != null || f.actual_out != null) &&
               f.actual_on == null &&
               f.fa_flight_id
             ) {
