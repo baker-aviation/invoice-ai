@@ -3,7 +3,7 @@ import { requireAdmin, isAuthed } from "@/lib/api-auth";
 import { computeAllRoutes, getRouteStatus, clearRoutes } from "@/lib/pilotRoutes";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 300; // 5 min — route computation involves many HasData API calls
+export const maxDuration = 120; // 2 min — bulk FlightAware fetch (~60 calls) + local matching
 
 /**
  * POST /api/crew/routes
@@ -31,7 +31,8 @@ export async function POST(req: NextRequest) {
       swap_date: swapDate,
       crew_processed: result.crewProcessed,
       total_routes: result.totalRoutes,
-      total_searches: result.totalSearches,
+      flightaware_calls: result.flightAwareCalls,
+      scheduled_flights: result.totalScheduledFlights,
       errors: result.errors.length > 0 ? result.errors : undefined,
     });
   } catch (e) {
