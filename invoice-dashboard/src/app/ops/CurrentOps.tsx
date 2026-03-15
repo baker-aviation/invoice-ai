@@ -851,8 +851,8 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
         map.set(f.id, "arrived");
       } else if (fiRouteMatch && fi?.status?.includes("En Route")) {
         map.set(f.id, "enroute");
-      } else if (fiRouteMatch && fi?.actual_departure && !fi?.actual_arrival) {
-        map.set(f.id, "enroute"); // LADD: FA has actual departure but status may not say "En Route"
+      } else if (fiRouteMatch && fi?.departure_time && !fi?.actual_arrival && new Date(fi.departure_time) < now && (!faEta || faEta > now)) {
+        map.set(f.id, "enroute"); // LADD: FA has departure time passed, ETA in future — plane is flying
       } else if (!swimRouteStale && swimRoute?.status === "En Route") {
         map.set(f.id, "enroute"); // SWIM detected takeoff (works with or without FA route match)
       } else if (!fiRouteMatch && !swimEntryStale && swim?.status === "Arrived") {
@@ -1046,12 +1046,6 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
   // Compute parked aircraft positions from schedule + FA data
   const parkedAircraft = useMemo(() => {
     const flyingTails = new Set(enRouteAircraft.map((a) => a.tail));
-    // Also exclude tails that SWIM shows as En Route with position (they'll appear via enrichedEnRoute)
-    for (const [, swim] of swimStatus) {
-      if (swim.status === "En Route" && swim.latitude != null && swim.longitude != null && swim.tail_number) {
-        flyingTails.add(swim.tail_number);
-      }
-    }
     const now = new Date();
     const parked: AircraftPosition[] = [];
     // For each tail, find its most likely current location:
@@ -1127,44 +1121,10 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
       }
     }
     return parked;
-  }, [flights, enRouteAircraft, swimStatus]);
-
-  // Supplement FA positions with SWIM positions for tails FA can't track (e.g. LADD-blocked)
-  const enrichedEnRoute = useMemo(() => {
-    const faTails = new Set(enRouteAircraft.map((a) => a.tail));
-    const swimPositions: AircraftPosition[] = [];
-    for (const [, swim] of swimStatus) {
-      if (
-        swim.status === "En Route" &&
-        swim.latitude != null &&
-        swim.longitude != null &&
-        swim.tail_number &&
-        !faTails.has(swim.tail_number)
-      ) {
-        // Avoid duplicates from multiple SWIM route entries for same tail
-        if (swimPositions.some((p) => p.tail === swim.tail_number)) continue;
-        swimPositions.push({
-          tail: swim.tail_number,
-          lat: swim.latitude,
-          lon: swim.longitude,
-          alt_baro: null,
-          gs: swim.groundspeed_kt ?? null,
-          track: null,
-          baro_rate: null,
-          on_ground: false,
-          squawk: null,
-          flight: null,
-          seen: null,
-          aircraft_type: null,
-          description: null,
-        });
-      }
-    }
-    return [...enRouteAircraft, ...swimPositions];
-  }, [enRouteAircraft, swimStatus]);
+  }, [flights, enRouteAircraft]);
 
   // Combine flying + parked for the map
-  const allMapAircraft = useMemo(() => [...enrichedEnRoute, ...parkedAircraft], [enrichedEnRoute, parkedAircraft]);
+  const allMapAircraft = useMemo(() => [...enRouteAircraft, ...parkedAircraft], [enRouteAircraft, parkedAircraft]);
 
   // Per-tail duty summary (24hr flight time + crew rest)
   const tailDuty = useMemo(() => computeTailDuty(flights, faFlightsRaw), [flights, faFlightsRaw]);
@@ -1192,7 +1152,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
   const bestFuelByAirport = useMemo(() => buildBestRateByAirport(advertisedPrices), [advertisedPrices]);
 
   // Count airborne vs on-ground
-  const airborne = enrichedEnRoute.length;
+  const airborne = enRouteAircraft.length;
   const onGround = parkedAircraft.length;
 
   // Collect same-day EDCT alerts across all flights
@@ -1596,7 +1556,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                             status = "Arrived"; statusColor = "text-green-600 font-medium";
                           } else if (fiRouteMatch && fi?.status?.includes("En Route")) {
                             status = "En Route"; statusColor = "text-blue-600 font-medium";
-                          } else if (fiRouteMatch && fi?.actual_departure && !fi?.actual_arrival) {
+                          } else if (fiRouteMatch && fi?.departure_time && !fi?.actual_arrival && new Date(fi.departure_time) < now && (!faEta || faEta > now)) {
                             status = "En Route"; statusColor = "text-blue-600 font-medium";
                           } else if (!swimRouteStale && swimRouteMatch?.status === "En Route") {
                             status = "En Route"; statusColor = "text-blue-600 font-medium";
@@ -1915,7 +1875,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                   status = "Arrived"; statusColor = "text-green-600 font-medium";
                 } else if (fiRouteMatch && fi?.status?.includes("En Route")) {
                   status = "En Route"; statusColor = "text-blue-600 font-medium";
-                } else if (fiRouteMatch && fi?.actual_departure && !fi?.actual_arrival) {
+                } else if (fiRouteMatch && fi?.departure_time && !fi?.actual_arrival && new Date(fi.departure_time) < now && (!faEta || faEta > now)) {
                   status = "En Route"; statusColor = "text-blue-600 font-medium";
                 } else if (!swimRouteStale && swimRouteMatch?.status === "En Route") {
                   status = "En Route"; statusColor = "text-blue-600 font-medium";
