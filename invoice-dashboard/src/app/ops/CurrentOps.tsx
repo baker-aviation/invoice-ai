@@ -851,6 +851,8 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
         map.set(f.id, "arrived");
       } else if (fiRouteMatch && fi?.status?.includes("En Route")) {
         map.set(f.id, "enroute");
+      } else if (fiRouteMatch && fi?.actual_departure && !fi?.actual_arrival) {
+        map.set(f.id, "enroute"); // LADD: FA has actual departure but status may not say "En Route"
       } else if (!swimRouteStale && swimRoute?.status === "En Route") {
         map.set(f.id, "enroute"); // SWIM detected takeoff (works with or without FA route match)
       } else if (!fiRouteMatch && !swimEntryStale && swim?.status === "Arrived") {
@@ -1554,6 +1556,8 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                             status = "Arrived"; statusColor = "text-green-600 font-medium";
                           } else if (fiRouteMatch && fi?.status?.includes("En Route")) {
                             status = "En Route"; statusColor = "text-blue-600 font-medium";
+                          } else if (fiRouteMatch && fi?.actual_departure && !fi?.actual_arrival) {
+                            status = "En Route"; statusColor = "text-blue-600 font-medium";
                           } else if (!swimRouteStale && swimRouteMatch?.status === "En Route") {
                             status = "En Route"; statusColor = "text-blue-600 font-medium";
                           } else if (fiRouteMatch && fi?.status === "Filed") {
@@ -1870,6 +1874,8 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                 } else if (arrivalPassed) {
                   status = "Arrived"; statusColor = "text-green-600 font-medium";
                 } else if (fiRouteMatch && fi?.status?.includes("En Route")) {
+                  status = "En Route"; statusColor = "text-blue-600 font-medium";
+                } else if (fiRouteMatch && fi?.actual_departure && !fi?.actual_arrival) {
                   status = "En Route"; statusColor = "text-blue-600 font-medium";
                 } else if (!swimRouteStale && swimRouteMatch?.status === "En Route") {
                   status = "En Route"; statusColor = "text-blue-600 font-medium";
