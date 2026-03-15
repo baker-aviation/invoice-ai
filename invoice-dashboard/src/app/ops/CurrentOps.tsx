@@ -841,12 +841,14 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
       const swimEntryStale = isSwimStale(swim, f.scheduled_departure);
       const fiRouteMatch = fi && fi.destination_icao === f.arrival_icao;
 
+      // FA confirmed arrival takes priority over stale SWIM "En Route"
+      const faConfirmedArrival = fiRouteMatch && (fi?.actual_arrival || fi?.status?.includes("Arrived") || fi?.status?.includes("Landed"));
       // If scheduled arrival passed by >30min, treat as arrived regardless of SWIM/FA lag
       const arrivalWellPast = arrivalDate && (now.getTime() - arrivalDate.getTime() > 30 * 60_000);
 
       if (fi?.diverted || supersededMap.has(f.id)) {
         map.set(f.id, "arrived"); // treat cancelled/diverted as "arrived" bucket
-      } else if (arrivalWellPast) {
+      } else if (faConfirmedArrival || arrivalWellPast) {
         map.set(f.id, "arrived");
       } else if (!swimRouteStale && swimRoute?.status === "En Route") {
         map.set(f.id, "enroute");
@@ -1547,7 +1549,13 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           const swimRouteStale = isSwimStale(swimRouteMatch, f.scheduled_departure);
                           const swimEntryStale = isSwimStale(swimEntry, f.scheduled_departure);
                           const fiRouteMatch = fi && fi.destination_icao === f.arrival_icao;
-                          if (!swimEntryStale && swimEntry?.status === "Filed") {
+                          // FA confirmed arrival beats stale SWIM "En Route"
+                          const faConfirmedArrival = fiRouteMatch && (fi?.actual_arrival || fi?.status?.includes("Arrived") || fi?.status?.includes("Landed"));
+                          const arrivalWellPast = arrivalDate && (now.getTime() - arrivalDate.getTime() > 30 * 60_000);
+
+                          if (faConfirmedArrival || arrivalWellPast) {
+                            status = "Arrived"; statusColor = "text-green-600 font-medium";
+                          } else if (!swimEntryStale && swimEntry?.status === "Filed") {
                             status = "Scheduled"; isFiled = true; statusColor = "text-gray-500";
                           } else if (!swimRouteStale && swimRouteMatch?.status === "En Route") {
                             status = "En Route"; statusColor = "text-blue-600 font-medium";
@@ -1569,14 +1577,8 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                             status = "Arrived";
                             statusColor = "text-green-600 font-medium";
                           }
-                          // If scheduled arrival passed by >30min, force Arrived (SWIM/FA can lag)
-                          const arrivalWellPast = arrivalDate && (now.getTime() - arrivalDate.getTime() > 30 * 60_000);
-                          if (arrivalWellPast && (status === "Scheduled" || status === "En Route")) {
-                            status = "Arrived";
-                            statusColor = "text-green-600 font-medium";
-                          }
-                          // Softer check: arrival passed but FA still hasn't confirmed landing
-                          else if (arrivalPassed && (status === "Scheduled" || status === "En Route") && !(fi && !fi.actual_arrival)) {
+                          // Fallback: arrival passed but FA still hasn't confirmed landing
+                          if (arrivalPassed && (status === "Scheduled" || status === "En Route") && !(fi && !fi.actual_arrival)) {
                             status = "Arrived";
                             statusColor = "text-green-600 font-medium";
                           }
