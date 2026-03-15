@@ -768,7 +768,12 @@ function scoreCandidate(
 
   // ── Reliability scoring ────────────────────────────────────────────────
   if (c.type === "uber" || c.type === "rental_car") {
-    score += 15; // Ground transport is highly reliable
+    // Scale reliability by drive time — 20min Uber ≠ 5hr rental
+    const driveMin = c.durationMin ?? 0;
+    if (driveMin <= UBER_MAX_MINUTES) score += 15;       // Uber: highly reliable
+    else if (driveMin <= 120) score += 12;                // Short rental: 1-2hr
+    else if (driveMin <= 240) score += 8;                 // Medium rental: 2-4hr
+    else score += 3;                                       // Long rental: 4-5hr, eats duty day
   } else if (c.type === "commercial") {
     if (c.isDirect) score += 12;
     else if (c.hubConnection) score += 8;
@@ -1270,10 +1275,11 @@ export function buildSwapPlan(params: {
     // - SIC can swap at ANY swap point — PIC covers SIC seat for early legs.
     // - Offgoing leaves from the SAME swap point as their oncoming counterpart.
 
-    // Pick PIC swap point by commercial accessibility (cheap — drive time only, no candidate building)
-    // For EGE→VNY: VNY (15min to BUR/LAX) beats EGE (3hr to DEN)
+    // Pick PIC swap point:
+    // - With flights: best commercial accessibility (EGE→VNY: VNY near BUR/LAX wins)
+    // - Drive-only: use first swap point (default), let buildCandidates try all
     let picSwapPoint = swapPoints[0]; // default
-    if (swapPoints.length > 1) {
+    if (swapPoints.length > 1 && commercialFlights) {
       let bestEase = -Infinity;
       for (const sp of swapPoints) {
         const commAirports = findAllCommercialAirports(sp.icao, aliases);
@@ -1369,6 +1375,9 @@ export function buildSwapPlan(params: {
     const tailTasks: CrewTask[] = [];
 
     // PIC tasks — at the best-scored swap point
+    if (!assignment.oncoming_pic) {
+      globalWarnings.push(`${tail}: No oncoming PIC assigned — no qualified crew can reach this aircraft`);
+    }
     for (const [name, direction] of [
       [assignment.oncoming_pic, "oncoming"] as const,
       [assignment.offgoing_pic, "offgoing"] as const,
@@ -1392,6 +1401,9 @@ export function buildSwapPlan(params: {
     }
 
     // SIC tasks — try ALL swap points, pick the one with best transport
+    if (!assignment.oncoming_sic) {
+      globalWarnings.push(`${tail}: No oncoming SIC assigned — no qualified crew can reach this aircraft`);
+    }
     for (const [name, direction] of [
       [assignment.oncoming_sic, "oncoming"] as const,
       [assignment.offgoing_sic, "offgoing"] as const,
@@ -1586,7 +1598,14 @@ export function buildSwapPlan(params: {
     : 0;
 
   if (unsolvedRows.length > 0) {
-    globalWarnings.push(`${unsolvedRows.length} crew member(s) have no viable transport — arrange manually`);
+    const needsFlightCount = unsolvedRows.filter((r) => r.direction === "oncoming").length;
+    const otherUnsolved = unsolvedRows.length - needsFlightCount;
+    if (needsFlightCount > 0) {
+      globalWarnings.push(`${needsFlightCount} oncoming crew need commercial flights — run Optimize + Flights`);
+    }
+    if (otherUnsolved > 0) {
+      globalWarnings.push(`${otherUnsolved} offgoing crew have no viable transport — arrange manually`);
+    }
   }
 
   return {
@@ -1698,11 +1717,10 @@ function buildFeasibilityMatrix(params: {
     if (swapPoints.length === 0) continue;
 
     // SIC tries all swap points (can swap at intermediate airports).
-    // PIC tries only the BEST swap point by commercial accessibility — keeps
-    // matrix perf identical to pre-overhaul while picking the smartest point
-    // (buildSwapPlan re-evaluates all swap points for PIC after assignment anyway).
+    // PIC: in drive-only mode, try ALL swap points (commercial accessibility irrelevant).
+    // With flights, pick BEST swap point by commercial accessibility for perf.
     let swapPointsToTry = swapPoints;
-    if (role === "PIC" && swapPoints.length > 1) {
+    if (role === "PIC" && swapPoints.length > 1 && commercialFlights) {
       let bestSp = swapPoints[0];
       let bestEase = -Infinity;
       for (const sp of swapPoints) {
@@ -1990,8 +2008,58 @@ function assignRoleWithMatrix(
     });
   }
 
-  // Tails without viable transport stay unassigned — crew goes to standby.
-  // Transport-first: never assign crew without a proven transport solution.
+  // ── Fallback: assign closest qualified crew to remaining tails ──────────
+  // Every tail needs crew — aircraft can never be unattended.
+  // Mark as "needs_flight" so the user knows to run Optimize + Flights.
+  const unassignedTails = needingTails.filter((t) => !assignedTails.has(t));
+  const unassignedPool = pool.filter((p) => !assignedCrews.has(p.name));
+
+  if (unassignedTails.length > 0 && unassignedPool.length > 0) {
+    for (const tail of unassignedTails) {
+      if (unassignedPool.length === 0) break;
+
+      const { swapPoints } = extractSwapPoints(tail, byTail, swapDate);
+      const swapIcao = swapPoints[0]?.icao;
+      const acType = tailAircraftType.get(tail) ?? "unknown";
+
+      // Find best remaining crew (qualified, closest)
+      let bestIdx = -1;
+      let bestDist = Infinity;
+      for (let i = 0; i < unassignedPool.length; i++) {
+        const crew = unassignedPool[i];
+        if (!isQualified(crew.aircraft_type, acType)) continue;
+        if (swapIcao) {
+          for (const home of crew.home_airports) {
+            const drive = estimateDriveTime(toIcao(home), swapIcao);
+            const dist = drive?.straight_line_miles ?? 9999;
+            if (dist < bestDist) { bestDist = dist; bestIdx = i; }
+          }
+        } else if (bestIdx === -1) {
+          bestIdx = i;
+        }
+      }
+
+      if (bestIdx >= 0) {
+        const crew = unassignedPool[bestIdx];
+        result[tail][field] = crew.name;
+        assignedCrews.add(crew.name);
+        assignedTails.add(tail);
+        unassignedPool.splice(bestIdx, 1);
+
+        const loc = swapPoints[0];
+        const distStr = bestDist < 9999 ? `${Math.round(bestDist)}mi` : "?mi";
+        const reason = `NEEDS FLIGHT to ${loc ? toIata(loc.icao) : "?"} (${distStr} away) — run Optimize + Flights`;
+        console.log(`[Assignment] ${role} ${crew.name} → ${tail} (fallback): ${reason}`);
+
+        details.push({
+          name: crew.name,
+          tail,
+          cost: 0,
+          reason,
+        });
+      }
+    }
+  }
 }
 
 // ─── Helper: get flight searches for ALL pool crew × ALL swap locations ───────
