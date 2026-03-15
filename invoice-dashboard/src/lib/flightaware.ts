@@ -279,6 +279,14 @@ export async function getActiveFlights(
               const depMs = new Date(dep).getTime();
               if (depMs < now - 48 * 3600_000) continue;
             }
+            // Filter out completed flights older than 4 hours — prevents
+            // yesterday's landed flights from showing as "En Route" with
+            // stale positions on the next day's map.
+            const landed = f.actual_in ?? f.actual_on;
+            if (landed) {
+              const landedMs = new Date(landed).getTime();
+              if (landedMs < now - 4 * 3600_000) continue;
+            }
 
             const info = toFlightInfo(tail, f);
 
