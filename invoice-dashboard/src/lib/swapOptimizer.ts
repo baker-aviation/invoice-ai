@@ -1834,7 +1834,20 @@ function buildFeasibilityMatrix(params: {
   const uniqueCrew = new Set(matrix.filter((m) => m.viable).map((m) => m.crewName)).size;
   console.log(`[FeasMatrix] ${role}: ${viableCount}/${totalCombos} viable combos, ${uniqueTails} tails w/viable crew, ${uniqueCrew} crew w/viable tails`);
 
-  // Log constrained tails (1-2 viable crew) — these drive assignment priority
+  // Log constrained CREW (1-2 viable tails) — these get assigned first
+  const viableByCrew = new Map<string, FeasibilityEntry[]>();
+  for (const m of matrix.filter((e) => e.viable)) {
+    if (!viableByCrew.has(m.crewName)) viableByCrew.set(m.crewName, []);
+    viableByCrew.get(m.crewName)!.push(m);
+  }
+  for (const [crew, entries] of viableByCrew) {
+    if (entries.length <= 2) {
+      const tailList = entries.map((e) => `${e.tail}(${e.bestType} $${Math.round(e.bestCost)} rank=${e.rank.toFixed(1)})`).join(", ");
+      console.log(`[FeasMatrix] CONSTRAINED ${role} crew ${crew}: only ${entries.length} viable tails — ${tailList}`);
+    }
+  }
+
+  // Also log constrained tails (1-2 viable crew)
   const viableByTail = new Map<string, FeasibilityEntry[]>();
   for (const m of matrix.filter((e) => e.viable)) {
     if (!viableByTail.has(m.tail)) viableByTail.set(m.tail, []);
@@ -1843,7 +1856,7 @@ function buildFeasibilityMatrix(params: {
   for (const [tail, entries] of viableByTail) {
     if (entries.length <= 2) {
       const crewList = entries.map((e) => `${e.crewName}(${e.bestType} $${Math.round(e.bestCost)} rank=${e.rank.toFixed(1)} ${Math.round(e.minDriveMiles)}mi)`).join(", ");
-      console.log(`[FeasMatrix] CONSTRAINED ${role} tail ${tail}: only ${entries.length} viable — ${crewList}`);
+      console.log(`[FeasMatrix] CONSTRAINED ${role} tail ${tail}: only ${entries.length} viable crew — ${crewList}`);
     }
   }
 
@@ -1957,23 +1970,30 @@ function assignRoleWithMatrix(
   // Only consider viable options (where real transport exists)
   const viableOptions = matrix.filter((m) => m.viable);
 
-  // Count viable crew per tail — fewer options = more constrained = assign first
+  // Count viable tails per crew AND viable crew per tail
+  const viableTailsPerCrew = new Map<string, number>();
   const viableCrewPerTail = new Map<string, number>();
   for (const opt of viableOptions) {
+    viableTailsPerCrew.set(opt.crewName, (viableTailsPerCrew.get(opt.crewName) ?? 0) + 1);
     viableCrewPerTail.set(opt.tail, (viableCrewPerTail.get(opt.tail) ?? 0) + 1);
   }
 
-  // Sort: most constrained tails first (fewest viable crew), then by rank within.
-  // Tough airports (remote FBOs with 1-2 options) get assigned before
-  // easy airports (major hubs with 20+ options) can steal their only viable crew.
+  // Sort: CREW-FIRST — most constrained crew first (fewest viable tails).
+  // "Mark Smith at TVC can only reach 2 tails — assign him first before
+  //  someone at ATL (who can reach 15 tails) steals his only option."
+  // Tiebreak: best rank (cost + reliability + proximity blend).
   viableOptions.sort((a, b) => {
-    const aConstraint = viableCrewPerTail.get(a.tail) ?? 999;
-    const bConstraint = viableCrewPerTail.get(b.tail) ?? 999;
-    if (aConstraint !== bConstraint) return aConstraint - bConstraint;
+    const aCrewConstraint = viableTailsPerCrew.get(a.crewName) ?? 999;
+    const bCrewConstraint = viableTailsPerCrew.get(b.crewName) ?? 999;
+    if (aCrewConstraint !== bCrewConstraint) return aCrewConstraint - bCrewConstraint;
+    // Secondary: if crew equally constrained, prefer the more constrained tail
+    const aTailConstraint = viableCrewPerTail.get(a.tail) ?? 999;
+    const bTailConstraint = viableCrewPerTail.get(b.tail) ?? 999;
+    if (aTailConstraint !== bTailConstraint) return aTailConstraint - bTailConstraint;
     return a.rank - b.rank;
   });
 
-  // Greedy assignment — constrained tails first, best rank within each
+  // Greedy assignment — hardest-to-move crew first, best fit within each
   const assignedCrews = new Set<string>();
   const assignedTails = new Set<string>();
 
@@ -1984,20 +2004,21 @@ function assignRoleWithMatrix(
     assignedTails.add(opt.tail);
 
     const loc = extractSwapPoints(opt.tail, byTail, swapDate).swapPoints[0];
-    const constraint = viableCrewPerTail.get(opt.tail) ?? 0;
+    const crewConstraint = viableTailsPerCrew.get(opt.crewName) ?? 0;
+    const tailConstraint = viableCrewPerTail.get(opt.tail) ?? 0;
     const swapIata = opt.bestSwapIcao ? toIata(opt.bestSwapIcao) : (loc ? toIata(loc.icao) : "?");
     const driveMi = opt.minDriveMiles < 9999 ? `${Math.round(opt.minDriveMiles)}mi` : "?mi";
-    const constrainedTag = constraint <= 2 ? " [CONSTRAINED]" : "";
+    const constrainedTag = crewConstraint <= 2 ? " [CREW-CONSTRAINED]" : (tailConstraint <= 2 ? " [TAIL-CONSTRAINED]" : "");
 
-    // Build alternatives list: other viable crew for this tail, ranked
+    // Build alternatives list: other viable tails for this crew, ranked
     const alternatives = viableOptions
-      .filter((v) => v.tail === opt.tail && v.crewName !== opt.crewName && !assignedCrews.has(v.crewName))
+      .filter((v) => v.crewName === opt.crewName && v.tail !== opt.tail && !assignedTails.has(v.tail))
       .sort((a, b) => a.rank - b.rank)
       .slice(0, 3)
-      .map((v) => `${v.crewName}(rank=${v.rank.toFixed(1)})`);
-    const altStr = alternatives.length > 0 ? ` alts: ${alternatives.join(", ")}` : " (only viable option)";
+      .map((v) => `${v.tail}(rank=${v.rank.toFixed(1)})`);
+    const altStr = alternatives.length > 0 ? ` alt tails: ${alternatives.join(", ")}` : " (only viable tail)";
 
-    const reason = `${opt.bestType} $${Math.round(opt.bestCost)} score=${opt.bestScore} to ${swapIata} | proximity=${driveMi} rank=${opt.rank.toFixed(1)} (${constraint} viable)${constrainedTag}${altStr}`;
+    const reason = `${opt.bestType} $${Math.round(opt.bestCost)} score=${opt.bestScore} to ${swapIata} | proximity=${driveMi} rank=${opt.rank.toFixed(1)} (crew→${crewConstraint} tails, tail→${tailConstraint} crew)${constrainedTag}${altStr}`;
     console.log(`[Assignment] ${role} ${opt.crewName} → ${opt.tail} @ ${swapIata}: ${reason}`);
 
     details.push({
