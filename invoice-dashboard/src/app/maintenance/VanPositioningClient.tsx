@@ -1700,10 +1700,10 @@ function VanScheduleCard({
                   }
                 }
               }
-              const vanLabel = liveCityState ? `${liveCityState} Van` : ((samsaraVanName && parseVanDisplayName(samsaraVanName)) || zone.name);
+              const locationLabel = liveCityState ?? ((samsaraVanName && parseVanDisplayName(samsaraVanName)) || null);
               return (
                 <div className="font-semibold text-sm">
-                  {vanLabel} <span className="text-gray-400 font-normal">({items.length} aircraft{items.length !== 1 ? "" : ""})</span>
+                  {zone.name}{locationLabel ? <span className="text-gray-400 font-normal"> ({locationLabel})</span> : ""} <span className="text-gray-400 font-normal">({items.length} aircraft)</span>
                 </div>
               );
             })()}
