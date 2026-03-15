@@ -800,16 +800,13 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
   // Fetch user map when "All" (show acknowledged) is toggled on
   useEffect(() => {
     if (!showAcknowledged || userMap.size > 0) return;
-    fetch("/api/admin/users")
+    fetch("/api/ops/users")
       .then((r) => r.ok ? r.json() : null)
       .then((data) => {
         if (!data?.users) return;
         const map = new Map<string, string>();
-        for (const u of data.users as { id: string; email?: string }[]) {
-          if (u.email) {
-            // Use the part before @ as the display name
-            map.set(u.id, u.email.split("@")[0]);
-          }
+        for (const [id, name] of Object.entries(data.users as Record<string, string>)) {
+          map.set(id, name);
         }
         setUserMap(map);
       })
