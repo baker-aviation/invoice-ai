@@ -371,6 +371,18 @@ function matchFlightInfo(
   return undefined;
 }
 
+/** Check if a SWIM entry is stale relative to a scheduled departure.
+ *  Returns true if the SWIM event is from a previous flight (>3h from scheduled departure). */
+function isSwimStale(
+  swim: { event_time?: string; actual_departure?: string | null } | undefined,
+  scheduledDep: string,
+): boolean {
+  if (!swim) return true;
+  const ref = swim.actual_departure ?? swim.event_time;
+  if (!ref) return false;
+  return Math.abs(new Date(ref).getTime() - new Date(scheduledDep).getTime()) > 3 * 3600_000;
+}
+
 /** Delay color for departure estimates: only show if ≥15min late. Returns null if on-time. */
 function depEstColorClass(scheduledIso: string, estIso: string): string | null {
   const delayMin = (new Date(estIso).getTime() - new Date(scheduledIso).getTime()) / 60_000;
@@ -550,7 +562,10 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
             }
           }
           // Synthesize map positions from en-route flights
-          if (fi.latitude != null && fi.longitude != null) {
+          // Skip positions from stale flights (departed >4h ago with no landing = ghost)
+          const faDepMs = fi.actual_departure ? new Date(fi.actual_departure).getTime() : null;
+          const isStalePosition = faDepMs && !fi.actual_arrival && (Date.now() - faDepMs > 4 * 3600_000);
+          if (fi.latitude != null && fi.longitude != null && !isStalePosition) {
             positions.push({
               tail: fi.tail,
               lat: fi.latitude,
@@ -805,15 +820,16 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
       // Check SWIM status — route-specific only for "En Route" to avoid bleeding across legs
       const swimRoute = swimStatus.get(routeKey);
       const swim = swimRoute ?? (f.tail_number ? swimStatus.get(`${f.tail_number}||`) : undefined);
+      const swimStale = isSwimStale(swimRoute, f.scheduled_departure);
       const fiRouteMatch = fi && fi.destination_icao === f.arrival_icao;
 
       if (fi?.diverted || supersededMap.has(f.id)) {
         map.set(f.id, "arrived"); // treat cancelled/diverted as "arrived" bucket
-      } else if (swimRoute?.status === "En Route") {
+      } else if (!swimStale && swimRoute?.status === "En Route") {
         map.set(f.id, "enroute");
-      } else if (swim?.status === "Arrived") {
+      } else if (!swimStale && swim?.status === "Arrived") {
         map.set(f.id, "arrived");
-      } else if (swim?.status === "Filed") {
+      } else if (!swimStale && swim?.status === "Filed") {
         map.set(f.id, "scheduled"); // filed = scheduled bucket
       } else if (fiRouteMatch && (fi?.status?.includes("En Route") || (f.tail_number && holdingTails.has(f.tail_number) && fi?.status?.includes("En Route")))) {
         map.set(f.id, "enroute");
@@ -1505,16 +1521,17 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           // Check SWIM status first — route-specific for "En Route", tail fallback for others
                           const swimRouteMatch = swimStatus.get(routeKey);
                           const swimEntry = swimRouteMatch ?? (f.tail_number ? swimStatus.get(`${f.tail_number}||`) : undefined);
+                          const swimStale = isSwimStale(swimRouteMatch, f.scheduled_departure);
                           const fiRouteMatch = fi && fi.destination_icao === f.arrival_icao;
-                          if (swimEntry?.status === "Filed") {
+                          if (!swimStale && swimEntry?.status === "Filed") {
                             status = "Scheduled"; isFiled = true; statusColor = "text-gray-500";
-                          } else if (swimRouteMatch?.status === "En Route") {
+                          } else if (!swimStale && swimRouteMatch?.status === "En Route") {
                             status = "En Route"; statusColor = "text-blue-600 font-medium";
-                          } else if (swimEntry?.status === "Arrived") {
+                          } else if (!swimStale && swimEntry?.status === "Arrived") {
                             status = "Arrived"; statusColor = "text-green-600 font-medium";
-                          } else if (swimEntry?.status === "Diverted") {
+                          } else if (!swimStale && swimEntry?.status === "Diverted") {
                             status = "DIVERTED"; statusColor = "text-red-600 font-bold";
-                          } else if (swimEntry?.status === "Cancelled") {
+                          } else if (!swimStale && swimEntry?.status === "Cancelled") {
                             status = "Cancelled"; statusColor = "text-red-600 font-medium";
                           } else if (fi?.status) {
                             if (fiRouteMatch && fi.status.includes("En Route")) {
@@ -1544,8 +1561,8 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                             statusColor = "text-red-600 font-medium";
                           }
 
-                          const actualDepIso = isCancelled ? null : (fi?.actual_departure ?? swimEntry?.actual_departure ?? null);
-                          const actualArrIso = isCancelled ? null : (fi?.actual_arrival ?? swimEntry?.actual_arrival ?? null);
+                          const actualDepIso = isCancelled ? null : (fi?.actual_departure ?? (!swimStale ? swimEntry?.actual_departure : null) ?? null);
+                          const actualArrIso = isCancelled ? null : (fi?.actual_arrival ?? (!swimStale ? swimEntry?.actual_arrival : null) ?? null);
 
                           return (
                             <div key={f.id} className={`px-4 py-2 text-xs ${isCancelled ? "opacity-50 bg-gray-50" : ""} ${isFaSourced ? "bg-blue-50/40" : ""}`}>
@@ -1607,7 +1624,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                                     <div className="text-[10px] text-blue-600 font-medium">
                                       ETA: {fmt(fi.arrival_time, f.arrival_icao)}
                                     </div>
-                                  ) : !isCancelled && status === "En Route" && swimRouteMatch?.eta ? (
+                                  ) : !isCancelled && status === "En Route" && !swimStale && swimRouteMatch?.eta ? (
                                     <div className="text-[10px] text-blue-600 font-medium">
                                       ETA: {fmt(swimRouteMatch.eta, f.arrival_icao)}
                                     </div>
@@ -1658,8 +1675,8 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                                 )}
                                 {/* Progress bar fallback — SWIM or FA actual_departure + ETA */}
                                 {!isCancelled && status === "En Route" && !(fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100) && (() => {
-                                  const depStr = swimRouteMatch?.etd ?? fi?.actual_departure ?? fi?.departure_time ?? swimEntry?.actual_departure;
-                                  const arrStr = swimRouteMatch?.eta ?? fi?.arrival_time ?? swimEntry?.eta;
+                                  const depStr = (!swimStale ? swimRouteMatch?.etd : null) ?? fi?.actual_departure ?? fi?.departure_time ?? (!swimStale ? swimEntry?.actual_departure : null);
+                                  const arrStr = (!swimStale ? swimRouteMatch?.eta : null) ?? fi?.arrival_time ?? (!swimStale ? swimEntry?.eta : null);
                                   if (!depStr || !arrStr) return null;
                                   const dep = new Date(depStr).getTime();
                                   const arr = new Date(arrStr).getTime();
@@ -1817,6 +1834,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                 let isFiled = false;
                 const swimRouteMatch = swimStatus.get(routeKey);
                 const swimEntry = swimRouteMatch ?? (f.tail_number ? swimStatus.get(`${f.tail_number}||`) : undefined);
+                const swimStale = isSwimStale(swimRouteMatch, f.scheduled_departure);
 
                 const arrivalDate = f.scheduled_arrival ? new Date(f.scheduled_arrival) : null;
                 const now = new Date();
@@ -1824,13 +1842,14 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
 
                 // Check ForeFlight/SWIM status first
                 // Only use route-specific SWIM match for "En Route" to avoid bleeding across legs
-                if (swimEntry?.status === "Filed") {
+                // Skip stale SWIM data (from a previous day's flight on the same route)
+                if (!swimStale && swimEntry?.status === "Filed") {
                   status = "Scheduled"; isFiled = true;
-                } else if (swimRouteMatch?.status === "En Route") {
+                } else if (!swimStale && swimRouteMatch?.status === "En Route") {
                   status = "En Route"; statusColor = "text-blue-600 font-medium";
-                } else if (swimEntry?.status === "Arrived") {
+                } else if (!swimStale && swimEntry?.status === "Arrived") {
                   status = "Arrived"; statusColor = "text-green-600 font-medium";
-                } else if (swimEntry?.status === "Cancelled") {
+                } else if (!swimStale && swimEntry?.status === "Cancelled") {
                   status = "Cancelled"; statusColor = "text-red-600 font-medium";
                 }
 
@@ -2002,8 +2021,8 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                         )}
                         {/* Progress bar fallback — SWIM or FA actual_departure + ETA */}
                         {!isCancelled && status === "En Route" && !(fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100) && (() => {
-                          const depStr = swimRouteMatch?.etd ?? fi?.actual_departure ?? fi?.departure_time ?? swimEntry?.actual_departure;
-                          const arrStr = swimRouteMatch?.eta ?? fi?.arrival_time ?? swimEntry?.eta;
+                          const depStr = (!swimStale ? swimRouteMatch?.etd : null) ?? fi?.actual_departure ?? fi?.departure_time ?? (!swimStale ? swimEntry?.actual_departure : null);
+                          const arrStr = (!swimStale ? swimRouteMatch?.eta : null) ?? fi?.arrival_time ?? (!swimStale ? swimEntry?.eta : null);
                           if (!depStr || !arrStr) return null;
                           const dep = new Date(depStr).getTime();
                           const arr = new Date(arrStr).getTime();
@@ -2030,7 +2049,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                       </td>
                       <td className="px-3 py-2.5 text-gray-600">
                         <div>{fmt(f.scheduled_departure, f.departure_icao)}</div>
-                        {!isCancelled && (fi?.actual_departure ?? swimEntry?.actual_departure) ? (
+                        {!isCancelled && (fi?.actual_departure ?? (!swimStale ? swimEntry?.actual_departure : null)) ? (
                           <div className={`text-[10px] font-medium mt-0.5 ${delayColorClass(f.scheduled_departure, (fi?.actual_departure ?? swimEntry?.actual_departure)!)}`}>
                             Actual: {fmt((fi?.actual_departure ?? swimEntry?.actual_departure)!, f.departure_icao)}
                           </div>
@@ -2057,7 +2076,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                       </td>
                       <td className="px-3 py-2.5 text-gray-600">
                         <div>{fmt(f.scheduled_arrival, f.arrival_icao)}</div>
-                        {!isCancelled && (fi?.actual_arrival ?? swimEntry?.actual_arrival) && f.scheduled_arrival ? (
+                        {!isCancelled && (fi?.actual_arrival ?? (!swimStale ? swimEntry?.actual_arrival : null)) && f.scheduled_arrival ? (
                           <div className={`text-[10px] font-medium mt-0.5 ${delayColorClass(f.scheduled_arrival, (fi?.actual_arrival ?? swimEntry?.actual_arrival)!)}`}>
                             Actual: {fmt((fi?.actual_arrival ?? swimEntry?.actual_arrival)!, f.arrival_icao)}
                           </div>
@@ -2065,7 +2084,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           <div className="text-[10px] text-blue-600 font-medium mt-0.5">
                             ETA: {fmt(fi.arrival_time, f.arrival_icao)}
                           </div>
-                        ) : !isCancelled && status === "En Route" && swimRouteMatch?.eta ? (
+                        ) : !isCancelled && status === "En Route" && !swimStale && swimRouteMatch?.eta ? (
                           <div className="text-[10px] text-blue-600 font-medium mt-0.5">
                             ETA: {fmt(swimRouteMatch.eta, f.arrival_icao)}
                           </div>
