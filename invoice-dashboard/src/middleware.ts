@@ -118,6 +118,22 @@ export async function middleware(request: NextRequest) {
       }
     }
 
+    // MX users can only access /maintenance, /vehicles, /van/*, and /login
+    if (role === "mx") {
+      if (!pathname.startsWith("/maintenance") && !pathname.startsWith("/vehicles") && !pathname.startsWith("/van") && !pathname.startsWith("/login") && !pathname.startsWith("/api/")) {
+        const url = request.nextUrl.clone();
+        url.pathname = "/maintenance";
+        return NextResponse.redirect(url);
+      }
+    }
+
+    // Users with no role assigned — show "contact admin" page
+    if (!role && !pathname.startsWith("/pending") && !pathname.startsWith("/login") && !pathname.startsWith("/api/") && !pathname.startsWith("/auth/")) {
+      const url = request.nextUrl.clone();
+      url.pathname = "/pending";
+      return NextResponse.redirect(url);
+    }
+
     // Super admin route — requires super_admin flag in app_metadata
     if (pathname.startsWith("/admin/super")) {
       if (!user.app_metadata?.super_admin) {

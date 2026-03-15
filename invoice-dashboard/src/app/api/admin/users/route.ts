@@ -4,7 +4,7 @@ import { z } from "zod";
 import { requireAdmin, isRateLimited, isAuthed } from "@/lib/api-auth";
 import { ALL_SECTION_KEYS } from "@/lib/permissions";
 
-const VALID_ROLES = ["admin", "dashboard", "pilot"] as const;
+const VALID_ROLES = ["admin", "dashboard", "pilot", "mx"] as const;
 
 const UpdateRoleSchema = z.object({
   userId: z.string().uuid("Invalid user ID"),

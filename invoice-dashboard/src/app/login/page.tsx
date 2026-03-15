@@ -41,7 +41,7 @@ export default function LoginPage() {
       const role =
         data.user?.app_metadata?.role ??
         data.user?.user_metadata?.role;
-      window.location.href = role === "pilot" ? "/pilot" : "/";
+      window.location.href = role === "pilot" ? "/pilot" : role === "mx" ? "/maintenance" : role === "van" ? `/van/${data.user?.app_metadata?.van_id ?? 1}` : role ? "/" : "/pending";
     }
   }
 
