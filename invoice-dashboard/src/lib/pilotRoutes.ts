@@ -11,6 +11,7 @@ import { createServiceClient } from "@/lib/supabase/service";
 import { estimateDriveTime, findNearbyCommercialAirports } from "./driveTime";
 import { getCrewDifficulty } from "./airportTiers";
 import { fetchAllCrewSchedules, type ScheduledFlight } from "./flightaware";
+import { searchFlights } from "./hasdata";
 import type { FlightOffer } from "./amadeus";
 import type { AirportAlias } from "./swapOptimizer";
 import { DEFAULT_AIRPORT_ALIASES } from "./airportAliases";
@@ -90,30 +91,28 @@ function findAllCommercialAirports(fboIcao: string, aliases: AirportAlias[]): st
 
 // ─── Route computation for a single pilot ───────────────────────────────────
 
+/** Real pricing from HasData, keyed by "ORIGIN-DEST" e.g. "DFW-EWR" */
+type PriceMap = Map<string, Map<string, number>>; // "ORIG-DEST" → flightNumber → price
+
 /**
  * Compute all routes for a single crew member to a set of destination airports.
- * Uses pre-fetched FlightAware schedule data (no per-crew API calls) + drive options.
+ * Uses pre-fetched FlightAware schedule data + HasData real pricing.
  * Stores results in `pilot_routes` table.
  */
-export async function computePilotRoutes(params: {
+export function computePilotRoutes(params: {
   crewMemberId: string;
   homeAirports: string[];
   swapDate: string;
-  destinations: string[];  // FBO/swap airport ICAO codes
+  destinations: string[];
   aliases: AirportAlias[];
-  /** Pre-fetched flights from FlightAware, keyed by origin airport (ICAO or IATA) */
   scheduledFlights: Map<string, ScheduledFlight[]>;
-}): Promise<{ routesStored: number }> {
-  const { crewMemberId, homeAirports, swapDate, destinations, aliases, scheduledFlights } = params;
-  const supa = createServiceClient();
-  let routesStored = 0;
-
-  // Collect all route rows to batch-insert
+  priceMap: PriceMap;
+}): Array<Record<string, unknown>> {
+  const { crewMemberId, homeAirports, swapDate, destinations, aliases, scheduledFlights, priceMap } = params;
   const routeRows: Array<Record<string, unknown>> = [];
 
   for (const destIcao of destinations) {
     const commAirports = findAllCommercialAirports(destIcao, aliases);
-    // Build a set of destination IATA codes for fast lookup
     const commIataSet = new Set(commAirports.map((c) => toIata(c)));
 
     for (const homeApt of homeAirports) {
@@ -159,18 +158,15 @@ export async function computePilotRoutes(params: {
       }
 
       // ── Commercial flights from pre-fetched FlightAware schedules ────
-      // Look up flights from this crew member's home airport
       const homeFlights = scheduledFlights.get(homeIcao) ?? scheduledFlights.get(homeIata) ?? [];
 
-      // Filter to flights landing at commercial airports near this FBO
       const matchingFlights = homeFlights.filter((f) => {
-        if (f.destination_iata === homeIata) return false; // round-trip to self
+        if (f.destination_iata === homeIata) return false;
         return commIataSet.has(f.destination_iata) || commIataSet.has(toIata(f.destination_icao));
       });
 
       for (const f of matchingFlights) {
         const commIata = f.destination_iata;
-        const commIcao = f.destination_icao;
 
         // Drive from commercial airport to FBO
         const driveToFbo = estimateDriveTime(toIcao(commIata), destIcao);
@@ -182,10 +178,31 @@ export async function computePilotRoutes(params: {
           groundCost = 80 + Math.round((driveToFbo?.estimated_drive_miles ?? 0) * 0.50);
         }
 
-        // Estimate cost (FlightAware doesn't provide pricing)
-        const budgetCarriers = new Set(["F9", "NK", "G4", "WN", "B6"]);
-        const priceMult = budgetCarriers.has(f.airline_iata) ? 0.7 : 1.0;
-        const flightPrice = Math.min(Math.round((50 + f.duration_minutes * 1.5) * priceMult), 500);
+        // Look up real HasData price for this route pair, then by flight number
+        const pairKey = `${homeIata}-${commIata}`;
+        const pairPrices = priceMap.get(pairKey);
+        let flightPrice: number;
+        let priceSource: string;
+
+        if (pairPrices) {
+          // Try exact flight number match first, then cheapest on the route
+          const exactPrice = pairPrices.get(f.flight_number);
+          if (exactPrice !== undefined) {
+            flightPrice = exactPrice;
+            priceSource = "hasdata_exact";
+          } else {
+            // Use cheapest price on this O→D pair as proxy
+            flightPrice = Math.min(...pairPrices.values());
+            priceSource = "hasdata_route";
+          }
+        } else {
+          // Fallback estimate when HasData didn't cover this pair
+          const budgetCarriers = new Set(["F9", "NK", "G4", "WN", "B6"]);
+          const priceMult = budgetCarriers.has(f.airline_iata) ? 0.7 : 1.0;
+          flightPrice = Math.min(Math.round((50 + f.duration_minutes * 1.5) * priceMult), 500);
+          priceSource = "estimated";
+        }
+
         const totalCost = flightPrice + groundCost;
 
         // Build FlightOffer-compatible object for storage
@@ -206,19 +223,17 @@ export async function computePilotRoutes(params: {
           numberOfBookableSeats: 9,
         };
 
-        // Estimate FBO arrival: flight arrival + deplane (30min) + drive to FBO
         const fboArrMs = new Date(f.scheduled_arrival).getTime() + (30 + driveToFboMin) * 60_000;
         const fboArrAt = new Date(fboArrMs).toISOString();
-
-        // Duty-on: 60min before flight departure
         const dutyOnMs = new Date(f.scheduled_departure).getTime() - 60 * 60_000;
         const dutyOnAt = new Date(dutyOnMs).toISOString();
 
-        // Baseline score
+        // Score: real-priced routes score higher than estimated
         let score = 50;
         if (totalCost <= 100) score += 20;
         else if (totalCost <= 300) score += 10;
-        score += 12; // all FlightAware results are direct (nonstop)
+        score += 12; // direct flight bonus
+        if (priceSource.startsWith("hasdata")) score += 5; // real price confidence bonus
 
         routeRows.push({
           crew_member_id: crewMemberId,
@@ -245,46 +260,28 @@ export async function computePilotRoutes(params: {
     }
   }
 
-  // Batch upsert all route rows
-  if (routeRows.length > 0) {
-    // Delete existing routes for this crew member + swap date + destinations
-    const destList = [...new Set(destinations)];
-    await supa
-      .from("pilot_routes")
-      .delete()
-      .eq("crew_member_id", crewMemberId)
-      .eq("swap_date", swapDate)
-      .in("destination_icao", destList);
-
-    // Insert in chunks of 100
-    for (let i = 0; i < routeRows.length; i += 100) {
-      const chunk = routeRows.slice(i, i + 100);
-      const { error } = await supa.from("pilot_routes").insert(chunk);
-      if (error) {
-        console.error(`[PilotRoutes] Insert error for crew ${crewMemberId}:`, error.message);
-      } else {
-        routesStored += chunk.length;
-      }
-    }
-  }
-
-  return { routesStored };
+  return routeRows;
 }
 
 // ─── Orchestrator: compute routes for ALL crew ──────────────────────────────
 
 /**
  * Compute routes for ALL active crew members to ALL swap-day destinations.
- * This is the main entry point — called after Excel upload or via "Refresh Routes".
  *
- * Architecture: One bulk FlightAware fetch (~60 API calls for all unique home airports),
- * then local matching per crew member. No per-crew API calls = no timeouts.
+ * Three-phase pipeline:
+ *   1. FlightAware bulk fetch — discover all flights from ~60 unique home airports
+ *   2. HasData pricing — get real Google Flights prices for unique O→D pairs
+ *   3. Local matching — match flights to crew×destination, store with real prices
+ *
+ * ~60 FlightAware calls + ~50-150 HasData calls instead of 2000+ blind searches.
  */
 export async function computeAllRoutes(swapDate: string): Promise<{
   crewProcessed: number;
   totalRoutes: number;
   flightAwareCalls: number;
+  hasDataCalls: number;
   totalScheduledFlights: number;
+  pricedPairs: number;
   errors: string[];
 }> {
   const supa = createServiceClient();
@@ -297,7 +294,7 @@ export async function computeAllRoutes(swapDate: string): Promise<{
     .eq("active", true);
 
   if (crewErr || !crewData) {
-    return { crewProcessed: 0, totalRoutes: 0, flightAwareCalls: 0, totalScheduledFlights: 0, errors: [`Failed to load crew: ${crewErr?.message}`] };
+    return { crewProcessed: 0, totalRoutes: 0, flightAwareCalls: 0, hasDataCalls: 0, totalScheduledFlights: 0, pricedPairs: 0, errors: [`Failed to load crew: ${crewErr?.message}`] };
   }
 
   // 2. Get all flights on swap day to determine destination airports
@@ -330,7 +327,6 @@ export async function computeAllRoutes(swapDate: string): Promise<{
     if (f.arrival_icao) destinationIcaos.add(f.arrival_icao);
   }
 
-  // Add overnight positions for tails without Wednesday flights
   const tailsWithWedFlights = new Set(wedFlights.map((f) => f.tail_number));
   if (priorFlights) {
     const seenTails = new Set<string>();
@@ -343,7 +339,7 @@ export async function computeAllRoutes(swapDate: string): Promise<{
   }
 
   if (destinationIcaos.size === 0) {
-    return { crewProcessed: 0, totalRoutes: 0, flightAwareCalls: 0, totalScheduledFlights: 0, errors: ["No destination airports found for swap date"] };
+    return { crewProcessed: 0, totalRoutes: 0, flightAwareCalls: 0, hasDataCalls: 0, totalScheduledFlights: 0, pricedPairs: 0, errors: ["No destination airports found for swap date"] };
   }
 
   const destinations = Array.from(destinationIcaos);
@@ -373,8 +369,9 @@ export async function computeAllRoutes(swapDate: string): Promise<{
 
   console.log(`[PilotRoutes] ${crewData.length} crew, ${destinations.length} destinations, ${allHomeAirports.size} unique home airports`);
 
-  // 6. BULK FETCH: Get all commercial flights from every home airport on swap day
-  //    ~60 FlightAware API calls instead of 2000+ HasData calls
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PHASE 1: FlightAware — discover all flights from home airports
+  // ═══════════════════════════════════════════════════════════════════════════
   let scheduledFlights = new Map<string, ScheduledFlight[]>();
   let flightAwareCalls = 0;
   let totalScheduledFlights = 0;
@@ -385,15 +382,116 @@ export async function computeAllRoutes(swapDate: string): Promise<{
     flightAwareCalls = faResult.apiCalls;
     totalScheduledFlights = faResult.totalFlights;
     for (const e of faResult.errors) errors.push(e);
-    console.log(`[PilotRoutes] FlightAware: ${totalScheduledFlights} flights from ${scheduledFlights.size} airports in ${flightAwareCalls} API calls`);
+    console.log(`[PilotRoutes] Phase 1 done: ${totalScheduledFlights} flights from ${scheduledFlights.size} airports in ${flightAwareCalls} FA calls`);
   } catch (e) {
     const msg = e instanceof Error ? e.message : "unknown";
     errors.push(`FlightAware bulk fetch failed: ${msg}`);
     console.error(`[PilotRoutes] FlightAware bulk fetch failed:`, msg);
-    // Continue — will still compute drive/uber/rental routes without flights
   }
 
-  // 7. Process each crew member locally (no API calls — just matching pre-fetched flights)
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PHASE 2: Determine unique O→D pairs that have FlightAware matches,
+  //          then batch HasData to get real Google Flights prices
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Build set of commercial airports near each FBO destination
+  const destCommAirports = new Map<string, Set<string>>(); // destIcao → Set<commIata>
+  for (const destIcao of destinations) {
+    const comms = findAllCommercialAirports(destIcao, aliases);
+    destCommAirports.set(destIcao, new Set(comms.map((c) => toIata(c))));
+  }
+
+  // Scan FlightAware results to find which O→D pairs actually have flights
+  const viableOdPairs = new Set<string>(); // "ORIG_IATA-DEST_IATA"
+  for (const [_airport, flights] of scheduledFlights) {
+    for (const f of flights) {
+      const originIata = f.origin_iata;
+      const destIata = f.destination_iata;
+      // Check if this flight's destination is near any of our FBO destinations
+      for (const [, commSet] of destCommAirports) {
+        if (commSet.has(destIata) || commSet.has(toIata(f.destination_icao))) {
+          viableOdPairs.add(`${originIata}-${destIata}`);
+          break;
+        }
+      }
+    }
+  }
+
+  console.log(`[PilotRoutes] Phase 2: ${viableOdPairs.size} unique O→D pairs to price via HasData`);
+
+  // Fetch real prices from HasData for each unique O→D pair
+  const priceMap: PriceMap = new Map();
+  let hasDataCalls = 0;
+  const odPairList = [...viableOdPairs];
+
+  // Process HasData in batches of 3 (respecting rate limits)
+  for (let i = 0; i < odPairList.length; i += 3) {
+    const batch = odPairList.slice(i, i + 3);
+    const results = await Promise.all(
+      batch.map(async (pair) => {
+        const [origin, dest] = pair.split("-");
+        try {
+          hasDataCalls++;
+          const result = await searchFlights({ origin, destination: dest, date: swapDate, max: 15 });
+          const flightPrices = new Map<string, number>();
+
+          for (const offer of result.offers) {
+            const segs = offer.itineraries[0]?.segments ?? [];
+            if (segs.length === 0) continue;
+            // Build flight number key: "AA1234" or "AA1234/AA5678" for connections
+            const flightNum = segs.map((s) => `${s.carrierCode}${s.number}`).join("/");
+            const price = parseFloat(offer.price.total);
+            if (!isNaN(price)) {
+              // Keep cheapest price per flight number
+              const existing = flightPrices.get(flightNum);
+              if (existing === undefined || price < existing) {
+                flightPrices.set(flightNum, price);
+              }
+            }
+          }
+
+          // Also store connection flights from HasData that FA might not have
+          // (HasData returns connections, FlightAware only returns nonstops)
+          for (const offer of result.offers) {
+            const segs = offer.itineraries[0]?.segments ?? [];
+            if (segs.length > 1 && segs.length <= 2) {
+              const flightNum = segs.map((s) => `${s.carrierCode}${s.number}`).join("/");
+              const price = parseFloat(offer.price.total);
+              if (!isNaN(price)) {
+                flightPrices.set(flightNum, price);
+              }
+            }
+          }
+
+          return { pair, flightPrices, error: null };
+        } catch (e) {
+          return { pair, flightPrices: new Map<string, number>(), error: `HasData ${pair}: ${e instanceof Error ? e.message : "unknown"}` };
+        }
+      }),
+    );
+
+    for (const r of results) {
+      if (r.error) errors.push(r.error);
+      if (r.flightPrices.size > 0) {
+        priceMap.set(r.pair, r.flightPrices);
+      }
+    }
+
+    // HasData rate limit pause
+    if (i + 3 < odPairList.length) {
+      await new Promise((r) => setTimeout(r, 500));
+    }
+
+    // Progress log every 30 pairs
+    if ((i + 3) % 30 === 0 && i + 3 < odPairList.length) {
+      console.log(`[PilotRoutes] HasData pricing: ${i + 3}/${odPairList.length} pairs done`);
+    }
+  }
+
+  console.log(`[PilotRoutes] Phase 2 done: ${priceMap.size} pairs priced from ${hasDataCalls} HasData calls`);
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PHASE 3: Match flights to crew × destinations locally, store routes
+  // ═══════════════════════════════════════════════════════════════════════════
   const crewWithDifficulty = crewData.map((c) => ({
     ...c,
     difficulty: getCrewDifficulty((c.home_airports as string[]) ?? []),
@@ -403,44 +501,63 @@ export async function computeAllRoutes(swapDate: string): Promise<{
   let totalRoutes = 0;
   let crewProcessed = 0;
 
-  // Process in batches of 10 (no rate limiting needed — all local matching)
+  // Process in batches of 10 (all local, no API calls)
   for (let i = 0; i < crewWithDifficulty.length; i += 10) {
     const batch = crewWithDifficulty.slice(i, i + 10);
-    const results = await Promise.all(
-      batch.map(async (crew) => {
-        const homeAirports = (crew.home_airports as string[]) ?? [];
-        if (homeAirports.length === 0) {
-          errors.push(`${crew.name}: no home airports`);
-          return { routesStored: 0 };
-        }
-        try {
-          return await computePilotRoutes({
-            crewMemberId: crew.id as string,
-            homeAirports,
-            swapDate,
-            destinations,
-            aliases,
-            scheduledFlights,
-          });
-        } catch (e) {
-          errors.push(`${crew.name}: ${e instanceof Error ? e.message : "unknown error"}`);
-          return { routesStored: 0 };
-        }
-      }),
-    );
+    const allRows: Array<Record<string, unknown>> = [];
 
-    for (const r of results) {
-      totalRoutes += r.routesStored;
+    for (const crew of batch) {
+      const homeAirports = (crew.home_airports as string[]) ?? [];
+      if (homeAirports.length === 0) {
+        errors.push(`${crew.name}: no home airports`);
+        continue;
+      }
+      try {
+        const rows = computePilotRoutes({
+          crewMemberId: crew.id as string,
+          homeAirports,
+          swapDate,
+          destinations,
+          aliases,
+          scheduledFlights,
+          priceMap,
+        });
+        allRows.push(...rows);
+      } catch (e) {
+        errors.push(`${crew.name}: ${e instanceof Error ? e.message : "unknown error"}`);
+      }
     }
+
     crewProcessed += batch.length;
 
-    if (i + 10 < crewWithDifficulty.length && crewProcessed % 50 === 0) {
-      console.log(`[PilotRoutes] Progress: ${crewProcessed}/${crewWithDifficulty.length} crew, ${totalRoutes} routes`);
+    // Batch insert all rows for this batch of crew
+    if (allRows.length > 0) {
+      // Delete existing routes for these crew members
+      const crewIds = batch.map((c) => c.id as string);
+      await supa
+        .from("pilot_routes")
+        .delete()
+        .in("crew_member_id", crewIds)
+        .eq("swap_date", swapDate);
+
+      for (let j = 0; j < allRows.length; j += 100) {
+        const chunk = allRows.slice(j, j + 100);
+        const { error } = await supa.from("pilot_routes").insert(chunk);
+        if (error) {
+          console.error(`[PilotRoutes] Insert error:`, error.message);
+        } else {
+          totalRoutes += chunk.length;
+        }
+      }
+    }
+
+    if (crewProcessed % 50 === 0 && i + 10 < crewWithDifficulty.length) {
+      console.log(`[PilotRoutes] Phase 3: ${crewProcessed}/${crewWithDifficulty.length} crew, ${totalRoutes} routes`);
     }
   }
 
-  console.log(`[PilotRoutes] Done: ${crewProcessed} crew, ${totalRoutes} routes stored, ${flightAwareCalls} FA calls, ${errors.length} errors`);
-  return { crewProcessed, totalRoutes, flightAwareCalls, totalScheduledFlights, errors };
+  console.log(`[PilotRoutes] Done: ${crewProcessed} crew, ${totalRoutes} routes, ${flightAwareCalls} FA + ${hasDataCalls} HD calls, ${errors.length} errors`);
+  return { crewProcessed, totalRoutes, flightAwareCalls, hasDataCalls, totalScheduledFlights, pricedPairs: priceMap.size, errors };
 }
 
 // ─── Load pre-computed routes for the optimizer ─────────────────────────────
