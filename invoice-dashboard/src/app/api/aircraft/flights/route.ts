@@ -133,13 +133,16 @@ export async function GET(req: NextRequest) {
 
     // Count flights per tail for debugging
     const perTail: Record<string, number> = {};
+    let withPosition = 0;
     for (const f of flights) {
       perTail[f.tail] = (perTail[f.tail] ?? 0) + 1;
+      if (f.latitude != null && f.longitude != null) withPosition++;
     }
 
     return NextResponse.json({
       flights,
       count: flights.length,
+      with_position: withPosition,
       total_tails: tails.length,
       tails_queried: tails,
       flights_per_tail: perTail,
