@@ -832,7 +832,8 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
       const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
       const fi = f.tail_number ? matchFlightInfo(flightInfo, routeKey, f.tail_number, f.departure_icao, f.scheduled_departure) : undefined;
       const arrivalDate = f.scheduled_arrival ? new Date(f.scheduled_arrival) : null;
-      const arrivalPassed = arrivalDate && arrivalDate < now;
+      const faEta = fi && fi.destination_icao === f.arrival_icao && fi.arrival_time ? new Date(fi.arrival_time) : null;
+      const arrivalPassed = (arrivalDate && arrivalDate < now) || (faEta && faEta < now);
 
       // Check SWIM status — route-specific only for "En Route" to avoid bleeding across legs
       const swimRoute = swimStatus.get(routeKey);
@@ -841,7 +842,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
       const swimEntryStale = isSwimStale(swim, f.scheduled_departure);
       const fiRouteMatch = fi && fi.destination_icao === f.arrival_icao;
 
-      // FA is primary source for status; SWIM is fallback only when FA has no match
+      // FA is primary source; SWIM supplements when FA hasn't detected takeoff yet
       if (fi?.diverted || supersededMap.has(f.id)) {
         map.set(f.id, "arrived");
       } else if (fiRouteMatch && (fi?.actual_arrival || fi?.status?.includes("Arrived") || fi?.status?.includes("Landed"))) {
@@ -850,8 +851,8 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
         map.set(f.id, "arrived");
       } else if (fiRouteMatch && fi?.status?.includes("En Route")) {
         map.set(f.id, "enroute");
-      } else if (!fiRouteMatch && !swimRouteStale && swimRoute?.status === "En Route") {
-        map.set(f.id, "enroute"); // SWIM fallback only when FA has no route match
+      } else if (!swimRouteStale && swimRoute?.status === "En Route") {
+        map.set(f.id, "enroute"); // SWIM detected takeoff (works with or without FA route match)
       } else if (!fiRouteMatch && !swimEntryStale && swim?.status === "Arrived") {
         map.set(f.id, "arrived");
       } else if (fi?.status?.includes("Arrived") || fi?.status?.includes("Landed") || fi?.actual_arrival) {
@@ -1538,24 +1539,25 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           let isFiled = false;
                           const arrivalDate = f.scheduled_arrival ? new Date(f.scheduled_arrival) : null;
                           const now = new Date();
-                          const arrivalPassed = arrivalDate && arrivalDate < now;
-                          // Check SWIM status first — route-specific for "En Route", tail fallback for others
+                          const fiRouteMatch = fi && fi.destination_icao === f.arrival_icao;
+                          const faEta = fiRouteMatch && fi?.arrival_time ? new Date(fi.arrival_time) : null;
+                          const arrivalPassed = (arrivalDate && arrivalDate < now) || (faEta && faEta < now);
+                          // Check SWIM status — route-specific for "En Route", tail fallback for others
                           const swimRouteMatch = swimStatus.get(routeKey);
                           const swimEntry = swimRouteMatch ?? (f.tail_number ? swimStatus.get(`${f.tail_number}||`) : undefined);
                           const swimRouteStale = isSwimStale(swimRouteMatch, f.scheduled_departure);
                           const swimEntryStale = isSwimStale(swimEntry, f.scheduled_departure);
-                          const fiRouteMatch = fi && fi.destination_icao === f.arrival_icao;
-                          // FA primary, but arrivalPassed always wins over any "En Route"
+                          // FA primary; SWIM supplements when FA hasn't detected takeoff yet
                           if (fiRouteMatch && (fi?.actual_arrival || fi?.status?.includes("Arrived") || fi?.status?.includes("Landed"))) {
                             status = "Arrived"; statusColor = "text-green-600 font-medium";
                           } else if (arrivalPassed) {
                             status = "Arrived"; statusColor = "text-green-600 font-medium";
                           } else if (fiRouteMatch && fi?.status?.includes("En Route")) {
                             status = "En Route"; statusColor = "text-blue-600 font-medium";
+                          } else if (!swimRouteStale && swimRouteMatch?.status === "En Route") {
+                            status = "En Route"; statusColor = "text-blue-600 font-medium";
                           } else if (fiRouteMatch && fi?.status === "Filed") {
                             isFiled = true; statusColor = "text-indigo-600 font-medium";
-                          } else if (!fiRouteMatch && !swimRouteStale && swimRouteMatch?.status === "En Route") {
-                            status = "En Route"; statusColor = "text-blue-600 font-medium";
                           } else if (!fiRouteMatch && !swimEntryStale && swimEntry?.status === "Arrived") {
                             status = "Arrived"; statusColor = "text-green-600 font-medium";
                           } else if (!fiRouteMatch && !swimEntryStale && swimEntry?.status === "Diverted") {
@@ -1683,13 +1685,8 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                                 {isFaSourced && (
                                   <span className="px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-blue-100 text-blue-700">FA</span>
                                 )}
-                                {!isCancelled && status === "En Route" && fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100 && (
-                                  <div className="w-16 h-1.5 bg-gray-200 rounded-full overflow-hidden">
-                                    <div className="h-full bg-blue-500 rounded-full" style={{ width: `${fi.progress_percent}%` }} />
-                                  </div>
-                                )}
-                                {/* Progress bar fallback — SWIM or FA actual_departure + ETA */}
-                                {!isCancelled && status === "En Route" && !(fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100) && (() => {
+                                {/* Time-based progress bar for en route flights */}
+                                {!isCancelled && status === "En Route" && (() => {
                                   const depStr = (!swimRouteStale ? swimRouteMatch?.etd : null) ?? fi?.actual_departure ?? fi?.departure_time ?? (!swimEntryStale ? swimEntry?.actual_departure : null);
                                   let arrStr = (!swimRouteStale ? swimRouteMatch?.eta : null) ?? (fiRouteMatch ? fi?.arrival_time : null) ?? (!swimEntryStale ? swimEntry?.eta : null);
                                   if (!arrStr && f.scheduled_arrival && f.scheduled_departure && depStr) {
@@ -1858,20 +1855,21 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
 
                 const arrivalDate = f.scheduled_arrival ? new Date(f.scheduled_arrival) : null;
                 const now = new Date();
-                const arrivalPassed = arrivalDate && arrivalDate < now;
-
-                // FA is primary source; SWIM is fallback only when FA has no route match
                 const fiRouteMatch = fi && fi.destination_icao === f.arrival_icao;
+                const faEta = fiRouteMatch && fi?.arrival_time ? new Date(fi.arrival_time) : null;
+                const arrivalPassed = (arrivalDate && arrivalDate < now) || (faEta && faEta < now);
+
+                // FA primary; SWIM supplements when FA hasn't detected takeoff yet
                 if (fiRouteMatch && (fi?.actual_arrival || fi?.status?.includes("Arrived") || fi?.status?.includes("Landed"))) {
                   status = "Arrived"; statusColor = "text-green-600 font-medium";
                 } else if (arrivalPassed) {
                   status = "Arrived"; statusColor = "text-green-600 font-medium";
                 } else if (fiRouteMatch && fi?.status?.includes("En Route")) {
                   status = "En Route"; statusColor = "text-blue-600 font-medium";
+                } else if (!swimRouteStale && swimRouteMatch?.status === "En Route") {
+                  status = "En Route"; statusColor = "text-blue-600 font-medium";
                 } else if (fiRouteMatch && fi?.status === "Filed") {
                   status = fi.status; isFiled = true; statusColor = "text-indigo-600 font-medium";
-                } else if (!fiRouteMatch && !swimRouteStale && swimRouteMatch?.status === "En Route") {
-                  status = "En Route"; statusColor = "text-blue-600 font-medium";
                 } else if (!fiRouteMatch && !swimEntryStale && swimEntry?.status === "Arrived") {
                   status = "Arrived"; statusColor = "text-green-600 font-medium";
                 } else if (!fiRouteMatch && !swimEntryStale && swimEntry?.status === "Cancelled") {
@@ -1995,31 +1993,9 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                             </>
                           ) : (f.arrival_icao || "?")}
                         </span>
-                        {!isCancelled && status === "En Route" && fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100 && (
-                          <div className="mt-1 flex items-center gap-2">
-                            <div className="w-20 h-1.5 bg-gray-200 rounded-full overflow-hidden">
-                              <div
-                                className="h-full bg-blue-500 rounded-full"
-                                style={{ width: `${fi.progress_percent}%` }}
-                              />
-                            </div>
-                            {fi.arrival_time && (() => {
-                              const remaining = Math.round((new Date(fi.arrival_time).getTime() - Date.now()) / 60000);
-                              if (remaining <= 0) return null;
-                              const hrs = Math.floor(remaining / 60);
-                              const mins = remaining % 60;
-                              return (
-                                <span className="text-[10px] text-blue-600 font-medium whitespace-nowrap">
-                                  {hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`} remaining
-                                </span>
-                              );
-                            })()}
-                          </div>
-                        )}
-                        {/* Progress bar fallback — SWIM or FA actual_departure + ETA */}
-                        {!isCancelled && status === "En Route" && !(fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100) && (() => {
+                        {/* Time-based progress bar + remaining for en route flights */}
+                        {!isCancelled && status === "En Route" && (() => {
                           const depStr = (!swimRouteStale ? swimRouteMatch?.etd : null) ?? fi?.actual_departure ?? fi?.departure_time ?? (!swimEntryStale ? swimEntry?.actual_departure : null);
-                          // Fall back to scheduled arrival shifted by departure delay
                           let arrStr = (!swimRouteStale ? swimRouteMatch?.eta : null) ?? (fiRouteMatch ? fi?.arrival_time : null) ?? (!swimEntryStale ? swimEntry?.eta : null);
                           if (!arrStr && f.scheduled_arrival && f.scheduled_departure && depStr) {
                             const delayMs = new Date(depStr).getTime() - new Date(f.scheduled_departure).getTime();
