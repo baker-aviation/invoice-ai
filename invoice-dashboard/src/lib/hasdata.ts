@@ -4,6 +4,7 @@
 
 import type { FlightOffer, FlightSearchResult } from "./amadeus";
 import { getAirportTimezone } from "./airportTimezones";
+import { BUDGET_CARRIERS } from "./swapRules";
 
 const API_KEY = process.env.HASDATA_API_KEY!;
 const BASE_URL = "https://api.hasdata.com/scrape/google/flights";
@@ -98,9 +99,10 @@ export async function searchFlights(params: {
 
   console.log(`[HasData] ${orig}->${dest} ${date}: status=${data.requestMetadata?.status} best=${(data.bestFlights ?? []).length} other=${(data.otherFlights ?? []).length}`);
 
-  // Combine bestFlights + otherFlights, take up to max
+  // Combine bestFlights + otherFlights, prefer major carriers over budget
   const all = [...(data.bestFlights ?? []), ...(data.otherFlights ?? [])];
-  const limited = all.slice(0, max);
+  const filtered = filterBudgetCarriers(all);
+  const limited = filtered.slice(0, max);
 
   const offers: FlightOffer[] = limited.map((r, i) => ({
     id: String(i),
@@ -126,6 +128,34 @@ export async function searchFlights(params: {
   }));
 
   return { origin: orig, destination: dest, date, offers, count: offers.length };
+}
+
+// ─── Budget carrier filter ────────────────────────────────────────────────────
+
+/**
+ * Remove budget carrier flights (Spirit, Frontier, Allegiant) UNLESS they are
+ * the only option. If ANY non-budget flight exists, all budget flights are
+ * dropped — even if the budget flight is half the price.
+ *
+ * A flight is "budget" if ALL of its legs are operated by budget carriers.
+ * Mixed itineraries (e.g. AA leg + NK leg) are treated as non-budget.
+ */
+function filterBudgetCarriers(results: HdResult[]): HdResult[] {
+  if (results.length === 0) return results;
+
+  const isBudget = (r: HdResult) =>
+    r.flights.length > 0 &&
+    r.flights.every((f) => {
+      const carrier = (f.flightNumber?.split(" ")[0] ?? "").toUpperCase();
+      return BUDGET_CARRIERS.includes(carrier);
+    });
+
+  const major = results.filter((r) => !isBudget(r));
+
+  // If no major carrier options exist, allow budget as last resort
+  if (major.length === 0) return results;
+
+  return major;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

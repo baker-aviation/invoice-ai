@@ -84,8 +84,19 @@ export const EARLY_LATE_BONUS_SIC = 1000;
 /** Strong preference for direct flights */
 export const MAX_CONNECTIONS = 1; // never 2+ connections
 
-/** Budget carriers (allowed but not preferred) */
+/**
+ * Budget carriers — AVOID unless no other option exists.
+ * Even if a budget carrier is half the price of a major carrier on the same
+ * route, pick the major carrier. Budget carriers are last-resort only
+ * (frequent delays, bad connections, poor rebooking if things go wrong).
+ *
+ * Scoring: when a non-budget option exists for the same origin→destination,
+ * budget carriers are eliminated. Only used when they are the SOLE option.
+ */
 export const BUDGET_CARRIERS = ["NK", "F9", "G4"]; // Spirit, Frontier, Allegiant
+
+/** If the ONLY available flights are budget carriers, allow them */
+export const BUDGET_CARRIER_LAST_RESORT = true;
 
 /** Preferred connection hubs */
 export const PREFERRED_HUBS = ["ATL", "DEN", "DFW", "ORD", "IAH", "CLT", "PHX", "MSP", "DTW", "EWR"];

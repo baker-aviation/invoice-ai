@@ -15,6 +15,7 @@ import { searchFlights } from "./hasdata";
 import type { FlightOffer } from "./amadeus";
 import type { AirportAlias } from "./swapOptimizer";
 import { DEFAULT_AIRPORT_ALIASES } from "./airportAliases";
+import { BUDGET_CARRIERS } from "./swapRules";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -225,7 +226,7 @@ export function computePilotRoutes(params: {
             priceSource = "hasdata_route";
           }
         } else {
-          const budgetCarriers = new Set(["F9", "NK", "G4", "WN", "B6"]);
+          const budgetCarriers = new Set(BUDGET_CARRIERS);
           const priceMult = budgetCarriers.has(f.airline_iata) ? 0.7 : 1.0;
           flightPrice = Math.min(Math.round((50 + f.duration_minutes * 1.5) * priceMult), 500);
           priceSource = "estimated";
