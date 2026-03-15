@@ -411,8 +411,13 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
       const actualDep = fi?.actual_departure ?? null;
       const actualArr = fi?.actual_arrival ?? null;
       const estimatedArr = fi?.arrival_time ?? null;
+      // FA departure_time = best available (actual > estimated > scheduled)
+      const faDep = fi?.departure_time ?? null;
 
-      const depIso = actualDep ?? f.scheduled_departure;
+      // Use FA departure when available — JetInsight often sets the same
+      // scheduled_departure for connecting legs (e.g. both ACT→LAS and
+      // LAS→PLS show 12:14Z), inflating enroute time for later legs.
+      const depIso = actualDep ?? faDep ?? f.scheduled_departure;
       const depMs = new Date(depIso).getTime();
 
       let source: "actual" | "fa-estimate" | "scheduled";
@@ -424,6 +429,9 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
       } else if (actualDep && !actualArr) {
         source = estimatedArr ? "fa-estimate" : "actual";
         endMs = estimatedArr ? new Date(estimatedArr).getTime() : now;
+      } else if (faDep && estimatedArr) {
+        source = "fa-estimate";
+        endMs = new Date(estimatedArr).getTime();
       } else if (estimatedArr) {
         source = "fa-estimate";
         endMs = new Date(estimatedArr).getTime();
