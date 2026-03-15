@@ -861,7 +861,9 @@ function buildSlackItems(items: VanFlightItem[], flightInfoMap: Map<string, Flig
       fbo,
       arrivalTime: item.arrFlight.scheduled_arrival ? fmtUtcHM(item.arrFlight.scheduled_arrival, item.arrFlight.arrival_icao) : "—",
       status: slackStatus,
-      nextDep: item.nextDep ? `Flying again ${fmtUtcHM(item.nextDep.scheduled_departure, item.nextDep.departure_icao)} → ${item.nextDep.arrival_icao?.replace(/^K/, "") ?? "?"}` : undefined,
+      nextDep: item.nextDep
+        ? `Flying again ${fmtUtcHM(item.nextDep.scheduled_departure, item.nextDep.departure_icao)}`
+        : "Staying Overnight",
       turnStatus: turnLabel,
       driveTime: item.distKm > 0 ? fmtDriveTime(item.distKm) : undefined,
     };
