@@ -669,6 +669,16 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
     loadRouteStatus();
   }, [loadRouteStatus]);
 
+  // Safe JSON parse — Vercel timeouts return HTML like "An error occurred..."
+  async function safeJson(res: Response, fallbackError: string) {
+    const text = await res.text();
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new Error(res.status === 504 ? `${fallbackError} (timed out)` : `${fallbackError}: ${text.slice(0, 120)}`);
+    }
+  }
+
   // Trigger route computation
   async function computeRoutes() {
     setComputingRoutes(true);
@@ -678,7 +688,7 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ swap_date: selectedWed.toISOString().slice(0, 10) }),
       });
-      const data = await res.json();
+      const data = await safeJson(res, "Route computation failed");
       if (res.ok) {
         await loadRouteStatus();
       } else {
@@ -698,7 +708,7 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
     try {
       const dateStr = selectedWed.toISOString().slice(0, 10);
       const res = await fetch(`/api/crew/detect-rotation?date=${dateStr}`);
-      const data = await res.json();
+      const data = await safeJson(res, "Rotation detection failed");
       if (!res.ok) {
         setOptimizeError(data.error ?? "Rotation detection failed");
         return;
@@ -731,7 +741,7 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
       const fd = new FormData();
       fd.append("file", file);
       const res = await fetch("/api/crew/roster", { method: "POST", body: fd });
-      const data = await res.json();
+      const data = await safeJson(res, "Upload failed");
       if (!res.ok) {
         setUploadError(data.error ?? "Upload failed");
       } else {
@@ -746,8 +756,6 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
         }
         setRotationSource("excel");
         await loadCrew();
-        // Auto-trigger route computation in background
-        computeRoutes();
       }
     } catch (e) {
       setUploadError(e instanceof Error ? e.message : "Upload failed");
