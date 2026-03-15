@@ -40,7 +40,7 @@ export type VanZone = {
 };
 
 export const FIXED_VAN_ZONES: VanZone[] = [
-  { vanId: 1,  name: "North FL",       city: "Jacksonville, FL",   homeAirport: "JAX", lat: 30.4943, lon: -81.6879 },
+  { vanId: 1,  name: "South FL East",  city: "West Palm Beach, FL", homeAirport: "PBI", lat: 26.6832, lon: -80.0956 },
   { vanId: 2,  name: "South FL East",  city: "West Palm Beach, FL", homeAirport: "PBI", lat: 26.6832, lon: -80.0956 },
   { vanId: 3,  name: "South FL West",  city: "Fort Myers, FL",     homeAirport: "FMY", lat: 26.5866, lon: -81.8633 },
   { vanId: 4,  name: "NY/NJ – TEB",    city: "New York, NY",       homeAirport: "TEB", lat: 40.8501, lon: -74.0608 },
@@ -51,11 +51,11 @@ export const FIXED_VAN_ZONES: VanZone[] = [
   { vanId: 9,  name: "Dallas/FW",      city: "Dallas, TX",         homeAirport: "ADS", lat: 32.9686, lon: -96.8364 },
   { vanId: 10, name: "Houston",        city: "Houston, TX",        homeAirport: "SGR", lat: 29.6222, lon: -95.6565 },
   { vanId: 11, name: "Chicago",        city: "Chicago, IL",        homeAirport: "PWK", lat: 42.1142, lon: -87.9015 },
-  { vanId: 12, name: "Atlanta",        city: "Atlanta, GA",        homeAirport: "PDK", lat: 33.8756, lon: -84.3020 },
+  { vanId: 12, name: "North Carolina", city: "Burlington, NC",     homeAirport: "BUY", lat: 36.0485, lon: -79.4749 },
   { vanId: 13, name: "DC Area",        city: "Washington, DC",     homeAirport: "IAD", lat: 38.9445, lon: -77.4558 },
   { vanId: 14, name: "Denver",         city: "Denver, CO",         homeAirport: "APA", lat: 39.5701, lon: -104.8493 },
-  { vanId: 15, name: "Scottsdale",     city: "Scottsdale, AZ",     homeAirport: "SDL", lat: 33.6229, lon: -111.9105 },
-  { vanId: 16, name: "Seattle",        city: "Seattle, WA",        homeAirport: "BFI", lat: 47.5300, lon: -122.3019 },
+  { vanId: 15, name: "Arizona",        city: "Scottsdale, AZ",     homeAirport: "SDL", lat: 33.6229, lon: -111.9105 },
+  { vanId: 16, name: "Utah",           city: "Salt Lake City, UT", homeAirport: "SLC", lat: 40.7884, lon: -111.9778 },
 ];
 
 // ---------------------------------------------------------------------------

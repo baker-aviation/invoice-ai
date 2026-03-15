@@ -841,8 +841,13 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
       const swimEntryStale = isSwimStale(swim, f.scheduled_departure);
       const fiRouteMatch = fi && fi.destination_icao === f.arrival_icao;
 
+      // If scheduled arrival passed by >30min, treat as arrived regardless of SWIM/FA lag
+      const arrivalWellPast = arrivalDate && (now.getTime() - arrivalDate.getTime() > 30 * 60_000);
+
       if (fi?.diverted || supersededMap.has(f.id)) {
         map.set(f.id, "arrived"); // treat cancelled/diverted as "arrived" bucket
+      } else if (arrivalWellPast) {
+        map.set(f.id, "arrived");
       } else if (!swimRouteStale && swimRoute?.status === "En Route") {
         map.set(f.id, "enroute");
       } else if (!swimEntryStale && swim?.status === "Arrived") {
@@ -1564,8 +1569,14 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                             status = "Arrived";
                             statusColor = "text-green-600 font-medium";
                           }
-                          // If scheduled arrival has passed and still Scheduled/En Route, it arrived
-                          if (arrivalPassed && (status === "Scheduled" || status === "En Route") && !(fi && !fi.actual_arrival)) {
+                          // If scheduled arrival passed by >30min, force Arrived (SWIM/FA can lag)
+                          const arrivalWellPast = arrivalDate && (now.getTime() - arrivalDate.getTime() > 30 * 60_000);
+                          if (arrivalWellPast && (status === "Scheduled" || status === "En Route")) {
+                            status = "Arrived";
+                            statusColor = "text-green-600 font-medium";
+                          }
+                          // Softer check: arrival passed but FA still hasn't confirmed landing
+                          else if (arrivalPassed && (status === "Scheduled" || status === "En Route") && !(fi && !fi.actual_arrival)) {
                             status = "Arrived";
                             statusColor = "text-green-600 font-medium";
                           }
