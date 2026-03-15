@@ -354,6 +354,15 @@ def parse_tfms_flight_message(xml_str: str) -> Optional[Dict[str, Any]]:
         event_type = "TAXI_OUT"
     elif "taxi_in" in trigger_lower:
         event_type = "TAXI_IN"
+    elif "flight_plan" in trigger_lower or "flight_create" in trigger_lower:
+        event_type = "FLIGHT_PLAN"
+
+    # Also detect filed status from FIXM flightStatus field — catches flight plan
+    # messages that arrive with msgType="trackInformation" or other non-"plan" types
+    if event_type in ("POSITION", "TRACK") and flight_status:
+        fs = flight_status.upper()
+        if fs in ("PLANNED", "FILED", "PROPOSED"):
+            event_type = "FLIGHT_PLAN"
 
     # Detect EDCT-related trigger
     is_edct_trigger = any(k in trigger_lower for k in ("edct", "expected_departure_clearance",
