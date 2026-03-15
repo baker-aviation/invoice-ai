@@ -125,9 +125,19 @@ export type FlightInfo = {
 
 // LADD/PIA-blocked aircraft: registration lookup returns nothing,
 // so we fall back to querying by callsign (operator + fleet number).
-const CALLSIGN_FALLBACKS: Record<string, string> = {
-  N301HR: "KOW301",
+// Explicit overrides take priority; auto-derivation (KOW + digits) is used as fallback.
+const CALLSIGN_OVERRIDES: Record<string, string> = {
+  // Add explicit mappings here if the auto-derived KOW{digits} doesn't match
 };
+
+/** Derive potential callsigns from a registration.
+ *  Baker Aviation operates under Kalitta Charters (ICAO: KOW). */
+function deriveCallsigns(registration: string): string[] {
+  if (CALLSIGN_OVERRIDES[registration]) return [CALLSIGN_OVERRIDES[registration]];
+  const digits = registration.replace(/\D/g, "");
+  if (!digits) return [];
+  return [`KOW${digits}`];
+}
 
 /**
  * Get recent and upcoming flights for a registration (tail number).
@@ -151,22 +161,25 @@ export async function getFlightsByRegistration(
   let flights = (data.flights ?? []) as FaFlight[];
   console.log(`[FA] ${registration}: ${flights.length} flights returned`);
 
-  // Fallback: try callsign for blocked aircraft
-  if (flights.length === 0 && CALLSIGN_FALLBACKS[registration]) {
-    const callsign = CALLSIGN_FALLBACKS[registration];
-    console.log(`[FA] ${registration}: trying callsign fallback ${callsign}`);
-    const csUrl = `${BASE}/flights/${encodeURIComponent(callsign)}`;
-    try {
-      const csRes = await fetch(csUrl, {
-        headers: headers(),
-        signal: AbortSignal.timeout(10000),
-      });
-      if (csRes.ok) {
-        const csData = await csRes.json();
-        flights = (csData.flights ?? []) as FaFlight[];
-        console.log(`[FA] ${callsign}: ${flights.length} flights returned (callsign fallback)`);
-      }
-    } catch { /* ignore callsign fallback errors */ }
+  // Fallback: try callsign(s) for LADD/PIA-blocked aircraft
+  if (flights.length === 0) {
+    const callsigns = deriveCallsigns(registration);
+    for (const callsign of callsigns) {
+      console.log(`[FA] ${registration}: trying callsign fallback ${callsign}`);
+      const csUrl = `${BASE}/flights/${encodeURIComponent(callsign)}`;
+      try {
+        const csRes = await fetch(csUrl, {
+          headers: headers(),
+          signal: AbortSignal.timeout(10000),
+        });
+        if (csRes.ok) {
+          const csData = await csRes.json();
+          flights = (csData.flights ?? []) as FaFlight[];
+          console.log(`[FA] ${callsign}: ${flights.length} flights returned (callsign fallback for ${registration})`);
+          if (flights.length > 0) break;
+        }
+      } catch { /* ignore callsign fallback errors */ }
+    }
   }
 
   return flights;
