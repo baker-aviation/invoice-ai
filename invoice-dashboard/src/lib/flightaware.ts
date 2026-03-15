@@ -136,9 +136,9 @@ export async function getFlightsByRegistration(
 ): Promise<FaFlight[]> {
   const dbCallsign = callsignMap?.get(registration);
 
-  // If we have a known callsign, query by callsign directly — saves a wasted N-number call
-  const primaryIdent = dbCallsign ?? registration;
-  const url = `${BASE}/flights/${encodeURIComponent(primaryIdent)}`;
+  // Query by N-number first — returns last_position with lat/lon for map tracking.
+  // Callsign queries return flight data but NOT positions.
+  const url = `${BASE}/flights/${encodeURIComponent(registration)}`;
   const res = await fetch(url, {
     headers: headers(),
     signal: AbortSignal.timeout(10000),
@@ -150,18 +150,16 @@ export async function getFlightsByRegistration(
   }
   const data = await res.json();
   let flights = (data.flights ?? []) as FaFlight[];
-  console.log(`[FA] ${primaryIdent}${dbCallsign ? ` (${registration})` : ""}: ${flights.length} flights`);
+  console.log(`[FA] ${registration}: ${flights.length} flights`);
 
-  // Fallback: try the other ident if primary returned nothing
+  // Fallback: if N-number returned nothing (LADD-blocked), try callsign
   if (flights.length === 0) {
-    // If we queried by callsign, try N-number (crew may have filed under registration)
-    // If we queried by N-number, try auto-derived KOW callsign
-    const fallbackIdent = dbCallsign ? registration : (() => {
+    const fallbackIdent = dbCallsign ?? (() => {
       const digits = registration.replace(/\D/g, "");
       return digits ? `KOW${digits}` : null;
     })();
     if (fallbackIdent) {
-      console.log(`[FA] ${registration}: trying fallback ${fallbackIdent}`);
+      console.log(`[FA] ${registration}: trying callsign fallback ${fallbackIdent}`);
       const fbUrl = `${BASE}/flights/${encodeURIComponent(fallbackIdent)}`;
       try {
         const fbRes = await fetch(fbUrl, {
