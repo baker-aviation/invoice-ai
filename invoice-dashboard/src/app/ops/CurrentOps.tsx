@@ -1860,49 +1860,26 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                 const now = new Date();
                 const arrivalPassed = arrivalDate && arrivalDate < now;
 
-                // Check ForeFlight/SWIM status first
-                // Only use route-specific SWIM match for "En Route" to avoid bleeding across legs
-                // Skip stale SWIM data (from a previous day's flight on the same route)
-                if (!swimEntryStale && swimEntry?.status === "Filed") {
-                  status = "Scheduled"; isFiled = true;
-                } else if (!swimRouteStale && swimRouteMatch?.status === "En Route") {
-                  status = "En Route"; statusColor = "text-blue-600 font-medium";
-                } else if (!swimEntryStale && swimEntry?.status === "Arrived") {
-                  status = "Arrived"; statusColor = "text-green-600 font-medium";
-                } else if (!swimEntryStale && swimEntry?.status === "Cancelled") {
-                  status = "Cancelled"; statusColor = "text-red-600 font-medium";
-                }
-
-                // FA overrides if it has better data
-                // Only infer "En Route" from FA when destination matches (route-specific)
+                // FA is primary source; SWIM is fallback only when FA has no route match
                 const fiRouteMatch = fi && fi.destination_icao === f.arrival_icao;
-                if (fi?.actual_arrival) {
-                  // FA confirms landed — always takes priority
-                  status = "Arrived";
-                  statusColor = "text-green-600 font-medium";
-                } else if (fiRouteMatch && fi && fi.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100) {
-                  // In progress on THIS leg
-                  status = "En Route";
-                  statusColor = "text-blue-600 font-medium";
-                } else if (fiRouteMatch && fi && fi.latitude != null && fi.longitude != null && !fi.actual_arrival) {
-                  // Has position data for THIS leg
-                  status = "En Route";
-                  statusColor = "text-blue-600 font-medium";
-                } else if (fi?.status) {
-                  // Fall back to FA status string — only "En Route" if route matches
-                  if (fiRouteMatch && fi.status.includes("En Route")) {
-                    status = "En Route"; statusColor = "text-blue-600 font-medium";
-                  } else if (fi.status.includes("Arrived") || fi.status.includes("Landed")) {
-                    status = fi.status; statusColor = "text-green-600 font-medium";
-                  } else if (fi.status === "Filed") {
-                    status = fi.status; isFiled = true; statusColor = "text-indigo-600 font-medium";
-                  }
-                }
-
-                // If scheduled arrival has passed and we're still showing Scheduled, it arrived
-                if (arrivalPassed && (status === "Scheduled" || status === "En Route") && !(fi && !fi.actual_arrival)) {
-                  status = "Arrived";
-                  statusColor = "text-green-600 font-medium";
+                if (fiRouteMatch && (fi?.actual_arrival || fi?.status?.includes("Arrived") || fi?.status?.includes("Landed"))) {
+                  status = "Arrived"; statusColor = "text-green-600 font-medium";
+                } else if (fiRouteMatch && fi?.status?.includes("En Route")) {
+                  status = "En Route"; statusColor = "text-blue-600 font-medium";
+                } else if (fiRouteMatch && fi?.status === "Filed") {
+                  status = fi.status; isFiled = true; statusColor = "text-indigo-600 font-medium";
+                } else if (arrivalPassed) {
+                  status = "Arrived"; statusColor = "text-green-600 font-medium";
+                } else if (!fiRouteMatch && !swimRouteStale && swimRouteMatch?.status === "En Route") {
+                  status = "En Route"; statusColor = "text-blue-600 font-medium";
+                } else if (!fiRouteMatch && !swimEntryStale && swimEntry?.status === "Arrived") {
+                  status = "Arrived"; statusColor = "text-green-600 font-medium";
+                } else if (!fiRouteMatch && !swimEntryStale && swimEntry?.status === "Cancelled") {
+                  status = "Cancelled"; statusColor = "text-red-600 font-medium";
+                } else if (!fiRouteMatch && !swimEntryStale && swimEntry?.status === "Filed") {
+                  status = "Scheduled"; isFiled = true;
+                } else if (fi?.actual_arrival) {
+                  status = "Arrived"; statusColor = "text-green-600 font-medium";
                 }
 
                 if (fi?.diverted) {
