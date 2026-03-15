@@ -1717,10 +1717,12 @@ type FeasibilityEntry = {
   tail: string;
   viable: boolean;
   bestScore: number;
-  bestCost: number;
+  bestCost: number;       // oncoming cost
+  offgoingCost: number;   // cheapest offgoing route from this swap airport
+  totalCost: number;      // oncoming + offgoing combined
   bestType: string;
   candidateCount: number;
-  rank: number; // weighted blend of cost + reliability + proximity (lower = better)
+  rank: number; // weighted blend of total cost + reliability + proximity (lower = better)
   bestSwapIcao: string;   // which swap point produced the best result
   minDriveMiles: number;  // shortest home→swap distance (for fallback tiebreak)
 };
@@ -1739,9 +1741,10 @@ function buildFeasibilityMatrix(params: {
   commercialFlights?: Map<string, FlightOffer[]>;
   crewRoster: CrewMember[];
   tailAircraftType: Map<string, string>;
-  preComputedRoutes?: Map<string, PilotRoute[]>;  // crewMemberId → routes
+  preComputedRoutes?: Map<string, PilotRoute[]>;  // crewMemberId → oncoming routes
+  preComputedOffgoing?: Map<string, PilotRoute[]>;  // crewMemberId → offgoing routes
 }): FeasibilityEntry[] {
-  const { pool, role, tails, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, preComputedRoutes } = params;
+  const { pool, role, tails, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, preComputedRoutes, preComputedOffgoing } = params;
   const matrix: FeasibilityEntry[] = [];
 
   for (const tail of tails) {
@@ -1775,7 +1778,7 @@ function buildFeasibilityMatrix(params: {
 
     for (const poolEntry of pool) {
       if (!isQualified(poolEntry.aircraft_type, acType)) {
-        matrix.push({ crewName: poolEntry.name, tail, viable: false, bestScore: 0, bestCost: 999, bestType: "none", candidateCount: 0, rank: 999, bestSwapIcao: "", minDriveMiles: 9999 });
+        matrix.push({ crewName: poolEntry.name, tail, viable: false, bestScore: 0, bestCost: 999, offgoingCost: 0, totalCost: 999, bestType: "none", candidateCount: 0, rank: 999, bestSwapIcao: "", minDriveMiles: 9999 });
         continue;
       }
 
@@ -1820,14 +1823,24 @@ function buildFeasibilityMatrix(params: {
           if (viable) entryCost += bonus;
         }
 
+        // Look up cheapest offgoing route from this swap airport back home
+        let offgoingCost = 0;
+        if (preComputedOffgoing && crewMember?.id) {
+          const offRoutes = preComputedOffgoing.get(crewMember.id) ?? [];
+          const offRelevant = offRoutes
+            .filter((r) => tailSwapIcaos.has(r.destination_icao.toUpperCase()) && r.score > 0)
+            .sort((a, b) => a.cost_estimate - b.cost_estimate);
+          offgoingCost = offRelevant[0]?.cost_estimate ?? 0;
+        }
+        const totalCost = entryCost + offgoingCost;
+
         const entryScore = best?.score ?? 0;
 
-        // Weighted rank with crew difficulty factor
+        // Weighted rank uses TOTAL round-trip cost (oncoming + offgoing)
         const crewDiff = getCrewDifficulty(homeAirports);
-        const costNorm = Math.min(100, (entryCost / 500) * 50);
+        const costNorm = Math.min(100, (totalCost / 800) * 50); // scale for round-trip
         const reliabilityNorm = 100 - entryScore;
         const proximityNorm = Math.min(100, (minDriveMin / 300) * 50);
-        // Crew difficulty slightly reduces rank (constrained crew get priority in sort)
         const rank = costNorm * 0.40 + reliabilityNorm * 0.25 + proximityNorm * 0.20 + crewDiff * 0.15;
 
         matrix.push({
@@ -1836,6 +1849,8 @@ function buildFeasibilityMatrix(params: {
           viable,
           bestScore: entryScore,
           bestCost: entryCost,
+          offgoingCost,
+          totalCost,
           bestType: best?.route_type ?? "none",
           candidateCount: viableRoutes.length,
           rank,
@@ -1898,12 +1913,20 @@ function buildFeasibilityMatrix(params: {
 
       const entryCost = viable ? best!.cost : 999;
       const entryScore = best?.score ?? 0;
-      // Weighted rank: 45% cost, 30% reliability, 25% proximity (lower = better)
-      // Proximity captures strategic flexibility — nearby crew have backup options,
-      // can drive in emergency, and have shorter duty days
-      const costNorm = Math.min(100, (entryCost / 500) * 50);
+
+      // Look up offgoing cost (runtime path — estimate from drive distance)
+      let offgoingCost = 0;
+      if (viable && minDriveMiles < 9999) {
+        // Rough estimate: offgoing mirrors oncoming ground cost
+        offgoingCost = minDriveMin <= 60
+          ? Math.max(25, Math.round(minDriveMiles * 2.0))  // uber
+          : 80 + Math.round(minDriveMiles * 0.50);          // rental
+      }
+      const totalCost = entryCost + offgoingCost;
+
+      const costNorm = Math.min(100, (totalCost / 800) * 50);
       const reliabilityNorm = 100 - entryScore;
-      const proximityNorm = Math.min(100, (minDriveMin / 300) * 50); // 5hr drive → 50 pts
+      const proximityNorm = Math.min(100, (minDriveMin / 300) * 50);
       const rank = costNorm * 0.45 + reliabilityNorm * 0.3 + proximityNorm * 0.25;
 
       matrix.push({
@@ -1912,6 +1935,8 @@ function buildFeasibilityMatrix(params: {
         viable,
         bestScore: entryScore,
         bestCost: entryCost,
+        offgoingCost,
+        totalCost,
         bestType: best?.type ?? "none",
         candidateCount: candidates.filter((c) => c.type !== "none").length,
         rank,
@@ -1935,7 +1960,7 @@ function buildFeasibilityMatrix(params: {
   }
   for (const [crew, entries] of viableByCrew) {
     if (entries.length <= 2) {
-      const tailList = entries.map((e) => `${e.tail}(${e.bestType} $${Math.round(e.bestCost)} rank=${e.rank.toFixed(1)})`).join(", ");
+      const tailList = entries.map((e) => `${e.tail}(${e.bestType} $${Math.round(e.bestCost)}+$${Math.round(e.offgoingCost)}=$${Math.round(e.totalCost)} rank=${e.rank.toFixed(1)})`).join(", ");
       console.log(`[FeasMatrix] CONSTRAINED ${role} crew ${crew}: only ${entries.length} viable tails — ${tailList}`);
     }
   }
@@ -1948,7 +1973,7 @@ function buildFeasibilityMatrix(params: {
   }
   for (const [tail, entries] of viableByTail) {
     if (entries.length <= 2) {
-      const crewList = entries.map((e) => `${e.crewName}(${e.bestType} $${Math.round(e.bestCost)} rank=${e.rank.toFixed(1)} ${Math.round(e.minDriveMiles)}mi)`).join(", ");
+      const crewList = entries.map((e) => `${e.crewName}(${e.bestType} $${Math.round(e.totalCost)} rank=${e.rank.toFixed(1)} ${Math.round(e.minDriveMiles)}mi)`).join(", ");
       console.log(`[FeasMatrix] CONSTRAINED ${role} tail ${tail}: only ${entries.length} viable crew — ${crewList}`);
     }
   }
@@ -1971,12 +1996,13 @@ export function assignOncomingCrew(params: {
   aliases?: AirportAlias[];
   commercialFlights?: Map<string, FlightOffer[]>;
   preComputedRoutes?: Map<string, PilotRoute[]>;
+  preComputedOffgoing?: Map<string, PilotRoute[]>;
 }): {
   assignments: Record<string, SwapAssignment>;
   standby: { pic: string[]; sic: string[] };
   details: { name: string; tail: string; cost: number; reason: string }[];
 } {
-  const { swapAssignments, oncomingPool, crewRoster, flights, swapDate, aliases = [], commercialFlights, preComputedRoutes } = params;
+  const { swapAssignments, oncomingPool, crewRoster, flights, swapDate, aliases = [], commercialFlights, preComputedRoutes, preComputedOffgoing } = params;
   const result: Record<string, SwapAssignment> = JSON.parse(JSON.stringify(swapAssignments));
   const details: { name: string; tail: string; cost: number; reason: string }[] = [];
 
@@ -2019,8 +2045,8 @@ export function assignOncomingCrew(params: {
   }
 
   // Assign PICs then SICs using feasibility matrix
-  assignRoleWithMatrix("oncoming_pic", oncomingPool.pic, "PIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes);
-  assignRoleWithMatrix("oncoming_sic", oncomingPool.sic, "SIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes);
+  assignRoleWithMatrix("oncoming_pic", oncomingPool.pic, "PIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes, preComputedOffgoing);
+  assignRoleWithMatrix("oncoming_sic", oncomingPool.sic, "SIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes, preComputedOffgoing);
 
   // Remaining pool → standby
   const assignedNames = new Set(details.map((d) => d.name));
@@ -2045,6 +2071,7 @@ function assignRoleWithMatrix(
   tailAircraftType: Map<string, string>,
   details: { name: string; tail: string; cost: number; reason: string }[],
   preComputedRoutes?: Map<string, PilotRoute[]>,
+  preComputedOffgoing?: Map<string, PilotRoute[]>,
 ): void {
   const needingTails = Object.keys(result).filter((tail) => !result[tail][field]);
   if (needingTails.length === 0 || pool.length === 0) return;
@@ -2061,6 +2088,7 @@ function assignRoleWithMatrix(
     crewRoster,
     tailAircraftType,
     preComputedRoutes,
+    preComputedOffgoing,
   });
 
   // Only consider viable options (where real transport exists)
@@ -2114,13 +2142,14 @@ function assignRoleWithMatrix(
       .map((v) => `${v.tail}(rank=${v.rank.toFixed(1)})`);
     const altStr = alternatives.length > 0 ? ` alt tails: ${alternatives.join(", ")}` : " (only viable tail)";
 
-    const reason = `${opt.bestType} $${Math.round(opt.bestCost)} score=${opt.bestScore} to ${swapIata} | proximity=${driveMi} rank=${opt.rank.toFixed(1)} (crew→${crewConstraint} tails, tail→${tailConstraint} crew)${constrainedTag}${altStr}`;
+    const offStr = opt.offgoingCost > 0 ? ` +$${Math.round(opt.offgoingCost)} offgoing` : "";
+    const reason = `${opt.bestType} $${Math.round(opt.bestCost)}${offStr} (total $${Math.round(opt.totalCost)}) score=${opt.bestScore} to ${swapIata} | proximity=${driveMi} rank=${opt.rank.toFixed(1)} (crew→${crewConstraint} tails, tail→${tailConstraint} crew)${constrainedTag}${altStr}`;
     console.log(`[Assignment] ${role} ${opt.crewName} → ${opt.tail} @ ${swapIata}: ${reason}`);
 
     details.push({
       name: opt.crewName,
       tail: opt.tail,
-      cost: Math.round(opt.bestCost),
+      cost: Math.round(opt.totalCost),
       reason,
     });
   }

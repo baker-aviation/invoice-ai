@@ -155,7 +155,7 @@ export async function POST(req: NextRequest) {
 
   // ── STEP 1: Load pre-computed routes from pilot_routes table ──────────────
   const routeStart = Date.now();
-  const { commercialFlights, routeCount, crewRouteMap } = await getRoutesForOptimizer(swapDate);
+  const { commercialFlights, routeCount, crewRouteMap, crewOffgoingMap } = await getRoutesForOptimizer(swapDate);
   const hasPreComputedRoutes = routeCount > 0;
 
   if (hasPreComputedRoutes) {
@@ -178,6 +178,7 @@ export async function POST(req: NextRequest) {
       aliases,
       commercialFlights: hasPreComputedRoutes ? commercialFlights : undefined,
       preComputedRoutes: hasPreComputedRoutes ? crewRouteMap : undefined,
+      preComputedOffgoing: hasPreComputedRoutes ? crewOffgoingMap : undefined,
     });
     swapAssignments = assignmentResult.assignments;
     console.log(`[Swap Optimizer] Assignment took ${((Date.now() - assignStart) / 1000).toFixed(1)}s`);
