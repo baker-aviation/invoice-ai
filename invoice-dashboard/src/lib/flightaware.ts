@@ -152,22 +152,26 @@ export async function getFlightsByRegistration(
   let flights = (data.flights ?? []) as FaFlight[];
   console.log(`[FA] ${primaryIdent}${dbCallsign ? ` (${registration})` : ""}: ${flights.length} flights`);
 
-  // Fallback: if N-number returned nothing (no DB callsign), try auto-derived KOW + digits
-  if (flights.length === 0 && !dbCallsign) {
-    const digits = registration.replace(/\D/g, "");
-    if (digits) {
-      const callsign = `KOW${digits}`;
-      console.log(`[FA] ${registration}: trying auto-derived callsign ${callsign}`);
-      const csUrl = `${BASE}/flights/${encodeURIComponent(callsign)}`;
+  // Fallback: try the other ident if primary returned nothing
+  if (flights.length === 0) {
+    // If we queried by callsign, try N-number (crew may have filed under registration)
+    // If we queried by N-number, try auto-derived KOW callsign
+    const fallbackIdent = dbCallsign ? registration : (() => {
+      const digits = registration.replace(/\D/g, "");
+      return digits ? `KOW${digits}` : null;
+    })();
+    if (fallbackIdent) {
+      console.log(`[FA] ${registration}: trying fallback ${fallbackIdent}`);
+      const fbUrl = `${BASE}/flights/${encodeURIComponent(fallbackIdent)}`;
       try {
-        const csRes = await fetch(csUrl, {
+        const fbRes = await fetch(fbUrl, {
           headers: headers(),
           signal: AbortSignal.timeout(10000),
         });
-        if (csRes.ok) {
-          const csData = await csRes.json();
-          flights = (csData.flights ?? []) as FaFlight[];
-          console.log(`[FA] ${callsign}: ${flights.length} flights (auto-derived for ${registration})`);
+        if (fbRes.ok) {
+          const fbData = await fbRes.json();
+          flights = (fbData.flights ?? []) as FaFlight[];
+          console.log(`[FA] ${fallbackIdent}: ${flights.length} flights (fallback for ${registration})`);
         }
       } catch { /* ignore fallback errors */ }
     }
