@@ -1642,7 +1642,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                                 {isFaSourced && (
                                   <span className="px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-blue-100 text-blue-700">FA</span>
                                 )}
-                                {!isCancelled && fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100 && (
+                                {!isCancelled && status === "En Route" && fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100 && (
                                   <div className="w-16 h-1.5 bg-gray-200 rounded-full overflow-hidden">
                                     <div className="h-full bg-blue-500 rounded-full" style={{ width: `${fi.progress_percent}%` }} />
                                   </div>
@@ -1970,7 +1970,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                             </>
                           ) : (f.arrival_icao || "?")}
                         </span>
-                        {!isCancelled && fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100 && (
+                        {!isCancelled && status === "En Route" && fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100 && (
                           <div className="mt-1 flex items-center gap-2">
                             <div className="w-20 h-1.5 bg-gray-200 rounded-full overflow-hidden">
                               <div
