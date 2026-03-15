@@ -558,12 +558,13 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
               }
             }
           }
-          // Also store by tail-only for fallback — prefer non-stale with position
-          const fiDepMs = fi.actual_departure ? new Date(fi.actual_departure).getTime() : null;
-          const fiArrMs = fi.actual_arrival ? new Date(fi.actual_arrival).getTime() : null;
-          const fiStale = (fiArrMs && (Date.now() - fiArrMs > 60 * 60_000))
-            || (fiDepMs && !fiArrMs && (Date.now() - fiDepMs > 4 * 3600_000));
-          if (!map.has(fi.tail) || (!fiStale && fi.latitude != null && fi.longitude != null)) {
+          // Also store by tail-only for fallback — prefer one with position that hasn't landed
+          const hasLanded = fi.actual_arrival != null;
+          const existingEntry = map.get(fi.tail);
+          const existingLanded = existingEntry?.actual_arrival != null;
+          if (!existingEntry
+            || (!hasLanded && fi.latitude != null && fi.longitude != null)
+            || (existingLanded && !hasLanded)) {
             map.set(fi.tail, fi);
           }
           // Also index by ident (callsign) so lookups work either way
@@ -574,14 +575,11 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
               map.set(fi.ident, fi);
             }
           }
-          // Synthesize map positions from en-route flights
-          // Skip stale positions: landed >1h ago, or departed >4h ago with no landing
-          const nowMs = Date.now();
+          // Synthesize map positions from en-route flights only
+          // Skip: flights that have landed, or ghost flights (departed >6h ago, no landing)
           const faDepMs = fi.actual_departure ? new Date(fi.actual_departure).getTime() : null;
-          const faArrMs = fi.actual_arrival ? new Date(fi.actual_arrival).getTime() : null;
-          const isStalePosition = (faArrMs && (nowMs - faArrMs > 60 * 60_000))
-            || (faDepMs && !faArrMs && (nowMs - faDepMs > 4 * 3600_000));
-          if (fi.latitude != null && fi.longitude != null && !isStalePosition) {
+          const isGhostFlight = faDepMs && !fi.actual_arrival && (Date.now() - faDepMs > 6 * 3600_000);
+          if (fi.latitude != null && fi.longitude != null && !hasLanded && !isGhostFlight) {
             positions.push({
               tail: fi.tail,
               lat: fi.latitude,
@@ -1692,7 +1690,11 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                                 {/* Progress bar fallback — SWIM or FA actual_departure + ETA */}
                                 {!isCancelled && status === "En Route" && !(fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100) && (() => {
                                   const depStr = (!swimStale ? swimRouteMatch?.etd : null) ?? fi?.actual_departure ?? fi?.departure_time ?? (!swimStale ? swimEntry?.actual_departure : null);
-                                  const arrStr = (!swimStale ? swimRouteMatch?.eta : null) ?? fi?.arrival_time ?? (!swimStale ? swimEntry?.eta : null);
+                                  let arrStr = (!swimStale ? swimRouteMatch?.eta : null) ?? fi?.arrival_time ?? (!swimStale ? swimEntry?.eta : null);
+                                  if (!arrStr && f.scheduled_arrival && f.scheduled_departure && depStr) {
+                                    const delayMs = new Date(depStr).getTime() - new Date(f.scheduled_departure).getTime();
+                                    arrStr = new Date(new Date(f.scheduled_arrival).getTime() + delayMs).toISOString();
+                                  }
                                   if (!depStr || !arrStr) return null;
                                   const dep = new Date(depStr).getTime();
                                   const arr = new Date(arrStr).getTime();
@@ -2038,7 +2040,12 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                         {/* Progress bar fallback — SWIM or FA actual_departure + ETA */}
                         {!isCancelled && status === "En Route" && !(fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100) && (() => {
                           const depStr = (!swimStale ? swimRouteMatch?.etd : null) ?? fi?.actual_departure ?? fi?.departure_time ?? (!swimStale ? swimEntry?.actual_departure : null);
-                          const arrStr = (!swimStale ? swimRouteMatch?.eta : null) ?? fi?.arrival_time ?? (!swimStale ? swimEntry?.eta : null);
+                          // Fall back to scheduled arrival shifted by departure delay
+                          let arrStr = (!swimStale ? swimRouteMatch?.eta : null) ?? fi?.arrival_time ?? (!swimStale ? swimEntry?.eta : null);
+                          if (!arrStr && f.scheduled_arrival && f.scheduled_departure && depStr) {
+                            const delayMs = new Date(depStr).getTime() - new Date(f.scheduled_departure).getTime();
+                            arrStr = new Date(new Date(f.scheduled_arrival).getTime() + delayMs).toISOString();
+                          }
                           if (!depStr || !arrStr) return null;
                           const dep = new Date(depStr).getTime();
                           const arr = new Date(arrStr).getTime();
