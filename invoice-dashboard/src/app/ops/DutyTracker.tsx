@@ -517,6 +517,23 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
         }
         deduped.push(leg);
       }
+      // Fix overlapping legs: if a leg departs before the previous leg arrives
+      // (common when JetInsight + FA both set connecting legs to the same departure),
+      // push the later leg's departure to the previous leg's arrival.
+      deduped.sort((a, b) => a.startMs - b.startMs);
+      for (let i = 1; i < deduped.length; i++) {
+        const prev = deduped[i - 1];
+        if (deduped[i].startMs < prev.endMs) {
+          deduped[i].startMs = prev.endMs;
+          deduped[i].depIso = new Date(prev.endMs).toISOString();
+          // Preserve FA arrival estimate but recalculate duration
+          deduped[i].durationMin = Math.max(0, (deduped[i].endMs - deduped[i].startMs) / 60_000);
+          if (deduped[i].durationMin > MAX_LEG_DURATION_MIN) {
+            deduped[i].durationMin = MAX_LEG_DURATION_MIN;
+            deduped[i].endMs = deduped[i].startMs + MAX_LEG_DURATION_MIN * 60_000;
+          }
+        }
+      }
       result.set(tail, deduped);
     }
     return result;

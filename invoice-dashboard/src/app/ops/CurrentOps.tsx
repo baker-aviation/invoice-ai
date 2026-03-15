@@ -241,6 +241,15 @@ function computeTailDuty(
       }
       deduped.push(leg);
     }
+    // Fix overlapping legs: push later leg's departure to previous leg's arrival
+    deduped.sort((a, b) => a.startMs - b.startMs);
+    for (let i = 1; i < deduped.length; i++) {
+      if (deduped[i].startMs < deduped[i - 1].endMs) {
+        deduped[i].startMs = deduped[i - 1].endMs;
+        const newDur = Math.max(0, (deduped[i].endMs - deduped[i].startMs) / 60_000);
+        deduped[i].endMs = deduped[i].startMs + Math.min(newDur, MAX_LEG_DURATION_MIN) * 60_000;
+      }
+    }
     const finalIntervals = deduped;
 
     // --- Rolling 24hr flight time (Part 135.267: ANY 24 consecutive hours) ---
@@ -549,8 +558,12 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
               }
             }
           }
-          // Also store by tail-only for fallback — prefer one with position
-          if (!map.has(fi.tail) || (fi.latitude != null && fi.longitude != null)) {
+          // Also store by tail-only for fallback — prefer non-stale with position
+          const fiDepMs = fi.actual_departure ? new Date(fi.actual_departure).getTime() : null;
+          const fiArrMs = fi.actual_arrival ? new Date(fi.actual_arrival).getTime() : null;
+          const fiStale = (fiArrMs && (Date.now() - fiArrMs > 60 * 60_000))
+            || (fiDepMs && !fiArrMs && (Date.now() - fiDepMs > 4 * 3600_000));
+          if (!map.has(fi.tail) || (!fiStale && fi.latitude != null && fi.longitude != null)) {
             map.set(fi.tail, fi);
           }
           // Also index by ident (callsign) so lookups work either way
@@ -562,9 +575,12 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
             }
           }
           // Synthesize map positions from en-route flights
-          // Skip positions from stale flights (departed >4h ago with no landing = ghost)
+          // Skip stale positions: landed >1h ago, or departed >4h ago with no landing
+          const nowMs = Date.now();
           const faDepMs = fi.actual_departure ? new Date(fi.actual_departure).getTime() : null;
-          const isStalePosition = faDepMs && !fi.actual_arrival && (Date.now() - faDepMs > 4 * 3600_000);
+          const faArrMs = fi.actual_arrival ? new Date(fi.actual_arrival).getTime() : null;
+          const isStalePosition = (faArrMs && (nowMs - faArrMs > 60 * 60_000))
+            || (faDepMs && !faArrMs && (nowMs - faDepMs > 4 * 3600_000));
           if (fi.latitude != null && fi.longitude != null && !isStalePosition) {
             positions.push({
               tail: fi.tail,
@@ -2088,7 +2104,17 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           <div className="text-[10px] text-blue-600 font-medium mt-0.5">
                             ETA: {fmt(swimRouteMatch.eta, f.arrival_icao)}
                           </div>
-                        ) : (() => {
+                        ) : !isCancelled && status === "En Route" && f.scheduled_arrival && f.scheduled_departure ? (() => {
+                          // Fallback ETA: scheduled arrival shifted by actual departure delay
+                          const actualDep = fi?.actual_departure ?? (!swimStale ? swimEntry?.actual_departure : null);
+                          const delayMs = actualDep ? new Date(actualDep).getTime() - new Date(f.scheduled_departure).getTime() : 0;
+                          const fallbackEta = new Date(new Date(f.scheduled_arrival).getTime() + delayMs).toISOString();
+                          return (
+                            <div className="text-[10px] text-blue-600 font-medium mt-0.5">
+                              ETA: {fmt(fallbackEta, f.arrival_icao)}
+                            </div>
+                          );
+                        })() : (() => {
                           const edctAlert = getActiveEdct(f);
                           if (!edctAlert || !f.scheduled_arrival || isCancelled) return null;
                           const deltaMs = new Date(edctAlert.edct_time!).getTime() - new Date(f.scheduled_departure).getTime();
