@@ -23,6 +23,7 @@ export type PilotRoute = {
   crew_member_id: string;
   swap_date: string;
   destination_icao: string;
+  direction: "oncoming" | "offgoing";
   route_type: string;
   origin_iata: string;
   via_commercial: string | null;
@@ -95,9 +96,13 @@ function findAllCommercialAirports(fboIcao: string, aliases: AirportAlias[]): st
 type PriceMap = Map<string, Map<string, number>>; // "ORIG-DEST" → flightNumber → price
 
 /**
- * Compute all routes for a single crew member to a set of destination airports.
- * Uses pre-fetched FlightAware schedule data + HasData real pricing.
- * Stores results in `pilot_routes` table.
+ * Compute routes for a single crew member.
+ *
+ * direction='oncoming': home_airport → [flight] → commercial_near_FBO → [ground] → FBO
+ * direction='offgoing': FBO → [ground] → commercial_near_FBO → [flight] → home_airport
+ *
+ * In both cases, destination_icao = FBO, origin_iata = crew home airport.
+ * The `direction` column tells which way the travel goes.
  */
 export function computePilotRoutes(params: {
   crewMemberId: string;
@@ -107,8 +112,9 @@ export function computePilotRoutes(params: {
   aliases: AirportAlias[];
   scheduledFlights: Map<string, ScheduledFlight[]>;
   priceMap: PriceMap;
+  direction: "oncoming" | "offgoing";
 }): Array<Record<string, unknown>> {
-  const { crewMemberId, homeAirports, swapDate, destinations, aliases, scheduledFlights, priceMap } = params;
+  const { crewMemberId, homeAirports, swapDate, destinations, aliases, scheduledFlights, priceMap, direction } = params;
   const routeRows: Array<Record<string, unknown>> = [];
 
   for (const destIcao of destinations) {
@@ -119,7 +125,7 @@ export function computePilotRoutes(params: {
       const homeIata = toIata(homeApt);
       const homeIcao = toIcao(homeApt);
 
-      // ── Ground transport (home → FBO) ────────────────────────────────
+      // ── Ground transport (same distance either direction) ─────────────
       const drive = estimateDriveTime(homeIcao, destIcao);
       if (drive && drive.estimated_drive_minutes <= 300) {
         const driveMin = drive.estimated_drive_minutes;
@@ -138,6 +144,7 @@ export function computePilotRoutes(params: {
           crew_member_id: crewMemberId,
           swap_date: swapDate,
           destination_icao: destIcao,
+          direction,
           route_type: routeType,
           origin_iata: homeIata,
           via_commercial: null,
@@ -158,17 +165,41 @@ export function computePilotRoutes(params: {
       }
 
       // ── Commercial flights from pre-fetched FlightAware schedules ────
-      const homeFlights = scheduledFlights.get(homeIcao) ?? scheduledFlights.get(homeIata) ?? [];
+      // Oncoming: flights FROM home TO commercial near FBO
+      //   scheduledFlights keyed by home airport, filter dest → commIataSet
+      // Offgoing: flights FROM commercial near FBO TO home
+      //   scheduledFlights keyed by FBO-adjacent commercial airport, filter dest → homeIata
 
-      const matchingFlights = homeFlights.filter((f) => {
-        if (f.destination_iata === homeIata) return false;
-        return commIataSet.has(f.destination_iata) || commIataSet.has(toIata(f.destination_icao));
-      });
+      let matchingFlights: ScheduledFlight[];
+
+      if (direction === "oncoming") {
+        const homeFlights = scheduledFlights.get(homeIcao) ?? scheduledFlights.get(homeIata) ?? [];
+        matchingFlights = homeFlights.filter((f) => {
+          if (f.destination_iata === homeIata) return false;
+          return commIataSet.has(f.destination_iata) || commIataSet.has(toIata(f.destination_icao));
+        });
+      } else {
+        // Offgoing: look up flights from each commercial airport near this FBO
+        matchingFlights = [];
+        for (const commApt of commAirports) {
+          const commIcao = commApt;
+          const commIata = toIata(commApt);
+          const fboFlights = scheduledFlights.get(commIcao) ?? scheduledFlights.get(commIata) ?? [];
+          // Filter to flights landing at/near crew's home airport
+          const homeMatches = fboFlights.filter((f) => {
+            const fDestIata = f.destination_iata;
+            return fDestIata === homeIata || toIata(f.destination_icao) === homeIata;
+          });
+          matchingFlights.push(...homeMatches);
+        }
+      }
 
       for (const f of matchingFlights) {
-        const commIata = f.destination_iata;
+        // For oncoming: commercial airport = flight destination (near FBO)
+        // For offgoing: commercial airport = flight origin (near FBO)
+        const commIata = direction === "oncoming" ? f.destination_iata : f.origin_iata;
 
-        // Drive from commercial airport to FBO
+        // Ground leg between commercial airport and FBO
         const driveToFbo = estimateDriveTime(toIcao(commIata), destIcao);
         const driveToFboMin = driveToFbo?.estimated_drive_minutes ?? 0;
         let groundCost = 0;
@@ -178,25 +209,22 @@ export function computePilotRoutes(params: {
           groundCost = 80 + Math.round((driveToFbo?.estimated_drive_miles ?? 0) * 0.50);
         }
 
-        // Look up real HasData price for this route pair, then by flight number
-        const pairKey = `${homeIata}-${commIata}`;
+        // HasData price lookup — key is always origin-destination of the FLIGHT
+        const pairKey = `${f.origin_iata}-${f.destination_iata}`;
         const pairPrices = priceMap.get(pairKey);
         let flightPrice: number;
         let priceSource: string;
 
         if (pairPrices) {
-          // Try exact flight number match first, then cheapest on the route
           const exactPrice = pairPrices.get(f.flight_number);
           if (exactPrice !== undefined) {
             flightPrice = exactPrice;
             priceSource = "hasdata_exact";
           } else {
-            // Use cheapest price on this O→D pair as proxy
             flightPrice = Math.min(...pairPrices.values());
             priceSource = "hasdata_route";
           }
         } else {
-          // Fallback estimate when HasData didn't cover this pair
           const budgetCarriers = new Set(["F9", "NK", "G4", "WN", "B6"]);
           const priceMult = budgetCarriers.has(f.airline_iata) ? 0.7 : 1.0;
           flightPrice = Math.min(Math.round((50 + f.duration_minutes * 1.5) * priceMult), 500);
@@ -205,7 +233,6 @@ export function computePilotRoutes(params: {
 
         const totalCost = flightPrice + groundCost;
 
-        // Build FlightOffer-compatible object for storage
         const offer: FlightOffer = {
           id: f.flight_number,
           price: { total: String(flightPrice), currency: "USD" },
@@ -213,7 +240,7 @@ export function computePilotRoutes(params: {
             duration: `PT${Math.floor(f.duration_minutes / 60)}H${f.duration_minutes % 60}M`,
             segments: [{
               departure: { iataCode: f.origin_iata, at: f.scheduled_departure },
-              arrival: { iataCode: commIata, at: f.scheduled_arrival },
+              arrival: { iataCode: f.destination_iata, at: f.scheduled_arrival },
               carrierCode: f.airline_iata,
               number: f.flight_number.replace(/^[A-Z]{1,3}/, ""),
               duration: `PT${Math.floor(f.duration_minutes / 60)}H${f.duration_minutes % 60}M`,
@@ -223,22 +250,36 @@ export function computePilotRoutes(params: {
           numberOfBookableSeats: 9,
         };
 
-        const fboArrMs = new Date(f.scheduled_arrival).getTime() + (30 + driveToFboMin) * 60_000;
-        const fboArrAt = new Date(fboArrMs).toISOString();
-        const dutyOnMs = new Date(f.scheduled_departure).getTime() - 60 * 60_000;
-        const dutyOnAt = new Date(dutyOnMs).toISOString();
+        // Timing depends on direction
+        let fboArrAt: string | null = null;
+        let dutyOnAt: string | null = null;
 
-        // Score: real-priced routes score higher than estimated
+        if (direction === "oncoming") {
+          // Oncoming: FBO arrival = flight landing + deplane + ground transfer
+          const fboArrMs = new Date(f.scheduled_arrival).getTime() + (30 + driveToFboMin) * 60_000;
+          fboArrAt = new Date(fboArrMs).toISOString();
+          // Duty-on: 60min before flight departure
+          const dutyOnMs = new Date(f.scheduled_departure).getTime() - 60 * 60_000;
+          dutyOnAt = new Date(dutyOnMs).toISOString();
+        } else {
+          // Offgoing: they leave the FBO, drive to commercial, fly home
+          // FBO departure = flight departure - ground transfer - check-in (90min)
+          const fboLeaveMs = new Date(f.scheduled_departure).getTime() - (90 + driveToFboMin) * 60_000;
+          fboArrAt = new Date(fboLeaveMs).toISOString(); // repurpose as "FBO leave time"
+          dutyOnAt = null; // offgoing crew are off duty
+        }
+
         let score = 50;
         if (totalCost <= 100) score += 20;
         else if (totalCost <= 300) score += 10;
-        score += 12; // direct flight bonus
-        if (priceSource.startsWith("hasdata")) score += 5; // real price confidence bonus
+        score += 12;
+        if (priceSource.startsWith("hasdata")) score += 5;
 
         routeRows.push({
           crew_member_id: crewMemberId,
           swap_date: swapDate,
           destination_icao: destIcao,
+          direction,
           route_type: "commercial",
           origin_iata: homeIata,
           via_commercial: commIata,
@@ -370,14 +411,30 @@ export async function computeAllRoutes(swapDate: string): Promise<{
   console.log(`[PilotRoutes] ${crewData.length} crew, ${destinations.length} destinations, ${allHomeAirports.size} unique home airports`);
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // PHASE 1: FlightAware — discover all flights from home airports
+  // PHASE 1: FlightAware — discover flights from home airports (oncoming)
+  //          AND from FBO-adjacent commercial airports (offgoing)
   // ═══════════════════════════════════════════════════════════════════════════
+
+  // Build set of commercial airports near each FBO destination
+  const destCommAirports = new Map<string, Set<string>>(); // destIcao → Set<commIcao>
+  const allFboCommAirports = new Set<string>(); // all unique commercial airports near FBOs
+  for (const destIcao of destinations) {
+    const comms = findAllCommercialAirports(destIcao, aliases);
+    destCommAirports.set(destIcao, new Set(comms.map((c) => toIata(c))));
+    for (const c of comms) allFboCommAirports.add(c.toUpperCase());
+  }
+
+  // Combine: fetch from home airports + FBO-adjacent commercial airports
+  const allFetchAirports = new Set([...allHomeAirports, ...allFboCommAirports]);
+
   let scheduledFlights = new Map<string, ScheduledFlight[]>();
   let flightAwareCalls = 0;
   let totalScheduledFlights = 0;
 
+  console.log(`[PilotRoutes] Phase 1: fetching from ${allHomeAirports.size} home + ${allFboCommAirports.size} FBO-adjacent airports (${allFetchAirports.size} unique)`);
+
   try {
-    const faResult = await fetchAllCrewSchedules([...allHomeAirports], swapDate);
+    const faResult = await fetchAllCrewSchedules([...allFetchAirports], swapDate);
     scheduledFlights = faResult.flightsByOrigin;
     flightAwareCalls = faResult.apiCalls;
     totalScheduledFlights = faResult.totalFlights;
@@ -390,40 +447,39 @@ export async function computeAllRoutes(swapDate: string): Promise<{
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // PHASE 2: Determine unique O→D pairs that have FlightAware matches,
+  // PHASE 2: Find unique O→D pairs from FlightAware (both directions),
   //          then batch HasData to get real Google Flights prices
   // ═══════════════════════════════════════════════════════════════════════════
-  // Build set of commercial airports near each FBO destination
-  const destCommAirports = new Map<string, Set<string>>(); // destIcao → Set<commIata>
-  for (const destIcao of destinations) {
-    const comms = findAllCommercialAirports(destIcao, aliases);
-    destCommAirports.set(destIcao, new Set(comms.map((c) => toIata(c))));
+
+  const viableOdPairs = new Set<string>(); // "ORIG_IATA-DEST_IATA"
+  const homeIataSet = new Set([...allHomeAirports].map((a) => toIata(a)));
+  const fboCommIataSet = new Set<string>();
+  for (const commSet of destCommAirports.values()) {
+    for (const c of commSet) fboCommIataSet.add(c);
   }
 
-  // Scan FlightAware results to find which O→D pairs actually have flights
-  const viableOdPairs = new Set<string>(); // "ORIG_IATA-DEST_IATA"
-  for (const [_airport, flights] of scheduledFlights) {
+  for (const [, flights] of scheduledFlights) {
     for (const f of flights) {
-      const originIata = f.origin_iata;
+      const origIata = f.origin_iata;
       const destIata = f.destination_iata;
-      // Check if this flight's destination is near any of our FBO destinations
-      for (const [, commSet] of destCommAirports) {
-        if (commSet.has(destIata) || commSet.has(toIata(f.destination_icao))) {
-          viableOdPairs.add(`${originIata}-${destIata}`);
-          break;
-        }
+
+      // Oncoming: home → commercial near FBO
+      if (homeIataSet.has(origIata) && (fboCommIataSet.has(destIata) || fboCommIataSet.has(toIata(f.destination_icao)))) {
+        viableOdPairs.add(`${origIata}-${destIata}`);
+      }
+      // Offgoing: commercial near FBO → home
+      if ((fboCommIataSet.has(origIata) || fboCommIataSet.has(toIata(f.origin_icao))) && homeIataSet.has(destIata)) {
+        viableOdPairs.add(`${origIata}-${destIata}`);
       }
     }
   }
 
-  console.log(`[PilotRoutes] Phase 2: ${viableOdPairs.size} unique O→D pairs to price via HasData`);
+  console.log(`[PilotRoutes] Phase 2: ${viableOdPairs.size} unique O→D pairs to price via HasData (oncoming + offgoing)`);
 
-  // Fetch real prices from HasData for each unique O→D pair
   const priceMap: PriceMap = new Map();
   let hasDataCalls = 0;
   const odPairList = [...viableOdPairs];
 
-  // Process HasData in batches of 3 (respecting rate limits)
   for (let i = 0; i < odPairList.length; i += 3) {
     const batch = odPairList.slice(i, i + 3);
     const results = await Promise.all(
@@ -436,27 +492,12 @@ export async function computeAllRoutes(swapDate: string): Promise<{
 
           for (const offer of result.offers) {
             const segs = offer.itineraries[0]?.segments ?? [];
-            if (segs.length === 0) continue;
-            // Build flight number key: "AA1234" or "AA1234/AA5678" for connections
+            if (segs.length === 0 || segs.length > 2) continue;
             const flightNum = segs.map((s) => `${s.carrierCode}${s.number}`).join("/");
             const price = parseFloat(offer.price.total);
             if (!isNaN(price)) {
-              // Keep cheapest price per flight number
               const existing = flightPrices.get(flightNum);
               if (existing === undefined || price < existing) {
-                flightPrices.set(flightNum, price);
-              }
-            }
-          }
-
-          // Also store connection flights from HasData that FA might not have
-          // (HasData returns connections, FlightAware only returns nonstops)
-          for (const offer of result.offers) {
-            const segs = offer.itineraries[0]?.segments ?? [];
-            if (segs.length > 1 && segs.length <= 2) {
-              const flightNum = segs.map((s) => `${s.carrierCode}${s.number}`).join("/");
-              const price = parseFloat(offer.price.total);
-              if (!isNaN(price)) {
                 flightPrices.set(flightNum, price);
               }
             }
@@ -476,12 +517,10 @@ export async function computeAllRoutes(swapDate: string): Promise<{
       }
     }
 
-    // HasData rate limit pause
     if (i + 3 < odPairList.length) {
       await new Promise((r) => setTimeout(r, 500));
     }
 
-    // Progress log every 30 pairs
     if ((i + 3) % 30 === 0 && i + 3 < odPairList.length) {
       console.log(`[PilotRoutes] HasData pricing: ${i + 3}/${odPairList.length} pairs done`);
     }
@@ -491,6 +530,7 @@ export async function computeAllRoutes(swapDate: string): Promise<{
 
   // ═══════════════════════════════════════════════════════════════════════════
   // PHASE 3: Match flights to crew × destinations locally, store routes
+  //          (both oncoming and offgoing)
   // ═══════════════════════════════════════════════════════════════════════════
   const crewWithDifficulty = crewData.map((c) => ({
     ...c,
@@ -501,7 +541,6 @@ export async function computeAllRoutes(swapDate: string): Promise<{
   let totalRoutes = 0;
   let crewProcessed = 0;
 
-  // Process in batches of 10 (all local, no API calls)
   for (let i = 0; i < crewWithDifficulty.length; i += 10) {
     const batch = crewWithDifficulty.slice(i, i + 10);
     const allRows: Array<Record<string, unknown>> = [];
@@ -513,7 +552,8 @@ export async function computeAllRoutes(swapDate: string): Promise<{
         continue;
       }
       try {
-        const rows = computePilotRoutes({
+        // Oncoming routes: home → FBO
+        const oncoming = computePilotRoutes({
           crewMemberId: crew.id as string,
           homeAirports,
           swapDate,
@@ -521,8 +561,22 @@ export async function computeAllRoutes(swapDate: string): Promise<{
           aliases,
           scheduledFlights,
           priceMap,
+          direction: "oncoming",
         });
-        allRows.push(...rows);
+        allRows.push(...oncoming);
+
+        // Offgoing routes: FBO → home
+        const offgoing = computePilotRoutes({
+          crewMemberId: crew.id as string,
+          homeAirports,
+          swapDate,
+          destinations,
+          aliases,
+          scheduledFlights,
+          priceMap,
+          direction: "offgoing",
+        });
+        allRows.push(...offgoing);
       } catch (e) {
         errors.push(`${crew.name}: ${e instanceof Error ? e.message : "unknown error"}`);
       }
@@ -530,9 +584,7 @@ export async function computeAllRoutes(swapDate: string): Promise<{
 
     crewProcessed += batch.length;
 
-    // Batch insert all rows for this batch of crew
     if (allRows.length > 0) {
-      // Delete existing routes for these crew members
       const crewIds = batch.map((c) => c.id as string);
       await supa
         .from("pilot_routes")
@@ -556,7 +608,7 @@ export async function computeAllRoutes(swapDate: string): Promise<{
     }
   }
 
-  console.log(`[PilotRoutes] Done: ${crewProcessed} crew, ${totalRoutes} routes, ${flightAwareCalls} FA + ${hasDataCalls} HD calls, ${errors.length} errors`);
+  console.log(`[PilotRoutes] Done: ${crewProcessed} crew, ${totalRoutes} routes (oncoming+offgoing), ${flightAwareCalls} FA + ${hasDataCalls} HD calls, ${errors.length} errors`);
   return { crewProcessed, totalRoutes, flightAwareCalls, hasDataCalls, totalScheduledFlights, pricedPairs: priceMap.size, errors };
 }
 
@@ -572,7 +624,8 @@ export async function computeAllRoutes(swapDate: string): Promise<{
 export async function getRoutesForOptimizer(swapDate: string): Promise<{
   commercialFlights: Map<string, FlightOffer[]>;
   routeCount: number;
-  crewRouteMap: Map<string, PilotRoute[]>;  // crewMemberId → routes
+  crewRouteMap: Map<string, PilotRoute[]>;  // crewMemberId → oncoming routes
+  crewOffgoingMap: Map<string, PilotRoute[]>;  // crewMemberId → offgoing routes
 }> {
   const supa = createServiceClient();
 
@@ -584,20 +637,29 @@ export async function getRoutesForOptimizer(swapDate: string): Promise<{
 
   if (error || !data) {
     console.error("[PilotRoutes] Failed to load routes:", error?.message);
-    return { commercialFlights: new Map(), routeCount: 0, crewRouteMap: new Map() };
+    return { commercialFlights: new Map(), routeCount: 0, crewRouteMap: new Map(), crewOffgoingMap: new Map() };
   }
 
   const commercialFlights = new Map<string, FlightOffer[]>();
   const crewRouteMap = new Map<string, PilotRoute[]>();
+  const crewOffgoingMap = new Map<string, PilotRoute[]>();
 
   for (const row of data) {
-    // Build crew route map
     const crewId = row.crew_member_id as string;
-    if (!crewRouteMap.has(crewId)) crewRouteMap.set(crewId, []);
-    crewRouteMap.get(crewId)!.push(row as unknown as PilotRoute);
+    const direction = (row.direction as string) ?? "oncoming";
+    const route = row as unknown as PilotRoute;
 
-    // Build commercial flights map (only for flight routes with flight_data)
-    if (row.route_type === "commercial" && row.flight_data && row.via_commercial) {
+    // Split into oncoming vs offgoing maps
+    if (direction === "offgoing") {
+      if (!crewOffgoingMap.has(crewId)) crewOffgoingMap.set(crewId, []);
+      crewOffgoingMap.get(crewId)!.push(route);
+    } else {
+      if (!crewRouteMap.has(crewId)) crewRouteMap.set(crewId, []);
+      crewRouteMap.get(crewId)!.push(route);
+    }
+
+    // Build commercial flights map (oncoming routes only — what optimizer uses for assignment)
+    if (direction === "oncoming" && row.route_type === "commercial" && row.flight_data && row.via_commercial) {
       const originIata = row.origin_iata as string;
       const destIata = row.via_commercial as string;
       const key = `${originIata}-${destIata}-${swapDate}`;
@@ -607,7 +669,6 @@ export async function getRoutesForOptimizer(swapDate: string): Promise<{
       }
 
       const offer = row.flight_data as unknown as FlightOffer;
-      // Deduplicate by flight number
       const existing = commercialFlights.get(key)!;
       const flightNum = row.flight_number as string;
       if (!existing.some((o) => {
@@ -620,8 +681,10 @@ export async function getRoutesForOptimizer(swapDate: string): Promise<{
     }
   }
 
-  console.log(`[PilotRoutes] Loaded ${data.length} routes for ${swapDate}: ${commercialFlights.size} flight keys, ${crewRouteMap.size} crew members`);
-  return { commercialFlights, routeCount: data.length, crewRouteMap };
+  const oncomingCount = [...crewRouteMap.values()].reduce((s, r) => s + r.length, 0);
+  const offgoingCount = [...crewOffgoingMap.values()].reduce((s, r) => s + r.length, 0);
+  console.log(`[PilotRoutes] Loaded ${data.length} routes for ${swapDate}: ${oncomingCount} oncoming, ${offgoingCount} offgoing, ${crewRouteMap.size} crew`);
+  return { commercialFlights, routeCount: data.length, crewRouteMap, crewOffgoingMap };
 }
 
 // ─── Route status ───────────────────────────────────────────────────────────
