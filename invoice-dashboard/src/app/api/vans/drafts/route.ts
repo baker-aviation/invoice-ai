@@ -53,7 +53,7 @@ export async function POST(req: NextRequest) {
       removals: removals ?? [],
       unscheduled: unscheduled ?? [],
       leg_notes: leg_notes ?? {},
-      updated_by: auth.user.id,
+      updated_by: auth.userId,
       updated_at: new Date().toISOString(),
     }, { onConflict: "date" });
 
