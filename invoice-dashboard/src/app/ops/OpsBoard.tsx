@@ -613,7 +613,7 @@ function ClientAlertCard({ alert, onDismiss, dismissed, dismissedByName }: { ale
         <div className="ml-auto shrink-0">
           {dismissed ? (
             <span className="text-xs text-gray-400 bg-gray-100 rounded px-1.5 py-0.5">
-              Dismissed{dismissedByName ? ` by ${dismissedByName}` : ""}
+              Ack'd{dismissedByName ? ` by ${dismissedByName}` : ""}
             </span>
           ) : (
             <button
