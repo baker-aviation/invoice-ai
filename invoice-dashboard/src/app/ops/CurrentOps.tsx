@@ -846,10 +846,10 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
         map.set(f.id, "arrived");
       } else if (fiRouteMatch && (fi?.actual_arrival || fi?.status?.includes("Arrived") || fi?.status?.includes("Landed"))) {
         map.set(f.id, "arrived");
-      } else if (fiRouteMatch && fi?.status?.includes("En Route")) {
-        map.set(f.id, "enroute");
       } else if (arrivalPassed) {
         map.set(f.id, "arrived");
+      } else if (fiRouteMatch && fi?.status?.includes("En Route")) {
+        map.set(f.id, "enroute");
       } else if (!fiRouteMatch && !swimRouteStale && swimRoute?.status === "En Route") {
         map.set(f.id, "enroute"); // SWIM fallback only when FA has no route match
       } else if (!fiRouteMatch && !swimEntryStale && swim?.status === "Arrived") {
@@ -1545,19 +1545,15 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           const swimRouteStale = isSwimStale(swimRouteMatch, f.scheduled_departure);
                           const swimEntryStale = isSwimStale(swimEntry, f.scheduled_departure);
                           const fiRouteMatch = fi && fi.destination_icao === f.arrival_icao;
-                          // DEBUG: trace status determination for completed-looking flights
-                          if (arrivalPassed && f.tail_number) {
-                            console.log(`[STATUS DEBUG] ${f.tail_number} ${f.departure_icao}→${f.arrival_icao}: fi=${!!fi} fiRouteMatch=${fiRouteMatch} fi.dest=${fi?.destination_icao} fi.status=${fi?.status} fi.actual_arrival=${fi?.actual_arrival} arrivalPassed=${arrivalPassed} sched_arr=${f.scheduled_arrival} swimRoute=${swimRouteMatch?.status} swimEntry=${swimEntry?.status}`);
-                          }
-                          // FA is primary source; SWIM is fallback only when FA has no route match
+                          // FA primary, but arrivalPassed always wins over any "En Route"
                           if (fiRouteMatch && (fi?.actual_arrival || fi?.status?.includes("Arrived") || fi?.status?.includes("Landed"))) {
+                            status = "Arrived"; statusColor = "text-green-600 font-medium";
+                          } else if (arrivalPassed) {
                             status = "Arrived"; statusColor = "text-green-600 font-medium";
                           } else if (fiRouteMatch && fi?.status?.includes("En Route")) {
                             status = "En Route"; statusColor = "text-blue-600 font-medium";
                           } else if (fiRouteMatch && fi?.status === "Filed") {
                             isFiled = true; statusColor = "text-indigo-600 font-medium";
-                          } else if (arrivalPassed) {
-                            status = "Arrived"; statusColor = "text-green-600 font-medium";
                           } else if (!fiRouteMatch && !swimRouteStale && swimRouteMatch?.status === "En Route") {
                             status = "En Route"; statusColor = "text-blue-600 font-medium";
                           } else if (!fiRouteMatch && !swimEntryStale && swimEntry?.status === "Arrived") {
@@ -1868,12 +1864,12 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                 const fiRouteMatch = fi && fi.destination_icao === f.arrival_icao;
                 if (fiRouteMatch && (fi?.actual_arrival || fi?.status?.includes("Arrived") || fi?.status?.includes("Landed"))) {
                   status = "Arrived"; statusColor = "text-green-600 font-medium";
+                } else if (arrivalPassed) {
+                  status = "Arrived"; statusColor = "text-green-600 font-medium";
                 } else if (fiRouteMatch && fi?.status?.includes("En Route")) {
                   status = "En Route"; statusColor = "text-blue-600 font-medium";
                 } else if (fiRouteMatch && fi?.status === "Filed") {
                   status = fi.status; isFiled = true; statusColor = "text-indigo-600 font-medium";
-                } else if (arrivalPassed) {
-                  status = "Arrived"; statusColor = "text-green-600 font-medium";
                 } else if (!fiRouteMatch && !swimRouteStale && swimRouteMatch?.status === "En Route") {
                   status = "En Route"; statusColor = "text-blue-600 font-medium";
                 } else if (!fiRouteMatch && !swimEntryStale && swimEntry?.status === "Arrived") {
