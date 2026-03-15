@@ -445,7 +445,7 @@ function EdctRow({ alert, flight, onDismiss, fmtTime }: {
 
 // ─── Alert inline card (server-side NOTAM/EDCT alerts) ──────────────────────
 
-function AlertCard({ alert, onAck, acked }: { alert: OpsAlert; onAck: (id: string) => void; acked?: boolean }) {
+function AlertCard({ alert, onAck, acked, ackedByName }: { alert: OpsAlert; onAck: (id: string) => void; acked?: boolean; ackedByName?: string | null }) {
   const [expanded, setExpanded] = useState(false);
   const [acking, setAcking] = useState(false);
 
@@ -506,7 +506,9 @@ function AlertCard({ alert, onAck, acked }: { alert: OpsAlert; onAck: (id: strin
         )}
         <div className="ml-auto flex items-center gap-1.5 shrink-0">
           {acked ? (
-            <span className="text-xs text-gray-400 bg-gray-100 rounded px-1.5 py-0.5">Ack'd</span>
+            <span className="text-xs text-gray-400 bg-gray-100 rounded px-1.5 py-0.5">
+              Ack'd{ackedByName ? ` by ${ackedByName}` : ""}
+            </span>
           ) : (
             <button
               type="button"
@@ -622,7 +624,7 @@ function ClientAlertCard({ alert, onDismiss }: { alert: ClientAlert; onDismiss: 
 // ─── Flight card ──────────────────────────────────────────────────────────────
 
 function FlightCard({
-  flight, isAcked, showAcknowledged, onAck, clientAlerts, dismissedClientAlerts, onDismissClient,
+  flight, isAcked, showAcknowledged, onAck, clientAlerts, dismissedClientAlerts, onDismissClient, userMap,
 }: {
   flight: Flight;
   isAcked: (a: OpsAlert) => boolean;
@@ -631,6 +633,7 @@ function FlightCard({
   clientAlerts: ClientAlert[];
   dismissedClientAlerts: Set<string>;
   onDismissClient: (key: string) => void;
+  userMap: Map<string, string>;
 }) {
   const visibleAlerts = (flight.alerts ?? []).filter((a) => showAcknowledged || !isAcked(a));
   const alerts = visibleAlerts;
@@ -710,7 +713,7 @@ function FlightCard({
       {/* Alerts (server + client) */}
       {totalAlertCount > 0 && (
         <div className="px-3 pb-3 space-y-1.5">
-          {alerts.map((a) => <AlertCard key={a.id} alert={a} onAck={onAck} acked={isAcked(a)} />)}
+          {alerts.map((a) => <AlertCard key={a.id} alert={a} onAck={onAck} acked={isAcked(a)} ackedByName={showAcknowledged && a.acknowledged_by ? userMap.get(a.acknowledged_by) ?? null : null} />)}
           {activeClientAlerts.map((ca) => (
             <ClientAlertCard key={ca.key} alert={ca} onDismiss={onDismissClient} />
           ))}
@@ -779,11 +782,31 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
   const [localAckedIds, setLocalAckedIds] = useState<Set<string>>(new Set());
   const [showAcknowledged, setShowAcknowledged] = useState(false);
   const [dismissedClientAlerts, setDismissedClientAlerts] = useState<Set<string>>(new Set());
+  const [userMap, setUserMap] = useState<Map<string, string>>(new Map());
 
   // Load dismissed client alerts from localStorage on mount
   useEffect(() => {
     setDismissedClientAlerts(loadDismissed());
   }, []);
+
+  // Fetch user map when "All" (show acknowledged) is toggled on
+  useEffect(() => {
+    if (!showAcknowledged || userMap.size > 0) return;
+    fetch("/api/admin/users")
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        if (!data?.users) return;
+        const map = new Map<string, string>();
+        for (const u of data.users as { id: string; email?: string }[]) {
+          if (u.email) {
+            // Use the part before @ as the display name
+            map.set(u.id, u.email.split("@")[0]);
+          }
+        }
+        setUserMap(map);
+      })
+      .catch(() => {});
+  }, [showAcknowledged]);
 
   const handleAck = useCallback((id: string) => {
     setLocalAckedIds((prev) => new Set(prev).add(id));
@@ -1351,6 +1374,7 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
                       clientAlerts={clientAlertsByFlight.get(f.id) ?? []}
                       dismissedClientAlerts={dismissedClientAlerts}
                       onDismissClient={handleDismissClient}
+                      userMap={userMap}
                     />
                   ))}
                 </div>
