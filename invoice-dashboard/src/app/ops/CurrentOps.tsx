@@ -1662,9 +1662,19 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                                 </span>
                                 {(() => {
                                   const edctAlert = getActiveEdct(f);
-                                  if (edctAlert && status === "Scheduled") {
+                                  if (status === "Scheduled") {
                                     return (
-                                      <span className="text-xs font-medium text-amber-600">EDCT</span>
+                                      <div className="flex flex-col">
+                                        <span className={`text-xs ${statusColor}`}>{status}</span>
+                                        {edctAlert && (
+                                          <span className="text-[10px] font-medium text-amber-600">EDCT</span>
+                                        )}
+                                        {isFiled && (
+                                          <span className="text-[10px] text-indigo-500 whitespace-nowrap">
+                                            IFR Filed{swimEntry?.etd ? ` ${fmt(swimEntry.etd, f.departure_icao)}` : ""}
+                                          </span>
+                                        )}
+                                      </div>
                                     );
                                   }
                                   if (edctAlert && status === "En Route") {
@@ -1677,11 +1687,6 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                                   }
                                   return <span className={`text-xs ${statusColor}`}>{status}</span>;
                                 })()}
-                                {isFiled && status === "Scheduled" && !getActiveEdct(f) && (
-                                  <span className="text-[10px] text-indigo-500 whitespace-nowrap">
-                                    IFR Filed{swimEntry?.etd ? ` ${fmt(swimEntry.etd, f.departure_icao)}` : ""}
-                                  </span>
-                                )}
                                 {isFaSourced && (
                                   <span className="px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-blue-100 text-blue-700">FA</span>
                                 )}
@@ -1924,14 +1929,18 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                         <div className="flex flex-col gap-0.5">
                           {(() => {
                             const edctAlert = getActiveEdct(f);
-                            if (edctAlert && status === "Scheduled") {
+                            if (status === "Scheduled") {
                               return (
                                 <>
-                                  <span className="text-xs font-medium text-amber-600">EDCT</span>
-                                  <div className="text-[10px] text-amber-700">
-                                    {fmtEdctTime(edctAlert.edct_time!, f.scheduled_departure, f.departure_icao)}
-                                    <span className="ml-1 px-1 py-px rounded bg-amber-100 text-amber-600 text-[9px] font-medium">{edctSourceTag(edctAlert)}</span>
-                                  </div>
+                                  <span className={`text-xs font-medium ${statusColor}`}>{status}</span>
+                                  {edctAlert && (
+                                    <span className="text-[10px] font-medium text-amber-600">EDCT</span>
+                                  )}
+                                  {isFiled && (
+                                    <span className="text-[10px] text-indigo-500 font-medium whitespace-nowrap">
+                                      IFR Filed{swimEntry?.etd ? ` ${fmt(swimEntry.etd, f.departure_icao)}` : ""}
+                                    </span>
+                                  )}
                                 </>
                               );
                             }
@@ -1945,11 +1954,6 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                             }
                             return <span className={`text-xs font-medium ${statusColor}`}>{status}</span>;
                           })()}
-                          {isFiled && status === "Scheduled" && !getActiveEdct(f) && (
-                            <span className="text-[10px] text-indigo-500 font-medium whitespace-nowrap">
-                              IFR Filed{swimEntry?.etd ? ` ${fmt(swimEntry.etd, f.departure_icao)}` : ""}
-                            </span>
-                          )}
                           {isFaSourced && (
                             <span className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-blue-100 text-blue-700">
                               FA Source
