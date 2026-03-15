@@ -359,7 +359,7 @@ function matchFlightInfo(
     if (!scheduledDep) return false;
     const faDep = fi.actual_departure ?? fi.departure_time;
     if (!faDep) return false;
-    return Math.abs(new Date(faDep).getTime() - new Date(scheduledDep).getTime()) > 6 * 3600_000;
+    return Math.abs(new Date(faDep).getTime() - new Date(scheduledDep).getTime()) > 3 * 3600_000;
   };
   const byRoute = map.get(routeKey);
   if (byRoute && !isStale(byRoute)) return byRoute;
@@ -1529,7 +1529,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                             statusColor = "text-green-600 font-medium";
                           }
                           // If scheduled arrival has passed and still Scheduled/En Route, it arrived
-                          if (arrivalPassed && (status === "Scheduled" || status === "En Route")) {
+                          if (arrivalPassed && (status === "Scheduled" || status === "En Route") && !(fi && !fi.actual_arrival)) {
                             status = "Arrived";
                             statusColor = "text-green-600 font-medium";
                           }
@@ -1852,7 +1852,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                 }
 
                 // If scheduled arrival has passed and we're still showing Scheduled, it arrived
-                if (arrivalPassed && (status === "Scheduled" || status === "En Route")) {
+                if (arrivalPassed && (status === "Scheduled" || status === "En Route") && !(fi && !fi.actual_arrival)) {
                   status = "Arrived";
                   statusColor = "text-green-600 font-medium";
                 }
