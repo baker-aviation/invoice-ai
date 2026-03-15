@@ -1394,7 +1394,7 @@ function AircraftCompactRow({
   doneForDay, isQuickturn, hasMaintenance, extraLegs,
   color, zone, date,
   mxNotes, hiddenTodayMxIds, onHideMxForToday,
-  legNote, onSaveNote, onDragStart, onRemove,
+  legNote, onSaveNote, onDragStart, onRemove, onSetPrimaryAirport,
 }: {
   arrFlight: Flight;
   nextDep: Flight | null;
@@ -1423,6 +1423,7 @@ function AircraftCompactRow({
   onSaveNote: (flightId: string, tailNumber: string | null, note: string) => void;
   onDragStart: (e: React.DragEvent, flightId: string, fromVanId: number) => void;
   onRemove: (flightId: string) => void;
+  onSetPrimaryAirport?: (tail: string, airport: string) => void;
 }) {
   const [detailOpen, setDetailOpen] = useState(false);
 
@@ -1530,6 +1531,7 @@ function AircraftCompactRow({
         <div className="ml-8 mt-1.5 space-y-1 border-l-2 border-gray-200 pl-3">
           {/* Route + flight type */}
           <div className="flex items-center gap-2 text-xs">
+            <span className="text-blue-500">📍</span>
             <span className="text-gray-500 font-mono">
               {arrFlight.departure_icao?.replace(/^K/, "") ?? "?"} → {airport}
             </span>
@@ -1558,10 +1560,21 @@ function AircraftCompactRow({
                   : cat === "positioning" ? "border-purple-300"
                   : cat === "maintenance" ? "border-orange-300"
                   : "border-gray-200";
+                const isPrimary = arrIcao === airport;
                 return (
-                  <div key={f.id} className={`flex items-center gap-2 text-xs pl-3 border-l-2 ${borderColor} ${
-                    isRevenue ? "py-1 bg-green-50/60 rounded-r font-medium text-gray-700" : "py-px text-gray-400"
-                  }`}>
+                  <div
+                    key={f.id}
+                    className={`flex items-center gap-2 text-xs pl-3 border-l-2 ${borderColor} ${
+                      isRevenue ? "py-1 bg-green-50/60 rounded-r font-medium text-gray-700" : "py-px text-gray-400"
+                    } ${onSetPrimaryAirport && !isPrimary ? "cursor-pointer hover:bg-blue-50/50" : ""}`}
+                    onClick={(e) => {
+                      if (!onSetPrimaryAirport || isPrimary) return;
+                      e.stopPropagation();
+                      onSetPrimaryAirport(arrFlight.tail_number ?? "", arrIcao);
+                    }}
+                    title={isPrimary ? "Current service airport" : "Click to set as service airport"}
+                  >
+                    {isPrimary && <span className="text-blue-500">📍</span>}
                     <span className={`font-mono ${isRevenue ? "text-gray-700" : "text-gray-500"}`}>{dep} → {arrIcao}</span>
                     <span>{fmtUtcHM(f.scheduled_departure, f.departure_icao)}{f.scheduled_arrival ? ` – ${fmtUtcHM(f.scheduled_arrival, f.arrival_icao)}` : ""}</span>
                     {ft && (
@@ -1620,6 +1633,7 @@ function VanScheduleCard({
   onDrop,
   onDragLeave,
   onRemove,
+  onSetPrimaryAirport,
   fboMap,
 }: {
   zone: (typeof FIXED_VAN_ZONES)[number];
@@ -1643,6 +1657,7 @@ function VanScheduleCard({
   onDrop: (e: React.DragEvent, toVanId: number) => void;
   onDragLeave: (e: React.DragEvent) => void;
   onRemove: (flightId: string) => void;  // delete aircraft from this van
+  onSetPrimaryAirport?: (tail: string, airport: string) => void;
   fboMap?: Record<string, string>;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -1823,6 +1838,7 @@ function VanScheduleCard({
                     onSaveNote={onSaveNote}
                     onDragStart={onDragStart}
                     onRemove={onRemove}
+                    onSetPrimaryAirport={onSetPrimaryAirport}
                   />
                 );
               })}
@@ -1908,6 +1924,13 @@ function ScheduleTab({
   const [removals, setRemovals] = useState<Set<string>>(new Set());
   // Unscheduled aircraft assigned to vans: tail → vanId
   const [unscheduledOverrides, setUnscheduledOverrides] = useState<Map<string, number>>(new Map());
+  // Airport overrides: tail → IATA airport (user clicked a specific leg to set primary)
+  const [airportOverrides, setAirportOverrides] = useState<Map<string, string>>(() => {
+    try {
+      const saved = localStorage.getItem(`vanAirportOverrides-${date}`);
+      return saved ? new Map(JSON.parse(saved)) : new Map();
+    } catch { return new Map(); }
+  });
 
   // Track the last DB updated_at to avoid overwriting fresher data
   const draftUpdatedAtRef = useRef<string | null>(null);
@@ -1925,6 +1948,9 @@ function ScheduleTab({
       else localStorage.removeItem(`vanRemovals-${date}`);
       if (u.size > 0) localStorage.setItem(`vanUnscheduled-${date}`, JSON.stringify([...u]));
       else localStorage.removeItem(`vanUnscheduled-${date}`);
+      // Airport overrides (localStorage only — no DB migration needed)
+      if (airportOverrides.size > 0) localStorage.setItem(`vanAirportOverrides-${date}`, JSON.stringify([...airportOverrides]));
+      else localStorage.removeItem(`vanAirportOverrides-${date}`);
     } catch {}
     // DB save (debounced 500ms)
     if (suppressSaveRef.current) return;
@@ -1980,6 +2006,10 @@ function ScheduleTab({
       const savedU = localStorage.getItem(`vanUnscheduled-${targetDate}`);
       setUnscheduledOverrides(savedU ? new Map(JSON.parse(savedU)) : new Map());
     } catch { setUnscheduledOverrides(new Map()); }
+    try {
+      const savedA = localStorage.getItem(`vanAirportOverrides-${targetDate}`);
+      setAirportOverrides(savedA ? new Map(JSON.parse(savedA)) : new Map());
+    } catch { setAirportOverrides(new Map()); }
     suppressSaveRef.current = false;
   }, []);
 
@@ -2046,7 +2076,7 @@ function ScheduleTab({
       .catch(() => {});
   }, [date, loadDraftsFromDb]);
 
-  const totalEdits = overrides.size + removals.size + unscheduledOverrides.size;
+  const totalEdits = overrides.size + removals.size + unscheduledOverrides.size + airportOverrides.size;
 
   // DnD visual state
   const saveLegNote = useCallback(async (flightId: string, tailNumber: string | null, note: string) => {
@@ -2227,6 +2257,23 @@ function ScheduleTab({
       result.set(targetVanId, target);
     }
 
+    // Apply airport overrides (user clicked a specific leg to set primary airport)
+    if (airportOverrides.size > 0) {
+      for (const items of result.values()) {
+        for (const item of items) {
+          const tail = item.arrFlight.tail_number;
+          if (!tail) continue;
+          const overrideAirport = airportOverrides.get(tail);
+          if (!overrideAirport || overrideAirport === item.airport) continue;
+          const info = getAirportInfo(overrideAirport);
+          if (info) {
+            item.airport = overrideAirport;
+            item.airportInfo = info;
+          }
+        }
+      }
+    }
+
     // Recalculate distances + greedy sort for each van, then re-sort by FA ETA
     for (const zone of FIXED_VAN_ZONES) {
       const items = result.get(zone.vanId) ?? [];
@@ -2241,7 +2288,7 @@ function ScheduleTab({
     }
 
     return result;
-  }, [baseItemsByVan, overrides, removals, liveVanPositions, allDayArrivals, flightInfoMap, unscheduledOverrides, allFlights, date]);
+  }, [baseItemsByVan, overrides, removals, liveVanPositions, allDayArrivals, flightInfoMap, unscheduledOverrides, allFlights, date, airportOverrides]);
 
   // Uncovered aircraft: arrivals today not assigned to any van
   const uncoveredItems = useMemo(() => {
@@ -2531,8 +2578,8 @@ function ScheduleTab({
           {totalEdits > 0 && (
             <button
               onClick={() => {
-                setOverrides(new Map()); setRemovals(new Set()); setUnscheduledOverrides(new Map());
-                try { localStorage.removeItem(`vanOverrides-${date}`); localStorage.removeItem(`vanRemovals-${date}`); localStorage.removeItem(`vanUnscheduled-${date}`); } catch {}
+                setOverrides(new Map()); setRemovals(new Set()); setUnscheduledOverrides(new Map()); setAirportOverrides(new Map());
+                try { localStorage.removeItem(`vanOverrides-${date}`); localStorage.removeItem(`vanRemovals-${date}`); localStorage.removeItem(`vanUnscheduled-${date}`); localStorage.removeItem(`vanAirportOverrides-${date}`); } catch {}
               }}
               className="text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5 hover:bg-amber-100 transition-colors"
             >
@@ -2902,6 +2949,15 @@ function ScheduleTab({
               onDrop={handleDrop}
               onDragLeave={() => handleDragLeaveZone()}
               onRemove={handleRemove}
+              onSetPrimaryAirport={(tail, apt) => {
+                setAirportOverrides((prev) => {
+                  const next = new Map(prev);
+                  next.set(tail, apt);
+                  // Persist immediately
+                  try { localStorage.setItem(`vanAirportOverrides-${date}`, JSON.stringify([...next])); } catch {}
+                  return next;
+                });
+              }}
               fboMap={fboMap}
             />
           </div>
