@@ -313,13 +313,17 @@ export async function getActiveFlights(
               f.actual_on == null &&
               f.fa_flight_id
             ) {
+              console.log(`[FA Pos] ${tail} ${f.fa_flight_id}: last_position missing, fetching...`);
               const pos = await getFlightPosition(f.fa_flight_id);
               if (pos) {
+                console.log(`[FA Pos] ${tail}: got position ${pos.latitude},${pos.longitude}`);
                 info.latitude = pos.latitude;
                 info.longitude = pos.longitude;
                 info.altitude = pos.altitude ?? null;
                 info.groundspeed = pos.groundspeed ?? null;
                 info.heading = pos.heading ?? null;
+              } else {
+                console.log(`[FA Pos] ${tail} ${f.fa_flight_id}: position fetch returned null`);
               }
             }
 
