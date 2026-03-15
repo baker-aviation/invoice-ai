@@ -445,7 +445,7 @@ function EdctRow({ alert, flight, onDismiss, fmtTime }: {
 
 // ─── Alert inline card (server-side NOTAM/EDCT alerts) ──────────────────────
 
-function AlertCard({ alert, onAck, acked }: { alert: OpsAlert; onAck: (id: string) => void; acked?: boolean }) {
+function AlertCard({ alert, onAck, acked, ackedByName }: { alert: OpsAlert; onAck: (id: string) => void; acked?: boolean; ackedByName?: string | null }) {
   const [expanded, setExpanded] = useState(false);
   const [acking, setAcking] = useState(false);
 
@@ -506,7 +506,9 @@ function AlertCard({ alert, onAck, acked }: { alert: OpsAlert; onAck: (id: strin
         )}
         <div className="ml-auto flex items-center gap-1.5 shrink-0">
           {acked ? (
-            <span className="text-xs text-gray-400 bg-gray-100 rounded px-1.5 py-0.5">Ack'd</span>
+            <span className="text-xs text-gray-400 bg-gray-100 rounded px-1.5 py-0.5">
+              Ack'd{ackedByName ? ` by ${ackedByName}` : ""}
+            </span>
           ) : (
             <button
               type="button"
@@ -575,7 +577,7 @@ function AlertCard({ alert, onAck, acked }: { alert: OpsAlert; onAck: (id: strin
 
 // ─── Client alert card (KJAC/KSNA/after-hours — localStorage dismiss) ───────
 
-function ClientAlertCard({ alert, onDismiss }: { alert: ClientAlert; onDismiss: (key: string) => void }) {
+function ClientAlertCard({ alert, onDismiss, dismissed }: { alert: ClientAlert; onDismiss: (key: string) => void; dismissed?: boolean }) {
   const [dismissing, setDismissing] = useState(false);
 
   function handleDismiss(e: React.MouseEvent) {
@@ -589,30 +591,38 @@ function ClientAlertCard({ alert, onDismiss }: { alert: ClientAlert; onDismiss: 
   return (
     <div
       className={`rounded-lg border text-sm ${
-        isLate
-          ? "border-purple-200 bg-purple-50/60"
-          : "border-blue-200 bg-blue-50/60"
+        dismissed
+          ? "border-gray-200 bg-gray-50/60 opacity-60"
+          : isLate
+            ? "border-purple-200 bg-purple-50/60"
+            : "border-blue-200 bg-blue-50/60"
       }`}
     >
       <div className="px-3 py-2 flex items-center gap-2">
-        <span className={`w-2 h-2 rounded-full shrink-0 ${isLate ? "bg-purple-500" : "bg-blue-500"}`} />
+        <span className={`w-2 h-2 rounded-full shrink-0 ${dismissed ? "bg-gray-400" : isLate ? "bg-purple-500" : "bg-blue-500"}`} />
         <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-mono font-semibold ${
-          isLate
-            ? "bg-purple-100 text-purple-800 border border-purple-200"
-            : "bg-blue-100 text-blue-800 border border-blue-200"
+          dismissed
+            ? "bg-gray-100 text-gray-500 border border-gray-200"
+            : isLate
+              ? "bg-purple-100 text-purple-800 border border-purple-200"
+              : "bg-blue-100 text-blue-800 border border-blue-200"
         }`}>
           {alert.label}
         </span>
         <span className="text-xs text-gray-700">{alert.message}</span>
         <div className="ml-auto shrink-0">
-          <button
-            type="button"
-            onClick={handleDismiss}
-            disabled={dismissing}
-            className="text-xs text-gray-500 hover:text-green-700 hover:bg-green-50 border border-gray-200 hover:border-green-300 rounded px-1.5 py-0.5 transition-colors disabled:opacity-50"
-          >
-            {dismissing ? "..." : "Dismiss"}
-          </button>
+          {dismissed ? (
+            <span className="text-xs text-gray-400 bg-gray-100 rounded px-1.5 py-0.5">Dismissed</span>
+          ) : (
+            <button
+              type="button"
+              onClick={handleDismiss}
+              disabled={dismissing}
+              className="text-xs text-gray-500 hover:text-green-700 hover:bg-green-50 border border-gray-200 hover:border-green-300 rounded px-1.5 py-0.5 transition-colors disabled:opacity-50"
+            >
+              {dismissing ? "..." : "Dismiss"}
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -622,7 +632,7 @@ function ClientAlertCard({ alert, onDismiss }: { alert: ClientAlert; onDismiss: 
 // ─── Flight card ──────────────────────────────────────────────────────────────
 
 function FlightCard({
-  flight, isAcked, showAcknowledged, onAck, clientAlerts, dismissedClientAlerts, onDismissClient,
+  flight, isAcked, showAcknowledged, onAck, clientAlerts, dismissedClientAlerts, onDismissClient, userMap,
 }: {
   flight: Flight;
   isAcked: (a: OpsAlert) => boolean;
@@ -631,10 +641,11 @@ function FlightCard({
   clientAlerts: ClientAlert[];
   dismissedClientAlerts: Set<string>;
   onDismissClient: (key: string) => void;
+  userMap: Map<string, string>;
 }) {
   const visibleAlerts = (flight.alerts ?? []).filter((a) => showAcknowledged || !isAcked(a));
   const alerts = visibleAlerts;
-  const activeClientAlerts = clientAlerts.filter((ca) => !dismissedClientAlerts.has(ca.key));
+  const activeClientAlerts = clientAlerts.filter((ca) => showAcknowledged || !dismissedClientAlerts.has(ca.key));
   const hasCritical = alerts.some((a) => a.severity === "critical");
   const hasWarning = alerts.some((a) => a.severity === "warning");
   const hasLate = activeClientAlerts.some((ca) => ca.type === "AFTER_HOURS");
@@ -710,9 +721,9 @@ function FlightCard({
       {/* Alerts (server + client) */}
       {totalAlertCount > 0 && (
         <div className="px-3 pb-3 space-y-1.5">
-          {alerts.map((a) => <AlertCard key={a.id} alert={a} onAck={onAck} acked={isAcked(a)} />)}
+          {alerts.map((a) => <AlertCard key={a.id} alert={a} onAck={onAck} acked={isAcked(a)} ackedByName={showAcknowledged && a.acknowledged_by ? userMap.get(a.acknowledged_by) ?? null : null} />)}
           {activeClientAlerts.map((ca) => (
-            <ClientAlertCard key={ca.key} alert={ca} onDismiss={onDismissClient} />
+            <ClientAlertCard key={ca.key} alert={ca} onDismiss={onDismissClient} dismissed={dismissedClientAlerts.has(ca.key)} />
           ))}
         </div>
       )}
@@ -779,11 +790,28 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
   const [localAckedIds, setLocalAckedIds] = useState<Set<string>>(new Set());
   const [showAcknowledged, setShowAcknowledged] = useState(false);
   const [dismissedClientAlerts, setDismissedClientAlerts] = useState<Set<string>>(new Set());
+  const [userMap, setUserMap] = useState<Map<string, string>>(new Map());
 
   // Load dismissed client alerts from localStorage on mount
   useEffect(() => {
     setDismissedClientAlerts(loadDismissed());
   }, []);
+
+  // Fetch user map when "All" (show acknowledged) is toggled on
+  useEffect(() => {
+    if (!showAcknowledged || userMap.size > 0) return;
+    fetch("/api/ops/users")
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        if (!data?.users) return;
+        const map = new Map<string, string>();
+        for (const [id, name] of Object.entries(data.users as Record<string, string>)) {
+          map.set(id, name);
+        }
+        setUserMap(map);
+      })
+      .catch(() => {});
+  }, [showAcknowledged]);
 
   const handleAck = useCallback((id: string) => {
     setLocalAckedIds((prev) => new Set(prev).add(id));
@@ -1351,6 +1379,7 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
                       clientAlerts={clientAlertsByFlight.get(f.id) ?? []}
                       dismissedClientAlerts={dismissedClientAlerts}
                       onDismissClient={handleDismissClient}
+                      userMap={userMap}
                     />
                   ))}
                 </div>

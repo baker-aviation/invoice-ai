@@ -1700,10 +1700,10 @@ function VanScheduleCard({
                   }
                 }
               }
-              const vanLabel = liveCityState ? `${liveCityState} Van` : ((samsaraVanName && parseVanDisplayName(samsaraVanName)) || zone.name);
+              const locationLabel = liveCityState ?? ((samsaraVanName && parseVanDisplayName(samsaraVanName)) || null);
               return (
                 <div className="font-semibold text-sm">
-                  {vanLabel} <span className="text-gray-400 font-normal">({items.length} aircraft{items.length !== 1 ? "" : ""})</span>
+                  {zone.name}{locationLabel ? <span className="text-gray-400 font-normal"> ({locationLabel})</span> : ""} <span className="text-gray-400 font-normal">({items.length} aircraft)</span>
                 </div>
               );
             })()}
@@ -2721,7 +2721,7 @@ function ScheduleTab({
                         <option value="">Assign…</option>
                         {FIXED_VAN_ZONES.map((z) => (
                           <option key={z.vanId} value={z.vanId}>
-                            V{z.vanId} – {vanDropdownLabels.get(z.vanId) ?? z.city}
+                            V{z.vanId} – {z.name}
                           </option>
                         ))}
                       </select>
@@ -2848,7 +2848,7 @@ function ScheduleTab({
                       <option value="">Assign...</option>
                       {FIXED_VAN_ZONES.map((z) => (
                         <option key={z.vanId} value={z.vanId}>
-                          V{z.vanId} – {vanDropdownLabels.get(z.vanId) ?? z.city}
+                          V{z.vanId} – {z.name}
                         </option>
                       ))}
                     </select>
