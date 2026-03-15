@@ -2462,6 +2462,7 @@ function ScheduleTab({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           date,
+          test: true,
           vans: [{
             vanName: zone.name,
             vanId: zone.vanId,
@@ -4242,7 +4243,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
 
           {viewMode === "map" ? (
             <div className="rounded-xl overflow-hidden border shadow-sm">
-              <MapView vans={displayedVans} colors={VAN_COLORS} liveVanPositions={liveVanPositions} liveVanIsLive={liveVanIsLive} aircraftPositions={faAircraft} flightInfo={flightInfoMap} />
+              <MapView vans={displayedVans} colors={VAN_COLORS} liveVanPositions={liveVanPositions} liveVanIsLive={liveVanIsLive} aircraftPositions={[]} flightInfo={flightInfoMap} />
             </div>
           ) : (
             <div className="space-y-3">
