@@ -5,12 +5,14 @@
 
 export type VanSlackItem = {
   tail: string;
-  route: string;       // "TEB → PBI"
-  arrivalTime: string;  // "14:30 UTC"
-  status: string;       // "Scheduled" | "~Landed" | "En Route" | "DIVERTED"
-  nextDep?: string;     // "Flying again 18:00 UTC → VNY"
-  turnStatus?: string;  // "Quickturn" | "Done for day"
-  driveTime?: string;   // "1h 30m drive"
+  airport: string;       // "BCT"
+  fbo?: string | null;   // "Atlantic Aviation"
+  arrivalTime: string;   // "14:30 ET"
+  status: string;        // "Scheduled" | "~Landed" | "En Route" | "DIVERTED"
+  nextDep?: string;      // "Flying again 18:00 ET → VNY"
+  turnStatus?: string;   // "Quickturn" | "Done for day"
+  driveTime?: string;    // "1h 30m drive"
+  route?: string;        // deprecated, kept for compat
 };
 
 const VAN_BASE_URL = process.env.VAN_BASE_URL ?? "https://www.whitelabel-ops.com";
@@ -28,8 +30,11 @@ export function buildVanSlackBlocks(
     items.length === 0
       ? ["_No arrivals scheduled_"]
       : items.map((item) => {
-          let line = `• *${item.tail}* ${item.route} — Lands ${item.arrivalTime}`;
-          if (item.status === "~Landed") line += " _(Landed)_";
+          const airport = item.airport ?? item.route?.split("→").pop()?.trim() ?? "?";
+          const fboLabel = item.fbo ? ` · ${item.fbo}` : "";
+          let line = `• *${item.tail}* → ${airport}${fboLabel} — ${item.arrivalTime}`;
+          if (item.status === "~Landed" || item.status === "Landed") line += " _(Landed)_";
+          else if (item.status.startsWith("En Route")) line += ` _(${item.status})_`;
           if (item.driveTime) line += ` · ${item.driveTime}`;
           if (item.nextDep) line += `\n  ↳ ${item.nextDep}`;
           return line;

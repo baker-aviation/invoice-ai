@@ -1,20 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin, isAuthed } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
-import { buildSwapPlan, getRequiredFlightSearches, getPoolFlightSearches, assignOncomingCrew, type CrewMember, type FlightLeg, type AirportAlias, type SwapAssignment, type OncomingPool } from "@/lib/swapOptimizer";
+import { buildSwapPlan, assignOncomingCrew, type CrewMember, type FlightLeg, type AirportAlias, type SwapAssignment, type OncomingPool } from "@/lib/swapOptimizer";
 import { DEFAULT_AIRPORT_ALIASES } from "@/lib/airportAliases";
-import { searchFlights } from "@/lib/hasdata";
-import type { FlightOffer } from "@/lib/amadeus";
+import { getRoutesForOptimizer } from "@/lib/pilotRoutes";
+import { detectCurrentRotation } from "@/lib/crewRotationDetect";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 300; // 5 min — flight searches + feasibility matrix take time
+export const maxDuration = 60; // 1 min — no API calls, just DB reads + computation
 
 /**
  * POST /api/crew/optimize
- * Body: { swap_date: "2026-03-11", search_flights?: boolean }
+ * Body: { swap_date: "2026-03-18" }
  *
- * Runs the swap optimizer for the given Wednesday.
- * If search_flights=true, also queries Amadeus for commercial flights (uses API quota).
+ * Runs the swap optimizer using pre-computed routes from pilot_routes table.
+ * Routes must be computed first via POST /api/crew/routes.
  */
 export async function POST(req: NextRequest) {
   const auth = await requireAdmin(req);
@@ -23,7 +23,6 @@ export async function POST(req: NextRequest) {
   try {
   const body = await req.json();
   const swapDate = body.swap_date as string;
-  const searchCommercial = body.search_flights === true;
   // Accept swap_assignments directly from client (parsed from Excel upload)
   const clientSwapAssignments = body.swap_assignments as Record<string, SwapAssignment> | undefined;
   // Accept oncoming pool for crew-to-tail assignment
@@ -85,6 +84,7 @@ export async function POST(req: NextRequest) {
     is_checkairman: (c.is_checkairman as boolean) ?? false,
     is_skillbridge: (c.is_skillbridge as boolean) ?? false,
     priority: (c.priority as number) ?? 0,
+    rotation_group: (c.rotation_group as "A" | "B" | null) ?? null,
   }));
 
   // Merge DB aliases with defaults (DB takes precedence)
@@ -99,13 +99,19 @@ export async function POST(req: NextRequest) {
     ...DEFAULT_AIRPORT_ALIASES.filter((a) => !dbFboKeys.has(`${a.fbo_icao}|${a.commercial_icao}`)),
   ];
 
-  // Use client-provided swap assignments (from Excel upload), or fall back to crew_rotations
+  // Determine swap assignments + oncoming pool from one of three sources:
+  // 1. Client-provided (from Excel upload) — highest priority
+  // 2. crew_rotations table — manual rotation tracking
+  // 3. Auto-detect from JetInsight flights — scan who's flying each tail now
   let swapAssignments: Record<string, SwapAssignment> = {};
+  let autoDetectedPool: OncomingPool | null = null;
+  let rotationSource = "none";
 
   if (clientSwapAssignments && Object.keys(clientSwapAssignments).length > 0) {
     swapAssignments = clientSwapAssignments;
-  } else if (rotationsRes.data) {
-    // Fallback: reconstruct from crew_rotations (less reliable)
+    rotationSource = "excel";
+  } else if (rotationsRes.data && rotationsRes.data.length > 0) {
+    // Fallback 1: reconstruct from crew_rotations table
     for (const rot of rotationsRes.data) {
       const tail = rot.tail_number as string;
       const memberArr = rot.crew_members as unknown as { name: string; role: string }[] | { name: string; role: string } | null;
@@ -127,119 +133,52 @@ export async function POST(req: NextRequest) {
         else sa.oncoming_sic = sa.oncoming_sic ?? member.name;
       }
     }
+    if (Object.keys(swapAssignments).length > 0) rotationSource = "crew_rotations";
   }
 
-  const hasPool = clientOncomingPool && (clientOncomingPool.pic?.length > 0 || clientOncomingPool.sic?.length > 0);
-
-  // ── STEP 1: Search commercial flights ──────────────────────────────────────
-  // Search BEFORE assignment so we have real costs for crew-to-tail matching.
-  // For oncoming pool: search ALL pool crew home airports → ALL swap locations.
-  // For offgoing: search swap locations → home airports.
-  let commercialFlights: Map<string, FlightOffer[]> | undefined;
-
-  if (searchCommercial) {
-    commercialFlights = new Map();
-    const searchPairs = new Set<string>();
-
-    // Pool searches: every pool member's home → every swap location
-    if (hasPool) {
-      const poolSearches = getPoolFlightSearches({
-        oncomingPool: clientOncomingPool!,
-        aliases,
-        swapAssignments,
-        flights,
-        swapDate,
-      });
-      for (const s of poolSearches) {
-        searchPairs.add(`${s.origin}-${s.destination}`);
-      }
+  // Fallback 2: Auto-detect from JetInsight flights
+  if (Object.keys(swapAssignments).length === 0) {
+    console.log("[Swap Optimizer] No swap assignments from Excel or crew_rotations — auto-detecting from flights");
+    const detected = detectCurrentRotation(flights, crewRoster, swapDate);
+    swapAssignments = detected.swap_assignments;
+    autoDetectedPool = detected.oncoming_pool;
+    rotationSource = "auto_detect";
+    console.log(`[Swap Optimizer] Auto-detected ${detected.stats.tails_detected} tails, ${detected.stats.offgoing_pic} PICs, ${detected.stats.offgoing_sic} SICs offgoing`);
+    if (detected.unmatched_names.length > 0) {
+      console.log(`[Swap Optimizer] Unmatched JetInsight names: ${detected.unmatched_names.join(", ")}`);
     }
-
-    // Offgoing searches: swap locations → offgoing crew home airports
-    const offgoingSearches = getRequiredFlightSearches({
-      crewRoster,
-      aliases,
-      swapAssignments,
-      flights,
-      swapDate,
-    });
-    for (const s of offgoingSearches) {
-      searchPairs.add(`${s.origin}-${s.destination}`);
-    }
-
-    const pairsArray = Array.from(searchPairs);
-    let searchSuccessCount = 0;
-    let searchFailCount = 0;
-
-    // Determine search dates: swap-day (Wednesday) + Tue/Thu if volunteers exist
-    const searchDates = [swapDate];
-    if (clientOncomingPool) {
-      const allPoolMembers = [...(clientOncomingPool.pic ?? []), ...(clientOncomingPool.sic ?? [])];
-      const hasEarly = allPoolMembers.some((m) => m.early_volunteer);
-      const hasLate = allPoolMembers.some((m) => m.late_volunteer);
-      if (hasEarly) {
-        const dayBefore = new Date(swapDate);
-        dayBefore.setDate(dayBefore.getDate() - 1);
-        searchDates.unshift(dayBefore.toISOString().slice(0, 10));
-      }
-      if (hasLate) {
-        const dayAfter = new Date(swapDate);
-        dayAfter.setDate(dayAfter.getDate() + 1);
-        searchDates.push(dayAfter.toISOString().slice(0, 10));
-      }
-    }
-
-    const allSearches: { pair: string; date: string }[] = [];
-    for (const pair of pairsArray) {
-      for (const date of searchDates) {
-        allSearches.push({ pair, date });
-      }
-    }
-
-    console.log(`[Swap Optimizer] Searching ${pairsArray.length} route pairs × ${searchDates.length} date(s) (${searchDates.join(", ")}) = ${allSearches.length} searches via HasData`);
-    const flightSearchStart = Date.now();
-
-    // Search in batches of 30 (HasData Pro: 30 concurrent requests)
-    for (let i = 0; i < allSearches.length; i += 30) {
-      const batch = allSearches.slice(i, i + 30);
-      const results = await Promise.all(
-        batch.map(async ({ pair, date }) => {
-          const [orig, dest] = pair.split("-");
-          try {
-            const result = await searchFlights({ origin: orig, destination: dest, date, max: 5 });
-            return { key: `${orig}-${dest}-${date}`, offers: result.offers };
-          } catch (e) {
-            console.warn(`[Swap Optimizer] Search failed ${orig}->${dest} ${date}:`, e instanceof Error ? e.message : e);
-            return { key: `${orig}-${dest}-${date}`, offers: [] };
-          }
-        }),
-      );
-      for (const r of results) {
-        if (r.offers.length > 0) {
-          commercialFlights.set(r.key, r.offers);
-          searchSuccessCount++;
-        } else {
-          searchFailCount++;
-        }
-      }
-    }
-
-    console.log(`[Swap Optimizer] Flight search results: ${searchSuccessCount} routes with flights, ${searchFailCount} empty, ${commercialFlights.size} total cached (${((Date.now() - flightSearchStart) / 1000).toFixed(1)}s)`);
   }
 
-  // ── STEP 2: Assign oncoming crew using ACTUAL transport costs ──────────────
+  // Use client pool, auto-detected pool, or nothing
+  const effectivePool = clientOncomingPool ?? autoDetectedPool;
+  const hasPool = effectivePool && (effectivePool.pic?.length > 0 || effectivePool.sic?.length > 0);
+
+  // ── STEP 1: Load pre-computed routes from pilot_routes table ──────────────
+  const routeStart = Date.now();
+  const { commercialFlights, routeCount, crewRouteMap, crewOffgoingMap } = await getRoutesForOptimizer(swapDate);
+  const hasPreComputedRoutes = routeCount > 0;
+
+  if (hasPreComputedRoutes) {
+    console.log(`[Swap Optimizer] Loaded ${routeCount} pre-computed routes (${commercialFlights.size} flight keys) in ${Date.now() - routeStart}ms`);
+  } else {
+    console.log(`[Swap Optimizer] No pre-computed routes for ${swapDate} — running in drive-only mode`);
+  }
+
+  // ── STEP 2: Assign oncoming crew using pre-computed routes ────────────────
   let assignmentResult: ReturnType<typeof assignOncomingCrew> | null = null;
 
   if (hasPool) {
     const assignStart = Date.now();
     assignmentResult = assignOncomingCrew({
       swapAssignments,
-      oncomingPool: clientOncomingPool!,
+      oncomingPool: effectivePool!,
       crewRoster,
       flights,
       swapDate,
       aliases,
-      commercialFlights,
+      commercialFlights: hasPreComputedRoutes ? commercialFlights : undefined,
+      preComputedRoutes: hasPreComputedRoutes ? crewRouteMap : undefined,
+      preComputedOffgoing: hasPreComputedRoutes ? crewOffgoingMap : undefined,
     });
     swapAssignments = assignmentResult.assignments;
     console.log(`[Swap Optimizer] Assignment took ${((Date.now() - assignStart) / 1000).toFixed(1)}s`);
@@ -252,9 +191,9 @@ export async function POST(req: NextRequest) {
     crewRoster,
     aliases,
     swapDate,
-    commercialFlights,
+    commercialFlights: hasPreComputedRoutes ? commercialFlights : undefined,
     swapAssignments: Object.keys(swapAssignments).length > 0 ? swapAssignments : undefined,
-    oncomingPool: clientOncomingPool,
+    oncomingPool: effectivePool ?? undefined,
   });
 
   console.log(`[Swap Optimizer] Transport plan took ${((Date.now() - transportStart) / 1000).toFixed(1)}s`);
@@ -262,7 +201,8 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({
     ok: true,
     ...result,
-    commercial_flights_searched: searchCommercial ? (commercialFlights?.size ?? 0) : 0,
+    routes_used: routeCount,
+    rotation_source: rotationSource,
     crew_assignment: assignmentResult ? {
       standby: assignmentResult.standby,
       details: assignmentResult.details,

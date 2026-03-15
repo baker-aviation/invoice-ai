@@ -4,7 +4,14 @@
  * Docs: https://www.flightaware.com/aeroapi/portal/documentation
  * Base: https://aeroapi.flightaware.com/aeroapi/
  * Auth: x-apikey header
+ *
+ * Also used for bulk schedule fetching: instead of 2000+ HasData calls per
+ * crew member, we fetch ALL scheduled departures from each unique crew home
+ * airport (~60 calls) on the swap date. Route computation then matches
+ * flights to destinations locally.
  */
+
+import type { FlightOffer } from "./amadeus";
 
 const BASE = "https://aeroapi.flightaware.com/aeroapi";
 
@@ -376,4 +383,209 @@ function toFlightInfo(tail: string, f: FaFlight): FlightInfo {
     groundspeed: f.last_position?.groundspeed ?? null,
     heading: f.last_position?.heading ?? null,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Bulk Schedule Fetching (for swap optimizer route computation)
+// ---------------------------------------------------------------------------
+
+/** Normalized scheduled flight from FlightAware timetable data */
+export type ScheduledFlight = {
+  flight_number: string;       // e.g. "AA2345"
+  airline_iata: string;        // e.g. "AA"
+  origin_icao: string;         // e.g. "KDFW"
+  origin_iata: string;         // e.g. "DFW"
+  destination_icao: string;    // e.g. "KEWR"
+  destination_iata: string;    // e.g. "EWR"
+  scheduled_departure: string; // ISO 8601 UTC
+  scheduled_arrival: string;   // ISO 8601 UTC
+  aircraft_type: string | null;
+  duration_minutes: number;
+};
+
+type FaScheduleResponse = {
+  scheduled: FaFlight[];
+  links?: { next?: string | null } | null;
+  num_pages?: number;
+};
+
+/**
+ * Fetch all scheduled departures from an airport on a specific date.
+ * Uses GET /schedules/{start}/{end}?origin={ICAO}
+ */
+export async function fetchScheduledDepartures(
+  originIcao: string,
+  date: string,
+): Promise<ScheduledFlight[]> {
+  const start = `${date}T00:00:00Z`;
+  const end = `${date}T23:59:59Z`;
+  const flights: ScheduledFlight[] = [];
+  let cursor: string | null = null;
+  let page = 0;
+
+  do {
+    const url = cursor
+      ? `${BASE}${cursor}`
+      : `${BASE}/schedules/${start}/${end}?origin=${originIcao}&max_pages=5`;
+
+    const res = await fetch(url, {
+      headers: headers(),
+      signal: AbortSignal.timeout(15000),
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      console.warn(`[FA Sched] ${res.status} for ${originIcao} on ${date}: ${text.slice(0, 200)}`);
+      if (res.status === 401) throw new Error("FlightAware: invalid API key");
+      if (res.status === 429) {
+        console.warn("[FA Sched] Rate limited — backing off");
+        await new Promise((r) => setTimeout(r, 3000));
+        continue;
+      }
+      break;
+    }
+
+    const data: FaScheduleResponse = await res.json();
+
+    for (const f of data.scheduled ?? []) {
+      if (!f.origin?.code || !f.destination?.code) continue;
+      if (!f.scheduled_out || !f.scheduled_in) continue;
+
+      const flightNum = f.ident ?? "???";
+      const airlineIata = flightNum.replace(/\d+$/, "").slice(0, 2);
+
+      const depMs = new Date(f.scheduled_out).getTime();
+      const arrMs = new Date(f.scheduled_in).getTime();
+      const durationMin = Math.round((arrMs - depMs) / 60_000);
+      if (durationMin <= 0 || durationMin > 720) continue;
+
+      const originIata = f.origin.code_iata ?? icaoToIata(f.origin.code);
+      const destIata = f.destination.code_iata ?? icaoToIata(f.destination.code);
+
+      flights.push({
+        flight_number: flightNum,
+        airline_iata: airlineIata,
+        origin_icao: f.origin.code,
+        origin_iata: originIata,
+        destination_icao: f.destination.code,
+        destination_iata: destIata,
+        scheduled_departure: f.scheduled_out,
+        scheduled_arrival: f.scheduled_in,
+        aircraft_type: f.aircraft_type ?? null,
+        duration_minutes: durationMin,
+      });
+    }
+
+    cursor = data.links?.next ?? null;
+    page++;
+  } while (cursor && page < 5);
+
+  return flights;
+}
+
+/**
+ * Fetch scheduled departures from ALL unique crew home airports on a swap date.
+ * ~60 API calls total (~$3). Returns a map of origin_iata → flights.
+ */
+export async function fetchAllCrewSchedules(
+  homeAirports: string[],
+  date: string,
+): Promise<{
+  flightsByOrigin: Map<string, ScheduledFlight[]>;
+  totalFlights: number;
+  apiCalls: number;
+  errors: string[];
+}> {
+  const uniqueAirports = [...new Set(homeAirports.map((a) => a.toUpperCase()))];
+  const flightsByOrigin = new Map<string, ScheduledFlight[]>();
+  const errors: string[] = [];
+  let apiCalls = 0;
+
+  console.log(`[FA Sched] Fetching schedules for ${uniqueAirports.length} airports on ${date}`);
+
+  // Process in batches of 5
+  for (let i = 0; i < uniqueAirports.length; i += 5) {
+    const batch = uniqueAirports.slice(i, i + 5);
+    const results = await Promise.all(
+      batch.map(async (airport) => {
+        const icao = airport.length === 3 ? `K${airport}` : airport;
+        try {
+          apiCalls++;
+          const flights = await fetchScheduledDepartures(icao, date);
+          return { airport, flights, error: null };
+        } catch (e) {
+          return { airport, flights: [] as ScheduledFlight[], error: `${airport}: ${e instanceof Error ? e.message : "unknown"}` };
+        }
+      }),
+    );
+
+    for (const r of results) {
+      if (r.error) errors.push(r.error);
+      if (r.flights.length > 0) {
+        flightsByOrigin.set(r.airport, r.flights);
+      }
+    }
+
+    if (i + 5 < uniqueAirports.length) {
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  }
+
+  let totalFlights = 0;
+  for (const flights of flightsByOrigin.values()) totalFlights += flights.length;
+
+  console.log(`[FA Sched] Done: ${totalFlights} flights from ${flightsByOrigin.size} airports in ${apiCalls} calls`);
+  return { flightsByOrigin, totalFlights, apiCalls, errors };
+}
+
+/**
+ * Convert FlightAware ScheduledFlights to the FlightOffer format the optimizer uses.
+ * Groups by origin-destination-date key.
+ */
+export function scheduledFlightsToOffers(
+  flights: ScheduledFlight[],
+  date: string,
+): Map<string, FlightOffer[]> {
+  const offerMap = new Map<string, FlightOffer[]>();
+
+  for (const f of flights) {
+    const key = `${f.origin_iata}-${f.destination_iata}-${date}`;
+    if (!offerMap.has(key)) offerMap.set(key, []);
+
+    // FlightAware doesn't provide pricing — estimate based on duration
+    const estimatedPrice = estimateFlightPrice(f.duration_minutes, f.airline_iata);
+
+    const offer: FlightOffer = {
+      id: f.flight_number,
+      price: { total: String(estimatedPrice), currency: "USD" },
+      itineraries: [{
+        duration: `PT${Math.floor(f.duration_minutes / 60)}H${f.duration_minutes % 60}M`,
+        segments: [{
+          departure: { iataCode: f.origin_iata, at: f.scheduled_departure },
+          arrival: { iataCode: f.destination_iata, at: f.scheduled_arrival },
+          carrierCode: f.airline_iata,
+          number: f.flight_number.replace(/^[A-Z]{1,3}/, ""),
+          duration: `PT${Math.floor(f.duration_minutes / 60)}H${f.duration_minutes % 60}M`,
+          numberOfStops: 0,
+        }],
+      }],
+      numberOfBookableSeats: 9,
+    };
+
+    offerMap.get(key)!.push(offer);
+  }
+
+  return offerMap;
+}
+
+/** Estimate one-way economy fare from duration + airline (no pricing from FlightAware) */
+function estimateFlightPrice(durationMin: number, airline: string): number {
+  const budgetCarriers = new Set(["F9", "NK", "G4", "WN", "B6"]);
+  const mult = budgetCarriers.has(airline) ? 0.7 : 1.0;
+  return Math.min(Math.round((50 + durationMin * 1.5) * mult), 500);
+}
+
+function icaoToIata(code: string): string {
+  if (code.length === 4 && code.startsWith("K")) return code.slice(1);
+  return code;
 }
