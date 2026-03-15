@@ -826,7 +826,7 @@ function routeDistKm(items: VanFlightItem[]): number {
 
 type SlackChannel = { id: string; name: string };
 /** Build Slack-ready item payloads from VanFlightItems. Used by single share and bulk share. */
-function buildSlackItems(items: VanFlightItem[], flightInfoMap: Map<string, FlightInfoEntry>) {
+function buildSlackItems(items: VanFlightItem[], flightInfoMap: Map<string, FlightInfoEntry>, fboMap?: Record<string, string>) {
   return items.map((item) => {
     const fi = flightInfoMap.get(item.arrFlight.tail_number ?? "");
     const arrMs = item.arrFlight.scheduled_arrival ? new Date(item.arrFlight.scheduled_arrival).getTime() : null;
@@ -848,9 +848,13 @@ function buildSlackItems(items: VanFlightItem[], flightInfoMap: Map<string, Flig
     } else {
       slackStatus = "Scheduled";
     }
+    // Look up FBO name from trip_salespersons
+    const fboKey = `${item.arrFlight.tail_number}:${item.arrFlight.arrival_icao}`;
+    const fbo = fboMap?.[fboKey] ?? null;
     return {
       tail: item.arrFlight.tail_number ?? "—",
-      route: `${item.arrFlight.departure_icao?.replace(/^K/, "") ?? "?"} → ${item.airport}`,
+      airport: item.airport,
+      fbo,
       arrivalTime: item.arrFlight.scheduled_arrival ? fmtUtcHM(item.arrFlight.scheduled_arrival, item.arrFlight.arrival_icao) : "—",
       status: slackStatus,
       nextDep: item.nextDep ? `Flying again ${fmtUtcHM(item.nextDep.scheduled_departure, item.nextDep.departure_icao)} → ${item.nextDep.arrival_icao?.replace(/^K/, "") ?? "?"}` : undefined,
@@ -869,6 +873,7 @@ function SlackShareModal({
   date,
   items,
   flightInfoMap,
+  fboMap,
   onClose,
 }: {
   vanName: string;
@@ -877,6 +882,7 @@ function SlackShareModal({
   date: string;
   items: VanFlightItem[];
   flightInfoMap: Map<string, FlightInfoEntry>;
+  fboMap?: Record<string, string>;
   onClose: () => void;
 }) {
   const [state, setState] = useState<SlackShareState>("loading-channels");
@@ -913,7 +919,7 @@ function SlackShareModal({
         vanId,
         homeAirport,
         date,
-        items: buildSlackItems(items, flightInfoMap),
+        items: buildSlackItems(items, flightInfoMap, fboMap),
       };
       const res = await fetch("/api/vans/share-slack", {
         method: "POST",
@@ -1608,6 +1614,7 @@ function VanScheduleCard({
   onDrop,
   onDragLeave,
   onRemove,
+  fboMap,
 }: {
   zone: (typeof FIXED_VAN_ZONES)[number];
   color: string;
@@ -1630,6 +1637,7 @@ function VanScheduleCard({
   onDrop: (e: React.DragEvent, toVanId: number) => void;
   onDragLeave: (e: React.DragEvent) => void;
   onRemove: (flightId: string) => void;  // delete aircraft from this van
+  fboMap?: Record<string, string>;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [showSlackModal, setShowSlackModal] = useState(false);
@@ -1663,6 +1671,7 @@ function VanScheduleCard({
           date={date}
           items={items}
           flightInfoMap={flightInfoMap}
+          fboMap={fboMap}
           onClose={() => setShowSlackModal(false)}
         />
       )}
@@ -1840,6 +1849,7 @@ function ScheduleTab({
   longTermMxTails,
   hiddenTodayMxIds,
   onHideMxForToday,
+  fboMap,
 }: {
   allFlights: Flight[];
   date: string;
@@ -1851,6 +1861,7 @@ function ScheduleTab({
   longTermMxTails: Set<string>;
   hiddenTodayMxIds: Set<string>;
   onHideMxForToday: (id: string) => void;
+  fboMap?: Record<string, string>;
 }) {
   const hasLive = liveVanPositions.size > 0;
 
@@ -2417,7 +2428,7 @@ function ScheduleTab({
             vanName: zone.name,
             vanId: zone.vanId,
             homeAirport: zone.homeAirport,
-            items: buildSlackItems(items, flightInfoMap),
+            items: buildSlackItems(items, flightInfoMap, fboMap),
           };
         })
         .filter(Boolean);
@@ -2455,7 +2466,7 @@ function ScheduleTab({
             vanName: zone.name,
             vanId: zone.vanId,
             homeAirport: zone.homeAirport,
-            items: buildSlackItems(items, flightInfoMap),
+            items: buildSlackItems(items, flightInfoMap, fboMap),
           }],
         }),
       });
@@ -2884,6 +2895,7 @@ function ScheduleTab({
               onDrop={handleDrop}
               onDragLeave={() => handleDragLeaveZone()}
               onRemove={handleRemove}
+              fboMap={fboMap}
             />
           </div>
         );
@@ -3280,7 +3292,7 @@ function MxAdminTab() {
   );
 }
 
-export default function VanPositioningClient({ initialFlights, mxNotes, aircraftTags = [] }: { initialFlights: Flight[]; mxNotes?: MxNote[]; aircraftTags?: AircraftTag[] }) {
+export default function VanPositioningClient({ initialFlights, mxNotes, aircraftTags = [], fboMap = {} }: { initialFlights: Flight[]; mxNotes?: MxNote[]; aircraftTags?: AircraftTag[]; fboMap?: Record<string, string> }) {
   const dates = useMemo(() => getDateRange(2), []); // today + tomorrow
   const [dayIdx, setDayIdx] = useState(0);
   const [activeTab, setActiveTab] = useState<"map" | "schedule" | "flights" | "mx-admin">("schedule");
@@ -4342,7 +4354,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
 
       {/* ── Schedule tab ── */}
       {activeTab === "schedule" && (
-        <ScheduleTab allFlights={activeFlights} date={selectedDate} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} flightInfoMap={flightInfoMap} mxNotesByTail={mxNotesByTail} longTermMxTails={longTermMxTails} hiddenTodayMxIds={hiddenTodayMxIds} onHideMxForToday={hideMxForToday} />
+        <ScheduleTab allFlights={activeFlights} date={selectedDate} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} flightInfoMap={flightInfoMap} mxNotesByTail={mxNotesByTail} longTermMxTails={longTermMxTails} hiddenTodayMxIds={hiddenTodayMxIds} onHideMxForToday={hideMxForToday} fboMap={fboMap} />
       )}
 
       {/* ── Flight Schedule tab — grouped by aircraft ── */}
