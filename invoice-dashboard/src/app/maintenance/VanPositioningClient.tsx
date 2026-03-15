@@ -1886,49 +1886,106 @@ function ScheduleTab({
   const unscheduledDragTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Manual overrides: flightId → target vanId (moves) + removed flight IDs
-  // Initialize from localStorage for persistence across reloads
-  const [overrides, setOverrides] = useState<Map<string, number>>(() => {
-    try {
-      const saved = localStorage.getItem(`vanOverrides-${date}`);
-      if (saved) return new Map(JSON.parse(saved));
-    } catch {}
-    return new Map();
-  });
-  const [removals, setRemovals] = useState<Set<string>>(() => {
-    try {
-      const saved = localStorage.getItem(`vanRemovals-${date}`);
-      if (saved) return new Set(JSON.parse(saved));
-    } catch {}
-    return new Set();
-  });
+  // Shared via database so all admins see the same draft state
+  const [overrides, setOverrides] = useState<Map<string, number>>(new Map());
+  const [removals, setRemovals] = useState<Set<string>>(new Set());
   // Unscheduled aircraft assigned to vans: tail → vanId
-  const [unscheduledOverrides, setUnscheduledOverrides] = useState<Map<string, number>>(() => {
-    try {
-      const saved = localStorage.getItem(`vanUnscheduled-${date}`);
-      if (saved) return new Map(JSON.parse(saved));
-    } catch {}
-    return new Map();
-  });
+  const [unscheduledOverrides, setUnscheduledOverrides] = useState<Map<string, number>>(new Map());
 
-  // Persist overrides to localStorage on every change
-  useEffect(() => {
+  // Track the last DB updated_at to avoid overwriting fresher data
+  const draftUpdatedAtRef = useRef<string | null>(null);
+  // Suppress DB save while loading from DB
+  const suppressSaveRef = useRef(false);
+
+  // Save drafts to DB (debounced) + localStorage fallback
+  const saveDraftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveDraftToDb = useCallback((o: Map<string, number>, r: Set<string>, u: Map<string, number>) => {
+    // localStorage fallback (immediate)
     try {
-      if (overrides.size > 0) localStorage.setItem(`vanOverrides-${date}`, JSON.stringify([...overrides]));
+      if (o.size > 0) localStorage.setItem(`vanOverrides-${date}`, JSON.stringify([...o]));
       else localStorage.removeItem(`vanOverrides-${date}`);
-    } catch {}
-  }, [overrides, date]);
-  useEffect(() => {
-    try {
-      if (removals.size > 0) localStorage.setItem(`vanRemovals-${date}`, JSON.stringify([...removals]));
+      if (r.size > 0) localStorage.setItem(`vanRemovals-${date}`, JSON.stringify([...r]));
       else localStorage.removeItem(`vanRemovals-${date}`);
-    } catch {}
-  }, [removals, date]);
-  useEffect(() => {
-    try {
-      if (unscheduledOverrides.size > 0) localStorage.setItem(`vanUnscheduled-${date}`, JSON.stringify([...unscheduledOverrides]));
+      if (u.size > 0) localStorage.setItem(`vanUnscheduled-${date}`, JSON.stringify([...u]));
       else localStorage.removeItem(`vanUnscheduled-${date}`);
     } catch {}
-  }, [unscheduledOverrides, date]);
+    // DB save (debounced 500ms)
+    if (suppressSaveRef.current) return;
+    if (saveDraftTimer.current) clearTimeout(saveDraftTimer.current);
+    saveDraftTimer.current = setTimeout(() => {
+      const now = new Date().toISOString();
+      draftUpdatedAtRef.current = now;
+      fetch("/api/vans/drafts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          date,
+          overrides: [...o],
+          removals: [...r],
+          unscheduled: [...u],
+        }),
+      }).catch(() => {});
+    }, 500);
+  }, [date]);
+
+  // Auto-save on every change
+  useEffect(() => {
+    saveDraftToDb(overrides, removals, unscheduledOverrides);
+  }, [overrides, removals, unscheduledOverrides, saveDraftToDb]);
+
+  // Load drafts from DB on mount/date change, fall back to localStorage
+  const loadDraftsFromDb = useCallback(async (targetDate: string) => {
+    suppressSaveRef.current = true;
+    try {
+      const res = await fetch(`/api/vans/drafts?date=${targetDate}`);
+      if (res.ok) {
+        const d = await res.json();
+        if (d.updated_at) {
+          draftUpdatedAtRef.current = d.updated_at;
+          setOverrides(new Map(d.overrides ?? []));
+          setRemovals(new Set(d.removals ?? []));
+          setUnscheduledOverrides(new Map(d.unscheduled ?? []));
+          suppressSaveRef.current = false;
+          return;
+        }
+      }
+    } catch {}
+    // Fall back to localStorage if DB has nothing
+    try {
+      const savedO = localStorage.getItem(`vanOverrides-${targetDate}`);
+      setOverrides(savedO ? new Map(JSON.parse(savedO)) : new Map());
+    } catch { setOverrides(new Map()); }
+    try {
+      const savedR = localStorage.getItem(`vanRemovals-${targetDate}`);
+      setRemovals(savedR ? new Set(JSON.parse(savedR)) : new Set());
+    } catch { setRemovals(new Set()); }
+    try {
+      const savedU = localStorage.getItem(`vanUnscheduled-${targetDate}`);
+      setUnscheduledOverrides(savedU ? new Map(JSON.parse(savedU)) : new Map());
+    } catch { setUnscheduledOverrides(new Map()); }
+    suppressSaveRef.current = false;
+  }, []);
+
+  // Poll DB every 15s for other admins' changes
+  useEffect(() => {
+    const poll = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/vans/drafts?date=${date}`);
+        if (!res.ok) return;
+        const d = await res.json();
+        // Only apply if someone else saved something newer
+        if (d.updated_at && d.updated_at !== draftUpdatedAtRef.current) {
+          suppressSaveRef.current = true;
+          draftUpdatedAtRef.current = d.updated_at;
+          setOverrides(new Map(d.overrides ?? []));
+          setRemovals(new Set(d.removals ?? []));
+          setUnscheduledOverrides(new Map(d.unscheduled ?? []));
+          setTimeout(() => { suppressSaveRef.current = false; }, 100);
+        }
+      } catch {}
+    }, 15000);
+    return () => clearInterval(poll);
+  }, [date]);
 
   // Publish state
   const [publishedAt, setPublishedAt] = useState<string | null>(null);
@@ -1951,19 +2008,8 @@ function ScheduleTab({
     setPublishError(null);
     setPublishedEditsSnapshot("");
     setPublishedAssignments([]);
-    // Restore overrides from localStorage for this date
-    try {
-      const savedO = localStorage.getItem(`vanOverrides-${date}`);
-      setOverrides(savedO ? new Map(JSON.parse(savedO)) : new Map());
-    } catch { setOverrides(new Map()); }
-    try {
-      const savedR = localStorage.getItem(`vanRemovals-${date}`);
-      setRemovals(savedR ? new Set(JSON.parse(savedR)) : new Set());
-    } catch { setRemovals(new Set()); }
-    try {
-      const savedU = localStorage.getItem(`vanUnscheduled-${date}`);
-      setUnscheduledOverrides(savedU ? new Map(JSON.parse(savedU)) : new Map());
-    } catch { setUnscheduledOverrides(new Map()); }
+    // Load shared draft overrides from DB (falls back to localStorage)
+    loadDraftsFromDb(date);
     fetch(`/api/vans/publish?date=${date}`)
       .then((r) => r.json())
       .then((d) => {
@@ -1980,7 +2026,7 @@ function ScheduleTab({
         setLegNotes(map);
       })
       .catch(() => {});
-  }, [date]);
+  }, [date, loadDraftsFromDb]);
 
   const totalEdits = overrides.size + removals.size + unscheduledOverrides.size;
 
