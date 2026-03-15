@@ -87,7 +87,7 @@ export async function GET(req: NextRequest) {
           const flights = await getActiveFlights(activeTails, csMap);
           await setCache(flights);
           console.log("[SWR] Background refresh complete,", flights.length, "flights");
-          await refreshAlerts(allTails, activeTails).catch(() => {});
+          await refreshAlerts(allTails, activeTails, csMap).catch(() => {});
         } catch (err) {
           console.error("[SWR] Background refresh failed:", err);
         } finally {
@@ -111,8 +111,8 @@ export async function GET(req: NextRequest) {
     // Ensure webhook alerts are registered even on cached responses
     after(async () => {
       try {
-          const { allTails: at, activeTails: act } = await getTails();
-          await refreshAlerts(at, act);
+          const [{ allTails: at, activeTails: act }, csm] = await Promise.all([getTails(), getCallsignMap()]);
+          await refreshAlerts(at, act, csm);
         } catch {}
     });
     return NextResponse.json({
@@ -138,7 +138,7 @@ export async function GET(req: NextRequest) {
     after(async () => {
       try {
         console.log("[FA Alerts] after() starting refreshAlerts for", activeTails.length, "active tails (of", tails.length, "total)");
-        await refreshAlerts(tails, activeTails);
+        await refreshAlerts(tails, activeTails, callsignMap);
         console.log("[FA Alerts] after() completed");
       } catch (err) {
         console.error("[FA Alerts] after() failed:", err);
