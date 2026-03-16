@@ -561,14 +561,14 @@ function StopCard({
             <div className="text-sm font-bold text-slate-700 dark:text-slate-200 tabular-nums">
               Sched {schedArrLocal}
             </div>
-            {faEtaLocal && faEtaLocal !== schedArrLocal && (
+            {faEtaLocal && faEtaLocal !== schedArrLocal && status.label !== "Landed" && (
               <div className="text-xs font-medium text-blue-600 dark:text-blue-400 tabular-nums">
                 FA ETA {faEtaLocal}
               </div>
             )}
           </div>
         </div>
-        {countdown && (
+        {countdown && status.label !== "Landed" && (
           <div className="mt-0.5">
             <span className="text-xs font-medium text-blue-600 dark:text-blue-400">
               Landing {countdown}
