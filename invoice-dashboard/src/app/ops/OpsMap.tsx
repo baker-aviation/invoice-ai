@@ -154,20 +154,27 @@ function FlightTracks({
     return m;
   }, [aircraft]);
 
+  // Stable ref for enRoute list — only update when the set of airborne flight IDs changes
+  const enRouteRef = useRef<FlightInfoMap[]>([]);
+  const enRouteKeyRef = useRef("");
+  useEffect(() => {
+    const enRoute: FlightInfoMap[] = [];
+    for (const tail of airborneSet) {
+      const fi = flightInfo.get(tail);
+      if (fi && fi.fa_flight_id) enRoute.push(fi);
+    }
+    const key = enRoute.map(f => f.fa_flight_id).sort().join(",");
+    if (key !== enRouteKeyRef.current) {
+      enRouteKeyRef.current = key;
+      enRouteRef.current = enRoute;
+    }
+  }, [flightInfo, airborneSet]);
+
   useEffect(() => {
     // Throttle: only refetch tracks every 2.5 min
     if (Date.now() - lastFetchRef.current < 150_000 && tracks.size > 0) return;
 
-    // Collect airborne flights with FA flight IDs
-    // Look up by tail key directly — the tail-keyed entry prefers en-route flights
-    // (iterating .values() would hit route-keyed entries first, which may be completed flights)
-    const enRoute: FlightInfoMap[] = [];
-    for (const tail of airborneSet) {
-      const fi = flightInfo.get(tail);
-      if (fi && fi.fa_flight_id) {
-        enRoute.push(fi);
-      }
-    }
+    const enRoute = enRouteRef.current;
     if (enRoute.length === 0) { setTracks(new Map()); setFallbacks(new Map()); onHoldingDetected(new Set()); onLatestPositions(new Map()); return; }
 
     const controller = new AbortController();
@@ -177,31 +184,35 @@ function FlightTracks({
       const newFallbacks = new Map<string, [number, number][]>();
       const holdingTails = new Set<string>();
       const latestPositions = new Map<string, [number, number]>();
-      for (const fi of enRoute) {
-        try {
+
+      // Fetch all tracks in parallel to avoid sequential abort issues
+      const results = await Promise.allSettled(
+        enRoute.map(async (fi) => {
           const res = await fetch(`/api/aircraft/track/${encodeURIComponent(fi.fa_flight_id!)}`, {
             signal: controller.signal, cache: "no-store",
           });
-          if (res.ok) {
-            const data = await res.json();
-            const rawPositions: TrackPoint[] = data.positions ?? [];
-            const positions: [number, number][] = rawPositions
-              .filter((p) => p.latitude && p.longitude)
-              .map((p) => [p.latitude, p.longitude] as [number, number]);
-            if (positions.length > 1) {
-              newTracks.set(fi.tail, positions);
-              // Use the last track point as the most recent position
-              latestPositions.set(fi.tail, positions[positions.length - 1]);
-            } else {
-              // No track data — build fallback route line
-              const fb = buildFallbackRoute(fi, acByTail.get(fi.tail));
-              if (fb) newFallbacks.set(fi.tail, fb);
-            }
-            // Check holding from raw positions (have heading)
-            if (detectHolding(rawPositions)) holdingTails.add(fi.tail);
-          }
-        } catch { /* ignore */ }
+          if (!res.ok) return { fi, rawPositions: [] as TrackPoint[] };
+          const data = await res.json();
+          return { fi, rawPositions: (data.positions ?? []) as TrackPoint[] };
+        })
+      );
+
+      for (const result of results) {
+        if (result.status !== "fulfilled") continue;
+        const { fi, rawPositions } = result.value;
+        const positions: [number, number][] = rawPositions
+          .filter((p) => p.latitude && p.longitude)
+          .map((p) => [p.latitude, p.longitude] as [number, number]);
+        if (positions.length > 1) {
+          newTracks.set(fi.tail, positions);
+          latestPositions.set(fi.tail, positions[positions.length - 1]);
+        } else {
+          const fb = buildFallbackRoute(fi, acByTail.get(fi.tail));
+          if (fb) newFallbacks.set(fi.tail, fb);
+        }
+        if (detectHolding(rawPositions)) holdingTails.add(fi.tail);
       }
+
       if (!controller.signal.aborted) {
         setTracks(newTracks);
         setFallbacks(newFallbacks);
@@ -210,7 +221,7 @@ function FlightTracks({
       }
     })();
     return () => controller.abort();
-  }, [flightInfo, airborneSet]);
+  }, [enRouteKeyRef.current]);
 
   return (
     <>
