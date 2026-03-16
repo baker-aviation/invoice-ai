@@ -16,6 +16,7 @@ function faHeaders() {
 /**
  * Last time we checked for unregistered tails.
  * Only run once every 30 minutes to avoid hammering FA.
+ * Uses both in-memory (fast) and Supabase (survives cold starts) cooldowns.
  */
 let lastRefreshMs = 0;
 const REFRESH_INTERVAL_MS = 30 * 60 * 1000; // 30 min
@@ -69,11 +70,31 @@ async function listFaAlerts(): Promise<FaAlert[]> {
  * Fire-and-forget — errors are logged but don't propagate.
  */
 export async function refreshAlerts(tails: string[], activeTails: string[], callsignMap?: Map<string, string>): Promise<void> {
-  // Skip if checked recently
+  // Skip if checked recently (in-memory fast path)
   if (Date.now() - lastRefreshMs < REFRESH_INTERVAL_MS) {
     console.log("[FA Alerts] Skipped — checked", Math.round((Date.now() - lastRefreshMs) / 60000), "min ago");
     return;
   }
+
+  // Supabase cooldown — survives Vercel cold starts (in-memory resets to 0)
+  try {
+    const cooldownSupa = createServiceClient();
+    const { data: cooldownRow } = await cooldownSupa
+      .from("fa_alert_registrations")
+      .select("updated_at")
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .single();
+    if (cooldownRow?.updated_at) {
+      const lastDbMs = new Date(cooldownRow.updated_at).getTime();
+      if (Date.now() - lastDbMs < REFRESH_INTERVAL_MS) {
+        lastRefreshMs = lastDbMs; // sync in-memory with DB
+        console.log("[FA Alerts] Skipped — DB says checked", Math.round((Date.now() - lastDbMs) / 60000), "min ago");
+        return;
+      }
+    }
+  } catch { /* proceed if DB check fails */ }
+
   lastRefreshMs = Date.now();
 
   const apiKey = process.env.FLIGHTAWARE_API_KEY?.trim();

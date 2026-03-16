@@ -16,9 +16,28 @@ export async function POST(req: NextRequest) {
 
   const url = `${opsUrl.replace(/\/$/, "")}/jobs/sync_schedule`;
 
+  // The ops-monitor has a dual auth layer:
+  //   1. Cloud Run IAM (OIDC token) — handled by cloudRunFetch
+  //   2. App-level SERVICE_AUTH_TOKEN — static Bearer token checked by auth_middleware.py
+  // If SERVICE_AUTH_TOKEN is available, use it directly (simpler, avoids OIDC audience issues).
+  // Otherwise fall back to OIDC via cloudRunFetch.
+  const serviceToken = process.env.SERVICE_AUTH_TOKEN;
+
   try {
-    // Call ops-monitor with OIDC token (Cloud Run requires IAM auth)
-    const res = await cloudRunFetch(url, { method: "POST", cache: "no-store" });
+    let res: Response;
+
+    if (serviceToken) {
+      // Direct call with static service token — bypasses OIDC complexity
+      res = await fetch(url, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${serviceToken}` },
+        cache: "no-store",
+      });
+    } else {
+      // Fall back to OIDC token for Cloud Run IAM auth
+      res = await cloudRunFetch(url, { method: "POST", cache: "no-store" });
+    }
+
     const text = await res.text();
     let data: Record<string, unknown>;
     try {
