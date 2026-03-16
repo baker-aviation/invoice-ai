@@ -4,9 +4,9 @@ import { getFlightTrack, type FaTrackPoint } from "@/lib/flightaware";
 
 export const dynamic = "force-dynamic";
 
-// Cache: 15 minutes per flight, keyed by flightId (reduced FA API costs)
+// Cache: 5 minutes per flight, keyed by flightId (reduced FA API costs)
 const cache = new Map<string, { data: FaTrackPoint[]; ts: number }>();
-const CACHE_TTL = 15 * 60_000;
+const CACHE_TTL = 5 * 60_000;
 const MAX_CACHE_SIZE = 30;
 
 export async function GET(
@@ -38,7 +38,10 @@ export async function GET(
       const oldest = [...cache.entries()].sort((a, b) => a[1].ts - b[1].ts)[0];
       if (oldest) cache.delete(oldest[0]);
     }
-    cache.set(flightId, { data: positions, ts: Date.now() });
+    // Only cache non-empty results — empty tracks should be retried next cycle
+    if (positions.length > 0) {
+      cache.set(flightId, { data: positions, ts: Date.now() });
+    }
     return NextResponse.json({ positions, cached: false });
   } catch {
     return NextResponse.json({

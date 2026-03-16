@@ -632,6 +632,11 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
           const faDepMs = fi.actual_departure ? new Date(fi.actual_departure).getTime() : null;
           const isGhostFlight = faDepMs && !fi.actual_arrival && (Date.now() - faDepMs > 6 * 3600_000);
           if (fi.latitude != null && fi.longitude != null && !hasLanded && !isGhostFlight) {
+            // Determine on_ground from FA status and altitude
+            const faStatus = (fi.status ?? "").toLowerCase();
+            const isAirborne = faStatus.includes("en route") || faStatus.includes("diverted")
+              || (fi.altitude != null && fi.altitude > 200)
+              || (fi.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100);
             positions.push({
               tail: fi.tail,
               lat: fi.latitude,
@@ -640,7 +645,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
               gs: fi.groundspeed ?? null,
               track: fi.heading ?? null,
               baro_rate: null,
-              on_ground: false,
+              on_ground: !isAirborne,
               squawk: null,
               flight: fi.ident ?? null,
               seen: null,
