@@ -8,6 +8,7 @@ import { getCache, setCache, isCacheFresh, isRefreshing, tryClaimRefresh, clearR
 import { refreshAlerts } from "@/lib/faAlerts";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 120; // 2 min — fetching 15+ tails from FA in batches takes time
 
 // Fallback tail numbers
 const FALLBACK_TAILS = [...new Set(TRIPS.map((t) => t.tail))];
