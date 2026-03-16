@@ -120,15 +120,20 @@ export async function setCache(data: FlightInfo[]): Promise<void> {
   const ts = Date.now();
   memCache = { data, ts };
 
-  // Persist to Supabase (fire-and-forget)
+  // Persist to Supabase
   try {
     const supa = createServiceClient();
-    await supa
+    const { error } = await supa
       .from("flight_cache")
       .update({ data: data as unknown as Record<string, unknown>[], updated_at: new Date(ts).toISOString() })
       .eq("id", 1);
-  } catch {
-    // Non-fatal — in-memory cache still works
+    if (error) {
+      console.error("[FlightCache] Supabase write failed:", error.message, "data size:", JSON.stringify(data).length, "bytes");
+    } else {
+      console.log("[FlightCache] Wrote", data.length, "flights to Supabase cache");
+    }
+  } catch (err) {
+    console.error("[FlightCache] Supabase write error:", err);
   }
 }
 
