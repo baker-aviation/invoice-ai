@@ -184,7 +184,7 @@ export async function getFlightsByRegistration(
 /**
  * Get the last position for a specific flight by fa_flight_id.
  */
-async function getFlightPosition(
+export async function getFlightPosition(
   faFlightId: string,
 ): Promise<FaPosition | null> {
   const url = `${BASE}/flights/${encodeURIComponent(faFlightId)}/position`;
@@ -433,7 +433,7 @@ function pickActiveFlight(flights: FaFlight[]): FaFlight | null {
   return upcoming ?? null;
 }
 
-function toFlightInfo(tail: string, f: FaFlight): FlightInfo {
+export function toFlightInfo(tail: string, f: FaFlight): FlightInfo {
   return {
     tail,
     ident: f.ident,

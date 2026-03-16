@@ -1,191 +1,58 @@
 import { NextRequest, NextResponse } from "next/server";
-import { after } from "next/server";
 import { requireAuth, isAuthed } from "@/lib/api-auth";
-import { getActiveFlights } from "@/lib/flightaware";
-import { TRIPS } from "@/lib/maintenanceData";
 import { createServiceClient } from "@/lib/supabase/service";
-import { getCache, setCache, isCacheFresh, isRefreshing, tryClaimRefresh, clearRefreshing } from "@/lib/flightCache";
-import { refreshAlerts } from "@/lib/faAlerts";
+import type { FlightInfo } from "@/lib/flightaware";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 120; // 2 min — fetching 15+ tails from FA in batches takes time
-
-// Fallback tail numbers
-const FALLBACK_TAILS = [...new Set(TRIPS.map((t) => t.tail))];
-
-/** Load callsign mappings from ics_sources table (label → callsign). */
-async function getCallsignMap(): Promise<Map<string, string>> {
-  const supa = createServiceClient();
-  const { data } = await supa
-    .from("ics_sources")
-    .select("label, callsign")
-    .not("callsign", "is", null);
-  const map = new Map<string, string>();
-  for (const row of data ?? []) {
-    if (row.label && row.callsign) map.set(row.label, row.callsign);
-  }
-  return map;
-}
-
-/** Fetch tail numbers from DB + fallback list.
- *  Returns { allTails, activeTails } where activeTails are tails with flights
- *  in the ±48h window (used for FA alert registration to limit push costs). */
-async function getTails(): Promise<{ allTails: string[]; activeTails: string[] }> {
-  const supa = createServiceClient();
-  const now = new Date();
-  const past = new Date(now.getTime() - 48 * 60 * 60 * 1000).toISOString();
-  const future = new Date(now.getTime() + 48 * 60 * 60 * 1000).toISOString();
-
-  const { data: dbFlights } = await supa
-    .from("flights")
-    .select("tail_number")
-    .gte("scheduled_departure", past)
-    .lte("scheduled_departure", future);
-
-  const activeTails = [...new Set(
-    (dbFlights ?? [])
-      .map((f) => f.tail_number as string | null)
-      .filter((t): t is string => !!t),
-  )];
-
-  const allTails = [...new Set([...activeTails, ...FALLBACK_TAILS])];
-  return { allTails, activeTails };
-}
 
 export async function GET(req: NextRequest) {
   const auth = await requireAuth(req);
   if (!isAuthed(auth)) return auth.error;
 
-  // If FA key is missing, serve from shared Supabase cache (written by prod) — no API calls
-  if (!process.env.FLIGHTAWARE_API_KEY) {
-    const stale = await getCache();
-    return NextResponse.json({
-      flights: stale?.data ?? [],
-      count: stale?.data.length ?? 0,
-      cached: true,
-      cached_at: stale ? new Date(stale.ts).toISOString() : null,
-      cache_age_s: stale ? Math.round((Date.now() - stale.ts) / 1000) : null,
-      cache_only: true,
-    });
+  const supabase = createServiceClient();
+  const cutoff = new Date(Date.now() - 36 * 60 * 60 * 1000).toISOString();
+
+  const { data, error } = await supabase
+    .from("fa_flights")
+    .select("*")
+    .gt("updated_at", cutoff)
+    .order("departure_time", { ascending: true, nullsFirst: false });
+
+  if (error) {
+    console.error("[Flights] fa_flights query failed:", error);
+    return NextResponse.json(
+      { error: "Failed to query flights", detail: error.message },
+      { status: 500 },
+    );
   }
 
-  // Return cache if fresh (unless ?refresh=true)
-  const forceRefresh = req.nextUrl.searchParams.get("refresh") === "true";
-  const cacheFresh = await isCacheFresh();
-  const cachedResult = await getCache();
+  const flights: FlightInfo[] = (data ?? []).map((row) => ({
+    tail: row.tail,
+    ident: row.ident,
+    fa_flight_id: row.fa_flight_id,
+    origin_icao: row.origin_icao,
+    origin_name: row.origin_name,
+    destination_icao: row.destination_icao,
+    destination_name: row.destination_name,
+    status: row.status,
+    progress_percent: row.progress_percent,
+    departure_time: row.departure_time ? new Date(row.departure_time).toISOString() : null,
+    arrival_time: row.arrival_time ? new Date(row.arrival_time).toISOString() : null,
+    scheduled_arrival: row.scheduled_arrival ? new Date(row.scheduled_arrival).toISOString() : null,
+    actual_departure: row.actual_departure ? new Date(row.actual_departure).toISOString() : null,
+    actual_arrival: row.actual_arrival ? new Date(row.actual_arrival).toISOString() : null,
+    route: row.route,
+    route_distance_nm: row.route_distance_nm,
+    filed_altitude: row.filed_altitude,
+    diverted: row.diverted ?? false,
+    cancelled: row.cancelled ?? false,
+    aircraft_type: row.aircraft_type,
+    latitude: row.latitude,
+    longitude: row.longitude,
+    altitude: row.altitude,
+    groundspeed: row.groundspeed,
+    heading: row.heading,
+  }));
 
-  // Stale-while-revalidate: return stale cache immediately, refresh in background
-  // Uses atomic Supabase lock so only one Vercel instance refreshes at a time
-  const refreshing = await isRefreshing();
-  if (!forceRefresh && cachedResult && !cacheFresh && !refreshing) {
-    const claimed = await tryClaimRefresh();
-    if (claimed) {
-      // This instance won the lock — kick off background refresh
-      after(async () => {
-        try {
-          const [{ allTails, activeTails }, csMap] = await Promise.all([getTails(), getCallsignMap()]);
-          console.log("[SWR] Background refresh starting for", activeTails.length, "active tails (of", allTails.length, "total)");
-          const flights = await getActiveFlights(activeTails, csMap);
-
-          // Safety: don't overwrite cache with fewer flights than what's already there.
-          // If after() was terminated early, we might only have 1-2 flights from the first batch.
-          const existing = await getCache();
-          const existingCount = existing?.data.length ?? 0;
-          if (flights.length >= existingCount || flights.length >= 5) {
-            await setCache(flights);
-            console.log("[SWR] Background refresh complete,", flights.length, "flights (was", existingCount, ")");
-          } else {
-            console.warn("[SWR] Refusing to overwrite cache:", flights.length, "flights fetched but cache has", existingCount, "— likely partial fetch");
-          }
-
-          await refreshAlerts(allTails, activeTails, csMap).catch(() => {});
-        } catch (err) {
-          console.error("[SWR] Background refresh failed:", err);
-        } finally {
-          await clearRefreshing();
-        }
-      });
-    }
-
-    return NextResponse.json({
-      flights: cachedResult.data,
-      count: cachedResult.data.length,
-      cached: true,
-      stale: true,
-      cached_at: new Date(cachedResult.ts).toISOString(),
-      cache_age_s: Math.round((Date.now() - cachedResult.ts) / 1000),
-    });
-  }
-
-  // Fresh cache — return immediately
-  if (!forceRefresh && cacheFresh && cachedResult) {
-    // Ensure webhook alerts are registered even on cached responses
-    after(async () => {
-      try {
-          const [{ allTails: at, activeTails: act }, csm] = await Promise.all([getTails(), getCallsignMap()]);
-          await refreshAlerts(at, act, csm);
-        } catch {}
-    });
-    return NextResponse.json({
-      flights: cachedResult.data,
-      count: cachedResult.data.length,
-      cached: true,
-      stale: false,
-      cached_at: new Date(cachedResult.ts).toISOString(),
-      cache_age_s: Math.round((Date.now() - cachedResult.ts) / 1000),
-    });
-  }
-
-  // No cache at all (first load) or force refresh — block and fetch
-  // Only query tails with flights in ±48h to reduce FA API costs
-  const [{ allTails: tails, activeTails }, callsignMap] = await Promise.all([getTails(), getCallsignMap()]);
-
-  try {
-    console.log("[Flights] Blocking fetch for", activeTails.length, "active tails");
-    const flights = await getActiveFlights(activeTails, callsignMap);
-    console.log("[Flights] Got", flights.length, "flights from FA for", activeTails.length, "tails");
-    await setCache(flights);
-    await clearRefreshing(); // in case a background refresh was somehow flagged
-
-    // Auto-register FA webhook alerts for active tails only — runs after response is sent
-    after(async () => {
-      try {
-        console.log("[FA Alerts] after() starting refreshAlerts for", activeTails.length, "active tails (of", tails.length, "total)");
-        await refreshAlerts(tails, activeTails, callsignMap);
-        console.log("[FA Alerts] after() completed");
-      } catch (err) {
-        console.error("[FA Alerts] after() failed:", err);
-      }
-    });
-
-    // Count flights per tail for debugging
-    const perTail: Record<string, number> = {};
-    let withPosition = 0;
-    for (const f of flights) {
-      perTail[f.tail] = (perTail[f.tail] ?? 0) + 1;
-      if (f.latitude != null && f.longitude != null) withPosition++;
-    }
-
-    return NextResponse.json({
-      flights,
-      count: flights.length,
-      with_position: withPosition,
-      total_tails: tails.length,
-      tails_queried: tails,
-      flights_per_tail: perTail,
-      cached: false,
-      stale: false,
-      cached_at: new Date().toISOString(),
-      cache_age_s: 0,
-    });
-  } catch (err) {
-    const stale = await getCache();
-    return NextResponse.json({
-      flights: stale?.data ?? [],
-      count: stale?.data.length ?? 0,
-      error: "FlightAware query failed",
-      stale: true,
-      cached: true,
-    });
-  }
+  return NextResponse.json({ flights, count: flights.length, cached: false });
 }

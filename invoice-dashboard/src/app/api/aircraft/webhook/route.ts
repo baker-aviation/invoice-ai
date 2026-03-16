@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/service";
-import { updateFlightInCache } from "@/lib/flightCache";
-import type { FlightInfo } from "@/lib/flightaware";
 
 export const dynamic = "force-dynamic";
 
@@ -10,7 +8,7 @@ export const dynamic = "force-dynamic";
  *
  * FA sends POST requests here when alert events fire (filed, departure,
  * arrival, cancelled, diverted). We store the event in Supabase and
- * update the flight in cache directly — no full FA re-poll needed.
+ * upsert the flight into the fa_flights table directly — no full FA re-poll needed.
  *
  * Auth: shared secret as query param — ?secret=<FLIGHTAWARE_WEBHOOK_SECRET>
  */
@@ -60,8 +58,8 @@ export async function POST(req: NextRequest) {
   );
 
   // Store in Supabase
+  const supa = createServiceClient();
   try {
-    const supa = createServiceClient();
     await supa.from("flight_events").insert({
       alert_id: alertId ?? null,
       event_code: eventCode,
@@ -80,36 +78,40 @@ export async function POST(req: NextRequest) {
     // Still return 200 so FA doesn't retry endlessly
   }
 
-  // Update the specific flight in cache instead of invalidating everything
-  if (faFlightId && registration) {
-    const update: Partial<FlightInfo> & { fa_flight_id: string } = {
+  // Upsert flight data directly into fa_flights table
+  if (faFlightId) {
+    const upsertData: Record<string, unknown> = {
       fa_flight_id: faFlightId,
-      ident: ident ?? undefined,
+      tail: registration,
+      ident: ident,
       aircraft_type: aircraftType,
       origin_icao: origin,
       destination_icao: destination,
-      diverted: eventCode === "diverted",
-      cancelled: eventCode === "cancelled",
+      updated_at: new Date().toISOString(),
     };
 
-    // Map event codes to status
+    // Add event-specific fields
     if (eventCode === "departure") {
-      update.status = "En Route";
-      update.actual_departure = new Date().toISOString();
+      upsertData.status = "En Route";
+      upsertData.actual_departure = new Date().toISOString();
     } else if (eventCode === "arrival") {
-      update.status = "Landed";
-      update.actual_arrival = new Date().toISOString();
-    } else if (eventCode === "cancelled") {
-      update.status = "Cancelled";
-    } else if (eventCode === "diverted") {
-      update.status = "Diverted";
+      upsertData.status = "Landed";
+      upsertData.actual_arrival = new Date().toISOString();
     } else if (eventCode === "filed") {
-      update.status = "Filed";
+      upsertData.status = "Filed";
+    } else if (eventCode === "cancelled") {
+      upsertData.status = "Cancelled";
+      upsertData.cancelled = true;
+    } else if (eventCode === "diverted") {
+      upsertData.status = "Diverted";
+      upsertData.diverted = true;
     }
 
-    updateFlightInCache(registration, update).catch((err) => {
-      console.error("[FA Webhook] Cache update failed:", err);
-    });
+    try {
+      await supa.from("fa_flights").upsert(upsertData, { onConflict: "fa_flight_id" });
+    } catch (err) {
+      console.error("[FA Webhook] fa_flights upsert failed:", err);
+    }
   }
 
   // Process events immediately for real-time alerts (fire-and-forget)
