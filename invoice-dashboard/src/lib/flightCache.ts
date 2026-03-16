@@ -87,13 +87,14 @@ function hasAirborneFlights(flights: FlightInfo[]): boolean {
 }
 
 export function getCacheTtl(): number {
-  if (memCache && hasAirborneFlights(memCache.data)) return AIRBORNE_TTL;
+  if (memCache && memCache.data.length > 0 && hasAirborneFlights(memCache.data)) return AIRBORNE_TTL;
+  if (memCache && memCache.data.length === 0) return 0; // empty cache is never fresh
   return IDLE_TTL;
 }
 
 export async function getCache(): Promise<{ data: FlightInfo[]; ts: number } | null> {
-  // Fast path: in-memory
-  if (memCache) return memCache;
+  // Fast path: in-memory (only if we actually have flight data)
+  if (memCache && memCache.data.length > 0) return memCache;
 
   // Cold start: load from Supabase
   try {
@@ -120,15 +121,20 @@ export async function setCache(data: FlightInfo[]): Promise<void> {
   const ts = Date.now();
   memCache = { data, ts };
 
-  // Persist to Supabase (fire-and-forget)
+  // Persist to Supabase
   try {
     const supa = createServiceClient();
-    await supa
+    const { error } = await supa
       .from("flight_cache")
       .update({ data: data as unknown as Record<string, unknown>[], updated_at: new Date(ts).toISOString() })
       .eq("id", 1);
-  } catch {
-    // Non-fatal — in-memory cache still works
+    if (error) {
+      console.error("[FlightCache] Supabase write failed:", error.message, "data size:", JSON.stringify(data).length, "bytes");
+    } else {
+      console.log("[FlightCache] Wrote", data.length, "flights to Supabase cache");
+    }
+  } catch (err) {
+    console.error("[FlightCache] Supabase write error:", err);
   }
 }
 

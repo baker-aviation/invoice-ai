@@ -1043,7 +1043,12 @@ function daysRemaining(endTime: string | null): number {
 }
 
 /** Single MX note row with expandable description */
-function MxNoteRow({ note, onHideForToday }: { note: MxNote; onHideForToday?: (id: string) => void }) {
+function MxNoteRow({ note, onHideForToday, vanOverride, onVanOverride }: {
+  note: MxNote;
+  onHideForToday?: (id: string) => void;
+  vanOverride?: number | null;
+  onVanOverride?: (noteId: string, vanId: number | null) => void;
+}) {
   const [descOpen, setDescOpen] = useState(false);
   return (
     <div className="rounded-lg px-3 py-1.5 bg-orange-50 border border-orange-200">
@@ -1073,14 +1078,28 @@ function MxNoteRow({ note, onHideForToday }: { note: MxNote; onHideForToday?: (i
               {note.description}
             </div>
           )}
-          {onHideForToday && (
-            <button
-              onClick={() => onHideForToday(note.id)}
-              className="text-[10px] font-medium text-orange-400 hover:text-orange-700 hover:bg-orange-50 border border-orange-200 rounded px-2 py-0.5 mt-1 transition-colors"
-            >
-              Hide for Today
-            </button>
-          )}
+          <div className="flex items-center gap-2 mt-1">
+            {onHideForToday && (
+              <button
+                onClick={() => onHideForToday(note.id)}
+                className="text-[10px] font-medium text-orange-400 hover:text-orange-700 hover:bg-orange-50 border border-orange-200 rounded px-2 py-0.5 transition-colors"
+              >
+                Hide for Today
+              </button>
+            )}
+            {onVanOverride && (
+              <select
+                value={vanOverride ?? ""}
+                onChange={(e) => onVanOverride(note.id, e.target.value ? Number(e.target.value) : null)}
+                className="text-[10px] border border-orange-200 rounded px-1.5 py-0.5 bg-white text-gray-600"
+              >
+                <option value="">Default Van</option>
+                {FIXED_VAN_ZONES.map((z) => (
+                  <option key={z.vanId} value={z.vanId}>V{z.vanId} {z.name}</option>
+                ))}
+              </select>
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -1088,7 +1107,7 @@ function MxNoteRow({ note, onHideForToday }: { note: MxNote; onHideForToday?: (i
 }
 
 /** Inline MX notes per aircraft — only non-MEL MX items (MELs moved to van-level accordion) */
-function MxNoteInline({ notes, hiddenIds, onHideForToday }: { notes: MxNote[]; hiddenIds?: Set<string>; onHideForToday?: (id: string) => void }) {
+function MxNoteInline({ notes, hiddenIds, onHideForToday, vanOverrides, onVanOverride }: { notes: MxNote[]; hiddenIds?: Set<string>; onHideForToday?: (id: string) => void; vanOverrides?: Map<string, number>; onVanOverride?: (noteId: string, vanId: number | null) => void }) {
   const todayEt = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
   const tomorrowEt = (() => { const d = new Date(); d.setDate(d.getDate() + 1); return d.toLocaleDateString("en-CA", { timeZone: "America/New_York" }); })();
   const visible = notes.filter((n) => {
@@ -1103,7 +1122,7 @@ function MxNoteInline({ notes, hiddenIds, onHideForToday }: { notes: MxNote[]; h
   return (
     <div className="ml-8 mt-1 space-y-1">
       {visible.map((n) => (
-        <MxNoteRow key={n.id} note={n} onHideForToday={onHideForToday} />
+        <MxNoteRow key={n.id} note={n} onHideForToday={onHideForToday} vanOverride={vanOverrides?.get(n.id) ?? null} onVanOverride={onVanOverride} />
       ))}
     </div>
   );
@@ -1393,7 +1412,7 @@ function AircraftCompactRow({
   fi, arrTime, hasLanded, delayMin, isEnRoute, faLanded,
   doneForDay, isQuickturn, hasMaintenance, extraLegs,
   color, zone, date,
-  mxNotes, hiddenTodayMxIds, onHideMxForToday,
+  mxNotes, hiddenTodayMxIds, onHideMxForToday, mxVanOverrides, onVanOverride,
   legNote, onSaveNote, onDragStart, onRemove, onSetPrimaryAirport,
 }: {
   arrFlight: Flight;
@@ -1419,6 +1438,8 @@ function AircraftCompactRow({
   mxNotes: MxNote[];
   hiddenTodayMxIds: Set<string>;
   onHideMxForToday: (id: string) => void;
+  mxVanOverrides?: Map<string, number>;
+  onVanOverride?: (noteId: string, vanId: number | null) => void;
   legNote: string;
   onSaveNote: (flightId: string, tailNumber: string | null, note: string) => void;
   onDragStart: (e: React.DragEvent, flightId: string, fromVanId: number) => void;
@@ -1524,7 +1545,7 @@ function AircraftCompactRow({
       )}
 
       {/* MX notes from JetInsight (non-MEL only — MELs in van accordion) */}
-      <MxNoteInline notes={mxNotes} hiddenIds={hiddenTodayMxIds} onHideForToday={onHideMxForToday} />
+      <MxNoteInline notes={mxNotes} hiddenIds={hiddenTodayMxIds} onHideForToday={onHideMxForToday} vanOverrides={mxVanOverrides} onVanOverride={onVanOverride} />
 
       {/* ── Expandable detail section ── */}
       {detailOpen && (
@@ -1616,6 +1637,8 @@ function VanScheduleCard({
   mxNotesByTail,
   hiddenTodayMxIds,
   onHideMxForToday,
+  mxVanOverrides,
+  onVanOverride,
   onSaveNote,
   onDragStart,
   onDragOver,
@@ -1640,6 +1663,8 @@ function VanScheduleCard({
   mxNotesByTail: Map<string, MxNote[]>;
   hiddenTodayMxIds: Set<string>;
   onHideMxForToday: (id: string) => void;
+  mxVanOverrides?: Map<string, number>;
+  onVanOverride?: (noteId: string, vanId: number | null) => void;
   onSaveNote: (flightId: string, tailNumber: string | null, note: string) => void;
   onDragStart: (e: React.DragEvent, flightId: string, fromVanId: number) => void;
   onDragOver: (e: React.DragEvent) => void;
@@ -1823,6 +1848,8 @@ function VanScheduleCard({
                     mxNotes={mxNotesByTail.get(arrFlight.tail_number ?? "") ?? []}
                     hiddenTodayMxIds={hiddenTodayMxIds}
                     onHideMxForToday={onHideMxForToday}
+                    mxVanOverrides={mxVanOverrides}
+                    onVanOverride={onVanOverride}
                     legNote={legNotes.get(arrFlight.id) ?? ""}
                     onSaveNote={onSaveNote}
                     onDragStart={onDragStart}
@@ -1860,6 +1887,8 @@ function ScheduleTab({
   longTermMxTails,
   hiddenTodayMxIds,
   onHideMxForToday,
+  mxVanOverrides,
+  onVanOverride,
   fboMap,
 }: {
   allFlights: Flight[];
@@ -1872,6 +1901,8 @@ function ScheduleTab({
   longTermMxTails: Set<string>;
   hiddenTodayMxIds: Set<string>;
   onHideMxForToday: (id: string) => void;
+  mxVanOverrides?: Map<string, number>;
+  onVanOverride?: (noteId: string, vanId: number | null) => void;
   fboMap?: Record<string, string>;
 }) {
   const hasLive = liveVanPositions.size > 0;
@@ -2804,7 +2835,7 @@ function ScheduleTab({
                       )}
                     </div>
                     {/* MX notes from JetInsight */}
-                    <MxNoteInline notes={mxNotesByTail.get(tail ?? "") ?? []} hiddenIds={hiddenTodayMxIds} onHideForToday={onHideMxForToday} />
+                    <MxNoteInline notes={mxNotesByTail.get(tail ?? "") ?? []} hiddenIds={hiddenTodayMxIds} onHideForToday={onHideMxForToday} vanOverrides={mxVanOverrides} onVanOverride={onVanOverride} />
                   </div>
                 );
               })}
@@ -2900,7 +2931,7 @@ function ScheduleTab({
                       {ac.airportInfo.name}, {ac.airportInfo.state}
                     </div>
                   )}
-                  <MxNoteInline notes={mxNotesByTail.get(ac.tail) ?? []} hiddenIds={hiddenTodayMxIds} onHideForToday={onHideMxForToday} />
+                  <MxNoteInline notes={mxNotesByTail.get(ac.tail) ?? []} hiddenIds={hiddenTodayMxIds} onHideForToday={onHideMxForToday} vanOverrides={mxVanOverrides} onVanOverride={onVanOverride} />
                 </div>
               ))}
             </div>}
@@ -2932,6 +2963,8 @@ function ScheduleTab({
               mxNotesByTail={mxNotesByTail}
               hiddenTodayMxIds={hiddenTodayMxIds}
               onHideMxForToday={onHideMxForToday}
+              mxVanOverrides={mxVanOverrides}
+              onVanOverride={onVanOverride}
               onSaveNote={saveLegNote}
               onDragStart={handleDragStart}
               onDragOver={handleDragOver}
@@ -3354,6 +3387,41 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
   const [melAccordionOpen, setMelAccordionOpen] = useState(false);
   const [mxConflictsOpen, setMxConflictsOpen] = useState(false);
   const [dismissedMxIds, setDismissedMxIds] = useState<Set<string>>(new Set());
+
+  // Van overrides for MX notes — allows assigning individual MX notes to different vans
+  const [mxVanOverrides, setMxVanOverrides] = useState<Map<string, number>>(new Map());
+
+  // Load van overrides on mount
+  useEffect(() => {
+    fetch("/api/ops/mx-van-override")
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        if (!data?.overrides) return;
+        const map = new Map<string, number>();
+        for (const o of data.overrides as { mx_note_id: string; van_id: number }[]) {
+          map.set(o.mx_note_id, o.van_id);
+        }
+        setMxVanOverrides(map);
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleVanOverride = useCallback(async (noteId: string, vanId: number | null) => {
+    // Optimistic update
+    setMxVanOverrides((prev) => {
+      const next = new Map(prev);
+      if (vanId == null) next.delete(noteId);
+      else next.set(noteId, vanId);
+      return next;
+    });
+    try {
+      await fetch("/api/ops/mx-van-override", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mxNoteId: noteId, vanId }),
+      });
+    } catch { /* non-fatal */ }
+  }, []);
 
   const dismissMxNote = useCallback(async (id: string) => {
     // Optimistic UI update
@@ -4424,7 +4492,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
 
       {/* ── Schedule tab ── */}
       {activeTab === "schedule" && (
-        <ScheduleTab allFlights={activeFlights} date={selectedDate} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} flightInfoMap={flightInfoMap} mxNotesByTail={mxNotesByTail} longTermMxTails={longTermMxTails} hiddenTodayMxIds={hiddenTodayMxIds} onHideMxForToday={hideMxForToday} fboMap={fboMap} />
+        <ScheduleTab allFlights={activeFlights} date={selectedDate} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} flightInfoMap={flightInfoMap} mxNotesByTail={mxNotesByTail} longTermMxTails={longTermMxTails} hiddenTodayMxIds={hiddenTodayMxIds} onHideMxForToday={hideMxForToday} mxVanOverrides={mxVanOverrides} onVanOverride={handleVanOverride} fboMap={fboMap} />
       )}
 
       {/* ── Flight Schedule tab — grouped by aircraft ── */}
