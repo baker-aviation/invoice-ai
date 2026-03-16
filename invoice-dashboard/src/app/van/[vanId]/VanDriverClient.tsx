@@ -91,8 +91,13 @@ function getFlightStatus(
     return { label: "En Route", accent: "text-blue-600 dark:text-blue-400", borderColor: "border-l-blue-500" };
   }
 
-  // Check for delays (scheduled vs FA arrival)
+  // If scheduled arrival is in the past and FA doesn't show en route, treat as landed
   const schedArr = item.arrFlight.scheduled_arrival;
+  if (schedArr && new Date(schedArr).getTime() < Date.now()) {
+    return { label: "Landed", accent: "text-green-600 dark:text-green-400", borderColor: "border-l-green-500" };
+  }
+
+  // Check for delays (scheduled vs FA arrival) — only for non-landed flights
   const faArr = fi?.arrival_time;
   if (schedArr && faArr) {
     const diffMin = (new Date(faArr).getTime() - new Date(schedArr).getTime()) / 60000;

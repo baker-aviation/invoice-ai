@@ -1518,13 +1518,13 @@ function AircraftCompactRow({
             </span>
           ) : (
             <span className={`text-xs font-semibold rounded-full px-2 py-0.5 ${hasLanded ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-600"}`}>
-              {hasLanded ? "~Landed" : "Scheduled"}
+              {hasLanded ? "Landed" : "Scheduled"}
             </span>
           )}
-          {!fi?.diverted && delayMin > 30 && (
+          {!fi?.diverted && !faLanded && !hasLanded && delayMin > 30 && (
             <span className="text-xs font-semibold rounded-full px-2 py-0.5 bg-red-100 text-red-700">Delayed ~{delayMin}m</span>
           )}
-          {!fi?.diverted && delayMin > 15 && delayMin <= 30 && (
+          {!fi?.diverted && !faLanded && !hasLanded && delayMin > 15 && delayMin <= 30 && (
             <span className="text-xs font-semibold rounded-full px-2 py-0.5 bg-amber-100 text-amber-700">Delayed ~{delayMin}m</span>
           )}
           {/* Expand/collapse detail */}
