@@ -30,6 +30,11 @@ const POST_TIME_MIN = 30; // duty ends 30min after last leg
 // Only include revenue/charter and positioning legs for duty tracking
 const DUTY_FLIGHT_TYPES = new Set(["revenue", "owner", "positioning", "ferry", "charter"]);
 
+/** Find the active (unacknowledged) EDCT alert for a flight */
+function getActiveEdct(f: Flight): { edct_time: string } | null {
+  return f.alerts?.find(a => a.alert_type === "EDCT" && a.edct_time && !a.acknowledged_at) as { edct_time: string } | null ?? null;
+}
+
 /* ── Types ──────────────────────────────────────────── */
 
 type LegInterval = {
@@ -71,6 +76,10 @@ type TailData = {
   hasFlightsTomorrow: boolean;
   breachLegKey: string | null; // "dpIdx-legIdx" of the leg that pushes past 10h
   suggestion: string | null; // fix suggestion text
+  // EDCT-adjusted variant (only present when tail has active EDCTs)
+  edctMaxRolling24hrMin: number | null;
+  edctRestPeriods: RestPeriod[] | null;
+  edctChartPoints: ChartPoint[] | null;
 };
 
 
@@ -561,12 +570,78 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
       const breachLegKey = maxRolling24hrMin >= FLIGHT_TIME_YELLOW_MIN ? findBreachLeg(dutyPeriods) : null;
       const suggestion = maxRolling24hrMin >= FLIGHT_TIME_YELLOW_MIN ? computeSuggestion(dutyPeriods, breachLegKey) : null;
 
-      result.push({ tail, dutyPeriods, restPeriods, maxRolling24hrMin, chartPoints, hasFlightsTomorrow, breachLegKey, suggestion });
+      // EDCT-adjusted variant: shift EDCT legs AND cascade delay to subsequent legs
+      let edctMaxRolling24hrMin: number | null = null;
+      let edctRestPeriods: RestPeriod[] | null = null;
+      const tailFlights = flights.filter(f => f.tail_number === tail);
+      const hasEdct = tailFlights.some(f => getActiveEdct(f) != null);
+      if (hasEdct) {
+        // Build EDCT-shifted legs: shift EDCT leg, then cascade delay to later legs
+        const edctLegs = validLegs.map(leg => ({ ...leg }));
+        // Sort by departure time
+        edctLegs.sort((a, b) => a.startMs - b.startMs);
+        // Apply EDCT shifts
+        for (const leg of edctLegs) {
+          const matchedFlight = tailFlights.find(f =>
+            f.departure_icao === leg.departure_icao &&
+            f.arrival_icao === leg.arrival_icao &&
+            Math.abs(new Date(f.scheduled_departure).getTime() - leg.startMs) < 2 * 60 * 60 * 1000
+          );
+          if (!matchedFlight) continue;
+          const edct = getActiveEdct(matchedFlight);
+          if (!edct?.edct_time) continue;
+          const deltaMs = new Date(edct.edct_time).getTime() - new Date(matchedFlight.scheduled_departure).getTime();
+          if (deltaMs <= 0) continue;
+          leg.startMs += deltaMs;
+          leg.endMs += deltaMs;
+        }
+        // Cascade: if leg N ends after leg N+1 starts, push N+1 forward
+        edctLegs.sort((a, b) => a.startMs - b.startMs);
+        for (let i = 1; i < edctLegs.length; i++) {
+          if (edctLegs[i].startMs < edctLegs[i - 1].endMs) {
+            const shift = edctLegs[i - 1].endMs - edctLegs[i].startMs;
+            edctLegs[i].startMs += shift;
+            edctLegs[i].endMs += shift;
+          }
+        }
+        edctMaxRolling24hrMin = findMaxRolling24(edctLegs);
+        const edctDPs = groupIntoDutyPeriods(edctLegs);
+        edctRestPeriods = buildRestPeriods(edctDPs);
+      }
+      const edctChartPoints = hasEdct ? buildRolling24Chart((() => {
+        const el = validLegs.map(leg => ({ ...leg }));
+        el.sort((a, b) => a.startMs - b.startMs);
+        for (const leg of el) {
+          const mf = tailFlights.find(f =>
+            f.departure_icao === leg.departure_icao &&
+            f.arrival_icao === leg.arrival_icao &&
+            Math.abs(new Date(f.scheduled_departure).getTime() - leg.startMs) < 2 * 60 * 60 * 1000
+          );
+          if (!mf) continue;
+          const edct = getActiveEdct(mf);
+          if (!edct?.edct_time) continue;
+          const deltaMs = new Date(edct.edct_time).getTime() - new Date(mf.scheduled_departure).getTime();
+          if (deltaMs <= 0) continue;
+          leg.startMs += deltaMs;
+          leg.endMs += deltaMs;
+        }
+        el.sort((a, b) => a.startMs - b.startMs);
+        for (let i = 1; i < el.length; i++) {
+          if (el[i].startMs < el[i - 1].endMs) {
+            const shift = el[i - 1].endMs - el[i].startMs;
+            el[i].startMs += shift;
+            el[i].endMs += shift;
+          }
+        }
+        return el;
+      })()) : null;
+
+      result.push({ tail, dutyPeriods, restPeriods, maxRolling24hrMin, chartPoints, hasFlightsTomorrow, breachLegKey, suggestion, edctMaxRolling24hrMin, edctRestPeriods, edctChartPoints });
     }
 
     result.sort((a, b) => b.maxRolling24hrMin - a.maxRolling24hrMin);
     return result;
-  }, [intervalsByTail]);
+  }, [intervalsByTail, flights]);
 
   // Scroll to a specific tail card when requested.
   // Depends on tailData so it re-fires after FA data recomputes the card list.
@@ -661,6 +736,20 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
                       {isRed && <span className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-red-100 text-red-700 uppercase">Limit</span>}
                       {isYellow && <span className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-amber-100 text-amber-700 uppercase">Caution</span>}
                     </div>
+                    {td.edctMaxRolling24hrMin != null && td.edctMaxRolling24hrMin !== td.maxRolling24hrMin && (() => {
+                      const eIsRed = td.edctMaxRolling24hrMin >= FLIGHT_TIME_RED_MIN;
+                      const eIsYellow = !eIsRed && td.edctMaxRolling24hrMin >= FLIGHT_TIME_YELLOW_MIN;
+                      return (
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <span className="text-[10px] text-gray-400">EDCT:</span>
+                          <span className={`font-mono font-medium text-xs ${eIsRed ? "text-red-700" : eIsYellow ? "text-amber-700" : "text-green-700"}`}>
+                            {fmtDuration(td.edctMaxRolling24hrMin)}
+                          </span>
+                          {eIsRed && <span className="px-1 py-0.5 text-[9px] font-bold rounded bg-red-100 text-red-700 uppercase">Limit</span>}
+                          {eIsYellow && <span className="px-1 py-0.5 text-[9px] font-bold rounded bg-amber-100 text-amber-700 uppercase">Caution</span>}
+                        </div>
+                      );
+                    })()}
                   </div>
                   <div className="flex-1 min-w-0 pt-2">
                     <div className="flex items-center gap-2">
@@ -675,17 +764,65 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
                 {/* ── Body: chart + duty periods ── */}
                 <div className="flex flex-col lg:flex-row">
                   {/* Rolling 24h chart */}
-                  {td.chartPoints.length > 1 && (
+                  {td.chartPoints.length > 1 && (() => {
+                    // Merge normal + EDCT chart points into one dataset for Recharts
+                    const hasEdctChart = td.edctChartPoints && td.edctChartPoints.length > 1;
+                    const mergedChart = (() => {
+                      if (!hasEdctChart) return td.chartPoints.map(p => ({ timeMs: p.timeMs, hours: p.hours, edctHours: undefined as number | undefined }));
+                      const allTimes = new Set<number>();
+                      for (const p of td.chartPoints) allTimes.add(p.timeMs);
+                      for (const p of td.edctChartPoints!) allTimes.add(p.timeMs);
+                      const sorted = [...allTimes].sort((a, b) => a - b);
+                      // Interpolate values at each time point
+                      const interpNormal = (t: number) => {
+                        const pts = td.chartPoints;
+                        if (t <= pts[0].timeMs) return pts[0].hours;
+                        if (t >= pts[pts.length - 1].timeMs) return pts[pts.length - 1].hours;
+                        for (let i = 1; i < pts.length; i++) {
+                          if (t <= pts[i].timeMs) {
+                            const frac = (t - pts[i - 1].timeMs) / (pts[i].timeMs - pts[i - 1].timeMs);
+                            return pts[i - 1].hours + frac * (pts[i].hours - pts[i - 1].hours);
+                          }
+                        }
+                        return 0;
+                      };
+                      const interpEdct = (t: number) => {
+                        const pts = td.edctChartPoints!;
+                        if (t <= pts[0].timeMs) return pts[0].hours;
+                        if (t >= pts[pts.length - 1].timeMs) return pts[pts.length - 1].hours;
+                        for (let i = 1; i < pts.length; i++) {
+                          if (t <= pts[i].timeMs) {
+                            const frac = (t - pts[i - 1].timeMs) / (pts[i].timeMs - pts[i - 1].timeMs);
+                            return pts[i - 1].hours + frac * (pts[i].hours - pts[i - 1].hours);
+                          }
+                        }
+                        return 0;
+                      };
+                      return sorted.map(t => ({ timeMs: t, hours: interpNormal(t), edctHours: interpEdct(t) }));
+                    })();
+                    const edctChartMax = hasEdctChart ? Math.max(chartMax, ...td.edctChartPoints!.map(p => p.hours)) : chartMax;
+                    return (
                     <div className="lg:w-[360px] shrink-0 px-3 py-2 border-b lg:border-b-0 lg:border-r border-gray-100">
-                      <div className="text-[10px] text-gray-400 font-medium uppercase tracking-wider mb-1">10 in 24</div>
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-[10px] text-gray-400 font-medium uppercase tracking-wider">10 in 24</span>
+                        {hasEdctChart && (
+                          <span className="text-[9px] text-amber-500 font-medium">— EDCT overlay</span>
+                        )}
+                      </div>
                       <div className="h-[120px]">
                         <ResponsiveContainer width="100%" height="100%">
-                          <AreaChart data={td.chartPoints} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
+                          <AreaChart data={mergedChart} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
                             <defs>
                               <linearGradient id={`grad-${td.tail}`} x1="0" y1="0" x2="0" y2="1">
                                 <stop offset="0%" stopColor={isRed ? "#ef4444" : isYellow ? "#f59e0b" : "#3b82f6"} stopOpacity={0.3} />
                                 <stop offset="100%" stopColor={isRed ? "#ef4444" : isYellow ? "#f59e0b" : "#3b82f6"} stopOpacity={0.05} />
                               </linearGradient>
+                              {hasEdctChart && (
+                                <linearGradient id={`grad-edct-${td.tail}`} x1="0" y1="0" x2="0" y2="1">
+                                  <stop offset="0%" stopColor="#f59e0b" stopOpacity={0.2} />
+                                  <stop offset="100%" stopColor="#f59e0b" stopOpacity={0.02} />
+                                </linearGradient>
+                              )}
                             </defs>
                             <XAxis
                               dataKey="timeMs"
@@ -706,7 +843,7 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
                               minTickGap={40}
                             />
                             <YAxis
-                              domain={[0, Math.ceil(chartMax)]}
+                              domain={[0, Math.ceil(edctChartMax)]}
                               tick={{ fontSize: 9, fill: "#9ca3af" }}
                               tickLine={false}
                               axisLine={false}
@@ -735,7 +872,10 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
                               return lines;
                             })()}
                             <Tooltip
-                              formatter={(value) => [`${Number(value ?? 0).toFixed(1)}h`, "Flight Time"]}
+                              formatter={(value, name) => {
+                                if (name === "edctHours") return [`${Number(value ?? 0).toFixed(1)}h`, "EDCT"];
+                                return [`${Number(value ?? 0).toFixed(1)}h`, "Flight Time"];
+                              }}
                               labelFormatter={(label) => {
                                 const d = new Date(Number(label));
                                 return `${d.getUTCHours().toString().padStart(2, "0")}:${d.getUTCMinutes().toString().padStart(2, "0")}Z`;
@@ -751,11 +891,24 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
                               dot={false}
                               isAnimationActive={false}
                             />
+                            {hasEdctChart && (
+                              <Area
+                                type="monotone"
+                                dataKey="edctHours"
+                                stroke="#f59e0b"
+                                strokeWidth={2}
+                                strokeDasharray="4 3"
+                                fill={`url(#grad-edct-${td.tail})`}
+                                dot={false}
+                                isAnimationActive={false}
+                              />
+                            )}
                           </AreaChart>
                         </ResponsiveContainer>
                       </div>
                     </div>
-                  )}
+                    );
+                  })()}
 
                   {/* Duty periods + rest */}
                   <div className="flex-1 px-4 py-3 text-sm space-y-3">
@@ -826,6 +979,25 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
                                       {rIsRed && <span className="text-[9px] uppercase font-bold">Insufficient</span>}
                                       {rIsYellow && <span className="text-[9px] uppercase font-bold">Marginal</span>}
                                     </div>
+                                    {td.edctRestPeriods && td.edctRestPeriods[dpIdx] && (() => {
+                                      const eRest = td.edctRestPeriods[dpIdx];
+                                      if (Math.abs(eRest.minutes - rest.minutes) < 5) return null; // same — skip
+                                      if (eRest.minutes >= rest.minutes) return null; // EDCT rest should be shorter, not longer
+                                      const eHours = eRest.minutes / 60;
+                                      const eIsRed = eHours < REST_RED_HOURS;
+                                      const eIsYellow = !eIsRed && eHours < REST_YELLOW_HOURS;
+                                      return (
+                                        <div className={`flex items-center gap-2 px-2.5 py-1 rounded-lg text-[10px] font-medium ${
+                                          eIsRed ? "bg-red-50 text-red-700 border border-red-200" :
+                                          eIsYellow ? "bg-amber-50 text-amber-700 border border-amber-200" :
+                                          "bg-green-50 text-green-700 border border-green-200"
+                                        }`}>
+                                          <span>EDCT Rest</span>
+                                          <span className="font-mono">{fmtZulu(eRest.startMs)}→{fmtZulu(eRest.stopMs)}</span>
+                                          <span className="font-mono font-bold">{fmtDuration(eRest.minutes)}</span>
+                                        </div>
+                                      );
+                                    })()}
                                   </>
                                 );
                               })()}

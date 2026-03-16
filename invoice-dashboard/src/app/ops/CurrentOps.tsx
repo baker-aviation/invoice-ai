@@ -112,6 +112,7 @@ const POST_TIME_MS = 30 * 60 * 1000;  // 30min post-duty (matches DutyTracker)
 type TailDutySummary = {
   flightTimeMin: number;
   restMin: number | null;
+  restStartMs: number | null; // duty-off time of the rest period (for EDCT comparison)
 };
 
 /** Compute per-tail 24hr flight time and crew rest from flights + FA data.
@@ -169,8 +170,11 @@ function computeTailDuty(
     const fiDestMatch = fi && fi.destination_icao === f.arrival_icao;
     const actualArr = fiDestMatch ? (fi?.actual_arrival ?? null) : null;
     const estimatedArr = fiDestMatch ? (fi?.arrival_time ?? null) : null;
+    // FA departure_time = best available (actual > estimated > scheduled)
+    const faDep = fi?.departure_time ?? null;
 
-    const depMs = new Date(actualDep ?? f.scheduled_departure).getTime();
+    // Use FA departure when available — matches DutyTracker logic
+    const depMs = new Date(actualDep ?? faDep ?? f.scheduled_departure).getTime();
     let endMs: number;
     let source: "actual" | "fa-estimate" | "scheduled";
     if (actualArr) {
@@ -179,6 +183,9 @@ function computeTailDuty(
     } else if (actualDep && !actualArr) {
       source = estimatedArr ? "fa-estimate" : "actual";
       endMs = estimatedArr ? new Date(estimatedArr).getTime() : nowMs;
+    } else if (faDep && estimatedArr) {
+      source = "fa-estimate";
+      endMs = new Date(estimatedArr).getTime();
     } else if (estimatedArr) {
       source = "fa-estimate";
       endMs = new Date(estimatedArr).getTime();
@@ -275,36 +282,62 @@ function computeTailDuty(
       if (totalMs > maxMs) maxMs = totalMs;
     }
 
-    // --- Crew rest: find the most recent completed rest period ---
-    // Walk backwards to find the last rest gap (≥8h) before a leg that has started.
-    // This shows how much rest the crew got before their current/most recent duty period.
-    // Rest = dutyOff (prev arrival + 30min post) to dutyOn (next departure - 60min lead)
-    // to match DutyTracker's calculation.
+    // --- Crew rest: tonight's rest (after today's duty, before tomorrow's) ---
+    // Group intervals into duty periods, find today's DP, show rest after it.
     let restMin: number | null = null;
-    for (let i = finalIntervals.length - 2; i >= 0; i--) {
-      const gapMs = finalIntervals[i + 1].startMs - finalIntervals[i].endMs;
-      if (gapMs < MIN_REST_GAP_MS) continue;
-      if (finalIntervals[i + 1].startMs <= nowMs) {
-        const dutyOffMs = finalIntervals[i].endMs + POST_TIME_MS;
-        const dutyOnMs = finalIntervals[i + 1].startMs - LEAD_TIME_MS;
-        restMin = Math.max(0, (dutyOnMs - dutyOffMs) / 60_000);
-        break;
-      }
-    }
-    // Fallback: if no past rest found, show the upcoming rest
-    if (restMin == null) {
-      for (let i = 0; i < finalIntervals.length - 1; i++) {
-        const gapMs = finalIntervals[i + 1].startMs - finalIntervals[i].endMs;
-        if (gapMs >= MIN_REST_GAP_MS && finalIntervals[i + 1].startMs > nowMs) {
-          const dutyOffMs = finalIntervals[i].endMs + POST_TIME_MS;
-          const dutyOnMs = finalIntervals[i + 1].startMs - LEAD_TIME_MS;
-          restMin = Math.max(0, (dutyOnMs - dutyOffMs) / 60_000);
-          break;
+    let restStartMs: number | null = null;
+    {
+      // Group into duty periods (split at gaps >= 8h)
+      const dps: { onMs: number; offMs: number }[] = [];
+      let dpStart = finalIntervals[0].startMs;
+      let dpEnd = finalIntervals[0].endMs;
+      for (let i = 1; i < finalIntervals.length; i++) {
+        if (finalIntervals[i].startMs - dpEnd >= MIN_REST_GAP_MS) {
+          dps.push({ onMs: dpStart - LEAD_TIME_MS, offMs: dpEnd + POST_TIME_MS });
+          dpStart = finalIntervals[i].startMs;
+          dpEnd = finalIntervals[i].endMs;
+        } else {
+          dpEnd = finalIntervals[i].endMs;
         }
+      }
+      dps.push({ onMs: dpStart - LEAD_TIME_MS, offMs: dpEnd + POST_TIME_MS });
+
+      // Find today's DP: first DP with legs departing on today's UTC date
+      const todayUtcStart = todayUtc; // already computed above
+      const todayUtcEnd = todayUtcStart + 24 * 60 * 60 * 1000;
+      let todayIdx = -1;
+      for (let d = 0; d < dps.length; d++) {
+        // Check if any interval in this DP departs today
+        // DP spans from dps[d].onMs + LEAD_TIME to dps[d].offMs - POST_TIME
+        // Find intervals belonging to this DP
+        const dpFirstDep = dps[d].onMs + LEAD_TIME_MS;
+        const dpLastArr = dps[d].offMs - POST_TIME_MS;
+        for (const iv of finalIntervals) {
+          if (iv.startMs >= dpFirstDep - 60_000 && iv.endMs <= dpLastArr + 60_000 &&
+              iv.startMs >= todayUtcStart && iv.startMs < todayUtcEnd) {
+            todayIdx = d;
+            break;
+          }
+        }
+        if (todayIdx >= 0) break;
+      }
+      // Fallback: DP still on duty (offMs > now)
+      if (todayIdx === -1) {
+        for (let d = dps.length - 1; d >= 0; d--) {
+          if (dps[d].offMs > nowMs) { todayIdx = d; break; }
+        }
+      }
+
+      // Rest = gap between today's DP and the next DP
+      if (todayIdx >= 0 && todayIdx < dps.length - 1) {
+        const off = dps[todayIdx].offMs;
+        const on = dps[todayIdx + 1].onMs;
+        restMin = Math.max(0, (on - off) / 60_000);
+        restStartMs = off;
       }
     }
 
-    result.set(tail, { flightTimeMin: maxMs / 60_000, restMin });
+    result.set(tail, { flightTimeMin: maxMs / 60_000, restMin, restStartMs });
   }
 
   return result;
@@ -1476,7 +1509,11 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           {duty && (() => {
                             const edctDuty = tailDutyEdct?.get(tail);
                             const dutyDiffers = edctDuty && Math.abs(edctDuty.flightTimeMin - duty.flightTimeMin) > 5;
-                            const restDiffers = edctDuty && edctDuty.restMin != null && duty.restMin != null && Math.abs(edctDuty.restMin - duty.restMin) > 5;
+                            // Only show EDCT rest when it measures the same rest period (start times within 2h).
+                            // EDCT delays can create phantom 8h+ gaps that get treated as rest periods — suppress those.
+                            // EDCT rest: only show when shorter (EDCT delays compress tonight's rest)
+                            const restDiffers = edctDuty && edctDuty.restMin != null && duty.restMin != null
+                              && duty.restMin - edctDuty.restMin > 5;
                             return (
                               <>
                                 <div className="flex flex-col items-end gap-0.5">
@@ -2140,7 +2177,9 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           const level = restLevel(duty.restMin);
                           if (!level) return <span className="text-xs text-gray-300">--</span>;
                           const edctDuty = f.tail_number && tailDutyEdct ? tailDutyEdct.get(f.tail_number) : null;
-                          const edctDiffers = edctDuty && edctDuty.restMin != null && duty.restMin != null && Math.abs(edctDuty.restMin - duty.restMin) > 5;
+                          // EDCT rest: only show when shorter
+                          const edctDiffers = edctDuty && edctDuty.restMin != null && duty.restMin != null
+                            && duty.restMin - edctDuty.restMin > 5;
                           return (
                             <div className="flex flex-col gap-0.5">
                               <button
