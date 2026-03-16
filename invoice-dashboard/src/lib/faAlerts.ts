@@ -18,16 +18,55 @@ function faHeaders() {
  * Only run once every 30 minutes to avoid hammering FA.
  */
 let lastRefreshMs = 0;
-const REFRESH_INTERVAL_MS = 30 * 60 * 1000; // 30 min — check for unregistered tails periodically
+const REFRESH_INTERVAL_MS = 30 * 60 * 1000; // 30 min
+
+type FaAlert = {
+  id: number;
+  ident: string;
+  origin: string | null;
+  destination: string | null;
+  target_url: string | null;
+  enabled: boolean;
+};
+
+/**
+ * Fetch ALL alerts currently registered on FA's side.
+ * This is the source of truth — our DB can get out of sync.
+ */
+async function listFaAlerts(): Promise<FaAlert[]> {
+  const alerts: FaAlert[] = [];
+  let url: string | null = `${FA_BASE}/alerts`;
+
+  for (let page = 0; page < 10 && url; page++) {
+    try {
+      const resp: Response = await fetch(url, {
+        headers: faHeaders(),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!resp.ok) {
+        console.warn(`[FA Alerts] List alerts failed: ${resp.status}`);
+        break;
+      }
+      const body: { alerts?: FaAlert[]; links?: { next?: string } } = await resp.json();
+      alerts.push(...(body.alerts ?? []));
+      url = body.links?.next
+        ? (body.links!.next!.startsWith("http") ? body.links!.next! : `${FA_BASE}${body.links!.next!}`)
+        : null;
+    } catch (err) {
+      console.warn("[FA Alerts] List alerts error:", err);
+      break;
+    }
+  }
+
+  return alerts;
+}
 
 /**
  * Register FA webhook alerts for active tails (flights in next 48h) and
  * deregister alerts for idle tails to reduce push delivery costs.
- * Fire-and-forget — errors are logged but don't propagate.
  *
- * @param tails      Full fleet tail list (unused, kept for backwards compat)
- * @param activeTails Tails with flights in the next 48h — only these get alerts
- * @param callsignMap Optional map of tail → callsign for LADD-blocked aircraft
+ * Syncs against FA's actual alert list to prevent duplicate registrations.
+ * Fire-and-forget — errors are logged but don't propagate.
  */
 export async function refreshAlerts(tails: string[], activeTails: string[], callsignMap?: Map<string, string>): Promise<void> {
   // Skip if checked recently
@@ -50,8 +89,7 @@ export async function refreshAlerts(tails: string[], activeTails: string[], call
     return;
   }
 
-  // Only register alerts from production to prevent duplicate registrations
-  // across dev/preview deployments
+  // Only register alerts from production
   if (!baseUrl.includes("baker-ai-gamma")) {
     console.log("[FA Alerts] Skipped — not production (base:", baseUrl, ")");
     return;
@@ -61,62 +99,96 @@ export async function refreshAlerts(tails: string[], activeTails: string[], call
     const supa = createServiceClient();
     const activeSet = new Set(activeTails);
 
-    // Get all tails that currently have active alerts
-    const { data: existing } = await supa
-      .from("fa_alert_registrations")
-      .select("tail, alert_id")
-      .eq("active", true);
-
-    const registeredRows = existing ?? [];
-    const registeredSet = new Set(registeredRows.map((r) => r.tail));
-
-    // --- Deregister idle tails (active in DB but not in activeTails) ---
-    const toDeregister = registeredRows.filter((r) => !activeSet.has(r.tail));
-    if (toDeregister.length > 0) {
-      console.log(`[FA Alerts] Deregistering ${toDeregister.length} idle tails: ${toDeregister.map((r) => r.tail).join(", ")}`);
+    // Build reverse callsign map: callsign → tail (e.g. KOW733 → N733FL)
+    const callsignToTail = new Map<string, string>();
+    if (callsignMap) {
+      for (const [tail, cs] of callsignMap) callsignToTail.set(cs, tail);
     }
 
-    for (const row of toDeregister) {
-      try {
-        const res = await fetch(`${FA_BASE}/alerts/${row.alert_id}`, {
-          method: "DELETE",
-          headers: faHeaders(),
-          signal: AbortSignal.timeout(10000),
-        });
+    // ── Step 1: Get FA's actual alert list (source of truth) ──
+    const faAlerts = await listFaAlerts();
+    console.log(`[FA Alerts] FA has ${faAlerts.length} alerts registered`);
 
-        if (res.ok || res.status === 404) {
-          // 404 means already deleted on FA side — still mark inactive locally
-          await supa
-            .from("fa_alert_registrations")
-            .update({ active: false })
-            .eq("tail", row.tail);
-          console.log(`[FA Alerts] Deregistered ${row.tail} (alert ${row.alert_id})`);
-        } else {
-          console.warn(`[FA Alerts] Deregister failed for ${row.tail}: ${res.status}`);
+    // Map ident → alert(s) on FA side. An ident could be N-number or callsign.
+    // Resolve to tail number for comparison with our active set.
+    const alertsByTail = new Map<string, FaAlert[]>();
+    for (const alert of faAlerts) {
+      // Resolve ident to tail: could be "N733FL" or "KOW733"
+      const tail = callsignToTail.get(alert.ident) ?? alert.ident;
+      const existing = alertsByTail.get(tail) ?? [];
+      existing.push(alert);
+      alertsByTail.set(tail, existing);
+    }
+
+    // ── Step 2: Delete duplicates + alerts for idle tails ──
+    for (const [tail, alerts] of alertsByTail) {
+      const isActive = activeSet.has(tail);
+
+      if (!isActive) {
+        // Idle tail — delete ALL alerts
+        for (const alert of alerts) {
+          try {
+            await fetch(`${FA_BASE}/alerts/${alert.id}`, {
+              method: "DELETE",
+              headers: faHeaders(),
+              signal: AbortSignal.timeout(10000),
+            });
+            console.log(`[FA Alerts] Deleted idle alert ${alert.id} for ${tail} (${alert.ident})`);
+            await new Promise((resolve) => setTimeout(resolve, 300));
+          } catch (err) {
+            console.warn(`[FA Alerts] Delete error for ${tail}:`, err);
+          }
         }
-
-        await new Promise((r) => setTimeout(r, 500));
-      } catch (err) {
-        console.warn(`[FA Alerts] Deregister error for ${row.tail}:`, err);
+        // Mark inactive in DB
+        await supa
+          .from("fa_alert_registrations")
+          .update({ active: false })
+          .eq("tail", tail);
+      } else if (alerts.length > 1) {
+        // Active tail but has DUPLICATES — keep first, delete rest
+        console.log(`[FA Alerts] ${tail} has ${alerts.length} duplicate alerts, cleaning up`);
+        for (let i = 1; i < alerts.length; i++) {
+          try {
+            await fetch(`${FA_BASE}/alerts/${alerts[i].id}`, {
+              method: "DELETE",
+              headers: faHeaders(),
+              signal: AbortSignal.timeout(10000),
+            });
+            console.log(`[FA Alerts] Deleted duplicate alert ${alerts[i].id} for ${tail}`);
+            await new Promise((resolve) => setTimeout(resolve, 300));
+          } catch (err) {
+            console.warn(`[FA Alerts] Delete duplicate error for ${tail}:`, err);
+          }
+        }
+        // Ensure DB has the kept alert
+        await supa.from("fa_alert_registrations").upsert(
+          { tail, alert_id: alerts[0].id, active: true },
+          { onConflict: "tail" },
+        );
+      } else {
+        // Active tail, single alert — sync to DB
+        await supa.from("fa_alert_registrations").upsert(
+          { tail, alert_id: alerts[0].id, active: true },
+          { onConflict: "tail" },
+        );
       }
     }
 
-    // --- Register active tails that don't have alerts yet ---
-    const missing = activeTails.filter((t) => !registeredSet.has(t));
-
-    if (missing.length === 0) {
-      console.log(`[FA Alerts] All ${activeTails.length} active tails already registered`);
-      return;
-    }
-
-    console.log(`[FA Alerts] Auto-registering ${missing.length} new tails: ${missing.join(", ")}`);
-
+    // ── Step 3: Register alerts for active tails that have NONE on FA ──
     const normalizedBase = baseUrl.startsWith("http") ? baseUrl : `https://${baseUrl}`;
     const webhookUrl = `${normalizedBase}/api/aircraft/webhook?secret=${encodeURIComponent(webhookSecret)}`;
 
+    const missing = activeTails.filter((t) => !alertsByTail.has(t));
+
+    if (missing.length === 0) {
+      console.log(`[FA Alerts] All ${activeTails.length} active tails have alerts on FA`);
+      return;
+    }
+
+    console.log(`[FA Alerts] Registering ${missing.length} new tails: ${missing.join(", ")}`);
+
     for (const tail of missing) {
       try {
-        // Use callsign for LADD-blocked aircraft so FA matches the filed ident
         const ident = callsignMap?.get(tail) ?? tail;
         const res = await fetch(`${FA_BASE}/alerts`, {
           method: "POST",
@@ -141,39 +213,42 @@ export async function refreshAlerts(tails: string[], activeTails: string[], call
           signal: AbortSignal.timeout(10000),
         });
 
-        const responseText = await res.text();
-
         if (res.ok) {
+          // Parse alert ID from response body or Location header
           let alertId: number | null = null;
+          const responseText = await res.text();
           if (responseText) {
             try {
               const data = JSON.parse(responseText);
               alertId = data.id ?? data.alert_id ?? null;
             } catch { /* empty response */ }
           }
-          const location = res.headers.get("location");
-          if (!alertId && location) {
-            const match = location.match(/\/alerts\/(\d+)/);
-            if (match) alertId = parseInt(match[1], 10);
-          }
-
-          if (alertId) {
-            const { error: upsertErr } = await supa.from("fa_alert_registrations").upsert(
-              { tail, alert_id: alertId, active: true },
-              { onConflict: "tail" },
-            );
-            if (upsertErr) {
-              console.error(`[FA Alerts] DB upsert failed for ${tail}:`, upsertErr.message);
+          if (!alertId) {
+            const location = res.headers.get("location");
+            if (location) {
+              const match = location.match(/\/alerts\/(\d+)/);
+              if (match) alertId = parseInt(match[1], 10);
             }
           }
-          console.log(`[FA Alerts] Auto-registered ${tail} as ${ident} (id: ${alertId})`);
+
+          // Always record in DB — use alert_id if we got one, otherwise use -1
+          // so we know this tail is registered and don't re-register next cycle
+          const { error: upsertErr } = await supa.from("fa_alert_registrations").upsert(
+            { tail, alert_id: alertId ?? -1, active: true },
+            { onConflict: "tail" },
+          );
+          if (upsertErr) {
+            console.error(`[FA Alerts] DB upsert failed for ${tail}:`, upsertErr.message);
+          }
+          console.log(`[FA Alerts] Registered ${tail} as ${ident} (id: ${alertId ?? "unknown"})`);
         } else {
-          console.warn(`[FA Alerts] Auto-register failed for ${tail} (${ident}): ${res.status}`);
+          const text = await res.text();
+          console.warn(`[FA Alerts] Register failed for ${tail} (${ident}): ${res.status} ${text}`);
         }
 
         await new Promise((r) => setTimeout(r, 500));
       } catch (err) {
-        console.warn(`[FA Alerts] Auto-register error for ${tail}:`, err);
+        console.warn(`[FA Alerts] Register error for ${tail}:`, err);
       }
     }
   } catch (err) {
