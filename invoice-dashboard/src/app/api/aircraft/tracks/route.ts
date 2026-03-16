@@ -3,6 +3,7 @@ import { requireAuth, isAuthed } from "@/lib/api-auth";
 import { getFlightTrack, type FaTrackPoint } from "@/lib/flightaware";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 // Shared cache with single-flight endpoint (module-level, survives warm starts)
 const cache = new Map<string, { data: FaTrackPoint[]; ts: number }>();
@@ -32,16 +33,19 @@ export async function POST(req: NextRequest) {
     });
   }
 
+  console.log(`[Tracks Batch] Received ${flightIds.length} flight IDs`);
   const tracks: Record<string, FaTrackPoint[]> = {};
   let fetched = 0;
+  let cached_count = 0;
 
   for (let i = 0; i < flightIds.length; i++) {
     const id = flightIds[i];
 
     // Return cache if fresh
-    const cached = cache.get(id);
-    if (cached && Date.now() - cached.ts < CACHE_TTL) {
-      tracks[id] = cached.data;
+    const cachedEntry = cache.get(id);
+    if (cachedEntry && Date.now() - cachedEntry.ts < CACHE_TTL) {
+      tracks[id] = cachedEntry.data;
+      cached_count++;
       continue;
     }
 
@@ -54,6 +58,7 @@ export async function POST(req: NextRequest) {
       const positions = await getFlightTrack(id);
       tracks[id] = positions;
       fetched++;
+      console.log(`[Tracks Batch] ${id}: ${positions.length} positions`);
 
       // Only cache non-empty results
       if (positions.length > 0) {
@@ -63,10 +68,12 @@ export async function POST(req: NextRequest) {
         }
         cache.set(id, { data: positions, ts: Date.now() });
       }
-    } catch {
-      tracks[id] = cached?.data ?? [];
+    } catch (err) {
+      console.error(`[Tracks Batch] ${id}: error`, err instanceof Error ? err.message : err);
+      tracks[id] = cachedEntry?.data ?? [];
     }
   }
 
-  return NextResponse.json({ tracks, fetched });
+  console.log(`[Tracks Batch] Done: ${fetched} fetched, ${cached_count} cached`);
+  return NextResponse.json({ tracks, fetched, cached: cached_count });
 }

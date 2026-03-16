@@ -196,8 +196,12 @@ function FlightTracks({
           signal: controller.signal,
           cache: "no-store",
         });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        if (!res.ok) {
+          console.error(`[OpsMap] Batch tracks HTTP ${res.status}`, await res.text().catch(() => ""));
+          throw new Error(`HTTP ${res.status}`);
+        }
         const data = await res.json();
+        console.log(`[OpsMap] Batch tracks response: ${data.fetched} fetched, ${data.cached} cached, keys: ${Object.keys(data.tracks ?? {}).length}`);
         const trackMap: Record<string, TrackPoint[]> = data.tracks ?? {};
 
         for (const fi of enRoute) {
