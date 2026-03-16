@@ -112,6 +112,7 @@ const POST_TIME_MS = 30 * 60 * 1000;  // 30min post-duty (matches DutyTracker)
 type TailDutySummary = {
   flightTimeMin: number;
   restMin: number | null;
+  restStartMs: number | null; // duty-off time of the rest period (for EDCT comparison)
 };
 
 /** Compute per-tail 24hr flight time and crew rest from flights + FA data.
@@ -287,6 +288,7 @@ function computeTailDuty(
     // Rest = dutyOff (prev arrival + 30min post) to dutyOn (next departure - 60min lead)
     // to match DutyTracker's calculation.
     let restMin: number | null = null;
+    let restStartMs: number | null = null;
     for (let i = finalIntervals.length - 2; i >= 0; i--) {
       const gapMs = finalIntervals[i + 1].startMs - finalIntervals[i].endMs;
       if (gapMs < MIN_REST_GAP_MS) continue;
@@ -294,6 +296,7 @@ function computeTailDuty(
         const dutyOffMs = finalIntervals[i].endMs + POST_TIME_MS;
         const dutyOnMs = finalIntervals[i + 1].startMs - LEAD_TIME_MS;
         restMin = Math.max(0, (dutyOnMs - dutyOffMs) / 60_000);
+        restStartMs = dutyOffMs;
         break;
       }
     }
@@ -305,12 +308,13 @@ function computeTailDuty(
           const dutyOffMs = finalIntervals[i].endMs + POST_TIME_MS;
           const dutyOnMs = finalIntervals[i + 1].startMs - LEAD_TIME_MS;
           restMin = Math.max(0, (dutyOnMs - dutyOffMs) / 60_000);
+          restStartMs = dutyOffMs;
           break;
         }
       }
     }
 
-    result.set(tail, { flightTimeMin: maxMs / 60_000, restMin });
+    result.set(tail, { flightTimeMin: maxMs / 60_000, restMin, restStartMs });
   }
 
   return result;
@@ -1482,7 +1486,12 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           {duty && (() => {
                             const edctDuty = tailDutyEdct?.get(tail);
                             const dutyDiffers = edctDuty && Math.abs(edctDuty.flightTimeMin - duty.flightTimeMin) > 5;
-                            const restDiffers = edctDuty && edctDuty.restMin != null && duty.restMin != null && Math.abs(edctDuty.restMin - duty.restMin) > 5;
+                            // Only show EDCT rest when it measures the same rest period (start times within 2h).
+                            // EDCT delays can create phantom 8h+ gaps that get treated as rest periods — suppress those.
+                            const restDiffers = edctDuty && edctDuty.restMin != null && duty.restMin != null
+                              && Math.abs(edctDuty.restMin - duty.restMin) > 5
+                              && duty.restStartMs != null && edctDuty.restStartMs != null
+                              && Math.abs(duty.restStartMs - edctDuty.restStartMs) < 2 * 60 * 60 * 1000;
                             return (
                               <>
                                 <div className="flex flex-col items-end gap-0.5">
@@ -2146,7 +2155,10 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           const level = restLevel(duty.restMin);
                           if (!level) return <span className="text-xs text-gray-300">--</span>;
                           const edctDuty = f.tail_number && tailDutyEdct ? tailDutyEdct.get(f.tail_number) : null;
-                          const edctDiffers = edctDuty && edctDuty.restMin != null && duty.restMin != null && Math.abs(edctDuty.restMin - duty.restMin) > 5;
+                          const edctDiffers = edctDuty && edctDuty.restMin != null && duty.restMin != null
+                            && Math.abs(edctDuty.restMin - duty.restMin) > 5
+                            && duty.restStartMs != null && edctDuty.restStartMs != null
+                            && Math.abs(duty.restStartMs - edctDuty.restStartMs) < 2 * 60 * 60 * 1000;
                           return (
                             <div className="flex flex-col gap-0.5">
                               <button
