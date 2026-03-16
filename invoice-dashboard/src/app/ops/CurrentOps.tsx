@@ -169,8 +169,11 @@ function computeTailDuty(
     const fiDestMatch = fi && fi.destination_icao === f.arrival_icao;
     const actualArr = fiDestMatch ? (fi?.actual_arrival ?? null) : null;
     const estimatedArr = fiDestMatch ? (fi?.arrival_time ?? null) : null;
+    // FA departure_time = best available (actual > estimated > scheduled)
+    const faDep = fi?.departure_time ?? null;
 
-    const depMs = new Date(actualDep ?? f.scheduled_departure).getTime();
+    // Use FA departure when available — matches DutyTracker logic
+    const depMs = new Date(actualDep ?? faDep ?? f.scheduled_departure).getTime();
     let endMs: number;
     let source: "actual" | "fa-estimate" | "scheduled";
     if (actualArr) {
@@ -179,6 +182,9 @@ function computeTailDuty(
     } else if (actualDep && !actualArr) {
       source = estimatedArr ? "fa-estimate" : "actual";
       endMs = estimatedArr ? new Date(estimatedArr).getTime() : nowMs;
+    } else if (faDep && estimatedArr) {
+      source = "fa-estimate";
+      endMs = new Date(estimatedArr).getTime();
     } else if (estimatedArr) {
       source = "fa-estimate";
       endMs = new Date(estimatedArr).getTime();
