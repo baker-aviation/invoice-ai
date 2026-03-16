@@ -453,7 +453,6 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
   const [showRadar, setShowRadar] = useState(false);
   const [showVans, setShowVans] = useState(false);
   const [holdingTails, setHoldingTails] = useState<Set<string>>(new Set());
-  const [trackLatest, setTrackLatest] = useState<Map<string, [number, number]>>(new Map());
   const radarUrl = useRadarUrl(showRadar);
   const vanPositions = useVanPositions(showVans);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -510,7 +509,7 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
           <TileLayer key={`radar-${radarUrl}`} url={radarUrl} opacity={0.65} zIndex={300} />
         )}
 
-        <FlightTracks aircraft={aircraft} flightInfo={flightInfo} fleetLookup={fleetLookup} onHoldingDetected={handleHoldingDetected} onLatestPositions={setTrackLatest} />
+        <FlightTracks aircraft={aircraft} flightInfo={flightInfo} fleetLookup={fleetLookup} onHoldingDetected={handleHoldingDetected} onLatestPositions={() => {}} />
 
         {aircraft.map((ac) => {
           const fi = flightInfo.get(ac.tail);
@@ -523,10 +522,9 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
           const showMapAlert = (isDiverted && !divertedStale) || isHolding;
           const hasAlert = showMapAlert;
           const alertLabel = (isDiverted && !divertedStale) ? "DIVERTED" : isHolding ? "HOLDING" : undefined;
-          // Use latest track position if available (more recent than ADSB poll)
-          const trackPos = trackLatest.get(ac.tail);
-          const markerLat = trackPos ? trackPos[0] : ac.lat;
-          const markerLon = trackPos ? trackPos[1] : ac.lon;
+          // Use position from fa_flights (updated by cron every 3 min)
+          const markerLat = ac.lat;
+          const markerLon = ac.lon;
           return (
             <Marker
               key={`ac-${ac.tail}`}
