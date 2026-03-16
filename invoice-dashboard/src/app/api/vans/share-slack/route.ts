@@ -104,13 +104,11 @@ export async function POST(req: NextRequest) {
     if (!headerData.ok) {
       return NextResponse.json({ error: headerData.error ?? "Slack API error" }, { status: 502 });
     }
-    const threadTs = headerData.ts;
 
-    // 2) Send each aircraft as a threaded reply
+    // 2) Send each aircraft as its own top-level message
     for (const item of items) {
       await postMessage({
         channel,
-        thread_ts: threadTs,
         text: buildAircraftFallbackText(item),
         blocks: buildAircraftSlackBlocks(item),
       });
@@ -133,7 +131,7 @@ export async function POST(req: NextRequest) {
       // Non-fatal — Slack messages were sent successfully
     }
 
-    return NextResponse.json({ ok: true, ts: threadTs, channel: headerData.channel, aircraftCount: items.length });
+    return NextResponse.json({ ok: true, ts: headerData.ts, channel: headerData.channel, aircraftCount: items.length });
   } catch (err) {
     return NextResponse.json({ error: "Slack API request failed" }, { status: 502 });
   }
