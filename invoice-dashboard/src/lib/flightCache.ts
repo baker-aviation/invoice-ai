@@ -87,13 +87,14 @@ function hasAirborneFlights(flights: FlightInfo[]): boolean {
 }
 
 export function getCacheTtl(): number {
-  if (memCache && hasAirborneFlights(memCache.data)) return AIRBORNE_TTL;
+  if (memCache && memCache.data.length > 0 && hasAirborneFlights(memCache.data)) return AIRBORNE_TTL;
+  if (memCache && memCache.data.length === 0) return 0; // empty cache is never fresh
   return IDLE_TTL;
 }
 
 export async function getCache(): Promise<{ data: FlightInfo[]; ts: number } | null> {
-  // Fast path: in-memory
-  if (memCache) return memCache;
+  // Fast path: in-memory (only if we actually have flight data)
+  if (memCache && memCache.data.length > 0) return memCache;
 
   // Cold start: load from Supabase
   try {
