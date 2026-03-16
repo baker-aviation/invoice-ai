@@ -1064,7 +1064,7 @@ function MxNoteRow({ note, onHideForToday }: { note: MxNote; onHideForToday?: (i
             )}
             {note.end_time && (
               <span className="text-[11px] text-gray-400 ml-auto shrink-0">
-                Due {new Date(note.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                Due {new Date(note.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}{(() => { const d = new Date(note.end_time); return d.getHours() !== 0 || d.getMinutes() !== 0 ? `, ${d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}` : ""; })()}
               </span>
             )}
           </div>
@@ -1228,7 +1228,7 @@ function VanMaintenanceAccordion({ items, mxNotesByTail, hiddenIds, onHideForTod
                         )}
                         {n.end_time && (
                           <span className="text-[11px] text-gray-400">
-                            Due {new Date(n.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                            Due {new Date(n.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}{(() => { const d = new Date(n.end_time); return d.getHours() !== 0 || d.getMinutes() !== 0 ? `, ${d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}` : ""; })()}
                           </span>
                         )}
                       </span>
@@ -1529,70 +1529,59 @@ function AircraftCompactRow({
       {/* ── Expandable detail section ── */}
       {detailOpen && (
         <div className="ml-8 mt-1.5 space-y-1 border-l-2 border-gray-200 pl-3">
-          {/* Route + flight type */}
-          <div className="flex items-center gap-2 text-xs">
-            <span className="text-blue-500">📍</span>
-            <span className="text-gray-500 font-mono">
-              {arrFlight.departure_icao?.replace(/^K/, "") ?? "?"} → {airport}
-            </span>
-            {inferFlightType(arrFlight) === "Maintenance" ? (
-              <span className="text-xs bg-orange-100 text-orange-700 rounded px-1.5 py-0.5">Maintenance</span>
-            ) : isRepo ? (
-              <span className="text-xs bg-purple-100 text-purple-700 rounded px-1.5 py-0.5">Positioning</span>
-            ) : (
-              <span className="text-xs bg-green-100 text-green-700 rounded px-1.5 py-0.5">Revenue</span>
-            )}
-            {hasMaintenance && (
-              <span className="text-xs font-semibold bg-orange-100 text-orange-700 rounded-full px-2 py-0.5">Maint</span>
-            )}
-          </div>
-          {/* Day's other legs */}
-          {extraLegs.length > 0 && (
-            <div className="space-y-0.5">
-              {extraLegs.map((f) => {
-                const ft = inferFlightType(f);
-                const cat = getFilterCategory(ft);
-                const dep = f.departure_icao?.replace(/^K/, "") ?? "?";
-                const arrIcao = f.arrival_icao?.replace(/^K/, "") ?? "?";
-                const isNext = nextDep && f.id === nextDep.id;
-                const isRevenue = cat === "charter";
-                const borderColor = cat === "charter" ? "border-green-400"
-                  : cat === "positioning" ? "border-purple-300"
-                  : cat === "maintenance" ? "border-orange-300"
-                  : "border-gray-200";
-                const isPrimary = arrIcao === airport;
-                return (
-                  <div
-                    key={f.id}
-                    className={`flex items-center gap-2 text-xs pl-3 border-l-2 ${borderColor} ${
-                      isRevenue ? "py-1 bg-green-50/60 rounded-r font-medium text-gray-700" : "py-px text-gray-400"
-                    } ${onSetPrimaryAirport && !isPrimary ? "cursor-pointer hover:bg-blue-50/50" : ""}`}
-                    onClick={(e) => {
-                      if (!onSetPrimaryAirport || isPrimary) return;
-                      e.stopPropagation();
-                      onSetPrimaryAirport(arrFlight.tail_number ?? "", arrIcao);
-                    }}
-                    title={isPrimary ? "Current service airport" : "Click to set as service airport"}
-                  >
-                    {isPrimary && <span className="text-blue-500">📍</span>}
-                    <span className={`font-mono ${isRevenue ? "text-gray-700" : "text-gray-500"}`}>{dep} → {arrIcao}</span>
-                    <span>{fmtUtcHM(f.scheduled_departure, f.departure_icao)}{f.scheduled_arrival ? ` – ${fmtUtcHM(f.scheduled_arrival, f.arrival_icao)}` : ""}</span>
-                    {ft && (
-                      <span className={`rounded px-1 py-0.5 text-[10px] font-medium ${
-                        cat === "positioning" ? "bg-purple-50 text-purple-500"
-                        : cat === "charter" ? "bg-green-100 text-green-700"
-                        : cat === "maintenance" ? "bg-orange-50 text-orange-500"
-                        : ft === "Owner" ? "bg-blue-50 text-blue-500"
-                        : "bg-gray-50 text-gray-400"
-                      }`}>
-                        {ft}
-                      </span>
-                    )}
-                    {isNext && <span className="text-blue-500 font-medium">← next</span>}
-                  </div>
-                );
-              })}
-            </div>
+          {/* All legs for this tail, sorted chronologically */}
+          {(() => {
+            const allLegs = [arrFlight, ...extraLegs].sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure));
+            return (
+              <div className="space-y-0.5">
+                {allLegs.map((f) => {
+                  const ft = inferFlightType(f);
+                  const cat = getFilterCategory(ft);
+                  const dep = f.departure_icao?.replace(/^K/, "") ?? "?";
+                  const arrIcao = f.arrival_icao?.replace(/^K/, "") ?? "?";
+                  const isNextLeg = nextDep && f.id === nextDep.id;
+                  const isRevenue = cat === "charter";
+                  const borderColor = cat === "charter" ? "border-green-400"
+                    : cat === "positioning" ? "border-purple-300"
+                    : cat === "maintenance" ? "border-orange-300"
+                    : "border-gray-200";
+                  const isPrimary = arrIcao === airport;
+                  return (
+                    <div
+                      key={f.id}
+                      className={`flex items-center gap-2 text-xs pl-3 border-l-2 ${borderColor} ${
+                        isRevenue ? "py-1 bg-green-50/60 rounded-r font-medium text-gray-700" : "py-px text-gray-400"
+                      } ${onSetPrimaryAirport && !isPrimary ? "cursor-pointer hover:bg-blue-50/50" : ""}`}
+                      onClick={(e) => {
+                        if (!onSetPrimaryAirport || isPrimary) return;
+                        e.stopPropagation();
+                        onSetPrimaryAirport(arrFlight.tail_number ?? "", arrIcao);
+                      }}
+                      title={isPrimary ? "Current service airport" : "Click to set as service airport"}
+                    >
+                      {isPrimary && <span className="text-blue-500">📍</span>}
+                      <span className={`font-mono ${isRevenue ? "text-gray-700" : "text-gray-500"}`}>{dep} → {arrIcao}</span>
+                      <span>{fmtUtcHM(f.scheduled_departure, f.departure_icao)}{f.scheduled_arrival ? ` – ${fmtUtcHM(f.scheduled_arrival, f.arrival_icao)}` : ""}</span>
+                      {ft && (
+                        <span className={`rounded px-1 py-0.5 text-[10px] font-medium ${
+                          cat === "positioning" ? "bg-purple-50 text-purple-500"
+                          : cat === "charter" ? "bg-green-100 text-green-700"
+                          : cat === "maintenance" ? "bg-orange-50 text-orange-500"
+                          : ft === "Owner" ? "bg-blue-50 text-blue-500"
+                          : "bg-gray-50 text-gray-400"
+                        }`}>
+                          {ft}
+                        </span>
+                      )}
+                      {isNextLeg && <span className="text-blue-500 font-medium">← next</span>}
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
+          {hasMaintenance && (
+            <span className="text-xs font-semibold bg-orange-100 text-orange-700 rounded-full px-2 py-0.5">Maint</span>
           )}
           {/* MX director note */}
           <LegNoteInline
@@ -3730,7 +3719,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
         // Figure out where the aircraft actually is during the window
         const locations = windowFlights.map((f) => f.arrival_icao).filter(Boolean);
         const lastLoc = locations[locations.length - 1] ?? "unknown";
-        const mxDate = new Date(note.start_time!).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+        const mxDate = (() => { const d = new Date(note.start_time!); const date = d.toLocaleDateString("en-US", { month: "short", day: "numeric" }); const time = d.getHours() !== 0 || d.getMinutes() !== 0 ? `, ${d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}` : ""; return `${date}${time}`; })();
         conflicts.push({
           tail: note.tail_number,
           mxNote: note,
@@ -4059,7 +4048,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
           <div className="flex flex-col gap-2 ml-[52px] mt-2">
             {visibleConflicts.map((c, i) => {
               const mxDateStr = c.mxNote.end_time
-                ? `Due ${new Date(c.mxNote.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`
+                ? `Due ${new Date(c.mxNote.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}${(() => { const d = new Date(c.mxNote.end_time); return d.getHours() !== 0 || d.getMinutes() !== 0 ? `, ${d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}` : ""; })()}`
                 : c.mxNote.start_time
                   ? new Date(c.mxNote.start_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })
                   : "";
@@ -4129,7 +4118,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
                       <span className="text-xs text-orange-600">{note.airport_icao}</span>
                       {note.end_time && (
                         <span className="text-[11px] text-gray-500 ml-auto">
-                          Due {new Date(note.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                          Due {new Date(note.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}{(() => { const d = new Date(note.end_time); return d.getHours() !== 0 || d.getMinutes() !== 0 ? `, ${d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}` : ""; })()}
                         </span>
                       )}
                       <button onClick={(e) => { e.stopPropagation(); dismissMxNote(note.id); }} className="text-gray-400 hover:text-red-600 text-xs ml-2 shrink-0" title="Dismiss">&times;</button>
@@ -4176,7 +4165,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
                         )}
                         {note.end_time && (
                           <span className="text-[11px] text-gray-500 ml-auto">
-                            Due {new Date(note.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                            Due {new Date(note.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}{(() => { const d = new Date(note.end_time); return d.getHours() !== 0 || d.getMinutes() !== 0 ? `, ${d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}` : ""; })()}
                           </span>
                         )}
                         <button onClick={(e) => { e.stopPropagation(); dismissMxNote(note.id); }} className="text-gray-400 hover:text-red-600 text-xs ml-2 shrink-0" title="Dismiss">&times;</button>
@@ -4226,7 +4215,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
                     <span className="text-xs text-gray-600 flex-1">{note.body}</span>
                     {note.end_time && (
                       <span className="text-[11px] text-gray-400 shrink-0">
-                        Due {new Date(note.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                        Due {new Date(note.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}{(() => { const d = new Date(note.end_time); return d.getHours() !== 0 || d.getMinutes() !== 0 ? `, ${d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}` : ""; })()}
                       </span>
                     )}
                     <button
@@ -4610,8 +4599,8 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
                                     )}
                                     {n.start_time && (
                                       <span className="text-[11px] text-gray-400">
-                                        {new Date(n.start_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-                                        {n.end_time && n.end_time !== n.start_time && ` – ${new Date(n.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`}
+                                        {new Date(n.start_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}{(() => { const d = new Date(n.start_time); return d.getHours() !== 0 || d.getMinutes() !== 0 ? `, ${d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}` : ""; })()}
+                                        {n.end_time && n.end_time !== n.start_time && (() => { const endDate = new Date(n.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" }); const endTime = (() => { const d = new Date(n.end_time); return d.getHours() !== 0 || d.getMinutes() !== 0 ? `, ${d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}` : ""; })(); return ` – ${endDate}${endTime}`; })()}
                                       </span>
                                     )}
                                   </span>
