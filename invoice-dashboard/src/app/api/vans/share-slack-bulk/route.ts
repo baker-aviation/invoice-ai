@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, isAuthed, isRateLimited } from "@/lib/api-auth";
-import { buildVanSlackBlocks, buildVanSlackFallbackText, type VanSlackItem } from "@/lib/vanSlackBlocks";
+import { buildVanSlackHeaderBlocks, buildAircraftSlackBlocks, buildVanSlackFallbackText, buildAircraftFallbackText, type VanSlackItem } from "@/lib/vanSlackBlocks";
 
 /**
  * POST /api/vans/share-slack-bulk
@@ -79,29 +79,45 @@ export async function POST(req: NextRequest) {
 
   const isTest = body.test === true;
 
+  const postMessage = async (payload: Record<string, unknown>) => {
+    const res = await fetch("https://slack.com/api/chat.postMessage", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+    return res.json();
+  };
+
   for (const van of vans) {
     const channel = isTest ? defaultChannel : (van.channel ?? VAN_CHANNEL_MAP[van.vanId] ?? defaultChannel);
-    const slackPayload = {
-      channel,
-      text: buildVanSlackFallbackText(van.vanName, date),
-      blocks: buildVanSlackBlocks(van.vanName, van.vanId, van.homeAirport, date, van.items),
-    };
 
     try {
-      const res = await fetch("https://slack.com/api/chat.postMessage", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(slackPayload),
+      // 1) Header message
+      const headerData = await postMessage({
+        channel,
+        text: buildVanSlackFallbackText(van.vanName, date),
+        blocks: buildVanSlackHeaderBlocks(van.vanName, van.vanId, van.homeAirport, date, van.items.length),
       });
-      const data = await res.json();
-      if (!data.ok) {
-        results.push({ vanId: van.vanId, ok: false, error: data.error ?? "Slack API error" });
-      } else {
-        results.push({ vanId: van.vanId, ok: true });
+      if (!headerData.ok) {
+        results.push({ vanId: van.vanId, ok: false, error: headerData.error ?? "Slack API error" });
+        continue;
       }
+
+      // 2) Each aircraft as a threaded reply
+      const threadTs = headerData.ts;
+      for (const item of van.items) {
+        await postMessage({
+          channel,
+          thread_ts: threadTs,
+          text: buildAircraftFallbackText(item),
+          blocks: buildAircraftSlackBlocks(item),
+        });
+      }
+
+      results.push({ vanId: van.vanId, ok: true });
     } catch (err) {
       results.push({ vanId: van.vanId, ok: false, error: "Slack API request failed" });
     }

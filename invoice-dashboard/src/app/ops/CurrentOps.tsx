@@ -7,7 +7,7 @@ import type { AdvertisedPriceRow } from "@/lib/types";
 import { FALLBACK_TAILS, BAKER_FLEET } from "@/lib/maintenanceData";
 import type { AircraftPosition, FlightInfoMap } from "@/app/maintenance/MapView";
 import { fmtTimeInTz, type TzMode } from "@/lib/airportTimezones";
-import { getAirportInfo } from "@/lib/airportCoords";
+import { getAirportInfo, findNearestAirport } from "@/lib/airportCoords";
 import { TRIPS } from "@/lib/maintenanceData";
 import { buildBestRateByAirport } from "@/lib/fuelLookup";
 
@@ -795,11 +795,27 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
       if (!f.tail_number || !f.departure_icao) continue;
 
       // --- Diversion detection ---
-      // If FA matched this leg's route but says it's diverted, mark it
+      // If FA matched this leg's route but says it's diverted, find diversion airport
+      // from last known position (FA's destination stays as the original filed dest)
       const routeKey = `${f.tail_number}|${f.departure_icao}|${f.arrival_icao ?? ""}`;
-      const routeFi = flightInfo.get(routeKey);
-      if (routeFi?.diverted && routeFi.destination_icao && routeFi.destination_icao !== f.arrival_icao) {
-        superseded.set(f.id, { actualDest: routeFi.destination_icao, diverted: true });
+      const routeFi = flightInfo.get(routeKey) ?? (flightInfo.get(f.tail_number)?.diverted ? flightInfo.get(f.tail_number) : undefined);
+      if (routeFi?.diverted) {
+        let divertedTo: string | null = null;
+        if (routeFi.latitude != null && routeFi.longitude != null) {
+          const nearest = findNearestAirport(routeFi.latitude, routeFi.longitude);
+          if (nearest) {
+            // Normalize to ICAO (K-prefix for US 3-letter codes)
+            let code = nearest.code;
+            if (code.length === 3 && /^[A-Z]/.test(code)) code = `K${code}`;
+            // Don't show if it matches the departure or original destination
+            const depNorm = f.departure_icao?.length === 3 ? `K${f.departure_icao}` : f.departure_icao;
+            const arrNorm = f.arrival_icao?.length === 3 ? `K${f.arrival_icao}` : f.arrival_icao;
+            if (code !== depNorm && code !== arrNorm) {
+              divertedTo = code;
+            }
+          }
+        }
+        superseded.set(f.id, { actualDest: divertedTo, diverted: true });
         continue;
       }
 
