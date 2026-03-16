@@ -490,7 +490,10 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
         {aircraft.map((ac) => {
           const fi = flightInfo.get(ac.tail);
           const color = getAcColor(fleetLookup, ac.tail, ac.on_ground);
-          const isDiverted = fi?.diverted === true;
+          const divertedRecently = fi?.diverted === true && !(
+            fi.actual_arrival && Date.now() - new Date(fi.actual_arrival).getTime() > 5 * 3600_000
+          );
+          const isDiverted = divertedRecently;
           const isHolding = holdingTails.has(ac.tail);
           const hasAlert = isDiverted || isHolding;
           const alertLabel = isDiverted ? "DIVERTED" : isHolding ? "HOLDING" : undefined;
