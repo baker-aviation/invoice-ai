@@ -185,32 +185,44 @@ function FlightTracks({
       const holdingTails = new Set<string>();
       const latestPositions = new Map<string, [number, number]>();
 
-      // Fetch all tracks in parallel to avoid sequential abort issues
-      const results = await Promise.allSettled(
-        enRoute.map(async (fi) => {
-          const res = await fetch(`/api/aircraft/track/${encodeURIComponent(fi.fa_flight_id!)}`, {
-            signal: controller.signal, cache: "no-store",
-          });
-          if (!res.ok) return { fi, rawPositions: [] as TrackPoint[] };
-          const data = await res.json();
-          return { fi, rawPositions: (data.positions ?? []) as TrackPoint[] };
-        })
-      );
+      // Single batch request — FA rate-limits at 1 req/sec, so the server
+      // fetches tracks sequentially with pauses instead of parallel calls
+      const flightIds = enRoute.map(fi => fi.fa_flight_id!);
+      try {
+        const res = await fetch("/api/aircraft/tracks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ flightIds }),
+          signal: controller.signal,
+          cache: "no-store",
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const trackMap: Record<string, TrackPoint[]> = data.tracks ?? {};
 
-      for (const result of results) {
-        if (result.status !== "fulfilled") continue;
-        const { fi, rawPositions } = result.value;
-        const positions: [number, number][] = rawPositions
-          .filter((p) => p.latitude && p.longitude)
-          .map((p) => [p.latitude, p.longitude] as [number, number]);
-        if (positions.length > 1) {
-          newTracks.set(fi.tail, positions);
-          latestPositions.set(fi.tail, positions[positions.length - 1]);
-        } else {
-          const fb = buildFallbackRoute(fi, acByTail.get(fi.tail));
-          if (fb) newFallbacks.set(fi.tail, fb);
+        for (const fi of enRoute) {
+          const rawPositions = trackMap[fi.fa_flight_id!] ?? [];
+          const positions: [number, number][] = rawPositions
+            .filter((p: TrackPoint) => p.latitude && p.longitude)
+            .map((p: TrackPoint) => [p.latitude, p.longitude] as [number, number]);
+          if (positions.length > 1) {
+            newTracks.set(fi.tail, positions);
+            latestPositions.set(fi.tail, positions[positions.length - 1]);
+          } else {
+            const fb = buildFallbackRoute(fi, acByTail.get(fi.tail));
+            if (fb) newFallbacks.set(fi.tail, fb);
+          }
+          if (detectHolding(rawPositions)) holdingTails.add(fi.tail);
         }
-        if (detectHolding(rawPositions)) holdingTails.add(fi.tail);
+      } catch (err) {
+        if (!controller.signal.aborted) {
+          console.warn("[OpsMap] Batch track fetch failed:", err);
+          // Build fallback lines for all
+          for (const fi of enRoute) {
+            const fb = buildFallbackRoute(fi, acByTail.get(fi.tail));
+            if (fb) newFallbacks.set(fi.tail, fb);
+          }
+        }
       }
 
       if (!controller.signal.aborted) {
