@@ -86,15 +86,19 @@ function hasAirborneFlights(flights: FlightInfo[]): boolean {
   return flights.some((f) => f.status === "En Route" || f.status === "Diverted");
 }
 
+// Minimum flight count to consider a cache valid. Below this, it's likely a
+// partial fetch (e.g. after() was killed after 1 batch) and should be re-fetched.
+const MIN_VALID_FLIGHTS = 5;
+
 export function getCacheTtl(): number {
+  if (memCache && memCache.data.length < MIN_VALID_FLIGHTS) return 0; // too few flights — treat as stale
   if (memCache && memCache.data.length > 0 && hasAirborneFlights(memCache.data)) return AIRBORNE_TTL;
-  if (memCache && memCache.data.length === 0) return 0; // empty cache is never fresh
   return IDLE_TTL;
 }
 
 export async function getCache(): Promise<{ data: FlightInfo[]; ts: number } | null> {
-  // Fast path: in-memory (only if we actually have flight data)
-  if (memCache && memCache.data.length > 0) return memCache;
+  // Fast path: in-memory (only if we have meaningful flight data)
+  if (memCache && memCache.data.length >= MIN_VALID_FLIGHTS) return memCache;
 
   // Cold start: load from Supabase
   try {
@@ -105,7 +109,7 @@ export async function getCache(): Promise<{ data: FlightInfo[]; ts: number } | n
       .eq("id", 1)
       .single();
 
-    if (row && row.data && Array.isArray(row.data) && row.data.length > 0) {
+    if (row && row.data && Array.isArray(row.data) && row.data.length >= MIN_VALID_FLIGHTS) {
       const ts = new Date(row.updated_at).getTime();
       memCache = { data: row.data as FlightInfo[], ts };
       return memCache;

@@ -86,8 +86,18 @@ export async function GET(req: NextRequest) {
           const [{ allTails, activeTails }, csMap] = await Promise.all([getTails(), getCallsignMap()]);
           console.log("[SWR] Background refresh starting for", activeTails.length, "active tails (of", allTails.length, "total)");
           const flights = await getActiveFlights(activeTails, csMap);
-          await setCache(flights);
-          console.log("[SWR] Background refresh complete,", flights.length, "flights");
+
+          // Safety: don't overwrite cache with fewer flights than what's already there.
+          // If after() was terminated early, we might only have 1-2 flights from the first batch.
+          const existing = await getCache();
+          const existingCount = existing?.data.length ?? 0;
+          if (flights.length >= existingCount || flights.length >= 5) {
+            await setCache(flights);
+            console.log("[SWR] Background refresh complete,", flights.length, "flights (was", existingCount, ")");
+          } else {
+            console.warn("[SWR] Refusing to overwrite cache:", flights.length, "flights fetched but cache has", existingCount, "— likely partial fetch");
+          }
+
           await refreshAlerts(allTails, activeTails, csMap).catch(() => {});
         } catch (err) {
           console.error("[SWR] Background refresh failed:", err);
@@ -131,7 +141,9 @@ export async function GET(req: NextRequest) {
   const [{ allTails: tails, activeTails }, callsignMap] = await Promise.all([getTails(), getCallsignMap()]);
 
   try {
+    console.log("[Flights] Blocking fetch for", activeTails.length, "active tails");
     const flights = await getActiveFlights(activeTails, callsignMap);
+    console.log("[Flights] Got", flights.length, "flights from FA for", activeTails.length, "tails");
     await setCache(flights);
     await clearRefreshing(); // in case a background refresh was somehow flagged
 
