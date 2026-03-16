@@ -45,7 +45,7 @@ export function buildVanSlackBlocks(
   return [
     {
       type: "header",
-      text: { type: "plain_text", text: `🚐 AOG Van Schedule — ${date}`, emoji: true },
+      text: { type: "plain_text", text: `🚐 Schedule Update for Today — ${date}`, emoji: true },
     },
     {
       type: "section",
@@ -77,5 +77,5 @@ export function buildVanSlackBlocks(
 }
 
 export function buildVanSlackFallbackText(vanName: string, date: string): string {
-  return `AOG Van Schedule: ${vanName} — ${date}`;
+  return `Schedule Update for Today: ${vanName} — ${date}`;
 }

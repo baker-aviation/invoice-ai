@@ -3404,33 +3404,42 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
     } catch { /* ignore */ }
   }, []);
 
-  // Snooze conflicts for 1 hour (localStorage with timestamps)
-  const [snoozedConflictIds, setSnoozedConflictIds] = useState<Set<string>>(() => {
+  // Dismiss conflicts by content hash — reappears if MX note changes
+  const dismissedConflictHashesRef = useRef<Record<string, string>>({});
+  // Load from localStorage on first render
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem("dismissedConflictHashes");
+      if (stored) dismissedConflictHashesRef.current = JSON.parse(stored);
+    } catch { /* ignore */ }
+  }, []);
+
+  const getMxNoteHash = useCallback((note: { body?: string | null; start_time?: string | null; end_time?: string | null; airport_icao?: string | null }) => {
+    return `${note.body ?? ""}|${note.start_time ?? ""}|${note.end_time ?? ""}|${note.airport_icao ?? ""}`;
+  }, []);
+
+  const [, setDismissedConflictIds] = useState<Set<string>>(() => {
     if (typeof window === "undefined") return new Set();
     try {
-      const stored: Record<string, number> = JSON.parse(localStorage.getItem("snoozedConflicts") ?? "{}");
-      const now = Date.now();
-      const active = new Set<string>();
-      const cleaned: Record<string, number> = {};
-      for (const [id, expiry] of Object.entries(stored)) {
-        if (expiry > now) { active.add(id); cleaned[id] = expiry; }
-      }
-      localStorage.setItem("snoozedConflicts", JSON.stringify(cleaned));
-      return active;
+      const stored: Record<string, string> = JSON.parse(localStorage.getItem("dismissedConflictHashes") ?? "{}");
+      dismissedConflictHashesRef.current = stored;
+      return new Set(Object.keys(stored));
     } catch { return new Set(); }
   });
 
-  const snoozeConflict = useCallback((id: string) => {
-    setSnoozedConflictIds((prev) => {
+  const dismissConflict = useCallback((id: string, mxNote: { body?: string | null; start_time?: string | null; end_time?: string | null; airport_icao?: string | null }) => {
+    const hash = getMxNoteHash(mxNote);
+    setDismissedConflictIds((prev) => {
       const next = new Set(prev).add(id);
       try {
-        const stored: Record<string, number> = JSON.parse(localStorage.getItem("snoozedConflicts") ?? "{}");
-        stored[id] = Date.now() + 60 * 60 * 1000; // 1 hour
-        localStorage.setItem("snoozedConflicts", JSON.stringify(stored));
+        const stored: Record<string, string> = JSON.parse(localStorage.getItem("dismissedConflictHashes") ?? "{}");
+        stored[id] = hash;
+        localStorage.setItem("dismissedConflictHashes", JSON.stringify(stored));
+        dismissedConflictHashesRef.current = stored;
       } catch { /* ignore */ }
       return next;
     });
-  }, []);
+  }, [getMxNoteHash]);
 
   const [schedTypeFilter, setSchedTypeFilter] = useState<string>("all");
   const [syncing, setSyncing] = useState(false);
@@ -3538,8 +3547,13 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
     const threeDaysOut = now + THREE_DAYS_MS;
     for (const tail of allTails) {
       if (qualifiedTails.has(tail)) continue;
+      const pastDay = now - 24 * 60 * 60 * 1000;
       const hasNonMxFlight = initialFlights.some(
-        (f) => f.tail_number === tail && f.flight_type !== "Maintenance" && new Date(f.scheduled_departure).getTime() >= now && new Date(f.scheduled_departure).getTime() <= threeDaysOut,
+        (f) =>
+          f.tail_number === tail &&
+          f.flight_type !== "Maintenance" &&
+          new Date(f.scheduled_departure).getTime() >= pastDay &&
+          new Date(f.scheduled_departure).getTime() <= threeDaysOut,
       );
       if (!hasNonMxFlight) {
         let lastAirport: string | null = null;
@@ -4004,7 +4018,11 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
 
       {/* ── MX Conflict Alerts (accordion) ── */}
       {(() => {
-        const visibleConflicts = mxConflicts.filter((c) => !snoozedConflictIds.has(c.mxNote.id));
+        const visibleConflicts = mxConflicts.filter((c) => {
+          const storedHash = dismissedConflictHashesRef.current[c.mxNote.id];
+          if (!storedHash) return true;
+          return storedHash !== getMxNoteHash(c.mxNote);
+        });
         return (
       <div className={`rounded-xl border-2 px-5 py-4 shadow-sm ${
         visibleConflicts.length > 0
@@ -4063,10 +4081,10 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
                       )}
                     </div>
                     <button
-                      onClick={(e) => { e.stopPropagation(); snoozeConflict(c.mxNote.id); }}
+                      onClick={(e) => { e.stopPropagation(); dismissConflict(c.mxNote.id, c.mxNote); }}
                       className="text-[10px] font-medium text-red-400 hover:text-red-700 hover:bg-red-50 border border-red-200 rounded px-2 py-0.5 shrink-0 transition-colors"
                     >
-                      Snooze 1hr
+                      Dismiss
                     </button>
                   </div>
                 </div>
