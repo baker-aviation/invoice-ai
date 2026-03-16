@@ -197,11 +197,9 @@ function FlightTracks({
           cache: "no-store",
         });
         if (!res.ok) {
-          console.error(`[OpsMap] Batch tracks HTTP ${res.status}`, await res.text().catch(() => ""));
           throw new Error(`HTTP ${res.status}`);
         }
         const data = await res.json();
-        console.log(`[OpsMap] Batch tracks response: ${data.fetched} fetched, ${data.cached} cached, keys: ${Object.keys(data.tracks ?? {}).length}`);
         const trackMap: Record<string, TrackPoint[]> = data.tracks ?? {};
 
         for (const fi of enRoute) {
@@ -209,10 +207,6 @@ function FlightTracks({
           const positions: [number, number][] = rawPositions
             .filter((p: TrackPoint) => p.latitude && p.longitude)
             .map((p: TrackPoint) => [p.latitude, p.longitude] as [number, number]);
-          console.log(`[OpsMap] ${fi.tail} (${fi.fa_flight_id}): ${rawPositions.length} raw → ${positions.length} filtered`);
-          if (rawPositions.length > 0 && positions.length === 0) {
-            console.log(`[OpsMap] ${fi.tail} sample raw:`, JSON.stringify(rawPositions[0]));
-          }
           if (positions.length > 1) {
             newTracks.set(fi.tail, positions);
             latestPositions.set(fi.tail, positions[positions.length - 1]);
@@ -222,7 +216,6 @@ function FlightTracks({
           }
           if (detectHolding(rawPositions)) holdingTails.add(fi.tail);
         }
-        console.log(`[OpsMap] Result: ${newTracks.size} solid tracks, ${newFallbacks.size} fallbacks`);
       } catch (err) {
         if (!controller.signal.aborted) {
           console.warn("[OpsMap] Batch track fetch failed:", err);
