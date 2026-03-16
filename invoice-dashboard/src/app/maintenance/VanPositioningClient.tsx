@@ -830,7 +830,7 @@ function routeDistKm(items: VanFlightItem[]): number {
 
 type SlackChannel = { id: string; name: string };
 /** Build Slack-ready item payloads from VanFlightItems. Used by single share and bulk share. */
-function buildSlackItems(items: VanFlightItem[], flightInfoMap: Map<string, FlightInfoEntry>, fboMap?: Record<string, string>) {
+function buildSlackItems(items: VanFlightItem[], flightInfoMap: Map<string, FlightInfoEntry>, fboMap?: Record<string, string>, mxNotesByTail?: Map<string, MxNote[]>) {
   return items.map((item) => {
     const fi = flightInfoMap.get(item.arrFlight.tail_number ?? "");
     const arrMs = item.arrFlight.scheduled_arrival ? new Date(item.arrFlight.scheduled_arrival).getTime() : null;
@@ -855,6 +855,18 @@ function buildSlackItems(items: VanFlightItem[], flightInfoMap: Map<string, Flig
     // Look up FBO name from trip_salespersons
     const fboKey = `${item.arrFlight.tail_number}:${item.arrFlight.arrival_icao}`;
     const fbo = fboMap?.[fboKey] ?? null;
+    // Gather today's MX notes for this tail
+    const tailNotes = mxNotesByTail?.get(item.arrFlight.tail_number ?? "") ?? [];
+    const nowMs = Date.now();
+    const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+    const mxNoteTexts = tailNotes
+      .filter((n) => {
+        if (n.end_time && new Date(n.end_time).getTime() < nowMs) return false;
+        if (n.start_time && n.start_time.slice(0, 10) > todayStr) return false;
+        return true;
+      })
+      .map((n) => `${n.airport_icao ?? ""} — ${n.body ?? ""}`.trim());
+
     return {
       tail: item.arrFlight.tail_number ?? "—",
       airport: item.airport,
@@ -866,6 +878,7 @@ function buildSlackItems(items: VanFlightItem[], flightInfoMap: Map<string, Flig
         : "Staying Overnight",
       turnStatus: turnLabel,
       driveTime: item.distKm > 0 ? fmtDriveTime(item.distKm) : undefined,
+      mxNotes: mxNoteTexts.length > 0 ? mxNoteTexts : undefined,
     };
   });
 }
@@ -880,6 +893,7 @@ function SlackShareModal({
   items,
   flightInfoMap,
   fboMap,
+  mxNotesByTail,
   onClose,
 }: {
   vanName: string;
@@ -889,6 +903,7 @@ function SlackShareModal({
   items: VanFlightItem[];
   flightInfoMap: Map<string, FlightInfoEntry>;
   fboMap?: Record<string, string>;
+  mxNotesByTail?: Map<string, MxNote[]>;
   onClose: () => void;
 }) {
   const [state, setState] = useState<SlackShareState>("loading-channels");
@@ -925,7 +940,7 @@ function SlackShareModal({
         vanId,
         homeAirport,
         date,
-        items: buildSlackItems(items, flightInfoMap, fboMap),
+        items: buildSlackItems(items, flightInfoMap, fboMap, mxNotesByTail),
       };
       const res = await fetch("/api/vans/share-slack", {
         method: "POST",
@@ -1707,6 +1722,7 @@ function VanScheduleCard({
           items={items}
           flightInfoMap={flightInfoMap}
           fboMap={fboMap}
+          mxNotesByTail={mxNotesByTail}
           onClose={() => setShowSlackModal(false)}
         />
       )}
@@ -2534,7 +2550,7 @@ function ScheduleTab({
             vanName: zone.name,
             vanId: zone.vanId,
             homeAirport: zone.homeAirport,
-            items: buildSlackItems(items, flightInfoMap, fboMap),
+            items: buildSlackItems(items, flightInfoMap, fboMap, mxNotesByTail),
           };
         })
         .filter(Boolean);
@@ -2553,7 +2569,7 @@ function ScheduleTab({
     } catch {
       setSlackBulkStatus("error");
     }
-  }, [date, finalItemsByVan, flightInfoMap]);
+  }, [date, finalItemsByVan, flightInfoMap, fboMap, mxNotesByTail]);
 
   const shareAllToSlack = useCallback(() => shareVansToSlack(), [shareVansToSlack]);
 
@@ -2573,7 +2589,7 @@ function ScheduleTab({
             vanName: zone.name,
             vanId: zone.vanId,
             homeAirport: zone.homeAirport,
-            items: buildSlackItems(items, flightInfoMap, fboMap),
+            items: buildSlackItems(items, flightInfoMap, fboMap, mxNotesByTail),
           }],
         }),
       });

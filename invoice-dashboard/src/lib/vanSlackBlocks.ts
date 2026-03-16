@@ -1,6 +1,9 @@
 /**
  * Shared Slack Block Kit builder for van schedule messages.
  * Used by both single share and bulk share endpoints.
+ *
+ * Sends a header message, then one message per aircraft so drivers
+ * can reply in-thread to each specific aircraft.
  */
 
 export type VanSlackItem = {
@@ -13,35 +16,20 @@ export type VanSlackItem = {
   turnStatus?: string;   // "Quickturn" | "Done for day"
   driveTime?: string;    // "1h 30m drive"
   route?: string;        // deprecated, kept for compat
+  mxNotes?: string[];    // MX note descriptions for this aircraft
 };
 
 const VAN_BASE_URL = process.env.VAN_BASE_URL ?? "https://www.whitelabel-ops.com";
 
-export function buildVanSlackBlocks(
+/** Header message blocks — posted first, subsequent aircraft messages are threaded under it. */
+export function buildVanSlackHeaderBlocks(
   vanName: string,
   vanId: number,
   homeAirport: string,
   date: string,
-  items: VanSlackItem[],
+  itemCount: number,
 ) {
-  const header = `*${vanName} (V${vanId})* — ${date}\nBase: ${homeAirport}`;
-
-  const aircraftLines =
-    items.length === 0
-      ? ["_No arrivals scheduled_"]
-      : items.map((item) => {
-          const airport = item.airport ?? item.route?.split("→").pop()?.trim() ?? "?";
-          const fboLabel = item.fbo ? ` · ${item.fbo}` : "";
-          let line = `• *${item.tail}* → ${airport}${fboLabel} — ${item.arrivalTime}`;
-          if (item.status === "~Landed" || item.status === "Landed") line += " _(Landed)_";
-          else if (item.status.startsWith("En Route")) line += ` _(${item.status})_`;
-          if (item.driveTime) line += ` · ${item.driveTime}`;
-          if (item.nextDep) line += `\n  ↳ _${item.nextDep}_`;
-          return line;
-        });
-
   const vanUrl = `${VAN_BASE_URL}/van/${vanId}`;
-
   return [
     {
       type: "header",
@@ -49,12 +37,7 @@ export function buildVanSlackBlocks(
     },
     {
       type: "section",
-      text: { type: "mrkdwn", text: header },
-    },
-    { type: "divider" },
-    {
-      type: "section",
-      text: { type: "mrkdwn", text: aircraftLines.join("\n") },
+      text: { type: "mrkdwn", text: `*${vanName} (V${vanId})* — ${date}\nBase: ${homeAirport}\n${itemCount} aircraft assigned` },
     },
     {
       type: "actions",
@@ -67,15 +50,47 @@ export function buildVanSlackBlocks(
         },
       ],
     },
+  ];
+}
+
+/** Per-aircraft message blocks — posted as thread replies. */
+export function buildAircraftSlackBlocks(item: VanSlackItem) {
+  const airport = item.airport ?? item.route?.split("→").pop()?.trim() ?? "?";
+  const fboLabel = item.fbo ? ` · ${item.fbo}` : "";
+
+  let statusEmoji = "⏳";
+  if (item.status === "~Landed" || item.status === "Landed") statusEmoji = "✅";
+  else if (item.status.startsWith("En Route")) statusEmoji = "✈️";
+  else if (item.status === "DIVERTED") statusEmoji = "🔴";
+
+  let body = `${statusEmoji} *${item.tail}* → ${airport}${fboLabel}\n`;
+  body += `Arrival: ${item.arrivalTime}`;
+  if (item.status !== "Scheduled") body += ` _(${item.status})_`;
+  if (item.driveTime) body += `\nDrive: ${item.driveTime}`;
+  if (item.turnStatus) body += `\nTurn: ${item.turnStatus}`;
+  if (item.nextDep) body += `\n↳ _${item.nextDep}_`;
+
+  const blocks: Record<string, unknown>[] = [
     {
-      type: "context",
-      elements: [
-        { type: "mrkdwn", text: `Shared from Baker Aviation AOG Van Planner · ${items.length} aircraft` },
-      ],
+      type: "section",
+      text: { type: "mrkdwn", text: body },
     },
   ];
+
+  if (item.mxNotes && item.mxNotes.length > 0) {
+    blocks.push({
+      type: "section",
+      text: { type: "mrkdwn", text: `🔧 *MX Notes:*\n${item.mxNotes.map((n) => `• ${n}`).join("\n")}` },
+    });
+  }
+
+  return blocks;
 }
 
 export function buildVanSlackFallbackText(vanName: string, date: string): string {
   return `Schedule Update for Today: ${vanName} — ${date}`;
+}
+
+export function buildAircraftFallbackText(item: VanSlackItem): string {
+  return `${item.tail} → ${item.airport} — ${item.arrivalTime}`;
 }

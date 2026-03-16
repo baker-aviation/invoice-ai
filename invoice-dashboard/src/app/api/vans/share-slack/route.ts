@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, isAuthed, isRateLimited } from "@/lib/api-auth";
-import { buildVanSlackBlocks, buildVanSlackFallbackText, type VanSlackItem } from "@/lib/vanSlackBlocks";
+import { buildVanSlackHeaderBlocks, buildAircraftSlackBlocks, buildVanSlackFallbackText, buildAircraftFallbackText, type VanSlackItem } from "@/lib/vanSlackBlocks";
 import { createServiceClient } from "@/lib/supabase/service";
 
 /**
@@ -82,24 +82,38 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
   }
 
-  const slackPayload = {
-    channel,
-    text: buildVanSlackFallbackText(vanName, date),
-    blocks: buildVanSlackBlocks(vanName, vanId, homeAirport, date, items),
-  };
-
   try {
-    const res = await fetch("https://slack.com/api/chat.postMessage", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(slackPayload),
+    const postMessage = async (payload: Record<string, unknown>) => {
+      const res = await fetch("https://slack.com/api/chat.postMessage", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+      return res.json();
+    };
+
+    // 1) Send header message
+    const headerData = await postMessage({
+      channel,
+      text: buildVanSlackFallbackText(vanName, date),
+      blocks: buildVanSlackHeaderBlocks(vanName, vanId, homeAirport, date, items.length),
     });
-    const data = await res.json();
-    if (!data.ok) {
-      return NextResponse.json({ error: data.error ?? "Slack API error" }, { status: 502 });
+    if (!headerData.ok) {
+      return NextResponse.json({ error: headerData.error ?? "Slack API error" }, { status: 502 });
+    }
+    const threadTs = headerData.ts;
+
+    // 2) Send each aircraft as a threaded reply
+    for (const item of items) {
+      await postMessage({
+        channel,
+        thread_ts: threadTs,
+        text: buildAircraftFallbackText(item),
+        blocks: buildAircraftSlackBlocks(item),
+      });
     }
 
     // Save the shared schedule to DB for persistence
@@ -109,17 +123,17 @@ export async function POST(req: NextRequest) {
         {
           van_id: vanId,
           schedule_date: date,
-          flight_ids: items.map((i) => i.tail), // store tail numbers as identifiers
+          flight_ids: items.map((i) => i.tail),
           published_by: auth.userId,
           published_at: new Date().toISOString(),
         },
         { onConflict: "van_id,schedule_date" },
       );
     } catch {
-      // Non-fatal — Slack message was sent successfully
+      // Non-fatal — Slack messages were sent successfully
     }
 
-    return NextResponse.json({ ok: true, ts: data.ts, channel: data.channel });
+    return NextResponse.json({ ok: true, ts: threadTs, channel: headerData.channel, aircraftCount: items.length });
   } catch (err) {
     return NextResponse.json({ error: "Slack API request failed" }, { status: 502 });
   }
