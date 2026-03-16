@@ -180,6 +180,13 @@ export const STAGGER_MIN_GAP_HOURS = 2;
  * Plan USA swaps as much as possible.
  */
 
+// ─── TEB Airport Preferences ─────────────────────────────────────────────────
+
+/** For TEB swaps, EWR is strongly preferred. LGA/JFK Ubers are terrible. */
+export const TEB_PENALTY_AIRPORTS = ["LGA", "JFK"];
+export const TEB_OFFGOING_PENALTY = -15;
+export const TEB_ONCOMING_PENALTY = -10;
+
 // ─── Airport Alias Preferences ───────────────────────────────────────────────
 
 /**

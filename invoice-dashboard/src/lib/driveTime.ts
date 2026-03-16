@@ -331,7 +331,8 @@ export type DriveEstimate = {
 
 /**
  * Estimate drive time between two airports using straight-line distance.
- * Uses 1.3x multiplier for road vs straight-line, 45 mph average speed.
+ * Uses distance-dependent road multiplier (1.2x highway / 1.3x city) and 55 mph avg.
+ * All drive times rounded UP to nearest 15 minutes.
  */
 export function estimateDriveTime(originIcao: string, destIcao: string): DriveEstimate | null {
   const orig = AIRPORT_COORDS[originIcao.toUpperCase()];
@@ -339,15 +340,19 @@ export function estimateDriveTime(originIcao: string, destIcao: string): DriveEs
   if (!orig || !dest) return null;
 
   const straightMiles = haversineMiles(orig[0], orig[1], dest[0], dest[1]);
-  const driveMiles = straightMiles * 1.3; // road distance multiplier
-  const driveMinutes = (driveMiles / 45) * 60; // 45 mph average
+  // Short distances (<50mi) use 1.3x (city driving is windier)
+  // Longer distances use 1.2x (highways are straighter)
+  const roadMultiplier = straightMiles > 50 ? 1.2 : 1.3;
+  const driveMiles = straightMiles * roadMultiplier;
+  const rawMinutes = (driveMiles / 55) * 60; // 55 mph average
+  const driveMinutes = Math.ceil(rawMinutes / 15) * 15; // round UP to nearest 15 min
 
   return {
     origin: originIcao.toUpperCase(),
     destination: destIcao.toUpperCase(),
     straight_line_miles: Math.round(straightMiles),
     estimated_drive_miles: Math.round(driveMiles),
-    estimated_drive_minutes: Math.round(driveMinutes),
+    estimated_drive_minutes: driveMinutes,
     feasible: driveMinutes <= 240, // 4 hour cutoff
   };
 }

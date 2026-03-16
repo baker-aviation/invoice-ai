@@ -87,6 +87,7 @@ type CrewSwapRow = {
   duty_off_time: string | null;
   is_checkairman: boolean;
   is_skillbridge: boolean;
+  volunteer_status: string | null;
   notes: string | null;
   warnings: string[];
   alt_flights: { flight_number: string; dep: string; arr: string; price: string }[];
@@ -537,7 +538,7 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
 
     function fmtLocal(iso: string | null): string {
       if (!iso) return "";
-      return new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", timeZoneName: "short" });
+      return new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }) + "L";
     }
 
     function travelLabel(r: CrewSwapRow): string {
@@ -548,72 +549,128 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
       return "";
     }
 
-    // Header row matches the import format columns + optimizer result columns
-    const HEADER = [
-      "SB", "Vol", "Name (Home Base)", "", "Tail", "",
-      "Swap Location", "Transport", "Dep Time", "Avail/Arr Time",
-      "Cost", "Backup", "Notes/Warnings",
+    // Headers match the manual Excel layout
+    const ONCOMING_HEADER = [
+      "SB", "Vol", "Name (Home Base)", "Swap Location", "Aircraft",
+      "Flight Number", "Date", "Duty On Time", "Arrival Time",
+      "Price", "Notes", "Verified Ticket", "Bonus Eligible", "Bonus Claimed",
+      "", "", // gap columns
+      "OLD PIC", "NEW PIC", "TAIL",
     ];
 
-    function dataRow(r: CrewSwapRow): (string | number | null)[] {
+    const OFFGOING_HEADER = [
+      "SB", "Vol", "Name (Home Base)", "Swap Location", "Aircraft",
+      "Flight Number", "Date", "Depart", "Arrival Time",
+      "Price", "Notes", "Verified Ticket", "Bonus Eligible", "Bonus Claimed",
+    ];
+
+    function dataRow(r: CrewSwapRow, isOffgoing: boolean): (string | number | null)[] {
       return [
-        r.is_skillbridge ? "TRUE" : "",
-        "", // volunteer flag not stored on result rows
+        r.is_skillbridge ? "SB" : "",
+        r.volunteer_status ?? "",
         crewCell(r),
-        "",
-        r.tail_number,
-        "",
         r.swap_location ?? "",
+        r.tail_number,
         travelLabel(r),
-        fmtLocal(r.departure_time),
-        fmtLocal(r.available_time ?? r.arrival_time),
+        r.departure_time ? new Date(r.departure_time).toLocaleDateString() : "",
+        isOffgoing
+          ? fmtLocal(r.departure_time)                          // Offgoing: Depart time
+          : fmtLocal(r.duty_on_time ?? r.departure_time),       // Oncoming: Duty On Time
+        fmtLocal(r.available_time ?? r.arrival_time),            // Arrival Time (times only, no airports)
         r.cost_estimate != null ? `$${r.cost_estimate}` : "",
-        r.backup_flight ?? "",
-        [...r.warnings, r.notes ?? ""].filter(Boolean).join("; "),
+        [...(r.notes ? [r.notes] : []), ...r.warnings].filter(Boolean).join("; "),
+        "", // Verified Ticket (manual)
+        r.volunteer_status ? "Y" : "",
+        "", // Bonus Claimed (manual)
       ];
     }
+
+    // Sort rows within each section by aircraft type: CX → Challenger → Standby → OFF
+    const acTypeOrder = (r: CrewSwapRow): number => {
+      if (r.swap_location === "STANDBY" || r.travel_type === "none") return 2;
+      if (r.aircraft_type === "citation_x") return 0;
+      if (r.aircraft_type === "challenger") return 1;
+      return 3; // OFF/unavailable
+    };
+    const sortSection = (arr: CrewSwapRow[]) =>
+      [...arr].sort((a, b) => acTypeOrder(a) - acTypeOrder(b) || a.tail_number.localeCompare(b.tail_number));
 
     const sheetData: (string | number | null)[][] = [];
 
     // ONCOMING PILOTS
-    sheetData.push(["", "", "ONCOMING PILOTS", "", "", "", "", "", "", "", "", "", ""]);
-    sheetData.push(["", "", "PILOT IN-COMMAND", "", "", "", "", "", "", "", "", "", ""]);
-    sheetData.push(HEADER);
-    for (const r of oncomingPics) sheetData.push(dataRow(r));
+    sheetData.push(["", "", "ONCOMING PILOTS", "", "", "", "", "", "", "", "", "", "", ""]);
+    sheetData.push(["", "", "PILOT IN-COMMAND", "", "", "", "", "", "", "", "", "", "", ""]);
+    sheetData.push(ONCOMING_HEADER);
+    for (const r of sortSection(oncomingPics)) sheetData.push(dataRow(r, false));
     sheetData.push([]);
-    sheetData.push(["", "", "SECOND IN-COMMAND", "", "", "", "", "", "", "", "", "", ""]);
-    sheetData.push(HEADER);
-    for (const r of oncomingSics) sheetData.push(dataRow(r));
+    sheetData.push(["", "", "SECOND IN-COMMAND", "", "", "", "", "", "", "", "", "", "", ""]);
+    sheetData.push(ONCOMING_HEADER);
+    for (const r of sortSection(oncomingSics)) sheetData.push(dataRow(r, false));
     sheetData.push([]);
 
     // OFFGOING PILOTS
-    sheetData.push(["", "", "OFFGOING PILOTS", "", "", "", "", "", "", "", "", "", ""]);
-    sheetData.push(["", "", "PILOT IN-COMMAND", "", "", "", "", "", "", "", "", "", ""]);
-    sheetData.push(HEADER);
-    for (const r of offgoingPics) sheetData.push(dataRow(r));
+    sheetData.push(["", "", "OFFGOING PILOTS", "", "", "", "", "", "", "", "", "", "", ""]);
+    sheetData.push(["", "", "PILOT IN-COMMAND", "", "", "", "", "", "", "", "", "", "", ""]);
+    sheetData.push(OFFGOING_HEADER);
+    for (const r of sortSection(offgoingPics)) sheetData.push(dataRow(r, true));
     sheetData.push([]);
-    sheetData.push(["", "", "SECOND IN-COMMAND", "", "", "", "", "", "", "", "", "", ""]);
-    sheetData.push(HEADER);
-    for (const r of offgoingSics) sheetData.push(dataRow(r));
+    sheetData.push(["", "", "SECOND IN-COMMAND", "", "", "", "", "", "", "", "", "", "", ""]);
+    sheetData.push(OFFGOING_HEADER);
+    for (const r of sortSection(offgoingSics)) sheetData.push(dataRow(r, true));
 
     // Summary row
     sheetData.push([]);
-    sheetData.push(["", "", `Total Est. Cost: $${swapPlan.total_cost.toLocaleString()}`, "", "", "",
+    sheetData.push(["", "", `Total Est. Cost: $${swapPlan.total_cost.toLocaleString()}`, "", "",
       `Score: ${swapPlan.plan_score}`, `Solved: ${swapPlan.solved_count ?? 0}`,
-      `Unsolved: ${swapPlan.unsolved_count ?? 0}`, "", "", "", ""]);
+      `Unsolved: ${swapPlan.unsolved_count ?? 0}`, "", "", "", "", "", ""]);
     if (swapPlan.warnings.length > 0) {
-      sheetData.push(["", "", "WARNINGS:", "", "", "", "", "", "", "", "", "", ""]);
+      sheetData.push(["", "", "WARNINGS:", "", "", "", "", "", "", "", "", "", "", ""]);
       for (const w of swapPlan.warnings) {
-        sheetData.push(["", "", w, "", "", "", "", "", "", "", "", "", ""]);
+        sheetData.push(["", "", w, "", "", "", "", "", "", "", "", "", "", ""]);
+      }
+    }
+
+    // To-Do List sidebar (columns P-R on first oncoming header row)
+    // Find the first oncoming header row index and add to-do items
+    const todoItems = [
+      "Verify all tickets booked",
+      "Confirm rental cars reserved",
+      "Send crew notifications",
+      "Update JetInsight schedules",
+      "Confirm FBO crew lounges",
+      "Verify ground transport",
+    ];
+    // Add to-do list to the first few rows after the first header
+    for (let i = 0; i < Math.min(todoItems.length, sheetData.length); i++) {
+      const row = sheetData[i + 3]; // skip title rows + header
+      if (row && row.length < 19) {
+        while (row.length < 16) row.push("");
+        row.push("", "", "");
       }
     }
 
     const ws = XLSX.utils.aoa_to_sheet(sheetData);
-    // Set column widths
+    // Set column widths: A-N = data, O-P = gap, Q-S = To-Do sidebar
     ws["!cols"] = [
-      { wch: 5 }, { wch: 4 }, { wch: 30 }, { wch: 3 }, { wch: 10 }, { wch: 3 },
-      { wch: 12 }, { wch: 18 }, { wch: 14 }, { wch: 14 },
-      { wch: 8 }, { wch: 14 }, { wch: 40 },
+      { wch: 4 },  // SB
+      { wch: 18 }, // Vol
+      { wch: 28 }, // Name (Home Base)
+      { wch: 12 }, // Swap Location
+      { wch: 12 }, // Aircraft
+      { wch: 18 }, // Flight Number
+      { wch: 10 }, // Date
+      { wch: 12 }, // Duty On / Depart
+      { wch: 12 }, // Arrival Time
+      { wch: 8 },  // Price
+      { wch: 35 }, // Notes
+      { wch: 10 }, // Verified Ticket
+      { wch: 10 }, // Bonus Eligible
+      { wch: 10 }, // Bonus Claimed
+      { wch: 3 },  // gap
+      { wch: 3 },  // gap
+      { wch: 14 }, // OLD PIC
+      { wch: 14 }, // NEW PIC
+      { wch: 12 }, // TAIL
     ];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Swap Plan");

@@ -326,6 +326,8 @@ def parse_tfms_flight_message(xml_str: str) -> Optional[Dict[str, Any]]:
         event_type = "FLIGHT_TIMES"
     elif "cancel" in msg_type:
         event_type = "CANCEL"
+    elif "control" in msg_type or "flightcontrol" in msg_type:
+        event_type = "FLIGHT_CONTROL"
 
     # Timestamp — check sourceTimeStamp attribute, then elements
     event_time = _get_attr(root, "sourceTimeStamp")
@@ -367,6 +369,8 @@ def parse_tfms_flight_message(xml_str: str) -> Optional[Dict[str, Any]]:
     # Detect EDCT-related trigger
     is_edct_trigger = any(k in trigger_lower for k in ("edct", "expected_departure_clearance",
                                                         "controlled_time", "tm_initiative"))
+    if is_edct_trigger:
+        event_type = "FLIGHT_CONTROL"
 
     # Diversion detection
     diversion_el = _find_any(root, "diversionIndicator")
@@ -417,25 +421,40 @@ def parse_tfms_flight_message(xml_str: str) -> Optional[Dict[str, Any]]:
 
 
 def parse_tfms_flow_message(xml_str: str) -> Optional[Dict[str, Any]]:
-    """Parse a TFMS R14 Flow Data message (GDP, Ground Stop, CTOP)."""
+    """Parse a TFMS R14 Flow Data message (GDP, Ground Stop, CTOP, AFP, Reroute, etc.)."""
     try:
         root = ET.fromstring(xml_str)
     except ET.ParseError:
         return None
 
-    root_tag = root.tag.split("}")[-1] if "}" in root.tag else root.tag
-
-    # Determine event type
+    # Walk all tags + msgType attrs to classify the flow message
     event_type = "UNKNOWN"
-    tag_lower = root_tag.lower()
-    if "grounddelay" in tag_lower or "gdp" in tag_lower:
-        event_type = "GDP"
-    elif "groundstop" in tag_lower:
-        event_type = "GROUND_STOP"
-    elif "ctop" in tag_lower or "collaborative" in tag_lower:
-        event_type = "CTOP"
-    elif "airspaceflow" in tag_lower or "afp" in tag_lower:
-        event_type = "AFP"
+    for el in root.iter():
+        tag = (el.tag.split("}")[-1] if "}" in el.tag else el.tag).lower()
+        msg_type = (el.get("msgType") or "").lower()
+        combined = tag + " " + msg_type
+
+        if "grounddelay" in combined or "gdp" in combined:
+            event_type = "GDP"
+            break
+        elif "groundstop" in combined:
+            event_type = "GROUND_STOP"
+            break
+        elif "ctop" in combined or "collaborative" in combined:
+            event_type = "CTOP"
+            break
+        elif "airspaceflow" in combined or "afp" in combined:
+            event_type = "AFP"
+            break
+        elif "reroute" in combined:
+            event_type = "REROUTE"
+            break
+        elif "fueladvisory" in combined:
+            event_type = "FUEL_ADVISORY"
+            break
+        elif "deicing" in combined:
+            event_type = "DEICING"
+            break
 
     # Airport
     airport_el = _find_any(root, "airport", "aerodrome", "facility", "controlElement")
@@ -449,11 +468,19 @@ def parse_tfms_flow_message(xml_str: str) -> Optional[Dict[str, Any]]:
     reason_el = _find_any(root, "reason", "description", "remarks")
     reason = _safe_text(reason_el)
 
+    # Average delay (GDP-specific)
+    delay_el = _find_any(root, "averageDelay", "avgDelay", "delay")
+    delay_mins = _safe_text(delay_el)
+
     severity = "critical" if event_type in ("GROUND_STOP", "GDP") else "warning"
 
     subject = f"{event_type}"
     if airport:
         subject += f" at {airport}"
+    if delay_mins:
+        subject += f" ({delay_mins} min avg delay)"
+
+    print(f"[SWIM] Flow message parsed: {event_type} airport={airport} reason={reason}", flush=True)
 
     return {
         "event_type": event_type,
@@ -588,7 +615,11 @@ def pull_swim() -> Dict[str, Any]:
     flow_batch: List[Dict[str, Any]] = []
 
     # Flow data keywords — cheap string check before XML parse
-    FLOW_KEYWORDS = ("GroundDelay", "GroundStop", "GDP", "CTOP", "AirspaceFlow", "AFP")
+    # Covers R14 Flow Data message types: GDP, Ground Stop, CTOP, AFP, Reroute, etc.
+    FLOW_KEYWORDS = ("GroundDelay", "GroundStop", "GDP", "CTOP", "AirspaceFlow", "AFP",
+                     "gdpAdvisory", "groundStopAdvisory", "fiCommonMessage",
+                     "RerouteProgram", "Reroute", "FuelAdvisory", "FlowControl",
+                     "flowEvaluation", "DeicingLog", "AirportConfig")
 
     for raw in tfms_raw:
         # Fast pre-filter: skip XML parse unless message might be relevant
