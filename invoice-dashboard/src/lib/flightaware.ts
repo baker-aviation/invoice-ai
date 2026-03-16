@@ -286,8 +286,10 @@ export async function getActiveFlights(
   const now = Date.now();
   evictStaleCache();
 
-  // Query in batches of 3 to stay well under rate limits
-  const BATCH = 3;
+  // Query one tail at a time — FA rate-limits at 1 req/sec, and concurrent
+  // requests from Vercel's serverless functions cause 429s that silently
+  // return empty results, leaving the cache with only 2-3 tails of data.
+  const BATCH = 1;
   for (let i = 0; i < tails.length; i += BATCH) {
     const batch = tails.slice(i, i + BATCH);
     const batchResults = await Promise.all(
@@ -376,20 +378,23 @@ export async function getActiveFlights(
           }
 
           return recent;
-        } catch {
+        } catch (err) {
+          console.error(`[FA] ${tail}: ERROR`, err instanceof Error ? err.message : err);
           return [];
         }
       }),
     );
-    for (const batch of batchResults) {
-      results.push(...batch);
+    for (const br of batchResults) {
+      results.push(...br);
     }
-    // Rate limit pause between batches
+    console.log(`[FA] Batch ${Math.floor(i / BATCH) + 1}/${Math.ceil(tails.length / BATCH)}: ${batchResults.reduce((s, b) => s + b.length, 0)} flights from [${batch.join(",")}] (total so far: ${results.length})`);
+    // Rate limit pause — FA allows ~1 req/sec
     if (i + BATCH < tails.length) {
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      await new Promise((resolve) => setTimeout(resolve, 500));
     }
   }
 
+  console.log(`[FA] getActiveFlights complete: ${results.length} flights from ${tails.length} tails`);
   return results;
 }
 

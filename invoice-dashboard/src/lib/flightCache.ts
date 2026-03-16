@@ -88,7 +88,7 @@ function hasAirborneFlights(flights: FlightInfo[]): boolean {
 
 // Minimum flight count to consider a cache valid. Below this, it's likely a
 // partial fetch (e.g. after() was killed after 1 batch) and should be re-fetched.
-const MIN_VALID_FLIGHTS = 5;
+const MIN_VALID_FLIGHTS = 20;
 
 export function getCacheTtl(): number {
   if (memCache && memCache.data.length < MIN_VALID_FLIGHTS) return 0; // too few flights — treat as stale
