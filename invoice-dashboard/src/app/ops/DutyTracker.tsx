@@ -982,6 +982,7 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
                                     {td.edctRestPeriods && td.edctRestPeriods[dpIdx] && (() => {
                                       const eRest = td.edctRestPeriods[dpIdx];
                                       if (Math.abs(eRest.minutes - rest.minutes) < 5) return null; // same — skip
+                                      if (eRest.minutes >= rest.minutes) return null; // EDCT rest should be shorter, not longer
                                       const eHours = eRest.minutes / 60;
                                       const eIsRed = eHours < REST_RED_HOURS;
                                       const eIsYellow = !eIsRed && eHours < REST_YELLOW_HOURS;

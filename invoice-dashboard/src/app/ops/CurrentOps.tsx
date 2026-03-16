@@ -282,36 +282,21 @@ function computeTailDuty(
       if (totalMs > maxMs) maxMs = totalMs;
     }
 
-    // --- Crew rest: find the most recent completed rest period ---
-    // Walk backwards to find the last rest gap (≥8h) before a leg that has started.
-    // This shows how much rest the crew got before their current/most recent duty period.
+    // --- Crew rest: forward-looking ---
+    // Find the next/current rest period (the one whose next DP hasn't started yet).
+    // Shows "how much rest will the crew get tonight" rather than last night.
     // Rest = dutyOff (prev arrival + 30min post) to dutyOn (next departure - 60min lead)
-    // to match DutyTracker's calculation.
     let restMin: number | null = null;
     let restStartMs: number | null = null;
-    for (let i = finalIntervals.length - 2; i >= 0; i--) {
+    for (let i = 0; i < finalIntervals.length - 1; i++) {
       const gapMs = finalIntervals[i + 1].startMs - finalIntervals[i].endMs;
       if (gapMs < MIN_REST_GAP_MS) continue;
-      if (finalIntervals[i + 1].startMs <= nowMs) {
-        const dutyOffMs = finalIntervals[i].endMs + POST_TIME_MS;
-        const dutyOnMs = finalIntervals[i + 1].startMs - LEAD_TIME_MS;
-        restMin = Math.max(0, (dutyOnMs - dutyOffMs) / 60_000);
-        restStartMs = dutyOffMs;
-        break;
-      }
-    }
-    // Fallback: if no past rest found, show the upcoming rest
-    if (restMin == null) {
-      for (let i = 0; i < finalIntervals.length - 1; i++) {
-        const gapMs = finalIntervals[i + 1].startMs - finalIntervals[i].endMs;
-        if (gapMs >= MIN_REST_GAP_MS && finalIntervals[i + 1].startMs > nowMs) {
-          const dutyOffMs = finalIntervals[i].endMs + POST_TIME_MS;
-          const dutyOnMs = finalIntervals[i + 1].startMs - LEAD_TIME_MS;
-          restMin = Math.max(0, (dutyOnMs - dutyOffMs) / 60_000);
-          restStartMs = dutyOffMs;
-          break;
-        }
-      }
+      const dutyOnMs = finalIntervals[i + 1].startMs - LEAD_TIME_MS;
+      if (dutyOnMs <= nowMs) continue; // this rest period is already over
+      const dutyOffMs = finalIntervals[i].endMs + POST_TIME_MS;
+      restMin = Math.max(0, (dutyOnMs - dutyOffMs) / 60_000);
+      restStartMs = dutyOffMs;
+      break;
     }
 
     result.set(tail, { flightTimeMin: maxMs / 60_000, restMin, restStartMs });
