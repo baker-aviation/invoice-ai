@@ -104,7 +104,7 @@ function getFleetType(icaoType: string | null | undefined): string {
 const FLEET_ORDER = ["Challenger 300", "Challenger 350", "Citation X", "Other"];
 
 const DUTY_FLIGHT_TYPES = new Set(["revenue", "owner", "positioning", "ferry", "charter"]);
-const MAX_LEG_DURATION_MIN = 12 * 60;
+const MAX_LEG_DURATION_MIN = 8 * 60; // cap any single leg at 8h (longest Baker legs are ~5h)
 const MIN_REST_GAP_MS = 8 * 60 * 60 * 1000;
 const LEAD_TIME_MS = 60 * 60 * 1000;  // 60min pre-duty (matches DutyTracker)
 const POST_TIME_MS = 30 * 60 * 1000;  // 30min post-duty (matches DutyTracker)
@@ -607,13 +607,16 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
               }
             }
           }
-          // Also store by tail-only for fallback — prefer one with position that hasn't landed
+          // Also store by tail-only for fallback — prefer most recent active flight
           const hasLanded = fi.actual_arrival != null;
           const existingEntry = map.get(fi.tail);
           const existingLanded = existingEntry?.actual_arrival != null;
+          const fiDepMs = fi.departure_time ? new Date(fi.departure_time).getTime() : 0;
+          const exDepMs = existingEntry?.departure_time ? new Date(existingEntry.departure_time).getTime() : 0;
           if (!existingEntry
             || (!hasLanded && fi.latitude != null && fi.longitude != null)
-            || (existingLanded && !hasLanded)) {
+            || (existingLanded && !hasLanded && fiDepMs >= exDepMs)
+            || (fiDepMs > exDepMs && !hasLanded)) {
             map.set(fi.tail, fi);
           }
           // Also index by ident (callsign) so lookups work either way
