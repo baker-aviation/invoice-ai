@@ -15,10 +15,13 @@ export async function POST(req: NextRequest) {
   }
 
   const url = `${opsUrl.replace(/\/$/, "")}/jobs/sync_schedule`;
+  console.log(`[sync-schedule] Calling ${url}`);
+  console.log(`[sync-schedule] GCP_SA_KEY present: ${!!process.env.GCP_SA_KEY}, length: ${(process.env.GCP_SA_KEY ?? "").length}`);
 
   try {
     // Call ops-monitor with OIDC token (Cloud Run requires IAM auth)
     const res = await cloudRunFetch(url, { method: "POST", cache: "no-store" });
+    console.log(`[sync-schedule] Response status: ${res.status}, headers: ${JSON.stringify(Object.fromEntries(res.headers.entries()))}`);
     const text = await res.text();
     let data: Record<string, unknown>;
     try {
