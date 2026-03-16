@@ -298,7 +298,7 @@ export async function getActiveFlights(
           const seenFaIds = new Set<string>();
 
           for (const f of flights) {
-            if (f.cancelled) continue;
+            if (f.cancelled && !f.diverted) continue;
             if (f.fa_flight_id) seenFaIds.add(f.fa_flight_id);
             // Include flights from last 48 hours + upcoming (daily baseline needs wider window)
             const dep = f.actual_out ?? f.estimated_out ?? f.scheduled_out;
