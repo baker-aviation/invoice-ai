@@ -1180,6 +1180,20 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
   // Combine flying + parked for the map
   const allMapAircraft = useMemo(() => [...enRouteAircraft, ...parkedAircraft], [enRouteAircraft, parkedAircraft]);
 
+  // Flow control affected airports — for SWIM badge in flight table
+  const flowAffectedAirports = useMemo(() => {
+    const set = new Set<string>();
+    for (const ev of swimFlow) {
+      if (ev.airport_icao) {
+        set.add(ev.airport_icao);
+        const norm = ev.airport_icao.startsWith("K") && ev.airport_icao.length === 4 ? ev.airport_icao.slice(1) : ev.airport_icao;
+        set.add(norm);
+        if (!ev.airport_icao.startsWith("K") && ev.airport_icao.length === 3) set.add("K" + ev.airport_icao);
+      }
+    }
+    return set;
+  }, [swimFlow]);
+
   // Per-tail duty summary (24hr flight time + crew rest)
   const tailDuty = useMemo(() => computeTailDuty(flights, faFlightsRaw), [flights, faFlightsRaw]);
 
@@ -1427,37 +1441,117 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
       </div>
 
       {/* ── SWIM Flow Control (GDP, Ground Stops, CTOPs) ── */}
-      {swimFlow.length > 0 && (
-        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3">
-          <div className="flex items-center gap-2 mb-2 text-sm">
-            <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse" />
-            <span className="font-semibold text-red-800">
-              {swimFlow.length} Active Flow Control{swimFlow.length !== 1 ? " Events" : " Event"}
+      {swimFlow.length > 0 && (() => {
+        // Cross-reference flow events against Baker flights
+        const normalizeIcao = (icao: string) => icao.startsWith("K") && icao.length === 4 ? icao.slice(1) : icao;
+        const flowAirportSet = new Set<string>();
+        for (const ev of swimFlow) {
+          if (ev.airport_icao) {
+            flowAirportSet.add(ev.airport_icao);
+            flowAirportSet.add(normalizeIcao(ev.airport_icao));
+            if (!ev.airport_icao.startsWith("K") && ev.airport_icao.length === 3) flowAirportSet.add("K" + ev.airport_icao);
+          }
+        }
+        const affectedFlightsByAirport = new Map<string, typeof flights>();
+        for (const f of flights) {
+          for (const icao of [f.departure_icao, f.arrival_icao].filter(Boolean) as string[]) {
+            const norm = normalizeIcao(icao);
+            const kIcao = icao.startsWith("K") ? icao : "K" + icao;
+            if (flowAirportSet.has(icao) || flowAirportSet.has(norm) || flowAirportSet.has(kIcao)) {
+              const key = norm;
+              if (!affectedFlightsByAirport.has(key)) affectedFlightsByAirport.set(key, []);
+              affectedFlightsByAirport.get(key)!.push(f);
+            }
+          }
+        }
+        const flowAffectsAirport = (icao: string | null) => {
+          if (!icao) return false;
+          const norm = normalizeIcao(icao);
+          return affectedFlightsByAirport.has(norm) || affectedFlightsByAirport.has(icao);
+        };
+        const affectedFlow = swimFlow.filter(ev => flowAffectsAirport(ev.airport_icao));
+        const unaffectedFlow = swimFlow.filter(ev => !flowAffectsAirport(ev.airport_icao));
+
+        const formatSubject = (subject: string) => subject.replace(/\((\d+\.?\d*)\s*min avg delay\)/, (_, m) => {
+          const mins = parseFloat(m);
+          return mins >= 60 ? `(~${(mins / 60).toFixed(1)} hr avg delay)` : `(~${Math.round(mins)} min avg delay)`;
+        });
+
+        const airportLabel = (icao: string | null) => {
+          if (!icao) return null;
+          const code = icao.startsWith("K") && icao.length === 4 ? icao.slice(1) : icao;
+          const info = getAirportInfo(code) ?? getAirportInfo(icao);
+          return info ? `${code} (${info.name})` : icao;
+        };
+
+        const getAffectedTails = (icao: string | null) => {
+          if (!icao) return [];
+          const norm = normalizeIcao(icao);
+          const af = affectedFlightsByAirport.get(norm) ?? affectedFlightsByAirport.get(icao) ?? [];
+          return [...new Set(af.map(f => f.tail_number).filter(Boolean) as string[])];
+        };
+
+        const renderFlowEvent = (ev: SwimFlowEvent) => (
+          <div key={ev.id} className="flex items-start gap-3 text-sm text-red-900">
+            <span className={`shrink-0 px-1.5 py-0.5 rounded text-xs font-bold uppercase ${
+              ev.event_type === "GROUND_STOP" ? "bg-red-200 text-red-800" :
+              ev.event_type === "GDP" ? "bg-amber-200 text-amber-800" :
+              "bg-orange-200 text-orange-800"
+            }`}>
+              {ev.event_type.replace(/_/g, " ")}
             </span>
-            <span className="ml-auto text-xs text-red-400">via FAA SWIM</span>
-          </div>
-          <div className="space-y-1.5">
-            {swimFlow.map((ev) => (
-              <div key={ev.id} className="flex items-center gap-3 text-sm text-red-900">
-                <span className={`px-1.5 py-0.5 rounded text-xs font-bold uppercase ${
-                  ev.event_type === "GROUND_STOP" ? "bg-red-200 text-red-800" :
-                  ev.event_type === "GDP" ? "bg-amber-200 text-amber-800" :
-                  "bg-orange-200 text-orange-800"
-                }`}>
-                  {ev.event_type.replace(/_/g, " ")}
-                </span>
-                {ev.airport_icao && <span className="font-medium">{ev.airport_icao}</span>}
-                <span className="text-red-700">{ev.subject}</span>
-                {ev.expires_at && (
-                  <span className="ml-auto text-xs text-red-400">
-                    until {new Date(ev.expires_at).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", timeZoneName: "short" })}
-                  </span>
-                )}
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                {ev.airport_icao && <span className="font-semibold">{airportLabel(ev.airport_icao)}</span>}
+                <span className="text-red-700">{formatSubject(ev.subject?.replace(/^[A-Z_ ]+ at [A-Z]{3,4}\s*/, "") ?? "")}</span>
               </div>
-            ))}
+              {(() => {
+                const tails = getAffectedTails(ev.airport_icao);
+                return tails.length > 0 ? (
+                  <div className="text-xs text-red-600 mt-0.5">
+                    Affects: {tails.map(t => <span key={t} className="font-mono font-semibold mr-1.5">{t}</span>)}
+                  </div>
+                ) : null;
+              })()}
+            </div>
+            {ev.expires_at && (
+              <span className="shrink-0 text-xs text-red-400">
+                until {new Date(ev.expires_at).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", timeZoneName: "short" })}
+              </span>
+            )}
           </div>
-        </div>
-      )}
+        );
+
+        return (
+          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3">
+            {affectedFlow.length > 0 && (
+              <>
+                <div className="flex items-center gap-2 mb-2 text-sm">
+                  <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse" />
+                  <span className="font-semibold text-red-800">
+                    {affectedFlow.length} Flow Event{affectedFlow.length !== 1 ? "s" : ""} Affecting Baker Flights
+                  </span>
+                  <span className="ml-auto text-xs text-red-400">via FAA SWIM</span>
+                </div>
+                <div className="space-y-2">
+                  {affectedFlow.map(renderFlowEvent)}
+                </div>
+              </>
+            )}
+            {unaffectedFlow.length > 0 && (
+              <details className={affectedFlow.length > 0 ? "mt-3 border-t border-red-200 pt-2" : ""}>
+                <summary className="cursor-pointer text-xs text-red-400 hover:text-red-600 select-none">
+                  {affectedFlow.length === 0 && <span className="w-2.5 h-2.5 rounded-full bg-orange-400 inline-block mr-2" />}
+                  {unaffectedFlow.length} other flow event{unaffectedFlow.length !== 1 ? "s" : ""} (no Baker flights affected)
+                </summary>
+                <div className="space-y-1.5 mt-2">
+                  {unaffectedFlow.map(renderFlowEvent)}
+                </div>
+              </details>
+            )}
+          </div>
+        );
+      })()}
 
       {/* ── Map ── */}
       <div className="rounded-xl border border-gray-200 overflow-hidden">
@@ -2107,6 +2201,15 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           {isFaSourced && (
                             <span className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-blue-100 text-blue-700">
                               FA Source
+                            </span>
+                          )}
+                          {flowAffectedAirports.size > 0 && [f.departure_icao, f.arrival_icao].some(icao => {
+                            if (!icao) return false;
+                            const norm = icao.startsWith("K") && icao.length === 4 ? icao.slice(1) : icao;
+                            return flowAffectedAirports.has(icao) || flowAffectedAirports.has(norm) || flowAffectedAirports.has("K" + norm);
+                          }) && (
+                            <span className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-red-100 text-red-700">
+                              SWIM
                             </span>
                           )}
                           {(() => {

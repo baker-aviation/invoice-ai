@@ -456,9 +456,19 @@ def parse_tfms_flow_message(xml_str: str) -> Optional[Dict[str, Any]]:
             event_type = "DEICING"
             break
 
-    # Airport
-    airport_el = _find_any(root, "airport", "aerodrome", "facility", "controlElement")
-    airport = _safe_text(airport_el) or (airport_el.get("code") if airport_el is not None else None)
+    # Airport — search multiple tag names and attribute patterns
+    airport_el = _find_any(root, "airport", "aerodrome", "facility", "controlElement",
+                           "controlFacility", "arrArpt", "depArpt", "FacilityIdentifier")
+    airport = _safe_text(airport_el)
+    if not airport and airport_el is not None:
+        airport = airport_el.get("code") or airport_el.get("icaoId") or airport_el.get("name") or airport_el.get("facilityId")
+    # Fallback: scan root-level attributes (TFMS often puts airport in arrArpt/depArpt attrs)
+    if not airport:
+        for attr in ("arrArpt", "depArpt", "airport", "controlElement"):
+            val = _get_attr(root, attr)
+            if val:
+                airport = val
+                break
 
     # Times
     eff_el = _find_any(root, "effectiveStart", "beginDate", "startTime")
@@ -474,11 +484,18 @@ def parse_tfms_flow_message(xml_str: str) -> Optional[Dict[str, Any]]:
 
     severity = "critical" if event_type in ("GROUND_STOP", "GDP") else "warning"
 
-    subject = f"{event_type}"
+    subject = event_type.replace("_", " ")
     if airport:
         subject += f" at {airport}"
     if delay_mins:
-        subject += f" ({delay_mins} min avg delay)"
+        try:
+            mins = float(delay_mins)
+            if mins >= 60:
+                subject += f" (~{mins / 60:.1f} hr avg delay)"
+            else:
+                subject += f" (~{int(round(mins))} min avg delay)"
+        except ValueError:
+            subject += f" ({delay_mins} avg delay)"
 
     print(f"[SWIM] Flow message parsed: {event_type} airport={airport} reason={reason}", flush=True)
 
@@ -652,7 +669,8 @@ def pull_swim() -> Dict[str, Any]:
         if has_flow_keyword:
             flow = parse_tfms_flow_message(raw)
             if flow and flow["event_type"] != "UNKNOWN":
-                source_id = f"swim-flow-{flow['event_type']}-{flow.get('airport_icao', 'UNK')}-{flow.get('effective_at', '')}"
+                # Dedup: one active row per event_type+airport (updates overwrite previous)
+                source_id = f"swim-flow-{flow['event_type']}-{flow.get('airport_icao', 'UNK')}"
                 flow_batch.append({
                     **flow,
                     "source_id": source_id,
