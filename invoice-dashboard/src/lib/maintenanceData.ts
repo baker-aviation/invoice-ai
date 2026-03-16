@@ -42,7 +42,7 @@ export type VanZone = {
 export const FIXED_VAN_ZONES: VanZone[] = [
   { vanId: 1,  name: "South FL East",  city: "West Palm Beach, FL", homeAirport: "PBI", lat: 26.6832, lon: -80.0956 },
   { vanId: 2,  name: "South FL East",  city: "West Palm Beach, FL", homeAirport: "PBI", lat: 26.6832, lon: -80.0956 },
-  { vanId: 3,  name: "South FL West",  city: "Fort Myers, FL",     homeAirport: "FMY", lat: 26.5866, lon: -81.8633 },
+  { vanId: 3,  name: "North FL",        city: "Kissimmee, FL",      homeAirport: "ISM", lat: 28.2898, lon: -81.4371 },
   { vanId: 4,  name: "NY/NJ – TEB",    city: "New York, NY",       homeAirport: "TEB", lat: 40.8501, lon: -74.0608 },
   { vanId: 5,  name: "NY/NJ – HPN",    city: "White Plains, NY",   homeAirport: "HPN", lat: 41.0670, lon: -73.7076 },
   { vanId: 6,  name: "Bedford MA",     city: "Boston, MA",         homeAirport: "BED", lat: 42.4700, lon: -71.2890 },
