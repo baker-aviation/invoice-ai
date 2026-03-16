@@ -3,6 +3,8 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import type { Flight, MxNote } from "@/lib/opsApi";
 import type { VanZone } from "@/lib/maintenanceData";
+
+const DAY = 86_400_000;
 import {
   computeZoneItems,
   greedySort,
@@ -510,6 +512,8 @@ function StopCard({
   const countdown = effectiveArr ? fmtTimeUntil(effectiveArr) : "";
   const arrTime = effectiveArr ? fmtUtcHM(effectiveArr) : "\u2014";
   const badge = flightTypeBadge(item.arrFlight);
+  const schedArrLocal = fmtLocalTime(item.arrFlight.scheduled_arrival, item.arrFlight.arrival_icao);
+  const faEtaLocal = fi?.arrival_time ? fmtLocalTime(fi.arrival_time, item.arrFlight.arrival_icao) : null;
   const turnLabel = getTurnLabel(item);
 
   // Auto-expand when this becomes the next stop
@@ -538,25 +542,29 @@ function StopCard({
       >
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <span className="text-lg font-bold text-blue-700 dark:text-blue-300 tabular-nums">
-              {fmtLocalTime(effectiveArr, item.arrFlight.arrival_icao)}
-            </span>
             <span className="text-lg font-bold font-mono text-slate-800 dark:text-white">
               {tail}
             </span>
             <span className="text-sm font-medium text-gray-500 dark:text-gray-400">
               {arr}
             </span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className={`text-sm font-semibold ${status.accent}`}>
+            <span className={`text-xs font-semibold ${status.accent}`}>
               {status.label}
             </span>
-            <span className="text-gray-400 text-xs">{expanded ? "▲" : "▼"}</span>
+          </div>
+          <div className="text-right">
+            <div className="text-sm font-bold text-slate-700 dark:text-slate-200 tabular-nums">
+              Sched {schedArrLocal}
+            </div>
+            {faEtaLocal && faEtaLocal !== schedArrLocal && (
+              <div className="text-xs font-medium text-blue-600 dark:text-blue-400 tabular-nums">
+                FA ETA {faEtaLocal}
+              </div>
+            )}
           </div>
         </div>
         {countdown && (
-          <div className="mt-0.5 ml-0">
+          <div className="mt-0.5">
             <span className="text-xs font-medium text-blue-600 dark:text-blue-400">
               Landing {countdown}
             </span>
@@ -632,11 +640,16 @@ function StopCard({
         {/* MX notes — hide dismissed + older than 24h */}
         {(() => {
           const now = Date.now();
-          const DAY = 86_400_000;
+          const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
           const visible = tailMxNotes.filter((n) => {
             if (dismissedMxIds.has(n.id)) return false;
-            const end = n.end_time ? new Date(n.end_time).getTime() : n.start_time ? new Date(n.start_time).getTime() : 0;
-            if (end && end + DAY < now) return false;
+            // Hide past notes
+            if (n.end_time && new Date(n.end_time).getTime() < now) return false;
+            // Only show notes relevant to today (start_time on or before today, end_time on or after today)
+            if (n.start_time) {
+              const startDate = n.start_time.slice(0, 10);
+              if (startDate > todayStr) return false; // future note
+            }
             return true;
           });
           if (!visible.length) return null;

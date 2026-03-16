@@ -237,4 +237,42 @@ export function getAllAirports(): AirportInfo[] {
   return Object.values(AIRPORTS);
 }
 
+/** Find the nearest airport to a lat/lon within maxNm nautical miles */
+export function findNearestAirport(
+  lat: number,
+  lon: number,
+  maxNm: number = 15,
+): AirportInfo | null {
+  let best: AirportInfo | null = null;
+  let bestDist = Infinity;
+
+  // Haversine distance in nautical miles
+  function distNm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+    const R = 3440.065; // earth radius in nm
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat / 2) ** 2 +
+      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+      Math.sin(dLon / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  }
+
+  // Check curated airports first
+  for (const ap of Object.values(AIRPORTS)) {
+    const d = distNm(lat, lon, ap.lat, ap.lon);
+    if (d < bestDist) { bestDist = d; best = ap; }
+  }
+
+  // Check worldwide dataset
+  for (const [code, entry] of Object.entries(worldwide)) {
+    const d = distNm(lat, lon, entry[0], entry[1]);
+    if (d < bestDist) {
+      bestDist = d;
+      best = { code, name: entry[2], lat: entry[0], lon: entry[1], city: "", state: "" };
+    }
+  }
+
+  return bestDist <= maxNm ? best : null;
+}
+
 export default AIRPORTS;
