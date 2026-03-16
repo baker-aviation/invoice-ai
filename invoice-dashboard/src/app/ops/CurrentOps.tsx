@@ -574,8 +574,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
   // Fetch FlightAware data (primary source for both positions and flight info)
   const fetchFlightInfo = useCallback(async () => {
     try {
-      const pageRefresh = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("refresh") === "true";
-      const res = await fetch(`/api/aircraft/flights${pageRefresh ? "?refresh=true" : ""}`, { cache: "no-store" });
+      const res = await fetch("/api/aircraft/flights", { cache: "no-store" });
       if (res.ok) {
         const data = await res.json();
         // JetInsight uses K-prefix or non-standard codes for some airports
