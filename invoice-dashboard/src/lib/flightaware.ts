@@ -139,9 +139,10 @@ export async function getFlightsByRegistration(
   // Query by N-number first — returns last_position with lat/lon for map tracking.
   // Callsign queries return flight data but NOT positions.
   // Use start param to include yesterday's flights (duty tracker needs 3-day window).
-  // Completed flights are cached in memory so we don't lose them if FA truncates.
-  const startDate = new Date(Date.now() - 36 * 3600_000).toISOString();
-  const url = `${BASE}/flights/${encodeURIComponent(registration)}?start=${encodeURIComponent(startDate)}`;
+  // NOTE: FA rejects encodeURIComponent on dates (%3A for colons → 400).
+  // Use raw ISO without milliseconds.
+  const startDate = new Date(Date.now() - 36 * 3600_000).toISOString().split(".")[0] + "Z";
+  const url = `${BASE}/flights/${encodeURIComponent(registration)}?start=${startDate}`;
   const res = await fetch(url, {
     headers: headers(),
     signal: AbortSignal.timeout(10000),
