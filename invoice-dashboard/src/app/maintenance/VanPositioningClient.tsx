@@ -4108,7 +4108,10 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
 
       {/* ── MX Conflict Alerts (accordion) ── */}
       {(() => {
+        const nowMsConf = Date.now();
         const visibleConflicts = mxConflicts.filter((c) => {
+          if (c.mxNote.end_time && new Date(c.mxNote.end_time).getTime() < nowMsConf) return false;
+          if (hiddenTodayMxIds.has(c.mxNote.id)) return false;
           const storedHash = dismissedConflictHashesRef.current[c.mxNote.id];
           if (!storedHash) return true;
           return storedHash !== getMxNoteHash(c.mxNote);
@@ -4188,7 +4191,12 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
 
       {/* ── MX Notes from JetInsight (accordion) ── */}
       {(() => {
-        const visibleNotes = (mxNotes ?? []).filter((n) => !dismissedMxIds.has(n.id));
+        const nowMs = Date.now();
+        const visibleNotes = (mxNotes ?? []).filter((n) => {
+          if (hiddenTodayMxIds.has(n.id)) return false;
+          if (n.end_time && new Date(n.end_time).getTime() < nowMs) return false;
+          return true;
+        });
         const mxOnly = visibleNotes.filter((n) => !isMel(n));
         const melOnly = visibleNotes.filter((n) => isMel(n));
         if (visibleNotes.length === 0) return null;
@@ -4222,7 +4230,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
                           Due {new Date(note.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}{(() => { const d = new Date(note.end_time); return d.getHours() !== 0 || d.getMinutes() !== 0 ? `, ${d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}` : ""; })()}
                         </span>
                       )}
-                      <button onClick={(e) => { e.stopPropagation(); dismissMxNote(note.id); }} className="text-gray-400 hover:text-red-600 text-xs ml-2 shrink-0" title="Dismiss">&times;</button>
+                      <button onClick={(e) => { e.stopPropagation(); hideMxForToday(note.id); }} className="text-gray-400 hover:text-red-600 text-xs ml-2 shrink-0" title="Hide for today">&times;</button>
                     </div>
                     <div className="text-sm text-gray-700 mt-0.5">{note.body}</div>
                   </div>
@@ -4269,7 +4277,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
                             Due {new Date(note.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}{(() => { const d = new Date(note.end_time); return d.getHours() !== 0 || d.getMinutes() !== 0 ? `, ${d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}` : ""; })()}
                           </span>
                         )}
-                        <button onClick={(e) => { e.stopPropagation(); dismissMxNote(note.id); }} className="text-gray-400 hover:text-red-600 text-xs ml-2 shrink-0" title="Dismiss">&times;</button>
+                        <button onClick={(e) => { e.stopPropagation(); hideMxForToday(note.id); }} className="text-gray-400 hover:text-red-600 text-xs ml-2 shrink-0" title="Hide for today">&times;</button>
                       </div>
                       <div className="text-sm text-gray-700 mt-0.5">{note.body}</div>
                     </div>
@@ -4680,9 +4688,9 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
                         })}
                       </div>
                       {/* MX notes from JetInsight */}
-                      {(mxNotesByTail.get(tail ?? "") ?? []).filter((n) => { if (hiddenTodayMxIds.has(n.id)) return false; if (!n.start_time) return true; const e = n.end_time ? new Date(n.end_time).getTime() + 86400000 : new Date(n.start_time).getTime() + 86400000; return e >= Date.now() - 86400000; }).length > 0 && (
+                      {(mxNotesByTail.get(tail ?? "") ?? []).filter((n) => { if (hiddenTodayMxIds.has(n.id)) return false; if (n.end_time && new Date(n.end_time).getTime() < Date.now()) return false; return true; }).length > 0 && (
                         <div className="border-t border-orange-100 px-4 py-2 space-y-1">
-                          {(mxNotesByTail.get(tail ?? "") ?? []).filter((n) => { if (hiddenTodayMxIds.has(n.id)) return false; if (!n.start_time) return true; const e = n.end_time ? new Date(n.end_time).getTime() + 86400000 : new Date(n.start_time).getTime() + 86400000; return e >= Date.now() - 86400000; }).map((n) => {
+                          {(mxNotesByTail.get(tail ?? "") ?? []).filter((n) => { if (hiddenTodayMxIds.has(n.id)) return false; if (n.end_time && new Date(n.end_time).getTime() < Date.now()) return false; return true; }).map((n) => {
                             const mel = isMel(n);
                             const timeLeft = mel ? fmtTimeRemaining(n.end_time) : null;
                             return (
