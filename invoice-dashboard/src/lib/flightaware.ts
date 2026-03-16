@@ -286,13 +286,13 @@ export async function getActiveFlights(
               const depMs = new Date(dep).getTime();
               if (depMs < now - 48 * 3600_000) continue;
             }
-            // Filter out completed flights older than 4 hours — prevents
-            // yesterday's landed flights from showing as "En Route" with
-            // stale positions on the next day's map.
+            // Filter out completed flights older than 36 hours.
+            // The duty tracker needs yesterday's actual times for 10/24 calculations.
+            // Map components filter en-route vs ground aircraft separately.
             const landed = f.actual_in ?? f.actual_on;
             if (landed) {
               const landedMs = new Date(landed).getTime();
-              if (landedMs < now - 4 * 3600_000) continue;
+              if (landedMs < now - 36 * 3600_000) continue;
             }
             // Filter flights whose estimated arrival passed >2h ago with no
             // actual landing recorded — FA lost track, flight is done.

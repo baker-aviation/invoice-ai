@@ -569,32 +569,40 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
       const breachLegKey = maxRolling24hrMin >= FLIGHT_TIME_YELLOW_MIN ? findBreachLeg(dutyPeriods) : null;
       const suggestion = maxRolling24hrMin >= FLIGHT_TIME_YELLOW_MIN ? computeSuggestion(dutyPeriods, breachLegKey) : null;
 
-      // EDCT-adjusted variant: recompute with EDCT departure times
+      // EDCT-adjusted variant: shift EDCT legs AND cascade delay to subsequent legs
       let edctMaxRolling24hrMin: number | null = null;
       let edctRestPeriods: RestPeriod[] | null = null;
       const tailFlights = flights.filter(f => f.tail_number === tail);
       const hasEdct = tailFlights.some(f => getActiveEdct(f) != null);
       if (hasEdct) {
-        // Shift legs that have active EDCTs
-        const edctLegs = validLegs.map(leg => {
-          // Find the matching flight for this leg
+        // Build EDCT-shifted legs: shift EDCT leg, then cascade delay to later legs
+        const edctLegs = validLegs.map(leg => ({ ...leg }));
+        // Sort by departure time
+        edctLegs.sort((a, b) => a.startMs - b.startMs);
+        // Apply EDCT shifts
+        for (const leg of edctLegs) {
           const matchedFlight = tailFlights.find(f =>
             f.departure_icao === leg.departure_icao &&
             f.arrival_icao === leg.arrival_icao &&
             Math.abs(new Date(f.scheduled_departure).getTime() - leg.startMs) < 2 * 60 * 60 * 1000
           );
-          if (!matchedFlight) return leg;
+          if (!matchedFlight) continue;
           const edct = getActiveEdct(matchedFlight);
-          if (!edct?.edct_time) return leg;
+          if (!edct?.edct_time) continue;
           const deltaMs = new Date(edct.edct_time).getTime() - new Date(matchedFlight.scheduled_departure).getTime();
-          return {
-            ...leg,
-            startMs: leg.startMs + deltaMs,
-            endMs: leg.endMs + deltaMs,
-            depIso: new Date(leg.startMs + deltaMs).toISOString(),
-            arrIso: new Date(leg.endMs + deltaMs).toISOString(),
-          };
-        });
+          if (deltaMs <= 0) continue;
+          leg.startMs += deltaMs;
+          leg.endMs += deltaMs;
+        }
+        // Cascade: if leg N ends after leg N+1 starts, push N+1 forward
+        edctLegs.sort((a, b) => a.startMs - b.startMs);
+        for (let i = 1; i < edctLegs.length; i++) {
+          if (edctLegs[i].startMs < edctLegs[i - 1].endMs) {
+            const shift = edctLegs[i - 1].endMs - edctLegs[i].startMs;
+            edctLegs[i].startMs += shift;
+            edctLegs[i].endMs += shift;
+          }
+        }
         edctMaxRolling24hrMin = findMaxRolling24(edctLegs);
         const edctDPs = groupIntoDutyPeriods(edctLegs);
         edctRestPeriods = buildRestPeriods(edctDPs);
