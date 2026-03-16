@@ -139,7 +139,8 @@ export async function getFlightsByRegistration(
   // Query by N-number first — returns last_position with lat/lon for map tracking.
   // Callsign queries return flight data but NOT positions.
   // Use start param to include yesterday's flights (duty tracker needs 3-day window).
-  const startDate = new Date(Date.now() - 48 * 3600_000).toISOString();
+  // Completed flights are cached in memory so we don't lose them if FA truncates.
+  const startDate = new Date(Date.now() - 36 * 3600_000).toISOString();
   const url = `${BASE}/flights/${encodeURIComponent(registration)}?start=${encodeURIComponent(startDate)}`;
   const res = await fetch(url, {
     headers: headers(),
@@ -258,10 +259,24 @@ export async function getFlightTrack(
   }
 }
 
+// In-memory cache for completed FA flights (landed flights don't change).
+// Key: fa_flight_id, Value: FlightInfo + cached timestamp.
+// Evict entries older than 36h to prevent unbounded growth.
+const completedFlightCache = new Map<string, { info: FlightInfo; cachedAt: number }>();
+const CACHE_TTL_MS = 36 * 3600_000;
+
+function evictStaleCache() {
+  const cutoff = Date.now() - CACHE_TTL_MS;
+  for (const [key, val] of completedFlightCache) {
+    if (val.cachedAt < cutoff) completedFlightCache.delete(key);
+  }
+}
+
 /**
  * For a list of tail numbers, return all recent flights from FlightAware
- * (within 12 hours past + upcoming). Includes completed, en-route, and scheduled.
+ * (within 48 hours past + upcoming). Includes completed, en-route, and scheduled.
  * Only fetches position for the single active en-route flight per tail (to limit API calls).
+ * Completed flights (with actual landing) are cached in memory to reduce FA API calls.
  */
 export async function getActiveFlights(
   tails: string[],
@@ -269,6 +284,7 @@ export async function getActiveFlights(
 ): Promise<FlightInfo[]> {
   const results: FlightInfo[] = [];
   const now = Date.now();
+  evictStaleCache();
 
   // Query in batches of 3 to stay well under rate limits
   const BATCH = 3;
@@ -279,9 +295,11 @@ export async function getActiveFlights(
         try {
           const flights = await getFlightsByRegistration(tail, callsignMap);
           const recent: FlightInfo[] = [];
+          const seenFaIds = new Set<string>();
 
           for (const f of flights) {
             if (f.cancelled) continue;
+            if (f.fa_flight_id) seenFaIds.add(f.fa_flight_id);
             // Include flights from last 48 hours + upcoming (daily baseline needs wider window)
             const dep = f.actual_out ?? f.estimated_out ?? f.scheduled_out;
             if (dep) {
@@ -342,7 +360,20 @@ export async function getActiveFlights(
               }
             }
 
+            // Cache completed flights (landed flights don't change)
+            if (info.actual_arrival && f.fa_flight_id) {
+              completedFlightCache.set(f.fa_flight_id, { info, cachedAt: now });
+            }
+
             recent.push(info);
+          }
+
+          // Add cached completed flights that FA didn't return this time
+          // (FA may truncate older flights when there are many recent ones)
+          for (const [faId, cached] of completedFlightCache) {
+            if (seenFaIds.has(faId)) continue; // already in results
+            if (cached.info.tail !== tail) continue; // different tail
+            recent.push(cached.info);
           }
 
           return recent;

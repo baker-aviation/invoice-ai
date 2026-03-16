@@ -605,8 +605,40 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
           }
         }
         edctMaxRolling24hrMin = findMaxRolling24(edctLegs);
-        const edctDPs = groupIntoDutyPeriods(edctLegs);
-        edctRestPeriods = buildRestPeriods(edctDPs);
+        // Build EDCT rest periods: use EDCT-shifted duty off + NORMAL next DP duty on.
+        // This correctly shows compressed rest (EDCT delays → finish later → less rest tonight).
+        // Don't restructure DPs from EDCT legs — that creates misleading phantom rest periods.
+        const todayUtcStart = Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate());
+        const todayUtcEnd = todayUtcStart + 24 * 60 * 60 * 1000;
+        edctRestPeriods = [];
+        for (let dpIdx = 0; dpIdx < dutyPeriods.length; dpIdx++) {
+          if (dpIdx >= restPeriods.length) break;
+          const normalRest = restPeriods[dpIdx];
+          // Check if this DP has legs departing today (the DP before the rest gap)
+          const dp = dutyPeriods[dpIdx];
+          const hasTodayLegs = dp.legs.some(l => l.startMs >= todayUtcStart && l.startMs < todayUtcEnd);
+          if (!hasTodayLegs) {
+            // No EDCT impact on this rest period — use normal rest
+            edctRestPeriods.push(normalRest);
+            continue;
+          }
+          // Find EDCT-shifted duty off for this DP's legs
+          let edctDpLastArr = 0;
+          for (const leg of dp.legs) {
+            const edctLeg = edctLegs.find(el =>
+              el.departure_icao === leg.departure_icao && el.arrival_icao === leg.arrival_icao
+            );
+            edctDpLastArr = Math.max(edctDpLastArr, edctLeg?.endMs ?? leg.endMs);
+          }
+          const edctOff = edctDpLastArr + POST_TIME_MIN * 60_000;
+          // Use NORMAL next DP's duty on (EDCT doesn't change when crew reports tomorrow)
+          const normalNextOn = dutyPeriods[dpIdx + 1].dutyOnMs;
+          edctRestPeriods.push({
+            startMs: edctOff,
+            stopMs: normalNextOn,
+            minutes: Math.max(0, (normalNextOn - edctOff) / 60_000),
+          });
+        }
       }
       const edctChartPoints = hasEdct ? buildRolling24Chart((() => {
         const el = validLegs.map(leg => ({ ...leg }));
