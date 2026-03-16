@@ -394,7 +394,7 @@ function MxNoteCard({ note, isMel, now, DAY, onDismiss }: {
       )}
       {note.end_time && (
         <div className="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5">
-          Due {new Date(note.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+          Due {new Date(note.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}{(() => { const d = new Date(note.end_time); return d.getHours() !== 0 || d.getMinutes() !== 0 ? `, ${d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}` : ""; })()}
         </div>
       )}
     </div>
