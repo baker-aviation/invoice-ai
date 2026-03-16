@@ -607,16 +607,23 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
               }
             }
           }
-          // Also store by tail-only for fallback — prefer most recent active flight
+          // Also store by tail-only for fallback — prefer en-route flights with positions
           const hasLanded = fi.actual_arrival != null;
           const existingEntry = map.get(fi.tail);
           const existingLanded = existingEntry?.actual_arrival != null;
           const fiDepMs = fi.departure_time ? new Date(fi.departure_time).getTime() : 0;
           const exDepMs = existingEntry?.departure_time ? new Date(existingEntry.departure_time).getTime() : 0;
+          const fiHasPosition = fi.latitude != null && fi.longitude != null;
+          const exHasPosition = existingEntry?.latitude != null && existingEntry?.longitude != null;
+          const fiIsEnRoute = fi.status === "En Route" || fi.status === "Diverted";
+          const exIsEnRoute = existingEntry?.status === "En Route" || existingEntry?.status === "Diverted";
           if (!existingEntry
-            || (!hasLanded && fi.latitude != null && fi.longitude != null)
+            // En-route with position always wins over scheduled/landed
+            || (fiIsEnRoute && fiHasPosition && !exIsEnRoute)
+            // Don't let a scheduled flight replace an en-route one
+            || (!exIsEnRoute && !hasLanded && fiHasPosition)
             || (existingLanded && !hasLanded && fiDepMs >= exDepMs)
-            || (fiDepMs > exDepMs && !hasLanded)) {
+            || (fiDepMs > exDepMs && !hasLanded && !exIsEnRoute)) {
             map.set(fi.tail, fi);
           }
           // Also index by ident (callsign) so lookups work either way
