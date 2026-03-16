@@ -2277,6 +2277,39 @@ function ScheduleTab({
       result.set(targetVanId, target);
     }
 
+    // MX note van overrides: duplicate aircraft to the target van
+    if (mxVanOverrides && mxVanOverrides.size > 0) {
+      // Build noteId → tail lookup from mxNotesByTail
+      const noteToTail = new Map<string, string>();
+      for (const [tail, notes] of mxNotesByTail) {
+        for (const n of notes) noteToTail.set(n.id, tail);
+      }
+
+      for (const [noteId, targetVanId] of mxVanOverrides) {
+        const tail = noteToTail.get(noteId);
+        if (!tail) continue;
+
+        // Check if this aircraft is already in the target van
+        const targetItems = result.get(targetVanId) ?? [];
+        if (targetItems.some((item) => item.arrFlight.tail_number === tail)) continue;
+
+        // Find the aircraft in any other van and duplicate it to the target
+        let sourceItem: VanFlightItem | undefined;
+        for (const items of result.values()) {
+          sourceItem = items.find((item) => item.arrFlight.tail_number === tail);
+          if (sourceItem) break;
+        }
+        // Also check allDayArrivals if not in any van
+        if (!sourceItem) {
+          sourceItem = allDayArrivals.find((a) => a.arrFlight.tail_number === tail);
+        }
+        if (sourceItem) {
+          targetItems.push({ ...sourceItem });
+          result.set(targetVanId, targetItems);
+        }
+      }
+    }
+
     // Apply airport overrides (user clicked a specific leg to set primary airport)
     if (airportOverrides.size > 0) {
       for (const items of result.values()) {
