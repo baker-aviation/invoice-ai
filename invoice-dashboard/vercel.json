@@ -8,6 +8,10 @@
     {
       "path": "/api/fuel-prices/advertised/pull-mailbox",
       "schedule": "*/30 * * * *"
+    },
+    {
+      "path": "/api/cron/fa-poll",
+      "schedule": "*/3 * * * *"
     }
   ]
 }
