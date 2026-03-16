@@ -490,13 +490,14 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
         {aircraft.map((ac) => {
           const fi = flightInfo.get(ac.tail);
           const color = getAcColor(fleetLookup, ac.tail, ac.on_ground);
-          const divertedRecently = fi?.diverted === true && !(
-            fi.actual_arrival && Date.now() - new Date(fi.actual_arrival).getTime() > 5 * 3600_000
-          );
-          const isDiverted = divertedRecently;
+          const isDiverted = fi?.diverted === true;
+          const divertedStale = isDiverted &&
+            fi.actual_arrival != null &&
+            Date.now() - new Date(fi.actual_arrival).getTime() > 5 * 3600_000;
           const isHolding = holdingTails.has(ac.tail);
-          const hasAlert = isDiverted || isHolding;
-          const alertLabel = isDiverted ? "DIVERTED" : isHolding ? "HOLDING" : undefined;
+          const showMapAlert = (isDiverted && !divertedStale) || isHolding;
+          const hasAlert = showMapAlert;
+          const alertLabel = (isDiverted && !divertedStale) ? "DIVERTED" : isHolding ? "HOLDING" : undefined;
           // Use latest track position if available (more recent than ADSB poll)
           const trackPos = trackLatest.get(ac.tail);
           const markerLat = trackPos ? trackPos[0] : ac.lat;
