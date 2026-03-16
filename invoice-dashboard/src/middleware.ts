@@ -84,7 +84,7 @@ export async function middleware(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser();
 
-  if (!user && !request.nextUrl.pathname.startsWith("/login") && !request.nextUrl.pathname.startsWith("/auth/") && request.nextUrl.pathname !== "/invite") {
+  if (!user && !request.nextUrl.pathname.startsWith("/login") && !request.nextUrl.pathname.startsWith("/auth/") && !request.nextUrl.pathname.startsWith("/van/") && request.nextUrl.pathname !== "/invite") {
     // API routes get a 401 JSON response, not a redirect to /login
     if (request.nextUrl.pathname.startsWith("/api/")) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
