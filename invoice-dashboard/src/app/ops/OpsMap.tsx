@@ -154,9 +154,9 @@ function FlightTracks({
     return m;
   }, [aircraft]);
 
-  // Stable ref for enRoute list — only update when the set of airborne flight IDs changes
+  // Stable list of en-route flights — only update when the set of airborne flight IDs changes
   const enRouteRef = useRef<FlightInfoMap[]>([]);
-  const enRouteKeyRef = useRef("");
+  const [enRouteKey, setEnRouteKey] = useState("");
   useEffect(() => {
     const enRoute: FlightInfoMap[] = [];
     for (const tail of airborneSet) {
@@ -164,11 +164,11 @@ function FlightTracks({
       if (fi && fi.fa_flight_id) enRoute.push(fi);
     }
     const key = enRoute.map(f => f.fa_flight_id).sort().join(",");
-    if (key !== enRouteKeyRef.current) {
-      enRouteKeyRef.current = key;
+    if (key !== enRouteKey) {
       enRouteRef.current = enRoute;
+      setEnRouteKey(key);
     }
-  }, [flightInfo, airborneSet]);
+  }, [flightInfo, airborneSet, enRouteKey]);
 
   useEffect(() => {
     // Throttle: only refetch tracks every 2.5 min
@@ -221,7 +221,7 @@ function FlightTracks({
       }
     })();
     return () => controller.abort();
-  }, [enRouteKeyRef.current]);
+  }, [enRouteKey]);
 
   return (
     <>
