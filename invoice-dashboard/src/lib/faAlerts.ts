@@ -37,7 +37,7 @@ async function listFaAlerts(): Promise<FaAlert[]> {
   const alerts: FaAlert[] = [];
   let url: string | null = `${FA_BASE}/alerts`;
 
-  for (let page = 0; page < 10 && url; page++) {
+  for (let page = 0; page < 200 && url; page++) {
     try {
       const resp: Response = await fetch(url, {
         headers: faHeaders(),

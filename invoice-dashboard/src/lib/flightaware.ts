@@ -316,9 +316,13 @@ export async function getActiveFlights(
             // Fetch position for any en-route flight missing last_position
             // Check actual_off (wheels off) OR actual_out (gate departure) — FA
             // sometimes returns only actual_out without actual_off.
+            // Also fetch if estimated departure has passed (FA may still say "Scheduled"
+            // but plane is airborne — e.g. N733FL scenario).
+            const estDep = f.estimated_off ?? f.estimated_out ?? f.scheduled_off ?? f.scheduled_out;
+            const estDepPassed = estDep && new Date(estDep).getTime() < now;
             if (
               info.latitude == null &&
-              (f.actual_off != null || f.actual_out != null) &&
+              (f.actual_off != null || f.actual_out != null || estDepPassed) &&
               f.actual_on == null &&
               f.fa_flight_id
             ) {
