@@ -32,6 +32,7 @@ import {
   BUDGET_CARRIERS, PREFERRED_HUBS, BACKUP_FLIGHT_MIN_GAP, MAX_CONNECTIONS,
   EARLY_LATE_BONUS_PIC, EARLY_LATE_BONUS_SIC,
   RENTAL_HANDOFF_FUEL_COST, STAGGER_MIN_GAP_HOURS, HANDOFF_BUFFER_MINUTES,
+  TEB_PENALTY_AIRPORTS, TEB_OFFGOING_PENALTY, TEB_ONCOMING_PENALTY,
 } from "./swapRules";
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -99,6 +100,7 @@ export type CrewSwapRow = {
   duty_off_time: string | null;
   is_checkairman: boolean;
   is_skillbridge: boolean;
+  volunteer_status: string | null;
   notes: string | null;
   warnings: string[];
   drive_estimate: DriveEstimate | null;
@@ -532,8 +534,10 @@ function buildCandidates(
     if (!commercialFlights) continue;
 
     // Build search dates: swap-day (Wednesday), plus day-before/after for volunteers
+    // SkillBridge crew can only go early if they volunteer (flag in oncoming pool)
     const datesToSearch = [swapDate];
-    if (task.earlyVolunteer) {
+    const canGoEarly = task.earlyVolunteer && !(task.crewMember?.is_skillbridge && !task.earlyVolunteer);
+    if (canGoEarly) {
       const dayBefore = new Date(swapDate);
       dayBefore.setDate(dayBefore.getDate() - 1);
       datesToSearch.unshift(dayBefore.toISOString().slice(0, 10));
@@ -841,6 +845,14 @@ function scoreCandidate(
     !swapIcao.startsWith("TJ");   // Puerto Rico (TJSJ)
   if (isInternational) score -= 15;
 
+  // ── TEB: strongly prefer EWR, penalize LGA/JFK ────────────────────────
+  if (toIata(swapIcao) === "TEB" && c.type === "commercial") {
+    const commAirport = task.direction === "oncoming" ? c.to : c.from;
+    if (TEB_PENALTY_AIRPORTS.includes(commAirport)) {
+      score += task.direction === "offgoing" ? TEB_OFFGOING_PENALTY : TEB_ONCOMING_PENALTY;
+    }
+  }
+
   return Math.max(0, Math.min(100, score));
 }
 
@@ -912,10 +924,8 @@ function optimizeTail(
     if (picTo === sicTo) {
       oncomingPic.best.cost = Math.round(oncomingPic.best.cost / 2);
       oncomingSic.best.cost = Math.round(oncomingSic.best.cost / 2);
-      const sicName = oncomingSic.name.split(" ").pop() ?? oncomingSic.name;
-      const picName = oncomingPic.name.split(" ").pop() ?? oncomingPic.name;
-      oncomingPic.best.flightNumber = `Rental w/ ${sicName}`;
-      oncomingSic.best.flightNumber = `Rental w/ ${picName}`;
+      oncomingPic.best.flightNumber = "RENTAL (shared)";
+      oncomingSic.best.flightNumber = "RENTAL (shared)";
     }
   }
 
@@ -1056,10 +1066,8 @@ function optimizeTail(
     if (picFrom === sicFrom) {
       offgoingPic.best.cost = Math.round(offgoingPic.best.cost / 2);
       offgoingSic.best.cost = Math.round(offgoingSic.best.cost / 2);
-      const sicName = offgoingSic.name.split(" ").pop() ?? offgoingSic.name;
-      const picName = offgoingPic.name.split(" ").pop() ?? offgoingPic.name;
-      offgoingPic.best.flightNumber = `Rental w/ ${sicName}`;
-      offgoingSic.best.flightNumber = `Rental w/ ${picName}`;
+      offgoingPic.best.flightNumber = "RENTAL (shared)";
+      offgoingSic.best.flightNumber = "RENTAL (shared)";
     }
   }
 
@@ -1159,18 +1167,30 @@ function extractSwapPoints(
       });
     }
   } else if (overnightAirport) {
-    // For idle tails, use noon LOCAL time (not UTC) so West Coast tails
-    // don't get impossibly early swap points
+    // For idle tails, split into two swap points:
+    // - Oncoming target: 0800L (get new crew there early for coverage)
+    // - Offgoing target: 1700L (hold old crew until late afternoon)
     const tz = getAirportTimezone(overnightAirport) ?? "America/New_York";
-    const noonLocal = new Date(`${swapDate}T12:00:00`);
-    const utcStr = noonLocal.toLocaleString("en-US", { timeZone: "UTC" });
-    const localStr = noonLocal.toLocaleString("en-US", { timeZone: tz });
-    const offsetMs = new Date(utcStr).getTime() - new Date(localStr).getTime();
-    const noonUtc = new Date(noonLocal.getTime() + offsetMs);
 
+    function localToUtc(hour: number): Date {
+      const localRef = new Date(`${swapDate}T${String(hour).padStart(2, "0")}:00:00`);
+      const utcS = localRef.toLocaleString("en-US", { timeZone: "UTC" });
+      const localS = localRef.toLocaleString("en-US", { timeZone: tz });
+      const off = new Date(utcS).getTime() - new Date(localS).getTime();
+      return new Date(localRef.getTime() + off);
+    }
+
+    // Oncoming arrives early (0800L)
     swapPoints.push({
       icao: overnightAirport,
-      time: noonUtc,
+      time: localToUtc(8),
+      position: "idle",
+      isAdjacentLive: false,
+    });
+    // Offgoing departs late (1700L) — hold the aircraft
+    swapPoints.push({
+      icao: overnightAirport,
+      time: localToUtc(17),
       position: "idle",
       isAdjacentLive: false,
     });
@@ -1191,8 +1211,9 @@ export function buildSwapPlan(params: {
   commercialFlights?: Map<string, FlightOffer[]>;
   swapAssignments?: Record<string, SwapAssignment>;
   oncomingPool?: OncomingPool;
+  stayingCrew?: Array<{ name: string; tail: string; role: "PIC" | "SIC" }>;
 }): SwapPlanResult {
-  const { flights, crewRoster, aliases, swapDate, commercialFlights, swapAssignments, oncomingPool } = params;
+  const { flights, crewRoster, aliases, swapDate, commercialFlights, swapAssignments, oncomingPool, stayingCrew } = params;
   _warnedFlightKeys.clear(); // Reset per-run to avoid stale warnings
   const globalWarnings: string[] = [];
   const allTasks: CrewTask[] = [];
@@ -1377,6 +1398,11 @@ export function buildSwapPlan(params: {
     // ── Create crew tasks ────────────────────────────────────────────────
     const tailTasks: CrewTask[] = [];
 
+    // For idle tails with split swap points (early oncoming / late offgoing),
+    // use the first swap point for oncoming and the last for offgoing.
+    const isIdleTail = swapPoints.length >= 2 && swapPoints.every((sp) => sp.position === "idle");
+    const offgoingSwapPoint = isIdleTail ? swapPoints[swapPoints.length - 1] : picSwapPoint;
+
     // PIC tasks — at the best-scored swap point
     if (!assignment.oncoming_pic) {
       globalWarnings.push(`${tail}: No oncoming PIC assigned — no qualified crew can reach this aircraft`);
@@ -1395,9 +1421,10 @@ export function buildSwapPlan(params: {
         warnings.push(`PIC swaps at ${toIata(picSwapPoint.icao)} (${picSwapPoint.position}) — easier commercial access than ${toIata(swapPoints[0].icao)}`);
       }
       const volFlags = direction === "oncoming" ? getVolunteerFlags(name, "PIC") : { earlyVolunteer: false, lateVolunteer: false };
+      const taskSwapPoint = direction === "offgoing" ? offgoingSwapPoint : picSwapPoint;
       tailTasks.push({
         name: crewMember?.name ?? name, crewMember, role: "PIC", direction, tail,
-        aircraftType, swapPoint: picSwapPoint, homeAirports,
+        aircraftType, swapPoint: taskSwapPoint, homeAirports,
         candidates: [], best: null, warnings,
         ...volFlags,
       });
@@ -1455,7 +1482,9 @@ export function buildSwapPlan(params: {
       } else {
         // Offgoing SIC or oncoming SIC with single swap point
         const oncomingSicTask = tailTasks.find((t) => t.role === "SIC" && t.direction === "oncoming");
-        const sicSwapPoint = oncomingSicTask?.swapPoint ?? picSwapPoint;
+        const sicSwapPoint = direction === "offgoing"
+          ? offgoingSwapPoint  // idle tails: use late swap point for offgoing
+          : (oncomingSicTask?.swapPoint ?? picSwapPoint);
 
         tailTasks.push({
           name: crewMember?.name ?? name, crewMember, role: "SIC", direction, tail,
@@ -1522,18 +1551,23 @@ export function buildSwapPlan(params: {
     }
   }
 
-  // ── Helper: generate helpful transport notes like the human does ────────
+  // ── Helper: generate transport notes — method + ground transport only ────
+  // No routes/connections, no cross-crew sharing references.
   function generateTransportNote(best: TransportCandidate | null, task: CrewTask): string | null {
     if (!best || best.type === "none") return null;
     const swapLoc = toIata(task.swapPoint.icao);
     const parts: string[] = [];
 
     if (task.direction === "oncoming") {
-      // "Uber LAX to VNY", "Grab rental to TEB, be on site by 0930L"
+      // Ground transport to FBO + arrival time
       if (best.type === "commercial" && best.to !== swapLoc) {
-        parts.push(`Uber ${best.to} to ${swapLoc}`);
+        parts.push(`Uber ${best.to}→${swapLoc}`);
       } else if (best.type === "rental_car") {
-        parts.push(`Grab rental to ${swapLoc}`);
+        const driveMin = best.durationMin ?? 0;
+        const hrs = Math.floor(driveMin / 60);
+        const mins = driveMin % 60;
+        const driveStr = mins > 0 ? `${hrs}h${String(mins).padStart(2, "0")}m` : `${hrs}h`;
+        parts.push(`Drive, ~${driveStr}`);
       } else if (best.type === "uber") {
         parts.push(`Uber to ${swapLoc}`);
       }
@@ -1542,19 +1576,77 @@ export function buildSwapPlan(params: {
         const localStr = best.fboArrivalTime.toLocaleTimeString("en-US", {
           timeZone: tz, hour: "2-digit", minute: "2-digit", hour12: false,
         });
-        parts.push(`be on site by ${localStr}L`);
+        parts.push(`on site by ${localStr}L`);
       }
     } else {
-      // "Uber to LAX for departure", "Uber to EWR for departure"
+      // Offgoing: just ground transport method
       if (best.type === "commercial" && best.from !== swapLoc) {
-        parts.push(`Uber to ${best.from} for departure`);
+        parts.push(`Uber to ${best.from}`);
       } else if (best.type === "rental_car") {
-        parts.push(`Drive to ${best.to}`);
+        const driveMin = best.durationMin ?? 0;
+        const hrs = Math.floor(driveMin / 60);
+        const mins = driveMin % 60;
+        const driveStr = mins > 0 ? `${hrs}h${String(mins).padStart(2, "0")}m` : `${hrs}h`;
+        parts.push(`Drive home, ~${driveStr}`);
       } else if (best.type === "uber") {
-        parts.push(`Uber to ${best.to}`);
+        parts.push(`Uber home`);
       }
     }
     return parts.length > 0 ? parts.join(", ") : null;
+  }
+
+  // ── Emit rows for staying crew (2nd rotation — no transport needed) ────
+  const stayingNames = new Set((stayingCrew ?? []).map((s) => s.name));
+
+  for (const stay of (stayingCrew ?? [])) {
+    const crewMember = crewRoster.find((c) => c.name === stay.name) ?? null;
+    const aircraftType = crewMember?.aircraft_types[0] ?? "unknown";
+    const { swapPoints } = extractSwapPoints(stay.tail, byTail, swapDate);
+    const swapLoc = swapPoints[0] ? toIata(swapPoints[0].icao) : null;
+
+    // Remove staying crew from swap assignments so they don't get transport planned
+    const assignment = swapAssignments?.[stay.tail];
+    if (assignment) {
+      if (assignment.offgoing_pic === stay.name) assignment.offgoing_pic = null;
+      if (assignment.offgoing_sic === stay.name) assignment.offgoing_sic = null;
+      if (assignment.oncoming_pic === stay.name) assignment.oncoming_pic = null;
+      if (assignment.oncoming_sic === stay.name) assignment.oncoming_sic = null;
+    }
+
+    // Emit a "staying" row — no transport needed
+    allTasks.push({
+      name: stay.name,
+      crewMember,
+      role: stay.role,
+      direction: "oncoming",
+      tail: stay.tail,
+      aircraftType,
+      swapPoint: swapPoints[0] ?? { icao: "", time: new Date(), position: "idle", isAdjacentLive: false },
+      homeAirports: crewMember?.home_airports ?? [],
+      candidates: [],
+      best: {
+        type: "none",
+        flightNumber: null,
+        depTime: null,
+        arrTime: null,
+        from: swapLoc ?? "",
+        to: swapLoc ?? "",
+        cost: 0,
+        durationMin: 0,
+        isDirect: false,
+        isBudgetCarrier: false,
+        hubConnection: false,
+        connectionCount: 0,
+        offer: null,
+        drive: null,
+        fboArrivalTime: null,
+        fboLeaveTime: null,
+        dutyOnTime: null,
+        score: 100,
+        backups: [],
+      },
+      warnings: [],
+    });
   }
 
   // ── Convert tasks to CrewSwapRow[] ─────────────────────────────────────
@@ -1594,13 +1686,25 @@ export function buildSwapPlan(params: {
       duty_off_time: null,
       is_checkairman: task.crewMember?.is_checkairman ?? false,
       is_skillbridge: task.crewMember?.is_skillbridge ?? false,
-      notes: task.name.startsWith("[UNASSIGNED")
-        ? `Needs crew — run Optimize + Flights`
-        : best?.type === "none"
-          ? task.direction === "oncoming"
-            ? `No viable transport from ${task.homeAirports[0] ?? "?"} to ${toIata(task.swapPoint.icao)}`
-            : `No viable transport from ${toIata(task.swapPoint.icao)} to ${task.homeAirports[0] ?? "?"}`
-          : generateTransportNote(best, task),
+      volunteer_status: (() => {
+        if (stayingNames.has(task.name)) return null;
+        if (task.crewMember?.is_skillbridge) {
+          if (task.earlyVolunteer) return "Early Vol ($1500)";
+          return "SkillBridge (no bonus)";
+        }
+        if (task.earlyVolunteer) return `Early Vol ($${task.role === "PIC" ? EARLY_LATE_BONUS_PIC : EARLY_LATE_BONUS_SIC})`;
+        if (task.lateVolunteer) return `Late Vol ($${task.role === "PIC" ? EARLY_LATE_BONUS_PIC : EARLY_LATE_BONUS_SIC})`;
+        return null;
+      })(),
+      notes: stayingNames.has(task.name)
+        ? "Stays on aircraft — 2nd rotation"
+        : task.name.startsWith("[UNASSIGNED")
+          ? `Needs crew — run Optimize + Flights`
+          : best?.type === "none"
+            ? task.direction === "oncoming"
+              ? `No viable transport from ${task.homeAirports[0] ?? "?"} to ${toIata(task.swapPoint.icao)}`
+              : `No viable transport from ${toIata(task.swapPoint.icao)} to ${task.homeAirports[0] ?? "?"}`
+            : generateTransportNote(best, task),
       warnings: task.warnings,
       drive_estimate: best?.drive ?? null,
       flight_offer: best?.offer ?? null,

@@ -18,6 +18,8 @@ export type DetectedRotation = {
   swap_assignments: Record<string, SwapAssignment>;
   /** Oncoming pool (crew not currently flying) */
   oncoming_pool: { pic: OncomingPoolEntry[]; sic: OncomingPoolEntry[] };
+  /** Crew staying on aircraft for a 2nd rotation (in both offgoing+oncoming pools) */
+  staying_crew: Array<{ name: string; tail: string; role: "PIC" | "SIC" }>;
   /** Name matches found (for debugging) */
   name_matches: Array<{ jetinsight_name: string; matched_to: string; tail: string; role: "PIC" | "SIC" }>;
   /** JetInsight names that couldn't be matched to crew_members */
@@ -340,10 +342,28 @@ export function detectCurrentRotation(
   }
   const oncomingRotationGroup = offgoingRotationGroup === "A" ? "B" : offgoingRotationGroup === "B" ? "A" : null;
 
+  // ── Detect "staying" crew: appears in BOTH offgoing (flying now) and oncoming pool ──
+  // These crew stay on the aircraft for a 2nd rotation — no transport needed.
+  const stayingCrew: DetectedRotation["staying_crew"] = [];
+  const stayingCrewIds = new Set<string>();
+
   // Build oncoming pool using rotation_group when available
   const oncomingPool: DetectedRotation["oncoming_pool"] = { pic: [], sic: [] };
 
   for (const c of crewRoster) {
+    // If this crew member is offgoing AND also in the oncoming rotation group,
+    // they are staying on the aircraft for a 2nd rotation.
+    if (offgoingCrewIds.has(c.id) && oncomingRotationGroup && c.rotation_group === oncomingRotationGroup) {
+      // Find which tail they're on
+      for (const [tail, assignment] of Object.entries(swapAssignments)) {
+        if (assignment.offgoing_pic === c.name || assignment.offgoing_sic === c.name) {
+          stayingCrew.push({ name: c.name, tail, role: c.role });
+          stayingCrewIds.add(c.id);
+        }
+      }
+      continue; // Don't add to oncoming pool — they stay put
+    }
+
     // Skip offgoing crew (matched from JetInsight)
     if (offgoingCrewIds.has(c.id)) continue;
 
@@ -375,6 +395,7 @@ export function detectCurrentRotation(
   return {
     swap_assignments: swapAssignments,
     oncoming_pool: oncomingPool,
+    staying_crew: stayingCrew,
     name_matches: nameMatches,
     unmatched_names: [...unmatchedNames],
     offgoing_rotation_group: offgoingRotationGroup,
