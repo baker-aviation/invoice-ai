@@ -30,6 +30,11 @@ const POST_TIME_MIN = 30; // duty ends 30min after last leg
 // Only include revenue/charter and positioning legs for duty tracking
 const DUTY_FLIGHT_TYPES = new Set(["revenue", "owner", "positioning", "ferry", "charter"]);
 
+/** Find the active (unacknowledged) EDCT alert for a flight */
+function getActiveEdct(f: Flight): { edct_time: string } | null {
+  return f.alerts?.find(a => a.alert_type === "EDCT" && a.edct_time && !a.acknowledged_at) as { edct_time: string } | null ?? null;
+}
+
 /* ── Types ──────────────────────────────────────────── */
 
 type LegInterval = {
@@ -71,6 +76,9 @@ type TailData = {
   hasFlightsTomorrow: boolean;
   breachLegKey: string | null; // "dpIdx-legIdx" of the leg that pushes past 10h
   suggestion: string | null; // fix suggestion text
+  // EDCT-adjusted variant (only present when tail has active EDCTs)
+  edctMaxRolling24hrMin: number | null;
+  edctRestPeriods: RestPeriod[] | null;
 };
 
 
@@ -561,12 +569,43 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
       const breachLegKey = maxRolling24hrMin >= FLIGHT_TIME_YELLOW_MIN ? findBreachLeg(dutyPeriods) : null;
       const suggestion = maxRolling24hrMin >= FLIGHT_TIME_YELLOW_MIN ? computeSuggestion(dutyPeriods, breachLegKey) : null;
 
-      result.push({ tail, dutyPeriods, restPeriods, maxRolling24hrMin, chartPoints, hasFlightsTomorrow, breachLegKey, suggestion });
+      // EDCT-adjusted variant: recompute with EDCT departure times
+      let edctMaxRolling24hrMin: number | null = null;
+      let edctRestPeriods: RestPeriod[] | null = null;
+      const tailFlights = flights.filter(f => f.tail_number === tail);
+      const hasEdct = tailFlights.some(f => getActiveEdct(f) != null);
+      if (hasEdct) {
+        // Shift legs that have active EDCTs
+        const edctLegs = validLegs.map(leg => {
+          // Find the matching flight for this leg
+          const matchedFlight = tailFlights.find(f =>
+            f.departure_icao === leg.departure_icao &&
+            f.arrival_icao === leg.arrival_icao &&
+            Math.abs(new Date(f.scheduled_departure).getTime() - leg.startMs) < 2 * 60 * 60 * 1000
+          );
+          if (!matchedFlight) return leg;
+          const edct = getActiveEdct(matchedFlight);
+          if (!edct?.edct_time) return leg;
+          const deltaMs = new Date(edct.edct_time).getTime() - new Date(matchedFlight.scheduled_departure).getTime();
+          return {
+            ...leg,
+            startMs: leg.startMs + deltaMs,
+            endMs: leg.endMs + deltaMs,
+            depIso: new Date(leg.startMs + deltaMs).toISOString(),
+            arrIso: new Date(leg.endMs + deltaMs).toISOString(),
+          };
+        });
+        edctMaxRolling24hrMin = findMaxRolling24(edctLegs);
+        const edctDPs = groupIntoDutyPeriods(edctLegs);
+        edctRestPeriods = buildRestPeriods(edctDPs);
+      }
+
+      result.push({ tail, dutyPeriods, restPeriods, maxRolling24hrMin, chartPoints, hasFlightsTomorrow, breachLegKey, suggestion, edctMaxRolling24hrMin, edctRestPeriods });
     }
 
     result.sort((a, b) => b.maxRolling24hrMin - a.maxRolling24hrMin);
     return result;
-  }, [intervalsByTail]);
+  }, [intervalsByTail, flights]);
 
   // Scroll to a specific tail card when requested.
   // Depends on tailData so it re-fires after FA data recomputes the card list.
@@ -661,6 +700,20 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
                       {isRed && <span className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-red-100 text-red-700 uppercase">Limit</span>}
                       {isYellow && <span className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-amber-100 text-amber-700 uppercase">Caution</span>}
                     </div>
+                    {td.edctMaxRolling24hrMin != null && td.edctMaxRolling24hrMin !== td.maxRolling24hrMin && (() => {
+                      const eIsRed = td.edctMaxRolling24hrMin >= FLIGHT_TIME_RED_MIN;
+                      const eIsYellow = !eIsRed && td.edctMaxRolling24hrMin >= FLIGHT_TIME_YELLOW_MIN;
+                      return (
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <span className="text-[10px] text-gray-400">EDCT:</span>
+                          <span className={`font-mono font-medium text-xs ${eIsRed ? "text-red-700" : eIsYellow ? "text-amber-700" : "text-green-700"}`}>
+                            {fmtDuration(td.edctMaxRolling24hrMin)}
+                          </span>
+                          {eIsRed && <span className="px-1 py-0.5 text-[9px] font-bold rounded bg-red-100 text-red-700 uppercase">Limit</span>}
+                          {eIsYellow && <span className="px-1 py-0.5 text-[9px] font-bold rounded bg-amber-100 text-amber-700 uppercase">Caution</span>}
+                        </div>
+                      );
+                    })()}
                   </div>
                   <div className="flex-1 min-w-0 pt-2">
                     <div className="flex items-center gap-2">
@@ -826,6 +879,24 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
                                       {rIsRed && <span className="text-[9px] uppercase font-bold">Insufficient</span>}
                                       {rIsYellow && <span className="text-[9px] uppercase font-bold">Marginal</span>}
                                     </div>
+                                    {td.edctRestPeriods && td.edctRestPeriods[dpIdx] && (() => {
+                                      const eRest = td.edctRestPeriods[dpIdx];
+                                      if (Math.abs(eRest.minutes - rest.minutes) < 5) return null; // same — skip
+                                      const eHours = eRest.minutes / 60;
+                                      const eIsRed = eHours < REST_RED_HOURS;
+                                      const eIsYellow = !eIsRed && eHours < REST_YELLOW_HOURS;
+                                      return (
+                                        <div className={`flex items-center gap-2 px-2.5 py-1 rounded-lg text-[10px] font-medium ${
+                                          eIsRed ? "bg-red-50 text-red-700 border border-red-200" :
+                                          eIsYellow ? "bg-amber-50 text-amber-700 border border-amber-200" :
+                                          "bg-green-50 text-green-700 border border-green-200"
+                                        }`}>
+                                          <span>EDCT Rest</span>
+                                          <span className="font-mono">{fmtZulu(eRest.startMs)}→{fmtZulu(eRest.stopMs)}</span>
+                                          <span className="font-mono font-bold">{fmtDuration(eRest.minutes)}</span>
+                                        </div>
+                                      );
+                                    })()}
                                   </>
                                 );
                               })()}
