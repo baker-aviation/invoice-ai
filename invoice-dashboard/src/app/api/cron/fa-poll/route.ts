@@ -50,6 +50,12 @@ function shouldIncludeFlight(f: FaFlight, now: number): boolean {
   // Skip cancelled (unless diverted)
   if (f.cancelled && !f.diverted) return false;
 
+  // Skip diverted flights with scheduled departure > 24h ago (stale diversions)
+  if (f.diverted) {
+    const divDep = f.actual_out ?? f.scheduled_out;
+    if (divDep && new Date(divDep).getTime() < now - 24 * 3600_000) return false;
+  }
+
   // Skip flights with departure > 48h ago
   const dep = f.actual_out ?? f.estimated_out ?? f.scheduled_out;
   if (dep) {
@@ -289,11 +295,21 @@ async function pollDiscovery(
 
   // Cleanup: delete old completed flights (> 36h ago)
   const cutoff = new Date(now.getTime() - 36 * 3600_000).toISOString();
-  const { count: cleaned } = await supa
+  const { count: cleaned1 } = await supa
     .from("fa_flights")
     .delete({ count: "exact" })
     .lt("actual_arrival", cutoff)
     .not("actual_arrival", "is", null);
+
+  // Also clean stale diverted/cancelled flights that never landed (> 36h old by updated_at)
+  const { count: cleaned2 } = await supa
+    .from("fa_flights")
+    .delete({ count: "exact" })
+    .in("status", ["Diverted", "Cancelled"])
+    .is("actual_arrival", null)
+    .lt("updated_at", cutoff);
+
+  const cleaned = (cleaned1 ?? 0) + (cleaned2 ?? 0);
 
   if (cleaned && cleaned > 0) {
     console.log(`[FA Poll] Cleaned ${cleaned} old completed flights`);
