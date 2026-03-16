@@ -18,6 +18,7 @@ import {
   type VanFlightItem,
   type FlightInfoEntry,
 } from "@/lib/vanUtils";
+import { getAirportTimezone } from "@/lib/airportTimezones";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -25,6 +26,29 @@ import {
 
 function todayEtDate(): string {
   return new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+}
+
+/** Format an ISO time in the airport's local timezone as "2:30 PM EDT". */
+function fmtLocalTime(iso: string | null | undefined, airportIcao: string | null | undefined): string {
+  if (!iso) return "\u2014";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "\u2014";
+  const tz = getAirportTimezone(airportIcao) ?? "America/New_York";
+  try {
+    const timePart = d.toLocaleTimeString("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+      timeZone: tz,
+    });
+    const tzAbbr = d
+      .toLocaleString("en-US", { timeZoneName: "short", timeZone: tz })
+      .split(" ")
+      .pop() ?? "";
+    return `${timePart} ${tzAbbr}`;
+  } catch {
+    return fmtUtcHM(iso);
+  }
 }
 
 /** Flight type to readable badge label */
@@ -513,15 +537,15 @@ function StopCard({
         onClick={() => setExpanded((v) => !v)}
       >
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-medium text-gray-400 dark:text-gray-500 w-5 text-center">
-              {index + 1}
+          <div className="flex items-center gap-3">
+            <span className="text-lg font-bold text-blue-700 dark:text-blue-300 tabular-nums">
+              {fmtLocalTime(effectiveArr, item.arrFlight.arrival_icao)}
             </span>
             <span className="text-lg font-bold font-mono text-slate-800 dark:text-white">
               {tail}
             </span>
-            <span className="text-sm text-gray-500 dark:text-gray-400">
-              {dep} &rarr; {arr}
+            <span className="text-sm font-medium text-gray-500 dark:text-gray-400">
+              {arr}
             </span>
           </div>
           <div className="flex items-center gap-2">
@@ -531,24 +555,34 @@ function StopCard({
             <span className="text-gray-400 text-xs">{expanded ? "▲" : "▼"}</span>
           </div>
         </div>
-        {fbo && (
-          <div className="ml-7 mt-0.5">
-            <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
-              {arr} {fbo}
+        {countdown && (
+          <div className="mt-0.5 ml-0">
+            <span className="text-xs font-medium text-blue-600 dark:text-blue-400">
+              Landing {countdown}
             </span>
           </div>
         )}
       </div>
 
       {expanded && <div className="px-4 pb-4">
-        {/* Airport name */}
-        {item.airportInfo && (
-          <div className="mb-2">
+        {/* Route & FBO */}
+        <div className="mb-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-sm text-gray-600 dark:text-gray-300">
+              {dep} &rarr; {arr}
+            </span>
+            {fbo && (
+              <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
+                &middot; {fbo}
+              </span>
+            )}
+          </div>
+          {item.airportInfo && (
             <span className="text-xs text-gray-400 dark:text-gray-500">
               {item.airportInfo.name}
             </span>
-          </div>
-        )}
+          )}
+        </div>
 
         {/* Time info */}
         <div className="flex items-center gap-3 mb-2 flex-wrap">
@@ -556,17 +590,11 @@ function StopCard({
             Dep {fmtUtcHM(fi?.departure_time ?? item.arrFlight.scheduled_departure)}
           </span>
           <span className="text-gray-300 dark:text-gray-600">&rarr;</span>
-          {countdown ? (
-            <span className="text-sm font-medium text-blue-700 dark:text-blue-300">
-              Landing {countdown}
-            </span>
-          ) : (
-            <span className="text-xs text-gray-500 dark:text-gray-400">
-              ETA {arrTime}
-            </span>
-          )}
+          <span className="text-xs text-gray-500 dark:text-gray-400">
+            ETA {arrTime}
+          </span>
           <span className="text-xs text-gray-400 dark:text-gray-500">
-            {fmtDriveTime(item.distKm)}
+            &middot; {fmtDriveTime(item.distKm)}
           </span>
         </div>
 
@@ -591,6 +619,14 @@ function StopCard({
               DIVERTED
             </span>
           )}
+          {(() => {
+            const arrDate = item.arrFlight.scheduled_arrival ? new Date(item.arrFlight.scheduled_arrival).toISOString().split("T")[0] : null;
+            const today = new Date().toISOString().split("T")[0];
+            if (arrDate && arrDate < today) {
+              return <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-indigo-100 text-indigo-700">Landed Yesterday</span>;
+            }
+            return null;
+          })()}
         </div>
 
         {/* MX notes — hide dismissed + older than 24h */}

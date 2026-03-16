@@ -83,7 +83,7 @@ const AIRBORNE_TTL = 5 * 60_000;   // 5 minutes (was 3 — reduced FA API costs)
 const IDLE_TTL = 2 * 60 * 60_000;  // 2 hours
 
 function hasAirborneFlights(flights: FlightInfo[]): boolean {
-  return flights.some((f) => f.status === "En Route");
+  return flights.some((f) => f.status === "En Route" || f.status === "Diverted");
 }
 
 export function getCacheTtl(): number {

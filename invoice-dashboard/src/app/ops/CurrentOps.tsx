@@ -109,10 +109,16 @@ const MIN_REST_GAP_MS = 8 * 60 * 60 * 1000;
 const LEAD_TIME_MS = 60 * 60 * 1000;  // 60min pre-duty (matches DutyTracker)
 const POST_TIME_MS = 30 * 60 * 1000;  // 30min post-duty (matches DutyTracker)
 
+type DutyInterval = { startMs: number; endMs: number; depIcao: string | null; arrIcao: string | null; source: "actual" | "fa-estimate" | "scheduled" };
+
 type TailDutySummary = {
   flightTimeMin: number;
   restMin: number | null;
-  restStartMs: number | null; // duty-off time of the rest period (for EDCT comparison)
+  restStartMs: number | null;
+  // For EDCT computation: today's DP off time and tomorrow's DP on time
+  todayDpOffMs: number | null;
+  tomorrowDpOnMs: number | null;
+  intervals: DutyInterval[]; // deduped intervals for EDCT recalculation
 };
 
 /** Compute per-tail 24hr flight time and crew rest from flights + FA data.
@@ -286,6 +292,8 @@ function computeTailDuty(
     // Group intervals into duty periods, find today's DP, show rest after it.
     let restMin: number | null = null;
     let restStartMs: number | null = null;
+    let todayDpOffMs: number | null = null;
+    let tomorrowDpOnMs: number | null = null;
     {
       // Group into duty periods (split at gaps >= 8h)
       const dps: { onMs: number; offMs: number }[] = [];
@@ -303,18 +311,14 @@ function computeTailDuty(
       dps.push({ onMs: dpStart - LEAD_TIME_MS, offMs: dpEnd + POST_TIME_MS });
 
       // Find today's DP: first DP with legs departing on today's UTC date
-      const todayUtcStart = todayUtc; // already computed above
-      const todayUtcEnd = todayUtcStart + 24 * 60 * 60 * 1000;
+      const todayUtcEnd = todayUtc + 24 * 60 * 60 * 1000;
       let todayIdx = -1;
       for (let d = 0; d < dps.length; d++) {
-        // Check if any interval in this DP departs today
-        // DP spans from dps[d].onMs + LEAD_TIME to dps[d].offMs - POST_TIME
-        // Find intervals belonging to this DP
         const dpFirstDep = dps[d].onMs + LEAD_TIME_MS;
         const dpLastArr = dps[d].offMs - POST_TIME_MS;
         for (const iv of finalIntervals) {
           if (iv.startMs >= dpFirstDep - 60_000 && iv.endMs <= dpLastArr + 60_000 &&
-              iv.startMs >= todayUtcStart && iv.startMs < todayUtcEnd) {
+              iv.startMs >= todayUtc && iv.startMs < todayUtcEnd) {
             todayIdx = d;
             break;
           }
@@ -328,16 +332,25 @@ function computeTailDuty(
         }
       }
 
-      // Rest = gap between today's DP and the next DP
-      if (todayIdx >= 0 && todayIdx < dps.length - 1) {
-        const off = dps[todayIdx].offMs;
-        const on = dps[todayIdx + 1].onMs;
-        restMin = Math.max(0, (on - off) / 60_000);
-        restStartMs = off;
+      if (todayIdx >= 0) {
+        todayDpOffMs = dps[todayIdx].offMs;
+        // Primary: rest between today's DP and tomorrow's DP
+        if (todayIdx < dps.length - 1) {
+          tomorrowDpOnMs = dps[todayIdx + 1].onMs;
+          restMin = Math.max(0, (tomorrowDpOnMs - todayDpOffMs) / 60_000);
+          restStartMs = todayDpOffMs;
+        }
+        // Fallback: if no tomorrow DP, show last night's rest (before today's DP)
+        else if (todayIdx > 0) {
+          const prevOff = dps[todayIdx - 1].offMs;
+          const todayOn = dps[todayIdx].onMs;
+          restMin = Math.max(0, (todayOn - prevOff) / 60_000);
+          restStartMs = prevOff;
+        }
       }
     }
 
-    result.set(tail, { flightTimeMin: maxMs / 60_000, restMin, restStartMs });
+    result.set(tail, { flightTimeMin: maxMs / 60_000, restMin, restStartMs, todayDpOffMs, tomorrowDpOnMs, intervals: finalIntervals });
   }
 
   return result;
@@ -1162,24 +1175,110 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
   // Per-tail duty summary (24hr flight time + crew rest)
   const tailDuty = useMemo(() => computeTailDuty(flights, faFlightsRaw), [flights, faFlightsRaw]);
 
-  // EDCT-adjusted duty: shift departure/arrival on legs with active EDCTs
+  // EDCT-adjusted duty: compute per-tail using normal intervals + EDCT shifts
+  // EDCT shifts today's duty off later → compresses tonight's rest.
+  // Tomorrow's duty on stays the same (EDCT doesn't affect tomorrow's flights).
   const tailDutyEdct = useMemo(() => {
     const hasAnyEdct = flights.some(f => getActiveEdct(f) != null);
     if (!hasAnyEdct) return null;
-    const edctFlights = flights.map(f => {
-      const edct = getActiveEdct(f);
-      if (!edct?.edct_time) return f;
-      const deltaMs = new Date(edct.edct_time).getTime() - new Date(f.scheduled_departure).getTime();
-      return {
-        ...f,
-        scheduled_departure: edct.edct_time,
-        scheduled_arrival: f.scheduled_arrival
-          ? new Date(new Date(f.scheduled_arrival).getTime() + deltaMs).toISOString()
-          : f.scheduled_arrival,
-      };
-    });
-    return computeTailDuty(edctFlights, faFlightsRaw);
-  }, [flights, faFlightsRaw]);
+
+    const result = new Map<string, TailDutySummary>();
+    const WINDOW_MS = 24 * 60 * 60 * 1000;
+
+    for (const [tail, normalDuty] of tailDuty) {
+      const tailFlights = flights.filter(f => f.tail_number === tail);
+      const hasEdct = tailFlights.some(f => getActiveEdct(f) != null);
+      if (!hasEdct) continue; // skip tails without EDCTs
+
+      // Build EDCT-shifted intervals from normal intervals
+      const edctIntervals = normalDuty.intervals.map(iv => ({ ...iv }));
+      for (const iv of edctIntervals) {
+        // Find the flight that matches this interval
+        const matchedFlight = tailFlights.find(f =>
+          f.departure_icao === iv.depIcao &&
+          f.arrival_icao === iv.arrIcao &&
+          Math.abs(new Date(f.scheduled_departure).getTime() - iv.startMs) < 2 * 60 * 60 * 1000
+        );
+        if (!matchedFlight) continue;
+        const edct = getActiveEdct(matchedFlight);
+        if (!edct?.edct_time) continue;
+        const deltaMs = new Date(edct.edct_time).getTime() - new Date(matchedFlight.scheduled_departure).getTime();
+        if (deltaMs <= 0) continue;
+        iv.startMs += deltaMs;
+        iv.endMs += deltaMs;
+      }
+      // Cascade: push subsequent legs forward if they overlap
+      edctIntervals.sort((a, b) => a.startMs - b.startMs);
+      for (let i = 1; i < edctIntervals.length; i++) {
+        if (edctIntervals[i].startMs < edctIntervals[i - 1].endMs) {
+          const shift = edctIntervals[i - 1].endMs - edctIntervals[i].startMs;
+          edctIntervals[i].startMs += shift;
+          edctIntervals[i].endMs += shift;
+        }
+      }
+
+      // EDCT rolling 24hr max
+      const checkPoints = new Set<number>();
+      for (const leg of edctIntervals) {
+        checkPoints.add(leg.startMs);
+        checkPoints.add(leg.endMs);
+        checkPoints.add(leg.startMs + WINDOW_MS);
+        checkPoints.add(leg.endMs + WINDOW_MS);
+      }
+      let maxMs = 0;
+      for (const wp of checkPoints) {
+        const ws = wp - WINDOW_MS;
+        let totalMs = 0;
+        for (const leg of edctIntervals) {
+          const os = Math.max(leg.startMs, ws);
+          const oe = Math.min(leg.endMs, wp);
+          if (oe > os) totalMs += oe - os;
+        }
+        if (totalMs > maxMs) maxMs = totalMs;
+      }
+
+      // EDCT rest: use EDCT-shifted today's duty off + NORMAL tomorrow's duty on
+      // This correctly shows compressed rest (EDCT delays → finish later → less rest)
+      let edctRestMin: number | null = null;
+      let edctRestStartMs: number | null = null;
+      if (normalDuty.tomorrowDpOnMs != null) {
+        // Find EDCT today's DP off: group EDCT intervals into DPs, find today's
+        const todayUtcDate = Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate());
+        const todayUtcEnd = todayUtcDate + 24 * 60 * 60 * 1000;
+        // Find the last EDCT interval that departs today (or was part of today's original DP)
+        let edctTodayLastArr = 0;
+        for (const iv of edctIntervals) {
+          // Use original intervals to determine which legs belong to "today's duty"
+          const origIv = normalDuty.intervals.find(o => o.depIcao === iv.depIcao && o.arrIcao === iv.arrIcao);
+          const origDep = origIv?.startMs ?? iv.startMs;
+          if (origDep >= todayUtcDate && origDep < todayUtcEnd) {
+            edctTodayLastArr = Math.max(edctTodayLastArr, iv.endMs);
+          }
+        }
+        if (edctTodayLastArr > 0) {
+          const edctOff = edctTodayLastArr + POST_TIME_MS;
+          edctRestMin = Math.max(0, (normalDuty.tomorrowDpOnMs - edctOff) / 60_000);
+          edctRestStartMs = edctOff;
+        }
+      }
+      // Fallback: if no tomorrow DP, use same rest as normal (EDCT doesn't matter)
+      if (edctRestMin == null && normalDuty.restMin != null && normalDuty.tomorrowDpOnMs == null) {
+        edctRestMin = normalDuty.restMin;
+        edctRestStartMs = normalDuty.restStartMs;
+      }
+
+      result.set(tail, {
+        flightTimeMin: maxMs / 60_000,
+        restMin: edctRestMin,
+        restStartMs: edctRestStartMs,
+        todayDpOffMs: null,
+        tomorrowDpOnMs: null,
+        intervals: edctIntervals,
+      });
+    }
+
+    return result;
+  }, [flights, tailDuty]);
 
   // Best advertised fuel rate per airport
   const bestFuelByAirport = useMemo(() => buildBestRateByAirport(advertisedPrices), [advertisedPrices]);

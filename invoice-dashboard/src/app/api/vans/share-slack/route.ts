@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, isAuthed, isRateLimited } from "@/lib/api-auth";
 import { buildVanSlackBlocks, buildVanSlackFallbackText, type VanSlackItem } from "@/lib/vanSlackBlocks";
+import { createServiceClient } from "@/lib/supabase/service";
 
 /**
  * POST /api/vans/share-slack
@@ -100,6 +101,24 @@ export async function POST(req: NextRequest) {
     if (!data.ok) {
       return NextResponse.json({ error: data.error ?? "Slack API error" }, { status: 502 });
     }
+
+    // Save the shared schedule to DB for persistence
+    try {
+      const supa = createServiceClient();
+      await supa.from("van_published_schedules").upsert(
+        {
+          van_id: vanId,
+          schedule_date: date,
+          flight_ids: items.map((i) => i.tail), // store tail numbers as identifiers
+          published_by: auth.userId,
+          published_at: new Date().toISOString(),
+        },
+        { onConflict: "van_id,schedule_date" },
+      );
+    } catch {
+      // Non-fatal — Slack message was sent successfully
+    }
+
     return NextResponse.json({ ok: true, ts: data.ts, channel: data.channel });
   } catch (err) {
     return NextResponse.json({ error: "Slack API request failed" }, { status: 502 });

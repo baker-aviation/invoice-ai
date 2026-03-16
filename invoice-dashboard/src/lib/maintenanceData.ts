@@ -359,8 +359,19 @@ export function assignVans(
   });
 
   // ── Phase 1: assign to fixed zones (only within MAX_ZONE_DISTANCE_KM) ──
+  // Load-sharing: paired vans in the same region (e.g., South FL East V1+V2,
+  // NY/NJ V4+V5) share aircraft evenly via round-robin instead of filling
+  // the first van before the second.
   const fixedClusters: AircraftOvernightPosition[][] = FIXED_VAN_ZONES.map(() => []);
   const unassigned: AircraftOvernightPosition[] = [];
+
+  // Build region groups: name → [zone indices]
+  const regionGroups = new Map<string, number[]>();
+  for (let i = 0; i < FIXED_VAN_ZONES.length; i++) {
+    const name = FIXED_VAN_ZONES[i].name;
+    if (!regionGroups.has(name)) regionGroups.set(name, []);
+    regionGroups.get(name)!.push(i);
+  }
 
   for (const ac of sorted) {
     const ranked = FIXED_VAN_ZONES
@@ -376,8 +387,22 @@ export function assignVans(
     let placed = false;
     for (const { i, d } of ranked) {
       if (d > MAX_ZONE_DISTANCE_KM) break; // stop checking once beyond cutoff
-      if (fixedClusters[i].length < maxPerVan) {
-        fixedClusters[i].push(ac);
+
+      // Load-sharing: if this zone is part of a paired region, pick the
+      // van in that region with the fewest aircraft assigned so far.
+      const regionName = FIXED_VAN_ZONES[i].name;
+      const siblings = regionGroups.get(regionName) ?? [i];
+      // Only consider siblings within range of this aircraft
+      const eligibleSiblings = siblings.filter(
+        (si) => haversineKm(ac.lat, ac.lon, FIXED_VAN_ZONES[si].lat, FIXED_VAN_ZONES[si].lon) <= MAX_ZONE_DISTANCE_KM,
+      );
+      // Pick the sibling with the fewest aircraft (round-robin effect)
+      const target = eligibleSiblings
+        .filter((si) => fixedClusters[si].length < maxPerVan)
+        .sort((a, b) => fixedClusters[a].length - fixedClusters[b].length)[0];
+
+      if (target !== undefined) {
+        fixedClusters[target].push(ac);
         placed = true;
         break;
       }
