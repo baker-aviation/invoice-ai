@@ -852,9 +852,12 @@ function buildSlackItems(items: VanFlightItem[], flightInfoMap: Map<string, Flig
     } else {
       slackStatus = "Scheduled";
     }
-    // Look up FBO name from trip_salespersons
-    const fboKey = `${item.arrFlight.tail_number}:${item.arrFlight.arrival_icao}`;
-    const fbo = fboMap?.[fboKey] ?? null;
+    // Look up FBO name from trip_salespersons (try both ICAO formats)
+    const arrIcao = item.arrFlight.arrival_icao ?? "";
+    const arrIcaoStripped = arrIcao.replace(/^K/, "");
+    const fbo = fboMap?.[`${item.arrFlight.tail_number}:${arrIcao}`]
+      ?? fboMap?.[`${item.arrFlight.tail_number}:${arrIcaoStripped}`]
+      ?? null;
     // Gather today's MX notes for this tail
     const tailNotes = mxNotesByTail?.get(item.arrFlight.tail_number ?? "") ?? [];
     const nowMs = Date.now();
@@ -1122,16 +1125,15 @@ function MxNoteRow({ note, onHideForToday, vanOverride, onVanOverride }: {
 }
 
 /** Inline MX notes per aircraft — only non-MEL MX items (MELs moved to van-level accordion) */
-function MxNoteInline({ notes, hiddenIds, onHideForToday, vanOverrides, onVanOverride }: { notes: MxNote[]; hiddenIds?: Set<string>; onHideForToday?: (id: string) => void; vanOverrides?: Map<string, number>; onVanOverride?: (noteId: string, vanId: number | null) => void }) {
-  const todayEt = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
-  const tomorrowEt = (() => { const d = new Date(); d.setDate(d.getDate() + 1); return d.toLocaleDateString("en-CA", { timeZone: "America/New_York" }); })();
+function MxNoteInline({ notes, hiddenIds, onHideForToday, vanOverrides, onVanOverride, viewDate }: { notes: MxNote[]; hiddenIds?: Set<string>; onHideForToday?: (id: string) => void; vanOverrides?: Map<string, number>; onVanOverride?: (noteId: string, vanId: number | null) => void; viewDate?: string }) {
+  const targetDate = viewDate ?? new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
   const visible = notes.filter((n) => {
     if (hiddenIds?.has(n.id)) return false;
     if (isMel(n)) return false;
     if (!n.start_time) return true;
     const startDate = n.start_time.slice(0, 10);
     const endDate = n.end_time ? n.end_time.slice(0, 10) : startDate;
-    return endDate >= todayEt && startDate <= tomorrowEt;
+    return endDate >= targetDate && startDate <= targetDate;
   });
   if (visible.length === 0) return null;
   return (
@@ -1560,7 +1562,7 @@ function AircraftCompactRow({
       )}
 
       {/* MX notes from JetInsight (non-MEL only — MELs in van accordion) */}
-      <MxNoteInline notes={mxNotes} hiddenIds={hiddenTodayMxIds} onHideForToday={onHideMxForToday} vanOverrides={mxVanOverrides} onVanOverride={onVanOverride} />
+      <MxNoteInline notes={mxNotes} hiddenIds={hiddenTodayMxIds} onHideForToday={onHideMxForToday} vanOverrides={mxVanOverrides} onVanOverride={onVanOverride} viewDate={date} />
 
       {/* ── Expandable detail section ── */}
       {detailOpen && (
@@ -2884,7 +2886,7 @@ function ScheduleTab({
                       )}
                     </div>
                     {/* MX notes from JetInsight */}
-                    <MxNoteInline notes={mxNotesByTail.get(tail ?? "") ?? []} hiddenIds={hiddenTodayMxIds} onHideForToday={onHideMxForToday} vanOverrides={mxVanOverrides} onVanOverride={onVanOverride} />
+                    <MxNoteInline notes={mxNotesByTail.get(tail ?? "") ?? []} hiddenIds={hiddenTodayMxIds} onHideForToday={onHideMxForToday} vanOverrides={mxVanOverrides} onVanOverride={onVanOverride} viewDate={date} />
                   </div>
                 );
               })}
@@ -2980,7 +2982,7 @@ function ScheduleTab({
                       {ac.airportInfo.name}, {ac.airportInfo.state}
                     </div>
                   )}
-                  <MxNoteInline notes={mxNotesByTail.get(ac.tail) ?? []} hiddenIds={hiddenTodayMxIds} onHideForToday={onHideMxForToday} vanOverrides={mxVanOverrides} onVanOverride={onVanOverride} />
+                  <MxNoteInline notes={mxNotesByTail.get(ac.tail) ?? []} hiddenIds={hiddenTodayMxIds} onHideForToday={onHideMxForToday} vanOverrides={mxVanOverrides} onVanOverride={onVanOverride} viewDate={date} />
                 </div>
               ))}
             </div>}
