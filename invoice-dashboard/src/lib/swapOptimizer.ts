@@ -42,6 +42,8 @@ import {
 export type CrewMember = {
   id: string;
   name: string;
+  /** JetInsight legal name (when different from display name) */
+  jetinsight_name?: string | null;
   role: "PIC" | "SIC";
   home_airports: string[];
   aircraft_types: string[];
