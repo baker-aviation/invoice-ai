@@ -80,6 +80,7 @@ export async function POST(req: NextRequest) {
   const crewRoster: CrewMember[] = (crewRes.data ?? []).map((c) => ({
     id: c.id as string,
     name: c.name as string,
+    jetinsight_name: (c.jetinsight_name as string | null) ?? null,
     role: c.role as "PIC" | "SIC",
     home_airports: (c.home_airports as string[]) ?? [],
     aircraft_types: (c.aircraft_types as string[]) ?? [],
@@ -160,18 +161,34 @@ export async function POST(req: NextRequest) {
   const { commercialFlights, routeCount, crewRouteMap, crewOffgoingMap } = await getRoutesForOptimizer(swapDate);
   const hasPreComputedRoutes = routeCount > 0;
 
-  // Also try loading from commercial flight cache (FlightAware bulk data)
-  let effectiveFlights = hasPreComputedRoutes ? commercialFlights : new Map<string, import("@/lib/amadeus").FlightOffer[]>();
-  if (!hasPreComputedRoutes) {
-    const cached = await getCachedFlightsForOptimizer(swapDate);
-    if (cached.totalFlights > 0) {
-      effectiveFlights = cached.commercialFlights;
-      console.log(`[Swap Optimizer] Loaded ${cached.totalFlights} flights from commercial cache (${effectiveFlights.size} route keys) in ${Date.now() - routeStart}ms`);
-    } else {
-      console.log(`[Swap Optimizer] No pre-computed routes or cached flights for ${swapDate} — drive-only mode`);
+  // Always load commercial flight cache — crew without pre-computed routes
+  // need it for runtime buildCandidates evaluation in the feasibility matrix.
+  let effectiveFlights = new Map<string, import("@/lib/amadeus").FlightOffer[]>(commercialFlights);
+  const cached = await getCachedFlightsForOptimizer(swapDate);
+  if (cached.totalFlights > 0) {
+    // Merge: cached flights fill gaps not covered by pre-computed routes
+    for (const [key, offers] of cached.commercialFlights) {
+      if (!effectiveFlights.has(key)) {
+        effectiveFlights.set(key, offers);
+      } else {
+        // Merge offers, dedup by flight number
+        const existing = effectiveFlights.get(key)!;
+        const existingNums = new Set(existing.map((o) => {
+          const segs = o.itineraries?.[0]?.segments ?? [];
+          return segs.map((s) => `${s.carrierCode}${s.number}`).join("/");
+        }));
+        for (const offer of offers) {
+          const segs = offer.itineraries?.[0]?.segments ?? [];
+          const num = segs.map((s) => `${s.carrierCode}${s.number}`).join("/");
+          if (!existingNums.has(num)) existing.push(offer);
+        }
+      }
     }
-  } else {
+    console.log(`[Swap Optimizer] Loaded ${routeCount} pre-computed routes + ${cached.totalFlights} cached flights (${effectiveFlights.size} total route keys) in ${Date.now() - routeStart}ms`);
+  } else if (hasPreComputedRoutes) {
     console.log(`[Swap Optimizer] Loaded ${routeCount} pre-computed routes (${commercialFlights.size} flight keys) in ${Date.now() - routeStart}ms`);
+  } else {
+    console.log(`[Swap Optimizer] No pre-computed routes or cached flights for ${swapDate} — drive-only mode`);
   }
   const hasFlightData = effectiveFlights.size > 0;
 
@@ -185,6 +202,14 @@ export async function POST(req: NextRequest) {
       swapAssignments,
     });
     console.log(`[Swap Optimizer] Offgoing-first: ${offgoingFirstResult.deadlines.length} deadlines, ${offgoingFirstResult.unsolvable.length} unsolvable`);
+  }
+
+  // Build set of tails where offgoing has no solution — don't waste oncoming crew on these
+  const unsolvableTails = offgoingFirstResult
+    ? new Set(offgoingFirstResult.unsolvable.map((u) => u.tail))
+    : undefined;
+  if (unsolvableTails?.size) {
+    console.log(`[Swap Optimizer] Excluding ${unsolvableTails.size} unsolvable tails from oncoming assignment: ${[...unsolvableTails].join(", ")}`);
   }
 
   // ── STEP 2+3: Assign oncoming crew + run transport optimizer ────────────────
@@ -211,6 +236,7 @@ export async function POST(req: NextRequest) {
       commercialFlights: hasFlightData ? effectiveFlights : undefined,
       preComputedRoutes: hasPreComputedRoutes ? crewRouteMap : undefined,
       preComputedOffgoing: hasPreComputedRoutes ? crewOffgoingMap : undefined,
+      excludeTails: unsolvableTails,
     });
     result = twoPass.result;
     assignmentResult = twoPass.assignmentResult;
@@ -230,6 +256,7 @@ export async function POST(req: NextRequest) {
         commercialFlights: hasFlightData ? effectiveFlights : undefined,
         preComputedRoutes: hasPreComputedRoutes ? crewRouteMap : undefined,
         preComputedOffgoing: hasPreComputedRoutes ? crewOffgoingMap : undefined,
+        excludeTails: unsolvableTails,
       });
       swapAssignments = assignmentResult.assignments;
       console.log(`[Swap Optimizer] Assignment took ${((Date.now() - assignStart) / 1000).toFixed(1)}s`);

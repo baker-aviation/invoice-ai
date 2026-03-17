@@ -143,7 +143,11 @@ function getFirstName(fullName: string): string {
 function matchName(jetInsightName: string, crewMembers: CrewMember[]): CrewMember | null {
   const jNorm = normalize(jetInsightName);
 
-  // 1. Exact match
+  // 0. Check jetinsight_name field (DB-stored mapping — most reliable)
+  const jiMatch = crewMembers.find((c) => c.jetinsight_name && normalize(c.jetinsight_name) === jNorm);
+  if (jiMatch) return jiMatch;
+
+  // 1. Exact match on display name
   const exact = crewMembers.find((c) => normalize(c.name) === jNorm);
   if (exact) return exact;
 

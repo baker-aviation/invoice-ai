@@ -42,6 +42,8 @@ import {
 export type CrewMember = {
   id: string;
   name: string;
+  /** JetInsight legal name (when different from display name) */
+  jetinsight_name?: string | null;
   role: "PIC" | "SIC";
   home_airports: string[];
   aircraft_types: string[];
@@ -878,6 +880,7 @@ function optimizeTail(
   commercialFlights: Map<string, FlightOffer[]> | undefined,
   swapDate: string,
   tailLegs?: FlightLeg[],
+  deadlines?: OncomingDeadline[],
 ): void {
   // Build candidates for each task
   for (const task of tasks) {
@@ -896,6 +899,34 @@ function optimizeTail(
   // Separate by direction
   const oncoming = tasks.filter((t) => t.direction === "oncoming");
   const offgoing = tasks.filter((t) => t.direction === "offgoing");
+
+  // ── Filter oncoming candidates by offgoing deadlines ───────────────
+  // When offgoing-first deadlines are provided, oncoming must arrive before
+  // the offgoing crew needs to leave the FBO. This eliminates timing conflicts.
+  if (deadlines && deadlines.length > 0) {
+    const tail = tasks[0]?.tail;
+    const tailDeadlines = deadlines.filter((d) => d.tail === tail);
+    for (const onTask of oncoming) {
+      const dl = tailDeadlines.find((d) => d.role === onTask.role);
+      if (!dl) continue;
+      const deadlineMs = dl.deadline.getTime();
+      const filtered = onTask.candidates.filter((c) => {
+        if (c.type === "none") return true;
+        if (!c.fboArrivalTime) return true; // can't evaluate — keep
+        return c.fboArrivalTime.getTime() <= deadlineMs;
+      });
+      if (filtered.some((c) => c.type !== "none")) {
+        onTask.candidates = filtered;
+      } else {
+        // No oncoming option arrives before offgoing must leave
+        onTask.candidates = onTask.candidates.filter((c) => c.type === "none");
+        onTask.warnings.push(
+          `No oncoming transport arrives before offgoing ${dl.offgoingName} must leave` +
+          (dl.offgoingFlight ? ` (${dl.offgoingFlight})` : ""),
+        );
+      }
+    }
+  }
 
   // Score and select oncoming PIC first (to pair SIC with same flights)
   const oncomingPic = oncoming.find((t) => t.role === "PIC");
@@ -1019,26 +1050,13 @@ function optimizeTail(
         // else: filtered out — crew must leave FBO before oncoming arrives
       }
 
-      if (adjusted.length > 0 && adjusted.some((c) => c.type !== "none")) {
-        task.candidates = adjusted;
-      } else {
-        // Graceful degradation: keep ALL original candidates with a warning.
-        // Better to show a timing-conflict option than "none".
-        const sorted = task.candidates
-          .filter((c) => c.type !== "none" && (c.fboLeaveTime ?? c.depTime))
-          .sort((a, b) => {
-            const bT = (b.fboLeaveTime ?? b.depTime)!.getTime();
-            const aT = (a.fboLeaveTime ?? a.depTime)!.getTime();
-            return bT - aT; // latest-leaving first
-          });
-        const gapMin = sorted[0]
-          ? Math.round((earliestOffgoingLeave - (sorted[0].fboLeaveTime ?? sorted[0].depTime)!.getTime()) / 60_000)
-          : 0;
+      // Only keep candidates that pass the timing constraint
+      task.candidates = adjusted;
+      if (!adjusted.some((c) => c.type !== "none")) {
+        // All real transport options depart before oncoming arrives — unsolvable
         task.warnings.push(
-          `Aircraft unattended risk: offgoing must leave FBO before oncoming PIC arrives + ${HANDOFF_BUFFER_MINUTES}min handoff` +
-          (gapMin > 0 ? ` (best option misses by ${gapMin} min)` : ""),
+          `No offgoing transport available: all options require leaving FBO before oncoming PIC arrives + ${HANDOFF_BUFFER_MINUTES}min handoff`,
         );
-        // Keep originals — scorer will still rank them, user sees the warning
       }
     }
   }
@@ -1229,6 +1247,14 @@ export function buildSwapPlan(params: {
   _warnedFlightKeys.clear(); // Reset per-run to avoid stale warnings
   const globalWarnings: string[] = [];
   const allTasks: CrewTask[] = [];
+
+  // When offgoing-first: compute deadlines (latest oncoming arrival per tail)
+  // so optimizeTail can reject oncoming candidates that arrive too late.
+  let offgoingDeadlines: OncomingDeadline[] | undefined;
+  if (strategy === "offgoing_first" && swapAssignments && Object.keys(swapAssignments).length > 0) {
+    const offResult = solveOffgoingFirst({ flights, crewRoster, aliases, swapDate, commercialFlights, swapAssignments });
+    offgoingDeadlines = offResult.deadlines;
+  }
 
   if (!swapAssignments || Object.keys(swapAssignments).length === 0) {
     globalWarnings.push("No swap assignments found. Upload the swap Excel document first.");
@@ -1508,7 +1534,7 @@ export function buildSwapPlan(params: {
     }
 
     // Run optimizer for this tail
-    optimizeTail(tailTasks, aliases, commercialFlights, swapDate, byTail.get(tail));
+    optimizeTail(tailTasks, aliases, commercialFlights, swapDate, byTail.get(tail), offgoingDeadlines);
     allTasks.push(...tailTasks);
 
     // Emit placeholder rows for unassigned oncoming slots
@@ -1907,8 +1933,10 @@ function buildFeasibilityMatrix(params: {
       }
 
       // ── PRE-COMPUTED ROUTES PATH (instant) ──────────────────────────────
-      if (preComputedRoutes && crewMember?.id) {
-        const crewRoutes = preComputedRoutes.get(crewMember.id) ?? [];
+      // Only use pre-computed path if this crew member actually HAS routes.
+      // Otherwise fall through to runtime buildCandidates evaluation.
+      if (preComputedRoutes && crewMember?.id && preComputedRoutes.has(crewMember.id)) {
+        const crewRoutes = preComputedRoutes.get(crewMember.id)!;
 
         // Filter routes to destinations matching this tail's swap airports
         const relevantRoutes = crewRoutes.filter((r) =>
@@ -2113,12 +2141,13 @@ export function assignOncomingCrew(params: {
   commercialFlights?: Map<string, FlightOffer[]>;
   preComputedRoutes?: Map<string, PilotRoute[]>;
   preComputedOffgoing?: Map<string, PilotRoute[]>;
+  excludeTails?: Set<string>;
 }): {
   assignments: Record<string, SwapAssignment>;
   standby: { pic: string[]; sic: string[] };
   details: { name: string; tail: string; cost: number; reason: string }[];
 } {
-  const { swapAssignments, oncomingPool, crewRoster, flights, swapDate, aliases = [], commercialFlights, preComputedRoutes, preComputedOffgoing } = params;
+  const { swapAssignments, oncomingPool, crewRoster, flights, swapDate, aliases = [], commercialFlights, preComputedRoutes, preComputedOffgoing, excludeTails } = params;
   const result: Record<string, SwapAssignment> = JSON.parse(JSON.stringify(swapAssignments));
   const details: { name: string; tail: string; cost: number; reason: string }[] = [];
 
@@ -2161,8 +2190,8 @@ export function assignOncomingCrew(params: {
   }
 
   // Assign PICs then SICs using feasibility matrix
-  assignRoleWithMatrix("oncoming_pic", oncomingPool.pic, "PIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes, preComputedOffgoing);
-  assignRoleWithMatrix("oncoming_sic", oncomingPool.sic, "SIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes, preComputedOffgoing);
+  assignRoleWithMatrix("oncoming_pic", oncomingPool.pic, "PIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes, preComputedOffgoing, excludeTails);
+  assignRoleWithMatrix("oncoming_sic", oncomingPool.sic, "SIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes, preComputedOffgoing, excludeTails);
 
   // Remaining pool → standby
   const assignedNames = new Set(details.map((d) => d.name));
@@ -2189,12 +2218,13 @@ export function twoPassAssignAndOptimize(params: {
   commercialFlights?: Map<string, FlightOffer[]>;
   preComputedRoutes?: Map<string, PilotRoute[]>;
   preComputedOffgoing?: Map<string, PilotRoute[]>;
+  excludeTails?: Set<string>;
 }): {
   result: SwapPlanResult;
   assignmentResult: ReturnType<typeof assignOncomingCrew>;
   twoPassStats: TwoPassStats;
 } {
-  const { swapAssignments, oncomingPool, crewRoster, flights, swapDate, aliases, commercialFlights, preComputedRoutes, preComputedOffgoing } = params;
+  const { swapAssignments, oncomingPool, crewRoster, flights, swapDate, aliases, commercialFlights, preComputedRoutes, preComputedOffgoing, excludeTails } = params;
 
   // ── Pass 1: Normal Wednesday only (exclude early/late volunteers) ──────
   const normalPool: OncomingPool = {
@@ -2218,6 +2248,7 @@ export function twoPassAssignAndOptimize(params: {
     commercialFlights,
     preComputedRoutes,
     preComputedOffgoing,
+    excludeTails,
   });
 
   const pass1Result = buildSwapPlan({
@@ -2292,6 +2323,7 @@ export function twoPassAssignAndOptimize(params: {
     commercialFlights,
     preComputedRoutes,
     preComputedOffgoing,
+    excludeTails,
   });
 
   // Merge pass 2 results into pass 1: only replace unsolved tails
@@ -2391,8 +2423,9 @@ function assignRoleWithMatrix(
   details: { name: string; tail: string; cost: number; reason: string }[],
   preComputedRoutes?: Map<string, PilotRoute[]>,
   preComputedOffgoing?: Map<string, PilotRoute[]>,
+  excludeTails?: Set<string>,
 ): void {
-  const needingTails = Object.keys(result).filter((tail) => !result[tail][field]);
+  const needingTails = Object.keys(result).filter((tail) => !result[tail][field] && !excludeTails?.has(tail));
   if (needingTails.length === 0 || pool.length === 0) return;
 
   // Build full feasibility matrix — uses pre-computed routes when available
@@ -2714,7 +2747,7 @@ export function solveOffgoingFirst(params: {
         warnings: [],
       };
 
-      buildCandidates(task, aliases, commercialFlights, swapDate);
+      task.candidates = buildCandidates(task, aliases, commercialFlights, swapDate);
       for (const c of task.candidates) {
         c.score = scoreCandidate(c, task, null);
       }
@@ -2724,8 +2757,10 @@ export function solveOffgoingFirst(params: {
       const best = task.best;
       let deadline: Date | null = null;
 
-      if (best?.depTime) {
-        deadline = new Date(best.depTime.getTime() - HANDOFF_BUFFER_MINUTES * 60_000);
+      // Use fboLeaveTime (when crew physically leaves FBO) — tighter than depTime
+      const offgoingLeave = best?.fboLeaveTime ?? best?.depTime;
+      if (offgoingLeave) {
+        deadline = new Date(offgoingLeave.getTime() - HANDOFF_BUFFER_MINUTES * 60_000);
       }
 
       offgoingPlans.push({
