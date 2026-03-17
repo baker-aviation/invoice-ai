@@ -57,13 +57,25 @@ export async function runParser(overrideSwapDate?: string) {
     );
   }
 
-  // Find the bot message containing "Volunteer Pilots" or "volunteer" thread
+  // Find the bot/workflow message containing "Volunteer Pilots" or volunteer keywords
+  // Workflow messages may have text in blocks/attachments, so check all possible fields
   const messages = (historyRes.messages ?? []) as SlackMessage[];
-  const volunteerThread = messages.find(
-    (m) =>
-      m.text &&
-      /volunteer\s*pilot/i.test(m.text),
-  );
+  const volunteerThread = messages.find((m) => {
+    const searchText = [
+      m.text,
+      // Workflow bot messages store text in blocks
+      ...(m.blocks ?? []).flatMap((b: Record<string, unknown>) => {
+        const elems = (b.elements ?? []) as Record<string, unknown>[];
+        return elems.flatMap((e) => {
+          const inner = (e.elements ?? []) as Record<string, unknown>[];
+          return inner.map((el) => (el.text as string) ?? "");
+        });
+      }),
+      // Also check attachments
+      ...(m.attachments ?? []).map((a: Record<string, unknown>) => (a.text as string) ?? ""),
+    ].join(" ");
+    return /volunteer\s*pilot/i.test(searchText) || /volunteer.*stay late|volunteer.*start early/i.test(searchText);
+  });
 
   if (!volunteerThread) {
     return NextResponse.json({
@@ -179,6 +191,8 @@ type SlackMessage = {
   text?: string;
   user?: string;
   bot_id?: string;
+  blocks?: Record<string, unknown>[];
+  attachments?: Record<string, unknown>[];
 };
 
 // In-memory cache for Slack user profiles (lasts the request lifecycle)

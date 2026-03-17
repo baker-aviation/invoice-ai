@@ -70,7 +70,12 @@ export async function GET(req: NextRequest) {
     overnight_airport: string | null;
     aircraft_type: string;
     wednesday_legs: { dep: string; arr: string; type: string | null; dep_time: string; arr_time: string | null }[];
+    recent_crew: { pic: string[]; sic: string[] } | null;
   }[] = [];
+
+  // Determine the 3-day window before swap date for crew activity check
+  const swapDateObj = new Date(swapDate);
+  const threeDaysBefore = new Date(swapDateObj.getTime() - 3 * 86400_000).toISOString().slice(0, 10);
 
   for (const [tail, legs] of byTail) {
     const result = extractSwapPointsPublic(tail, byTail, swapDate);
@@ -86,6 +91,15 @@ export async function GET(req: NextRequest) {
         arr_time: f.scheduled_arrival,
       }));
 
+    // Check for crew on recent legs (last 3 days before swap)
+    const recentLegs = legs.filter((f) => {
+      const d = f.scheduled_departure.slice(0, 10);
+      return d >= threeDaysBefore && d < swapDate;
+    });
+    const recentPics = [...new Set(recentLegs.map((f) => f.pic).filter(Boolean))] as string[];
+    const recentSics = [...new Set(recentLegs.map((f) => f.sic).filter(Boolean))] as string[];
+    const hasCrew = recentPics.length > 0 || recentSics.length > 0;
+
     tailSwapPoints.push({
       tail,
       swap_points: result.swapPoints.map((sp) => ({
@@ -97,6 +111,7 @@ export async function GET(req: NextRequest) {
       overnight_airport: result.overnightAirport,
       aircraft_type: result.aircraftType,
       wednesday_legs: wedLegs,
+      recent_crew: hasCrew ? { pic: recentPics, sic: recentSics } : null,
     });
   }
 
