@@ -95,6 +95,25 @@ export async function POST(req: NextRequest) {
     const channel = isTest ? defaultChannel : (van.channel ?? VAN_CHANNEL_MAP[van.vanId] ?? defaultChannel);
 
     try {
+      if (van.items.length === 0) {
+        // No aircraft assigned — send a simple "check in" message
+        const noAcData = await postMessage({
+          channel,
+          text: `No Aircraft schedule for ${date} — Check in for tasking`,
+          blocks: [
+            {
+              type: "section",
+              text: {
+                type: "mrkdwn",
+                text: `*${van.vanName} (V${van.vanId})* — ${date}\n✅ No Aircraft scheduled. Check in for tasking.`,
+              },
+            },
+          ],
+        });
+        results.push({ vanId: van.vanId, ok: noAcData.ok, error: noAcData.ok ? undefined : (noAcData.error ?? "Slack API error") });
+        continue;
+      }
+
       // 1) Header message
       const headerData = await postMessage({
         channel,

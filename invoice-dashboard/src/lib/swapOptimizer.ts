@@ -19,7 +19,7 @@
  * See swapRules.ts for all constants.
  */
 
-import { estimateDriveTime, findNearbyCommercialAirports, type DriveEstimate } from "./driveTime";
+import { estimateDriveTime, findNearbyCommercialAirports, isCommercialAirport, type DriveEstimate } from "./driveTime";
 import { getAirportTimezone } from "./airportTimezones";
 import { getCrewDifficulty } from "./airportTiers";
 import type { FlightOffer } from "./amadeus";
@@ -304,6 +304,10 @@ function findCommercialAirport(fboIcao: string, aliases: AirportAlias[]): string
 function findAllCommercialAirports(fboIcao: string, aliases: AirportAlias[]): string[] {
   const upper = fboIcao.toUpperCase();
   const result = new Set<string>();
+
+  // 0. If the FBO itself is a commercial airport (e.g. KIAD, KRDU), include it first.
+  //    The nearby-search skips self, so we'd miss it without this check.
+  if (isCommercialAirport(upper)) result.add(upper);
 
   // 1. Check alias table (preferred first)
   const matching = aliases.filter((a) => a.fbo_icao.toUpperCase() === upper);
@@ -1124,11 +1128,19 @@ function extractSwapPoints(
   swapDate: string,
 ): { swapPoints: SwapPoint[]; overnightAirport: string | null; aircraftType: string } {
   const legs = byTail.get(tail) ?? [];
-  const wedLegs = legs.filter((f) => f.scheduled_departure.slice(0, 10) === swapDate);
+
+  // Classify legs by LOCAL date at departure airport, not UTC.
+  // A leg departing at 8:30pm ET (00:30 UTC next day) must be treated as the prior day.
+  const localDate = (isoStr: string, icao: string): string => {
+    const tz = getAirportTimezone(icao) ?? "America/New_York";
+    return new Date(isoStr).toLocaleDateString("en-CA", { timeZone: tz }); // YYYY-MM-DD
+  };
+
+  const wedLegs = legs.filter((f) => localDate(f.scheduled_departure, f.departure_icao) === swapDate);
   const liveWedLegs = wedLegs.filter((f) => isLiveType(f.flight_type));
 
   const priorLegs = legs.filter(
-    (f) => new Date(f.scheduled_departure).getTime() < new Date(swapDate).getTime(),
+    (f) => localDate(f.scheduled_departure, f.departure_icao) < swapDate,
   );
   const lastPrior = priorLegs[priorLegs.length - 1];
   const overnightAirport = lastPrior?.arrival_icao ?? wedLegs[0]?.departure_icao ?? null;
@@ -1356,8 +1368,14 @@ export function buildSwapPlan(params: {
           if (d) minDrive = Math.min(minDrive, d.estimated_drive_minutes);
         }
         if (minDrive === Infinity) minDrive = 999;
+        // Heavy penalty for international swap points (outside continental US + Canada).
+        // Crew stranded in Caribbean/Mexico is much worse than driving 30min to EWR.
+        const isInternational = commAirports.every((c) => {
+          const upper = c.toUpperCase();
+          return !upper.startsWith("K") && !upper.startsWith("CY") && !upper.startsWith("Y");
+        });
         // Ease score: lower drive = easier, self-commercial = bonus, more options = bonus
-        const ease = -minDrive + (selfCommercial ? 30 : 0) + (commAirports.length * 2);
+        const ease = -minDrive + (selfCommercial ? 30 : 0) + (commAirports.length * 2) - (isInternational ? 200 : 0);
         if (ease > bestEase) {
           bestEase = ease;
           picSwapPoint = sp;
