@@ -161,18 +161,34 @@ export async function POST(req: NextRequest) {
   const { commercialFlights, routeCount, crewRouteMap, crewOffgoingMap } = await getRoutesForOptimizer(swapDate);
   const hasPreComputedRoutes = routeCount > 0;
 
-  // Also try loading from commercial flight cache (FlightAware bulk data)
-  let effectiveFlights = hasPreComputedRoutes ? commercialFlights : new Map<string, import("@/lib/amadeus").FlightOffer[]>();
-  if (!hasPreComputedRoutes) {
-    const cached = await getCachedFlightsForOptimizer(swapDate);
-    if (cached.totalFlights > 0) {
-      effectiveFlights = cached.commercialFlights;
-      console.log(`[Swap Optimizer] Loaded ${cached.totalFlights} flights from commercial cache (${effectiveFlights.size} route keys) in ${Date.now() - routeStart}ms`);
-    } else {
-      console.log(`[Swap Optimizer] No pre-computed routes or cached flights for ${swapDate} — drive-only mode`);
+  // Always load commercial flight cache — crew without pre-computed routes
+  // need it for runtime buildCandidates evaluation in the feasibility matrix.
+  let effectiveFlights = new Map<string, import("@/lib/amadeus").FlightOffer[]>(commercialFlights);
+  const cached = await getCachedFlightsForOptimizer(swapDate);
+  if (cached.totalFlights > 0) {
+    // Merge: cached flights fill gaps not covered by pre-computed routes
+    for (const [key, offers] of cached.commercialFlights) {
+      if (!effectiveFlights.has(key)) {
+        effectiveFlights.set(key, offers);
+      } else {
+        // Merge offers, dedup by flight number
+        const existing = effectiveFlights.get(key)!;
+        const existingNums = new Set(existing.map((o) => {
+          const segs = o.itineraries?.[0]?.segments ?? [];
+          return segs.map((s) => `${s.carrierCode}${s.number}`).join("/");
+        }));
+        for (const offer of offers) {
+          const segs = offer.itineraries?.[0]?.segments ?? [];
+          const num = segs.map((s) => `${s.carrierCode}${s.number}`).join("/");
+          if (!existingNums.has(num)) existing.push(offer);
+        }
+      }
     }
-  } else {
+    console.log(`[Swap Optimizer] Loaded ${routeCount} pre-computed routes + ${cached.totalFlights} cached flights (${effectiveFlights.size} total route keys) in ${Date.now() - routeStart}ms`);
+  } else if (hasPreComputedRoutes) {
     console.log(`[Swap Optimizer] Loaded ${routeCount} pre-computed routes (${commercialFlights.size} flight keys) in ${Date.now() - routeStart}ms`);
+  } else {
+    console.log(`[Swap Optimizer] No pre-computed routes or cached flights for ${swapDate} — drive-only mode`);
   }
   const hasFlightData = effectiveFlights.size > 0;
 
