@@ -2740,7 +2740,7 @@ export function solveOffgoingFirst(params: {
         warnings: [],
       };
 
-      buildCandidates(task, aliases, commercialFlights, swapDate);
+      task.candidates = buildCandidates(task, aliases, commercialFlights, swapDate);
       for (const c of task.candidates) {
         c.score = scoreCandidate(c, task, null);
       }
