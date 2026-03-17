@@ -40,7 +40,8 @@ function acDivIcon(track: number | null, color: string, onGround: boolean, alert
 /** Map label — tail number + optional DIVERTED/HOLDING alert */
 function acDataLabel(ac: AircraftPosition, _fi: FlightInfoMap | undefined, fleetLookup: Map<string, string>, alertLabel?: string, dark?: boolean): string {
   const color = getAcColor(fleetLookup, ac.tail, ac.on_ground);
-  const alertHtml = alertLabel ? ` <span style="color:#ef4444;font-size:10px;font-weight:bold">${alertLabel}</span>` : "";
+  const alertColor = alertLabel === "DIVERTING" ? "#d97706" : "#ef4444"; // amber for diverting, red for diverted/holding
+  const alertHtml = alertLabel ? ` <span style="color:${alertColor};font-size:10px;font-weight:bold">${alertLabel}</span>` : "";
   const bg = dark
     ? "text-shadow: 0 1px 3px rgba(0,0,0,0.9), 0 0 6px rgba(0,0,0,0.6)"
     : "background:rgba(255,255,255,0.85);padding:1px 4px;border-radius:3px;border:1px solid rgba(0,0,0,0.12)";
@@ -515,13 +516,15 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
           const fi = flightInfo.get(ac.tail);
           const color = getAcColor(fleetLookup, ac.tail, ac.on_ground);
           const isDiverted = fi?.diverted === true;
-          const divertedStale = isDiverted &&
-            fi.actual_arrival != null &&
-            Date.now() - new Date(fi.actual_arrival).getTime() > 5 * 3600_000;
+          const hasLanded = fi?.actual_arrival != null;
+          const divertedStale = isDiverted && hasLanded &&
+            Date.now() - new Date(fi.actual_arrival!).getTime() > 5 * 3600_000;
+          // Two-tier: airborne + diverted flag = "DIVERTING" (amber), landed at wrong airport = "DIVERTED" (red)
+          const isConfirmedDiversion = isDiverted && hasLanded && !divertedStale;
+          const isDiverting = isDiverted && !hasLanded;
           const isHolding = holdingTails.has(ac.tail);
-          const showMapAlert = (isDiverted && !divertedStale) || isHolding;
-          const hasAlert = showMapAlert;
-          const alertLabel = (isDiverted && !divertedStale) ? "DIVERTED" : isHolding ? "HOLDING" : undefined;
+          const hasAlert = isConfirmedDiversion || isDiverting || isHolding;
+          const alertLabel = isConfirmedDiversion ? "DIVERTED" : isDiverting ? "DIVERTING" : isHolding ? "HOLDING" : undefined;
           // Use position from fa_flights (updated by cron every 3 min)
           const markerLat = ac.lat;
           const markerLon = ac.lon;
@@ -561,7 +564,8 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
                       </span>
                     )}
                   </div>
-                  {isDiverted && <div className="text-xs font-semibold text-red-600">DIVERTED</div>}
+                  {isConfirmedDiversion && <div className="text-xs font-semibold text-red-600">DIVERTED</div>}
+                  {isDiverting && <div className="text-xs font-semibold text-amber-600">DIVERTING</div>}
                   {isHolding && <div className="text-xs font-semibold text-red-600">HOLDING PATTERN</div>}
                 </div>
               </Popup>
