@@ -1200,7 +1200,19 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
     t_total = _time.monotonic() - t0
     print(f"sync_schedule: done in {t_total:.1f}s — upserted={upserted} skipped={skipped} errors={errors} cleaned={cleaned} deleted={deleted} mx_notes={mx_created}", flush=True)
     log_pipeline_run("flight-sync", items=upserted, duration_ms=int(t_total * 1000), message=f"upserted={upserted} skipped={skipped} mx_notes={mx_created}")
-    return {"ok": True, "upserted": upserted, "skipped": skipped, "errors": errors, "cleaned": cleaned, "deleted": deleted, "mx_notes": mx_created, "fetch_secs": round(t_fetch, 1), "total_secs": round(t_total, 1)}
+
+    # If any flights were purged/re-inserted, their NOTAM alert links are now
+    # broken (flight_id FK nulled out). Rebuild immediately rather than waiting
+    # up to 30 min for the next scheduled check_notams run.
+    notam_stats: Dict[str, Any] = {}
+    if cleaned > 0 or upserted > 0:
+        print(f"sync_schedule: triggering check_notams inline (cleaned={cleaned} upserted={upserted})", flush=True)
+        try:
+            notam_stats = _run_check_notams(720)
+        except Exception as e:
+            print(f"sync_schedule: inline check_notams failed: {repr(e)}", flush=True)
+
+    return {"ok": True, "upserted": upserted, "skipped": skipped, "errors": errors, "cleaned": cleaned, "deleted": deleted, "mx_notes": mx_created, "fetch_secs": round(t_fetch, 1), "total_secs": round(t_total, 1), "notam_stats": notam_stats}
 
 
 # ─── Job: pull_edct ───────────────────────────────────────────────────────────
@@ -2029,7 +2041,7 @@ def debug_notam_test(airport: str = Query("KJFK")):
         r = requests.get(
             f"{NMS_API_BASE}/v1/notams",
             headers={"Authorization": f"Bearer {token}", "nmsResponseFormat": "GEOJSON"},
-            params={"location": icao, "classification": "DOMESTIC,FDC"},
+            params={"location": icao},
             timeout=(5, 10),
         )
         nms_result["status_code"] = r.status_code
@@ -2142,7 +2154,7 @@ def _fetch_notams(icao: str, token: str) -> List[Dict]:
                 "Authorization": f"Bearer {token}",
                 "nmsResponseFormat": "GEOJSON",
             },
-            params={"location": icao, "classification": "DOMESTIC,FDC"},
+            params={"location": icao},
             timeout=(5, 10),
         )
         print(f"NMS NOTAM {icao}: status={r.status_code} body={r.text[:200]!r}", flush=True)
@@ -2357,3 +2369,56 @@ def notam_consumer():
         message=f"recv={result.get('messages_received',0)} notams={result.get('notams_upserted',0)} alerts={result.get('alerts_created',0)}",
     )
     return {"ok": True, **result}
+
+
+@app.post("/jobs/cleanup")
+def cleanup():
+    """Delete stale records to keep tables lean.
+
+    Retention policy:
+      - swim_notams          → 1 day  (raw SWIM feed, replaced on reconnect)
+      - ops_alerts NOTAM_*   → 1 day  (rebuilt by check_notams every 30 min)
+      - ops_alerts TFR_*     → 1 day  (rebuilt by check_notams every 30 min)
+      - ops_alerts SWIM_*    → 7 days (flight events / diversions)
+      - ops_alerts MX_NOTE   → 30 days (maintenance notes, kept for reference)
+    """
+    supa = sb()
+    now = datetime.now(timezone.utc)
+    deleted: Dict[str, int] = {}
+
+    cutoffs = {
+        "swim_notams_1d": now - timedelta(days=1),
+        "notam_alerts_1d": now - timedelta(days=1),
+        "swim_alerts_7d": now - timedelta(days=7),
+        "mx_alerts_30d": now - timedelta(days=30),
+    }
+
+    # swim_notams — 1 day
+    r = supa.table("swim_notams").delete().lt(
+        "created_at", cutoffs["swim_notams_1d"].isoformat()
+    ).execute()
+    deleted["swim_notams"] = len(r.data or [])
+
+    # ops_alerts NOTAM_* and TFR_* — 1 day
+    for prefix in ("NOTAM_", "TFR_"):
+        r = supa.table("ops_alerts").delete().like(
+            "alert_type", f"{prefix}%"
+        ).lt("created_at", cutoffs["notam_alerts_1d"].isoformat()).execute()
+        deleted[f"ops_alerts_{prefix.lower().rstrip('_')}"] = len(r.data or [])
+
+    # ops_alerts SWIM_* — 7 days
+    r = supa.table("ops_alerts").delete().like(
+        "alert_type", "SWIM_%"
+    ).lt("created_at", cutoffs["swim_alerts_7d"].isoformat()).execute()
+    deleted["ops_alerts_swim"] = len(r.data or [])
+
+    # ops_alerts MX_NOTE — 30 days
+    r = supa.table("ops_alerts").delete().eq(
+        "alert_type", "MX_NOTE"
+    ).lt("created_at", cutoffs["mx_alerts_30d"].isoformat()).execute()
+    deleted["ops_alerts_mx_note"] = len(r.data or [])
+
+    total = sum(deleted.values())
+    print(f"[cleanup] deleted {total} rows: {deleted}", flush=True)
+    log_pipeline_run("cleanup", items=total, message=str(deleted))
+    return {"ok": True, "deleted": deleted, "total": total}
