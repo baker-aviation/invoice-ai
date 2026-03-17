@@ -148,6 +148,8 @@ function computeTailDuty(
   const tailIntervals = new Map<string, DutyInterval[]>();
   for (const f of flights) {
     if (!f.tail_number) continue;
+    // Skip synthetic EDCT-orphan flights (not real ICS legs)
+    if (f.id.startsWith("edct-orphan-")) continue;
     const ft = (f.flight_type ?? "").toLowerCase();
     if (ft && !DUTY_FLIGHT_TYPES.has(ft)) continue;
 
