@@ -515,21 +515,10 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
         {aircraft.map((ac) => {
           const fi = flightInfo.get(ac.tail);
           const color = getAcColor(fleetLookup, ac.tail, ac.on_ground);
-          const isDiverted = fi?.diverted === true;
-          // FA often doesn't populate actual_arrival for diverted flights.
-          // Use multiple signals: actual_arrival, on_ground, 100% progress, or past ETA.
-          const hasLanded = fi?.actual_arrival != null
-            || ac.on_ground
-            || (fi?.progress_percent != null && fi.progress_percent >= 100)
-            || (fi?.arrival_time != null && new Date(fi.arrival_time).getTime() < Date.now());
-          const divertedStale = isDiverted && hasLanded && fi?.actual_arrival != null &&
-            Date.now() - new Date(fi.actual_arrival).getTime() > 5 * 3600_000;
-          // Two-tier: airborne + diverted flag = "DIVERTING" (amber), landed at wrong airport = "DIVERTED" (red)
-          const isConfirmedDiversion = isDiverted && hasLanded && !divertedStale;
-          const isDiverting = isDiverted && !hasLanded;
+          // Diversion display disabled — FA diverted flag too unreliable (re-enable later)
           const isHolding = holdingTails.has(ac.tail);
-          const hasAlert = isConfirmedDiversion || isDiverting || isHolding;
-          const alertLabel = isConfirmedDiversion ? "DIVERTED" : isDiverting ? "DIVERTING" : isHolding ? "HOLDING" : undefined;
+          const hasAlert = isHolding;
+          const alertLabel = isHolding ? "HOLDING" : undefined;
           // Use position from fa_flights (updated by cron every 3 min)
           const markerLat = ac.lat;
           const markerLon = ac.lon;
@@ -569,8 +558,6 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
                       </span>
                     )}
                   </div>
-                  {isConfirmedDiversion && <div className="text-xs font-semibold text-red-600">DIVERTED</div>}
-                  {isDiverting && <div className="text-xs font-semibold text-amber-600">DIVERTING</div>}
                   {isHolding && <div className="text-xs font-semibold text-red-600">HOLDING PATTERN</div>}
                 </div>
               </Popup>
