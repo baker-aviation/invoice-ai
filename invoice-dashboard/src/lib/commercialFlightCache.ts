@@ -45,6 +45,10 @@ export type CacheResult = {
   flights_cached: number;
   errors: string[];
   duration_ms: number;
+  /** When batching: which slice of airports was processed */
+  batch_offset?: number;
+  batch_limit?: number;
+  total_airports?: number;
 };
 
 // ─── Airport collection ─────────────────────────────────────────────────────
@@ -88,12 +92,8 @@ export async function getRelevantAirports(): Promise<string[]> {
     airports.add(a.commercial_icao.toUpperCase());
   }
 
-  // 3. Major hubs that serve as connections
-  const HUBS = [
-    "KATL", "KDEN", "KDFW", "KORD", "KIAH", "KCLT", "KPHX", "KMSP", "KDTW", "KEWR",
-    "KJFK", "KLAX", "KSFO", "KMIA", "KBOS", "KSEA", "KMCO", "KFLL", "KSLC", "KBWI",
-    "KSAN", "KAUS", "KBNA", "KRDU", "KSTL", "KPIT", "KCLE", "KMKE", "KSMF", "KONT",
-  ];
+  // 3. Top connection hubs only (crew home airports already cover most of these)
+  const HUBS = ["KATL", "KDFW", "KORD", "KDEN", "KCLT", "KIAH"];
   for (const h of HUBS) airports.add(h);
 
   return [...airports].sort();
@@ -107,29 +107,44 @@ export async function getRelevantAirports(): Promise<string[]> {
  *
  * @param date - YYYY-MM-DD format
  * @param mode - "seed" clears existing data first, "refresh" upserts over existing
+ * @param offset - start index into the airport list (for batching across requests)
+ * @param limit - how many airports to process this call (default: all)
  */
 export async function buildFlightCache(
   date: string,
   mode: "seed" | "refresh" = "seed",
+  offset = 0,
+  limit?: number,
 ): Promise<CacheResult> {
   const start = Date.now();
   const supa = createServiceClient();
   const errors: string[] = [];
 
-  const airports = await getRelevantAirports();
-  console.log(`[CommercialCache] ${mode} for ${date}: ${airports.length} airports`);
+  const allAirports = await getRelevantAirports();
+  const totalAirports = allAirports.length;
 
-  // If seeding, clear existing data for this date
-  if (mode === "seed") {
+  // Slice to the requested batch
+  const airports = limit != null
+    ? allAirports.slice(offset, offset + limit)
+    : allAirports.slice(offset);
+
+  console.log(`[CommercialCache] ${mode} for ${date}: batch ${offset}..${offset + airports.length} of ${totalAirports} airports`);
+
+  // If seeding AND this is the first batch, clear existing data for this date
+  if (mode === "seed" && offset === 0) {
     await supa.from("commercial_flight_cache").delete().eq("cache_date", date);
   }
 
-  // Fetch departures from each airport in batches (FA rate limit: ~1 req/sec)
-  const allFlights: CachedFlightRow[] = [];
-  const BATCH_SIZE = 3;
+  // Fetch departures from each airport and upsert incrementally.
+  // If the function times out, whatever was already upserted is safe in Supabase.
+  // Re-run with mode=refresh to fill in the rest (no delete, upsert handles dupes).
+  let inserted = 0;
+  const BATCH_SIZE = 5;
 
   for (let i = 0; i < airports.length; i += BATCH_SIZE) {
     const batch = airports.slice(i, i + BATCH_SIZE);
+    const batchFlights: CachedFlightRow[] = [];
+
     const results = await Promise.all(
       batch.map(async (icao) => {
         try {
@@ -152,7 +167,7 @@ export async function buildFlightCache(
         // Only cache US domestic flights (both airports start with K)
         if (!f.origin_icao.startsWith("K") || !f.destination_icao.startsWith("K")) continue;
 
-        allFlights.push({
+        batchFlights.push({
           cache_date: date,
           origin_icao: f.origin_icao,
           origin_iata: f.origin_iata,
@@ -171,41 +186,25 @@ export async function buildFlightCache(
       }
     }
 
-    const progress = Math.min(i + BATCH_SIZE, airports.length);
-    if (progress % 15 === 0 || progress === airports.length) {
-      console.log(`[CommercialCache] ${progress}/${airports.length} airports, ${allFlights.length} flights`);
+    // Upsert this batch immediately — survives timeouts
+    if (batchFlights.length > 0) {
+      const { error } = await supa
+        .from("commercial_flight_cache")
+        .upsert(batchFlights, { onConflict: "cache_date,flight_number,scheduled_departure" });
+
+      if (error) {
+        errors.push(`Upsert at airport ${offset + i}: ${error.message}`);
+      } else {
+        inserted += batchFlights.length;
+      }
     }
+
+    const progress = Math.min(i + BATCH_SIZE, airports.length);
+    console.log(`[CommercialCache] ${offset + progress}/${totalAirports} airports, ${inserted} flights saved`);
 
     // Rate limit pause between batches
     if (i + BATCH_SIZE < airports.length) {
-      await new Promise((r) => setTimeout(r, 600));
-    }
-  }
-
-  // Deduplicate: same flight appears when querying both origin and destination airports
-  const seen = new Set<string>();
-  const unique = allFlights.filter((f) => {
-    const key = `${f.cache_date}|${f.flight_number}|${f.scheduled_departure}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-
-  console.log(`[CommercialCache] Deduped: ${allFlights.length} → ${unique.length}`);
-
-  // Batch upsert into DB
-  const UPSERT_BATCH = 500;
-  let inserted = 0;
-  for (let i = 0; i < unique.length; i += UPSERT_BATCH) {
-    const batch = unique.slice(i, i + UPSERT_BATCH);
-    const { error } = await supa
-      .from("commercial_flight_cache")
-      .upsert(batch, { onConflict: "cache_date,flight_number,scheduled_departure" });
-
-    if (error) {
-      errors.push(`Upsert batch ${i}: ${error.message}`);
-    } else {
-      inserted += batch.length;
+      await new Promise((r) => setTimeout(r, 400));
     }
   }
 
@@ -217,6 +216,9 @@ export async function buildFlightCache(
     flights_cached: inserted,
     errors,
     duration_ms: duration,
+    batch_offset: offset,
+    batch_limit: limit,
+    total_airports: totalAirports,
   };
 }
 
