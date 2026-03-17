@@ -14,7 +14,7 @@ export type PriceRow = {
   upload_batch: string;
 };
 
-export type FuelFormat = "baker" | "everest" | "wfs" | "avfuel" | "titan" | "signature" | "signature_v2" | "jet_aviation" | "atlantic" | "evo" | "generic";
+export type FuelFormat = "baker" | "everest" | "wfs" | "avfuel" | "titan" | "signature" | "jet_aviation" | "atlantic" | "evo" | "generic";
 
 export type ParseResult = {
   rows: PriceRow[];
@@ -72,11 +72,6 @@ export function parseFuelCSV(
     const weekStart = resolveWeekStart(weekStartRaw ?? null, filename);
     if (!weekStart) return { rows: [], vendor: detectedVendor, format, error: "Could not determine week_start" };
     rows = parseSignatureCSV(lines, headerFields, vendorOverride ?? detectedVendor, weekStart, batchId);
-  } else if (format === "signature_v2") {
-    detectedVendor = "Signature Flight Support";
-    const weekStart = resolveWeekStart(weekStartRaw ?? null, filename);
-    if (!weekStart) return { rows: [], vendor: detectedVendor, format, error: "Could not determine week_start" };
-    rows = parseJetAviationCSV(lines, headerFields, vendorOverride ?? detectedVendor, weekStart, batchId);
   } else if (format === "jet_aviation") {
     detectedVendor = "Jet Aviation";
     const weekStart = resolveWeekStart(weekStartRaw ?? null, filename);
@@ -120,8 +115,6 @@ export function detectFormat(headers: string[]): FuelFormat {
   if (headers.includes("FIXED BASE OPERATOR") && headers.includes("EFF DATE")) return "avfuel";
   if (headers.includes("AIRPORT CODE") && headers.includes("JET A WITH ADD PRICE PER UNIT")) return "titan";
   if (headers.includes("BASE") && headers.includes("MIN QUANTITY") && headers.includes("MAX QUANTITY") && headers.includes("TOTAL")) return "signature";
-  // New Signature format (v2): has FBO + PRODUCT columns (Jet Aviation format lacks PRODUCT or uses different headers)
-  if (headers.includes("FBO") && headers.includes("VOLUME TIER") && headers.includes("PRODUCT") && headers.includes("TAIL NUMBERS")) return "signature_v2";
   if (headers.includes("VOLUME TIER") && headers.includes("TAIL NUMBERS")) return "jet_aviation";
   if (headers.includes("AIRPORTCODE") && headers.includes("CUSTOMEROTDPRICE")) return "atlantic";
   return "generic";
