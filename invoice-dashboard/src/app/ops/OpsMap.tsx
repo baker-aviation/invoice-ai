@@ -516,9 +516,14 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
           const fi = flightInfo.get(ac.tail);
           const color = getAcColor(fleetLookup, ac.tail, ac.on_ground);
           const isDiverted = fi?.diverted === true;
-          const hasLanded = fi?.actual_arrival != null;
-          const divertedStale = isDiverted && hasLanded &&
-            Date.now() - new Date(fi.actual_arrival!).getTime() > 5 * 3600_000;
+          // FA often doesn't populate actual_arrival for diverted flights.
+          // Use multiple signals: actual_arrival, on_ground, 100% progress, or past ETA.
+          const hasLanded = fi?.actual_arrival != null
+            || ac.on_ground
+            || (fi?.progress_percent != null && fi.progress_percent >= 100)
+            || (fi?.arrival_time != null && new Date(fi.arrival_time).getTime() < Date.now());
+          const divertedStale = isDiverted && hasLanded && fi?.actual_arrival != null &&
+            Date.now() - new Date(fi.actual_arrival).getTime() > 5 * 3600_000;
           // Two-tier: airborne + diverted flag = "DIVERTING" (amber), landed at wrong airport = "DIVERTED" (red)
           const isConfirmedDiversion = isDiverted && hasLanded && !divertedStale;
           const isDiverting = isDiverted && !hasLanded;
