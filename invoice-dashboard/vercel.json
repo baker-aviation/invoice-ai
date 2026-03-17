@@ -18,12 +18,8 @@
       "schedule": "0 0 * * 1"
     },
     {
-      "path": "/api/cron/flight-cache",
+      "path": "/api/cron/hasdata-cache",
       "schedule": "0 4 * * 2"
-    },
-    {
-      "path": "/api/cron/flight-cache",
-      "schedule": "0 10 * * 2"
     }
   ]
 }

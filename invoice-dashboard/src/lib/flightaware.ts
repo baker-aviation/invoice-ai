@@ -521,9 +521,9 @@ export async function fetchScheduledDepartures(
   let page = 0;
   let retries = 0;
 
-  let url: string = `${BASE}/schedules/${start}/${end}?origin=${originIcao}&max_pages=5`;
+  let url: string = `${BASE}/schedules/${start}/${end}?origin=${originIcao}&max_pages=10`;
 
-  while (page < 5) {
+  while (page < 10) {
     if (cursor) {
       url = cursor.startsWith("http") ? cursor : `${BASE}${cursor}`;
     }
