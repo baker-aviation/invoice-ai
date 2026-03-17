@@ -61,6 +61,7 @@ export async function GET(req: NextRequest) {
   const crewRoster: CrewMember[] = (crewRes.data ?? []).map((c) => ({
     id: c.id as string,
     name: c.name as string,
+    jetinsight_name: (c.jetinsight_name as string | null) ?? null,
     role: c.role as "PIC" | "SIC",
     home_airports: (c.home_airports as string[]) ?? [],
     aircraft_types: (c.aircraft_types as string[]) ?? [],

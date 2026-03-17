@@ -1915,6 +1915,9 @@ function ScheduleTab({
   mxVanOverrides,
   onVanOverride,
   fboMap,
+  wontSeeTodayTails,
+  onMarkWontSee,
+  onRestoreWontSee,
 }: {
   allFlights: Flight[];
   date: string;
@@ -1929,6 +1932,9 @@ function ScheduleTab({
   mxVanOverrides?: Map<string, number>;
   onVanOverride?: (noteId: string, vanId: number | null) => void;
   fboMap?: Record<string, string>;
+  wontSeeTodayTails: Set<string>;
+  onMarkWontSee: (tail: string) => void;
+  onRestoreWontSee: (tail: string) => void;
 }) {
   const hasLive = liveVanPositions.size > 0;
 
@@ -1960,6 +1966,7 @@ function ScheduleTab({
 
   const [unassignedOpen, setUnassignedOpen] = useState(false);
   const [unscheduledOpen, setUnscheduledOpen] = useState(false);
+  const [wontSeeOpen, setWontSeeOpen] = useState(false);
   const unassignedDragTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const unscheduledDragTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -2754,7 +2761,11 @@ function ScheduleTab({
           }
         }
 
-        const uncoveredTails = Array.from(uncoveredByTail.keys());
+        const uncoveredTails = Array.from(uncoveredByTail.keys()).filter(
+          (t) => t === "_no_tail" || !wontSeeTodayTails.has(t),
+        );
+
+        if (uncoveredTails.length === 0) return null;
 
         return (
           <div
@@ -2856,6 +2867,15 @@ function ScheduleTab({
                           </option>
                         ))}
                       </select>
+                      {tail && tail !== "_no_tail" && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); onMarkWontSee(tail); }}
+                          className="text-[10px] font-medium text-gray-400 hover:text-gray-700 hover:bg-gray-100 border border-gray-200 rounded px-2 py-1 shrink-0 transition-colors"
+                          title="Mark as reviewed — won't be seen today"
+                        >
+                          Won&apos;t See
+                        </button>
+                      )}
                     </div>
                     {/* All legs + flying again */}
                     <div className="ml-5 space-y-0">
@@ -2906,7 +2926,7 @@ function ScheduleTab({
       {(() => {
         // Filter out tails already assigned to a van via unscheduledOverrides
         const visibleUnscheduled = unscheduledAircraft.filter(
-          (a) => !unscheduledOverrides.has(a.tail) && !longTermMxTails.has(a.tail),
+          (a) => !unscheduledOverrides.has(a.tail) && !longTermMxTails.has(a.tail) && !wontSeeTodayTails.has(a.tail),
         );
         if (visibleUnscheduled.length === 0) return null;
 
@@ -2983,6 +3003,13 @@ function ScheduleTab({
                         </option>
                       ))}
                     </select>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onMarkWontSee(ac.tail); }}
+                      className="text-[10px] font-medium text-gray-400 hover:text-gray-700 hover:bg-gray-100 border border-gray-200 rounded px-2 py-1 shrink-0 transition-colors"
+                      title="Mark as reviewed — won't be seen today"
+                    >
+                      Won&apos;t See
+                    </button>
                   </div>
                   {ac.airportInfo && (
                     <div className="ml-5 text-xs text-gray-500 mt-0.5">
@@ -2993,6 +3020,86 @@ function ScheduleTab({
                 </div>
               ))}
             </div>}
+          </div>
+        );
+      })()}
+
+      {/* ── Reviewed — Won't Be Seen Today ── */}
+      {(() => {
+        // Collect won't-see tails from both unassigned and unscheduled pools
+        const wontSeeTails: { tail: string; airport: string | null; source: string }[] = [];
+        // From unassigned (uncovered items)
+        if (uncoveredItems.length > 0) {
+          const uncoveredByTailWS = new Map<string, VanFlightItem[]>();
+          for (const item of uncoveredItems) {
+            const key = item.arrFlight.tail_number || "_no_tail";
+            const arr = uncoveredByTailWS.get(key) ?? [];
+            arr.push(item);
+            uncoveredByTailWS.set(key, arr);
+          }
+          for (const tailKey of uncoveredByTailWS.keys()) {
+            if (tailKey === "_no_tail") continue;
+            if (wontSeeTodayTails.has(tailKey)) {
+              const items = uncoveredByTailWS.get(tailKey) ?? [];
+              const apt = items[0]?.airport ?? null;
+              wontSeeTails.push({ tail: tailKey, airport: apt, source: "Unassigned" });
+            }
+          }
+        }
+        // From unscheduled
+        for (const ac of unscheduledAircraft) {
+          if (unscheduledOverrides.has(ac.tail) || longTermMxTails.has(ac.tail)) continue;
+          if (wontSeeTodayTails.has(ac.tail)) {
+            wontSeeTails.push({ tail: ac.tail, airport: ac.airport, source: "Unscheduled" });
+          }
+        }
+        if (wontSeeTails.length === 0) return null;
+        return (
+          <div className="border-2 border-dashed border-slate-300 rounded-xl bg-slate-50/50 overflow-hidden">
+            <div
+              className="px-4 py-3 flex items-center justify-between cursor-pointer hover:bg-slate-100"
+              onClick={() => setWontSeeOpen((v) => !v)}
+            >
+              <div className="flex items-center gap-2">
+                <div className="w-6 h-6 rounded-full bg-slate-200 flex items-center justify-center text-xs text-slate-600 font-bold">
+                  &#10003;
+                </div>
+                <div>
+                  <div className="text-sm font-semibold text-slate-700">
+                    Reviewed — Won&apos;t Be Seen Today
+                    <span className="ml-1.5 text-xs font-normal text-slate-500">({wontSeeTails.length})</span>
+                  </div>
+                  {!wontSeeOpen && (
+                    <div className="text-xs text-slate-500">
+                      Aircraft reviewed and marked as not needing service today
+                    </div>
+                  )}
+                </div>
+              </div>
+              <span className="text-gray-400 text-sm">{wontSeeOpen ? "\u25B2" : "\u25BC"}</span>
+            </div>
+            {wontSeeOpen && (
+              <div className="border-t border-slate-200 divide-y divide-slate-100">
+                {wontSeeTails.map((item) => (
+                  <div key={item.tail} className="px-4 py-2 flex items-center justify-between gap-4">
+                    <div className="flex items-center gap-2">
+                      <div className="w-2.5 h-2.5 rounded-full bg-slate-300 flex-shrink-0" />
+                      <span className="font-mono font-semibold text-sm">{item.tail}</span>
+                      {item.airport && (
+                        <span className="text-xs text-gray-500 font-mono">{item.airport}</span>
+                      )}
+                      <span className="text-[10px] bg-slate-200 text-slate-600 rounded px-1.5 py-0.5">{item.source}</span>
+                    </div>
+                    <button
+                      onClick={() => onRestoreWontSee(item.tail)}
+                      className="text-xs font-semibold text-blue-600 hover:text-blue-800 border border-blue-200 rounded px-2.5 py-1 shrink-0 transition-colors hover:bg-blue-50"
+                    >
+                      Restore
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         );
       })()}
@@ -3576,6 +3683,41 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
       const next = new Set(prev).add(id);
       const today = new Date().toISOString().slice(0, 10);
       localStorage.setItem("hiddenTodayMx", JSON.stringify({ date: today, ids: [...next] }));
+      return next;
+    });
+  }, []);
+
+  // "Won't Be Seen Today" — stored in localStorage, auto-expires next day
+  const [wontSeeTodayTails, setWontSeeTodayTails] = useState<Set<string>>(() => {
+    if (typeof window === "undefined") return new Set();
+    try {
+      const stored = JSON.parse(localStorage.getItem("wontSeeToday") ?? "{}");
+      const today = new Date().toISOString().slice(0, 10);
+      if (stored.date === today) return new Set(stored.tails ?? []);
+      localStorage.removeItem("wontSeeToday");
+    } catch {}
+    return new Set();
+  });
+
+  const handleMarkWontSee = useCallback((tail: string) => {
+    setWontSeeTodayTails((prev) => {
+      const next = new Set(prev).add(tail);
+      const today = new Date().toISOString().slice(0, 10);
+      localStorage.setItem("wontSeeToday", JSON.stringify({ date: today, tails: [...next] }));
+      return next;
+    });
+  }, []);
+
+  const handleRestoreWontSee = useCallback((tail: string) => {
+    setWontSeeTodayTails((prev) => {
+      const next = new Set(prev);
+      next.delete(tail);
+      const today = new Date().toISOString().slice(0, 10);
+      if (next.size > 0) {
+        localStorage.setItem("wontSeeToday", JSON.stringify({ date: today, tails: [...next] }));
+      } else {
+        localStorage.removeItem("wontSeeToday");
+      }
       return next;
     });
   }, []);
@@ -4214,59 +4356,14 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
         );
       })()}
 
-      {/* ── MX Notes from JetInsight (accordion) ── */}
+      {/* ── MEL Items from JetInsight (standalone accordion — no end_time filter) ── */}
       {(() => {
-        const nowMs = Date.now();
-        const visibleNotes = (mxNotes ?? []).filter((n) => {
+        const melOnly = (mxNotes ?? []).filter((n) => {
           if (hiddenTodayMxIds.has(n.id)) return false;
-          if (n.end_time && new Date(n.end_time).getTime() < nowMs) return false;
-          return true;
+          return isMel(n);
         });
-        const mxOnly = visibleNotes.filter((n) => !isMel(n));
-        const melOnly = visibleNotes.filter((n) => isMel(n));
-        if (visibleNotes.length === 0) return null;
+        if (melOnly.length === 0) return null;
         return (
-          <>
-          {/* MX Notes accordion */}
-          {mxOnly.length > 0 && (
-          <div className="rounded-xl border-2 border-orange-300 bg-orange-50 px-5 py-4 shadow-sm">
-            <button
-              onClick={() => setMxNotesOpen((v) => !v)}
-              className="flex items-center gap-3 w-full text-left"
-            >
-              <div className="w-10 h-10 rounded-full flex items-center justify-center text-xl shrink-0 bg-orange-100">!</div>
-              <div className="text-base font-bold text-orange-800 flex-1">
-                Maintenance Notes ({mxOnly.length})
-              </div>
-              <svg className={`w-5 h-5 text-orange-600 transition-transform ${mxNotesOpen ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-              </svg>
-            </button>
-            {mxNotesOpen && (
-              <div className="flex flex-col gap-2 ml-[52px] mt-2">
-                {mxOnly.map((note) => (
-                  <div key={note.id} className="bg-white rounded-lg px-3 py-2 border border-orange-200">
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-orange-100 text-orange-700">MX</span>
-                      <span className="text-xs font-bold text-orange-800">{note.tail_number}</span>
-                      <span className="text-xs text-orange-600">{note.airport_icao}</span>
-                      {note.end_time && (
-                        <span className="text-[11px] text-gray-500 ml-auto">
-                          Due {new Date(note.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}{(() => { const d = new Date(note.end_time); return d.getHours() !== 0 || d.getMinutes() !== 0 ? `, ${d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}` : ""; })()}
-                        </span>
-                      )}
-                      <button onClick={(e) => { e.stopPropagation(); hideMxForToday(note.id); }} className="text-gray-400 hover:text-red-600 text-xs ml-2 shrink-0" title="Hide for today">&times;</button>
-                    </div>
-                    <div className="text-sm text-gray-700 mt-0.5">{note.body}</div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-          )}
-
-          {/* MEL accordion */}
-          {melOnly.length > 0 && (
           <div className="rounded-xl border-2 border-yellow-300 bg-yellow-50 px-5 py-4 shadow-sm">
             <button
               onClick={() => setMelAccordionOpen((v) => !v)}
@@ -4311,8 +4408,54 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
               </div>
             )}
           </div>
-          )}
-          </>
+        );
+      })()}
+
+      {/* ── MX Notes from JetInsight (accordion — excludes MEL) ── */}
+      {(() => {
+        const nowMs = Date.now();
+        const mxOnly = (mxNotes ?? []).filter((n) => {
+          if (hiddenTodayMxIds.has(n.id)) return false;
+          if (n.end_time && new Date(n.end_time).getTime() < nowMs) return false;
+          if (isMel(n)) return false;
+          return true;
+        });
+        if (mxOnly.length === 0) return null;
+        return (
+          <div className="rounded-xl border-2 border-orange-300 bg-orange-50 px-5 py-4 shadow-sm">
+            <button
+              onClick={() => setMxNotesOpen((v) => !v)}
+              className="flex items-center gap-3 w-full text-left"
+            >
+              <div className="w-10 h-10 rounded-full flex items-center justify-center text-xl shrink-0 bg-orange-100">!</div>
+              <div className="text-base font-bold text-orange-800 flex-1">
+                Maintenance Notes ({mxOnly.length})
+              </div>
+              <svg className={`w-5 h-5 text-orange-600 transition-transform ${mxNotesOpen ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+            {mxNotesOpen && (
+              <div className="flex flex-col gap-2 ml-[52px] mt-2">
+                {mxOnly.map((note) => (
+                  <div key={note.id} className="bg-white rounded-lg px-3 py-2 border border-orange-200">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold px-1.5 py-0.5 rounded bg-orange-100 text-orange-700">MX</span>
+                      <span className="text-xs font-bold text-orange-800">{note.tail_number}</span>
+                      <span className="text-xs text-orange-600">{note.airport_icao}</span>
+                      {note.end_time && (
+                        <span className="text-[11px] text-gray-500 ml-auto">
+                          Due {new Date(note.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}{(() => { const d = new Date(note.end_time); return d.getHours() !== 0 || d.getMinutes() !== 0 ? `, ${d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}` : ""; })()}
+                        </span>
+                      )}
+                      <button onClick={(e) => { e.stopPropagation(); hideMxForToday(note.id); }} className="text-gray-400 hover:text-red-600 text-xs ml-2 shrink-0" title="Hide for today">&times;</button>
+                    </div>
+                    <div className="text-sm text-gray-700 mt-0.5">{note.body}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         );
       })()}
 
@@ -4558,7 +4701,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
 
       {/* ── Schedule tab ── */}
       {activeTab === "schedule" && (
-        <ScheduleTab allFlights={activeFlights} date={selectedDate} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} flightInfoMap={flightInfoMap} mxNotesByTail={mxNotesByTail} longTermMxTails={longTermMxTails} hiddenTodayMxIds={hiddenTodayMxIds} onHideMxForToday={hideMxForToday} mxVanOverrides={mxVanOverrides} onVanOverride={handleVanOverride} fboMap={fboMap} />
+        <ScheduleTab allFlights={activeFlights} date={selectedDate} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} flightInfoMap={flightInfoMap} mxNotesByTail={mxNotesByTail} longTermMxTails={longTermMxTails} hiddenTodayMxIds={hiddenTodayMxIds} onHideMxForToday={hideMxForToday} mxVanOverrides={mxVanOverrides} onVanOverride={handleVanOverride} fboMap={fboMap} wontSeeTodayTails={wontSeeTodayTails} onMarkWontSee={handleMarkWontSee} onRestoreWontSee={handleRestoreWontSee} />
       )}
 
       {/* ── Flight Schedule tab — grouped by aircraft ── */}

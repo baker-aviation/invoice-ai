@@ -519,10 +519,11 @@ export async function fetchScheduledDepartures(
   const seenFlightIds = new Set<string>(); // dedupe codeshares
   let cursor: string | null = null;
   let page = 0;
+  let retries = 0;
 
   let url: string = `${BASE}/schedules/${start}/${end}?origin=${originIcao}&max_pages=5`;
 
-  do {
+  while (page < 5) {
     if (cursor) {
       url = cursor.startsWith("http") ? cursor : `${BASE}${cursor}`;
     }
@@ -536,13 +537,15 @@ export async function fetchScheduledDepartures(
       const text = await res.text();
       console.warn(`[FA Sched] ${res.status} for ${originIcao} on ${date}: ${text.slice(0, 200)}`);
       if (res.status === 401) throw new Error("FlightAware: invalid API key");
-      if (res.status === 429) {
-        console.warn("[FA Sched] Rate limited — backing off");
-        await new Promise((r) => setTimeout(r, 3000));
-        continue;
+      if (res.status === 429 && retries < 3) {
+        retries++;
+        console.warn(`[FA Sched] Rate limited — retry ${retries}/3 after backoff`);
+        await new Promise((r) => setTimeout(r, 2000 * retries));
+        continue; // retry same page
       }
       break;
     }
+    retries = 0; // reset on success
 
     const data = await res.json();
     const scheduled: FaScheduleEntry[] = data.scheduled ?? [];
@@ -584,7 +587,8 @@ export async function fetchScheduledDepartures(
 
     cursor = data.links?.next ?? null;
     page++;
-  } while (cursor && page < 5);
+    if (!cursor) break; // no more pages
+  }
 
   return flights;
 }
