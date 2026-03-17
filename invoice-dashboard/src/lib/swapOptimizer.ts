@@ -1933,8 +1933,10 @@ function buildFeasibilityMatrix(params: {
       }
 
       // ── PRE-COMPUTED ROUTES PATH (instant) ──────────────────────────────
-      if (preComputedRoutes && crewMember?.id) {
-        const crewRoutes = preComputedRoutes.get(crewMember.id) ?? [];
+      // Only use pre-computed path if this crew member actually HAS routes.
+      // Otherwise fall through to runtime buildCandidates evaluation.
+      if (preComputedRoutes && crewMember?.id && preComputedRoutes.has(crewMember.id)) {
+        const crewRoutes = preComputedRoutes.get(crewMember.id)!;
 
         // Filter routes to destinations matching this tail's swap airports
         const relevantRoutes = crewRoutes.filter((r) =>
