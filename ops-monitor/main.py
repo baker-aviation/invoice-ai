@@ -1201,18 +1201,7 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
     print(f"sync_schedule: done in {t_total:.1f}s — upserted={upserted} skipped={skipped} errors={errors} cleaned={cleaned} deleted={deleted} mx_notes={mx_created}", flush=True)
     log_pipeline_run("flight-sync", items=upserted, duration_ms=int(t_total * 1000), message=f"upserted={upserted} skipped={skipped} mx_notes={mx_created}")
 
-    # If any flights were purged/re-inserted, their NOTAM alert links are now
-    # broken (flight_id FK nulled out). Rebuild immediately rather than waiting
-    # up to 30 min for the next scheduled check_notams run.
-    notam_stats: Dict[str, Any] = {}
-    if cleaned > 0 or upserted > 0:
-        print(f"sync_schedule: triggering check_notams inline (cleaned={cleaned} upserted={upserted})", flush=True)
-        try:
-            notam_stats = _run_check_notams(720)
-        except Exception as e:
-            print(f"sync_schedule: inline check_notams failed: {repr(e)}", flush=True)
-
-    return {"ok": True, "upserted": upserted, "skipped": skipped, "errors": errors, "cleaned": cleaned, "deleted": deleted, "mx_notes": mx_created, "fetch_secs": round(t_fetch, 1), "total_secs": round(t_total, 1), "notam_stats": notam_stats}
+    return {"ok": True, "upserted": upserted, "skipped": skipped, "errors": errors, "cleaned": cleaned, "deleted": deleted, "mx_notes": mx_created, "fetch_secs": round(t_fetch, 1), "total_secs": round(t_total, 1)}
 
 
 # ─── Job: pull_edct ───────────────────────────────────────────────────────────

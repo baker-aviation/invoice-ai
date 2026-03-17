@@ -376,7 +376,7 @@ export function knownAirports(): string[] {
 const COMMERCIAL_AIRPORTS = new Set([
   "KATL", "KBOS", "KBWI", "KCLT", "KCLE", "KCMH", "KCVG",
   "KDAL", "KDCA", "KDEN", "KDFW", "KDTW", "KELP",
-  "KEWR", "KFLL", "KHOU", "KIAH", "KIND", "KJAX", "KJFK",
+  "KEWR", "KFLL", "KHOU", "KIAH", "KIAD", "KIND", "KJAX", "KJFK",
   "KLAS", "KLAX", "KLGA", "KLIT", "KMCO", "KMDW", "KMEM",
   "KMIA", "KMKE", "KMSP", "KMSY", "KOAK", "KOKC", "KORD",
   "KORF", "KPBI", "KPHL", "KPHX", "KPIT", "KPSP", "KPVD",
@@ -389,6 +389,11 @@ const COMMERCIAL_AIRPORTS = new Set([
   "KMCI", "KDSM", "KGRB", "KSGF",
   "CYYZ", "CYUL", "CYVR", "CYOW", "CYYC",
 ]);
+
+/** Check if an airport is a known commercial airport with scheduled airline service. */
+export function isCommercialAirport(icao: string): boolean {
+  return COMMERCIAL_AIRPORTS.has(icao.toUpperCase());
+}
 
 /**
  * Find commercial airports within a given radius of an airport.
