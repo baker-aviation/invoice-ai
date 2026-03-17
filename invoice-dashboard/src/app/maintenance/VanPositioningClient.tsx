@@ -2008,8 +2008,8 @@ function ScheduleTab({
     if (suppressSaveRef.current) return;
     if (saveDraftTimer.current) clearTimeout(saveDraftTimer.current);
     saveDraftTimer.current = setTimeout(() => {
-      const now = new Date().toISOString();
-      draftUpdatedAtRef.current = now;
+      // Suppress polling while save is in-flight so it doesn't revert our changes
+      suppressSaveRef.current = true;
       fetch("/api/vans/drafts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2019,7 +2019,14 @@ function ScheduleTab({
           removals: [...r],
           unscheduled: [...u],
         }),
-      }).catch(() => {});
+      }).then(async (res) => {
+        if (res.ok) {
+          const d = await res.json().catch(() => null);
+          if (d?.updated_at) draftUpdatedAtRef.current = d.updated_at;
+        }
+      }).catch(() => {}).finally(() => {
+        suppressSaveRef.current = false;
+      });
     }, 500);
   }, [date]);
 
@@ -2068,6 +2075,8 @@ function ScheduleTab({
   // Poll DB every 15s for other admins' changes
   useEffect(() => {
     const poll = setInterval(async () => {
+      // Don't poll while a save is in-flight — would revert to stale data
+      if (suppressSaveRef.current) return;
       try {
         const res = await fetch(`/api/vans/drafts?date=${date}`);
         if (!res.ok) return;

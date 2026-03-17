@@ -45,6 +45,7 @@ export async function POST(req: NextRequest) {
   if (!date) return NextResponse.json({ error: "date required" }, { status: 400 });
 
   const supa = createServiceClient();
+  const now = new Date().toISOString();
   const { error } = await supa
     .from("van_draft_overrides")
     .upsert({
@@ -54,10 +55,10 @@ export async function POST(req: NextRequest) {
       unscheduled: unscheduled ?? [],
       leg_notes: leg_notes ?? {},
       updated_by: auth.userId,
-      updated_at: new Date().toISOString(),
+      updated_at: now,
     }, { onConflict: "date" });
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, updated_at: now });
 }
