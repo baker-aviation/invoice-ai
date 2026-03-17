@@ -15,7 +15,7 @@ Queue configuration (from SWIFT portal):
 import os
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from xml.etree import ElementTree as ET
 
@@ -518,11 +518,21 @@ def parse_notam_message(xml_str: str) -> Optional[Dict[str, Any]]:
     except ET.ParseError:
         return None
 
-    # NOTAM ID
-    notam_id_el = _find_any(root, "id", "notamId", "identifier")
-    notam_id = _safe_text(notam_id_el)
+    # NOTAM ID — build from series/number/year (e.g. "A0621/2026") for human readability
+    series_el = _find_any(root, "series")
+    number_el = _find_any(root, "number")
+    year_el = _find_any(root, "year")
+    series = _safe_text(series_el) or ""
+    number = _safe_text(number_el) or ""
+    year = _safe_text(year_el) or ""
+    notam_id = f"{series}{number}/{year}" if series and number and year else None
+
     if not notam_id:
-        # Try attribute
+        # Fall back to gml:identifier (UUID)
+        ident_el = _find_any(root, "identifier")
+        notam_id = _safe_text(ident_el)
+    if not notam_id:
+        # Last resort: gml:id attribute
         for el in root.iter():
             gml_id = el.get("{http://www.opengis.net/gml/3.2}id") or el.get("id")
             if gml_id:
@@ -532,21 +542,28 @@ def parse_notam_message(xml_str: str) -> Optional[Dict[str, Any]]:
     if not notam_id:
         return None
 
-    # Location / airport
-    location_el = _find_any(root, "location", "affectedFIR", "designator")
+    # Location / airport — prefer <location> (actual airport) over <affectedFIR> (ARTCC/FIR)
+    location_el = _find_any(root, "location")
     airport = _safe_text(location_el)
+    if not airport:
+        fir_el = _find_any(root, "affectedFIR", "designator")
+        airport = _safe_text(fir_el)
+
+    # Convert 3-letter US FAA LIDs to 4-letter ICAO (e.g. SGF → KSGF)
+    if airport and len(airport) == 3 and airport.isalpha() and airport.isupper():
+        airport = "K" + airport
 
     # NOTAM text
     text_el = _find_any(root, "text", "notamText", "description", "note")
     body = _safe_text(text_el)
 
-    # Classification
-    class_el = _find_any(root, "classification", "type", "purpose")
+    # Classification — use selectionCode (ICAO Q-code like QFTAS, QMRLC)
+    class_el = _find_any(root, "selectionCode", "classification", "purpose")
     classification = _safe_text(class_el)
 
-    # Times
-    eff_el = _find_any(root, "effectiveStart", "beginPosition", "validTimeBegin")
-    exp_el = _find_any(root, "effectiveEnd", "endPosition", "validTimeEnd")
+    # Times — prefer ISO timestamps from gml:TimePeriod over NOTAM YYMMDDHHMM format
+    eff_el = _find_any(root, "beginPosition", "effectiveStart", "validTimeBegin")
+    exp_el = _find_any(root, "endPosition", "effectiveEnd", "validTimeEnd")
 
     # Classify the NOTAM (reuse logic from main.py patterns)
     notam_type = "NOTAM_OTHER"
@@ -576,6 +593,281 @@ def parse_notam_message(xml_str: str) -> Optional[Dict[str, Any]]:
     }
 
 
+# ── NOTAM Stream Consumer ─────────────────────────────────────────────────────
+
+# Noise NOTAM patterns — equipment/lighting, not actual closures
+_NOTAM_NOISE_RE = re.compile(
+    r"\bILS\b|\bPAPI\b|\bALS\b|\bLGT\b|\bLIGHT\b|\bTWY\b|\bTAXIWAY\b"
+    r"|\bAPRON\b|\bWINDCONE\b|\bWIND\s*CONE\b"
+)
+
+
+def _is_noise_notam_swim(body_upper: str) -> bool:
+    """Return True if NOTAM is equipment/lighting noise (not worth an ops_alert)."""
+    return bool(_NOTAM_NOISE_RE.search(body_upper))
+
+
+def _is_relevant_notam(body: Optional[str]) -> bool:
+    """Return True if a NOTAM body text is operationally relevant (worth an ops_alert)."""
+    if not body:
+        return False
+    m = body.upper()
+    # Runway closures (skip noise/lighting)
+    if re.search(r"(RWY|RUNWAY).{0,60}(CLSD|CLOSED)", m) or re.search(r"(CLSD|CLOSED).{0,60}(RWY|RUNWAY)", m):
+        return not _is_noise_notam_swim(m)
+    # Airport/aerodrome closure or restriction
+    if re.search(r"(\bAD\b|AERODROME|AIRPORT).{0,30}(CLSD|CLOSED|RSTD|RESTRICTED)", m):
+        return True
+    if re.search(r"(CLSD|CLOSED|RSTD|RESTRICTED).{0,30}(\bAD\b|AERODROME|AIRPORT)", m):
+        return True
+    # TFR
+    if re.search(r"\bTFR\b|TEMPORARY FLIGHT RESTRICTION", m):
+        return True
+    # PPR
+    if re.search(r"\bPPR\b|PRIOR PERMISSION REQUIRED", m):
+        return True
+    return False
+
+
+def _notam_severity_swim(body: Optional[str]) -> str:
+    """Classify NOTAM severity based on body text."""
+    if not body:
+        return "warning"
+    m = body.upper()
+    if re.search(r"CLSD|CLOSED|STOP", m):
+        return "critical"
+    if re.search(r"\bTFR\b", m):
+        return "critical"
+    if re.search(r"(\bAD\b|AERODROME|AIRPORT).{0,30}(RSTD|RESTRICTED)", m):
+        return "critical"
+    return "warning"
+
+
+def get_trip_airports(lookahead_days: int = 30) -> set[str]:
+    """Query flights table for ICAO airports in the next N days."""
+    supa = sb()
+    now = datetime.now(timezone.utc)
+    cutoff = (now + timedelta(days=lookahead_days)).isoformat()
+    now_iso = now.isoformat()
+
+    rows = (
+        supa.table("flights")
+        .select("departure_icao,arrival_icao")
+        .gte("scheduled_departure", now_iso)
+        .lte("scheduled_departure", cutoff)
+        .execute()
+    )
+    airports: set[str] = set()
+    for r in rows.data or []:
+        if r.get("departure_icao"):
+            airports.add(r["departure_icao"])
+        if r.get("arrival_icao"):
+            airports.add(r["arrival_icao"])
+    print(f"[SWIM NOTAM] Trip airports ({len(airports)}): {sorted(airports)}", flush=True)
+    return airports
+
+
+def _find_matching_flights(supa, airport_icao: str) -> List[Dict[str, Any]]:
+    """Find upcoming flights that depart from or arrive at this airport."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    cutoff = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+
+    rows = (
+        supa.table("flights")
+        .select("id,tail_number,departure_icao,arrival_icao,scheduled_departure")
+        .or_(f"departure_icao.eq.{airport_icao},arrival_icao.eq.{airport_icao}")
+        .gte("scheduled_departure", now_iso)
+        .lte("scheduled_departure", cutoff)
+        .limit(50)
+        .execute()
+    )
+    return rows.data or []
+
+
+def drain_notam_stream(max_secs: int = 250) -> Dict[str, Any]:
+    """Long-running NOTAM drain — stays connected up to max_secs.
+
+    Connects to Solace AIM_FNS VPN, receives NOTAMs as they arrive,
+    flushes batches to swim_notams + ops_alerts every 30s or 50 messages.
+    """
+    from solace.messaging.messaging_service import MessagingService, RetryStrategy
+    from solace.messaging.resources.queue import Queue
+
+    stats: Dict[str, Any] = {
+        "messages_received": 0,
+        "notams_upserted": 0,
+        "alerts_created": 0,
+        "errors": 0,
+        "skipped_no_airport": 0,
+        "skipped_not_trip": 0,
+        "skipped_noise": 0,
+    }
+
+    # Load trip airports once at start
+    try:
+        trip_airports = get_trip_airports()
+    except Exception as e:
+        print(f"[SWIM NOTAM] Failed to load trip airports: {e}", flush=True)
+        trip_airports = set()
+        stats["errors"] += 1
+
+    supa = sb()
+
+    # Connect to Solace
+    default_broker, username, password = _get_swim_config()
+    q_cfg = SWIM_QUEUES["NOTAM"]
+    broker = q_cfg.get("broker") or default_broker
+
+    print(f"[SWIM NOTAM] Connecting: vpn={q_cfg['vpn']}, broker={broker}", flush=True)
+    broker_props = {
+        "solace.messaging.transport.host": broker,
+        "solace.messaging.service.vpn-name": q_cfg["vpn"],
+        "solace.messaging.authentication.scheme.basic.username": username,
+        "solace.messaging.authentication.scheme.basic.password": password,
+        "solace.messaging.tls.trust-store-path": "/etc/ssl/certs/",
+    }
+
+    messaging_service = (
+        MessagingService.builder()
+        .from_properties(broker_props)
+        .with_reconnection_retry_strategy(RetryStrategy.parametrized_retry(3, 3000))
+        .build()
+    )
+    messaging_service.connect()
+    print(f"[SWIM NOTAM] Connected, draining for up to {max_secs}s", flush=True)
+
+    FLUSH_INTERVAL = 30  # seconds
+    FLUSH_BATCH_SIZE = 50
+    RECEIVE_TIMEOUT = 30000  # ms — wait up to 30s for a message
+
+    notam_batch: List[Dict[str, Any]] = []
+    alert_batch: List[Dict[str, Any]] = []
+    last_flush = time.time()
+
+    def _flush():
+        nonlocal notam_batch, alert_batch, last_flush
+        CHUNK = 50
+
+        if notam_batch:
+            for i in range(0, len(notam_batch), CHUNK):
+                chunk = notam_batch[i:i + CHUNK]
+                try:
+                    supa.table("swim_notams").upsert(chunk, on_conflict="notam_id").execute()
+                    stats["notams_upserted"] += len(chunk)
+                except Exception as e:
+                    print(f"[SWIM NOTAM] notams upsert error: {e}", flush=True)
+                    stats["errors"] += 1
+
+        if alert_batch:
+            for i in range(0, len(alert_batch), CHUNK):
+                chunk = alert_batch[i:i + CHUNK]
+                try:
+                    supa.table("ops_alerts").upsert(chunk, on_conflict="source_message_id").execute()
+                    stats["alerts_created"] += len(chunk)
+                except Exception as e:
+                    print(f"[SWIM NOTAM] alerts upsert error: {e}", flush=True)
+                    stats["errors"] += 1
+
+        if notam_batch or alert_batch:
+            print(f"[SWIM NOTAM] Flushed {len(notam_batch)} notams, {len(alert_batch)} alerts", flush=True)
+
+        notam_batch = []
+        alert_batch = []
+        last_flush = time.time()
+
+    try:
+        queue = Queue.durable_exclusive_queue(q_cfg["queue"])
+        receiver = (
+            messaging_service.create_persistent_message_receiver_builder()
+            .build(queue)
+        )
+        receiver.start()
+
+        t_start = time.time()
+
+        while time.time() - t_start < max_secs:
+            # Check if it's time to flush
+            if (time.time() - last_flush >= FLUSH_INTERVAL) or len(notam_batch) >= FLUSH_BATCH_SIZE:
+                _flush()
+
+            msg = receiver.receive_message(timeout=RECEIVE_TIMEOUT)
+            if msg is None:
+                continue  # No message in 30s — loop and check time budget
+
+            payload = msg.get_payload_as_string() or ""
+            if not payload and msg.get_payload_as_bytes():
+                payload = msg.get_payload_as_bytes().decode("utf-8", errors="replace")
+            receiver.ack(msg)
+            stats["messages_received"] += 1
+
+            notam = parse_notam_message(payload)
+            if not notam:
+                continue
+
+            airport = notam.get("airport_icao")
+
+            # Debug: log first 5 parsed airports
+            if stats["messages_received"] <= 5:
+                print(f"[SWIM NOTAM] Sample #{stats['messages_received']}: airport={airport!r} notam_id={notam.get('notam_id','?')} type={notam.get('notam_type','?')}", flush=True)
+
+            # Always upsert to swim_notams for trip airports
+            if not airport:
+                stats["skipped_no_airport"] += 1
+                continue
+
+            if airport not in trip_airports:
+                stats["skipped_not_trip"] += 1
+                continue
+
+            notam_batch.append({
+                **notam,
+                "raw_xml": payload[:4000],
+            })
+
+            # Create ops_alerts for relevant NOTAMs linked to flights
+            body = notam.get("body") or ""
+            if _is_noise_notam_swim(body.upper()):
+                stats["skipped_noise"] += 1
+                continue
+
+            if not _is_relevant_notam(body):
+                continue
+
+            # Find matching flights at this airport
+            flights = _find_matching_flights(supa, airport)
+            if not flights:
+                continue
+
+            for flight in flights:
+                alert_batch.append({
+                    "alert_type": notam.get("notam_type", "NOTAM_OTHER"),
+                    "severity": _notam_severity_swim(body),
+                    "tail_number": flight.get("tail_number"),
+                    "departure_icao": flight.get("departure_icao"),
+                    "arrival_icao": flight.get("arrival_icao"),
+                    "airport_icao": airport,
+                    "flight_id": flight.get("id"),
+                    "subject": notam.get("subject", f"NOTAM ({airport})"),
+                    "body": body[:2000],
+                    "effective_at": notam.get("effective_at"),
+                    "expires_at": notam.get("expires_at"),
+                    "source_message_id": f"swim-notam-{notam.get('notam_id', 'UNK')}-{flight.get('id', 'UNK')}",
+                })
+
+        # Final flush
+        _flush()
+
+    finally:
+        try:
+            messaging_service.disconnect()
+        except Exception:
+            pass
+
+    stats["duration_secs"] = round(time.time() - t_start, 1)
+    print(f"[SWIM NOTAM] Done: {stats}", flush=True)
+    return stats
+
+
 # ── Main Pull Logic ───────────────────────────────────────────────────────────
 
 def _is_baker_flight(msg: Dict[str, Any]) -> bool:
@@ -602,10 +894,8 @@ def pull_swim() -> Dict[str, Any]:
         "tfms_flight_messages": 0,
         "tfms_flow_messages": 0,
         "stdds_messages": 0,
-        "notam_messages": 0,
         "positions_upserted": 0,
         "flow_control_upserted": 0,
-        "notams_upserted": 0,
         "errors": 0,
     }
 
@@ -712,27 +1002,7 @@ def pull_swim() -> Dict[str, Any]:
             })
             stats["stdds_messages"] += 1
 
-    # ── 3. NOTAM Distribution ─────────────────────────────────────────────────
-    try:
-        notam_raw = drain_queue(
-            SWIM_QUEUES["NOTAM"]["queue"],
-            SWIM_QUEUES["NOTAM"]["vpn"],
-            broker_override=SWIM_QUEUES["NOTAM"].get("broker"),
-        )
-    except Exception as e:
-        print(f"[SWIM] NOTAM drain error: {e}", flush=True)
-        notam_raw = []
-        stats["errors"] += 1
-
-    notams_batch: List[Dict[str, Any]] = []
-    for raw in notam_raw:
-        notam = parse_notam_message(raw)
-        if notam:
-            notams_batch.append({
-                **notam,
-                "raw_xml": raw[:4000],
-            })
-            stats["notam_messages"] += 1
+    # ── 3. NOTAM — handled by dedicated /jobs/notam_consumer endpoint ────────
 
     # ── 4. Write to Supabase ──────────────────────────────────────────────────
     CHUNK = 50
@@ -842,18 +1112,6 @@ def pull_swim() -> Dict[str, Any]:
             stats["flow_control_upserted"] += len(chunk)
         except Exception as e:
             print(f"[SWIM] flow_control upsert error: {e}", flush=True)
-            stats["errors"] += 1
-
-    # NOTAMs — keep ALL (we filter by airport on the dashboard side)
-    for i in range(0, len(notams_batch), CHUNK):
-        chunk = notams_batch[i : i + CHUNK]
-        try:
-            supa.table("swim_notams").upsert(
-                chunk, on_conflict="notam_id"
-            ).execute()
-            stats["notams_upserted"] += len(chunk)
-        except Exception as e:
-            print(f"[SWIM] notams upsert error: {e}", flush=True)
             stats["errors"] += 1
 
     stats["total_secs"] = round(time.time() - t0, 1)

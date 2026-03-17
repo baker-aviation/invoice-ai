@@ -362,7 +362,7 @@ function buildAdvVsActual(
   }
   for (const adv of filteredAdv) {
     const fbo = extractFboName(adv.product) ?? "";
-    const wk = `${adv.fbo_vendor}|${normAirport(adv.airport_code)}|${normFboKey(fbo)}|${adv.week_start}`;
+    const wk = `${adv.fbo_vendor}|${normAirport(adv.airport_code)}|${normFboKey(fbo)}|${getWeekMonday(adv.week_start)}`;
     const existing = seenByWeek.get(wk);
     if (!existing) {
       seenByWeek.set(wk, adv);
