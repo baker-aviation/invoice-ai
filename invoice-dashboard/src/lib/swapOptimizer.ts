@@ -118,6 +118,17 @@ export type SwapPlanResult = {
   plan_score: number;
   solved_count: number;
   unsolved_count: number;
+  two_pass?: TwoPassStats;
+};
+
+export type TwoPassStats = {
+  pass1_solved: number;
+  pass1_unsolved: number;
+  pass1_cost: number;
+  pass2_solved: number;
+  pass2_volunteers_used: { name: string; role: "PIC" | "SIC"; tail: string; type: "early" | "late" }[];
+  pass2_bonus_cost: number;
+  total_cost: number;
 };
 
 // ─── Internal Types ──────────────────────────────────────────────────────────
@@ -1212,8 +1223,9 @@ export function buildSwapPlan(params: {
   swapAssignments?: Record<string, SwapAssignment>;
   oncomingPool?: OncomingPool;
   stayingCrew?: Array<{ name: string; tail: string; role: "PIC" | "SIC" }>;
+  strategy?: "offgoing_first" | "oncoming_first";
 }): SwapPlanResult {
-  const { flights, crewRoster, aliases, swapDate, commercialFlights, swapAssignments, oncomingPool, stayingCrew } = params;
+  const { flights, crewRoster, aliases, swapDate, commercialFlights, swapAssignments, oncomingPool, stayingCrew, strategy = "oncoming_first" } = params;
   _warnedFlightKeys.clear(); // Reset per-run to avoid stale warnings
   const globalWarnings: string[] = [];
   const allTasks: CrewTask[] = [];
@@ -2162,6 +2174,209 @@ export function assignOncomingCrew(params: {
   return { assignments: result, standby, details };
 }
 
+/**
+ * Two-pass optimizer: first try normal Wednesday-only candidates, then pull
+ * early/late volunteers only for tails that can't be solved.
+ * Saves $1500/PIC and $1000/SIC bonuses by using volunteers sparingly.
+ */
+export function twoPassAssignAndOptimize(params: {
+  swapAssignments: Record<string, SwapAssignment>;
+  oncomingPool: OncomingPool;
+  crewRoster: CrewMember[];
+  flights: FlightLeg[];
+  swapDate: string;
+  aliases: AirportAlias[];
+  commercialFlights?: Map<string, FlightOffer[]>;
+  preComputedRoutes?: Map<string, PilotRoute[]>;
+  preComputedOffgoing?: Map<string, PilotRoute[]>;
+}): {
+  result: SwapPlanResult;
+  assignmentResult: ReturnType<typeof assignOncomingCrew>;
+  twoPassStats: TwoPassStats;
+} {
+  const { swapAssignments, oncomingPool, crewRoster, flights, swapDate, aliases, commercialFlights, preComputedRoutes, preComputedOffgoing } = params;
+
+  // ── Pass 1: Normal Wednesday only (exclude early/late volunteers) ──────
+  const normalPool: OncomingPool = {
+    pic: oncomingPool.pic.filter((p) => !p.early_volunteer && !p.late_volunteer),
+    sic: oncomingPool.sic.filter((p) => !p.early_volunteer && !p.late_volunteer),
+  };
+
+  // Also include SkillBridge crew in pass 1 — they can be forced, no bonus
+  const skillbridgeEarlyPic = oncomingPool.pic.filter((p) => p.is_skillbridge && (p.early_volunteer || p.late_volunteer));
+  const skillbridgeEarlySic = oncomingPool.sic.filter((p) => p.is_skillbridge && (p.early_volunteer || p.late_volunteer));
+  normalPool.pic.push(...skillbridgeEarlyPic);
+  normalPool.sic.push(...skillbridgeEarlySic);
+
+  const pass1Assignment = assignOncomingCrew({
+    swapAssignments,
+    oncomingPool: normalPool,
+    crewRoster,
+    flights,
+    swapDate,
+    aliases,
+    commercialFlights,
+    preComputedRoutes,
+    preComputedOffgoing,
+  });
+
+  const pass1Result = buildSwapPlan({
+    flights, crewRoster, aliases, swapDate, commercialFlights,
+    swapAssignments: pass1Assignment.assignments,
+    oncomingPool: normalPool,
+    strategy: "offgoing_first",
+  });
+
+  const pass1Solved = pass1Result.solved_count;
+  const pass1Unsolved = pass1Result.unsolved_count;
+  const pass1Cost = pass1Result.total_cost;
+
+  // ── Identify unsolvable tails from Pass 1 ────────────────────────────
+  const unsolvedRows = pass1Result.rows.filter((r) => r.travel_type === "none");
+  const unsolvedTails = new Set(unsolvedRows.map((r) => r.tail_number));
+
+  // If everything solved in pass 1, return early — no bonuses needed
+  if (unsolvedTails.size === 0) {
+    const stats: TwoPassStats = {
+      pass1_solved: pass1Solved,
+      pass1_unsolved: 0,
+      pass1_cost: pass1Cost,
+      pass2_solved: 0,
+      pass2_volunteers_used: [],
+      pass2_bonus_cost: 0,
+      total_cost: pass1Cost,
+    };
+    return {
+      result: { ...pass1Result, two_pass: stats },
+      assignmentResult: pass1Assignment,
+      twoPassStats: stats,
+    };
+  }
+
+  // ── Pass 2: Add early/late volunteers for unsolved tails ──────────────
+  console.log(`[Two-Pass] Pass 1: ${pass1Solved} solved, ${pass1Unsolved} unsolved (${[...unsolvedTails].join(", ")}). Running Pass 2 with volunteers...`);
+
+  // Get paid (non-SkillBridge) early/late volunteers
+  const volunteerPic = oncomingPool.pic.filter(
+    (p) => (p.early_volunteer || p.late_volunteer) && !p.is_skillbridge,
+  );
+  const volunteerSic = oncomingPool.sic.filter(
+    (p) => (p.early_volunteer || p.late_volunteer) && !p.is_skillbridge,
+  );
+
+  // Build a new assignment set — start from pass 1 but clear oncoming for unsolved tails
+  const pass2Assignments: Record<string, SwapAssignment> = JSON.parse(JSON.stringify(pass1Assignment.assignments));
+  for (const tail of unsolvedTails) {
+    if (pass2Assignments[tail]) {
+      // Only clear oncoming slots that were unsolved
+      const unsolvedPic = unsolvedRows.some((r) => r.tail_number === tail && r.direction === "oncoming" && r.role === "PIC");
+      const unsolvedSic = unsolvedRows.some((r) => r.tail_number === tail && r.direction === "oncoming" && r.role === "SIC");
+      if (unsolvedPic) pass2Assignments[tail].oncoming_pic = null;
+      if (unsolvedSic) pass2Assignments[tail].oncoming_sic = null;
+    }
+  }
+
+  // Run assignment with full pool (volunteers included) but only for unsolved tails
+  const fullPool: OncomingPool = {
+    pic: [...normalPool.pic, ...volunteerPic],
+    sic: [...normalPool.sic, ...volunteerSic],
+  };
+
+  const pass2Assignment = assignOncomingCrew({
+    swapAssignments: pass2Assignments,
+    oncomingPool: fullPool,
+    crewRoster,
+    flights,
+    swapDate,
+    aliases,
+    commercialFlights,
+    preComputedRoutes,
+    preComputedOffgoing,
+  });
+
+  // Merge pass 2 results into pass 1: only replace unsolved tails
+  const mergedAssignments = { ...pass1Assignment.assignments };
+  const volunteersUsed: TwoPassStats["pass2_volunteers_used"] = [];
+  const volunteerNames = new Set([
+    ...volunteerPic.map((p) => p.name),
+    ...volunteerSic.map((p) => p.name),
+  ]);
+
+  for (const tail of unsolvedTails) {
+    if (pass2Assignment.assignments[tail]) {
+      const p2 = pass2Assignment.assignments[tail];
+      const p1 = mergedAssignments[tail];
+
+      if (p2.oncoming_pic && !p1.oncoming_pic) {
+        mergedAssignments[tail] = { ...p1, oncoming_pic: p2.oncoming_pic };
+        if (volunteerNames.has(p2.oncoming_pic)) {
+          const entry = oncomingPool.pic.find((p) => p.name === p2.oncoming_pic);
+          volunteersUsed.push({
+            name: p2.oncoming_pic, role: "PIC", tail,
+            type: entry?.early_volunteer ? "early" : "late",
+          });
+        }
+      }
+      if (p2.oncoming_sic && !p1.oncoming_sic) {
+        mergedAssignments[tail] = { ...mergedAssignments[tail], oncoming_sic: p2.oncoming_sic };
+        if (volunteerNames.has(p2.oncoming_sic)) {
+          const entry = oncomingPool.sic.find((p) => p.name === p2.oncoming_sic);
+          volunteersUsed.push({
+            name: p2.oncoming_sic, role: "SIC", tail,
+            type: entry?.early_volunteer ? "early" : "late",
+          });
+        }
+      }
+    }
+  }
+
+  // Compute bonus cost
+  const bonusCost = volunteersUsed.reduce((sum, v) => {
+    if (v.role === "PIC") return sum + EARLY_LATE_BONUS_PIC;
+    return sum + EARLY_LATE_BONUS_SIC;
+  }, 0);
+
+  // Run final transport optimizer with merged assignments
+  const finalResult = buildSwapPlan({
+    flights, crewRoster, aliases, swapDate, commercialFlights,
+    swapAssignments: mergedAssignments,
+    oncomingPool: fullPool,
+    strategy: "offgoing_first",
+  });
+
+  const pass2NewlySolved = pass1Unsolved - finalResult.unsolved_count;
+
+  const stats: TwoPassStats = {
+    pass1_solved: pass1Solved,
+    pass1_unsolved: pass1Unsolved,
+    pass1_cost: pass1Cost,
+    pass2_solved: pass2NewlySolved,
+    pass2_volunteers_used: volunteersUsed,
+    pass2_bonus_cost: bonusCost,
+    total_cost: finalResult.total_cost + bonusCost,
+  };
+
+  // Add volunteer bonus warnings
+  for (const v of volunteersUsed) {
+    const bonus = v.role === "PIC" ? EARLY_LATE_BONUS_PIC : EARLY_LATE_BONUS_SIC;
+    finalResult.warnings.push(`${v.name} (${v.role}) used as ${v.type} volunteer on ${v.tail} — $${bonus} bonus`);
+  }
+
+  // Merge standby from both passes
+  const mergedStandby = {
+    pic: pass2Assignment.standby.pic,
+    sic: pass2Assignment.standby.sic,
+  };
+
+  console.log(`[Two-Pass] Pass 2: ${pass2NewlySolved} additional tails solved, ${volunteersUsed.length} volunteers used, $${bonusCost} bonus cost`);
+
+  return {
+    result: { ...finalResult, two_pass: stats },
+    assignmentResult: { assignments: mergedAssignments, standby: mergedStandby, details: [...pass1Assignment.details, ...pass2Assignment.details] },
+    twoPassStats: stats,
+  };
+}
+
 function assignRoleWithMatrix(
   field: "oncoming_pic" | "oncoming_sic",
   pool: OncomingPoolEntry[],
@@ -2387,4 +2602,150 @@ export function getRequiredFlightSearches(params: {
     const [origin, destination] = p.split("-");
     return { origin, destination, date: swapDate };
   });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PUBLIC SWAP POINT EXTRACTION (for API use)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export type SwapPointInfo = {
+  icao: string;
+  time: Date;
+  position: "before_live" | "after_live" | "between_legs" | "idle";
+  isAdjacentLive: boolean;
+};
+
+/**
+ * Public wrapper around extractSwapPoints for API use.
+ */
+export function extractSwapPointsPublic(
+  tail: string,
+  byTail: Map<string, FlightLeg[]>,
+  swapDate: string,
+): { swapPoints: SwapPointInfo[]; overnightAirport: string | null; aircraftType: string } {
+  return extractSwapPoints(tail, byTail, swapDate);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// OFFGOING-FIRST ALGORITHM (Phase 5)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export type OffgoingPlan = {
+  name: string;
+  tail: string;
+  role: "PIC" | "SIC";
+  swapPoint: string;
+  transport: TransportCandidate | null;
+  deadline: Date | null;
+};
+
+export type OncomingDeadline = {
+  tail: string;
+  role: "PIC" | "SIC";
+  swapPoint: string;
+  deadline: Date;
+  offgoingName: string;
+  offgoingFlight: string | null;
+};
+
+export type OffgoingFirstResult = {
+  offgoingPlans: OffgoingPlan[];
+  deadlines: OncomingDeadline[];
+  unsolvable: { tail: string; role: "PIC" | "SIC"; reason: string }[];
+};
+
+/**
+ * Solve offgoing constraints first, then derive oncoming deadlines.
+ * For each tail: find best offgoing transport → compute deadline → filter oncoming candidates.
+ */
+export function solveOffgoingFirst(params: {
+  flights: FlightLeg[];
+  crewRoster: CrewMember[];
+  aliases: AirportAlias[];
+  swapDate: string;
+  commercialFlights?: Map<string, FlightOffer[]>;
+  swapAssignments: Record<string, SwapAssignment>;
+}): OffgoingFirstResult {
+  const { flights, crewRoster, aliases, swapDate, commercialFlights, swapAssignments } = params;
+
+  const byTail = new Map<string, FlightLeg[]>();
+  for (const f of flights) {
+    if (!f.tail_number) continue;
+    if (!byTail.has(f.tail_number)) byTail.set(f.tail_number, []);
+    byTail.get(f.tail_number)!.push(f);
+  }
+
+  const offgoingPlans: OffgoingPlan[] = [];
+  const deadlines: OncomingDeadline[] = [];
+  const unsolvable: { tail: string; role: "PIC" | "SIC"; reason: string }[] = [];
+
+  for (const [tail, assignment] of Object.entries(swapAssignments)) {
+    const { swapPoints } = extractSwapPoints(tail, byTail, swapDate);
+    if (swapPoints.length === 0) {
+      unsolvable.push({ tail, role: "PIC", reason: "No swap points found" });
+      continue;
+    }
+
+    const swapPoint = swapPoints[0];
+
+    for (const [offName, role] of [
+      [assignment.offgoing_pic, "PIC"] as const,
+      [assignment.offgoing_sic, "SIC"] as const,
+    ]) {
+      if (!offName) continue;
+
+      const crewMember = findCrewByName(crewRoster, offName, role);
+      if (!crewMember) {
+        offgoingPlans.push({ name: offName, tail, role, swapPoint: swapPoint.icao, transport: null, deadline: null });
+        continue;
+      }
+
+      const task: CrewTask = {
+        name: offName,
+        crewMember,
+        role,
+        direction: "offgoing",
+        tail,
+        aircraftType: crewMember.aircraft_types[0] ?? "unknown",
+        swapPoint,
+        homeAirports: crewMember.home_airports,
+        candidates: [],
+        best: null,
+        warnings: [],
+      };
+
+      buildCandidates(task, aliases, commercialFlights, swapDate);
+      for (const c of task.candidates) {
+        c.score = scoreCandidate(c, task, null);
+      }
+      task.candidates.sort((a, b) => b.score - a.score);
+      task.best = task.candidates[0] ?? null;
+
+      const best = task.best;
+      let deadline: Date | null = null;
+
+      if (best?.depTime) {
+        deadline = new Date(best.depTime.getTime() - HANDOFF_BUFFER_MINUTES * 60_000);
+      }
+
+      offgoingPlans.push({
+        name: offName, tail, role,
+        swapPoint: swapPoint.icao, transport: best, deadline,
+      });
+
+      if (deadline) {
+        deadlines.push({
+          tail, role, swapPoint: swapPoint.icao, deadline,
+          offgoingName: offName, offgoingFlight: best?.flightNumber ?? null,
+        });
+      } else {
+        unsolvable.push({
+          tail, role,
+          reason: `No viable transport for offgoing ${offName} from ${swapPoint.icao}`,
+        });
+      }
+    }
+  }
+
+  return { offgoingPlans, deadlines, unsolvable };
 }

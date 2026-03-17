@@ -12,6 +12,18 @@
     {
       "path": "/api/cron/fa-poll",
       "schedule": "*/3 * * * *"
+    },
+    {
+      "path": "/api/cron/parse-volunteers",
+      "schedule": "0 0 * * 1"
+    },
+    {
+      "path": "/api/cron/flight-cache",
+      "schedule": "0 4 * * 2"
+    },
+    {
+      "path": "/api/cron/flight-cache",
+      "schedule": "0 10 * * 2"
     }
   ]
 }

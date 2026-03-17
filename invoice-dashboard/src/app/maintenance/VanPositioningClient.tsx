@@ -1127,15 +1127,14 @@ function MxNoteRow({ note, onHideForToday, vanOverride, onVanOverride }: {
 /** Inline MX notes per aircraft — only non-MEL MX items (MELs moved to van-level accordion) */
 function MxNoteInline({ notes, hiddenIds, onHideForToday, vanOverrides, onVanOverride, viewDate }: { notes: MxNote[]; hiddenIds?: Set<string>; onHideForToday?: (id: string) => void; vanOverrides?: Map<string, number>; onVanOverride?: (noteId: string, vanId: number | null) => void; viewDate?: string }) {
   const targetDate = viewDate ?? new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  const toEtDate = (iso: string) => new Date(iso).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
   const visible = notes.filter((n) => {
     if (hiddenIds?.has(n.id)) return false;
     if (isMel(n)) return false;
-    // Use start/end dates to determine if note is relevant to the viewed date
-    const startDate = n.start_time?.slice(0, 10) ?? null;
-    const endDate = n.end_time?.slice(0, 10) ?? startDate;
-    // If we have no date info at all, show the note
+    // Compare dates in ET timezone (ISO strings are UTC, display is ET)
+    const startDate = n.start_time ? toEtDate(n.start_time) : null;
+    const endDate = n.end_time ? toEtDate(n.end_time) : startDate;
     if (!startDate && !endDate) return true;
-    // Note spans [startDate, endDate] — show if targetDate falls in that range
     if (startDate && startDate > targetDate) return false; // future
     if (endDate && endDate < targetDate) return false; // past
     return true;
