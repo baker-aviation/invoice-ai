@@ -1130,10 +1130,15 @@ function MxNoteInline({ notes, hiddenIds, onHideForToday, vanOverrides, onVanOve
   const visible = notes.filter((n) => {
     if (hiddenIds?.has(n.id)) return false;
     if (isMel(n)) return false;
-    if (!n.start_time) return true;
-    const startDate = n.start_time.slice(0, 10);
-    const endDate = n.end_time ? n.end_time.slice(0, 10) : startDate;
-    return endDate >= targetDate && startDate <= targetDate;
+    // Use start/end dates to determine if note is relevant to the viewed date
+    const startDate = n.start_time?.slice(0, 10) ?? null;
+    const endDate = n.end_time?.slice(0, 10) ?? startDate;
+    // If we have no date info at all, show the note
+    if (!startDate && !endDate) return true;
+    // Note spans [startDate, endDate] — show if targetDate falls in that range
+    if (startDate && startDate > targetDate) return false; // future
+    if (endDate && endDate < targetDate) return false; // past
+    return true;
   });
   if (visible.length === 0) return null;
   return (
