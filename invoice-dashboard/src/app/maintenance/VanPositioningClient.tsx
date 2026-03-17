@@ -2330,6 +2330,7 @@ function ScheduleTab({
         sic: null,
         pax_count: null,
         jetinsight_url: null,
+        fa_flight_id: null,
         alerts: [],
       };
       const item: VanFlightItem = {

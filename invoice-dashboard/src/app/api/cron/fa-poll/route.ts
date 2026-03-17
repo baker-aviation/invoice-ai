@@ -189,6 +189,73 @@ async function upsertFlights(flights: FlightInfo[]): Promise<number> {
 }
 
 // ---------------------------------------------------------------------------
+// Link FA flights → ICS flights by fa_flight_id
+// ---------------------------------------------------------------------------
+
+async function linkFaToIcs(flights: FlightInfo[]): Promise<number> {
+  if (flights.length === 0) return 0;
+  const supa = createServiceClient();
+  let linked = 0;
+
+  for (const fa of flights) {
+    if (!fa.fa_flight_id || !fa.tail || !fa.origin_icao || !fa.destination_icao) continue;
+
+    const faDep = fa.departure_time ?? fa.actual_departure;
+    if (!faDep) continue;
+
+    const faDepMs = new Date(faDep).getTime();
+    const windowStart = new Date(faDepMs - 3 * 3600_000).toISOString();
+    const windowEnd = new Date(faDepMs + 3 * 3600_000).toISOString();
+
+    // Find ICS flights matching tail + route + departure within ±3h
+    const { data: candidates } = await supa
+      .from("flights")
+      .select("id, scheduled_departure, fa_flight_id")
+      .eq("tail_number", fa.tail)
+      .eq("departure_icao", fa.origin_icao)
+      .eq("arrival_icao", fa.destination_icao)
+      .gte("scheduled_departure", windowStart)
+      .lte("scheduled_departure", windowEnd);
+
+    if (!candidates || candidates.length === 0) continue;
+
+    // Pick closest by departure time
+    let bestId: string | null = null;
+    let bestDiff = Infinity;
+    for (const c of candidates) {
+      // Skip if already correctly linked
+      if (c.fa_flight_id === fa.fa_flight_id) {
+        bestId = null;
+        break;
+      }
+      const diff = Math.abs(new Date(c.scheduled_departure).getTime() - faDepMs);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        bestId = c.id;
+      }
+    }
+
+    if (bestId) {
+      const { error } = await supa
+        .from("flights")
+        .update({ fa_flight_id: fa.fa_flight_id })
+        .eq("id", bestId);
+
+      if (!error) {
+        linked++;
+      } else {
+        console.error(`[FA Poll] linkFaToIcs error for ${fa.fa_flight_id}:`, error.message);
+      }
+    }
+  }
+
+  if (linked > 0) {
+    console.log(`[FA Poll] Linked ${linked} FA flights to ICS flights`);
+  }
+  return linked;
+}
+
+// ---------------------------------------------------------------------------
 // Mode 1: En-route polling
 // ---------------------------------------------------------------------------
 
@@ -214,12 +281,14 @@ async function pollEnRoute(
 
   let totalFlights = 0;
   let totalUpserted = 0;
+  const allFlights: FlightInfo[] = [];
 
   for (let i = 0; i < tails.length; i++) {
     try {
       const flights = await fetchAndProcessTail(tails[i], callsignMap);
       totalFlights += flights.length;
       totalUpserted += await upsertFlights(flights);
+      allFlights.push(...flights);
     } catch (err) {
       console.error(`[FA Poll] Error polling ${tails[i]}:`, err instanceof Error ? err.message : err);
     }
@@ -227,6 +296,9 @@ async function pollEnRoute(
       await new Promise((r) => setTimeout(r, PAUSE_MS));
     }
   }
+
+  // Link FA flights to ICS flights by fa_flight_id
+  await linkFaToIcs(allFlights);
 
   return { tails, flights: totalFlights, upserted: totalUpserted };
 }
@@ -279,12 +351,14 @@ async function pollDiscovery(
 
   let totalFlights = 0;
   let totalUpserted = 0;
+  const allFlights: FlightInfo[] = [];
 
   for (let i = 0; i < tails.length; i++) {
     try {
       const flights = await fetchAndProcessTail(tails[i], callsignMap);
       totalFlights += flights.length;
       totalUpserted += await upsertFlights(flights);
+      allFlights.push(...flights);
     } catch (err) {
       console.error(`[FA Poll] Error discovering ${tails[i]}:`, err instanceof Error ? err.message : err);
     }
@@ -292,6 +366,9 @@ async function pollDiscovery(
       await new Promise((r) => setTimeout(r, PAUSE_MS));
     }
   }
+
+  // Link FA flights to ICS flights by fa_flight_id
+  await linkFaToIcs(allFlights);
 
   // Cleanup: delete old completed flights (> 36h ago)
   const cutoff = new Date(now.getTime() - 36 * 3600_000).toISOString();

@@ -44,6 +44,7 @@ export type Flight = {
   sic: string | null;
   pax_count: number | null;
   jetinsight_url: string | null;
+  fa_flight_id: string | null;
   alerts: OpsAlert[];
 };
 
@@ -137,7 +138,7 @@ export async function fetchFlights(params: {
   // Fetch flights in the time window
   const { data: flightRows, error: flightErr } = await supa
     .from("flights")
-    .select("id, ics_uid, tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, summary, flight_type, pic, sic, pax_count, jetinsight_url")
+    .select("id, ics_uid, tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, summary, flight_type, pic, sic, pax_count, jetinsight_url, fa_flight_id")
     .gte("scheduled_departure", past)
     .lte("scheduled_departure", future)
     .order("scheduled_departure", { ascending: true });
@@ -239,6 +240,7 @@ export async function fetchFlights(params: {
     sic: f.sic as string | null,
     pax_count: f.pax_count as number | null,
     jetinsight_url: f.jetinsight_url as string | null,
+    fa_flight_id: f.fa_flight_id as string | null,
     alerts: alertsByFlight.get(f.id as string) ?? [],
   }));
 
@@ -276,6 +278,7 @@ export async function fetchFlights(params: {
       sic: null,
       pax_count: null,
       jetinsight_url: null,
+      fa_flight_id: null,
       alerts: [alert],
     });
   }
