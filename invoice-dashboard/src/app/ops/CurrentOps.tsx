@@ -1767,22 +1767,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                       <div className="flex items-center justify-between px-4 py-2.5 bg-gray-50 border-b border-gray-200">
                         <span className="inline-flex items-center gap-1.5 font-mono font-bold text-gray-900">
                           {tail}
-                          {(() => {
-                            const tailFi = flightInfo.get(tail);
-                            if (!tailFi?.diverted) return null;
-                            // Check if any flight for this tail has a confirmed diversion vs in-progress
-                            const hasConfirmedDiversion = tailFlights.some((tf) => supersededMap.get(tf.id)?.diverted);
-                            const hasDiverting = tailFlights.some((tf) => supersededMap.get(tf.id)?.diverting);
-                            // False alarm: diverted flag set but landed at correct airport (not in supersededMap)
-                            if (!hasConfirmedDiversion && !hasDiverting) return null;
-                            const isConfirmed = hasConfirmedDiversion;
-                            return (
-                              <span className="relative flex h-2.5 w-2.5" title={isConfirmed ? "DIVERTED" : "DIVERTING"}>
-                                <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${isConfirmed ? "bg-red-400" : "bg-amber-400"} opacity-75`} />
-                                <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${isConfirmed ? "bg-red-500" : "bg-amber-500"}`} />
-                              </span>
-                            );
-                          })()}
+                          {/* Diversion dots disabled — FA diverted flag too unreliable */}
                         </span>
                         <div className="flex items-center gap-2">
                           {duty && (() => {
@@ -1887,20 +1872,13 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           } else if (fi?.actual_arrival) {
                             status = "Arrived"; statusColor = "text-green-600 font-medium";
                           }
-                          const supersedInfo = supersededMap.get(f.id);
-                          if (fi?.diverted) {
-                            const fiLanded = fi.actual_arrival != null
-                              || (fi.progress_percent != null && fi.progress_percent >= 100)
-                              || (fi.arrival_time != null && new Date(fi.arrival_time).getTime() < now.getTime());
-                            if (supersedInfo?.diverted) { status = "DIVERTED"; statusColor = "text-red-600 font-bold"; }
-                            else if (supersedInfo?.diverting) { status = "DIVERTING"; statusColor = "text-amber-600 font-bold"; }
-                            else if (fiLanded) { status = "Arrived"; statusColor = "text-green-600 font-medium"; }
-                            else { status = "DIVERTING"; statusColor = "text-amber-600 font-bold"; }
-                          } else if (f.tail_number && holdingTails.has(f.tail_number) && status === "En Route") { status = "HOLDING"; statusColor = "text-red-600 font-bold animate-pulse"; }
+                          // Diversion display disabled — FA diverted flag too unreliable (re-enable later)
+                          if (f.tail_number && holdingTails.has(f.tail_number) && status === "En Route") { status = "HOLDING"; statusColor = "text-red-600 font-bold animate-pulse"; }
 
-                          const isCancelled = !!supersedInfo && !supersedInfo.diverting;
+                          const supersedInfo = supersededMap.get(f.id);
+                          const isCancelled = !!supersedInfo && !supersedInfo.diverting && !supersedInfo.diverted;
                           const isFaSourced = f.id.startsWith("fa-");
-                          if (isCancelled && !fi?.diverted) {
+                          if (isCancelled) {
                             status = supersedInfo.diverted ? "DIVERTED" : "Cancelled";
                             statusColor = supersedInfo.diverted ? "text-red-600 font-bold" : "text-red-600 font-medium";
                           }
@@ -1909,25 +1887,11 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           const actualArrIso = isCancelled ? null : (fi?.actual_arrival ?? (!swimEntryStale ? swimEntry?.actual_arrival : null) ?? null);
 
                           return (
-                            <div key={f.id} className={`px-4 py-2 text-xs ${isCancelled ? "opacity-50 bg-gray-50" : ""} ${supersedInfo?.diverting ? "bg-amber-50/40" : ""} ${isFaSourced ? "bg-blue-50/40" : ""}`}>
+                            <div key={f.id} className={`px-4 py-2 text-xs ${isCancelled ? "opacity-50 bg-gray-50" : ""} ${isFaSourced ? "bg-blue-50/40" : ""}`}>
                               <div className="flex items-center gap-3">
                                 <span className="font-mono font-medium w-28 shrink-0 text-gray-800">
                                   {f.departure_icao || "?"} →{" "}
-                                  {supersedInfo?.diverted ? (
-                                    <>
-                                      <span className="line-through text-red-400">{f.arrival_icao || "?"}</span>
-                                      {supersedInfo.actualDest && (
-                                        <span className="text-red-600 font-bold ml-1">{supersedInfo.actualDest}</span>
-                                      )}
-                                    </>
-                                  ) : supersedInfo?.diverting ? (
-                                    <>
-                                      {f.arrival_icao || "?"}
-                                      {supersedInfo.actualDest && (
-                                        <span className="text-amber-600 ml-1 text-[10px]">(est. {supersedInfo.actualDest})</span>
-                                      )}
-                                    </>
-                                  ) : isCancelled ? (
+                                  {isCancelled ? (
                                     <>
                                       <span className="line-through text-red-400">{f.arrival_icao || "?"}</span>
                                       {supersedInfo!.actualDest && (
@@ -2228,26 +2192,19 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                   status = "Arrived"; statusColor = "text-green-600 font-medium";
                 }
 
-                const supersedInfo = supersededMap.get(f.id);
-                if (fi?.diverted) {
-                  const fiLanded = fi.actual_arrival != null
-                    || (fi.progress_percent != null && fi.progress_percent >= 100)
-                    || (fi.arrival_time != null && new Date(fi.arrival_time).getTime() < Date.now());
-                  if (supersedInfo?.diverted) { status = "DIVERTED"; statusColor = "text-red-600 font-bold"; }
-                  else if (supersedInfo?.diverting) { status = "DIVERTING"; statusColor = "text-amber-600 font-bold"; }
-                  else if (fiLanded) { status = "Arrived"; statusColor = "text-green-600 font-medium"; }
-                  else { status = "DIVERTING"; statusColor = "text-amber-600 font-bold"; }
-                } else if (f.tail_number && holdingTails.has(f.tail_number) && (status === "En Route")) {
+                // Diversion display disabled — FA diverted flag too unreliable (re-enable later)
+                if (f.tail_number && holdingTails.has(f.tail_number) && (status === "En Route")) {
                   status = "HOLDING";
                   statusColor = "text-red-600 font-bold animate-pulse";
                 }
 
-                // Check if this leg is superseded by FA (route changed or diverted)
-                const isCancelled = !!supersedInfo && !supersedInfo.diverting;
+                // Check if this leg is superseded by FA (route changed only, not diverted)
+                const supersedInfo = supersededMap.get(f.id);
+                const isCancelled = !!supersedInfo && !supersedInfo.diverting && !supersedInfo.diverted;
                 const isFaSourced = f.id.startsWith("fa-");
-                if (isCancelled && !fi?.diverted) {
-                  status = supersedInfo.diverted ? "DIVERTED" : "Cancelled";
-                  statusColor = supersedInfo.diverted ? "text-red-600 font-bold" : "text-red-600 font-medium";
+                if (isCancelled) {
+                  status = "Cancelled";
+                  statusColor = "text-red-600 font-medium";
                 }
 
                 const depDate = new Date(f.scheduled_departure);
@@ -2334,32 +2291,13 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                       <td className="px-3 py-2.5 font-mono font-semibold text-gray-900">
                         <span className="inline-flex items-center gap-1.5">
                           {f.tail_number || "—"}
-                          {(supersedInfo?.diverted || supersedInfo?.diverting) && (
-                            <span className="relative flex h-2.5 w-2.5" title={supersedInfo.diverted ? "DIVERTED" : "DIVERTING"}>
-                              <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${supersedInfo.diverted ? "bg-red-400" : "bg-amber-400"} opacity-75`} />
-                              <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${supersedInfo.diverted ? "bg-red-500" : "bg-amber-500"}`} />
-                            </span>
-                          )}
+                          {/* Diversion dots disabled — FA diverted flag too unreliable */}
                         </span>
                       </td>
                       <td className="px-3 py-2.5">
                         <span className="font-mono font-medium">
                           {f.departure_icao || "?"} →{" "}
-                          {supersedInfo?.diverted ? (
-                            <>
-                              <span className="line-through text-red-400">{f.arrival_icao || "?"}</span>
-                              {supersedInfo.actualDest && (
-                                <span className="text-red-600 font-bold ml-1">{supersedInfo.actualDest}</span>
-                              )}
-                            </>
-                          ) : supersedInfo?.diverting ? (
-                            <>
-                              {f.arrival_icao || "?"}
-                              {supersedInfo.actualDest && (
-                                <span className="text-amber-600 ml-1 text-[10px]">(est. {supersedInfo.actualDest})</span>
-                              )}
-                            </>
-                          ) : isCancelled ? (
+                          {isCancelled ? (
                             <>
                               <span className="line-through text-red-400">{f.arrival_icao || "?"}</span>
                               {supersedInfo!.actualDest && (
