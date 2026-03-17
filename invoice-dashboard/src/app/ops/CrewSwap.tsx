@@ -548,6 +548,8 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
   // Phase 4: Flight change alerts
   const [swapAlerts, setSwapAlerts] = useState<SwapAlert[]>([]);
   const [alertCount, setAlertCount] = useState(0);
+  // Excluded tails (MX, owner-flown, etc.)
+  const [excludedTails, setExcludedTails] = useState<Set<string>>(new Set());
   // Phase 5-6: Strategy
   const [strategy, setStrategy] = useState<"offgoing_first" | "oncoming_first">("offgoing_first");
 
@@ -984,12 +986,19 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
     setOptimizing(true);
     setOptimizeError(null);
     try {
+      // Filter out excluded tails from swap assignments
+      let filteredAssignments = swapAssignments;
+      if (filteredAssignments && excludedTails.size > 0) {
+        filteredAssignments = Object.fromEntries(
+          Object.entries(filteredAssignments).filter(([tail]) => !excludedTails.has(tail))
+        );
+      }
       const res = await fetch("/api/crew/optimize", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           swap_date: selectedWed.toISOString().slice(0, 10),
-          swap_assignments: swapAssignments ?? undefined,
+          swap_assignments: filteredAssignments ?? undefined,
           oncoming_pool: oncomingPool ?? undefined,
           strategy,
         }),
@@ -1287,7 +1296,8 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
             </h3>
             {swapPoints.length > 0 && (
               <span className="text-[10px] px-2 py-0.5 rounded bg-blue-50 text-blue-600">
-                {swapPoints.length} tails
+                {swapPoints.length - excludedTails.size}/{swapPoints.length} tails
+                {excludedTails.size > 0 && ` (${excludedTails.size} excluded)`}
               </span>
             )}
             {/* Phase 4: Alert badge */}
@@ -1337,9 +1347,22 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
             {swapPoints.length > 0 ? (
               <div className="space-y-2 p-3">
                 {swapPoints.map((t) => (
-                  <div key={t.tail} className="rounded border bg-white overflow-hidden">
+                  <div key={t.tail} className={`rounded border overflow-hidden ${excludedTails.has(t.tail) ? "opacity-40" : "bg-white"}`}>
                     <div className="px-3 py-2 bg-gray-50 border-b flex items-center justify-between">
-                      <span className="font-mono font-bold text-sm text-gray-900">{t.tail}</span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => setExcludedTails((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(t.tail)) next.delete(t.tail); else next.add(t.tail);
+                            return next;
+                          })}
+                          className={`w-4 h-4 rounded border flex items-center justify-center text-[10px] ${excludedTails.has(t.tail) ? "bg-red-100 border-red-300 text-red-600" : "bg-white border-gray-300 text-transparent hover:border-gray-400"}`}
+                          title={excludedTails.has(t.tail) ? "Click to include" : "Click to exclude"}
+                        >
+                          {excludedTails.has(t.tail) ? "X" : ""}
+                        </button>
+                        <span className={`font-mono font-bold text-sm ${excludedTails.has(t.tail) ? "text-gray-400 line-through" : "text-gray-900"}`}>{t.tail}</span>
+                      </div>
                       <div className="flex items-center gap-2 text-xs text-gray-500">
                         {t.recent_crew ? (
                           <span className="px-1.5 py-0.5 rounded bg-green-100 text-green-700 text-[10px]" title={`PIC: ${t.recent_crew.pic.join(", ") || "—"} | SIC: ${t.recent_crew.sic.join(", ") || "—"}`}>
