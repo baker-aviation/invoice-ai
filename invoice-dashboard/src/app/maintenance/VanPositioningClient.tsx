@@ -1992,8 +1992,8 @@ function ScheduleTab({
 
   // Track the last DB updated_at to avoid overwriting fresher data
   const draftUpdatedAtRef = useRef<string | null>(null);
-  // Suppress DB save while loading from DB
-  const suppressSaveRef = useRef(false);
+  // Suppress DB save while loading from DB — start suppressed until initial load completes
+  const suppressSaveRef = useRef(true);
 
   // DB-backed UI state refs — synced from parent props for inclusion in draft saves
   const wontSeeTailsRef = useRef<string[]>([]);
