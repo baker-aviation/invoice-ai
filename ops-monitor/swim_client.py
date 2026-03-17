@@ -636,8 +636,8 @@ def get_trip_airports(lookahead_days: int = 30) -> set[str]:
     rows = (
         supa.table("flights")
         .select("departure_icao,arrival_icao")
-        .gte("departure_time", now_iso)
-        .lte("departure_time", cutoff)
+        .gte("scheduled_departure", now_iso)
+        .lte("scheduled_departure", cutoff)
         .execute()
     )
     airports: set[str] = set()
@@ -657,10 +657,10 @@ def _find_matching_flights(supa, airport_icao: str) -> List[Dict[str, Any]]:
 
     rows = (
         supa.table("flights")
-        .select("id,tail_number,departure_icao,arrival_icao,departure_time")
+        .select("id,tail_number,departure_icao,arrival_icao,scheduled_departure")
         .or_(f"departure_icao.eq.{airport_icao},arrival_icao.eq.{airport_icao}")
-        .gte("departure_time", now_iso)
-        .lte("departure_time", cutoff)
+        .gte("scheduled_departure", now_iso)
+        .lte("scheduled_departure", cutoff)
         .limit(50)
         .execute()
     )
