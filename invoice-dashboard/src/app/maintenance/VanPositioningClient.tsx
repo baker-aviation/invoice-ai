@@ -1817,9 +1817,12 @@ function VanScheduleCard({
           ) : (
             <div className="divide-y">
               {items.map(({ arrFlight, nextDep, isRepo, nextIsRepo, airport, airportInfo, distKm }) => {
-                const fi = flightInfoMap.get(arrFlight.tail_number ?? "");
+                // Only use FA live data when viewing today — tomorrow's flights aren't flying yet
+                const todayEt = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+                const isViewingToday = date === todayEt;
+                const fi = isViewingToday ? flightInfoMap.get(arrFlight.tail_number ?? "") : undefined;
                 const arrTime = arrFlight.scheduled_arrival ? new Date(arrFlight.scheduled_arrival) : null;
-                const hasLanded = arrTime !== null && arrTime < now;
+                const hasLanded = isViewingToday && arrTime !== null && arrTime < now;
                 const faEtaMs = fi?.arrival_time ? new Date(fi.arrival_time).getTime() : null;
                 const schedMs = arrTime ? arrTime.getTime() : null;
                 const delayMs = (faEtaMs != null && schedMs != null) ? faEtaMs - schedMs : 0;
