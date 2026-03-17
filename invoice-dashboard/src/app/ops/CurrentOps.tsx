@@ -153,16 +153,27 @@ function computeTailDuty(
     const ft = (f.flight_type ?? "").toLowerCase();
     if (ft && !DUTY_FLIGHT_TYPES.has(ft)) continue;
 
-    // Match FA data: prefer exact route match within 6h, fall back to closest departure time within 2h
+    // Match FA data: direct ID match first, then route+time heuristics as fallback
     const tailFaFlights = faByTail.get(f.tail_number) ?? [];
     let fi: FlightInfoMap | undefined;
     const schedMs = new Date(f.scheduled_departure).getTime();
-    fi = tailFaFlights.find((fa) => {
-      if (fa.origin_icao !== f.departure_icao || fa.destination_icao !== f.arrival_icao) return false;
-      const faDep = fa.departure_time ?? fa.actual_departure;
-      if (!faDep) return true;
-      return Math.abs(new Date(faDep).getTime() - schedMs) < 6 * 60 * 60 * 1000;
-    });
+
+    // 1. Direct ID match (if ICS flight has fa_flight_id linked)
+    if (f.fa_flight_id) {
+      fi = tailFaFlights.find(fa => fa.fa_flight_id === f.fa_flight_id);
+    }
+
+    // 2. Fallback: exact route match within 6h
+    if (!fi) {
+      fi = tailFaFlights.find((fa) => {
+        if (fa.origin_icao !== f.departure_icao || fa.destination_icao !== f.arrival_icao) return false;
+        const faDep = fa.departure_time ?? fa.actual_departure;
+        if (!faDep) return true;
+        return Math.abs(new Date(faDep).getTime() - schedMs) < 6 * 60 * 60 * 1000;
+      });
+    }
+
+    // 3. Fallback: closest departure time within 2h
     if (!fi && tailFaFlights.length > 0) {
       let bestDiff = Infinity;
       for (const fa of tailFaFlights) {
@@ -920,6 +931,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
         sic: null,
         pax_count: null,
         jetinsight_url: null,
+        fa_flight_id: null,
         alerts: [],
       });
     }
