@@ -378,11 +378,12 @@ async function pollDiscovery(
     .lt("actual_arrival", cutoff)
     .not("actual_arrival", "is", null);
 
-  // Also clean stale diverted/cancelled flights that never landed (> 36h old by updated_at)
+  // Also clean any flight that never recorded a landing and hasn't been updated in 36h.
+  // This catches En Route / Scheduled flights where FA lost track and never sent actual_arrival.
+  // Without this, ghost tracks persist on the map indefinitely.
   const { count: cleaned2 } = await supa
     .from("fa_flights")
     .delete({ count: "exact" })
-    .in("status", ["Diverted", "Cancelled"])
     .is("actual_arrival", null)
     .lt("updated_at", cutoff);
 
