@@ -58,15 +58,14 @@ export type FlightsResponse = {
 // NOTAM noise filter — matches backend logic in ops-monitor/main.py
 // ---------------------------------------------------------------------------
 
-const NOISE_PATTERNS = [
-  /RWY\s+\d+[LRC]?\/\d+[LRC]?\s+(CLSD|CLOSED)/i,
-  /TWY\s+\w+\s+(CLSD|CLOSED)/i,
-];
+// Equipment/lighting terms that indicate a RWY NOTAM is NOT an actual closure.
+// Mirrors _NOISE_TERMS in ops-monitor/main.py.
+const NOISE_TERMS = /\b(ILS|PAPI|ALS|LGT|LIGHT|TWY|TAXIWAY|APRON|WINDCONE|WIND\s*CONE)\b/i;
 
 function isNoiseNotam(alert: { alert_type: string; body: string | null }): boolean {
   if (alert.alert_type !== "NOTAM_RUNWAY" && alert.alert_type !== "NOTAM_TAXIWAY") return false;
   if (!alert.body) return false;
-  return NOISE_PATTERNS.some((p) => p.test(alert.body!));
+  return NOISE_TERMS.test(alert.body);
 }
 
 // ---------------------------------------------------------------------------
