@@ -867,7 +867,9 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
     all_components: list = []
     feed_results: dict = {}
     pool = ThreadPoolExecutor(max_workers=min(len(ics_urls), 8))
-    future_to_url = {pool.submit(_fetch_ics_events, url, now): url for url in ics_urls}
+    # Fetch events ending after 48h ago so cleanup can purge stale past flights too
+    ics_cutoff_past = now - timedelta(hours=48)
+    future_to_url = {pool.submit(_fetch_ics_events, url, ics_cutoff_past): url for url in ics_urls}
     try:
         for future in as_completed(future_to_url, timeout=60):
             url = future_to_url[future]
@@ -1082,7 +1084,8 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
         fresh_uids = {f["ics_uid"] for f in batch}
         if fresh_uids:
             # Fetch all ics_uids currently in the DB within the sync window
-            window_start = now.isoformat()
+            # Include 48h of past flights so revised/removed legs get cleaned up
+            window_start = (now - timedelta(hours=48)).isoformat()
             window_end = cutoff.isoformat()
             db_rows = (
                 supa.table(FLIGHTS_TABLE)
@@ -1165,7 +1168,7 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
     except Exception as e:
         print(f"sync_schedule cleanup error: {repr(e)}", flush=True)
 
-    # ── Cleanup: delete future flights that no longer appear in any ICS feed ──
+    # ── Cleanup: delete recent+future flights that no longer appear in any ICS feed ──
     # Only run cleanup if we successfully fetched at least 1 feed (avoid
     # wiping everything if all feeds failed).
     deleted = 0
@@ -1173,10 +1176,11 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
     successful_feeds = sum(1 for v in feed_results.values() if isinstance(v, int))
     if successful_feeds > 0 and live_uids:
         try:
-            # Find future flights in DB whose ics_uid is NOT in the current feed
+            # Find recent+future flights in DB whose ics_uid is NOT in the current feed
+            # Include 48h of past flights so revised/removed legs get cleaned up
             existing = supa.table(FLIGHTS_TABLE) \
                 .select("id, ics_uid") \
-                .gte("scheduled_departure", now.isoformat()) \
+                .gte("scheduled_departure", (now - timedelta(hours=48)).isoformat()) \
                 .limit(10000) \
                 .execute()
             stale_ids = [
