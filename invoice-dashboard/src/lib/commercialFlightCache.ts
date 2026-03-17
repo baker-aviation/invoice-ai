@@ -202,9 +202,9 @@ export async function buildFlightCache(
     const progress = Math.min(i + BATCH_SIZE, airports.length);
     console.log(`[CommercialCache] ${offset + progress}/${totalAirports} airports, ${inserted} flights saved`);
 
-    // Rate limit pause between batches
+    // Rate limit pause between batches (FA allows ~5 req/sec for schedules)
     if (i + BATCH_SIZE < airports.length) {
-      await new Promise((r) => setTimeout(r, 400));
+      await new Promise((r) => setTimeout(r, 1200));
     }
   }
 
