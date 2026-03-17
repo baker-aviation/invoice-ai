@@ -397,16 +397,19 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
       const ft = (f.flight_type ?? "").toLowerCase();
       if (ft && !DUTY_FLIGHT_TYPES.has(ft)) continue;
 
-      // Match FA data: prefer exact route match, fall back to closest departure time
+      // Match FA data: prefer exact route match within 6h, fall back to closest departure time within 2h
       const tailFaFlights = faByTail.get(f.tail_number) ?? [];
       let fi: FlightInfoMap | undefined;
-      // Try exact route match first
-      fi = tailFaFlights.find(
-        (fa) => fa.origin_icao === f.departure_icao && fa.destination_icao === f.arrival_icao
-      );
+      const schedMs = new Date(f.scheduled_departure).getTime();
+      // Try exact route match first (but require within 6h to avoid cross-day stale matches)
+      fi = tailFaFlights.find((fa) => {
+        if (fa.origin_icao !== f.departure_icao || fa.destination_icao !== f.arrival_icao) return false;
+        const faDep = fa.departure_time ?? fa.actual_departure;
+        if (!faDep) return true; // no departure time yet — allow match
+        return Math.abs(new Date(faDep).getTime() - schedMs) < 6 * 60 * 60 * 1000;
+      });
       // Fall back: match by closest scheduled departure time (within 2h)
       if (!fi && tailFaFlights.length > 0) {
-        const schedMs = new Date(f.scheduled_departure).getTime();
         let bestDiff = Infinity;
         for (const fa of tailFaFlights) {
           const faDep = fa.departure_time ?? fa.actual_departure;

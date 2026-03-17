@@ -153,14 +153,17 @@ function computeTailDuty(
     const ft = (f.flight_type ?? "").toLowerCase();
     if (ft && !DUTY_FLIGHT_TYPES.has(ft)) continue;
 
-    // Match FA data: prefer exact route match, fall back to closest departure time
+    // Match FA data: prefer exact route match within 6h, fall back to closest departure time within 2h
     const tailFaFlights = faByTail.get(f.tail_number) ?? [];
     let fi: FlightInfoMap | undefined;
-    fi = tailFaFlights.find(
-      (fa) => fa.origin_icao === f.departure_icao && fa.destination_icao === f.arrival_icao,
-    );
+    const schedMs = new Date(f.scheduled_departure).getTime();
+    fi = tailFaFlights.find((fa) => {
+      if (fa.origin_icao !== f.departure_icao || fa.destination_icao !== f.arrival_icao) return false;
+      const faDep = fa.departure_time ?? fa.actual_departure;
+      if (!faDep) return true;
+      return Math.abs(new Date(faDep).getTime() - schedMs) < 6 * 60 * 60 * 1000;
+    });
     if (!fi && tailFaFlights.length > 0) {
-      const schedMs = new Date(f.scheduled_departure).getTime();
       let bestDiff = Infinity;
       for (const fa of tailFaFlights) {
         const faDep = fa.departure_time ?? fa.actual_departure;
