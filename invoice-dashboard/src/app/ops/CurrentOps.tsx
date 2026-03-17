@@ -813,7 +813,11 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
       })();
       const routeFi = flightInfo.get(routeKey) ?? tailFallback;
       if (routeFi?.diverted) {
-        const hasLanded = routeFi.actual_arrival != null;
+        // FA often doesn't populate actual_arrival for diverted flights.
+        // Also check progress and ETA as landed signals.
+        const hasLanded = routeFi.actual_arrival != null
+          || (routeFi.progress_percent != null && routeFi.progress_percent >= 100)
+          || (routeFi.arrival_time != null && new Date(routeFi.arrival_time).getTime() < Date.now());
         // Normalize ICAO codes for comparison (3-letter US → K-prefix)
         const normIcao = (c: string | null | undefined) => c ? (c.length === 3 && /^[A-Z]/.test(c) ? `K${c}` : c) : null;
         const faDest = normIcao(routeFi.destination_icao);
@@ -874,7 +878,9 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
       let routeDiverted = false;
       let routeDiverting = false;
       if (tailFi.diverted) {
-        const hasLanded = tailFi.actual_arrival != null;
+        const hasLanded = tailFi.actual_arrival != null
+          || (tailFi.progress_percent != null && tailFi.progress_percent >= 100)
+          || (tailFi.arrival_time != null && new Date(tailFi.arrival_time).getTime() < Date.now());
         const faDest = normIcaoB(tailFi.destination_icao);
         const schedDest = normIcaoB(f.arrival_icao);
         if (hasLanded && faDest && schedDest && faDest === schedDest) {
@@ -1883,9 +1889,12 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           }
                           const supersedInfo = supersededMap.get(f.id);
                           if (fi?.diverted) {
+                            const fiLanded = fi.actual_arrival != null
+                              || (fi.progress_percent != null && fi.progress_percent >= 100)
+                              || (fi.arrival_time != null && new Date(fi.arrival_time).getTime() < now.getTime());
                             if (supersedInfo?.diverted) { status = "DIVERTED"; statusColor = "text-red-600 font-bold"; }
                             else if (supersedInfo?.diverting) { status = "DIVERTING"; statusColor = "text-amber-600 font-bold"; }
-                            else if (fi.actual_arrival) { status = "Arrived"; statusColor = "text-green-600 font-medium"; }
+                            else if (fiLanded) { status = "Arrived"; statusColor = "text-green-600 font-medium"; }
                             else { status = "DIVERTING"; statusColor = "text-amber-600 font-bold"; }
                           } else if (f.tail_number && holdingTails.has(f.tail_number) && status === "En Route") { status = "HOLDING"; statusColor = "text-red-600 font-bold animate-pulse"; }
 
@@ -2221,9 +2230,12 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
 
                 const supersedInfo = supersededMap.get(f.id);
                 if (fi?.diverted) {
+                  const fiLanded = fi.actual_arrival != null
+                    || (fi.progress_percent != null && fi.progress_percent >= 100)
+                    || (fi.arrival_time != null && new Date(fi.arrival_time).getTime() < Date.now());
                   if (supersedInfo?.diverted) { status = "DIVERTED"; statusColor = "text-red-600 font-bold"; }
                   else if (supersedInfo?.diverting) { status = "DIVERTING"; statusColor = "text-amber-600 font-bold"; }
-                  else if (fi.actual_arrival) { status = "Arrived"; statusColor = "text-green-600 font-medium"; }
+                  else if (fiLanded) { status = "Arrived"; statusColor = "text-green-600 font-medium"; }
                   else { status = "DIVERTING"; statusColor = "text-amber-600 font-bold"; }
                 } else if (f.tail_number && holdingTails.has(f.tail_number) && (status === "En Route")) {
                   status = "HOLDING";
