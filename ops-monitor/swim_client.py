@@ -518,11 +518,21 @@ def parse_notam_message(xml_str: str) -> Optional[Dict[str, Any]]:
     except ET.ParseError:
         return None
 
-    # NOTAM ID
-    notam_id_el = _find_any(root, "id", "notamId", "identifier")
-    notam_id = _safe_text(notam_id_el)
+    # NOTAM ID — build from series/number/year (e.g. "A0621/2026") for human readability
+    series_el = _find_any(root, "series")
+    number_el = _find_any(root, "number")
+    year_el = _find_any(root, "year")
+    series = _safe_text(series_el) or ""
+    number = _safe_text(number_el) or ""
+    year = _safe_text(year_el) or ""
+    notam_id = f"{series}{number}/{year}" if series and number and year else None
+
     if not notam_id:
-        # Try attribute
+        # Fall back to gml:identifier (UUID)
+        ident_el = _find_any(root, "identifier")
+        notam_id = _safe_text(ident_el)
+    if not notam_id:
+        # Last resort: gml:id attribute
         for el in root.iter():
             gml_id = el.get("{http://www.opengis.net/gml/3.2}id") or el.get("id")
             if gml_id:
@@ -532,21 +542,28 @@ def parse_notam_message(xml_str: str) -> Optional[Dict[str, Any]]:
     if not notam_id:
         return None
 
-    # Location / airport
-    location_el = _find_any(root, "location", "affectedFIR", "designator")
+    # Location / airport — prefer <location> (actual airport) over <affectedFIR> (ARTCC/FIR)
+    location_el = _find_any(root, "location")
     airport = _safe_text(location_el)
+    if not airport:
+        fir_el = _find_any(root, "affectedFIR", "designator")
+        airport = _safe_text(fir_el)
+
+    # Convert 3-letter US FAA LIDs to 4-letter ICAO (e.g. SGF → KSGF)
+    if airport and len(airport) == 3 and airport.isalpha() and airport.isupper():
+        airport = "K" + airport
 
     # NOTAM text
     text_el = _find_any(root, "text", "notamText", "description", "note")
     body = _safe_text(text_el)
 
-    # Classification
-    class_el = _find_any(root, "classification", "type", "purpose")
+    # Classification — use selectionCode (ICAO Q-code like QFTAS, QMRLC)
+    class_el = _find_any(root, "selectionCode", "classification", "purpose")
     classification = _safe_text(class_el)
 
-    # Times
-    eff_el = _find_any(root, "effectiveStart", "beginPosition", "validTimeBegin")
-    exp_el = _find_any(root, "effectiveEnd", "endPosition", "validTimeEnd")
+    # Times — prefer ISO timestamps from gml:TimePeriod over NOTAM YYMMDDHHMM format
+    eff_el = _find_any(root, "beginPosition", "effectiveStart", "validTimeBegin")
+    exp_el = _find_any(root, "endPosition", "effectiveEnd", "validTimeEnd")
 
     # Classify the NOTAM (reuse logic from main.py patterns)
     notam_type = "NOTAM_OTHER"
@@ -789,10 +806,9 @@ def drain_notam_stream(max_secs: int = 250) -> Dict[str, Any]:
 
             airport = notam.get("airport_icao")
 
-            # Debug: log first 3 raw XML payloads + parsed airports
-            if stats["messages_received"] <= 3:
+            # Debug: log first 5 parsed airports
+            if stats["messages_received"] <= 5:
                 print(f"[SWIM NOTAM] Sample #{stats['messages_received']}: airport={airport!r} notam_id={notam.get('notam_id','?')} type={notam.get('notam_type','?')}", flush=True)
-                print(f"[SWIM NOTAM] Raw XML #{stats['messages_received']}: {payload[:2000]}", flush=True)
 
             # Always upsert to swim_notams for trip airports
             if not airport:
