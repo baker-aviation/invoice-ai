@@ -880,6 +880,7 @@ function optimizeTail(
   commercialFlights: Map<string, FlightOffer[]> | undefined,
   swapDate: string,
   tailLegs?: FlightLeg[],
+  deadlines?: OncomingDeadline[],
 ): void {
   // Build candidates for each task
   for (const task of tasks) {
@@ -898,6 +899,34 @@ function optimizeTail(
   // Separate by direction
   const oncoming = tasks.filter((t) => t.direction === "oncoming");
   const offgoing = tasks.filter((t) => t.direction === "offgoing");
+
+  // ── Filter oncoming candidates by offgoing deadlines ───────────────
+  // When offgoing-first deadlines are provided, oncoming must arrive before
+  // the offgoing crew needs to leave the FBO. This eliminates timing conflicts.
+  if (deadlines && deadlines.length > 0) {
+    const tail = tasks[0]?.tail;
+    const tailDeadlines = deadlines.filter((d) => d.tail === tail);
+    for (const onTask of oncoming) {
+      const dl = tailDeadlines.find((d) => d.role === onTask.role);
+      if (!dl) continue;
+      const deadlineMs = dl.deadline.getTime();
+      const filtered = onTask.candidates.filter((c) => {
+        if (c.type === "none") return true;
+        if (!c.fboArrivalTime) return true; // can't evaluate — keep
+        return c.fboArrivalTime.getTime() <= deadlineMs;
+      });
+      if (filtered.some((c) => c.type !== "none")) {
+        onTask.candidates = filtered;
+      } else {
+        // No oncoming option arrives before offgoing must leave
+        onTask.candidates = onTask.candidates.filter((c) => c.type === "none");
+        onTask.warnings.push(
+          `No oncoming transport arrives before offgoing ${dl.offgoingName} must leave` +
+          (dl.offgoingFlight ? ` (${dl.offgoingFlight})` : ""),
+        );
+      }
+    }
+  }
 
   // Score and select oncoming PIC first (to pair SIC with same flights)
   const oncomingPic = oncoming.find((t) => t.role === "PIC");
@@ -1021,26 +1050,13 @@ function optimizeTail(
         // else: filtered out — crew must leave FBO before oncoming arrives
       }
 
-      if (adjusted.length > 0 && adjusted.some((c) => c.type !== "none")) {
-        task.candidates = adjusted;
-      } else {
-        // Graceful degradation: keep ALL original candidates with a warning.
-        // Better to show a timing-conflict option than "none".
-        const sorted = task.candidates
-          .filter((c) => c.type !== "none" && (c.fboLeaveTime ?? c.depTime))
-          .sort((a, b) => {
-            const bT = (b.fboLeaveTime ?? b.depTime)!.getTime();
-            const aT = (a.fboLeaveTime ?? a.depTime)!.getTime();
-            return bT - aT; // latest-leaving first
-          });
-        const gapMin = sorted[0]
-          ? Math.round((earliestOffgoingLeave - (sorted[0].fboLeaveTime ?? sorted[0].depTime)!.getTime()) / 60_000)
-          : 0;
+      // Only keep candidates that pass the timing constraint
+      task.candidates = adjusted;
+      if (!adjusted.some((c) => c.type !== "none")) {
+        // All real transport options depart before oncoming arrives — unsolvable
         task.warnings.push(
-          `Aircraft unattended risk: offgoing must leave FBO before oncoming PIC arrives + ${HANDOFF_BUFFER_MINUTES}min handoff` +
-          (gapMin > 0 ? ` (best option misses by ${gapMin} min)` : ""),
+          `No offgoing transport available: all options require leaving FBO before oncoming PIC arrives + ${HANDOFF_BUFFER_MINUTES}min handoff`,
         );
-        // Keep originals — scorer will still rank them, user sees the warning
       }
     }
   }
@@ -1231,6 +1247,14 @@ export function buildSwapPlan(params: {
   _warnedFlightKeys.clear(); // Reset per-run to avoid stale warnings
   const globalWarnings: string[] = [];
   const allTasks: CrewTask[] = [];
+
+  // When offgoing-first: compute deadlines (latest oncoming arrival per tail)
+  // so optimizeTail can reject oncoming candidates that arrive too late.
+  let offgoingDeadlines: OncomingDeadline[] | undefined;
+  if (strategy === "offgoing_first" && swapAssignments && Object.keys(swapAssignments).length > 0) {
+    const offResult = solveOffgoingFirst({ flights, crewRoster, aliases, swapDate, commercialFlights, swapAssignments });
+    offgoingDeadlines = offResult.deadlines;
+  }
 
   if (!swapAssignments || Object.keys(swapAssignments).length === 0) {
     globalWarnings.push("No swap assignments found. Upload the swap Excel document first.");
@@ -1510,7 +1534,7 @@ export function buildSwapPlan(params: {
     }
 
     // Run optimizer for this tail
-    optimizeTail(tailTasks, aliases, commercialFlights, swapDate, byTail.get(tail));
+    optimizeTail(tailTasks, aliases, commercialFlights, swapDate, byTail.get(tail), offgoingDeadlines);
     allTasks.push(...tailTasks);
 
     // Emit placeholder rows for unassigned oncoming slots
@@ -2726,8 +2750,10 @@ export function solveOffgoingFirst(params: {
       const best = task.best;
       let deadline: Date | null = null;
 
-      if (best?.depTime) {
-        deadline = new Date(best.depTime.getTime() - HANDOFF_BUFFER_MINUTES * 60_000);
+      // Use fboLeaveTime (when crew physically leaves FBO) — tighter than depTime
+      const offgoingLeave = best?.fboLeaveTime ?? best?.depTime;
+      if (offgoingLeave) {
+        deadline = new Date(offgoingLeave.getTime() - HANDOFF_BUFFER_MINUTES * 60_000);
       }
 
       offgoingPlans.push({
