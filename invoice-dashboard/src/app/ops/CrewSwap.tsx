@@ -81,6 +81,7 @@ type SwapPointData = {
   overnight_airport: string | null;
   aircraft_type: string;
   wednesday_legs: { dep: string; arr: string; type: string | null; dep_time: string; arr_time: string | null }[];
+  recent_crew: { pic: string[]; sic: string[] } | null;
 };
 
 type SwapAlert = {
@@ -1340,6 +1341,15 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
                     <div className="px-3 py-2 bg-gray-50 border-b flex items-center justify-between">
                       <span className="font-mono font-bold text-sm text-gray-900">{t.tail}</span>
                       <div className="flex items-center gap-2 text-xs text-gray-500">
+                        {t.recent_crew ? (
+                          <span className="px-1.5 py-0.5 rounded bg-green-100 text-green-700 text-[10px]" title={`PIC: ${t.recent_crew.pic.join(", ") || "—"} | SIC: ${t.recent_crew.sic.join(", ") || "—"}`}>
+                            Crewed
+                          </span>
+                        ) : (
+                          <span className="px-1.5 py-0.5 rounded bg-red-100 text-red-600 text-[10px]">
+                            No crew (MX?)
+                          </span>
+                        )}
                         {t.wednesday_legs.length > 0
                           ? <span>{t.wednesday_legs.length} legs</span>
                           : <span className="text-amber-600">Idle at {t.overnight_airport ?? "?"}</span>
