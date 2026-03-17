@@ -2141,12 +2141,13 @@ export function assignOncomingCrew(params: {
   commercialFlights?: Map<string, FlightOffer[]>;
   preComputedRoutes?: Map<string, PilotRoute[]>;
   preComputedOffgoing?: Map<string, PilotRoute[]>;
+  excludeTails?: Set<string>;
 }): {
   assignments: Record<string, SwapAssignment>;
   standby: { pic: string[]; sic: string[] };
   details: { name: string; tail: string; cost: number; reason: string }[];
 } {
-  const { swapAssignments, oncomingPool, crewRoster, flights, swapDate, aliases = [], commercialFlights, preComputedRoutes, preComputedOffgoing } = params;
+  const { swapAssignments, oncomingPool, crewRoster, flights, swapDate, aliases = [], commercialFlights, preComputedRoutes, preComputedOffgoing, excludeTails } = params;
   const result: Record<string, SwapAssignment> = JSON.parse(JSON.stringify(swapAssignments));
   const details: { name: string; tail: string; cost: number; reason: string }[] = [];
 
@@ -2189,8 +2190,8 @@ export function assignOncomingCrew(params: {
   }
 
   // Assign PICs then SICs using feasibility matrix
-  assignRoleWithMatrix("oncoming_pic", oncomingPool.pic, "PIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes, preComputedOffgoing);
-  assignRoleWithMatrix("oncoming_sic", oncomingPool.sic, "SIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes, preComputedOffgoing);
+  assignRoleWithMatrix("oncoming_pic", oncomingPool.pic, "PIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes, preComputedOffgoing, excludeTails);
+  assignRoleWithMatrix("oncoming_sic", oncomingPool.sic, "SIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes, preComputedOffgoing, excludeTails);
 
   // Remaining pool → standby
   const assignedNames = new Set(details.map((d) => d.name));
@@ -2217,12 +2218,13 @@ export function twoPassAssignAndOptimize(params: {
   commercialFlights?: Map<string, FlightOffer[]>;
   preComputedRoutes?: Map<string, PilotRoute[]>;
   preComputedOffgoing?: Map<string, PilotRoute[]>;
+  excludeTails?: Set<string>;
 }): {
   result: SwapPlanResult;
   assignmentResult: ReturnType<typeof assignOncomingCrew>;
   twoPassStats: TwoPassStats;
 } {
-  const { swapAssignments, oncomingPool, crewRoster, flights, swapDate, aliases, commercialFlights, preComputedRoutes, preComputedOffgoing } = params;
+  const { swapAssignments, oncomingPool, crewRoster, flights, swapDate, aliases, commercialFlights, preComputedRoutes, preComputedOffgoing, excludeTails } = params;
 
   // ── Pass 1: Normal Wednesday only (exclude early/late volunteers) ──────
   const normalPool: OncomingPool = {
@@ -2246,6 +2248,7 @@ export function twoPassAssignAndOptimize(params: {
     commercialFlights,
     preComputedRoutes,
     preComputedOffgoing,
+    excludeTails,
   });
 
   const pass1Result = buildSwapPlan({
@@ -2320,6 +2323,7 @@ export function twoPassAssignAndOptimize(params: {
     commercialFlights,
     preComputedRoutes,
     preComputedOffgoing,
+    excludeTails,
   });
 
   // Merge pass 2 results into pass 1: only replace unsolved tails
@@ -2419,8 +2423,9 @@ function assignRoleWithMatrix(
   details: { name: string; tail: string; cost: number; reason: string }[],
   preComputedRoutes?: Map<string, PilotRoute[]>,
   preComputedOffgoing?: Map<string, PilotRoute[]>,
+  excludeTails?: Set<string>,
 ): void {
-  const needingTails = Object.keys(result).filter((tail) => !result[tail][field]);
+  const needingTails = Object.keys(result).filter((tail) => !result[tail][field] && !excludeTails?.has(tail));
   if (needingTails.length === 0 || pool.length === 0) return;
 
   // Build full feasibility matrix — uses pre-computed routes when available

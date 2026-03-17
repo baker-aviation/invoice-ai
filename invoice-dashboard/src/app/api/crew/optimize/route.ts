@@ -204,6 +204,14 @@ export async function POST(req: NextRequest) {
     console.log(`[Swap Optimizer] Offgoing-first: ${offgoingFirstResult.deadlines.length} deadlines, ${offgoingFirstResult.unsolvable.length} unsolvable`);
   }
 
+  // Build set of tails where offgoing has no solution — don't waste oncoming crew on these
+  const unsolvableTails = offgoingFirstResult
+    ? new Set(offgoingFirstResult.unsolvable.map((u) => u.tail))
+    : undefined;
+  if (unsolvableTails?.size) {
+    console.log(`[Swap Optimizer] Excluding ${unsolvableTails.size} unsolvable tails from oncoming assignment: ${[...unsolvableTails].join(", ")}`);
+  }
+
   // ── STEP 2+3: Assign oncoming crew + run transport optimizer ────────────────
   // When strategy is offgoing_first and we have volunteers, use two-pass approach:
   // Pass 1: normal crew only. Pass 2: add early/late volunteers for unsolvable tails.
@@ -228,6 +236,7 @@ export async function POST(req: NextRequest) {
       commercialFlights: hasFlightData ? effectiveFlights : undefined,
       preComputedRoutes: hasPreComputedRoutes ? crewRouteMap : undefined,
       preComputedOffgoing: hasPreComputedRoutes ? crewOffgoingMap : undefined,
+      excludeTails: unsolvableTails,
     });
     result = twoPass.result;
     assignmentResult = twoPass.assignmentResult;
@@ -247,6 +256,7 @@ export async function POST(req: NextRequest) {
         commercialFlights: hasFlightData ? effectiveFlights : undefined,
         preComputedRoutes: hasPreComputedRoutes ? crewRouteMap : undefined,
         preComputedOffgoing: hasPreComputedRoutes ? crewOffgoingMap : undefined,
+        excludeTails: unsolvableTails,
       });
       swapAssignments = assignmentResult.assignments;
       console.log(`[Swap Optimizer] Assignment took ${((Date.now() - assignStart) / 1000).toFixed(1)}s`);
