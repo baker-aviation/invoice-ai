@@ -334,24 +334,38 @@ export async function getHasdataCacheForOptimizer(
   totalFlights: number;
 }> {
   const supa = createServiceClient();
+  const PAGE_SIZE = 5000;
 
-  const { data, error } = await supa
-    .from("hasdata_flight_cache")
-    .select("origin_iata, destination_iata, flight_offers, offer_count")
-    .eq("cache_date", date);
+  // Paginate through all rows — PostgREST max_rows is typically 10K, not 50K
+  const allRows: { origin_iata: string; destination_iata: string; flight_offers: unknown; offer_count: number }[] = [];
+  let from = 0;
+  while (true) {
+    const { data, error } = await supa
+      .from("hasdata_flight_cache")
+      .select("origin_iata, destination_iata, flight_offers, offer_count")
+      .eq("cache_date", date)
+      .range(from, from + PAGE_SIZE - 1);
 
-  if (error || !data) {
-    console.warn(`[HasdataCache] Error loading for ${date}:`, error?.message);
-    return { commercialFlights: new Map(), totalFlights: 0 };
+    if (error) {
+      console.warn(`[HasdataCache] Error loading page ${from} for ${date}:`, error.message);
+      break;
+    }
+    if (!data || data.length === 0) break;
+
+    allRows.push(...data);
+    if (data.length < PAGE_SIZE) break; // last page
+    from += PAGE_SIZE;
   }
+
+  console.log(`[HasdataCache] Loaded ${allRows.length} rows for ${date}`);
 
   const offerMap = new Map<string, FlightOffer[]>();
   let totalFlights = 0;
 
-  for (const row of data) {
+  for (const row of allRows) {
     const key = `${row.origin_iata}-${row.destination_iata}-${date}`;
     const offers = (typeof row.flight_offers === "string"
-      ? JSON.parse(row.flight_offers)
+      ? JSON.parse(row.flight_offers as string)
       : row.flight_offers) as FlightOffer[];
 
     if (offers.length > 0) {

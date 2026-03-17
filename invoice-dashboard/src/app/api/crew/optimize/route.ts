@@ -166,11 +166,14 @@ export async function POST(req: NextRequest) {
 
   // ── STEP 1: Load pre-computed routes + commercial flight cache ──────────
   const routeStart = Date.now();
-  const { commercialFlights, routeCount, crewRouteMap, crewOffgoingMap } = await getRoutesForOptimizer(swapDate);
+  // Skip pre-computed routes when force_auto_detect is set — the routes were
+  // computed for a different crew assignment, so they conflict with auto-detect.
+  const { commercialFlights, routeCount, crewRouteMap, crewOffgoingMap } = forceAutoDetect
+    ? { commercialFlights: new Map(), routeCount: 0, crewRouteMap: new Map(), crewOffgoingMap: new Map() }
+    : await getRoutesForOptimizer(swapDate);
   const hasPreComputedRoutes = routeCount > 0;
 
-  // Always load commercial flight cache — crew without pre-computed routes
-  // need it for runtime buildCandidates evaluation in the feasibility matrix.
+  // Always load HasData cache — provides runtime flight options for all city pairs.
   let effectiveFlights = new Map<string, import("@/lib/amadeus").FlightOffer[]>(commercialFlights);
   const cached = await getHasdataCacheForOptimizer(swapDate);
   if (cached.totalFlights > 0) {
