@@ -64,6 +64,36 @@ type RouteStatus = {
   is_stale: boolean;
 };
 
+type VolunteerResponse = {
+  id: string;
+  swap_date: string;
+  slack_user_id: string;
+  crew_member_id: string | null;
+  raw_text: string;
+  parsed_preference: "early" | "late" | "standby" | "early_and_late" | "unknown";
+  notes: string | null;
+  crew_members?: { id: string; name: string; role: string; home_airports: string[] } | null;
+};
+
+type SwapPointData = {
+  tail: string;
+  swap_points: { icao: string; time: string; position: string; isAdjacentLive: boolean }[];
+  overnight_airport: string | null;
+  aircraft_type: string;
+  wednesday_legs: { dep: string; arr: string; type: string | null; dep_time: string; arr_time: string | null }[];
+};
+
+type SwapAlert = {
+  id: string;
+  tail_number: string;
+  change_type: string;
+  old_value: Record<string, unknown> | null;
+  new_value: Record<string, unknown> | null;
+  swap_date: string;
+  detected_at: string;
+  acknowledged: boolean;
+};
+
 // Matches CrewSwapRow from swapOptimizer.ts
 type CrewSwapRow = {
   name: string;
@@ -95,6 +125,16 @@ type CrewSwapRow = {
   score: number;
 };
 
+type TwoPassStats = {
+  pass1_solved: number;
+  pass1_unsolved: number;
+  pass1_cost: number;
+  pass2_solved: number;
+  pass2_volunteers_used: { name: string; role: "PIC" | "SIC"; tail: string; type: "early" | "late" }[];
+  pass2_bonus_cost: number;
+  total_cost: number;
+};
+
 type SwapPlanResult = {
   ok: boolean;
   swap_date: string;
@@ -106,6 +146,7 @@ type SwapPlanResult = {
   plan_score: number;
   solved_count?: number;
   unsolved_count?: number;
+  two_pass?: TwoPassStats;
   crew_assignment?: {
     standby: { pic: string[]; sic: string[] };
     details: { name: string; tail: string; cost: number; reason: string }[];
@@ -494,6 +535,20 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
   const [computingRoutes, setComputingRoutes] = useState(false);
   const [detectingRotation, setDetectingRotation] = useState(false);
   const [rotationSource, setRotationSource] = useState<string | null>(null);
+  // Phase 1-2: Volunteer preferences
+  const [volunteers, setVolunteers] = useState<VolunteerResponse[]>([]);
+  const [volunteerOverrides, setVolunteerOverrides] = useState<Record<string, string>>({});
+  const [parsingVolunteers, setParsingVolunteers] = useState(false);
+  const [showVolunteers, setShowVolunteers] = useState(false);
+  // Phase 3: Swap points
+  const [swapPoints, setSwapPoints] = useState<SwapPointData[]>([]);
+  const [showSwapPoints, setShowSwapPoints] = useState(false);
+  const [loadingSwapPoints, setLoadingSwapPoints] = useState(false);
+  // Phase 4: Flight change alerts
+  const [swapAlerts, setSwapAlerts] = useState<SwapAlert[]>([]);
+  const [alertCount, setAlertCount] = useState(0);
+  // Phase 5-6: Strategy
+  const [strategy, setStrategy] = useState<"offgoing_first" | "oncoming_first">("offgoing_first");
 
   async function exportToImage() {
     if (!swapPlanRef.current) return;
@@ -726,6 +781,85 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
     loadRouteStatus();
   }, [loadRouteStatus]);
 
+  // Load volunteer preferences for selected Wednesday
+  const loadVolunteers = useCallback(async () => {
+    try {
+      const dateStr = selectedWed.toISOString().slice(0, 10);
+      const res = await fetch(`/api/crew/volunteers?swap_date=${dateStr}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setVolunteers(data.volunteers ?? []);
+    } catch { /* ignore */ }
+  }, [selectedWed]);
+
+  useEffect(() => { loadVolunteers(); }, [loadVolunteers]);
+
+  // Load swap points
+  const loadSwapPoints = useCallback(async () => {
+    setLoadingSwapPoints(true);
+    try {
+      const dateStr = selectedWed.toISOString().slice(0, 10);
+      const res = await fetch(`/api/crew/swap-points?swap_date=${dateStr}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setSwapPoints(data.tails ?? []);
+    } catch { /* ignore */ }
+    finally { setLoadingSwapPoints(false); }
+  }, [selectedWed]);
+
+  // Load flight change alerts
+  const loadAlerts = useCallback(async () => {
+    try {
+      const dateStr = selectedWed.toISOString().slice(0, 10);
+      const res = await fetch(`/api/crew/swap-alerts?swap_date=${dateStr}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setSwapAlerts(data.alerts ?? []);
+      setAlertCount(data.unacknowledged_count ?? 0);
+    } catch { /* ignore */ }
+  }, [selectedWed]);
+
+  useEffect(() => { loadAlerts(); }, [loadAlerts]);
+
+  // Parse volunteer thread on-demand
+  async function parseVolunteers() {
+    setParsingVolunteers(true);
+    try {
+      const res = await fetch("/api/crew/volunteers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ swap_date: selectedWed.toISOString().slice(0, 10) }),
+      });
+      if (res.ok) await loadVolunteers();
+    } catch { /* ignore */ }
+    finally { setParsingVolunteers(false); }
+  }
+
+  // Override a volunteer preference
+  async function overrideVolunteer(id: string, preference: string) {
+    setVolunteerOverrides((prev) => ({ ...prev, [id]: preference }));
+    try {
+      await fetch("/api/crew/volunteers", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, parsed_preference: preference }),
+      });
+      await loadVolunteers();
+    } catch { /* ignore */ }
+  }
+
+  // Acknowledge alert
+  async function acknowledgeAlert(id: string) {
+    try {
+      await fetch("/api/crew/swap-alerts", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      await loadAlerts();
+    } catch { /* ignore */ }
+  }
+
   // Safe JSON parse — Vercel timeouts return HTML like "An error occurred..."
   async function safeJson(res: Response, fallbackError: string) {
     const text = await res.text();
@@ -856,6 +990,7 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
           swap_date: selectedWed.toISOString().slice(0, 10),
           swap_assignments: swapAssignments ?? undefined,
           oncoming_pool: oncomingPool ?? undefined,
+          strategy,
         }),
       });
       const text = await res.text();
@@ -1036,6 +1171,227 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
         )}
       </div>
 
+      {/* Phase 2: Volunteer Review Panel */}
+      <div className="rounded-lg border bg-white shadow-sm overflow-hidden">
+        <div
+          className="px-4 py-3 bg-gray-50 border-b flex items-center justify-between cursor-pointer"
+          onClick={() => setShowVolunteers(!showVolunteers)}
+        >
+          <div className="flex items-center gap-3">
+            <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">
+              Volunteer Preferences
+            </h3>
+            {volunteers.length > 0 && (
+              <span className="text-[10px] px-2 py-0.5 rounded bg-green-50 text-green-600">
+                {volunteers.length} responses
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={(e) => { e.stopPropagation(); parseVolunteers(); }}
+              disabled={parsingVolunteers}
+              className={`px-3 py-1.5 text-xs font-medium border rounded-lg ${
+                parsingVolunteers ? "bg-gray-100 text-gray-400" : "bg-violet-50 text-violet-700 hover:bg-violet-100 border-violet-200"
+              }`}
+            >
+              {parsingVolunteers ? "Parsing..." : "Parse Slack Thread"}
+            </button>
+            <span className="text-xs text-gray-400">{showVolunteers ? "Hide" : "Show"}</span>
+          </div>
+        </div>
+        {showVolunteers && (
+          <div className="overflow-x-auto">
+            {volunteers.length > 0 ? (
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 text-left text-xs text-gray-500 uppercase tracking-wider">
+                  <tr>
+                    <th className="px-4 py-2">Name</th>
+                    <th className="px-4 py-2">Slack Text</th>
+                    <th className="px-4 py-2">Parsed</th>
+                    <th className="px-4 py-2">Override</th>
+                    <th className="px-4 py-2">Notes</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {volunteers.map((v) => {
+                    const prefColors: Record<string, string> = {
+                      early: "bg-blue-100 text-blue-700",
+                      late: "bg-orange-100 text-orange-700",
+                      standby: "bg-gray-100 text-gray-700",
+                      early_and_late: "bg-purple-100 text-purple-700",
+                      unknown: "bg-red-100 text-red-700",
+                    };
+                    return (
+                      <tr key={v.id} className="hover:bg-gray-50">
+                        <td className="px-4 py-2 font-medium text-gray-900">
+                          {v.crew_members?.name ?? (
+                            <span className="text-amber-600 italic">Unmatched ({v.slack_user_id})</span>
+                          )}
+                          {v.crew_members?.role && (
+                            <span className={`ml-1 text-[10px] px-1 py-0.5 rounded ${
+                              v.crew_members.role === "PIC" ? "bg-blue-100 text-blue-700" : "bg-purple-100 text-purple-700"
+                            }`}>
+                              {v.crew_members.role}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px] truncate">
+                          {v.raw_text}
+                        </td>
+                        <td className="px-4 py-2">
+                          <span className={`text-xs px-2 py-0.5 rounded font-medium ${prefColors[v.parsed_preference] ?? "bg-gray-100"}`}>
+                            {v.parsed_preference}
+                          </span>
+                        </td>
+                        <td className="px-4 py-2">
+                          <select
+                            className="text-xs border rounded px-2 py-1"
+                            value={volunteerOverrides[v.id] ?? v.parsed_preference}
+                            onChange={(e) => overrideVolunteer(v.id, e.target.value)}
+                          >
+                            <option value="early">Early</option>
+                            <option value="late">Late</option>
+                            <option value="standby">Standby</option>
+                            <option value="early_and_late">Early & Late</option>
+                            <option value="unknown">Unknown</option>
+                          </select>
+                        </td>
+                        <td className="px-4 py-2 text-xs text-gray-400 max-w-[150px] truncate">
+                          {v.notes ?? "—"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            ) : (
+              <div className="px-4 py-6 text-center text-sm text-gray-400">
+                No volunteer responses parsed yet. Click &quot;Parse Slack Thread&quot; to load from #pilots.
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Phase 3: Swap Points Preview */}
+      <div className="rounded-lg border bg-white shadow-sm overflow-hidden">
+        <div
+          className="px-4 py-3 bg-gray-50 border-b flex items-center justify-between cursor-pointer"
+          onClick={() => { setShowSwapPoints(!showSwapPoints); if (!showSwapPoints && swapPoints.length === 0) loadSwapPoints(); }}
+        >
+          <div className="flex items-center gap-3">
+            <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">
+              Swap Points
+            </h3>
+            {swapPoints.length > 0 && (
+              <span className="text-[10px] px-2 py-0.5 rounded bg-blue-50 text-blue-600">
+                {swapPoints.length} tails
+              </span>
+            )}
+            {/* Phase 4: Alert badge */}
+            {alertCount > 0 && (
+              <span className="text-[10px] px-2 py-0.5 rounded bg-red-100 text-red-700 font-bold animate-pulse">
+                {alertCount} flight change{alertCount > 1 ? "s" : ""}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={(e) => { e.stopPropagation(); loadSwapPoints(); }}
+              disabled={loadingSwapPoints}
+              className={`px-3 py-1.5 text-xs font-medium border rounded-lg ${
+                loadingSwapPoints ? "bg-gray-100 text-gray-400" : "bg-blue-50 text-blue-700 hover:bg-blue-100 border-blue-200"
+              }`}
+            >
+              {loadingSwapPoints ? "Loading..." : "Refresh"}
+            </button>
+            <span className="text-xs text-gray-400">{showSwapPoints ? "Hide" : "Show"}</span>
+          </div>
+        </div>
+        {showSwapPoints && (
+          <div className="divide-y">
+            {/* Flight change alerts */}
+            {swapAlerts.filter((a) => !a.acknowledged).length > 0 && (
+              <div className="px-4 py-3 bg-red-50 border-b space-y-1">
+                <div className="text-xs font-semibold text-red-700 mb-1">Flight Changes Detected:</div>
+                {swapAlerts.filter((a) => !a.acknowledged).map((a) => (
+                  <div key={a.id} className="flex items-center justify-between text-xs">
+                    <span className="text-red-600">
+                      <span className="font-mono font-bold">{a.tail_number}</span>: {a.change_type}
+                      {a.new_value && typeof a.new_value === "object" && " — " + JSON.stringify(a.new_value).slice(0, 80)}
+                    </span>
+                    <button
+                      onClick={() => acknowledgeAlert(a.id)}
+                      className="px-2 py-0.5 text-[10px] rounded bg-red-100 text-red-700 hover:bg-red-200"
+                    >
+                      Ack
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Swap points per tail */}
+            {swapPoints.length > 0 ? (
+              <div className="space-y-2 p-3">
+                {swapPoints.map((t) => (
+                  <div key={t.tail} className="rounded border bg-white overflow-hidden">
+                    <div className="px-3 py-2 bg-gray-50 border-b flex items-center justify-between">
+                      <span className="font-mono font-bold text-sm text-gray-900">{t.tail}</span>
+                      <div className="flex items-center gap-2 text-xs text-gray-500">
+                        {t.wednesday_legs.length > 0
+                          ? <span>{t.wednesday_legs.length} legs</span>
+                          : <span className="text-amber-600">Idle at {t.overnight_airport ?? "?"}</span>
+                        }
+                      </div>
+                    </div>
+                    {/* Wednesday legs */}
+                    {t.wednesday_legs.length > 0 && (
+                      <div className="px-3 py-1.5 border-b bg-gray-50/50">
+                        {t.wednesday_legs.map((leg, i) => (
+                          <span key={i} className="text-xs text-gray-500">
+                            {i > 0 && " → "}
+                            <span className="font-mono">{leg.dep}</span>
+                            <span className="text-gray-300 mx-0.5">→</span>
+                            <span className="font-mono">{leg.arr}</span>
+                            <span className="text-gray-400 ml-0.5">({fmtShortTime(leg.dep_time)})</span>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {/* Swap points */}
+                    <div className="px-3 py-2 flex flex-wrap gap-1.5">
+                      {t.swap_points.map((sp, i) => {
+                        const posColors: Record<string, string> = {
+                          before_live: "bg-green-100 text-green-700",
+                          after_live: "bg-blue-100 text-blue-700",
+                          between_legs: "bg-amber-100 text-amber-700",
+                          idle: "bg-gray-100 text-gray-600",
+                        };
+                        return (
+                          <span
+                            key={i}
+                            className={`text-[10px] px-2 py-1 rounded font-mono ${posColors[sp.position] ?? "bg-gray-100"}`}
+                            title={`${sp.position} @ ${fmtTime(sp.time)}`}
+                          >
+                            {sp.icao.replace(/^K/, "")} ({sp.position.replace("_", " ")})
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="px-4 py-6 text-center text-sm text-gray-400">
+                {loadingSwapPoints ? "Loading swap points..." : "Click Refresh to compute swap points from Wednesday legs."}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
       {/* Swap Optimizer */}
       <div className="rounded-lg border bg-white shadow-sm overflow-hidden">
         <div className="px-4 py-3 bg-gray-50 border-b flex items-center justify-between">
@@ -1067,6 +1423,23 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
                 {routeStatus.is_stale && " — stale"}
               </span>
             )}
+            {/* Strategy toggle */}
+            <div className="flex rounded-lg border overflow-hidden">
+              <button
+                onClick={() => setStrategy("offgoing_first")}
+                className={`px-2.5 py-1.5 text-[10px] font-medium ${strategy === "offgoing_first" ? "bg-emerald-50 text-emerald-700" : "bg-white text-gray-500 hover:bg-gray-50"}`}
+                title="Solve offgoing constraints first, derive oncoming deadlines"
+              >
+                Offgoing First
+              </button>
+              <button
+                onClick={() => setStrategy("oncoming_first")}
+                className={`px-2.5 py-1.5 text-[10px] font-medium border-l ${strategy === "oncoming_first" ? "bg-emerald-50 text-emerald-700" : "bg-white text-gray-500 hover:bg-gray-50"}`}
+                title="Current algorithm (oncoming-first assignment)"
+              >
+                Legacy
+              </button>
+            </div>
             <button
               onClick={detectRotation}
               disabled={detectingRotation || optimizing}
@@ -1173,6 +1546,35 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
                 )}
               </div>
             </div>
+
+            {/* Two-pass cost comparison */}
+            {swapPlan.two_pass && (
+              <div className="px-4 py-2 bg-blue-50 border-b">
+                <div className="text-xs font-medium text-blue-800 mb-1">Two-Pass Optimizer</div>
+                <div className="flex items-center gap-6 text-xs">
+                  <span className="text-blue-700">
+                    Pass 1: {swapPlan.two_pass.pass1_solved}/{swapPlan.two_pass.pass1_solved + swapPlan.two_pass.pass1_unsolved} tails, ${swapPlan.two_pass.pass1_cost.toLocaleString()}
+                  </span>
+                  {swapPlan.two_pass.pass2_solved > 0 && (
+                    <span className="text-purple-700">
+                      Pass 2: +{swapPlan.two_pass.pass2_solved} tails via {swapPlan.two_pass.pass2_volunteers_used.length} volunteer(s), +${swapPlan.two_pass.pass2_bonus_cost.toLocaleString()} bonus
+                    </span>
+                  )}
+                  <span className="font-medium text-blue-900">
+                    Total: ${swapPlan.two_pass.total_cost.toLocaleString()}
+                  </span>
+                </div>
+                {swapPlan.two_pass.pass2_volunteers_used.length > 0 && (
+                  <div className="mt-1 flex flex-wrap gap-2">
+                    {swapPlan.two_pass.pass2_volunteers_used.map((v, i) => (
+                      <span key={i} className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-purple-100 text-purple-700">
+                        {v.name} ({v.role}) — {v.type} on {v.tail}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Global warnings */}
             {swapPlan.warnings.length > 0 && (

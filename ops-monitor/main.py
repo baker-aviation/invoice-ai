@@ -114,6 +114,7 @@ MS_CLIENT_SECRET = os.getenv("MS_CLIENT_SECRET")
 
 FLIGHTS_TABLE = "flights"
 OPS_ALERTS_TABLE = "ops_alerts"
+SWAP_LEG_ALERTS_TABLE = "swap_leg_alerts"
 
 # ─── Airport coordinates for TFR proximity checks ────────────────────────────
 # Baker's common airports + major nearby airports. (lat, lon) in decimal degrees.
@@ -694,6 +695,121 @@ def get_notams(airports: str = Query(..., description="Comma-separated ICAO code
     return {"ok": True, "notams": res.data or [], "airports": icaos}
 
 
+# ─── Swap leg change detection ────────────────────────────────────────────────
+
+def _detect_swap_leg_changes(supa_client, batch: list, swap_date_str: str):
+    """Compare incoming flights against existing DB rows for the swap date.
+    Insert alerts for material changes (airport, time) on swap-day flights."""
+    from datetime import date as _date, timedelta as _timedelta
+    try:
+        swap_date = _date.fromisoformat(swap_date_str)
+    except (ValueError, TypeError):
+        return 0
+
+    # Filter batch to only flights on swap day (or day before)
+    swap_day_uids = []
+    uid_to_new = {}
+    for row in batch:
+        dep_str = row.get("scheduled_departure", "")
+        if not dep_str:
+            continue
+        dep_date_str = dep_str[:10]
+        # Check if flight is on swap day (Wednesday) or Tuesday before
+        day_before = (swap_date - _timedelta(days=1)).isoformat()
+        if dep_date_str == swap_date_str or dep_date_str == day_before:
+            uid = row.get("ics_uid")
+            if uid:
+                swap_day_uids.append(uid)
+                uid_to_new[uid] = row
+
+    if not swap_day_uids:
+        return 0
+
+    # Fetch existing flights by ics_uid
+    existing_map = {}
+    for i in range(0, len(swap_day_uids), 50):
+        chunk = swap_day_uids[i:i+50]
+        try:
+            res = supa_client.table(FLIGHTS_TABLE) \
+                .select("id, ics_uid, tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival") \
+                .in_("ics_uid", chunk) \
+                .execute()
+            for r in (res.data or []):
+                existing_map[r["ics_uid"]] = r
+        except Exception:
+            pass
+
+    # Compare and generate alerts
+    alerts = []
+    for uid, new_row in uid_to_new.items():
+        old = existing_map.get(uid)
+        if not old:
+            # New flight — only alert if it's a new addition on swap day
+            alerts.append({
+                "flight_id": None,
+                "tail_number": new_row.get("tail_number", ""),
+                "change_type": "added",
+                "old_value": None,
+                "new_value": {"departure_icao": new_row.get("departure_icao"), "arrival_icao": new_row.get("arrival_icao"),
+                              "scheduled_departure": new_row.get("scheduled_departure")},
+                "swap_date": swap_date_str,
+            })
+            continue
+
+        flight_id = old.get("id")
+        tail = old.get("tail_number", "")
+
+        # Check airport changes
+        if (old.get("departure_icao") != new_row.get("departure_icao") or
+            old.get("arrival_icao") != new_row.get("arrival_icao")):
+            alerts.append({
+                "flight_id": flight_id,
+                "tail_number": tail,
+                "change_type": "airport_change",
+                "old_value": {"departure_icao": old.get("departure_icao"), "arrival_icao": old.get("arrival_icao")},
+                "new_value": {"departure_icao": new_row.get("departure_icao"), "arrival_icao": new_row.get("arrival_icao")},
+                "swap_date": swap_date_str,
+            })
+
+        # Check time changes (>15min difference = material)
+        old_dep = old.get("scheduled_departure", "")
+        new_dep = new_row.get("scheduled_departure", "")
+        if old_dep and new_dep and old_dep != new_dep:
+            try:
+                from dateutil.parser import isoparse as _isoparse
+                old_dt = _isoparse(old_dep)
+                new_dt = _isoparse(new_dep)
+                if abs((new_dt - old_dt).total_seconds()) > 900:  # >15min
+                    alerts.append({
+                        "flight_id": flight_id,
+                        "tail_number": tail,
+                        "change_type": "time_change",
+                        "old_value": {"scheduled_departure": old_dep, "scheduled_arrival": old.get("scheduled_arrival")},
+                        "new_value": {"scheduled_departure": new_dep, "scheduled_arrival": new_row.get("scheduled_arrival")},
+                        "swap_date": swap_date_str,
+                    })
+            except Exception:
+                pass
+
+    if not alerts:
+        return 0
+
+    # Insert alerts
+    inserted = 0
+    try:
+        import json as _json
+        for a in alerts:
+            a["old_value"] = _json.dumps(a["old_value"]) if a["old_value"] else None
+            a["new_value"] = _json.dumps(a["new_value"]) if a["new_value"] else None
+        supa_client.table(SWAP_LEG_ALERTS_TABLE).insert(alerts).execute()
+        inserted = len(alerts)
+        print(f"sync_schedule: created {inserted} swap leg alerts for {swap_date_str}", flush=True)
+    except Exception as e:
+        print(f"sync_schedule: swap leg alert insert error: {repr(e)}", flush=True)
+
+    return inserted
+
+
 # ─── Job: sync_schedule ───────────────────────────────────────────────────────
 
 
@@ -903,6 +1019,18 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
 
     t_parse = _time.monotonic() - t0
     print(f"sync_schedule: parsed {len(batch)} flights to upsert, {skipped} skipped in {t_parse:.1f}s", flush=True)
+
+    # ── Detect swap-day flight changes before upserting ──────────────────
+    try:
+        today = datetime.now(timezone.utc).date()
+        days_until_wed = (2 - today.weekday()) % 7  # 2 = Wednesday
+        if days_until_wed == 0:
+            days_until_wed = 7 if today.weekday() > 2 else 0
+        next_wed = today + timedelta(days=days_until_wed)
+        swap_alerts_created = _detect_swap_leg_changes(supa, batch, next_wed.isoformat())
+    except Exception as e:
+        print(f"sync_schedule: swap leg change detection error: {repr(e)}", flush=True)
+        swap_alerts_created = 0
 
     # Bulk upsert in chunks of 50, with row-level fallback on failure
     CHUNK = 50

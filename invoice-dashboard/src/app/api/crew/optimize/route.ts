@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin, isAuthed } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
-import { buildSwapPlan, assignOncomingCrew, type CrewMember, type FlightLeg, type AirportAlias, type SwapAssignment, type OncomingPool } from "@/lib/swapOptimizer";
+import { buildSwapPlan, assignOncomingCrew, twoPassAssignAndOptimize, solveOffgoingFirst, type CrewMember, type FlightLeg, type AirportAlias, type SwapAssignment, type OncomingPool } from "@/lib/swapOptimizer";
 import { DEFAULT_AIRPORT_ALIASES } from "@/lib/airportAliases";
 import { getRoutesForOptimizer } from "@/lib/pilotRoutes";
 import { detectCurrentRotation } from "@/lib/crewRotationDetect";
+import { getCachedFlightsForOptimizer } from "@/lib/commercialFlightCache";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60; // 1 min — no API calls, just DB reads + computation
@@ -23,6 +24,7 @@ export async function POST(req: NextRequest) {
   try {
   const body = await req.json();
   const swapDate = body.swap_date as string;
+  const strategy = (body.strategy as "offgoing_first" | "oncoming_first") ?? "oncoming_first";
   // Accept swap_assignments directly from client (parsed from Excel upload)
   const clientSwapAssignments = body.swap_assignments as Record<string, SwapAssignment> | undefined;
   // Accept oncoming pool for crew-to-tail assignment
@@ -153,56 +155,114 @@ export async function POST(req: NextRequest) {
   const effectivePool = clientOncomingPool ?? autoDetectedPool;
   const hasPool = effectivePool && (effectivePool.pic?.length > 0 || effectivePool.sic?.length > 0);
 
-  // ── STEP 1: Load pre-computed routes from pilot_routes table ──────────────
+  // ── STEP 1: Load pre-computed routes + commercial flight cache ──────────
   const routeStart = Date.now();
   const { commercialFlights, routeCount, crewRouteMap, crewOffgoingMap } = await getRoutesForOptimizer(swapDate);
   const hasPreComputedRoutes = routeCount > 0;
 
-  if (hasPreComputedRoutes) {
-    console.log(`[Swap Optimizer] Loaded ${routeCount} pre-computed routes (${commercialFlights.size} flight keys) in ${Date.now() - routeStart}ms`);
+  // Also try loading from commercial flight cache (FlightAware bulk data)
+  let effectiveFlights = hasPreComputedRoutes ? commercialFlights : new Map<string, import("@/lib/amadeus").FlightOffer[]>();
+  if (!hasPreComputedRoutes) {
+    const cached = await getCachedFlightsForOptimizer(swapDate);
+    if (cached.totalFlights > 0) {
+      effectiveFlights = cached.commercialFlights;
+      console.log(`[Swap Optimizer] Loaded ${cached.totalFlights} flights from commercial cache (${effectiveFlights.size} route keys) in ${Date.now() - routeStart}ms`);
+    } else {
+      console.log(`[Swap Optimizer] No pre-computed routes or cached flights for ${swapDate} — drive-only mode`);
+    }
   } else {
-    console.log(`[Swap Optimizer] No pre-computed routes for ${swapDate} — running in drive-only mode`);
+    console.log(`[Swap Optimizer] Loaded ${routeCount} pre-computed routes (${commercialFlights.size} flight keys) in ${Date.now() - routeStart}ms`);
+  }
+  const hasFlightData = effectiveFlights.size > 0;
+
+  // ── STEP 1.5: Offgoing-first analysis (Phase 5) ────────────────────────
+  let offgoingFirstResult = null;
+  if (strategy === "offgoing_first" && Object.keys(swapAssignments).length > 0) {
+    console.log("[Swap Optimizer] Running offgoing-first analysis...");
+    offgoingFirstResult = solveOffgoingFirst({
+      flights, crewRoster, aliases, swapDate,
+      commercialFlights: hasFlightData ? effectiveFlights : undefined,
+      swapAssignments,
+    });
+    console.log(`[Swap Optimizer] Offgoing-first: ${offgoingFirstResult.deadlines.length} deadlines, ${offgoingFirstResult.unsolvable.length} unsolvable`);
   }
 
-  // ── STEP 2: Assign oncoming crew using pre-computed routes ────────────────
+  // ── STEP 2+3: Assign oncoming crew + run transport optimizer ────────────────
+  // When strategy is offgoing_first and we have volunteers, use two-pass approach:
+  // Pass 1: normal crew only. Pass 2: add early/late volunteers for unsolvable tails.
   let assignmentResult: ReturnType<typeof assignOncomingCrew> | null = null;
+  let result: ReturnType<typeof buildSwapPlan>;
 
-  if (hasPool) {
-    const assignStart = Date.now();
-    assignmentResult = assignOncomingCrew({
+  const hasVolunteers = hasPool && effectivePool && (
+    effectivePool.pic.some((p) => p.early_volunteer || p.late_volunteer) ||
+    effectivePool.sic.some((p) => p.early_volunteer || p.late_volunteer)
+  );
+
+  if (hasPool && strategy === "offgoing_first" && hasVolunteers) {
+    // ── Two-pass optimizer ──────────────────────────────────────────────
+    const twoPassStart = Date.now();
+    const twoPass = twoPassAssignAndOptimize({
       swapAssignments,
       oncomingPool: effectivePool!,
       crewRoster,
       flights,
       swapDate,
       aliases,
-      commercialFlights: hasPreComputedRoutes ? commercialFlights : undefined,
+      commercialFlights: hasFlightData ? effectiveFlights : undefined,
       preComputedRoutes: hasPreComputedRoutes ? crewRouteMap : undefined,
       preComputedOffgoing: hasPreComputedRoutes ? crewOffgoingMap : undefined,
     });
-    swapAssignments = assignmentResult.assignments;
-    console.log(`[Swap Optimizer] Assignment took ${((Date.now() - assignStart) / 1000).toFixed(1)}s`);
+    result = twoPass.result;
+    assignmentResult = twoPass.assignmentResult;
+    swapAssignments = twoPass.assignmentResult.assignments;
+    console.log(`[Swap Optimizer] Two-pass took ${((Date.now() - twoPassStart) / 1000).toFixed(1)}s`);
+  } else {
+    // ── Single-pass (legacy or no volunteers) ───────────────────────────
+    if (hasPool) {
+      const assignStart = Date.now();
+      assignmentResult = assignOncomingCrew({
+        swapAssignments,
+        oncomingPool: effectivePool!,
+        crewRoster,
+        flights,
+        swapDate,
+        aliases,
+        commercialFlights: hasFlightData ? effectiveFlights : undefined,
+        preComputedRoutes: hasPreComputedRoutes ? crewRouteMap : undefined,
+        preComputedOffgoing: hasPreComputedRoutes ? crewOffgoingMap : undefined,
+      });
+      swapAssignments = assignmentResult.assignments;
+      console.log(`[Swap Optimizer] Assignment took ${((Date.now() - assignStart) / 1000).toFixed(1)}s`);
+    }
+
+    const transportStart = Date.now();
+    result = buildSwapPlan({
+      flights,
+      crewRoster,
+      aliases,
+      swapDate,
+      commercialFlights: hasFlightData ? effectiveFlights : undefined,
+      swapAssignments: Object.keys(swapAssignments).length > 0 ? swapAssignments : undefined,
+      oncomingPool: effectivePool ?? undefined,
+      strategy,
+    });
+    console.log(`[Swap Optimizer] Transport plan took ${((Date.now() - transportStart) / 1000).toFixed(1)}s`);
   }
-
-  // ── STEP 3: Run transport optimizer for all assigned crew ──────────────────
-  const transportStart = Date.now();
-  const result = buildSwapPlan({
-    flights,
-    crewRoster,
-    aliases,
-    swapDate,
-    commercialFlights: hasPreComputedRoutes ? commercialFlights : undefined,
-    swapAssignments: Object.keys(swapAssignments).length > 0 ? swapAssignments : undefined,
-    oncomingPool: effectivePool ?? undefined,
-  });
-
-  console.log(`[Swap Optimizer] Transport plan took ${((Date.now() - transportStart) / 1000).toFixed(1)}s`);
 
   return NextResponse.json({
     ok: true,
     ...result,
+    strategy,
     routes_used: routeCount,
+    flight_cache_used: !hasPreComputedRoutes && hasFlightData,
     rotation_source: rotationSource,
+    offgoing_first: offgoingFirstResult ? {
+      deadlines: offgoingFirstResult.deadlines.map((d) => ({
+        ...d,
+        deadline: d.deadline.toISOString(),
+      })),
+      unsolvable: offgoingFirstResult.unsolvable,
+    } : undefined,
     crew_assignment: assignmentResult ? {
       standby: assignmentResult.standby,
       details: assignmentResult.details,
