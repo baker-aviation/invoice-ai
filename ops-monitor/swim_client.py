@@ -789,9 +789,10 @@ def drain_notam_stream(max_secs: int = 250) -> Dict[str, Any]:
 
             airport = notam.get("airport_icao")
 
-            # Debug: log first 10 parsed airports to diagnose format mismatches
-            if stats["messages_received"] <= 10:
+            # Debug: log first 3 raw XML payloads + parsed airports
+            if stats["messages_received"] <= 3:
                 print(f"[SWIM NOTAM] Sample #{stats['messages_received']}: airport={airport!r} notam_id={notam.get('notam_id','?')} type={notam.get('notam_type','?')}", flush=True)
+                print(f"[SWIM NOTAM] Raw XML #{stats['messages_received']}: {payload[:2000]}", flush=True)
 
             # Always upsert to swim_notams for trip airports
             if not airport:
