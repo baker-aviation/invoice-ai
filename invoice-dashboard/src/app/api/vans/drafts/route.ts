@@ -8,6 +8,16 @@ import { requireAuth, isAuthed } from "@/lib/api-auth";
  *
  * POST /api/vans/drafts
  * Save draft overrides for a date (shared across all admins).
+ *
+ * Columns: overrides, removals, unscheduled, leg_notes,
+ *   wont_see_tails (string[]), dismissed_conflicts (Record<id, hash>),
+ *   hidden_mx_ids (string[])
+ *
+ * Migration (run in Supabase SQL editor):
+ *   ALTER TABLE van_draft_overrides
+ *     ADD COLUMN IF NOT EXISTS wont_see_tails jsonb DEFAULT '[]'::jsonb,
+ *     ADD COLUMN IF NOT EXISTS dismissed_conflicts jsonb DEFAULT '{}'::jsonb,
+ *     ADD COLUMN IF NOT EXISTS hidden_mx_ids jsonb DEFAULT '[]'::jsonb;
  */
 
 export async function GET(req: NextRequest) {
@@ -32,6 +42,9 @@ export async function GET(req: NextRequest) {
     removals: data?.removals ?? [],
     unscheduled: data?.unscheduled ?? [],
     leg_notes: data?.leg_notes ?? {},
+    wont_see_tails: data?.wont_see_tails ?? [],
+    dismissed_conflicts: data?.dismissed_conflicts ?? {},
+    hidden_mx_ids: data?.hidden_mx_ids ?? [],
     updated_at: data?.updated_at ?? null,
   });
 }
@@ -41,7 +54,8 @@ export async function POST(req: NextRequest) {
   if (!isAuthed(auth)) return auth.error;
 
   const body = await req.json();
-  const { date, overrides, removals, unscheduled, leg_notes } = body;
+  const { date, overrides, removals, unscheduled, leg_notes,
+    wont_see_tails, dismissed_conflicts, hidden_mx_ids } = body;
   if (!date) return NextResponse.json({ error: "date required" }, { status: 400 });
 
   const supa = createServiceClient();
@@ -54,6 +68,9 @@ export async function POST(req: NextRequest) {
       removals: removals ?? [],
       unscheduled: unscheduled ?? [],
       leg_notes: leg_notes ?? {},
+      wont_see_tails: wont_see_tails ?? [],
+      dismissed_conflicts: dismissed_conflicts ?? {},
+      hidden_mx_ids: hidden_mx_ids ?? [],
       updated_by: auth.userId,
       updated_at: now,
     }, { onConflict: "date" });

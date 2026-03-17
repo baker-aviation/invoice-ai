@@ -1918,6 +1918,9 @@ function ScheduleTab({
   wontSeeTodayTails,
   onMarkWontSee,
   onRestoreWontSee,
+  onSyncDraftUiState,
+  dismissedConflictsRef: parentDismissedConflictsRef,
+  dismissedConflictVersion,
 }: {
   allFlights: Flight[];
   date: string;
@@ -1935,6 +1938,9 @@ function ScheduleTab({
   wontSeeTodayTails: Set<string>;
   onMarkWontSee: (tail: string) => void;
   onRestoreWontSee: (tail: string) => void;
+  onSyncDraftUiState?: (data: { wont_see_tails?: string[]; dismissed_conflicts?: Record<string, string>; hidden_mx_ids?: string[] }) => void;
+  dismissedConflictsRef?: React.MutableRefObject<Record<string, string>>;
+  dismissedConflictVersion?: number;
 }) {
   const hasLive = liveVanPositions.size > 0;
 
@@ -1989,6 +1995,12 @@ function ScheduleTab({
   // Suppress DB save while loading from DB
   const suppressSaveRef = useRef(false);
 
+  // DB-backed UI state refs — synced from parent props for inclusion in draft saves
+  const wontSeeTailsRef = useRef<string[]>([]);
+  const hiddenMxIdsRef = useRef<string[]>([]);
+  useEffect(() => { wontSeeTailsRef.current = [...wontSeeTodayTails]; }, [wontSeeTodayTails]);
+  useEffect(() => { hiddenMxIdsRef.current = [...hiddenTodayMxIds]; }, [hiddenTodayMxIds]);
+
   // Save drafts to DB (debounced) + localStorage fallback
   const saveDraftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saveDraftToDb = useCallback((o: Map<string, number>, r: Set<string>, u: Map<string, number>) => {
@@ -2018,6 +2030,9 @@ function ScheduleTab({
           overrides: [...o],
           removals: [...r],
           unscheduled: [...u],
+          wont_see_tails: wontSeeTailsRef.current,
+          dismissed_conflicts: parentDismissedConflictsRef?.current ?? {},
+          hidden_mx_ids: hiddenMxIdsRef.current,
         }),
       }).then(async (res) => {
         if (res.ok) {
@@ -2030,10 +2045,11 @@ function ScheduleTab({
     }, 500);
   }, [date]);
 
-  // Auto-save on every change
+  // Auto-save on every change (including parent UI-state props)
   useEffect(() => {
     saveDraftToDb(overrides, removals, unscheduledOverrides);
-  }, [overrides, removals, unscheduledOverrides, saveDraftToDb]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [overrides, removals, unscheduledOverrides, wontSeeTodayTails, hiddenTodayMxIds, dismissedConflictVersion, saveDraftToDb]);
 
   // Load drafts from DB on mount/date change, fall back to localStorage
   const loadDraftsFromDb = useCallback(async (targetDate: string) => {
@@ -2047,6 +2063,12 @@ function ScheduleTab({
           setOverrides(new Map(d.overrides ?? []));
           setRemovals(new Set(d.removals ?? []));
           setUnscheduledOverrides(new Map(d.unscheduled ?? []));
+          // Sync DB-backed UI state to parent
+          onSyncDraftUiState?.({
+            wont_see_tails: d.wont_see_tails ?? [],
+            dismissed_conflicts: d.dismissed_conflicts ?? {},
+            hidden_mx_ids: d.hidden_mx_ids ?? [],
+          });
           suppressSaveRef.current = false;
           return;
         }
@@ -2088,6 +2110,12 @@ function ScheduleTab({
           setOverrides(new Map(d.overrides ?? []));
           setRemovals(new Set(d.removals ?? []));
           setUnscheduledOverrides(new Map(d.unscheduled ?? []));
+          // Sync DB-backed UI state from other admins
+          onSyncDraftUiState?.({
+            wont_see_tails: d.wont_see_tails ?? [],
+            dismissed_conflicts: d.dismissed_conflicts ?? {},
+            hidden_mx_ids: d.hidden_mx_ids ?? [],
+          });
           setTimeout(() => { suppressSaveRef.current = false; }, 100);
         }
       } catch {}
@@ -3062,9 +3090,19 @@ function ScheduleTab({
             wontSeeTails.push({ tail: ac.tail, airport: ac.airport, source: "Unscheduled" });
           }
         }
-        if (wontSeeTails.length === 0) return null;
         return (
-          <div className="border-2 border-dashed border-slate-300 rounded-xl bg-slate-50/50 overflow-hidden">
+          <div
+            className="border-2 border-dashed border-slate-300 rounded-xl bg-slate-50/50 overflow-hidden"
+            onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; }}
+            onDrop={(e) => {
+              e.preventDefault();
+              try {
+                const data = JSON.parse(e.dataTransfer.getData("text/plain"));
+                const tail = data?.tailNumber ?? data?.tail;
+                if (tail) onMarkWontSee(tail);
+              } catch { /* ignore non-JSON drags */ }
+            }}
+          >
             <div
               className="px-4 py-3 flex items-center justify-between cursor-pointer hover:bg-slate-100"
               onClick={() => setWontSeeOpen((v) => !v)}
@@ -3080,7 +3118,9 @@ function ScheduleTab({
                   </div>
                   {!wontSeeOpen && (
                     <div className="text-xs text-slate-500">
-                      Aircraft reviewed and marked as not needing service today
+                      {wontSeeTails.length === 0
+                        ? "Drag aircraft here or click \"Won\u2019t See\" to mark as reviewed"
+                        : "Aircraft reviewed and marked as not needing service today"}
                     </div>
                   )}
                 </div>
@@ -3089,7 +3129,9 @@ function ScheduleTab({
             </div>
             {wontSeeOpen && (
               <div className="border-t border-slate-200 divide-y divide-slate-100">
-                {wontSeeTails.map((item) => (
+                {wontSeeTails.length === 0 ? (
+                  <div className="px-4 py-3 text-xs text-slate-400 italic">No aircraft reviewed yet</div>
+                ) : wontSeeTails.map((item) => (
                   <div key={item.tail} className="px-4 py-2 flex items-center justify-between gap-4">
                     <div className="flex items-center gap-2">
                       <div className="w-2.5 h-2.5 rounded-full bg-slate-300 flex-shrink-0" />
@@ -3562,6 +3604,11 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
   const [mxConflictsOpen, setMxConflictsOpen] = useState(false);
   const [dismissedMxIds, setDismissedMxIds] = useState<Set<string>>(new Set());
 
+  // DB-backed UI state (shared across all admins via drafts API)
+  const [wontSeeTodayTails, setWontSeeTodayTails] = useState<Set<string>>(new Set());
+  const [hiddenTodayMxIds, setHiddenTodayMxIds] = useState<Set<string>>(new Set());
+  const dismissedConflictHashesRef = useRef<Record<string, string>>({});
+
   // Van overrides for MX notes — allows assigning individual MX notes to different vans
   const [mxVanOverrides, setMxVanOverrides] = useState<Map<string, number>>(new Map());
 
@@ -3635,100 +3682,44 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
     } catch { /* ignore */ }
   }, []);
 
-  // Dismiss conflicts by content hash — reappears if MX note changes
-  const dismissedConflictHashesRef = useRef<Record<string, string>>({});
-  // Load from localStorage on first render
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem("dismissedConflictHashes");
-      if (stored) dismissedConflictHashesRef.current = JSON.parse(stored);
-    } catch { /* ignore */ }
-  }, []);
-
+  // Dismiss conflicts by content hash — reappears if MX note changes (DB-backed via drafts)
   const getMxNoteHash = useCallback((note: { body?: string | null; start_time?: string | null; end_time?: string | null; airport_icao?: string | null }) => {
     return `${note.body ?? ""}|${note.start_time ?? ""}|${note.end_time ?? ""}|${note.airport_icao ?? ""}`;
   }, []);
 
-  const [, setDismissedConflictIds] = useState<Set<string>>(() => {
-    if (typeof window === "undefined") return new Set();
-    try {
-      const stored: Record<string, string> = JSON.parse(localStorage.getItem("dismissedConflictHashes") ?? "{}");
-      dismissedConflictHashesRef.current = stored;
-      return new Set(Object.keys(stored));
-    } catch { return new Set(); }
-  });
-
+  const [dismissedConflictVersion, setDismissedConflictVersion] = useState(0);
   const dismissConflict = useCallback((id: string, mxNote: { body?: string | null; start_time?: string | null; end_time?: string | null; airport_icao?: string | null }) => {
     const hash = getMxNoteHash(mxNote);
-    setDismissedConflictIds((prev) => {
-      const next = new Set(prev).add(id);
-      try {
-        const stored: Record<string, string> = JSON.parse(localStorage.getItem("dismissedConflictHashes") ?? "{}");
-        stored[id] = hash;
-        localStorage.setItem("dismissedConflictHashes", JSON.stringify(stored));
-        dismissedConflictHashesRef.current = stored;
-      } catch { /* ignore */ }
-      return next;
-    });
+    dismissedConflictHashesRef.current = { ...dismissedConflictHashesRef.current, [id]: hash };
+    setDismissedConflictVersion((c) => c + 1);
   }, [getMxNoteHash]);
 
   const [schedTypeFilter, setSchedTypeFilter] = useState<string>("all");
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
 
-  // "Hide for Today" — stored in localStorage, auto-expires next day
-  const [hiddenTodayMxIds, setHiddenTodayMxIds] = useState<Set<string>>(() => {
-    if (typeof window === "undefined") return new Set();
-    try {
-      const stored = JSON.parse(localStorage.getItem("hiddenTodayMx") ?? "{}");
-      const today = new Date().toISOString().slice(0, 10);
-      if (stored.date === today) return new Set(stored.ids ?? []);
-      localStorage.removeItem("hiddenTodayMx");
-    } catch { /* ignore */ }
-    return new Set();
-  });
+  // "Hide for Today" — DB-backed via drafts (shared across all admins)
   const hideMxForToday = useCallback((id: string) => {
-    setHiddenTodayMxIds((prev) => {
-      const next = new Set(prev).add(id);
-      const today = new Date().toISOString().slice(0, 10);
-      localStorage.setItem("hiddenTodayMx", JSON.stringify({ date: today, ids: [...next] }));
-      return next;
-    });
+    setHiddenTodayMxIds((prev) => new Set(prev).add(id));
   }, []);
 
-  // "Won't Be Seen Today" — stored in localStorage, auto-expires next day
-  const [wontSeeTodayTails, setWontSeeTodayTails] = useState<Set<string>>(() => {
-    if (typeof window === "undefined") return new Set();
-    try {
-      const stored = JSON.parse(localStorage.getItem("wontSeeToday") ?? "{}");
-      const today = new Date().toISOString().slice(0, 10);
-      if (stored.date === today) return new Set(stored.tails ?? []);
-      localStorage.removeItem("wontSeeToday");
-    } catch {}
-    return new Set();
-  });
+  // Callback for ScheduleTab to sync UI state loaded from drafts DB
+  const handleSyncDraftUiState = useCallback((data: { wont_see_tails?: string[]; dismissed_conflicts?: Record<string, string>; hidden_mx_ids?: string[] }) => {
+    if (data.wont_see_tails) setWontSeeTodayTails(new Set(data.wont_see_tails));
+    if (data.dismissed_conflicts) {
+      dismissedConflictHashesRef.current = data.dismissed_conflicts;
+      setDismissedConflictVersion((c) => c + 1);
+    }
+    if (data.hidden_mx_ids) setHiddenTodayMxIds(new Set(data.hidden_mx_ids));
+  }, []);
 
+  // "Won't Be Seen Today" — DB-backed via drafts (shared across all admins)
   const handleMarkWontSee = useCallback((tail: string) => {
-    setWontSeeTodayTails((prev) => {
-      const next = new Set(prev).add(tail);
-      const today = new Date().toISOString().slice(0, 10);
-      localStorage.setItem("wontSeeToday", JSON.stringify({ date: today, tails: [...next] }));
-      return next;
-    });
+    setWontSeeTodayTails((prev) => new Set(prev).add(tail));
   }, []);
 
   const handleRestoreWontSee = useCallback((tail: string) => {
-    setWontSeeTodayTails((prev) => {
-      const next = new Set(prev);
-      next.delete(tail);
-      const today = new Date().toISOString().slice(0, 10);
-      if (next.size > 0) {
-        localStorage.setItem("wontSeeToday", JSON.stringify({ date: today, tails: [...next] }));
-      } else {
-        localStorage.removeItem("wontSeeToday");
-      }
-      return next;
-    });
+    setWontSeeTodayTails((prev) => { const next = new Set(prev); next.delete(tail); return next; });
   }, []);
 
   async function handleResync() {
@@ -4371,24 +4362,25 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
           if (hiddenTodayMxIds.has(n.id)) return false;
           return isMel(n);
         });
-        if (melOnly.length === 0) return null;
         return (
-          <div className="rounded-xl border-2 border-yellow-300 bg-yellow-50 px-5 py-4 shadow-sm">
+          <div className={`rounded-xl border-2 px-5 py-4 shadow-sm ${melOnly.length > 0 ? "border-yellow-300 bg-yellow-50" : "border-slate-200 bg-slate-50"}`}>
             <button
               onClick={() => setMelAccordionOpen((v) => !v)}
               className="flex items-center gap-3 w-full text-left"
             >
-              <div className="w-10 h-10 rounded-full flex items-center justify-center text-xl shrink-0 bg-yellow-100 text-yellow-700 font-bold">!</div>
-              <div className="text-base font-bold text-yellow-800 flex-1">
+              <div className={`w-10 h-10 rounded-full flex items-center justify-center text-xl shrink-0 font-bold ${melOnly.length > 0 ? "bg-yellow-100 text-yellow-700" : "bg-slate-100 text-slate-400"}`}>!</div>
+              <div className={`text-base font-bold flex-1 ${melOnly.length > 0 ? "text-yellow-800" : "text-slate-500"}`}>
                 MEL Items ({melOnly.length})
               </div>
-              <svg className={`w-5 h-5 text-yellow-600 transition-transform ${melAccordionOpen ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <svg className={`w-5 h-5 transition-transform ${melOnly.length > 0 ? "text-yellow-600" : "text-slate-400"} ${melAccordionOpen ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
               </svg>
             </button>
             {melAccordionOpen && (
               <div className="flex flex-col gap-2 ml-[52px] mt-2">
-                {melOnly.map((note) => {
+                {melOnly.length === 0 ? (
+                  <div className="text-xs text-slate-400 italic py-1">No active MEL items</div>
+                ) : melOnly.map((note) => {
                   const timeLeft = fmtTimeRemaining(note.end_time);
                   const days = daysRemaining(note.end_time);
                   const isUrgent = days < 5;
@@ -4710,7 +4702,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
 
       {/* ── Schedule tab ── */}
       {activeTab === "schedule" && (
-        <ScheduleTab allFlights={activeFlights} date={selectedDate} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} flightInfoMap={flightInfoMap} mxNotesByTail={mxNotesByTail} longTermMxTails={longTermMxTails} hiddenTodayMxIds={hiddenTodayMxIds} onHideMxForToday={hideMxForToday} mxVanOverrides={mxVanOverrides} onVanOverride={handleVanOverride} fboMap={fboMap} wontSeeTodayTails={wontSeeTodayTails} onMarkWontSee={handleMarkWontSee} onRestoreWontSee={handleRestoreWontSee} />
+        <ScheduleTab allFlights={activeFlights} date={selectedDate} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} flightInfoMap={flightInfoMap} mxNotesByTail={mxNotesByTail} longTermMxTails={longTermMxTails} hiddenTodayMxIds={hiddenTodayMxIds} onHideMxForToday={hideMxForToday} mxVanOverrides={mxVanOverrides} onVanOverride={handleVanOverride} fboMap={fboMap} wontSeeTodayTails={wontSeeTodayTails} onMarkWontSee={handleMarkWontSee} onRestoreWontSee={handleRestoreWontSee} onSyncDraftUiState={handleSyncDraftUiState} dismissedConflictsRef={dismissedConflictHashesRef} dismissedConflictVersion={dismissedConflictVersion} />
       )}
 
       {/* ── Flight Schedule tab — grouped by aircraft ── */}
