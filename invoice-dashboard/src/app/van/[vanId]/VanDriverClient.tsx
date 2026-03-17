@@ -112,17 +112,28 @@ function getFlightStatus(
   return { label: "Scheduled", accent: "text-gray-500 dark:text-gray-400", borderColor: "border-l-gray-300 dark:border-l-gray-600" };
 }
 
-/** Turn status for an item */
-function getTurnLabel(item: VanFlightItem): string | null {
-  if (!item.nextDep) return "Done for day";
+/** Turn status label for an item */
+function getTurnLabel(item: VanFlightItem): string {
+  if (!item.nextDep) return "Done for the Day";
   const schedDep = item.nextDep.scheduled_departure;
   const schedArr = item.arrFlight.scheduled_arrival;
-  if (schedArr && schedDep) {
-    const groundMin = (new Date(schedDep).getTime() - new Date(schedArr).getTime()) / 60000;
-    if (groundMin >= 240) return "Done for day";
-    if (groundMin < 120) return "Quickturn";
+  if (!schedArr || !schedDep) return "Done for the Day";
+  const gapMs = new Date(schedDep).getTime() - new Date(schedArr).getTime();
+  const hours = Math.round(gapMs / 3600000);
+  if (gapMs < 2 * 3600000) {
+    const depTime = fmtUtcHM(schedDep);
+    return `Quick Turn - Aircraft leaving after ${depTime}`;
   }
-  return null;
+  if (gapMs < 8 * 3600000) {
+    return `Aircraft Shutting Down - Aircraft leaving in ${hours} hour${hours === 1 ? "" : "s"}`;
+  }
+  return `Done for the Day - Aircraft leaving in ${hours} hour${hours === 1 ? "" : "s"}`;
+}
+
+function turnBadgeClass(label: string): string {
+  if (label.startsWith("Quick Turn")) return "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200";
+  if (label.startsWith("Aircraft Shutting Down")) return "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200";
+  return "bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300";
 }
 
 // ---------------------------------------------------------------------------
@@ -616,17 +627,9 @@ function StopCard({
           <span className={`text-xs px-2 py-1 rounded-full font-medium ${badge.color}`}>
             {badge.label}
           </span>
-          {turnLabel && (
-            <span
-              className={`text-xs px-2 py-1 rounded-full font-medium ${
-                turnLabel === "Quickturn"
-                  ? "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200"
-                  : "bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300"
-              }`}
-            >
-              {turnLabel}
-            </span>
-          )}
+          <span className={`text-xs px-2 py-1 rounded-full font-medium ${turnBadgeClass(turnLabel)}`}>
+            {turnLabel}
+          </span>
           {fi?.diverted && (
             <span className="text-xs px-2 py-1 rounded-full font-medium bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200">
               DIVERTED
@@ -646,15 +649,14 @@ function StopCard({
         {(() => {
           const now = Date.now();
           const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+          const toEtDate = (iso: string) => new Date(iso).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
           const visible = tailMxNotes.filter((n) => {
             if (dismissedMxIds.has(n.id)) return false;
-            // Hide past notes
-            if (n.end_time && new Date(n.end_time).getTime() < now) return false;
-            // Only show notes relevant to today (start_time on or before today, end_time on or after today)
-            if (n.start_time) {
-              const startDate = n.start_time.slice(0, 10);
-              if (startDate > todayStr) return false; // future note
-            }
+            const startDate = n.start_time ? toEtDate(n.start_time) : null;
+            const endDate = n.end_time ? toEtDate(n.end_time) : startDate; // no end_time = single-day
+            if (!startDate && !endDate) return true;
+            if (startDate && startDate > todayStr) return false; // future
+            if (endDate && endDate < todayStr) return false; // past
             return true;
           });
           if (!visible.length) return null;

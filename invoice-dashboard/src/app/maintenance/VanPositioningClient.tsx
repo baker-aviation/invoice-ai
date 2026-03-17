@@ -825,6 +825,35 @@ function routeDistKm(items: VanFlightItem[]): number {
 }
 
 // ---------------------------------------------------------------------------
+// Turn label helpers
+// ---------------------------------------------------------------------------
+
+/** Compute the turn status label for an aircraft.
+ * < 2h:  "Quick Turn - Aircraft leaving after HH:MM TZ"
+ * 2–8h:  "Aircraft Shutting Down - Aircraft leaving in X hours"
+ * ≥ 8h or no next dep:  "Done for the Day - Aircraft leaving in X hours" (or just "Done for the Day")
+ */
+function computeTurnLabel(nextDep: Flight | null, gapMs: number): string {
+  if (!nextDep) return "Done for the Day";
+  const hours = Math.round(gapMs / 3600000);
+  if (gapMs < 2 * 3600000) {
+    const depTime = fmtUtcHM(nextDep.scheduled_departure, nextDep.departure_icao);
+    return `Quick Turn - Aircraft leaving after ${depTime}`;
+  }
+  if (gapMs < 8 * 3600000) {
+    return `Aircraft Shutting Down - Aircraft leaving in ${hours} hour${hours === 1 ? "" : "s"}`;
+  }
+  return `Done for the Day - Aircraft leaving in ${hours} hour${hours === 1 ? "" : "s"}`;
+}
+
+/** Badge colors for turn labels */
+function turnBadgeClass(label: string): string {
+  if (label.startsWith("Quick Turn")) return "bg-amber-100 text-amber-700";
+  if (label.startsWith("Aircraft Shutting Down")) return "bg-orange-100 text-orange-700";
+  return "bg-green-100 text-green-700";
+}
+
+// ---------------------------------------------------------------------------
 // Slack share modal for a van's schedule
 // ---------------------------------------------------------------------------
 
@@ -836,9 +865,7 @@ function buildSlackItems(items: VanFlightItem[], flightInfoMap: Map<string, Flig
     const arrMs = item.arrFlight.scheduled_arrival ? new Date(item.arrFlight.scheduled_arrival).getTime() : null;
     const gapMs = item.nextDep && arrMs
       ? new Date(item.nextDep.scheduled_departure).getTime() - arrMs : Infinity;
-    const turnLabel = !item.nextDep || gapMs >= 6 * 3600000
-      ? "Done for day"
-      : gapMs < 2 * 3600000 ? "Quickturn" : undefined;
+    const turnLabel = computeTurnLabel(item.nextDep, gapMs);
     let slackStatus: string;
     if (fi?.diverted) {
       slackStatus = "DIVERTED";
@@ -858,14 +885,18 @@ function buildSlackItems(items: VanFlightItem[], flightInfoMap: Map<string, Flig
     const fbo = fboMap?.[`${item.arrFlight.tail_number}:${arrIcao}`]
       ?? fboMap?.[`${item.arrFlight.tail_number}:${arrIcaoStripped}`]
       ?? null;
-    // Gather today's MX notes for this tail
+    // Gather today's MX notes for this tail (ET timezone, same logic as MxNoteInline)
     const tailNotes = mxNotesByTail?.get(item.arrFlight.tail_number ?? "") ?? [];
-    const nowMs = Date.now();
     const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+    const toEtDate = (iso: string) => new Date(iso).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
     const mxNoteTexts = tailNotes
       .filter((n) => {
-        if (n.end_time && new Date(n.end_time).getTime() < nowMs) return false;
-        if (n.start_time && n.start_time.slice(0, 10) > todayStr) return false;
+        if (isMel(n)) return false;
+        const startDate = n.start_time ? toEtDate(n.start_time) : null;
+        const endDate = n.end_time ? toEtDate(n.end_time) : startDate; // no end_time = single-day
+        if (!startDate && !endDate) return true;
+        if (startDate && startDate > todayStr) return false; // future
+        if (endDate && endDate < todayStr) return false; // past
         return true;
       })
       .map((n) => `${n.airport_icao ?? ""} — ${n.body ?? ""}`.trim());
@@ -1431,7 +1462,7 @@ function LegNoteInline({
 function AircraftCompactRow({
   arrFlight, nextDep, isRepo, nextIsRepo, airport, airportInfo, distKm,
   fi, arrTime, hasLanded, delayMin, isEnRoute, faLanded,
-  doneForDay, isQuickturn, hasMaintenance, extraLegs,
+  turnBadgeLabel, hasMaintenance, extraLegs,
   color, zone, date,
   mxNotes, hiddenTodayMxIds, onHideMxForToday, mxVanOverrides, onVanOverride,
   legNote, onSaveNote, onDragStart, onRemove, onSetPrimaryAirport,
@@ -1449,8 +1480,7 @@ function AircraftCompactRow({
   delayMin: number;
   isEnRoute: boolean;
   faLanded: boolean;
-  doneForDay: boolean;
-  isQuickturn: boolean;
+  turnBadgeLabel: string;
   hasMaintenance: boolean;
   extraLegs: Flight[];
   color: string;
@@ -1487,12 +1517,7 @@ function AircraftCompactRow({
           <span className="font-mono font-semibold text-sm">{arrFlight.tail_number ?? "—"}</span>
           <span className="text-xs text-gray-500">{airport}{airportInfo ? ` · ${airportInfo.city}, ${airportInfo.state}` : ""}</span>
           <span className="text-xs text-gray-400">· {fmtDriveTime(distKm)}</span>
-          {isQuickturn && (
-            <span className="text-xs font-semibold bg-amber-100 text-amber-700 rounded-full px-2 py-0.5">Quickturn</span>
-          )}
-          {doneForDay && (
-            <span className="text-xs font-semibold bg-green-100 text-green-700 rounded-full px-2 py-0.5">Done for day</span>
-          )}
+          <span className={`text-xs font-semibold rounded-full px-2 py-0.5 ${turnBadgeClass(turnBadgeLabel)}`}>{turnBadgeLabel}</span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {/* Schedule times + ETA */}
@@ -1831,8 +1856,7 @@ function VanScheduleCard({
                 const groundMs = nextDep && arrTime
                   ? new Date(nextDep.scheduled_departure).getTime() - arrTime.getTime()
                   : Infinity;
-                const doneForDay = !nextDep || groundMs >= 6 * 3600000;
-                const isQuickturn = !!nextDep && groundMs < 2 * 3600000;
+                const turnBadgeLabel = computeTurnLabel(nextDep, groundMs);
                 const extraLegs = (allFlights && arrFlight.tail_number)
                   ? allFlights.filter((f) => {
                       if (f.tail_number !== arrFlight.tail_number) return false;
@@ -1863,8 +1887,7 @@ function VanScheduleCard({
                     delayMin={delayMin}
                     isEnRoute={isEnRoute}
                     faLanded={faLanded}
-                    doneForDay={doneForDay}
-                    isQuickturn={isQuickturn}
+                    turnBadgeLabel={turnBadgeLabel}
                     hasMaintenance={hasMaintenance}
                     extraLegs={extraLegs}
                     color={color}
@@ -2185,6 +2208,55 @@ function ScheduleTab({
 
   const [dropTargetVan, setDropTargetVan] = useState<number | null>(null);
   const dragCounterRef = useRef(0);
+
+  // Auto-scroll when dragging near the top/bottom edge of the viewport
+  useEffect(() => {
+    const EDGE_ZONE = 120; // px from top/bottom edge to start scrolling
+    const MAX_SPEED = 18; // max px per animation frame
+    let animFrame: number | null = null;
+    let curY = 0;
+    let isDragging = false;
+
+    function scroll() {
+      const { innerHeight } = window;
+      const distFromTop = curY;
+      const distFromBottom = innerHeight - curY;
+      let speed = 0;
+      if (distFromTop < EDGE_ZONE) {
+        speed = -Math.round(MAX_SPEED * (1 - distFromTop / EDGE_ZONE));
+      } else if (distFromBottom < EDGE_ZONE) {
+        speed = Math.round(MAX_SPEED * (1 - distFromBottom / EDGE_ZONE));
+      }
+      if (speed !== 0 && isDragging) {
+        window.scrollBy(0, speed);
+        animFrame = requestAnimationFrame(scroll);
+      } else {
+        animFrame = null;
+      }
+    }
+
+    function onDragOver(e: DragEvent) {
+      curY = e.clientY;
+      if (animFrame === null) animFrame = requestAnimationFrame(scroll);
+    }
+    function onDragStart() { isDragging = true; }
+    function onDragEnd() {
+      isDragging = false;
+      if (animFrame !== null) { cancelAnimationFrame(animFrame); animFrame = null; }
+    }
+
+    document.addEventListener("dragstart", onDragStart);
+    document.addEventListener("dragover", onDragOver);
+    document.addEventListener("dragend", onDragEnd);
+    document.addEventListener("drop", onDragEnd);
+    return () => {
+      document.removeEventListener("dragstart", onDragStart);
+      document.removeEventListener("dragover", onDragOver);
+      document.removeEventListener("dragend", onDragEnd);
+      document.removeEventListener("drop", onDragEnd);
+      if (animFrame !== null) cancelAnimationFrame(animFrame);
+    };
+  }, []);
 
   // Compute base items for every zone, then deduplicate across zones
   // so each aircraft only appears in the closest van's card.
@@ -2598,16 +2670,13 @@ function ScheduleTab({
         .filter((zone) => !vanIds || vanIds.includes(zone.vanId))
         .map((zone) => {
           const items = finalItemsByVan.get(zone.vanId) ?? [];
-          // For targeted test pushes, send even if empty so we verify Slack works
-          if (!isTest && items.length === 0) return null;
           return {
             vanName: zone.name,
             vanId: zone.vanId,
             homeAirport: zone.homeAirport,
             items: buildSlackItems(items, flightInfoMap, fboMap, mxNotesByTail),
           };
-        })
-        .filter(Boolean);
+        });
       if (vans.length === 0) {
         setSlackBulkStatus("idle");
         return;
@@ -2856,8 +2925,6 @@ function ScheduleTab({
                   ? new Date(lastItem.arrFlight.scheduled_arrival).getTime() : null;
                 const uncovGroundMs = nextDep && lastArrTime
                   ? new Date(nextDep.scheduled_departure).getTime() - lastArrTime : Infinity;
-                const uncovDoneForDay = !nextDep || uncovGroundMs >= 6 * 3600000;
-                const uncovQuickturn = !!nextDep && uncovGroundMs < 2 * 3600000;
                 return (
                   <div
                     key={tailKey}
