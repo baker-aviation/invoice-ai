@@ -2312,3 +2312,48 @@ def job_pull_swim():
         message=f"pos={stats.get('positions_upserted',0)} flow={stats.get('flow_control_upserted',0)} notams={stats.get('notams_upserted',0)}",
     )
     return {"ok": True, **stats}
+
+
+@app.post("/jobs/notam_consumer")
+def notam_consumer():
+    """Long-running NOTAM stream consumer — holds Solace connection open ~250s.
+
+    Triggered by Cloud Scheduler every 5 minutes. Receives NOTAMs in real-time,
+    filters to trip airports, writes to swim_notams + ops_alerts.
+    """
+    from swim_client import drain_notam_stream  # Lazy import
+
+    HARD_TIMEOUT = 270  # seconds — under Cloud Run's 300s limit
+    result: Dict[str, Any] = {}
+    error: Optional[Exception] = None
+
+    def _run():
+        nonlocal result, error
+        try:
+            result = drain_notam_stream(max_secs=250)
+        except Exception as e:
+            error = e
+
+    worker = threading.Thread(target=_run)
+    worker.start()
+    worker.join(timeout=HARD_TIMEOUT)
+
+    if worker.is_alive():
+        print("[notam_consumer] Hard timeout reached — returning partial results", flush=True)
+        log_pipeline_run("notam-consumer", status="timeout", message="Hard timeout at 270s")
+        return {"ok": False, "error": "timeout", **result}
+
+    if error:
+        print(f"[notam_consumer] exception: {error}", flush=True)
+        log_pipeline_run("notam-consumer", status="error", message=str(error)[:200])
+        raise HTTPException(500, detail=f"NOTAM consumer failed: {error}")
+
+    duration_ms = int(result.get("duration_secs", 0) * 1000)
+    total_items = result.get("notams_upserted", 0) + result.get("alerts_created", 0)
+    log_pipeline_run(
+        "notam-consumer",
+        items=total_items,
+        duration_ms=duration_ms,
+        message=f"recv={result.get('messages_received',0)} notams={result.get('notams_upserted',0)} alerts={result.get('alerts_created',0)}",
+    )
+    return {"ok": True, **result}
