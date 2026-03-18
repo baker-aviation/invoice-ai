@@ -1950,8 +1950,17 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                       </div>
                       <div className="divide-y divide-gray-100">
                         {tailFlights.map((f) => {
-                          const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
-                          const fi = f.tail_number ? matchFlightInfo(flightInfo, routeKey, f.tail_number, f.departure_icao, f.scheduled_departure, f.arrival_icao) : undefined;
+                          // Primary: direct fa_flight_id match
+                          let fi: FlightInfoMap | undefined;
+                          let idMatched = false;
+                          if (f.fa_flight_id && flightInfo.has(`fa:${f.fa_flight_id}`)) {
+                            fi = flightInfo.get(`fa:${f.fa_flight_id}`);
+                            idMatched = true;
+                          }
+                          if (!fi && f.tail_number) {
+                            const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
+                            fi = matchFlightInfo(flightInfo, routeKey, f.tail_number, f.departure_icao, f.scheduled_departure, f.arrival_icao);
+                          }
                           const type = f.flight_type || "Other";
                           const typeColor = FLIGHT_TYPE_COLORS[type] || "bg-gray-100 text-gray-700";
 
@@ -1960,10 +1969,11 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           let isFiled = false;
                           const arrivalDate = f.scheduled_arrival ? new Date(f.scheduled_arrival) : null;
                           const now = new Date();
-                          const fiRouteMatch = fi && fi.destination_icao === f.arrival_icao;
+                          const fiRouteMatch = idMatched || (fi && fi.destination_icao === f.arrival_icao);
                           const faEta = fiRouteMatch && fi?.arrival_time ? new Date(fi.arrival_time) : null;
                           const arrivalPassed = (arrivalDate && arrivalDate < now) || (faEta && faEta < now);
                           // Check SWIM status — route-specific for "En Route", tail fallback for others
+                          const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
                           const swimRouteMatch = swimStatus.get(routeKey);
                           const swimEntry = swimRouteMatch ?? (f.tail_number ? swimStatus.get(`${f.tail_number}||`) : undefined);
                           const swimRouteStale = isSwimStale(swimRouteMatch, f.scheduled_departure);
@@ -1975,7 +1985,9 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                             status = "Arrived"; statusColor = "text-green-600 font-medium";
                           } else if (fiRouteMatch && fi?.status?.includes("En Route")) {
                             status = "En Route"; statusColor = "text-blue-600 font-medium";
-                          } else if (fiRouteMatch && fi?.departure_time && !fi?.actual_arrival && new Date(fi.departure_time) < now && (!faEta || faEta > now)) {
+                          } else if (fiRouteMatch && fi?.actual_departure && !fi?.actual_arrival
+                            && new Date(fi.actual_departure) < now && (!faEta || faEta > now)
+                            && !fi?.status?.includes("Scheduled") && !fi?.status?.includes("Cancelled")) {
                             status = "En Route"; statusColor = "text-blue-600 font-medium";
                           } else if (!swimRouteStale && swimRouteMatch?.status === "En Route") {
                             status = "En Route"; statusColor = "text-blue-600 font-medium";
@@ -2301,11 +2313,17 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
               </tr>
             ) : (
               tableFlights.map((f) => {
-                // Look up FlightAware info by route-specific key first, then fall back to tail-only
-                const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
-                const fi = f.tail_number
-                  ? matchFlightInfo(flightInfo, routeKey, f.tail_number, f.departure_icao, f.scheduled_departure, f.arrival_icao)
-                  : undefined;
+                // Primary: direct fa_flight_id match
+                let fi: FlightInfoMap | undefined;
+                let idMatched = false;
+                if (f.fa_flight_id && flightInfo.has(`fa:${f.fa_flight_id}`)) {
+                  fi = flightInfo.get(`fa:${f.fa_flight_id}`);
+                  idMatched = true;
+                }
+                if (!fi && f.tail_number) {
+                  const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
+                  fi = matchFlightInfo(flightInfo, routeKey, f.tail_number, f.departure_icao, f.scheduled_departure, f.arrival_icao);
+                }
                 const allAlerts = f.alerts ?? [];
                 const alerts = showAcknowledged ? allAlerts : allAlerts.filter((a) => !isAcked(a));
                 const alertCount = alerts.length;
@@ -2317,6 +2335,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                 let status = "Scheduled";
                 let statusColor = "text-gray-500";
                 let isFiled = false;
+                const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
                 const swimRouteMatch = swimStatus.get(routeKey);
                 const swimEntry = swimRouteMatch ?? (f.tail_number ? swimStatus.get(`${f.tail_number}||`) : undefined);
                 const swimRouteStale = isSwimStale(swimRouteMatch, f.scheduled_departure);
@@ -2324,7 +2343,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
 
                 const arrivalDate = f.scheduled_arrival ? new Date(f.scheduled_arrival) : null;
                 const now = new Date();
-                const fiRouteMatch = fi && fi.destination_icao === f.arrival_icao;
+                const fiRouteMatch = idMatched || (fi && fi.destination_icao === f.arrival_icao);
                 const faEta = fiRouteMatch && fi?.arrival_time ? new Date(fi.arrival_time) : null;
                 const arrivalPassed = (arrivalDate && arrivalDate < now) || (faEta && faEta < now);
 
@@ -2335,7 +2354,9 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                   status = "Arrived"; statusColor = "text-green-600 font-medium";
                 } else if (fiRouteMatch && fi?.status?.includes("En Route")) {
                   status = "En Route"; statusColor = "text-blue-600 font-medium";
-                } else if (fiRouteMatch && fi?.departure_time && !fi?.actual_arrival && new Date(fi.departure_time) < now && (!faEta || faEta > now)) {
+                } else if (fiRouteMatch && fi?.actual_departure && !fi?.actual_arrival
+                  && new Date(fi.actual_departure) < now && (!faEta || faEta > now)
+                  && !fi?.status?.includes("Scheduled") && !fi?.status?.includes("Cancelled")) {
                   status = "En Route"; statusColor = "text-blue-600 font-medium";
                 } else if (!swimRouteStale && swimRouteMatch?.status === "En Route") {
                   status = "En Route"; statusColor = "text-blue-600 font-medium";
