@@ -301,17 +301,19 @@ export type MxNote = {
   created_at: string;
   acknowledged_at: string | null;
   attachment_count?: number;
+  scheduled_date?: string | null;
+  assigned_van?: number | null;
 };
 
 export async function fetchMxNotes(): Promise<MxNote[]> {
   const supa = createServiceClient();
   const { data, error } = await supa
     .from("ops_alerts")
-    .select("id, tail_number, airport_icao, subject, body, created_at, acknowledged_at, raw_data")
+    .select("id, tail_number, airport_icao, subject, body, created_at, acknowledged_at, raw_data, scheduled_date, assigned_van")
     .eq("alert_type", "MX_NOTE")
     .is("acknowledged_at", null)
     .order("created_at", { ascending: false })
-    .limit(100);
+    .limit(200);
 
   if (error || !data) return [];
 
@@ -336,8 +338,43 @@ export async function fetchMxNotes(): Promise<MxNote[]> {
       end_time: endTime,
       created_at: row.created_at as string,
       acknowledged_at: row.acknowledged_at as string | null,
+      scheduled_date: (row as Record<string, unknown>).scheduled_date as string | null ?? null,
+      assigned_van: (row as Record<string, unknown>).assigned_van as number | null ?? null,
     };
   });
+}
+
+// ---------------------------------------------------------------------------
+// MEL Items — Minimum Equipment List tracking
+// ---------------------------------------------------------------------------
+
+export type MelItem = {
+  id: number;
+  tail_number: string;
+  category: "A" | "B" | "C" | "D";
+  mel_reference: string | null;
+  description: string;
+  deferred_date: string;
+  expiration_date: string | null;
+  status: "open" | "cleared";
+  cleared_by: string | null;
+  cleared_at: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function fetchMelItems(): Promise<MelItem[]> {
+  const supa = createServiceClient();
+  const { data, error } = await supa
+    .from("mel_items")
+    .select("*")
+    .eq("status", "open")
+    .order("expiration_date", { ascending: true, nullsFirst: false })
+    .limit(500);
+
+  if (error || !data) return [];
+  return data as MelItem[];
 }
 
 // ---------------------------------------------------------------------------

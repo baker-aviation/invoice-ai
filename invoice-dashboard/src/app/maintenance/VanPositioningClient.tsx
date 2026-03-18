@@ -18,7 +18,8 @@ import {
 } from "@/lib/maintenanceData";
 import { getAirportInfo } from "@/lib/airportCoords";
 import type { AircraftPosition } from "./MapView";
-import MxNotesPanel from "@/app/ops/MxNotesPanel";
+import MxBoard from "./MxBoard";
+import type { MelItem } from "@/lib/opsApi";
 
 // Leaflet requires SSR to be disabled
 const MapView = dynamic(() => import("./MapView"), {
@@ -3788,7 +3789,7 @@ function MxAdminTab() {
   );
 }
 
-export default function VanPositioningClient({ initialFlights, mxNotes, aircraftTags = [], fboMap = {} }: { initialFlights: Flight[]; mxNotes?: MxNote[]; aircraftTags?: AircraftTag[]; fboMap?: Record<string, string> }) {
+export default function VanPositioningClient({ initialFlights, mxNotes, melItems = [], aircraftTags = [], fboMap = {} }: { initialFlights: Flight[]; mxNotes?: MxNote[]; melItems?: MelItem[]; aircraftTags?: AircraftTag[]; fboMap?: Record<string, string> }) {
   const dates = useMemo(() => getDateRange(2), []); // today + tomorrow
   const [dayIdx, setDayIdx] = useState(0);
   const [activeTab, setActiveTab] = useState<"map" | "schedule" | "flights" | "mx-admin">("schedule");
@@ -5102,7 +5103,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
       {/* ── MX Admin tab ── */}
       {activeTab === "mx-admin" && (
         <div className="space-y-8">
-          <MxNotesPanel mxNotes={mxNotes} />
+          <MxBoard flights={initialFlights} mxNotes={mxNotes} melItems={melItems} />
           <hr className="border-gray-200" />
           <MxAdminTab />
         </div>

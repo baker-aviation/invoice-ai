@@ -7,9 +7,8 @@ import CurrentOps from "./CurrentOps";
 import OpsBoard from "./OpsBoard";
 import DutyTracker from "./DutyTracker";
 import CrewSwap from "./CrewSwap";
-import MxNotesPanel from "./MxNotesPanel";
 
-const TABS = ["Current Ops", "Flight Time & Rest", "NOTAMs & PPRs", "Crew Swap", "MX Notes"] as const;
+const TABS = ["Current Ops", "Flight Time & Rest", "NOTAMs & PPRs", "Crew Swap"] as const;
 type Tab = (typeof TABS)[number];
 
 export default function OpsTabs({ flights, bakerPprAirports, advertisedPrices, mxNotes = [], swimFlow = [] }: { flights: Flight[]; bakerPprAirports: string[]; advertisedPrices: AdvertisedPriceRow[]; mxNotes?: MxNote[]; swimFlow?: SwimFlowEvent[] }) {
@@ -80,10 +79,8 @@ export default function OpsTabs({ flights, bakerPprAirports, advertisedPrices, m
         <DutyTracker flights={flights} scrollToTail={scrollToTail} onScrollComplete={() => setScrollToTail(null)} />
       ) : tab === "NOTAMs & PPRs" ? (
         <OpsBoard initialFlights={flights} bakerPprAirports={bakerPprAirports} />
-      ) : tab === "Crew Swap" ? (
-        <CrewSwap flights={flights} />
       ) : (
-        <MxNotesPanel mxNotes={mxNotes} />
+        <CrewSwap flights={flights} />
       )}
     </div>
   );
