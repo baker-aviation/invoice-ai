@@ -2128,6 +2128,8 @@ function ScheduleTab({
     const poll = setInterval(async () => {
       // Don't poll while a save is in-flight — would revert to stale data
       if (suppressSaveRef.current) return;
+      // Don't poll while the debounce timer is pending — local changes haven't been saved yet
+      if (saveDraftTimer.current) return;
       try {
         const res = await fetch(`/api/vans/drafts?date=${date}`);
         if (!res.ok) return;
@@ -2813,6 +2815,17 @@ function ScheduleTab({
               onClick={() => {
                 setOverrides(new Map()); setRemovals(new Set()); setUnscheduledOverrides(new Map()); setAirportOverrides(new Map());
                 try { localStorage.removeItem(`vanOverrides-${date}`); localStorage.removeItem(`vanRemovals-${date}`); localStorage.removeItem(`vanUnscheduled-${date}`); localStorage.removeItem(`vanAirportOverrides-${date}`); } catch {}
+                // Also clear DB so polling/refresh don't restore old overrides
+                fetch("/api/vans/drafts", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ date, overrides: [], removals: [], unscheduled: [], airport_overrides: [] }),
+                }).then(async (res) => {
+                  const d = await res.json().catch(() => null);
+                  if (d?.updated_at) draftUpdatedAtRef.current = d.updated_at;
+                }).catch(() => {});
+                // Prevent published-assignments restore from immediately re-applying
+                overridesRestoredRef.current = date;
               }}
               className="text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5 hover:bg-amber-100 transition-colors"
             >
