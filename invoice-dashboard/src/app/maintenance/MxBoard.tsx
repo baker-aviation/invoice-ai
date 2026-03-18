@@ -2,7 +2,8 @@
 
 import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import type { Flight, MxNote, MelItem } from "@/lib/opsApi";
-import { BAKER_FLEET, FIXED_VAN_ZONES } from "@/lib/maintenanceData";
+import { BAKER_FLEET, FIXED_VAN_ZONES, haversineKm } from "@/lib/maintenanceData";
+import { getAirportInfo } from "@/lib/airportCoords";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -527,6 +528,23 @@ function expiringMelsForTail(mels: MelItem[]): number {
 // Schedule Section — timeline view with MX markers at arrival airports
 // ---------------------------------------------------------------------------
 
+function nearestVan(icao: string): { vanId: number; name: string; distKm: number } | null {
+  const info = getAirportInfo(icao.replace(/^K/, "")) ?? getAirportInfo(icao);
+  if (!info) return null;
+  let best: { vanId: number; name: string; distKm: number } | null = null;
+  for (const z of FIXED_VAN_ZONES) {
+    const d = haversineKm(info.lat, info.lon, z.lat, z.lon);
+    if (!best || d < best.distKm) best = { vanId: z.vanId, name: z.name, distKm: d };
+  }
+  return best;
+}
+
+function airportCity(icao: string): string {
+  const info = getAirportInfo(icao.replace(/^K/, "")) ?? getAirportInfo(icao);
+  if (!info) return "";
+  return info.city ? `${info.city}${info.state ? `, ${info.state}` : ""}` : "";
+}
+
 function fmtDateShort(iso: string) {
   const d = new Date(iso);
   return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "America/New_York" });
@@ -670,7 +688,7 @@ function ScheduleSection({ flights, mxNotes: initialMxNotes = [], onMoveNote }: 
 
                       <div className="flex items-center gap-3">
                         {/* Route */}
-                        <div className="w-28 shrink-0">
+                        <div className="shrink-0">
                           <span className={`text-sm font-semibold ${flightIsPast ? "text-gray-400" : "text-gray-800"}`}>
                             {(f.departure_icao || "?").replace(/^K/, "")}
                           </span>
@@ -678,6 +696,15 @@ function ScheduleSection({ flights, mxNotes: initialMxNotes = [], onMoveNote }: 
                           <span className={`text-sm font-semibold ${flightIsPast ? "text-gray-400" : hasMxAtArrival ? "text-orange-600" : "text-gray-800"}`}>
                             {(f.arrival_icao || "?").replace(/^K/, "")}
                           </span>
+                          {f.arrival_icao && (() => {
+                            const city = airportCity(f.arrival_icao);
+                            const van = nearestVan(f.arrival_icao);
+                            return city || van ? (
+                              <span className="text-[11px] text-gray-400 ml-1.5">
+                                {city}{van ? <span className="text-gray-300">{city ? " · " : ""}V{van.vanId}</span> : ""}
+                              </span>
+                            ) : null;
+                          })()}
                         </div>
 
                         {/* Times */}
