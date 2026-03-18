@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { timingSafeEqual } from "crypto";
 import { createServerClient } from "@supabase/ssr";
 
 // ---------------------------------------------------------------------------
@@ -67,6 +68,19 @@ export async function requireAdmin(req: NextRequest): Promise<AuthResult> {
   }
 
   return auth;
+}
+
+// ---------------------------------------------------------------------------
+// Cron secret verification (constant-time comparison)
+// ---------------------------------------------------------------------------
+
+export function verifyCronSecret(req: NextRequest): boolean {
+  const cronSecret = process.env.CRON_SECRET;
+  if (!cronSecret) return false;
+  const header = req.headers.get("authorization") ?? "";
+  const expected = `Bearer ${cronSecret}`;
+  if (header.length !== expected.length) return false;
+  return timingSafeEqual(Buffer.from(header), Buffer.from(expected));
 }
 
 // ---------------------------------------------------------------------------

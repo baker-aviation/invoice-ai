@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { verifyCronSecret } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 import {
   getFlightsByRegistration,
@@ -20,9 +21,7 @@ const PAUSE_MS = 500; // pause between sequential tail fetches
 // ---------------------------------------------------------------------------
 
 function authorize(req: NextRequest): boolean {
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret) return false;
-  return req.headers.get("authorization") === `Bearer ${cronSecret}`;
+  return verifyCronSecret(req);
 }
 
 // ---------------------------------------------------------------------------

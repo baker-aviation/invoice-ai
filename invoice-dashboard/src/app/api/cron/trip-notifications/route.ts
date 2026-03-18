@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { verifyCronSecret } from "@/lib/api-auth";
 import { POST as runDepartureCheck } from "./check/route";
 import { POST as runDailySummary } from "./daily-summary/route";
 
@@ -13,22 +14,16 @@ import { POST as runDailySummary } from "./daily-summary/route";
  * blocking internal requests on preview/dev deployments.
  */
 export async function GET(req: NextRequest) {
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret) {
-    return NextResponse.json({ error: "CRON_SECRET not configured" }, { status: 503 });
-  }
-
-  const authHeader = req.headers.get("authorization");
-  if (authHeader !== `Bearer ${cronSecret}`) {
+  if (!verifyCronSecret(req)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   const results: Record<string, unknown> = {};
 
-  // Build a fake request with the auth header so sub-routes accept it
+  // Forward the original auth header so sub-routes accept it
   const subReq = new NextRequest(req.url, {
     method: "POST",
-    headers: { authorization: `Bearer ${cronSecret}` },
+    headers: { authorization: req.headers.get("authorization") ?? "" },
   });
 
   // Always run departure check
@@ -51,7 +46,7 @@ export async function GET(req: NextRequest) {
     try {
       const summaryReq = new NextRequest(req.url, {
         method: "POST",
-        headers: { authorization: `Bearer ${cronSecret}` },
+        headers: { authorization: req.headers.get("authorization") ?? "" },
       });
       const res = await runDailySummary(summaryReq);
       results.dailySummary = await res.json();

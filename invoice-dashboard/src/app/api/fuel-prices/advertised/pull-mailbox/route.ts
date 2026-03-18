@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/service";
-import { requireAuth, isAuthed } from "@/lib/api-auth";
+import { requireAuth, isAuthed, verifyCronSecret } from "@/lib/api-auth";
 import { parseFuelCSV } from "@/lib/fuelParsers";
 
 const FUEL_MAILBOX = "fuel@baker-aviation.com";
@@ -21,9 +21,7 @@ const FUEL_MAILBOX = "fuel@baker-aviation.com";
 
 async function checkAuth(req: NextRequest): Promise<NextResponse | null> {
   // Accept CRON_SECRET (Vercel Cron)
-  const cronSecret = process.env.CRON_SECRET;
-  const authHeader = req.headers.get("authorization");
-  if (cronSecret && authHeader === `Bearer ${cronSecret}`) {
+  if (verifyCronSecret(req)) {
     return null;
   }
 
