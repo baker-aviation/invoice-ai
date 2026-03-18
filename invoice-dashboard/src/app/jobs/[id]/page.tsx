@@ -372,7 +372,7 @@ export default async function JobDetailPage({
           <div className="rounded-xl border bg-white p-4 shadow-sm">
             <div className="flex items-center justify-between">
               <div className="text-sm font-semibold">Offer Letter</div>
-              <OfferPreview applicationId={Number(applicationId)} />
+              <OfferPreview applicationId={Number(applicationId)} initialOfferStatus={job.offer_status ?? null} />
             </div>
           </div>
 

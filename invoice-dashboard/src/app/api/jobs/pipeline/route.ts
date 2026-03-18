@@ -5,6 +5,7 @@ import type { HiringStage } from "@/lib/types";
 
 const VALID_STAGES: HiringStage[] = [
   "prd_faa_review",
+  "chief_pilot_review",
   "screening",
   "info_session",
   "tims_review",

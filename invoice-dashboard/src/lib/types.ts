@@ -97,6 +97,7 @@ export type AdvertisedPriceRow = {
 
 export type HiringStage =
   | "prd_faa_review"
+  | "chief_pilot_review"
   | "screening"
   | "info_session"
   | "tims_review"
@@ -106,7 +107,7 @@ export type HiringStage =
   | "offer"
   | "hired";
 
-export const PIPELINE_STAGES = ["prd_faa_review", "screening", "info_session", "tims_review", "interview_pre", "interview_post", "pending_offer", "offer", "hired"] as const;
+export const PIPELINE_STAGES = ["prd_faa_review", "chief_pilot_review", "screening", "info_session", "tims_review", "interview_pre", "interview_post", "pending_offer", "offer", "hired"] as const;
 export type PipelineStage = (typeof PIPELINE_STAGES)[number];
 
 export type JobRow = {
@@ -157,6 +158,12 @@ export type JobRow = {
   deleted_at?: string | null;
 
   info_session_data?: Record<string, any> | null;
+
+  info_session_attended?: boolean | null;
+  info_session_attended_at?: string | null;
+
+  offer_sent_at?: string | null;
+  offer_status?: string | null; // null | "draft" | "sent" | "accepted" | "declined"
 
   confidence?: any;
   raw_extraction?: any;

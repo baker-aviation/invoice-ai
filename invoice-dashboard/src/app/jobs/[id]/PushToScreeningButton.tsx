@@ -13,6 +13,7 @@ export default function PushToScreeningButton({
     currentStage === "screening" ||
     currentStage === "info_session" ||
     currentStage === "prd_faa_review" ||
+    currentStage === "chief_pilot_review" ||
     currentStage === "tims_review" ||
     currentStage === "interview_pre" ||
     currentStage === "interview_post" ||

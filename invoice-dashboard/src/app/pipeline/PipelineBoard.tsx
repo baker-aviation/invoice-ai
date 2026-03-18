@@ -9,7 +9,8 @@ import type { HiringStage, JobRow } from "@/lib/types";
 // ---------------------------------------------------------------------------
 
 const STAGES: { key: HiringStage; label: string; color: string }[] = [
-  { key: "prd_faa_review", label: "PRD / FAA Review", color: "bg-orange-50 border-orange-300" },
+  { key: "prd_faa_review", label: "Pending PRD Upload", color: "bg-orange-50 border-orange-300" },
+  { key: "chief_pilot_review", label: "Chief Pilot Review", color: "bg-red-50 border-red-300" },
   { key: "screening", label: "Screening", color: "bg-blue-50 border-blue-300" },
   { key: "info_session", label: "Info Session", color: "bg-cyan-50 border-cyan-300" },
   { key: "tims_review", label: "Tim's Review", color: "bg-teal-50 border-teal-300" },
@@ -64,6 +65,7 @@ export default function PipelineBoard({ initialJobs }: { initialJobs: JobRow[] }
 
     const map: Record<HiringStage, JobRow[]> = {
       prd_faa_review: [],
+      chief_pilot_review: [],
       screening: [],
       info_session: [],
       tims_review: [],
