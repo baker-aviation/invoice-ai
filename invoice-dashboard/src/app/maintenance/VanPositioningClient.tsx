@@ -1685,6 +1685,7 @@ function VanScheduleCard({
   onDragLeave,
   onRemove,
   onSetPrimaryAirport,
+  onPublishVan,
   fboMap,
 }: {
   zone: (typeof FIXED_VAN_ZONES)[number];
@@ -1712,10 +1713,12 @@ function VanScheduleCard({
   onDragLeave: (e: React.DragEvent) => void;
   onRemove: (flightId: string) => void;  // delete aircraft from this van
   onSetPrimaryAirport?: (tail: string, airport: string) => void;
+  onPublishVan?: (vanId: number) => Promise<void>;
   fboMap?: Record<string, string>;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [showSlackModal, setShowSlackModal] = useState(false);
+  const [publishingVan, setPublishingVan] = useState(false);
   const [showLocation, setShowLocation] = useState(false);
   const dragTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const now = new Date();
@@ -1803,6 +1806,16 @@ function VanScheduleCard({
               title={showLocation ? "Hide location" : "Show van location"}
             >
               <svg className="w-3.5 h-3.5 inline -mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+            </button>
+          )}
+          {onPublishVan && (
+            <button
+              onClick={async (e) => { e.stopPropagation(); setPublishingVan(true); await onPublishVan(zone.vanId); setPublishingVan(false); }}
+              disabled={publishingVan}
+              className="text-xs text-blue-600 hover:text-blue-800 hover:bg-blue-50 border border-gray-200 hover:border-blue-300 rounded-lg px-2 py-1 transition-colors font-medium disabled:opacity-50"
+              title="Update this van's driver page"
+            >
+              {publishingVan ? "Updating..." : "Update Schedule"}
             </button>
           )}
           <button
@@ -2838,6 +2851,24 @@ function ScheduleTab({
     setPublishing(false);
   }, [date, finalItemsByVan, currentEditsFingerprint]);
 
+  const handlePublishVan = useCallback(async (vanId: number) => {
+    try {
+      const items = finalItemsByVan.get(vanId) ?? [];
+      const res = await fetch("/api/vans/publish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          date,
+          assignments: [{ vanId, flightIds: items.map((item) => item.arrFlight.id) }],
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setPublishedAt(data.published_at);
+      }
+    } catch { /* ignore */ }
+  }, [date, finalItemsByVan]);
+
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between flex-wrap gap-2">
@@ -3351,6 +3382,7 @@ function ScheduleTab({
               onDrop={handleDrop}
               onDragLeave={() => handleDragLeaveZone()}
               onRemove={handleRemove}
+              onPublishVan={handlePublishVan}
               onSetPrimaryAirport={(tail, apt) => {
                 setAirportOverrides((prev) => {
                   const next = new Map(prev);
