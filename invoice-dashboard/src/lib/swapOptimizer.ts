@@ -207,21 +207,50 @@ function getLocalHour(utcDate: Date, icao: string): number {
   return parseInt(parts.find(p => p.type === "hour")?.value ?? "12");
 }
 
+/**
+ * Convert a local time at a specific timezone to UTC.
+ * The old toLocaleString→new Date() round-trip was broken: new Date(localeString)
+ * parses as SERVER local time (CDT), not the target timezone, adding ~1-5hr errors.
+ *
+ * Correct approach: guess UTC, check what local time that is, compute offset.
+ */
+function localTimeToUtc(dateStr: string, hour: number, minute: number, tz: string): Date {
+  const guess = new Date(`${dateStr}T${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:00Z`);
+  // What local hour does this UTC time correspond to in the target timezone?
+  const localHour = parseInt(
+    guess.toLocaleString("en-US", { timeZone: tz, hour: "numeric", hour12: false }),
+  );
+  // Compute the adjustment needed: if we want hour=18 local but guess gives localHour=14,
+  // we need to add 4 hours to the UTC guess.
+  let diff = hour - localHour;
+  // Handle midnight wrapping (e.g., want 1am local but got 23 → diff=-22, should be +2)
+  if (diff > 12) diff -= 24;
+  if (diff < -12) diff += 24;
+  return new Date(guess.getTime() + diff * 3600_000 + (minute > 0 ? 0 : 0));
+}
+
 /** Get midnight local at an airport on the NEXT day after dateStr (i.e. end of that day) */
 function midnightUtc(icao: string, dateStr: string): Date {
   const tz = getAirportTimezone(icao) ?? "America/New_York";
-  // We need to find UTC time for midnight local on the day AFTER dateStr
-  // (midnight = end of Wednesday = start of Thursday)
   const nextDay = new Date(dateStr);
   nextDay.setDate(nextDay.getDate() + 1);
   const ndStr = nextDay.toISOString().slice(0, 10);
+  return localTimeToUtc(ndStr, 0, 0, tz);
+}
 
-  // Get timezone offset at that local midnight
-  const refDate = new Date(`${ndStr}T00:00:00Z`);
-  const utcStr = refDate.toLocaleString("en-US", { timeZone: "UTC" });
-  const localStr = refDate.toLocaleString("en-US", { timeZone: tz });
-  const offsetMs = new Date(utcStr).getTime() - new Date(localStr).getTime();
-  return new Date(refDate.getTime() + offsetMs);
+/**
+ * Parse a HasData flight time string using the airport's timezone.
+ * HasData stores "YYYY-MM-DD HH:MM" in LOCAL airport time. Without this,
+ * new Date() parses as server timezone (CDT) instead of airport timezone (EDT).
+ */
+function parseFlightTime(timeStr: string, airportIata: string): Date {
+  // Extract date and time components from "2026-03-18 14:30" or "2026-03-18T14:30"
+  const clean = timeStr.replace("T", " ").trim();
+  const m = clean.match(/^(\d{4}-\d{2}-\d{2})\s+(\d{1,2}):(\d{2})/);
+  if (!m) return new Date(timeStr); // fallback to default parsing
+  const [, dateStr, hourStr, minStr] = m;
+  const tz = getAirportTimezone(toIcao(airportIata)) ?? "America/New_York";
+  return localTimeToUtc(dateStr, parseInt(hourStr), parseInt(minStr), tz);
 }
 
 /** Duty-on time for commercial flight from home airport */
@@ -433,14 +462,14 @@ function buildCandidates(
 
   // Oncoming hard deadline: 1800L at the swap airport (offgoing crew holds until then)
   // The ideal is arriving before the first leg, but it's a scoring preference, not a hard cutoff.
+  // Hard deadline: latest possible oncoming arrival. The REAL constraint is the per-tail
+  // offgoing deadline (handled in buildFeasibilityMatrix). This is a safety net for tails
+  // where offgoing has no booked transport. Extended from 6pm to 10pm because per-tail
+  // deadlines now handle the tight cases correctly.
   let oncomingHardDeadline: Date | null = null;
   if (task.direction === "oncoming") {
     const tz = getAirportTimezone(swapIcao) ?? "America/New_York";
-    const sixPmLocal = new Date(`${swapDate}T18:00:00`);
-    const utcStr = sixPmLocal.toLocaleString("en-US", { timeZone: "UTC" });
-    const localStr = sixPmLocal.toLocaleString("en-US", { timeZone: tz });
-    const offsetMs = new Date(utcStr).getTime() - new Date(localStr).getTime();
-    oncomingHardDeadline = new Date(sixPmLocal.getTime() + offsetMs);
+    oncomingHardDeadline = localTimeToUtc(swapDate, 22, 0, tz);
   }
 
   // Estimate duty-end for oncoming crew: last leg arrival + off-duty buffer
@@ -457,11 +486,7 @@ function buildCandidates(
     } else {
       // No legs — estimate duty ends at 2200L (conservative for unscheduled tails)
       const tz = getAirportTimezone(swapIcao) ?? "America/New_York";
-      const refDate = new Date(`${swapDate}T22:00:00`);
-      const utcStr = refDate.toLocaleString("en-US", { timeZone: "UTC" });
-      const localStr = refDate.toLocaleString("en-US", { timeZone: tz });
-      const offsetMs = new Date(utcStr).getTime() - new Date(localStr).getTime();
-      oncomingDutyEnd = new Date(refDate.getTime() + offsetMs);
+      oncomingDutyEnd = localTimeToUtc(swapDate, 22, 0, tz);
     }
   }
 
@@ -524,11 +549,7 @@ function buildCandidates(
         let earliestLeave = task.swapPoint.time;
         if (task.swapPoint.position === "before_live" || task.swapPoint.position === "idle") {
           const tz = getAirportTimezone(task.swapPoint.icao) ?? "America/New_York";
-          const earlyLocal = new Date(`${swapDate}T05:00:00`);
-          const utcStr = earlyLocal.toLocaleString("en-US", { timeZone: "UTC" });
-          const localStr = earlyLocal.toLocaleString("en-US", { timeZone: tz });
-          const offsetMs = new Date(utcStr).getTime() - new Date(localStr).getTime();
-          earliestLeave = new Date(earlyLocal.getTime() + offsetMs);
+          earliestLeave = localTimeToUtc(swapDate, 5, 0, tz);
         }
         depTime = earliestLeave;
         arrTime = new Date(depTime.getTime() + ms(driveMin));
@@ -626,6 +647,9 @@ function buildCandidates(
 
       for (const searchDate of datesToSearch) {
       const offers = lookupFlights(commercialFlights, originIata, destIata, searchDate);
+      if (task.tail === "N513JB" && task.role === "PIC" && task.name.includes("Palmer") && offers.length > 0) {
+        console.log(`[DBG-N513JB] Chris Palmer lookup ${originIata}→${destIata} ${searchDate}: ${offers.length} offers`);
+      }
 
       for (const offer of offers) {
         const segs = offer.itineraries[0]?.segments ?? [];
@@ -636,8 +660,13 @@ function buildCandidates(
 
         const firstSeg = segs[0];
         const lastSeg = segs[segs.length - 1];
-        const flightDep = new Date(firstSeg.departure.at);
-        const flightArr = new Date(lastSeg.arrival.at);
+
+        // Parse HasData flight times using the correct airport timezone.
+        // HasData stores local times ("2026-03-18 14:30") but new Date() parses
+        // these as server local time (CDT), not the airport's timezone (EDT).
+        // This 1-hour error causes flights to fail timing checks incorrectly.
+        const flightDep = parseFlightTime(firstSeg.departure.at, firstSeg.departure.iataCode);
+        const flightArr = parseFlightTime(lastSeg.arrival.at, lastSeg.arrival.iataCode);
         const totalDuration = segs.reduce((s, sg) => s + parseDuration(sg.duration), 0);
         const flightNum = segs.map((s) => `${s.carrierCode}${s.number}`).join("/");
         const isDirect = segs.length === 1;
@@ -665,6 +694,9 @@ function buildCandidates(
           // Hard deadline: must arrive at FBO by 1800L (offgoing crew holds until then)
           // Arriving before first leg is a scoring PREFERENCE, not a hard requirement
           if (oncomingHardDeadline && fboArr.getTime() > oncomingHardDeadline.getTime()) {
+            if (task.tail === "N513JB" && task.role === "PIC") {
+              console.log(`[DBG-N513JB] ${task.name} ${flightNum}: REJECTED hard deadline. fboArr=${fboArr.toISOString()} > deadline=${oncomingHardDeadline.toISOString()}`);
+            }
             continue; // Too late — even offgoing can't hold this long
           }
 
@@ -677,7 +709,12 @@ function buildCandidates(
           // 14hr duty day check: duty-on through estimated end of flying day
           if (oncomingDutyEnd && dutyOn) {
             const { valid } = checkDutyDay(dutyOn, oncomingDutyEnd);
-            if (!valid) continue; // Exceeds 14hr duty day
+            if (!valid) {
+              if (task.tail === "N513JB" && task.role === "PIC") {
+                console.log(`[DBG-N513JB] ${task.name} ${flightNum}: REJECTED duty day. dutyOn=${dutyOn.toISOString()} dutyEnd=${oncomingDutyEnd.toISOString()} hours=${((oncomingDutyEnd.getTime()-dutyOn.getTime())/3600000).toFixed(1)}`);
+              }
+              continue; // Exceeds 14hr duty day
+            }
           }
         } else {
           // Offgoing: check if they can make this flight
@@ -688,11 +725,7 @@ function buildCandidates(
           let releaseTime = task.swapPoint.time;
           if (task.swapPoint.position === "before_live" || task.swapPoint.position === "idle") {
             const tz = getAirportTimezone(task.swapPoint.icao) ?? "America/New_York";
-            const earlyLocal = new Date(`${swapDate}T05:00:00`);
-            const utcStr = earlyLocal.toLocaleString("en-US", { timeZone: "UTC" });
-            const localStr = earlyLocal.toLocaleString("en-US", { timeZone: tz });
-            const offsetMs = new Date(utcStr).getTime() - new Date(localStr).getTime();
-            releaseTime = new Date(earlyLocal.getTime() + offsetMs);
+            releaseTime = localTimeToUtc(swapDate, 5, 0, tz);
           }
           // Need to get to commercial airport + security buffer
           const buffer = driveToFboMin > UBER_MAX_MINUTES ? RENTAL_RETURN_BUFFER : AIRPORT_SECURITY_BUFFER;
@@ -805,11 +838,8 @@ function findBackups(
     // Backup must still arrive at FBO before 1800 local (offgoing crew holds until then)
     if (task?.direction === "oncoming" && c.fboArrivalTime) {
       const tz = getAirportTimezone(task.swapPoint.icao) ?? "America/New_York";
-      const deadline1800 = new Date(`${task.swapPoint.time.toISOString().slice(0, 10)}T18:00:00`);
-      const utcStr = deadline1800.toLocaleString("en-US", { timeZone: "UTC" });
-      const localStr = deadline1800.toLocaleString("en-US", { timeZone: tz });
-      const offsetMs = new Date(utcStr).getTime() - new Date(localStr).getTime();
-      const hardDeadline = new Date(deadline1800.getTime() + offsetMs);
+      const dateStr = task.swapPoint.time.toISOString().slice(0, 10);
+      const hardDeadline = localTimeToUtc(dateStr, 22, 0, tz);
       if (c.fboArrivalTime.getTime() > hardDeadline.getTime()) return false;
     }
 
@@ -2043,10 +2073,14 @@ function buildFeasibilityMatrix(params: {
       swapPointsToTry = [bestSp];
     }
     const acType = tailAircraftType.get(tail) ?? "unknown";
+    // Debug tracking for tails with 0 viable crew
+    const _dbgReasons: Record<string, string[]> = {};
 
     for (const poolEntry of pool) {
       if (!isQualified(poolEntry.aircraft_type, acType)) {
         matrix.push({ crewName: poolEntry.name, tail, viable: false, bestScore: 0, bestCost: 999, offgoingCost: 0, totalCost: 999, bestType: "none", candidateCount: 0, rank: 999, bestSwapIcao: "", minDriveMiles: 9999 });
+        if (!_dbgReasons[tail]) _dbgReasons[tail] = [];
+        _dbgReasons[tail].push(`${poolEntry.name}: NOT_QUAL (crew=${poolEntry.aircraft_type} tail=${acType})`);
         continue;
       }
 
@@ -2176,6 +2210,9 @@ function buildFeasibilityMatrix(params: {
             if (noneCandidate) candidates.push(noneCandidate);
           } else {
             // No candidate beats the offgoing deadline — not viable
+            if (!_dbgReasons[tail]) _dbgReasons[tail] = [];
+            const earliest = allCandidates.filter(c => c.fboArrivalTime).sort((a,b) => a.fboArrivalTime!.getTime() - b.fboArrivalTime!.getTime())[0];
+            _dbgReasons[tail].push(`${poolEntry.name}: DEADLINE dl=${dl.deadline.toISOString()} earliest_arr=${earliest?.fboArrivalTime?.toISOString() ?? "none"} gap=${earliest?.fboArrivalTime ? Math.round((earliest.fboArrivalTime.getTime() - deadlineMs)/60000) + "min" : "?"}`);
             candidates.length = 0;
             candidates.push({ type: "none" as const, flightNumber: null, depTime: null, arrTime: null, from: "", to: "", cost: 0, durationMin: 0, isDirect: false, isBudgetCarrier: false, hubConnection: false, connectionCount: 0, offer: null, drive: null, fboArrivalTime: null, fboLeaveTime: null, dutyOnTime: null, score: 0, backups: [] });
           }
@@ -2187,6 +2224,12 @@ function buildFeasibilityMatrix(params: {
 
       const best = candidates[0];
       const viable = best ? best.type !== "none" : false;
+
+      if (!viable) {
+        if (!_dbgReasons[tail]) _dbgReasons[tail] = [];
+        const candTypes = allCandidates.map(c => c.type).join(",");
+        _dbgReasons[tail].push(`${poolEntry.name}: NO_TRANSPORT sp=${swapPointsToTry.map(s=>toIata(s.icao)).join("/")} homes=${homeAirports.join(",")} cands=${allCandidates.length}(${candTypes})`);
+      }
 
       // Determine which swap point the best candidate targets
       const bestSwapIcao = best?.to ? toIcao(best.to) : (swapPoints[0]?.icao ?? "");
@@ -2236,6 +2279,18 @@ function buildFeasibilityMatrix(params: {
         bestSwapIcao,
         minDriveMiles,
       });
+    }
+    // Log reasons for tails with 0 viable crew
+    const tailViable = matrix.filter(m => m.tail === tail && m.viable).length;
+    if (tailViable === 0 && _dbgReasons[tail]) {
+      const reasons = _dbgReasons[tail];
+      const qualFails = reasons.filter(r => r.includes("NOT_QUAL")).length;
+      const transportFails = reasons.filter(r => r.includes("NO_TRANSPORT")).length;
+      const deadlineFails = reasons.filter(r => r.includes("DEADLINE")).length;
+      console.log(`[FeasMatrix] ${tail} ${role}: 0 viable (${qualFails} type mismatch, ${transportFails} no transport, ${deadlineFails} deadline). acType=${acType}`);
+      // Log first few transport failures for debugging
+      const transportReasons = reasons.filter(r => r.includes("NO_TRANSPORT")).slice(0, 3);
+      for (const r of transportReasons) console.log(`  ${r}`);
     }
   }
 
@@ -2609,63 +2664,83 @@ function assignRoleWithMatrix(
     viableCrewPerTail.set(opt.tail, (viableCrewPerTail.get(opt.tail) ?? 0) + 1);
   }
 
-  // Sort: CREW-FIRST — most constrained crew first (fewest viable tails).
-  // "Mark Smith at TVC can only reach 2 tails — assign him first before
-  //  someone at ATL (who can reach 15 tails) steals his only option."
-  // Tiebreak: best rank (cost + reliability + proximity blend).
-  viableOptions.sort((a, b) => {
-    const aCrewConstraint = viableTailsPerCrew.get(a.crewName) ?? 999;
-    const bCrewConstraint = viableTailsPerCrew.get(b.crewName) ?? 999;
-    if (aCrewConstraint !== bCrewConstraint) return aCrewConstraint - bCrewConstraint;
-    // Secondary: if crew equally constrained, prefer the more constrained tail
-    const aTailConstraint = viableCrewPerTail.get(a.tail) ?? 999;
-    const bTailConstraint = viableCrewPerTail.get(b.tail) ?? 999;
-    if (aTailConstraint !== bTailConstraint) return aTailConstraint - bTailConstraint;
-    return a.rank - b.rank;
-  });
+  // ── Maximum bipartite matching (Kuhn's algorithm) ─────────────────────
+  // Greedy can't backtrack: if it assigns a flexible crew to an easy tail,
+  // a hard tail with only that crew available ends up empty. Maximum matching
+  // finds augmenting paths — chains of swaps that free up crew for hard tails.
+  // This maximizes SOLVED COUNT, then we optimize cost within the matching.
 
-  // Greedy assignment — hardest-to-move crew first, best fit within each
-  const assignedCrews = new Set<string>();
-  const assignedTails = new Set<string>();
-
+  // Build adjacency: tail → viable crew (sorted by rank — best options first)
+  const tailAdj = new Map<string, FeasibilityEntry[]>();
   for (const opt of viableOptions) {
-    if (assignedCrews.has(opt.crewName) || assignedTails.has(opt.tail)) continue;
-    result[opt.tail][field] = opt.crewName;
-    // Carry the proven swap point forward so buildSwapPlan uses the same one
-    const swapField = field === "oncoming_pic" ? "oncoming_pic_swap_icao" : "oncoming_sic_swap_icao";
-    if (opt.bestSwapIcao) result[opt.tail][swapField] = opt.bestSwapIcao;
-    assignedCrews.add(opt.crewName);
-    assignedTails.add(opt.tail);
+    if (!tailAdj.has(opt.tail)) tailAdj.set(opt.tail, []);
+    tailAdj.get(opt.tail)!.push(opt);
+  }
+  // Sort each tail's crew by rank (lower = better) so augmenting prefers cheap assignments
+  for (const [, entries] of tailAdj) {
+    entries.sort((a, b) => a.rank - b.rank);
+  }
 
-    const loc = extractSwapPoints(opt.tail, byTail, swapDate).swapPoints[0];
-    const crewConstraint = viableTailsPerCrew.get(opt.crewName) ?? 0;
-    const tailConstraint = viableCrewPerTail.get(opt.tail) ?? 0;
+  // Kuhn's algorithm: for each tail, try to find an augmenting path
+  const crewToTail = new Map<string, string>();  // crew → matched tail
+  const tailToCrew = new Map<string, string>();   // tail → matched crew
+
+  function augment(tail: string, visited: Set<string>): boolean {
+    const adj = tailAdj.get(tail) ?? [];
+    for (const opt of adj) {
+      if (visited.has(opt.crewName)) continue;
+      visited.add(opt.crewName);
+      const currentTail = crewToTail.get(opt.crewName);
+      // If crew is unmatched, or we can reroute their current match
+      if (!currentTail || augment(currentTail, visited)) {
+        crewToTail.set(opt.crewName, tail);
+        tailToCrew.set(tail, opt.crewName);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Process most-constrained tails first (fewest viable crew) for better cost optimization
+  const sortedTails = [...needingTails].sort((a, b) =>
+    (viableCrewPerTail.get(a) ?? 0) - (viableCrewPerTail.get(b) ?? 0)
+  );
+  for (const tail of sortedTails) {
+    augment(tail, new Set());
+  }
+
+  const matchCount = tailToCrew.size;
+  console.log(`[FeasMatrix] ${role}: ${viableOptions.length}/${matrix.length} viable combos, ` +
+    `${new Set(viableOptions.map(v => v.tail)).size} tails w/viable crew, ` +
+    `${new Set(viableOptions.map(v => v.crewName)).size} crew w/viable tails — ` +
+    `matched ${matchCount} (max bipartite matching)`);
+
+  // Apply the matching
+  const swapField = field === "oncoming_pic" ? "oncoming_pic_swap_icao" : "oncoming_sic_swap_icao";
+  for (const [tail, crewName] of tailToCrew) {
+    const opt = viableOptions.find((v) => v.crewName === crewName && v.tail === tail);
+    if (!opt) continue;
+
+    result[tail][field] = crewName;
+    if (opt.bestSwapIcao) result[tail][swapField] = opt.bestSwapIcao;
+
+    const loc = extractSwapPoints(tail, byTail, swapDate).swapPoints[0];
+    const crewConstraint = viableTailsPerCrew.get(crewName) ?? 0;
+    const tailConstraint = viableCrewPerTail.get(tail) ?? 0;
     const swapIata = opt.bestSwapIcao ? toIata(opt.bestSwapIcao) : (loc ? toIata(loc.icao) : "?");
     const driveMi = opt.minDriveMiles < 9999 ? `${Math.round(opt.minDriveMiles)}mi` : "?mi";
     const constrainedTag = crewConstraint <= 2 ? " [CREW-CONSTRAINED]" : (tailConstraint <= 2 ? " [TAIL-CONSTRAINED]" : "");
-
-    // Build alternatives list: other viable tails for this crew, ranked
-    const alternatives = viableOptions
-      .filter((v) => v.crewName === opt.crewName && v.tail !== opt.tail && !assignedTails.has(v.tail))
-      .sort((a, b) => a.rank - b.rank)
-      .slice(0, 3)
-      .map((v) => `${v.tail}(rank=${v.rank.toFixed(1)})`);
-    const altStr = alternatives.length > 0 ? ` alt tails: ${alternatives.join(", ")}` : " (only viable tail)";
-
     const offStr = opt.offgoingCost > 0 ? ` +$${Math.round(opt.offgoingCost)} offgoing` : "";
-    const reason = `${opt.bestType} $${Math.round(opt.bestCost)}${offStr} (total $${Math.round(opt.totalCost)}) score=${opt.bestScore} to ${swapIata} | proximity=${driveMi} rank=${opt.rank.toFixed(1)} (crew→${crewConstraint} tails, tail→${tailConstraint} crew)${constrainedTag}${altStr}`;
-    console.log(`[Assignment] ${role} ${opt.crewName} → ${opt.tail} @ ${swapIata}: ${reason}`);
+    const reason = `${opt.bestType} $${Math.round(opt.bestCost)}${offStr} (total $${Math.round(opt.totalCost)}) score=${opt.bestScore} to ${swapIata} | proximity=${driveMi} rank=${opt.rank.toFixed(1)} (crew→${crewConstraint} tails, tail→${tailConstraint} crew)${constrainedTag}`;
+    console.log(`[Assignment] ${role} ${crewName} → ${tail} @ ${swapIata}: ${reason}`);
 
     details.push({
-      name: opt.crewName,
-      tail: opt.tail,
+      name: crewName,
+      tail,
       cost: Math.round(opt.totalCost),
       reason,
     });
   }
-
-  // No fallback — only assign crew with proven transport.
-  // Unassigned tails show up in buildSwapPlan output with clear "needs flights" status.
 }
 
 // ─── Helper: get flight searches for ALL pool crew × ALL swap locations ───────
@@ -2909,8 +2984,17 @@ export function solveOffgoingFirst(params: {
       for (const c of task.candidates) {
         c.score = scoreCandidate(c, task, null);
       }
-      task.candidates.sort((a, b) => b.score - a.score);
-      task.best = task.candidates[0] ?? null;
+      // Pick the candidate with the LATEST fboLeaveTime — maximizes the oncoming window.
+      // Previously we picked the best-scored (earliest departure), creating impossibly
+      // tight deadlines like 8:45am that no oncoming crew can meet. The offgoing crew
+      // takes a later flight home, giving oncoming all day to arrive.
+      const viableCandidates = task.candidates.filter((c) => c.type !== "none");
+      viableCandidates.sort((a, b) => {
+        const aLeave = (a.fboLeaveTime ?? a.depTime)?.getTime() ?? 0;
+        const bLeave = (b.fboLeaveTime ?? b.depTime)?.getTime() ?? 0;
+        return bLeave - aLeave; // latest first
+      });
+      task.best = viableCandidates[0] ?? task.candidates[0] ?? null;
 
       const best = task.best;
       let deadline: Date | null = null;
