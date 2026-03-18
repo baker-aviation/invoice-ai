@@ -13,6 +13,16 @@ const STAGE_META: Record<
   PipelineStage,
   { label: string; color: string; headerColor: string }
 > = {
+  prd_faa_review: {
+    label: "Pending PRD Upload",
+    color: "border-orange-200",
+    headerColor: "bg-orange-100 text-orange-700",
+  },
+  chief_pilot_review: {
+    label: "Chief Pilot Review",
+    color: "border-red-200",
+    headerColor: "bg-red-100 text-red-700",
+  },
   screening: {
     label: "Screening",
     color: "border-blue-200",
@@ -23,15 +33,20 @@ const STAGE_META: Record<
     color: "border-cyan-200",
     headerColor: "bg-cyan-100 text-cyan-700",
   },
-  prd_faa_review: {
-    label: "PRD / FAA Review",
-    color: "border-orange-200",
-    headerColor: "bg-orange-100 text-orange-700",
+  tims_review: {
+    label: "Tim's Review",
+    color: "border-teal-200",
+    headerColor: "bg-teal-100 text-teal-700",
   },
-  interview: {
-    label: "Interview",
+  interview_pre: {
+    label: "Pre-Interview",
     color: "border-violet-200",
     headerColor: "bg-violet-100 text-violet-700",
+  },
+  interview_post: {
+    label: "Post-Interview",
+    color: "border-purple-200",
+    headerColor: "bg-purple-100 text-purple-700",
   },
   pending_offer: {
     label: "Pending Offer",
@@ -67,6 +82,61 @@ const CATEGORY_LABELS: Record<string, string> = {
   line_service: "Line",
   other: "Other",
 };
+
+function InfoSessionTools({ jobs }: { jobs: JobRow[] }) {
+  const [copied, setCopied] = useState(false);
+  const [meetLink, setMeetLink] = useState(() => {
+    try { return localStorage.getItem("info_session_meet_link") ?? ""; } catch { return ""; }
+  });
+
+  const emails = jobs.filter((j) => j.email).map((j) => j.email!);
+
+  const handleCopyEmails = () => {
+    const text = emails.join(", ");
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  const handleMeetLinkChange = (val: string) => {
+    setMeetLink(val);
+    try { localStorage.setItem("info_session_meet_link", val); } catch {}
+  };
+
+  return (
+    <div className="px-3 py-2 border-t border-cyan-100 space-y-2">
+      <div className="flex items-center gap-2">
+        <button
+          onClick={handleCopyEmails}
+          disabled={emails.length === 0}
+          className="text-[10px] font-medium px-2 py-1 rounded border border-cyan-300 bg-white text-cyan-700 hover:bg-cyan-50 disabled:opacity-40 transition-colors"
+        >
+          {copied ? "Copied!" : `Copy ${emails.length} Email${emails.length !== 1 ? "s" : ""}`}
+        </button>
+      </div>
+      <div>
+        <input
+          type="text"
+          value={meetLink}
+          onChange={(e) => handleMeetLinkChange(e.target.value)}
+          placeholder="Google Meet link..."
+          className="w-full text-[10px] px-2 py-1 rounded border border-gray-200 focus:border-cyan-400 focus:outline-none"
+        />
+      </div>
+      {meetLink && (
+        <button
+          onClick={() => {
+            navigator.clipboard.writeText(meetLink);
+          }}
+          className="text-[10px] font-medium px-2 py-1 rounded border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 transition-colors"
+        >
+          Copy Meet Link
+        </button>
+      )}
+    </div>
+  );
+}
 
 const CATEGORY_COLORS: Record<string, string> = {
   pilot_pic: "bg-emerald-100 text-emerald-800 border-emerald-200",
@@ -157,7 +227,7 @@ function AddCandidateModal({
         location: form.location.trim() || null,
         category: form.category || null,
         notes: form.notes.trim() || null,
-        pipeline_stage: "screening",
+        pipeline_stage: "prd_faa_review",
       };
       if (isPilot) {
         if (form.total_time_hours) payload.total_time_hours = Number(form.total_time_hours);
@@ -201,7 +271,7 @@ function AddCandidateModal({
         application_id: data.application_id,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
-        pipeline_stage: "screening",
+        pipeline_stage: "prd_faa_review",
         category: form.category || null,
         employment_type: null,
         candidate_name: form.candidate_name.trim(),
@@ -381,12 +451,41 @@ function AddCandidateModal({
 // Candidate card
 // ---------------------------------------------------------------------------
 
+function OfferStatusBadge({ status }: { status: string | null | undefined }) {
+  if (!status || status === "draft") {
+    return (
+      <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-gray-100 text-gray-500 border-gray-200">
+        No Offer
+      </span>
+    );
+  }
+  const map: Record<string, string> = {
+    sent: "bg-blue-100 text-blue-700 border-blue-200",
+    accepted: "bg-emerald-100 text-emerald-700 border-emerald-200",
+    declined: "bg-red-100 text-red-700 border-red-200",
+  };
+  const labels: Record<string, string> = {
+    sent: "Offer Sent",
+    accepted: "Accepted",
+    declined: "Declined",
+  };
+  return (
+    <span className={`inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold ${map[status] ?? "bg-gray-100 text-gray-500 border-gray-200"}`}>
+      {labels[status] ?? status}
+    </span>
+  );
+}
+
 function CandidateCard({
   job,
   onDragStart,
+  stage,
+  onToggleAttendance,
 }: {
   job: JobRow;
   onDragStart: (e: React.DragEvent, applicationId: number) => void;
+  stage: PipelineStage;
+  onToggleAttendance?: (applicationId: number, attended: boolean) => void;
 }) {
   const isPilot =
     job.category === "pilot_pic" || job.category === "pilot_sic";
@@ -438,6 +537,14 @@ function CandidateCard({
             {catLabel}
           </span>
         )}
+        {/* Source tag */}
+        {job.model === "google-form-intake" ? (
+          <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-red-50 text-red-600 border-red-200">Google</span>
+        ) : job.model === "manual" ? (
+          <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-gray-50 text-gray-500 border-gray-200">Manual</span>
+        ) : job.model ? (
+          <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-indigo-50 text-indigo-600 border-indigo-200">Hiring@</span>
+        ) : null}
         {job.location && (
           <span className="text-[10px] text-gray-400 truncate max-w-[100px]">
             {job.location}
@@ -453,6 +560,39 @@ function CandidateCard({
           {job.pic_time_hours != null && (
             <span>PIC {fmtHours(job.pic_time_hours)}</span>
           )}
+        </div>
+      )}
+
+      {/* Info session attendance toggle */}
+      {stage === "info_session" && (
+        <div className="mt-2 flex items-center gap-1.5">
+          <label
+            className="flex items-center gap-1.5 cursor-pointer"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <input
+              type="checkbox"
+              checked={!!job.info_session_attended}
+              onChange={(e) => {
+                e.stopPropagation();
+                onToggleAttendance?.(job.application_id, e.target.checked);
+              }}
+              className="rounded border-gray-300 text-emerald-600 focus:ring-emerald-500 h-3.5 w-3.5"
+            />
+            <span className="text-[10px] text-gray-500">Attended</span>
+          </label>
+          {job.info_session_attended && (
+            <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-emerald-100 text-emerald-700 border-emerald-200">
+              Attended
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Offer status badge */}
+      {(stage === "pending_offer" || stage === "offer") && (
+        <div className="mt-2">
+          <OfferStatusBadge status={job.offer_status} />
         </div>
       )}
 
@@ -602,6 +742,70 @@ export default function PipelineBoard({
     setDropTarget(null);
   }, []);
 
+  const handleToggleAttendance = useCallback(
+    async (applicationId: number, attended: boolean) => {
+      // Optimistic update
+      setJobs((prev) =>
+        prev.map((j) =>
+          j.application_id === applicationId
+            ? {
+                ...j,
+                info_session_attended: attended || null,
+                info_session_attended_at: attended
+                  ? new Date().toISOString()
+                  : null,
+              }
+            : j,
+        ),
+      );
+
+      try {
+        const res = await fetch(`/api/jobs/${applicationId}/profile`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            info_session_attended: attended ? true : null,
+            info_session_attended_at: attended
+              ? new Date().toISOString()
+              : null,
+          }),
+        });
+        if (!res.ok) {
+          // Revert on failure
+          setJobs((prev) =>
+            prev.map((j) =>
+              j.application_id === applicationId
+                ? {
+                    ...j,
+                    info_session_attended: attended ? null : true,
+                    info_session_attended_at: attended
+                      ? null
+                      : j.info_session_attended_at,
+                  }
+                : j,
+            ),
+          );
+        }
+      } catch {
+        // Revert on network error
+        setJobs((prev) =>
+          prev.map((j) =>
+            j.application_id === applicationId
+              ? {
+                  ...j,
+                  info_session_attended: attended ? null : true,
+                  info_session_attended_at: attended
+                    ? null
+                    : j.info_session_attended_at,
+                }
+              : j,
+          ),
+        );
+      }
+    },
+    [],
+  );
+
   const handleCreated = useCallback((newJob: JobRow) => {
     setJobs((prev) => [newJob, ...prev]);
   }, []);
@@ -660,6 +864,8 @@ export default function PipelineBoard({
                 </span>
               </div>
 
+              {stage === "info_session" && <InfoSessionTools jobs={stageJobs} />}
+
               {/* Cards */}
               <div className="flex-1 p-2 space-y-2 min-h-[120px] max-h-[calc(100vh-220px)] overflow-y-auto">
                 {stageJobs.map((job) => (
@@ -673,6 +879,8 @@ export default function PipelineBoard({
                     <CandidateCard
                       job={job}
                       onDragStart={handleDragStart}
+                      stage={stage}
+                      onToggleAttendance={handleToggleAttendance}
                     />
                   </div>
                 ))}

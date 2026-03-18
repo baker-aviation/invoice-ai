@@ -18,6 +18,8 @@ import {
 } from "@/lib/maintenanceData";
 import { getAirportInfo } from "@/lib/airportCoords";
 import type { AircraftPosition } from "./MapView";
+import MxBoard from "./MxBoard";
+import type { MelItem } from "@/lib/opsApi";
 
 // Leaflet requires SSR to be disabled
 const MapView = dynamic(() => import("./MapView"), {
@@ -1091,6 +1093,140 @@ function daysRemaining(endTime: string | null): number {
   return Math.floor((end - Date.now()) / (24 * 60 * 60 * 1000));
 }
 
+// ---------------------------------------------------------------------------
+// Midday Service Opportunities — aircraft with 2h+ ground time near a van
+// ---------------------------------------------------------------------------
+
+type MiddayWindow = {
+  flightId: string;
+  tail: string;
+  airport: string;
+  city: string;
+  landTime: Date;
+  nextDepTime: Date;
+  groundMin: number;
+  mxNoteCount: number;
+};
+
+function MiddayOpportunities({
+  zone,
+  allFlights,
+  date,
+  overnightTails,
+  mxNotesByTail,
+  onAddToVan,
+}: {
+  zone: (typeof FIXED_VAN_ZONES)[number];
+  allFlights: Flight[];
+  date: string;
+  overnightTails: Set<string>;
+  mxNotesByTail: Map<string, MxNote[]>;
+  onAddToVan?: (flightId: string, vanId: number) => void;
+}) {
+  const windows = useMemo(() => {
+    const results: MiddayWindow[] = [];
+    const MIN_GROUND_MIN = 120; // 2 hours
+    const MAX_DIST_KM = 200; // ~125 miles from van home
+
+    // Group flights by tail for this date
+    const byTail = new Map<string, Flight[]>();
+    for (const f of allFlights) {
+      if (!f.tail_number || !f.arrival_icao) continue;
+      if (!isOnEtDate(f.scheduled_departure, date) && !isOnEtDate(f.scheduled_arrival ?? f.scheduled_departure, date)) continue;
+      if (!byTail.has(f.tail_number)) byTail.set(f.tail_number, []);
+      byTail.get(f.tail_number)!.push(f);
+    }
+
+    for (const [tail, flights] of byTail) {
+      // Skip tails already on this van's overnight list
+      if (overnightTails.has(tail)) continue;
+
+      const sorted = [...flights].sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure));
+      for (let i = 0; i < sorted.length - 1; i++) {
+        const leg = sorted[i];
+        const nextLeg = sorted[i + 1];
+        if (!leg.scheduled_arrival || !leg.arrival_icao) continue;
+
+        const landTime = new Date(leg.scheduled_arrival);
+        const nextDepTime = new Date(nextLeg.scheduled_departure);
+        const groundMin = Math.round((nextDepTime.getTime() - landTime.getTime()) / 60000);
+        if (groundMin < MIN_GROUND_MIN) continue;
+
+        // Check if this airport is near this van's zone
+        const info = getAirportInfo(leg.arrival_icao.replace(/^K/, "")) ?? getAirportInfo(leg.arrival_icao);
+        if (!info) continue;
+        const dist = haversineKm(info.lat, info.lon, zone.lat, zone.lon);
+        if (dist > MAX_DIST_KM) continue;
+
+        const mxNotes = mxNotesByTail.get(tail) ?? [];
+        results.push({
+          flightId: leg.id,
+          tail,
+          airport: leg.arrival_icao.replace(/^K/, ""),
+          city: info.city ? `${info.city}${info.state ? `, ${info.state}` : ""}` : "",
+          landTime,
+          nextDepTime,
+          groundMin,
+          mxNoteCount: mxNotes.length,
+        });
+      }
+    }
+
+    // Sort by ground time descending (biggest windows first)
+    results.sort((a, b) => b.groundMin - a.groundMin);
+    return results;
+  }, [zone, allFlights, date, overnightTails, mxNotesByTail]);
+
+  if (windows.length === 0) return null;
+
+  function fmtHM(d: Date) {
+    return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: "America/New_York" });
+  }
+
+  function fmtGround(min: number) {
+    const h = Math.floor(min / 60);
+    const m = min % 60;
+    return m > 0 ? `${h}h${m}m` : `${h}h`;
+  }
+
+  return (
+    <div className="px-4 py-2 bg-amber-50/50 border-b border-amber-200">
+      <div className="flex items-center gap-2 mb-1.5">
+        <span className="text-[10px] font-bold text-amber-700 uppercase tracking-wide">Midday Opportunities</span>
+        <span className="text-[10px] text-amber-500">{windows.length} aircraft with 2h+ ground time nearby</span>
+      </div>
+      <div className="space-y-1">
+        {windows.map((w, i) => (
+          <div key={`${w.tail}-${i}`} className="flex items-center gap-2 text-xs">
+            <span className="font-mono font-semibold text-gray-800 w-16">{w.tail}</span>
+            <span className="text-gray-600">{w.airport}</span>
+            {w.city && <span className="text-gray-400 text-[11px]">{w.city}</span>}
+            <span className="text-amber-700 font-medium">
+              {fmtHM(w.landTime)} – {fmtHM(w.nextDepTime)}
+            </span>
+            <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${w.groundMin >= 240 ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"}`}>
+              {fmtGround(w.groundMin)}
+            </span>
+            {w.mxNoteCount > 0 && (
+              <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-orange-100 text-orange-700">
+                {w.mxNoteCount} MX
+              </span>
+            )}
+            {onAddToVan && (
+              <button
+                onClick={() => onAddToVan(w.flightId, zone.vanId)}
+                className="px-2 py-0.5 text-[10px] font-medium text-amber-700 hover:text-white bg-amber-100 hover:bg-amber-600 border border-amber-300 rounded transition-colors"
+              >
+                + Add
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /** Single MX note row with expandable description */
 function MxNoteRow({ note, onHideForToday, vanOverride, onVanOverride }: {
   note: MxNote;
@@ -1099,6 +1235,7 @@ function MxNoteRow({ note, onHideForToday, vanOverride, onVanOverride }: {
   onVanOverride?: (noteId: string, vanId: number | null) => void;
 }) {
   const [descOpen, setDescOpen] = useState(false);
+  const effectiveVan = note.assigned_van ?? vanOverride ?? null;
   return (
     <div className="rounded-lg px-3 py-1.5 bg-orange-50 border border-orange-200">
       <div className="flex items-start gap-2">
@@ -1106,7 +1243,7 @@ function MxNoteRow({ note, onHideForToday, vanOverride, onVanOverride }: {
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-xs font-medium text-orange-700">{note.airport_icao}</span>
-            <span className="text-xs text-gray-700">{note.body}</span>
+            <span className="text-xs text-gray-700">{note.subject || note.body}</span>
             {note.description && (
               <button
                 onClick={() => setDescOpen((v) => !v)}
@@ -1115,6 +1252,11 @@ function MxNoteRow({ note, onHideForToday, vanOverride, onVanOverride }: {
                 {descOpen ? "hide notes" : "notes"}
                 <svg className={`w-2.5 h-2.5 inline ml-0.5 transition-transform ${descOpen ? "rotate-180" : ""}`} fill="none" viewBox="0 0 10 10" stroke="currentColor" strokeWidth={2}><path d="M2.5 3.5l2.5 2.5 2.5-2.5" /></svg>
               </button>
+            )}
+            {effectiveVan && (
+              <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-100 text-green-700">
+                V{effectiveVan}{note.scheduled_date ? ` · ${new Date(note.scheduled_date + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : ""}
+              </span>
             )}
             {note.end_time && (
               <span className="text-[11px] text-gray-400 ml-auto shrink-0">
@@ -1525,6 +1667,11 @@ function AircraftCompactRow({
           <span className="text-xs text-gray-500">{airport}{airportInfo ? ` · ${airportInfo.city}, ${airportInfo.state}` : ""}</span>
           <span className="text-xs text-gray-400">· {fmtDriveTime(distKm)}</span>
           <span className={`text-xs font-semibold rounded-full px-2 py-0.5 ${turnBadgeClass(turnBadgeLabel)}`}>{turnBadgeLabel}</span>
+          {mxNotes.filter((n) => !isMel(n) && (n.assigned_van === zone.vanId || !n.assigned_van)).length > 0 && (
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-orange-100 text-orange-700">
+              {mxNotes.filter((n) => !isMel(n) && (n.assigned_van === zone.vanId || !n.assigned_van)).length} MX
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {/* Schedule times + ETA */}
@@ -1686,6 +1833,7 @@ function VanScheduleCard({
   onRemove,
   onSetPrimaryAirport,
   onPublishVan,
+  onAddToVan,
   fboMap,
 }: {
   zone: (typeof FIXED_VAN_ZONES)[number];
@@ -1714,6 +1862,7 @@ function VanScheduleCard({
   onRemove: (flightId: string) => void;  // delete aircraft from this van
   onSetPrimaryAirport?: (tail: string, airport: string) => void;
   onPublishVan?: (vanId: number) => Promise<void>;
+  onAddToVan?: (flightId: string, vanId: number) => void;
   fboMap?: Record<string, string>;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -1841,6 +1990,16 @@ function VanScheduleCard({
 
       {expanded && (
         <div className="border-t">
+          {allFlights && (
+            <MiddayOpportunities
+              zone={zone}
+              allFlights={allFlights}
+              date={date}
+              overnightTails={new Set(items.map((it) => it.arrFlight.tail_number).filter(Boolean) as string[])}
+              mxNotesByTail={mxNotesByTail}
+              onAddToVan={onAddToVan}
+            />
+          )}
           {items.length === 0 ? (
             <div className={`px-4 py-6 text-sm text-center ${isDropTarget ? "text-blue-500 font-medium" : "text-gray-400"}`}>
               {isDropTarget ? "Drop aircraft here" : "No arrivals in area today."}
@@ -3390,6 +3549,19 @@ function ScheduleTab({
                   return next;
                 });
               }}
+              onAddToVan={(flightId, vanId) => {
+                setRemovals((prev) => {
+                  if (!prev.has(flightId)) return prev;
+                  const next = new Set(prev);
+                  next.delete(flightId);
+                  return next;
+                });
+                setOverrides((prev) => {
+                  const next = new Map(prev);
+                  next.set(flightId, vanId);
+                  return next;
+                });
+              }}
               fboMap={fboMap}
             />
           </div>
@@ -3787,7 +3959,7 @@ function MxAdminTab() {
   );
 }
 
-export default function VanPositioningClient({ initialFlights, mxNotes, aircraftTags = [], fboMap = {} }: { initialFlights: Flight[]; mxNotes?: MxNote[]; aircraftTags?: AircraftTag[]; fboMap?: Record<string, string> }) {
+export default function VanPositioningClient({ initialFlights, mxNotes, melItems = [], aircraftTags = [], fboMap = {} }: { initialFlights: Flight[]; mxNotes?: MxNote[]; melItems?: MelItem[]; aircraftTags?: AircraftTag[]; fboMap?: Record<string, string> }) {
   const dates = useMemo(() => getDateRange(2), []); // today + tomorrow
   const [dayIdx, setDayIdx] = useState(0);
   const [activeTab, setActiveTab] = useState<"map" | "schedule" | "flights" | "mx-admin">("schedule");
@@ -5100,7 +5272,11 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
 
       {/* ── MX Admin tab ── */}
       {activeTab === "mx-admin" && (
-        <MxAdminTab />
+        <div className="space-y-8">
+          <MxBoard flights={initialFlights} mxNotes={mxNotes} melItems={melItems} />
+          <hr className="border-gray-200" />
+          <MxAdminTab />
+        </div>
       )}
 
       {/* ── Long-Term Maintenance section ── */}

@@ -9,6 +9,7 @@ import TypeRatingsEditor from "./TypeRatingsEditor";
 import ProfileEditor from "./ProfileEditor";
 import ReviewBadge from "./ReviewBadge";
 import PushToScreeningButton from "./PushToScreeningButton";
+import OfferPreview from "./OfferPreview";
 
 function fmtDate(s: any) {
   return String(s ?? "").replace("T", " ").replace("+00:00", "Z");
@@ -343,6 +344,37 @@ export default async function JobDetailPage({
               </table>
             </div>
           )}
+
+          {/* PRD Document */}
+          {(() => {
+            const prdFiles = files.filter((f: any) => f.file_category === "prd");
+            return (
+              <div className="rounded-xl border bg-white p-4 shadow-sm">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-sm font-semibold text-gray-900">PRD Document</h3>
+                  <AttachFileButton applicationId={Number(applicationId)} parseId={job.id} defaultCategory="prd" />
+                </div>
+                {prdFiles.length === 0 ? (
+                  <p className="text-sm text-gray-400">No PRD uploaded yet.</p>
+                ) : (
+                  prdFiles.map((f: any) => (
+                    <a key={f.id} href={f.signed_url} target="_blank" rel="noreferrer"
+                      className="flex items-center gap-2 text-sm text-blue-600 hover:underline">
+                      <span>📄</span> {f.filename}
+                    </a>
+                  ))
+                )}
+              </div>
+            );
+          })()}
+
+          {/* Offer Letter */}
+          <div className="rounded-xl border bg-white p-4 shadow-sm">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-semibold">Offer Letter</div>
+              <OfferPreview applicationId={Number(applicationId)} initialOfferStatus={job.offer_status ?? null} />
+            </div>
+          </div>
 
           <div className="rounded-xl border bg-white p-4 shadow-sm">
             <div className="flex items-center justify-between">

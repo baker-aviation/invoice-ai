@@ -10,7 +10,7 @@ const JOB_COLUMNS =
   "id, application_id, created_at, updated_at, hiring_stage, category, employment_type, candidate_name, email, phone, location, total_time_hours, turbine_time_hours, pic_time_hours, sic_time_hours, has_citation_x, has_challenger_300_type_rating, type_ratings, has_part_135, has_part_121, soft_gate_pic_met, soft_gate_pic_status, needs_review, notes, model, info_session_data, structured_notes, rejected_at, rejection_reason, deleted_at";
 
 const JOB_COLUMNS_WITH_STAGE =
-  "id, application_id, created_at, updated_at, pipeline_stage, category, employment_type, candidate_name, email, phone, location, total_time_hours, turbine_time_hours, pic_time_hours, sic_time_hours, has_citation_x, has_challenger_300_type_rating, type_ratings, has_part_135, has_part_121, soft_gate_pic_met, soft_gate_pic_status, needs_review, notes, model, info_session_data, structured_notes, rejected_at, rejection_reason, deleted_at";
+  "id, application_id, created_at, updated_at, pipeline_stage, category, employment_type, candidate_name, email, phone, location, total_time_hours, turbine_time_hours, pic_time_hours, sic_time_hours, has_citation_x, has_challenger_300_type_rating, type_ratings, has_part_135, has_part_121, soft_gate_pic_met, soft_gate_pic_status, needs_review, notes, model, info_session_data, structured_notes, rejected_at, rejection_reason, deleted_at, offer_status, offer_sent_at, info_session_attended, info_session_attended_at";
 
 const JOB_COLUMNS_BASE =
   "id, application_id, created_at, updated_at, category, employment_type, candidate_name, email, phone, location, total_time_hours, turbine_time_hours, pic_time_hours, sic_time_hours, has_citation_x, has_challenger_300_type_rating, type_ratings, has_part_135, has_part_121, soft_gate_pic_met, soft_gate_pic_status, needs_review, notes, model, info_session_data";
@@ -190,7 +190,7 @@ export async function fetchJobDetail(applicationId: string | number): Promise<Jo
   // Fetch file metadata from Supabase (include GCS location for signing)
   const { data: fileRows } = await supa
     .from("job_application_files")
-    .select("id, filename, content_type, size_bytes, created_at, gcs_bucket, gcs_key")
+    .select("id, filename, content_type, size_bytes, created_at, gcs_bucket, gcs_key, file_category")
     .eq("application_id", Number(id))
     .order("created_at", { ascending: true });
 
