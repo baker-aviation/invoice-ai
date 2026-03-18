@@ -1101,6 +1101,7 @@ function MxNoteRow({ note, onHideForToday, vanOverride, onVanOverride }: {
   onVanOverride?: (noteId: string, vanId: number | null) => void;
 }) {
   const [descOpen, setDescOpen] = useState(false);
+  const effectiveVan = note.assigned_van ?? vanOverride ?? null;
   return (
     <div className="rounded-lg px-3 py-1.5 bg-orange-50 border border-orange-200">
       <div className="flex items-start gap-2">
@@ -1108,7 +1109,7 @@ function MxNoteRow({ note, onHideForToday, vanOverride, onVanOverride }: {
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-xs font-medium text-orange-700">{note.airport_icao}</span>
-            <span className="text-xs text-gray-700">{note.body}</span>
+            <span className="text-xs text-gray-700">{note.subject || note.body}</span>
             {note.description && (
               <button
                 onClick={() => setDescOpen((v) => !v)}
@@ -1117,6 +1118,11 @@ function MxNoteRow({ note, onHideForToday, vanOverride, onVanOverride }: {
                 {descOpen ? "hide notes" : "notes"}
                 <svg className={`w-2.5 h-2.5 inline ml-0.5 transition-transform ${descOpen ? "rotate-180" : ""}`} fill="none" viewBox="0 0 10 10" stroke="currentColor" strokeWidth={2}><path d="M2.5 3.5l2.5 2.5 2.5-2.5" /></svg>
               </button>
+            )}
+            {effectiveVan && (
+              <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-100 text-green-700">
+                V{effectiveVan}{note.scheduled_date ? ` · ${new Date(note.scheduled_date + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : ""}
+              </span>
             )}
             {note.end_time && (
               <span className="text-[11px] text-gray-400 ml-auto shrink-0">
@@ -1527,6 +1533,11 @@ function AircraftCompactRow({
           <span className="text-xs text-gray-500">{airport}{airportInfo ? ` · ${airportInfo.city}, ${airportInfo.state}` : ""}</span>
           <span className="text-xs text-gray-400">· {fmtDriveTime(distKm)}</span>
           <span className={`text-xs font-semibold rounded-full px-2 py-0.5 ${turnBadgeClass(turnBadgeLabel)}`}>{turnBadgeLabel}</span>
+          {mxNotes.filter((n) => !isMel(n) && (n.assigned_van === zone.vanId || !n.assigned_van)).length > 0 && (
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-orange-100 text-orange-700">
+              {mxNotes.filter((n) => !isMel(n) && (n.assigned_van === zone.vanId || !n.assigned_van)).length} MX
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {/* Schedule times + ETA */}

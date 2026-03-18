@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import type { Flight, MxNote, MelItem } from "@/lib/opsApi";
-import { BAKER_FLEET } from "@/lib/maintenanceData";
+import { BAKER_FLEET, FIXED_VAN_ZONES } from "@/lib/maintenanceData";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -221,6 +221,22 @@ export default function MxBoard({
     } catch { /* ignore */ }
   }
 
+  async function assignNote(noteId: string, vanId: number | null, scheduledDate: string | null) {
+    // Optimistic update
+    setNotes((prev) =>
+      prev.map((n) =>
+        n.id === noteId ? { ...n, assigned_van: vanId, scheduled_date: scheduledDate } : n,
+      ),
+    );
+    try {
+      await fetch(`/api/ops/mx-notes/${noteId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ assigned_van: vanId, scheduled_date: scheduledDate }),
+      });
+    } catch { /* ignore */ }
+  }
+
   async function loadAttachments(noteId: string) {
     try {
       const res = await fetch(`/api/ops/mx-notes/${noteId}/attachments`);
@@ -317,6 +333,7 @@ export default function MxBoard({
     return d !== null && d <= 3;
   }).length;
   const totalNotes = notes.length;
+  const unassignedNotes = notes.filter((n) => !n.assigned_van).length;
   const tailsWithItems = new Set([...notes.map((n) => n.tail_number).filter(Boolean), ...mels.map((m) => m.tail_number)]).size;
 
   return (
@@ -336,6 +353,11 @@ export default function MxBoard({
         {totalNotes > 0 && (
           <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-700">
             {totalNotes} MX note{totalNotes !== 1 ? "s" : ""}
+          </div>
+        )}
+        {unassignedNotes > 0 && (
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-gray-200 text-gray-700">
+            {unassignedNotes} unassigned
           </div>
         )}
         <div className="ml-auto">
@@ -444,6 +466,7 @@ export default function MxBoard({
                         onToggleCreate={() => setShowCreateNote(showCreateNote === tail ? null : tail)}
                         onCreate={(e) => createNote(e, tail)}
                         onAcknowledge={acknowledgeNote}
+                        onAssign={assignNote}
                         onUpload={uploadAttachment}
                         onDeleteAttachment={deleteAttachment}
                         fileInputRef={fileInputRef}
@@ -542,6 +565,7 @@ function NotesSection({
   onToggleCreate,
   onCreate,
   onAcknowledge,
+  onAssign,
   onUpload,
   onDeleteAttachment,
   fileInputRef,
@@ -553,6 +577,7 @@ function NotesSection({
   onToggleCreate: () => void;
   onCreate: (e: React.FormEvent<HTMLFormElement>) => void;
   onAcknowledge: (id: string) => void;
+  onAssign: (noteId: string, vanId: number | null, scheduledDate: string | null) => void;
   onUpload: (noteId: string, file: File) => void;
   onDeleteAttachment: (noteId: string, attachmentId: number) => void;
   fileInputRef: React.RefObject<HTMLInputElement | null>;
@@ -657,6 +682,15 @@ function NotesSection({
                       )}
                     </div>
                     <div className="flex items-center gap-1.5 shrink-0">
+                      {note.assigned_van ? (
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-100 text-green-700">
+                          V{note.assigned_van}{note.scheduled_date ? ` · ${fmtDate(note.scheduled_date)}` : ""}
+                        </span>
+                      ) : (
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 text-gray-500">
+                          Unassigned
+                        </span>
+                      )}
                       {note.airport_icao && <span className="text-xs text-gray-400">{note.airport_icao}</span>}
                       <span className="text-xs text-gray-400">{fmtDate(note.start_time ?? note.created_at)}</span>
                     </div>
@@ -688,6 +722,37 @@ function NotesSection({
                       ))}
                     </div>
                   )}
+
+                  {/* Assignment row */}
+                  <div className="flex items-center gap-2 pt-1 border-t border-gray-100">
+                    <span className="text-[10px] text-gray-400 uppercase tracking-wide shrink-0">Assign:</span>
+                    <select
+                      value={note.assigned_van ?? ""}
+                      onChange={(e) => {
+                        const v = e.target.value ? Number(e.target.value) : null;
+                        onAssign(note.id, v, note.scheduled_date ?? null);
+                      }}
+                      className="text-xs border border-gray-200 rounded px-1.5 py-0.5 bg-white text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                    >
+                      <option value="">No van</option>
+                      {FIXED_VAN_ZONES.map((z) => (
+                        <option key={z.vanId} value={z.vanId}>V{z.vanId} {z.name}</option>
+                      ))}
+                    </select>
+                    <input
+                      type="date"
+                      value={note.scheduled_date ?? ""}
+                      onChange={(e) => {
+                        onAssign(note.id, note.assigned_van ?? null, e.target.value || null);
+                      }}
+                      className="text-xs border border-gray-200 rounded px-1.5 py-0.5 bg-white text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                    />
+                    {note.assigned_van && (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-green-100 text-green-700">
+                        V{note.assigned_van}{note.scheduled_date ? ` · ${fmtDate(note.scheduled_date)}` : ""}
+                      </span>
+                    )}
+                  </div>
 
                   {/* Actions */}
                   <div className="flex items-center gap-2">
