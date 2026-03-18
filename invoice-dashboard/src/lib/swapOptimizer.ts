@@ -1460,9 +1460,30 @@ export function buildSwapPlan(params: {
           timingPenalty = Math.min(150, hoursAfterNoon * 12);
         }
 
+        // Crew-proximity bonus: how close is the oncoming pool to this swap point?
+        // Prevents picking remote airports (e.g. SJU) when all crew live on the mainland.
+        let totalProximity = 0;
+        let proximityCount = 0;
+        const picPool = oncomingPool?.pic ?? [];
+        for (const p of picPool) {
+          for (const home of p.home_airports) {
+            for (const comm of commAirports) {
+              const d = estimateDriveTime(toIcao(home), comm);
+              if (d) {
+                totalProximity += Math.min(d.straight_line_miles, 2000);
+                proximityCount++;
+                break; // closest commercial airport is enough
+              }
+            }
+          }
+        }
+        const avgMiles = proximityCount > 0 ? totalProximity / proximityCount : 1000;
+        // Bonus: 0mi avg = +60, 500mi avg = +30, 1000mi+ = 0
+        const proximityBonus = Math.max(0, 60 - (avgMiles / 1000) * 60);
+
         // Ease score: lower drive = easier, self-commercial = bonus, more options = bonus
         const ease = -minDrive + (selfCommercial ? 30 : 0) + (commAirports.length * 2)
-          - (isInternational ? 200 : 0) - timingPenalty;
+          - (isInternational ? 200 : 0) - timingPenalty + proximityBonus;
         if (ease > bestEase) {
           bestEase = ease;
           picSwapPoint = sp;
@@ -2051,8 +2072,28 @@ function buildFeasibilityMatrix(params: {
           const hoursAfterNoon = Math.max(0, localHour - 12);
           timingPenalty = Math.min(150, hoursAfterNoon * 12);
         }
+        // Crew-proximity bonus: how close is the oncoming pool to this swap point?
+        // Prevents picking remote airports (e.g. SJU) when all crew live on the mainland.
+        let totalProximity = 0;
+        let proximityCount = 0;
+        for (const p of pool) {
+          for (const home of p.home_airports) {
+            for (const comm of commAirports) {
+              const d = estimateDriveTime(toIcao(home), comm);
+              if (d) {
+                totalProximity += Math.min(d.straight_line_miles, 2000);
+                proximityCount++;
+                break; // closest commercial airport is enough
+              }
+            }
+          }
+        }
+        const avgMiles = proximityCount > 0 ? totalProximity / proximityCount : 1000;
+        // Bonus: 0mi avg = +60, 500mi avg = +30, 1000mi+ = 0
+        const proximityBonus = Math.max(0, 60 - (avgMiles / 1000) * 60);
+
         const ease = -(minDrive === Infinity ? 999 : minDrive) + (selfCommercial ? 30 : 0)
-          + commAirports.length * 2 - (isInternational ? 200 : 0) - timingPenalty;
+          + commAirports.length * 2 - (isInternational ? 200 : 0) - timingPenalty + proximityBonus;
         if (ease > bestEase) { bestEase = ease; bestSp = sp; }
       }
       swapPointsToTry = [bestSp];
