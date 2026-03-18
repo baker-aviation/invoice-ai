@@ -35,6 +35,63 @@ import {
   TEB_PENALTY_AIRPORTS, TEB_OFFGOING_PENALTY, TEB_ONCOMING_PENALTY,
 } from "./swapRules";
 
+// ─── Train routes (Amtrak NEC + Brightline) ──────────────────────────────────
+const TRAIN_ROUTES: { stations: string[]; name: string; schedules: { dep: string; arr: string; durationMin: number }[]; costPerLeg: number }[] = [
+  {
+    name: "Amtrak NEC",
+    // Northeast Corridor stations (IATA codes for nearby airports)
+    stations: ["BOS", "PVD", "NHV", "STM", "NYP", "EWR", "TEB", "MMU", "ABE", "PHL", "ILG", "BWI", "DCA", "IAD"],
+    // NHV=New Haven (KOXC/KHVN), STM=Stamford (KHPN), NYP=Penn Station (KLGA/KJFK/KEWR), ABE=Allentown (KABE)
+    // Representative schedules (hourly service, key departure windows)
+    schedules: [
+      { dep: "05:30", arr: "09:30", durationMin: 240 },  // early morning
+      { dep: "06:30", arr: "10:30", durationMin: 240 },
+      { dep: "07:30", arr: "11:30", durationMin: 240 },
+      { dep: "08:30", arr: "12:30", durationMin: 240 },
+      { dep: "10:00", arr: "14:00", durationMin: 240 },
+      { dep: "12:00", arr: "16:00", durationMin: 240 },
+      { dep: "14:00", arr: "18:00", durationMin: 240 },
+      { dep: "16:00", arr: "20:00", durationMin: 240 },
+    ],
+    costPerLeg: 75,  // avg NEC regional fare
+  },
+  {
+    name: "Brightline",
+    stations: ["MIA", "FLL", "WPB", "MCO"],
+    schedules: [
+      { dep: "06:00", arr: "09:30", durationMin: 210 },  // MIA→MCO full run
+      { dep: "08:00", arr: "11:30", durationMin: 210 },
+      { dep: "10:00", arr: "13:30", durationMin: 210 },
+      { dep: "12:00", arr: "15:30", durationMin: 210 },
+      { dep: "14:00", arr: "17:30", durationMin: 210 },
+      { dep: "16:00", arr: "19:30", durationMin: 210 },
+    ],
+    costPerLeg: 50,  // avg Brightline fare
+  },
+];
+
+// Map train station codes to nearby airport ICAOs (for matching crew homes/swap points)
+const TRAIN_STATION_AIRPORTS: Record<string, string[]> = {
+  "BOS": ["KBOS", "KBED"],
+  "PVD": ["KPVD"],
+  "NHV": ["KHVN", "KOXC", "KBDR"],
+  "STM": ["KHPN"],
+  "NYP": ["KLGA", "KJFK", "KEWR", "KTEB"],
+  "EWR": ["KEWR"],
+  "TEB": ["KTEB"],
+  "MMU": ["KMMU"],
+  "ABE": ["KABE"],
+  "PHL": ["KPHL", "KILG"],
+  "ILG": ["KILG"],
+  "BWI": ["KBWI"],
+  "DCA": ["KDCA", "KIAD"],
+  "IAD": ["KIAD"],
+  "MIA": ["KMIA", "KOPF", "KTMB"],
+  "FLL": ["KFLL", "KFXE", "KBCT"],
+  "WPB": ["KPBI"],
+  "MCO": ["KMCO", "KORL", "KSFB", "KISM"],
+};
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // LAYER 1: Types
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -585,6 +642,126 @@ function buildCandidates(
         score: 0,
         backups: [],
       });
+
+      // Also add a self-drive option (personal car) — same timing, gas-only cost.
+      // The crew may prefer driving their own car instead of Uber/rental.
+      // The if/else above only picks "uber" or "rental_car", so this never duplicates.
+      const driveCost = Math.round(drive.estimated_drive_miles * 0.25); // ~$0.25/mi gas
+      candidates.push({
+        type: "drive",
+        flightNumber: "DRIVE",
+        depTime: depTime,
+        arrTime: arrTime,
+        from: task.direction === "oncoming" ? homeIata : toIata(swapIcao),
+        to: task.direction === "oncoming" ? toIata(swapIcao) : homeIata,
+        cost: driveCost,
+        durationMin: driveMin,
+        isDirect: true,
+        isBudgetCarrier: false,
+        hubConnection: false,
+        connectionCount: 0,
+        offer: null,
+        drive,
+        fboArrivalTime: fboArr,
+        fboLeaveTime: task.direction === "offgoing" ? depTime : null,
+        dutyOnTime: dutyOn,
+        score: 0,
+        backups: [],
+      });
+    }
+
+    // ── Train options (Amtrak NEC, Brightline) ────────────────────────────
+    for (const route of TRAIN_ROUTES) {
+      // Find which station(s) the home airport is near
+      const homeStations = route.stations.filter(st =>
+        TRAIN_STATION_AIRPORTS[st]?.some(ap => ap.toUpperCase() === homeIcao.toUpperCase())
+      );
+      // Find which station(s) the swap airport is near
+      const swapStations = route.stations.filter(st =>
+        TRAIN_STATION_AIRPORTS[st]?.some(ap => ap.toUpperCase() === swapIcao.toUpperCase())
+      );
+
+      if (homeStations.length === 0 || swapStations.length === 0) continue;
+
+      // Determine direction on the route
+      const homeIdx = Math.min(...homeStations.map(s => route.stations.indexOf(s)));
+      const swapIdx = Math.min(...swapStations.map(s => route.stations.indexOf(s)));
+      if (homeIdx === swapIdx) continue;
+
+      // Estimate duration based on number of stops between stations
+      const stops = Math.abs(swapIdx - homeIdx);
+      const durationMin = Math.round(stops * (route.schedules[0].durationMin / (route.stations.length - 1)));
+      const cost = route.costPerLeg;
+
+      // Generate a candidate for each schedule
+      for (const sched of route.schedules) {
+        const depHour = parseInt(sched.dep.split(":")[0]);
+        const depMin = parseInt(sched.dep.split(":")[1]);
+        const tz = task.direction === "oncoming"
+          ? (getAirportTimezone(homeIcao) ?? "America/New_York")
+          : (getAirportTimezone(swapIcao) ?? "America/New_York");
+
+        const depTime = localTimeToUtc(swapDate, depHour, depMin, tz);
+        const arrTime = new Date(depTime.getTime() + durationMin * 60_000);
+
+        let fboArr: Date | null = null;
+        let dutyOn: Date | null = null;
+
+        if (task.direction === "oncoming") {
+          // Train arrives near swap airport, add ground transport time to FBO
+          const driveToFbo = estimateDriveTime(toIcao(swapStations[0]), swapIcao);
+          const driveMinToFbo = driveToFbo?.estimated_drive_minutes ?? 15;
+          fboArr = new Date(arrTime.getTime() + driveMinToFbo * 60_000);
+          dutyOn = depTime;
+
+          if (oncomingHardDeadline && fboArr.getTime() > oncomingHardDeadline.getTime()) continue;
+          if (oncomingDutyEnd && dutyOn) {
+            const { valid } = checkDutyDay(dutyOn, oncomingDutyEnd);
+            if (!valid) continue;
+          }
+        } else {
+          // Offgoing: crew takes train from near swap point toward home
+          const driveFromFbo = estimateDriveTime(swapIcao, toIcao(swapStations[0]));
+          const driveMinFromFbo = driveFromFbo?.estimated_drive_minutes ?? 15;
+          const fboLeave = new Date(depTime.getTime() - driveMinFromFbo * 60_000 - 30 * 60_000); // 30min buffer
+
+          // Check if crew can make this train
+          let releaseTime = task.swapPoint.time;
+          if (task.swapPoint.position === "before_live" || task.swapPoint.position === "idle") {
+            const spTz = getAirportTimezone(task.swapPoint.icao) ?? "America/New_York";
+            releaseTime = localTimeToUtc(swapDate, 5, 0, spTz);
+          }
+          if (fboLeave.getTime() < releaseTime.getTime()) continue;
+
+          // Check midnight
+          if (arrTime.getTime() > homeMidnight.getTime()) continue;
+
+          fboArr = null;
+          dutyOn = null;
+        }
+
+        candidates.push({
+          type: "commercial" as const,  // reuse commercial type for train (displays as flight number)
+          flightNumber: `${route.name.replace(/\s+/g, "")} ${sched.dep.replace(":", "")}`,
+          depTime,
+          arrTime,
+          from: task.direction === "oncoming" ? homeStations[0] : swapStations[0],
+          to: task.direction === "oncoming" ? swapStations[0] : homeStations[0],
+          cost,
+          durationMin,
+          isDirect: true,
+          isBudgetCarrier: false,
+          hubConnection: false,
+          connectionCount: 0,
+          offer: null,
+          drive: null,
+          fboArrivalTime: fboArr,
+          fboLeaveTime: task.direction === "offgoing" ? new Date(depTime.getTime() - 30 * 60_000) : null,
+          dutyOnTime: dutyOn,
+          score: 0,
+          backups: [],
+        });
+      }
     }
 
     // ── Commercial flight options ─────────────────────────────────────────
@@ -1162,6 +1339,36 @@ function optimizeTail(
       offgoingSic.best.cost = Math.round(offgoingSic.best.cost / 2);
       offgoingPic.best.flightNumber = "RENTAL (shared)";
       offgoingSic.best.flightNumber = "RENTAL (shared)";
+    }
+  }
+
+  // ── Rental handoff: offgoing takes oncoming's rental/personal car ────
+  // If oncoming drives to FBO (rental or personal car) and offgoing also needs
+  // ground transport from the same FBO, offgoing can take oncoming's car.
+  // Saves one rental cost (~$80). Only applies when the existing commercial-
+  // flight handoff (above) didn't already cover it.
+  if (oncomingPic?.best && offgoingPic?.best) {
+    const onType = oncomingPic.best.type;
+    const offType = offgoingPic.best.type;
+    if (
+      (onType === "rental_car" || onType === "drive") &&
+      (offType === "rental_car" || offType === "uber") &&
+      !offgoingPic.best.flightNumber?.includes("(handoff)")
+    ) {
+      offgoingPic.best.cost = Math.max(0, offgoingPic.best.cost - 80);
+      offgoingPic.best.flightNumber = `${offgoingPic.best.flightNumber} (handoff)`;
+    }
+  }
+  if (oncomingSic?.best && offgoingSic?.best) {
+    const onType = oncomingSic.best.type;
+    const offType = offgoingSic.best.type;
+    if (
+      (onType === "rental_car" || onType === "drive") &&
+      (offType === "rental_car" || offType === "uber") &&
+      !offgoingSic.best.flightNumber?.includes("(handoff)")
+    ) {
+      offgoingSic.best.cost = Math.max(0, offgoingSic.best.cost - 80);
+      offgoingSic.best.flightNumber = `${offgoingSic.best.flightNumber} (handoff)`;
     }
   }
 
