@@ -2471,6 +2471,40 @@ function ScheduleTab({
       }
     }
 
+    // Tail-level dedup: if the same tail ended up in multiple vans (e.g. MX
+    // override duplicated it, or base recomputation shifted zone ownership),
+    // keep only the explicitly overridden placement, else the closest van.
+    const tailVanWinner = new Map<string, number>(); // tail → winning vanId
+    for (const [vanId, items] of result) {
+      for (const item of items) {
+        const tail = item.arrFlight.tail_number;
+        if (!tail) continue;
+        const existing = tailVanWinner.get(tail);
+        if (existing === undefined) {
+          tailVanWinner.set(tail, vanId);
+        } else {
+          // Prefer the van with an explicit override for this flight
+          const thisHasOverride = overrides.get(item.arrFlight.id) === vanId;
+          const existingItem = result.get(existing)?.find((i) => i.arrFlight.tail_number === tail);
+          const existingHasOverride = existingItem ? overrides.get(existingItem.arrFlight.id) === existing : false;
+          if (thisHasOverride && !existingHasOverride) {
+            tailVanWinner.set(tail, vanId);
+          } else if (!thisHasOverride && existingHasOverride) {
+            // keep existing
+          } else if (item.distKm < (existingItem?.distKm ?? Infinity)) {
+            tailVanWinner.set(tail, vanId);
+          }
+        }
+      }
+    }
+    // Remove losers
+    for (const [vanId, items] of result) {
+      result.set(vanId, items.filter((item) => {
+        const tail = item.arrFlight.tail_number;
+        return !tail || tailVanWinner.get(tail) === vanId;
+      }));
+    }
+
     // Recalculate distances + greedy sort for each van, then re-sort by FA ETA
     for (const zone of FIXED_VAN_ZONES) {
       const items = result.get(zone.vanId) ?? [];
