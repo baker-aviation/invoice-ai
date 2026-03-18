@@ -1497,41 +1497,9 @@ def _process_fuel_price(invoice: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if stored is None:
         return {"document_id": doc_id, "status": "upsert_failed"}
 
-    # If price increase detected, post to Slack immediately
+    # Fuel price increase Slack alerts are disabled — price tracking still runs
+    # (stored in fuel_prices table) but no Slack notification is sent.
     slack_result = None
-    if increase and SLACK_WEBHOOK_URL:
-        signed_url = None
-        try:
-            doc = _fetch_document_row(doc_id)
-            if doc:
-                bucket = doc.get("gcs_bucket") or doc.get("storage_bucket") or ""
-                path = doc.get("gcs_path") or doc.get("storage_path") or ""
-                if bucket and path:
-                    signed_url = _get_gcs_signed_url(bucket, path)
-        except Exception:
-            pass
-
-        payload = build_fuel_price_slack_payload(
-            airport_code=data["airport_code"] or "???",
-            vendor_name=data.get("vendor_name"),
-            new_price=data["effective_price_per_gallon"],
-            previous_price=increase["previous_price"],
-            pct_change=increase["price_change_pct"],
-            base_price=data["base_price_per_gallon"],
-            gallons=data["gallons"],
-            invoice_date=data.get("invoice_date"),
-            tail_number=data.get("tail_number"),
-            document_id=doc_id,
-            signed_pdf_url=signed_url,
-        )
-        slack_result = _slack_post(payload)
-        _record_event("fuel_price_increase_alert", doc_id, {
-            "airport_code": data["airport_code"],
-            "new_price": data["effective_price_per_gallon"],
-            "previous_price": increase["previous_price"],
-            "pct_change": increase["price_change_pct"],
-            "slack_result": slack_result,
-        })
 
     return {
         "document_id": doc_id,
