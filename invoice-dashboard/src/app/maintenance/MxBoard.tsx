@@ -454,7 +454,7 @@ export default function MxBoard({
                   <div className="p-4">
                     {/* ── Schedule section ── */}
                     {(expandedSection[tail] || "notes") === "schedule" && (
-                      <ScheduleSection flights={tailFlights} />
+                      <ScheduleSection flights={tailFlights} mxNotes={tailNotes} />
                     )}
 
                     {/* ── MX Notes section ── */}
@@ -518,35 +518,170 @@ function expiringMelsForTail(mels: MelItem[]): number {
 }
 
 // ---------------------------------------------------------------------------
-// Schedule Section — collapsible flight legs for a tail
+// Schedule Section — timeline view with MX markers at arrival airports
 // ---------------------------------------------------------------------------
 
-function ScheduleSection({ flights }: { flights: Flight[] }) {
+function fmtDateShort(iso: string) {
+  const d = new Date(iso);
+  return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "America/New_York" });
+}
+
+function etDateKey(iso: string) {
+  return new Date(iso).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+}
+
+function groundMinutes(arrIso: string | null, depIso: string): number | null {
+  if (!arrIso) return null;
+  const diff = (new Date(depIso).getTime() - new Date(arrIso).getTime()) / 60000;
+  return diff > 0 ? Math.round(diff) : null;
+}
+
+function fmtGroundTime(min: number): string {
+  if (min < 60) return `${min}m`;
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return m > 0 ? `${h}h${m}m` : `${h}h`;
+}
+
+function ScheduleSection({ flights, mxNotes = [] }: { flights: Flight[]; mxNotes?: MxNoteWithAttachments[] }) {
   if (flights.length === 0) {
     return <div className="text-sm text-gray-400 py-4 text-center">No upcoming flights</div>;
   }
 
+  // Build a set of airports that have active MX notes
+  const mxAirports = new Map<string, MxNoteWithAttachments[]>();
+  for (const n of mxNotes) {
+    if (n.airport_icao) {
+      if (!mxAirports.has(n.airport_icao)) mxAirports.set(n.airport_icao, []);
+      mxAirports.get(n.airport_icao)!.push(n);
+    }
+  }
+
+  // Group flights by date
+  const dateGroups: { date: string; label: string; flights: Flight[] }[] = [];
+  let currentDate = "";
+  for (const f of flights) {
+    const dk = etDateKey(f.scheduled_departure);
+    if (dk !== currentDate) {
+      currentDate = dk;
+      dateGroups.push({ date: dk, label: fmtDateShort(f.scheduled_departure), flights: [] });
+    }
+    dateGroups[dateGroups.length - 1].flights.push(f);
+  }
+
+  const now = Date.now();
+  const todayKey = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+
   return (
-    <div className="space-y-1">
-      {flights.map((f) => {
-        const dep = f.scheduled_departure ? new Date(f.scheduled_departure) : null;
-        const arr = f.scheduled_arrival ? new Date(f.scheduled_arrival) : null;
-        const isPast = arr && arr.getTime() < Date.now();
+    <div className="space-y-4">
+      {dateGroups.map((group) => {
+        const isToday = group.date === todayKey;
+        const isPast = group.date < todayKey;
         return (
-          <div key={f.id} className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm ${isPast ? "bg-gray-50 text-gray-400" : "bg-white"}`}>
-            <span className="w-16 font-mono text-xs">{fmtDate(f.scheduled_departure)}</span>
-            <span className="font-medium w-24">
-              {f.departure_icao || "?"} → {f.arrival_icao || "?"}
-            </span>
-            <span className="text-xs text-gray-500 w-24">
-              {fmtTime(f.scheduled_departure)} — {fmtTime(f.scheduled_arrival)}
-            </span>
-            <span className="text-xs text-gray-400 flex-1 truncate">
-              {f.pic || ""} {f.sic ? `/ ${f.sic}` : ""}
-            </span>
-            {f.flight_type === "Maintenance" && (
-              <span className="px-1.5 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-700">MX</span>
-            )}
+          <div key={group.date}>
+            {/* Date header */}
+            <div className={`text-xs font-semibold uppercase tracking-wide mb-1.5 ${isToday ? "text-blue-600" : isPast ? "text-gray-400" : "text-gray-500"}`}>
+              {group.label}{isToday ? " (Today)" : ""}
+            </div>
+
+            {/* Legs with timeline */}
+            <div className="relative ml-3 border-l-2 border-gray-200 space-y-0">
+              {group.flights.map((f, i) => {
+                const arr = f.scheduled_arrival ? new Date(f.scheduled_arrival) : null;
+                const flightIsPast = arr ? arr.getTime() < now : false;
+                const isActive = !flightIsPast && f.scheduled_departure && new Date(f.scheduled_departure).getTime() <= now;
+                const isMxFlight = f.flight_type === "Maintenance";
+                const arrMxNotes = f.arrival_icao ? (mxAirports.get(f.arrival_icao) ?? []) : [];
+                const hasMxAtArrival = arrMxNotes.length > 0;
+
+                // Ground time gap between this leg and next
+                const nextFlight = group.flights[i + 1];
+                const gapMin = nextFlight ? groundMinutes(f.scheduled_arrival, nextFlight.scheduled_departure) : null;
+                const isLongGap = gapMin !== null && gapMin >= 120;
+
+                return (
+                  <div key={f.id}>
+                    {/* Flight leg */}
+                    <div className={`relative pl-5 py-1.5 ${flightIsPast ? "opacity-50" : ""}`}>
+                      {/* Timeline dot */}
+                      <div className={`absolute -left-[5px] top-3 w-2 h-2 rounded-full border-2 ${
+                        isActive ? "bg-blue-500 border-blue-500 ring-2 ring-blue-200" :
+                        isMxFlight ? "bg-purple-500 border-purple-500" :
+                        flightIsPast ? "bg-gray-300 border-gray-300" :
+                        "bg-white border-gray-400"
+                      }`} />
+
+                      <div className="flex items-center gap-3">
+                        {/* Route */}
+                        <div className="w-28 shrink-0">
+                          <span className={`text-sm font-semibold ${flightIsPast ? "text-gray-400" : "text-gray-800"}`}>
+                            {(f.departure_icao || "?").replace(/^K/, "")}
+                          </span>
+                          <span className="text-gray-400 mx-1">→</span>
+                          <span className={`text-sm font-semibold ${flightIsPast ? "text-gray-400" : hasMxAtArrival ? "text-orange-600" : "text-gray-800"}`}>
+                            {(f.arrival_icao || "?").replace(/^K/, "")}
+                          </span>
+                        </div>
+
+                        {/* Times */}
+                        <div className={`text-xs w-32 shrink-0 ${flightIsPast ? "text-gray-400" : "text-gray-600"}`}>
+                          {fmtTime(f.scheduled_departure)}
+                          <span className="text-gray-400"> — </span>
+                          {fmtTime(f.scheduled_arrival)}
+                        </div>
+
+                        {/* Crew */}
+                        <span className="text-xs text-gray-400 flex-1 truncate">
+                          {f.pic || ""}{f.sic ? ` / ${f.sic}` : ""}
+                        </span>
+
+                        {/* Badges */}
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {isActive && (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-700 animate-pulse">EN ROUTE</span>
+                          )}
+                          {isMxFlight && (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-100 text-purple-700">MX FLIGHT</span>
+                          )}
+                          {hasMxAtArrival && (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-orange-100 text-orange-700" title={arrMxNotes.map((n) => n.subject || n.body).join(", ")}>
+                              {arrMxNotes.length} MX @ {(f.arrival_icao || "").replace(/^K/, "")}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* MX notes at arrival — inline detail */}
+                      {hasMxAtArrival && !flightIsPast && (
+                        <div className="ml-0 mt-1 space-y-0.5">
+                          {arrMxNotes.map((n) => (
+                            <div key={n.id} className="flex items-center gap-2 text-[11px] text-orange-700 bg-orange-50 rounded px-2 py-0.5">
+                              <span className="font-bold">MX</span>
+                              <span className="truncate">{n.subject || n.body || n.description}</span>
+                              {n.assigned_van && (
+                                <span className="px-1 py-0.5 rounded bg-green-100 text-green-700 text-[10px] font-medium shrink-0">
+                                  V{n.assigned_van}
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Ground time gap indicator */}
+                    {gapMin !== null && gapMin >= 30 && (
+                      <div className="relative pl-5 py-0.5">
+                        <div className={`absolute -left-[3px] top-1/2 -translate-y-1/2 w-1.5 h-1.5 rounded-full ${isLongGap ? "bg-amber-300" : "bg-gray-200"}`} />
+                        <span className={`text-[10px] ${isLongGap ? "text-amber-600 font-medium" : "text-gray-400"}`}>
+                          {fmtGroundTime(gapMin)} ground{isLongGap ? " — service window" : ""}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
         );
       })}
