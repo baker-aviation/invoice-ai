@@ -2831,14 +2831,12 @@ function ScheduleTab({
       } else {
         setPublishedAt(data.published_at);
         setPublishedEditsSnapshot(currentEditsFingerprint);
-        // Auto-post all vans to Slack after successful publish
-        shareAllToSlack();
       }
     } catch {
       setPublishError("Network error");
     }
     setPublishing(false);
-  }, [date, finalItemsByVan, currentEditsFingerprint, shareAllToSlack]);
+  }, [date, finalItemsByVan, currentEditsFingerprint]);
 
   return (
     <div className="space-y-3">
