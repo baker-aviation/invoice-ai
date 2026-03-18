@@ -2226,8 +2226,11 @@ def _is_relevant_notam_msg(msg: str) -> bool:
     # TFR
     if re.search(r"\bTFR\b|TEMPORARY FLIGHT RESTRICTION", m):
         return True
-    # PPR
-    if re.search(r"\bPPR\b|PRIOR PERMISSION REQUIRED", m):
+    # PPR / prior approval
+    if re.search(r"\bPPR\b|PRIOR PERMISSION REQUIRED|PRIOR APPROVAL REQUIRED", m):
+        return True
+    # Traffic restrictions (e.g. "GA IFR TFC RESTRICTED", "TRAFFIC RESTRICTED")
+    if re.search(r"(TFC|TRAFFIC).{0,30}(RSTD|RESTRICTED)", m):
         return True
     return False
 
@@ -2263,8 +2266,10 @@ def _is_ignorable_runway(msg_upper: str) -> bool:
 
 def _classify_notam(msg: str) -> str:
     m = msg.upper()
-    if re.search(r"\bPPR\b|PRIOR PERMISSION REQUIRED", m):
+    if re.search(r"\bPPR\b|PRIOR PERMISSION REQUIRED|PRIOR APPROVAL REQUIRED", m):
         return "NOTAM_PPR"
+    if re.search(r"(TFC|TRAFFIC).{0,30}(RSTD|RESTRICTED)", m):
+        return "NOTAM_AD_RESTRICTED"
     if re.search(r"\bRWY\b|RUNWAY", m):
         return "NOTAM_RUNWAY"
     if re.search(r"TFR|TEMPORARY FLIGHT", m):
