@@ -11,7 +11,8 @@ import { requireAuth, isAuthed } from "@/lib/api-auth";
  *
  * Columns: overrides, removals, unscheduled, leg_notes,
  *   wont_see_tails (string[]), dismissed_conflicts (Record<id, hash>),
- *   hidden_mx_ids (string[]), airport_overrides ([tail, airport][])
+ *   hidden_mx_ids (string[]), airport_overrides ([tail, airport][]),
+ *   sort_overrides ([vanId, flightId[]][])
  *
  * Migration (run in Supabase SQL editor):
  *   ALTER TABLE van_draft_overrides
@@ -47,6 +48,7 @@ export async function GET(req: NextRequest) {
     dismissed_conflicts: data?.dismissed_conflicts ?? {},
     hidden_mx_ids: data?.hidden_mx_ids ?? [],
     airport_overrides: data?.airport_overrides ?? [],
+    sort_overrides: data?.sort_overrides ?? [],
     updated_at: data?.updated_at ?? null,
   });
 }
@@ -57,7 +59,7 @@ export async function POST(req: NextRequest) {
 
   const body = await req.json();
   const { date, overrides, removals, unscheduled, leg_notes,
-    wont_see_tails, dismissed_conflicts, hidden_mx_ids, airport_overrides } = body;
+    wont_see_tails, dismissed_conflicts, hidden_mx_ids, airport_overrides, sort_overrides } = body;
   if (!date) return NextResponse.json({ error: "date required" }, { status: 400 });
 
   const supa = createServiceClient();
@@ -74,6 +76,7 @@ export async function POST(req: NextRequest) {
       dismissed_conflicts: dismissed_conflicts ?? {},
       hidden_mx_ids: hidden_mx_ids ?? [],
       airport_overrides: airport_overrides ?? [],
+      sort_overrides: sort_overrides ?? [],
       updated_by: auth.userId,
       updated_at: now,
     }, { onConflict: "date" });
