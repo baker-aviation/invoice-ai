@@ -446,13 +446,9 @@ function matchFlightInfo(
   // 2. Try unbucketed route key (tail|dep|arr) — catches cases where FA dep drifted to adjacent bucket
   const byRoute = map.get(routeKey);
   if (byRoute && !isStale(byRoute)) return byRoute;
-  // 3. Tail-only fallback: require BOTH origin AND destination match, plus not stale
-  const byTail = map.get(tail);
-  if (byTail && departureIcao && byTail.origin_icao === departureIcao
-      && (!arrivalIcao || byTail.destination_icao === arrivalIcao)
-      && !isStale(byTail)) {
-    return byTail;
-  }
+  // Tail-only fallback removed — was the source of cross-leg status bleed.
+  // Flights without a route match will correctly show as "Scheduled" until
+  // the FA poll cron or webhook links them via fa_flight_id.
   return undefined;
 }
 
@@ -696,6 +692,10 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
             if (!map.has(fi.ident) || (fi.latitude != null && fi.longitude != null)) {
               map.set(fi.ident, fi);
             }
+          }
+          // Index by fa_flight_id for direct lookup from ICS flights
+          if (fi.fa_flight_id) {
+            map.set(`fa:${fi.fa_flight_id}`, fi);
           }
           // Synthesize map positions from en-route flights only
           // Skip: flights that have landed, or ghost flights (departed >6h ago, no landing)
@@ -1057,18 +1057,32 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
     const map = new Map<string, "scheduled" | "enroute" | "arrived">();
     const now = new Date();
     for (const f of displayFlights) {
-      const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
-      const fi = f.tail_number ? matchFlightInfo(flightInfo, routeKey, f.tail_number, f.departure_icao, f.scheduled_departure, f.arrival_icao) : undefined;
+      // Primary: direct fa_flight_id match
+      let fi: FlightInfoMap | undefined;
+      let idMatched = false;
+      if (f.fa_flight_id && flightInfo.has(`fa:${f.fa_flight_id}`)) {
+        fi = flightInfo.get(`fa:${f.fa_flight_id}`);
+        idMatched = true;
+      }
+      // Secondary: route-key match (for flights not yet linked)
+      if (!fi && f.tail_number) {
+        const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
+        fi = matchFlightInfo(flightInfo, routeKey, f.tail_number, f.departure_icao, f.scheduled_departure, f.arrival_icao);
+      }
+
       const arrivalDate = f.scheduled_arrival ? new Date(f.scheduled_arrival) : null;
-      const faEta = fi && fi.destination_icao === f.arrival_icao && fi.arrival_time ? new Date(fi.arrival_time) : null;
+      // For ID-matched flights, always trust ETA; for route-matched, require dest match
+      const faEta = fi && (idMatched || fi.destination_icao === f.arrival_icao) && fi.arrival_time ? new Date(fi.arrival_time) : null;
       const arrivalPassed = (arrivalDate && arrivalDate < now) || (faEta && faEta < now);
 
       // Check SWIM status — route-specific only for "En Route" to avoid bleeding across legs
+      const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
       const swimRoute = swimStatus.get(routeKey);
       const swim = swimRoute ?? (f.tail_number ? swimStatus.get(`${f.tail_number}||`) : undefined);
       const swimRouteStale = isSwimStale(swimRoute, f.scheduled_departure);
       const swimEntryStale = isSwimStale(swim, f.scheduled_departure);
-      const fiRouteMatch = fi && fi.destination_icao === f.arrival_icao;
+      // ID-matched flights are always "route matched" — the FA leg IS this leg
+      const fiRouteMatch = idMatched || (fi && fi.destination_icao === f.arrival_icao);
 
       // FA is primary source; SWIM supplements when FA hasn't detected takeoff yet
       if (fi?.diverted || supersededMap.has(f.id)) {
@@ -1079,8 +1093,10 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
         map.set(f.id, "arrived");
       } else if (fiRouteMatch && fi?.status?.includes("En Route")) {
         map.set(f.id, "enroute");
-      } else if (fiRouteMatch && fi?.actual_departure && !fi?.actual_arrival && new Date(fi.actual_departure) < now && (!faEta || faEta > now)) {
-        map.set(f.id, "enroute"); // LADD: FA has actual departure, ETA in future — plane is flying
+      } else if (fiRouteMatch && fi?.actual_departure && !fi?.actual_arrival
+        && new Date(fi.actual_departure) < now && (!faEta || faEta > now)
+        && !fi?.status?.includes("Scheduled") && !fi?.status?.includes("Cancelled")) {
+        map.set(f.id, "enroute"); // LADD: FA has actual departure + not scheduled/cancelled
       } else if (!swimRouteStale && swimRoute?.status === "En Route") {
         map.set(f.id, "enroute"); // SWIM detected takeoff (works with or without FA route match)
       } else if (!fiRouteMatch && !swimEntryStale && swim?.status === "Arrived") {

@@ -114,6 +114,42 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // Link FA flight to ICS flight on departure/arrival events
+  if (faFlightId && registration && origin && destination &&
+      (eventCode === "departure" || eventCode === "arrival")) {
+    try {
+      const windowMs = 3 * 3600_000;
+      const windowStart = new Date(Date.now() - windowMs).toISOString();
+      const windowEnd = new Date(Date.now() + windowMs).toISOString();
+
+      const { data: candidates } = await supa
+        .from("flights")
+        .select("id, scheduled_departure, fa_flight_id")
+        .eq("tail_number", registration)
+        .eq("departure_icao", origin)
+        .eq("arrival_icao", destination)
+        .gte("scheduled_departure", windowStart)
+        .lte("scheduled_departure", windowEnd);
+
+      if (candidates && candidates.length > 0) {
+        let bestId: string | null = null;
+        let bestDiff = Infinity;
+        for (const c of candidates) {
+          if (c.fa_flight_id === faFlightId) { bestId = null; break; } // already linked
+          if (c.fa_flight_id) continue; // linked to a different FA flight
+          const diff = Math.abs(new Date(c.scheduled_departure).getTime() - Date.now());
+          if (diff < bestDiff) { bestDiff = diff; bestId = c.id; }
+        }
+        if (bestId) {
+          await supa.from("flights").update({ fa_flight_id: faFlightId }).eq("id", bestId);
+          console.log(`[FA Webhook] Linked ${faFlightId} → ICS flight ${bestId}`);
+        }
+      }
+    } catch (err) {
+      console.error("[FA Webhook] ICS link failed:", err);
+    }
+  }
+
   // Process events immediately for real-time alerts (fire-and-forget)
   import("@/lib/flightEvents").then(m => m.processFlightEvents()).catch(() => {});
 
