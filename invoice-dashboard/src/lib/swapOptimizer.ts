@@ -1374,8 +1374,25 @@ export function buildSwapPlan(params: {
           const upper = c.toUpperCase();
           return !upper.startsWith("K") && !upper.startsWith("CY") && !upper.startsWith("Y");
         });
+
+        // Penalty for late arrival at after_live/between_legs swap points.
+        // If an aircraft flies KTEB→KPSP at 6pm, the crew arrives PSP at ~11pm —
+        // too late for any commercial flights home. Penalize by how late the swap is.
+        // "before_live" and "idle" have no timing penalty (crew leaves whenever they want).
+        let timingPenalty = 0;
+        if (sp.position === "after_live" || sp.position === "between_legs") {
+          const tz = getAirportTimezone(sp.icao) ?? "America/New_York";
+          const localHour = parseFloat(
+            new Date(sp.time).toLocaleString("en-US", { hour: "numeric", hour12: false, timeZone: tz })
+          );
+          // Penalty ramps up after noon local: 0 at noon, 50 at 6pm, 150 at 10pm+
+          const hoursAfterNoon = Math.max(0, localHour - 12);
+          timingPenalty = Math.min(150, hoursAfterNoon * 12);
+        }
+
         // Ease score: lower drive = easier, self-commercial = bonus, more options = bonus
-        const ease = -minDrive + (selfCommercial ? 30 : 0) + (commAirports.length * 2) - (isInternational ? 200 : 0);
+        const ease = -minDrive + (selfCommercial ? 30 : 0) + (commAirports.length * 2)
+          - (isInternational ? 200 : 0) - timingPenalty;
         if (ease > bestEase) {
           bestEase = ease;
           picSwapPoint = sp;
