@@ -6,89 +6,117 @@
 
 const AIRPORT_COORDS: Record<string, [number, number]> = {
   // Texas
-  KIAH: [29.9844, -95.3414],   // Houston Intercontinental
-  KHOU: [29.6454, -95.2789],   // Houston Hobby
-  KDWH: [30.0618, -95.5528],   // David Wayne Hooks (FBO, near IAH)
-  KDFW: [32.8968, -97.0380],   // Dallas/Fort Worth
+  KCXO: [30.3518, -95.4145],   // Conroe-North Houston Regional
   KDAL: [32.8471, -96.8518],   // Dallas Love Field
+  KDFW: [32.8968, -97.0380],   // Dallas/Fort Worth
+  KDWH: [30.0618, -95.5528],   // David Wayne Hooks (FBO, near IAH)
+  KELP: [31.8072, -106.3776],  // El Paso
+  KGRK: [31.0672, -97.8289],   // Robert Gray AAF/Killeen
+  KHOU: [29.6454, -95.2789],   // Houston Hobby
+  KIAH: [29.9844, -95.3414],   // Houston Intercontinental
   KAUS: [30.1945, -97.6699],   // Austin
   KSAT: [29.5337, -98.4698],   // San Antonio
-  KELP: [31.8072, -106.3776],  // El Paso
+  KTKI: [33.1779, -96.5905],   // McKinney National
 
   // Florida
-  KMIA: [25.7959, -80.2870],   // Miami International
-  KOPF: [25.9068, -80.2784],   // Opa-locka (FBO)
   KFLL: [26.0726, -80.1527],   // Fort Lauderdale
-  KPBI: [26.6832, -80.0956],   // Palm Beach
-  KTPA: [27.9755, -82.5332],   // Tampa
-  KMCO: [28.4294, -81.3090],   // Orlando
-  KJAX: [30.4941, -81.6879],   // Jacksonville
-  KGNV: [29.6900, -82.2718],   // Gainesville (FL)
   KFXE: [26.1973, -80.1707],   // Fort Lauderdale Executive
+  KGNV: [29.6900, -82.2718],   // Gainesville (FL)
+  KJAX: [30.4941, -81.6879],   // Jacksonville
+  KMCO: [28.4294, -81.3090],   // Orlando
+  KMIA: [25.7959, -80.2870],   // Miami International
+  KMLB: [28.1028, -80.6453],   // Melbourne Orlando Intl
+  KOPF: [25.9068, -80.2784],   // Opa-locka (FBO)
+  KPBI: [26.6832, -80.0956],   // Palm Beach
+  KPNS: [30.4734, -87.1866],   // Pensacola Intl
+  KSFB: [28.7776, -81.2375],   // Orlando Sanford Intl
+  KSGJ: [29.9592, -81.3397],   // NE Florida Regional (St. Augustine)
+  KSPG: [27.7651, -82.6270],   // Albert Whitted (St. Pete)
+  KTPA: [27.9755, -82.5332],   // Tampa
+  KVDF: [27.9765, -82.3453],   // Tampa Executive
+  KVPS: [30.4832, -86.5254],   // Destin-Fort Walton Beach
 
   // Northeast
-  KTEB: [40.8501, -74.0608],   // Teterboro (FBO)
+  KBDR: [41.1635, -73.1262],   // Bridgeport/Sikorsky
+  KBED: [42.4700, -71.2890],   // Bedford/Hanscom
+  KBOS: [42.3656, -71.0096],   // Boston Logan
   KEWR: [40.6925, -74.1687],   // Newark
+  KHPN: [41.0670, -73.7076],   // Westchester
   KJFK: [40.6413, -73.7781],   // JFK
   KLGA: [40.7769, -73.8740],   // LaGuardia
-  KHPN: [41.0670, -73.7076],   // Westchester
-  KBDR: [41.1635, -73.1262],   // Bridgeport/Sikorsky
   KPHL: [39.8721, -75.2411],   // Philadelphia
-  KBOS: [42.3656, -71.0096],   // Boston Logan
-  KBED: [42.4700, -71.2890],   // Bedford/Hanscom
+  KTEB: [40.8501, -74.0608],   // Teterboro (FBO)
 
   // California
-  KVNY: [34.2098, -118.4897],  // Van Nuys (FBO)
   KBUR: [34.2007, -118.3585],  // Burbank
   KLAX: [33.9425, -118.4081],  // Los Angeles
-  KSNA: [33.6757, -117.8683],  // Santa Ana/John Wayne
+  KOAK: [37.7213, -122.2208],  // Oakland
+  KPAO: [37.4611, -122.1150],  // Palo Alto
   KSAN: [32.7336, -117.1897],  // San Diego
   KSFO: [37.6213, -122.3790],  // San Francisco
   KSJC: [37.3626, -121.9291],  // San Jose
-  KOAK: [37.7213, -122.2208],  // Oakland
+  KSMO: [34.0158, -118.4513],  // Santa Monica
+  KSNA: [33.6757, -117.8683],  // Santa Ana/John Wayne
+  KVNY: [34.2098, -118.4897],  // Van Nuys (FBO)
 
   // Southeast
+  KAGS: [33.3700, -81.9645],   // Augusta Regional, GA
   KATL: [33.6407, -84.4277],   // Atlanta
-  KPDK: [33.8756, -84.3020],   // DeKalb-Peachtree (FBO)
-  KCLT: [35.2140, -80.9431],   // Charlotte
-  KRDU: [35.8776, -78.7875],   // Raleigh-Durham
   KBNA: [36.1245, -86.6782],   // Nashville
+  KCAE: [33.9388, -81.1195],   // Columbia Metropolitan, SC
+  KCLT: [35.2140, -80.9431],   // Charlotte
+  KDHN: [31.3214, -85.4496],   // Dothan Regional, AL
+  KGSP: [34.8957, -82.2189],   // Greenville-Spartanburg Intl, SC
   KMEM: [35.0424, -89.9767],   // Memphis
+  KMGM: [32.3006, -86.3940],   // Montgomery Regional, AL
+  KMOB: [30.6912, -88.2428],   // Mobile Regional, AL
+  KPDK: [33.8756, -84.3020],   // DeKalb-Peachtree (FBO)
+  KRDU: [35.8776, -78.7875],   // Raleigh-Durham
+  KRYY: [34.0132, -84.5971],   // McCollum Field, Kennesaw GA
 
   // Midwest
-  KORD: [41.9742, -87.9073],   // Chicago O'Hare
-  KMDW: [41.7868, -87.7416],   // Chicago Midway
-  KPWK: [42.1142, -87.9015],   // Chicago Executive (FBO)
-  KDTW: [42.2124, -83.3534],   // Detroit
-  KGRR: [42.8808, -85.5228],   // Grand Rapids
-  KESC: [45.7227, -87.0937],   // Escanaba MI
-  KMQT: [46.5336, -87.5614],   // Marquette MI (Sawyer Intl)
-  KTVC: [44.7414, -85.5822],   // Traverse City MI
-  KFSD: [43.5820, -96.7419],   // Sioux Falls SD
-  KMSP: [44.8820, -93.2218],   // Minneapolis
-  KIND: [39.7173, -86.2944],   // Indianapolis
   KCVG: [39.0488, -84.6678],   // Cincinnati
+  KDPA: [41.9078, -88.2486],   // DuPage Airport, IL
+  KDTW: [42.2124, -83.3534],   // Detroit
+  KESC: [45.7227, -87.0937],   // Escanaba MI
+  KFCM: [44.8272, -93.4572],   // Flying Cloud, MN
+  KFSD: [43.5820, -96.7419],   // Sioux Falls SD
+  KGRR: [42.8808, -85.5228],   // Grand Rapids
+  KIND: [39.7173, -86.2944],   // Indianapolis
+  KMDW: [41.7868, -87.7416],   // Chicago Midway
+  KMQT: [46.5336, -87.5614],   // Marquette MI (Sawyer Intl)
+  KMSP: [44.8820, -93.2218],   // Minneapolis
+  KORD: [41.9742, -87.9073],   // Chicago O'Hare
+  KPWK: [42.1142, -87.9015],   // Chicago Executive (FBO)
+  KTVC: [44.7414, -85.5822],   // Traverse City MI
 
   // Mountain/West
-  KDEN: [39.8561, -104.6737],  // Denver
   KAPA: [39.5701, -104.8493],  // Centennial (FBO)
-  KLAS: [36.0840, -115.1537],  // Las Vegas
-  KRNO: [39.4991, -119.7681],  // Reno-Tahoe
-  KPHX: [33.4373, -112.0078],  // Phoenix
-  KSDL: [33.6229, -111.9105],  // Scottsdale (FBO)
-  KPSP: [33.8297, -116.5067],  // Palm Springs
-  KTRM: [33.6267, -116.1597],  // Thermal/Jacqueline Cochran (FBO, near PSP)
-  KSLC: [40.7884, -111.9778],  // Salt Lake City
   KASE: [39.2232, -106.8688],  // Aspen
-  KEGE: [39.6426, -106.9159],  // Eagle/Vail
-  KCOS: [38.8058, -104.7007],  // Colorado Springs
   KBOI: [43.5644, -116.2228],  // Boise
+  KCOS: [38.8058, -104.7007],  // Colorado Springs
+  KDEN: [39.8561, -104.6737],  // Denver
+  KDVT: [33.6883, -112.0833],  // Deer Valley, Phoenix AZ
+  KEGE: [39.6426, -106.9159],  // Eagle/Vail
+  KFFZ: [33.4608, -111.7281],  // Falcon Field, Mesa AZ
+  KGJT: [39.1224, -108.5267],  // Grand Junction Regional, CO
+  KLAS: [36.0840, -115.1537],  // Las Vegas
+  KPHX: [33.4373, -112.0078],  // Phoenix
+  KPSP: [33.8297, -116.5067],  // Palm Springs
+  KRNO: [39.4991, -119.7681],  // Reno-Tahoe
+  KSDL: [33.6229, -111.9105],  // Scottsdale (FBO)
+  KSGU: [37.0364, -113.5103],  // St George Regional, UT
+  KSLC: [40.7884, -111.9778],  // Salt Lake City
+  KTRM: [33.6267, -116.1597],  // Thermal/Jacqueline Cochran (FBO, near PSP)
   KTWF: [42.4818, -114.4877],  // Twin Falls ID
 
   // DC area
-  KIAD: [38.9445, -77.4558],   // Dulles
-  KDCA: [38.8512, -77.0402],   // Reagan National
   KBWI: [39.1754, -76.6683],   // Baltimore
+  KCHO: [38.1386, -78.4529],   // Charlottesville-Albemarle, VA
+  KDCA: [38.8512, -77.0402],   // Reagan National
+  KGAI: [39.1683, -77.1660],   // Montgomery County Airpark, MD
+  KHEF: [38.7214, -77.5155],   // Manassas Regional, VA
+  KIAD: [38.9445, -77.4558],   // Dulles
 
   // Canada
   CYYZ: [43.6777, -79.6248],   // Toronto Pearson
@@ -124,24 +152,25 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   KCDW: [40.8752, -74.2814],   // Caldwell/Essex (NJ)
 
   // Other
-  KMSY: [29.9934, -90.2580],   // New Orleans
-  KSTL: [38.7487, -90.3700],   // St. Louis
   KABQ: [35.0402, -106.6094],  // Albuquerque
-  KTUL: [36.1984, -95.8881],   // Tulsa
-  KOKC: [35.3931, -97.6007],   // Oklahoma City
-  KLIT: [34.7294, -92.2243],   // Little Rock
-  KJAN: [32.3112, -90.0759],   // Jackson (MS)
   KBHM: [33.5629, -86.7535],   // Birmingham (AL)
-  KHSV: [34.6372, -86.7751],   // Huntsville (AL)
   KCHS: [32.8986, -80.0405],   // Charleston (SC)
-  KSAV: [32.1276, -81.2021],   // Savannah (GA)
-  KRIC: [37.5052, -77.3197],   // Richmond (VA)
-  KORF: [36.8946, -76.2012],   // Norfolk (VA)
-  KPIT: [40.4915, -80.2329],   // Pittsburgh
   KCLE: [41.4117, -81.8498],   // Cleveland
   KCMH: [39.9980, -82.8919],   // Columbus (OH)
-  KMKE: [42.9472, -87.8966],   // Milwaukee
   KDAB: [29.1799, -81.0581],   // Daytona Beach
+  KHSV: [34.6372, -86.7751],   // Huntsville (AL)
+  KJAN: [32.3112, -90.0759],   // Jackson (MS)
+  KLIT: [34.7294, -92.2243],   // Little Rock
+  KMKE: [42.9472, -87.8966],   // Milwaukee
+  KMSY: [29.9934, -90.2580],   // New Orleans
+  KOKC: [35.3931, -97.6007],   // Oklahoma City
+  KORF: [36.8946, -76.2012],   // Norfolk (VA)
+  KPIT: [40.4915, -80.2329],   // Pittsburgh
+  KRIC: [37.5052, -77.3197],   // Richmond (VA)
+  KSAV: [32.1276, -81.2021],   // Savannah (GA)
+  KSDF: [38.1744, -85.7360],   // Louisville Muhammad Ali Intl, KY
+  KSTL: [38.7487, -90.3700],   // St. Louis
+  KTUL: [36.1984, -95.8881],   // Tulsa
 
   // ── Texas (additional) ──────────────────────────────────────────────────
   KACT: [31.6113, -97.2305],   // Waco
@@ -174,39 +203,43 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   // ── Northeast / Mid-Atlantic (additional) ────────────────────────────────
   KABE: [40.6521, -75.4408],   // Allentown, PA
   KALB: [42.7483, -73.8017],   // Albany, NY
-  KMDT: [40.1935, -76.7634],   // Harrisburg PA
   KAVP: [41.3385, -75.7234],   // Wilkes-Barre/Scranton, PA
   KBLM: [40.1868, -74.1249],   // Belmar/Monmouth, NJ
+  KFCI: [37.5065, -77.5254],   // Richmond (Chesterfield), VA
+  KFKL: [41.3779, -79.8604],   // Venango Regional, Franklin PA
   KFOK: [40.8437, -72.6318],   // Westhampton Beach, NY
   KILG: [39.6787, -75.6065],   // Wilmington, DE
   KIPT: [41.2418, -76.9211],   // Williamsport, PA
   KJYO: [39.0780, -77.5575],   // Leesburg, VA
+  KMDT: [40.1935, -76.7634],   // Harrisburg PA
+  KOFP: [37.7091, -77.4361],   // Hanover County, VA
   KOKV: [39.1435, -78.1444],   // Winchester, VA
   KOXC: [41.4786, -73.1352],   // Oxford, CT
   KPNE: [40.0819, -75.0106],   // Philadelphia NE
+  KROA: [37.3255, -79.9754],   // Roanoke-Blacksburg Regional, VA
   KSHD: [38.2638, -78.8964],   // Staunton/Shenandoah, VA
   KTTN: [40.2767, -74.8135],   // Trenton, NJ
-  KFCI: [37.5065, -77.5254],   // Richmond (Chesterfield), VA
-  KOFP: [37.7091, -77.4361],   // Hanover County, VA
 
   // ── Carolinas / Southeast GA (additional) ─────────────────────────────────
-  KAUO: [32.6151, -85.4340],   // Auburn, AL
   KANB: [33.5882, -85.8581],   // Anniston, AL
+  KAUO: [32.6151, -85.4340],   // Auburn, AL
   KBUY: [36.0485, -79.4749],   // Burlington, NC
-  KFAY: [34.9912, -78.8803],   // Fayetteville NC
   KCRE: [33.8117, -78.7239],   // Myrtle Beach (Grand Strand)
+  KFAY: [34.9912, -78.8803],   // Fayetteville NC
   KGSO: [36.0978, -79.9373],   // Greensboro, NC
   KHKY: [35.7411, -81.3896],   // Hickory, NC
   KHXD: [32.2244, -80.6975],   // Hilton Head, SC
   KILM: [34.2706, -77.9026],   // Wilmington, NC
   KINT: [36.1337, -80.2220],   // Winston-Salem, NC
   KJQF: [35.3878, -80.7091],   // Concord, NC
+  KOAJ: [34.8292, -77.6121],   // Albert J Ellis, Jacksonville NC
   KPGV: [35.6352, -77.3853],   // Greenville, NC
   KSIG: [36.8937, -76.2893],   // Norfolk (Bravo), VA
   KSOP: [35.2374, -79.3913],   // Pinehurst/Southern Pines, NC
   KSSI: [31.1518, -81.3913],   // Brunswick (St. Simons), GA
 
   // ── Midwest (additional) ──────────────────────────────────────────────────
+  KAMW: [41.9921, -93.6218],   // Ames, IA
   KATW: [44.2581, -88.5191],   // Appleton, WI
   KCID: [41.8847, -91.7108],   // Cedar Rapids, IA
   KCMI: [40.0392, -88.2781],   // Champaign, IL
@@ -223,24 +256,28 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   KSGF: [37.2457, -93.3886],   // Springfield, MO
   KSUS: [38.6621, -90.6521],   // Spirit of St. Louis, MO
   KUES: [43.0411, -88.2370],   // Waukesha, WI
-  KAMW: [41.9921, -93.6218],   // Ames, IA
+  KYNG: [41.2607, -80.6791],   // Youngstown-Warren Regional, OH
 
   // ── South Central (additional) ────────────────────────────────────────────
   KBTR: [30.5332, -91.1496],   // Baton Rouge, LA
   KBVO: [36.7625, -96.0112],   // Bartlesville, OK
   KHCR: [35.5114, -91.5656],   // Heber Springs, AR
+  KLFT: [30.2053, -91.9876],   // Lafayette Regional, LA
   KSHV: [32.4466, -93.8256],   // Shreveport, LA
+  KXNA: [36.2819, -94.3068],   // Northwest Arkansas Regional
 
   // ── Mountain / West (additional) ──────────────────────────────────────────
   KAVQ: [32.4096, -111.2185],  // Tucson/Marana, AZ
   KBJC: [39.9088, -105.1172],  // Broomfield/Rocky Mtn Metro, CO
   KBZN: [45.7775, -111.1530],  // Bozeman, MT
   KCEZ: [37.3030, -108.6281],  // Cortez, CO
+  KFCA: [48.3105, -114.2560],  // Glacier Park Intl (Kalispell), MT
   KGPI: [48.3105, -114.2560],  // Glacier Park (Kalispell), MT
   KHDN: [40.4812, -107.2178],  // Hayden/Steamboat Springs, CO
   KHII: [34.5711, -114.3583],  // Lake Havasu, AZ
   KIWA: [33.3078, -111.6551],  // Phoenix-Mesa Gateway, AZ
   KJAC: [43.6073, -110.7377],  // Jackson Hole, WY
+  KMSO: [46.9163, -114.0906],  // Missoula Montana Airport
   KSUN: [43.5044, -114.2962],  // Sun Valley (Hailey), ID
 
   // ── Pacific (additional) ──────────────────────────────────────────────────
@@ -250,16 +287,17 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   KCCR: [37.9897, -122.0569],  // Concord, CA
   KCMA: [34.2137, -119.0943],  // Camarillo, CA
   KCRQ: [33.1283, -117.2803],  // Carlsbad (McClellan-Palomar), CA
+  KHWD: [37.6592, -122.1217],  // Hayward, CA
   KLGB: [33.8177, -118.1516],  // Long Beach, CA
+  KMCC: [38.6676, -121.4008],  // McClellan, CA
+  KNUQ: [37.4161, -122.0490],  // Moffett Field, CA
   KONT: [34.0560, -117.6012],  // Ontario, CA
   KPDX: [45.5887, -122.5975],  // Portland, OR
   KSBA: [34.4262, -119.8404],  // Santa Barbara, CA
   KSBD: [34.0954, -117.2349],  // San Bernardino, CA
   KSEA: [47.4502, -122.3088],  // Seattle-Tacoma, WA
+  KSTS: [38.5090, -122.8129],  // Charles M Schulz/Sonoma County, CA
   KUDD: [33.7484, -116.2748],  // Bermuda Dunes, CA
-  KMCC: [38.6676, -121.4008],  // McClellan, CA
-  KHWD: [37.6592, -122.1217],  // Hayward, CA
-  KNUQ: [37.4161, -122.0490],  // Moffett Field, CA
 
   // ── Alaska / Hawaii / Territories ─────────────────────────────────────────
   PANC: [61.1744, -149.9964],  // Anchorage, AK
