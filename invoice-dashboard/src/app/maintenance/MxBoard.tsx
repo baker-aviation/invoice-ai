@@ -454,7 +454,13 @@ export default function MxBoard({
                   <div className="p-4">
                     {/* ── Schedule section ── */}
                     {(expandedSection[tail] || "notes") === "schedule" && (
-                      <ScheduleSection flights={tailFlights} mxNotes={tailNotes} />
+                      <ScheduleSection
+                        flights={tailFlights}
+                        mxNotes={tailNotes}
+                        onMoveNote={(noteId, newAirport) => {
+                          setNotes((prev) => prev.map((n) => n.id === noteId ? { ...n, airport_icao: newAirport } : n));
+                        }}
+                      />
                     )}
 
                     {/* ── MX Notes section ── */}
@@ -543,7 +549,31 @@ function fmtGroundTime(min: number): string {
   return m > 0 ? `${h}h${m}m` : `${h}h`;
 }
 
-function ScheduleSection({ flights, mxNotes = [] }: { flights: Flight[]; mxNotes?: MxNoteWithAttachments[] }) {
+function ScheduleSection({ flights, mxNotes: initialMxNotes = [], onMoveNote }: { flights: Flight[]; mxNotes?: MxNoteWithAttachments[]; onMoveNote?: (noteId: string, newAirport: string) => void }) {
+  const [mxNotes, setMxNotes] = useState(initialMxNotes);
+  const [movingNoteId, setMovingNoteId] = useState<string | null>(null);
+
+  // All unique arrival airports from the schedule (for the move dropdown)
+  const arrivalAirports = useMemo(() => {
+    const set = new Set<string>();
+    for (const f of flights) if (f.arrival_icao) set.add(f.arrival_icao);
+    return Array.from(set).sort();
+  }, [flights]);
+
+  async function handleMoveNote(noteId: string, newAirport: string) {
+    // Optimistic update
+    setMxNotes((prev) => prev.map((n) => n.id === noteId ? { ...n, airport_icao: newAirport } : n));
+    setMovingNoteId(null);
+    try {
+      await fetch(`/api/ops/mx-notes/${noteId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ airport_icao: newAirport }),
+      });
+      onMoveNote?.(noteId, newAirport);
+    } catch { /* ignore */ }
+  }
+
   if (flights.length === 0) {
     return <div className="text-sm text-gray-400 py-4 text-center">No upcoming flights</div>;
   }
@@ -556,6 +586,9 @@ function ScheduleSection({ flights, mxNotes = [] }: { flights: Flight[]; mxNotes
       mxAirports.get(n.airport_icao)!.push(n);
     }
   }
+
+  // Notes not matched to any arrival airport
+  const unmatchedNotes = mxNotes.filter((n) => !n.airport_icao || !arrivalAirports.includes(n.airport_icao));
 
   // Group flights by date
   const dateGroups: { date: string; label: string; flights: Flight[] }[] = [];
@@ -574,6 +607,30 @@ function ScheduleSection({ flights, mxNotes = [] }: { flights: Flight[]; mxNotes
 
   return (
     <div className="space-y-4">
+      {/* Unmatched MX notes — not at any scheduled arrival airport */}
+      {unmatchedNotes.length > 0 && (
+        <div className="bg-orange-50 border border-orange-200 rounded-lg p-3 space-y-1.5">
+          <div className="text-xs font-semibold text-orange-700 uppercase tracking-wide">MX not on route — assign to a leg</div>
+          {unmatchedNotes.map((n) => (
+            <div key={n.id} className="flex items-center gap-2 text-xs">
+              <span className="font-bold text-orange-600">MX</span>
+              <span className="text-gray-700 truncate flex-1">{n.subject || n.body || n.description}</span>
+              {n.airport_icao && <span className="text-gray-400">{n.airport_icao}</span>}
+              <select
+                className="text-[11px] border border-orange-200 rounded px-1.5 py-0.5 bg-white text-gray-700"
+                value=""
+                onChange={(e) => { if (e.target.value) handleMoveNote(n.id, e.target.value); }}
+              >
+                <option value="">Move to...</option>
+                {arrivalAirports.map((a) => (
+                  <option key={a} value={a}>{a.replace(/^K/, "")}</option>
+                ))}
+              </select>
+            </div>
+          ))}
+        </div>
+      )}
+
       {dateGroups.map((group) => {
         const isToday = group.date === todayKey;
         const isPast = group.date < todayKey;
@@ -651,17 +708,39 @@ function ScheduleSection({ flights, mxNotes = [] }: { flights: Flight[]; mxNotes
                         </div>
                       </div>
 
-                      {/* MX notes at arrival — inline detail */}
+                      {/* MX notes at arrival — inline with move control */}
                       {hasMxAtArrival && !flightIsPast && (
                         <div className="ml-0 mt-1 space-y-0.5">
                           {arrMxNotes.map((n) => (
-                            <div key={n.id} className="flex items-center gap-2 text-[11px] text-orange-700 bg-orange-50 rounded px-2 py-0.5">
-                              <span className="font-bold">MX</span>
-                              <span className="truncate">{n.subject || n.body || n.description}</span>
+                            <div key={n.id} className="group flex items-center gap-2 text-[11px] text-orange-700 bg-orange-50 rounded px-2 py-1">
+                              <span className="font-bold shrink-0">MX</span>
+                              <span className="truncate flex-1">{n.subject || n.body || n.description}</span>
                               {n.assigned_van && (
                                 <span className="px-1 py-0.5 rounded bg-green-100 text-green-700 text-[10px] font-medium shrink-0">
                                   V{n.assigned_van}
                                 </span>
+                              )}
+                              {/* Move control */}
+                              {movingNoteId === n.id ? (
+                                <select
+                                  autoFocus
+                                  className="text-[10px] border border-orange-300 rounded px-1 py-0.5 bg-white text-gray-700 shrink-0"
+                                  value={n.airport_icao ?? ""}
+                                  onChange={(e) => { if (e.target.value && e.target.value !== n.airport_icao) handleMoveNote(n.id, e.target.value); }}
+                                  onBlur={() => setMovingNoteId(null)}
+                                >
+                                  {arrivalAirports.map((a) => (
+                                    <option key={a} value={a}>{a.replace(/^K/, "")}</option>
+                                  ))}
+                                </select>
+                              ) : (
+                                <button
+                                  onClick={() => setMovingNoteId(n.id)}
+                                  className="text-[10px] text-orange-400 hover:text-orange-700 font-medium opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                                  title="Move to different leg"
+                                >
+                                  Move
+                                </button>
                               )}
                             </div>
                           ))}
