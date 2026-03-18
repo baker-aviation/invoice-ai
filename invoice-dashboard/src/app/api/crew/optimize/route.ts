@@ -261,12 +261,34 @@ export async function POST(req: NextRequest) {
     console.log(`[Swap Optimizer] Offgoing-first: ${offgoingFirstResult.deadlines.length} deadlines, ${offgoingFirstResult.unsolvable.length} unsolvable`);
   }
 
-  // Build set of tails where offgoing has no solution — don't waste oncoming crew on these
+  // Build set of tails with CONFIRMED timing deadlocks — cases where the offgoing crew
+  // has a known departure deadline that makes any oncoming arrival impossible.
+  // We do NOT exclude tails where offgoing simply has no commercial transport (those tails
+  // can still be planned: offgoing will self-arrange, oncoming should still be assigned).
+  //
+  // Key: match on tail+role (not just tail). In solveOffgoingFirst, each crew member goes
+  // to EITHER deadlines OR unsolvable — never both. A tail where PIC is unsolvable (no
+  // transport) but SIC has a deadline (has a flight) is NOT a timing deadlock — those are
+  // independent crew members. Only exclude when the SAME role on the same tail somehow
+  // ends up in both lists (shouldn't happen, but defensive).
+  const deadlineTailRoles = offgoingFirstResult
+    ? new Set(offgoingFirstResult.deadlines.map((d) => `${d.tail}|${d.role}`))
+    : new Set<string>();
   const unsolvableTails = offgoingFirstResult
-    ? new Set(offgoingFirstResult.unsolvable.map((u) => u.tail))
+    ? new Set(
+        offgoingFirstResult.unsolvable
+          .filter((u) => deadlineTailRoles.has(`${u.tail}|${u.role}`))
+          .map((u) => u.tail)
+      )
     : undefined;
   if (unsolvableTails?.size) {
-    console.log(`[Swap Optimizer] Excluding ${unsolvableTails.size} unsolvable tails from oncoming assignment: ${[...unsolvableTails].join(", ")}`);
+    console.log(`[Swap Optimizer] Excluding ${unsolvableTails.size} timing-deadlock tails from oncoming assignment: ${[...unsolvableTails].join(", ")}`);
+  }
+  const noTransportTails = offgoingFirstResult
+    ? offgoingFirstResult.unsolvable.filter((u) => !deadlineTailRoles.has(`${u.tail}|${u.role}`)).map((u) => u.tail)
+    : [];
+  if (noTransportTails.length) {
+    console.log(`[Swap Optimizer] ${noTransportTails.length} tails have no offgoing transport but oncoming will still be assigned: ${noTransportTails.join(", ")}`);
   }
 
   // ── STEP 2+3: Assign oncoming crew + run transport optimizer ────────────────

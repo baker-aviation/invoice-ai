@@ -163,6 +163,8 @@ type SwapPoint = {
   time: Date;
   position: "before_live" | "after_live" | "between_legs" | "idle";
   isAdjacentLive: boolean;
+  /** For between_legs: the departure time of the next leg (= deadline for oncoming crew) */
+  window_end?: Date;
 };
 
 type CrewTask = {
@@ -314,13 +316,22 @@ function findAllCommercialAirports(fboIcao: string, aliases: AirportAlias[]): st
   const sorted = [...matching].sort((a, b) => (b.preferred ? 1 : 0) - (a.preferred ? 1 : 0));
   for (const a of sorted) result.add(a.commercial_icao);
 
-  // 2. Find nearby commercial airports within 30 miles
-  const nearby = findNearbyCommercialAirports(upper, 30);
-  for (const n of nearby) {
+  // 2. Find nearby commercial airports — 30 mile primary, 75 mile fallback.
+  // VRB (Vero Beach) is 50mi from PBI, KASM (St Augustine) is 35mi from JAX, etc.
+  // A wider search avoids marking isolated FBOs as unserviceable.
+  const nearby30 = findNearbyCommercialAirports(upper, 30);
+  for (const n of nearby30) {
     if (!result.has(n.icao)) result.add(n.icao);
   }
+  if (result.size === 0) {
+    // Nothing within 30 miles — widen to 75 miles (covers more isolated FBOs)
+    const nearby75 = findNearbyCommercialAirports(upper, 75);
+    for (const n of nearby75) {
+      if (!result.has(n.icao)) result.add(n.icao);
+    }
+  }
 
-  // 3. Fallback: if nothing found, use the FBO code itself
+  // 3. Fallback: if nothing found even within 75 miles, use the FBO code itself
   if (result.size === 0) result.add(fboIcao);
 
   return Array.from(result);
@@ -486,8 +497,13 @@ function buildCandidates(
       let dutyOn: Date | null = null;
 
       if (task.direction === "oncoming") {
-        // Work backwards from when they need to be at FBO
-        const mustBeAtFbo = new Date(task.swapPoint.time.getTime() - ms(FBO_ARRIVAL_BUFFER));
+        // Work backwards from when they need to be at FBO.
+        // For between_legs, use window_end (next departure) instead of arrival time —
+        // crew only needs to arrive before the aircraft's NEXT departure, not before it lands.
+        const deadlineRef = (task.swapPoint.position === "between_legs" && task.swapPoint.window_end)
+          ? task.swapPoint.window_end
+          : task.swapPoint.time;
+        const mustBeAtFbo = new Date(deadlineRef.getTime() - ms(FBO_ARRIVAL_BUFFER));
         arrTime = mustBeAtFbo;
         depTime = new Date(arrTime.getTime() - ms(driveMin));
         fboArr = arrTime;
@@ -565,6 +581,26 @@ function buildCandidates(
       datesToSearch.push(dayAfter.toISOString().slice(0, 10));
     }
 
+    // Resolve home to nearby commercial airports for flight search origins/destinations.
+    // Crew at GA/FBO airports (e.g., KILG/Wilmington) can drive to a nearby commercial
+    // airport (e.g., PHL) to catch flights. Without this, those crew show 0 flight options.
+    const homeFlightAirports: { iata: string; driveCost: number; driveMin: number }[] =
+      [{ iata: homeIata, driveCost: 0, driveMin: 0 }];
+    if (!isCommercialAirport(homeIcao)) {
+      const nearbyComm = findAllCommercialAirports(homeIcao, aliases);
+      for (const nc of nearbyComm) {
+        const ncIata = toIata(nc);
+        if (ncIata === homeIata) continue;
+        const d = estimateDriveTime(homeIcao, toIcao(nc));
+        if (d && d.estimated_drive_minutes <= RENTAL_MAX_MINUTES) {
+          const cost = d.estimated_drive_minutes <= UBER_MAX_MINUTES
+            ? Math.max(25, Math.round(d.estimated_drive_miles * 2.0))
+            : 80 + Math.round(d.estimated_drive_miles * 0.50);
+          homeFlightAirports.push({ iata: ncIata, driveCost: cost, driveMin: d.estimated_drive_minutes });
+        }
+      }
+    }
+
     for (const commApt of commAirports) {
       const commIata = toIata(commApt);
       const driveToFbo = estimateDriveTime(
@@ -573,15 +609,17 @@ function buildCandidates(
       );
       const driveToFboMin = driveToFbo?.estimated_drive_minutes ?? 0;
 
+      for (const homeFlight of homeFlightAirports) {
       let originIata: string;
       let destIata: string;
       if (task.direction === "oncoming") {
-        originIata = homeIata;
+        originIata = homeFlight.iata;
         destIata = commIata;
       } else {
         originIata = commIata;
-        destIata = homeIata;
+        destIata = homeFlight.iata;
       }
+      const homeGroundCost = homeFlight.driveCost;
 
       for (const searchDate of datesToSearch) {
       const offers = lookupFlights(commercialFlights, originIata, destIata, searchDate);
@@ -691,7 +729,7 @@ function buildCandidates(
           arrTime: flightArr,
           from: firstSeg.departure.iataCode,
           to: lastSeg.arrival.iataCode,
-          cost: cost + groundCost,
+          cost: cost + groundCost + homeGroundCost,
           durationMin: totalDuration,
           isDirect,
           isBudgetCarrier: isBudget,
@@ -709,6 +747,7 @@ function buildCandidates(
         candidates.push(candidate);
       }
       } // end for searchDate
+      } // end for homeFlight
     } // end for commApt
   } // end for homeApt
 
@@ -814,8 +853,12 @@ function scoreCandidate(
   // ── FBO arrival timing (oncoming only) ──────────────────────────────
   // Arriving before the first leg is ideal but not required.
   // Offgoing crew holds until oncoming arrives.
+  // For between_legs, score vs window_end (next departure) not aircraft arrival time.
   if (task.direction === "oncoming" && c.fboArrivalTime) {
-    const bufferMin = (task.swapPoint.time.getTime() - c.fboArrivalTime.getTime()) / 60_000;
+    const deadlineRef = (task.swapPoint.position === "between_legs" && task.swapPoint.window_end)
+      ? task.swapPoint.window_end
+      : task.swapPoint.time;
+    const bufferMin = (deadlineRef.getTime() - c.fboArrivalTime.getTime()) / 60_000;
     if (bufferMin >= FBO_ARRIVAL_BUFFER_PREFERRED) score += 10; // 90+ min early — ideal
     else if (bufferMin >= FBO_ARRIVAL_BUFFER) score += 7;       // 60+ min early — good
     else if (bufferMin >= 0) score += 3;                         // Before swap point — OK
@@ -1160,12 +1203,15 @@ function extractSwapPoints(
     // (PIC covers SIC seat for legs before the SIC arrives)
     for (let i = 0; i < liveWedLegs.length - 1; i++) {
       const leg = liveWedLegs[i];
+      const nextLeg = liveWedLegs[i + 1];
       if (leg.arrival_icao && leg.scheduled_arrival) {
         swapPoints.push({
           icao: leg.arrival_icao,
           time: new Date(leg.scheduled_arrival),
           position: "between_legs",
           isAdjacentLive: true,
+          // window_end = next departure = actual crew deadline
+          window_end: nextLeg?.scheduled_departure ? new Date(nextLeg.scheduled_departure) : undefined,
         });
       }
     }
@@ -1299,11 +1345,8 @@ export function buildSwapPlan(params: {
       const spIcao = sp.icao;
       const commAirports = findAllCommercialAirports(spIcao, aliases);
 
-      // Does the FBO itself have commercial service? (self-alias like KASE→KASE)
-      const selfCommercial = aliases.some(
-        (a) => a.fbo_icao.toUpperCase() === spIcao.toUpperCase()
-          && a.commercial_icao.toUpperCase() === spIcao.toUpperCase(),
-      );
+      // Does the FBO itself have commercial service?
+      const selfCommercial = isCommercialAirport(spIcao);
 
       // Shortest drive time to any commercial airport
       let minDriveMin = Infinity;
@@ -1357,10 +1400,10 @@ export function buildSwapPlan(params: {
       let bestEase = -Infinity;
       for (const sp of swapPoints) {
         const commAirports = findAllCommercialAirports(sp.icao, aliases);
-        const selfCommercial = aliases.some(
-          (a) => a.fbo_icao.toUpperCase() === sp.icao.toUpperCase()
-            && a.commercial_icao.toUpperCase() === sp.icao.toUpperCase(),
-        );
+        // Use isCommercialAirport() — matches buildFeasibilityMatrix's check so both
+        // phases pick the SAME swap point. The old alias-based self-reference check
+        // missed airports like KIAD that ARE commercial but have no self-alias entry.
+        const selfCommercial = isCommercialAirport(sp.icao);
         let minDrive = Infinity;
         for (const c of commAirports) {
           if (c.toUpperCase() === sp.icao.toUpperCase()) { minDrive = 0; break; }
@@ -1379,11 +1422,13 @@ export function buildSwapPlan(params: {
         // If an aircraft flies KTEB→KPSP at 6pm, the crew arrives PSP at ~11pm —
         // too late for any commercial flights home. Penalize by how late the swap is.
         // "before_live" and "idle" have no timing penalty (crew leaves whenever they want).
+        // For between_legs, use window_end (next departure) — the actual crew deadline.
         let timingPenalty = 0;
         if (sp.position === "after_live" || sp.position === "between_legs") {
           const tz = getAirportTimezone(sp.icao) ?? "America/New_York";
+          const refTime = (sp.position === "between_legs" && sp.window_end) ? sp.window_end : sp.time;
           const localHour = parseFloat(
-            new Date(sp.time).toLocaleString("en-US", { hour: "numeric", hour12: false, timeZone: tz })
+            new Date(refTime).toLocaleString("en-US", { hour: "numeric", hour12: false, timeZone: tz })
           );
           // Penalty ramps up after noon local: 0 at noon, 50 at 6pm, 150 at 10pm+
           const hoursAfterNoon = Math.max(0, localHour - 12);
@@ -1953,12 +1998,14 @@ function buildFeasibilityMatrix(params: {
           const u = c.toUpperCase();
           return !u.startsWith("K") && !u.startsWith("CY") && !u.startsWith("Y");
         });
-        // Timing penalty: same formula as buildSwapPlan's swap point picker
+        // Timing penalty: same formula as buildSwapPlan's swap point picker.
+        // For between_legs, use window_end (next departure) — the actual crew deadline.
         let timingPenalty = 0;
         if (sp.position === "after_live" || sp.position === "between_legs") {
           const tz = getAirportTimezone(sp.icao) ?? "America/New_York";
+          const refTime = (sp.position === "between_legs" && sp.window_end) ? sp.window_end : sp.time;
           const localHour = parseFloat(
-            new Date(sp.time).toLocaleString("en-US", { hour: "numeric", hour12: false, timeZone: tz })
+            new Date(refTime).toLocaleString("en-US", { hour: "numeric", hour12: false, timeZone: tz })
           );
           const hoursAfterNoon = Math.max(0, localHour - 12);
           timingPenalty = Math.min(150, hoursAfterNoon * 12);
