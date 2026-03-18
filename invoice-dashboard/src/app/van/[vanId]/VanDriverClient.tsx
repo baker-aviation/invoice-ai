@@ -572,6 +572,16 @@ function StopCard({
             <div className="text-sm font-bold text-slate-700 dark:text-slate-200 tabular-nums">
               Sched {schedArrLocal}
             </div>
+            {fi?.actual_arrival && (
+              <div className="text-xs font-medium text-green-600 dark:text-green-400 tabular-nums">
+                Landed {fmtLocalTime(fi.actual_arrival, item.arrFlight.arrival_icao)}
+              </div>
+            )}
+            {!fi?.actual_arrival && faEtaLocal && faEtaLocal !== schedArrLocal && status.label !== "Landed" && (
+              <div className="text-xs font-medium text-blue-600 dark:text-blue-400 tabular-nums">
+                FA Est {faEtaLocal}
+              </div>
+            )}
           </div>
         </div>
       </div>

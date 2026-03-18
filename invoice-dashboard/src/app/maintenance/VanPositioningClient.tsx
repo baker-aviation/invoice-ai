@@ -542,7 +542,7 @@ type FlightInfoEntry = {
   tail: string; ident: string; origin_icao: string | null; origin_name: string | null;
   destination_icao: string | null; destination_name: string | null; status: string | null;
   progress_percent: number | null; departure_time: string | null; arrival_time: string | null;
-  route_distance_nm: number | null; diverted: boolean;
+  actual_arrival: string | null; route_distance_nm: number | null; diverted: boolean;
   aircraft_type?: string | null; // ICAO type code e.g. "C750", "CL30"
   latitude?: number | null; longitude?: number | null; altitude?: number | null;
   groundspeed?: number | null; heading?: number | null;

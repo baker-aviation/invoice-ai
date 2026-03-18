@@ -58,6 +58,7 @@ export type FlightInfoEntry = {
   progress_percent: number | null;
   departure_time: string | null;
   arrival_time: string | null;
+  actual_arrival: string | null;
   route_distance_nm: number | null;
   diverted: boolean;
   latitude?: number | null;
