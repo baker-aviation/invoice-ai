@@ -537,6 +537,14 @@ function CandidateCard({
             {catLabel}
           </span>
         )}
+        {/* Source tag */}
+        {job.model === "google-form-intake" ? (
+          <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-red-50 text-red-600 border-red-200">Google</span>
+        ) : job.model === "manual" ? (
+          <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-gray-50 text-gray-500 border-gray-200">Manual</span>
+        ) : job.model ? (
+          <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-indigo-50 text-indigo-600 border-indigo-200">Hiring@</span>
+        ) : null}
         {job.location && (
           <span className="text-[10px] text-gray-400 truncate max-w-[100px]">
             {job.location}
