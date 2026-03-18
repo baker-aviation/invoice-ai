@@ -319,17 +319,17 @@ function findAllCommercialAirports(fboIcao: string, aliases: AirportAlias[]): st
   const sorted = [...matching].sort((a, b) => (b.preferred ? 1 : 0) - (a.preferred ? 1 : 0));
   for (const a of sorted) result.add(a.commercial_icao);
 
-  // 2. Find nearby commercial airports — 30 mile primary, 75 mile fallback.
-  // VRB (Vero Beach) is 50mi from PBI, KASM (St Augustine) is 35mi from JAX, etc.
-  // A wider search avoids marking isolated FBOs as unserviceable.
-  const nearby30 = findNearbyCommercialAirports(upper, 30);
-  for (const n of nearby30) {
+  // 2. Find nearby commercial airports — 50 mile primary, 75 mile fallback.
+  // 30mi missed DFW for KTKI (McKinney, 35mi) and similar cases where a major
+  // hub with far more flights sits just outside the narrow radius.
+  const nearby50 = findNearbyCommercialAirports(upper, 50);
+  for (const n of nearby50) {
     if (!result.has(n.icao)) result.add(n.icao);
   }
   if (result.size === 0) {
-    // Nothing within 30 miles — widen to 75 miles (covers more isolated FBOs)
-    const nearby75 = findNearbyCommercialAirports(upper, 75);
-    for (const n of nearby75) {
+    // Nothing within 50 miles — widen to 100 miles (covers truly isolated FBOs)
+    const nearby100 = findNearbyCommercialAirports(upper, 100);
+    for (const n of nearby100) {
       if (!result.has(n.icao)) result.add(n.icao);
     }
   }
