@@ -587,6 +587,19 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
     fetch(`/api/ops/alerts/${id}/acknowledge`, { method: "POST" }).catch(() => {});
   }, []);
 
+  const handleAckAll = useCallback((flightId: string, alertIds: string[]) => {
+    setLocalAckedIds((prev) => {
+      const next = new Set(prev);
+      for (const id of alertIds) next.add(id);
+      return next;
+    });
+    fetch("/api/ops/alerts/acknowledge-bulk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ flight_id: flightId }),
+    }).catch(() => {});
+  }, []);
+
   // Fetch FlightAware data (primary source for both positions and flight info)
   const fetchFlightInfo = useCallback(async () => {
     try {
@@ -2486,17 +2499,28 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                         })()}
                       </td>
                       <td className="px-3 py-2.5">
-                        {alertCount > 0 && (
-                          <button
-                            onClick={() => toggleExpanded(f.id)}
-                            className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full bg-red-100 text-red-700 hover:bg-red-200 transition-colors cursor-pointer"
-                          >
-                            <span className={`inline-block transition-transform ${isExpanded ? "rotate-90" : ""}`}>
-                              &#9656;
-                            </span>
-                            {alertCount}
-                          </button>
-                        )}
+                        <div className="flex items-center gap-1.5">
+                          {alertCount > 0 && (
+                            <button
+                              onClick={() => toggleExpanded(f.id)}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full bg-red-100 text-red-700 hover:bg-red-200 transition-colors cursor-pointer"
+                            >
+                              <span className={`inline-block transition-transform ${isExpanded ? "rotate-90" : ""}`}>
+                                &#9656;
+                              </span>
+                              {alertCount}
+                            </button>
+                          )}
+                          {isExpanded && alerts.some((a) => !isAcked(a)) && (
+                            <button
+                              type="button"
+                              onClick={() => handleAckAll(f.id, alerts.filter((a) => !isAcked(a)).map((a) => a.id))}
+                              className="text-[10px] text-gray-500 hover:text-green-700 hover:bg-green-50 border border-gray-200 hover:border-green-300 rounded px-1.5 py-0.5 transition-colors whitespace-nowrap"
+                            >
+                              Ack All
+                            </button>
+                          )}
+                        </div>
                       </td>
                       <td className="px-3 py-2.5">
                         {(() => {
