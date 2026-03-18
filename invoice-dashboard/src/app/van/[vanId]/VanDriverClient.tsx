@@ -53,6 +53,43 @@ function fmtLocalTime(iso: string | null | undefined, airportIcao: string | null
   }
 }
 
+/** Match best FA flight to a specific van leg by route (origin→dest + tail). */
+function matchFaFlight(
+  allEntries: FlightInfoEntry[],
+  flight: Flight,
+): FlightInfoEntry | undefined {
+  const tail = flight.tail_number;
+  if (!tail) return undefined;
+  const depIcao = flight.departure_icao;
+  const arrIcao = flight.arrival_icao;
+  // Normalize: strip leading K for comparison
+  const norm = (c: string | null) => c ? (c.length === 4 && c.startsWith("K") ? c.slice(1) : c) : null;
+  const nDep = norm(depIcao);
+  const nArr = norm(arrIcao);
+
+  // Find all FA flights for this tail
+  const tailFlights = allEntries.filter((e) => e.tail === tail);
+  if (tailFlights.length === 0) return undefined;
+
+  // Prefer route match (origin matches departure)
+  if (nDep) {
+    const routeMatch = tailFlights.find((e) =>
+      norm(e.origin_icao) === nDep && (!nArr || norm(e.destination_icao) === nArr)
+    );
+    if (routeMatch) return routeMatch;
+    // Partial: just origin matches
+    const originMatch = tailFlights.find((e) => norm(e.origin_icao) === nDep);
+    if (originMatch) return originMatch;
+  }
+
+  // Fallback: prefer en-route flight
+  const enRoute = tailFlights.find((e) => e.status?.includes("En Route"));
+  if (enRoute) return enRoute;
+
+  // Last resort: most recent by departure
+  return tailFlights[tailFlights.length - 1];
+}
+
 /** Flight type to readable badge label */
 function flightTypeBadge(flight: Flight): { label: string; color: string } {
   const ft = inferFlightType(flight);
@@ -164,6 +201,7 @@ export default function VanDriverClient({
   }, [fboMap]);
 
   const [flights, setFlights] = useState<Flight[]>(initialFlights);
+  const [allFlightEntries, setAllFlightEntries] = useState<FlightInfoEntry[]>([]);
   const [flightInfoMap, setFlightInfoMap] = useState<Map<string, FlightInfoEntry>>(new Map());
   const [refreshing, setRefreshing] = useState(false);
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
@@ -188,9 +226,16 @@ export default function VanDriverClient({
       if (!res.ok) return;
       const data = await res.json();
       const entries: FlightInfoEntry[] = data.flights ?? data ?? [];
+      setAllFlightEntries(entries);
+      // Build a simple tail→best-flight map (en-route preferred over scheduled/landed)
       const map = new Map<string, FlightInfoEntry>();
       for (const e of entries) {
-        if (e.tail) map.set(e.tail, e);
+        if (!e.tail) continue;
+        const existing = map.get(e.tail);
+        const eIsEnRoute = e.status?.includes("En Route");
+        if (!existing || eIsEnRoute || (!existing.status?.includes("En Route") && !existing.status?.includes("Landed"))) {
+          map.set(e.tail, e);
+        }
       }
       setFlightInfoMap(map);
       setLastRefresh(new Date());
@@ -271,12 +316,12 @@ export default function VanDriverClient({
   const nextStopIdx = useMemo(() => {
     for (let i = 0; i < stops.length; i++) {
       const tail = stops[i].arrFlight.tail_number;
-      const fi = tail ? flightInfoMap.get(tail) : undefined;
+      const fi = tail ? matchFaFlight(allFlightEntries, stops[i].arrFlight) : undefined;
       const status = fi?.status;
       if (status !== "Landed" && status !== "Arrived") return i;
     }
     return stops.length > 0 ? 0 : -1;
-  }, [stops, flightInfoMap]);
+  }, [stops, allFlightEntries]);
 
   // ---------------------------------------------------------------------------
   // Render
@@ -346,7 +391,7 @@ export default function VanDriverClient({
               index={idx}
               isNext={idx === nextStopIdx}
               fi={item.arrFlight.tail_number
-                ? flightInfoMap.get(item.arrFlight.tail_number)
+                ? matchFaFlight(allFlightEntries, item.arrFlight)
                 : undefined}
               flightInfoMap={flightInfoMap}
               tailMxNotes={mxNotesByTail.get(item.arrFlight.tail_number ?? "") ?? []}
