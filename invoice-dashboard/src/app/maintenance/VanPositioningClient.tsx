@@ -1098,6 +1098,7 @@ function daysRemaining(endTime: string | null): number {
 // ---------------------------------------------------------------------------
 
 type MiddayWindow = {
+  flightId: string;
   tail: string;
   airport: string;
   city: string;
@@ -1105,7 +1106,6 @@ type MiddayWindow = {
   nextDepTime: Date;
   groundMin: number;
   mxNoteCount: number;
-  alreadyOnVan: boolean;
 };
 
 function MiddayOpportunities({
@@ -1114,12 +1114,14 @@ function MiddayOpportunities({
   date,
   overnightTails,
   mxNotesByTail,
+  onAddToVan,
 }: {
   zone: (typeof FIXED_VAN_ZONES)[number];
   allFlights: Flight[];
   date: string;
   overnightTails: Set<string>;
   mxNotesByTail: Map<string, MxNote[]>;
+  onAddToVan?: (flightId: string, vanId: number) => void;
 }) {
   const windows = useMemo(() => {
     const results: MiddayWindow[] = [];
@@ -1136,6 +1138,9 @@ function MiddayOpportunities({
     }
 
     for (const [tail, flights] of byTail) {
+      // Skip tails already on this van's overnight list
+      if (overnightTails.has(tail)) continue;
+
       const sorted = [...flights].sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure));
       for (let i = 0; i < sorted.length - 1; i++) {
         const leg = sorted[i];
@@ -1155,6 +1160,7 @@ function MiddayOpportunities({
 
         const mxNotes = mxNotesByTail.get(tail) ?? [];
         results.push({
+          flightId: leg.id,
           tail,
           airport: leg.arrival_icao.replace(/^K/, ""),
           city: info.city ? `${info.city}${info.state ? `, ${info.state}` : ""}` : "",
@@ -1162,7 +1168,6 @@ function MiddayOpportunities({
           nextDepTime,
           groundMin,
           mxNoteCount: mxNotes.length,
-          alreadyOnVan: overnightTails.has(tail),
         });
       }
     }
@@ -1207,8 +1212,13 @@ function MiddayOpportunities({
                 {w.mxNoteCount} MX
               </span>
             )}
-            {w.alreadyOnVan && (
-              <span className="text-[10px] text-green-600 font-medium">on tonight&apos;s list</span>
+            {onAddToVan && (
+              <button
+                onClick={() => onAddToVan(w.flightId, zone.vanId)}
+                className="px-2 py-0.5 text-[10px] font-medium text-amber-700 hover:text-white bg-amber-100 hover:bg-amber-600 border border-amber-300 rounded transition-colors"
+              >
+                + Add
+              </button>
             )}
           </div>
         ))}
@@ -1823,6 +1833,7 @@ function VanScheduleCard({
   onRemove,
   onSetPrimaryAirport,
   onPublishVan,
+  onAddToVan,
   fboMap,
 }: {
   zone: (typeof FIXED_VAN_ZONES)[number];
@@ -1851,6 +1862,7 @@ function VanScheduleCard({
   onRemove: (flightId: string) => void;  // delete aircraft from this van
   onSetPrimaryAirport?: (tail: string, airport: string) => void;
   onPublishVan?: (vanId: number) => Promise<void>;
+  onAddToVan?: (flightId: string, vanId: number) => void;
   fboMap?: Record<string, string>;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -1985,6 +1997,7 @@ function VanScheduleCard({
               date={date}
               overnightTails={new Set(items.map((it) => it.arrFlight.tail_number).filter(Boolean) as string[])}
               mxNotesByTail={mxNotesByTail}
+              onAddToVan={onAddToVan}
             />
           )}
           {items.length === 0 ? (
@@ -3533,6 +3546,19 @@ function ScheduleTab({
                 setAirportOverrides((prev) => {
                   const next = new Map(prev);
                   next.set(tail, apt);
+                  return next;
+                });
+              }}
+              onAddToVan={(flightId, vanId) => {
+                setRemovals((prev) => {
+                  if (!prev.has(flightId)) return prev;
+                  const next = new Set(prev);
+                  next.delete(flightId);
+                  return next;
+                });
+                setOverrides((prev) => {
+                  const next = new Map(prev);
+                  next.set(flightId, vanId);
                   return next;
                 });
               }}
