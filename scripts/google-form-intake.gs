@@ -299,3 +299,82 @@ function testWebhook() {
   Logger.log("Status: " + result.getResponseCode());
   Logger.log("Body: " + result.getContentText());
 }
+
+
+// ── Backfill: download files from all existing rows and send to webhook ──────
+
+function backfillFiles() {
+  var props = PropertiesService.getScriptProperties();
+  var webhookUrl = props.getProperty("WEBHOOK_URL");
+  var intakeSecret = props.getProperty("INTAKE_SECRET");
+
+  if (!webhookUrl || !intakeSecret) {
+    Logger.log("ERROR: Set WEBHOOK_URL and INTAKE_SECRET in Script Properties first");
+    return;
+  }
+
+  var ss = SpreadsheetApp.getActive();
+  var sheet = ss.getSheets()[0]; // First sheet (Form Responses)
+  var data = sheet.getDataRange().getValues();
+  var headers = data[0];
+
+  var success = 0;
+  var failed = 0;
+  var noFiles = 0;
+
+  // Start from row 2 (skip header)
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    var email = String(row[3] || "").trim().toLowerCase();
+    var name = String(row[1] || "") + " " + String(row[2] || "");
+
+    if (!email) {
+      Logger.log("Row " + (i + 1) + ": no email, skipping");
+      continue;
+    }
+
+    // Collect files from this row
+    var files = collectFilesFromValues(row);
+
+    if (files.length === 0) {
+      noFiles++;
+      Logger.log("Row " + (i + 1) + " (" + name.trim() + "): no files to download");
+      continue;
+    }
+
+    // Send just the files + email to the webhook (it will match by email and attach)
+    var payload = buildPayloadFromValues(row, {});
+    payload.files = files;
+
+    var options = {
+      method: "post",
+      contentType: "application/json",
+      headers: { "x-intake-secret": intakeSecret },
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true,
+    };
+
+    try {
+      var result = UrlFetchApp.fetch(webhookUrl, options);
+      var code = result.getResponseCode();
+      if (code >= 200 && code < 300) {
+        success++;
+        Logger.log("Row " + (i + 1) + " (" + name.trim() + "): " + files.length + " files sent OK");
+      } else {
+        failed++;
+        Logger.log("Row " + (i + 1) + " (" + name.trim() + "): ERROR " + code + " — " + result.getContentText().substring(0, 200));
+      }
+    } catch (err) {
+      failed++;
+      Logger.log("Row " + (i + 1) + " (" + name.trim() + "): FAILED — " + err.toString());
+    }
+
+    // Pause between rows to avoid rate limits
+    Utilities.sleep(1000);
+  }
+
+  Logger.log("\n=== BACKFILL COMPLETE ===");
+  Logger.log("Files sent: " + success);
+  Logger.log("No files: " + noFiles);
+  Logger.log("Failed: " + failed);
+}
