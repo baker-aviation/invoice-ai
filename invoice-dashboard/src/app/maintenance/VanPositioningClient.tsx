@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useState, useMemo, useEffect, useRef, useCallback } from "react";
+import { useState, useMemo, useEffect, useLayoutEffect, useRef, useCallback } from "react";
 import type { Flight, MxNote, AircraftTag } from "@/lib/opsApi";
 import {
   computeOvernightPositions,
@@ -2067,6 +2067,11 @@ function ScheduleTab({
       });
     }, 500);
   }, [date]);
+
+  // Suppress auto-save during date transitions — runs synchronously before
+  // useEffect so the auto-save can't write stale overrides to the new date.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useLayoutEffect(() => { suppressSaveRef.current = true; }, [date]);
 
   // Auto-save on every change (including parent UI-state props)
   useEffect(() => {
