@@ -1053,14 +1053,44 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
                     print(f"sync_schedule row upsert error uid={row.get('ics_uid','?')}: {repr(row_err)}", flush=True)
 
     # ── Upsert MX_NOTE alerts from maintenance events ───────────────────
+    # Protect manually-edited notes: if a user has set assigned_van,
+    # scheduled_date, or changed airport_icao, don't overwrite those fields.
     mx_created = 0
     if mx_alerts_batch:
         print(f"sync_schedule: upserting {len(mx_alerts_batch)} MX_NOTE alerts", flush=True)
         try:
-            res = supa.table(OPS_ALERTS_TABLE).upsert(
-                mx_alerts_batch, on_conflict="source_message_id"
-            ).execute()
-            mx_created = len(res.data) if res.data else 0
+            # Check which notes have been manually edited
+            source_ids = [a["source_message_id"] for a in mx_alerts_batch]
+            edited_ids = set()
+            for i in range(0, len(source_ids), 50):
+                chunk = source_ids[i:i+50]
+                existing = supa.table(OPS_ALERTS_TABLE).select(
+                    "source_message_id"
+                ).in_("source_message_id", chunk).or_(
+                    "assigned_van.not.is.null,scheduled_date.not.is.null"
+                ).execute()
+                for row in (existing.data or []):
+                    edited_ids.add(row["source_message_id"])
+
+            # Split: full upsert for untouched notes, partial update for edited ones
+            new_batch = [a for a in mx_alerts_batch if a["source_message_id"] not in edited_ids]
+            edited_batch = [a for a in mx_alerts_batch if a["source_message_id"] in edited_ids]
+
+            if new_batch:
+                res = supa.table(OPS_ALERTS_TABLE).upsert(
+                    new_batch, on_conflict="source_message_id"
+                ).execute()
+                mx_created += len(res.data) if res.data else 0
+
+            # For edited notes, only update raw_data (timestamps) — preserve user edits
+            for a in edited_batch:
+                supa.table(OPS_ALERTS_TABLE).update({
+                    "raw_data": a["raw_data"],
+                }).eq("source_message_id", a["source_message_id"]).execute()
+                mx_created += 1
+
+            if edited_ids:
+                print(f"sync_schedule: preserved manual edits on {len(edited_ids)} MX_NOTE(s)", flush=True)
         except Exception as e:
             print(f"sync_schedule MX_NOTE upsert error: {repr(e)}", flush=True)
 
