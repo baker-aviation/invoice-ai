@@ -44,7 +44,7 @@ export default function OpsTabs({ flights, bakerPprAirports, advertisedPrices, m
   }
 
   return (
-    <div className="px-6 py-4 space-y-4">
+    <div className="px-3 py-4 space-y-4">
       {/* Tab bar */}
       <div className="flex gap-1 border-b border-gray-200">
         {TABS.map((t) => (
