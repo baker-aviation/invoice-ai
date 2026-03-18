@@ -18,6 +18,7 @@ import {
 } from "@/lib/maintenanceData";
 import { getAirportInfo } from "@/lib/airportCoords";
 import type { AircraftPosition } from "./MapView";
+import MxNotesPanel from "@/app/ops/MxNotesPanel";
 
 // Leaflet requires SSR to be disabled
 const MapView = dynamic(() => import("./MapView"), {
@@ -5100,7 +5101,11 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
 
       {/* ── MX Admin tab ── */}
       {activeTab === "mx-admin" && (
-        <MxAdminTab />
+        <div className="space-y-8">
+          <MxNotesPanel mxNotes={mxNotes} />
+          <hr className="border-gray-200" />
+          <MxAdminTab />
+        </div>
       )}
 
       {/* ── Long-Term Maintenance section ── */}

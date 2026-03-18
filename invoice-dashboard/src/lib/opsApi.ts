@@ -300,6 +300,7 @@ export type MxNote = {
   end_time: string | null;
   created_at: string;
   acknowledged_at: string | null;
+  attachment_count?: number;
 };
 
 export async function fetchMxNotes(): Promise<MxNote[]> {
