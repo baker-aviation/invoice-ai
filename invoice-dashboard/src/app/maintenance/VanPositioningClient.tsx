@@ -2026,7 +2026,7 @@ function ScheduleTab({
 
   // Save drafts to DB (debounced) + localStorage fallback
   const saveDraftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const saveDraftToDb = useCallback((o: Map<string, number>, r: Set<string>, u: Map<string, number>) => {
+  const saveDraftToDb = useCallback((o: Map<string, number>, r: Set<string>, u: Map<string, number>, a: Map<string, string>) => {
     // localStorage fallback (immediate)
     try {
       if (o.size > 0) localStorage.setItem(`vanOverrides-${date}`, JSON.stringify([...o]));
@@ -2035,8 +2035,7 @@ function ScheduleTab({
       else localStorage.removeItem(`vanRemovals-${date}`);
       if (u.size > 0) localStorage.setItem(`vanUnscheduled-${date}`, JSON.stringify([...u]));
       else localStorage.removeItem(`vanUnscheduled-${date}`);
-      // Airport overrides (localStorage only — no DB migration needed)
-      if (airportOverrides.size > 0) localStorage.setItem(`vanAirportOverrides-${date}`, JSON.stringify([...airportOverrides]));
+      if (a.size > 0) localStorage.setItem(`vanAirportOverrides-${date}`, JSON.stringify([...a]));
       else localStorage.removeItem(`vanAirportOverrides-${date}`);
     } catch {}
     // DB save (debounced 500ms)
@@ -2056,6 +2055,7 @@ function ScheduleTab({
           wont_see_tails: wontSeeTailsRef.current,
           dismissed_conflicts: parentDismissedConflictsRef?.current ?? {},
           hidden_mx_ids: hiddenMxIdsRef.current,
+          airport_overrides: [...a],
         }),
       }).then(async (res) => {
         if (res.ok) {
@@ -2070,9 +2070,9 @@ function ScheduleTab({
 
   // Auto-save on every change (including parent UI-state props)
   useEffect(() => {
-    saveDraftToDb(overrides, removals, unscheduledOverrides);
+    saveDraftToDb(overrides, removals, unscheduledOverrides, airportOverrides);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [overrides, removals, unscheduledOverrides, wontSeeTodayTails, hiddenTodayMxIds, dismissedConflictVersion, saveDraftToDb]);
+  }, [overrides, removals, unscheduledOverrides, airportOverrides, wontSeeTodayTails, hiddenTodayMxIds, dismissedConflictVersion, saveDraftToDb]);
 
   // Load drafts from DB on mount/date change, fall back to localStorage
   const loadDraftsFromDb = useCallback(async (targetDate: string) => {
@@ -2086,6 +2086,7 @@ function ScheduleTab({
           setOverrides(new Map(d.overrides ?? []));
           setRemovals(new Set(d.removals ?? []));
           setUnscheduledOverrides(new Map(d.unscheduled ?? []));
+          setAirportOverrides(new Map(d.airport_overrides ?? []));
           // Sync DB-backed UI state to parent
           onSyncDraftUiState?.({
             wont_see_tails: d.wont_see_tails ?? [],
@@ -2133,6 +2134,7 @@ function ScheduleTab({
           setOverrides(new Map(d.overrides ?? []));
           setRemovals(new Set(d.removals ?? []));
           setUnscheduledOverrides(new Map(d.unscheduled ?? []));
+          setAirportOverrides(new Map(d.airport_overrides ?? []));
           // Sync DB-backed UI state from other admins
           onSyncDraftUiState?.({
             wont_see_tails: d.wont_see_tails ?? [],
@@ -3259,8 +3261,6 @@ function ScheduleTab({
                 setAirportOverrides((prev) => {
                   const next = new Map(prev);
                   next.set(tail, apt);
-                  // Persist immediately
-                  try { localStorage.setItem(`vanAirportOverrides-${date}`, JSON.stringify([...next])); } catch {}
                   return next;
                 });
               }}

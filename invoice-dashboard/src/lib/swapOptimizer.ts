@@ -1374,8 +1374,25 @@ export function buildSwapPlan(params: {
           const upper = c.toUpperCase();
           return !upper.startsWith("K") && !upper.startsWith("CY") && !upper.startsWith("Y");
         });
+
+        // Penalty for late arrival at after_live/between_legs swap points.
+        // If an aircraft flies KTEB→KPSP at 6pm, the crew arrives PSP at ~11pm —
+        // too late for any commercial flights home. Penalize by how late the swap is.
+        // "before_live" and "idle" have no timing penalty (crew leaves whenever they want).
+        let timingPenalty = 0;
+        if (sp.position === "after_live" || sp.position === "between_legs") {
+          const tz = getAirportTimezone(sp.icao) ?? "America/New_York";
+          const localHour = parseFloat(
+            new Date(sp.time).toLocaleString("en-US", { hour: "numeric", hour12: false, timeZone: tz })
+          );
+          // Penalty ramps up after noon local: 0 at noon, 50 at 6pm, 150 at 10pm+
+          const hoursAfterNoon = Math.max(0, localHour - 12);
+          timingPenalty = Math.min(150, hoursAfterNoon * 12);
+        }
+
         // Ease score: lower drive = easier, self-commercial = bonus, more options = bonus
-        const ease = -minDrive + (selfCommercial ? 30 : 0) + (commAirports.length * 2) - (isInternational ? 200 : 0);
+        const ease = -minDrive + (selfCommercial ? 30 : 0) + (commAirports.length * 2)
+          - (isInternational ? 200 : 0) - timingPenalty;
         if (ease > bestEase) {
           bestEase = ease;
           picSwapPoint = sp;
@@ -1916,20 +1933,38 @@ function buildFeasibilityMatrix(params: {
 
     // SIC tries all swap points (can swap at intermediate airports).
     // PIC: in drive-only mode, try ALL swap points (commercial accessibility irrelevant).
-    // With flights, pick BEST swap point by commercial accessibility for perf.
+    // With flights, pick BEST swap point using the same timing-aware ease formula as
+    // buildSwapPlan — ensures the feasibility matrix evaluates the same point that
+    // will actually be used for transport planning.
     let swapPointsToTry = swapPoints;
     if (role === "PIC" && swapPoints.length > 1 && (commercialFlights || preComputedRoutes)) {
       let bestSp = swapPoints[0];
       let bestEase = -Infinity;
       for (const sp of swapPoints) {
         const commAirports = findAllCommercialAirports(sp.icao, aliases);
+        const selfCommercial = isCommercialAirport(sp.icao);
         let minDrive = Infinity;
         for (const c of commAirports) {
           if (c.toUpperCase() === sp.icao.toUpperCase()) { minDrive = 0; break; }
           const d = estimateDriveTime(sp.icao, c);
           if (d) minDrive = Math.min(minDrive, d.estimated_drive_minutes);
         }
-        const ease = -(minDrive === Infinity ? 999 : minDrive) + commAirports.length * 2;
+        const isInternational = commAirports.every((c) => {
+          const u = c.toUpperCase();
+          return !u.startsWith("K") && !u.startsWith("CY") && !u.startsWith("Y");
+        });
+        // Timing penalty: same formula as buildSwapPlan's swap point picker
+        let timingPenalty = 0;
+        if (sp.position === "after_live" || sp.position === "between_legs") {
+          const tz = getAirportTimezone(sp.icao) ?? "America/New_York";
+          const localHour = parseFloat(
+            new Date(sp.time).toLocaleString("en-US", { hour: "numeric", hour12: false, timeZone: tz })
+          );
+          const hoursAfterNoon = Math.max(0, localHour - 12);
+          timingPenalty = Math.min(150, hoursAfterNoon * 12);
+        }
+        const ease = -(minDrive === Infinity ? 999 : minDrive) + (selfCommercial ? 30 : 0)
+          + commAirports.length * 2 - (isInternational ? 200 : 0) - timingPenalty;
         if (ease > bestEase) { bestEase = ease; bestSp = sp; }
       }
       swapPointsToTry = [bestSp];
