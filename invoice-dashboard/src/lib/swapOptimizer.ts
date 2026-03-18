@@ -77,6 +77,9 @@ export type SwapAssignment = {
   oncoming_sic: string | null;
   offgoing_pic: string | null;
   offgoing_sic: string | null;
+  /** Swap point ICAO chosen during assignment phase — used by transport planner */
+  oncoming_pic_swap_icao?: string;
+  oncoming_sic_swap_icao?: string;
 };
 
 /** One row in the swap sheet — one crew member's travel plan */
@@ -1396,7 +1399,14 @@ export function buildSwapPlan(params: {
     // - With flights: best commercial accessibility (EGE→VNY: VNY near BUR/LAX wins)
     // - Drive-only: use first swap point (default), let buildCandidates try all
     let picSwapPoint = swapPoints[0]; // default
-    if (swapPoints.length > 1 && commercialFlights) {
+
+    // If assignment phase already proved a swap point, use it directly — avoids
+    // the transport phase independently picking a different (wrong) swap point.
+    const assignedPicSwapIcao = assignment.oncoming_pic_swap_icao;
+    if (assignedPicSwapIcao) {
+      const matched = swapPoints.find((sp) => sp.icao.toUpperCase() === assignedPicSwapIcao.toUpperCase());
+      if (matched) picSwapPoint = matched;
+    } else if (swapPoints.length > 1 && commercialFlights) {
       let bestEase = -Infinity;
       for (const sp of swapPoints) {
         const commAirports = findAllCommercialAirports(sp.icao, aliases);
@@ -1563,6 +1573,21 @@ export function buildSwapPlan(params: {
       }
 
       const sicVolFlags = direction === "oncoming" ? getVolunteerFlags(name, "SIC") : { earlyVolunteer: false, lateVolunteer: false };
+
+      // If assignment phase proved a SIC swap point, use it directly
+      const assignedSicSwapIcao = assignment.oncoming_sic_swap_icao;
+      if (direction === "oncoming" && assignedSicSwapIcao) {
+        const matched = swapPoints.find((sp) => sp.icao.toUpperCase() === assignedSicSwapIcao.toUpperCase());
+        if (matched) {
+          tailTasks.push({
+            name: crewMember?.name ?? name, crewMember, role: "SIC", direction, tail,
+            aircraftType, swapPoint: matched, homeAirports,
+            candidates: [], best: null, warnings,
+            ...sicVolFlags,
+          });
+          continue; // skip the try-all-swap-points loop
+        }
+      }
 
       if (direction === "oncoming" && swapPoints.length > 1) {
         // Try each swap point — run buildCandidates for each, pick the best
@@ -1965,8 +1990,9 @@ function buildFeasibilityMatrix(params: {
   tailAircraftType: Map<string, string>;
   preComputedRoutes?: Map<string, PilotRoute[]>;  // crewMemberId → oncoming routes
   preComputedOffgoing?: Map<string, PilotRoute[]>;  // crewMemberId → offgoing routes
+  offgoingDeadlines?: OncomingDeadline[];  // offgoing departure deadlines per tail+role
 }): FeasibilityEntry[] {
-  const { pool, role, tails, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, preComputedRoutes, preComputedOffgoing } = params;
+  const { pool, role, tails, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, preComputedRoutes, preComputedOffgoing, offgoingDeadlines } = params;
   const matrix: FeasibilityEntry[] = [];
 
   for (const tail of tails) {
@@ -2133,6 +2159,29 @@ function buildFeasibilityMatrix(params: {
         }
       }
 
+      // Filter by offgoing deadline — same check as optimizeTail Step 2.
+      // If offgoing crew must leave by 9am and no oncoming arrives before that, not viable.
+      if (offgoingDeadlines) {
+        const dl = offgoingDeadlines.find((d) => d.tail === tail && d.role === role);
+        if (dl) {
+          const deadlineMs = dl.deadline.getTime();
+          const meetsDeadline = candidates.filter((c) =>
+            c.type !== "none" && c.fboArrivalTime && c.fboArrivalTime.getTime() <= deadlineMs,
+          );
+          if (meetsDeadline.length > 0) {
+            // Keep only candidates that arrive before the offgoing deadline
+            const noneCandidate = candidates.find((c) => c.type === "none");
+            candidates.length = 0;
+            candidates.push(...meetsDeadline);
+            if (noneCandidate) candidates.push(noneCandidate);
+          } else {
+            // No candidate beats the offgoing deadline — not viable
+            candidates.length = 0;
+            candidates.push({ type: "none" as const, flightNumber: null, depTime: null, arrTime: null, from: "", to: "", cost: 0, durationMin: 0, isDirect: false, isBudgetCarrier: false, hubConnection: false, connectionCount: 0, offer: null, drive: null, fboArrivalTime: null, fboLeaveTime: null, dutyOnTime: null, score: 0, backups: [] });
+          }
+        }
+      }
+
       // Candidates already scored in the swap-point loop above
       candidates.sort((a, b) => b.score - a.score);
 
@@ -2242,12 +2291,13 @@ export function assignOncomingCrew(params: {
   preComputedRoutes?: Map<string, PilotRoute[]>;
   preComputedOffgoing?: Map<string, PilotRoute[]>;
   excludeTails?: Set<string>;
+  offgoingDeadlines?: OncomingDeadline[];
 }): {
   assignments: Record<string, SwapAssignment>;
   standby: { pic: string[]; sic: string[] };
   details: { name: string; tail: string; cost: number; reason: string }[];
 } {
-  const { swapAssignments, oncomingPool, crewRoster, flights, swapDate, aliases = [], commercialFlights, preComputedRoutes, preComputedOffgoing, excludeTails } = params;
+  const { swapAssignments, oncomingPool, crewRoster, flights, swapDate, aliases = [], commercialFlights, preComputedRoutes, preComputedOffgoing, excludeTails, offgoingDeadlines } = params;
   const result: Record<string, SwapAssignment> = JSON.parse(JSON.stringify(swapAssignments));
   const details: { name: string; tail: string; cost: number; reason: string }[] = [];
 
@@ -2290,8 +2340,8 @@ export function assignOncomingCrew(params: {
   }
 
   // Assign PICs then SICs using feasibility matrix
-  assignRoleWithMatrix("oncoming_pic", oncomingPool.pic, "PIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes, preComputedOffgoing, excludeTails);
-  assignRoleWithMatrix("oncoming_sic", oncomingPool.sic, "SIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes, preComputedOffgoing, excludeTails);
+  assignRoleWithMatrix("oncoming_pic", oncomingPool.pic, "PIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes, preComputedOffgoing, excludeTails, offgoingDeadlines);
+  assignRoleWithMatrix("oncoming_sic", oncomingPool.sic, "SIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes, preComputedOffgoing, excludeTails, offgoingDeadlines);
 
   // Remaining pool → standby
   const assignedNames = new Set(details.map((d) => d.name));
@@ -2319,12 +2369,13 @@ export function twoPassAssignAndOptimize(params: {
   preComputedRoutes?: Map<string, PilotRoute[]>;
   preComputedOffgoing?: Map<string, PilotRoute[]>;
   excludeTails?: Set<string>;
+  offgoingDeadlines?: OncomingDeadline[];
 }): {
   result: SwapPlanResult;
   assignmentResult: ReturnType<typeof assignOncomingCrew>;
   twoPassStats: TwoPassStats;
 } {
-  const { swapAssignments, oncomingPool, crewRoster, flights, swapDate, aliases, commercialFlights, preComputedRoutes, preComputedOffgoing, excludeTails } = params;
+  const { swapAssignments, oncomingPool, crewRoster, flights, swapDate, aliases, commercialFlights, preComputedRoutes, preComputedOffgoing, excludeTails, offgoingDeadlines } = params;
 
   // ── Pass 1: Normal Wednesday only (exclude early/late volunteers) ──────
   const normalPool: OncomingPool = {
@@ -2349,6 +2400,7 @@ export function twoPassAssignAndOptimize(params: {
     preComputedRoutes,
     preComputedOffgoing,
     excludeTails,
+    offgoingDeadlines,
   });
 
   const pass1Result = buildSwapPlan({
@@ -2424,6 +2476,7 @@ export function twoPassAssignAndOptimize(params: {
     preComputedRoutes,
     preComputedOffgoing,
     excludeTails,
+    offgoingDeadlines,
   });
 
   // Merge pass 2 results into pass 1: only replace unsolved tails
@@ -2440,7 +2493,7 @@ export function twoPassAssignAndOptimize(params: {
       const p1 = mergedAssignments[tail];
 
       if (p2.oncoming_pic && !p1.oncoming_pic) {
-        mergedAssignments[tail] = { ...p1, oncoming_pic: p2.oncoming_pic };
+        mergedAssignments[tail] = { ...p1, oncoming_pic: p2.oncoming_pic, oncoming_pic_swap_icao: p2.oncoming_pic_swap_icao };
         if (volunteerNames.has(p2.oncoming_pic)) {
           const entry = oncomingPool.pic.find((p) => p.name === p2.oncoming_pic);
           volunteersUsed.push({
@@ -2450,7 +2503,7 @@ export function twoPassAssignAndOptimize(params: {
         }
       }
       if (p2.oncoming_sic && !p1.oncoming_sic) {
-        mergedAssignments[tail] = { ...mergedAssignments[tail], oncoming_sic: p2.oncoming_sic };
+        mergedAssignments[tail] = { ...mergedAssignments[tail], oncoming_sic: p2.oncoming_sic, oncoming_sic_swap_icao: p2.oncoming_sic_swap_icao };
         if (volunteerNames.has(p2.oncoming_sic)) {
           const entry = oncomingPool.sic.find((p) => p.name === p2.oncoming_sic);
           volunteersUsed.push({
@@ -2524,6 +2577,7 @@ function assignRoleWithMatrix(
   preComputedRoutes?: Map<string, PilotRoute[]>,
   preComputedOffgoing?: Map<string, PilotRoute[]>,
   excludeTails?: Set<string>,
+  offgoingDeadlines?: OncomingDeadline[],
 ): void {
   const needingTails = Object.keys(result).filter((tail) => !result[tail][field] && !excludeTails?.has(tail));
   if (needingTails.length === 0 || pool.length === 0) return;
@@ -2541,6 +2595,7 @@ function assignRoleWithMatrix(
     tailAircraftType,
     preComputedRoutes,
     preComputedOffgoing,
+    offgoingDeadlines,
   });
 
   // Only consider viable options (where real transport exists)
@@ -2576,6 +2631,9 @@ function assignRoleWithMatrix(
   for (const opt of viableOptions) {
     if (assignedCrews.has(opt.crewName) || assignedTails.has(opt.tail)) continue;
     result[opt.tail][field] = opt.crewName;
+    // Carry the proven swap point forward so buildSwapPlan uses the same one
+    const swapField = field === "oncoming_pic" ? "oncoming_pic_swap_icao" : "oncoming_sic_swap_icao";
+    if (opt.bestSwapIcao) result[opt.tail][swapField] = opt.bestSwapIcao;
     assignedCrews.add(opt.crewName);
     assignedTails.add(opt.tail);
 

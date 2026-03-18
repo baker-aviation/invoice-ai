@@ -316,6 +316,7 @@ export async function POST(req: NextRequest) {
       preComputedRoutes: hasPreComputedRoutes ? crewRouteMap : undefined,
       preComputedOffgoing: hasPreComputedRoutes ? crewOffgoingMap : undefined,
       excludeTails: unsolvableTails,
+      offgoingDeadlines: offgoingFirstResult?.deadlines,
     });
     result = twoPass.result;
     assignmentResult = twoPass.assignmentResult;
@@ -336,6 +337,7 @@ export async function POST(req: NextRequest) {
         preComputedRoutes: hasPreComputedRoutes ? crewRouteMap : undefined,
         preComputedOffgoing: hasPreComputedRoutes ? crewOffgoingMap : undefined,
         excludeTails: unsolvableTails,
+        offgoingDeadlines: offgoingFirstResult?.deadlines,
       });
       swapAssignments = assignmentResult.assignments;
       console.log(`[Swap Optimizer] Assignment took ${((Date.now() - assignStart) / 1000).toFixed(1)}s`);
