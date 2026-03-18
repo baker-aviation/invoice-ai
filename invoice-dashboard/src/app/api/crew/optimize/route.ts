@@ -160,8 +160,54 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Use client pool, auto-detected pool, or nothing
-  const effectivePool = clientOncomingPool ?? autoDetectedPool;
+  // Use client pool, auto-detected pool, or auto-build from roster
+  let effectivePool: OncomingPool | null = clientOncomingPool ?? autoDetectedPool;
+
+  // If we have swap assignments but no pool, derive the pool from the roster.
+  // Steps:
+  //   1. Collect all offgoing names from the assignments.
+  //   2. Majority-vote their rotation_group to find the offgoing group.
+  //   3. The oncoming group is the opposite (A↔B).
+  //   4. Include only crew from the oncoming group who aren't already offgoing.
+  // This mirrors what detectCurrentRotation builds, but from Excel-provided data.
+  if (!effectivePool && Object.keys(swapAssignments).length > 0) {
+    const offgoingNames = new Set<string>();
+    for (const sa of Object.values(swapAssignments)) {
+      if (sa.offgoing_pic) offgoingNames.add(sa.offgoing_pic);
+      if (sa.offgoing_sic) offgoingNames.add(sa.offgoing_sic);
+    }
+
+    // Majority-vote the offgoing rotation group
+    const groupCounts: Record<string, number> = { A: 0, B: 0 };
+    for (const c of crewRoster) {
+      if (offgoingNames.has(c.name) && c.rotation_group) groupCounts[c.rotation_group]++;
+    }
+    const offgoingGroup = groupCounts.A >= groupCounts.B ? (groupCounts.A > 0 ? "A" : null) : "B";
+    const oncomingGroup = offgoingGroup === "A" ? "B" : offgoingGroup === "B" ? "A" : null;
+
+    const autoPool: OncomingPool = { pic: [], sic: [] };
+    for (const c of crewRoster) {
+      if (offgoingNames.has(c.name)) continue;
+      // If rotation groups are known, only include the oncoming group
+      if (oncomingGroup && c.rotation_group && c.rotation_group !== oncomingGroup) continue;
+      const entry = {
+        name: c.name,
+        aircraft_type: c.aircraft_types[0] ?? "unknown",
+        home_airports: c.home_airports,
+        is_checkairman: c.is_checkairman,
+        is_skillbridge: c.is_skillbridge,
+        early_volunteer: false,
+        late_volunteer: false,
+        standby_volunteer: false,
+        notes: null,
+      };
+      if (c.role === "PIC") autoPool.pic.push(entry);
+      else autoPool.sic.push(entry);
+    }
+    effectivePool = autoPool;
+    console.log(`[Swap Optimizer] Auto-built oncoming pool (group ${oncomingGroup ?? "unknown"}): ${autoPool.pic.length} PICs, ${autoPool.sic.length} SICs (excluded ${offgoingNames.size} offgoing, group votes: A=${groupCounts.A} B=${groupCounts.B})`);
+  }
+
   const hasPool = effectivePool && (effectivePool.pic?.length > 0 || effectivePool.sic?.length > 0);
 
   // ── STEP 1: Load pre-computed routes + commercial flight cache ──────────
