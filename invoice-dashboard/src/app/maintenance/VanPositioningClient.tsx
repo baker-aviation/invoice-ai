@@ -1535,15 +1535,6 @@ function AircraftCompactRow({
             {arrTime && (
               <span className="text-gray-400">{" → "}<span className="font-medium text-gray-700">{fmtUtcHM(arrFlight.scheduled_arrival!, arrFlight.arrival_icao)}</span></span>
             )}
-            {isEnRoute && fi?.arrival_time && !faLanded && (() => {
-              const countdown = fmtTimeUntil(fi.arrival_time!);
-              const etaColorClass = delayMin > 30 ? "text-red-600" : delayMin > 15 ? "text-amber-600" : delayMin < -5 ? "text-green-600" : "text-blue-600";
-              return countdown ? (
-                <span className={`ml-1 font-medium ${etaColorClass}`}>
-                  ETA {countdown}
-                </span>
-              ) : null;
-            })()}
           </div>
           {/* Status badge */}
           {fi?.diverted ? (
@@ -1552,18 +1543,12 @@ function AircraftCompactRow({
             <span className="text-xs font-semibold rounded-full px-2 py-0.5 bg-green-100 text-green-700">Landed</span>
           ) : isEnRoute ? (
             <span className="text-xs font-semibold rounded-full px-2 py-0.5 bg-blue-100 text-blue-700">
-              En Route{fi?.progress_percent != null ? ` ${fi.progress_percent}%` : ""}
+              En Route
             </span>
           ) : (
             <span className={`text-xs font-semibold rounded-full px-2 py-0.5 ${hasLanded ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-600"}`}>
               {hasLanded ? "Landed" : "Scheduled"}
             </span>
-          )}
-          {!fi?.diverted && !faLanded && !hasLanded && delayMin > 30 && (
-            <span className="text-xs font-semibold rounded-full px-2 py-0.5 bg-red-100 text-red-700">Delayed ~{delayMin}m</span>
-          )}
-          {!fi?.diverted && !faLanded && !hasLanded && delayMin > 15 && delayMin <= 30 && (
-            <span className="text-xs font-semibold rounded-full px-2 py-0.5 bg-amber-100 text-amber-700">Delayed ~{delayMin}m</span>
           )}
           {/* Expand/collapse detail */}
           <button
@@ -5023,7 +5008,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
                               )}
                               {isEnRoute && (
                                 <span className="text-xs rounded-full px-2 py-0.5 font-semibold bg-blue-100 text-blue-700">
-                                  En Route{fi?.progress_percent != null ? ` ${fi.progress_percent}%` : ""}
+                                  En Route
                                 </span>
                               )}
                               {isLanded && (
