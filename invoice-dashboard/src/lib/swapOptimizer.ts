@@ -92,6 +92,18 @@ const TRAIN_STATION_AIRPORTS: Record<string, string[]> = {
   "MCO": ["KMCO", "KORL", "KSFB", "KISM"],
 };
 
+// US territory airports that start with K but are effectively international
+// (no ground transport from mainland, expensive flights)
+// US territory airports — both K-prefixed (from JetInsight) and real ICAO codes
+// These are effectively international: no ground transport from mainland, expensive flights
+const TERRITORY_AIRPORTS = new Set([
+  "KSJU", "TJSJ",   // San Juan, PR
+  "KBQN", "TJBQ",   // Aguadilla, PR
+  "KPSE", "TJPS",   // Ponce, PR
+  "KSTT", "TIST",   // St Thomas, USVI
+  "KSTX", "TISX",   // St Croix, USVI
+]);
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // LAYER 1: Types
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1647,6 +1659,7 @@ export function buildSwapPlan(params: {
         // Crew stranded in Caribbean/Mexico is much worse than driving 30min to EWR.
         const isInternational = commAirports.every((c) => {
           const upper = c.toUpperCase();
+          if (TERRITORY_AIRPORTS.has(upper)) return true;
           return !upper.startsWith("K") && !upper.startsWith("CY") && !upper.startsWith("Y");
         });
 
@@ -1685,8 +1698,8 @@ export function buildSwapPlan(params: {
           }
         }
         const avgMiles = proximityCount > 0 ? totalProximity / proximityCount : 1000;
-        // Bonus: 0mi avg = +60, 500mi avg = +30, 1000mi+ = 0
-        const proximityBonus = Math.max(0, 60 - (avgMiles / 1000) * 60);
+        // Bonus: 0mi avg = +120, 500mi avg = +60, 1000mi+ = 0
+        const proximityBonus = Math.max(0, 120 - (avgMiles / 1000) * 120);
 
         // Ease score: lower drive = easier, self-commercial = bonus, more options = bonus
         const ease = -minDrive + (selfCommercial ? 30 : 0) + (commAirports.length * 2)
@@ -2265,6 +2278,7 @@ function buildFeasibilityMatrix(params: {
         }
         const isInternational = commAirports.every((c) => {
           const u = c.toUpperCase();
+          if (TERRITORY_AIRPORTS.has(u)) return true;
           return !u.startsWith("K") && !u.startsWith("CY") && !u.startsWith("Y");
         });
         // Timing penalty: same formula as buildSwapPlan's swap point picker.
@@ -2296,8 +2310,8 @@ function buildFeasibilityMatrix(params: {
           }
         }
         const avgMiles = proximityCount > 0 ? totalProximity / proximityCount : 1000;
-        // Bonus: 0mi avg = +60, 500mi avg = +30, 1000mi+ = 0
-        const proximityBonus = Math.max(0, 60 - (avgMiles / 1000) * 60);
+        // Bonus: 0mi avg = +120, 500mi avg = +60, 1000mi+ = 0
+        const proximityBonus = Math.max(0, 120 - (avgMiles / 1000) * 120);
 
         const ease = -(minDrive === Infinity ? 999 : minDrive) + (selfCommercial ? 30 : 0)
           + commAirports.length * 2 - (isInternational ? 200 : 0) - timingPenalty + proximityBonus;
@@ -3160,7 +3174,40 @@ export function solveOffgoingFirst(params: {
       continue;
     }
 
-    const swapPoint = swapPoints[0];
+    // Pick PIC swap point using same ease formula as buildSwapPlan
+    let swapPoint = swapPoints[0];
+    if (swapPoints.length > 1) {
+      let bestEase = -Infinity;
+      for (const sp of swapPoints) {
+        const commAirports = findAllCommercialAirports(sp.icao, aliases);
+        const selfCommercial = isCommercialAirport(sp.icao);
+        let minDrive = Infinity;
+        for (const c of commAirports) {
+          if (c.toUpperCase() === sp.icao.toUpperCase()) { minDrive = 0; break; }
+          const d = estimateDriveTime(sp.icao, c);
+          if (d) minDrive = Math.min(minDrive, d.estimated_drive_minutes);
+        }
+        if (minDrive === Infinity) minDrive = 999;
+        const isInternational = commAirports.every((c) => {
+          const upper = c.toUpperCase();
+          if (TERRITORY_AIRPORTS.has(upper)) return true;
+          return !upper.startsWith("K") && !upper.startsWith("CY") && !upper.startsWith("Y");
+        });
+        let timingPenalty = 0;
+        if (sp.position === "after_live" || sp.position === "between_legs") {
+          const tz = getAirportTimezone(sp.icao) ?? "America/New_York";
+          const refTime = (sp.position === "between_legs" && sp.window_end) ? sp.window_end : sp.time;
+          const localHour = parseFloat(
+            new Date(refTime).toLocaleString("en-US", { hour: "numeric", hour12: false, timeZone: tz })
+          );
+          const hoursAfterNoon = Math.max(0, localHour - 12);
+          timingPenalty = Math.min(150, hoursAfterNoon * 12);
+        }
+        const ease = -minDrive + (selfCommercial ? 30 : 0) + commAirports.length * 2
+          - (isInternational ? 200 : 0) - timingPenalty;
+        if (ease > bestEase) { bestEase = ease; swapPoint = sp; }
+      }
+    }
 
     for (const [offName, role] of [
       [assignment.offgoing_pic, "PIC"] as const,

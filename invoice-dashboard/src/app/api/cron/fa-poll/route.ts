@@ -219,15 +219,18 @@ async function linkFaToIcs(flights: FlightInfo[]): Promise<number> {
 
     if (!candidates || candidates.length === 0) continue;
 
-    // Pick closest by departure time
+    // Pick closest by departure time, but protect existing valid links
     let bestId: string | null = null;
     let bestDiff = Infinity;
     for (const c of candidates) {
-      // Skip if already correctly linked
+      // Skip if already correctly linked to THIS FA flight
       if (c.fa_flight_id === fa.fa_flight_id) {
         bestId = null;
         break;
       }
+      // Skip candidates that already have a different fa_flight_id —
+      // don't steal a link that was already established for another FA flight
+      if (c.fa_flight_id) continue;
       const diff = Math.abs(new Date(c.scheduled_departure).getTime() - faDepMs);
       if (diff < bestDiff) {
         bestDiff = diff;

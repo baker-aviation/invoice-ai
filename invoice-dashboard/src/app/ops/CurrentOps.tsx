@@ -418,27 +418,39 @@ function delayColorClass(scheduledIso: string, actualIso: string): string {
   return "text-green-600";
 }
 
-/** Look up FA data: try route-specific key first, fall back to tail-only if route matches.
- *  Both paths reject stale FA data (>6h from scheduled departure) to avoid
- *  showing yesterday's actuals on today's leg of the same route. */
+/** Look up FA data: try bucketed route key first, then unbucketed, then tail-only.
+ *  All paths reject stale FA data (>90min from scheduled departure) to avoid
+ *  blending data between legs of the same aircraft. */
 function matchFlightInfo(
   map: Map<string, FlightInfoMap>,
   routeKey: string,
   tail: string,
   departureIcao: string | null,
   scheduledDep?: string,
+  arrivalIcao?: string | null,
 ): FlightInfoMap | undefined {
+  const STALE_MS = 90 * 60_000; // 90 minutes
   const isStale = (fi: FlightInfoMap) => {
     if (!scheduledDep) return false;
     const faDep = fi.actual_departure ?? fi.departure_time;
     if (!faDep) return false;
-    return Math.abs(new Date(faDep).getTime() - new Date(scheduledDep).getTime()) > 3 * 3600_000;
+    return Math.abs(new Date(faDep).getTime() - new Date(scheduledDep).getTime()) > STALE_MS;
   };
+  // 1. Try bucketed route key (tail|dep|arr|bucket)
+  if (scheduledDep) {
+    const h = new Date(scheduledDep).getUTCHours();
+    const bucket = String(Math.floor(h / 3));
+    const bucketed = map.get(`${routeKey}|${bucket}`);
+    if (bucketed && !isStale(bucketed)) return bucketed;
+  }
+  // 2. Try unbucketed route key (tail|dep|arr) — catches cases where FA dep drifted to adjacent bucket
   const byRoute = map.get(routeKey);
   if (byRoute && !isStale(byRoute)) return byRoute;
-  // Tail-only fallback: only use if the FA flight's origin matches AND not stale
+  // 3. Tail-only fallback: require BOTH origin AND destination match, plus not stale
   const byTail = map.get(tail);
-  if (byTail && departureIcao && byTail.origin_icao === departureIcao && !isStale(byTail)) {
+  if (byTail && departureIcao && byTail.origin_icao === departureIcao
+      && (!arrivalIcao || byTail.destination_icao === arrivalIcao)
+      && !isStale(byTail)) {
     return byTail;
   }
   return undefined;
@@ -526,6 +538,12 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
   const [flightInfo, setFlightInfo] = useState<Map<string, FlightInfoMap>>(new Map());
   const [tripSalespersons, setTripSalespersons] = useState<TripSalesperson[]>([]);
 
+  // Flight remarks (day-of notes)
+  type FlightRemark = { id: string; flight_id: string; remark: string; created_by: string | null; updated_at: string };
+  const [remarks, setRemarks] = useState<Map<string, FlightRemark>>(new Map());
+  const [editingRemarkId, setEditingRemarkId] = useState<string | null>(null);
+  const [remarkDraft, setRemarkDraft] = useState("");
+
   // SWIM flight status
   type SwimFlightStatus = { tail_number: string; departure_icao: string | null; arrival_icao: string | null; status: string; event_time: string; etd: string | null; eta: string | null; actual_departure: string | null; actual_arrival: string | null; latitude?: number | null; longitude?: number | null; groundspeed_kt?: number | null };
   type FeedStatus = { name: string; status: "ok" | "error" | "off"; count: number; updated_at?: string; error?: string };
@@ -612,15 +630,27 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
           MYNN: "KNAS", MWCR: "KGCM", TXKF: "KBDA", TAPA: "KANU",
           TUPJ: "MBPV",  // Beef Island / Tortola BVI
         };
-        // Key by tail|origin|dest so each scheduled leg can find its FA match
+        // Key by tail|origin|dest|depBucket so same-route legs don't collide.
+        // depBucket is the 3h window the FA departure falls into, so legs >3h apart
+        // each get their own slot in the map.
+        const bucketHours = (iso: string | null | undefined): string => {
+          if (!iso) return "";
+          const h = new Date(iso).getUTCHours();
+          return String(Math.floor(h / 3));          // 0-7 (eight 3-h buckets per day)
+        };
         const map = new Map<string, FlightInfoMap>();
         const positions: AircraftPosition[] = [];
         for (const fi of data.flights ?? []) {
-          const key = `${fi.tail}|${fi.origin_icao ?? ""}|${fi.destination_icao ?? ""}`;
+          const bucket = bucketHours(fi.departure_time ?? fi.actual_departure);
+          const key = `${fi.tail}|${fi.origin_icao ?? ""}|${fi.destination_icao ?? ""}|${bucket}`;
           // Prefer the entry that's actively flying (has position or actual departure)
           const existing = map.get(key);
           const isMoreActive = !existing || fi.latitude != null || fi.actual_departure != null;
           if (isMoreActive) map.set(key, fi);
+          // Also store without bucket for backward-compat route lookups (matchFlightInfo
+          // tries bucketed key first, then falls back to unbucketed)
+          const unbucketedKey = `${fi.tail}|${fi.origin_icao ?? ""}|${fi.destination_icao ?? ""}`;
+          if (!map.has(unbucketedKey) || isMoreActive) map.set(unbucketedKey, fi);
           // Index all alias combinations (origin/dest independently)
           const altOrig = FA_ALIASES[fi.origin_icao ?? ""];
           const altDest = FA_ALIASES[fi.destination_icao ?? ""];
@@ -631,8 +661,10 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
             if (altDest) dests.push(altDest);
             for (const o of origins) {
               for (const d of dests) {
-                const k = `${fi.tail}|${o}|${d}`;
+                const k = `${fi.tail}|${o}|${d}|${bucket}`;
                 if (!map.has(k) || isMoreActive) map.set(k, fi);
+                const kUnbucketed = `${fi.tail}|${o}|${d}`;
+                if (!map.has(kUnbucketed) || isMoreActive) map.set(kUnbucketed, fi);
               }
             }
           }
@@ -657,8 +689,10 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
           }
           // Also index by ident (callsign) so lookups work either way
           if (fi.ident && fi.ident !== fi.tail) {
-            const identKey = `${fi.ident}|${fi.origin_icao ?? ""}|${fi.destination_icao ?? ""}`;
+            const identKey = `${fi.ident}|${fi.origin_icao ?? ""}|${fi.destination_icao ?? ""}|${bucket}`;
             if (!map.has(identKey) || fi.latitude != null) map.set(identKey, fi);
+            const identKeyUnbucketed = `${fi.ident}|${fi.origin_icao ?? ""}|${fi.destination_icao ?? ""}`;
+            if (!map.has(identKeyUnbucketed) || fi.latitude != null) map.set(identKeyUnbucketed, fi);
             if (!map.has(fi.ident) || (fi.latitude != null && fi.longitude != null)) {
               map.set(fi.ident, fi);
             }
@@ -752,16 +786,56 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
     } catch { /* ignore */ }
   }, []);
 
+  // Fetch flight remarks
+  const fetchRemarks = useCallback(async () => {
+    try {
+      const res = await fetch("/api/ops/remarks", { cache: "no-store" });
+      if (res.ok) {
+        const data = await res.json();
+        const map = new Map<string, FlightRemark>();
+        for (const [fid, r] of Object.entries(data.remarks ?? {})) {
+          map.set(fid, r as FlightRemark);
+        }
+        setRemarks(map);
+      }
+    } catch { /* ignore */ }
+  }, []);
+
+  const saveRemark = useCallback(async (flightId: string, text: string) => {
+    try {
+      const res = await fetch("/api/ops/remarks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ flight_id: flightId, remark: text }),
+      });
+      if (res.ok) {
+        // Optimistic update
+        if (text.trim() === "") {
+          setRemarks((prev) => { const m = new Map(prev); m.delete(flightId); return m; });
+        } else {
+          setRemarks((prev) => {
+            const m = new Map(prev);
+            m.set(flightId, { id: "", flight_id: flightId, remark: text.trim(), created_by: null, updated_at: new Date().toISOString() });
+            return m;
+          });
+        }
+      }
+    } catch { /* ignore */ }
+    setEditingRemarkId(null);
+  }, []);
+
   // Poll every 5 minutes
   useEffect(() => {
     fetchFlightInfo();
     fetchSwimStatus();
     fetchTripSalespersons();
+    fetchRemarks();
     const interval = setInterval(fetchFlightInfo, 300_000); // 5 min — matches server cache TTL
     const swimInterval = setInterval(fetchSwimStatus, 300_000); // 5 min same as FA
     const spInterval = setInterval(fetchTripSalespersons, 300_000);
-    return () => { clearInterval(interval); clearInterval(swimInterval); clearInterval(spInterval); };
-  }, [fetchFlightInfo, fetchSwimStatus, fetchTripSalespersons]);
+    const remarkInterval = setInterval(fetchRemarks, 300_000);
+    return () => { clearInterval(interval); clearInterval(swimInterval); clearInterval(spInterval); clearInterval(remarkInterval); };
+  }, [fetchFlightInfo, fetchSwimStatus, fetchTripSalespersons, fetchRemarks]);
 
   // Lazy-load extended flights when switching to Week/Month
   useEffect(() => {
@@ -984,7 +1058,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
     const now = new Date();
     for (const f of displayFlights) {
       const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
-      const fi = f.tail_number ? matchFlightInfo(flightInfo, routeKey, f.tail_number, f.departure_icao, f.scheduled_departure) : undefined;
+      const fi = f.tail_number ? matchFlightInfo(flightInfo, routeKey, f.tail_number, f.departure_icao, f.scheduled_departure, f.arrival_icao) : undefined;
       const arrivalDate = f.scheduled_arrival ? new Date(f.scheduled_arrival) : null;
       const faEta = fi && fi.destination_icao === f.arrival_icao && fi.arrival_time ? new Date(fi.arrival_time) : null;
       const arrivalPassed = (arrivalDate && arrivalDate < now) || (faEta && faEta < now);
@@ -1861,7 +1935,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                       <div className="divide-y divide-gray-100">
                         {tailFlights.map((f) => {
                           const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
-                          const fi = f.tail_number ? matchFlightInfo(flightInfo, routeKey, f.tail_number, f.departure_icao, f.scheduled_departure) : undefined;
+                          const fi = f.tail_number ? matchFlightInfo(flightInfo, routeKey, f.tail_number, f.departure_icao, f.scheduled_departure, f.arrival_icao) : undefined;
                           const type = f.flight_type || "Other";
                           const typeColor = FLIGHT_TYPE_COLORS[type] || "bg-gray-100 text-gray-700";
 
@@ -1946,14 +2020,15 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                                         </div>
                                       );
                                     }
-                                    // Show FA estimated departure when available and differs from schedule
+                                    // Show FA estimated departure only when LATER than scheduled (≥5min)
+                                    // If FA says earlier than scheduled, ignore it — nobody's departing early
                                     if (!isCancelled && fi?.departure_time && !fi.actual_departure) {
                                       const faDepMs = new Date(fi.departure_time).getTime();
                                       const schedMs = new Date(f.scheduled_departure).getTime();
                                       const diffMin = Math.round((faDepMs - schedMs) / 60_000);
-                                      if (Math.abs(diffMin) >= 5) {
+                                      if (diffMin >= 5) {
                                         return (
-                                          <div className={`text-[10px] font-medium ${diffMin > 15 ? "text-red-600" : diffMin > 0 ? "text-amber-600" : "text-green-600"}`}>
+                                          <div className={`text-[10px] font-medium ${diffMin > 15 ? "text-red-600" : "text-amber-600"}`}>
                                             FA Est: {fmt(fi.departure_time, f.departure_icao)}
                                           </div>
                                         );
@@ -1972,7 +2047,11 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                                     </div>
                                   ) : !isCancelled && fiRouteMatch && fi?.arrival_time && (fi?.actual_departure || fi?.departure_time) && !actualArrIso ? (
                                     <div className="text-[10px] text-blue-600 font-medium">
-                                      ETA: {fmt(fi.arrival_time, f.arrival_icao)}
+                                      ETA: {fmt(
+                                        f.scheduled_arrival && new Date(fi.arrival_time).getTime() < new Date(f.scheduled_arrival).getTime()
+                                          ? f.scheduled_arrival : fi.arrival_time,
+                                        f.arrival_icao,
+                                      )}
                                     </div>
                                   ) : !isCancelled && status === "En Route" && !swimRouteStale && swimRouteMatch?.eta ? (
                                     <div className="text-[10px] text-blue-600 font-medium">
@@ -2071,6 +2150,40 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                                   return null;
                                 })()}
                               </div>
+                              {/* Remark row */}
+                              {editingRemarkId === f.id ? (
+                                <div className="px-4 pb-2">
+                                  <input
+                                    type="text"
+                                    autoFocus
+                                    className="w-full text-xs border border-blue-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                                    maxLength={500}
+                                    placeholder="Add a remark..."
+                                    value={remarkDraft}
+                                    onChange={(e) => setRemarkDraft(e.target.value)}
+                                    onBlur={() => saveRemark(f.id, remarkDraft)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Enter") { e.preventDefault(); saveRemark(f.id, remarkDraft); }
+                                      if (e.key === "Escape") setEditingRemarkId(null);
+                                    }}
+                                  />
+                                </div>
+                              ) : remarks.get(f.id) ? (
+                                <div
+                                  className="px-4 pb-2 text-xs text-gray-500 italic cursor-pointer hover:text-gray-700"
+                                  onClick={() => { setEditingRemarkId(f.id); setRemarkDraft(remarks.get(f.id)?.remark ?? ""); }}
+                                  title="Click to edit"
+                                >
+                                  {remarks.get(f.id)!.remark}
+                                </div>
+                              ) : (
+                                <div
+                                  className="px-4 pb-1 cursor-pointer group"
+                                  onClick={() => { setEditingRemarkId(f.id); setRemarkDraft(""); }}
+                                >
+                                  <span className="text-[10px] text-gray-300 group-hover:text-gray-400 italic">+ remark</span>
+                                </div>
+                              )}
                             </div>
                           );
                         })}
@@ -2159,12 +2272,13 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                 </div>
               </th>
               <th className="px-3 py-3">Sales</th>
+              <th className="px-3 py-3">Remarks</th>
             </tr>
           </thead>
           <tbody>
             {tableFlights.length === 0 ? (
               <tr>
-                <td colSpan={10} className="px-4 py-8 text-center text-gray-400">
+                <td colSpan={11} className="px-4 py-8 text-center text-gray-400">
                   No flights scheduled for selected filters
                 </td>
               </tr>
@@ -2173,7 +2287,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                 // Look up FlightAware info by route-specific key first, then fall back to tail-only
                 const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
                 const fi = f.tail_number
-                  ? matchFlightInfo(flightInfo, routeKey, f.tail_number, f.departure_icao, f.scheduled_departure)
+                  ? matchFlightInfo(flightInfo, routeKey, f.tail_number, f.departure_icao, f.scheduled_departure, f.arrival_icao)
                   : undefined;
                 const allAlerts = f.alerts ?? [];
                 const alerts = showAcknowledged ? allAlerts : allAlerts.filter((a) => !isAcked(a));
@@ -2247,7 +2361,8 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                   const routeMatches = !fi.origin_icao || !f.departure_icao || fi.origin_icao === f.departure_icao;
                   if (routeMatches) {
                     const diffMin = Math.round((faDep - icsDep) / 60000);
-                    if (Math.abs(diffMin) >= MISMATCH_THRESHOLD_MIN) {
+                    // Only flag delays (positive diff), not early estimates
+                    if (diffMin >= MISMATCH_THRESHOLD_MIN) {
                       depMismatchMin = diffMin;
                     }
                   }
@@ -2375,7 +2490,8 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                         ) : !isCancelled ? (() => {
                           const edctAlert = getActiveEdct(f);
                           const faEstDiff = fi?.departure_time ? Math.round((new Date(fi.departure_time).getTime() - new Date(f.scheduled_departure).getTime()) / 60_000) : 0;
-                          const showFaEst = fi?.departure_time && Math.abs(faEstDiff) >= 5;
+                          // Only show FA estimate if it's LATER than scheduled (≥5min delay)
+                          const showFaEst = fi?.departure_time && faEstDiff >= 5;
                           return (
                             <>
                               {edctAlert && (
@@ -2385,7 +2501,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                                 </div>
                               )}
                               {showFaEst && (
-                                <div className={`text-[10px] font-medium mt-0.5 ${faEstDiff > 15 ? "text-red-600" : faEstDiff > 0 ? "text-amber-600" : "text-green-600"}`}>
+                                <div className={`text-[10px] font-medium mt-0.5 ${faEstDiff > 15 ? "text-red-600" : "text-amber-600"}`}>
                                   FA Est: {fmt(fi!.departure_time!, f.departure_icao)}
                                 </div>
                               )}
@@ -2401,7 +2517,11 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           </div>
                         ) : !isCancelled && fiRouteMatch && fi?.arrival_time && (fi?.actual_departure || fi?.departure_time) && !fi?.actual_arrival ? (
                           <div className="text-[10px] text-blue-600 font-medium mt-0.5">
-                            ETA: {fmt(fi.arrival_time, f.arrival_icao)}
+                            ETA: {fmt(
+                              f.scheduled_arrival && new Date(fi.arrival_time).getTime() < new Date(f.scheduled_arrival).getTime()
+                                ? f.scheduled_arrival : fi.arrival_time,
+                              f.arrival_icao,
+                            )}
                           </div>
                         ) : !isCancelled && status === "En Route" && !swimRouteStale && swimRouteMatch?.eta ? (
                           <div className="text-[10px] text-blue-600 font-medium mt-0.5">
@@ -2531,10 +2651,35 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           return <span className="text-xs text-gray-700">{sp}</span>;
                         })()}
                       </td>
+                      <td className="px-3 py-2.5 min-w-[140px] max-w-[220px]">
+                        {editingRemarkId === f.id ? (
+                          <input
+                            type="text"
+                            autoFocus
+                            className="w-full text-xs border border-blue-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                            maxLength={500}
+                            value={remarkDraft}
+                            onChange={(e) => setRemarkDraft(e.target.value)}
+                            onBlur={() => saveRemark(f.id, remarkDraft)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") { e.preventDefault(); saveRemark(f.id, remarkDraft); }
+                              if (e.key === "Escape") setEditingRemarkId(null);
+                            }}
+                          />
+                        ) : (
+                          <div
+                            className="text-xs text-gray-600 cursor-pointer hover:bg-gray-100 rounded px-1.5 py-1 min-h-[24px] truncate"
+                            title={remarks.get(f.id)?.remark ?? "Click to add remark"}
+                            onClick={() => { setEditingRemarkId(f.id); setRemarkDraft(remarks.get(f.id)?.remark ?? ""); }}
+                          >
+                            {remarks.get(f.id)?.remark || <span className="text-gray-300 italic">—</span>}
+                          </div>
+                        )}
+                      </td>
                     </tr>
                     {isExpanded && alerts.map((alert) => (
                       <tr key={alert.id} className={`border-t border-dashed border-gray-100 ${isAcked(alert) ? "bg-gray-50/40 opacity-60" : "bg-red-50/40"}`}>
-                        <td colSpan={10} className="px-4 py-3">
+                        <td colSpan={11} className="px-4 py-3">
                           <div className={`rounded-lg border p-3 text-xs ${isAcked(alert) ? "bg-gray-50 text-gray-700 border-gray-200" : SEVERITY_COLORS[alert.severity] || "bg-gray-50 text-gray-700 border-gray-200"}`}>
                             <div className="flex items-start justify-between gap-2">
                               <div className="space-y-1 flex-1">
