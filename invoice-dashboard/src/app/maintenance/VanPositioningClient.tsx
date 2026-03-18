@@ -1093,6 +1093,130 @@ function daysRemaining(endTime: string | null): number {
   return Math.floor((end - Date.now()) / (24 * 60 * 60 * 1000));
 }
 
+// ---------------------------------------------------------------------------
+// Midday Service Opportunities — aircraft with 2h+ ground time near a van
+// ---------------------------------------------------------------------------
+
+type MiddayWindow = {
+  tail: string;
+  airport: string;
+  city: string;
+  landTime: Date;
+  nextDepTime: Date;
+  groundMin: number;
+  mxNoteCount: number;
+  alreadyOnVan: boolean;
+};
+
+function MiddayOpportunities({
+  zone,
+  allFlights,
+  date,
+  overnightTails,
+  mxNotesByTail,
+}: {
+  zone: (typeof FIXED_VAN_ZONES)[number];
+  allFlights: Flight[];
+  date: string;
+  overnightTails: Set<string>;
+  mxNotesByTail: Map<string, MxNote[]>;
+}) {
+  const windows = useMemo(() => {
+    const results: MiddayWindow[] = [];
+    const MIN_GROUND_MIN = 120; // 2 hours
+    const MAX_DIST_KM = 200; // ~125 miles from van home
+
+    // Group flights by tail for this date
+    const byTail = new Map<string, Flight[]>();
+    for (const f of allFlights) {
+      if (!f.tail_number || !f.arrival_icao) continue;
+      if (!isOnEtDate(f.scheduled_departure, date) && !isOnEtDate(f.scheduled_arrival ?? f.scheduled_departure, date)) continue;
+      if (!byTail.has(f.tail_number)) byTail.set(f.tail_number, []);
+      byTail.get(f.tail_number)!.push(f);
+    }
+
+    for (const [tail, flights] of byTail) {
+      const sorted = [...flights].sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure));
+      for (let i = 0; i < sorted.length - 1; i++) {
+        const leg = sorted[i];
+        const nextLeg = sorted[i + 1];
+        if (!leg.scheduled_arrival || !leg.arrival_icao) continue;
+
+        const landTime = new Date(leg.scheduled_arrival);
+        const nextDepTime = new Date(nextLeg.scheduled_departure);
+        const groundMin = Math.round((nextDepTime.getTime() - landTime.getTime()) / 60000);
+        if (groundMin < MIN_GROUND_MIN) continue;
+
+        // Check if this airport is near this van's zone
+        const info = getAirportInfo(leg.arrival_icao.replace(/^K/, "")) ?? getAirportInfo(leg.arrival_icao);
+        if (!info) continue;
+        const dist = haversineKm(info.lat, info.lon, zone.lat, zone.lon);
+        if (dist > MAX_DIST_KM) continue;
+
+        const mxNotes = mxNotesByTail.get(tail) ?? [];
+        results.push({
+          tail,
+          airport: leg.arrival_icao.replace(/^K/, ""),
+          city: info.city ? `${info.city}${info.state ? `, ${info.state}` : ""}` : "",
+          landTime,
+          nextDepTime,
+          groundMin,
+          mxNoteCount: mxNotes.length,
+          alreadyOnVan: overnightTails.has(tail),
+        });
+      }
+    }
+
+    // Sort by ground time descending (biggest windows first)
+    results.sort((a, b) => b.groundMin - a.groundMin);
+    return results;
+  }, [zone, allFlights, date, overnightTails, mxNotesByTail]);
+
+  if (windows.length === 0) return null;
+
+  function fmtHM(d: Date) {
+    return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: "America/New_York" });
+  }
+
+  function fmtGround(min: number) {
+    const h = Math.floor(min / 60);
+    const m = min % 60;
+    return m > 0 ? `${h}h${m}m` : `${h}h`;
+  }
+
+  return (
+    <div className="px-4 py-2 bg-amber-50/50 border-b border-amber-200">
+      <div className="flex items-center gap-2 mb-1.5">
+        <span className="text-[10px] font-bold text-amber-700 uppercase tracking-wide">Midday Opportunities</span>
+        <span className="text-[10px] text-amber-500">{windows.length} aircraft with 2h+ ground time nearby</span>
+      </div>
+      <div className="space-y-1">
+        {windows.map((w, i) => (
+          <div key={`${w.tail}-${i}`} className="flex items-center gap-2 text-xs">
+            <span className="font-mono font-semibold text-gray-800 w-16">{w.tail}</span>
+            <span className="text-gray-600">{w.airport}</span>
+            {w.city && <span className="text-gray-400 text-[11px]">{w.city}</span>}
+            <span className="text-amber-700 font-medium">
+              {fmtHM(w.landTime)} – {fmtHM(w.nextDepTime)}
+            </span>
+            <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${w.groundMin >= 240 ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"}`}>
+              {fmtGround(w.groundMin)}
+            </span>
+            {w.mxNoteCount > 0 && (
+              <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-orange-100 text-orange-700">
+                {w.mxNoteCount} MX
+              </span>
+            )}
+            {w.alreadyOnVan && (
+              <span className="text-[10px] text-green-600 font-medium">on tonight&apos;s list</span>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /** Single MX note row with expandable description */
 function MxNoteRow({ note, onHideForToday, vanOverride, onVanOverride }: {
   note: MxNote;
@@ -1854,6 +1978,15 @@ function VanScheduleCard({
 
       {expanded && (
         <div className="border-t">
+          {allFlights && (
+            <MiddayOpportunities
+              zone={zone}
+              allFlights={allFlights}
+              date={date}
+              overnightTails={new Set(items.map((it) => it.arrFlight.tail_number).filter(Boolean) as string[])}
+              mxNotesByTail={mxNotesByTail}
+            />
+          )}
           {items.length === 0 ? (
             <div className={`px-4 py-6 text-sm text-center ${isDropTarget ? "text-blue-500 font-medium" : "text-gray-400"}`}>
               {isDropTarget ? "Drop aircraft here" : "No arrivals in area today."}
