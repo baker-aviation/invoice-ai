@@ -1465,7 +1465,7 @@ function AircraftCompactRow({
   turnBadgeLabel, hasMaintenance, extraLegs,
   color, zone, date,
   mxNotes, hiddenTodayMxIds, onHideMxForToday, mxVanOverrides, onVanOverride,
-  legNote, onSaveNote, onDragStart, onRemove, onSetPrimaryAirport,
+  legNote, onSaveNote, onDragStart, onDragOverItem, onRemove, onSetPrimaryAirport,
 }: {
   arrFlight: Flight;
   nextDep: Flight | null;
@@ -1494,6 +1494,7 @@ function AircraftCompactRow({
   legNote: string;
   onSaveNote: (flightId: string, tailNumber: string | null, note: string) => void;
   onDragStart: (e: React.DragEvent, flightId: string, fromVanId: number) => void;
+  onDragOverItem: (vanId: number, flightId: string, insertBefore: boolean) => void;
   onRemove: (flightId: string) => void;
   onSetPrimaryAirport?: (tail: string, airport: string) => void;
 }) {
@@ -1503,6 +1504,12 @@ function AircraftCompactRow({
     <div
       draggable
       onDragStart={(e) => onDragStart(e, arrFlight.id, zone.vanId)}
+      onDragOver={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const rect = e.currentTarget.getBoundingClientRect();
+        onDragOverItem(zone.vanId, arrFlight.id, e.clientY < rect.top + rect.height / 2);
+      }}
       className="px-4 py-2 cursor-grab active:cursor-grabbing hover:bg-gray-50/50"
     >
       {/* ── Compact row: tail + airport + ETA/schedule + drive time + status + remove ── */}
@@ -1687,6 +1694,7 @@ function VanScheduleCard({
   onVanOverride,
   onSaveNote,
   onDragStart,
+  onDragOverItem,
   onDragOver,
   onDrop,
   onDragLeave,
@@ -1713,6 +1721,7 @@ function VanScheduleCard({
   onVanOverride?: (noteId: string, vanId: number | null) => void;
   onSaveNote: (flightId: string, tailNumber: string | null, note: string) => void;
   onDragStart: (e: React.DragEvent, flightId: string, fromVanId: number) => void;
+  onDragOverItem: (vanId: number, flightId: string, insertBefore: boolean) => void;
   onDragOver: (e: React.DragEvent) => void;
   onDrop: (e: React.DragEvent, toVanId: number) => void;
   onDragLeave: (e: React.DragEvent) => void;
@@ -1901,6 +1910,7 @@ function VanScheduleCard({
                     legNote={legNotes.get(arrFlight.id) ?? ""}
                     onSaveNote={onSaveNote}
                     onDragStart={onDragStart}
+                    onDragOverItem={onDragOverItem}
                     onRemove={onRemove}
                     onSetPrimaryAirport={onSetPrimaryAirport}
                   />
@@ -2013,6 +2023,8 @@ function ScheduleTab({
     } catch { return new Map(); }
   });
 
+  const [sortOverrides, setSortOverrides] = useState<Map<number, string[]>>(new Map());
+
   // Track the last DB updated_at to avoid overwriting fresher data
   const draftUpdatedAtRef = useRef<string | null>(null);
   // Suppress DB save while loading from DB — start suppressed until initial load completes
@@ -2026,7 +2038,7 @@ function ScheduleTab({
 
   // Save drafts to DB (debounced) + localStorage fallback
   const saveDraftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const saveDraftToDb = useCallback((o: Map<string, number>, r: Set<string>, u: Map<string, number>, a: Map<string, string>) => {
+  const saveDraftToDb = useCallback((o: Map<string, number>, r: Set<string>, u: Map<string, number>, a: Map<string, string>, s: Map<number, string[]>) => {
     // localStorage fallback (immediate)
     try {
       if (o.size > 0) localStorage.setItem(`vanOverrides-${date}`, JSON.stringify([...o]));
@@ -2056,6 +2068,7 @@ function ScheduleTab({
           dismissed_conflicts: parentDismissedConflictsRef?.current ?? {},
           hidden_mx_ids: hiddenMxIdsRef.current,
           airport_overrides: [...a],
+          sort_overrides: [...s],
         }),
       }).then(async (res) => {
         if (res.ok) {
@@ -2075,9 +2088,9 @@ function ScheduleTab({
 
   // Auto-save on every change (including parent UI-state props)
   useEffect(() => {
-    saveDraftToDb(overrides, removals, unscheduledOverrides, airportOverrides);
+    saveDraftToDb(overrides, removals, unscheduledOverrides, airportOverrides, sortOverrides);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [overrides, removals, unscheduledOverrides, airportOverrides, wontSeeTodayTails, hiddenTodayMxIds, dismissedConflictVersion, saveDraftToDb]);
+  }, [overrides, removals, unscheduledOverrides, airportOverrides, sortOverrides, wontSeeTodayTails, hiddenTodayMxIds, dismissedConflictVersion, saveDraftToDb]);
 
   // Load drafts from DB on mount/date change, fall back to localStorage
   const loadDraftsFromDb = useCallback(async (targetDate: string) => {
@@ -2092,6 +2105,7 @@ function ScheduleTab({
           setRemovals(new Set(d.removals ?? []));
           setUnscheduledOverrides(new Map(d.unscheduled ?? []));
           setAirportOverrides(new Map(d.airport_overrides ?? []));
+          setSortOverrides(new Map(d.sort_overrides ?? []));
           // Sync DB-backed UI state to parent
           onSyncDraftUiState?.({
             wont_see_tails: d.wont_see_tails ?? [],
@@ -2142,6 +2156,7 @@ function ScheduleTab({
           setRemovals(new Set(d.removals ?? []));
           setUnscheduledOverrides(new Map(d.unscheduled ?? []));
           setAirportOverrides(new Map(d.airport_overrides ?? []));
+          setSortOverrides(new Map(d.sort_overrides ?? []));
           // Sync DB-backed UI state from other admins
           onSyncDraftUiState?.({
             wont_see_tails: d.wont_see_tails ?? [],
@@ -2512,21 +2527,34 @@ function ScheduleTab({
       }));
     }
 
-    // Recalculate distances + greedy sort for each van, then re-sort by FA ETA
+    // Recalculate distances + apply sort overrides or default arrival-time sort
     for (const zone of FIXED_VAN_ZONES) {
       const items = result.get(zone.vanId) ?? [];
       const baseLat = liveVanPositions.get(zone.vanId)?.lat ?? zone.lat;
       const baseLon = liveVanPositions.get(zone.vanId)?.lon ?? zone.lon;
       const withDist = recalcDist(items, baseLat, baseLon);
-      // Sort by scheduled arrival time (earliest first)
-      const sorted = withDist.sort((a, b) =>
-        (a.arrFlight.scheduled_arrival ?? "").localeCompare(b.arrFlight.scheduled_arrival ?? ""),
-      );
-      result.set(zone.vanId, sorted);
+      const customOrder = sortOverrides.get(zone.vanId);
+      if (customOrder && customOrder.length > 0) {
+        // Apply manual sort: items in customOrder first (in that order), then remaining by arrival time
+        const orderIndex = new Map(customOrder.map((id, i) => [id, i]));
+        withDist.sort((a, b) => {
+          const ai = orderIndex.get(a.arrFlight.id);
+          const bi = orderIndex.get(b.arrFlight.id);
+          if (ai !== undefined && bi !== undefined) return ai - bi;
+          if (ai !== undefined) return -1;
+          if (bi !== undefined) return 1;
+          return (a.arrFlight.scheduled_arrival ?? "").localeCompare(b.arrFlight.scheduled_arrival ?? "");
+        });
+      } else {
+        withDist.sort((a, b) =>
+          (a.arrFlight.scheduled_arrival ?? "").localeCompare(b.arrFlight.scheduled_arrival ?? ""),
+        );
+      }
+      result.set(zone.vanId, withDist);
     }
 
     return result;
-  }, [baseItemsByVan, overrides, removals, liveVanPositions, allDayArrivals, flightInfoMap, unscheduledOverrides, allFlights, date, airportOverrides]);
+  }, [baseItemsByVan, overrides, removals, liveVanPositions, allDayArrivals, flightInfoMap, unscheduledOverrides, allFlights, date, airportOverrides, sortOverrides]);
 
   // Uncovered aircraft: arrivals today not assigned to any van
   const uncoveredItems = useMemo(() => {
@@ -2603,6 +2631,8 @@ function ScheduleTab({
   }, [overrides, baseItemsByVan]);
 
   // ── Drag-and-drop handlers ──
+  const dragOverTargetRef = useRef<{ vanId: number; flightId: string; insertBefore: boolean } | null>(null);
+
   const handleDragStart = useCallback((e: React.DragEvent, flightId: string, fromVanId: number) => {
     e.dataTransfer.setData("text/plain", JSON.stringify({ flightId, fromVanId }));
     e.dataTransfer.effectAllowed = "move";
@@ -2613,6 +2643,10 @@ function ScheduleTab({
     e.dataTransfer.dropEffect = "move";
   }, []);
 
+  const handleDragOverItem = useCallback((vanId: number, flightId: string, insertBefore: boolean) => {
+    dragOverTargetRef.current = { vanId, flightId, insertBefore };
+  }, []);
+
   const handleDrop = useCallback((e: React.DragEvent, toVanId: number) => {
     e.preventDefault();
     dragCounterRef.current = 0;
@@ -2620,6 +2654,30 @@ function ScheduleTab({
 
     try {
       const { flightId, fromVanId } = JSON.parse(e.dataTransfer.getData("text/plain"));
+
+      // Same-van drop = reorder within the van
+      if (fromVanId === toVanId && fromVanId > 0) {
+        const target = dragOverTargetRef.current;
+        dragOverTargetRef.current = null;
+        if (!target || target.flightId === flightId) return; // dropped on itself
+        const items = finalItemsByVan.get(toVanId) ?? [];
+        const ids = items.map((i) => i.arrFlight.id);
+        // Remove the dragged item
+        const fromIdx = ids.indexOf(flightId);
+        if (fromIdx === -1) return;
+        ids.splice(fromIdx, 1);
+        // Insert at target position
+        const toIdx = ids.indexOf(target.flightId);
+        if (toIdx === -1) return;
+        ids.splice(target.insertBefore ? toIdx : toIdx + 1, 0, flightId);
+        setSortOverrides((prev) => {
+          const next = new Map(prev);
+          next.set(toVanId, ids);
+          return next;
+        });
+        return;
+      }
+      dragOverTargetRef.current = null;
       if (fromVanId === toVanId) return;
 
       // Handle unscheduled aircraft drops (synthetic IDs start with "unsched_")
@@ -2648,7 +2706,7 @@ function ScheduleTab({
         return next;
       });
     } catch { /* ignore bad data */ }
-  }, []);
+  }, [finalItemsByVan]);
 
   const handleRemove = useCallback((flightId: string) => {
     // Handle unscheduled aircraft removal
@@ -2813,7 +2871,7 @@ function ScheduleTab({
           {totalEdits > 0 && (
             <button
               onClick={() => {
-                setOverrides(new Map()); setRemovals(new Set()); setUnscheduledOverrides(new Map()); setAirportOverrides(new Map());
+                setOverrides(new Map()); setRemovals(new Set()); setUnscheduledOverrides(new Map()); setAirportOverrides(new Map()); setSortOverrides(new Map());
                 try { localStorage.removeItem(`vanOverrides-${date}`); localStorage.removeItem(`vanRemovals-${date}`); localStorage.removeItem(`vanUnscheduled-${date}`); localStorage.removeItem(`vanAirportOverrides-${date}`); } catch {}
                 // Also clear DB so polling/refresh don't restore old overrides
                 fetch("/api/vans/drafts", {
@@ -3305,6 +3363,7 @@ function ScheduleTab({
               onVanOverride={onVanOverride}
               onSaveNote={saveLegNote}
               onDragStart={handleDragStart}
+              onDragOverItem={handleDragOverItem}
               onDragOver={handleDragOver}
               onDrop={handleDrop}
               onDragLeave={() => handleDragLeaveZone()}
