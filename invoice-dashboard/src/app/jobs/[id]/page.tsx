@@ -344,6 +344,29 @@ export default async function JobDetailPage({
             </div>
           )}
 
+          {/* PRD Document */}
+          {(() => {
+            const prdFiles = files.filter((f: any) => f.file_category === "prd");
+            return (
+              <div className="rounded-xl border bg-white p-4 shadow-sm">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-sm font-semibold text-gray-900">PRD Document</h3>
+                  <AttachFileButton applicationId={Number(applicationId)} parseId={job.id} defaultCategory="prd" />
+                </div>
+                {prdFiles.length === 0 ? (
+                  <p className="text-sm text-gray-400">No PRD uploaded yet.</p>
+                ) : (
+                  prdFiles.map((f: any) => (
+                    <a key={f.id} href={f.signed_url} target="_blank" rel="noreferrer"
+                      className="flex items-center gap-2 text-sm text-blue-600 hover:underline">
+                      <span>📄</span> {f.filename}
+                    </a>
+                  ))
+                )}
+              </div>
+            );
+          })()}
+
           <div className="rounded-xl border bg-white p-4 shadow-sm">
             <div className="flex items-center justify-between">
               <div className="text-sm font-semibold">Files</div>

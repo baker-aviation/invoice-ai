@@ -96,15 +96,17 @@ export type AdvertisedPriceRow = {
 ========================= */
 
 export type HiringStage =
+  | "prd_faa_review"
   | "screening"
   | "info_session"
-  | "prd_faa_review"
-  | "interview"
+  | "tims_review"
+  | "interview_pre"
+  | "interview_post"
   | "pending_offer"
   | "offer"
   | "hired";
 
-export const PIPELINE_STAGES = ["screening", "info_session", "prd_faa_review", "interview", "pending_offer", "offer", "hired"] as const;
+export const PIPELINE_STAGES = ["prd_faa_review", "screening", "info_session", "tims_review", "interview_pre", "interview_post", "pending_offer", "offer", "hired"] as const;
 export type PipelineStage = (typeof PIPELINE_STAGES)[number];
 
 export type JobRow = {

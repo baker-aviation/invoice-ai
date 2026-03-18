@@ -33,7 +33,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid category" }, { status: 400 });
   }
 
-  const stage = body.pipeline_stage ?? "screening";
+  const stage = body.pipeline_stage ?? "prd_faa_review";
   if (!(PIPELINE_STAGES as readonly string[]).includes(stage)) {
     return NextResponse.json({ error: "Invalid pipeline_stage" }, { status: 400 });
   }

@@ -190,7 +190,7 @@ export async function fetchJobDetail(applicationId: string | number): Promise<Jo
   // Fetch file metadata from Supabase (include GCS location for signing)
   const { data: fileRows } = await supa
     .from("job_application_files")
-    .select("id, filename, content_type, size_bytes, created_at, gcs_bucket, gcs_key")
+    .select("id, filename, content_type, size_bytes, created_at, gcs_bucket, gcs_key, file_category")
     .eq("application_id", Number(id))
     .order("created_at", { ascending: true });
 

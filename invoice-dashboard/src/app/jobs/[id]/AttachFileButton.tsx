@@ -7,19 +7,22 @@ const CATEGORY_OPTIONS = [
   { value: "resume", label: "Resume" },
   { value: "lor", label: "Letter of Recommendation" },
   { value: "cover_letter", label: "Cover Letter" },
+  { value: "prd", label: "PRD Document" },
   { value: "other", label: "Other" },
 ];
 
 export default function AttachFileButton({
   applicationId,
   parseId,
+  defaultCategory,
 }: {
   applicationId: number;
   parseId: number;
+  defaultCategory?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [file, setFile] = useState<File | null>(null);
-  const [fileCategory, setFileCategory] = useState("resume");
+  const [fileCategory, setFileCategory] = useState(defaultCategory ?? "resume");
   const [uploading, setUploading] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);

@@ -13,6 +13,11 @@ const STAGE_META: Record<
   PipelineStage,
   { label: string; color: string; headerColor: string }
 > = {
+  prd_faa_review: {
+    label: "PRD / FAA Review",
+    color: "border-orange-200",
+    headerColor: "bg-orange-100 text-orange-700",
+  },
   screening: {
     label: "Screening",
     color: "border-blue-200",
@@ -23,15 +28,20 @@ const STAGE_META: Record<
     color: "border-cyan-200",
     headerColor: "bg-cyan-100 text-cyan-700",
   },
-  prd_faa_review: {
-    label: "PRD / FAA Review",
-    color: "border-orange-200",
-    headerColor: "bg-orange-100 text-orange-700",
+  tims_review: {
+    label: "Tim's Review",
+    color: "border-teal-200",
+    headerColor: "bg-teal-100 text-teal-700",
   },
-  interview: {
-    label: "Interview",
+  interview_pre: {
+    label: "Pre-Interview",
     color: "border-violet-200",
     headerColor: "bg-violet-100 text-violet-700",
+  },
+  interview_post: {
+    label: "Post-Interview",
+    color: "border-purple-200",
+    headerColor: "bg-purple-100 text-purple-700",
   },
   pending_offer: {
     label: "Pending Offer",
@@ -67,6 +77,61 @@ const CATEGORY_LABELS: Record<string, string> = {
   line_service: "Line",
   other: "Other",
 };
+
+function InfoSessionTools({ jobs }: { jobs: JobRow[] }) {
+  const [copied, setCopied] = useState(false);
+  const [meetLink, setMeetLink] = useState(() => {
+    try { return localStorage.getItem("info_session_meet_link") ?? ""; } catch { return ""; }
+  });
+
+  const emails = jobs.filter((j) => j.email).map((j) => j.email!);
+
+  const handleCopyEmails = () => {
+    const text = emails.join(", ");
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  const handleMeetLinkChange = (val: string) => {
+    setMeetLink(val);
+    try { localStorage.setItem("info_session_meet_link", val); } catch {}
+  };
+
+  return (
+    <div className="px-3 py-2 border-t border-cyan-100 space-y-2">
+      <div className="flex items-center gap-2">
+        <button
+          onClick={handleCopyEmails}
+          disabled={emails.length === 0}
+          className="text-[10px] font-medium px-2 py-1 rounded border border-cyan-300 bg-white text-cyan-700 hover:bg-cyan-50 disabled:opacity-40 transition-colors"
+        >
+          {copied ? "Copied!" : `Copy ${emails.length} Email${emails.length !== 1 ? "s" : ""}`}
+        </button>
+      </div>
+      <div>
+        <input
+          type="text"
+          value={meetLink}
+          onChange={(e) => handleMeetLinkChange(e.target.value)}
+          placeholder="Google Meet link..."
+          className="w-full text-[10px] px-2 py-1 rounded border border-gray-200 focus:border-cyan-400 focus:outline-none"
+        />
+      </div>
+      {meetLink && (
+        <button
+          onClick={() => {
+            navigator.clipboard.writeText(meetLink);
+          }}
+          className="text-[10px] font-medium px-2 py-1 rounded border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 transition-colors"
+        >
+          Copy Meet Link
+        </button>
+      )}
+    </div>
+  );
+}
 
 const CATEGORY_COLORS: Record<string, string> = {
   pilot_pic: "bg-emerald-100 text-emerald-800 border-emerald-200",
@@ -157,7 +222,7 @@ function AddCandidateModal({
         location: form.location.trim() || null,
         category: form.category || null,
         notes: form.notes.trim() || null,
-        pipeline_stage: "screening",
+        pipeline_stage: "prd_faa_review",
       };
       if (isPilot) {
         if (form.total_time_hours) payload.total_time_hours = Number(form.total_time_hours);
@@ -201,7 +266,7 @@ function AddCandidateModal({
         application_id: data.application_id,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
-        pipeline_stage: "screening",
+        pipeline_stage: "prd_faa_review",
         category: form.category || null,
         employment_type: null,
         candidate_name: form.candidate_name.trim(),
@@ -659,6 +724,8 @@ export default function PipelineBoard({
                   {stageJobs.length}
                 </span>
               </div>
+
+              {stage === "info_session" && <InfoSessionTools jobs={stageJobs} />}
 
               {/* Cards */}
               <div className="flex-1 p-2 space-y-2 min-h-[120px] max-h-[calc(100vh-220px)] overflow-y-auto">
