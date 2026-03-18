@@ -9,6 +9,7 @@ import TypeRatingsEditor from "./TypeRatingsEditor";
 import ProfileEditor from "./ProfileEditor";
 import ReviewBadge from "./ReviewBadge";
 import PushToScreeningButton from "./PushToScreeningButton";
+import OfferPreview from "./OfferPreview";
 
 function fmtDate(s: any) {
   return String(s ?? "").replace("T", " ").replace("+00:00", "Z");
@@ -366,6 +367,14 @@ export default async function JobDetailPage({
               </div>
             );
           })()}
+
+          {/* Offer Letter */}
+          <div className="rounded-xl border bg-white p-4 shadow-sm">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-semibold">Offer Letter</div>
+              <OfferPreview applicationId={Number(applicationId)} />
+            </div>
+          </div>
 
           <div className="rounded-xl border bg-white p-4 shadow-sm">
             <div className="flex items-center justify-between">
