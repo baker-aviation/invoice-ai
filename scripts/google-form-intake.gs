@@ -4,8 +4,8 @@
  * ╔═══════════════════════════════════════════════════════════════════╗
  * ║  INSTALLATION INSTRUCTIONS                                       ║
  * ║                                                                   ║
- * ║  1. Open the Google Form in edit mode                             ║
- * ║  2. Click the three-dot menu → Script editor                     ║
+ * ║  1. Open the Google Sheet (Form Responses)                         ║
+ * ║  2. Click Extensions → Apps Script                               ║
  * ║  3. Paste this entire file into Code.gs (replace any existing)   ║
  * ║  4. Set script properties (Project Settings → Script Properties): ║
  * ║     - WEBHOOK_URL = https://your-domain.com/api/public/form-intake║
@@ -68,14 +68,14 @@ function setup() {
     }
   }
 
-  // Create form-submit trigger
-  var form = FormApp.getActiveForm();
+  // Create spreadsheet form-submit trigger (works when script is attached to the Sheet)
+  var ss = SpreadsheetApp.getActive();
   ScriptApp.newTrigger("onFormSubmit")
-    .forForm(form)
+    .forSpreadsheet(ss)
     .onFormSubmit()
     .create();
 
-  Logger.log("Trigger created successfully. Form ID: " + form.getId());
+  Logger.log("Trigger created successfully. Spreadsheet: " + ss.getName());
 }
 
 // ── Main trigger handler ────────────────────────────────────────────────────
@@ -90,14 +90,16 @@ function onFormSubmit(e) {
     return;
   }
 
-  var response = e.response;
-  var items = response.getItemResponses();
+  // Spreadsheet trigger: e.values is an array of all cell values in the new row
+  // e.namedValues is a map of column header → [value]
+  var values = e.values || [];
+  var nv = e.namedValues || {};
 
-  // Build the payload from form responses
-  var payload = buildPayload(response, items);
+  // Build the payload from row values (by index, matching column order)
+  var payload = buildPayloadFromValues(values, nv);
 
-  // Attach files (download from Drive, convert to base64)
-  payload.files = collectFiles(items);
+  // Collect file URLs from the Drive link columns and download them
+  payload.files = collectFilesFromValues(values);
 
   // Send to webhook
   var options = {
@@ -129,21 +131,20 @@ function onFormSubmit(e) {
   }
 }
 
-// ── Build payload from form responses ───────────────────────────────────────
+// ── Build payload from spreadsheet row values ────────────────────────────────
 
-function buildPayload(response, items) {
-  // Helper to get response by index, returning empty string if missing
+function buildPayloadFromValues(values, namedValues) {
+  // values[] is indexed by column: 0=Timestamp, 1=First Name, 2=Last Name, ...
   function get(index) {
-    if (index < items.length) {
-      var r = items[index].getResponse();
-      return r != null ? String(r) : "";
+    if (index < values.length && values[index] != null) {
+      return String(values[index]).trim();
     }
     return "";
   }
 
   function getNum(index) {
     var val = get(index);
-    if (!val || val.trim() === "") return null;
+    if (!val) return null;
     var n = parseFloat(val.replace(/,/g, ""));
     return isNaN(n) ? null : n;
   }
@@ -154,44 +155,45 @@ function buildPayload(response, items) {
   }
 
   return {
-    timestamp: response.getTimestamp().toISOString(),
-    first_name: get(0),
-    last_name: get(1),
-    email: get(2),
-    phone: get(3),
-    address: get(4),
-    nearest_airport: get(5),
-    second_airport: get(6),
-    certificate_level: get(7),
-    total_time: getNum(8),
-    total_time_airplane: getNum(9),
-    total_time_me_turbine: getNum(10),
-    total_pic_time: getNum(11),
-    has_ce750_type: getBool(12),
-    has_cl30_type: getBool(13),
-    typed_hours_last_12mo: get(14),
-    last_sim_training: get(15),
-    other_type_ratings: get(16),
-    has_first_class_medical: getBool(17),
-    has_special_issuance: getBool(18),
-    medical_issued: get(19),
-    medical_expires: get(20),
-    has_prd_access: get(21),
-    has_accidents: get(22),
-    has_training_agreement: get(23),
-    training_agreement_owe: get(24),
-    available_start: get(25),
-    position_applying_for: get(26),
+    timestamp: get(0) || new Date().toISOString(),
+    first_name: get(1),
+    last_name: get(2),
+    email: get(3),
+    phone: get(4),
+    address: get(5),
+    nearest_airport: get(6),
+    second_airport: get(7),
+    certificate_level: get(8),
+    total_time: getNum(9),
+    total_time_airplane: getNum(10),
+    total_time_me_turbine: getNum(11),
+    total_pic_time: getNum(12),
+    has_ce750_type: getBool(13),
+    has_cl30_type: getBool(14),
+    typed_hours_last_12mo: get(15),
+    last_sim_training: get(16),
+    other_type_ratings: get(17),
+    has_first_class_medical: getBool(18),
+    has_special_issuance: getBool(19),
+    medical_issued: get(20),
+    medical_expires: get(21),
+    has_prd_access: get(22),
+    has_accidents: get(23),
+    has_training_agreement: get(24),
+    training_agreement_owe: get(25),
+    available_start: get(26),
+    position_applying_for: get(32), // last column
   };
 }
 
-// ── Collect file uploads → base64 ──────────────────────────────────────────
+// ── Collect file uploads from spreadsheet Drive URLs → base64 ────────────────
 
-function collectFiles(items) {
+function collectFilesFromValues(values) {
   var files = [];
 
-  // File upload question indices and their categories
-  var fileQuestions = [
+  // Column indices for file upload fields (contain Google Drive URLs)
+  // 27=Resume, 28=Driver License, 29=Medical, 30=Pilot Cert Front, 31=Pilot Cert Back
+  var fileColumns = [
     { index: 27, category: "resume" },
     { index: 28, category: "drivers_license" },
     { index: 29, category: "medical" },
@@ -199,39 +201,47 @@ function collectFiles(items) {
     { index: 31, category: "pilot_cert_back" },
   ];
 
-  for (var q = 0; q < fileQuestions.length; q++) {
-    var fq = fileQuestions[q];
-    if (fq.index >= items.length) continue;
+  for (var q = 0; q < fileColumns.length; q++) {
+    var fc = fileColumns[q];
+    if (fc.index >= values.length) continue;
 
-    var item = items[fq.index];
-    var itemType = item.getItem().getType();
+    var url = String(values[fc.index] || "").trim();
+    if (!url) continue;
 
-    // File upload items return an array of Drive file IDs
-    if (itemType === FormApp.ItemType.FILE_UPLOAD) {
-      var fileIds = item.getResponse();
-      if (!fileIds || !Array.isArray(fileIds)) continue;
+    // Extract Drive file ID from URL: https://drive.google.com/open?id=XXXXX
+    var fileId = null;
+    var idMatch = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+    if (idMatch) {
+      fileId = idMatch[1];
+    } else {
+      // Try /d/XXXXX/ format
+      var dMatch = url.match(/\/d\/([a-zA-Z0-9_-]+)/);
+      if (dMatch) fileId = dMatch[1];
+    }
 
-      for (var f = 0; f < fileIds.length; f++) {
-        try {
-          var driveFile = DriveApp.getFileById(fileIds[f]);
-          var blob = driveFile.getBlob();
+    if (!fileId) {
+      Logger.log("Could not extract file ID from URL: " + url);
+      continue;
+    }
 
-          // Skip files over 10MB to stay within Apps Script limits
-          if (blob.getBytes().length > 10 * 1024 * 1024) {
-            Logger.log("Skipping large file: " + driveFile.getName() + " (" + blob.getBytes().length + " bytes)");
-            continue;
-          }
+    try {
+      var driveFile = DriveApp.getFileById(fileId);
+      var blob = driveFile.getBlob();
 
-          files.push({
-            name: driveFile.getName(),
-            category: fq.category,
-            mimeType: blob.getContentType(),
-            base64: Utilities.base64Encode(blob.getBytes()),
-          });
-        } catch (err) {
-          Logger.log("Failed to download file " + fileIds[f] + ": " + err.toString());
-        }
+      // Skip files over 10MB
+      if (blob.getBytes().length > 10 * 1024 * 1024) {
+        Logger.log("Skipping large file: " + driveFile.getName() + " (" + blob.getBytes().length + " bytes)");
+        continue;
       }
+
+      files.push({
+        name: driveFile.getName(),
+        category: fc.category,
+        mimeType: blob.getContentType(),
+        base64: Utilities.base64Encode(blob.getBytes()),
+      });
+    } catch (err) {
+      Logger.log("Failed to download file " + fileId + ": " + err.toString());
     }
   }
 
