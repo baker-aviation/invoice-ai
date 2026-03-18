@@ -99,15 +99,15 @@ function onFormSubmit(e) {
   var payload = buildPayloadFromValues(values, nv);
 
   // Collect file URLs from the Drive link columns and download them
-  payload.files = collectFilesFromValues(values);
+  var allFiles = collectFilesFromValues(values);
 
-  // Send to webhook
+  // First call: send profile data without files (or with first file only)
+  payload.files = allFiles.length > 0 ? [allFiles[0]] : [];
+
   var options = {
     method: "post",
     contentType: "application/json",
-    headers: {
-      "x-intake-secret": intakeSecret,
-    },
+    headers: { "x-intake-secret": intakeSecret },
     payload: JSON.stringify(payload),
     muteHttpExceptions: true,
   };
@@ -121,10 +121,29 @@ function onFormSubmit(e) {
       Logger.log("Webhook success: " + body);
     } else {
       Logger.log("Webhook error " + code + ": " + body);
-      // Retry once after 2 seconds
       Utilities.sleep(2000);
       var retry = UrlFetchApp.fetch(webhookUrl, options);
       Logger.log("Retry result " + retry.getResponseCode() + ": " + retry.getContentText());
+    }
+
+    // Send remaining files one at a time
+    for (var f = 1; f < allFiles.length; f++) {
+      var filePayload = buildPayloadFromValues(values, nv);
+      filePayload.files = [allFiles[f]];
+      var fileOpts = {
+        method: "post",
+        contentType: "application/json",
+        headers: { "x-intake-secret": intakeSecret },
+        payload: JSON.stringify(filePayload),
+        muteHttpExceptions: true,
+      };
+      try {
+        var fileResult = UrlFetchApp.fetch(webhookUrl, fileOpts);
+        Logger.log("File " + allFiles[f].category + ": " + fileResult.getResponseCode());
+      } catch (fileErr) {
+        Logger.log("File " + allFiles[f].category + " failed: " + fileErr.toString());
+      }
+      Utilities.sleep(500);
     }
   } catch (err) {
     Logger.log("Webhook request failed: " + err.toString());
@@ -298,4 +317,93 @@ function testWebhook() {
   var result = UrlFetchApp.fetch(webhookUrl, options);
   Logger.log("Status: " + result.getResponseCode());
   Logger.log("Body: " + result.getContentText());
+}
+
+
+// ── Backfill: download files from all existing rows and send to webhook ──────
+
+function backfillFiles() {
+  var props = PropertiesService.getScriptProperties();
+  var webhookUrl = props.getProperty("WEBHOOK_URL");
+  var intakeSecret = props.getProperty("INTAKE_SECRET");
+
+  if (!webhookUrl || !intakeSecret) {
+    Logger.log("ERROR: Set WEBHOOK_URL and INTAKE_SECRET in Script Properties first");
+    return;
+  }
+
+  var ss = SpreadsheetApp.getActive();
+  var sheet = ss.getSheets()[0]; // First sheet (Form Responses)
+  var data = sheet.getDataRange().getValues();
+  var headers = data[0];
+
+  var success = 0;
+  var failed = 0;
+  var noFiles = 0;
+
+  // Start from row 2 (skip header)
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    var email = String(row[3] || "").trim().toLowerCase();
+    var name = String(row[1] || "") + " " + String(row[2] || "");
+
+    if (!email) {
+      Logger.log("Row " + (i + 1) + ": no email, skipping");
+      continue;
+    }
+
+    // Collect files from this row
+    var files = collectFilesFromValues(row);
+
+    if (files.length === 0) {
+      noFiles++;
+      Logger.log("Row " + (i + 1) + " (" + name.trim() + "): no files to download");
+      continue;
+    }
+
+    // Send files ONE AT A TIME to avoid Vercel 4.5MB body limit
+    var rowOk = true;
+    for (var f = 0; f < files.length; f++) {
+      var payload = buildPayloadFromValues(row, {});
+      payload.files = [files[f]]; // single file
+
+      var options = {
+        method: "post",
+        contentType: "application/json",
+        headers: { "x-intake-secret": intakeSecret },
+        payload: JSON.stringify(payload),
+        muteHttpExceptions: true,
+      };
+
+      try {
+        var result = UrlFetchApp.fetch(webhookUrl, options);
+        var code = result.getResponseCode();
+        if (code >= 200 && code < 300) {
+          Logger.log("  " + name.trim() + ": " + files[f].category + " (" + files[f].name + ") OK");
+        } else {
+          Logger.log("  " + name.trim() + ": " + files[f].category + " ERROR " + code);
+          rowOk = false;
+        }
+      } catch (err) {
+        Logger.log("  " + name.trim() + ": " + files[f].category + " FAILED — " + err.toString());
+        rowOk = false;
+      }
+      Utilities.sleep(500); // pause between files
+    }
+
+    if (rowOk) {
+      success++;
+      Logger.log("Row " + (i + 1) + " (" + name.trim() + "): all " + files.length + " files sent");
+    } else {
+      failed++;
+    }
+
+    // Pause between rows to avoid rate limits
+    Utilities.sleep(1000);
+  }
+
+  Logger.log("\n=== BACKFILL COMPLETE ===");
+  Logger.log("Files sent: " + success);
+  Logger.log("No files: " + noFiles);
+  Logger.log("Failed: " + failed);
 }
