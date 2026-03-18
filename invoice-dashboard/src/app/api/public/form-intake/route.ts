@@ -238,7 +238,6 @@ export async function POST(req: NextRequest) {
           has_challenger_300_type_rating: body.has_cl30_type ?? false,
           type_ratings: typeRatings.length > 0 ? typeRatings : null,
           category,
-          soft_gate_pic_status: softGatePicStatus,
           info_session_data: infoSessionData,
           updated_at: new Date().toISOString(),
         })
@@ -291,7 +290,6 @@ export async function POST(req: NextRequest) {
           type_ratings: typeRatings.length > 0 ? typeRatings : null,
           category,
           pipeline_stage: "prd_faa_review",
-          soft_gate_pic_status: softGatePicStatus,
           info_session_data: infoSessionData,
           model: "google-form-intake",
         })
