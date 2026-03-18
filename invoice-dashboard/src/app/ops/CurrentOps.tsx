@@ -1079,8 +1079,8 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
         map.set(f.id, "arrived");
       } else if (fiRouteMatch && fi?.status?.includes("En Route")) {
         map.set(f.id, "enroute");
-      } else if (fiRouteMatch && fi?.departure_time && !fi?.actual_arrival && new Date(fi.departure_time) < now && (!faEta || faEta > now)) {
-        map.set(f.id, "enroute"); // LADD: FA has departure time passed, ETA in future — plane is flying
+      } else if (fiRouteMatch && fi?.actual_departure && !fi?.actual_arrival && new Date(fi.actual_departure) < now && (!faEta || faEta > now)) {
+        map.set(f.id, "enroute"); // LADD: FA has actual departure, ETA in future — plane is flying
       } else if (!swimRouteStale && swimRoute?.status === "En Route") {
         map.set(f.id, "enroute"); // SWIM detected takeoff (works with or without FA route match)
       } else if (!fiRouteMatch && !swimEntryStale && swim?.status === "Arrived") {
