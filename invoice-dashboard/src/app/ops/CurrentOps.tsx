@@ -2221,17 +2221,17 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
       <div className="rounded-xl border border-gray-200 bg-white overflow-x-auto">
         <table className="w-full text-sm min-w-[1100px]">
           <colgroup>
-            <col style={{ width: "7%" }} />   {/* Status */}
-            <col style={{ width: "7%" }} />   {/* Tail */}
-            <col style={{ width: "10%" }} />  {/* Route */}
-            <col style={{ width: "11%" }} />  {/* Departure */}
-            <col style={{ width: "11%" }} />  {/* Arrival */}
+            <col style={{ width: "5%" }} />   {/* Status */}
+            <col style={{ width: "6%" }} />   {/* Tail */}
+            <col style={{ width: "8%" }} />   {/* Route */}
+            <col style={{ width: "10%" }} />  {/* Departure */}
+            <col style={{ width: "10%" }} />  {/* Arrival */}
             <col style={{ width: "7%" }} />   {/* Type */}
             <col style={{ width: "5%" }} />   {/* 10/24 */}
             <col style={{ width: "5%" }} />   {/* Rest */}
-            <col style={{ width: "5%" }} />   {/* Alerts */}
+            <col style={{ width: "8%" }} />   {/* Alerts */}
             <col style={{ width: "8%" }} />   {/* Sales */}
-            <col style={{ width: "14%" }} />  {/* Remarks */}
+            <col style={{ width: "18%" }} />  {/* Remarks */}
           </colgroup>
           <thead>
             <tr className="bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
