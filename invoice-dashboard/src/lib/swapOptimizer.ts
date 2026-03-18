@@ -647,10 +647,6 @@ function buildCandidates(
 
       for (const searchDate of datesToSearch) {
       const offers = lookupFlights(commercialFlights, originIata, destIata, searchDate);
-      if (task.tail === "N513JB" && task.role === "PIC" && task.name.includes("Palmer") && offers.length > 0) {
-        console.log(`[DBG-N513JB] Chris Palmer lookup ${originIata}→${destIata} ${searchDate}: ${offers.length} offers`);
-      }
-
       for (const offer of offers) {
         const segs = offer.itineraries[0]?.segments ?? [];
         if (segs.length === 0) continue;
@@ -694,9 +690,6 @@ function buildCandidates(
           // Hard deadline: must arrive at FBO by 1800L (offgoing crew holds until then)
           // Arriving before first leg is a scoring PREFERENCE, not a hard requirement
           if (oncomingHardDeadline && fboArr.getTime() > oncomingHardDeadline.getTime()) {
-            if (task.tail === "N513JB" && task.role === "PIC") {
-              console.log(`[DBG-N513JB] ${task.name} ${flightNum}: REJECTED hard deadline. fboArr=${fboArr.toISOString()} > deadline=${oncomingHardDeadline.toISOString()}`);
-            }
             continue; // Too late — even offgoing can't hold this long
           }
 
@@ -710,9 +703,6 @@ function buildCandidates(
           if (oncomingDutyEnd && dutyOn) {
             const { valid } = checkDutyDay(dutyOn, oncomingDutyEnd);
             if (!valid) {
-              if (task.tail === "N513JB" && task.role === "PIC") {
-                console.log(`[DBG-N513JB] ${task.name} ${flightNum}: REJECTED duty day. dutyOn=${dutyOn.toISOString()} dutyEnd=${oncomingDutyEnd.toISOString()} hours=${((oncomingDutyEnd.getTime()-dutyOn.getTime())/3600000).toFixed(1)}`);
-              }
               continue; // Exceeds 14hr duty day
             }
           }
@@ -997,14 +987,9 @@ function optimizeTail(
       });
       if (filtered.some((c) => c.type !== "none")) {
         onTask.candidates = filtered;
-      } else {
-        // No oncoming option arrives before offgoing must leave
-        onTask.candidates = onTask.candidates.filter((c) => c.type === "none");
-        onTask.warnings.push(
-          `No oncoming transport arrives before offgoing ${dl.offgoingName} must leave` +
-          (dl.offgoingFlight ? ` (${dl.offgoingFlight})` : ""),
-        );
       }
+      // If NO candidates meet the deadline: keep all — offgoing takes a later flight.
+      // The humans solve oncoming first, then tell offgoing to adjust.
     }
   }
 
@@ -2073,14 +2058,10 @@ function buildFeasibilityMatrix(params: {
       swapPointsToTry = [bestSp];
     }
     const acType = tailAircraftType.get(tail) ?? "unknown";
-    // Debug tracking for tails with 0 viable crew
-    const _dbgReasons: Record<string, string[]> = {};
 
     for (const poolEntry of pool) {
       if (!isQualified(poolEntry.aircraft_type, acType)) {
         matrix.push({ crewName: poolEntry.name, tail, viable: false, bestScore: 0, bestCost: 999, offgoingCost: 0, totalCost: 999, bestType: "none", candidateCount: 0, rank: 999, bestSwapIcao: "", minDriveMiles: 9999 });
-        if (!_dbgReasons[tail]) _dbgReasons[tail] = [];
-        _dbgReasons[tail].push(`${poolEntry.name}: NOT_QUAL (crew=${poolEntry.aircraft_type} tail=${acType})`);
         continue;
       }
 
@@ -2210,9 +2191,6 @@ function buildFeasibilityMatrix(params: {
             if (noneCandidate) candidates.push(noneCandidate);
           } else {
             // No candidate beats the offgoing deadline — not viable
-            if (!_dbgReasons[tail]) _dbgReasons[tail] = [];
-            const earliest = allCandidates.filter(c => c.fboArrivalTime).sort((a,b) => a.fboArrivalTime!.getTime() - b.fboArrivalTime!.getTime())[0];
-            _dbgReasons[tail].push(`${poolEntry.name}: DEADLINE dl=${dl.deadline.toISOString()} earliest_arr=${earliest?.fboArrivalTime?.toISOString() ?? "none"} gap=${earliest?.fboArrivalTime ? Math.round((earliest.fboArrivalTime.getTime() - deadlineMs)/60000) + "min" : "?"}`);
             candidates.length = 0;
             candidates.push({ type: "none" as const, flightNumber: null, depTime: null, arrTime: null, from: "", to: "", cost: 0, durationMin: 0, isDirect: false, isBudgetCarrier: false, hubConnection: false, connectionCount: 0, offer: null, drive: null, fboArrivalTime: null, fboLeaveTime: null, dutyOnTime: null, score: 0, backups: [] });
           }
@@ -2224,12 +2202,6 @@ function buildFeasibilityMatrix(params: {
 
       const best = candidates[0];
       const viable = best ? best.type !== "none" : false;
-
-      if (!viable) {
-        if (!_dbgReasons[tail]) _dbgReasons[tail] = [];
-        const candTypes = allCandidates.map(c => c.type).join(",");
-        _dbgReasons[tail].push(`${poolEntry.name}: NO_TRANSPORT sp=${swapPointsToTry.map(s=>toIata(s.icao)).join("/")} homes=${homeAirports.join(",")} cands=${allCandidates.length}(${candTypes})`);
-      }
 
       // Determine which swap point the best candidate targets
       const bestSwapIcao = best?.to ? toIcao(best.to) : (swapPoints[0]?.icao ?? "");
@@ -2279,18 +2251,6 @@ function buildFeasibilityMatrix(params: {
         bestSwapIcao,
         minDriveMiles,
       });
-    }
-    // Log reasons for tails with 0 viable crew
-    const tailViable = matrix.filter(m => m.tail === tail && m.viable).length;
-    if (tailViable === 0 && _dbgReasons[tail]) {
-      const reasons = _dbgReasons[tail];
-      const qualFails = reasons.filter(r => r.includes("NOT_QUAL")).length;
-      const transportFails = reasons.filter(r => r.includes("NO_TRANSPORT")).length;
-      const deadlineFails = reasons.filter(r => r.includes("DEADLINE")).length;
-      console.log(`[FeasMatrix] ${tail} ${role}: 0 viable (${qualFails} type mismatch, ${transportFails} no transport, ${deadlineFails} deadline). acType=${acType}`);
-      // Log first few transport failures for debugging
-      const transportReasons = reasons.filter(r => r.includes("NO_TRANSPORT")).slice(0, 3);
-      for (const r of transportReasons) console.log(`  ${r}`);
     }
   }
 
