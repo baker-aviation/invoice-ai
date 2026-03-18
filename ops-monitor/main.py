@@ -1707,10 +1707,12 @@ def _run_check_notams(lookahead_hours: int) -> dict:
     now = datetime.now(timezone.utc)
     cutoff = now + timedelta(hours=lookahead_hours)
 
+    # Include flights from the last 6h so en-route flights also get NOTAMs
+    lookback = now - timedelta(hours=6)
     flights_res = (
         supa.table(FLIGHTS_TABLE)
         .select("*")
-        .gte("scheduled_departure", now.isoformat())
+        .gte("scheduled_departure", lookback.isoformat())
         .lte("scheduled_departure", cutoff.isoformat())
         .limit(10000)
         .execute()
