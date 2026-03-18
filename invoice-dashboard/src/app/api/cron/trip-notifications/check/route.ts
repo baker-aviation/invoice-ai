@@ -28,10 +28,13 @@ export async function POST(req: NextRequest) {
   const windowEnd = new Date(now.getTime() + 75 * 60 * 1000);
 
   // 1. Get all today's flights (all types) for prior-leg lookups
-  const todayStart = new Date(now);
-  todayStart.setHours(0, 0, 0, 0);
-  const todayEnd = new Date(now);
-  todayEnd.setHours(23, 59, 59, 999);
+  // Use ET boundaries so late-night ET flights aren't missed (Vercel runs in UTC)
+  const etDate = new Intl.DateTimeFormat("en-US", {
+    year: "numeric", month: "2-digit", day: "2-digit", timeZone: "America/New_York",
+  }).format(now); // "MM/DD/YYYY"
+  const [mm, dd, yyyy] = etDate.split("/");
+  const todayStart = new Date(`${yyyy}-${mm}-${dd}T00:00:00-05:00`);
+  const todayEnd = new Date(`${yyyy}-${mm}-${dd}T23:59:59-05:00`);
 
   const LIVE_TYPES = ["Revenue", "Owner", "Charter"];
 
