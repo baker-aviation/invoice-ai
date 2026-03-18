@@ -260,7 +260,12 @@ async function linkFaToIcs(flights: FlightInfo[]): Promise<number> {
 // ---------------------------------------------------------------------------
 
 async function updateDivertedArrivals(flights: FlightInfo[]): Promise<number> {
-  const diverted = flights.filter((f) => f.diverted && f.fa_flight_id && f.destination_icao);
+  // Only update schedule when the diverted flight has actually landed.
+  // This prevents FA's sometimes-premature "diverted" flag from overwriting
+  // the schedule while the aircraft is still airborne and FA is guessing.
+  const diverted = flights.filter((f) =>
+    f.diverted && f.fa_flight_id && f.destination_icao && f.actual_arrival != null
+  );
   if (diverted.length === 0) return 0;
 
   const supa = createServiceClient();
