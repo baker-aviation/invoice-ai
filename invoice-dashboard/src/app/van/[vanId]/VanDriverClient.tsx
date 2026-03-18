@@ -62,6 +62,7 @@ function matchFaFlight(
   if (!tail) return undefined;
   const depIcao = flight.departure_icao;
   const arrIcao = flight.arrival_icao;
+  const schedDep = flight.scheduled_departure ? new Date(flight.scheduled_departure).getTime() : null;
   // Normalize: strip leading K for comparison
   const norm = (c: string | null) => c ? (c.length === 4 && c.startsWith("K") ? c.slice(1) : c) : null;
   const nDep = norm(depIcao);
@@ -71,23 +72,54 @@ function matchFaFlight(
   const tailFlights = allEntries.filter((e) => e.tail === tail);
   if (tailFlights.length === 0) return undefined;
 
-  // Prefer route match (origin matches departure)
-  if (nDep) {
-    const routeMatch = tailFlights.find((e) =>
-      norm(e.origin_icao) === nDep && (!nArr || norm(e.destination_icao) === nArr)
-    );
-    if (routeMatch) return routeMatch;
-    // Partial: just origin matches
-    const originMatch = tailFlights.find((e) => norm(e.origin_icao) === nDep);
-    if (originMatch) return originMatch;
+  // Find route matches (origin + destination)
+  const routeMatches = tailFlights.filter((e) =>
+    nDep && norm(e.origin_icao) === nDep && (!nArr || norm(e.destination_icao) === nArr)
+  );
+
+  // If multiple route matches, pick the one closest in time to scheduled departure
+  if (routeMatches.length > 1 && schedDep) {
+    let best = routeMatches[0];
+    let bestDiff = Infinity;
+    for (const rm of routeMatches) {
+      const faDep = rm.departure_time ? new Date(rm.departure_time).getTime() : null;
+      const diff = faDep ? Math.abs(faDep - schedDep) : Infinity;
+      if (diff < bestDiff) { bestDiff = diff; best = rm; }
+    }
+    return best;
   }
+  if (routeMatches.length === 1) return routeMatches[0];
 
-  // Fallback: prefer en-route flight
-  const enRoute = tailFlights.find((e) => e.status?.includes("En Route"));
-  if (enRoute) return enRoute;
+  // Partial: origin matches — pick closest in time
+  const originMatches = tailFlights.filter((e) => nDep && norm(e.origin_icao) === nDep);
+  if (originMatches.length > 0 && schedDep) {
+    let best = originMatches[0];
+    let bestDiff = Infinity;
+    for (const om of originMatches) {
+      const faDep = om.departure_time ? new Date(om.departure_time).getTime() : null;
+      const diff = faDep ? Math.abs(faDep - schedDep) : Infinity;
+      if (diff < bestDiff) { bestDiff = diff; best = om; }
+    }
+    return best;
+  }
+  if (originMatches.length > 0) return originMatches[0];
 
-  // Last resort: most recent by departure
-  return tailFlights[tailFlights.length - 1];
+  // Destination matches — pick closest in time (for cases where the van cares about arrival airport)
+  const destMatches = tailFlights.filter((e) => nArr && norm(e.destination_icao) === nArr);
+  if (destMatches.length > 0 && schedDep) {
+    let best = destMatches[0];
+    let bestDiff = Infinity;
+    for (const dm of destMatches) {
+      const faDep = dm.departure_time ? new Date(dm.departure_time).getTime() : null;
+      const diff = faDep ? Math.abs(faDep - schedDep) : Infinity;
+      if (diff < bestDiff) { bestDiff = diff; best = dm; }
+    }
+    return best;
+  }
+  if (destMatches.length > 0) return destMatches[0];
+
+  // No route match at all — don't guess, return undefined
+  return undefined;
 }
 
 /** Flight type to readable badge label */
