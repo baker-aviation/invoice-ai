@@ -82,7 +82,7 @@ function getFlightStatus(
   }
   if (fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100) {
     return {
-      label: `En Route (${fi.progress_percent}%)`,
+      label: "En Route",
       accent: "text-blue-600 dark:text-blue-400",
       borderColor: "border-l-blue-500",
     };
@@ -572,20 +572,8 @@ function StopCard({
             <div className="text-sm font-bold text-slate-700 dark:text-slate-200 tabular-nums">
               Sched {schedArrLocal}
             </div>
-            {faEtaLocal && faEtaLocal !== schedArrLocal && status.label !== "Landed" && (
-              <div className="text-xs font-medium text-blue-600 dark:text-blue-400 tabular-nums">
-                FA ETA {faEtaLocal}
-              </div>
-            )}
           </div>
         </div>
-        {countdown && status.label !== "Landed" && (
-          <div className="mt-0.5">
-            <span className="text-xs font-medium text-blue-600 dark:text-blue-400">
-              Landing {countdown}
-            </span>
-          </div>
-        )}
       </div>
 
       {expanded && <div className="px-4 pb-4">
@@ -615,7 +603,7 @@ function StopCard({
           </span>
           <span className="text-gray-300 dark:text-gray-600">&rarr;</span>
           <span className="text-xs text-gray-500 dark:text-gray-400">
-            ETA {arrTime}
+            Arr {arrTime}
           </span>
           <span className="text-xs text-gray-400 dark:text-gray-500">
             &middot; {fmtDriveTime(item.distKm)}

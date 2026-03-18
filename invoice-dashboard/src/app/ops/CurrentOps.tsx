@@ -2013,7 +2013,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                                 {/* Time-based progress bar for en route flights */}
                                 {!isCancelled && status === "En Route" && (() => {
                                   const depStr = (!swimRouteStale ? swimRouteMatch?.etd : null) ?? fi?.actual_departure ?? fi?.departure_time ?? (!swimEntryStale ? swimEntry?.actual_departure : null);
-                                  let arrStr = (!swimRouteStale ? swimRouteMatch?.eta : null) ?? (fiRouteMatch ? fi?.arrival_time : null) ?? (!swimEntryStale ? swimEntry?.eta : null);
+                                  let arrStr = (fiRouteMatch ? fi?.arrival_time : null) ?? (!swimRouteStale ? swimRouteMatch?.eta : null) ?? (!swimEntryStale ? swimEntry?.eta : null);
                                   if (!arrStr && f.scheduled_arrival && f.scheduled_departure && depStr) {
                                     const delayMs = new Date(depStr).getTime() - new Date(f.scheduled_departure).getTime();
                                     arrStr = new Date(new Date(f.scheduled_arrival).getTime() + delayMs).toISOString();
@@ -2324,7 +2324,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                         {/* Time-based progress bar + remaining for en route flights */}
                         {!isCancelled && status === "En Route" && (() => {
                           const depStr = (!swimRouteStale ? swimRouteMatch?.etd : null) ?? fi?.actual_departure ?? fi?.departure_time ?? (!swimEntryStale ? swimEntry?.actual_departure : null);
-                          let arrStr = (!swimRouteStale ? swimRouteMatch?.eta : null) ?? (fiRouteMatch ? fi?.arrival_time : null) ?? (!swimEntryStale ? swimEntry?.eta : null);
+                          let arrStr = (fiRouteMatch ? fi?.arrival_time : null) ?? (!swimRouteStale ? swimRouteMatch?.eta : null) ?? (!swimEntryStale ? swimEntry?.eta : null);
                           if (!arrStr && f.scheduled_arrival && f.scheduled_departure && depStr) {
                             const delayMs = new Date(depStr).getTime() - new Date(f.scheduled_departure).getTime();
                             arrStr = new Date(new Date(f.scheduled_arrival).getTime() + delayMs).toISOString();
