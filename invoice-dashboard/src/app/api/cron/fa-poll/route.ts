@@ -256,6 +256,54 @@ async function linkFaToIcs(flights: FlightInfo[]): Promise<number> {
 }
 
 // ---------------------------------------------------------------------------
+// Update ICS schedule when a flight diverts to a different airport
+// ---------------------------------------------------------------------------
+
+async function updateDivertedArrivals(flights: FlightInfo[]): Promise<number> {
+  // Only update schedule when the diverted flight has actually landed.
+  // This prevents FA's sometimes-premature "diverted" flag from overwriting
+  // the schedule while the aircraft is still airborne and FA is guessing.
+  const diverted = flights.filter((f) =>
+    f.diverted && f.fa_flight_id && f.destination_icao && f.actual_arrival != null
+  );
+  if (diverted.length === 0) return 0;
+
+  const supa = createServiceClient();
+  let updated = 0;
+
+  for (const fa of diverted) {
+    // Find the linked ICS flight
+    const { data: icsFlights } = await supa
+      .from("flights")
+      .select("id, arrival_icao")
+      .eq("fa_flight_id", fa.fa_flight_id)
+      .limit(1);
+
+    if (!icsFlights || icsFlights.length === 0) continue;
+    const ics = icsFlights[0];
+
+    // Normalize ICAO for comparison (3-letter US → K-prefix)
+    const norm = (c: string | null) => c ? (c.length === 3 && /^[A-Z]/.test(c) ? `K${c}` : c) : null;
+    const faDest = norm(fa.destination_icao);
+    const icsDest = norm(ics.arrival_icao);
+
+    if (faDest && icsDest && faDest !== icsDest) {
+      const { error } = await supa
+        .from("flights")
+        .update({ arrival_icao: faDest })
+        .eq("id", ics.id);
+
+      if (!error) {
+        console.log(`[FA Poll] Diversion: updated ${fa.tail} arrival ${icsDest} → ${faDest}`);
+        updated++;
+      }
+    }
+  }
+
+  return updated;
+}
+
+// ---------------------------------------------------------------------------
 // Mode 1: En-route polling
 // ---------------------------------------------------------------------------
 
@@ -299,6 +347,9 @@ async function pollEnRoute(
 
   // Link FA flights to ICS flights by fa_flight_id
   await linkFaToIcs(allFlights);
+
+  // Update ICS arrival airport for diverted flights
+  await updateDivertedArrivals(allFlights);
 
   return { tails, flights: totalFlights, upserted: totalUpserted };
 }
@@ -369,6 +420,9 @@ async function pollDiscovery(
 
   // Link FA flights to ICS flights by fa_flight_id
   await linkFaToIcs(allFlights);
+
+  // Update ICS arrival airport for diverted flights
+  await updateDivertedArrivals(allFlights);
 
   // Cleanup: delete old completed flights (> 36h ago)
   const cutoff = new Date(now.getTime() - 36 * 3600_000).toISOString();

@@ -531,10 +531,12 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
         {aircraft.map((ac) => {
           const fi = flightInfo.get(ac.tail);
           const color = getAcColor(fleetLookup, ac.tail, ac.on_ground);
-          // Only show DIVERTED when FA status is literally "Diverted" (in-air, active diversion).
-          // Once the aircraft lands, FA flips status to "Arrived" — badge clears automatically.
-          // This prevents the diverted flag from a completed leg bleeding into the next leg.
-          const isDiverted = fi?.diverted === true && fi.status === "Diverted";
+          // Show DIVERTED while in-air OR for 30 min after landing at diversion airport.
+          // After 30 min the badge clears, preventing bleed into later legs.
+          const isDiverted = fi?.diverted === true && (
+            fi.status === "Diverted" ||
+            (fi.actual_arrival != null && Date.now() - new Date(fi.actual_arrival).getTime() < 30 * 60_000)
+          );
           const isHolding = holdingTails.has(ac.tail);
           const hasAlert = isDiverted || isHolding;
           const alertLabel = isDiverted ? "DIVERTED" : isHolding ? "HOLDING" : undefined;
