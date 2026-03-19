@@ -3448,13 +3448,13 @@ function ScheduleTab({
           )}
           <button
             onClick={handleUpdateVans}
-            disabled={updateVansStatus === "sending" || changedVanCount === 0 || !morningSentAt}
+            disabled={updateVansStatus === "sending" || changedVanCount === 0}
             className={`text-sm font-semibold rounded-lg px-4 py-1.5 transition-colors disabled:opacity-50 ${
-              changedVanCount > 0 && morningSentAt
+              changedVanCount > 0
                 ? "text-white bg-amber-600 hover:bg-amber-700 active:bg-amber-800"
                 : "text-gray-400 bg-gray-100 border border-gray-200"
             }`}
-            title={!morningSentAt ? "Send morning schedule first" : changedVanCount === 0 ? "No vans have changed" : `${changedVanCount} van${changedVanCount > 1 ? "s" : ""} changed`}
+            title={changedVanCount === 0 ? "No vans have changed" : `${changedVanCount} van${changedVanCount > 1 ? "s" : ""} changed`}
           >
             {updateVansStatus === "sending" ? "Updating…" : updateVansStatus === "success" ? "Updated!" : changedVanCount > 0 ? `Update Vans (${changedVanCount})` : "No Changes"}
           </button>
