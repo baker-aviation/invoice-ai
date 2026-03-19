@@ -127,6 +127,9 @@ function deriveSwimStatus(eventType: SwimEventType, altitudeFt: number | null): 
       return "Arrived";
     case "POSITION":
     case "TRACK":
+      // POSITION/TRACK with no altitude or ground-level altitude is likely
+      // a ground ADS-B ping, not actual flight — treat as Filed, not En Route
+      if (altitudeFt == null || altitudeFt < 500) return "Filed";
       return "En Route";
     case "CANCEL":
       return "Cancelled";
