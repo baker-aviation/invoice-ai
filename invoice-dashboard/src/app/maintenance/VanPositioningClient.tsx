@@ -2734,12 +2734,20 @@ function ScheduleTab({
   }, [finalItemsByVan]);
 
   // Uncovered aircraft: arrivals today not assigned to any van
+  // If ANY leg for a tail is assigned, exclude ALL legs for that tail
   const uncoveredItems = useMemo(() => {
     const assignedIds = new Set<string>();
+    const assignedTails = new Set<string>();
     for (const items of finalItemsByVan.values()) {
-      for (const item of items) assignedIds.add(item.arrFlight.id);
+      for (const item of items) {
+        assignedIds.add(item.arrFlight.id);
+        if (item.arrFlight.tail_number) assignedTails.add(item.arrFlight.tail_number);
+      }
     }
-    return allDayArrivals.filter((item) => !assignedIds.has(item.arrFlight.id));
+    return allDayArrivals.filter((item) => {
+      if (item.arrFlight.tail_number && assignedTails.has(item.arrFlight.tail_number)) return false;
+      return !assignedIds.has(item.arrFlight.id);
+    });
   }, [allDayArrivals, finalItemsByVan]);
 
   // Unscheduled aircraft: fleet tails with NO flights on this date
@@ -3828,9 +3836,16 @@ function ScheduleTab({
 
       {/* ── Reviewed — Won't Be Seen Today ── */}
       {(() => {
+        // Tails assigned to any van — exclude from won't-see
+        const vanAssignedTails = new Set<string>();
+        for (const items of finalItemsByVan.values()) {
+          for (const item of items) {
+            if (item.arrFlight.tail_number) vanAssignedTails.add(item.arrFlight.tail_number);
+          }
+        }
         // Collect won't-see tails from both unassigned and unscheduled pools
         const wontSeeTails: { tail: string; airport: string | null; source: string }[] = [];
-        // From unassigned (uncovered items)
+        // From unassigned (uncovered items — only tails NOT in any van)
         if (uncoveredItems.length > 0) {
           const uncoveredByTailWS = new Map<string, VanFlightItem[]>();
           for (const item of uncoveredItems) {
@@ -3841,6 +3856,7 @@ function ScheduleTab({
           }
           for (const tailKey of uncoveredByTailWS.keys()) {
             if (tailKey === "_no_tail") continue;
+            if (vanAssignedTails.has(tailKey)) continue;
             if (wontSeeTodayTails.has(tailKey)) {
               const items = uncoveredByTailWS.get(tailKey) ?? [];
               const apt = items[0]?.airport ?? null;
@@ -3851,6 +3867,7 @@ function ScheduleTab({
         // From unscheduled
         for (const ac of unscheduledAircraft) {
           if (unscheduledOverrides.has(ac.tail) || longTermMxTails.has(ac.tail)) continue;
+          if (vanAssignedTails.has(ac.tail)) continue;
           if (wontSeeTodayTails.has(ac.tail)) {
             wontSeeTails.push({ tail: ac.tail, airport: ac.airport, source: "Unscheduled" });
           }
