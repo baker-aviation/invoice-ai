@@ -1109,24 +1109,98 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
     finally { setSavingPlan(false); }
   }
 
-  // Check impacts
+  // Check impacts — works client-side against in-memory plan, or server-side if saved
   async function checkImpacts() {
+    const planRows = swapPlan?.rows;
+    if (!planRows || planRows.length === 0) {
+      addToast("warning", "Run the optimizer first to analyze impacts");
+      return;
+    }
     setCheckingImpacts(true);
     try {
-      const res = await fetch("/api/crew/swap-plan/impact", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ swap_date: selectedWed.toISOString().slice(0, 10) }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setPlanImpacts(data.impacts?.map((imp: PlanImpact & { id?: string }, i: number) => ({
-          ...imp,
-          id: imp.id ?? `temp-${i}`,
-          resolved: false,
-        })) ?? []);
+      if (savedPlanMeta) {
+        // Server-side: cross-reference against saved plan + persist results
+        const res = await fetch("/api/crew/swap-plan/impact", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ swap_date: selectedWed.toISOString().slice(0, 10) }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setPlanImpacts(data.impacts?.map((imp: PlanImpact & { id?: string }, i: number) => ({
+            ...imp,
+            id: imp.id ?? `temp-${i}`,
+            resolved: false,
+          })) ?? []);
+          const count = data.impacts?.length ?? 0;
+          addToast(count > 0 ? "warning" : "success", count > 0 ? `${count} impact(s) detected` : "No impacts found");
+        }
+      } else {
+        // Client-side: analyze in-memory plan against current alerts
+        const unacked = swapAlerts.filter((a) => !a.acknowledged);
+        if (unacked.length === 0) {
+          addToast("success", "No unacknowledged alerts to analyze");
+          setCheckingImpacts(false);
+          return;
+        }
+        const results: PlanImpact[] = [];
+        for (const alert of unacked) {
+          const tailRows = planRows.filter((r) => r.tail_number === alert.tail_number);
+          if (tailRows.length === 0) continue;
+          const affected: PlanImpact["affected_crew"] = [];
+          let severity: "critical" | "warning" | "info" = "info";
+
+          if (alert.change_type === "cancelled") {
+            for (const r of tailRows) {
+              affected.push({ name: r.name, role: r.role, direction: r.direction, detail: "Leg cancelled — swap point may have changed" });
+            }
+            severity = "critical";
+          } else if (alert.change_type === "airport_change") {
+            const oldAirport = (alert.old_value?.departure_icao as string) ?? (alert.old_value?.arrival_icao as string);
+            const newAirport = (alert.new_value?.departure_icao as string) ?? (alert.new_value?.arrival_icao as string);
+            for (const r of tailRows) {
+              if (r.swap_location && oldAirport && r.swap_location === oldAirport) {
+                affected.push({ name: r.name, role: r.role, direction: r.direction, detail: `Traveling to ${oldAirport} but leg now at ${newAirport ?? "?"}` });
+                severity = "critical";
+              }
+            }
+          } else if (alert.change_type === "time_change") {
+            const newDep = alert.new_value?.scheduled_departure as string | undefined;
+            if (newDep) {
+              const newDepTime = new Date(newDep).getTime();
+              for (const r of tailRows) {
+                if (r.direction === "oncoming") {
+                  const arr = r.available_time ?? r.arrival_time;
+                  if (arr && new Date(arr).getTime() > newDepTime) {
+                    affected.push({ name: r.name, role: r.role, direction: r.direction, detail: "Arrives after aircraft departs" });
+                    severity = "critical";
+                  }
+                }
+              }
+            }
+            if (affected.length === 0) {
+              for (const r of tailRows) {
+                affected.push({ name: r.name, role: r.role, direction: r.direction, detail: "Leg time changed — review timing" });
+              }
+              severity = "warning";
+            }
+          } else if (alert.change_type === "added") {
+            for (const r of tailRows) {
+              affected.push({ name: r.name, role: r.role, direction: r.direction, detail: "New leg added — swap points may need review" });
+            }
+            severity = "warning";
+          }
+
+          if (affected.length > 0) {
+            results.push({ id: `local-${alert.id}`, alert_id: alert.id, tail_number: alert.tail_number, affected_crew: affected, severity, resolved: false });
+          }
+        }
+        setPlanImpacts(results);
+        addToast(results.length > 0 ? "warning" : "success", results.length > 0 ? `${results.length} impact(s) detected` : "No impacts on current plan");
       }
-    } catch { /* ignore */ }
+    } catch {
+      addToast("error", "Impact analysis failed");
+    }
     finally { setCheckingImpacts(false); }
   }
 
@@ -2289,12 +2363,15 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
           </h3>
           <button
             onClick={() => { checkImpacts(); }}
-            disabled={checkingImpacts || !savedPlanMeta}
+            disabled={checkingImpacts || !swapPlan}
             className={`px-3 py-1.5 text-xs font-medium border rounded-lg ${
-              checkingImpacts ? "bg-gray-100 text-gray-400" : "bg-blue-50 text-blue-700 hover:bg-blue-100 border-blue-200"
+              !swapPlan ? "bg-gray-100 text-gray-400 cursor-not-allowed"
+              : checkingImpacts ? "bg-gray-100 text-gray-400"
+              : "bg-blue-50 text-blue-700 hover:bg-blue-100 border-blue-200"
             }`}
+            title={!swapPlan ? "Run optimizer first" : undefined}
           >
-            {checkingImpacts ? "Analyzing..." : "Analyze Impact on Plan"}
+            {checkingImpacts ? "Analyzing..." : !swapPlan ? "Run optimizer first" : "Analyze Impact on Plan"}
           </button>
         </div>
 
