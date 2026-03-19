@@ -4,7 +4,8 @@ import { Topbar } from "@/components/Topbar";
 import { AutoRefresh } from "@/components/AutoRefresh";
 import { fetchFlights, fetchMxNotes, fetchMelItems, fetchAircraftTags } from "@/lib/opsApi";
 import { createServiceClient } from "@/lib/supabase/service";
-import VanPositioningClient from "./VanPositioningClient";
+import dynamic_import from "next/dynamic";
+const VanPositioningClient = dynamic_import(() => import("./VanPositioningClient"), { ssr: false });
 
 export default async function MaintenancePage() {
   const supa = createServiceClient();
