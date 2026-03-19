@@ -9,7 +9,7 @@ import { createServiceClient } from "@/lib/supabase/service";
 export async function GET(req: NextRequest) {
   const auth = await requireAuth(req);
   if (!isAuthed(auth)) return auth.error;
-  if (isRateLimited(auth.userId)) {
+  if (await isRateLimited(auth.userId)) {
     return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
   }
 
@@ -36,7 +36,7 @@ export async function GET(req: NextRequest) {
 export async function PUT(req: NextRequest) {
   const auth = await requireAuth(req);
   if (!isAuthed(auth)) return auth.error;
-  if (isRateLimited(auth.userId)) {
+  if (await isRateLimited(auth.userId)) {
     return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
   }
 

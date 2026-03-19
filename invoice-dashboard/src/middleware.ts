@@ -85,11 +85,6 @@ export async function middleware(request: NextRequest) {
   } = await supabase.auth.getUser();
 
   if (!user && !request.nextUrl.pathname.startsWith("/login") && !request.nextUrl.pathname.startsWith("/auth/") && !request.nextUrl.pathname.startsWith("/van/") && request.nextUrl.pathname !== "/invite") {
-    // Allow service-key auth for CLI testing (temporary)
-    const serviceKey = request.headers.get("x-service-key");
-    if (serviceKey && serviceKey === process.env.SUPABASE_SERVICE_ROLE_KEY) {
-      return NextResponse.next();
-    }
     // API routes get a 401 JSON response, not a redirect to /login
     if (request.nextUrl.pathname.startsWith("/api/")) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

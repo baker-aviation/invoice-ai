@@ -320,8 +320,11 @@ function useVanPositions(enabled: boolean): VanPos[] {
       } catch { /* ignore */ }
     }
     load();
-    const interval = setInterval(load, 240_000); // refresh every 4 min
-    return () => { cancelled = true; clearInterval(interval); };
+    const jitter = () => 240_000 + Math.random() * 30_000;
+    let tid: ReturnType<typeof setTimeout>;
+    const tick = () => { load(); tid = setTimeout(tick, jitter()); };
+    tid = setTimeout(tick, jitter());
+    return () => { cancelled = true; clearTimeout(tid); };
   }, [enabled]);
   return vans;
 }

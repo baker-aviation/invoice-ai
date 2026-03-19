@@ -1,7 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { requireAuth, requireAdmin, isAuthed, isRateLimited } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 import { signGcsUrl } from "@/lib/gcs";
+
+const UpdateLessonSchema = z.object({
+  title: z.string().min(1).max(200).optional(),
+  content_html: z.string().max(50000).optional(),
+  sort_order: z.number().int().min(0).max(9999).optional(),
+  video_filename: z.string().max(255).optional(),
+  doc_filename: z.string().max(255).optional(),
+}).strip();
 
 type RouteParams = { courseId: string; moduleId: string; lessonId: string };
 
@@ -57,7 +66,7 @@ export async function PATCH(
   const auth = await requireAdmin(req);
   if ("error" in auth) return auth.error;
 
-  if (isRateLimited(auth.userId, 10)) {
+  if (await isRateLimited(auth.userId, 10)) {
     return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
 
@@ -67,19 +76,19 @@ export async function PATCH(
     return NextResponse.json({ error: "Invalid lesson ID" }, { status: 400 });
   }
 
-  let body: {
-    title?: string;
-    content_html?: string;
-    sort_order?: number;
-    video_filename?: string;
-    doc_filename?: string;
-  };
+  let raw: unknown;
   try {
-    body = await req.json();
+    raw = await req.json();
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
+  const parsed = UpdateLessonSchema.safeParse(raw);
+  if (!parsed.success) {
+    return NextResponse.json({ error: "Validation failed", details: parsed.error.issues }, { status: 400 });
+  }
+
+  const body = parsed.data;
   const updates: Record<string, unknown> = {};
   if (body.title !== undefined) {
     const title = body.title.trim();
@@ -206,7 +215,7 @@ export async function DELETE(
   const auth = await requireAdmin(req);
   if ("error" in auth) return auth.error;
 
-  if (isRateLimited(auth.userId, 10)) {
+  if (await isRateLimited(auth.userId, 10)) {
     return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
 

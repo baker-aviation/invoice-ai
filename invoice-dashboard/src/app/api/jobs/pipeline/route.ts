@@ -20,7 +20,7 @@ const VALID_STAGES: HiringStage[] = [
 export async function PATCH(req: NextRequest) {
   const auth = await requireAuth(req);
   if (!isAuthed(auth)) return auth.error;
-  if (isRateLimited(auth.userId))
+  if (await isRateLimited(auth.userId))
     return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
 
   const body = await req.json().catch(() => null);
@@ -47,7 +47,7 @@ export async function PATCH(req: NextRequest) {
 export async function POST(req: NextRequest) {
   const auth = await requireAuth(req);
   if (!isAuthed(auth)) return auth.error;
-  if (isRateLimited(auth.userId))
+  if (await isRateLimited(auth.userId))
     return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
 
   const body = await req.json().catch(() => null);

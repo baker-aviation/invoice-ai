@@ -161,8 +161,11 @@ export function HealthBoard() {
   useEffect(() => {
     fetchHealth();
     fetchFaHealth();
-    const id = setInterval(() => { fetchHealth(); fetchFaHealth(); }, 300_000);
-    return () => clearInterval(id);
+    const jitter = () => 300_000 + Math.random() * 30_000;
+    let tid: ReturnType<typeof setTimeout>;
+    const tick = () => { fetchHealth(); fetchFaHealth(); tid = setTimeout(tick, jitter()); };
+    tid = setTimeout(tick, jitter());
+    return () => clearTimeout(tid);
   }, [fetchHealth, fetchFaHealth]);
 
   if (loading) {

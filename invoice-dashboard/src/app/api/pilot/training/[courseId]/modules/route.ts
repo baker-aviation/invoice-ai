@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { requireAuth, requireAdmin, isAuthed, isRateLimited } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
+
+const CreateModuleSchema = z.object({
+  title: z.string().min(1).max(200),
+  sort_order: z.number().int().min(0).max(9999).optional(),
+}).strip();
 
 /**
  * GET /api/pilot/training/[courseId]/modules — list modules
@@ -42,7 +48,7 @@ export async function POST(
   const auth = await requireAdmin(req);
   if ("error" in auth) return auth.error;
 
-  if (isRateLimited(auth.userId, 10)) {
+  if (await isRateLimited(auth.userId, 10)) {
     return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
 
@@ -52,16 +58,16 @@ export async function POST(
     return NextResponse.json({ error: "Invalid course ID" }, { status: 400 });
   }
 
-  let body: { title?: string; sort_order?: number };
+  let raw: unknown;
   try {
-    body = await req.json();
+    raw = await req.json();
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  const title = body.title?.trim();
-  if (!title) {
-    return NextResponse.json({ error: "Title is required" }, { status: 400 });
+  const parsed = CreateModuleSchema.safeParse(raw);
+  if (!parsed.success) {
+    return NextResponse.json({ error: "Validation failed", details: parsed.error.issues }, { status: 400 });
   }
 
   const supa = createServiceClient();
@@ -69,8 +75,8 @@ export async function POST(
     .from("lms_modules")
     .insert({
       course_id: id,
-      title,
-      sort_order: body.sort_order ?? 0,
+      title: parsed.data.title.trim(),
+      sort_order: parsed.data.sort_order ?? 0,
     })
     .select("*")
     .single();

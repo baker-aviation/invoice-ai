@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, isAuthed } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 import { toIcao } from "@/lib/iataToIcao";
+import { getRedis } from "@/lib/redis";
 
 export const dynamic = "force-dynamic";
 
@@ -23,15 +24,31 @@ interface ForeFlightFlight {
   timeUpdated: string;
 }
 
-// ── In-memory cache (2 min TTL) ──
+// ── Cache: Redis (shared) with in-memory fallback ──
 
-let foreFlightCache: { data: ForeFlightFlight[]; ts: number } | null = null;
+let memCache: { data: ForeFlightFlight[]; ts: number } | null = null;
 const CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes
+const REDIS_TTL_SEC = 120;
+const REDIS_KEY = "foreflight:flights";
 
 async function fetchForeFlight(): Promise<ForeFlightFlight[]> {
   const now = Date.now();
-  if (foreFlightCache && now - foreFlightCache.ts < CACHE_TTL_MS) {
-    return foreFlightCache.data;
+
+  // Check Redis first (shared across all instances)
+  const redis = getRedis();
+  if (redis) {
+    try {
+      const cached = await redis.get<ForeFlightFlight[]>(REDIS_KEY);
+      if (cached) {
+        memCache = { data: cached, ts: now }; // warm local cache too
+        return cached;
+      }
+    } catch { /* fall through */ }
+  }
+
+  // Check in-memory fallback
+  if (memCache && now - memCache.ts < CACHE_TTL_MS) {
+    return memCache.data;
   }
 
   const apiKey = process.env.FOREFLIGHT_API_KEY;
@@ -52,7 +69,12 @@ async function fetchForeFlight(): Promise<ForeFlightFlight[]> {
 
   const body = await res.json();
   const flights: ForeFlightFlight[] = body.flights ?? body;
-  foreFlightCache = { data: flights, ts: now };
+
+  // Store in Redis (shared) + memory (local fallback)
+  if (redis) {
+    try { await redis.set(REDIS_KEY, flights, { ex: REDIS_TTL_SEC }); } catch { /* ignore */ }
+  }
+  memCache = { data: flights, ts: now };
   return flights;
 }
 

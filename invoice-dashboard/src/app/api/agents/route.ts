@@ -37,7 +37,7 @@ export async function POST(req: NextRequest) {
   if (!isAuthed(auth)) return auth.error;
 
   // 2. Rate limit
-  if (isRateLimited(auth.userId, 10)) {
+  if (await isRateLimited(auth.userId, 10)) {
     return NextResponse.json(
       { error: "Rate limit exceeded" },
       { status: 429 },

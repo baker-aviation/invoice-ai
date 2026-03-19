@@ -19,7 +19,8 @@ export async function GET(req: NextRequest) {
       tail: sp.get("tail") || undefined,
     });
     return NextResponse.json(data);
-  } catch {
+  } catch (err) {
+    console.error("[invoices] search failed:", err instanceof Error ? err.message : err);
     return NextResponse.json({ ok: false, error: "Failed to fetch invoices" }, { status: 500 });
   }
 }

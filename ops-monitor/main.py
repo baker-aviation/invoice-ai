@@ -2401,10 +2401,14 @@ def cleanup():
 
     Retention policy:
       - swim_notams          → 1 day  (raw SWIM feed, replaced on reconnect)
+      - swim_positions       → 7 days (ADS-B position reports, queried with 24h window)
+      - flight_events        → 7 days (FA webhook events)
       - ops_alerts NOTAM_*   → 1 day  (rebuilt by check_notams every 30 min)
       - ops_alerts TFR_*     → 1 day  (rebuilt by check_notams every 30 min)
       - ops_alerts SWIM_*    → 7 days (flight events / diversions)
       - ops_alerts MX_NOTE   → 30 days (maintenance notes, kept for reference)
+      - pipeline_runs        → 7 days (execution logs)
+      - salesperson_notifications_sent → 30 days (dedup records)
     """
     supa = sb()
     now = datetime.now(timezone.utc)
@@ -2413,8 +2417,10 @@ def cleanup():
     cutoffs = {
         "swim_notams_1d": now - timedelta(days=1),
         "notam_alerts_1d": now - timedelta(days=1),
+        "7d": now - timedelta(days=7),
         "swim_alerts_7d": now - timedelta(days=7),
         "mx_alerts_30d": now - timedelta(days=30),
+        "30d": now - timedelta(days=30),
     }
 
     # swim_notams — 1 day
@@ -2441,6 +2447,30 @@ def cleanup():
         "alert_type", "MX_NOTE"
     ).lt("created_at", cutoffs["mx_alerts_30d"].isoformat()).execute()
     deleted["ops_alerts_mx_note"] = len(r.data or [])
+
+    # swim_positions — 7 days
+    r = supa.table("swim_positions").delete().lt(
+        "event_time", cutoffs["7d"].isoformat()
+    ).execute()
+    deleted["swim_positions"] = len(r.data or [])
+
+    # flight_events — 7 days
+    r = supa.table("flight_events").delete().lt(
+        "received_at", cutoffs["7d"].isoformat()
+    ).execute()
+    deleted["flight_events"] = len(r.data or [])
+
+    # pipeline_runs — 7 days
+    r = supa.table("pipeline_runs").delete().lt(
+        "started_at", cutoffs["7d"].isoformat()
+    ).execute()
+    deleted["pipeline_runs"] = len(r.data or [])
+
+    # salesperson_notifications_sent — 30 days
+    r = supa.table("salesperson_notifications_sent").delete().lt(
+        "sent_at", cutoffs["30d"].isoformat()
+    ).execute()
+    deleted["salesperson_notifications_sent"] = len(r.data or [])
 
     total = sum(deleted.values())
     print(f"[cleanup] deleted {total} rows: {deleted}", flush=True)

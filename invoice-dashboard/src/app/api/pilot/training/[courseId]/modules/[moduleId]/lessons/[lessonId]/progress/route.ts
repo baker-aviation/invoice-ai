@@ -15,7 +15,7 @@ export async function POST(
   const auth = await requireAuth(req);
   if (!isAuthed(auth)) return auth.error;
 
-  if (isRateLimited(auth.userId, 30)) {
+  if (await isRateLimited(auth.userId, 30)) {
     return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
 

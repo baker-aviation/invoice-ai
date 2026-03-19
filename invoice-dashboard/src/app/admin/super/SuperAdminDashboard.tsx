@@ -167,8 +167,11 @@ export default function SuperAdminDashboard() {
 
   useEffect(() => {
     fetchData();
-    const id = setInterval(fetchData, 60_000); // refresh every minute
-    return () => clearInterval(id);
+    const jitter = () => 60_000 + Math.random() * 10_000; // 1 min + 0-10s jitter
+    let tid: ReturnType<typeof setTimeout>;
+    const tick = () => { fetchData(); tid = setTimeout(tick, jitter()); };
+    tid = setTimeout(tick, jitter());
+    return () => clearTimeout(tid);
   }, [fetchData]);
 
   async function triggerPipeline(slug: string) {
