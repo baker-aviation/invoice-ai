@@ -1953,16 +1953,26 @@ export default function FuelPricesTable({
                         </div>
                         {row.vendorQuotes.length > 1 ? (
                           <div className="mt-0.5 space-y-0">
-                            {row.vendorQuotes.map((q) => (
-                              <div key={q.fboVendor} className="flex items-center gap-1.5 text-[10px]">
-                                <span className="text-gray-400 truncate max-w-[100px]">{q.fboVendor}</span>
-                                <span className="font-mono text-gray-500">{fmt$(q.currentPrice)}</span>
-                                <span className="text-gray-300">{q.volumeTier}</span>
-                              </div>
-                            ))}
+                            {row.vendorQuotes.map((q) => {
+                              const isFboDirect = row.canonicalBrand
+                                ? FBO_BRAND_PATTERNS.some(([pat, brand]) => brand === row.canonicalBrand && pat.test(q.fboVendor))
+                                : false;
+                              return (
+                                <div key={q.fboVendor} className="flex items-center gap-1.5 text-[10px]">
+                                  <span className={`truncate max-w-[100px] ${isFboDirect ? "text-indigo-600 font-semibold" : "text-gray-400"}`}>{q.fboVendor}</span>
+                                  {isFboDirect && <span className="text-[8px] font-bold px-1 py-px rounded bg-indigo-100 text-indigo-700 shrink-0">FBO</span>}
+                                  <span className="font-mono text-gray-500">{fmt$(q.currentPrice)}</span>
+                                  <span className="text-gray-300">{q.volumeTier}</span>
+                                </div>
+                              );
+                            })}
                           </div>
                         ) : (
-                          <div className="text-[10px] text-gray-400 truncate">{row.fboVendor}</div>
+                          <div className="text-[10px] text-gray-400 truncate">
+                            {row.fboVendor}
+                            {row.canonicalBrand && FBO_BRAND_PATTERNS.some(([pat, brand]) => brand === row.canonicalBrand && pat.test(row.fboVendor))
+                              && <span className="ml-1 text-[8px] font-bold px-1 py-px rounded bg-indigo-100 text-indigo-700">FBO</span>}
+                          </div>
                         )}
                       </td>
                       <td className="px-4 py-2.5 whitespace-nowrap text-xs text-gray-500">{row.volumeTier}</td>
