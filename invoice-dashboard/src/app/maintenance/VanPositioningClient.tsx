@@ -736,9 +736,9 @@ function computeAllDayArrivals(allFlights: Flight[], date: string): VanFlightIte
     const ft = inferFlightType(f);
     const cat = getFilterCategory(ft);
     if (cat === "other") return false;
-    const iata = f.arrival_icao.replace(/^K/, "");
-    const info = getAirportInfo(iata);
-    return !!(info && isContiguous48(info.state));
+    // Allow all arrivals including international — they show in unassigned with a tag
+    // (computeZoneItems still filters to contiguous 48 for auto van assignment)
+    return true;
   });
 
   const rawItems = arrivalsToday
@@ -3650,6 +3650,7 @@ function ScheduleTab({
                         const cat = getFilterCategory(ft);
                         const isMaint = dep === arrIcao;
                         const nearest = findNearestVan(item.arrFlight.arrival_icao);
+                        const isInternational = !item.airportInfo || !isContiguous48(item.airportInfo.state ?? "");
                         return (
                           <div
                             key={item.arrFlight.id}
@@ -3660,6 +3661,9 @@ function ScheduleTab({
                             <div className="flex items-center gap-2 text-xs text-gray-600 min-w-0">
                               <span className="font-mono font-medium">{dep} → {arrIcao}</span>
                               <span>{fmtUtcHM(item.arrFlight.scheduled_departure, item.arrFlight.departure_icao)}{item.arrFlight.scheduled_arrival ? ` – ${fmtUtcHM(item.arrFlight.scheduled_arrival, item.arrFlight.arrival_icao)}` : ""}</span>
+                              {isInternational && (
+                                <span className="rounded px-1 py-0.5 text-[10px] font-medium bg-blue-50 text-blue-600">International</span>
+                              )}
                               {ft && (
                                 <span className={`rounded px-1 py-0.5 text-[10px] font-medium ${
                                   isMaint ? "bg-orange-50 text-orange-600"
