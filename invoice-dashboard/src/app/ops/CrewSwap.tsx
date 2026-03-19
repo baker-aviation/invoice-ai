@@ -95,6 +95,46 @@ type SwapAlert = {
   acknowledged: boolean;
 };
 
+type SavedPlan = {
+  id: string;
+  swap_date: string;
+  version: number;
+  status: string;
+  plan_data: SwapPlanResult;
+  swap_assignments: Record<string, SwapAssignment> | null;
+  oncoming_pool: OncomingPool | null;
+  strategy: string | null;
+  total_cost: number | null;
+  solved_count: number | null;
+  unsolved_count: number | null;
+  created_by: string | null;
+  created_at: string;
+  notes: string | null;
+};
+
+type PlanImpact = {
+  id: string;
+  alert_id: string;
+  tail_number: string;
+  affected_crew: { name: string; role: string; direction: string; detail: string }[];
+  severity: "critical" | "warning" | "info";
+  resolved: boolean;
+};
+
+type PlanVersion = {
+  id: string;
+  swap_date: string;
+  version: number;
+  status: string;
+  total_cost: number | null;
+  solved_count: number | null;
+  unsolved_count: number | null;
+  strategy: string | null;
+  created_by: string | null;
+  created_at: string;
+  notes: string | null;
+};
+
 // Matches CrewSwapRow from swapOptimizer.ts
 type CrewSwapRow = {
   name: string;
@@ -303,8 +343,8 @@ function SwapSheetRow({ row }: { row: CrewSwapRow }) {
   );
 }
 
-function SwapSheet({ rows, view }: { rows: CrewSwapRow[]; view: "role" | "aircraft" }) {
-  if (view === "aircraft") return <SwapSheetByTail rows={rows} />;
+function SwapSheet({ rows, view, impacts }: { rows: CrewSwapRow[]; view: "role" | "aircraft"; impacts?: PlanImpact[] }) {
+  if (view === "aircraft") return <SwapSheetByTail rows={rows} impacts={impacts} />;
   return <SwapSheetByRole rows={rows} />;
 }
 
@@ -361,7 +401,7 @@ function SwapSheetByRole({ rows }: { rows: CrewSwapRow[] }) {
   );
 }
 
-function SwapSheetByTail({ rows }: { rows: CrewSwapRow[] }) {
+function SwapSheetByTail({ rows, impacts }: { rows: CrewSwapRow[]; impacts?: PlanImpact[] }) {
   // Group by tail number
   const byTail = new Map<string, CrewSwapRow[]>();
   for (const r of rows) {
@@ -450,8 +490,10 @@ function SwapSheetByTail({ rows }: { rows: CrewSwapRow[] }) {
           );
         }
 
+        const tailImpacts = impacts?.filter((i) => i.tail_number === tail && !i.resolved) ?? [];
+
         return (
-          <div key={tail} className="rounded-lg border bg-white overflow-hidden">
+          <div key={tail} className={`rounded-lg border bg-white overflow-hidden ${tailImpacts.some(i => i.severity === "critical") ? "ring-2 ring-red-300" : ""}`}>
             {/* Tail header */}
             <div className="px-4 py-2 bg-gray-50 border-b flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -467,6 +509,13 @@ function SwapSheetByTail({ rows }: { rows: CrewSwapRow[] }) {
                 </span>
               </div>
               <div className="flex items-center gap-3">
+                {tailImpacts.length > 0 && (
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${
+                    tailImpacts.some(i => i.severity === "critical") ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"
+                  }`}>
+                    {tailImpacts.length} impact{tailImpacts.length > 1 ? "s" : ""}
+                  </span>
+                )}
                 {gapMinutes !== null && (
                   <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
                     hasGap ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"
@@ -479,6 +528,24 @@ function SwapSheetByTail({ rows }: { rows: CrewSwapRow[] }) {
                 )}
               </div>
             </div>
+
+            {/* Impact banners */}
+            {tailImpacts.length > 0 && (
+              <div className="px-4 py-2 space-y-1 border-b" style={{ background: tailImpacts.some(i => i.severity === "critical") ? "#fef2f2" : "#fffbeb" }}>
+                {tailImpacts.map((imp) => (
+                  <div key={imp.id} className="text-xs">
+                    <span className={`font-bold ${imp.severity === "critical" ? "text-red-700" : "text-amber-700"}`}>
+                      {imp.severity === "critical" ? "CRITICAL" : "WARNING"}:
+                    </span>
+                    {imp.affected_crew.map((c, ci) => (
+                      <span key={ci} className="ml-2 text-gray-700">
+                        {c.name} ({c.role} {c.direction}): {c.detail}
+                      </span>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            )}
 
             {/* Crew grid: oncoming on left, offgoing on right */}
             <div className="grid grid-cols-2 divide-x">
@@ -552,6 +619,17 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
   const [excludedTails, setExcludedTails] = useState<Set<string>>(new Set());
   // Phase 5-6: Strategy
   const [strategy, setStrategy] = useState<"offgoing_first" | "oncoming_first">("offgoing_first");
+  // Plan persistence
+  const [savedPlanMeta, setSavedPlanMeta] = useState<{ id: string; version: number; created_at: string } | null>(null);
+  const [savingPlan, setSavingPlan] = useState(false);
+  const [loadingPlan, setLoadingPlan] = useState(false);
+  // Impact detection
+  const [planImpacts, setPlanImpacts] = useState<PlanImpact[]>([]);
+  const [checkingImpacts, setCheckingImpacts] = useState(false);
+  // Plan history
+  const [planVersions, setPlanVersions] = useState<PlanVersion[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
+  const [loadingVersion, setLoadingVersion] = useState(false);
 
   async function exportToImage() {
     if (!swapPlanRef.current) return;
@@ -861,6 +939,170 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
       });
       await loadAlerts();
     } catch { /* ignore */ }
+  }
+
+  // Load saved plan for selected Wednesday
+  const loadSavedPlan = useCallback(async () => {
+    setLoadingPlan(true);
+    try {
+      const dateStr = selectedWed.toISOString().slice(0, 10);
+      const res = await fetch(`/api/crew/swap-plan?swap_date=${dateStr}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.plan) {
+        const plan = data.plan as SavedPlan;
+        setSwapPlan(plan.plan_data);
+        setSavedPlanMeta({ id: plan.id, version: plan.version, created_at: plan.created_at });
+        if (plan.swap_assignments) {
+          setSwapAssignments(plan.swap_assignments);
+          try { localStorage.setItem("swap_assignments", JSON.stringify(plan.swap_assignments)); } catch {}
+        }
+        if (plan.oncoming_pool) {
+          setOncomingPool(plan.oncoming_pool);
+          try { localStorage.setItem("oncoming_pool", JSON.stringify(plan.oncoming_pool)); } catch {}
+        }
+        if (plan.strategy) {
+          setStrategy(plan.strategy as "offgoing_first" | "oncoming_first");
+        }
+        setPlanImpacts(data.impacts ?? []);
+      } else {
+        setSavedPlanMeta(null);
+        setPlanImpacts([]);
+      }
+    } catch { /* ignore */ }
+    finally { setLoadingPlan(false); }
+  }, [selectedWed]);
+
+  useEffect(() => { loadSavedPlan(); }, [loadSavedPlan]);
+
+  // Save current plan
+  async function savePlan() {
+    if (!swapPlan) return;
+    setSavingPlan(true);
+    try {
+      const res = await fetch("/api/crew/swap-plan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          swap_date: selectedWed.toISOString().slice(0, 10),
+          plan_data: swapPlan,
+          swap_assignments: swapAssignments,
+          oncoming_pool: oncomingPool,
+          strategy,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setSavedPlanMeta({ id: data.id, version: data.version, created_at: data.created_at });
+      }
+    } catch { /* ignore */ }
+    finally { setSavingPlan(false); }
+  }
+
+  // Check impacts
+  async function checkImpacts() {
+    setCheckingImpacts(true);
+    try {
+      const res = await fetch("/api/crew/swap-plan/impact", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ swap_date: selectedWed.toISOString().slice(0, 10) }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setPlanImpacts(data.impacts?.map((imp: PlanImpact & { id?: string }, i: number) => ({
+          ...imp,
+          id: imp.id ?? `temp-${i}`,
+          resolved: false,
+        })) ?? []);
+      }
+    } catch { /* ignore */ }
+    finally { setCheckingImpacts(false); }
+  }
+
+  // Auto-check impacts when plan is loaded and there are unacknowledged alerts
+  useEffect(() => {
+    if (savedPlanMeta && alertCount > 0 && !checkingImpacts) {
+      checkImpacts();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [savedPlanMeta, alertCount]);
+
+  // Load plan version history
+  async function loadPlanHistory() {
+    try {
+      const dateStr = selectedWed.toISOString().slice(0, 10);
+      const res = await fetch(`/api/crew/swap-plan?swap_date=${dateStr}&version=all`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setPlanVersions(data.versions ?? []);
+    } catch { /* ignore */ }
+  }
+
+  // Load a specific historical version (re-fetches the full plan from the server)
+  async function loadVersion(versionId: string) {
+    setLoadingVersion(true);
+    try {
+      // We need to fetch the full plan data. The history endpoint only returns metadata.
+      // For now, re-fetch active plan. If user wants a specific version, they would need
+      // to be able to restore it. We'll implement restore by re-saving the version's data.
+      // For MVP, just show version list. Full restore is a future enhancement.
+      setLoadingVersion(false);
+      console.log("Load version:", versionId);
+    } catch { /* ignore */ }
+    finally { setLoadingVersion(false); }
+  }
+
+  // Re-optimize only affected tails
+  async function reoptimizeAffected() {
+    if (!swapPlan || planImpacts.length === 0) return;
+    const affectedTails = new Set(planImpacts.filter(i => !i.resolved).map(i => i.tail_number));
+    if (affectedTails.size === 0) return;
+
+    // Lock all tails that are NOT affected
+    const allTails = [...new Set(swapPlan.rows.map(r => r.tail_number))];
+    const lockTails = allTails.filter(t => !affectedTails.has(t));
+    const lockedRows = swapPlan.rows.filter(r => !affectedTails.has(r.tail_number));
+
+    setOptimizing(true);
+    setOptimizeError(null);
+    try {
+      let filteredAssignments = swapAssignments;
+      if (filteredAssignments && excludedTails.size > 0) {
+        filteredAssignments = Object.fromEntries(
+          Object.entries(filteredAssignments).filter(([tail]) => !excludedTails.has(tail))
+        );
+      }
+      const res = await fetch("/api/crew/optimize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          swap_date: selectedWed.toISOString().slice(0, 10),
+          swap_assignments: filteredAssignments ?? undefined,
+          oncoming_pool: oncomingPool ?? undefined,
+          strategy,
+          lock_tails: lockTails,
+          locked_rows: lockedRows,
+        }),
+      });
+      const text = await res.text();
+      let data;
+      try { data = JSON.parse(text); } catch {
+        setOptimizeError(`Server error: ${text.slice(0, 200)}`);
+        return;
+      }
+      if (!res.ok) {
+        setOptimizeError(data.error ?? "Re-optimization failed");
+      } else {
+        setSwapPlan(data);
+        // Clear impacts since we re-optimized
+        setPlanImpacts([]);
+      }
+    } catch (e) {
+      setOptimizeError(e instanceof Error ? e.message : "Re-optimization failed");
+    } finally {
+      setOptimizing(false);
+    }
   }
 
   // Safe JSON parse — Vercel timeouts return HTML like "An error occurred..."
@@ -1529,6 +1771,15 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
                 >
                   Export Excel
                 </button>
+                <button
+                  onClick={savePlan}
+                  disabled={savingPlan}
+                  className={`px-3 py-1.5 text-xs font-medium border rounded-lg ${
+                    savingPlan ? "bg-gray-100 text-gray-400" : "bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border-emerald-200"
+                  }`}
+                >
+                  {savingPlan ? "Saving..." : savedPlanMeta ? `Update Plan (v${savedPlanMeta.version + 1})` : "Save Plan"}
+                </button>
               </>
             )}
           </div>
@@ -1578,7 +1829,48 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
                   </span>
                 )}
               </div>
+              <div className="flex items-center gap-3">
+                {savedPlanMeta && (
+                  <span className="text-xs text-green-600">
+                    Saved v{savedPlanMeta.version} — {new Date(savedPlanMeta.created_at).toLocaleString(undefined, { weekday: "short", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                  </span>
+                )}
+                {planImpacts.filter(i => !i.resolved).length > 0 && (
+                  <span className="text-xs font-bold text-red-700 px-2 py-0.5 rounded bg-red-100">
+                    {planImpacts.filter(i => i.severity === "critical").length} critical / {planImpacts.filter(i => !i.resolved).length} impacts
+                  </span>
+                )}
+              </div>
             </div>
+
+            {/* Impact action bar */}
+            {planImpacts.filter(i => !i.resolved).length > 0 && (
+              <div className="px-4 py-2 bg-red-50 border-b flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <span className="text-xs font-semibold text-red-700">
+                    Schedule changes detected since last save
+                  </span>
+                  <button
+                    onClick={checkImpacts}
+                    disabled={checkingImpacts}
+                    className="px-2 py-1 text-[10px] font-medium rounded bg-red-100 text-red-700 hover:bg-red-200"
+                  >
+                    {checkingImpacts ? "Checking..." : "Refresh Impacts"}
+                  </button>
+                </div>
+                {planImpacts.some(i => i.severity === "critical" && !i.resolved) && (
+                  <button
+                    onClick={reoptimizeAffected}
+                    disabled={optimizing}
+                    className={`px-3 py-1.5 text-xs font-medium rounded-lg ${
+                      optimizing ? "bg-gray-100 text-gray-400" : "bg-red-600 text-white hover:bg-red-700"
+                    }`}
+                  >
+                    {optimizing ? "Re-optimizing..." : `Re-optimize Affected (${new Set(planImpacts.filter(i => !i.resolved).map(i => i.tail_number)).size} tails)`}
+                  </button>
+                )}
+              </div>
+            )}
 
             {/* Two-pass cost comparison */}
             {swapPlan.two_pass && (
@@ -1640,17 +1932,52 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
               )
             )}
 
+            {/* Plan history (collapsible) */}
+            {savedPlanMeta && (
+              <div className="border-b">
+                <button
+                  onClick={() => { setShowHistory(!showHistory); if (!showHistory) loadPlanHistory(); }}
+                  className="w-full px-4 py-1.5 text-[10px] text-gray-500 hover:bg-gray-50 flex items-center justify-between"
+                >
+                  <span>Plan History</span>
+                  <span>{showHistory ? "Hide" : "Show"}</span>
+                </button>
+                {showHistory && planVersions.length > 0 && (
+                  <div className="px-4 pb-2 space-y-1">
+                    {planVersions.map((v) => (
+                      <div key={v.id} className={`flex items-center justify-between text-xs py-1 px-2 rounded ${v.status === "active" ? "bg-green-50" : "bg-gray-50"}`}>
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium text-gray-700">v{v.version}</span>
+                          <span className={`px-1 py-0.5 rounded text-[9px] ${v.status === "active" ? "bg-green-100 text-green-700" : "bg-gray-200 text-gray-500"}`}>
+                            {v.status}
+                          </span>
+                          <span className="text-gray-500">
+                            {new Date(v.created_at).toLocaleString(undefined, { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 text-gray-500">
+                          <span>${(v.total_cost ?? 0).toLocaleString()}</span>
+                          <span>{v.solved_count ?? 0}/{(v.solved_count ?? 0) + (v.unsolved_count ?? 0)} solved</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* The swap sheet */}
-            <SwapSheet rows={swapPlan.rows} view={swapView} />
+            <SwapSheet rows={swapPlan.rows} view={swapView} impacts={planImpacts} />
           </div>
         )}
 
         {!swapPlan && !optimizeError && (
           <div className="px-4 py-6 text-center text-sm text-gray-400">
-            {routeStatus && routeStatus.total_routes > 0
-              ? `${routeStatus.total_routes} routes cached for ${routeStatus.crew_count} crew. Click Optimize to run.`
-              : `Upload roster then click Refresh Routes to pre-compute routes for ${selectedWed.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`
-            }
+            {loadingPlan ? "Loading saved plan..." : (
+              routeStatus && routeStatus.total_routes > 0
+                ? `${routeStatus.total_routes} routes cached for ${routeStatus.crew_count} crew. Click Optimize to run.`
+                : `Upload roster then click Refresh Routes to pre-compute routes for ${selectedWed.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`
+            )}
           </div>
         )}
       </div>
