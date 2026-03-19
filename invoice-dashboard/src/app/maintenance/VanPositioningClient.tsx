@@ -3432,9 +3432,11 @@ function ScheduleTab({
                 return (
                   <div
                     key={tailKey}
-                    className="px-4 py-2 hover:bg-red-50/50"
+                    draggable
+                    onDragStart={(e) => handleDragStart(e, primaryItem.arrFlight.id, 0)}
+                    className="px-4 py-2 cursor-grab active:cursor-grabbing hover:bg-red-50/50"
                   >
-                    {/* Header: tail number + badges */}
+                    {/* Header: tail number + badges + assign dropdown */}
                     <div className="flex items-center justify-between gap-4 mb-1">
                       <div className="flex items-center gap-2 flex-wrap">
                         <div className="w-2.5 h-2.5 rounded-full bg-red-300 flex-shrink-0" />
@@ -3446,23 +3448,21 @@ function ScheduleTab({
                           </span>
                         )}
                       </div>
-                      {tail && tail !== "_no_tail" && (
-                        <button
-                          onClick={() => onMarkWontSee(tail)}
-                          className="text-[10px] font-medium text-gray-400 hover:text-gray-700 hover:bg-gray-100 border border-gray-200 rounded px-2 py-1 shrink-0 transition-colors"
-                          title="Mark as reviewed — won't be seen today"
-                        >
-                          Won&apos;t See
-                        </button>
-                      )}
-                    </div>
-                    {/* Assign to van — button row */}
-                    <div className="flex items-center gap-1 flex-wrap mt-1 mb-1">
-                      <span className="text-[10px] text-gray-400 mr-1">Assign to:</span>
-                      {FIXED_VAN_ZONES.map((z) => (
-                        <button
-                          key={z.vanId}
-                          onClick={() => {
+                      {/* Select wrapped in iframe-like isolation to avoid parent drag interference */}
+                      <div
+                        draggable={false}
+                        onDragStart={(e) => { e.stopPropagation(); e.preventDefault(); }}
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onPointerDown={(e) => e.stopPropagation()}
+                        className="shrink-0"
+                      >
+                        <select
+                          className="text-xs border border-red-200 rounded-lg px-2 py-1.5 bg-white text-red-700 font-medium cursor-pointer hover:border-red-400 focus:outline-none focus:ring-2 focus:ring-red-300"
+                          defaultValue=""
+                          onChange={(e) => {
+                            const vanId = Number(e.target.value);
+                            if (!vanId) return;
+                            e.target.value = ""; // reset dropdown
                             setRemovals((prev) => {
                               if (!prev.has(primaryItem.arrFlight.id)) return prev;
                               const next = new Set(prev);
@@ -3471,16 +3471,28 @@ function ScheduleTab({
                             });
                             setOverrides((prev) => {
                               const next = new Map(prev);
-                              next.set(primaryItem.arrFlight.id, z.vanId);
+                              next.set(primaryItem.arrFlight.id, vanId);
                               return next;
                             });
                           }}
-                          className="text-[10px] font-medium px-1.5 py-0.5 rounded border border-gray-200 text-gray-600 hover:bg-blue-50 hover:border-blue-300 hover:text-blue-700 transition-colors"
-                          title={z.name}
                         >
-                          V{z.vanId}
+                          <option value="">Assign…</option>
+                          {FIXED_VAN_ZONES.map((z) => (
+                            <option key={z.vanId} value={z.vanId}>
+                              V{z.vanId} – {z.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      {tail && tail !== "_no_tail" && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); onMarkWontSee(tail); }}
+                          className="text-[10px] font-medium text-gray-400 hover:text-gray-700 hover:bg-gray-100 border border-gray-200 rounded px-2 py-1 shrink-0 transition-colors"
+                          title="Mark as reviewed — won't be seen today"
+                        >
+                          Won&apos;t See
                         </button>
-                      ))}
+                      )}
                     </div>
                     {/* All legs + flying again */}
                     <div className="ml-5 space-y-0">
