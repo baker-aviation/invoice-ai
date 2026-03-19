@@ -140,6 +140,7 @@ export async function POST(req: NextRequest) {
   const auth = await requireAuth(req);
   if (!isAuthed(auth)) return auth.error;
 
+  try {
   const body = await req.json().catch(() => ({}));
   const targetDate = (body.date as string) || tomorrow();
 
@@ -204,8 +205,13 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  // 3. Get fuel prices
-  const advertisedPrices = await fetchAdvertisedPrices({ recentWeeks: 4 });
+  // 3. Get fuel prices (gracefully handle if none exist)
+  let advertisedPrices: Awaited<ReturnType<typeof fetchAdvertisedPrices>> = [];
+  try {
+    advertisedPrices = await fetchAdvertisedPrices({ recentWeeks: 4 });
+  } catch (err) {
+    console.warn("[fuel-planning/generate] Could not fetch advertised prices:", err);
+  }
   const bestRates = buildBestRateByAirport(advertisedPrices);
 
   // 4. Build plans per tail
@@ -344,6 +350,10 @@ export async function POST(req: NextRequest) {
     fuelPriceCount: advertisedPrices.length,
     shutdownDataDate: postFlightRows[0]?.flight_date ?? null,
   });
+  } catch (err) {
+    console.error("[fuel-planning/generate] Unhandled error:", err);
+    return NextResponse.json({ error: String(err) }, { status: 500 });
+  }
 }
 
 function tomorrow(): string {

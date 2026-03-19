@@ -119,7 +119,14 @@ export default function TankeringDashboard() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ date: targetDate }),
       });
-      const data = await res.json();
+      const text = await res.text();
+      let data: GenerateResponse;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        setError(`Server returned non-JSON response (HTTP ${res.status}): ${text.slice(0, 200)}`);
+        return;
+      }
       if (!res.ok) {
         setError(data.error ?? `Generate failed: HTTP ${res.status}`);
         return;
