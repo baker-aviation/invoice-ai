@@ -1649,9 +1649,13 @@ function AircraftCompactRow({
           <span className="text-xs text-gray-400">· {fmtDriveTime(distKm)}</span>
           <span className={`text-xs font-semibold rounded-full px-2 py-0.5 ${turnBadgeClass(turnBadgeLabel)}`}>{turnBadgeLabel}</span>
           {mxNotes.filter((n) => !isMel(n) && (n.assigned_van === zone.vanId || !n.assigned_van)).length > 0 && (
-            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-orange-100 text-orange-700">
+            <button
+              onClick={(e) => { e.stopPropagation(); setDetailOpen((v) => !v); }}
+              className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-orange-100 text-orange-700 hover:bg-orange-200 transition-colors cursor-pointer"
+              title={mxNotes.filter((n) => !isMel(n) && (n.assigned_van === zone.vanId || !n.assigned_van)).map((n) => `${n.airport_icao ?? ""} — ${n.subject || n.body || n.description || ""}`).join("\n")}
+            >
               {mxNotes.filter((n) => !isMel(n) && (n.assigned_van === zone.vanId || !n.assigned_van)).length} MX
-            </span>
+            </button>
           )}
           {multiVisitVans && multiVisitVans.length >= 2 && (
             <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-700" title={`Also serviced by V${multiVisitVans.filter(v => v !== zone.vanId).join(", V")}`}>
