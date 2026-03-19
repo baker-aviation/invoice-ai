@@ -2536,8 +2536,9 @@ function ScheduleTab({
     }
 
     // Move overridden flights
+    console.log("[AOG Assign] overrides:", [...overrides.entries()].map(([k,v]) => k.substring(0,8) + "→V" + v).join(", "), "removals:", [...removals].map(r => r.substring(0,8)).join(", "));
     for (const [flightId, targetVanId] of overrides) {
-      if (removals.has(flightId)) continue; // removed trumps move
+      if (removals.has(flightId)) { console.log("[AOG Assign] SKIPPED", flightId.substring(0,8), "in removals!"); continue; }
 
       // Check if this flight is already in a van (from base items)
       let found = false;
@@ -2545,6 +2546,7 @@ function ScheduleTab({
         const idx = items.findIndex((item) => item.arrFlight.id === flightId);
         if (idx !== -1) {
           found = true;
+          console.log("[AOG Assign] FOUND in base V" + vanId, "→ moving to V" + targetVanId, "tail:", items[idx].arrFlight.tail_number);
           const [removed] = items.splice(idx, 1);
           if (vanId !== targetVanId) {
             const target = result.get(targetVanId) ?? [];
