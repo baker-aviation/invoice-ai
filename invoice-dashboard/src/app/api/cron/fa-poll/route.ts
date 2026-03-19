@@ -320,10 +320,26 @@ async function pollEnRoute(
     .select("tail")
     .in("status", ["En Route", "Diverted"]);
 
-  const tails = [...new Set((enRouteRows ?? []).map((r) => r.tail as string))];
+  const enRouteTails = new Set((enRouteRows ?? []).map((r) => r.tail as string));
+
+  // Also check tails with ICS flights scheduled to depart in the last 2h but not yet
+  // marked en-route in fa_flights. This closes the gap where FA's website shows
+  // "En Route" but our DB still has "Scheduled"/"Filed" from the last discovery poll.
+  const recentDepCutoff = new Date(Date.now() - 2 * 3600_000).toISOString();
+  const { data: recentDepRows } = await supa
+    .from("flights")
+    .select("tail_number")
+    .lt("scheduled_departure", new Date().toISOString())
+    .gt("scheduled_departure", recentDepCutoff);
+
+  for (const row of recentDepRows ?? []) {
+    if (row.tail_number) enRouteTails.add(row.tail_number);
+  }
+
+  const tails = [...enRouteTails];
 
   if (tails.length === 0) {
-    console.log("[FA Poll] No en-route flights found");
+    console.log("[FA Poll] No en-route or recently-departed flights found");
     return { tails: [], flights: 0, upserted: 0 };
   }
 
