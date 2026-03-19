@@ -1,6 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { requireAuth, requireAdmin, isAuthed, isRateLimited } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
+
+const CreateLessonSchema = z.object({
+  title: z.string().min(1).max(200),
+  lesson_type: z.enum(["video", "document", "quiz", "text"]),
+  content_html: z.string().max(50000).optional(),
+  sort_order: z.number().int().min(0).max(9999).optional(),
+  video_filename: z.string().max(255).optional(),
+  doc_filename: z.string().max(255).optional(),
+}).strip();
 
 /**
  * GET /api/pilot/training/[courseId]/modules/[moduleId]/lessons — list lessons
@@ -53,34 +63,23 @@ export async function POST(
     return NextResponse.json({ error: "Invalid module ID" }, { status: 400 });
   }
 
-  let body: {
-    title?: string;
-    lesson_type?: string;
-    content_html?: string;
-    sort_order?: number;
-    video_filename?: string;
-    doc_filename?: string;
-  };
+  let raw: unknown;
   try {
-    body = await req.json();
+    raw = await req.json();
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  const title = body.title?.trim();
-  if (!title) {
-    return NextResponse.json({ error: "Title is required" }, { status: 400 });
+  const parsed = CreateLessonSchema.safeParse(raw);
+  if (!parsed.success) {
+    return NextResponse.json({ error: "Validation failed", details: parsed.error.issues }, { status: 400 });
   }
 
-  const lessonType = body.lesson_type?.trim();
-  if (!lessonType || !["video", "document", "quiz", "text"].includes(lessonType)) {
-    return NextResponse.json({ error: "Invalid lesson_type" }, { status: 400 });
-  }
-
+  const body = parsed.data;
   const insert: Record<string, unknown> = {
     module_id: modId,
-    title,
-    lesson_type: lessonType,
+    title: body.title.trim(),
+    lesson_type: body.lesson_type,
     content_html: body.content_html?.trim() || null,
     sort_order: body.sort_order ?? 0,
   };
@@ -89,7 +88,7 @@ export async function POST(
 
   // Handle video presign
   const videoFilename = body.video_filename?.trim();
-  if (videoFilename && lessonType === "video") {
+  if (videoFilename && body.lesson_type === "video") {
     try {
       const { Storage } = await import("@google-cloud/storage");
       let storage: InstanceType<typeof Storage>;
@@ -130,7 +129,7 @@ export async function POST(
 
   // Handle document presign
   const docFilename = body.doc_filename?.trim();
-  if (docFilename && lessonType === "document") {
+  if (docFilename && body.lesson_type === "document") {
     try {
       const { Storage } = await import("@google-cloud/storage");
       let storage: InstanceType<typeof Storage>;

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { requireAdmin, isAuthed } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 import { buildSwapPlan, assignOncomingCrew, twoPassAssignAndOptimize, solveOffgoingFirst, type CrewMember, type FlightLeg, type AirportAlias, type SwapAssignment, type OncomingPool } from "@/lib/swapOptimizer";
@@ -6,6 +7,14 @@ import { DEFAULT_AIRPORT_ALIASES } from "@/lib/airportAliases";
 import { getRoutesForOptimizer } from "@/lib/pilotRoutes";
 import { detectCurrentRotation } from "@/lib/crewRotationDetect";
 import { getHasdataCacheForOptimizer } from "@/lib/hasdataCache";
+
+const OptimizeRequestSchema = z.object({
+  swap_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  strategy: z.enum(["offgoing_first", "oncoming_first"]).optional(),
+  swap_assignments: z.record(z.string(), z.any()).optional(),
+  oncoming_pool: z.any().optional(),
+  force_auto_detect: z.boolean().optional(),
+}).strip();
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60; // 1 min — no API calls, just DB reads + computation
@@ -29,17 +38,22 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-  const body = await req.json();
-  const swapDate = body.swap_date as string;
-  const strategy = (body.strategy as "offgoing_first" | "oncoming_first") ?? "oncoming_first";
-  // Accept swap_assignments directly from client (parsed from Excel upload)
-  const clientSwapAssignments = body.swap_assignments as Record<string, SwapAssignment> | undefined;
-  // Accept oncoming pool for crew-to-tail assignment
-  const clientOncomingPool = body.oncoming_pool as OncomingPool | undefined;
-
-  if (!swapDate || !/^\d{4}-\d{2}-\d{2}$/.test(swapDate)) {
-    return NextResponse.json({ error: "swap_date required (YYYY-MM-DD)" }, { status: 400 });
+  let raw: unknown;
+  try {
+    raw = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
+
+  const parsed = OptimizeRequestSchema.safeParse(raw);
+  if (!parsed.success) {
+    return NextResponse.json({ error: "Validation failed", details: parsed.error.issues }, { status: 400 });
+  }
+
+  const swapDate = parsed.data.swap_date;
+  const strategy = parsed.data.strategy ?? "oncoming_first";
+  const clientSwapAssignments = parsed.data.swap_assignments as Record<string, SwapAssignment> | undefined;
+  const clientOncomingPool = parsed.data.oncoming_pool as OncomingPool | undefined;
 
   const supa = createServiceClient();
 
@@ -113,7 +127,7 @@ export async function POST(req: NextRequest) {
   // 1. Client-provided (from Excel upload) — highest priority
   // 2. crew_rotations table — manual rotation tracking
   // 3. Auto-detect from JetInsight flights — scan who's flying each tail now
-  const forceAutoDetect = body.force_auto_detect === true;
+  const forceAutoDetect = parsed.data.force_auto_detect === true;
   let swapAssignments: Record<string, SwapAssignment> = {};
   let autoDetectedPool: OncomingPool | null = null;
   let rotationSource = "none";

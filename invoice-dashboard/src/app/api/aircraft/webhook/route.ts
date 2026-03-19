@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { timingSafeEqual } from "crypto";
 import { createServiceClient } from "@/lib/supabase/service";
 
 export const dynamic = "force-dynamic";
@@ -10,8 +11,15 @@ export const dynamic = "force-dynamic";
  * arrival, cancelled, diverted). We store the event in Supabase and
  * upsert the flight into the fa_flights table directly — no full FA re-poll needed.
  *
- * Auth: shared secret as query param — ?secret=<FLIGHTAWARE_WEBHOOK_SECRET>
+ * Auth: shared secret via header (preferred) or query param (legacy).
+ *   Header: x-webhook-secret: <FLIGHTAWARE_WEBHOOK_SECRET>
+ *   Query:  ?secret=<FLIGHTAWARE_WEBHOOK_SECRET>
  */
+
+function safeCompare(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(Buffer.from(a), Buffer.from(b));
+}
 
 export async function POST(req: NextRequest) {
   // Validate webhook secret (trim to guard against Vercel env var whitespace)
@@ -21,9 +29,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "not configured" }, { status: 503 });
   }
 
-  const reqSecret = req.nextUrl.searchParams.get("secret")?.trim() ?? null;
-  if (reqSecret !== secret) {
-    console.warn(`[FA Webhook] Secret mismatch — env len=${secret.length} req len=${reqSecret?.length ?? "null"} envStart=${secret.slice(0, 6)} reqStart=${reqSecret?.slice(0, 6) ?? "null"}`);
+  // Try header first (preferred), fall back to query param (legacy)
+  const headerSecret = req.headers.get("x-webhook-secret")?.trim() ?? null;
+  const querySecret = req.nextUrl.searchParams.get("secret")?.trim() ?? null;
+  const reqSecret = headerSecret ?? querySecret;
+
+  if (!reqSecret || !safeCompare(reqSecret, secret)) {
+    console.warn(`[FA Webhook] Auth failed — source=${headerSecret ? "header" : querySecret ? "query" : "none"}`);
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 

@@ -1,6 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { requireAuth, requireAdmin, isAuthed, isRateLimited } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
+
+const CreateQuestionSchema = z.object({
+  question: z.string().min(1).max(1000),
+  options: z.array(z.string().max(500)).min(2).max(10),
+  correct_answer: z.number().int().min(0),
+  sort_order: z.number().int().min(0).max(9999).optional(),
+}).strip();
+
+const SubmitAnswersSchema = z.object({
+  answers: z.record(z.string(), z.number().int().min(0)),
+}).strip();
 
 type RouteParams = { courseId: string; moduleId: string; lessonId: string };
 
@@ -63,29 +75,21 @@ export async function POST(
     return NextResponse.json({ error: "Invalid lesson ID" }, { status: 400 });
   }
 
-  let body: {
-    question?: string;
-    options?: string[];
-    correct_answer?: number;
-    sort_order?: number;
-  };
+  let raw: unknown;
   try {
-    body = await req.json();
+    raw = await req.json();
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  const question = body.question?.trim();
-  if (!question) {
-    return NextResponse.json({ error: "Question is required" }, { status: 400 });
+  const parsed = CreateQuestionSchema.safeParse(raw);
+  if (!parsed.success) {
+    return NextResponse.json({ error: "Validation failed", details: parsed.error.issues }, { status: 400 });
   }
 
-  if (!Array.isArray(body.options) || body.options.length < 2) {
-    return NextResponse.json({ error: "At least 2 options required" }, { status: 400 });
-  }
-
-  if (body.correct_answer === undefined || body.correct_answer < 0 || body.correct_answer >= body.options.length) {
-    return NextResponse.json({ error: "Invalid correct_answer index" }, { status: 400 });
+  const body = parsed.data;
+  if (body.correct_answer >= body.options.length) {
+    return NextResponse.json({ error: "correct_answer index out of range" }, { status: 400 });
   }
 
   const supa = createServiceClient();
@@ -93,7 +97,7 @@ export async function POST(
     .from("lms_quiz_questions")
     .insert({
       lesson_id: id,
-      question,
+      question: body.question.trim(),
       options: body.options,
       correct_answer: body.correct_answer,
       sort_order: body.sort_order ?? 0,
@@ -130,16 +134,19 @@ export async function PUT(
     return NextResponse.json({ error: "Invalid lesson ID" }, { status: 400 });
   }
 
-  let body: { answers?: Record<string, number> };
+  let raw: unknown;
   try {
-    body = await req.json();
+    raw = await req.json();
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  if (!body.answers || typeof body.answers !== "object") {
-    return NextResponse.json({ error: "answers object is required" }, { status: 400 });
+  const parsed = SubmitAnswersSchema.safeParse(raw);
+  if (!parsed.success) {
+    return NextResponse.json({ error: "Validation failed", details: parsed.error.issues }, { status: 400 });
   }
+
+  const body = parsed.data;
 
   const supa = createServiceClient();
 
