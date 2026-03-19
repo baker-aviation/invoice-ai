@@ -2015,8 +2015,12 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           // FA primary; SWIM supplements when FA hasn't detected takeoff yet
                           if (fiRouteMatch && (fi?.actual_arrival || fi?.status?.includes("Arrived") || fi?.status?.includes("Landed"))) {
                             status = "Arrived"; statusColor = "text-green-600 font-medium";
+                          } else if (arrivalPassed && fiRouteMatch && !fi?.actual_departure && !fi?.actual_arrival
+                            && !fi?.status?.includes("En Route") && !fi?.status?.includes("Landed")) {
+                            // FA has this flight filed/scheduled but never saw it depart
+                            status = "No Departure"; statusColor = "text-orange-600 font-bold";
                           } else if (arrivalPassed && !fiRouteMatch && faLoc && !fi?.actual_departure) {
-                            // Scheduled arrival passed, FA tracks this tail, but FA never saw this flight depart
+                            // No FA route match but FA tracks tail — flight never happened
                             status = "No Departure"; statusColor = "text-orange-600 font-bold";
                           } else if (arrivalPassed) {
                             status = "Arrived"; statusColor = "text-green-600 font-medium";
