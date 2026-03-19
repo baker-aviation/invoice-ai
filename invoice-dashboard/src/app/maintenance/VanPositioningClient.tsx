@@ -3450,6 +3450,8 @@ function ScheduleTab({
                         {/* Quickturn + Done-for-day badges hidden for unassigned aircraft */}
                       </div>
                       <select
+                        draggable={false}
+                        onMouseDown={(e) => e.stopPropagation()}
                         className="text-xs border border-red-200 rounded-lg px-2 py-1.5 bg-white text-red-700 font-medium cursor-pointer hover:border-red-400 focus:outline-none focus:ring-2 focus:ring-red-300 appearance-none"
                         style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 5l3 3 3-3' fill='none' stroke='%23b91c1c' stroke-width='1.5'/%3E%3C/svg%3E\")", backgroundRepeat: "no-repeat", backgroundPosition: "right 6px center", paddingRight: "22px" }}
                         value=""
@@ -3592,6 +3594,8 @@ function ScheduleTab({
                       <span className="text-xs bg-amber-100 text-amber-700 rounded px-1.5 py-0.5">No Schedule</span>
                     </div>
                     <select
+                      draggable={false}
+                      onMouseDown={(e) => e.stopPropagation()}
                       className="text-xs border border-amber-200 rounded-lg px-2 py-1.5 bg-white text-amber-700 font-medium cursor-pointer hover:border-amber-400 focus:outline-none focus:ring-2 focus:ring-amber-300 appearance-none"
                       style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 5l3 3 3-3' fill='none' stroke='%23b45309' stroke-width='1.5'/%3E%3C/svg%3E\")", backgroundRepeat: "no-repeat", backgroundPosition: "right 6px center", paddingRight: "22px" }}
                       value=""
