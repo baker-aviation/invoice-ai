@@ -46,6 +46,14 @@ export default async function VanPage({ params }: { params: Promise<{ vanId: str
 
   const mxNotes = await fetchMxNotes().catch(() => []);
 
+  // Fetch airport overrides from draft overrides (e.g. N201HR → VNY)
+  const { data: draftRow } = await supa
+    .from("van_draft_overrides")
+    .select("airport_overrides")
+    .eq("date", today)
+    .maybeSingle();
+  const airportOverrides: [string, string][] = (draftRow?.airport_overrides as [string, string][]) ?? [];
+
   // Build FBO lookup from trip_salespersons (tail:dest_icao → fbo name)
   const { data: fboRows } = await supa
     .from("trip_salespersons")
@@ -70,6 +78,7 @@ export default async function VanPage({ params }: { params: Promise<{ vanId: str
       publishedAt={publishedAtStr}
       mxNotes={mxNotes}
       fboMap={fboMap}
+      airportOverrides={airportOverrides}
     />
   );
 }

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, isAuthed, isRateLimited } from "@/lib/api-auth";
 import { buildVanSlackHeaderBlocks, buildAircraftSlackBlocks, buildVanSlackFallbackText, buildAircraftFallbackText, type VanSlackItem } from "@/lib/vanSlackBlocks";
-import { createServiceClient } from "@/lib/supabase/service";
+
 
 /**
  * POST /api/vans/share-slack
@@ -114,22 +114,9 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Save the shared schedule to DB for persistence
-    try {
-      const supa = createServiceClient();
-      await supa.from("van_published_schedules").upsert(
-        {
-          van_id: vanId,
-          schedule_date: date,
-          flight_ids: items.map((i) => i.tail),
-          published_by: auth.userId,
-          published_at: new Date().toISOString(),
-        },
-        { onConflict: "van_id,schedule_date" },
-      );
-    } catch {
-      // Non-fatal — Slack messages were sent successfully
-    }
+    // Note: van_published_schedules is managed by "Update Schedule" (POST /api/vans/publish)
+    // which saves actual flight IDs. We don't overwrite it here since VanSlackItems only
+    // contain tail numbers, not flight IDs — saving those would break the van driver page.
 
     return NextResponse.json({ ok: true, ts: headerData.ts, channel: headerData.channel, aircraftCount: items.length });
   } catch (err) {
