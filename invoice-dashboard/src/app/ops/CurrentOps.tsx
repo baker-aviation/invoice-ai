@@ -2014,13 +2014,17 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           const faAtDest = faLoc && f.arrival_icao && posNorm(faLoc.icao) === posNorm(f.arrival_icao);
 
                           // FA primary; SWIM supplements when FA hasn't detected takeoff yet
+                          // "No Departure" only makes sense within ~2h of scheduled arrival.
+                          // After that, FA simply never tracked it (VFR, small airport, etc.) — assume arrived.
+                          const arrMs = arrivalDate ? arrivalDate.getTime() : 0;
+                          const noDepStale = arrMs > 0 && (now.getTime() - arrMs > 2 * 3600_000);
                           if (fiRouteMatch && (fi?.actual_arrival || fi?.status?.includes("Arrived") || fi?.status?.includes("Landed"))) {
                             status = "Arrived"; statusColor = "text-green-600 font-medium";
-                          } else if (arrivalPassed && fiRouteMatch && !fi?.actual_departure && !fi?.actual_arrival
+                          } else if (arrivalPassed && !noDepStale && fiRouteMatch && !fi?.actual_departure && !fi?.actual_arrival
                             && !fi?.status?.includes("En Route") && !fi?.status?.includes("Landed") && !faAtDest) {
                             // FA has this flight filed/scheduled but never saw it depart, and aircraft isn't at destination
                             status = "No Departure"; statusColor = "text-orange-600 font-bold";
-                          } else if (arrivalPassed && !fiRouteMatch && faLoc && !fi?.actual_departure && !faAtDest) {
+                          } else if (arrivalPassed && !noDepStale && !fiRouteMatch && faLoc && !fi?.actual_departure && !faAtDest) {
                             // No FA route match but FA tracks tail, aircraft isn't at destination
                             status = "No Departure"; statusColor = "text-orange-600 font-bold";
                           } else if (arrivalPassed) {
@@ -2409,13 +2413,16 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                 const faAtDest2 = faLoc2 && f.arrival_icao && posNorm2(faLoc2.icao) === posNorm2(f.arrival_icao);
 
                 // FA primary; SWIM supplements when FA hasn't detected takeoff yet
+                // "No Departure" only valid within ~2h of scheduled arrival — after that assume arrived
+                const arrMs2 = arrivalDate ? arrivalDate.getTime() : 0;
+                const noDepStale2 = arrMs2 > 0 && (now.getTime() - arrMs2 > 2 * 3600_000);
                 if (fiRouteMatch && (fi?.actual_arrival || fi?.status?.includes("Arrived") || fi?.status?.includes("Landed"))) {
                   status = "Arrived"; statusColor = "text-green-600 font-medium";
-                } else if (arrivalPassed && fiRouteMatch && !fi?.actual_departure && !fi?.actual_arrival
+                } else if (arrivalPassed && !noDepStale2 && fiRouteMatch && !fi?.actual_departure && !fi?.actual_arrival
                   && !fi?.status?.includes("En Route") && !fi?.status?.includes("Landed") && !faAtDest2) {
                   // FA has this flight filed/scheduled but never saw it depart, and aircraft isn't at destination
                   status = "No Departure"; statusColor = "text-orange-600 font-bold";
-                } else if (arrivalPassed && !fiRouteMatch && faLoc2 && !fi?.actual_departure && !faAtDest2) {
+                } else if (arrivalPassed && !noDepStale2 && !fiRouteMatch && faLoc2 && !fi?.actual_departure && !faAtDest2) {
                   // No FA route match but FA tracks tail, aircraft isn't at destination
                   status = "No Departure"; statusColor = "text-orange-600 font-bold";
                 } else if (arrivalPassed) {
