@@ -45,6 +45,8 @@ export type VanFlightItem = {
   airport:   string;    // IATA
   airportInfo: ReturnType<typeof getAirportInfo>;
   distKm:    number;
+  isTransitStop?: boolean;  // true if this is a short ground-time stop (not EOD)
+  isLastChance?: boolean;   // true if this is the last time this tail visits any van zone today
 };
 
 export type FlightInfoEntry = {
@@ -168,8 +170,57 @@ export function getFilterCategory(ft: string | null): string {
 // ---------------------------------------------------------------------------
 
 /**
+ * Check if a stop is the "last chance" to see this tail in ANY van zone today.
+ * Returns true if no later arrival for this tail on this date lands at an airport
+ * within any van zone's radius.
+ */
+function computeIsLastChance(
+  arrFlight: Flight,
+  allFlights: Flight[],
+  date: string,
+): boolean {
+  const tail = arrFlight.tail_number;
+  if (!tail) return true;
+
+  // All arrivals for this tail today, sorted by arrival time
+  const tailArrivalsToday = allFlights.filter(
+    (f) =>
+      f.tail_number === tail &&
+      f.arrival_icao &&
+      f.scheduled_arrival &&
+      isOnEtDate(f.scheduled_arrival, date),
+  );
+
+  // Find arrivals AFTER this one
+  const laterArrivals = tailArrivalsToday.filter(
+    (f) => (f.scheduled_arrival ?? "") > (arrFlight.scheduled_arrival ?? "") && f.id !== arrFlight.id,
+  );
+
+  if (laterArrivals.length === 0) return true; // no later arrivals = last chance by definition
+
+  // Check if any later arrival lands within ANY van zone
+  for (const f of laterArrivals) {
+    const iata = f.arrival_icao!.replace(/^K/, "");
+    const info = getAirportInfo(iata);
+    if (!info) continue;
+    for (const z of FIXED_VAN_ZONES) {
+      if (haversineKm(z.lat, z.lon, info.lat, info.lon) <= SCHEDULE_ARRIVAL_RADIUS_KM) {
+        return false; // there's a later arrival in a van zone — not last chance
+      }
+    }
+  }
+  return true; // no later arrivals land in any van zone
+}
+
+/**
  * Compute schedule items for a single zone.
  * Returns flights arriving within this zone's coverage radius on the given date.
+ *
+ * Smart transit filtering based on drive time and service opportunity:
+ * - Van drive <1hr (distKm < 80): Always show
+ * - Van drive 1-2hr (80-160km) + ground time >2hr: Show
+ * - Van drive 1-2hr + ground time <2hr: Only show if EOD or last chance
+ * - Van drive >2hr (distKm > 160): Only show if last chance
  */
 export function computeZoneItems(
   zone: (typeof FIXED_VAN_ZONES)[number],
@@ -181,6 +232,8 @@ export function computeZoneItems(
   const arrivalsToday = allFlights.filter((f) => {
     if (!f.arrival_icao || !f.scheduled_arrival) return false;
     if (!isOnEtDate(f.scheduled_arrival, date)) return false;
+    // Skip same-airport maintenance blocks (e.g. MYNN→MYNN)
+    if (f.departure_icao && f.departure_icao === f.arrival_icao) return false;
     const ft = inferFlightType(f);
     const cat = getFilterCategory(ft);
     if (cat === "other") return false;
@@ -190,55 +243,81 @@ export function computeZoneItems(
     return haversineKm(zone.lat, zone.lon, info.lat, info.lon) <= SCHEDULE_ARRIVAL_RADIUS_KM;
   });
 
-  const rawItems = arrivalsToday
-    .map((arr) => {
-      const iata = arr.arrival_icao!.replace(/^K/, "");
-      const info = getAirportInfo(iata);
-      const distKm = info ? Math.round(haversineKm(baseLat, baseLon, info.lat, info.lon)) : 0;
+  const allItems = arrivalsToday.map((arr) => {
+    const iata = arr.arrival_icao!.replace(/^K/, "");
+    const info = getAirportInfo(iata);
+    const distKm = info ? Math.round(haversineKm(baseLat, baseLon, info.lat, info.lon)) : 0;
 
-      const nextDep =
-        allFlights
-          .filter(
-            (f) =>
-              f.tail_number === arr.tail_number &&
-              f.departure_icao === arr.arrival_icao &&
-              f.scheduled_departure > (arr.scheduled_arrival ?? ""),
-          )
-          .sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure))[0] ?? null;
+    const nextDep =
+      allFlights
+        .filter(
+          (f) =>
+            f.tail_number === arr.tail_number &&
+            f.departure_icao === arr.arrival_icao &&
+            f.scheduled_departure > (arr.scheduled_arrival ?? ""),
+        )
+        .sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure))[0] ?? null;
 
-      return {
-        arrFlight: arr,
-        nextDep,
-        isRepo: isPositioningFlight(arr),
-        nextIsRepo: nextDep ? isPositioningFlight(nextDep) : false,
-        airport: iata,
-        airportInfo: info,
-        distKm,
-      };
-    })
-    .filter(({ arrFlight, nextDep }) => {
-      if (!nextDep) return true;
-      if (nextDep.scheduled_departure.startsWith(date)) {
-        const arrMs = new Date(arrFlight.scheduled_arrival ?? "").getTime();
-        const depMs = new Date(nextDep.scheduled_departure).getTime();
-        const groundHours = (depMs - arrMs) / 3_600_000;
-        if (groundHours < 2 && !isPositioningFlight(nextDep)) return false;
-      }
-      if (isPositioningFlight(nextDep)) return true;
-      return !isOnEtDate(nextDep.scheduled_departure, date);
-    });
+    // Determine if this is an end-of-day stop
+    const isEOD = !nextDep || !isOnEtDate(nextDep.scheduled_departure, date);
 
-  // Deduplicate by tail
-  const byTail = new Map<string, VanFlightItem>();
-  for (const item of rawItems) {
-    const key = item.arrFlight.tail_number || `_no_tail_${item.arrFlight.id}`;
-    const existing = byTail.get(key);
-    if (!existing || item.distKm < existing.distKm) {
-      byTail.set(key, item);
+    // Compute ground time in hours (only meaningful if nextDep exists and is same-day)
+    let groundHours = Infinity;
+    if (nextDep && isOnEtDate(nextDep.scheduled_departure, date)) {
+      const arrMs = new Date(arr.scheduled_arrival ?? "").getTime();
+      const depMs = new Date(nextDep.scheduled_departure).getTime();
+      groundHours = (depMs - arrMs) / 3_600_000;
     }
-  }
 
-  return Array.from(byTail.values())
+    const isQuickTurn = !isEOD && groundHours < 2;
+    const isLastChance = computeIsLastChance(arr, allFlights, date);
+
+    return {
+      arrFlight: arr,
+      nextDep,
+      isRepo: isPositioningFlight(arr),
+      nextIsRepo: nextDep ? isPositioningFlight(nextDep) : false,
+      airport: iata,
+      airportInfo: info,
+      distKm,
+      isTransitStop: isQuickTurn,
+      isLastChance,
+      // internal tracking
+      _isEOD: isEOD,
+      _groundHours: groundHours,
+    };
+  });
+
+  // Smart filtering based on drive time and service opportunity
+  const rawItems = allItems.filter((item) => {
+    const { distKm, _isEOD: isEOD, _groundHours: groundHours, isLastChance, nextDep } = item;
+
+    // Always include positioning departures
+    if (nextDep && isPositioningFlight(nextDep)) return true;
+
+    // Van drive <1hr (distKm < 80): Always show
+    if (distKm < 80) return true;
+
+    // Van drive 1-2hr (80-160km)
+    if (distKm >= 80 && distKm <= 160) {
+      // Ground time >2hr: Show
+      if (groundHours >= 2) return true;
+      // Quick turn: only show if EOD or last chance
+      if (isEOD || isLastChance) return true;
+      return false;
+    }
+
+    // Van drive >2hr (distKm > 160): Only show if last chance
+    if (isEOD || isLastChance) return true;
+    return false;
+  });
+
+  // Strip internal tracking fields and dedup by flight ID
+  const byFlightId = new Map<string, VanFlightItem>();
+  for (const { _isEOD: _, _groundHours: __, ...item } of rawItems) {
+    byFlightId.set(item.arrFlight.id, item);
+  }
+  return Array.from(byFlightId.values())
     .sort((a, b) =>
       (a.arrFlight.scheduled_arrival ?? "").localeCompare(b.arrFlight.scheduled_arrival ?? ""),
     )

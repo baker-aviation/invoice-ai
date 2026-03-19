@@ -572,13 +572,6 @@ function ScheduleSection({ flights, mxNotes: initialMxNotes = [], onMoveNote }: 
   const [dragOverFlightId, setDragOverFlightId] = useState<string | null>(null);
   const dragNoteRef = useRef<string | null>(null);
 
-  // All unique arrival airports from the schedule (for the move dropdown)
-  const arrivalAirports = useMemo(() => {
-    const set = new Set<string>();
-    for (const f of flights) if (f.arrival_icao) set.add(f.arrival_icao);
-    return Array.from(set).sort();
-  }, [flights]);
-
   async function handleMoveNote(noteId: string, newAirport: string, arrivalDate?: string | null) {
     // Find nearest van for the new airport
     const van = nearestVan(newAirport);
@@ -610,9 +603,6 @@ function ScheduleSection({ flights, mxNotes: initialMxNotes = [], onMoveNote }: 
     }
   }
 
-  // Notes not matched to any arrival airport
-  const unmatchedNotes = mxNotes.filter((n) => !n.airport_icao || !arrivalAirports.includes(n.airport_icao));
-
   // Group flights by date
   const dateGroups: { date: string; label: string; flights: Flight[] }[] = [];
   let currentDate = "";
@@ -627,6 +617,14 @@ function ScheduleSection({ flights, mxNotes: initialMxNotes = [], onMoveNote }: 
 
   const now = Date.now();
   const todayKey = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+
+  // Non-past arrival airports (only future/current flights count for matching)
+  const nonPastArrivalAirports = new Set<string>();
+  for (const f of flights) {
+    const arr = f.scheduled_arrival ? new Date(f.scheduled_arrival) : null;
+    const flightIsPast = arr ? arr.getTime() < now : false;
+    if (!flightIsPast && f.arrival_icao) nonPastArrivalAirports.add(f.arrival_icao);
+  }
 
   // Assign each MX note to only the FIRST non-past flight arriving at its airport
   const flightMxMap = new Map<string, MxNoteWithAttachments[]>();
@@ -643,30 +641,96 @@ function ScheduleSection({ flights, mxNotes: initialMxNotes = [], onMoveNote }: 
     }
   }
 
+  // Orphan detection: notes with an airport that no longer matches any non-past arrival
+  // AND not already claimed by a flight in flightMxMap
+  const orphanedNotes = mxNotes.filter(
+    (n) => n.airport_icao && !nonPastArrivalAirports.has(n.airport_icao) && !claimedNoteIds.has(n.id),
+  );
+
+  // Unassigned notes: no airport_icao set at all (and not claimed)
+  const unassignedNotes = mxNotes.filter(
+    (n) => !n.airport_icao && !claimedNoteIds.has(n.id),
+  );
+
+  // Overdue detection: scheduled_date is in the past
+  const isOverdue = (n: MxNoteWithAttachments): boolean => {
+    if (!n.scheduled_date) return false;
+    return n.scheduled_date < todayKey;
+  };
+
   return (
     <div className="space-y-4">
-      {/* Unmatched MX notes — not at any scheduled arrival airport */}
-      {unmatchedNotes.length > 0 && (
+      {/* Orphaned MX notes — airport no longer on any upcoming arrival */}
+      {orphanedNotes.length > 0 && (
+        <div className="bg-red-50 border border-red-300 rounded-lg p-3 space-y-1.5">
+          <div className="flex items-center gap-2">
+            <span className="text-sm">⚠️</span>
+            <span className="text-xs font-semibold text-red-700 uppercase tracking-wide">
+              MX Items Need Reassignment
+            </span>
+          </div>
+          {orphanedNotes.map((n) => {
+            const overdue = isOverdue(n);
+            return (
+              <div
+                key={n.id}
+                draggable
+                onDragStart={(e) => {
+                  dragNoteRef.current = n.id;
+                  e.dataTransfer.setData("text/plain", n.id);
+                  e.dataTransfer.effectAllowed = "move";
+                }}
+                onDragEnd={() => { dragNoteRef.current = null; setDragOverFlightId(null); }}
+                className="flex items-center gap-2 text-xs cursor-grab active:cursor-grabbing"
+              >
+                <span className="font-bold text-red-600">MX</span>
+                <span className="text-gray-700 truncate flex-1">
+                  {n.subject || n.body || n.description}
+                </span>
+                <span className="text-red-500 text-[11px] shrink-0">
+                  assigned to {(n.airport_icao || "").replace(/^K/, "")} but aircraft no longer arriving there
+                </span>
+                {overdue && (
+                  <span className="px-1.5 py-0.5 rounded bg-red-100 text-red-700 text-[10px] font-medium shrink-0">
+                    ⏰ Overdue — was scheduled for {fmtDate(n.scheduled_date)}
+                  </span>
+                )}
+                <span className="text-[10px] text-red-400 shrink-0 select-none">⠿ drag to a leg</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Unassigned MX notes — no airport set */}
+      {unassignedNotes.length > 0 && (
         <div className="bg-orange-50 border border-orange-200 rounded-lg p-3 space-y-1.5">
           <div className="text-xs font-semibold text-orange-700 uppercase tracking-wide">MX not on route — assign to a leg</div>
-          {unmatchedNotes.map((n) => (
-            <div
-              key={n.id}
-              draggable
-              onDragStart={(e) => {
-                dragNoteRef.current = n.id;
-                e.dataTransfer.setData("text/plain", n.id);
-                e.dataTransfer.effectAllowed = "move";
-              }}
-              onDragEnd={() => { dragNoteRef.current = null; setDragOverFlightId(null); }}
-              className="flex items-center gap-2 text-xs cursor-grab active:cursor-grabbing"
-            >
-              <span className="font-bold text-orange-600">MX</span>
-              <span className="text-gray-700 truncate flex-1">{n.subject || n.body || n.description}</span>
-              {n.airport_icao && <span className="text-gray-400">{n.airport_icao}</span>}
-              <span className="text-[10px] text-orange-400 shrink-0 select-none">⠿ drag to a leg</span>
-            </div>
-          ))}
+          {unassignedNotes.map((n) => {
+            const overdue = isOverdue(n);
+            return (
+              <div
+                key={n.id}
+                draggable
+                onDragStart={(e) => {
+                  dragNoteRef.current = n.id;
+                  e.dataTransfer.setData("text/plain", n.id);
+                  e.dataTransfer.effectAllowed = "move";
+                }}
+                onDragEnd={() => { dragNoteRef.current = null; setDragOverFlightId(null); }}
+                className="flex items-center gap-2 text-xs cursor-grab active:cursor-grabbing"
+              >
+                <span className="font-bold text-orange-600">MX</span>
+                <span className="text-gray-700 truncate flex-1">{n.subject || n.body || n.description}</span>
+                {overdue && (
+                  <span className="px-1.5 py-0.5 rounded bg-red-100 text-red-700 text-[10px] font-medium shrink-0">
+                    ⏰ Overdue — was scheduled for {fmtDate(n.scheduled_date)}
+                  </span>
+                )}
+                <span className="text-[10px] text-orange-400 shrink-0 select-none">⠿ drag to a leg</span>
+              </div>
+            );
+          })}
         </div>
       )}
 

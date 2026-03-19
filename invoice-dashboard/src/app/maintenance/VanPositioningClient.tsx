@@ -538,6 +538,8 @@ type VanFlightItem = {
   airport:    string;    // IATA
   airportInfo: ReturnType<typeof getAirportInfo>;
   distKm:     number;
+  isTransitStop?: boolean;  // true if this is a short ground-time stop (not EOD)
+  isLastChance?: boolean;   // true if this is the last time this tail visits any van zone today
 };
 
 type FlightInfoEntry = {
@@ -728,13 +730,15 @@ function computeAllDayArrivals(allFlights: Flight[], date: string): VanFlightIte
   const arrivalsToday = allFlights.filter((f) => {
     if (!f.arrival_icao || !f.scheduled_arrival) return false;
     if (!isOnEtDate(f.scheduled_arrival, date)) return false;
+    // Skip same-airport maintenance blocks (e.g. MYNN→MYNN) — not real legs
+    if (f.departure_icao && f.departure_icao === f.arrival_icao) return false;
     // Hide "other" category flights from the AOG schedule
     const ft = inferFlightType(f);
     const cat = getFilterCategory(ft);
     if (cat === "other") return false;
-    const iata = f.arrival_icao.replace(/^K/, "");
-    const info = getAirportInfo(iata);
-    return !!(info && isContiguous48(info.state));
+    // Allow all arrivals including international — they show in unassigned with a tag
+    // (computeZoneItems still filters to contiguous 48 for auto van assignment)
+    return true;
   });
 
   const rawItems = arrivalsToday
@@ -774,36 +778,13 @@ function computeAllDayArrivals(allFlights: Flight[], date: string): VanFlightIte
       return !isOnEtDate(nextDep.scheduled_departure, date);
     });
 
-  // Deduplicate by tail — keep last arrival (no van base for uncovered pool)
-  // Use flight ID as key for flights with no tail number to avoid collapsing them
-  const byTail = new Map<string, VanFlightItem>();
+  // Dedup by flight ID only (not by tail) — keep all arrivals per tail for multi-van support
+  const byFlightId = new Map<string, VanFlightItem>();
   for (const item of rawItems) {
-    const key = item.arrFlight.tail_number || `_no_tail_${item.arrFlight.id}`;
-    const existing = byTail.get(key);
-    if (
-      !existing ||
-      (item.arrFlight.scheduled_arrival ?? "") > (existing.arrFlight.scheduled_arrival ?? "")
-    ) {
-      byTail.set(key, item);
-    }
+    byFlightId.set(item.arrFlight.id, item);
   }
-
-  // Second pass: remove tailless duplicates that match a tailed flight on same route+time
-  const tailedSigs = new Set<string>();
-  for (const item of byTail.values()) {
-    if (!item.arrFlight.tail_number) continue;
-    const sig = `${item.arrFlight.departure_icao}|${item.arrFlight.arrival_icao}|${item.arrFlight.scheduled_departure}|${item.arrFlight.scheduled_arrival ?? ""}`;
-    tailedSigs.add(sig);
-  }
-  for (const [key, item] of byTail) {
-    if (item.arrFlight.tail_number) continue;
-    const sig = `${item.arrFlight.departure_icao}|${item.arrFlight.arrival_icao}|${item.arrFlight.scheduled_departure}|${item.arrFlight.scheduled_arrival ?? ""}`;
-    if (tailedSigs.has(sig)) byTail.delete(key);
-  }
-
-  return Array.from(byTail.values()).sort((a, b) =>
-    (a.arrFlight.scheduled_arrival ?? "").localeCompare(b.arrFlight.scheduled_arrival ?? ""),
-  );
+  return Array.from(byFlightId.values())
+    .sort((a, b) => (a.arrFlight.scheduled_arrival ?? "").localeCompare(b.arrFlight.scheduled_arrival ?? ""));
 }
 
 /** Recalculate distKm for items relative to a van's base position. */
@@ -1608,6 +1589,7 @@ function AircraftCompactRow({
   color, zone, date,
   mxNotes, hiddenTodayMxIds, onHideMxForToday, mxVanOverrides, onVanOverride,
   legNote, onSaveNote, onDragStart, onDragOverItem, onRemove, onSetPrimaryAirport,
+  multiVisitVans,
 }: {
   arrFlight: Flight;
   nextDep: Flight | null;
@@ -1639,6 +1621,7 @@ function AircraftCompactRow({
   onDragOverItem: (vanId: number, flightId: string, insertBefore: boolean) => void;
   onRemove: (flightId: string) => void;
   onSetPrimaryAirport?: (tail: string, airport: string) => void;
+  multiVisitVans?: number[];
 }) {
   const [detailOpen, setDetailOpen] = useState(false);
 
@@ -1668,8 +1651,17 @@ function AircraftCompactRow({
           <span className="text-xs text-gray-400">· {fmtDriveTime(distKm)}</span>
           <span className={`text-xs font-semibold rounded-full px-2 py-0.5 ${turnBadgeClass(turnBadgeLabel)}`}>{turnBadgeLabel}</span>
           {mxNotes.filter((n) => !isMel(n) && (n.assigned_van === zone.vanId || !n.assigned_van)).length > 0 && (
-            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-orange-100 text-orange-700">
+            <button
+              onClick={(e) => { e.stopPropagation(); setDetailOpen((v) => !v); }}
+              className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-orange-100 text-orange-700 hover:bg-orange-200 transition-colors cursor-pointer"
+              title={mxNotes.filter((n) => !isMel(n) && (n.assigned_van === zone.vanId || !n.assigned_van)).map((n) => `${n.airport_icao ?? ""} — ${n.subject || n.body || n.description || ""}`).join("\n")}
+            >
               {mxNotes.filter((n) => !isMel(n) && (n.assigned_van === zone.vanId || !n.assigned_van)).length} MX
+            </button>
+          )}
+          {multiVisitVans && multiVisitVans.length >= 2 && (
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-700" title={`Also serviced by V${multiVisitVans.filter(v => v !== zone.vanId).join(", V")}`}>
+              {"\uD83D\uDD04"} {multiVisitVans.length} stops today
             </span>
           )}
         </div>
@@ -1835,6 +1827,7 @@ function VanScheduleCard({
   onPublishVan,
   onAddToVan,
   fboMap,
+  tailToVans,
 }: {
   zone: (typeof FIXED_VAN_ZONES)[number];
   color: string;
@@ -1864,6 +1857,7 @@ function VanScheduleCard({
   onPublishVan?: (vanId: number) => Promise<void>;
   onAddToVan?: (flightId: string, vanId: number) => void;
   fboMap?: Record<string, string>;
+  tailToVans?: Map<string, number[]>;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [showSlackModal, setShowSlackModal] = useState(false);
@@ -2070,6 +2064,7 @@ function VanScheduleCard({
                     onDragOverItem={onDragOverItem}
                     onRemove={onRemove}
                     onSetPrimaryAirport={onSetPrimaryAirport}
+                    multiVisitVans={tailToVans?.get(arrFlight.tail_number ?? "")}
                   />
                 );
               })}
@@ -2536,9 +2531,8 @@ function ScheduleTab({
     }
 
     // Move overridden flights
-    console.log("[AOG Assign] overrides:", [...overrides.entries()].map(([k,v]) => k.substring(0,8) + "→V" + v).join(", "), "removals:", [...removals].map(r => r.substring(0,8)).join(", "));
     for (const [flightId, targetVanId] of overrides) {
-      if (removals.has(flightId)) { console.log("[AOG Assign] SKIPPED", flightId.substring(0,8), "in removals!"); continue; }
+      if (removals.has(flightId)) { continue; }
 
       // Check if this flight is already in a van (from base items)
       let found = false;
@@ -2546,7 +2540,6 @@ function ScheduleTab({
         const idx = items.findIndex((item) => item.arrFlight.id === flightId);
         if (idx !== -1) {
           found = true;
-          console.log("[AOG Assign] FOUND in base V" + vanId, "→ moving to V" + targetVanId, "tail:", items[idx].arrFlight.tail_number);
           const [removed] = items.splice(idx, 1);
           if (vanId !== targetVanId) {
             const target = result.get(targetVanId) ?? [];
@@ -2559,20 +2552,12 @@ function ScheduleTab({
         }
       }
 
-      // Flight came from uncovered pool — find it and all same-tail flights in allDayArrivals
+      // Flight came from uncovered pool — assign only this single flight
       if (!found) {
         const item = allDayArrivals.find((a) => a.arrFlight.id === flightId);
-        console.log("[AOG Assign] override flightId:", flightId, "→ V" + targetVanId, "found in allDayArrivals:", !!item, "allDayArrivals count:", allDayArrivals.length, "allDayArrivals tails:", [...new Set(allDayArrivals.map(a => a.arrFlight.tail_number))].join(","));
         if (item) {
-          const tail = item.arrFlight.tail_number;
           const target = result.get(targetVanId) ?? [];
-          // Add the primary flight + all other flights for this tail that aren't already assigned
-          const assignedIds = new Set<string>();
-          for (const [, items] of result) for (const i of items) assignedIds.add(i.arrFlight.id);
-          const tailItems = tail
-            ? allDayArrivals.filter((a) => a.arrFlight.tail_number === tail && !assignedIds.has(a.arrFlight.id))
-            : [item];
-          for (const ti of tailItems) target.push(ti);
+          target.push(item);
           result.set(targetVanId, target);
         }
       }
@@ -2733,7 +2718,23 @@ function ScheduleTab({
     return result;
   }, [baseItemsByVan, overrides, removals, liveVanPositions, allDayArrivals, flightInfoMap, unscheduledOverrides, allFlights, date, airportOverrides, sortOverrides]);
 
+  // Build tail → vanIds map for multi-visit detection
+  const tailToVans = useMemo(() => {
+    const map = new Map<string, number[]>();
+    for (const [vanId, items] of finalItemsByVan) {
+      for (const item of items) {
+        const tail = item.arrFlight.tail_number;
+        if (!tail) continue;
+        const arr = map.get(tail) ?? [];
+        if (!arr.includes(vanId)) arr.push(vanId);
+        map.set(tail, arr);
+      }
+    }
+    return map;
+  }, [finalItemsByVan]);
+
   // Uncovered aircraft: arrivals today not assigned to any van
+  // If ANY leg for a tail is assigned, exclude ALL legs for that tail
   const uncoveredItems = useMemo(() => {
     const assignedIds = new Set<string>();
     const assignedTails = new Set<string>();
@@ -2743,26 +2744,10 @@ function ScheduleTab({
         if (item.arrFlight.tail_number) assignedTails.add(item.arrFlight.tail_number);
       }
     }
-    const result = allDayArrivals.filter((item) => {
-      // If this tail is assigned to ANY van (by any flight), it's not uncovered
+    return allDayArrivals.filter((item) => {
       if (item.arrFlight.tail_number && assignedTails.has(item.arrFlight.tail_number)) return false;
       return !assignedIds.has(item.arrFlight.id);
     });
-    // Debug: log any tail that's in allDayArrivals but has mismatched IDs
-    for (const item of allDayArrivals) {
-      const tail = item.arrFlight.tail_number;
-      if (tail && assignedTails.has(tail) && !assignedIds.has(item.arrFlight.id)) {
-        console.log("[AOG Debug] tail", tail, "assigned via different flight ID. allDayArrivals id:", item.arrFlight.id.substring(0, 8), "assigned ids for tail:", [...assignedIds].filter((_, idx) => {
-          for (const items of finalItemsByVan.values()) {
-            for (const i of items) {
-              if (i.arrFlight.tail_number === tail) return true;
-            }
-          }
-          return false;
-        }).map(id => id.substring(0, 8)).join(","));
-      }
-    }
-    return result;
   }, [allDayArrivals, finalItemsByVan]);
 
   // Unscheduled aircraft: fleet tails with NO flights on this date
@@ -2829,6 +2814,129 @@ function ScheduleTab({
     }
     return set;
   }, [overrides, baseItemsByVan]);
+
+  // ── Auto-dispatch uncovered aircraft to nearest vans ──
+  const autoDispatchUncovered = useCallback(() => {
+    if (uncoveredItems.length === 0) return;
+
+    const newOverrides = new Map<string, number>(overrides);
+
+    // Build a map of all stops today per tail from uncoveredItems + allDayArrivals
+    const stopsByTail = new Map<string, VanFlightItem[]>();
+    for (const item of allDayArrivals) {
+      const tail = item.arrFlight.tail_number ?? `_no_tail_${item.arrFlight.id}`;
+      const arr = stopsByTail.get(tail) ?? [];
+      arr.push(item);
+      stopsByTail.set(tail, arr);
+    }
+
+    // Build scoring list from uncovered items
+    type ScoredStop = {
+      item: VanFlightItem;
+      score: number;
+      bestVanId: number;
+      bestDist: number;
+    };
+
+    const scoredStops: ScoredStop[] = [];
+
+    for (const item of uncoveredItems) {
+      const { nextDep, arrFlight } = item;
+
+      // Determine if this is EOD
+      const isEOD = !nextDep || !isOnEtDate(nextDep.scheduled_departure, date);
+
+      // Compute ground time
+      let groundHours = Infinity;
+      if (nextDep && isOnEtDate(nextDep.scheduled_departure, date)) {
+        const arrMs = new Date(arrFlight.scheduled_arrival ?? "").getTime();
+        const depMs = new Date(nextDep.scheduled_departure).getTime();
+        groundHours = (depMs - arrMs) / 3_600_000;
+      }
+
+      const isQuickTurn = !isEOD && groundHours < 2;
+
+      // Find the tail's EOD location to check convenience
+      const tail = arrFlight.tail_number ?? `_no_tail_${arrFlight.id}`;
+      const tailStops = stopsByTail.get(tail) ?? [];
+      const eodStop = tailStops
+        .slice()
+        .sort((a, b) => (b.arrFlight.scheduled_arrival ?? "").localeCompare(a.arrFlight.scheduled_arrival ?? ""))
+        .find((s) => {
+          const nd = s.nextDep;
+          return !nd || !isOnEtDate(nd.scheduled_departure, date);
+        });
+
+      // Find nearest van for this item
+      let bestVanId = -1;
+      let bestDist = Infinity;
+      const itemInfo = item.airportInfo;
+      if (itemInfo) {
+        for (const z of FIXED_VAN_ZONES) {
+          const vanLat = liveVanPositions.get(z.vanId)?.lat ?? z.lat;
+          const vanLon = liveVanPositions.get(z.vanId)?.lon ?? z.lon;
+          const d = haversineKm(vanLat, vanLon, itemInfo.lat, itemInfo.lon);
+          if (d < bestDist) {
+            bestDist = d;
+            bestVanId = z.vanId;
+          }
+        }
+      }
+
+      if (bestVanId === -1) continue;
+
+      // Score: EOD=100, longGround=50, quickTurn=10
+      let score: number;
+      if (isEOD) {
+        // EOD: always assign to nearest van. Highest priority.
+        score = 100;
+      } else if (groundHours >= 2) {
+        // Long ground: assign if drive <2hr (160km)
+        if (bestDist > 160) continue; // skip — too far for a non-EOD long ground
+        score = 50;
+      } else {
+        // Quick turn: only assign if van <30min drive (~45km) OR the EOD isn't convenient
+        const eodInfo = eodStop?.airportInfo;
+        let eodConvenient = false;
+        if (eodInfo) {
+          // Check if any van is within 2hr drive (160km) of the EOD airport
+          for (const z of FIXED_VAN_ZONES) {
+            const vanLat = liveVanPositions.get(z.vanId)?.lat ?? z.lat;
+            const vanLon = liveVanPositions.get(z.vanId)?.lon ?? z.lon;
+            if (haversineKm(vanLat, vanLon, eodInfo.lat, eodInfo.lon) <= 160) {
+              eodConvenient = true;
+              break;
+            }
+          }
+        }
+
+        if (bestDist <= 45) {
+          // Van very close — worth a quick stop
+          score = 10;
+        } else if (!eodConvenient) {
+          // EOD not convenient to any van — this quick turn is the best opportunity
+          score = 10;
+        } else {
+          continue; // skip this quick turn
+        }
+      }
+
+      // Adjust score by inverse distance (closer = slightly higher priority)
+      score -= Math.min(bestDist / 100, 5);
+
+      scoredStops.push({ item, score, bestVanId, bestDist });
+    }
+
+    // Sort by score descending (highest priority first)
+    scoredStops.sort((a, b) => b.score - a.score);
+
+    // Greedily assign
+    for (const { item, bestVanId } of scoredStops) {
+      newOverrides.set(item.arrFlight.id, bestVanId);
+    }
+
+    setOverrides(newOverrides);
+  }, [uncoveredItems, overrides, allDayArrivals, date, liveVanPositions]);
 
   // ── Drag-and-drop handlers ──
   const dragOverTargetRef = useRef<{ vanId: number; flightId: string; insertBefore: boolean } | null>(null);
@@ -3300,6 +3408,15 @@ function ScheduleTab({
               Reset all edits ({totalEdits})
             </button>
           )}
+          {uncoveredItems.length > 0 && (
+            <button
+              onClick={autoDispatchUncovered}
+              className="text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-3 py-1.5 hover:bg-blue-100 transition-colors"
+              title="Auto-assign uncovered aircraft to nearest vans based on priority scoring"
+            >
+              Auto-Dispatch All ({uncoveredItems.length})
+            </button>
+          )}
           <button
             onClick={() => testVanToSlack(1)}
             disabled={slackTestStatus === "sending"}
@@ -3448,7 +3565,6 @@ function ScheduleTab({
               {uncoveredTails.map((tailKey) => {
                 const items = uncoveredByTail.get(tailKey) ?? [];
                 const tail = items[0].arrFlight.tail_number;
-                const primaryItem = items[0]; // for drag-and-drop assignment
                 const allLegs = allLegsByTail.get(tailKey) ?? [];
                 // Check for maintenance (same-airport flights)
                 const hasMaintenance = allLegs.some((f) =>
@@ -3458,18 +3574,23 @@ function ScheduleTab({
                 const lastItem = items[items.length - 1];
                 const nextDep = lastItem?.nextDep ?? null;
                 const nextIsRepo = lastItem?.nextIsRepo ?? false;
-                const lastArrTime = lastItem?.arrFlight.scheduled_arrival
-                  ? new Date(lastItem.arrFlight.scheduled_arrival).getTime() : null;
-                const uncovGroundMs = nextDep && lastArrTime
-                  ? new Date(nextDep.scheduled_departure).getTime() - lastArrTime : Infinity;
+
+                // Helper: find nearest van for an arrival airport
+                const findNearestVan = (arrIcao: string | null | undefined): { vanId: number; name: string; distKm: number } | null => {
+                  if (!arrIcao) return null;
+                  const info = getAirportInfo(arrIcao.replace(/^K/, ""));
+                  if (!info) return null;
+                  let best: { vanId: number; name: string; distKm: number } | null = null;
+                  for (const z of FIXED_VAN_ZONES) {
+                    const d = haversineKm(info.lat, info.lon, z.lat, z.lon);
+                    if (!best || d < best.distKm) best = { vanId: z.vanId, name: z.name, distKm: d };
+                  }
+                  return best;
+                };
+
                 return (
-                  <div
-                    key={tailKey}
-                    draggable
-                    onDragStart={(e) => handleDragStart(e, primaryItem.arrFlight.id, 0)}
-                    className="px-4 py-2 cursor-grab active:cursor-grabbing hover:bg-red-50/50"
-                  >
-                    {/* Header: tail number + badges + assign dropdown */}
+                  <div key={tailKey} className="px-4 py-2">
+                    {/* Header: tail number + badges + Won't See */}
                     <div className="flex items-center justify-between gap-4 mb-1">
                       <div className="flex items-center gap-2 flex-wrap">
                         <div className="w-2.5 h-2.5 rounded-full bg-red-300 flex-shrink-0" />
@@ -3481,75 +3602,116 @@ function ScheduleTab({
                           </span>
                         )}
                       </div>
-                      {/* Select wrapped in iframe-like isolation to avoid parent drag interference */}
-                      <div
-                        draggable={false}
-                        onDragStart={(e) => { e.stopPropagation(); e.preventDefault(); }}
-                        onMouseDown={(e) => e.stopPropagation()}
-                        onPointerDown={(e) => e.stopPropagation()}
-                        className="shrink-0"
-                      >
-                        <select
-                          className="text-xs border border-red-200 rounded-lg px-2 py-1.5 bg-white text-red-700 font-medium cursor-pointer hover:border-red-400 focus:outline-none focus:ring-2 focus:ring-red-300"
-                          defaultValue=""
-                          onChange={(e) => {
-                            const vanId = Number(e.target.value);
-                            if (!vanId) return;
-                            e.target.value = ""; // reset dropdown
-                            setRemovals((prev) => {
-                              if (!prev.has(primaryItem.arrFlight.id)) return prev;
-                              const next = new Set(prev);
-                              next.delete(primaryItem.arrFlight.id);
-                              return next;
-                            });
-                            setOverrides((prev) => {
-                              const next = new Map(prev);
-                              next.set(primaryItem.arrFlight.id, vanId);
-                              return next;
-                            });
-                          }}
-                        >
-                          <option value="">Assign…</option>
-                          {FIXED_VAN_ZONES.map((z) => (
-                            <option key={z.vanId} value={z.vanId}>
-                              V{z.vanId} – {z.name}
-                            </option>
-                          ))}
-                        </select>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {/* Assign All to Nearest — only show when multiple legs */}
+                        {items.length > 1 && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setOverrides((prev) => {
+                                const next = new Map(prev);
+                                for (const item of items) {
+                                  const nearest = findNearestVan(item.arrFlight.arrival_icao);
+                                  if (nearest) {
+                                    next.set(item.arrFlight.id, nearest.vanId);
+                                  }
+                                }
+                                return next;
+                              });
+                              setRemovals((prev) => {
+                                const next = new Set(prev);
+                                for (const item of items) next.delete(item.arrFlight.id);
+                                return next;
+                              });
+                            }}
+                            className="text-[10px] font-medium text-blue-600 hover:text-blue-800 hover:bg-blue-50 border border-blue-200 rounded px-2 py-1 transition-colors"
+                            title="Assign all legs to their nearest van"
+                          >
+                            Assign All to Nearest
+                          </button>
+                        )}
+                        {tail && tail !== "_no_tail" && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); onMarkWontSee(tail); }}
+                            className="text-[10px] font-medium text-gray-400 hover:text-gray-700 hover:bg-gray-100 border border-gray-200 rounded px-2 py-1 shrink-0 transition-colors"
+                            title="Mark as reviewed — won't be seen today"
+                          >
+                            Won&apos;t See
+                          </button>
+                        )}
                       </div>
-                      {tail && tail !== "_no_tail" && (
-                        <button
-                          onClick={(e) => { e.stopPropagation(); onMarkWontSee(tail); }}
-                          className="text-[10px] font-medium text-gray-400 hover:text-gray-700 hover:bg-gray-100 border border-gray-200 rounded px-2 py-1 shrink-0 transition-colors"
-                          title="Mark as reviewed — won't be seen today"
-                        >
-                          Won&apos;t See
-                        </button>
-                      )}
                     </div>
-                    {/* All legs + flying again */}
-                    <div className="ml-5 space-y-0">
-                      {allLegs.map((f) => {
-                        const ft = inferFlightType(f);
+                    {/* Per-leg rows: each independently draggable + assignable */}
+                    <div className="ml-5 space-y-0.5">
+                      {items.map((item) => {
+                        const dep = item.arrFlight.departure_icao?.replace(/^K/, "") ?? "?";
+                        const arrIcao = item.arrFlight.arrival_icao?.replace(/^K/, "") ?? "?";
+                        const ft = inferFlightType(item.arrFlight);
                         const cat = getFilterCategory(ft);
-                        const dep = f.departure_icao?.replace(/^K/, "") ?? "?";
-                        const arrIcao = f.arrival_icao?.replace(/^K/, "") ?? "?";
                         const isMaint = dep === arrIcao;
+                        const nearest = findNearestVan(item.arrFlight.arrival_icao);
+                        const isInternational = !item.airportInfo || !isContiguous48(item.airportInfo.state ?? "");
                         return (
-                          <div key={f.id} className="flex items-center gap-2 text-xs text-gray-600 py-px">
-                            <span className="font-mono">{dep} → {arrIcao}</span>
-                            <span>{fmtUtcHM(f.scheduled_departure, f.departure_icao)}{f.scheduled_arrival ? ` – ${fmtUtcHM(f.scheduled_arrival, f.arrival_icao)}` : ""}</span>
-                            {ft && (
-                              <span className={`rounded px-1 py-0.5 text-[10px] font-medium ${
-                                isMaint ? "bg-orange-50 text-orange-600"
-                                : cat === "charter" ? "bg-green-50 text-green-600"
-                                : cat === "positioning" ? "bg-purple-50 text-purple-600"
-                                : cat === "maintenance" ? "bg-orange-50 text-orange-600"
-                                : "bg-gray-50 text-gray-500"
-                              }`}>
-                                {ft}
-                              </span>
-                            )}
+                          <div
+                            key={item.arrFlight.id}
+                            draggable
+                            onDragStart={(e) => handleDragStart(e, item.arrFlight.id, 0)}
+                            className="flex items-center justify-between gap-2 py-1 px-2 -mx-2 rounded cursor-grab active:cursor-grabbing hover:bg-red-50/80 group"
+                          >
+                            <div className="flex items-center gap-2 text-xs text-gray-600 min-w-0">
+                              <span className="font-mono font-medium">{dep} → {arrIcao}</span>
+                              <span>{fmtUtcHM(item.arrFlight.scheduled_departure, item.arrFlight.departure_icao)}{item.arrFlight.scheduled_arrival ? ` – ${fmtUtcHM(item.arrFlight.scheduled_arrival, item.arrFlight.arrival_icao)}` : ""}</span>
+                              {isInternational && (
+                                <span className="rounded px-1 py-0.5 text-[10px] font-medium bg-blue-50 text-blue-600">International</span>
+                              )}
+                              {ft && (
+                                <span className={`rounded px-1 py-0.5 text-[10px] font-medium ${
+                                  isMaint ? "bg-orange-50 text-orange-600"
+                                  : cat === "charter" ? "bg-green-50 text-green-600"
+                                  : cat === "positioning" ? "bg-purple-50 text-purple-600"
+                                  : cat === "maintenance" ? "bg-orange-50 text-orange-600"
+                                  : "bg-gray-50 text-gray-500"
+                                }`}>
+                                  {ft}
+                                </span>
+                              )}
+                            </div>
+                            {/* Per-leg assign dropdown */}
+                            <div
+                              draggable={false}
+                              onDragStart={(e) => { e.stopPropagation(); e.preventDefault(); }}
+                              onMouseDown={(e) => e.stopPropagation()}
+                              onPointerDown={(e) => e.stopPropagation()}
+                              className="shrink-0"
+                            >
+                              <select
+                                className="text-xs border border-red-200 rounded-lg px-2 py-1 bg-white text-red-700 font-medium cursor-pointer hover:border-red-400 focus:outline-none focus:ring-2 focus:ring-red-300"
+                                defaultValue=""
+                                onChange={(e) => {
+                                  const vanId = Number(e.target.value);
+                                  if (!vanId) return;
+                                  e.target.value = ""; // reset dropdown
+                                  setRemovals((prev) => {
+                                    if (!prev.has(item.arrFlight.id)) return prev;
+                                    const next = new Set(prev);
+                                    next.delete(item.arrFlight.id);
+                                    return next;
+                                  });
+                                  setOverrides((prev) => {
+                                    const next = new Map(prev);
+                                    next.set(item.arrFlight.id, vanId);
+                                    return next;
+                                  });
+                                }}
+                              >
+                                <option value="">{nearest ? `Assign (nearest: V${nearest.vanId})` : "Assign…"}</option>
+                                {FIXED_VAN_ZONES.map((z) => (
+                                  <option key={z.vanId} value={z.vanId}>
+                                    V{z.vanId} – {z.name}{nearest && z.vanId === nearest.vanId ? " ★" : ""}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
                           </div>
                         );
                       })}
@@ -3678,9 +3840,16 @@ function ScheduleTab({
 
       {/* ── Reviewed — Won't Be Seen Today ── */}
       {(() => {
+        // Tails assigned to any van — exclude from won't-see
+        const vanAssignedTails = new Set<string>();
+        for (const items of finalItemsByVan.values()) {
+          for (const item of items) {
+            if (item.arrFlight.tail_number) vanAssignedTails.add(item.arrFlight.tail_number);
+          }
+        }
         // Collect won't-see tails from both unassigned and unscheduled pools
         const wontSeeTails: { tail: string; airport: string | null; source: string }[] = [];
-        // From unassigned (uncovered items)
+        // From unassigned (uncovered items — only tails NOT in any van)
         if (uncoveredItems.length > 0) {
           const uncoveredByTailWS = new Map<string, VanFlightItem[]>();
           for (const item of uncoveredItems) {
@@ -3691,6 +3860,7 @@ function ScheduleTab({
           }
           for (const tailKey of uncoveredByTailWS.keys()) {
             if (tailKey === "_no_tail") continue;
+            if (vanAssignedTails.has(tailKey)) continue;
             if (wontSeeTodayTails.has(tailKey)) {
               const items = uncoveredByTailWS.get(tailKey) ?? [];
               const apt = items[0]?.airport ?? null;
@@ -3701,6 +3871,7 @@ function ScheduleTab({
         // From unscheduled
         for (const ac of unscheduledAircraft) {
           if (unscheduledOverrides.has(ac.tail) || longTermMxTails.has(ac.tail)) continue;
+          if (vanAssignedTails.has(ac.tail)) continue;
           if (wontSeeTodayTails.has(ac.tail)) {
             wontSeeTails.push({ tail: ac.tail, airport: ac.airport, source: "Unscheduled" });
           }
@@ -3825,6 +3996,7 @@ function ScheduleTab({
                 });
               }}
               fboMap={fboMap}
+              tailToVans={tailToVans}
             />
           </div>
         );

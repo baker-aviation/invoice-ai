@@ -634,12 +634,13 @@ function ClientAlertCard({ alert, onDismiss, dismissed, dismissedByName }: { ale
 // ─── Flight card ──────────────────────────────────────────────────────────────
 
 function FlightCard({
-  flight, isAcked, showAcknowledged, onAck, clientAlerts, dismissedClientAlerts, onDismissClient, userMap, dismissedByMap,
+  flight, isAcked, showAcknowledged, onAck, onAckAll, clientAlerts, dismissedClientAlerts, onDismissClient, userMap, dismissedByMap,
 }: {
   flight: Flight;
   isAcked: (a: OpsAlert) => boolean;
   showAcknowledged: boolean;
   onAck: (id: string) => void;
+  onAckAll: (flightId: string, alertIds: string[]) => void;
   clientAlerts: ClientAlert[];
   dismissedClientAlerts: Set<string>;
   onDismissClient: (key: string) => void;
@@ -648,12 +649,14 @@ function FlightCard({
 }) {
   const visibleAlerts = (flight.alerts ?? []).filter((a) => showAcknowledged || !isAcked(a));
   const alerts = visibleAlerts;
+  const unackedServerAlerts = (flight.alerts ?? []).filter((a) => !isAcked(a));
   const activeClientAlerts = clientAlerts.filter((ca) => showAcknowledged || !dismissedClientAlerts.has(ca.key));
   const hasCritical = alerts.some((a) => a.severity === "critical");
   const hasWarning = alerts.some((a) => a.severity === "warning");
   const hasLate = activeClientAlerts.some((ca) => ca.type === "AFTER_HOURS");
   const hasAirport = activeClientAlerts.some((ca) => ca.type.startsWith("AIRPORT_"));
   const totalAlertCount = alerts.length + activeClientAlerts.length;
+  const [ackingAll, setAckingAll] = useState(false);
 
   const borderColor = hasCritical
     ? "border-red-300"
@@ -718,6 +721,18 @@ function FlightCard({
             </span>
           ) : (
             <span className="text-xs font-medium text-green-700 bg-green-50 px-2 py-0.5 rounded-full">Clear</span>
+          )}
+          {unackedServerAlerts.length >= 2 && (
+            <button
+              onClick={() => {
+                setAckingAll(true);
+                onAckAll(flight.id, unackedServerAlerts.map((a) => a.id));
+              }}
+              disabled={ackingAll}
+              className="text-[10px] font-medium px-2 py-1 rounded bg-gray-100 text-gray-600 hover:bg-green-100 hover:text-green-700 transition-colors disabled:opacity-50"
+            >
+              {ackingAll ? "..." : "Ack All"}
+            </button>
           )}
         </div>
       </div>
@@ -840,6 +855,20 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
   const handleAck = useCallback((id: string) => {
     setLocalAckedIds((prev) => new Set(prev).add(id));
     fetch(`/api/ops/alerts/${id}/acknowledge`, { method: "POST" }).catch(() => {});
+  }, []);
+
+  const handleAckAll = useCallback((flightId: string, alertIds: string[]) => {
+    // Optimistically mark all as acked
+    setLocalAckedIds((prev) => {
+      const next = new Set(prev);
+      for (const id of alertIds) next.add(id);
+      return next;
+    });
+    fetch("/api/ops/alerts/acknowledge-bulk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ flight_id: flightId }),
+    }).catch(() => {});
   }, []);
 
   // An alert is "acknowledged" if the server has it acked OR we optimistically acked it
@@ -1405,6 +1434,7 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
                       isAcked={isAcked}
                       showAcknowledged={showAcknowledged}
                       onAck={handleAck}
+                      onAckAll={handleAckAll}
                       clientAlerts={clientAlertsByFlight.get(f.id) ?? []}
                       dismissedClientAlerts={dismissedClientAlerts}
                       onDismissClient={handleDismissClient}
