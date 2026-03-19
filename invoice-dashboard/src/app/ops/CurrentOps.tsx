@@ -2011,16 +2011,17 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           const posNorm = (c: string | null | undefined) => c ? (c.length === 3 && /^[A-Z]/.test(c) ? `K${c}` : c) : null;
                           const faLoc = f.tail_number ? tailFaLocation.get(f.tail_number) : null;
                           const atDeparture = !faLoc || posNorm(faLoc.icao) === posNorm(f.departure_icao);
+                          const faAtDest = faLoc && f.arrival_icao && posNorm(faLoc.icao) === posNorm(f.arrival_icao);
 
                           // FA primary; SWIM supplements when FA hasn't detected takeoff yet
                           if (fiRouteMatch && (fi?.actual_arrival || fi?.status?.includes("Arrived") || fi?.status?.includes("Landed"))) {
                             status = "Arrived"; statusColor = "text-green-600 font-medium";
                           } else if (arrivalPassed && fiRouteMatch && !fi?.actual_departure && !fi?.actual_arrival
-                            && !fi?.status?.includes("En Route") && !fi?.status?.includes("Landed")) {
-                            // FA has this flight filed/scheduled but never saw it depart
+                            && !fi?.status?.includes("En Route") && !fi?.status?.includes("Landed") && !faAtDest) {
+                            // FA has this flight filed/scheduled but never saw it depart, and aircraft isn't at destination
                             status = "No Departure"; statusColor = "text-orange-600 font-bold";
-                          } else if (arrivalPassed && !fiRouteMatch && faLoc && !fi?.actual_departure) {
-                            // No FA route match but FA tracks tail — flight never happened
+                          } else if (arrivalPassed && !fiRouteMatch && faLoc && !fi?.actual_departure && !faAtDest) {
+                            // No FA route match but FA tracks tail, aircraft isn't at destination
                             status = "No Departure"; statusColor = "text-orange-600 font-bold";
                           } else if (arrivalPassed) {
                             status = "Arrived"; statusColor = "text-green-600 font-medium";
@@ -2057,22 +2058,11 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           const actualDepIso = isCancelled ? null : (fi?.actual_departure ?? (!swimEntryStale ? swimEntry?.actual_departure : null) ?? null);
                           const actualArrIso = isCancelled ? null : (fi?.actual_arrival ?? (!swimEntryStale ? swimEntry?.actual_arrival : null) ?? null);
 
-                          // DEBUG: temporary — remove after verifying No Departure works
-                          const _dbg = f.tail_number === "N371DB" && f.departure_icao === "KAUS" ? {
-                            fiRM: !!fiRouteMatch, arrP: !!arrivalPassed, fiSt: fi?.status ?? "none",
-                            fiAD: fi?.actual_departure ?? "null", fiAA: fi?.actual_arrival ?? "null",
-                            idM: idMatched, sup: !!supersedInfo, st: status,
-                          } : null;
 
                           return (
                             <div key={f.id} className={`px-4 py-2 text-xs ${isCancelled ? "opacity-50 bg-gray-50" : ""} ${isFaSourced ? "bg-blue-50/40" : ""}`}>
                               <div className="flex items-center gap-3">
                                 <div className="w-28 shrink-0">
-                                  {_dbg && (
-                                    <div className="text-[8px] text-red-500 font-mono leading-tight bg-red-50 rounded px-1 mb-0.5">
-                                      {JSON.stringify(_dbg)}
-                                    </div>
-                                  )}
                                   <span className="font-mono font-medium text-gray-800">
                                     {f.departure_icao || "?"} →{" "}
                                     {isCancelled ? (
@@ -2413,9 +2403,21 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                 const faEta = fiRouteMatch && fi?.arrival_time ? new Date(fi.arrival_time) : null;
                 const arrivalPassed = (arrivalDate && arrivalDate < now) || (faEta && faEta < now);
 
+                // Position mismatch: FA says aircraft is NOT at departure airport
+                const posNorm2 = (c: string | null | undefined) => c ? (c.length === 3 && /^[A-Z]/.test(c) ? `K${c}` : c) : null;
+                const faLoc2 = f.tail_number ? tailFaLocation.get(f.tail_number) : null;
+                const faAtDest2 = faLoc2 && f.arrival_icao && posNorm2(faLoc2.icao) === posNorm2(f.arrival_icao);
+
                 // FA primary; SWIM supplements when FA hasn't detected takeoff yet
                 if (fiRouteMatch && (fi?.actual_arrival || fi?.status?.includes("Arrived") || fi?.status?.includes("Landed"))) {
                   status = "Arrived"; statusColor = "text-green-600 font-medium";
+                } else if (arrivalPassed && fiRouteMatch && !fi?.actual_departure && !fi?.actual_arrival
+                  && !fi?.status?.includes("En Route") && !fi?.status?.includes("Landed") && !faAtDest2) {
+                  // FA has this flight filed/scheduled but never saw it depart, and aircraft isn't at destination
+                  status = "No Departure"; statusColor = "text-orange-600 font-bold";
+                } else if (arrivalPassed && !fiRouteMatch && faLoc2 && !fi?.actual_departure && !faAtDest2) {
+                  // No FA route match but FA tracks tail, aircraft isn't at destination
+                  status = "No Departure"; statusColor = "text-orange-600 font-bold";
                 } else if (arrivalPassed) {
                   status = "Arrived"; statusColor = "text-green-600 font-medium";
                 } else if (fiRouteMatch && fi?.status?.includes("En Route")) {
@@ -2553,6 +2555,12 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                             </>
                           ) : (f.arrival_icao || "?")}
                         </span>
+                        {/* Position mismatch: aircraft not at departure airport per FA */}
+                        {status === "No Departure" && faLoc2 && posNorm2(faLoc2.icao) !== posNorm2(f.departure_icao) && (
+                          <div className="text-[10px] font-medium text-orange-600 leading-tight">
+                            Aircraft at {faLoc2.icao}
+                          </div>
+                        )}
                         {/* Time-based progress bar + remaining for en route flights */}
                         {!isCancelled && status === "En Route" && (() => {
                           const depStr = (!swimRouteStale ? swimRouteMatch?.etd : null) ?? fi?.actual_departure ?? fi?.departure_time ?? (!swimEntryStale ? swimEntry?.actual_departure : null);
