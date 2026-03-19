@@ -36,6 +36,8 @@ export default function OpsTabs({ flights, bakerPprAirports, advertisedPrices, m
       const upserted = data.upserted ?? 0;
       const skipped = data.skipped ?? 0;
       setSyncMsg(`${upserted} upserted, ${skipped} skipped`);
+      // Fire international ops checks after sync (non-blocking)
+      fetch("/api/ops/intl/run-checks", { method: "POST" }).catch(() => {});
       setTimeout(() => window.location.reload(), 1500);
     } catch (err) {
       setSyncMsg(err instanceof Error ? err.message : "Network error");
