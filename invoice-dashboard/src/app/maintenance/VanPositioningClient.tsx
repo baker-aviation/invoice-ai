@@ -774,36 +774,13 @@ function computeAllDayArrivals(allFlights: Flight[], date: string): VanFlightIte
       return !isOnEtDate(nextDep.scheduled_departure, date);
     });
 
-  // Deduplicate by tail — keep last arrival (no van base for uncovered pool)
-  // Use flight ID as key for flights with no tail number to avoid collapsing them
-  const byTail = new Map<string, VanFlightItem>();
+  // Dedup by flight ID only (not by tail) — keep all arrivals per tail for multi-van support
+  const byFlightId = new Map<string, VanFlightItem>();
   for (const item of rawItems) {
-    const key = item.arrFlight.tail_number || `_no_tail_${item.arrFlight.id}`;
-    const existing = byTail.get(key);
-    if (
-      !existing ||
-      (item.arrFlight.scheduled_arrival ?? "") > (existing.arrFlight.scheduled_arrival ?? "")
-    ) {
-      byTail.set(key, item);
-    }
+    byFlightId.set(item.arrFlight.id, item);
   }
-
-  // Second pass: remove tailless duplicates that match a tailed flight on same route+time
-  const tailedSigs = new Set<string>();
-  for (const item of byTail.values()) {
-    if (!item.arrFlight.tail_number) continue;
-    const sig = `${item.arrFlight.departure_icao}|${item.arrFlight.arrival_icao}|${item.arrFlight.scheduled_departure}|${item.arrFlight.scheduled_arrival ?? ""}`;
-    tailedSigs.add(sig);
-  }
-  for (const [key, item] of byTail) {
-    if (item.arrFlight.tail_number) continue;
-    const sig = `${item.arrFlight.departure_icao}|${item.arrFlight.arrival_icao}|${item.arrFlight.scheduled_departure}|${item.arrFlight.scheduled_arrival ?? ""}`;
-    if (tailedSigs.has(sig)) byTail.delete(key);
-  }
-
-  return Array.from(byTail.values()).sort((a, b) =>
-    (a.arrFlight.scheduled_arrival ?? "").localeCompare(b.arrFlight.scheduled_arrival ?? ""),
-  );
+  return Array.from(byFlightId.values())
+    .sort((a, b) => (a.arrFlight.scheduled_arrival ?? "").localeCompare(b.arrFlight.scheduled_arrival ?? ""));
 }
 
 /** Recalculate distKm for items relative to a van's base position. */
@@ -2557,19 +2534,12 @@ function ScheduleTab({
         }
       }
 
-      // Flight came from uncovered pool — find it and all same-tail flights in allDayArrivals
+      // Flight came from uncovered pool — assign only this single flight
       if (!found) {
         const item = allDayArrivals.find((a) => a.arrFlight.id === flightId);
         if (item) {
-          const tail = item.arrFlight.tail_number;
           const target = result.get(targetVanId) ?? [];
-          // Add the primary flight + all other flights for this tail that aren't already assigned
-          const assignedIds = new Set<string>();
-          for (const [, items] of result) for (const i of items) assignedIds.add(i.arrFlight.id);
-          const tailItems = tail
-            ? allDayArrivals.filter((a) => a.arrFlight.tail_number === tail && !assignedIds.has(a.arrFlight.id))
-            : [item];
-          for (const ti of tailItems) target.push(ti);
+          target.push(item);
           result.set(targetVanId, target);
         }
       }
@@ -2733,19 +2703,10 @@ function ScheduleTab({
   // Uncovered aircraft: arrivals today not assigned to any van
   const uncoveredItems = useMemo(() => {
     const assignedIds = new Set<string>();
-    const assignedTails = new Set<string>();
     for (const items of finalItemsByVan.values()) {
-      for (const item of items) {
-        assignedIds.add(item.arrFlight.id);
-        if (item.arrFlight.tail_number) assignedTails.add(item.arrFlight.tail_number);
-      }
+      for (const item of items) assignedIds.add(item.arrFlight.id);
     }
-    const result = allDayArrivals.filter((item) => {
-      // If this tail is assigned to ANY van (by any flight), it's not uncovered
-      if (item.arrFlight.tail_number && assignedTails.has(item.arrFlight.tail_number)) return false;
-      return !assignedIds.has(item.arrFlight.id);
-    });
-    return result;
+    return allDayArrivals.filter((item) => !assignedIds.has(item.arrFlight.id));
   }, [allDayArrivals, finalItemsByVan]);
 
   // Unscheduled aircraft: fleet tails with NO flights on this date

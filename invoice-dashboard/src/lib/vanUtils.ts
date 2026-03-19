@@ -228,17 +228,12 @@ export function computeZoneItems(
       return !isOnEtDate(nextDep.scheduled_departure, date);
     });
 
-  // Deduplicate by tail
-  const byTail = new Map<string, VanFlightItem>();
+  // Dedup by flight ID only (not by tail) — keep all arrivals for multi-van support
+  const byFlightId = new Map<string, VanFlightItem>();
   for (const item of rawItems) {
-    const key = item.arrFlight.tail_number || `_no_tail_${item.arrFlight.id}`;
-    const existing = byTail.get(key);
-    if (!existing || item.distKm < existing.distKm) {
-      byTail.set(key, item);
-    }
+    byFlightId.set(item.arrFlight.id, item);
   }
-
-  return Array.from(byTail.values())
+  return Array.from(byFlightId.values())
     .sort((a, b) =>
       (a.arrFlight.scheduled_arrival ?? "").localeCompare(b.arrFlight.scheduled_arrival ?? ""),
     )
