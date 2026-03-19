@@ -2557,12 +2557,19 @@ function ScheduleTab({
         }
       }
 
-      // Flight came from uncovered pool — find it in allDayArrivals
+      // Flight came from uncovered pool — find it and all same-tail flights in allDayArrivals
       if (!found) {
         const item = allDayArrivals.find((a) => a.arrFlight.id === flightId);
         if (item) {
+          const tail = item.arrFlight.tail_number;
           const target = result.get(targetVanId) ?? [];
-          target.push(item);
+          // Add the primary flight + all other flights for this tail that aren't already assigned
+          const assignedIds = new Set<string>();
+          for (const [, items] of result) for (const i of items) assignedIds.add(i.arrFlight.id);
+          const tailItems = tail
+            ? allDayArrivals.filter((a) => a.arrFlight.tail_number === tail && !assignedIds.has(a.arrFlight.id))
+            : [item];
+          for (const ti of tailItems) target.push(ti);
           result.set(targetVanId, target);
         }
       }
