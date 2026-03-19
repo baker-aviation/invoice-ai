@@ -10,7 +10,7 @@ const JOB_COLUMNS =
   "id, application_id, created_at, updated_at, hiring_stage, category, employment_type, candidate_name, email, phone, location, total_time_hours, turbine_time_hours, pic_time_hours, sic_time_hours, has_citation_x, has_challenger_300_type_rating, type_ratings, has_part_135, has_part_121, soft_gate_pic_met, soft_gate_pic_status, needs_review, notes, model, info_session_data, structured_notes, rejected_at, rejection_reason, deleted_at";
 
 const JOB_COLUMNS_WITH_STAGE =
-  "id, application_id, created_at, updated_at, pipeline_stage, category, employment_type, candidate_name, email, phone, location, total_time_hours, turbine_time_hours, pic_time_hours, sic_time_hours, has_citation_x, has_challenger_300_type_rating, type_ratings, has_part_135, has_part_121, soft_gate_pic_met, soft_gate_pic_status, needs_review, notes, model, info_session_data, structured_notes, rejected_at, rejection_reason, deleted_at, offer_status, offer_sent_at, info_session_attended, info_session_attended_at";
+  "id, application_id, created_at, updated_at, pipeline_stage, category, employment_type, candidate_name, email, phone, location, total_time_hours, turbine_time_hours, pic_time_hours, sic_time_hours, has_citation_x, has_challenger_300_type_rating, type_ratings, has_part_135, has_part_121, soft_gate_pic_met, soft_gate_pic_status, needs_review, notes, model, info_session_data, structured_notes, rejected_at, rejection_reason, deleted_at, offer_status, offer_sent_at, info_session_attended, info_session_attended_at, hr_reviewed, previously_rejected";
 
 const JOB_COLUMNS_BASE =
   "id, application_id, created_at, updated_at, category, employment_type, candidate_name, email, phone, location, total_time_hours, turbine_time_hours, pic_time_hours, sic_time_hours, has_citation_x, has_challenger_300_type_rating, type_ratings, has_part_135, has_part_121, soft_gate_pic_met, soft_gate_pic_status, needs_review, notes, model, info_session_data";
@@ -259,15 +259,24 @@ export async function fetchLinkedLors(parseId: number | null | undefined): Promi
 // ---------------------------------------------------------------------------
 
 export async function fetchPreviousRejections(
-  email: string,
+  fields: { email?: string | null; phone?: string | null; candidate_name?: string | null },
   excludeId: number,
 ): Promise<{ id: number; application_id: number; rejected_at: string; rejection_reason: string | null }[]> {
-  if (!email) return [];
+  const { email, phone, candidate_name } = fields;
+  if (!email && !phone && !candidate_name) return [];
+
   const supa = createServiceClient();
+
+  // Build OR conditions for matching on email, phone, or name
+  const orClauses: string[] = [];
+  if (email) orClauses.push(`email.eq.${email}`);
+  if (phone) orClauses.push(`phone.eq.${phone}`);
+  if (candidate_name) orClauses.push(`candidate_name.eq.${candidate_name}`);
+
   const { data, error } = await supa
     .from("job_application_parse")
-    .select("id, application_id, rejected_at, rejection_reason")
-    .eq("email", email)
+    .select("id, application_id, rejected_at, rejection_reason, candidate_name, email, phone")
+    .or(orClauses.join(","))
     .not("rejected_at", "is", null)
     .is("deleted_at", null)
     .neq("id", excludeId);

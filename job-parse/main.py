@@ -691,6 +691,44 @@ def _upsert_parse_row(supa: Client, application_id: int, result: Dict[str, Any])
     supa.table(PARSE_TABLE).upsert(row, on_conflict="application_id").execute()
 
 
+def _check_previously_rejected(supa: Client, application_id: int, result: Dict[str, Any]) -> None:
+    """Check if a newly parsed candidate matches any previously rejected application
+    by email, phone, or name. If so, set previously_rejected=true on the new row."""
+    candidate = result.get("candidate") or {}
+    email = candidate.get("email")
+    phone = candidate.get("phone")
+    name = candidate.get("name")
+
+    if not email and not phone and not name:
+        return
+
+    # Build OR filter for matching rejected rows
+    or_clauses = []
+    if email:
+        or_clauses.append(f"email.eq.{email}")
+    if phone:
+        or_clauses.append(f"phone.eq.{phone}")
+    if name:
+        or_clauses.append(f"candidate_name.eq.{name}")
+
+    res = (
+        supa.table(PARSE_TABLE)
+        .select("id")
+        .or_(",".join(or_clauses))
+        .not_("rejected_at", "is", "null")
+        .is_("deleted_at", "null")
+        .neq("application_id", application_id)
+        .limit(1)
+        .execute()
+    )
+
+    if res.data and len(res.data) > 0:
+        print(f"Candidate for app {application_id} matches a previously rejected application", flush=True)
+        supa.table(PARSE_TABLE).update(
+            {"previously_rejected": True}
+        ).eq("application_id", application_id).execute()
+
+
 def _fetch_files_for_application(supa: Client, application_id: int) -> List[Dict[str, Any]]:
     res = (
         supa.table(FILES_TABLE)
@@ -956,6 +994,12 @@ def parse_application(application_id: int = Query(..., ge=1)):
     except Exception as e:
         print(f"Supabase upsert failed: {e}", flush=True)
         raise HTTPException(status_code=500, detail=f"Supabase upsert failed: {e}")
+
+    # Check if this candidate was previously rejected (by email, phone, or name)
+    try:
+        _check_previously_rejected(supa, application_id, extracted)
+    except Exception as e:
+        print(f"Previously-rejected check failed (non-fatal): {e}", flush=True)
 
     return {
         "ok": True,

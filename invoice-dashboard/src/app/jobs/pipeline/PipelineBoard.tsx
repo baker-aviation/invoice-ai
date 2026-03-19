@@ -39,12 +39,17 @@ const STAGE_META: Record<
     headerColor: "bg-teal-100 text-teal-700",
   },
   interview_pre: {
-    label: "Pre-Interview",
+    label: "Need to Schedule Interview",
     color: "border-violet-200",
     headerColor: "bg-violet-100 text-violet-700",
   },
+  interview_scheduled: {
+    label: "Scheduled for Interview",
+    color: "border-fuchsia-200",
+    headerColor: "bg-fuchsia-100 text-fuchsia-700",
+  },
   interview_post: {
-    label: "Post-Interview",
+    label: "Interview Completed",
     color: "border-purple-200",
     headerColor: "bg-purple-100 text-purple-700",
   },
@@ -476,6 +481,59 @@ function OfferStatusBadge({ status }: { status: string | null | undefined }) {
   );
 }
 
+function SendInterviewEmailButton({ job }: { job: JobRow }) {
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [error, setError] = useState("");
+
+  async function handleSend(e: React.MouseEvent) {
+    e.stopPropagation();
+    e.preventDefault();
+    if (!job.email) {
+      setError("No email");
+      return;
+    }
+    setSending(true);
+    setError("");
+    try {
+      const res = await fetch("/api/jobs/send-interview-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ application_id: job.application_id }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setError(data.error ?? "Failed");
+      } else {
+        setSent(true);
+      }
+    } catch {
+      setError("Network error");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  if (sent) {
+    return (
+      <span className="text-[10px] text-emerald-600 font-medium">Email sent</span>
+    );
+  }
+
+  return (
+    <div onClick={(e) => e.stopPropagation()}>
+      <button
+        onClick={handleSend}
+        disabled={sending || !job.email}
+        className="text-[10px] font-medium px-2 py-1 rounded border border-violet-300 bg-white text-violet-700 hover:bg-violet-50 disabled:opacity-40 transition-colors"
+      >
+        {sending ? "Sending..." : "Send Scheduling Email"}
+      </button>
+      {error && <div className="text-[10px] text-red-500 mt-0.5">{error}</div>}
+    </div>
+  );
+}
+
 function CandidateCard({
   job,
   onDragStart,
@@ -545,6 +603,16 @@ function CandidateCard({
         ) : job.model ? (
           <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-indigo-50 text-indigo-600 border-indigo-200">Hiring@</span>
         ) : null}
+        {/* HR Reviewed badge */}
+        {job.hr_reviewed ? (
+          <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-emerald-50 text-emerald-700 border-emerald-200">HR Reviewed</span>
+        ) : (
+          <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-gray-50 text-gray-400 border-gray-200">HR Pending</span>
+        )}
+        {/* Previously Rejected badge */}
+        {job.previously_rejected && (
+          <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-red-50 text-red-600 border-red-200">Prev. Rejected</span>
+        )}
         {job.location && (
           <span className="text-[10px] text-gray-400 truncate max-w-[100px]">
             {job.location}
@@ -560,6 +628,13 @@ function CandidateCard({
           {job.pic_time_hours != null && (
             <span>PIC {fmtHours(job.pic_time_hours)}</span>
           )}
+        </div>
+      )}
+
+      {/* Interview scheduling email button */}
+      {stage === "interview_pre" && (
+        <div className="mt-2">
+          <SendInterviewEmailButton job={job} />
         </div>
       )}
 

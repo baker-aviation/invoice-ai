@@ -59,14 +59,35 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: `Failed to create application: ${appErr?.message ?? "unknown"}` }, { status: 500 });
     }
 
-    // 2. Create the parse row with candidate info
+    // 2. Check if this candidate was previously rejected (by email, phone, or name)
+    const email = String(body.email ?? "").trim() || null;
+    const phone = String(body.phone ?? "").trim() || null;
+    let previouslyRejected = false;
+
+    const orClauses: string[] = [];
+    if (email) orClauses.push(`email.eq.${email}`);
+    if (phone) orClauses.push(`phone.eq.${phone}`);
+    if (name) orClauses.push(`candidate_name.eq.${name}`);
+
+    if (orClauses.length > 0) {
+      const { data: rejectedMatches } = await supa
+        .from("job_application_parse")
+        .select("id")
+        .or(orClauses.join(","))
+        .not("rejected_at", "is", null)
+        .is("deleted_at", null)
+        .limit(1);
+      previouslyRejected = (rejectedMatches?.length ?? 0) > 0;
+    }
+
+    // 3. Create the parse row with candidate info
     const { data: parseRow, error: parseErr } = await supa
       .from("job_application_parse")
       .insert({
         application_id: appRow.id,
         candidate_name: name,
-        email: String(body.email ?? "").trim() || null,
-        phone: String(body.phone ?? "").trim() || null,
+        email,
+        phone,
         location: String(body.location ?? "").trim() || null,
         category: category,
         employment_type: body.employment_type ?? null,
@@ -75,6 +96,7 @@ export async function POST(req: NextRequest) {
         pipeline_stage: stage,
         notes: String(body.notes ?? "").trim() || null,
         model: "manual",
+        previously_rejected: previouslyRejected,
       })
       .select("id, application_id")
       .single();
