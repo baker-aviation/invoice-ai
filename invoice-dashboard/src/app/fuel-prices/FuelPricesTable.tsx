@@ -761,6 +761,7 @@ export default function FuelPricesTable({
   const [showImportModal, setShowImportModal] = useState(false);
   const [volumeGallons, setVolumeGallons] = useState<string>("");
   const [compareJetFbo, setCompareJetFbo] = useState(false);
+  const [hideStale, setHideStale] = useState(true);
   const [isPulling, setIsPulling] = useState(false);
   const [pullResult, setPullResult] = useState<string | null>(null);
   const [extendedAdv, setExtendedAdv] = useState<AdvertisedPriceRow[] | null>(null);
@@ -1060,8 +1061,12 @@ export default function FuelPricesTable({
           .some((f) => String(f).toLowerCase().includes(q)),
       );
     }
+    if (hideStale) {
+      const staleCutoff = new Date(Date.now() - 8 * 86400000).toISOString().split("T")[0];
+      rows = rows.filter((r) => r.currentWeek >= staleCutoff);
+    }
     return rows;
-  }, [advVsActual, airportFilter, vendorFilter, search, compareJetFbo]);
+  }, [advVsActual, airportFilter, vendorFilter, search, compareJetFbo, hideStale]);
 
   // Cheapest price per airport — only rows with data ≤8 days old
   const cheapestByAirport = useMemo(() => {
@@ -1495,6 +1500,18 @@ export default function FuelPricesTable({
               title="Compare Jet Aviation, Atlantic, and Signature at airports where Jet Aviation has pricing"
             >
               Compare FBOs
+            </button>
+            <button
+              type="button"
+              onClick={() => { setHideStale((v) => !v); setPage(0); }}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md border transition-colors ${
+                hideStale
+                  ? "bg-amber-100 text-amber-800 border-amber-300"
+                  : "bg-white text-gray-600 border-gray-200 hover:border-gray-400 hover:bg-gray-50"
+              }`}
+              title="Hide prices older than 8 days"
+            >
+              {hideStale ? "Stale Hidden" : "Show All"}
             </button>
             {!extendedAdv && (
               <button
@@ -1982,7 +1999,7 @@ export default function FuelPricesTable({
                           const weekDate = new Date(row.currentWeek + "T12:00:00");
                           const now = new Date();
                           const diffDays = Math.floor((now.getTime() - weekDate.getTime()) / 86400000);
-                          const isStale = diffDays > 6;
+                          const isStale = diffDays > 8;
                           return (
                             <span className={`${isCheapest ? "inline-flex items-center gap-1" : ""} ${isStale ? "text-amber-600" : "text-green-700"}`}>
                               {fmt$(row.currentPrice)}
