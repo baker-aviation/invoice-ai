@@ -322,10 +322,11 @@ async function pollEnRoute(
 
   const enRouteTails = new Set((enRouteRows ?? []).map((r) => r.tail as string));
 
-  // Also check tails with ICS flights scheduled to depart in the last 2h but not yet
+  // Also check tails with ICS flights scheduled to depart in the last 8h but not yet
   // marked en-route in fa_flights. This closes the gap where FA's website shows
   // "En Route" but our DB still has "Scheduled"/"Filed" from the last discovery poll.
-  const recentDepCutoff = new Date(Date.now() - 2 * 3600_000).toISOString();
+  // 8h covers the longest domestic flights (e.g. KORL→KLAS ~5h).
+  const recentDepCutoff = new Date(Date.now() - 8 * 3600_000).toISOString();
   const { data: recentDepRows } = await supa
     .from("flights")
     .select("tail_number")
