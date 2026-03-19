@@ -172,8 +172,9 @@ _SECTION_BOUNDARY_PATTERNS = [
     # World Fuel invoice numbers: 8+ digits hyphen 4-5 digits (e.g. 27379628-21101)
     re.compile(r"\b(\d{8,}-\d{4,5})\b"),
     re.compile(r"\bFUEL\s+TICKET\s+(\d{4,})\b", re.I),
-    # World Fuel fuel ticket: header on one line, number on next line
-    re.compile(r"FUEL\s+TICKET\b[^\n]*\n\s*(?:\d{1,2}-[A-Z]{3}-\d{4}\s+)?(\d{5,7})\b", re.I),
+    # NOTE: WF multiline fuel ticket pattern intentionally excluded here —
+    # it creates duplicate section boundaries alongside the invoice number pattern.
+    # It's only needed in INV_PATTERNS (for ID count) and split_statement.py (page ID).
     re.compile(r"\bRef Number\s+([A-Z0-9][A-Z0-9-]*)\b", re.I),
     re.compile(r"\bInvoice\s+(?:No\.?|#|Number)\s*:?\s*([A-Z0-9][A-Z0-9-]{2,})\b", re.I),
     re.compile(r"\bCredit Memo\s+(?:No\.?|#|Number)\s*:?\s*([A-Z0-9][A-Z0-9-]{2,})\b", re.I),
