@@ -3129,6 +3129,7 @@ function ScheduleTab({
     added: { tail: string; airport: string }[];
     removed: { tail: string; airport: string }[];
     orderChanged: boolean;
+    mxChanged: boolean;
     currentFlightIds: string[];
     newOrder: { tail: string; airport: string }[];
   };
@@ -3175,7 +3176,19 @@ function ScheduleTab({
       const sameSet = addedIds.length === 0 && removedIds.length === 0;
       const orderChanged = sameSet && currentIds.join(",") !== pubIds.join(",");
 
-      if (addedIds.length === 0 && removedIds.length === 0 && !orderChanged) continue;
+      // Check if MX notes changed for any aircraft in this van
+      const currentMxFingerprint = currentItems
+        .map((i) => {
+          const tail = i.arrFlight.tail_number ?? "";
+          const notes = (mxNotesByTail.get(tail) ?? []).filter((n) => !isMel(n));
+          return notes.map((n) => n.id).sort().join(",");
+        })
+        .join("|");
+      const pubMxKey = `vanMxFingerprint-${date}-${zone.vanId}`;
+      const pubMxFingerprint = typeof window !== "undefined" ? localStorage.getItem(pubMxKey) : null;
+      const mxChanged = pubMxFingerprint != null && currentMxFingerprint !== pubMxFingerprint;
+
+      if (addedIds.length === 0 && removedIds.length === 0 && !orderChanged && !mxChanged) continue;
 
       diffs.push({
         vanId: zone.vanId,
@@ -3184,12 +3197,13 @@ function ScheduleTab({
         added: addedIds.map((id) => flightLookup.get(id) ?? { tail: "???", airport: "?" }),
         removed: removedIds.map((id) => flightLookup.get(id) ?? { tail: "???", airport: "?" }),
         orderChanged,
+        mxChanged,
         currentFlightIds: currentIds,
         newOrder: currentItems.map((i) => ({ tail: i.arrFlight.tail_number ?? "???", airport: i.airport })),
       });
     }
     return diffs;
-  }, [finalItemsByVan, baseItemsByVan, publishedAssignments]);
+  }, [finalItemsByVan, baseItemsByVan, publishedAssignments, mxNotesByTail, date]);
 
   const changedVanCount = changedVans.length;
 
@@ -3288,6 +3302,16 @@ function ScheduleTab({
       setPublishedEditsSnapshot(currentEditsFingerprint);
       setMorningSentAt(sentTime);
       try { localStorage.setItem(`vanMorningSent-${date}`, sentTime); } catch {}
+      // Save MX fingerprints as baseline for change detection
+      for (const zone of FIXED_VAN_ZONES) {
+        const items = finalItemsByVan.get(zone.vanId) ?? [];
+        const fp = items.map((i) => {
+          const tail = i.arrFlight.tail_number ?? "";
+          const notes = (mxNotesByTail.get(tail) ?? []).filter((n) => !isMel(n));
+          return notes.map((n) => n.id).sort().join(",");
+        }).join("|");
+        try { localStorage.setItem(`vanMxFingerprint-${date}-${zone.vanId}`, fp); } catch {}
+      }
       setMorningSendStatus("success");
       setTimeout(() => setMorningSendStatus("idle"), 3000);
     } catch {
@@ -3339,9 +3363,19 @@ function ScheduleTab({
         return;
       }
 
-      // 3) Update state
+      // 3) Update state + save MX fingerprints
       setPublishedAt(pubData.published_at);
       setPublishedEditsSnapshot(currentEditsFingerprint);
+      // Save MX fingerprints for all vans so we detect future MX changes
+      for (const zone of FIXED_VAN_ZONES) {
+        const items = finalItemsByVan.get(zone.vanId) ?? [];
+        const fp = items.map((i) => {
+          const tail = i.arrFlight.tail_number ?? "";
+          const notes = (mxNotesByTail.get(tail) ?? []).filter((n) => !isMel(n));
+          return notes.map((n) => n.id).sort().join(",");
+        }).join("|");
+        try { localStorage.setItem(`vanMxFingerprint-${date}-${zone.vanId}`, fp); } catch {}
+      }
       setUpdateVansStatus("success");
       setTimeout(() => setUpdateVansStatus("idle"), 3000);
     } catch {
