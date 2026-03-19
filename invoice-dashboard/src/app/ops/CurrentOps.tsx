@@ -2007,9 +2007,17 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           const swimEntry = swimRouteMatch ?? (f.tail_number ? swimStatus.get(`${f.tail_number}||`) : undefined);
                           const swimRouteStale = isSwimStale(swimRouteMatch, f.scheduled_departure);
                           const swimEntryStale = isSwimStale(swimEntry, f.scheduled_departure);
+                          // Position mismatch: FA says aircraft is NOT at departure airport
+                          const posNorm = (c: string | null | undefined) => c ? (c.length === 3 && /^[A-Z]/.test(c) ? `K${c}` : c) : null;
+                          const faLoc = f.tail_number ? tailFaLocation.get(f.tail_number) : null;
+                          const atDeparture = !faLoc || posNorm(faLoc.icao) === posNorm(f.departure_icao);
+
                           // FA primary; SWIM supplements when FA hasn't detected takeoff yet
                           if (fiRouteMatch && (fi?.actual_arrival || fi?.status?.includes("Arrived") || fi?.status?.includes("Landed"))) {
                             status = "Arrived"; statusColor = "text-green-600 font-medium";
+                          } else if (arrivalPassed && !fiRouteMatch && !atDeparture) {
+                            // Scheduled arrival passed but FA says aircraft never made it to departure airport
+                            status = "No Departure"; statusColor = "text-orange-600 font-bold";
                           } else if (arrivalPassed) {
                             status = "Arrived"; statusColor = "text-green-600 font-medium";
                           } else if (fiRouteMatch && fi?.status?.includes("En Route")) {
@@ -2063,16 +2071,8 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                                   {/* Position mismatch: aircraft not at departure airport per FA */}
                                   {(() => {
                                     if (isCancelled || !f.tail_number || !f.departure_icao) return null;
-                                    if (status !== "Scheduled" && !isFiled) return null;
-                                    // Only flag the first scheduled flight for this tail
-                                    const isFirstScheduled = tailFlights.findIndex(
-                                      (tf) => tf.tail_number === f.tail_number && new Date(tf.scheduled_departure) > new Date()
-                                    ) === tailFlights.indexOf(f);
-                                    if (!isFirstScheduled) return null;
-                                    const faLoc = tailFaLocation.get(f.tail_number);
-                                    if (!faLoc) return null;
-                                    const normDep = f.departure_icao.length === 3 && /^[A-Z]/.test(f.departure_icao) ? `K${f.departure_icao}` : f.departure_icao;
-                                    if (faLoc.icao === normDep) return null;
+                                    if (status !== "Scheduled" && status !== "No Departure" && !isFiled) return null;
+                                    if (!faLoc || atDeparture) return null;
                                     return (
                                       <div className="text-[10px] font-medium text-orange-600 leading-tight">
                                         Aircraft at {faLoc.icao}
