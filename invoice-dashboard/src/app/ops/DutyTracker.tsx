@@ -370,8 +370,11 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
 
   useEffect(() => {
     fetchFaData(true);
-    const interval = setInterval(() => fetchFaData(false), POLL_INTERVAL_MS);
-    return () => clearInterval(interval);
+    const jitter = () => POLL_INTERVAL_MS + Math.random() * 30_000;
+    let id: ReturnType<typeof setTimeout>;
+    const tick = () => { fetchFaData(false); id = setTimeout(tick, jitter()); };
+    id = setTimeout(tick, jitter());
+    return () => clearTimeout(id);
   }, [fetchFaData]);
 
   // Group FA flights by tail for flexible matching

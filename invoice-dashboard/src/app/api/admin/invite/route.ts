@@ -16,7 +16,7 @@ export async function POST(req: NextRequest) {
   if (!isAuthed(auth)) return auth.error;
 
   // 2. Rate limit — 10 invites per minute per admin
-  if (isRateLimited(auth.userId, 10)) {
+  if (await isRateLimited(auth.userId, 10)) {
     return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
   }
 

@@ -824,17 +824,21 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
     setEditingRemarkId(null);
   }, []);
 
-  // Poll every 5 minutes
+  // Poll every 5 minutes (with jitter to prevent thundering herd across clients)
   useEffect(() => {
     fetchFlightInfo();
     fetchSwimStatus();
     fetchTripSalespersons();
     fetchRemarks();
-    const interval = setInterval(fetchFlightInfo, 300_000); // 5 min — matches server cache TTL
-    const swimInterval = setInterval(fetchSwimStatus, 300_000); // 5 min same as FA
-    const spInterval = setInterval(fetchTripSalespersons, 300_000);
-    const remarkInterval = setInterval(fetchRemarks, 300_000);
-    return () => { clearInterval(interval); clearInterval(swimInterval); clearInterval(spInterval); clearInterval(remarkInterval); };
+    const jitter = () => 300_000 + Math.random() * 30_000; // 5 min + 0-30s jitter
+    let i1: ReturnType<typeof setTimeout>, i2: ReturnType<typeof setTimeout>,
+        i3: ReturnType<typeof setTimeout>, i4: ReturnType<typeof setTimeout>;
+    const loop = (fn: () => void) => { const tick = () => { fn(); id = setTimeout(tick, jitter()); }; let id = setTimeout(tick, jitter()); return () => clearTimeout(id); };
+    const c1 = loop(fetchFlightInfo);
+    const c2 = loop(fetchSwimStatus);
+    const c3 = loop(fetchTripSalespersons);
+    const c4 = loop(fetchRemarks);
+    return () => { c1(); c2(); c3(); c4(); };
   }, [fetchFlightInfo, fetchSwimStatus, fetchTripSalespersons, fetchRemarks]);
 
   // Lazy-load extended flights when switching to Week/Month

@@ -344,8 +344,11 @@ function useRadarUrl(enabled: boolean): string | null {
       } catch { /* ignore */ }
     }
     fetchUrl();
-    const interval = setInterval(fetchUrl, 5 * 60 * 1000);
-    return () => { cancelled = true; clearInterval(interval); };
+    const jitter = () => 300_000 + Math.random() * 30_000;
+    let tid: ReturnType<typeof setTimeout>;
+    const tick = () => { fetchUrl(); tid = setTimeout(tick, jitter()); };
+    tid = setTimeout(tick, jitter());
+    return () => { cancelled = true; clearTimeout(tid); };
   }, [enabled]);
   return url;
 }

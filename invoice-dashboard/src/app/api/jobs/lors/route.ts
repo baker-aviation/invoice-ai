@@ -66,7 +66,7 @@ export async function GET(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
   const auth = await requireAdmin(req);
   if ("error" in auth) return auth.error;
-  if (isRateLimited(auth.userId)) {
+  if (await isRateLimited(auth.userId)) {
     return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
 

@@ -83,7 +83,7 @@ const PIPELINES = [
 export async function GET(req: NextRequest) {
   const auth = await requireSuperAdmin(req);
   if (!isAuthed(auth)) return auth.error;
-  if (isRateLimited(auth.userId, 10)) {
+  if (await isRateLimited(auth.userId, 10)) {
     return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
 

@@ -2193,6 +2193,10 @@ function ScheduleTab({
   useEffect(() => { wontSeeTailsRef.current = [...wontSeeTodayTails]; }, [wontSeeTodayTails]);
   useEffect(() => { hiddenMxIdsRef.current = [...hiddenTodayMxIds]; }, [hiddenTodayMxIds]);
 
+  // Ref to loadDraftsFromDb so saveDraftToDb can call it on conflict without
+  // circular declaration ordering issues (loadDraftsFromDb is defined after saveDraftToDb).
+  const loadDraftsFromDbRef = useRef<((d: string) => Promise<void>) | null>(null);
+
   // Save drafts to DB (debounced) + localStorage fallback
   const saveDraftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saveDraftToDb = useCallback((o: Map<string, number>, r: Set<string>, u: Map<string, number>, a: Map<string, string>, s: Map<number, string[]>) => {
@@ -2226,16 +2230,21 @@ function ScheduleTab({
           hidden_mx_ids: hiddenMxIdsRef.current,
           airport_overrides: [...a],
           sort_overrides: [...s],
+          expected_updated_at: draftUpdatedAtRef.current,
         }),
       }).then(async (res) => {
         if (res.ok) {
           const d = await res.json().catch(() => null);
           if (d?.updated_at) draftUpdatedAtRef.current = d.updated_at;
+        } else if (res.status === 409) {
+          // Conflict — another dispatcher saved. Reload their changes.
+          loadDraftsFromDbRef.current?.(date);
         }
       }).catch(() => {}).finally(() => {
         suppressSaveRef.current = false;
       });
     }, 500);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [date]);
 
   // Suppress auto-save during date transitions — runs synchronously before
@@ -2293,6 +2302,7 @@ function ScheduleTab({
     } catch { setAirportOverrides(new Map()); }
     suppressSaveRef.current = false;
   }, []);
+  loadDraftsFromDbRef.current = loadDraftsFromDb;
 
   // Poll DB every 15s for other admins' changes
   useEffect(() => {
@@ -4409,8 +4419,11 @@ export default function VanPositioningClient({ initialFlights, mxNotes, melItems
 
   useEffect(() => { loadSamsara(); }, []);
   useEffect(() => {
-    const id = setInterval(loadSamsara, 240_000);
-    return () => clearInterval(id);
+    const jitter = () => 240_000 + Math.random() * 30_000;
+    let tid: ReturnType<typeof setTimeout>;
+    const tick = () => { loadSamsara(); tid = setTimeout(tick, jitter()); };
+    tid = setTimeout(tick, jitter());
+    return () => clearTimeout(tid);
   }, []);
 
   const aogSamsaraVans = useMemo(
@@ -4514,8 +4527,11 @@ export default function VanPositioningClient({ initialFlights, mxNotes, melItems
       } catch {}
     }
     loadDiags();
-    const id = setInterval(loadDiags, 300_000); // refresh every 5 min
-    return () => clearInterval(id);
+    const jitterD = () => 300_000 + Math.random() * 30_000;
+    let tidD: ReturnType<typeof setTimeout>;
+    const tickD = () => { loadDiags(); tidD = setTimeout(tickD, jitterD()); };
+    tidD = setTimeout(tickD, jitterD());
+    return () => clearTimeout(tidD);
   }, []);
 
   // ── FlightAware flight info (ETA, route, origin/destination, positions) ──
@@ -4566,8 +4582,11 @@ export default function VanPositioningClient({ initialFlights, mxNotes, melItems
       }
     }
     loadFlightInfo();
-    const id = setInterval(loadFlightInfo, 300_000); // refresh every 5 min
-    return () => { cancelled = true; clearInterval(id); };
+    const jitterFI = () => 300_000 + Math.random() * 30_000;
+    let tidFI: ReturnType<typeof setTimeout>;
+    const tickFI = () => { loadFlightInfo(); tidFI = setTimeout(tickFI, jitterFI()); };
+    tidFI = setTimeout(tickFI, jitterFI());
+    return () => { cancelled = true; clearTimeout(tidFI); };
   }, []);
 
   return (

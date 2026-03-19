@@ -37,7 +37,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  if (isRateLimited(auth.userId, 20)) {
+  if (await isRateLimited(auth.userId, 20)) {
     return NextResponse.json({ error: "Rate limited. Please wait a moment." }, { status: 429 });
   }
 

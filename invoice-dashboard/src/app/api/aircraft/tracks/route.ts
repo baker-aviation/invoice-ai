@@ -1,16 +1,43 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, isAuthed } from "@/lib/api-auth";
 import { getFlightTrack, type FaTrackPoint } from "@/lib/flightaware";
+import { getRedis } from "@/lib/redis";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-// Shared cache with single-flight endpoint (module-level, survives warm starts)
-const cache = new Map<string, { data: FaTrackPoint[]; ts: number }>();
+// In-memory fallback cache
+const memCache = new Map<string, { data: FaTrackPoint[]; ts: number }>();
 const CACHE_TTL = 5 * 60_000;
-const MAX_CACHE_SIZE = 50;
+const MAX_MEM_SIZE = 50;
+const REDIS_TTL_SEC = 300;
 
 const PAUSE_MS = 600; // pause between sequential FA calls (rate limit: 1 req/sec)
+
+async function getCached(id: string): Promise<FaTrackPoint[] | null> {
+  const redis = getRedis();
+  if (redis) {
+    try {
+      const val = await redis.get<FaTrackPoint[]>(`track:${id}`);
+      if (val) return val;
+    } catch { /* fall through */ }
+  }
+  const mem = memCache.get(id);
+  if (mem && Date.now() - mem.ts < CACHE_TTL) return mem.data;
+  return null;
+}
+
+async function setCache(id: string, data: FaTrackPoint[]): Promise<void> {
+  const redis = getRedis();
+  if (redis) {
+    try { await redis.set(`track:${id}`, data, { ex: REDIS_TTL_SEC }); } catch { /* ignore */ }
+  }
+  if (memCache.size >= MAX_MEM_SIZE) {
+    const oldest = [...memCache.entries()].sort((a, b) => a[1].ts - b[1].ts)[0];
+    if (oldest) memCache.delete(oldest[0]);
+  }
+  memCache.set(id, { data, ts: Date.now() });
+}
 
 export async function POST(req: NextRequest) {
   const auth = await requireAuth(req);
@@ -41,15 +68,13 @@ export async function POST(req: NextRequest) {
   for (let i = 0; i < flightIds.length; i++) {
     const id = flightIds[i];
 
-    // Return cache if fresh
-    const cachedEntry = cache.get(id);
-    if (cachedEntry && Date.now() - cachedEntry.ts < CACHE_TTL) {
-      tracks[id] = cachedEntry.data;
+    const cached = await getCached(id);
+    if (cached) {
+      tracks[id] = cached;
       cached_count++;
       continue;
     }
 
-    // Rate-limit pause between actual FA API calls
     if (fetched > 0) {
       await new Promise((r) => setTimeout(r, PAUSE_MS));
     }
@@ -60,17 +85,13 @@ export async function POST(req: NextRequest) {
       fetched++;
       console.log(`[Tracks Batch] ${id}: ${positions.length} positions`);
 
-      // Only cache non-empty results
       if (positions.length > 0) {
-        if (cache.size >= MAX_CACHE_SIZE) {
-          const oldest = [...cache.entries()].sort((a, b) => a[1].ts - b[1].ts)[0];
-          if (oldest) cache.delete(oldest[0]);
-        }
-        cache.set(id, { data: positions, ts: Date.now() });
+        await setCache(id, positions);
       }
     } catch (err) {
       console.error(`[Tracks Batch] ${id}: error`, err instanceof Error ? err.message : err);
-      tracks[id] = cachedEntry?.data ?? [];
+      const stale = memCache.get(id);
+      tracks[id] = stale?.data ?? [];
     }
   }
 

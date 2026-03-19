@@ -30,7 +30,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   const auth = await requireAuth(req);
   if (!isAuthed(auth)) return auth.error;
-  if (isRateLimited(auth.userId)) return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
+  if (await isRateLimited(auth.userId)) return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
 
   try {
     const body = await req.json();
@@ -65,7 +65,7 @@ export async function POST(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   const auth = await requireAuth(req);
   if (!isAuthed(auth)) return auth.error;
-  if (isRateLimited(auth.userId)) return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
+  if (await isRateLimited(auth.userId)) return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
 
   try {
     const body = await req.json();

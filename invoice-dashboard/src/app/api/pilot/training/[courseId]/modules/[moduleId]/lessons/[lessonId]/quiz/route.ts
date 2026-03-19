@@ -53,7 +53,7 @@ export async function POST(
   const auth = await requireAdmin(req);
   if ("error" in auth) return auth.error;
 
-  if (isRateLimited(auth.userId, 10)) {
+  if (await isRateLimited(auth.userId, 10)) {
     return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
 
@@ -120,7 +120,7 @@ export async function PUT(
   const auth = await requireAuth(req);
   if (!isAuthed(auth)) return auth.error;
 
-  if (isRateLimited(auth.userId, 20)) {
+  if (await isRateLimited(auth.userId, 20)) {
     return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
 
