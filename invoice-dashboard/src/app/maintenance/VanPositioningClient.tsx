@@ -2930,6 +2930,91 @@ function ScheduleTab({
 
   const hasUnpublishedChanges = publishedAt && currentEditsFingerprint !== publishedEditsSnapshot;
 
+  // ── Per-van change detection (for Update Vans) ──
+  type VanDiff = {
+    vanId: number;
+    vanName: string;
+    homeAirport: string;
+    added: { tail: string; airport: string }[];
+    removed: { tail: string; airport: string }[];
+    orderChanged: boolean;
+    currentFlightIds: string[];
+    newOrder: { tail: string; airport: string }[];
+  };
+
+  const changedVans = useMemo<VanDiff[]>(() => {
+    if (publishedAssignments.length === 0) return [];
+    const diffs: VanDiff[] = [];
+
+    // Build a flight ID → tail+airport lookup from all current items across vans
+    const flightLookup = new Map<string, { tail: string; airport: string }>();
+    for (const [, items] of finalItemsByVan) {
+      for (const item of items) {
+        flightLookup.set(item.arrFlight.id, {
+          tail: item.arrFlight.tail_number ?? "???",
+          airport: item.airport,
+        });
+      }
+    }
+    // Also index from allDayArrivals for removed flights that are no longer in any van
+    for (const [, items] of baseItemsByVan) {
+      for (const item of items) {
+        if (!flightLookup.has(item.arrFlight.id)) {
+          flightLookup.set(item.arrFlight.id, {
+            tail: item.arrFlight.tail_number ?? "???",
+            airport: item.airport,
+          });
+        }
+      }
+    }
+
+    for (const zone of FIXED_VAN_ZONES) {
+      const currentItems = finalItemsByVan.get(zone.vanId) ?? [];
+      const currentIds = currentItems.map((i) => i.arrFlight.id);
+      const pubAssignment = publishedAssignments.find((a) => a.vanId === zone.vanId);
+      const pubIds = pubAssignment?.flightIds ?? [];
+
+      const currentSet = new Set(currentIds);
+      const pubSet = new Set(pubIds);
+
+      const addedIds = currentIds.filter((id) => !pubSet.has(id));
+      const removedIds = pubIds.filter((id) => !currentSet.has(id));
+
+      // Order changed if same set of IDs but different sequence
+      const sameSet = addedIds.length === 0 && removedIds.length === 0;
+      const orderChanged = sameSet && currentIds.join(",") !== pubIds.join(",");
+
+      if (addedIds.length === 0 && removedIds.length === 0 && !orderChanged) continue;
+
+      diffs.push({
+        vanId: zone.vanId,
+        vanName: zone.name,
+        homeAirport: zone.homeAirport,
+        added: addedIds.map((id) => flightLookup.get(id) ?? { tail: "???", airport: "?" }),
+        removed: removedIds.map((id) => flightLookup.get(id) ?? { tail: "???", airport: "?" }),
+        orderChanged,
+        currentFlightIds: currentIds,
+        newOrder: currentItems.map((i) => ({ tail: i.arrFlight.tail_number ?? "???", airport: i.airport })),
+      });
+    }
+    return diffs;
+  }, [finalItemsByVan, baseItemsByVan, publishedAssignments]);
+
+  const changedVanCount = changedVans.length;
+
+  // ── Morning Send state ──
+  const [morningSentAt, setMorningSentAt] = useState<string | null>(null);
+  const [morningSendStatus, setMorningSendStatus] = useState<"idle" | "sending" | "success" | "error">("idle");
+  const [updateVansStatus, setUpdateVansStatus] = useState<"idle" | "sending" | "success" | "error">("idle");
+
+  // Load morning send status from localStorage on date change
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(`vanMorningSent-${date}`);
+      setMorningSentAt(stored);
+    } catch { setMorningSentAt(null); }
+  }, [date]);
+
   const shareVansToSlack = useCallback(async (vanIds?: number[]) => {
     setSlackBulkStatus("sending");
     try {
@@ -2963,6 +3048,115 @@ function ScheduleTab({
   }, [date, finalItemsByVan, flightInfoMap, fboMap, mxNotesByTail]);
 
   const shareAllToSlack = useCallback(() => shareVansToSlack(), [shareVansToSlack]);
+
+  // ── Morning Send: full Slack summary + publish all vans ──
+  const handleMorningSend = useCallback(async () => {
+    setMorningSendStatus("sending");
+    try {
+      // 1) Post full schedule to Slack
+      const vans = FIXED_VAN_ZONES.map((zone) => {
+        const items = finalItemsByVan.get(zone.vanId) ?? [];
+        return {
+          vanName: zone.name,
+          vanId: zone.vanId,
+          homeAirport: zone.homeAirport,
+          items: buildSlackItems(items, flightInfoMap, fboMap, mxNotesByTail),
+        };
+      });
+      const slackRes = await fetch("/api/vans/share-slack-bulk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date, vans, mode: "morning" }),
+      });
+      const slackData = await slackRes.json();
+      if (!slackData.ok) {
+        setMorningSendStatus("error");
+        return;
+      }
+
+      // 2) Publish schedule to all vans
+      const assignments = FIXED_VAN_ZONES.map((zone) => ({
+        vanId: zone.vanId,
+        flightIds: (finalItemsByVan.get(zone.vanId) ?? []).map((item) => item.arrFlight.id),
+      }));
+      const pubRes = await fetch("/api/vans/publish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date, assignments }),
+      });
+      const pubData = await pubRes.json();
+      if (!pubRes.ok) {
+        setMorningSendStatus("error");
+        setPublishError(pubData.error ?? "Publish failed");
+        return;
+      }
+
+      // 3) Update state
+      const sentTime = new Date().toISOString();
+      setPublishedAt(pubData.published_at);
+      setPublishedEditsSnapshot(currentEditsFingerprint);
+      setMorningSentAt(sentTime);
+      try { localStorage.setItem(`vanMorningSent-${date}`, sentTime); } catch {}
+      setMorningSendStatus("success");
+      setTimeout(() => setMorningSendStatus("idle"), 3000);
+    } catch {
+      setMorningSendStatus("error");
+    }
+  }, [date, finalItemsByVan, flightInfoMap, fboMap, mxNotesByTail, currentEditsFingerprint]);
+
+  // ── Update Vans: diff-only Slack + republish changed vans ──
+  const handleUpdateVans = useCallback(async () => {
+    if (changedVans.length === 0) return;
+    setUpdateVansStatus("sending");
+    try {
+      // 1) Post change summaries to Slack for changed vans only
+      const vans = changedVans.map((d) => ({
+        vanName: d.vanName,
+        vanId: d.vanId,
+        homeAirport: d.homeAirport,
+        items: buildSlackItems(finalItemsByVan.get(d.vanId) ?? [], flightInfoMap, fboMap, mxNotesByTail),
+        diff: {
+          added: d.added,
+          removed: d.removed,
+          newOrder: d.newOrder,
+        },
+      }));
+      const slackRes = await fetch("/api/vans/share-slack-bulk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date, vans, mode: "update" }),
+      });
+      const slackData = await slackRes.json();
+      if (!slackData.ok) {
+        setUpdateVansStatus("error");
+        return;
+      }
+
+      // 2) Republish changed vans only
+      const assignments = changedVans.map((d) => ({
+        vanId: d.vanId,
+        flightIds: d.currentFlightIds,
+      }));
+      const pubRes = await fetch("/api/vans/publish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date, assignments }),
+      });
+      const pubData = await pubRes.json();
+      if (!pubRes.ok) {
+        setUpdateVansStatus("error");
+        return;
+      }
+
+      // 3) Update state
+      setPublishedAt(pubData.published_at);
+      setPublishedEditsSnapshot(currentEditsFingerprint);
+      setUpdateVansStatus("success");
+      setTimeout(() => setUpdateVansStatus("idle"), 3000);
+    } catch {
+      setUpdateVansStatus("error");
+    }
+  }, [date, changedVans, finalItemsByVan, flightInfoMap, fboMap, mxNotesByTail, currentEditsFingerprint]);
 
   const testVanToSlack = useCallback(async (vanId: number) => {
     setSlackTestStatus("sending");
@@ -3086,18 +3280,33 @@ function ScheduleTab({
             {slackTestStatus === "sending" ? "Sending…" : slackTestStatus === "success" ? "Sent!" : slackTestStatus === "error" ? "Failed" : "Test Van 1"}
           </button>
           <button
-            onClick={shareAllToSlack}
-            disabled={slackBulkStatus === "sending"}
-            className="text-sm font-medium text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 hover:border-purple-300 disabled:opacity-50 rounded-lg px-3 py-1.5 transition-colors"
+            onClick={handleMorningSend}
+            disabled={morningSendStatus === "sending"}
+            className={`text-sm font-semibold rounded-lg px-4 py-1.5 transition-colors disabled:opacity-50 ${
+              morningSentAt
+                ? "text-green-700 bg-green-50 border border-green-200 hover:bg-green-100"
+                : "text-white bg-blue-600 hover:bg-blue-700 active:bg-blue-800"
+            }`}
           >
-            {slackBulkStatus === "sending" ? "Sharing…" : slackBulkStatus === "success" ? "Shared!" : "Share All to Slack"}
+            {morningSendStatus === "sending" ? "Sending…" : morningSendStatus === "success" ? "Sent!" : morningSentAt ? "Re-send Morning" : "Morning Send"}
           </button>
+          {morningSentAt && (
+            <span className="text-xs text-green-600 font-medium flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-green-500 inline-block" />
+              Sent {new Date(morningSentAt).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", timeZone: "America/New_York" })} ET
+            </span>
+          )}
           <button
-            onClick={handlePublish}
-            disabled={publishing}
-            className="text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 active:bg-blue-800 disabled:bg-blue-400 rounded-lg px-4 py-1.5 transition-colors"
+            onClick={handleUpdateVans}
+            disabled={updateVansStatus === "sending" || changedVanCount === 0 || !morningSentAt}
+            className={`text-sm font-semibold rounded-lg px-4 py-1.5 transition-colors disabled:opacity-50 ${
+              changedVanCount > 0 && morningSentAt
+                ? "text-white bg-amber-600 hover:bg-amber-700 active:bg-amber-800"
+                : "text-gray-400 bg-gray-100 border border-gray-200"
+            }`}
+            title={!morningSentAt ? "Send morning schedule first" : changedVanCount === 0 ? "No vans have changed" : `${changedVanCount} van${changedVanCount > 1 ? "s" : ""} changed`}
           >
-            {publishing ? "Sending…" : "Send to Vans"}
+            {updateVansStatus === "sending" ? "Updating…" : updateVansStatus === "success" ? "Updated!" : changedVanCount > 0 ? `Update Vans (${changedVanCount})` : "No Changes"}
           </button>
         </div>
       </div>
@@ -3113,10 +3322,10 @@ function ScheduleTab({
         {hasUnpublishedChanges && (
           <span className="text-xs text-amber-600 font-medium flex items-center gap-1">
             <span className="w-1.5 h-1.5 rounded-full bg-amber-500 inline-block" />
-            Unpublished changes
+            Unpublished changes{changedVanCount > 0 ? ` (${changedVanCount} van${changedVanCount > 1 ? "s" : ""})` : ""}
           </span>
         )}
-        {!publishedAt && !publishing && (
+        {!publishedAt && !morningSendStatus && (
           <span className="text-xs text-gray-400">Not yet published for this date</span>
         )}
         {publishError && (

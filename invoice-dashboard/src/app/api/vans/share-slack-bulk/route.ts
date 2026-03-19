@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, isAuthed, isRateLimited } from "@/lib/api-auth";
-import { buildVanSlackHeaderBlocks, buildAircraftSlackBlocks, buildVanSlackFallbackText, buildAircraftFallbackText, type VanSlackItem } from "@/lib/vanSlackBlocks";
+import { buildVanSlackHeaderBlocks, buildAircraftSlackBlocks, buildVanSlackFallbackText, buildAircraftFallbackText, buildVanChangeBlocks, buildVanChangeFallbackText, type VanSlackItem, type VanChangeDiff } from "@/lib/vanSlackBlocks";
 
 /**
  * POST /api/vans/share-slack-bulk
@@ -37,12 +37,14 @@ type BulkVan = {
   homeAirport: string;
   channel?: string; // per-van channel override
   items: VanSlackItem[];
+  diff?: VanChangeDiff; // provided when mode === "update"
 };
 
 type BulkBody = {
   date: string;
   vans: BulkVan[];
   test?: boolean; // when true, send all to default test channel
+  mode?: "morning" | "update"; // "morning" = full summary (default), "update" = change diff only
 };
 
 export async function POST(req: NextRequest) {
@@ -70,7 +72,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  const { date, vans } = body;
+  const { date, vans, mode = "morning" } = body;
   if (!date || !Array.isArray(vans) || vans.length === 0) {
     return NextResponse.json({ error: "Missing date or vans array" }, { status: 400 });
   }
@@ -95,6 +97,18 @@ export async function POST(req: NextRequest) {
     const channel = isTest ? defaultChannel : (van.channel ?? VAN_CHANNEL_MAP[van.vanId] ?? defaultChannel);
 
     try {
+      // ── Update mode: post change summary only ──
+      if (mode === "update" && van.diff) {
+        const changeData = await postMessage({
+          channel,
+          text: buildVanChangeFallbackText(van.vanName, date),
+          blocks: buildVanChangeBlocks(van.vanName, van.vanId, date, van.diff),
+        });
+        results.push({ vanId: van.vanId, ok: changeData.ok, error: changeData.ok ? undefined : (changeData.error ?? "Slack API error") });
+        continue;
+      }
+
+      // ── Morning mode (default): full schedule summary ──
       if (van.items.length === 0) {
         // No aircraft assigned — send a simple "check in" message
         const noAcData = await postMessage({

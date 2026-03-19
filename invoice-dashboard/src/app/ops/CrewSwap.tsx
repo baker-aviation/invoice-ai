@@ -437,8 +437,13 @@ function SwapSheetRow({ row }: { row: CrewSwapRow }) {
   );
 }
 
-function SwapSheet({ rows, view, impacts, impactedTails }: { rows: CrewSwapRow[]; view: "role" | "aircraft"; impacts?: PlanImpact[]; impactedTails?: Set<string> }) {
-  if (view === "aircraft") return <SwapSheetByTail rows={rows} impacts={impacts} impactedTails={impactedTails} />;
+function SwapSheet({ rows, view, impacts, impactedTails, lockedTails, onLockTail, onAssignCrew, pool }: {
+  rows: CrewSwapRow[]; view: "role" | "aircraft"; impacts?: PlanImpact[]; impactedTails?: Set<string>;
+  lockedTails?: Set<string>; onLockTail?: (tail: string) => void;
+  onAssignCrew?: (tail: string, role: "PIC" | "SIC", name: string | null) => void;
+  pool?: OncomingPool | null;
+}) {
+  if (view === "aircraft") return <SwapSheetByTail rows={rows} impacts={impacts} impactedTails={impactedTails} lockedTails={lockedTails} onLockTail={onLockTail} onAssignCrew={onAssignCrew} pool={pool} />;
   return <SwapSheetByRole rows={rows} />;
 }
 
@@ -495,7 +500,15 @@ function SwapSheetByRole({ rows }: { rows: CrewSwapRow[] }) {
   );
 }
 
-function SwapSheetByTail({ rows, impacts, impactedTails }: { rows: CrewSwapRow[]; impacts?: PlanImpact[]; impactedTails?: Set<string> }) {
+function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail, onAssignCrew, pool }: {
+  rows: CrewSwapRow[];
+  impacts?: PlanImpact[];
+  impactedTails?: Set<string>;
+  lockedTails?: Set<string>;
+  onLockTail?: (tail: string) => void;
+  onAssignCrew?: (tail: string, role: "PIC" | "SIC", name: string | null) => void;
+  pool?: OncomingPool | null;
+}) {
   // Group by tail number
   const byTail = new Map<string, CrewSwapRow[]>();
   for (const r of rows) {
@@ -530,11 +543,41 @@ function SwapSheetByTail({ rows, impacts, impactedTails }: { rows: CrewSwapRow[]
           ? Math.round((earliestOffDep - latestOnArrival) / 60_000)
           : null;
 
-        function CrewSlot({ label, color, row }: { label: string; color: string; row: CrewSwapRow | undefined }) {
+        const isLocked = lockedTails?.has(tail);
+        // Build pool options for crew picker (only oncoming direction)
+        const poolPics = pool?.pic ?? [];
+        const poolSics = pool?.sic ?? [];
+        // Names already assigned across all tails (to avoid double-assigning)
+        const assignedOncoming = new Set(rows.filter((r) => r.direction === "oncoming").map((r) => r.name));
+
+        function CrewSlot({ label, color, row, direction, role }: {
+          label: string; color: string; row: CrewSwapRow | undefined;
+          direction: "oncoming" | "offgoing"; role: "PIC" | "SIC";
+        }) {
+          const canPick = direction === "oncoming" && onAssignCrew && pool;
+          const poolForRole = role === "PIC" ? poolPics : poolSics;
+          const available = poolForRole.filter((p) => !assignedOncoming.has(p.name) || p.name === row?.name);
+
           if (!row) return (
             <div className="flex items-center gap-2 py-1.5 px-3 rounded bg-gray-50">
               <span className={`text-[10px] font-bold uppercase ${color} w-14`}>{label}</span>
-              <span className="text-xs text-gray-400">— not assigned —</span>
+              {canPick && available.length > 0 ? (
+                <select
+                  className="text-xs border rounded px-2 py-1 bg-white text-gray-700"
+                  value=""
+                  onChange={(e) => { if (e.target.value) onAssignCrew(tail, role, e.target.value); }}
+                >
+                  <option value="">Assign crew...</option>
+                  {available.map((p) => (
+                    <option key={p.name} value={p.name}>
+                      {p.name} ({p.home_airports.join("/")})
+                      {p.is_checkairman ? " [CA]" : ""}{p.is_skillbridge ? " [SB]" : ""}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <span className="text-xs text-gray-400">— not assigned —</span>
+              )}
             </div>
           );
           return (
@@ -546,6 +589,21 @@ function SwapSheetByTail({ rows, impacts, impactedTails }: { rows: CrewSwapRow[]
                   <span className="text-[10px] text-gray-400">({row.home_airports.join("/")})</span>
                   {row.is_checkairman && <span className="text-[9px] px-1 py-0.5 rounded bg-amber-100 text-amber-700">CA</span>}
                   {row.is_skillbridge && <span className="text-[9px] px-1 py-0.5 rounded bg-teal-100 text-teal-700">SB</span>}
+                  {canPick && (
+                    <select
+                      className="text-[10px] border rounded px-1 py-0.5 bg-white text-gray-500 ml-1"
+                      value={row.name}
+                      onChange={(e) => onAssignCrew(tail, role, e.target.value || null)}
+                    >
+                      <option value={row.name}>{row.name}</option>
+                      <option value="">Unassign</option>
+                      {available.filter((p) => p.name !== row.name).map((p) => (
+                        <option key={p.name} value={p.name}>
+                          {p.name} ({p.home_airports.join("/")})
+                        </option>
+                      ))}
+                    </select>
+                  )}
                 </div>
                 <div className="flex items-center gap-3 mt-0.5">
                   {row.travel_type === "commercial" && row.flight_number ? (
@@ -590,10 +648,21 @@ function SwapSheetByTail({ rows, impacts, impactedTails }: { rows: CrewSwapRow[]
         const borderColor = isImpacted ? "border-l-red-500" : !isSolved ? "border-l-amber-400" : "border-l-green-500";
 
         return (
-          <div key={tail} id={`tail-${tail}`} className={`rounded-lg border border-l-4 ${borderColor} bg-white overflow-hidden ${tailImpacts.some(i => i.severity === "critical") ? "ring-2 ring-red-300" : ""}`}>
+          <div key={tail} id={`tail-${tail}`} className={`rounded-lg border border-l-4 ${borderColor} bg-white overflow-hidden ${isLocked ? "ring-2 ring-blue-300" : ""} ${tailImpacts.some(i => i.severity === "critical") ? "ring-2 ring-red-300" : ""}`}>
             {/* Tail header */}
-            <div className="px-4 py-2 bg-gray-50 border-b flex items-center justify-between">
+            <div className={`px-4 py-2 border-b flex items-center justify-between ${isLocked ? "bg-blue-50" : "bg-gray-50"}`}>
               <div className="flex items-center gap-2">
+                {onLockTail && (
+                  <button
+                    onClick={() => onLockTail(tail)}
+                    className={`w-6 h-6 rounded flex items-center justify-center text-sm transition-colors ${
+                      isLocked ? "bg-blue-500 text-white" : "bg-gray-200 text-gray-400 hover:bg-gray-300"
+                    }`}
+                    title={isLocked ? "Unlock — optimizer will recalculate this tail" : "Lock — keep this assignment during re-optimization"}
+                  >
+                    {isLocked ? "\uD83D\uDD12" : "\uD83D\uDD13"}
+                  </button>
+                )}
                 <span className="font-mono font-bold text-gray-900">{tail}</span>
                 {ac && <span className={`text-[10px] px-1.5 py-0.5 rounded ${ac.bg} ${ac.text}`}>{ac.label}</span>}
                 <span className="font-mono text-xs text-gray-500">
@@ -648,13 +717,13 @@ function SwapSheetByTail({ rows, impacts, impactedTails }: { rows: CrewSwapRow[]
             <div className="grid grid-cols-2 divide-x">
               <div className="p-2 space-y-1">
                 <div className="text-[10px] font-bold uppercase text-green-600 px-3 pb-1">Oncoming</div>
-                <CrewSlot label="PIC" color="text-green-700" row={onPic} />
-                <CrewSlot label="SIC" color="text-green-600" row={onSic} />
+                <CrewSlot label="PIC" color="text-green-700" row={onPic} direction="oncoming" role="PIC" />
+                <CrewSlot label="SIC" color="text-green-600" row={onSic} direction="oncoming" role="SIC" />
               </div>
               <div className="p-2 space-y-1">
                 <div className="text-[10px] font-bold uppercase text-red-600 px-3 pb-1">Offgoing</div>
-                <CrewSlot label="PIC" color="text-red-700" row={offPic} />
-                <CrewSlot label="SIC" color="text-red-600" row={offSic} />
+                <CrewSlot label="PIC" color="text-red-700" row={offPic} direction="offgoing" role="PIC" />
+                <CrewSlot label="SIC" color="text-red-600" row={offSic} direction="offgoing" role="SIC" />
               </div>
             </div>
 
@@ -726,6 +795,80 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 4000);
   }, []);
   const removeToast = useCallback((id: number) => setToasts((prev) => prev.filter((t) => t.id !== id)), []);
+  // Locked tails (manual assignments the optimizer won't touch)
+  const [lockedTails, setLockedTails] = useState<Set<string>>(new Set());
+
+  function toggleLockTail(tail: string) {
+    setLockedTails((prev) => {
+      const next = new Set(prev);
+      if (next.has(tail)) next.delete(tail); else next.add(tail);
+      return next;
+    });
+  }
+
+  function assignCrew(tail: string, role: "PIC" | "SIC", name: string | null) {
+    if (!swapPlan) return;
+    setSwapPlan((prev) => {
+      if (!prev) return prev;
+      const newRows = [...prev.rows];
+
+      if (name === null) {
+        // Unassign: remove the oncoming row for this tail+role
+        const idx = newRows.findIndex((r) => r.tail_number === tail && r.role === role && r.direction === "oncoming");
+        if (idx >= 0) newRows.splice(idx, 1);
+      } else {
+        // Find the pool entry for context
+        const poolEntry = (role === "PIC" ? oncomingPool?.pic : oncomingPool?.sic)?.find((p) => p.name === name);
+        const existing = newRows.findIndex((r) => r.tail_number === tail && r.role === role && r.direction === "oncoming");
+        const offRow = newRows.find((r) => r.tail_number === tail && r.direction === "offgoing");
+
+        const newRow: CrewSwapRow = {
+          name,
+          home_airports: poolEntry?.home_airports ?? [],
+          role,
+          direction: "oncoming",
+          aircraft_type: offRow?.aircraft_type ?? "unknown",
+          tail_number: tail,
+          swap_location: offRow?.swap_location ?? null,
+          all_swap_points: offRow?.all_swap_points,
+          travel_type: "none",
+          flight_number: null,
+          departure_time: null,
+          arrival_time: null,
+          travel_from: null,
+          travel_to: null,
+          cost_estimate: null,
+          duration_minutes: null,
+          available_time: null,
+          duty_on_time: null,
+          duty_off_time: null,
+          is_checkairman: poolEntry?.is_checkairman ?? false,
+          is_skillbridge: poolEntry?.is_skillbridge ?? false,
+          volunteer_status: null,
+          notes: "Manually assigned",
+          warnings: ["Manual assignment — transport not calculated"],
+          alt_flights: [],
+          backup_flight: null,
+          score: 0,
+        };
+
+        if (existing >= 0) {
+          newRows[existing] = newRow;
+        } else {
+          newRows.push(newRow);
+        }
+      }
+
+      return { ...prev, rows: newRows };
+    });
+
+    // Auto-lock the tail when manually assigning
+    if (name !== null) {
+      setLockedTails((prev) => new Set(prev).add(tail));
+      addToast("success", `${name} assigned to ${tail} (locked)`);
+    }
+  }
+
   // Plan persistence
   const [savedPlanMeta, setSavedPlanMeta] = useState<{ id: string; version: number; created_at: string } | null>(null);
   const [savingPlan, setSavingPlan] = useState(false);
@@ -1419,6 +1562,10 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
           Object.entries(filteredAssignments).filter(([tail]) => !excludedTails.has(tail))
         );
       }
+      // If tails are locked, pass them + their rows so optimizer skips them
+      const lockTailsArr = lockedTails.size > 0 && swapPlan ? [...lockedTails] : undefined;
+      const lockedRows = lockTailsArr && swapPlan ? swapPlan.rows.filter((r) => lockedTails.has(r.tail_number)) : undefined;
+
       const res = await fetch("/api/crew/optimize", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1427,6 +1574,8 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
           swap_assignments: filteredAssignments ?? undefined,
           oncoming_pool: oncomingPool ?? undefined,
           strategy,
+          lock_tails: lockTailsArr,
+          locked_rows: lockedRows,
         }),
       });
       const text = await res.text();
@@ -2269,7 +2418,8 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
               />
             )}
 
-            <SwapSheet rows={swapPlan.rows} view={swapView} impacts={planImpacts} impactedTails={impactedTails} />
+            <SwapSheet rows={swapPlan.rows} view={swapView} impacts={planImpacts} impactedTails={impactedTails}
+              lockedTails={lockedTails} onLockTail={toggleLockTail} onAssignCrew={assignCrew} pool={oncomingPool} />
           </div>
         )}
 
