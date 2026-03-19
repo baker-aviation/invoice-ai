@@ -2560,6 +2560,7 @@ function ScheduleTab({
       // Flight came from uncovered pool — find it and all same-tail flights in allDayArrivals
       if (!found) {
         const item = allDayArrivals.find((a) => a.arrFlight.id === flightId);
+        console.log("[AOG Assign] override flightId:", flightId, "→ V" + targetVanId, "found in allDayArrivals:", !!item, "allDayArrivals count:", allDayArrivals.length, "allDayArrivals tails:", [...new Set(allDayArrivals.map(a => a.arrFlight.tail_number))].join(","));
         if (item) {
           const tail = item.arrFlight.tail_number;
           const target = result.get(targetVanId) ?? [];
