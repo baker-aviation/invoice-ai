@@ -36,7 +36,7 @@ export async function fetchInvoices(params: {
     if (q.length > 0) {
       const pattern = `%${q}%`;
       query = query.or(
-        `vendor_name.ilike.${pattern},invoice_number.ilike.${pattern},airport_code.ilike.${pattern},tail_number.ilike.${pattern},document_id.ilike.${pattern}`
+        `vendor_name.ilike.${pattern},invoice_number.ilike.${pattern},airport_code.ilike.${pattern},tail_number.ilike.${pattern}`
       );
     }
   }
