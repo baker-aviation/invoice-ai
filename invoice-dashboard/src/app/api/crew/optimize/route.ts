@@ -14,6 +14,8 @@ const OptimizeRequestSchema = z.object({
   swap_assignments: z.record(z.string(), z.any()).optional(),
   oncoming_pool: z.any().optional(),
   force_auto_detect: z.boolean().optional(),
+  lock_tails: z.array(z.string()).optional(),
+  locked_rows: z.array(z.any()).optional(),
 }).strip();
 
 export const dynamic = "force-dynamic";
@@ -54,6 +56,9 @@ export async function POST(req: NextRequest) {
   const strategy = parsed.data.strategy ?? "oncoming_first";
   const clientSwapAssignments = parsed.data.swap_assignments as Record<string, SwapAssignment> | undefined;
   const clientOncomingPool = parsed.data.oncoming_pool as OncomingPool | undefined;
+  const lockTails = parsed.data.lock_tails as string[] | undefined;
+  const lockedRows = parsed.data.locked_rows as unknown[] | undefined;
+  const lockTailSet = lockTails ? new Set(lockTails) : null;
 
   const supa = createServiceClient();
 
@@ -224,6 +229,38 @@ export async function POST(req: NextRequest) {
 
   const hasPool = effectivePool && (effectivePool.pic?.length > 0 || effectivePool.sic?.length > 0);
 
+  // ── STEP 0.5: Filter locked tails from assignments AND pool ──────────────
+  // When lock_tails is provided, we only optimize unlocked tails.
+  // Locked tail rows come from the saved plan and are merged back at the end.
+  // Critically, we also remove locked tails' oncoming crew from the pool so the
+  // optimizer can't double-assign them to unlocked tails.
+  if (lockTailSet && lockTailSet.size > 0) {
+    // Collect names of crew already assigned in locked rows
+    const lockedCrewNames = new Set<string>();
+    if (lockedRows) {
+      for (const row of lockedRows as { name?: string; direction?: string }[]) {
+        if (row.name && row.direction === "oncoming") {
+          lockedCrewNames.add(row.name);
+        }
+      }
+    }
+
+    swapAssignments = Object.fromEntries(
+      Object.entries(swapAssignments).filter(([tail]) => !lockTailSet.has(tail))
+    );
+
+    // Filter oncoming pool to exclude crew locked into saved plan tails
+    if (effectivePool && lockedCrewNames.size > 0) {
+      effectivePool = {
+        pic: effectivePool.pic.filter((p) => !lockedCrewNames.has(p.name)),
+        sic: effectivePool.sic.filter((p) => !lockedCrewNames.has(p.name)),
+      };
+      console.log(`[Swap Optimizer] lock_tails: removed ${lockedCrewNames.size} locked crew from pool (${effectivePool.pic.length} PICs, ${effectivePool.sic.length} SICs remaining)`);
+    }
+
+    console.log(`[Swap Optimizer] lock_tails: optimizing ${Object.keys(swapAssignments).length} tails, ${lockTailSet.size} locked`);
+  }
+
   // ── STEP 1: Load pre-computed routes + commercial flight cache ──────────
   const routeStart = Date.now();
   // Skip pre-computed routes when force_auto_detect is set — the routes were
@@ -369,6 +406,21 @@ export async function POST(req: NextRequest) {
       strategy,
     });
     console.log(`[Swap Optimizer] Transport plan took ${((Date.now() - transportStart) / 1000).toFixed(1)}s`);
+  }
+
+  // ── Merge locked rows back into result ────────────────────────────────────
+  if (lockTailSet && lockTailSet.size > 0 && lockedRows && lockedRows.length > 0) {
+    const typedLockedRows = lockedRows as typeof result.rows;
+    result.rows = [...typedLockedRows, ...result.rows];
+    // Recalculate totals
+    result.total_cost = result.rows.reduce((s, r) => s + (r.cost_estimate ?? 0), 0);
+    const solved = result.rows.filter((r) => r.travel_type !== "none").length;
+    result.solved_count = solved;
+    result.unsolved_count = result.rows.length - solved;
+    // Recompute plan_score as average of row scores
+    const scores = result.rows.map((r) => r.score ?? 0);
+    result.plan_score = scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : 0;
+    console.log(`[Swap Optimizer] Merged ${typedLockedRows.length} locked rows + ${result.rows.length - typedLockedRows.length} optimized rows`);
   }
 
   return NextResponse.json({
