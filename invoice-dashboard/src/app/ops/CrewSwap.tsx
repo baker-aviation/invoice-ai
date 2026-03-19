@@ -194,6 +194,100 @@ type SwapPlanResult = {
   };
 };
 
+// ─── Toast System ───────────────────────────────────────────────────────────
+
+type Toast = { id: number; type: "success" | "error" | "warning"; msg: string };
+let _toastId = 0;
+
+function ToastContainer({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id: number) => void }) {
+  if (toasts.length === 0) return null;
+  const colors = {
+    success: "bg-green-600 text-white",
+    error: "bg-red-600 text-white",
+    warning: "bg-amber-500 text-white",
+  };
+  return (
+    <div className="fixed bottom-4 right-4 z-50 space-y-2">
+      {toasts.map((t) => (
+        <div key={t.id} className={`rounded-lg px-4 py-3 shadow-lg text-sm font-medium flex items-center gap-3 ${colors[t.type]}`}>
+          <span>{t.msg}</span>
+          <button onClick={() => onDismiss(t.id)} className="opacity-70 hover:opacity-100 text-lg leading-none">&times;</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── Workflow Stepper ───────────────────────────────────────────────────────
+
+function WorkflowStepper({ steps }: { steps: { label: string; done: boolean }[] }) {
+  const currentStep = steps.findIndex((s) => !s.done);
+  return (
+    <div className="flex items-center gap-1 px-2">
+      {steps.map((s, i) => (
+        <div key={i} className="flex items-center gap-1">
+          {i > 0 && <div className={`w-8 h-0.5 ${i <= currentStep && steps[i - 1].done ? "bg-green-400" : "bg-gray-200"}`} />}
+          <div className="flex flex-col items-center gap-0.5">
+            <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold ${
+              s.done ? "bg-green-500 text-white" : i === currentStep ? "bg-blue-500 text-white ring-2 ring-blue-200" : "bg-gray-200 text-gray-400"
+            }`}>
+              {s.done ? "\u2713" : i + 1}
+            </div>
+            <span className="text-[9px] text-gray-500 whitespace-nowrap">{s.label}</span>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── Tail Status Grid ───────────────────────────────────────────────────────
+
+function TailStatusGrid({ rows, impactedTails, onTileClick }: {
+  rows: CrewSwapRow[];
+  impactedTails: Set<string>;
+  onTileClick: (tail: string) => void;
+}) {
+  const byTail = new Map<string, CrewSwapRow[]>();
+  for (const r of rows) {
+    if (!byTail.has(r.tail_number)) byTail.set(r.tail_number, []);
+    byTail.get(r.tail_number)!.push(r);
+  }
+  const tails = Array.from(byTail.entries()).sort(([a], [b]) => a.localeCompare(b));
+
+  return (
+    <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-2 p-4">
+      {tails.map(([tail, tailRows]) => {
+        const isImpacted = impactedTails.has(tail);
+        const hasUnsolved = tailRows.some((r) => r.travel_type === "none");
+        const hasWarnings = tailRows.some((r) => r.warnings.length > 0);
+        const tailCost = tailRows.reduce((s, r) => s + (r.cost_estimate ?? 0), 0);
+        const ac = AIRCRAFT_COLORS[tailRows[0]?.aircraft_type ?? ""];
+
+        const tileClass = isImpacted
+          ? "bg-red-100 border-red-300 text-red-800"
+          : hasUnsolved
+          ? "bg-amber-100 border-amber-300 text-amber-800"
+          : hasWarnings
+          ? "bg-yellow-50 border-yellow-300 text-yellow-800"
+          : "bg-green-100 border-green-300 text-green-800";
+
+        return (
+          <button
+            key={tail}
+            onClick={() => onTileClick(tail)}
+            className={`rounded-lg p-2.5 text-center border cursor-pointer hover:ring-2 hover:ring-blue-300 transition-all ${tileClass}`}
+          >
+            <div className="font-mono font-bold text-sm">{tail}</div>
+            {ac && <div className={`text-[9px] mt-0.5 ${ac.text}`}>{ac.label}</div>}
+            {tailCost > 0 && <div className="text-[9px] mt-0.5 opacity-70">${tailCost}</div>}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function getNextWednesday(): Date {
@@ -343,8 +437,8 @@ function SwapSheetRow({ row }: { row: CrewSwapRow }) {
   );
 }
 
-function SwapSheet({ rows, view, impacts }: { rows: CrewSwapRow[]; view: "role" | "aircraft"; impacts?: PlanImpact[] }) {
-  if (view === "aircraft") return <SwapSheetByTail rows={rows} impacts={impacts} />;
+function SwapSheet({ rows, view, impacts, impactedTails }: { rows: CrewSwapRow[]; view: "role" | "aircraft"; impacts?: PlanImpact[]; impactedTails?: Set<string> }) {
+  if (view === "aircraft") return <SwapSheetByTail rows={rows} impacts={impacts} impactedTails={impactedTails} />;
   return <SwapSheetByRole rows={rows} />;
 }
 
@@ -401,7 +495,7 @@ function SwapSheetByRole({ rows }: { rows: CrewSwapRow[] }) {
   );
 }
 
-function SwapSheetByTail({ rows, impacts }: { rows: CrewSwapRow[]; impacts?: PlanImpact[] }) {
+function SwapSheetByTail({ rows, impacts, impactedTails }: { rows: CrewSwapRow[]; impacts?: PlanImpact[]; impactedTails?: Set<string> }) {
   // Group by tail number
   const byTail = new Map<string, CrewSwapRow[]>();
   for (const r of rows) {
@@ -491,9 +585,12 @@ function SwapSheetByTail({ rows, impacts }: { rows: CrewSwapRow[]; impacts?: Pla
         }
 
         const tailImpacts = impacts?.filter((i) => i.tail_number === tail && !i.resolved) ?? [];
+        const isImpacted = impactedTails?.has(tail) || tailImpacts.length > 0;
+        const isSolved = [onPic, onSic, offPic, offSic].every((r) => r && r.travel_type !== "none");
+        const borderColor = isImpacted ? "border-l-red-500" : !isSolved ? "border-l-amber-400" : "border-l-green-500";
 
         return (
-          <div key={tail} className={`rounded-lg border bg-white overflow-hidden ${tailImpacts.some(i => i.severity === "critical") ? "ring-2 ring-red-300" : ""}`}>
+          <div key={tail} id={`tail-${tail}`} className={`rounded-lg border border-l-4 ${borderColor} bg-white overflow-hidden ${tailImpacts.some(i => i.severity === "critical") ? "ring-2 ring-red-300" : ""}`}>
             {/* Tail header */}
             <div className="px-4 py-2 bg-gray-50 border-b flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -619,6 +716,16 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
   const [excludedTails, setExcludedTails] = useState<Set<string>>(new Set());
   // Phase 5-6: Strategy
   const [strategy, setStrategy] = useState<"offgoing_first" | "oncoming_first">("offgoing_first");
+  // Tabs
+  const [activeTab, setActiveTab] = useState<"setup" | "plan" | "impacts">("setup");
+  // Toasts
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const addToast = useCallback((type: Toast["type"], msg: string) => {
+    const id = ++_toastId;
+    setToasts((prev) => [...prev, { id, type, msg }]);
+    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 4000);
+  }, []);
+  const removeToast = useCallback((id: number) => setToasts((prev) => prev.filter((t) => t.id !== id)), []);
   // Plan persistence
   const [savedPlanMeta, setSavedPlanMeta] = useState<{ id: string; version: number; created_at: string } | null>(null);
   const [savingPlan, setSavingPlan] = useState(false);
@@ -994,8 +1101,11 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
       if (res.ok) {
         const data = await res.json();
         setSavedPlanMeta({ id: data.id, version: data.version, created_at: data.created_at });
+        addToast("success", `Plan saved (v${data.version})`);
+      } else {
+        addToast("error", "Failed to save plan");
       }
-    } catch { /* ignore */ }
+    } catch { addToast("error", "Failed to save plan"); }
     finally { setSavingPlan(false); }
   }
 
@@ -1255,15 +1365,26 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
       }
       if (!res.ok) {
         setOptimizeError(data.error ?? "Optimization failed");
+        addToast("error", data.error ?? "Optimization failed");
       } else {
         setSwapPlan(data);
+        setActiveTab("plan");
+        addToast("success", `Optimized: ${data.solved_count ?? 0} solved, $${(data.total_cost ?? 0).toLocaleString()}`);
       }
     } catch (e) {
-      setOptimizeError(e instanceof Error ? e.message : "Optimization failed");
+      const msg = e instanceof Error ? e.message : "Optimization failed";
+      setOptimizeError(msg);
+      addToast("error", msg);
     } finally {
       setOptimizing(false);
     }
   }
+
+  // Derived: impacted tails set
+  const impactedTails = useMemo(
+    () => new Set(swapAlerts.filter((a) => !a.acknowledged).map((a) => a.tail_number)),
+    [swapAlerts],
+  );
 
   function shiftWeek(delta: number) {
     setSelectedWed((prev) => {
@@ -1274,14 +1395,22 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
   }
 
   return (
-    <div className="space-y-6">
-      {/* Header + Week Selector */}
+    <div className="space-y-4">
+      {/* Header + Week Selector + Stepper */}
       <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-lg font-bold text-gray-900">Crew Swap Planning</h2>
-          <p className="text-sm text-gray-500">
-            Wednesday swap day: {selectedWed.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" })}
-          </p>
+        <div className="flex items-center gap-6">
+          <div>
+            <h2 className="text-lg font-bold text-gray-900">Crew Swap Planning</h2>
+            <p className="text-sm text-gray-500">
+              Wednesday swap day: {selectedWed.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" })}
+            </p>
+          </div>
+          <WorkflowStepper steps={[
+            { label: "Upload", done: !!(uploadResult || swapAssignments) },
+            { label: "Routes", done: !!(routeStatus && routeStatus.total_routes > 0) },
+            { label: "Optimize", done: !!swapPlan },
+            { label: "Save", done: !!savedPlanMeta },
+          ]} />
         </div>
         <div className="flex items-center gap-2">
           <button onClick={() => shiftWeek(-1)} className="px-3 py-1.5 text-sm font-medium border rounded-lg hover:bg-gray-50">
@@ -1295,6 +1424,87 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
           </button>
         </div>
       </div>
+
+      {/* Plan Status Hero Banner */}
+      {savedPlanMeta && (
+        <div className={`rounded-lg border-2 px-5 py-3 flex items-center justify-between ${
+          planImpacts.filter(i => !i.resolved).some(i => i.severity === "critical")
+            ? "border-red-200 bg-red-50"
+            : planImpacts.filter(i => !i.resolved).length > 0
+            ? "border-amber-200 bg-amber-50"
+            : "border-green-200 bg-green-50"
+        }`}>
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-bold text-gray-800">v{savedPlanMeta.version}</span>
+              <span className="text-xs text-gray-500">
+                saved {new Date(savedPlanMeta.created_at).toLocaleString(undefined, { weekday: "short", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+              </span>
+            </div>
+            {swapPlan && (
+              <div className="flex items-center gap-2 text-xs">
+                <span className="text-gray-600">${swapPlan.total_cost.toLocaleString()}</span>
+                <span className="text-gray-400">|</span>
+                <span className="text-gray-600">{swapPlan.solved_count ?? 0} solved</span>
+              </div>
+            )}
+            {planImpacts.filter(i => !i.resolved).length > 0 && (
+              <span className="text-xs font-bold text-red-700 px-2 py-0.5 rounded bg-red-100">
+                {planImpacts.filter(i => i.severity === "critical" && !i.resolved).length} critical / {planImpacts.filter(i => !i.resolved).length} impacts
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => { checkImpacts(); setActiveTab("impacts"); }}
+              disabled={checkingImpacts}
+              className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white hover:bg-gray-50"
+            >
+              {checkingImpacts ? "Checking..." : "Check Impacts"}
+            </button>
+            {planImpacts.some(i => i.severity === "critical" && !i.resolved) && (
+              <button
+                onClick={reoptimizeAffected}
+                disabled={optimizing}
+                className="px-3 py-1.5 text-xs font-medium rounded-lg bg-red-600 text-white hover:bg-red-700"
+              >
+                Re-optimize Affected
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Tab Bar */}
+      <div className="flex border-b">
+        {([
+          { key: "setup" as const, label: "Setup", badge: null },
+          { key: "plan" as const, label: "Plan", badge: swapPlan ? `${swapPlan.rows.length / 4 | 0} tails` : null },
+          { key: "impacts" as const, label: "Impacts", badge: alertCount > 0 ? `${alertCount}` : null },
+        ]).map((tab) => (
+          <button
+            key={tab.key}
+            onClick={() => setActiveTab(tab.key)}
+            className={`px-5 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === tab.key
+                ? "border-blue-500 text-blue-600"
+                : "border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300"
+            }`}
+          >
+            {tab.label}
+            {tab.badge && (
+              <span className={`ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full ${
+                tab.key === "impacts" && alertCount > 0 ? "bg-red-100 text-red-700" : "bg-gray-100 text-gray-600"
+              }`}>
+                {tab.badge}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* ═══ SETUP TAB ═══ */}
+      {activeTab === "setup" && <>
 
       {/* Crew Roster Section */}
       <div className="rounded-lg border bg-white shadow-sm overflow-hidden">
@@ -1667,9 +1877,15 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
         )}
       </div>
 
+      </>}
+
+      {/* ═══ PLAN TAB ═══ */}
+      {activeTab === "plan" && <>
+
       {/* Swap Optimizer */}
       <div className="rounded-lg border bg-white shadow-sm overflow-hidden">
-        <div className="px-4 py-3 bg-gray-50 border-b flex items-center justify-between">
+        {/* Sticky toolbar */}
+        <div className="sticky top-0 z-20 bg-white/95 backdrop-blur-sm border-b shadow-sm px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">
               Swap Optimizer
@@ -1967,7 +2183,19 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
             )}
 
             {/* The swap sheet */}
-            <SwapSheet rows={swapPlan.rows} view={swapView} impacts={planImpacts} />
+            {/* Tail status grid */}
+            {swapView === "aircraft" && (
+              <TailStatusGrid
+                rows={swapPlan.rows}
+                impactedTails={impactedTails}
+                onTileClick={(tail) => {
+                  const el = document.getElementById(`tail-${tail}`);
+                  if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+                }}
+              />
+            )}
+
+            <SwapSheet rows={swapPlan.rows} view={swapView} impacts={planImpacts} impactedTails={impactedTails} />
           </div>
         )}
 
@@ -2043,6 +2271,109 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
           </div>
         )}
       </div>
+
+      </>}
+
+      {/* ═══ IMPACTS TAB ═══ */}
+      {activeTab === "impacts" && <>
+
+      <div className="rounded-lg border bg-white shadow-sm overflow-hidden">
+        <div className="px-4 py-3 bg-gray-50 border-b flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">
+            Flight Change Alerts
+            {alertCount > 0 && (
+              <span className="ml-2 text-[10px] px-2 py-0.5 rounded bg-red-100 text-red-700 font-bold">
+                {alertCount} unacknowledged
+              </span>
+            )}
+          </h3>
+          <button
+            onClick={() => { checkImpacts(); }}
+            disabled={checkingImpacts || !savedPlanMeta}
+            className={`px-3 py-1.5 text-xs font-medium border rounded-lg ${
+              checkingImpacts ? "bg-gray-100 text-gray-400" : "bg-blue-50 text-blue-700 hover:bg-blue-100 border-blue-200"
+            }`}
+          >
+            {checkingImpacts ? "Analyzing..." : "Analyze Impact on Plan"}
+          </button>
+        </div>
+
+        {/* Unacknowledged alerts */}
+        {swapAlerts.filter((a) => !a.acknowledged).length > 0 ? (
+          <div className="divide-y">
+            {swapAlerts.filter((a) => !a.acknowledged).map((a) => (
+              <div key={a.id} className="px-4 py-3 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <span className={`text-[10px] px-2 py-0.5 rounded font-bold ${
+                    a.change_type === "cancelled" ? "bg-red-100 text-red-700"
+                    : a.change_type === "time_change" ? "bg-amber-100 text-amber-700"
+                    : a.change_type === "airport_change" ? "bg-red-100 text-red-700"
+                    : "bg-blue-100 text-blue-700"
+                  }`}>
+                    {a.change_type.replace("_", " ")}
+                  </span>
+                  <span className="font-mono font-bold text-sm text-gray-900">{a.tail_number}</span>
+                  <span className="text-xs text-gray-500">
+                    {a.new_value && typeof a.new_value === "object" && JSON.stringify(a.new_value).slice(0, 100)}
+                  </span>
+                  <span className="text-[10px] text-gray-400">
+                    {new Date(a.detected_at).toLocaleString(undefined, { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                  </span>
+                </div>
+                <button
+                  onClick={() => acknowledgeAlert(a.id)}
+                  className="px-2.5 py-1 text-xs rounded bg-gray-100 text-gray-600 hover:bg-gray-200"
+                >
+                  Acknowledge
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="px-4 py-8 text-center text-sm text-gray-400">
+            No unacknowledged flight changes for this swap date.
+          </div>
+        )}
+      </div>
+
+      {/* Plan impacts */}
+      {planImpacts.filter(i => !i.resolved).length > 0 && (
+        <div className="rounded-lg border bg-white shadow-sm overflow-hidden">
+          <div className="px-4 py-3 bg-red-50 border-b">
+            <h3 className="text-sm font-semibold text-red-700 uppercase tracking-wider">
+              Plan Impacts ({planImpacts.filter(i => !i.resolved).length})
+            </h3>
+          </div>
+          <div className="divide-y">
+            {planImpacts.filter(i => !i.resolved).map((imp) => (
+              <div key={imp.id} className={`px-4 py-3 ${imp.severity === "critical" ? "bg-red-50/50" : "bg-amber-50/50"}`}>
+                <div className="flex items-center gap-3 mb-1">
+                  <span className={`text-[10px] px-2 py-0.5 rounded font-bold ${
+                    imp.severity === "critical" ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"
+                  }`}>
+                    {imp.severity}
+                  </span>
+                  <span className="font-mono font-bold text-sm text-gray-900">{imp.tail_number}</span>
+                </div>
+                <div className="space-y-0.5 ml-16">
+                  {imp.affected_crew.map((c, ci) => (
+                    <div key={ci} className="text-xs text-gray-700">
+                      <span className="font-medium">{c.name}</span>
+                      <span className="text-gray-400 mx-1">({c.role} {c.direction})</span>
+                      <span>{c.detail}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      </>}
+
+      {/* Toast notifications */}
+      <ToastContainer toasts={toasts} onDismiss={removeToast} />
     </div>
   );
 }
