@@ -23,6 +23,8 @@ interface TailPlan {
   shutdownAirport: string;
   legs: LegData[];
   plan: MultiLegPlan | null;
+  naiveCost: number;
+  tankerSavings: number;
   error?: string;
 }
 
@@ -30,7 +32,7 @@ interface GenerateResponse {
   ok: boolean;
   date: string;
   plans: TailPlan[];
-  fleetTotals: { totalFuelCost: number; totalFees: number; totalTripCost: number; planCount: number };
+  fleetTotals: { totalFuelCost: number; totalFees: number; totalTripCost: number; naiveCost: number; tankerSavings: number; planCount: number };
   fuelPriceCount: number;
   shutdownDataDate: string | null;
   message?: string;
@@ -250,6 +252,12 @@ export default function TankeringDashboard() {
                   <span className="text-xs text-blue-500 uppercase mr-1">Total</span>
                   {fmtDollars(result.fleetTotals.totalTripCost)}
                 </span>
+                {result.fleetTotals.tankerSavings > 0 && (
+                  <span className="text-green-700 font-semibold">
+                    <span className="text-xs text-green-500 uppercase mr-1">Savings</span>
+                    {fmtDollars(result.fleetTotals.tankerSavings)}
+                  </span>
+                )}
               </div>
             </div>
             <div className="mt-2 text-xs text-blue-500">
@@ -288,11 +296,18 @@ function TailPlanCard({ plan: tp }: { plan: TailPlan }) {
             Shutdown: {fmtNum(tp.shutdownFuel)} lbs @ {tp.shutdownAirport}
           </span>
         </div>
-        {plan && (
-          <span className="text-sm font-semibold text-gray-900">
-            {fmtDollars(plan.totalTripCost)}
-          </span>
-        )}
+        <div className="flex items-center gap-4">
+          {tp.tankerSavings > 0 && (
+            <span className="text-sm font-semibold text-green-600">
+              Save {fmtDollars(tp.tankerSavings)}
+            </span>
+          )}
+          {plan && (
+            <span className="text-sm font-semibold text-gray-900">
+              {fmtDollars(plan.totalTripCost)}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Error state */}

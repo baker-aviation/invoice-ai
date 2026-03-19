@@ -131,6 +131,8 @@ interface TailPlan {
     ffSource: "foreflight" | "estimate";
   }[];
   plan: MultiLegPlan | null;
+  naiveCost: number;      // cost if you just buy all fuel at each stop (no tankering)
+  tankerSavings: number;  // naiveCost - optimized cost
   error?: string;
 }
 
@@ -230,6 +232,8 @@ export async function POST(req: NextRequest) {
         shutdownAirport: schedule[0].departure_icao,
         legs: [],
         plan: null,
+        naiveCost: 0,
+        tankerSavings: 0,
         error: "No post-flight data for this tail — upload shutdown fuel to generate plan",
       });
       continue;
@@ -311,6 +315,22 @@ export async function POST(req: NextRequest) {
 
     const plan = optimizeMultiLeg(routeInput);
 
+    // Compute naive cost: buy exactly requiredStartFuelLbs at each stop, no tankering
+    const ppg = calcPpg(15);
+    let naiveCost = 0;
+    let runningFuel = shutdown.fuel;
+    for (const ld of legData) {
+      const needed = ld.totalFuelLbs;
+      const orderLbs = Math.max(0, needed - runningFuel);
+      const orderGal = orderLbs / ppg;
+      naiveCost += orderGal * ld.departurePricePerGal;
+      // After this leg, landing fuel = needed - fuelToDestLbs - buffer
+      runningFuel = Math.max(0, needed - ld.fuelToDestLbs - 300);
+    }
+
+    const optimizedCost = plan?.totalTripCost ?? naiveCost;
+    const tankerSavings = naiveCost - optimizedCost;
+
     plans.push({
       tail,
       aircraftType: acType,
@@ -318,6 +338,8 @@ export async function POST(req: NextRequest) {
       shutdownAirport: shutdown.airport,
       legs: legData,
       plan,
+      naiveCost,
+      tankerSavings,
       error: plan ? undefined : "Optimizer could not find a valid plan (check weight constraints)",
     });
   }
@@ -336,10 +358,12 @@ export async function POST(req: NextRequest) {
       acc.totalFuelCost += p.plan.totalFuelCost;
       acc.totalFees += p.plan.totalFees;
       acc.totalTripCost += p.plan.totalTripCost;
+      acc.naiveCost += p.naiveCost;
+      acc.tankerSavings += p.tankerSavings;
       acc.planCount++;
       return acc;
     },
-    { totalFuelCost: 0, totalFees: 0, totalTripCost: 0, planCount: 0 },
+    { totalFuelCost: 0, totalFees: 0, totalTripCost: 0, naiveCost: 0, tankerSavings: 0, planCount: 0 },
   );
 
   return NextResponse.json({
