@@ -479,6 +479,29 @@ class Supa:
             # Treat business-unique duplicates as handled (do not crash worker)
             if resp.status_code == 409 and "parsed_invoices_business_unique" in (resp.text or ""):
                 raise DuplicateInvoiceError(resp.text)
+            # DB trigger on parsed_invoices auto-creates invoice_alerts rows;
+            # when splitting produces multiple invoices per document, the
+            # trigger hits a unique constraint on (rule_id, document_id).
+            # Safe to retry the upsert after clearing the conflicting alert.
+            if resp.status_code == 409 and "invoice_alerts_unique_rule_doc" in (resp.text or ""):
+                # Delete the conflicting alert and retry once
+                try:
+                    import json as _json
+                    err = _json.loads(resp.text)
+                    # Extract document_id from the error details
+                    self._rest("DELETE", "invoice_alerts", params={
+                        "document_id": f"eq.{json_body.get('document_id', '')}",
+                    }, prefer="return=minimal")
+                except Exception:
+                    pass
+                # Retry the original request
+                resp2 = requests.request(method, endpoint, params=params, json=json_body, headers=headers, timeout=120)
+                if resp2.status_code < 300:
+                    if resp2.text.strip():
+                        return resp2.json()
+                    return None
+                # If retry also fails, fall through to raise
+                resp = resp2
             raise RuntimeError(f"Supabase REST error {resp.status_code}: {resp.text}")
 
         if resp.text.strip():
