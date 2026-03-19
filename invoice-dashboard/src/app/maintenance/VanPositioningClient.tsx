@@ -1585,6 +1585,7 @@ function AircraftCompactRow({
   color, zone, date,
   mxNotes, hiddenTodayMxIds, onHideMxForToday, mxVanOverrides, onVanOverride,
   legNote, onSaveNote, onDragStart, onDragOverItem, onRemove, onSetPrimaryAirport,
+  multiVisitVans,
 }: {
   arrFlight: Flight;
   nextDep: Flight | null;
@@ -1616,6 +1617,7 @@ function AircraftCompactRow({
   onDragOverItem: (vanId: number, flightId: string, insertBefore: boolean) => void;
   onRemove: (flightId: string) => void;
   onSetPrimaryAirport?: (tail: string, airport: string) => void;
+  multiVisitVans?: number[];
 }) {
   const [detailOpen, setDetailOpen] = useState(false);
 
@@ -1647,6 +1649,11 @@ function AircraftCompactRow({
           {mxNotes.filter((n) => !isMel(n) && (n.assigned_van === zone.vanId || !n.assigned_van)).length > 0 && (
             <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-orange-100 text-orange-700">
               {mxNotes.filter((n) => !isMel(n) && (n.assigned_van === zone.vanId || !n.assigned_van)).length} MX
+            </span>
+          )}
+          {multiVisitVans && multiVisitVans.length >= 2 && (
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-700" title={`Also serviced by V${multiVisitVans.filter(v => v !== zone.vanId).join(", V")}`}>
+              {"\uD83D\uDD04"} {multiVisitVans.length} stops today
             </span>
           )}
         </div>
@@ -1812,6 +1819,7 @@ function VanScheduleCard({
   onPublishVan,
   onAddToVan,
   fboMap,
+  tailToVans,
 }: {
   zone: (typeof FIXED_VAN_ZONES)[number];
   color: string;
@@ -1841,6 +1849,7 @@ function VanScheduleCard({
   onPublishVan?: (vanId: number) => Promise<void>;
   onAddToVan?: (flightId: string, vanId: number) => void;
   fboMap?: Record<string, string>;
+  tailToVans?: Map<string, number[]>;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [showSlackModal, setShowSlackModal] = useState(false);
@@ -2047,6 +2056,7 @@ function VanScheduleCard({
                     onDragOverItem={onDragOverItem}
                     onRemove={onRemove}
                     onSetPrimaryAirport={onSetPrimaryAirport}
+                    multiVisitVans={tailToVans?.get(arrFlight.tail_number ?? "")}
                   />
                 );
               })}
@@ -2699,6 +2709,21 @@ function ScheduleTab({
 
     return result;
   }, [baseItemsByVan, overrides, removals, liveVanPositions, allDayArrivals, flightInfoMap, unscheduledOverrides, allFlights, date, airportOverrides, sortOverrides]);
+
+  // Build tail → vanIds map for multi-visit detection
+  const tailToVans = useMemo(() => {
+    const map = new Map<string, number[]>();
+    for (const [vanId, items] of finalItemsByVan) {
+      for (const item of items) {
+        const tail = item.arrFlight.tail_number;
+        if (!tail) continue;
+        const arr = map.get(tail) ?? [];
+        if (!arr.includes(vanId)) arr.push(vanId);
+        map.set(tail, arr);
+      }
+    }
+    return map;
+  }, [finalItemsByVan]);
 
   // Uncovered aircraft: arrivals today not assigned to any van
   const uncoveredItems = useMemo(() => {
@@ -3392,7 +3417,6 @@ function ScheduleTab({
               {uncoveredTails.map((tailKey) => {
                 const items = uncoveredByTail.get(tailKey) ?? [];
                 const tail = items[0].arrFlight.tail_number;
-                const primaryItem = items[0]; // for drag-and-drop assignment
                 const allLegs = allLegsByTail.get(tailKey) ?? [];
                 // Check for maintenance (same-airport flights)
                 const hasMaintenance = allLegs.some((f) =>
@@ -3402,18 +3426,23 @@ function ScheduleTab({
                 const lastItem = items[items.length - 1];
                 const nextDep = lastItem?.nextDep ?? null;
                 const nextIsRepo = lastItem?.nextIsRepo ?? false;
-                const lastArrTime = lastItem?.arrFlight.scheduled_arrival
-                  ? new Date(lastItem.arrFlight.scheduled_arrival).getTime() : null;
-                const uncovGroundMs = nextDep && lastArrTime
-                  ? new Date(nextDep.scheduled_departure).getTime() - lastArrTime : Infinity;
+
+                // Helper: find nearest van for an arrival airport
+                const findNearestVan = (arrIcao: string | null | undefined): { vanId: number; name: string; distKm: number } | null => {
+                  if (!arrIcao) return null;
+                  const info = getAirportInfo(arrIcao.replace(/^K/, ""));
+                  if (!info) return null;
+                  let best: { vanId: number; name: string; distKm: number } | null = null;
+                  for (const z of FIXED_VAN_ZONES) {
+                    const d = haversineKm(info.lat, info.lon, z.lat, z.lon);
+                    if (!best || d < best.distKm) best = { vanId: z.vanId, name: z.name, distKm: d };
+                  }
+                  return best;
+                };
+
                 return (
-                  <div
-                    key={tailKey}
-                    draggable
-                    onDragStart={(e) => handleDragStart(e, primaryItem.arrFlight.id, 0)}
-                    className="px-4 py-2 cursor-grab active:cursor-grabbing hover:bg-red-50/50"
-                  >
-                    {/* Header: tail number + badges + assign dropdown */}
+                  <div key={tailKey} className="px-4 py-2">
+                    {/* Header: tail number + badges + Won't See */}
                     <div className="flex items-center justify-between gap-4 mb-1">
                       <div className="flex items-center gap-2 flex-wrap">
                         <div className="w-2.5 h-2.5 rounded-full bg-red-300 flex-shrink-0" />
@@ -3425,75 +3454,112 @@ function ScheduleTab({
                           </span>
                         )}
                       </div>
-                      {/* Select wrapped in iframe-like isolation to avoid parent drag interference */}
-                      <div
-                        draggable={false}
-                        onDragStart={(e) => { e.stopPropagation(); e.preventDefault(); }}
-                        onMouseDown={(e) => e.stopPropagation()}
-                        onPointerDown={(e) => e.stopPropagation()}
-                        className="shrink-0"
-                      >
-                        <select
-                          className="text-xs border border-red-200 rounded-lg px-2 py-1.5 bg-white text-red-700 font-medium cursor-pointer hover:border-red-400 focus:outline-none focus:ring-2 focus:ring-red-300"
-                          defaultValue=""
-                          onChange={(e) => {
-                            const vanId = Number(e.target.value);
-                            if (!vanId) return;
-                            e.target.value = ""; // reset dropdown
-                            setRemovals((prev) => {
-                              if (!prev.has(primaryItem.arrFlight.id)) return prev;
-                              const next = new Set(prev);
-                              next.delete(primaryItem.arrFlight.id);
-                              return next;
-                            });
-                            setOverrides((prev) => {
-                              const next = new Map(prev);
-                              next.set(primaryItem.arrFlight.id, vanId);
-                              return next;
-                            });
-                          }}
-                        >
-                          <option value="">Assign…</option>
-                          {FIXED_VAN_ZONES.map((z) => (
-                            <option key={z.vanId} value={z.vanId}>
-                              V{z.vanId} – {z.name}
-                            </option>
-                          ))}
-                        </select>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {/* Assign All to Nearest — only show when multiple legs */}
+                        {items.length > 1 && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setOverrides((prev) => {
+                                const next = new Map(prev);
+                                for (const item of items) {
+                                  const nearest = findNearestVan(item.arrFlight.arrival_icao);
+                                  if (nearest) {
+                                    next.set(item.arrFlight.id, nearest.vanId);
+                                  }
+                                }
+                                return next;
+                              });
+                              setRemovals((prev) => {
+                                const next = new Set(prev);
+                                for (const item of items) next.delete(item.arrFlight.id);
+                                return next;
+                              });
+                            }}
+                            className="text-[10px] font-medium text-blue-600 hover:text-blue-800 hover:bg-blue-50 border border-blue-200 rounded px-2 py-1 transition-colors"
+                            title="Assign all legs to their nearest van"
+                          >
+                            Assign All to Nearest
+                          </button>
+                        )}
+                        {tail && tail !== "_no_tail" && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); onMarkWontSee(tail); }}
+                            className="text-[10px] font-medium text-gray-400 hover:text-gray-700 hover:bg-gray-100 border border-gray-200 rounded px-2 py-1 shrink-0 transition-colors"
+                            title="Mark as reviewed — won't be seen today"
+                          >
+                            Won&apos;t See
+                          </button>
+                        )}
                       </div>
-                      {tail && tail !== "_no_tail" && (
-                        <button
-                          onClick={(e) => { e.stopPropagation(); onMarkWontSee(tail); }}
-                          className="text-[10px] font-medium text-gray-400 hover:text-gray-700 hover:bg-gray-100 border border-gray-200 rounded px-2 py-1 shrink-0 transition-colors"
-                          title="Mark as reviewed — won't be seen today"
-                        >
-                          Won&apos;t See
-                        </button>
-                      )}
                     </div>
-                    {/* All legs + flying again */}
-                    <div className="ml-5 space-y-0">
-                      {allLegs.map((f) => {
-                        const ft = inferFlightType(f);
+                    {/* Per-leg rows: each independently draggable + assignable */}
+                    <div className="ml-5 space-y-0.5">
+                      {items.map((item) => {
+                        const dep = item.arrFlight.departure_icao?.replace(/^K/, "") ?? "?";
+                        const arrIcao = item.arrFlight.arrival_icao?.replace(/^K/, "") ?? "?";
+                        const ft = inferFlightType(item.arrFlight);
                         const cat = getFilterCategory(ft);
-                        const dep = f.departure_icao?.replace(/^K/, "") ?? "?";
-                        const arrIcao = f.arrival_icao?.replace(/^K/, "") ?? "?";
                         const isMaint = dep === arrIcao;
+                        const nearest = findNearestVan(item.arrFlight.arrival_icao);
                         return (
-                          <div key={f.id} className="flex items-center gap-2 text-xs text-gray-600 py-px">
-                            <span className="font-mono">{dep} → {arrIcao}</span>
-                            <span>{fmtUtcHM(f.scheduled_departure, f.departure_icao)}{f.scheduled_arrival ? ` – ${fmtUtcHM(f.scheduled_arrival, f.arrival_icao)}` : ""}</span>
-                            {ft && (
-                              <span className={`rounded px-1 py-0.5 text-[10px] font-medium ${
-                                isMaint ? "bg-orange-50 text-orange-600"
-                                : cat === "charter" ? "bg-green-50 text-green-600"
-                                : cat === "positioning" ? "bg-purple-50 text-purple-600"
-                                : cat === "maintenance" ? "bg-orange-50 text-orange-600"
-                                : "bg-gray-50 text-gray-500"
-                              }`}>
-                                {ft}
-                              </span>
-                            )}
+                          <div
+                            key={item.arrFlight.id}
+                            draggable
+                            onDragStart={(e) => handleDragStart(e, item.arrFlight.id, 0)}
+                            className="flex items-center justify-between gap-2 py-1 px-2 -mx-2 rounded cursor-grab active:cursor-grabbing hover:bg-red-50/80 group"
+                          >
+                            <div className="flex items-center gap-2 text-xs text-gray-600 min-w-0">
+                              <span className="font-mono font-medium">{dep} → {arrIcao}</span>
+                              <span>{fmtUtcHM(item.arrFlight.scheduled_departure, item.arrFlight.departure_icao)}{item.arrFlight.scheduled_arrival ? ` – ${fmtUtcHM(item.arrFlight.scheduled_arrival, item.arrFlight.arrival_icao)}` : ""}</span>
+                              {ft && (
+                                <span className={`rounded px-1 py-0.5 text-[10px] font-medium ${
+                                  isMaint ? "bg-orange-50 text-orange-600"
+                                  : cat === "charter" ? "bg-green-50 text-green-600"
+                                  : cat === "positioning" ? "bg-purple-50 text-purple-600"
+                                  : cat === "maintenance" ? "bg-orange-50 text-orange-600"
+                                  : "bg-gray-50 text-gray-500"
+                                }`}>
+                                  {ft}
+                                </span>
+                              )}
+                            </div>
+                            {/* Per-leg assign dropdown */}
+                            <div
+                              draggable={false}
+                              onDragStart={(e) => { e.stopPropagation(); e.preventDefault(); }}
+                              onMouseDown={(e) => e.stopPropagation()}
+                              onPointerDown={(e) => e.stopPropagation()}
+                              className="shrink-0"
+                            >
+                              <select
+                                className="text-xs border border-red-200 rounded-lg px-2 py-1 bg-white text-red-700 font-medium cursor-pointer hover:border-red-400 focus:outline-none focus:ring-2 focus:ring-red-300"
+                                defaultValue=""
+                                onChange={(e) => {
+                                  const vanId = Number(e.target.value);
+                                  if (!vanId) return;
+                                  e.target.value = ""; // reset dropdown
+                                  setRemovals((prev) => {
+                                    if (!prev.has(item.arrFlight.id)) return prev;
+                                    const next = new Set(prev);
+                                    next.delete(item.arrFlight.id);
+                                    return next;
+                                  });
+                                  setOverrides((prev) => {
+                                    const next = new Map(prev);
+                                    next.set(item.arrFlight.id, vanId);
+                                    return next;
+                                  });
+                                }}
+                              >
+                                <option value="">{nearest ? `Assign (nearest: V${nearest.vanId})` : "Assign…"}</option>
+                                {FIXED_VAN_ZONES.map((z) => (
+                                  <option key={z.vanId} value={z.vanId}>
+                                    V{z.vanId} – {z.name}{nearest && z.vanId === nearest.vanId ? " ★" : ""}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
                           </div>
                         );
                       })}
@@ -3769,6 +3835,7 @@ function ScheduleTab({
                 });
               }}
               fboMap={fboMap}
+              tailToVans={tailToVans}
             />
           </div>
         );
