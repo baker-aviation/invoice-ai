@@ -315,21 +315,16 @@ export async function POST(req: NextRequest) {
 
     const plan = optimizeMultiLeg(routeInput);
 
-    // Compute naive cost: buy exactly requiredStartFuelLbs at each stop, no tankering
+    // Compute naive cost: what if you bought ALL fuel at each stop's local price
+    // (full price at every stop, no benefit from shutdown fuel or cheap stops)
     const ppg = calcPpg(15);
     let naiveCost = 0;
-    let runningFuel = shutdown.fuel;
     for (const ld of legData) {
-      const needed = ld.totalFuelLbs;
-      const orderLbs = Math.max(0, needed - runningFuel);
-      const orderGal = orderLbs / ppg;
-      naiveCost += orderGal * ld.departurePricePerGal;
-      // After this leg, landing fuel = needed - fuelToDestLbs - buffer
-      runningFuel = Math.max(0, needed - ld.fuelToDestLbs - 300);
+      naiveCost += (ld.totalFuelLbs / ppg) * ld.departurePricePerGal;
     }
 
     const optimizedCost = plan?.totalTripCost ?? naiveCost;
-    const tankerSavings = naiveCost - optimizedCost;
+    const tankerSavings = Math.max(0, naiveCost - optimizedCost);
 
     plans.push({
       tail,
