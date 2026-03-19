@@ -538,6 +538,8 @@ type VanFlightItem = {
   airport:    string;    // IATA
   airportInfo: ReturnType<typeof getAirportInfo>;
   distKm:     number;
+  isTransitStop?: boolean;  // true if this is a short ground-time stop (not EOD)
+  isLastChance?: boolean;   // true if this is the last time this tail visits any van zone today
 };
 
 type FlightInfoEntry = {
@@ -2799,6 +2801,129 @@ function ScheduleTab({
     return set;
   }, [overrides, baseItemsByVan]);
 
+  // ── Auto-dispatch uncovered aircraft to nearest vans ──
+  const autoDispatchUncovered = useCallback(() => {
+    if (uncoveredItems.length === 0) return;
+
+    const newOverrides = new Map<string, number>(overrides);
+
+    // Build a map of all stops today per tail from uncoveredItems + allDayArrivals
+    const stopsByTail = new Map<string, VanFlightItem[]>();
+    for (const item of allDayArrivals) {
+      const tail = item.arrFlight.tail_number ?? `_no_tail_${item.arrFlight.id}`;
+      const arr = stopsByTail.get(tail) ?? [];
+      arr.push(item);
+      stopsByTail.set(tail, arr);
+    }
+
+    // Build scoring list from uncovered items
+    type ScoredStop = {
+      item: VanFlightItem;
+      score: number;
+      bestVanId: number;
+      bestDist: number;
+    };
+
+    const scoredStops: ScoredStop[] = [];
+
+    for (const item of uncoveredItems) {
+      const { nextDep, arrFlight } = item;
+
+      // Determine if this is EOD
+      const isEOD = !nextDep || !isOnEtDate(nextDep.scheduled_departure, date);
+
+      // Compute ground time
+      let groundHours = Infinity;
+      if (nextDep && isOnEtDate(nextDep.scheduled_departure, date)) {
+        const arrMs = new Date(arrFlight.scheduled_arrival ?? "").getTime();
+        const depMs = new Date(nextDep.scheduled_departure).getTime();
+        groundHours = (depMs - arrMs) / 3_600_000;
+      }
+
+      const isQuickTurn = !isEOD && groundHours < 2;
+
+      // Find the tail's EOD location to check convenience
+      const tail = arrFlight.tail_number ?? `_no_tail_${arrFlight.id}`;
+      const tailStops = stopsByTail.get(tail) ?? [];
+      const eodStop = tailStops
+        .slice()
+        .sort((a, b) => (b.arrFlight.scheduled_arrival ?? "").localeCompare(a.arrFlight.scheduled_arrival ?? ""))
+        .find((s) => {
+          const nd = s.nextDep;
+          return !nd || !isOnEtDate(nd.scheduled_departure, date);
+        });
+
+      // Find nearest van for this item
+      let bestVanId = -1;
+      let bestDist = Infinity;
+      const itemInfo = item.airportInfo;
+      if (itemInfo) {
+        for (const z of FIXED_VAN_ZONES) {
+          const vanLat = liveVanPositions.get(z.vanId)?.lat ?? z.lat;
+          const vanLon = liveVanPositions.get(z.vanId)?.lon ?? z.lon;
+          const d = haversineKm(vanLat, vanLon, itemInfo.lat, itemInfo.lon);
+          if (d < bestDist) {
+            bestDist = d;
+            bestVanId = z.vanId;
+          }
+        }
+      }
+
+      if (bestVanId === -1) continue;
+
+      // Score: EOD=100, longGround=50, quickTurn=10
+      let score: number;
+      if (isEOD) {
+        // EOD: always assign to nearest van. Highest priority.
+        score = 100;
+      } else if (groundHours >= 2) {
+        // Long ground: assign if drive <2hr (160km)
+        if (bestDist > 160) continue; // skip — too far for a non-EOD long ground
+        score = 50;
+      } else {
+        // Quick turn: only assign if van <30min drive (~45km) OR the EOD isn't convenient
+        const eodInfo = eodStop?.airportInfo;
+        let eodConvenient = false;
+        if (eodInfo) {
+          // Check if any van is within 2hr drive (160km) of the EOD airport
+          for (const z of FIXED_VAN_ZONES) {
+            const vanLat = liveVanPositions.get(z.vanId)?.lat ?? z.lat;
+            const vanLon = liveVanPositions.get(z.vanId)?.lon ?? z.lon;
+            if (haversineKm(vanLat, vanLon, eodInfo.lat, eodInfo.lon) <= 160) {
+              eodConvenient = true;
+              break;
+            }
+          }
+        }
+
+        if (bestDist <= 45) {
+          // Van very close — worth a quick stop
+          score = 10;
+        } else if (!eodConvenient) {
+          // EOD not convenient to any van — this quick turn is the best opportunity
+          score = 10;
+        } else {
+          continue; // skip this quick turn
+        }
+      }
+
+      // Adjust score by inverse distance (closer = slightly higher priority)
+      score -= Math.min(bestDist / 100, 5);
+
+      scoredStops.push({ item, score, bestVanId, bestDist });
+    }
+
+    // Sort by score descending (highest priority first)
+    scoredStops.sort((a, b) => b.score - a.score);
+
+    // Greedily assign
+    for (const { item, bestVanId } of scoredStops) {
+      newOverrides.set(item.arrFlight.id, bestVanId);
+    }
+
+    setOverrides(newOverrides);
+  }, [uncoveredItems, overrides, allDayArrivals, date, liveVanPositions]);
+
   // ── Drag-and-drop handlers ──
   const dragOverTargetRef = useRef<{ vanId: number; flightId: string; insertBefore: boolean } | null>(null);
 
@@ -3267,6 +3392,15 @@ function ScheduleTab({
               className="text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5 hover:bg-amber-100 transition-colors"
             >
               Reset all edits ({totalEdits})
+            </button>
+          )}
+          {uncoveredItems.length > 0 && (
+            <button
+              onClick={autoDispatchUncovered}
+              className="text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-3 py-1.5 hover:bg-blue-100 transition-colors"
+              title="Auto-assign uncovered aircraft to nearest vans based on priority scoring"
+            >
+              Auto-Dispatch All ({uncoveredItems.length})
             </button>
           )}
           <button
