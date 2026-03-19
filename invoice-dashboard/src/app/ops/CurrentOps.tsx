@@ -2057,10 +2057,22 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           const actualDepIso = isCancelled ? null : (fi?.actual_departure ?? (!swimEntryStale ? swimEntry?.actual_departure : null) ?? null);
                           const actualArrIso = isCancelled ? null : (fi?.actual_arrival ?? (!swimEntryStale ? swimEntry?.actual_arrival : null) ?? null);
 
+                          // DEBUG: temporary — remove after verifying No Departure works
+                          const _dbg = f.tail_number === "N371DB" && f.departure_icao === "KAUS" ? {
+                            fiRM: !!fiRouteMatch, arrP: !!arrivalPassed, fiSt: fi?.status ?? "none",
+                            fiAD: fi?.actual_departure ?? "null", fiAA: fi?.actual_arrival ?? "null",
+                            idM: idMatched, sup: !!supersedInfo, st: status,
+                          } : null;
+
                           return (
                             <div key={f.id} className={`px-4 py-2 text-xs ${isCancelled ? "opacity-50 bg-gray-50" : ""} ${isFaSourced ? "bg-blue-50/40" : ""}`}>
                               <div className="flex items-center gap-3">
                                 <div className="w-28 shrink-0">
+                                  {_dbg && (
+                                    <div className="text-[8px] text-red-500 font-mono leading-tight bg-red-50 rounded px-1 mb-0.5">
+                                      {JSON.stringify(_dbg)}
+                                    </div>
+                                  )}
                                   <span className="font-mono font-medium text-gray-800">
                                     {f.departure_icao || "?"} →{" "}
                                     {isCancelled ? (
