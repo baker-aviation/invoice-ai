@@ -569,7 +569,8 @@ function fmtGroundTime(min: number): string {
 
 function ScheduleSection({ flights, mxNotes: initialMxNotes = [], onMoveNote }: { flights: Flight[]; mxNotes?: MxNoteWithAttachments[]; onMoveNote?: (noteId: string, newAirport: string) => void }) {
   const [mxNotes, setMxNotes] = useState(initialMxNotes);
-  const [movingNoteId, setMovingNoteId] = useState<string | null>(null);
+  const [dragOverFlightId, setDragOverFlightId] = useState<string | null>(null);
+  const dragNoteRef = useRef<string | null>(null);
 
   // All unique arrival airports from the schedule (for the move dropdown)
   const arrivalAirports = useMemo(() => {
@@ -578,15 +579,19 @@ function ScheduleSection({ flights, mxNotes: initialMxNotes = [], onMoveNote }: 
     return Array.from(set).sort();
   }, [flights]);
 
-  async function handleMoveNote(noteId: string, newAirport: string) {
+  async function handleMoveNote(noteId: string, newAirport: string, arrivalDate?: string | null) {
+    // Find nearest van for the new airport
+    const van = nearestVan(newAirport);
+    const newVanId = van ? van.vanId : null;
+    // Derive scheduled_date from the flight's arrival (YYYY-MM-DD in ET)
+    const scheduledDate = arrivalDate ? etDateKey(arrivalDate) : null;
     // Optimistic update
-    setMxNotes((prev) => prev.map((n) => n.id === noteId ? { ...n, airport_icao: newAirport } : n));
-    setMovingNoteId(null);
+    setMxNotes((prev) => prev.map((n) => n.id === noteId ? { ...n, airport_icao: newAirport, assigned_van: newVanId, scheduled_date: scheduledDate } : n));
     try {
       await fetch(`/api/ops/mx-notes/${noteId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ airport_icao: newAirport }),
+        body: JSON.stringify({ airport_icao: newAirport, assigned_van: newVanId, scheduled_date: scheduledDate }),
       });
       onMoveNote?.(noteId, newAirport);
     } catch { /* ignore */ }
@@ -623,6 +628,21 @@ function ScheduleSection({ flights, mxNotes: initialMxNotes = [], onMoveNote }: 
   const now = Date.now();
   const todayKey = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
 
+  // Assign each MX note to only the FIRST non-past flight arriving at its airport
+  const flightMxMap = new Map<string, MxNoteWithAttachments[]>();
+  const claimedNoteIds = new Set<string>();
+  for (const f of flights) {
+    const arr = f.scheduled_arrival ? new Date(f.scheduled_arrival) : null;
+    const flightIsPast = arr ? arr.getTime() < now : false;
+    if (flightIsPast || !f.arrival_icao) continue;
+    const notes = mxAirports.get(f.arrival_icao) ?? [];
+    const unclaimed = notes.filter((n) => !claimedNoteIds.has(n.id));
+    if (unclaimed.length > 0) {
+      flightMxMap.set(f.id, unclaimed);
+      for (const n of unclaimed) claimedNoteIds.add(n.id);
+    }
+  }
+
   return (
     <div className="space-y-4">
       {/* Unmatched MX notes — not at any scheduled arrival airport */}
@@ -630,20 +650,21 @@ function ScheduleSection({ flights, mxNotes: initialMxNotes = [], onMoveNote }: 
         <div className="bg-orange-50 border border-orange-200 rounded-lg p-3 space-y-1.5">
           <div className="text-xs font-semibold text-orange-700 uppercase tracking-wide">MX not on route — assign to a leg</div>
           {unmatchedNotes.map((n) => (
-            <div key={n.id} className="flex items-center gap-2 text-xs">
+            <div
+              key={n.id}
+              draggable
+              onDragStart={(e) => {
+                dragNoteRef.current = n.id;
+                e.dataTransfer.setData("text/plain", n.id);
+                e.dataTransfer.effectAllowed = "move";
+              }}
+              onDragEnd={() => { dragNoteRef.current = null; setDragOverFlightId(null); }}
+              className="flex items-center gap-2 text-xs cursor-grab active:cursor-grabbing"
+            >
               <span className="font-bold text-orange-600">MX</span>
               <span className="text-gray-700 truncate flex-1">{n.subject || n.body || n.description}</span>
               {n.airport_icao && <span className="text-gray-400">{n.airport_icao}</span>}
-              <select
-                className="text-[11px] border border-orange-200 rounded px-1.5 py-0.5 bg-white text-gray-700"
-                value=""
-                onChange={(e) => { if (e.target.value) handleMoveNote(n.id, e.target.value); }}
-              >
-                <option value="">Move to...</option>
-                {arrivalAirports.map((a) => (
-                  <option key={a} value={a}>{a.replace(/^K/, "")}</option>
-                ))}
-              </select>
+              <span className="text-[10px] text-orange-400 shrink-0 select-none">⠿ drag to a leg</span>
             </div>
           ))}
         </div>
@@ -666,8 +687,9 @@ function ScheduleSection({ flights, mxNotes: initialMxNotes = [], onMoveNote }: 
                 const flightIsPast = arr ? arr.getTime() < now : false;
                 const isActive = !flightIsPast && f.scheduled_departure && new Date(f.scheduled_departure).getTime() <= now;
                 const isMxFlight = f.flight_type === "Maintenance";
-                const arrMxNotes = f.arrival_icao ? (mxAirports.get(f.arrival_icao) ?? []) : [];
+                const arrMxNotes = flightMxMap.get(f.id) ?? [];
                 const hasMxAtArrival = arrMxNotes.length > 0;
+                const isDropTarget = dragOverFlightId === f.id;
 
                 // Ground time gap between this leg and next
                 const nextFlight = group.flights[i + 1];
@@ -676,8 +698,23 @@ function ScheduleSection({ flights, mxNotes: initialMxNotes = [], onMoveNote }: 
 
                 return (
                   <div key={f.id}>
-                    {/* Flight leg */}
-                    <div className={`relative pl-5 py-1.5 ${flightIsPast ? "opacity-50" : ""}`}>
+                    {/* Flight leg — drop target for dragged MX notes */}
+                    <div
+                      className={`relative pl-5 py-1.5 transition-colors ${flightIsPast ? "opacity-50" : ""} ${isDropTarget ? "bg-orange-50 rounded" : ""}`}
+                      onDragOver={(e) => {
+                        if (!f.arrival_icao || flightIsPast) return;
+                        e.preventDefault();
+                        setDragOverFlightId(f.id);
+                      }}
+                      onDragLeave={() => { if (dragOverFlightId === f.id) setDragOverFlightId(null); }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        setDragOverFlightId(null);
+                        const noteId = dragNoteRef.current ?? e.dataTransfer.getData("text/plain");
+                        dragNoteRef.current = null;
+                        if (noteId && f.arrival_icao) handleMoveNote(noteId, f.arrival_icao, f.scheduled_arrival);
+                      }}
+                    >
                       {/* Timeline dot */}
                       <div className={`absolute -left-[5px] top-3 w-2 h-2 rounded-full border-2 ${
                         isActive ? "bg-blue-500 border-blue-500 ring-2 ring-blue-200" :
@@ -739,7 +776,17 @@ function ScheduleSection({ flights, mxNotes: initialMxNotes = [], onMoveNote }: 
                       {hasMxAtArrival && !flightIsPast && (
                         <div className="ml-0 mt-1 space-y-0.5">
                           {arrMxNotes.map((n) => (
-                            <div key={n.id} className="group flex items-center gap-2 text-[11px] text-orange-700 bg-orange-50 rounded px-2 py-1">
+                            <div
+                              key={n.id}
+                              draggable
+                              onDragStart={(e) => {
+                                dragNoteRef.current = n.id;
+                                e.dataTransfer.setData("text/plain", n.id);
+                                e.dataTransfer.effectAllowed = "move";
+                              }}
+                              onDragEnd={() => { dragNoteRef.current = null; setDragOverFlightId(null); }}
+                              className="group flex items-center gap-2 text-[11px] text-orange-700 bg-orange-50 rounded px-2 py-1 cursor-grab active:cursor-grabbing"
+                            >
                               <span className="font-bold shrink-0">MX</span>
                               <span className="truncate flex-1">{n.subject || n.body || n.description}</span>
                               {n.assigned_van && (
@@ -747,28 +794,9 @@ function ScheduleSection({ flights, mxNotes: initialMxNotes = [], onMoveNote }: 
                                   V{n.assigned_van}
                                 </span>
                               )}
-                              {/* Move control */}
-                              {movingNoteId === n.id ? (
-                                <select
-                                  autoFocus
-                                  className="text-[10px] border border-orange-300 rounded px-1 py-0.5 bg-white text-gray-700 shrink-0"
-                                  value={n.airport_icao ?? ""}
-                                  onChange={(e) => { if (e.target.value && e.target.value !== n.airport_icao) handleMoveNote(n.id, e.target.value); }}
-                                  onBlur={() => setMovingNoteId(null)}
-                                >
-                                  {arrivalAirports.map((a) => (
-                                    <option key={a} value={a}>{a.replace(/^K/, "")}</option>
-                                  ))}
-                                </select>
-                              ) : (
-                                <button
-                                  onClick={() => setMovingNoteId(n.id)}
-                                  className="text-[10px] text-orange-400 hover:text-orange-700 font-medium opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
-                                  title="Move to different leg"
-                                >
-                                  Move
-                                </button>
-                              )}
+                              <span className="text-[10px] text-orange-400 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 select-none">
+                                ⠿ drag to move
+                              </span>
                             </div>
                           ))}
                         </div>
