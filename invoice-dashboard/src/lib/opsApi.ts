@@ -434,3 +434,257 @@ export async function fetchAircraftTags(): Promise<AircraftTag[]> {
   if (error || !data) return [];
   return data as AircraftTag[];
 }
+
+// ---------------------------------------------------------------------------
+// International Ops — countries, permits, handlers, documents, customs, alerts
+// ---------------------------------------------------------------------------
+
+export type Country = {
+  id: string;
+  name: string;
+  iso_code: string;
+  icao_prefixes: string[];
+  overflight_permit_required: boolean;
+  landing_permit_required: boolean;
+  permit_lead_time_days: number | null;
+  permit_lead_time_working_days: boolean;
+  treat_as_international: boolean;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CountryRequirement = {
+  id: string;
+  country_id: string;
+  requirement_type: "overflight" | "landing" | "customs" | "handling";
+  name: string;
+  description: string | null;
+  required_documents: string[];
+  sort_order: number;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type IntlLegPermit = {
+  id: string;
+  flight_id: string;
+  country_id: string;
+  permit_type: "overflight" | "landing";
+  status: "not_started" | "drafted" | "submitted" | "approved";
+  deadline: string | null;
+  submitted_at: string | null;
+  approved_at: string | null;
+  approved_by: string | null;
+  reference_number: string | null;
+  notes: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+  // Joined fields
+  country?: Country;
+};
+
+export type IntlLegHandler = {
+  id: string;
+  flight_id: string;
+  handler_name: string;
+  handler_contact: string | null;
+  airport_icao: string;
+  requested: boolean;
+  approved: boolean;
+  requested_at: string | null;
+  approved_at: string | null;
+  notes: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type IntlDocument = {
+  id: string;
+  name: string;
+  document_type: "airworthiness" | "medical" | "certificate" | "passport" | "insurance" | "other";
+  entity_type: "aircraft" | "crew" | "company";
+  entity_id: string;
+  gcs_bucket: string;
+  gcs_key: string;
+  filename: string;
+  content_type: string;
+  expiration_date: string | null;
+  is_current: boolean;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type UsCustomsAirport = {
+  id: string;
+  icao: string;
+  airport_name: string;
+  customs_type: "AOE" | "LRA" | "UserFee" | "None";
+  hours_open: string | null;
+  hours_close: string | null;
+  timezone: string | null;
+  advance_notice_hours: number | null;
+  overtime_available: boolean;
+  restrictions: string | null;
+  notes: string | null;
+  difficulty: "easy" | "moderate" | "hard" | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type IntlLegAlert = {
+  id: string;
+  flight_id: string | null;
+  alert_type: "deadline_approaching" | "permit_resubmit" | "customs_conflict" | "tail_change";
+  severity: "critical" | "warning" | "info";
+  message: string;
+  related_country_id: string | null;
+  related_permit_id: string | null;
+  acknowledged: boolean;
+  acknowledged_by: string | null;
+  acknowledged_at: string | null;
+  created_at: string;
+};
+
+// Re-export client-safe helpers (these are also importable directly from @/lib/intlUtils)
+import { isInternationalFlight as _isIntlFlight } from "@/lib/intlUtils";
+export { isInternationalIcao, isInternationalFlight } from "@/lib/intlUtils";
+
+// ---------------------------------------------------------------------------
+// Fetch international flights (30-day lookahead)
+// ---------------------------------------------------------------------------
+
+export async function fetchInternationalFlights(): Promise<Flight[]> {
+  const result = await fetchFlights({ lookahead_hours: 720, lookback_hours: 24 });
+  return result.flights.filter(_isIntlFlight);
+}
+
+// ---------------------------------------------------------------------------
+// Fetch countries
+// ---------------------------------------------------------------------------
+
+export async function fetchCountries(): Promise<Country[]> {
+  const supa = createServiceClient();
+  const { data, error } = await supa
+    .from("countries")
+    .select("*")
+    .order("name");
+  if (error || !data) return [];
+  return data as Country[];
+}
+
+// ---------------------------------------------------------------------------
+// Fetch country requirements
+// ---------------------------------------------------------------------------
+
+export async function fetchCountryRequirements(countryId?: string): Promise<CountryRequirement[]> {
+  const supa = createServiceClient();
+  let q = supa
+    .from("country_requirements")
+    .select("*")
+    .eq("is_active", true)
+    .order("sort_order");
+  if (countryId) q = q.eq("country_id", countryId);
+  const { data, error } = await q;
+  if (error || !data) return [];
+  return data as CountryRequirement[];
+}
+
+// ---------------------------------------------------------------------------
+// Fetch permits for a flight
+// ---------------------------------------------------------------------------
+
+export async function fetchPermitsForFlight(flightId: string): Promise<IntlLegPermit[]> {
+  const supa = createServiceClient();
+  const { data, error } = await supa
+    .from("intl_leg_permits")
+    .select("*, country:countries(*)")
+    .eq("flight_id", flightId)
+    .order("created_at");
+  if (error || !data) return [];
+  return data as IntlLegPermit[];
+}
+
+// ---------------------------------------------------------------------------
+// Fetch all pending permits (for the dashboard view)
+// ---------------------------------------------------------------------------
+
+export async function fetchPendingPermits(): Promise<IntlLegPermit[]> {
+  const supa = createServiceClient();
+  const { data, error } = await supa
+    .from("intl_leg_permits")
+    .select("*, country:countries(*)")
+    .neq("status", "approved")
+    .order("deadline", { ascending: true, nullsFirst: false });
+  if (error || !data) return [];
+  return data as IntlLegPermit[];
+}
+
+// ---------------------------------------------------------------------------
+// Fetch handlers for a flight
+// ---------------------------------------------------------------------------
+
+export async function fetchHandlersForFlight(flightId: string): Promise<IntlLegHandler[]> {
+  const supa = createServiceClient();
+  const { data, error } = await supa
+    .from("intl_leg_handlers")
+    .select("*")
+    .eq("flight_id", flightId)
+    .order("created_at");
+  if (error || !data) return [];
+  return data as IntlLegHandler[];
+}
+
+// ---------------------------------------------------------------------------
+// Fetch international documents
+// ---------------------------------------------------------------------------
+
+export async function fetchIntlDocuments(entityType?: string, entityId?: string): Promise<IntlDocument[]> {
+  const supa = createServiceClient();
+  let q = supa
+    .from("intl_documents")
+    .select("*")
+    .eq("is_current", true)
+    .order("created_at", { ascending: false });
+  if (entityType) q = q.eq("entity_type", entityType);
+  if (entityId) q = q.eq("entity_id", entityId);
+  const { data, error } = await q;
+  if (error || !data) return [];
+  return data as IntlDocument[];
+}
+
+// ---------------------------------------------------------------------------
+// Fetch US customs airports
+// ---------------------------------------------------------------------------
+
+export async function fetchUsCustomsAirports(): Promise<UsCustomsAirport[]> {
+  const supa = createServiceClient();
+  const { data, error } = await supa
+    .from("us_customs_airports")
+    .select("*")
+    .order("icao");
+  if (error || !data) return [];
+  return data as UsCustomsAirport[];
+}
+
+// ---------------------------------------------------------------------------
+// Fetch international leg alerts
+// ---------------------------------------------------------------------------
+
+export async function fetchIntlAlerts(unackedOnly = true): Promise<IntlLegAlert[]> {
+  const supa = createServiceClient();
+  let q = supa
+    .from("intl_leg_alerts")
+    .select("*")
+    .order("created_at", { ascending: false })
+    .limit(200);
+  if (unackedOnly) q = q.eq("acknowledged", false);
+  const { data, error } = await q;
+  if (error || !data) return [];
+  return data as IntlLegAlert[];
+}
