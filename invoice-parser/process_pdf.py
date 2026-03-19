@@ -106,21 +106,32 @@ def scrub_obj(x):
 # ---------------------------
 
 INV_PATTERNS = [
+    # World Fuel invoice numbers: 8+ digits hyphen 4-5 digits (e.g. 27379628-21101)
+    re.compile(r"\b(\d{8,}-\d{4,5})\b"),
     re.compile(r"\bFUEL\s+TICKET\s+(\d{4,})\b", re.I),
+    # World Fuel fuel ticket: header on one line, number on next line
+    re.compile(r"FUEL\s+TICKET\b[^\n]*\n\s*(?:\d{1,2}-[A-Z]{3}-\d{4}\s+)?(\d{5,7})\b", re.I),
     re.compile(r"\bRef Number\s+([A-Z0-9-]{6,})\b", re.I),
     re.compile(r"\bInvoice\s+(?:No\.?|#|Number)?\s*([A-Z0-9-]{3,})\b", re.I),
     re.compile(r"\bCredit Memo No\.?:\s*([A-Z0-9-]{3,})\b", re.I),
     re.compile(r"\bINV\d{6,}\b", re.I),
 ]
 
+# IDs that are clearly column headers / labels, not real invoice numbers
+_BAD_INV_ID = re.compile(
+    r"^(?:PAGE|DATE|CUSTOMER|TOTAL|USD|AMOUNT|NUMBER|NUMBERS|THE|AND|FOR|"
+    r"TAX|NET|INVOICE|PERIOD|DETAIL|SUMMARY|REPORT|BALANCE|STATEMENT|World)$",
+    re.I,
+)
+
 def detect_invoice_ids(text: str) -> List[str]:
     ids = set()
     for pat in INV_PATTERNS:
         for m in pat.finditer(text or ""):
-            if m.groups():
-                ids.add(m.group(1))
-            else:
-                ids.add(m.group(0))
+            val = m.group(1) if m.groups() else m.group(0)
+            if _BAD_INV_ID.match(val):
+                continue
+            ids.add(val)
 
     # For Avfuel activity invoices, also detect receipt numbers (7-9 digit
     # integers at the start of table rows) so they appear in detected_invoice_ids.
@@ -157,7 +168,11 @@ def maybe_statement_gate(text: str, invoice_ids: List[str]) -> Tuple[bool, int]:
 # ---------------------------
 
 _SECTION_BOUNDARY_PATTERNS = [
+    # World Fuel invoice numbers: 8+ digits hyphen 4-5 digits (e.g. 27379628-21101)
+    re.compile(r"\b(\d{8,}-\d{4,5})\b"),
     re.compile(r"\bFUEL\s+TICKET\s+(\d{4,})\b", re.I),
+    # World Fuel fuel ticket: header on one line, number on next line
+    re.compile(r"FUEL\s+TICKET\b[^\n]*\n\s*(?:\d{1,2}-[A-Z]{3}-\d{4}\s+)?(\d{5,7})\b", re.I),
     re.compile(r"\bRef Number\s+([A-Z0-9][A-Z0-9-]*)\b", re.I),
     re.compile(r"\bInvoice\s+(?:No\.?|#|Number)\s*:?\s*([A-Z0-9][A-Z0-9-]{2,})\b", re.I),
     re.compile(r"\bCredit Memo\s+(?:No\.?|#|Number)\s*:?\s*([A-Z0-9][A-Z0-9-]{2,})\b", re.I),
