@@ -179,15 +179,36 @@ function FlightBoard({ flights, countries }: { flights: Flight[]; countries: Cou
   );
 }
 
+type OverflightInfo = { country_name: string; country_iso: string; fir_id: string };
+
 function FlightRow({ flight, countries, expanded, onToggle }: {
   flight: Flight;
   countries: Country[];
   expanded: boolean;
   onToggle: () => void;
 }) {
+  const [overflights, setOverflights] = useState<OverflightInfo[]>([]);
+  const [ovfLoaded, setOvfLoaded] = useState(false);
+
   const dep = new Date(flight.scheduled_departure);
   const time = dep.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC" });
   const daysOut = Math.ceil((dep.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+
+  // Fetch overflights once per row
+  useEffect(() => {
+    if (ovfLoaded || !flight.departure_icao || !flight.arrival_icao) return;
+    setOvfLoaded(true);
+    fetch(`/api/ops/intl/overflights?dep=${flight.departure_icao}&arr=${flight.arrival_icao}`)
+      .then((r) => r.json())
+      .then((d) => setOverflights(d.overflights ?? []))
+      .catch(() => {});
+  }, [flight.departure_icao, flight.arrival_icao, ovfLoaded]);
+
+  // Flag overflown countries that require permits
+  const ovfPermitCountries = overflights.filter((o) => {
+    const c = countries.find((c) => c.iso_code === o.country_iso);
+    return c?.overflight_permit_required;
+  });
 
   return (
     <div className="border border-gray-200 rounded-lg overflow-hidden">
@@ -202,6 +223,21 @@ function FlightRow({ flight, countries, expanded, onToggle }: {
           <span className="text-gray-400 mx-1">&rarr;</span>
           <span className="font-medium">{flight.arrival_icao}</span>
         </span>
+        {/* Overflight badges */}
+        {overflights.length > 0 && (
+          <span className="flex gap-0.5 flex-wrap">
+            {overflights.map((o) => {
+              const needsPermit = ovfPermitCountries.some((p) => p.country_iso === o.country_iso);
+              return (
+                <span key={o.fir_id} className={`text-[10px] px-1 py-0.5 rounded ${
+                  needsPermit ? "bg-orange-100 text-orange-700 font-medium" : "bg-gray-100 text-gray-500"
+                }`} title={`Overflies ${o.country_name}${needsPermit ? " — PERMIT REQUIRED" : ""}`}>
+                  {o.country_iso}{needsPermit ? "!" : ""}
+                </span>
+              );
+            })}
+          </span>
+        )}
         <span className="text-xs text-gray-500 ml-auto">
           {flight.pic && <span className="mr-2">PIC: {flight.pic}</span>}
           {flight.sic && <span>SIC: {flight.sic}</span>}
@@ -217,7 +253,7 @@ function FlightRow({ flight, countries, expanded, onToggle }: {
       </button>
 
       {expanded && (
-        <FlightDetail flight={flight} countries={countries} />
+        <FlightDetail flight={flight} countries={countries} overflights={overflights} />
       )}
     </div>
   );
@@ -226,17 +262,32 @@ function FlightRow({ flight, countries, expanded, onToggle }: {
 // ===========================================================================
 // FLIGHT DETAIL — permits, handlers, checklist for a single leg
 // ===========================================================================
-function FlightDetail({ flight, countries }: { flight: Flight; countries: Country[] }) {
+function FlightDetail({ flight, countries, overflights }: { flight: Flight; countries: Country[]; overflights: OverflightInfo[] }) {
   const [permits, setPermits] = useState<IntlLegPermit[]>([]);
   const [handlers, setHandlers] = useState<IntlLegHandler[]>([]);
   const [requirements, setRequirements] = useState<CountryRequirement[]>([]);
   const [loading, setLoading] = useState(true);
+  const [autoCreating, setAutoCreating] = useState(false);
 
   // Form states
   const [showAddPermit, setShowAddPermit] = useState(false);
   const [showAddHandler, setShowAddHandler] = useState(false);
   const [newPermit, setNewPermit] = useState({ country_id: "", permit_type: "landing" as string, deadline: "" });
   const [newHandler, setNewHandler] = useState({ handler_name: "", airport_icao: flight.arrival_icao ?? "", handler_contact: "" });
+
+  // Compute relevant countries: destination/departure + overflown
+  const relevantCountryIds = new Set<string>();
+  for (const c of countries) {
+    const prefixes = c.icao_prefixes ?? [];
+    // Destination/departure country
+    if (prefixes.some((p: string) => flight.departure_icao?.startsWith(p) || flight.arrival_icao?.startsWith(p))) {
+      relevantCountryIds.add(c.id);
+    }
+    // Overflown country
+    if (overflights.some((o) => o.country_iso === c.iso_code)) {
+      relevantCountryIds.add(c.id);
+    }
+  }
 
   const loadData = useCallback(async () => {
     try {
@@ -248,13 +299,8 @@ function FlightDetail({ flight, countries }: { flight: Flight; countries: Countr
       setPermits(permData.permits ?? []);
       setHandlers(handlerData.handlers ?? []);
 
-      // Load requirements for relevant countries
-      const relevantCountries = countries.filter((c) => {
-        const prefixes = c.icao_prefixes ?? [];
-        return prefixes.some((p: string) =>
-          flight.departure_icao?.startsWith(p) || flight.arrival_icao?.startsWith(p)
-        );
-      });
+      // Load requirements for all relevant countries (destination + overflown)
+      const relevantCountries = countries.filter((c) => relevantCountryIds.has(c.id));
       if (relevantCountries.length > 0) {
         const reqResults = await Promise.all(
           relevantCountries.map((c) =>
@@ -265,7 +311,7 @@ function FlightDetail({ flight, countries }: { flight: Flight; countries: Countr
       }
     } catch { /* ignore */ }
     setLoading(false);
-  }, [flight.id, flight.departure_icao, flight.arrival_icao, countries]);
+  }, [flight.id, countries, relevantCountryIds]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
@@ -321,10 +367,114 @@ function FlightDetail({ flight, countries }: { flight: Flight; countries: Countr
     loadData();
   }
 
+  // Compute which permits are missing for this leg
+  const missingPermits: Array<{ country: Country; type: "overflight" | "landing" }> = [];
+  for (const c of countries) {
+    if (!relevantCountryIds.has(c.id)) continue;
+    const isOverflown = overflights.some((o) => o.country_iso === c.iso_code);
+    const isDestination = (c.icao_prefixes ?? []).some((p: string) =>
+      flight.departure_icao?.startsWith(p) || flight.arrival_icao?.startsWith(p)
+    );
+
+    // Check overflight permit
+    if (isOverflown && c.overflight_permit_required) {
+      const hasIt = permits.some((p) => p.country_id === c.id && p.permit_type === "overflight");
+      if (!hasIt) missingPermits.push({ country: c, type: "overflight" });
+    }
+    // Check landing permit
+    if (isDestination && c.landing_permit_required) {
+      const hasIt = permits.some((p) => p.country_id === c.id && p.permit_type === "landing");
+      if (!hasIt) missingPermits.push({ country: c, type: "landing" });
+    }
+  }
+
+  /** Compute deadline based on country lead time */
+  function computeDeadline(c: Country): string | null {
+    if (!c.permit_lead_time_days) return null;
+    const dep = new Date(flight.scheduled_departure);
+    if (c.permit_lead_time_working_days) {
+      // Subtract working days (skip weekends)
+      let remaining = c.permit_lead_time_days;
+      const d = new Date(dep);
+      while (remaining > 0) {
+        d.setDate(d.getDate() - 1);
+        const dow = d.getDay();
+        if (dow !== 0 && dow !== 6) remaining--;
+      }
+      return d.toISOString().slice(0, 10);
+    }
+    const d = new Date(dep.getTime() - c.permit_lead_time_days * 24 * 60 * 60 * 1000);
+    return d.toISOString().slice(0, 10);
+  }
+
+  async function autoCreatePermits() {
+    if (missingPermits.length === 0) return;
+    setAutoCreating(true);
+    for (const mp of missingPermits) {
+      await fetch("/api/ops/intl/permits", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          flight_id: flight.id,
+          country_id: mp.country.id,
+          permit_type: mp.type,
+          deadline: computeDeadline(mp.country),
+          notes: `Tail: ${flight.tail_number ?? "unknown"}`,
+        }),
+      });
+    }
+    setAutoCreating(false);
+    loadData();
+  }
+
   if (loading) return <div className="px-3 py-2 text-xs text-gray-500 animate-pulse">Loading...</div>;
 
   return (
     <div className="border-t border-gray-200 bg-gray-50 px-4 py-3 space-y-4">
+      {/* Overflight route analysis */}
+      {overflights.length > 0 && (
+        <div>
+          <h4 className="text-xs font-semibold text-gray-700 uppercase mb-1">Route Overflight Analysis</h4>
+          <div className="flex gap-1.5 flex-wrap">
+            {overflights.map((o) => {
+              const c = countries.find((c) => c.iso_code === o.country_iso);
+              const needsPermit = c?.overflight_permit_required;
+              return (
+                <span key={o.fir_id} className={`text-xs px-2 py-0.5 rounded-full ${
+                  needsPermit ? "bg-orange-100 text-orange-700 font-medium" : "bg-gray-100 text-gray-600"
+                }`}>
+                  {o.country_name} ({o.fir_id})
+                  {needsPermit && " — PERMIT REQUIRED"}
+                </span>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Auto-create missing permits */}
+      {missingPermits.length > 0 && (
+        <div className="bg-yellow-50 border border-yellow-200 rounded px-3 py-2">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-xs font-medium text-yellow-800">
+                {missingPermits.length} permit{missingPermits.length > 1 ? "s" : ""} not yet tracked:
+              </p>
+              <p className="text-xs text-yellow-700 mt-0.5">
+                {missingPermits.map((mp) => `${mp.country.name} (${mp.type})`).join(", ")}
+              </p>
+            </div>
+            <button
+              onClick={autoCreatePermits}
+              disabled={autoCreating}
+              className="px-3 py-1 text-xs bg-yellow-600 text-white rounded hover:bg-yellow-700 disabled:opacity-50"
+            >
+              {autoCreating ? "Creating..." : "Auto-Create Permits"}
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Requirements checklist */}
       {requirements.length > 0 && (
         <div>

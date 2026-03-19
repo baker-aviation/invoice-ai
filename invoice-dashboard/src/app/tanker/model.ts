@@ -9,6 +9,17 @@
 export type AircraftType = "CE-750" | "CL-30";
 export const AIRCRAFT_TYPES: AircraftType[] = ["CE-750", "CL-30"];
 
+/** Standard operating weights used by the automated tankering planner */
+export const STD_AIRCRAFT: Record<AircraftType, {
+  label: string;
+  mlw: number;   // max landing gross weight (lbs)
+  zfw: number;   // zero fuel weight estimate (OEW + avg pax/crew)
+  maxFuel: number; // max fuel capacity (lbs)
+}> = {
+  "CE-750": { label: "Citation X",      mlw: 31_800, zfw: 23_500, maxFuel: 14_400 },
+  "CL-30":  { label: "Challenger 300",  mlw: 34_250, zfw: 25_600, maxFuel: 13_250 },
+};
+
 interface BurnPt { fuelLbs: number; burnLbs: number; }
 
 const CURVES: Record<AircraftType, BurnPt[]> = {
