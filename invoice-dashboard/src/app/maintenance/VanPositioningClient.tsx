@@ -2736,10 +2736,33 @@ function ScheduleTab({
   // Uncovered aircraft: arrivals today not assigned to any van
   const uncoveredItems = useMemo(() => {
     const assignedIds = new Set<string>();
+    const assignedTails = new Set<string>();
     for (const items of finalItemsByVan.values()) {
-      for (const item of items) assignedIds.add(item.arrFlight.id);
+      for (const item of items) {
+        assignedIds.add(item.arrFlight.id);
+        if (item.arrFlight.tail_number) assignedTails.add(item.arrFlight.tail_number);
+      }
     }
-    return allDayArrivals.filter((item) => !assignedIds.has(item.arrFlight.id));
+    const result = allDayArrivals.filter((item) => {
+      // If this tail is assigned to ANY van (by any flight), it's not uncovered
+      if (item.arrFlight.tail_number && assignedTails.has(item.arrFlight.tail_number)) return false;
+      return !assignedIds.has(item.arrFlight.id);
+    });
+    // Debug: log any tail that's in allDayArrivals but has mismatched IDs
+    for (const item of allDayArrivals) {
+      const tail = item.arrFlight.tail_number;
+      if (tail && assignedTails.has(tail) && !assignedIds.has(item.arrFlight.id)) {
+        console.log("[AOG Debug] tail", tail, "assigned via different flight ID. allDayArrivals id:", item.arrFlight.id.substring(0, 8), "assigned ids for tail:", [...assignedIds].filter((_, idx) => {
+          for (const items of finalItemsByVan.values()) {
+            for (const i of items) {
+              if (i.arrFlight.tail_number === tail) return true;
+            }
+          }
+          return false;
+        }).map(id => id.substring(0, 8)).join(","));
+      }
+    }
+    return result;
   }, [allDayArrivals, finalItemsByVan]);
 
   // Unscheduled aircraft: fleet tails with NO flights on this date
