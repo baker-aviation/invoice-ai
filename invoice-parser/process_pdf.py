@@ -1064,6 +1064,21 @@ def process_one_pdf(
         if len(airport_sections) >= 2:
             text_sections = airport_sections
 
+    # Clear stale alerts before re-parsing — a DB trigger on parsed_invoices
+    # auto-creates alert rows keyed on (rule_id, document_id). When splitting
+    # produces multiple parsed_invoices per document, the second insert would
+    # hit a unique constraint if stale alerts from a previous parse remain.
+    if did_split or len(text_sections) >= 2:
+        try:
+            supa._rest(
+                "DELETE",
+                "invoice_alerts",
+                params={"document_id": f"eq.{document_id}"},
+                prefer="return=minimal",
+            )
+        except Exception:
+            pass  # best-effort; alerts table may not exist in all envs
+
     try:
         if did_split:
             mode = "statement"
