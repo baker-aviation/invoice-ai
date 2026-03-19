@@ -3432,13 +3432,15 @@ function ScheduleTab({
                 return (
                   <div
                     key={tailKey}
-                    draggable
-                    onDragStart={(e) => handleDragStart(e, primaryItem.arrFlight.id, 0)}
-                    className="px-4 py-2 cursor-grab active:cursor-grabbing hover:bg-red-50/50"
+                    className="px-4 py-2 hover:bg-red-50/50"
                   >
                     {/* Header: tail number + badges + assign dropdown */}
                     <div className="flex items-center justify-between gap-4 mb-1">
-                      <div className="flex items-center gap-2 flex-wrap">
+                      <div
+                        className="flex items-center gap-2 flex-wrap cursor-grab active:cursor-grabbing"
+                        draggable
+                        onDragStart={(e) => handleDragStart(e, primaryItem.arrFlight.id, 0)}
+                      >
                         <div className="w-2.5 h-2.5 rounded-full bg-red-300 flex-shrink-0" />
                         <span className="font-mono font-semibold text-sm">{tail ?? "—"}</span>
                         <span className="text-xs bg-red-100 text-red-600 rounded px-1.5 py-0.5">No Van</span>
@@ -3450,9 +3452,7 @@ function ScheduleTab({
                         {/* Quickturn + Done-for-day badges hidden for unassigned aircraft */}
                       </div>
                       <select
-                        draggable={false}
-                        onMouseDown={(e) => e.stopPropagation()}
-                        className="text-xs border border-red-200 rounded-lg px-2 py-1.5 bg-white text-red-700 font-medium cursor-pointer hover:border-red-400 focus:outline-none focus:ring-2 focus:ring-red-300 appearance-none"
+                        className="text-xs border border-red-200 rounded-lg px-2 py-1.5 bg-white text-red-700 font-medium cursor-pointer hover:border-red-400 focus:outline-none focus:ring-2 focus:ring-red-300 appearance-none shrink-0"
                         style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 5l3 3 3-3' fill='none' stroke='%23b91c1c' stroke-width='1.5'/%3E%3C/svg%3E\")", backgroundRepeat: "no-repeat", backgroundPosition: "right 6px center", paddingRight: "22px" }}
                         value=""
                         onChange={(e) => {
