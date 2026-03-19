@@ -783,6 +783,56 @@ function computeAllDayArrivals(allFlights: Flight[], date: string): VanFlightIte
   for (const item of rawItems) {
     byFlightId.set(item.arrFlight.id, item);
   }
+
+  // Add overnight/parked aircraft: arrived BEFORE today, next departure is today or later.
+  // These are sitting at an airport and serviceable by a van today.
+  const todayTails = new Set(rawItems.map((i) => i.arrFlight.tail_number).filter(Boolean));
+  const overnightArrivals = allFlights.filter((f) => {
+    if (!f.arrival_icao || !f.scheduled_arrival || !f.tail_number) return false;
+    // Must have arrived before today
+    if (isOnEtDate(f.scheduled_arrival, date)) return false;
+    const arrDate = new Date(f.scheduled_arrival).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+    if (arrDate >= date) return false;
+    // Skip same-airport maintenance blocks
+    if (f.departure_icao && f.departure_icao === f.arrival_icao) return false;
+    // Skip if tail already has arrivals today (already covered)
+    if (todayTails.has(f.tail_number)) return false;
+    // Must have a next departure today or later from the arrival airport
+    const nextDep = allFlights.find(
+      (d) => d.tail_number === f.tail_number && d.departure_icao === f.arrival_icao && d.scheduled_departure >= `${date}T00:00:00`,
+    );
+    if (!nextDep) return false; // no upcoming departure = probably not in our window
+    // Skip if already in byFlightId
+    if (byFlightId.has(f.id)) return false;
+    return true;
+  });
+
+  // For each overnight tail, keep only the LATEST arrival (the one that parked the aircraft)
+  const overnightByTail = new Map<string, Flight>();
+  for (const f of overnightArrivals) {
+    const existing = overnightByTail.get(f.tail_number!);
+    if (!existing || (f.scheduled_arrival ?? "") > (existing.scheduled_arrival ?? "")) {
+      overnightByTail.set(f.tail_number!, f);
+    }
+  }
+
+  for (const [, arr] of overnightByTail) {
+    const iata = arr.arrival_icao!.replace(/^K/, "");
+    const info = getAirportInfo(iata);
+    const nextDep = allFlights
+      .filter((f) => f.tail_number === arr.tail_number && f.departure_icao === arr.arrival_icao && f.scheduled_departure >= `${date}T00:00:00`)
+      .sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure))[0] ?? null;
+    byFlightId.set(arr.id, {
+      arrFlight: arr,
+      nextDep,
+      isRepo: false,
+      nextIsRepo: nextDep ? isPositioningFlight(nextDep) : false,
+      airport: iata,
+      airportInfo: info,
+      distKm: 0,
+    });
+  }
+
   return Array.from(byFlightId.values())
     .sort((a, b) => (a.arrFlight.scheduled_arrival ?? "").localeCompare(b.arrFlight.scheduled_arrival ?? ""));
 }
