@@ -217,6 +217,7 @@ export default function VanDriverClient({
   publishedAt,
   mxNotes,
   fboMap,
+  airportOverrides,
 }: {
   vanId: number;
   zone: VanZone;
@@ -225,6 +226,7 @@ export default function VanDriverClient({
   publishedAt: string | null;
   mxNotes?: MxNote[];
   fboMap?: Record<string, string>;
+  airportOverrides?: [string, string][];
 }) {
   /** Look up destination FBO for a flight from trip_salespersons data */
   const lookupFbo = useCallback((f: Flight): string | null => {
@@ -316,20 +318,33 @@ export default function VanDriverClient({
   // ---------------------------------------------------------------------------
   const date = todayEtDate();
 
+  const apOverrideMap = useMemo(() => new Map(airportOverrides ?? []), [airportOverrides]);
+
   const stops = useMemo(() => {
+    let items: VanFlightItem[];
     if (publishedFlightIds && publishedFlightIds.length > 0) {
       // Use Director's published schedule — preserve ordering
-      const items: VanFlightItem[] = [];
+      items = [];
       for (const fId of publishedFlightIds) {
         const item = buildItemFromFlight(fId, flights, zone.lat, zone.lon);
         if (item) items.push(item);
       }
-      return items;
+    } else {
+      // Fallback: auto-compute
+      items = computeZoneItems(zone, flights, date, zone.lat, zone.lon);
+      items = greedySort(items, zone.lat, zone.lon);
     }
-    // Fallback: auto-compute
-    const items = computeZoneItems(zone, flights, date, zone.lat, zone.lon);
-    return greedySort(items, zone.lat, zone.lon);
-  }, [zone, flights, date, publishedFlightIds]);
+    // Apply airport overrides (e.g. N201HR → VNY instead of raw arrival airport)
+    if (apOverrideMap.size > 0) {
+      for (const item of items) {
+        const override = apOverrideMap.get(item.arrFlight.tail_number ?? "");
+        if (override) {
+          item.airport = override.replace(/^K/, "");
+        }
+      }
+    }
+    return items;
+  }, [zone, flights, date, publishedFlightIds, apOverrideMap]);
 
   const totalRouteKm = useMemo(() => routeDistKm(stops), [stops]);
 
