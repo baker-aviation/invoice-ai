@@ -20,7 +20,8 @@ WF_FUEL_TICKET_RE = re.compile(
 # IDs that are clearly column headers / labels, not real invoice numbers
 _BAD_PAGE_ID = re.compile(
     r"^(?:PAGE|DATE|CUSTOMER|TOTAL|USD|AMOUNT|NUMBER|NUMBERS|THE|AND|FOR|"
-    r"TAX|NET|INVOICE|PERIOD|DETAIL|SUMMARY|REPORT|BALANCE|STATEMENT|World)$",
+    r"TAX|NET|INVOICE|PERIOD|DETAIL|SUMMARY|REPORT|BALANCE|STATEMENT|World|"
+    r"TO|FROM|OR|OF|IN|AT|BY|ON|NO|USD|EA|USG)$",
     re.IGNORECASE,
 )
 
