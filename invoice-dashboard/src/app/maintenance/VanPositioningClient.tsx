@@ -730,6 +730,8 @@ function computeAllDayArrivals(allFlights: Flight[], date: string): VanFlightIte
   const arrivalsToday = allFlights.filter((f) => {
     if (!f.arrival_icao || !f.scheduled_arrival) return false;
     if (!isOnEtDate(f.scheduled_arrival, date)) return false;
+    // Skip same-airport maintenance blocks (e.g. MYNN→MYNN) — not real legs
+    if (f.departure_icao && f.departure_icao === f.arrival_icao) return false;
     // Hide "other" category flights from the AOG schedule
     const ft = inferFlightType(f);
     const cat = getFilterCategory(ft);
