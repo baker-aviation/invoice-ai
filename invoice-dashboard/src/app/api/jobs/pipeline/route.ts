@@ -10,6 +10,7 @@ const VALID_STAGES: HiringStage[] = [
   "info_session",
   "tims_review",
   "interview_pre",
+  "interview_scheduled",
   "interview_post",
   "pending_offer",
   "offer",

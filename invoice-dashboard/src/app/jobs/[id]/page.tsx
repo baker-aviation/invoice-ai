@@ -8,6 +8,7 @@ import AttachFileButton from "./AttachFileButton";
 import TypeRatingsEditor from "./TypeRatingsEditor";
 import ProfileEditor from "./ProfileEditor";
 import ReviewBadge from "./ReviewBadge";
+import HrReviewedBadge from "./HrReviewedBadge";
 import PushToScreeningButton from "./PushToScreeningButton";
 import OfferPreview from "./OfferPreview";
 
@@ -93,10 +94,11 @@ export default async function JobDetailPage({
     const lors = await fetchLinkedLors(job?.id);
     const isPilot = job?.category === "pilot_pic" || job?.category === "pilot_sic";
 
-    // Check for previously rejected applications with the same email
-    const previousRejections = job?.email
-      ? await fetchPreviousRejections(job.email, job.id)
-      : [];
+    // Check for previously rejected applications with same email, phone, or name
+    const previousRejections = await fetchPreviousRejections(
+      { email: job?.email, phone: job?.phone, candidate_name: job?.candidate_name },
+      job.id,
+    );
 
     const isRejected = !!job?.rejected_at;
 
@@ -105,9 +107,12 @@ export default async function JobDetailPage({
         <Topbar title="Job detail" />
 
         <div className="p-6 space-y-4">
-          <div className="text-sm">
+          <div className="flex items-center gap-4 text-sm">
             <Link href="/jobs" className="text-blue-600 hover:underline">
               ← Back to Jobs
+            </Link>
+            <Link href="/jobs/pipeline" className="text-blue-600 hover:underline">
+              ← Return to Pipeline
             </Link>
           </div>
 
@@ -162,6 +167,13 @@ export default async function JobDetailPage({
 
               <div className="flex items-center gap-2">
                 {isRejected && <Badge variant="danger">Rejected</Badge>}
+                {job?.previously_rejected && !isRejected && (
+                  <Badge variant="warning">Previously Rejected</Badge>
+                )}
+                <HrReviewedBadge
+                  applicationId={Number(applicationId)}
+                  initialHrReviewed={!!job?.hr_reviewed}
+                />
                 <PushToScreeningButton
                   applicationId={Number(applicationId)}
                   currentStage={job?.pipeline_stage ?? null}
@@ -423,9 +435,12 @@ export default async function JobDetailPage({
       <>
         <Topbar title="Job detail" />
         <div className="p-6 space-y-4">
-          <div className="text-sm">
+          <div className="flex items-center gap-4 text-sm">
             <Link href="/jobs" className="text-blue-600 hover:underline">
               ← Back to Jobs
+            </Link>
+            <Link href="/jobs/pipeline" className="text-blue-600 hover:underline">
+              ← Return to Pipeline
             </Link>
           </div>
 
