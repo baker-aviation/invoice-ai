@@ -121,9 +121,19 @@ INV_PATTERNS = [
 _BAD_INV_ID = re.compile(
     r"^(?:PAGE|DATE|CUSTOMER|TOTAL|USD|AMOUNT|NUMBER|NUMBERS|THE|AND|FOR|"
     r"TAX|NET|INVOICE|PERIOD|DETAIL|SUMMARY|REPORT|BALANCE|STATEMENT|World|"
-    r"TO|FROM|OR|OF|IN|AT|BY|ON|NO|USD|EA|USG)$",
+    r"TO|FROM|OR|OF|IN|AT|BY|ON|NO|USD|EA|USG|"
+    r"STATUS|TYPE|SALE|PAID|CARD|METHOD|CODE|AUTH)$",
     re.I,
 )
+
+# "CC Invoice #:" is a credit card transaction number, not a real invoice.
+# Check if "Invoice" in a match is preceded by "CC" within 4 chars.
+_CC_INVOICE_RE = re.compile(r"\bCC\s+Invoice\b", re.I)
+
+def _is_cc_invoice(text: str, match_start: int) -> bool:
+    """Return True if the Invoice match is part of a 'CC Invoice #:' pattern."""
+    lookback = max(0, match_start - 4)
+    return bool(_CC_INVOICE_RE.search(text[lookback:match_start + 8]))
 
 def detect_invoice_ids(text: str) -> List[str]:
     ids = set()
@@ -131,6 +141,8 @@ def detect_invoice_ids(text: str) -> List[str]:
         for m in pat.finditer(text or ""):
             val = m.group(1) if m.groups() else m.group(0)
             if _BAD_INV_ID.match(val):
+                continue
+            if _is_cc_invoice(text, m.start()):
                 continue
             ids.add(val)
 
@@ -183,7 +195,8 @@ _SECTION_BOUNDARY_PATTERNS = [
 
 # IDs that are clearly not invoice numbers
 _BAD_SECTION_ID = re.compile(
-    r"^(?:PAGE|DATE|CUSTOMER|TOTAL|USD|AMOUNT|NUMBER|NUMBERS|THE|AND|FOR|TAX|NET|INVOICE|PERIOD|DETAIL|SUMMARY|REPORT|BALANCE|STATEMENT)$", re.I
+    r"^(?:PAGE|DATE|CUSTOMER|TOTAL|USD|AMOUNT|NUMBER|NUMBERS|THE|AND|FOR|TAX|NET|INVOICE|PERIOD|DETAIL|SUMMARY|REPORT|BALANCE|STATEMENT|"
+    r"STATUS|TYPE|SALE|PAID|CARD|METHOD|CODE|AUTH)$", re.I
 )
 
 
@@ -306,6 +319,9 @@ def split_text_into_sections(text: str) -> List[Tuple[str, str]]:
             if not inv_id or len(inv_id) < 3:
                 continue
             if _BAD_SECTION_ID.match(inv_id):
+                continue
+            # Skip "CC Invoice #:" matches — credit card transaction numbers
+            if _is_cc_invoice(text, m.start()):
                 continue
             # Find start of the line containing this match
             line_start = text.rfind("\n", 0, m.start())
