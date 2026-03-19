@@ -30,8 +30,9 @@ export async function fetchInvoices(params: {
     .limit(limit);
 
   if (params.q) {
-    // Strip characters that have special meaning in PostgREST filter strings
-    const q = params.q.replace(/[%,.()"\\]/g, "");
+    // Strip characters that act as PostgREST filter operators:
+    //   , = condition separator  ( ) = grouping  % = SQL wildcard (we add our own)
+    const q = params.q.replace(/[%,()]/g, "").trim();
     if (q.length > 0) {
       const pattern = `%${q}%`;
       query = query.or(
