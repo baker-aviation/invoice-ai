@@ -2536,9 +2536,8 @@ function ScheduleTab({
     }
 
     // Move overridden flights
-    console.log("[AOG Assign] overrides:", [...overrides.entries()].map(([k,v]) => k.substring(0,8) + "→V" + v).join(", "), "removals:", [...removals].map(r => r.substring(0,8)).join(", "));
     for (const [flightId, targetVanId] of overrides) {
-      if (removals.has(flightId)) { console.log("[AOG Assign] SKIPPED", flightId.substring(0,8), "in removals!"); continue; }
+      if (removals.has(flightId)) { continue; }
 
       // Check if this flight is already in a van (from base items)
       let found = false;
@@ -2546,7 +2545,6 @@ function ScheduleTab({
         const idx = items.findIndex((item) => item.arrFlight.id === flightId);
         if (idx !== -1) {
           found = true;
-          console.log("[AOG Assign] FOUND in base V" + vanId, "→ moving to V" + targetVanId, "tail:", items[idx].arrFlight.tail_number);
           const [removed] = items.splice(idx, 1);
           if (vanId !== targetVanId) {
             const target = result.get(targetVanId) ?? [];
@@ -2562,7 +2560,6 @@ function ScheduleTab({
       // Flight came from uncovered pool — find it and all same-tail flights in allDayArrivals
       if (!found) {
         const item = allDayArrivals.find((a) => a.arrFlight.id === flightId);
-        console.log("[AOG Assign] override flightId:", flightId, "→ V" + targetVanId, "found in allDayArrivals:", !!item, "allDayArrivals count:", allDayArrivals.length, "allDayArrivals tails:", [...new Set(allDayArrivals.map(a => a.arrFlight.tail_number))].join(","));
         if (item) {
           const tail = item.arrFlight.tail_number;
           const target = result.get(targetVanId) ?? [];
@@ -2748,20 +2745,6 @@ function ScheduleTab({
       if (item.arrFlight.tail_number && assignedTails.has(item.arrFlight.tail_number)) return false;
       return !assignedIds.has(item.arrFlight.id);
     });
-    // Debug: log any tail that's in allDayArrivals but has mismatched IDs
-    for (const item of allDayArrivals) {
-      const tail = item.arrFlight.tail_number;
-      if (tail && assignedTails.has(tail) && !assignedIds.has(item.arrFlight.id)) {
-        console.log("[AOG Debug] tail", tail, "assigned via different flight ID. allDayArrivals id:", item.arrFlight.id.substring(0, 8), "assigned ids for tail:", [...assignedIds].filter((_, idx) => {
-          for (const items of finalItemsByVan.values()) {
-            for (const i of items) {
-              if (i.arrFlight.tail_number === tail) return true;
-            }
-          }
-          return false;
-        }).map(id => id.substring(0, 8)).join(","));
-      }
-    }
     return result;
   }, [allDayArrivals, finalItemsByVan]);
 

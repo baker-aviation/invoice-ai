@@ -36,6 +36,7 @@ const CreateSchema = z.object({
   label: z.string().min(1).max(100),
   url: z.string().url().max(2000),
   callsign: z.string().max(20).optional().nullable(),
+  aircraft_type: z.string().max(10).optional().nullable(),
   enabled: z.boolean().optional().default(true),
 });
 
@@ -81,6 +82,7 @@ const UpdateSchema = z.object({
   label: z.string().min(1).max(100).optional(),
   url: z.string().url().max(2000).optional(),
   callsign: z.string().max(20).optional().nullable(),
+  aircraft_type: z.string().max(10).optional().nullable(),
   enabled: z.boolean().optional(),
 });
 
