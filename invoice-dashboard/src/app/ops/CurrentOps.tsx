@@ -1388,6 +1388,31 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
     return set;
   }, [swimFlow]);
 
+  // Per-tail FA last-known location (most recent landed flight's destination)
+  const tailFaLocation = useMemo(() => {
+    const normIcao = (c: string | null | undefined) => c ? (c.length === 3 && /^[A-Z]/.test(c) ? `K${c}` : c) : null;
+    const map = new Map<string, { icao: string; landedAt: string | null }>();
+    const flyingTails = new Set(enRouteAircraft.map((a) => a.tail));
+    for (const fi of faFlightsRaw) {
+      if (!fi.tail || flyingTails.has(fi.tail)) continue;
+      // Only consider flights that have actually landed
+      const hasLanded = fi.actual_arrival != null
+        || (fi.status?.includes("Landed") || fi.status?.includes("Arrived"))
+        || (fi.progress_percent != null && fi.progress_percent >= 100);
+      if (!hasLanded || !fi.destination_icao) continue;
+      // Only trust FA data from the last 24 hours
+      const landedTime = fi.actual_arrival ?? fi.arrival_time;
+      if (landedTime && Date.now() - new Date(landedTime).getTime() > 24 * 3600_000) continue;
+      const existing = map.get(fi.tail);
+      const existingTime = existing?.landedAt ? new Date(existing.landedAt).getTime() : 0;
+      const thisTime = landedTime ? new Date(landedTime).getTime() : 0;
+      if (!existing || thisTime > existingTime) {
+        map.set(fi.tail, { icao: normIcao(fi.destination_icao) ?? fi.destination_icao, landedAt: landedTime });
+      }
+    }
+    return map;
+  }, [faFlightsRaw, enRouteAircraft]);
+
   // Per-tail duty summary (24hr flight time + crew rest)
   const tailDuty = useMemo(() => computeTailDuty(flights, faFlightsRaw), [flights, faFlightsRaw]);
 
@@ -2023,17 +2048,38 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           return (
                             <div key={f.id} className={`px-4 py-2 text-xs ${isCancelled ? "opacity-50 bg-gray-50" : ""} ${isFaSourced ? "bg-blue-50/40" : ""}`}>
                               <div className="flex items-center gap-3">
-                                <span className="font-mono font-medium w-28 shrink-0 text-gray-800">
-                                  {f.departure_icao || "?"} →{" "}
-                                  {isCancelled ? (
-                                    <>
-                                      <span className="line-through text-red-400">{f.arrival_icao || "?"}</span>
-                                      {supersedInfo!.actualDest && (
-                                        <span className="text-red-600 font-bold ml-1">{supersedInfo!.actualDest}</span>
-                                      )}
-                                    </>
-                                  ) : (f.arrival_icao || "?")}
-                                </span>
+                                <div className="w-28 shrink-0">
+                                  <span className="font-mono font-medium text-gray-800">
+                                    {f.departure_icao || "?"} →{" "}
+                                    {isCancelled ? (
+                                      <>
+                                        <span className="line-through text-red-400">{f.arrival_icao || "?"}</span>
+                                        {supersedInfo!.actualDest && (
+                                          <span className="text-red-600 font-bold ml-1">{supersedInfo!.actualDest}</span>
+                                        )}
+                                      </>
+                                    ) : (f.arrival_icao || "?")}
+                                  </span>
+                                  {/* Position mismatch: aircraft not at departure airport per FA */}
+                                  {(() => {
+                                    if (isCancelled || !f.tail_number || !f.departure_icao) return null;
+                                    if (status !== "Scheduled" && !isFiled) return null;
+                                    // Only flag the first scheduled flight for this tail
+                                    const isFirstScheduled = tailFlights.findIndex(
+                                      (tf) => tf.tail_number === f.tail_number && new Date(tf.scheduled_departure) > new Date()
+                                    ) === tailFlights.indexOf(f);
+                                    if (!isFirstScheduled) return null;
+                                    const faLoc = tailFaLocation.get(f.tail_number);
+                                    if (!faLoc) return null;
+                                    const normDep = f.departure_icao.length === 3 && /^[A-Z]/.test(f.departure_icao) ? `K${f.departure_icao}` : f.departure_icao;
+                                    if (faLoc.icao === normDep) return null;
+                                    return (
+                                      <div className="text-[10px] font-medium text-orange-600 leading-tight">
+                                        Aircraft at {faLoc.icao}
+                                      </div>
+                                    );
+                                  })()}
+                                </div>
                                 <div className="w-36 shrink-0">
                                   <div className="text-gray-500">
                                     {fmt(f.scheduled_departure, f.departure_icao)}
