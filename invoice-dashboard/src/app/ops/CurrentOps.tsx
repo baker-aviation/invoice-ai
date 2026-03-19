@@ -1089,10 +1089,18 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
       const fiRouteMatch = idMatched || (fi && fi.destination_icao === f.arrival_icao);
 
       // FA is primary source; SWIM supplements when FA hasn't detected takeoff yet
+      const schedArrPassed = arrivalDate && arrivalDate < now;
+      const arrOvMin = arrivalDate && schedArrPassed ? (now.getTime() - arrivalDate.getTime()) / 60_000 : 0;
+      // "Late" / "No Departure" flights (15min–2h overdue with no FA dep) stay in "scheduled" filter
+      const noDepConds = !fi?.actual_departure && !fi?.actual_arrival
+        && !fi?.status?.includes("En Route") && !fi?.status?.includes("Landed");
+      const isLateOrNoDep = arrOvMin >= 15 && arrOvMin <= 120 && noDepConds;
       if (fi?.diverted || supersededMap.has(f.id)) {
         map.set(f.id, "arrived");
       } else if (fiRouteMatch && (fi?.actual_arrival || fi?.status?.includes("Arrived") || fi?.status?.includes("Landed"))) {
         map.set(f.id, "arrived");
+      } else if (isLateOrNoDep) {
+        map.set(f.id, "scheduled"); // Late / No Departure — keep in scheduled filter
       } else if (arrivalPassed) {
         map.set(f.id, "arrived");
       } else if (fiRouteMatch && fi?.status?.includes("En Route")) {
@@ -2017,19 +2025,23 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           const faAtDest = faLoc && f.arrival_icao && posNorm(faLoc.icao) === posNorm(f.arrival_icao);
 
                           // FA primary; SWIM supplements when FA hasn't detected takeoff yet
-                          // "No Departure" only makes sense within ~2h of scheduled arrival.
-                          // After that, FA simply never tracked it (VFR, small airport, etc.) — assume arrived.
+                          // Timeline after scheduled arrival passes (FA has no actual dep/arr):
+                          //   +15min → "Late"  |  +60min → "No Departure"  |  +2h → assume "Arrived"
                           const arrMs = arrivalDate ? arrivalDate.getTime() : 0;
-                          const noDepStale = arrMs > 0 && (now.getTime() - arrMs > 2 * 3600_000);
+                          const arrOverdueMin = arrMs > 0 && schedArrPassed ? (now.getTime() - arrMs) / 60_000 : 0;
+                          const noDepStale = arrOverdueMin > 120;
+                          const noDepConditions = !fi?.actual_departure && !fi?.actual_arrival
+                            && !fi?.status?.includes("En Route") && !fi?.status?.includes("Landed");
                           if (fiRouteMatch && (fi?.actual_arrival || fi?.status?.includes("Arrived") || fi?.status?.includes("Landed"))) {
                             status = "Arrived"; statusColor = "text-green-600 font-medium";
-                          } else if (schedArrPassed && !noDepStale && fiRouteMatch && !fi?.actual_departure && !fi?.actual_arrival
-                            && !fi?.status?.includes("En Route") && !fi?.status?.includes("Landed") && !faAtDest) {
-                            // FA has this flight filed/scheduled but never saw it depart, and aircraft isn't at destination
+                          } else if (arrOverdueMin >= 60 && !noDepStale && fiRouteMatch && noDepConditions && !faAtDest) {
                             status = "No Departure"; statusColor = "text-orange-600 font-bold";
-                          } else if (schedArrPassed && !noDepStale && !fiRouteMatch && faLoc && !fi?.actual_departure && !faAtDest) {
-                            // No FA route match but FA tracks tail, aircraft isn't at destination
+                          } else if (arrOverdueMin >= 60 && !noDepStale && !fiRouteMatch && faLoc && !fi?.actual_departure && !faAtDest) {
                             status = "No Departure"; statusColor = "text-orange-600 font-bold";
+                          } else if (arrOverdueMin >= 15 && !noDepStale && fiRouteMatch && noDepConditions && !faAtDest) {
+                            status = "Late"; statusColor = "text-amber-600 font-bold";
+                          } else if (arrOverdueMin >= 15 && !noDepStale && !fiRouteMatch && faLoc && !fi?.actual_departure && !faAtDest) {
+                            status = "Late"; statusColor = "text-amber-600 font-bold";
                           } else if (arrivalPassed) {
                             status = "Arrived"; statusColor = "text-green-600 font-medium";
                           } else if (fiRouteMatch && fi?.status?.includes("En Route")) {
@@ -2084,7 +2096,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                                   {/* Position mismatch: aircraft not at departure airport per FA */}
                                   {(() => {
                                     if (isCancelled || !f.tail_number || !f.departure_icao) return null;
-                                    if (status !== "Scheduled" && status !== "No Departure" && !isFiled) return null;
+                                    if (status !== "Scheduled" && status !== "No Departure" && status !== "Late" && !isFiled) return null;
                                     if (!faLoc || atDeparture) return null;
                                     return (
                                       <div className="text-[10px] font-medium text-orange-600 leading-tight">
@@ -2418,18 +2430,22 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                 const faAtDest2 = faLoc2 && f.arrival_icao && posNorm2(faLoc2.icao) === posNorm2(f.arrival_icao);
 
                 // FA primary; SWIM supplements when FA hasn't detected takeoff yet
-                // "No Departure" only valid within ~2h of scheduled arrival — after that assume arrived
+                // Timeline: +15min → "Late"  |  +60min → "No Departure"  |  +2h → assume "Arrived"
                 const arrMs2 = arrivalDate ? arrivalDate.getTime() : 0;
-                const noDepStale2 = arrMs2 > 0 && (now.getTime() - arrMs2 > 2 * 3600_000);
+                const arrOverdueMin2 = arrMs2 > 0 && schedArrPassed2 ? (now.getTime() - arrMs2) / 60_000 : 0;
+                const noDepStale2 = arrOverdueMin2 > 120;
+                const noDepConditions2 = !fi?.actual_departure && !fi?.actual_arrival
+                  && !fi?.status?.includes("En Route") && !fi?.status?.includes("Landed");
                 if (fiRouteMatch && (fi?.actual_arrival || fi?.status?.includes("Arrived") || fi?.status?.includes("Landed"))) {
                   status = "Arrived"; statusColor = "text-green-600 font-medium";
-                } else if (schedArrPassed2 && !noDepStale2 && fiRouteMatch && !fi?.actual_departure && !fi?.actual_arrival
-                  && !fi?.status?.includes("En Route") && !fi?.status?.includes("Landed") && !faAtDest2) {
-                  // FA has this flight filed/scheduled but never saw it depart, and aircraft isn't at destination
+                } else if (arrOverdueMin2 >= 60 && !noDepStale2 && fiRouteMatch && noDepConditions2 && !faAtDest2) {
                   status = "No Departure"; statusColor = "text-orange-600 font-bold";
-                } else if (schedArrPassed2 && !noDepStale2 && !fiRouteMatch && faLoc2 && !fi?.actual_departure && !faAtDest2) {
-                  // No FA route match but FA tracks tail, aircraft isn't at destination
+                } else if (arrOverdueMin2 >= 60 && !noDepStale2 && !fiRouteMatch && faLoc2 && !fi?.actual_departure && !faAtDest2) {
                   status = "No Departure"; statusColor = "text-orange-600 font-bold";
+                } else if (arrOverdueMin2 >= 15 && !noDepStale2 && fiRouteMatch && noDepConditions2 && !faAtDest2) {
+                  status = "Late"; statusColor = "text-amber-600 font-bold";
+                } else if (arrOverdueMin2 >= 15 && !noDepStale2 && !fiRouteMatch && faLoc2 && !fi?.actual_departure && !faAtDest2) {
+                  status = "Late"; statusColor = "text-amber-600 font-bold";
                 } else if (arrivalPassed) {
                   status = "Arrived"; statusColor = "text-green-600 font-medium";
                 } else if (fiRouteMatch && fi?.status?.includes("En Route")) {
@@ -2568,7 +2584,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           ) : (f.arrival_icao || "?")}
                         </span>
                         {/* Position mismatch: aircraft not at departure airport per FA */}
-                        {status === "No Departure" && faLoc2 && posNorm2(faLoc2.icao) !== posNorm2(f.departure_icao) && (
+                        {(status === "No Departure" || status === "Late") && faLoc2 && posNorm2(faLoc2.icao) !== posNorm2(f.departure_icao) && (
                           <div className="text-[10px] font-medium text-orange-600 leading-tight">
                             Aircraft at {faLoc2.icao}
                           </div>
