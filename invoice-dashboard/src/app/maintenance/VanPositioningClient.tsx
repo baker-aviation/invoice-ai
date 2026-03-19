@@ -3434,13 +3434,9 @@ function ScheduleTab({
                     key={tailKey}
                     className="px-4 py-2 hover:bg-red-50/50"
                   >
-                    {/* Header: tail number + badges + assign dropdown */}
+                    {/* Header: tail number + badges */}
                     <div className="flex items-center justify-between gap-4 mb-1">
-                      <div
-                        className="flex items-center gap-2 flex-wrap cursor-grab active:cursor-grabbing"
-                        draggable
-                        onDragStart={(e) => handleDragStart(e, primaryItem.arrFlight.id, 0)}
-                      >
+                      <div className="flex items-center gap-2 flex-wrap">
                         <div className="w-2.5 h-2.5 rounded-full bg-red-300 flex-shrink-0" />
                         <span className="font-mono font-semibold text-sm">{tail ?? "—"}</span>
                         <span className="text-xs bg-red-100 text-red-600 rounded px-1.5 py-0.5">No Van</span>
@@ -3449,44 +3445,42 @@ function ScheduleTab({
                             Maintenance Scheduled
                           </span>
                         )}
-                        {/* Quickturn + Done-for-day badges hidden for unassigned aircraft */}
                       </div>
-                      <select
-                        className="text-xs border border-red-200 rounded-lg px-2 py-1.5 bg-white text-red-700 font-medium cursor-pointer hover:border-red-400 focus:outline-none focus:ring-2 focus:ring-red-300 appearance-none shrink-0"
-                        style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 5l3 3 3-3' fill='none' stroke='%23b91c1c' stroke-width='1.5'/%3E%3C/svg%3E\")", backgroundRepeat: "no-repeat", backgroundPosition: "right 6px center", paddingRight: "22px" }}
-                        value=""
-                        onChange={(e) => {
-                          const vanId = Number(e.target.value);
-                          if (!vanId) return;
-                          setRemovals((prev) => {
-                            if (!prev.has(primaryItem.arrFlight.id)) return prev;
-                            const next = new Set(prev);
-                            next.delete(primaryItem.arrFlight.id);
-                            return next;
-                          });
-                          setOverrides((prev) => {
-                            const next = new Map(prev);
-                            next.set(primaryItem.arrFlight.id, vanId);
-                            return next;
-                          });
-                        }}
-                      >
-                        <option value="">Assign…</option>
-                        {FIXED_VAN_ZONES.map((z) => (
-                          <option key={z.vanId} value={z.vanId}>
-                            V{z.vanId} – {z.name}
-                          </option>
-                        ))}
-                      </select>
                       {tail && tail !== "_no_tail" && (
                         <button
-                          onClick={(e) => { e.stopPropagation(); onMarkWontSee(tail); }}
+                          onClick={() => onMarkWontSee(tail)}
                           className="text-[10px] font-medium text-gray-400 hover:text-gray-700 hover:bg-gray-100 border border-gray-200 rounded px-2 py-1 shrink-0 transition-colors"
                           title="Mark as reviewed — won't be seen today"
                         >
                           Won&apos;t See
                         </button>
                       )}
+                    </div>
+                    {/* Assign to van — button row */}
+                    <div className="flex items-center gap-1 flex-wrap mt-1 mb-1">
+                      <span className="text-[10px] text-gray-400 mr-1">Assign to:</span>
+                      {FIXED_VAN_ZONES.map((z) => (
+                        <button
+                          key={z.vanId}
+                          onClick={() => {
+                            setRemovals((prev) => {
+                              if (!prev.has(primaryItem.arrFlight.id)) return prev;
+                              const next = new Set(prev);
+                              next.delete(primaryItem.arrFlight.id);
+                              return next;
+                            });
+                            setOverrides((prev) => {
+                              const next = new Map(prev);
+                              next.set(primaryItem.arrFlight.id, z.vanId);
+                              return next;
+                            });
+                          }}
+                          className="text-[10px] font-medium px-1.5 py-0.5 rounded border border-gray-200 text-gray-600 hover:bg-blue-50 hover:border-blue-300 hover:text-blue-700 transition-colors"
+                          title={z.name}
+                        >
+                          V{z.vanId}
+                        </button>
+                      ))}
                     </div>
                     {/* All legs + flying again */}
                     <div className="ml-5 space-y-0">
