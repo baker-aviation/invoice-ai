@@ -359,13 +359,13 @@ export default function VanDriverClient({
     return map;
   }, [mxNotes]);
 
-  // Find the "next" stop — first non-landed
+  // Find the "next" stop — first non-landed (using same logic as getFlightStatus)
   const nextStopIdx = useMemo(() => {
     for (let i = 0; i < stops.length; i++) {
       const tail = stops[i].arrFlight.tail_number;
       const fi = tail ? matchFaFlight(allFlightEntries, stops[i].arrFlight) : undefined;
-      const status = fi?.status;
-      if (status !== "Landed" && status !== "Arrived") return i;
+      const status = getFlightStatus(stops[i], fi);
+      if (status.label !== "Landed") return i;
     }
     return stops.length > 0 ? 0 : -1;
   }, [stops, allFlightEntries]);
