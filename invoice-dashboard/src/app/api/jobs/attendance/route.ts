@@ -135,25 +135,50 @@ export async function POST(req: NextRequest) {
     // 1. Get Google access token
     const token = await getGoogleAccessToken();
 
-    // 2. Query Admin Reports API for call_ended events with this meeting code
-    const reportsUrl = new URL("https://admin.googleapis.com/admin/reports/v1/activity/users/all/applications/meet");
-    reportsUrl.searchParams.set("eventName", "call_ended");
-    reportsUrl.searchParams.set("filters", `meeting_code==${meetingCode}`);
-    reportsUrl.searchParams.set("maxResults", "200");
+    // 2. Query Admin Reports API for call_ended events
+    // Try with dashes first, then without (Google may store either format)
+    const codeVariants = [meetingCode, meetingCode.replace(/-/g, "")];
+    let items: any[] = [];
+    let rawResponse: any = null;
+    let usedCode = meetingCode;
 
-    const reportsRes = await fetch(reportsUrl.toString(), {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    for (const code of codeVariants) {
+      const reportsUrl = new URL("https://admin.googleapis.com/admin/reports/v1/activity/users/all/applications/meet");
+      reportsUrl.searchParams.set("eventName", "call_ended");
+      reportsUrl.searchParams.set("filters", `meeting_code==${code}`);
+      reportsUrl.searchParams.set("maxResults", "200");
 
-    if (!reportsRes.ok) {
-      const text = await reportsRes.text();
-      return NextResponse.json({
-        error: `Google Reports API error (${reportsRes.status}): ${text.slice(0, 500)}`,
-      }, { status: 502 });
+      const reportsRes = await fetch(reportsUrl.toString(), {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (!reportsRes.ok) {
+        const text = await reportsRes.text();
+        return NextResponse.json({
+          error: `Google Reports API error (${reportsRes.status}): ${text.slice(0, 500)}`,
+        }, { status: 502 });
+      }
+
+      const data = await reportsRes.json();
+      rawResponse = data;
+      if (data.items?.length > 0) {
+        items = data.items;
+        usedCode = code;
+        break;
+      }
     }
 
-    const reportsData = await reportsRes.json();
-    const items = reportsData.items ?? [];
+    // If still empty, try without any meeting code filter to verify API access
+    if (items.length === 0) {
+      const testUrl = new URL("https://admin.googleapis.com/admin/reports/v1/activity/users/all/applications/meet");
+      testUrl.searchParams.set("eventName", "call_ended");
+      testUrl.searchParams.set("maxResults", "5");
+      const testRes = await fetch(testUrl.toString(), {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const testData = testRes.ok ? await testRes.json() : null;
+      rawResponse = { filteredResult: rawResponse, unfilteredSample: testData };
+    }
 
     // 3. Extract participant emails from events
     const participants: { email: string; displayName: string; durationSec: number }[] = [];
@@ -237,6 +262,14 @@ export async function POST(req: NextRequest) {
       matched,
       markedCount,
       unmatched,
+      _debug: {
+        meetLink,
+        extractedCode: meetingCode,
+        usedCode,
+        codeVariantsTried: codeVariants,
+        googleItemCount: items.length,
+        rawResponse,
+      },
     });
   } catch (err) {
     console.error("[attendance] Error:", err);
