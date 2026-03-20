@@ -612,11 +612,13 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
           leg.startMs += deltaMs;
           leg.endMs += deltaMs;
         }
-        // Cascade: if leg N ends after leg N+1 starts, push N+1 forward
+        // Cascade: push subsequent legs forward if gap < 30 min (minimum turnaround)
+        const MIN_TURN_MS = 30 * 60_000;
         edctLegs.sort((a, b) => a.startMs - b.startMs);
         for (let i = 1; i < edctLegs.length; i++) {
-          if (edctLegs[i].startMs < edctLegs[i - 1].endMs) {
-            const shift = edctLegs[i - 1].endMs - edctLegs[i].startMs;
+          const gap = edctLegs[i].startMs - edctLegs[i - 1].endMs;
+          if (gap < MIN_TURN_MS) {
+            const shift = MIN_TURN_MS - gap;
             edctLegs[i].startMs += shift;
             edctLegs[i].endMs += shift;
           }

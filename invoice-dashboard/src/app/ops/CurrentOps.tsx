@@ -1456,11 +1456,13 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
         iv.startMs += deltaMs;
         iv.endMs += deltaMs;
       }
-      // Cascade: push subsequent legs forward if they overlap
+      // Cascade: push subsequent legs forward if gap < 30 min (minimum turnaround)
+      const MIN_TURN_MS = 30 * 60_000;
       edctIntervals.sort((a, b) => a.startMs - b.startMs);
       for (let i = 1; i < edctIntervals.length; i++) {
-        if (edctIntervals[i].startMs < edctIntervals[i - 1].endMs) {
-          const shift = edctIntervals[i - 1].endMs - edctIntervals[i].startMs;
+        const gap = edctIntervals[i].startMs - edctIntervals[i - 1].endMs;
+        if (gap < MIN_TURN_MS) {
+          const shift = MIN_TURN_MS - gap;
           edctIntervals[i].startMs += shift;
           edctIntervals[i].endMs += shift;
         }
