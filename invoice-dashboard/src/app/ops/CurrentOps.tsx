@@ -2322,19 +2322,19 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
       {/* ── Schedule table ── */}
       {viewMode === "table" && (
       <div className="rounded-xl border border-gray-200 bg-white overflow-x-auto">
-        <table className="w-full text-sm min-w-[1100px]">
+        <table className="w-full table-fixed text-sm min-w-[1100px]">
           <colgroup>
-            <col style={{ width: "5%" }} />   {/* Status */}
+            <col style={{ width: "6%" }} />   {/* Status */}
             <col style={{ width: "6%" }} />   {/* Tail */}
-            <col style={{ width: "8%" }} />   {/* Route */}
-            <col style={{ width: "10%" }} />  {/* Departure */}
-            <col style={{ width: "10%" }} />  {/* Arrival */}
-            <col style={{ width: "7%" }} />   {/* Type */}
+            <col style={{ width: "13%" }} />  {/* Route */}
+            <col style={{ width: "8%" }} />   {/* Departure */}
+            <col style={{ width: "8%" }} />   {/* Arrival */}
+            <col style={{ width: "6%" }} />   {/* Type */}
             <col style={{ width: "5%" }} />   {/* 10/24 */}
             <col style={{ width: "5%" }} />   {/* Rest */}
-            <col style={{ width: "8%" }} />   {/* Alerts */}
-            <col style={{ width: "8%" }} />   {/* Sales */}
-            <col style={{ width: "18%" }} />  {/* Remarks */}
+            <col style={{ width: "7%" }} />   {/* Alerts */}
+            <col style={{ width: "7%" }} />   {/* Sales */}
+            <col style={{ width: "12%" }} />  {/* Remarks */}
           </colgroup>
           <thead>
             <tr className="bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -2348,7 +2348,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
               <th className="px-3 py-3">Rest</th>
               <th className="px-3 py-3">
                 <div className="flex flex-col gap-0.5">
-                  <span>NOTAMs, PPRs & TFRs</span>
+                  <span className="whitespace-nowrap">Alerts</span>
                   <div className="flex rounded border border-gray-200 bg-white p-0.5 w-fit font-normal normal-case tracking-normal">
                     <button
                       type="button"
