@@ -612,6 +612,9 @@ def _is_relevant_notam(body: Optional[str]) -> bool:
     if not body:
         return False
     m = body.upper()
+    # Skip canceled NOTAMs
+    if "CANCELED" in m or "CANCELLED" in m:
+        return False
     # Runway closures (skip noise/lighting)
     if re.search(r"(RWY|RUNWAY).{0,60}(CLSD|CLOSED)", m) or re.search(r"(CLSD|CLOSED).{0,60}(RWY|RUNWAY)", m):
         return not _is_noise_notam_swim(m)

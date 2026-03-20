@@ -2411,6 +2411,9 @@ def _fetch_notams_legacy(icao: str) -> List[Dict]:
 
 def _is_relevant_notam_msg(msg: str) -> bool:
     m = msg.upper()
+    # Skip canceled NOTAMs
+    if "CANCELED" in m or "CANCELLED" in m:
+        return False
     # Runway closures
     if re.search(r"(RWY|RUNWAY).{0,60}(CLSD|CLOSED)", m):
         # Exclude equipment / lighting NOTAMs that mention RWY but aren't
