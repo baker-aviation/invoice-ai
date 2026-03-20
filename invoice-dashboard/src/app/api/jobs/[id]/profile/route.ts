@@ -87,6 +87,14 @@ export async function PATCH(
     }
   }
 
+  // Info session attendance
+  if ("info_session_attended" in body) {
+    update.info_session_attended = body.info_session_attended === true ? true : null;
+  }
+  if ("info_session_attended_at" in body) {
+    update.info_session_attended_at = body.info_session_attended_at ?? null;
+  }
+
   // Structured notes
   if ("structured_notes" in body) {
     const sn = body.structured_notes;
