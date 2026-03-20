@@ -94,6 +94,7 @@ export async function POST(req: NextRequest) {
     .upsert(rows, { onConflict: "van_id,schedule_date" });
 
   if (error) {
+    console.error("[vans/publish] Upsert error:", error.message, error.details, JSON.stringify(rows));
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 

@@ -3373,10 +3373,16 @@ function ScheduleTab({
       }
 
       // 2) Publish schedule to all vans
-      const assignments = FIXED_VAN_ZONES.map((zone) => ({
-        vanId: zone.vanId,
-        flightIds: (finalItemsByVan.get(zone.vanId) ?? []).map((item) => item.arrFlight.id),
-      }));
+      const assignments = FIXED_VAN_ZONES.map((zone) => {
+        const zoneItems = finalItemsByVan.get(zone.vanId) ?? [];
+        const sf: { id: string; tail: string; airport: string | null }[] = [];
+        for (const item of zoneItems) {
+          if (item.arrFlight.id.startsWith("unsched_")) {
+            sf.push({ id: item.arrFlight.id, tail: item.arrFlight.tail_number ?? "", airport: item.airport ?? item.arrFlight.arrival_icao?.replace(/^K/, "") ?? null });
+          }
+        }
+        return { vanId: zone.vanId, flightIds: zoneItems.map((i) => i.arrFlight.id).filter((id) => !id.startsWith("unsched_")), ...(sf.length > 0 ? { syntheticFlights: sf } : {}) };
+      });
       const pubRes = await fetch("/api/vans/publish", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -3441,10 +3447,16 @@ function ScheduleTab({
       }
 
       // 2) Republish changed vans only
-      const assignments = changedVans.map((d) => ({
-        vanId: d.vanId,
-        flightIds: d.currentFlightIds,
-      }));
+      const assignments = changedVans.map((d) => {
+        const items = finalItemsByVan.get(d.vanId) ?? [];
+        const sf: { id: string; tail: string; airport: string | null }[] = [];
+        for (const item of items) {
+          if (item.arrFlight.id.startsWith("unsched_")) {
+            sf.push({ id: item.arrFlight.id, tail: item.arrFlight.tail_number ?? "", airport: item.airport ?? item.arrFlight.arrival_icao?.replace(/^K/, "") ?? null });
+          }
+        }
+        return { vanId: d.vanId, flightIds: d.currentFlightIds.filter((id: string) => !id.startsWith("unsched_")), ...(sf.length > 0 ? { syntheticFlights: sf } : {}) };
+      });
       const pubRes = await fetch("/api/vans/publish", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -3510,10 +3522,16 @@ function ScheduleTab({
     setPublishing(true);
     setPublishError(null);
     try {
-      const assignments = FIXED_VAN_ZONES.map((zone) => ({
-        vanId: zone.vanId,
-        flightIds: (finalItemsByVan.get(zone.vanId) ?? []).map((item) => item.arrFlight.id),
-      }));
+      const assignments = FIXED_VAN_ZONES.map((zone) => {
+        const zoneItems = finalItemsByVan.get(zone.vanId) ?? [];
+        const sf: { id: string; tail: string; airport: string | null }[] = [];
+        for (const item of zoneItems) {
+          if (item.arrFlight.id.startsWith("unsched_")) {
+            sf.push({ id: item.arrFlight.id, tail: item.arrFlight.tail_number ?? "", airport: item.airport ?? item.arrFlight.arrival_icao?.replace(/^K/, "") ?? null });
+          }
+        }
+        return { vanId: zone.vanId, flightIds: zoneItems.map((i) => i.arrFlight.id).filter((id) => !id.startsWith("unsched_")), ...(sf.length > 0 ? { syntheticFlights: sf } : {}) };
+      });
       const res = await fetch("/api/vans/publish", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -3547,6 +3565,10 @@ function ScheduleTab({
           });
         }
       }
+      // Separate real flight IDs (UUIDs) from synthetic IDs
+      const realFlightIds = items
+        .map((item) => item.arrFlight.id)
+        .filter((id) => !id.startsWith("unsched_"));
       const res = await fetch("/api/vans/publish", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -3554,7 +3576,7 @@ function ScheduleTab({
           date,
           assignments: [{
             vanId,
-            flightIds: items.map((item) => item.arrFlight.id),
+            flightIds: realFlightIds,
             ...(syntheticFlights.length > 0 ? { syntheticFlights } : {}),
           }],
         }),
