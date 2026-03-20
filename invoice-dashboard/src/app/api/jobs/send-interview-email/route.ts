@@ -169,7 +169,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: `Email send failed (HTTP ${sendRes.status})`, detail: errText.slice(0, 300) }, { status: 500 });
     }
 
-    return NextResponse.json({ ok: true, email: job.email });
+    // Save timestamp
+    const sentAt = new Date().toISOString();
+    await supa
+      .from("job_application_parse")
+      .update({ interview_email_sent_at: sentAt, updated_at: sentAt })
+      .eq("application_id", appId);
+
+    return NextResponse.json({ ok: true, email: job.email, sentAt });
   } catch (err: any) {
     console.error("[send-interview-email] Error:", err);
     return NextResponse.json({ error: err.message ?? "Failed to send email" }, { status: 500 });

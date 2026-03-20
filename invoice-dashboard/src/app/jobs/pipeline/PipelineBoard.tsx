@@ -676,7 +676,7 @@ function OfferStatusBadge({ status }: { status: string | null | undefined }) {
 
 function SendInterviewEmailButton({ job }: { job: JobRow }) {
   const [sending, setSending] = useState(false);
-  const [sent, setSent] = useState(false);
+  const [sentAt, setSentAt] = useState<string | null>((job as any).interview_email_sent_at ?? null);
   const [error, setError] = useState("");
 
   async function handleSend(e: React.MouseEvent) {
@@ -694,11 +694,11 @@ function SendInterviewEmailButton({ job }: { job: JobRow }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ application_id: job.application_id }),
       });
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
         setError(data.error ?? "Failed");
       } else {
-        setSent(true);
+        setSentAt(data.sentAt ?? new Date().toISOString());
       }
     } catch {
       setError("Network error");
@@ -707,9 +707,19 @@ function SendInterviewEmailButton({ job }: { job: JobRow }) {
     }
   }
 
-  if (sent) {
+  if (sentAt) {
+    const dateStr = new Date(sentAt).toLocaleDateString("en-US", { month: "short", day: "numeric" });
     return (
-      <span className="text-[10px] text-emerald-600 font-medium">Email sent</span>
+      <div className="text-[10px]">
+        <span className="text-emerald-600 font-medium">Email sent {dateStr}</span>
+        <button
+          onClick={handleSend}
+          disabled={sending}
+          className="ml-1.5 text-gray-400 hover:text-violet-600 transition-colors"
+        >
+          {sending ? "..." : "resend"}
+        </button>
+      </div>
     );
   }
 

@@ -68,7 +68,7 @@ export async function fetchJobs(
   if (error) {
     console.warn("[fetchJobs] Full column query failed, trying with pipeline_stage only:", error.message);
     // Fallback: base columns + pipeline_stage (skip newer columns like offer_status etc.)
-    const fallbackCols = JOB_COLUMNS_BASE + ", pipeline_stage, structured_notes, rejected_at, rejection_reason, deleted_at, hr_reviewed, previously_rejected";
+    const fallbackCols = JOB_COLUMNS_BASE + ", pipeline_stage, structured_notes, rejected_at, rejection_reason, rejection_type, deleted_at, hr_reviewed, previously_rejected, interview_email_sent_at";
     const retry2 = await queryJobs(supa, fallbackCols, params);
     if (retry2.error) {
       console.warn("[fetchJobs] Pipeline column query also failed, using base:", retry2.error.message);
@@ -182,7 +182,7 @@ export async function fetchJobDetail(applicationId: string | number): Promise<Jo
 
   if (first.error) {
     // Fallback: base columns + pipeline_stage (skip newest columns)
-    const fallbackCols = JOB_COLUMNS_BASE + ", pipeline_stage, structured_notes, rejected_at, rejection_reason, deleted_at, hr_reviewed, previously_rejected";
+    const fallbackCols = JOB_COLUMNS_BASE + ", pipeline_stage, structured_notes, rejected_at, rejection_reason, rejection_type, deleted_at, hr_reviewed, previously_rejected, interview_email_sent_at";
     const retry2 = await supa
       .from("job_application_parse")
       .select(fallbackCols)
