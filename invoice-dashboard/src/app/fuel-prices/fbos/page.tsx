@@ -269,6 +269,24 @@ export default function FBOsPage() {
         const airportFees = invoiceFeesByAirport.get(airportCode) ?? [];
         const airportFuel = fuelByAirport.get(airportCode) ?? [];
 
+        // Find overall best Jet-A price across ALL sources at this airport
+        type BestPrice = { price: number; vendor: string; source: string; tier?: string };
+        let airportBest: BestPrice | null = null;
+        // Check scraped retail from each FBO
+        for (const r of records) {
+          if (r.jet_a_price && (!airportBest || r.jet_a_price < airportBest.price)) {
+            airportBest = { price: r.jet_a_price, vendor: r.fbo_name || r.chain, source: "retail" };
+          }
+        }
+        // Check contract prices
+        for (const fp of airportFuel) {
+          if (/jet.?a/i.test(fp.product) && !/saf/i.test(fp.product)) {
+            if (!airportBest || fp.price < airportBest.price) {
+              airportBest = { price: fp.price, vendor: fp.vendor, source: "contract", tier: fp.volume_tier !== "default" ? fp.volume_tier : undefined };
+            }
+          }
+        }
+
         return (
           <div key={airportCode} className="rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden">
             <div className="bg-slate-800 text-white px-5 py-3 flex items-center gap-3">
@@ -278,9 +296,27 @@ export default function FBOsPage() {
                   {records[0].city}{records[0].state ? `, ${records[0].state}` : ""}
                 </span>
               )}
-              <span className="ml-auto text-xs text-slate-400">
-                {records.length > 0 && `${records.length} FBO${records.length !== 1 ? "s" : ""}`}
-              </span>
+              {airportBest && (
+                <div className="ml-auto flex items-center gap-2">
+                  <div className="text-right">
+                    <div className="text-[10px] text-emerald-300 uppercase tracking-wide">Best Fuel</div>
+                    <div className="text-sm font-bold text-emerald-400">
+                      ${airportBest.price.toFixed(2)}/gal
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-[10px] text-slate-400">
+                      via {airportBest.vendor}
+                      {airportBest.tier && ` · ${airportBest.tier}`}
+                    </div>
+                  </div>
+                </div>
+              )}
+              {!airportBest && (
+                <span className="ml-auto text-xs text-slate-400">
+                  {records.length > 0 && `${records.length} FBO${records.length !== 1 ? "s" : ""}`}
+                </span>
+              )}
             </div>
 
             <div className="divide-y divide-gray-200">
@@ -322,34 +358,33 @@ export default function FBOsPage() {
                     }
                   }
 
-                  // Build fuel display: scraped retail + matched contract + all airport contract prices
+                  // Fuel: FBO's own retail prices (scraped)
                   type FuelItem = { label: string; price: number; source: "scraped" | "contract"; vendor?: string; tier?: string };
-                  const allFuel: FuelItem[] = [];
-                  if (r.jet_a_price) allFuel.push({ label: "Jet-A", price: r.jet_a_price, source: "scraped", vendor: r.chain });
-                  if (r.jet_a_additive_price) allFuel.push({ label: "Jet-A + Additive", price: r.jet_a_additive_price, source: "scraped", vendor: r.chain });
-                  if (r.saf_price) allFuel.push({ label: "SAF", price: r.saf_price, source: "scraped", vendor: r.chain });
-                  if (r.avgas_price) allFuel.push({ label: "Avgas 100LL", price: r.avgas_price, source: "scraped", vendor: r.chain });
-                  // Include ALL contract fuel at this airport (matched + unmatched vendors)
-                  for (const fp of airportFuel) {
-                    allFuel.push({
-                      label: fp.product,
-                      price: fp.price,
-                      source: "contract",
-                      vendor: fp.vendor,
-                      tier: fp.volume_tier !== "default" ? fp.volume_tier : undefined,
-                    });
-                  }
+                  const fboRetailFuel: FuelItem[] = [];
+                  if (r.jet_a_price) fboRetailFuel.push({ label: "Jet-A (retail)", price: r.jet_a_price, source: "scraped", vendor: r.chain });
+                  if (r.jet_a_additive_price) fboRetailFuel.push({ label: "Jet-A + Additive", price: r.jet_a_additive_price, source: "scraped", vendor: r.chain });
+                  if (r.saf_price) fboRetailFuel.push({ label: "SAF", price: r.saf_price, source: "scraped", vendor: r.chain });
+                  if (r.avgas_price) fboRetailFuel.push({ label: "Avgas 100LL", price: r.avgas_price, source: "scraped", vendor: r.chain });
+
+                  // Contract fuel available at this airport (for dropdown)
+                  const contractFuel: FuelItem[] = airportFuel.map((fp) => ({
+                    label: fp.product,
+                    price: fp.price,
+                    source: "contract" as const,
+                    vendor: fp.vendor,
+                    tier: fp.volume_tier !== "default" ? fp.volume_tier : undefined,
+                  }));
+
+                  // Best Jet-A for THIS FBO: only from FBO's own retail
+                  const fboJetA = fboRetailFuel.filter((f) => /jet.?a/i.test(f.label) && !/saf/i.test(f.label) && !/additive/i.test(f.label));
+                  const bestFboFuel = fboJetA.length > 0
+                    ? fboJetA.reduce((best, f) => f.price < best.price ? f : best)
+                    : null;
+                  const otherRetail = fboRetailFuel.filter((f) => f !== bestFboFuel);
 
                   const hasFees = Object.keys(mergedFees).length > 0;
-                  const hasFuel = allFuel.length > 0;
+                  const hasFuel = fboRetailFuel.length > 0 || contractFuel.length > 0;
                   const hasAnything = hasFees || hasFuel || r.gallons_to_waive || r.hangar_info || r.parking_info;
-
-                  // Best fuel price (lowest Jet-A variant)
-                  const jetAFuels = allFuel.filter((f) => /jet.?a/i.test(f.label) && !/saf/i.test(f.label));
-                  const bestFuel = jetAFuels.length > 0
-                    ? jetAFuels.reduce((best, f) => f.price < best.price ? f : best)
-                    : null;
-                  const otherFuels = allFuel.filter((f) => f !== bestFuel);
 
                   return (
                     <div key={i} className="px-5 py-4">
@@ -386,25 +421,31 @@ export default function FBOsPage() {
                           {/* Right: fuel price box */}
                           {hasFuel && (
                             <div className="w-48 flex-shrink-0">
-                              {bestFuel && (
+                              {bestFboFuel && (
                                 <div className="rounded-lg border-2 border-amber-300 bg-amber-50 px-3 py-2.5 mb-2">
                                   <div className="text-[10px] font-medium text-amber-600 uppercase tracking-wide">
-                                    Best Jet-A
-                                    {bestFuel.tier && ` · ${bestFuel.tier}`}
+                                    Jet-A (retail)
                                   </div>
                                   <div className="text-xl font-bold text-amber-800 mt-0.5">
-                                    ${bestFuel.price.toFixed(2)}
+                                    ${bestFboFuel.price.toFixed(2)}
                                     <span className="text-xs font-normal">/gal</span>
                                   </div>
-                                  {bestFuel.vendor && (
-                                    <div className="text-[10px] text-amber-700 mt-1 font-medium">
-                                      via {bestFuel.vendor}
-                                    </div>
-                                  )}
                                 </div>
                               )}
-                              {otherFuels.length > 0 && (
-                                <FuelDropdown fuels={otherFuels} bestVendor={bestFuel?.vendor} />
+                              {/* Other retail fuel for this FBO */}
+                              {otherRetail.length > 0 && (
+                                <div className="space-y-0.5 mb-2">
+                                  {otherRetail.map((f, j) => (
+                                    <div key={j} className="flex items-center justify-between text-xs px-1.5">
+                                      <span className="text-gray-500 truncate mr-2">{f.label}</span>
+                                      <span className="font-medium text-gray-700">${f.price.toFixed(2)}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                              {/* Contract fuel dropdown */}
+                              {contractFuel.length > 0 && (
+                                <FuelDropdown fuels={contractFuel} bestVendor={bestFboFuel?.vendor} />
                               )}
                             </div>
                           )}
