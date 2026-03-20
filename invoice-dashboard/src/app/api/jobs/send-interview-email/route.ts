@@ -36,27 +36,41 @@ async function getGraphToken(): Promise<string> {
   return data.access_token;
 }
 
-function buildEmailBody(candidateName: string, calendlyUrl: string): string {
-  const firstName = candidateName.split(/\s+/)[0] || "there";
-  return `Hi ${firstName},
+const DEFAULT_TEMPLATE = `Dear {{name}},
 
-Thank you for your interest in Baker Aviation. We'd like to schedule an interview with you.
+Thank you for your interest in Baker Aviation. We'd like to invite you to schedule an interview with our team.
 
 Please use the link below to select a time that works best for you:
 
-${calendlyUrl}
+{{calendly_url}}
 
 If you have any questions or need to reschedule, please reply to this email.
 
-Best regards,
+We look forward to speaking with you!
+
+Sincerely,
 Baker Aviation Hiring Team`;
+
+function buildHtmlEmail(bodyText: string, logoUrl: string): string {
+  const htmlBody = bodyText.replace(/\n/g, "<br>");
+  return `<!DOCTYPE html>
+<html>
+<body style="margin:0;padding:0;font-family:Arial,sans-serif;color:#333;">
+  <div style="max-width:600px;margin:0 auto;padding:20px;">
+    <div style="text-align:center;margin-bottom:24px;">
+      <img src="${logoUrl}" alt="Baker Aviation" style="height:50px;" />
+    </div>
+    <div style="font-size:15px;line-height:1.6;">
+      ${htmlBody}
+    </div>
+  </div>
+</body>
+</html>`;
 }
 
 /**
  * POST /api/jobs/send-interview-email
  * Body: { application_id: number }
- *
- * Sends the Calendly scheduling email to the candidate.
  */
 export async function POST(req: NextRequest) {
   const auth = await requireAdmin(req);
@@ -79,7 +93,6 @@ export async function POST(req: NextRequest) {
 
   const supa = createServiceClient();
 
-  // Fetch candidate info
   const { data: job, error: jobErr } = await supa
     .from("job_application_parse")
     .select("candidate_name, email, pipeline_stage")
@@ -94,14 +107,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Candidate has no email address" }, { status: 400 });
   }
 
-  // Fetch Calendly URL from settings
-  const { data: setting } = await supa
+  // Fetch Calendly URL and email template from settings
+  const { data: settings } = await supa
     .from("hiring_settings")
-    .select("value")
-    .eq("key", "interview_calendly_url")
-    .maybeSingle();
+    .select("key, value")
+    .in("key", ["interview_calendly_url", "interview_email_template"]);
 
-  const calendlyUrl = setting?.value;
+  const calendlyUrl = settings?.find((s: any) => s.key === "interview_calendly_url")?.value;
   if (!calendlyUrl) {
     return NextResponse.json(
       { error: "Calendly URL not configured. Go to Jobs → Admin to set it." },
@@ -109,19 +121,23 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Get MS Graph token and send email
+  const template = settings?.find((s: any) => s.key === "interview_email_template")?.value || DEFAULT_TEMPLATE;
+
   try {
     const token = await getGraphToken();
-
-    const mailbox = process.env.OUTLOOK_HIRING_MAILBOX || process.env.OUTLOOK_SHARED_MAILBOX;
+    const mailbox = process.env.OUTLOOK_HR_MAILBOX || process.env.OUTLOOK_HIRING_MAILBOX || process.env.OUTLOOK_SHARED_MAILBOX;
     if (!mailbox) {
-      return NextResponse.json(
-        { error: "OUTLOOK_HIRING_MAILBOX or OUTLOOK_SHARED_MAILBOX not configured" },
-        { status: 500 },
-      );
+      return NextResponse.json({ error: "No mailbox configured" }, { status: 500 });
     }
 
-    const emailBody = buildEmailBody(job.candidate_name ?? "there", calendlyUrl);
+    const firstName = (job.candidate_name ?? "").split(/\s+/)[0] || "there";
+    const emailText = template
+      .replace(/\{\{name\}\}/g, firstName)
+      .replace(/\{\{calendly_url\}\}/g, calendlyUrl);
+
+    const origin = req.headers.get("origin") || "https://baker-ai-gamma.vercel.app";
+    const logoUrl = `${origin}/logo3.png`;
+    const htmlBody = buildHtmlEmail(emailText, logoUrl);
 
     const sendRes = await fetch(
       `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/sendMail`,
@@ -134,18 +150,13 @@ export async function POST(req: NextRequest) {
         body: JSON.stringify({
           message: {
             subject: "Baker Aviation — Interview Scheduling",
-            body: {
-              contentType: "Text",
-              content: emailBody,
-            },
-            toRecipients: [
-              {
-                emailAddress: {
-                  address: job.email,
-                  name: job.candidate_name ?? undefined,
-                },
+            body: { contentType: "HTML", content: htmlBody },
+            toRecipients: [{
+              emailAddress: {
+                address: job.email,
+                name: job.candidate_name ?? undefined,
               },
-            ],
+            }],
           },
           saveToSentItems: true,
         }),
@@ -155,10 +166,7 @@ export async function POST(req: NextRequest) {
     if (!sendRes.ok) {
       const errText = await sendRes.text();
       console.error("[send-interview-email] Graph sendMail failed:", sendRes.status, errText);
-      return NextResponse.json(
-        { error: `Failed to send email: ${sendRes.status}` },
-        { status: 500 },
-      );
+      return NextResponse.json({ error: `Email send failed (HTTP ${sendRes.status})`, detail: errText.slice(0, 300) }, { status: 500 });
     }
 
     return NextResponse.json({ ok: true, email: job.email });

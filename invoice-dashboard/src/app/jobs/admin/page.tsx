@@ -4,6 +4,7 @@ import { createServiceClient } from "@/lib/supabase/service";
 import OfferTemplateEditor from "./OfferTemplateEditor";
 import CalendlyUrlEditor from "./CalendlyUrlEditor";
 import RejectionEmailEditor from "./RejectionEmailEditor";
+import InterviewEmailEditor from "./InterviewEmailEditor";
 
 export default async function AdminPage() {
   const supa = createServiceClient();
@@ -28,6 +29,9 @@ export default async function AdminPage() {
       <JobsNav />
       <div className="p-6 space-y-6">
         <CalendlyUrlEditor initialUrl={calendlyUrl} />
+        <InterviewEmailEditor
+          initialTemplate={settings?.find((s: any) => s.key === "interview_email_template")?.value ?? ""}
+        />
         <RejectionEmailEditor initialTemplates={rejectionTemplates} />
         <OfferTemplateEditor initialTemplates={templates ?? []} />
       </div>
