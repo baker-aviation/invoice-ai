@@ -30,9 +30,11 @@ export async function PATCH(
   }
 
   const stage = body.stage;
-  if (!stage || !(PIPELINE_STAGES as readonly string[]).includes(stage)) {
+  const isRemove = stage === "remove" || stage === null;
+
+  if (!isRemove && (!stage || !(PIPELINE_STAGES as readonly string[]).includes(stage))) {
     return NextResponse.json(
-      { error: `Invalid stage. Must be one of: ${PIPELINE_STAGES.join(", ")}` },
+      { error: `Invalid stage. Must be one of: remove, ${PIPELINE_STAGES.join(", ")}` },
       { status: 400 },
     );
   }
@@ -41,7 +43,7 @@ export async function PATCH(
     const supa = createServiceClient();
     const { data } = await supa
       .from("job_application_parse")
-      .update({ pipeline_stage: stage })
+      .update({ pipeline_stage: isRemove ? null : stage })
       .eq("application_id", Number(id))
       .select("id");
 

@@ -181,14 +181,26 @@ export async function fetchJobDetail(applicationId: string | number): Promise<Jo
     .maybeSingle();
 
   if (first.error) {
-    const retry = await supa
+    // Fallback: base columns + pipeline_stage (skip newest columns)
+    const fallbackCols = JOB_COLUMNS_BASE + ", pipeline_stage, structured_notes, rejected_at, rejection_reason, deleted_at, hr_reviewed, previously_rejected";
+    const retry2 = await supa
       .from("job_application_parse")
-      .select(JOB_COLUMNS_BASE)
+      .select(fallbackCols)
       .eq("application_id", Number(id))
       .limit(1)
       .maybeSingle();
-    jobRow = retry.data;
-    jobErr = retry.error;
+    if (retry2.error) {
+      const retry3 = await supa
+        .from("job_application_parse")
+        .select(JOB_COLUMNS_BASE)
+        .eq("application_id", Number(id))
+        .limit(1)
+        .maybeSingle();
+      jobRow = retry3.data;
+      jobErr = retry3.error;
+    } else {
+      jobRow = retry2.data;
+    }
   } else {
     jobRow = first.data;
   }
