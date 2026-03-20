@@ -207,9 +207,15 @@ export async function POST(req: NextRequest) {
     const matched: { applicationId: number; name: string; email: string; durationSec: number; stage: string | null }[] = [];
     const unmatched: { name: string; email: string; durationMin: number }[] = [];
 
+    const internal: { name: string; email: string; durationMin: number }[] = [];
+
     for (const p of participants) {
-      // Skip internal emails
-      if (p.email.endsWith("@baker-aviation.com") || p.email.endsWith("@airninetwo.com")) continue;
+      const isInternal = p.email.endsWith("@baker-aviation.com") || p.email.endsWith("@airninetwo.com");
+
+      if (isInternal) {
+        internal.push({ name: p.displayName || p.email.split("@")[0], email: p.email, durationMin: Math.round(p.durationSec / 60) });
+        continue;
+      }
 
       const app = (allApplicants ?? []).find(
         (a) => a.email?.toLowerCase() === p.email,
@@ -266,6 +272,7 @@ export async function POST(req: NextRequest) {
       matched,
       markedCount,
       unmatched,
+      internal,
       _debug: {
         meetLink,
         extractedCode: meetingCode,

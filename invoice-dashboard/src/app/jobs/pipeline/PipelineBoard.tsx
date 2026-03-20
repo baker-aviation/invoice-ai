@@ -139,6 +139,7 @@ function InfoSessionTools({ jobs, onAttendanceChecked }: { jobs: JobRow[]; onAtt
     summary: string;
     matched: { name: string; email: string; durationSec: number; stage?: string | null }[];
     unmatched: { name: string; email: string; durationMin: number }[];
+    internal: { name: string; email: string; durationMin: number }[];
     totalParticipants: number;
   } | null>(null);
   const [attendanceError, setAttendanceError] = useState<string | null>(null);
@@ -194,9 +195,10 @@ function InfoSessionTools({ jobs, onAttendanceChecked }: { jobs: JobRow[]; onAtt
       if (data.unmatched?.length > 0) parts.push(`${data.unmatched.length} unmatched`);
       if (data.totalParticipants === 0) parts.push(`No participants found (code: ${data.meetingCode ?? "?"})`);
       setAttendanceResult({
-        summary: parts.join(", ") || "No matches",
+        summary: parts.join(", ") || `${data.totalParticipants} participants`,
         matched: data.matched ?? [],
         unmatched: data.unmatched ?? [],
+        internal: data.internal ?? [],
         totalParticipants: data.totalParticipants ?? 0,
       });
       if (data.markedCount > 0) {
@@ -257,6 +259,14 @@ function InfoSessionTools({ jobs, onAttendanceChecked }: { jobs: JobRow[]; onAtt
                 <div key={typeof u === "string" ? u : u.email} className="text-gray-500">
                   {typeof u === "string" ? u : `${u.name} (${u.durationMin}m)`}
                 </div>
+              ))}
+            </div>
+          )}
+          {attendanceResult.internal.length > 0 && (
+            <div className="px-2 py-1 border-t border-emerald-200 space-y-0.5">
+              <div className="font-semibold text-gray-400">Baker staff:</div>
+              {attendanceResult.internal.map((s) => (
+                <div key={s.email} className="text-gray-400">{s.name} ({s.durationMin}m)</div>
               ))}
             </div>
           )}
