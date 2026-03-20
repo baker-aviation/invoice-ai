@@ -506,9 +506,18 @@ function AlertCard({ alert, onAck, acked, ackedByName }: { alert: OpsAlert; onAc
         )}
         <div className="ml-auto flex items-center gap-1.5 shrink-0">
           {acked ? (
-            <span className="text-xs text-gray-400 bg-gray-100 rounded px-1.5 py-0.5">
+            <button
+              type="button"
+              onClick={async (e) => {
+                e.stopPropagation();
+                await fetch(`/api/ops/alerts/${alert.id}/acknowledge`, { method: "DELETE" });
+                onAck(alert.id);
+              }}
+              className="text-xs text-gray-400 hover:text-orange-600 bg-gray-100 hover:bg-orange-50 border border-transparent hover:border-orange-200 rounded px-1.5 py-0.5 transition-colors cursor-pointer"
+              title="Click to un-acknowledge"
+            >
               Ack'd{ackedByName ? ` by ${ackedByName}` : ""}
-            </span>
+            </button>
           ) : (
             <button
               type="button"
