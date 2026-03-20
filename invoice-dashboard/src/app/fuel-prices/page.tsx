@@ -1,7 +1,6 @@
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-import { Topbar } from "@/components/Topbar";
 import { AutoRefresh } from "@/components/AutoRefresh";
 import { fetchFuelPrices, fetchAdvertisedPrices } from "@/lib/invoiceApi";
 import FuelPricesTable from "./FuelPricesTable";
@@ -15,7 +14,6 @@ export default async function FuelPricesPage() {
 
   return (
     <>
-      <Topbar title="Fuel Prices" />
       <AutoRefresh intervalSeconds={120} />
       <FuelPricesTable initialPrices={fuelPrices} advertisedPrices={advertisedPrices} />
     </>
