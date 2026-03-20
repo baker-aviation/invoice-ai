@@ -454,35 +454,50 @@ function FlightDetail({ flight, countries, overflights, ffRoute, routeMethod }: 
   return (
     <div className="border-t border-gray-200 bg-gray-50 px-4 py-3 space-y-4">
       {/* Overflight route analysis */}
-      {(overflights.length > 0 || ffRoute) && (
-        <div>
-          <div className="flex items-center gap-2 mb-1">
-            <h4 className="text-xs font-semibold text-gray-700 uppercase">Route Overflight Analysis</h4>
-            <span className="text-[10px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded">
-              {routeMethod === "foreflight+great_circle" ? "ForeFlight + GC" : routeMethod === "great_circle" ? "Great Circle" : routeMethod}
-            </span>
-          </div>
-          {ffRoute && (
-            <p className="text-xs text-gray-600 font-mono bg-white border border-gray-200 rounded px-2 py-1 mb-1.5 break-all">
-              {ffRoute}
-            </p>
-          )}
-          <div className="flex gap-1.5 flex-wrap">
+      {/* Airspace / Overflight list */}
+      <div>
+        <div className="flex items-center gap-2 mb-1">
+          <h4 className="text-xs font-semibold text-gray-700 uppercase">Airspace Transited</h4>
+          <span className="text-[10px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded">
+            {routeMethod === "foreflight+great_circle" ? "ForeFlight + GC" : routeMethod === "great_circle" ? "Great Circle" : routeMethod === "loading" ? "analyzing..." : routeMethod}
+          </span>
+        </div>
+        {ffRoute && (
+          <p className="text-xs text-gray-600 font-mono bg-white border border-gray-200 rounded px-2 py-1 mb-1.5 break-all">
+            {ffRoute}
+          </p>
+        )}
+        {overflights.length > 0 ? (
+          <div className="space-y-1">
             {overflights.map((o) => {
               const c = countries.find((c) => c.iso_code === o.country_iso);
-              const needsPermit = c?.overflight_permit_required;
+              const needsOvfPermit = c?.overflight_permit_required;
+              const needsLandPermit = c?.landing_permit_required;
+              const isDestination = (c?.icao_prefixes ?? []).some((p: string) =>
+                flight.departure_icao?.startsWith(p) || flight.arrival_icao?.startsWith(p)
+              );
               return (
-                <span key={o.fir_id} className={`text-xs px-2 py-0.5 rounded-full ${
-                  needsPermit ? "bg-orange-100 text-orange-700 font-medium" : "bg-gray-100 text-gray-600"
+                <div key={o.fir_id} className={`flex items-center gap-2 text-xs px-2 py-1.5 rounded border ${
+                  needsOvfPermit ? "bg-orange-50 border-orange-200" : "bg-white border-gray-200"
                 }`}>
-                  {o.country_name} ({o.fir_id})
-                  {needsPermit && " — PERMIT REQUIRED"}
-                </span>
+                  <span className="font-medium w-6 text-center">{o.country_iso}</span>
+                  <span className="text-gray-700">{o.country_name}</span>
+                  <span className="text-gray-400 text-[10px]">FIR: {o.fir_id}</span>
+                  <span className="ml-auto flex gap-1">
+                    {isDestination && <span className="text-[10px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">DEST</span>}
+                    {needsOvfPermit && <span className="text-[10px] bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded font-medium">OVF PERMIT REQ</span>}
+                    {needsLandPermit && isDestination && <span className="text-[10px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded font-medium">LANDING PERMIT REQ</span>}
+                    {c?.permit_lead_time_days && <span className="text-[10px] bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded">{c.permit_lead_time_days}{c.permit_lead_time_working_days ? " work" : ""} days</span>}
+                    {!needsOvfPermit && !needsLandPermit && !isDestination && <span className="text-[10px] text-gray-400">transit only</span>}
+                  </span>
+                </div>
               );
             })}
           </div>
-        </div>
-      )}
+        ) : routeMethod !== "loading" ? (
+          <p className="text-xs text-gray-400">No foreign airspace transited (direct US routing).</p>
+        ) : null}
+      </div>
 
       {/* Auto-create missing permits */}
       {missingPermits.length > 0 && (
@@ -754,108 +769,283 @@ function CountryProfiles({ countries, onRefresh }: { countries: Country[]; onRef
         {!selected ? (
           <p className="text-sm text-gray-500">Select a country to view its profile and requirements.</p>
         ) : (
-          <div className="space-y-4">
-            <div>
-              <h3 className="text-lg font-semibold">{selected.name}</h3>
-              <div className="flex gap-2 mt-1 flex-wrap">
-                {selected.overflight_permit_required && (
-                  <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full">Overflight Permit Required</span>
-                )}
-                {selected.landing_permit_required && (
-                  <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">Landing Permit Required</span>
-                )}
-                {selected.permit_lead_time_days && (
-                  <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full">
-                    {selected.permit_lead_time_days} {selected.permit_lead_time_working_days ? "working" : ""} day{selected.permit_lead_time_days > 1 ? "s" : ""} advance
-                  </span>
-                )}
-                {selected.treat_as_international && (
-                  <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">Treated as International</span>
-                )}
-                {selected.icao_prefixes?.length > 0 && (
-                  <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">ICAO: {selected.icao_prefixes.join(", ")}</span>
-                )}
-              </div>
-              {selected.notes && <p className="text-sm text-gray-600 mt-2">{selected.notes}</p>}
+          <CountryDetail country={selected} requirements={requirements} loadingReqs={loadingReqs}
+            onAddReq={addRequirement} showAddReq={showAddReq} setShowAddReq={setShowAddReq}
+            newReq={newReq} setNewReq={setNewReq}
+            onReqChange={async () => {
+              const res = await fetch(`/api/ops/intl/countries/${selectedId}/requirements`);
+              const data = await res.json();
+              setRequirements(data.requirements ?? []);
+            }}
+            onCountryChange={onRefresh}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ===========================================================================
+// COUNTRY DETAIL — editable country settings + requirements
+// ===========================================================================
+function CountryDetail({ country, requirements, loadingReqs, onAddReq, showAddReq, setShowAddReq, newReq, setNewReq, onReqChange, onCountryChange }: {
+  country: Country;
+  requirements: CountryRequirement[];
+  loadingReqs: boolean;
+  onAddReq: () => void;
+  showAddReq: boolean;
+  setShowAddReq: (v: boolean) => void;
+  newReq: { name: string; requirement_type: string; description: string };
+  setNewReq: (v: { name: string; requirement_type: string; description: string }) => void;
+  onReqChange: () => void;
+  onCountryChange: () => void;
+}) {
+  const [editingCountry, setEditingCountry] = useState(false);
+  const [countryEdit, setCountryEdit] = useState({
+    notes: country.notes ?? "",
+    overflight_permit_required: country.overflight_permit_required,
+    landing_permit_required: country.landing_permit_required,
+    permit_lead_time_days: country.permit_lead_time_days?.toString() ?? "",
+    permit_lead_time_working_days: country.permit_lead_time_working_days,
+    treat_as_international: country.treat_as_international,
+  });
+  const [editingReqId, setEditingReqId] = useState<string | null>(null);
+
+  async function saveCountry() {
+    await fetch(`/api/ops/intl/countries/${country.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...countryEdit,
+        permit_lead_time_days: countryEdit.permit_lead_time_days ? parseInt(countryEdit.permit_lead_time_days) : null,
+      }),
+    });
+    setEditingCountry(false);
+    onCountryChange();
+  }
+
+  async function updateReq(reqId: string, updates: Record<string, unknown>) {
+    await fetch(`/api/ops/intl/requirements/${reqId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(updates),
+    });
+    setEditingReqId(null);
+    onReqChange();
+  }
+
+  async function deleteReq(reqId: string) {
+    if (!confirm("Delete this requirement?")) return;
+    await fetch(`/api/ops/intl/requirements/${reqId}`, { method: "DELETE" });
+    onReqChange();
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Country header */}
+      <div>
+        <div className="flex items-center gap-2">
+          <h3 className="text-lg font-semibold">{country.name}</h3>
+          <button onClick={() => setEditingCountry(!editingCountry)}
+            className="text-xs text-blue-600 hover:text-blue-800">{editingCountry ? "Cancel" : "Edit"}</button>
+        </div>
+
+        {editingCountry ? (
+          <div className="mt-2 p-3 bg-white border border-gray-200 rounded space-y-2">
+            <div className="grid grid-cols-3 gap-3">
+              <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+                <input type="checkbox" checked={countryEdit.overflight_permit_required}
+                  onChange={(e) => setCountryEdit({ ...countryEdit, overflight_permit_required: e.target.checked })}
+                  className="rounded border-gray-300" />
+                Overflight Permit Required
+              </label>
+              <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+                <input type="checkbox" checked={countryEdit.landing_permit_required}
+                  onChange={(e) => setCountryEdit({ ...countryEdit, landing_permit_required: e.target.checked })}
+                  className="rounded border-gray-300" />
+                Landing Permit Required
+              </label>
+              <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+                <input type="checkbox" checked={countryEdit.treat_as_international}
+                  onChange={(e) => setCountryEdit({ ...countryEdit, treat_as_international: e.target.checked })}
+                  className="rounded border-gray-300" />
+                Treat as International
+              </label>
             </div>
-
-            {/* Requirements */}
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <h4 className="text-sm font-semibold text-gray-700">Requirements Checklist</h4>
-                <button onClick={() => setShowAddReq(!showAddReq)} className="text-xs text-blue-600 hover:text-blue-800">+ Add Requirement</button>
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="text-[10px] text-gray-500">Lead Time (days)</label>
+                <input type="number" value={countryEdit.permit_lead_time_days}
+                  onChange={(e) => setCountryEdit({ ...countryEdit, permit_lead_time_days: e.target.value })}
+                  className="block w-full text-xs border border-gray-300 rounded px-2 py-1" />
               </div>
-
-              {showAddReq && (
-                <div className="flex gap-2 items-end mb-3 p-2 bg-white border border-gray-200 rounded">
-                  <div className="flex-1">
-                    <label className="text-[10px] text-gray-500">Name</label>
-                    <input
-                      value={newReq.name}
-                      onChange={(e) => setNewReq({ ...newReq, name: e.target.value })}
-                      className="block w-full text-xs border border-gray-300 rounded px-2 py-1"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[10px] text-gray-500">Type</label>
-                    <select
-                      value={newReq.requirement_type}
-                      onChange={(e) => setNewReq({ ...newReq, requirement_type: e.target.value })}
-                      className="block text-xs border border-gray-300 rounded px-2 py-1"
-                    >
-                      <option value="landing">Landing</option>
-                      <option value="overflight">Overflight</option>
-                      <option value="customs">Customs</option>
-                      <option value="handling">Handling</option>
-                    </select>
-                  </div>
-                  <div className="flex-1">
-                    <label className="text-[10px] text-gray-500">Description</label>
-                    <input
-                      value={newReq.description}
-                      onChange={(e) => setNewReq({ ...newReq, description: e.target.value })}
-                      className="block w-full text-xs border border-gray-300 rounded px-2 py-1"
-                    />
-                  </div>
-                  <button onClick={addRequirement} className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700">Save</button>
-                  <button onClick={() => setShowAddReq(false)} className="px-2 py-1 text-xs text-gray-500">Cancel</button>
-                </div>
+              <label className="flex items-center gap-1.5 text-xs cursor-pointer pt-4">
+                <input type="checkbox" checked={countryEdit.permit_lead_time_working_days}
+                  onChange={(e) => setCountryEdit({ ...countryEdit, permit_lead_time_working_days: e.target.checked })}
+                  className="rounded border-gray-300" />
+                Working Days Only
+              </label>
+            </div>
+            <div>
+              <label className="text-[10px] text-gray-500">Notes</label>
+              <textarea value={countryEdit.notes}
+                onChange={(e) => setCountryEdit({ ...countryEdit, notes: e.target.value })}
+                className="block w-full text-xs border border-gray-300 rounded px-2 py-1 h-16" />
+            </div>
+            <button onClick={saveCountry} className="px-3 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700">Save Changes</button>
+          </div>
+        ) : (
+          <>
+            <div className="flex gap-2 mt-1 flex-wrap">
+              {country.overflight_permit_required && (
+                <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full">Overflight Permit Required</span>
               )}
-
-              {loadingReqs ? (
-                <p className="text-xs text-gray-400 animate-pulse">Loading...</p>
-              ) : requirements.length === 0 ? (
-                <p className="text-xs text-gray-400">No requirements defined yet. Add requirements to build this country&apos;s checklist.</p>
-              ) : (
-                <div className="space-y-2">
-                  {requirements.map((r) => (
-                    <div key={r.id} className="bg-white border border-gray-200 rounded px-3 py-2">
-                      <div className="flex items-center gap-2">
-                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
-                          r.requirement_type === "overflight" ? "bg-orange-100 text-orange-700" :
-                          r.requirement_type === "landing" ? "bg-blue-100 text-blue-700" :
-                          r.requirement_type === "customs" ? "bg-purple-100 text-purple-700" :
-                          "bg-gray-100 text-gray-600"
-                        }`}>{r.requirement_type}</span>
-                        <span className="text-sm font-medium">{r.name}</span>
-                      </div>
-                      {r.description && <p className="text-xs text-gray-500 mt-1">{r.description}</p>}
-                      {r.required_documents.length > 0 && (
-                        <div className="flex gap-1 mt-1">
-                          <span className="text-[10px] text-gray-400">Docs:</span>
-                          {r.required_documents.map((d) => (
-                            <span key={d} className="text-[10px] bg-gray-100 text-gray-600 px-1 rounded">{d.replace(/_/g, " ")}</span>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
+              {country.landing_permit_required && (
+                <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">Landing Permit Required</span>
+              )}
+              {country.permit_lead_time_days && (
+                <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full">
+                  {country.permit_lead_time_days} {country.permit_lead_time_working_days ? "working" : ""} day{country.permit_lead_time_days > 1 ? "s" : ""} advance
+                </span>
+              )}
+              {country.treat_as_international && (
+                <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">Treated as International</span>
+              )}
+              {country.icao_prefixes?.length > 0 && (
+                <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">ICAO: {country.icao_prefixes.join(", ")}</span>
               )}
             </div>
+            {country.notes && <p className="text-sm text-gray-600 mt-2">{country.notes}</p>}
+          </>
+        )}
+      </div>
+
+      {/* Requirements */}
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <h4 className="text-sm font-semibold text-gray-700">Requirements Checklist</h4>
+          <button onClick={() => setShowAddReq(!showAddReq)} className="text-xs text-blue-600 hover:text-blue-800">+ Add Requirement</button>
+        </div>
+
+        {showAddReq && (
+          <div className="flex gap-2 items-end mb-3 p-2 bg-white border border-gray-200 rounded">
+            <div className="flex-1">
+              <label className="text-[10px] text-gray-500">Name</label>
+              <input value={newReq.name} onChange={(e) => setNewReq({ ...newReq, name: e.target.value })}
+                className="block w-full text-xs border border-gray-300 rounded px-2 py-1" />
+            </div>
+            <div>
+              <label className="text-[10px] text-gray-500">Type</label>
+              <select value={newReq.requirement_type} onChange={(e) => setNewReq({ ...newReq, requirement_type: e.target.value })}
+                className="block text-xs border border-gray-300 rounded px-2 py-1">
+                <option value="landing">Landing</option>
+                <option value="overflight">Overflight</option>
+                <option value="customs">Customs</option>
+                <option value="handling">Handling</option>
+              </select>
+            </div>
+            <div className="flex-1">
+              <label className="text-[10px] text-gray-500">Description</label>
+              <input value={newReq.description} onChange={(e) => setNewReq({ ...newReq, description: e.target.value })}
+                className="block w-full text-xs border border-gray-300 rounded px-2 py-1" />
+            </div>
+            <button onClick={onAddReq} className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700">Save</button>
+            <button onClick={() => setShowAddReq(false)} className="px-2 py-1 text-xs text-gray-500">Cancel</button>
+          </div>
+        )}
+
+        {loadingReqs ? (
+          <p className="text-xs text-gray-400 animate-pulse">Loading...</p>
+        ) : requirements.length === 0 ? (
+          <p className="text-xs text-gray-400">No requirements defined yet. Add requirements to build this country&apos;s checklist.</p>
+        ) : (
+          <div className="space-y-2">
+            {requirements.map((r) => (
+              <ReqCard key={r.id} req={r} editing={editingReqId === r.id}
+                onEdit={() => setEditingReqId(editingReqId === r.id ? null : r.id)}
+                onSave={(updates) => updateReq(r.id, updates)}
+                onDelete={() => deleteReq(r.id)} />
+            ))}
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/** Single editable requirement card */
+function ReqCard({ req, editing, onEdit, onSave, onDelete }: {
+  req: CountryRequirement; editing: boolean;
+  onEdit: () => void; onSave: (u: Record<string, unknown>) => void; onDelete: () => void;
+}) {
+  const [edit, setEdit] = useState({
+    name: req.name, description: req.description ?? "", requirement_type: req.requirement_type as string,
+    required_documents: req.required_documents.join(", "),
+  });
+
+  const typeBg = req.requirement_type === "overflight" ? "bg-orange-100 text-orange-700" :
+    req.requirement_type === "landing" ? "bg-blue-100 text-blue-700" :
+    req.requirement_type === "customs" ? "bg-purple-100 text-purple-700" : "bg-gray-100 text-gray-600";
+
+  if (editing) {
+    return (
+      <div className="bg-blue-50 border border-blue-200 rounded px-3 py-2 space-y-2">
+        <div className="grid grid-cols-4 gap-2">
+          <div className="col-span-2">
+            <label className="text-[10px] text-gray-500">Name</label>
+            <input value={edit.name} onChange={(e) => setEdit({ ...edit, name: e.target.value })}
+              className="block w-full text-xs border border-gray-300 rounded px-2 py-1" />
+          </div>
+          <div>
+            <label className="text-[10px] text-gray-500">Type</label>
+            <select value={edit.requirement_type} onChange={(e) => setEdit({ ...edit, requirement_type: e.target.value })}
+              className="block w-full text-xs border border-gray-300 rounded px-2 py-1">
+              <option value="landing">Landing</option>
+              <option value="overflight">Overflight</option>
+              <option value="customs">Customs</option>
+              <option value="handling">Handling</option>
+            </select>
+          </div>
+        </div>
+        <div>
+          <label className="text-[10px] text-gray-500">Description</label>
+          <input value={edit.description} onChange={(e) => setEdit({ ...edit, description: e.target.value })}
+            className="block w-full text-xs border border-gray-300 rounded px-2 py-1" />
+        </div>
+        <div>
+          <label className="text-[10px] text-gray-500">Required Documents (comma-separated)</label>
+          <input value={edit.required_documents} onChange={(e) => setEdit({ ...edit, required_documents: e.target.value })}
+            className="block w-full text-xs border border-gray-300 rounded px-2 py-1" placeholder="airworthiness_certificate, insurance_certificate" />
+        </div>
+        <div className="flex gap-2">
+          <button onClick={() => onSave({
+            name: edit.name, description: edit.description || null, requirement_type: edit.requirement_type,
+            required_documents: edit.required_documents.split(",").map((d) => d.trim()).filter(Boolean),
+          })} className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700">Save</button>
+          <button onClick={onEdit} className="px-2 py-1 text-xs text-gray-500">Cancel</button>
+          <button onClick={onDelete} className="px-2 py-1 text-xs text-red-500 hover:text-red-700 ml-auto">Delete</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-white border border-gray-200 rounded px-3 py-2 group hover:border-gray-300">
+      <div className="flex items-center gap-2">
+        <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${typeBg}`}>{req.requirement_type}</span>
+        <span className="text-sm font-medium">{req.name}</span>
+        <button onClick={onEdit} className="ml-auto opacity-0 group-hover:opacity-100 text-xs text-blue-600 hover:text-blue-800 transition-opacity">Edit</button>
+        <button onClick={onDelete} className="opacity-0 group-hover:opacity-100 text-xs text-red-400 hover:text-red-600 transition-opacity">Delete</button>
+      </div>
+      {req.description && <p className="text-xs text-gray-500 mt-1">{req.description}</p>}
+      {req.required_documents.length > 0 && (
+        <div className="flex gap-1 mt-1">
+          <span className="text-[10px] text-gray-400">Docs:</span>
+          {req.required_documents.map((d) => (
+            <span key={d} className="text-[10px] bg-gray-100 text-gray-600 px-1 rounded">{d.replace(/_/g, " ")}</span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
