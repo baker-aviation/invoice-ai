@@ -334,7 +334,16 @@ function FlightDetail({ flight, countries, overflights, ffRoute, routeMethod }: 
 
       setPermits(jsons[0].permits ?? []);
       setHandlers(jsons[1].handlers ?? []);
-      setRequirements(jsons.slice(2).flatMap((r) => r.requirements ?? []));
+      // Deduplicate requirements by name (e.g. "eAPIS Submission" appears per-country)
+      const allReqs = jsons.slice(2).flatMap((r) => r.requirements ?? []);
+      const seen = new Set<string>();
+      const deduped = allReqs.filter((r: CountryRequirement) => {
+        const key = `${r.name}|${r.requirement_type}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      setRequirements(deduped);
     } catch { /* ignore */ }
     setLoading(false);
   }, [flight.id, relevantCountryIdStr]);
