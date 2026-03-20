@@ -210,21 +210,32 @@ function FlightRow({ flight, countries, expanded, onToggle }: {
   const [ffRoute, setFfRoute] = useState<string | null>(null);
   const [routeMethod, setRouteMethod] = useState<string>("loading");
 
-  // Fetch overflights + ForeFlight route once per row
+  // Use fast great-circle-only endpoint for row badges (no ForeFlight call)
   useEffect(() => {
     if (ovfLoaded || !flight.departure_icao || !flight.arrival_icao) return;
     setOvfLoaded(true);
-    const params = new URLSearchParams({ dep: flight.departure_icao, arr: flight.arrival_icao });
-    if (flight.tail_number) params.set("tail", flight.tail_number);
-    fetch(`/api/ops/intl/route-analysis?${params}`)
+    fetch(`/api/ops/intl/overflights?dep=${flight.departure_icao}&arr=${flight.arrival_icao}`)
       .then((r) => r.json())
       .then((d) => {
         setOverflights(d.overflights ?? []);
-        setFfRoute(d.foreflight?.route ?? null);
-        setRouteMethod(d.method ?? "great_circle");
+        setRouteMethod("great_circle");
       })
       .catch(() => { setRouteMethod("error"); });
-  }, [flight.departure_icao, flight.arrival_icao, flight.tail_number, ovfLoaded]);
+  }, [flight.departure_icao, flight.arrival_icao, ovfLoaded]);
+
+  // Only fetch ForeFlight route when expanded
+  useEffect(() => {
+    if (!expanded || ffRoute !== null || !flight.departure_icao || !flight.arrival_icao || !flight.tail_number) return;
+    const params = new URLSearchParams({ dep: flight.departure_icao, arr: flight.arrival_icao, tail: flight.tail_number });
+    fetch(`/api/ops/intl/route-analysis?${params}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.foreflight?.route) setFfRoute(d.foreflight.route);
+        if (d.overflights?.length) setOverflights(d.overflights);
+        setRouteMethod(d.method ?? "great_circle");
+      })
+      .catch(() => {});
+  }, [expanded, ffRoute, flight.departure_icao, flight.arrival_icao, flight.tail_number]);
 
   // Flag overflown countries that require permits
   const ovfPermitCountries = overflights.filter((o) => {
@@ -297,43 +308,36 @@ function FlightDetail({ flight, countries, overflights, ffRoute, routeMethod }: 
   const [newPermit, setNewPermit] = useState({ country_id: "", permit_type: "landing" as string, deadline: "" });
   const [newHandler, setNewHandler] = useState({ handler_name: "", airport_icao: flight.arrival_icao ?? "", handler_contact: "" });
 
-  // Compute relevant countries: destination/departure + overflown
-  const relevantCountryIds = new Set<string>();
-  for (const c of countries) {
-    const prefixes = c.icao_prefixes ?? [];
-    // Destination/departure country
-    if (prefixes.some((p: string) => flight.departure_icao?.startsWith(p) || flight.arrival_icao?.startsWith(p))) {
-      relevantCountryIds.add(c.id);
-    }
-    // Overflown country
-    if (overflights.some((o) => o.country_iso === c.iso_code)) {
-      relevantCountryIds.add(c.id);
-    }
-  }
+  // Compute relevant country IDs (memoize to avoid re-renders)
+  const relevantCountryIdStr = countries
+    .filter((c) => {
+      const prefixes = c.icao_prefixes ?? [];
+      const isDepArr = prefixes.some((p: string) => flight.departure_icao?.startsWith(p) || flight.arrival_icao?.startsWith(p));
+      const isOverflown = overflights.some((o) => o.country_iso === c.iso_code);
+      return isDepArr || isOverflown;
+    })
+    .map((c) => c.id)
+    .sort()
+    .join(",");
 
   const loadData = useCallback(async () => {
     try {
-      const [permRes, handlerRes] = await Promise.all([
+      const ids = relevantCountryIdStr.split(",").filter(Boolean);
+      // Fetch permits, handlers, and all country requirements in parallel
+      const fetches: Promise<Response>[] = [
         fetch(`/api/ops/intl/permits?flight_id=${flight.id}`),
         fetch(`/api/ops/intl/handlers?flight_id=${flight.id}`),
-      ]);
-      const [permData, handlerData] = await Promise.all([permRes.json(), handlerRes.json()]);
-      setPermits(permData.permits ?? []);
-      setHandlers(handlerData.handlers ?? []);
+        ...ids.map((cid) => fetch(`/api/ops/intl/countries/${cid}/requirements`)),
+      ];
+      const responses = await Promise.all(fetches);
+      const jsons = await Promise.all(responses.map((r) => r.json()));
 
-      // Load requirements for all relevant countries (destination + overflown)
-      const relevantCountries = countries.filter((c) => relevantCountryIds.has(c.id));
-      if (relevantCountries.length > 0) {
-        const reqResults = await Promise.all(
-          relevantCountries.map((c) =>
-            fetch(`/api/ops/intl/countries/${c.id}/requirements`).then((r) => r.json())
-          )
-        );
-        setRequirements(reqResults.flatMap((r) => r.requirements ?? []));
-      }
+      setPermits(jsons[0].permits ?? []);
+      setHandlers(jsons[1].handlers ?? []);
+      setRequirements(jsons.slice(2).flatMap((r) => r.requirements ?? []));
     } catch { /* ignore */ }
     setLoading(false);
-  }, [flight.id, countries, relevantCountryIds]);
+  }, [flight.id, relevantCountryIdStr]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
@@ -390,9 +394,10 @@ function FlightDetail({ flight, countries, overflights, ffRoute, routeMethod }: 
   }
 
   // Compute which permits are missing for this leg
+  const relevantIds = new Set(relevantCountryIdStr.split(",").filter(Boolean));
   const missingPermits: Array<{ country: Country; type: "overflight" | "landing" }> = [];
   for (const c of countries) {
-    if (!relevantCountryIds.has(c.id)) continue;
+    if (!relevantIds.has(c.id)) continue;
     const isOverflown = overflights.some((o) => o.country_iso === c.iso_code);
     const isDestination = (c.icao_prefixes ?? []).some((p: string) =>
       flight.departure_icao?.startsWith(p) || flight.arrival_icao?.startsWith(p)
