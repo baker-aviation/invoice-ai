@@ -6,6 +6,7 @@ import { buildBestRateByAirport, airportVariants } from "@/lib/fuelLookup";
 import { calcPpg, optimizeMultiLeg, type AircraftType, type MultiLeg, type MultiRouteInputs, type MultiLegPlan } from "@/app/tanker/model";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 // ─── Standard aircraft parameters ──────────────────────────────────────
 const AIRCRAFT_DEFAULTS: Record<AircraftType, {
@@ -156,7 +157,7 @@ export async function POST(req: NextRequest) {
     // 3. Get fuel prices
     let advertisedPrices: Awaited<ReturnType<typeof fetchAdvertisedPrices>> = [];
     try {
-      advertisedPrices = await fetchAdvertisedPrices({ recentWeeks: 4 });
+      advertisedPrices = await fetchAdvertisedPrices({ recentWeeks: 2 });
     } catch (err) {
       console.warn("[fuel-planning/generate] Could not fetch advertised prices:", err);
     }
@@ -247,7 +248,7 @@ export async function POST(req: NextRequest) {
         legs: multiLegs,
       };
 
-      const plan = optimizeMultiLeg(routeInput);
+      const plan = optimizeMultiLeg(routeInput, 200); // coarser step for fleet speed
 
       // Naive cost: buy only what you need at each stop (no tankering)
       // Track fuel carryover from shutdown through each leg
