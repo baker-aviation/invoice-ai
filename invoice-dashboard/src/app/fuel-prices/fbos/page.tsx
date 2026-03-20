@@ -269,17 +269,6 @@ export default function FBOsPage() {
         const airportFees = invoiceFeesByAirport.get(airportCode) ?? [];
         const airportFuel = fuelByAirport.get(airportCode) ?? [];
 
-        // Fuel not matched to a specific FBO (third-party vendors)
-        const unmatchedFuel = airportFuel.filter((f) =>
-          !records.some((r) => fuelVendorMatchesFbo(f.vendor, r.chain, r.fbo_name))
-        );
-        // Group unmatched fuel by vendor
-        const unmatchedByVendor = new Map<string, FuelPrice[]>();
-        for (const f of unmatchedFuel) {
-          if (!unmatchedByVendor.has(f.vendor)) unmatchedByVendor.set(f.vendor, []);
-          unmatchedByVendor.get(f.vendor)!.push(f);
-        }
-
         return (
           <div key={airportCode} className="rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden">
             <div className="bg-slate-800 text-white px-5 py-3 flex items-center gap-3">
@@ -333,17 +322,20 @@ export default function FBOsPage() {
                     }
                   }
 
-                  // Build fuel display: scraped retail + matched contract prices
-                  const allFuel: { label: string; price: number; source: "scraped" | "contract"; tier?: string }[] = [];
-                  if (r.jet_a_price) allFuel.push({ label: "Jet-A", price: r.jet_a_price, source: "scraped" });
-                  if (r.jet_a_additive_price) allFuel.push({ label: "Jet-A + Additive", price: r.jet_a_additive_price, source: "scraped" });
-                  if (r.saf_price) allFuel.push({ label: "SAF", price: r.saf_price, source: "scraped" });
-                  if (r.avgas_price) allFuel.push({ label: "Avgas 100LL", price: r.avgas_price, source: "scraped" });
-                  for (const fp of matchedFuel) {
+                  // Build fuel display: scraped retail + matched contract + all airport contract prices
+                  type FuelItem = { label: string; price: number; source: "scraped" | "contract"; vendor?: string; tier?: string };
+                  const allFuel: FuelItem[] = [];
+                  if (r.jet_a_price) allFuel.push({ label: "Jet-A", price: r.jet_a_price, source: "scraped", vendor: r.chain });
+                  if (r.jet_a_additive_price) allFuel.push({ label: "Jet-A + Additive", price: r.jet_a_additive_price, source: "scraped", vendor: r.chain });
+                  if (r.saf_price) allFuel.push({ label: "SAF", price: r.saf_price, source: "scraped", vendor: r.chain });
+                  if (r.avgas_price) allFuel.push({ label: "Avgas 100LL", price: r.avgas_price, source: "scraped", vendor: r.chain });
+                  // Include ALL contract fuel at this airport (matched + unmatched vendors)
+                  for (const fp of airportFuel) {
                     allFuel.push({
                       label: fp.product,
                       price: fp.price,
                       source: "contract",
+                      vendor: fp.vendor,
                       tier: fp.volume_tier !== "default" ? fp.volume_tier : undefined,
                     });
                   }
@@ -398,27 +390,36 @@ export default function FBOsPage() {
                                 <div className="rounded-lg border-2 border-amber-300 bg-amber-50 px-3 py-2.5 mb-2">
                                   <div className="text-[10px] font-medium text-amber-600 uppercase tracking-wide">
                                     Best Jet-A
-                                    {bestFuel.source === "contract" && " (contract)"}
                                     {bestFuel.tier && ` · ${bestFuel.tier}`}
                                   </div>
                                   <div className="text-xl font-bold text-amber-800 mt-0.5">
                                     ${bestFuel.price.toFixed(2)}
                                     <span className="text-xs font-normal">/gal</span>
                                   </div>
+                                  {bestFuel.vendor && (
+                                    <div className="text-[10px] text-amber-700 mt-1 font-medium">
+                                      via {bestFuel.vendor}
+                                    </div>
+                                  )}
                                 </div>
                               )}
                               {otherFuels.length > 0 && (
                                 <div className="space-y-1">
                                   {otherFuels.map((f, j) => (
-                                    <div key={j} className="flex items-center justify-between text-xs px-1.5">
-                                      <span className="text-gray-500 truncate mr-2">
-                                        {f.label}{f.tier ? ` (${f.tier})` : ""}
-                                      </span>
-                                      <span className={`font-medium whitespace-nowrap ${
-                                        f.source === "contract" ? "text-blue-700" : "text-gray-700"
-                                      }`}>
-                                        ${f.price.toFixed(2)}
-                                      </span>
+                                    <div key={j} className="text-xs px-1.5 py-0.5">
+                                      <div className="flex items-center justify-between">
+                                        <span className="text-gray-500 truncate mr-2">
+                                          {f.label}{f.tier ? ` (${f.tier})` : ""}
+                                        </span>
+                                        <span className={`font-medium whitespace-nowrap ${
+                                          f.source === "contract" ? "text-blue-700" : "text-gray-700"
+                                        }`}>
+                                          ${f.price.toFixed(2)}
+                                        </span>
+                                      </div>
+                                      {f.vendor && f.vendor !== bestFuel?.vendor && (
+                                        <div className="text-[9px] text-gray-400 text-right">{f.vendor}</div>
+                                      )}
                                     </div>
                                   ))}
                                 </div>
@@ -435,58 +436,6 @@ export default function FBOsPage() {
                     </div>
                   );
                 })}
-
-              {/* Contract fuel from third-party vendors (not matched to any FBO) */}
-              {unmatchedByVendor.size > 0 && (
-                <div className="px-5 py-4 bg-amber-50/30">
-                  <div className="flex items-center gap-2 mb-3">
-                    <span className="font-semibold text-sm text-amber-900">Contract Fuel</span>
-                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800">
-                      From Price Sheets
-                    </span>
-                  </div>
-                  <div className="space-y-3">
-                    {Array.from(unmatchedByVendor.entries()).map(([vendor, prices]) => {
-                      // Dedupe same product+price
-                      const unique = prices.filter((p, i, arr) =>
-                        arr.findIndex((x) => x.product === p.product && x.price === p.price) === i
-                      );
-                      // Best price
-                      const jetA = unique.filter((p) => /jet.?a/i.test(p.product) && !/saf/i.test(p.product));
-                      const best = jetA.length > 0 ? jetA.reduce((b, p) => p.price < b.price ? p : b) : null;
-                      const others = unique.filter((p) => p !== best);
-
-                      return (
-                        <div key={vendor} className="flex items-start gap-3">
-                          <span className="text-xs font-medium text-gray-600 w-32 flex-shrink-0 pt-1">{vendor}</span>
-                          <div className="flex items-start gap-3 flex-1">
-                            {best && (
-                              <div className="rounded-lg border-2 border-amber-300 bg-amber-50 px-3 py-2 w-40 flex-shrink-0">
-                                <div className="text-[10px] font-medium text-amber-600 uppercase">
-                                  {best.product}{best.volume_tier !== "default" ? ` · ${best.volume_tier}` : ""}
-                                </div>
-                                <div className="text-lg font-bold text-amber-800">
-                                  ${best.price.toFixed(2)}<span className="text-xs font-normal">/gal</span>
-                                </div>
-                              </div>
-                            )}
-                            {others.length > 0 && (
-                              <div className="space-y-0.5 pt-1">
-                                {others.map((p, j) => (
-                                  <div key={j} className="flex items-center gap-2 text-xs">
-                                    <span className="text-gray-500">{p.product}{p.volume_tier !== "default" ? ` (${p.volume_tier})` : ""}</span>
-                                    <span className="font-medium text-gray-700">${p.price.toFixed(2)}</span>
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
 
               {/* Invoice fees not matched to any scraped FBO */}
               {airportFees.filter((f) =>
