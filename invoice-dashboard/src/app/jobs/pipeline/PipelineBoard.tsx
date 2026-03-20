@@ -124,8 +124,10 @@ function MeetingLinkTool({ storageKey, placeholder, borderColor }: { storageKey:
   );
 }
 
-function InfoSessionTools({ jobs }: { jobs: JobRow[] }) {
+function InfoSessionTools({ jobs, onAttendanceChecked }: { jobs: JobRow[]; onAttendanceChecked?: () => void }) {
   const [copied, setCopied] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [attendanceResult, setAttendanceResult] = useState<string | null>(null);
   const emails = jobs.filter((j) => j.email).map((j) => j.email!);
 
   const handleCopyEmails = () => {
@@ -134,6 +136,39 @@ function InfoSessionTools({ jobs }: { jobs: JobRow[] }) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
+  };
+
+  const handleCheckAttendance = async () => {
+    let meetLink = "";
+    try { meetLink = localStorage.getItem("info_session_meet_link") ?? ""; } catch {}
+    if (!meetLink) {
+      setAttendanceResult("Enter a Google Meet link first");
+      return;
+    }
+    setChecking(true);
+    setAttendanceResult(null);
+    try {
+      const res = await fetch("/api/jobs/attendance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ meetLink }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setAttendanceResult(`Error: ${data.error}`);
+        return;
+      }
+      const parts = [];
+      if (data.markedCount > 0) parts.push(`${data.markedCount} marked attended`);
+      if (data.unmatched?.length > 0) parts.push(`${data.unmatched.length} unmatched`);
+      if (data.totalParticipants === 0) parts.push("No participants found (meeting may not have ended yet)");
+      setAttendanceResult(parts.join(", ") || "No matches found");
+      if (data.markedCount > 0) onAttendanceChecked?.();
+    } catch (err) {
+      setAttendanceResult(`Error: ${String(err)}`);
+    } finally {
+      setChecking(false);
+    }
   };
 
   return (
@@ -148,6 +183,18 @@ function InfoSessionTools({ jobs }: { jobs: JobRow[] }) {
         </button>
       </div>
       <MeetingLinkTool storageKey="info_session_meet_link" placeholder="Google Meet link..." />
+      <button
+        onClick={handleCheckAttendance}
+        disabled={checking}
+        className="w-full text-[10px] font-medium px-2 py-1 rounded border border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 disabled:opacity-50 transition-colors"
+      >
+        {checking ? "Checking..." : "Check Attendance"}
+      </button>
+      {attendanceResult && (
+        <div className={`text-[10px] px-2 py-1 rounded ${attendanceResult.startsWith("Error") ? "bg-red-50 text-red-600" : "bg-emerald-50 text-emerald-700"}`}>
+          {attendanceResult}
+        </div>
+      )}
     </div>
   );
 }
@@ -948,7 +995,12 @@ export default function PipelineBoard({
                 </span>
               </div>
 
-              {stage === "info_session" && <InfoSessionTools jobs={stageJobs} />}
+              {stage === "info_session" && (
+                <InfoSessionTools
+                  jobs={stageJobs}
+                  onAttendanceChecked={() => window.location.reload()}
+                />
+              )}
               {stage === "interview_scheduled" && (
                 <div className="px-3 py-2 border-t border-fuchsia-100">
                   <MeetingLinkTool storageKey="interview_meet_link" placeholder="Calendly or Meet link..." borderColor="fuchsia" />
