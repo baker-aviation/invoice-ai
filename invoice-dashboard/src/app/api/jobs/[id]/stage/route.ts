@@ -41,14 +41,28 @@ export async function PATCH(
 
   try {
     const supa = createServiceClient();
-    const { data } = await supa
+    const { data, error: updateErr } = await supa
       .from("job_application_parse")
       .update({ pipeline_stage: isRemove ? null : stage })
       .eq("application_id", Number(id))
       .select("id");
 
+    if (updateErr) {
+      console.error("[jobs/stage] Update error:", updateErr);
+      return NextResponse.json({ error: `Update failed: ${updateErr.message}` }, { status: 500 });
+    }
+
     if (!data || data.length === 0) {
-      return NextResponse.json({ error: "Application not found" }, { status: 404 });
+      // Debug: check if the row exists at all
+      const { data: check } = await supa
+        .from("job_application_parse")
+        .select("id, application_id, pipeline_stage")
+        .eq("application_id", Number(id))
+        .limit(1);
+      return NextResponse.json({
+        error: "Application not found",
+        debug: { id, numericId: Number(id), existingRows: check?.length ?? 0, rows: check },
+      }, { status: 404 });
     }
 
     // Auto-create pilot profile when moved to "hired"
