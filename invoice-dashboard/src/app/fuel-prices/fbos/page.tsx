@@ -404,25 +404,7 @@ export default function FBOsPage() {
                                 </div>
                               )}
                               {otherFuels.length > 0 && (
-                                <div className="space-y-1">
-                                  {otherFuels.map((f, j) => (
-                                    <div key={j} className="text-xs px-1.5 py-0.5">
-                                      <div className="flex items-center justify-between">
-                                        <span className="text-gray-500 truncate mr-2">
-                                          {f.label}{f.tier ? ` (${f.tier})` : ""}
-                                        </span>
-                                        <span className={`font-medium whitespace-nowrap ${
-                                          f.source === "contract" ? "text-blue-700" : "text-gray-700"
-                                        }`}>
-                                          ${f.price.toFixed(2)}
-                                        </span>
-                                      </div>
-                                      {f.vendor && f.vendor !== bestFuel?.vendor && (
-                                        <div className="text-[9px] text-gray-400 text-right">{f.vendor}</div>
-                                      )}
-                                    </div>
-                                  ))}
-                                </div>
+                                <FuelDropdown fuels={otherFuels} bestVendor={bestFuel?.vendor} />
                               )}
                             </div>
                           )}
@@ -502,6 +484,49 @@ function FeeCard({ label, value, highlight, yours }: {
       <div className={`text-sm font-semibold mt-0.5 whitespace-pre-line ${
         yours ? "text-blue-800" : highlight ? "text-green-700" : "text-gray-900"
       }`}>{value}</div>
+    </div>
+  );
+}
+
+function FuelDropdown({ fuels, bestVendor }: {
+  fuels: { label: string; price: number; source: string; vendor?: string; tier?: string }[];
+  bestVendor?: string;
+}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="text-[11px] text-gray-500 hover:text-gray-700 flex items-center gap-1 px-1.5 py-1 transition-colors"
+      >
+        <span>{fuels.length} more price{fuels.length !== 1 ? "s" : ""}</span>
+        <svg className={`w-3 h-3 transition-transform ${open ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+      {open && (
+        <div className="mt-1 max-h-48 overflow-y-auto space-y-0.5">
+          {fuels.map((f, j) => (
+            <div key={j} className="text-xs px-1.5 py-0.5">
+              <div className="flex items-center justify-between">
+                <span className="text-gray-500 truncate mr-2">
+                  {f.label}{f.tier ? ` (${f.tier})` : ""}
+                </span>
+                <span className={`font-medium whitespace-nowrap ${
+                  f.source === "contract" ? "text-blue-700" : "text-gray-700"
+                }`}>
+                  ${f.price.toFixed(2)}
+                </span>
+              </div>
+              {f.vendor && f.vendor !== bestVendor && (
+                <div className="text-[9px] text-gray-400 text-right">{f.vendor}</div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
