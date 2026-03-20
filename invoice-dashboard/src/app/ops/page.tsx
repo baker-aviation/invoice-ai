@@ -1,6 +1,5 @@
 export const dynamic = "force-dynamic";
 
-import { unstable_cache } from "next/cache";
 import { Topbar } from "@/components/Topbar";
 import { AutoRefresh } from "@/components/AutoRefresh";
 import { fetchFlights, fetchMxNotes, fetchSwimFlowControl } from "@/lib/opsApi";
@@ -8,29 +7,25 @@ import { fetchAdvertisedPrices } from "@/lib/invoiceApi";
 import { createClient } from "@/lib/supabase/server";
 import OpsTabs from "./OpsTabs";
 
-// Cache shared data for 60s so concurrent users share one DB fetch per minute.
-// Auth is still enforced per-request by the page — only the data is cached.
-const getCachedOpsData = unstable_cache(
-  async () => {
-    const [data, advertisedPrices, mxNotes, swimFlow, pprRows] = await Promise.all([
-      fetchFlights({ lookahead_hours: 48, lookback_hours: 48 }).catch((e) => {
-        console.error("[ops/page] fetchFlights error:", e);
-        return { ok: false, flights: [] as any[], count: 0, error: String(e) };
-      }),
-      fetchAdvertisedPrices({ recentWeeks: 4 }).catch(() => []),
-      fetchMxNotes().catch(() => []),
-      fetchSwimFlowControl().catch(() => []),
-      createClient().then((s) => s.from("baker_ppr_airports").select("icao")).then((r) => r.data).catch(() => []),
-    ]);
-    return { data, advertisedPrices, mxNotes, swimFlow, pprRows };
-  },
-  ["ops-page-data"],
-  { revalidate: 60 }
-);
+// Fetch ops data on each request (no unstable_cache — payload exceeds
+// Vercel's 2 MB cache-item limit when flights + alerts are large).
+async function getOpsData() {
+  const [data, advertisedPrices, mxNotes, swimFlow, pprRows] = await Promise.all([
+    fetchFlights({ lookahead_hours: 48, lookback_hours: 48 }).catch((e) => {
+      console.error("[ops/page] fetchFlights error:", e);
+      return { ok: false, flights: [] as any[], count: 0, error: String(e) };
+    }),
+    fetchAdvertisedPrices({ recentWeeks: 4 }).catch(() => []),
+    fetchMxNotes().catch(() => []),
+    fetchSwimFlowControl().catch(() => []),
+    createClient().then((s) => s.from("baker_ppr_airports").select("icao")).then((r) => r.data).catch(() => []),
+  ]);
+  return { data, advertisedPrices, mxNotes, swimFlow, pprRows };
+}
 
 export default async function OpsPage() {
   let error: string | null = null;
-  const { data, advertisedPrices, mxNotes, swimFlow, pprRows } = await getCachedOpsData().catch((e) => {
+  const { data, advertisedPrices, mxNotes, swimFlow, pprRows } = await getOpsData().catch((e) => {
     error = String(e);
     return {
       data: { ok: false, flights: [] as any[], count: 0, error: null as string | null },
