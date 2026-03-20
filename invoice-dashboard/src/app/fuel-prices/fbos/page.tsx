@@ -375,12 +375,22 @@ export default function FBOsPage() {
                     tier: fp.volume_tier !== "default" ? fp.volume_tier : undefined,
                   }));
 
-                  // Best Jet-A for THIS FBO: only from FBO's own retail
+                  // Best Jet-A for this FBO: prefer retail, fall back to best contract
                   const fboJetA = fboRetailFuel.filter((f) => /jet.?a/i.test(f.label) && !/saf/i.test(f.label) && !/additive/i.test(f.label));
-                  const bestFboFuel = fboJetA.length > 0
-                    ? fboJetA.reduce((best, f) => f.price < best.price ? f : best)
-                    : null;
+                  const contractJetA = contractFuel.filter((f) => /jet.?a/i.test(f.label) && !/saf/i.test(f.label));
+                  let bestFboFuel: FuelItem | null = null;
+                  let bestIsContract = false;
+                  if (fboJetA.length > 0) {
+                    bestFboFuel = fboJetA.reduce((best, f) => f.price < best.price ? f : best);
+                  } else if (contractJetA.length > 0) {
+                    bestFboFuel = contractJetA.reduce((best, f) => f.price < best.price ? f : best);
+                    bestIsContract = true;
+                  }
                   const otherRetail = fboRetailFuel.filter((f) => f !== bestFboFuel);
+                  // Don't show best contract in dropdown if it's already the main card
+                  const dropdownFuel = bestIsContract
+                    ? contractFuel.filter((f) => f !== bestFboFuel)
+                    : contractFuel;
 
                   const hasFees = Object.keys(mergedFees).length > 0;
                   const hasFuel = fboRetailFuel.length > 0 || contractFuel.length > 0;
@@ -420,16 +430,30 @@ export default function FBOsPage() {
 
                           {/* Right: fuel price box */}
                           {hasFuel && (
-                            <div className="w-48 flex-shrink-0">
+                            <div className="w-52 flex-shrink-0">
                               {bestFboFuel && (
-                                <div className="rounded-lg border-2 border-amber-300 bg-amber-50 px-3 py-2.5 mb-2">
-                                  <div className="text-[10px] font-medium text-amber-600 uppercase tracking-wide">
-                                    Jet-A (retail)
+                                <div className={`rounded-lg border-2 px-3 py-2.5 mb-2 ${
+                                  bestIsContract
+                                    ? "border-blue-300 bg-blue-50"
+                                    : "border-amber-300 bg-amber-50"
+                                }`}>
+                                  <div className={`text-[10px] font-medium uppercase tracking-wide ${
+                                    bestIsContract ? "text-blue-600" : "text-amber-600"
+                                  }`}>
+                                    {bestIsContract ? "Best Contract" : "Jet-A (retail)"}
+                                    {bestFboFuel.tier && ` · ${bestFboFuel.tier}`}
                                   </div>
-                                  <div className="text-xl font-bold text-amber-800 mt-0.5">
+                                  <div className={`text-xl font-bold mt-0.5 ${
+                                    bestIsContract ? "text-blue-800" : "text-amber-800"
+                                  }`}>
                                     ${bestFboFuel.price.toFixed(2)}
                                     <span className="text-xs font-normal">/gal</span>
                                   </div>
+                                  {bestIsContract && bestFboFuel.vendor && (
+                                    <div className="text-[10px] text-blue-700 mt-1 font-medium">
+                                      via {bestFboFuel.vendor}
+                                    </div>
+                                  )}
                                 </div>
                               )}
                               {/* Other retail fuel for this FBO */}
@@ -444,8 +468,8 @@ export default function FBOsPage() {
                                 </div>
                               )}
                               {/* Contract fuel dropdown */}
-                              {contractFuel.length > 0 && (
-                                <FuelDropdown fuels={contractFuel} bestVendor={bestFboFuel?.vendor} />
+                              {dropdownFuel.length > 0 && (
+                                <FuelDropdown fuels={dropdownFuel} bestVendor={bestFboFuel?.vendor} />
                               )}
                             </div>
                           )}
