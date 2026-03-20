@@ -293,6 +293,189 @@ function FlightRow({ flight, countries, expanded, onToggle }: {
 }
 
 // ===========================================================================
+// TRIP DOCS PANEL — select & download documents for a flight
+// ===========================================================================
+type TripDoc = { id: string; name: string; document_type: string; entity_type: string; entity_id: string };
+
+function TripDocsPanel({ tail, dep, arr }: { tail: string; dep: string; arr: string }) {
+  const [open, setOpen] = useState(false);
+  const [aircraft, setAircraft] = useState<TripDoc[]>([]);
+  const [company, setCompany] = useState<TripDoc[]>([]);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [loading, setLoading] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+
+  const loadDocs = useCallback(async () => {
+    if (loaded) return;
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/ops/intl/trip-docs?tail=${tail}`);
+      const data = await res.json();
+      const ac = data.aircraft ?? [];
+      const co = data.company ?? [];
+      setAircraft(ac);
+      setCompany(co);
+      // Pre-select all aircraft docs
+      setSelected(new Set(ac.map((d: TripDoc) => d.id)));
+      setLoaded(true);
+    } catch { /* ignore */ }
+    setLoading(false);
+  }, [tail, loaded]);
+
+  const toggle = (id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const selectAllGroup = (docs: TripDoc[]) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      docs.forEach((d) => next.add(d.id));
+      return next;
+    });
+  };
+
+  const deselectAllGroup = (docs: TripDoc[]) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      docs.forEach((d) => next.delete(d.id));
+      return next;
+    });
+  };
+
+  const downloadSelected = async () => {
+    if (selected.size === 0) return;
+    setDownloading(true);
+    try {
+      // Get signed URLs for selected docs
+      const ids = [...selected].join(",");
+      const res = await fetch(`/api/ops/intl/trip-docs?tail=${tail}&ids=${ids}`);
+      const data = await res.json();
+      const docs = data.documents ?? [];
+
+      if (docs.length === 1) {
+        // Single doc — just download directly
+        window.open(docs[0].url, "_blank");
+      } else {
+        // Multiple docs — ZIP client-side
+        const JSZip = (await import("jszip")).default;
+        const zip = new JSZip();
+
+        await Promise.all(
+          docs.map(async (doc: { name: string; entity_type: string; entity_id: string; url: string }) => {
+            try {
+              const response = await fetch(doc.url);
+              const blob = await response.blob();
+              const folder = doc.entity_type === "aircraft" ? `Aircraft - ${doc.entity_id}` : "Company";
+              zip.file(`${folder}/${doc.name}.pdf`, blob);
+            } catch { /* skip failed downloads */ }
+          })
+        );
+
+        const zipBlob = await zip.generateAsync({ type: "blob" });
+        const url = URL.createObjectURL(zipBlob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${tail}_${dep}-${arr}_trip-docs.zip`;
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+    } catch { /* ignore */ }
+    setDownloading(false);
+  };
+
+  const groupChecked = (docs: TripDoc[]) => docs.filter((d) => selected.has(d.id)).length;
+
+  return (
+    <div className="mt-4 pt-3 border-t border-gray-200">
+      <div className="flex items-center justify-between">
+        <h4 className="text-xs font-bold uppercase tracking-wide text-gray-500">Trip Documents</h4>
+        <button
+          onClick={() => { setOpen(!open); if (!loaded) loadDocs(); }}
+          className="text-xs text-blue-600 hover:text-blue-800 font-medium"
+        >
+          {open ? "Hide" : `Select & Download`}
+        </button>
+      </div>
+
+      {open && (
+        <div className="mt-2 space-y-3">
+          {loading ? (
+            <p className="text-xs text-gray-400">Loading documents...</p>
+          ) : (
+            <>
+              {/* Aircraft docs */}
+              {aircraft.length > 0 && (
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs font-semibold text-gray-600">Aircraft — {tail}</span>
+                    <div className="flex gap-2">
+                      <button onClick={() => selectAllGroup(aircraft)} className="text-[10px] text-blue-500 hover:underline">All</button>
+                      <button onClick={() => deselectAllGroup(aircraft)} className="text-[10px] text-gray-400 hover:underline">None</button>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-1">
+                    {aircraft.map((d) => (
+                      <label key={d.id} className="flex items-center gap-1.5 text-xs cursor-pointer hover:bg-gray-50 rounded px-1 py-0.5">
+                        <input type="checkbox" checked={selected.has(d.id)} onChange={() => toggle(d.id)} className="rounded border-gray-300 text-blue-600" />
+                        <span className="truncate">{d.name}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Company docs */}
+              {company.length > 0 && (
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs font-semibold text-gray-600">Company</span>
+                    <div className="flex gap-2">
+                      <button onClick={() => selectAllGroup(company)} className="text-[10px] text-blue-500 hover:underline">All</button>
+                      <button onClick={() => deselectAllGroup(company)} className="text-[10px] text-gray-400 hover:underline">None</button>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-1">
+                    {company.map((d) => (
+                      <label key={d.id} className="flex items-center gap-1.5 text-xs cursor-pointer hover:bg-gray-50 rounded px-1 py-0.5">
+                        <input type="checkbox" checked={selected.has(d.id)} onChange={() => toggle(d.id)} className="rounded border-gray-300 text-blue-600" />
+                        <span className="truncate">{d.name}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {aircraft.length === 0 && company.length === 0 && (
+                <p className="text-xs text-gray-400">No documents found for {tail}</p>
+              )}
+
+              {/* Download button */}
+              {selected.size > 0 && (
+                <div className="flex justify-end">
+                  <button
+                    onClick={downloadSelected}
+                    disabled={downloading}
+                    className="inline-flex items-center gap-2 px-3 py-1.5 bg-blue-600 text-white text-xs font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" /></svg>
+                    {downloading ? "Zipping..." : `Download ${selected.size} doc${selected.size > 1 ? "s" : ""}`}
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ===========================================================================
 // FLIGHT DETAIL — permits, handlers, checklist for a single leg
 // ===========================================================================
 function FlightDetail({ flight, countries, overflights, ffRoute, routeMethod }: { flight: Flight; countries: Country[]; overflights: OverflightInfo[]; ffRoute: string | null; routeMethod: string }) {
@@ -713,24 +896,9 @@ function FlightDetail({ flight, countries, overflights, ffRoute, routeMethod }: 
         )}
       </div>
 
-      {/* Download all trip documents */}
+      {/* Trip Documents — select & download */}
       {flight.tail_number && (
-        <div className="mt-4 pt-3 border-t border-gray-200 flex justify-end">
-          <button
-            onClick={() => {
-              const params = new URLSearchParams({
-                tail: flight.tail_number!,
-                ...(flight.departure_icao && { dep: flight.departure_icao }),
-                ...(flight.arrival_icao && { arr: flight.arrival_icao }),
-              });
-              window.open(`/api/ops/intl/trip-docs?${params}`, "_blank");
-            }}
-            className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"
-          >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" /></svg>
-            Download Trip Docs
-          </button>
-        </div>
+        <TripDocsPanel tail={flight.tail_number} dep={flight.departure_icao ?? ""} arr={flight.arrival_icao ?? ""} />
       )}
     </div>
   );
