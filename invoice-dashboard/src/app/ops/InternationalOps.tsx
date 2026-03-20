@@ -194,15 +194,24 @@ function FlightRow({ flight, countries, expanded, onToggle }: {
   const time = dep.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC" });
   const daysOut = Math.ceil((dep.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
 
-  // Fetch overflights once per row
+  const [ffRoute, setFfRoute] = useState<string | null>(null);
+  const [routeMethod, setRouteMethod] = useState<string>("loading");
+
+  // Fetch overflights + ForeFlight route once per row
   useEffect(() => {
     if (ovfLoaded || !flight.departure_icao || !flight.arrival_icao) return;
     setOvfLoaded(true);
-    fetch(`/api/ops/intl/overflights?dep=${flight.departure_icao}&arr=${flight.arrival_icao}`)
+    const params = new URLSearchParams({ dep: flight.departure_icao, arr: flight.arrival_icao });
+    if (flight.tail_number) params.set("tail", flight.tail_number);
+    fetch(`/api/ops/intl/route-analysis?${params}`)
       .then((r) => r.json())
-      .then((d) => setOverflights(d.overflights ?? []))
-      .catch(() => {});
-  }, [flight.departure_icao, flight.arrival_icao, ovfLoaded]);
+      .then((d) => {
+        setOverflights(d.overflights ?? []);
+        setFfRoute(d.foreflight?.route ?? null);
+        setRouteMethod(d.method ?? "great_circle");
+      })
+      .catch(() => { setRouteMethod("error"); });
+  }, [flight.departure_icao, flight.arrival_icao, flight.tail_number, ovfLoaded]);
 
   // Flag overflown countries that require permits
   const ovfPermitCountries = overflights.filter((o) => {
@@ -253,7 +262,7 @@ function FlightRow({ flight, countries, expanded, onToggle }: {
       </button>
 
       {expanded && (
-        <FlightDetail flight={flight} countries={countries} overflights={overflights} />
+        <FlightDetail flight={flight} countries={countries} overflights={overflights} ffRoute={ffRoute} routeMethod={routeMethod} />
       )}
     </div>
   );
@@ -262,7 +271,7 @@ function FlightRow({ flight, countries, expanded, onToggle }: {
 // ===========================================================================
 // FLIGHT DETAIL — permits, handlers, checklist for a single leg
 // ===========================================================================
-function FlightDetail({ flight, countries, overflights }: { flight: Flight; countries: Country[]; overflights: OverflightInfo[] }) {
+function FlightDetail({ flight, countries, overflights, ffRoute, routeMethod }: { flight: Flight; countries: Country[]; overflights: OverflightInfo[]; ffRoute: string | null; routeMethod: string }) {
   const [permits, setPermits] = useState<IntlLegPermit[]>([]);
   const [handlers, setHandlers] = useState<IntlLegHandler[]>([]);
   const [requirements, setRequirements] = useState<CountryRequirement[]>([]);
@@ -432,9 +441,19 @@ function FlightDetail({ flight, countries, overflights }: { flight: Flight; coun
   return (
     <div className="border-t border-gray-200 bg-gray-50 px-4 py-3 space-y-4">
       {/* Overflight route analysis */}
-      {overflights.length > 0 && (
+      {(overflights.length > 0 || ffRoute) && (
         <div>
-          <h4 className="text-xs font-semibold text-gray-700 uppercase mb-1">Route Overflight Analysis</h4>
+          <div className="flex items-center gap-2 mb-1">
+            <h4 className="text-xs font-semibold text-gray-700 uppercase">Route Overflight Analysis</h4>
+            <span className="text-[10px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded">
+              {routeMethod === "foreflight+great_circle" ? "ForeFlight + GC" : routeMethod === "great_circle" ? "Great Circle" : routeMethod}
+            </span>
+          </div>
+          {ffRoute && (
+            <p className="text-xs text-gray-600 font-mono bg-white border border-gray-200 rounded px-2 py-1 mb-1.5 break-all">
+              {ffRoute}
+            </p>
+          )}
           <div className="flex gap-1.5 flex-wrap">
             {overflights.map((o) => {
               const c = countries.find((c) => c.iso_code === o.country_iso);

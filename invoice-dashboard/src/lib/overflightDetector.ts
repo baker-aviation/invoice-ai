@@ -179,7 +179,12 @@ export function detectOverflights(
   }
 
   const results: OverflightResult[] = [];
-  const seen = new Set<string>(); // track fir_id to avoid dupes
+  const seen = new Set<string>(); // track fir_id+name to avoid dupes
+
+  // MHTG "Central American" FIR covers multiple countries as one polygon.
+  // When detected, we report it as the combined FIR and let the caller
+  // cross-reference with the countries table for specific permit needs.
+  // Countries in MHTG: Honduras, Guatemala, Nicaragua, Costa Rica, El Salvador, Belize.
 
   for (const feature of firBoundaries.features) {
     const { fir_id, country_name, country_iso } = feature.properties;
@@ -189,12 +194,17 @@ export function detectOverflights(
 
     // Test each segment of the route against this FIR polygon
     for (const segment of routeFeatures) {
-      if (turf.booleanIntersects(segment, feature)) {
-        if (!seen.has(fir_id)) {
-          seen.add(fir_id);
-          results.push({ country_name, country_iso, fir_id });
+      try {
+        if (turf.booleanIntersects(segment, feature as GeoJSON.Feature)) {
+          const key = `${fir_id}|${country_name}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            results.push({ country_name, country_iso, fir_id });
+          }
+          break;
         }
-        break; // no need to check other segments for this FIR
+      } catch {
+        // Skip malformed geometries
       }
     }
   }
