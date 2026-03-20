@@ -198,6 +198,9 @@ function InfoSessionTools({ jobs, onAttendanceChecked }: { jobs: JobRow[]; onAtt
       if (data.markedCount > 0) parts.push(`${data.markedCount} marked attended`);
       if (data.unmatched?.length > 0) parts.push(`${data.unmatched.length} unmatched`);
       if (data.totalParticipants === 0) parts.push(`No participants found (code: ${data.meetingCode ?? "?"})`);
+      if (data.totalParticipants > 0 && !data.matched?.length && !data.unmatched?.length && !data.internal?.length) {
+        parts.push(`${data.totalParticipants} participants (all filtered — check domains)`);
+      }
       setAttendanceResult({
         summary: parts.join(", ") || `${data.totalParticipants} participants`,
         matched: data.matched ?? [],
@@ -276,8 +279,8 @@ function InfoSessionTools({ jobs, onAttendanceChecked }: { jobs: JobRow[]; onAtt
             </div>
           )}
           {attendanceResult.matched.length === 0 && attendanceResult.unmatched.length === 0 && (attendanceResult.internal?.length ?? 0) === 0 && attendanceResult.totalParticipants > 0 && (
-            <div className="px-2 py-1 text-gray-400">
-              {attendanceResult.totalParticipants} participants found — details may still be loading. Try refreshing.
+            <div className="px-2 py-1 text-gray-400 text-[9px] break-all">
+              {attendanceResult.totalParticipants} participants — matched:{attendanceResult.matched.length} unmatched:{attendanceResult.unmatched.length} internal:{attendanceResult.internal?.length ?? "undefined"}
             </div>
           )}
         </div>
