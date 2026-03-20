@@ -130,9 +130,16 @@ function fmtDateShort(ms: number): string {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
 }
 
+/**
+ * Find the max rolling 24hr flight time, but only for windows that include
+ * at least one future leg (startMs or endMs >= now). Past-only windows are
+ * informational — we can't change them, so don't alert on them.
+ * Past legs still COUNT toward future windows (they're in the rolling total).
+ */
 function findMaxRolling24(legs: LegInterval[]): number {
   if (legs.length === 0) return 0;
   const WINDOW_MS = 24 * 60 * 60 * 1000;
+  const nowMs = Date.now();
   const checkPoints = new Set<number>();
   for (const leg of legs) {
     checkPoints.add(leg.startMs);
@@ -143,6 +150,9 @@ function findMaxRolling24(legs: LegInterval[]): number {
   let maxTotalMs = 0;
   for (const windowEnd of checkPoints) {
     const windowStart = windowEnd - WINDOW_MS;
+    // Only consider windows that include at least one future/in-progress leg
+    const hasFutureLeg = legs.some(l => l.endMs >= nowMs && l.startMs < windowEnd && l.endMs > windowStart);
+    if (!hasFutureLeg) continue;
     let totalMs = 0;
     for (const leg of legs) {
       const os = Math.max(leg.startMs, windowStart);
@@ -247,6 +257,7 @@ function buildRestPeriods(dps: DutyPeriod[]): RestPeriod[] {
  *  Returns "dpIdx-legIdx" key or null. */
 function findBreachLeg(dps: DutyPeriod[]): string | null {
   const WINDOW_MS = 24 * 60 * 60 * 1000;
+  const nowMs = Date.now();
   const allLegs: { dpIdx: number; legIdx: number; leg: LegInterval }[] = [];
   for (let d = 0; d < dps.length; d++) {
     for (let l = 0; l < dps[d].legs.length; l++) {
@@ -255,8 +266,10 @@ function findBreachLeg(dps: DutyPeriod[]): string | null {
   }
   allLegs.sort((a, b) => a.leg.startMs - b.leg.startMs);
 
-  // For each leg, compute rolling 24hr total at that leg's end
+  // For each FUTURE leg, compute rolling 24hr total at that leg's end
+  // Only flag legs that haven't departed yet — past breaches can't be fixed
   for (let i = 0; i < allLegs.length; i++) {
+    if (allLegs[i].leg.startMs < nowMs) continue; // skip already-departed legs
     const windowEnd = allLegs[i].leg.endMs;
     const windowStart = windowEnd - WINDOW_MS;
     let totalMin = 0;

@@ -1,6 +1,21 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
+
+const STAGE_LABELS: Record<string, string> = {
+  prd_faa_review: "Pending PRD Upload",
+  chief_pilot_review: "Chief Pilot Review",
+  screening: "Screening",
+  info_session: "Info Session",
+  tims_review: "Tim's Review",
+  interview_pre: "Need to Schedule",
+  interview_scheduled: "Interview Scheduled",
+  interview_post: "Interview Complete",
+  pending_offer: "Pending Offer",
+  offer: "Offer",
+  hired: "Hired",
+};
 
 export default function PushToScreeningButton({
   applicationId,
@@ -9,54 +24,72 @@ export default function PushToScreeningButton({
   applicationId: number;
   currentStage: string | null | undefined;
 }) {
-  const alreadyScreening =
-    currentStage === "screening" ||
-    currentStage === "info_session" ||
-    currentStage === "prd_faa_review" ||
-    currentStage === "chief_pilot_review" ||
-    currentStage === "tims_review" ||
-    currentStage === "interview_pre" ||
-    currentStage === "interview_post" ||
-    currentStage === "pending_offer" ||
-    currentStage === "offer" ||
-    currentStage === "hired";
+  const router = useRouter();
+  const inPipeline = !!(currentStage && currentStage !== "");
 
-  const [pushed, setPushed] = useState(alreadyScreening);
-  const [loading, setLoading] = useState(false);
+  const [status, setStatus] = useState<"idle" | "loading" | "error">("idle");
+  const [message, setMessage] = useState<string | null>(null);
 
-  if (pushed) {
+  async function callStageApi(stage: string | null) {
+    setStatus("loading");
+    setMessage(null);
+    try {
+      const res = await fetch(`/api/jobs/${applicationId}/stage`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stage: stage ?? "remove" }),
+      });
+      const text = await res.text();
+      if (res.ok) {
+        router.refresh();
+      } else {
+        setStatus("error");
+        setMessage(`HTTP ${res.status}: ${text.slice(0, 200)}`);
+      }
+    } catch (err) {
+      setStatus("error");
+      setMessage(String(err));
+    }
+  }
+
+  if (inPipeline) {
     return (
-      <span className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M3 8.5l3.5 3.5L13 5" />
-        </svg>
-        In Screening
-      </span>
+      <div className="inline-flex items-center gap-2">
+        <span className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 8.5l3.5 3.5L13 5" />
+          </svg>
+          {STAGE_LABELS[currentStage!] ?? currentStage!.replace(/_/g, " ")}
+        </span>
+        <button
+          type="button"
+          disabled={status === "loading"}
+          onClick={() => callStageApi(null)}
+          className="text-xs text-gray-400 hover:text-red-500 transition-colors"
+          title="Remove from pipeline (back to table)"
+        >
+          {status === "loading" ? "..." : "x"}
+        </button>
+        {status === "error" && message && (
+          <span className="text-xs text-red-600">{message}</span>
+        )}
+      </div>
     );
   }
 
   return (
-    <button
-      type="button"
-      disabled={loading}
-      onClick={async () => {
-        setLoading(true);
-        try {
-          const res = await fetch(`/api/jobs/${applicationId}/stage`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ stage: "screening" }),
-          });
-          if (res.ok) setPushed(true);
-        } catch {
-          // ignore
-        } finally {
-          setLoading(false);
-        }
-      }}
-      className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-full bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 transition-colors"
-    >
-      {loading ? "Pushing..." : "Push to Screening"}
-    </button>
+    <div className="inline-flex items-center gap-2">
+      <button
+        type="button"
+        disabled={status === "loading"}
+        onClick={() => callStageApi("prd_faa_review")}
+        className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-full bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 transition-colors"
+      >
+        {status === "loading" ? "Sending..." : "Send to Pipeline"}
+      </button>
+      {status === "error" && message && (
+        <span className="text-xs text-red-600 max-w-xs break-all">{message}</span>
+      )}
+    </div>
   );
 }

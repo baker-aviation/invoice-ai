@@ -1639,7 +1639,7 @@ function AircraftCompactRow({
   color, zone, date,
   mxNotes, hiddenTodayMxIds, onHideMxForToday, mxVanOverrides, onVanOverride,
   legNote, onSaveNote, onDragStart, onDragOverItem, onRemove, onSetPrimaryAirport,
-  multiVisitVans,
+  multiVisitVans, onSwapToVan, onAlsoOnVan,
 }: {
   arrFlight: Flight;
   nextDep: Flight | null;
@@ -1672,8 +1672,22 @@ function AircraftCompactRow({
   onRemove: (flightId: string) => void;
   onSetPrimaryAirport?: (tail: string, airport: string) => void;
   multiVisitVans?: number[];
+  onSwapToVan?: (flightId: string, toVanId: number) => void;
+  onAlsoOnVan?: (tail: string, toVanId: number) => void;
 }) {
   const [detailOpen, setDetailOpen] = useState(false);
+  const [vanMenuOpen, setVanMenuOpen] = useState(false);
+  const vanMenuRef = useRef<HTMLDivElement>(null);
+
+  // Close van menu on click outside
+  useEffect(() => {
+    if (!vanMenuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (vanMenuRef.current && !vanMenuRef.current.contains(e.target as Node)) setVanMenuOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [vanMenuOpen]);
 
   return (
     <div
@@ -1749,6 +1763,52 @@ function AircraftCompactRow({
               <path d="M3 4.5l3 3 3-3" />
             </svg>
           </button>
+          {/* Van swap / add-to-van menu */}
+          {(onSwapToVan || onAlsoOnVan) && (
+            <div className="relative" ref={vanMenuRef}>
+              <button
+                onClick={(e) => { e.stopPropagation(); setVanMenuOpen((v) => !v); }}
+                className={`p-1 rounded-md transition-colors ${vanMenuOpen ? "text-blue-600 bg-blue-50" : "text-gray-300 hover:text-blue-600 hover:bg-blue-50"}`}
+                title="Move or add to another van"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 14 14" stroke="currentColor" strokeWidth={1.8}>
+                  <path d="M2 5h7M9 5l-2.5-2.5M9 5L6.5 7.5M12 9H5M5 9l2.5-2.5M5 9l2.5 2.5" />
+                </svg>
+              </button>
+              {vanMenuOpen && (
+                <div
+                  className="absolute right-0 top-full mt-1 z-50 bg-white border border-gray-200 rounded-lg shadow-lg py-1 min-w-[160px]"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="px-3 py-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Swap to</div>
+                  {FIXED_VAN_ZONES.filter((z) => z.vanId !== zone.vanId).map((z) => (
+                    <button
+                      key={`swap-${z.vanId}`}
+                      className="w-full text-left px-3 py-1 text-xs hover:bg-blue-50 text-gray-700 hover:text-blue-700 transition-colors"
+                      onClick={() => { onSwapToVan?.(arrFlight.id, z.vanId); setVanMenuOpen(false); }}
+                    >
+                      V{z.vanId} {z.name}
+                    </button>
+                  ))}
+                  {onAlsoOnVan && (
+                    <>
+                      <div className="border-t border-gray-100 my-1" />
+                      <div className="px-3 py-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Also show on</div>
+                      {FIXED_VAN_ZONES.filter((z) => z.vanId !== zone.vanId && !(multiVisitVans ?? []).includes(z.vanId)).map((z) => (
+                        <button
+                          key={`also-${z.vanId}`}
+                          className="w-full text-left px-3 py-1 text-xs hover:bg-indigo-50 text-gray-700 hover:text-indigo-700 transition-colors"
+                          onClick={() => { onAlsoOnVan(arrFlight.tail_number ?? "", z.vanId); setVanMenuOpen(false); }}
+                        >
+                          V{z.vanId} {z.name}
+                        </button>
+                      ))}
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
           <button
             onClick={(e) => { e.stopPropagation(); onRemove(arrFlight.id); }}
             className="p-1 rounded-md text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors"
@@ -1876,6 +1936,8 @@ function VanScheduleCard({
   onSetPrimaryAirport,
   onPublishVan,
   onAddToVan,
+  onSwapToVan,
+  onAlsoOnVan,
   fboMap,
   tailToVans,
 }: {
@@ -1906,6 +1968,8 @@ function VanScheduleCard({
   onSetPrimaryAirport?: (tail: string, airport: string) => void;
   onPublishVan?: (vanId: number) => Promise<void>;
   onAddToVan?: (flightId: string, vanId: number) => void;
+  onSwapToVan?: (flightId: string, toVanId: number) => void;
+  onAlsoOnVan?: (tail: string, toVanId: number) => void;
   fboMap?: Record<string, string>;
   tailToVans?: Map<string, number[]>;
 }) {
@@ -2115,6 +2179,8 @@ function VanScheduleCard({
                     onRemove={onRemove}
                     onSetPrimaryAirport={onSetPrimaryAirport}
                     multiVisitVans={tailToVans?.get(arrFlight.tail_number ?? "")}
+                    onSwapToVan={onSwapToVan}
+                    onAlsoOnVan={onAlsoOnVan}
                   />
                 );
               })}
@@ -2705,14 +2771,39 @@ function ScheduleTab({
       }
     }
 
+    // Detect tails intentionally placed on multiple vans via explicit user overrides
+    const intentionalDualTails = new Set<string>();
+    const tailExplicitVans = new Map<string, Set<number>>();
+    for (const [flightId, targetVanId] of overrides) {
+      for (const items of result.values()) {
+        const item = items.find((i) => i.arrFlight.id === flightId);
+        if (item?.arrFlight.tail_number) {
+          const s = tailExplicitVans.get(item.arrFlight.tail_number) ?? new Set();
+          s.add(targetVanId);
+          tailExplicitVans.set(item.arrFlight.tail_number, s);
+        }
+      }
+    }
+    // Tails also on a van via unscheduledOverrides count as explicit
+    for (const [tail, vanId] of unscheduledOverrides) {
+      const s = tailExplicitVans.get(tail) ?? new Set();
+      s.add(vanId);
+      tailExplicitVans.set(tail, s);
+    }
+    for (const [tail, vans] of tailExplicitVans) {
+      if (vans.size > 1) intentionalDualTails.add(tail);
+    }
+
     // Tail-level dedup: if the same tail ended up in multiple vans (e.g. MX
     // override duplicated it, or base recomputation shifted zone ownership),
     // keep only the explicitly overridden placement, else the closest van.
+    // Skip tails that the user intentionally placed on multiple vans.
     const tailVanWinner = new Map<string, number>(); // tail → winning vanId
     for (const [vanId, items] of result) {
       for (const item of items) {
         const tail = item.arrFlight.tail_number;
         if (!tail) continue;
+        if (intentionalDualTails.has(tail)) continue;
         const existing = tailVanWinner.get(tail);
         if (existing === undefined) {
           tailVanWinner.set(tail, vanId);
@@ -2731,11 +2822,13 @@ function ScheduleTab({
         }
       }
     }
-    // Remove losers
+    // Remove losers (but keep intentional dual-van tails)
     for (const [vanId, items] of result) {
       result.set(vanId, items.filter((item) => {
         const tail = item.arrFlight.tail_number;
-        return !tail || tailVanWinner.get(tail) === vanId;
+        if (!tail) return true;
+        if (intentionalDualTails.has(tail)) return true;
+        return tailVanWinner.get(tail) === vanId;
       }));
     }
 
@@ -4065,6 +4158,32 @@ function ScheduleTab({
                   next.set(tail, apt);
                   return next;
                 });
+                // Also reassign to closest van zone if the new airport is in a different zone
+                const aptInfo = getAirportInfo(apt);
+                if (aptInfo) {
+                  const closest = FIXED_VAN_ZONES
+                    .map((z) => ({
+                      vanId: z.vanId,
+                      dist: haversineKm(aptInfo.lat, aptInfo.lon,
+                        liveVanPositions.get(z.vanId)?.lat ?? z.lat,
+                        liveVanPositions.get(z.vanId)?.lon ?? z.lon),
+                    }))
+                    .sort((a, b) => a.dist - b.dist)[0];
+                  if (closest) {
+                    // Find the flight for this tail and its current van
+                    for (const [vanId, items] of finalItemsByVan) {
+                      const item = items.find((i) => i.arrFlight.tail_number === tail);
+                      if (item && vanId !== closest.vanId) {
+                        setOverrides((prev) => {
+                          const next = new Map(prev);
+                          next.set(item.arrFlight.id, closest.vanId);
+                          return next;
+                        });
+                        break;
+                      }
+                    }
+                  }
+                }
               }}
               onAddToVan={(flightId, vanId) => {
                 setRemovals((prev) => {
@@ -4078,6 +4197,58 @@ function ScheduleTab({
                   next.set(flightId, vanId);
                   return next;
                 });
+              }}
+              onSwapToVan={(flightId, toVanId) => {
+                // Move aircraft to a different van (same as drag-and-drop)
+                setRemovals((prev) => {
+                  if (!prev.has(flightId)) return prev;
+                  const next = new Set(prev);
+                  next.delete(flightId);
+                  return next;
+                });
+                setOverrides((prev) => {
+                  const next = new Map(prev);
+                  next.set(flightId, toVanId);
+                  return next;
+                });
+              }}
+              onAlsoOnVan={(tail, toVanId) => {
+                // Add aircraft to a second van (dual placement)
+                // Find any flight for this tail and create override on the new van
+                const allItems = [...finalItemsByVan.values()].flat();
+                const tailItem = allItems.find((i) => i.arrFlight.tail_number === tail);
+                if (!tailItem) return;
+                // Find a different flight ID for the same tail to put on the second van
+                // (so both overrides can coexist: flight_A → van1, flight_B → van2)
+                const tailFlights = allDayArrivals.filter((a) => a.arrFlight.tail_number === tail);
+                const usedFlightId = tailItem.arrFlight.id;
+                const altFlight = tailFlights.find((a) => a.arrFlight.id !== usedFlightId);
+                if (altFlight) {
+                  // Use a different flight for the second van
+                  setOverrides((prev) => {
+                    const next = new Map(prev);
+                    next.set(altFlight.arrFlight.id, toVanId);
+                    return next;
+                  });
+                } else {
+                  // Only one flight — use unscheduled override for dual placement
+                  setUnscheduledOverrides((prev) => {
+                    const next = new Map(prev);
+                    next.set(tail, toVanId);
+                    return next;
+                  });
+                }
+                // Also ensure the original van has an explicit override so dual detection works
+                const currentVanId = [...finalItemsByVan.entries()].find(([, items]) =>
+                  items.some((i) => i.arrFlight.tail_number === tail)
+                )?.[0];
+                if (currentVanId !== undefined && !overrides.has(usedFlightId)) {
+                  setOverrides((prev) => {
+                    const next = new Map(prev);
+                    next.set(usedFlightId, currentVanId);
+                    return next;
+                  });
+                }
               }}
               fboMap={fboMap}
               tailToVans={tailToVans}
