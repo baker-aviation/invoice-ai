@@ -1308,7 +1308,7 @@ function DocumentLibrary() {
   const [previewName, setPreviewName] = useState<string>("");
 
   const loadDocs = useCallback(async () => {
-    const params = filter !== "all" ? `?document_type=${filter}` : "";
+    const params = filter !== "all" ? `?entity_type=${filter}` : "";
     const res = await fetch(`/api/ops/intl/documents${params}`);
     const data = await res.json();
     setDocuments(data.documents ?? []);
@@ -1375,9 +1375,8 @@ function DocumentLibrary() {
             className="text-xs border border-gray-300 rounded px-2 py-1"
           >
             <option value="all">All Types</option>
-            {docTypes.map((t) => (
-              <option key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1)}</option>
-            ))}
+            <option value="aircraft">Aircraft</option>
+            <option value="company">Company</option>
           </select>
         </div>
         <button onClick={() => setShowAdd(!showAdd)} className="text-xs text-blue-600 hover:text-blue-800">+ Upload Document</button>

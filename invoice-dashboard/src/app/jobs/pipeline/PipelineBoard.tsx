@@ -88,12 +88,44 @@ const CATEGORY_LABELS: Record<string, string> = {
   other: "Other",
 };
 
+function MeetingLinkTool({ storageKey, placeholder, borderColor }: { storageKey: string; placeholder?: string; borderColor?: string }) {
+  const [meetLink, setMeetLink] = useState(() => {
+    try { return localStorage.getItem(storageKey) ?? ""; } catch { return ""; }
+  });
+  const [copied, setCopied] = useState(false);
+
+  const handleChange = (val: string) => {
+    setMeetLink(val);
+    try { localStorage.setItem(storageKey, val); } catch {}
+  };
+
+  return (
+    <div className="space-y-1.5">
+      <input
+        type="text"
+        value={meetLink}
+        onChange={(e) => handleChange(e.target.value)}
+        placeholder={placeholder ?? "Meeting link..."}
+        className={`w-full text-[10px] px-2 py-1 rounded border border-gray-200 focus:border-${borderColor ?? "cyan"}-400 focus:outline-none`}
+      />
+      {meetLink && (
+        <button
+          onClick={() => {
+            navigator.clipboard.writeText(meetLink);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+          }}
+          className="text-[10px] font-medium px-2 py-1 rounded border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 transition-colors"
+        >
+          {copied ? "Copied!" : "Copy Meet Link"}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function InfoSessionTools({ jobs }: { jobs: JobRow[] }) {
   const [copied, setCopied] = useState(false);
-  const [meetLink, setMeetLink] = useState(() => {
-    try { return localStorage.getItem("info_session_meet_link") ?? ""; } catch { return ""; }
-  });
-
   const emails = jobs.filter((j) => j.email).map((j) => j.email!);
 
   const handleCopyEmails = () => {
@@ -102,11 +134,6 @@ function InfoSessionTools({ jobs }: { jobs: JobRow[] }) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
-  };
-
-  const handleMeetLinkChange = (val: string) => {
-    setMeetLink(val);
-    try { localStorage.setItem("info_session_meet_link", val); } catch {}
   };
 
   return (
@@ -120,25 +147,7 @@ function InfoSessionTools({ jobs }: { jobs: JobRow[] }) {
           {copied ? "Copied!" : `Copy ${emails.length} Email${emails.length !== 1 ? "s" : ""}`}
         </button>
       </div>
-      <div>
-        <input
-          type="text"
-          value={meetLink}
-          onChange={(e) => handleMeetLinkChange(e.target.value)}
-          placeholder="Google Meet link..."
-          className="w-full text-[10px] px-2 py-1 rounded border border-gray-200 focus:border-cyan-400 focus:outline-none"
-        />
-      </div>
-      {meetLink && (
-        <button
-          onClick={() => {
-            navigator.clipboard.writeText(meetLink);
-          }}
-          className="text-[10px] font-medium px-2 py-1 rounded border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 transition-colors"
-        >
-          Copy Meet Link
-        </button>
-      )}
+      <MeetingLinkTool storageKey="info_session_meet_link" placeholder="Google Meet link..." />
     </div>
   );
 }
@@ -940,6 +949,11 @@ export default function PipelineBoard({
               </div>
 
               {stage === "info_session" && <InfoSessionTools jobs={stageJobs} />}
+              {stage === "interview_scheduled" && (
+                <div className="px-3 py-2 border-t border-fuchsia-100">
+                  <MeetingLinkTool storageKey="interview_meet_link" placeholder="Calendly or Meet link..." borderColor="fuchsia" />
+                </div>
+              )}
 
               {/* Cards */}
               <div className="flex-1 p-2 space-y-2 min-h-[120px] max-h-[calc(100vh-220px)] overflow-y-auto">
