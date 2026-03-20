@@ -147,7 +147,7 @@ export async function POST(
         const emailText = setting.value.replace(/\{\{name\}\}/g, firstName);
 
         const token = await getGraphToken();
-        const mailbox = process.env.OUTLOOK_HIRING_MAILBOX || "HR@baker-aviation.com";
+        const mailbox = process.env.OUTLOOK_HR_MAILBOX || "HR@baker-aviation.com";
 
         // Build logo URL from the request origin
         const origin = req.headers.get("origin") || req.headers.get("referer")?.replace(/\/[^/]*$/, "") || "https://baker-ai-gamma.vercel.app";
