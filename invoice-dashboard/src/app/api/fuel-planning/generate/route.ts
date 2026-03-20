@@ -6,105 +6,30 @@ import { buildBestRateByAirport, airportVariants } from "@/lib/fuelLookup";
 import { calcPpg, optimizeMultiLeg, type AircraftType, type MultiLeg, type MultiRouteInputs, type MultiLegPlan } from "@/app/tanker/model";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 60; // ForeFlight calls can be slow
+export const maxDuration = 60;
 
-// ─── Standard aircraft parameters (with safety margin) ─────────────────
+// ─── Standard aircraft parameters ──────────────────────────────────────
 const AIRCRAFT_DEFAULTS: Record<AircraftType, {
-  mlw: number;     // max landing gross weight (lbs)
-  zfw: number;     // zero fuel weight estimate (OEW + avg pax load)
-  ffReg: string;   // ForeFlight registration to use
-  ffType: "citation" | "challenger";
+  mlw: number;
+  zfw: number;
+  defaultBurnRate: number;  // lbs/hr fallback
+  reserveLbs: number;       // reserve + taxi fuel estimate
 }> = {
-  "CE-750": { mlw: 31_800, zfw: 23_500, ffReg: "N106PC", ffType: "citation" },
-  "CL-30":  { mlw: 34_250, zfw: 25_600, ffReg: "N520FX", ffType: "challenger" },
+  "CE-750": { mlw: 31_800, zfw: 23_500, defaultBurnRate: 3000, reserveLbs: 2000 },
+  "CL-30":  { mlw: 34_250, zfw: 25_600, defaultBurnRate: 2500, reserveLbs: 1800 },
 };
 
-// Map tail numbers → aircraft type for tails without post-flight data
-const TAIL_TYPE_MAP: Record<string, AircraftType> = {
-  "N106PC": "CE-750",
-  "N520FX": "CL-30",
-  // These are known Baker tails from the sample data
-  "N939TX": "CE-750",
-  "N187CR": "CE-750",
-  "N301HR": "CE-750",
-  "N541FX": "CL-30",
-  "N883TR": "CL-30",
-  "N125DZ": "CE-750",
+// ─── FBO fee waiver rules ──────────────────────────────────────────────
+// Minimum fuel purchase (gallons) to waive handling/ramp fees
+const FBO_WAIVERS: Record<string, { minGallons: number; feeWaived: number }> = {
+  "Signature Flight Support": { minGallons: 420, feeWaived: 1000 },
+  "Atlantic Aviation":        { minGallons: 350, feeWaived: 750 },
+  "Jet Aviation":             { minGallons: 250, feeWaived: 1000 },
 };
 
-const FF_BASE = "https://public-api.foreflight.com/public/api";
-function apiKey(): string {
-  const key = process.env.FOREFLIGHT_API_KEY;
-  if (!key) throw new Error("FOREFLIGHT_API_KEY not set");
-  return key;
-}
-
-// ─── ForeFlight helpers ────────────────────────────────────────────────
-
-interface FFPerf { fuelToDestLbs: number; totalFuelLbs: number; flightMinutes: number }
-
-async function getForeFlight(
-  departure: string, destination: string, registration: string,
-): Promise<FFPerf | null> {
-  try {
-    const flightReq = {
-      flight: {
-        departure: departure.toUpperCase(),
-        destination: destination.toUpperCase(),
-        aircraftRegistration: registration,
-        scheduledTimeOfDeparture: new Date(Date.now() + 3600_000).toISOString(),
-        routeToDestination: { altitude: { altitude: 470, unit: "FL" } },
-        load: { people: 4 },
-        windOptions: { windModel: "Forecasted" },
-      },
-    };
-
-    const res = await fetch(`${FF_BASE}/Flights`, {
-      method: "POST",
-      headers: { "x-api-key": apiKey(), "Content-Type": "application/json" },
-      body: JSON.stringify(flightReq),
-    });
-
-    if (!res.ok) return null;
-    const data = await res.json();
-
-    // Clean up flight
-    const flightId = data.flightId;
-    if (flightId) {
-      fetch(`${FF_BASE}/Flights/${encodeURIComponent(flightId)}`, {
-        method: "DELETE",
-        headers: { "x-api-key": apiKey() },
-      }).catch(() => {});
-    }
-
-    // Extract perf (search deeply)
-    const perf = data.performance ?? deepFind(data, "performance");
-    const fuel = (perf as Record<string, unknown>)?.fuel ?? deepFind(data, "fuel");
-    const times = (perf as Record<string, unknown>)?.times ?? deepFind(data, "times");
-
-    const fuelObj = fuel as Record<string, number> | undefined;
-    const timesObj = times as Record<string, number> | undefined;
-
-    return {
-      fuelToDestLbs: Math.round(fuelObj?.fuelToDestination ?? 0),
-      totalFuelLbs: Math.round(fuelObj?.totalFuel ?? 0),
-      flightMinutes: timesObj?.timeToDestinationMinutes ?? 0,
-    };
-  } catch (err) {
-    console.error(`[fuel-planning] ForeFlight error for ${departure}→${destination}:`, err);
-    return null;
-  }
-}
-
-function deepFind(obj: unknown, key: string): unknown {
-  if (!obj || typeof obj !== "object") return undefined;
-  const rec = obj as Record<string, unknown>;
-  if (key in rec) return rec[key];
-  for (const v of Object.values(rec)) {
-    const found = deepFind(v, key);
-    if (found !== undefined) return found;
-  }
-  return undefined;
+function getWaiver(vendor: string | null): { minGallons: number; feeWaived: number } {
+  if (!vendor) return { minGallons: 0, feeWaived: 0 };
+  return FBO_WAIVERS[vendor] ?? { minGallons: 0, feeWaived: 0 };
 }
 
 // ─── Types ─────────────────────────────────────────────────────────────
@@ -113,6 +38,18 @@ interface ScheduleLeg {
   departure_icao: string;
   arrival_icao: string;
   scheduled_departure: string;
+  scheduled_arrival: string | null;
+}
+
+interface LegData {
+  from: string;
+  to: string;
+  fuelToDestLbs: number;
+  totalFuelLbs: number;
+  flightTimeHours: number;
+  departurePricePerGal: number;
+  departureFboVendor: string | null;
+  ffSource: "foreflight" | "estimate";
 }
 
 interface TailPlan {
@@ -120,17 +57,10 @@ interface TailPlan {
   aircraftType: AircraftType;
   shutdownFuel: number;
   shutdownAirport: string;
-  legs: {
-    from: string;
-    to: string;
-    fuelToDestLbs: number;
-    totalFuelLbs: number;
-    flightTimeHours: number;
-    departurePricePerGal: number;
-    departureFboVendor: string | null;
-    ffSource: "foreflight" | "estimate";
-  }[];
+  legs: LegData[];
   plan: MultiLegPlan | null;
+  naiveCost: number;
+  tankerSavings: number;
   error?: string;
 }
 
@@ -141,106 +71,138 @@ export async function POST(req: NextRequest) {
   if (!isAuthed(auth)) return auth.error;
 
   try {
-  const body = await req.json().catch(() => ({}));
-  const targetDate = (body.date as string) || tomorrow();
+    const body = await req.json().catch(() => ({}));
+    const targetDate = (body.date as string) || tomorrow();
 
-  const supa = createServiceClient();
+    const supa = createServiceClient();
 
-  // 1. Get shutdown fuel per tail from most recent post-flight data
-  const { data: postFlightRows } = await supa
-    .from("post_flight_data")
-    .select("tail_number, aircraft_type, destination, fuel_end_lbs, flight_date, segment_number")
-    .order("flight_date", { ascending: false })
-    .order("segment_number", { ascending: false })
-    .limit(500);
+    // 1. Get shutdown fuel + avg burn rates from post-flight data
+    const { data: postFlightRows } = await supa
+      .from("post_flight_data")
+      .select("tail_number, aircraft_type, destination, fuel_end_lbs, fuel_burn_lbs_hour, flight_date, segment_number")
+      .order("flight_date", { ascending: false })
+      .order("segment_number", { ascending: false })
+      .limit(500);
 
-  if (!postFlightRows?.length) {
-    return NextResponse.json({ error: "No post-flight data found. Upload a post-flight CSV first." }, { status: 400 });
-  }
-
-  // Build shutdown map: tail → { fuel, airport, type, date }
-  const shutdownMap = new Map<string, { fuel: number; airport: string; type: AircraftType; date: string }>();
-  for (const row of postFlightRows) {
-    if (shutdownMap.has(row.tail_number)) continue; // first row per tail is most recent
-    if (row.fuel_end_lbs == null) continue;
-    shutdownMap.set(row.tail_number, {
-      fuel: Number(row.fuel_end_lbs),
-      airport: row.destination,
-      type: row.aircraft_type as AircraftType,
-      date: row.flight_date,
-    });
-  }
-
-  // 2. Get tomorrow's schedule from flights table
-  const dayStart = `${targetDate}T00:00:00Z`;
-  const dayEnd = `${targetDate}T23:59:59Z`;
-
-  const { data: flightRows } = await supa
-    .from("flights")
-    .select("tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival")
-    .gte("scheduled_departure", dayStart)
-    .lte("scheduled_departure", dayEnd)
-    .order("scheduled_departure", { ascending: true });
-
-  if (!flightRows?.length) {
-    return NextResponse.json({
-      ok: true,
-      message: `No flights scheduled for ${targetDate}`,
-      date: targetDate,
-      plans: [],
-      shutdownData: Object.fromEntries(shutdownMap),
-    });
-  }
-
-  // Group by tail
-  const scheduleByTail = new Map<string, ScheduleLeg[]>();
-  for (const f of flightRows) {
-    if (!f.tail_number || !f.departure_icao || !f.arrival_icao) continue;
-    const tail = f.tail_number.toUpperCase();
-    if (!scheduleByTail.has(tail)) scheduleByTail.set(tail, []);
-    scheduleByTail.get(tail)!.push({
-      departure_icao: f.departure_icao,
-      arrival_icao: f.arrival_icao,
-      scheduled_departure: f.scheduled_departure,
-    });
-  }
-
-  // 3. Get fuel prices (gracefully handle if none exist)
-  let advertisedPrices: Awaited<ReturnType<typeof fetchAdvertisedPrices>> = [];
-  try {
-    advertisedPrices = await fetchAdvertisedPrices({ recentWeeks: 4 });
-  } catch (err) {
-    console.warn("[fuel-planning/generate] Could not fetch advertised prices:", err);
-  }
-  const bestRates = buildBestRateByAirport(advertisedPrices);
-
-  // 4. Build plans per tail
-  const plans: TailPlan[] = [];
-
-  for (const [tail, schedule] of scheduleByTail) {
-    const shutdown = shutdownMap.get(tail);
-    const acType = shutdown?.type ?? TAIL_TYPE_MAP[tail] ?? "CE-750";
-    const defaults = AIRCRAFT_DEFAULTS[acType];
-
-    if (!shutdown) {
-      plans.push({
-        tail,
-        aircraftType: acType,
-        shutdownFuel: 0,
-        shutdownAirport: schedule[0].departure_icao,
-        legs: [],
-        plan: null,
-        error: "No post-flight data for this tail — upload shutdown fuel to generate plan",
-      });
-      continue;
+    if (!postFlightRows?.length) {
+      return NextResponse.json({ error: "No post-flight data found. Upload a post-flight CSV first." }, { status: 400 });
     }
 
-    // Fetch ForeFlight data for each leg (batch with concurrency limit)
-    const legData = await Promise.all(
-      schedule.map(async (leg) => {
-        const ff = await getForeFlight(leg.departure_icao, leg.arrival_icao, defaults.ffReg);
+    // Build shutdown map + average burn rates per aircraft type
+    const shutdownMap = new Map<string, { fuel: number; airport: string; type: AircraftType; date: string }>();
+    const burnRates: Record<AircraftType, number[]> = { "CE-750": [], "CL-30": [] };
 
-        // Get fuel price at departure
+    for (const row of postFlightRows) {
+      // Shutdown fuel: first (most recent) row per tail
+      if (!shutdownMap.has(row.tail_number) && row.fuel_end_lbs != null) {
+        shutdownMap.set(row.tail_number, {
+          fuel: Number(row.fuel_end_lbs),
+          airport: row.destination,
+          type: row.aircraft_type as AircraftType,
+          date: row.flight_date,
+        });
+      }
+      // Collect burn rates for averaging
+      if (row.fuel_burn_lbs_hour != null && Number(row.fuel_burn_lbs_hour) > 500) {
+        const acType = row.aircraft_type as AircraftType;
+        if (burnRates[acType]) burnRates[acType].push(Number(row.fuel_burn_lbs_hour));
+      }
+    }
+
+    // Compute average burn rates (fall back to defaults)
+    const avgBurnRate: Record<AircraftType, number> = {
+      "CE-750": burnRates["CE-750"].length > 0
+        ? burnRates["CE-750"].reduce((a, b) => a + b, 0) / burnRates["CE-750"].length
+        : AIRCRAFT_DEFAULTS["CE-750"].defaultBurnRate,
+      "CL-30": burnRates["CL-30"].length > 0
+        ? burnRates["CL-30"].reduce((a, b) => a + b, 0) / burnRates["CL-30"].length
+        : AIRCRAFT_DEFAULTS["CL-30"].defaultBurnRate,
+    };
+
+    // 2. Get schedule from flights table
+    const dayStart = `${targetDate}T00:00:00Z`;
+    const dayEnd = `${targetDate}T23:59:59Z`;
+
+    const { data: flightRows } = await supa
+      .from("flights")
+      .select("tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival")
+      .gte("scheduled_departure", dayStart)
+      .lte("scheduled_departure", dayEnd)
+      .order("scheduled_departure", { ascending: true });
+
+    if (!flightRows?.length) {
+      return NextResponse.json({
+        ok: true,
+        message: `No flights scheduled for ${targetDate}`,
+        date: targetDate,
+        plans: [],
+        shutdownData: Object.fromEntries(shutdownMap),
+      });
+    }
+
+    // Group by tail
+    const scheduleByTail = new Map<string, ScheduleLeg[]>();
+    for (const f of flightRows) {
+      if (!f.tail_number || !f.departure_icao || !f.arrival_icao) continue;
+      const tail = f.tail_number.toUpperCase();
+      if (!scheduleByTail.has(tail)) scheduleByTail.set(tail, []);
+      scheduleByTail.get(tail)!.push({
+        departure_icao: f.departure_icao,
+        arrival_icao: f.arrival_icao,
+        scheduled_departure: f.scheduled_departure,
+        scheduled_arrival: f.scheduled_arrival ?? null,
+      });
+    }
+
+    // 3. Get fuel prices
+    let advertisedPrices: Awaited<ReturnType<typeof fetchAdvertisedPrices>> = [];
+    try {
+      advertisedPrices = await fetchAdvertisedPrices({ recentWeeks: 2 });
+    } catch (err) {
+      console.warn("[fuel-planning/generate] Could not fetch advertised prices:", err);
+    }
+    const bestRates = buildBestRateByAirport(advertisedPrices);
+
+    // 4. Build plans per tail (no ForeFlight calls — uses schedule times + burn rates)
+    const plans: TailPlan[] = [];
+    const ppg = calcPpg(15);
+
+    for (const [tail, schedule] of scheduleByTail) {
+      const shutdown = shutdownMap.get(tail);
+      const acType = shutdown?.type ?? "CE-750";
+      const defaults = AIRCRAFT_DEFAULTS[acType];
+      const burnRate = avgBurnRate[acType];
+
+      if (!shutdown) {
+        plans.push({
+          tail, aircraftType: acType, shutdownFuel: 0,
+          shutdownAirport: schedule[0].departure_icao,
+          legs: [], plan: null, naiveCost: 0, tankerSavings: 0,
+          error: "No post-flight data for this tail — upload shutdown fuel to generate plan",
+        });
+        continue;
+      }
+
+      // Build leg data from schedule + burn rate estimates
+      const legData: LegData[] = schedule.map((leg, idx) => {
+        // Estimate flight time from schedule
+        let flightHrs: number;
+        if (leg.scheduled_arrival) {
+          const dep = new Date(leg.scheduled_departure).getTime();
+          const arr = new Date(leg.scheduled_arrival).getTime();
+          flightHrs = Math.max(0.3, (arr - dep) / 3_600_000);
+        } else {
+          // Fallback: estimate from next leg's departure or 2 hours
+          const dep = new Date(leg.scheduled_departure).getTime();
+          const nextLeg = schedule[idx + 1];
+          const nextDep = nextLeg ? new Date(nextLeg.scheduled_departure).getTime() : dep + 2 * 3_600_000;
+          flightHrs = Math.max(0.3, (nextDep - dep) / 3_600_000 - 0.5);
+        }
+
+        const fuelBurn = Math.round(burnRate * flightHrs);
+        const totalFuel = fuelBurn + defaults.reserveLbs;
+
+        // Fuel price at departure
         const depVariants = airportVariants(leg.departure_icao);
         let depRate = 0;
         let depVendor: string | null = null;
@@ -249,107 +211,112 @@ export async function POST(req: NextRequest) {
           if (r) { depRate = r.price; depVendor = r.vendor; break; }
         }
 
-        if (ff && ff.fuelToDestLbs > 0) {
-          return {
-            from: leg.departure_icao,
-            to: leg.arrival_icao,
-            fuelToDestLbs: ff.fuelToDestLbs,
-            totalFuelLbs: ff.totalFuelLbs,
-            flightTimeHours: ff.flightMinutes / 60,
-            departurePricePerGal: depRate,
-            departureFboVendor: depVendor,
-            ffSource: "foreflight" as const,
-          };
-        }
-
-        // Fallback: estimate from post-flight historical data for similar legs
-        // Use a rough estimate of 3000 lbs/hr for Citation, 2500 lbs/hr for Challenger
-        const estBurnRate = acType === "CE-750" ? 3000 : 2500;
-        // Estimate flight time from the schedule
-        const depTime = new Date(leg.scheduled_departure).getTime();
-        const arrRows = schedule.filter((s) => s.departure_icao === leg.arrival_icao);
-        const nextDepTime = arrRows.length > 0 ? new Date(arrRows[0].scheduled_departure).getTime() : depTime + 2 * 3600_000;
-        const estHrs = Math.max(0.5, (nextDepTime - depTime) / 3_600_000 - 0.5); // subtract taxi
-        const estFuel = Math.round(estBurnRate * estHrs);
-        const estTotal = Math.round(estFuel * 1.15); // add 15% for taxi + reserve
-
         return {
           from: leg.departure_icao,
           to: leg.arrival_icao,
-          fuelToDestLbs: estFuel,
-          totalFuelLbs: estTotal,
-          flightTimeHours: estHrs,
+          fuelToDestLbs: fuelBurn,
+          totalFuelLbs: totalFuel,
+          flightTimeHours: flightHrs,
           departurePricePerGal: depRate,
           departureFboVendor: depVendor,
           ffSource: "estimate" as const,
         };
-      }),
+      });
+
+      // Build optimizer input (with fee waiver rules per FBO)
+      const multiLegs: MultiLeg[] = legData.map((ld) => {
+        const waiver = getWaiver(ld.departureFboVendor);
+        return {
+          id: `${tail}-${ld.from}-${ld.to}`,
+          from: ld.from, to: ld.to,
+          requiredStartFuelLbs: ld.totalFuelLbs,
+          fuelToDestLbs: ld.fuelToDestLbs,
+          flightTimeHours: ld.flightTimeHours,
+          maxLandingGrossWeightLbs: defaults.mlw,
+          zeroFuelWeightLbs: defaults.zfw,
+          departurePricePerGal: ld.departurePricePerGal,
+          waiveFeesGallons: waiver.minGallons,
+          feesWaivedDollars: waiver.feeWaived,
+        };
+      });
+
+      const routeInput: MultiRouteInputs = {
+        startShutdownFuelLbs: shutdown.fuel,
+        carryCostPctPerHour: 3.94,
+        fuelTemperatureC: 15.0,
+        arrivalBufferLbs: 300,
+        legs: multiLegs,
+      };
+
+      const plan = optimizeMultiLeg(routeInput, 200); // coarser step for fleet speed
+
+      // Naive cost: buy only what you need at each stop (no tankering)
+      // Track fuel carryover from shutdown through each leg
+      let naiveCost = 0;
+      let runningFuel = shutdown.fuel;
+      for (const ld of legData) {
+        const needed = ld.totalFuelLbs;
+        const orderLbs = Math.max(0, needed - runningFuel);
+        const orderGal = orderLbs / ppg;
+        const fuelCost = orderGal * ld.departurePricePerGal;
+        // Check fee waiver at this stop
+        const waiver = getWaiver(ld.departureFboVendor);
+        let fee = 0;
+        if (waiver.minGallons > 0 && orderGal < waiver.minGallons) {
+          // Either pay the fee or buy up to the waiver minimum — whichever is cheaper
+          const topUpCost = waiver.minGallons * ld.departurePricePerGal;
+          const payFeeCost = fuelCost + waiver.feeWaived;
+          if (topUpCost < payFeeCost) {
+            naiveCost += topUpCost;
+          } else {
+            naiveCost += fuelCost + waiver.feeWaived;
+            fee = waiver.feeWaived;
+          }
+        } else {
+          naiveCost += fuelCost;
+        }
+        // Landing fuel after this leg (no extra carried)
+        runningFuel = Math.max(0, needed - ld.fuelToDestLbs - 300);
+      }
+
+      const optimizedCost = plan?.totalTripCost ?? naiveCost;
+      const tankerSavings = Math.max(0, naiveCost - optimizedCost);
+
+      plans.push({
+        tail, aircraftType: acType,
+        shutdownFuel: shutdown.fuel, shutdownAirport: shutdown.airport,
+        legs: legData, plan, naiveCost, tankerSavings,
+        error: plan ? undefined : "Optimizer could not find a valid plan (check weight constraints)",
+      });
+    }
+
+    // Sort: tails with plans first, then by tail
+    plans.sort((a, b) => {
+      if (a.plan && !b.plan) return -1;
+      if (!a.plan && b.plan) return 1;
+      return a.tail.localeCompare(b.tail);
+    });
+
+    const fleetTotals = plans.reduce(
+      (acc, p) => {
+        if (!p.plan) return acc;
+        acc.totalFuelCost += p.plan.totalFuelCost;
+        acc.totalFees += p.plan.totalFees;
+        acc.totalTripCost += p.plan.totalTripCost;
+        acc.naiveCost += p.naiveCost;
+        acc.tankerSavings += p.tankerSavings;
+        acc.planCount++;
+        return acc;
+      },
+      { totalFuelCost: 0, totalFees: 0, totalTripCost: 0, naiveCost: 0, tankerSavings: 0, planCount: 0 },
     );
 
-    // Build multi-leg optimizer input
-    const multiLegs: MultiLeg[] = legData.map((ld) => ({
-      id: `${tail}-${ld.from}-${ld.to}`,
-      from: ld.from,
-      to: ld.to,
-      requiredStartFuelLbs: ld.totalFuelLbs,
-      fuelToDestLbs: ld.fuelToDestLbs,
-      flightTimeHours: ld.flightTimeHours,
-      maxLandingGrossWeightLbs: defaults.mlw,
-      zeroFuelWeightLbs: defaults.zfw,
-      departurePricePerGal: ld.departurePricePerGal,
-      waiveFeesGallons: 0,
-      feesWaivedDollars: 0,
-    }));
-
-    const routeInput: MultiRouteInputs = {
-      startShutdownFuelLbs: shutdown.fuel,
-      carryCostPctPerHour: 3.94, // standard carry cost
-      fuelTemperatureC: 15.0,
-      arrivalBufferLbs: 300,
-      legs: multiLegs,
-    };
-
-    const plan = optimizeMultiLeg(routeInput);
-
-    plans.push({
-      tail,
-      aircraftType: acType,
-      shutdownFuel: shutdown.fuel,
-      shutdownAirport: shutdown.airport,
-      legs: legData,
-      plan,
-      error: plan ? undefined : "Optimizer could not find a valid plan (check weight constraints)",
+    return NextResponse.json({
+      ok: true, date: targetDate, plans, fleetTotals,
+      fuelPriceCount: advertisedPrices.length,
+      shutdownDataDate: postFlightRows[0]?.flight_date ?? null,
+      avgBurnRates: avgBurnRate,
     });
-  }
-
-  // Sort: tails with plans first, then by tail number
-  plans.sort((a, b) => {
-    if (a.plan && !b.plan) return -1;
-    if (!a.plan && b.plan) return 1;
-    return a.tail.localeCompare(b.tail);
-  });
-
-  // Calculate fleet totals
-  const fleetTotals = plans.reduce(
-    (acc, p) => {
-      if (!p.plan) return acc;
-      acc.totalFuelCost += p.plan.totalFuelCost;
-      acc.totalFees += p.plan.totalFees;
-      acc.totalTripCost += p.plan.totalTripCost;
-      acc.planCount++;
-      return acc;
-    },
-    { totalFuelCost: 0, totalFees: 0, totalTripCost: 0, planCount: 0 },
-  );
-
-  return NextResponse.json({
-    ok: true,
-    date: targetDate,
-    plans,
-    fleetTotals,
-    fuelPriceCount: advertisedPrices.length,
-    shutdownDataDate: postFlightRows[0]?.flight_date ?? null,
-  });
   } catch (err) {
     console.error("[fuel-planning/generate] Unhandled error:", err);
     return NextResponse.json({ error: String(err) }, { status: 500 });
