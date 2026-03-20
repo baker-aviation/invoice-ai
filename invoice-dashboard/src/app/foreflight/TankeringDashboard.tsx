@@ -417,11 +417,24 @@ function TailPlanCard({ plan: tp }: { plan: TailPlan }) {
                 {plan.tankerOutByStop.map((tankerOut, i) => {
                   if (tankerOut <= 0) return null;
                   const leg = tp.legs[i];
+                  const nextLeg = tp.legs[i + 1];
                   const tankerIn = plan.tankerInByStop[i] ?? 0;
+                  // Determine reason: price play vs fee waiver
+                  const nextPrice = nextLeg?.departurePricePerGal ?? 0;
+                  const isFeeWaiver = leg.departurePricePerGal >= nextPrice && nextPrice > 0;
                   return (
-                    <div key={i} className="text-xs bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-md px-3 py-1.5">
+                    <div key={i} className={`text-xs rounded-md px-3 py-1.5 border ${
+                      isFeeWaiver
+                        ? "bg-blue-50 text-blue-700 border-blue-200"
+                        : "bg-emerald-50 text-emerald-700 border-emerald-200"
+                    }`}>
                       <span className="font-semibold">{leg.from}</span>: carry +{fmtNum(tankerOut)} lbs
-                      <span className="text-emerald-500 ml-1">({fmtNum(tankerIn)} lbs on arrival at {leg.to})</span>
+                      <span className={`ml-1 ${isFeeWaiver ? "text-blue-500" : "text-emerald-500"}`}>
+                        ({fmtNum(tankerIn)} lbs on arrival at {leg.to})
+                      </span>
+                      {isFeeWaiver && (
+                        <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-600">FEE WAIVER</span>
+                      )}
                     </div>
                   );
                 })}

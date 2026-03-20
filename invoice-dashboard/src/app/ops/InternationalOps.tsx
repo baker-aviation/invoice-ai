@@ -43,13 +43,26 @@ function difficultyColor(d: string | null) {
 // ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
-export default function InternationalOps({ flights }: { flights: Flight[] }) {
+export default function InternationalOps({ flights: _parentFlights }: { flights: Flight[] }) {
   const [subTab, setSubTab] = useState<SubTab>("Flight Board");
   const [countries, setCountries] = useState<Country[]>([]);
   const [alerts, setAlerts] = useState<IntlLegAlert[]>([]);
+  const [allFlights, setAllFlights] = useState<Flight[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const intlFlights = flights
+  // The parent page only fetches 48h of flights. We need 30 days for the international board.
+  const loadFlights = useCallback(async () => {
+    try {
+      const res = await fetch("/api/ops/flights?lookahead_hours=720&lookback_hours=24");
+      const data = await res.json();
+      setAllFlights(data.flights ?? data.items ?? []);
+    } catch {
+      // Fallback to parent flights if API fails
+      setAllFlights(_parentFlights);
+    }
+  }, [_parentFlights]);
+
+  const intlFlights = allFlights
     .filter(isInternationalFlight)
     .filter((f) => {
       const dep = new Date(f.scheduled_departure);
@@ -75,8 +88,8 @@ export default function InternationalOps({ flights }: { flights: Flight[] }) {
   }, []);
 
   useEffect(() => {
-    Promise.all([loadCountries(), loadAlerts()]).finally(() => setLoading(false));
-  }, [loadCountries, loadAlerts]);
+    Promise.all([loadFlights(), loadCountries(), loadAlerts()]).finally(() => setLoading(false));
+  }, [loadFlights, loadCountries, loadAlerts]);
 
   const unackedAlerts = alerts.filter((a) => !a.acknowledged);
 
@@ -1164,12 +1177,13 @@ function CustomsTracker() {
       {loading ? (
         <p className="text-xs text-gray-500 animate-pulse">Loading customs data...</p>
       ) : airports.length === 0 ? (
-        <p className="text-xs text-gray-400">No customs airports added yet. Start building your knowledge base by adding airports your aircraft commonly clear customs at.</p>
+        <p className="text-xs text-gray-400">No customs airports added yet.</p>
       ) : (
         <div className="border border-gray-200 rounded overflow-hidden">
           <table className="w-full text-xs">
             <thead className="bg-gray-50">
               <tr>
+                <th className="text-left px-3 py-1.5 font-medium text-gray-600 w-6"></th>
                 <th className="text-left px-3 py-1.5 font-medium text-gray-600">ICAO</th>
                 <th className="text-left px-3 py-1.5 font-medium text-gray-600">Airport</th>
                 <th className="text-left px-3 py-1.5 font-medium text-gray-600">Type</th>
@@ -1178,38 +1192,164 @@ function CustomsTracker() {
                 <th className="text-left px-3 py-1.5 font-medium text-gray-600">OT</th>
                 <th className="text-left px-3 py-1.5 font-medium text-gray-600">Difficulty</th>
                 <th className="text-left px-3 py-1.5 font-medium text-gray-600">Notes</th>
+                <th className="text-center px-3 py-1.5 font-medium text-gray-600">Status</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {airports.map((a) => (
-                <tr key={a.id} className="hover:bg-gray-50">
-                  <td className="px-3 py-1.5 font-mono font-medium">{a.icao}</td>
-                  <td className="px-3 py-1.5">{a.airport_name}</td>
-                  <td className="px-3 py-1.5">
-                    <span className="bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded text-[10px]">{a.customs_type}</span>
-                  </td>
-                  <td className="px-3 py-1.5 text-gray-500">
-                    {a.hours_open && a.hours_close ? `${a.hours_open}–${a.hours_close}` : "—"}
-                  </td>
-                  <td className="px-3 py-1.5 text-gray-500">
-                    {a.advance_notice_hours ? `${a.advance_notice_hours}h` : "—"}
-                  </td>
-                  <td className="px-3 py-1.5">
-                    {a.overtime_available ? <span className="text-green-600">Yes</span> : <span className="text-gray-300">No</span>}
-                  </td>
-                  <td className="px-3 py-1.5">
-                    {a.difficulty ? (
-                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${difficultyColor(a.difficulty)}`}>{a.difficulty}</span>
-                    ) : "—"}
-                  </td>
-                  <td className="px-3 py-1.5 text-gray-500 max-w-xs truncate">{a.restrictions || a.notes || "—"}</td>
-                </tr>
+                <CustomsRow key={a.id} airport={a} onUpdate={loadAirports} />
               ))}
             </tbody>
           </table>
         </div>
       )}
     </div>
+  );
+}
+
+/** Inline-editable customs airport row */
+function CustomsRow({ airport: a, onUpdate }: { airport: UsCustomsAirport; onUpdate: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [edit, setEdit] = useState({
+    customs_type: a.customs_type,
+    hours_open: a.hours_open ?? "",
+    hours_close: a.hours_close ?? "",
+    advance_notice_hours: a.advance_notice_hours?.toString() ?? "",
+    overtime_available: a.overtime_available,
+    restrictions: a.restrictions ?? "",
+    notes: a.notes ?? "",
+    difficulty: a.difficulty ?? "",
+  });
+  const [saving, setSaving] = useState(false);
+
+  async function save() {
+    setSaving(true);
+    await fetch(`/api/ops/intl/customs/${a.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        customs_type: edit.customs_type,
+        hours_open: edit.hours_open || null,
+        hours_close: edit.hours_close || null,
+        advance_notice_hours: edit.advance_notice_hours ? parseInt(edit.advance_notice_hours) : null,
+        overtime_available: edit.overtime_available,
+        restrictions: edit.restrictions || null,
+        notes: edit.notes || null,
+        difficulty: edit.difficulty || null,
+      }),
+    });
+    setSaving(false);
+    setEditing(false);
+    onUpdate();
+  }
+
+  async function toggleConfirmed() {
+    const newVal = !a.baker_confirmed;
+    await fetch(`/api/ops/intl/customs/${a.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        baker_confirmed: newVal,
+        ...(newVal ? { confirmed_at: new Date().toISOString() } : { confirmed_at: null, confirmed_by: null }),
+      }),
+    });
+    onUpdate();
+  }
+
+  if (editing) {
+    return (
+      <tr className="bg-blue-50">
+        <td className="px-3 py-1.5"></td>
+        <td className="px-3 py-1.5 font-mono font-medium">{a.icao}</td>
+        <td className="px-3 py-1.5">{a.airport_name}</td>
+        <td className="px-3 py-1.5">
+          <select value={edit.customs_type} onChange={(e) => setEdit({ ...edit, customs_type: e.target.value as UsCustomsAirport["customs_type"] })}
+            className="text-xs border border-gray-300 rounded px-1 py-0.5 w-20">
+            <option value="AOE">AOE</option><option value="LRA">LRA</option><option value="UserFee">UserFee</option><option value="None">None</option>
+          </select>
+        </td>
+        <td className="px-3 py-1.5">
+          <div className="flex gap-0.5">
+            <input type="time" value={edit.hours_open} onChange={(e) => setEdit({ ...edit, hours_open: e.target.value })}
+              className="text-xs border border-gray-300 rounded px-1 py-0.5 w-20" />
+            <input type="time" value={edit.hours_close} onChange={(e) => setEdit({ ...edit, hours_close: e.target.value })}
+              className="text-xs border border-gray-300 rounded px-1 py-0.5 w-20" />
+          </div>
+        </td>
+        <td className="px-3 py-1.5">
+          <input type="number" value={edit.advance_notice_hours} onChange={(e) => setEdit({ ...edit, advance_notice_hours: e.target.value })}
+            className="text-xs border border-gray-300 rounded px-1 py-0.5 w-12" placeholder="hrs" />
+        </td>
+        <td className="px-3 py-1.5">
+          <input type="checkbox" checked={edit.overtime_available} onChange={(e) => setEdit({ ...edit, overtime_available: e.target.checked })}
+            className="rounded border-gray-300" />
+        </td>
+        <td className="px-3 py-1.5">
+          <select value={edit.difficulty} onChange={(e) => setEdit({ ...edit, difficulty: e.target.value })}
+            className="text-xs border border-gray-300 rounded px-1 py-0.5 w-20">
+            <option value="">—</option><option value="easy">Easy</option><option value="moderate">Moderate</option><option value="hard">Hard</option>
+          </select>
+        </td>
+        <td className="px-3 py-1.5">
+          <input value={edit.notes} onChange={(e) => setEdit({ ...edit, notes: e.target.value })}
+            className="text-xs border border-gray-300 rounded px-1 py-0.5 w-full" />
+        </td>
+        <td className="px-3 py-1.5 text-center">
+          <div className="flex gap-1 justify-center">
+            <button onClick={save} disabled={saving} className="text-[10px] bg-blue-600 text-white px-2 py-0.5 rounded hover:bg-blue-700 disabled:opacity-50">
+              {saving ? "..." : "Save"}
+            </button>
+            <button onClick={() => setEditing(false)} className="text-[10px] text-gray-500 px-1">Cancel</button>
+          </div>
+        </td>
+      </tr>
+    );
+  }
+
+  return (
+    <tr className="hover:bg-gray-50 cursor-pointer group" onDoubleClick={() => setEditing(true)}>
+      <td className="px-1 py-1.5 text-center">
+        <button onClick={() => setEditing(true)} className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-blue-600 transition-opacity" title="Edit">
+          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
+        </button>
+      </td>
+      <td className="px-3 py-1.5 font-mono font-medium">{a.icao}</td>
+      <td className="px-3 py-1.5">{a.airport_name}</td>
+      <td className="px-3 py-1.5">
+        <span className="bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded text-[10px]">{a.customs_type}</span>
+      </td>
+      <td className="px-3 py-1.5 text-gray-500">
+        {a.hours_open && a.hours_close ? `${a.hours_open}–${a.hours_close}` : "—"}
+      </td>
+      <td className="px-3 py-1.5 text-gray-500">
+        {a.advance_notice_hours ? `${a.advance_notice_hours}h` : "—"}
+      </td>
+      <td className="px-3 py-1.5">
+        {a.overtime_available ? <span className="text-green-600">Yes</span> : <span className="text-gray-300">No</span>}
+      </td>
+      <td className="px-3 py-1.5">
+        {a.difficulty ? (
+          <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${difficultyColor(a.difficulty)}`}>{a.difficulty}</span>
+        ) : "—"}
+      </td>
+      <td className="px-3 py-1.5 text-gray-500 max-w-xs truncate" title={[a.restrictions, a.notes].filter(Boolean).join(" | ")}>
+        {a.restrictions || a.notes || "—"}
+      </td>
+      <td className="px-3 py-1.5 text-center">
+        <button onClick={toggleConfirmed} title={a.baker_confirmed ? `Confirmed${a.confirmed_at ? ` on ${new Date(a.confirmed_at).toLocaleDateString()}` : ""}` : "Click to confirm"}>
+          {a.baker_confirmed ? (
+            <span className="inline-flex items-center gap-0.5 text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full font-medium">
+              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
+              Confirmed
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-0.5 text-[10px] bg-gray-100 text-gray-400 px-1.5 py-0.5 rounded-full hover:bg-yellow-100 hover:text-yellow-600 transition-colors">
+              Unverified
+            </span>
+          )}
+        </button>
+      </td>
+    </tr>
   );
 }
 

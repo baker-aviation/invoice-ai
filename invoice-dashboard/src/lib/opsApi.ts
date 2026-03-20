@@ -450,6 +450,9 @@ export type Country = {
   permit_lead_time_working_days: boolean;
   treat_as_international: boolean;
   notes: string | null;
+  baker_confirmed: boolean;
+  confirmed_at: string | null;
+  confirmed_by: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -532,6 +535,9 @@ export type UsCustomsAirport = {
   restrictions: string | null;
   notes: string | null;
   difficulty: "easy" | "moderate" | "hard" | null;
+  baker_confirmed: boolean;
+  confirmed_at: string | null;
+  confirmed_by: string | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;

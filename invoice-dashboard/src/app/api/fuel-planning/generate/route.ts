@@ -250,33 +250,27 @@ export async function POST(req: NextRequest) {
 
       const plan = optimizeMultiLeg(routeInput, 200); // coarser step for fleet speed
 
-      // Naive cost: buy only what you need at each stop (no tankering)
-      // Track fuel carryover from shutdown through each leg
+      // Baseline cost: buy what you need at each stop, always meeting fee
+      // waiver minimums (standard ops). No tankering — no extra fuel carried.
       let naiveCost = 0;
       let runningFuel = shutdown.fuel;
       for (const ld of legData) {
         const needed = ld.totalFuelLbs;
-        const orderLbs = Math.max(0, needed - runningFuel);
-        const orderGal = orderLbs / ppg;
-        const fuelCost = orderGal * ld.departurePricePerGal;
-        // Check fee waiver at this stop
+        const neededLbs = Math.max(0, needed - runningFuel);
+        let orderGal = neededLbs / ppg;
+
+        // Always buy at least the fee waiver minimum (standard ops)
         const waiver = getWaiver(ld.departureFboVendor);
-        let fee = 0;
         if (waiver.minGallons > 0 && orderGal < waiver.minGallons) {
-          // Either pay the fee or buy up to the waiver minimum — whichever is cheaper
-          const topUpCost = waiver.minGallons * ld.departurePricePerGal;
-          const payFeeCost = fuelCost + waiver.feeWaived;
-          if (topUpCost < payFeeCost) {
-            naiveCost += topUpCost;
-          } else {
-            naiveCost += fuelCost + waiver.feeWaived;
-            fee = waiver.feeWaived;
-          }
-        } else {
-          naiveCost += fuelCost;
+          orderGal = waiver.minGallons;
         }
-        // Landing fuel after this leg (no extra carried)
-        runningFuel = Math.max(0, needed - ld.fuelToDestLbs - 300);
+
+        naiveCost += orderGal * ld.departurePricePerGal;
+
+        // Extra fuel from buying waiver minimum carries over as landing fuel
+        const actualOrderLbs = orderGal * ppg;
+        const departFuel = runningFuel + actualOrderLbs;
+        runningFuel = Math.max(0, departFuel - ld.fuelToDestLbs - 300);
       }
 
       const optimizedCost = plan?.totalTripCost ?? naiveCost;
