@@ -533,7 +533,13 @@ function buildAdvVsActual(
       if (seenVendors.has(vKey)) continue;
       seenVendors.add(vKey);
       const q = vendorWow.get(vKey);
-      if (q) quotes.push(q);
+      if (!q) continue;
+      // Dedup by vendor display name — same vendor can appear with different vKeys
+      // due to airport code variants (KTEB vs TEB) or product format differences
+      const vendorDisplayKey = `${q.fboVendor.toLowerCase()}|${q.volumeTier}`;
+      if (seenVendors.has(vendorDisplayKey)) continue;
+      seenVendors.add(vendorDisplayKey);
+      quotes.push(q);
     }
     // Sort quotes: cheapest first
     quotes.sort((a, b) => a.currentPrice - b.currentPrice);
