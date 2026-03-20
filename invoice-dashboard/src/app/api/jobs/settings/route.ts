@@ -45,7 +45,7 @@ export async function PATCH(req: NextRequest) {
   }
 
   // Only allow known keys
-  const ALLOWED_KEYS = ["interview_calendly_url"];
+  const ALLOWED_KEYS = ["interview_calendly_url", "rejection_email_soft", "rejection_email_hard", "rejection_email_left"];
   if (!ALLOWED_KEYS.includes(key)) {
     return NextResponse.json({ error: `Unknown setting key: ${key}` }, { status: 400 });
   }
