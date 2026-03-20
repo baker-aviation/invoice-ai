@@ -13,9 +13,10 @@ import OpsTabs from "./OpsTabs";
 const getCachedOpsData = unstable_cache(
   async () => {
     const [data, advertisedPrices, mxNotes, swimFlow, pprRows] = await Promise.all([
-      fetchFlights({ lookahead_hours: 48, lookback_hours: 48 }).catch(() =>
-        ({ ok: false, flights: [] as any[], count: 0, error: null as string | null })
-      ),
+      fetchFlights({ lookahead_hours: 48, lookback_hours: 48 }).catch((e) => {
+        console.error("[ops/page] fetchFlights error:", e);
+        return { ok: false, flights: [] as any[], count: 0, error: String(e) };
+      }),
       fetchAdvertisedPrices({ recentWeeks: 4 }).catch(() => []),
       fetchMxNotes().catch(() => []),
       fetchSwimFlowControl().catch(() => []),
