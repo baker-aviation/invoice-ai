@@ -64,11 +64,14 @@ export default function RejectModal({
       });
       const data = await res.json();
       setResult(data);
-      if (data.ok) {
+      if (data.ok && data.emailSent && !data.emailError) {
         setTimeout(() => {
           onClose();
           router.refresh();
         }, 2000);
+      } else if (data.ok) {
+        // Rejection saved but email had an issue — don't auto-close
+        router.refresh();
       }
     } catch (err) {
       setResult({ ok: false, emailError: String(err) });
@@ -170,18 +173,25 @@ export default function RejectModal({
         {result && (
           <div className="p-5 space-y-3">
             {result.ok ? (
-              <div className="text-center">
-                <div className="text-2xl mb-2">&#10003;</div>
+              <div className="text-center space-y-2">
+                <div className="text-2xl mb-1">&#10003;</div>
                 <div className="text-sm font-semibold text-gray-900">
                   {candidateName} has been rejected
                 </div>
-                {result.emailSent && (
-                  <div className="text-xs text-emerald-600 mt-1">Rejection email sent to {candidateEmail}</div>
+                {result.emailSent && !result.emailError && (
+                  <div className="text-xs text-emerald-600">Rejection email sent to {candidateEmail}</div>
                 )}
                 {result.emailError && (
-                  <div className="text-xs text-red-600 mt-1">Email issue: {result.emailError}</div>
+                  <div className="rounded-lg bg-red-50 border border-red-200 p-3 text-left">
+                    <div className="text-xs font-semibold text-red-700">Email failed to send</div>
+                    <div className="text-xs text-red-600 mt-1 break-all">{result.emailError}</div>
+                    <div className="text-xs text-red-500 mt-1">Rejection was saved. You may need to send the email manually.</div>
+                  </div>
                 )}
-                <div className="text-xs text-gray-400 mt-2">Closing...</div>
+                {!result.emailError && <div className="text-xs text-gray-400">Closing...</div>}
+                {result.emailError && (
+                  <button onClick={onClose} className="text-xs text-gray-500 hover:text-gray-700 mt-2">Close</button>
+                )}
               </div>
             ) : (
               <div className="text-center">
