@@ -1265,6 +1265,8 @@ function DocumentLibrary() {
   });
   const [uploading, setUploading] = useState(false);
   const [fileToUpload, setFileToUpload] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewName, setPreviewName] = useState<string>("");
 
   const loadDocs = useCallback(async () => {
     const params = filter !== "all" ? `?document_type=${filter}` : "";
@@ -1310,6 +1312,15 @@ function DocumentLibrary() {
     const res = await fetch(`/api/ops/intl/documents/${docId}`);
     const data = await res.json();
     if (data.download_url) window.open(data.download_url, "_blank");
+  }
+
+  async function viewDoc(docId: string, name: string) {
+    const res = await fetch(`/api/ops/intl/documents/${docId}`);
+    const data = await res.json();
+    if (data.download_url) {
+      setPreviewUrl(data.download_url);
+      setPreviewName(name);
+    }
   }
 
   const docTypes = ["airworthiness", "medical", "certificate", "passport", "insurance", "other"];
@@ -1421,14 +1432,47 @@ function DocumentLibrary() {
                         <span className="text-gray-300">—</span>
                       )}
                     </td>
-                    <td className="px-3 py-1.5">
-                      <button onClick={() => downloadDoc(d.id)} className="text-blue-600 hover:text-blue-800">Download</button>
+                    <td className="px-3 py-1.5 space-x-2">
+                      <button onClick={() => viewDoc(d.id, d.name)} className="text-blue-600 hover:text-blue-800">View</button>
+                      <button onClick={() => downloadDoc(d.id)} className="text-gray-400 hover:text-gray-600">Download</button>
                     </td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* PDF Preview Modal */}
+      {previewUrl && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setPreviewUrl(null)}>
+          <div className="bg-white rounded-lg shadow-2xl w-[90vw] max-w-4xl h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-2 border-b border-gray-200">
+              <h3 className="text-sm font-semibold text-gray-700 truncate">{previewName}</h3>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => window.open(previewUrl, "_blank")}
+                  className="text-xs text-blue-600 hover:text-blue-800"
+                >
+                  Open in new tab
+                </button>
+                <button
+                  onClick={() => setPreviewUrl(null)}
+                  className="text-gray-400 hover:text-gray-600 text-lg leading-none"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 min-h-0">
+              <iframe
+                src={previewUrl}
+                className="w-full h-full border-0"
+                title={previewName}
+              />
+            </div>
+          </div>
         </div>
       )}
     </div>
