@@ -610,9 +610,9 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
         const edctLegs = validLegs.map(leg => ({ ...leg }));
         // Sort by departure time
         edctLegs.sort((a, b) => a.startMs - b.startMs);
-        // Apply EDCT shifts (skip legs with actual data — EDCT is moot once airborne)
+        // Apply EDCT shifts (skip legs that have actually departed — EDCT is moot once airborne)
         for (const leg of edctLegs) {
-          if (leg.source === "actual" || leg.source === "fa-estimate") continue;
+          if (leg.source === "actual" && leg.startMs < Date.now()) continue;
           const matchedFlight = tailFlights.find(f =>
             f.departure_icao === leg.departure_icao &&
             f.arrival_icao === leg.arrival_icao &&
@@ -677,7 +677,7 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
         const el = validLegs.map(leg => ({ ...leg }));
         el.sort((a, b) => a.startMs - b.startMs);
         for (const leg of el) {
-          if (leg.source === "actual" || leg.source === "fa-estimate") continue;
+          if (leg.source === "actual" && leg.startMs < Date.now()) continue;
           const mf = tailFlights.find(f =>
             f.departure_icao === leg.departure_icao &&
             f.arrival_icao === leg.arrival_icao &&
