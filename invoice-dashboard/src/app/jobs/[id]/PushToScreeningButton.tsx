@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 
 export default function PushToScreeningButton({
   applicationId,
@@ -10,25 +9,16 @@ export default function PushToScreeningButton({
   applicationId: number;
   currentStage: string | null | undefined;
 }) {
-  const router = useRouter();
-  const alreadyInPipeline =
-    currentStage === "screening" ||
-    currentStage === "info_session" ||
-    currentStage === "prd_faa_review" ||
-    currentStage === "chief_pilot_review" ||
-    currentStage === "tims_review" ||
-    currentStage === "interview_pre" ||
-    currentStage === "interview_post" ||
-    currentStage === "pending_offer" ||
-    currentStage === "offer" ||
-    currentStage === "hired";
+  const alreadyInPipeline = !!(currentStage && currentStage !== "");
 
-  const [pushed, setPushed] = useState(alreadyInPipeline);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [debugMsg, setDebugMsg] = useState<string | null>(null);
+  const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">(
+    alreadyInPipeline ? "success" : "idle",
+  );
+  const [message, setMessage] = useState<string | null>(
+    alreadyInPipeline ? currentStage!.replace(/_/g, " ") : null,
+  );
 
-  if (pushed) {
+  if (status === "success") {
     return (
       <span className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
         <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -40,14 +30,13 @@ export default function PushToScreeningButton({
   }
 
   return (
-    <div className="inline-flex items-center gap-2">
+    <div className="inline-flex flex-col items-start gap-1">
       <button
         type="button"
-        disabled={loading}
+        disabled={status === "loading"}
         onClick={async () => {
-          setLoading(true);
-          setError(null);
-          setDebugMsg(`Calling PATCH /api/jobs/${applicationId}/stage ...`);
+          setStatus("loading");
+          setMessage(null);
           try {
             const res = await fetch(`/api/jobs/${applicationId}/stage`, {
               method: "PATCH",
@@ -55,29 +44,27 @@ export default function PushToScreeningButton({
               body: JSON.stringify({ stage: "prd_faa_review" }),
             });
             const text = await res.text();
-            setDebugMsg(`Response: HTTP ${res.status} — ${text.slice(0, 300)}`);
-            let data: Record<string, unknown> = {};
-            try { data = JSON.parse(text); } catch {}
             if (res.ok) {
-              setPushed(true);
-              router.refresh();
+              setStatus("success");
+              setMessage("Sent to pipeline");
             } else {
-              const msg = (data.error as string) ?? `Failed (HTTP ${res.status}): ${text.slice(0, 200)}`;
-              setError(msg);
+              setStatus("error");
+              setMessage(`HTTP ${res.status}: ${text.slice(0, 300)}`);
             }
           } catch (err) {
-            setError(String(err));
-            setDebugMsg(`Exception: ${String(err)}`);
-          } finally {
-            setLoading(false);
+            setStatus("error");
+            setMessage(`Network error: ${String(err)}`);
           }
         }}
         className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-full bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 transition-colors"
       >
-        {loading ? "Sending..." : "Send to Pipeline"}
+        {status === "loading" ? "Sending..." : "Send to Pipeline"}
       </button>
-      {error && <span className="text-xs text-red-600">{error}</span>}
-      {debugMsg && <span className="text-xs text-gray-400">{debugMsg}</span>}
+      {status === "error" && message && (
+        <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded px-2 py-1 max-w-md break-all">
+          {message}
+        </div>
+      )}
     </div>
   );
 }
