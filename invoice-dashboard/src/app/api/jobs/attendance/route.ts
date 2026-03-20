@@ -4,6 +4,29 @@ import { createServiceClient } from "@/lib/supabase/service";
 
 export const dynamic = "force-dynamic";
 
+// ─── GET: fetch recent attendance history ──────────────────────────────
+
+export async function GET(req: NextRequest) {
+  const auth = await requireAdmin(req);
+  if ("error" in auth) return auth.error;
+
+  const supa = createServiceClient();
+  const twoWeeksAgo = new Date(Date.now() - 14 * 86400_000).toISOString().split("T")[0];
+
+  const { data, error } = await supa
+    .from("info_session_attendance")
+    .select("id, meeting_code, meet_link, meeting_date, total_participants, matched, unmatched, checked_by, created_at")
+    .gte("meeting_date", twoWeeksAgo)
+    .order("meeting_date", { ascending: false })
+    .limit(20);
+
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  return NextResponse.json({ ok: true, records: data ?? [] });
+}
+
 // ─── Google Auth: JWT → Access Token ───────────────────────────────────
 
 async function getGoogleAccessToken(): Promise<string> {
@@ -195,6 +218,17 @@ export async function POST(req: NextRequest) {
 
       if (!error) markedCount++;
     }
+
+    // 6. Save attendance record
+    await supa.from("info_session_attendance").insert({
+      meeting_code: meetingCode,
+      meet_link: meetLink,
+      meeting_date: new Date().toISOString().split("T")[0],
+      total_participants: participants.length,
+      matched: matched.map((m) => ({ name: m.name, email: m.email, durationMin: Math.round(m.durationSec / 60) })),
+      unmatched,
+      checked_by: auth.email ?? null,
+    });
 
     return NextResponse.json({
       ok: true,

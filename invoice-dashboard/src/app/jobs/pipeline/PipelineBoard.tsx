@@ -124,6 +124,14 @@ function MeetingLinkTool({ storageKey, placeholder, borderColor }: { storageKey:
   );
 }
 
+interface AttendanceRecord {
+  id: number;
+  meeting_date: string;
+  total_participants: number;
+  matched: { name: string; email: string; durationMin: number }[];
+  unmatched: string[];
+}
+
 function InfoSessionTools({ jobs, onAttendanceChecked }: { jobs: JobRow[]; onAttendanceChecked?: () => void }) {
   const [copied, setCopied] = useState(false);
   const [checking, setChecking] = useState(false);
@@ -134,6 +142,22 @@ function InfoSessionTools({ jobs, onAttendanceChecked }: { jobs: JobRow[]; onAtt
     totalParticipants: number;
   } | null>(null);
   const [attendanceError, setAttendanceError] = useState<string | null>(null);
+  const [history, setHistory] = useState<AttendanceRecord[]>([]);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [expandedRecord, setExpandedRecord] = useState<number | null>(null);
+
+  // Load history on first expand
+  const loadHistory = async () => {
+    if (historyLoaded) { setShowHistory(!showHistory); return; }
+    try {
+      const res = await fetch("/api/jobs/attendance");
+      const data = await res.json();
+      if (data.ok) setHistory(data.records ?? []);
+    } catch {}
+    setHistoryLoaded(true);
+    setShowHistory(true);
+  };
   const emails = jobs.filter((j) => j.email).map((j) => j.email!);
 
   const handleCopyEmails = () => {
@@ -230,6 +254,53 @@ function InfoSessionTools({ jobs, onAttendanceChecked }: { jobs: JobRow[]; onAtt
               ))}
             </div>
           )}
+        </div>
+      )}
+      {/* History toggle */}
+      <button
+        onClick={loadHistory}
+        className="w-full text-[10px] font-medium px-2 py-1 rounded border border-gray-200 bg-white text-gray-500 hover:bg-gray-50 transition-colors"
+      >
+        {showHistory ? "Hide History" : "Past Sessions"}
+      </button>
+      {showHistory && (
+        <div className="space-y-1">
+          {history.length === 0 && (
+            <div className="text-[10px] text-gray-400 px-1">No records yet</div>
+          )}
+          {history.map((rec) => {
+            const dayLabel = new Date(rec.meeting_date + "T12:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+            const isExpanded = expandedRecord === rec.id;
+            return (
+              <div key={rec.id} className="text-[10px] rounded border border-gray-200 overflow-hidden">
+                <button
+                  onClick={() => setExpandedRecord(isExpanded ? null : rec.id)}
+                  className="w-full px-2 py-1 flex items-center justify-between bg-gray-50 hover:bg-gray-100 transition-colors text-left"
+                >
+                  <span className="font-medium text-gray-700">{dayLabel}</span>
+                  <span className="text-gray-400">
+                    {rec.matched.length} attended / {rec.total_participants} total
+                  </span>
+                </button>
+                {isExpanded && (
+                  <div className="px-2 py-1 space-y-0.5 border-t border-gray-100">
+                    {rec.matched.map((m) => (
+                      <div key={m.email} className="text-emerald-700">
+                        {m.name} <span className="text-emerald-400">({m.durationMin}m)</span>
+                      </div>
+                    ))}
+                    {rec.unmatched.length > 0 && (
+                      <div className="pt-0.5 mt-0.5 border-t border-gray-100">
+                        {rec.unmatched.map((u) => (
+                          <div key={u} className="text-gray-400">{u}</div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
