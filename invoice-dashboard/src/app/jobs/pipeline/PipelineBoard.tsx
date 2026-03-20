@@ -127,7 +127,13 @@ function MeetingLinkTool({ storageKey, placeholder, borderColor }: { storageKey:
 function InfoSessionTools({ jobs, onAttendanceChecked }: { jobs: JobRow[]; onAttendanceChecked?: () => void }) {
   const [copied, setCopied] = useState(false);
   const [checking, setChecking] = useState(false);
-  const [attendanceResult, setAttendanceResult] = useState<string | null>(null);
+  const [attendanceResult, setAttendanceResult] = useState<{
+    summary: string;
+    matched: { name: string; email: string; durationSec: number }[];
+    unmatched: string[];
+    totalParticipants: number;
+  } | null>(null);
+  const [attendanceError, setAttendanceError] = useState<string | null>(null);
   const emails = jobs.filter((j) => j.email).map((j) => j.email!);
 
   const handleCopyEmails = () => {
@@ -142,11 +148,12 @@ function InfoSessionTools({ jobs, onAttendanceChecked }: { jobs: JobRow[]; onAtt
     let meetLink = "";
     try { meetLink = localStorage.getItem("info_session_meet_link") ?? ""; } catch {}
     if (!meetLink) {
-      setAttendanceResult("Enter a Google Meet link first");
+      setAttendanceError("Enter a Google Meet link first");
       return;
     }
     setChecking(true);
     setAttendanceResult(null);
+    setAttendanceError(null);
     try {
       const res = await fetch("/api/jobs/attendance", {
         method: "POST",
@@ -155,17 +162,24 @@ function InfoSessionTools({ jobs, onAttendanceChecked }: { jobs: JobRow[]; onAtt
       });
       const data = await res.json();
       if (!res.ok) {
-        setAttendanceResult(`Error: ${data.error}`);
+        setAttendanceError(data.error);
         return;
       }
       const parts = [];
       if (data.markedCount > 0) parts.push(`${data.markedCount} marked attended`);
       if (data.unmatched?.length > 0) parts.push(`${data.unmatched.length} unmatched`);
-      if (data.totalParticipants === 0) parts.push("No participants found (meeting may not have ended yet)");
-      setAttendanceResult(parts.join(", ") || "No matches found");
-      if (data.markedCount > 0) onAttendanceChecked?.();
+      if (data.totalParticipants === 0) parts.push("No participants found yet");
+      setAttendanceResult({
+        summary: parts.join(", ") || "No matches",
+        matched: data.matched ?? [],
+        unmatched: data.unmatched ?? [],
+        totalParticipants: data.totalParticipants ?? 0,
+      });
+      if (data.markedCount > 0) {
+        setTimeout(() => onAttendanceChecked?.(), 2000);
+      }
     } catch (err) {
-      setAttendanceResult(`Error: ${String(err)}`);
+      setAttendanceError(String(err));
     } finally {
       setChecking(false);
     }
@@ -190,9 +204,32 @@ function InfoSessionTools({ jobs, onAttendanceChecked }: { jobs: JobRow[]; onAtt
       >
         {checking ? "Checking..." : "Check Attendance"}
       </button>
+      {attendanceError && (
+        <div className="text-[10px] px-2 py-1 rounded bg-red-50 text-red-600">{attendanceError}</div>
+      )}
       {attendanceResult && (
-        <div className={`text-[10px] px-2 py-1 rounded ${attendanceResult.startsWith("Error") ? "bg-red-50 text-red-600" : "bg-emerald-50 text-emerald-700"}`}>
-          {attendanceResult}
+        <div className="text-[10px] rounded border border-emerald-200 bg-emerald-50 overflow-hidden">
+          <div className="px-2 py-1 font-semibold text-emerald-700 border-b border-emerald-200">
+            {attendanceResult.summary} ({attendanceResult.totalParticipants} total)
+          </div>
+          {attendanceResult.matched.length > 0 && (
+            <div className="px-2 py-1 space-y-0.5">
+              <div className="font-semibold text-emerald-600">Attended:</div>
+              {attendanceResult.matched.map((m) => (
+                <div key={m.email} className="text-emerald-700">
+                  {m.name} <span className="text-emerald-500">({Math.round(m.durationSec / 60)}m)</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {attendanceResult.unmatched.length > 0 && (
+            <div className="px-2 py-1 border-t border-emerald-200 space-y-0.5">
+              <div className="font-semibold text-gray-500">Not in pipeline:</div>
+              {attendanceResult.unmatched.map((u) => (
+                <div key={u} className="text-gray-500">{u}</div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
