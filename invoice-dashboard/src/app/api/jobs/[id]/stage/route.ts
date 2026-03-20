@@ -43,7 +43,7 @@ export async function PATCH(
     const supa = createServiceClient();
     const { data, error: updateErr } = await supa
       .from("job_application_parse")
-      .update({ pipeline_stage: isRemove ? null : stage })
+      .update({ pipeline_stage: isRemove ? "" : stage })
       .eq("application_id", Number(id))
       .select("id");
 
