@@ -18,6 +18,19 @@ const AIRCRAFT_DEFAULTS: Record<AircraftType, {
   "CL-30":  { mlw: 34_250, zfw: 25_600, defaultBurnRate: 2500, reserveLbs: 1800 },
 };
 
+// ─── FBO fee waiver rules ──────────────────────────────────────────────
+// Minimum fuel purchase (gallons) to waive handling/ramp fees
+const FBO_WAIVERS: Record<string, { minGallons: number; feeWaived: number }> = {
+  "Signature Flight Support": { minGallons: 420, feeWaived: 1000 },
+  "Atlantic Aviation":        { minGallons: 350, feeWaived: 750 },
+  "Jet Aviation":             { minGallons: 250, feeWaived: 1000 },
+};
+
+function getWaiver(vendor: string | null): { minGallons: number; feeWaived: number } {
+  if (!vendor) return { minGallons: 0, feeWaived: 0 };
+  return FBO_WAIVERS[vendor] ?? { minGallons: 0, feeWaived: 0 };
+}
+
 // ─── Types ─────────────────────────────────────────────────────────────
 
 interface ScheduleLeg {
@@ -209,19 +222,22 @@ export async function POST(req: NextRequest) {
         };
       });
 
-      // Build optimizer input
-      const multiLegs: MultiLeg[] = legData.map((ld) => ({
-        id: `${tail}-${ld.from}-${ld.to}`,
-        from: ld.from, to: ld.to,
-        requiredStartFuelLbs: ld.totalFuelLbs,
-        fuelToDestLbs: ld.fuelToDestLbs,
-        flightTimeHours: ld.flightTimeHours,
-        maxLandingGrossWeightLbs: defaults.mlw,
-        zeroFuelWeightLbs: defaults.zfw,
-        departurePricePerGal: ld.departurePricePerGal,
-        waiveFeesGallons: 0,
-        feesWaivedDollars: 0,
-      }));
+      // Build optimizer input (with fee waiver rules per FBO)
+      const multiLegs: MultiLeg[] = legData.map((ld) => {
+        const waiver = getWaiver(ld.departureFboVendor);
+        return {
+          id: `${tail}-${ld.from}-${ld.to}`,
+          from: ld.from, to: ld.to,
+          requiredStartFuelLbs: ld.totalFuelLbs,
+          fuelToDestLbs: ld.fuelToDestLbs,
+          flightTimeHours: ld.flightTimeHours,
+          maxLandingGrossWeightLbs: defaults.mlw,
+          zeroFuelWeightLbs: defaults.zfw,
+          departurePricePerGal: ld.departurePricePerGal,
+          waiveFeesGallons: waiver.minGallons,
+          feesWaivedDollars: waiver.feeWaived,
+        };
+      });
 
       const routeInput: MultiRouteInputs = {
         startShutdownFuelLbs: shutdown.fuel,
@@ -233,11 +249,35 @@ export async function POST(req: NextRequest) {
 
       const plan = optimizeMultiLeg(routeInput);
 
-      // Naive cost: buy all fuel at each stop's local price (no carryover)
+      // Naive cost: buy only what you need at each stop (no tankering)
+      // Track fuel carryover from shutdown through each leg
       let naiveCost = 0;
+      let runningFuel = shutdown.fuel;
       for (const ld of legData) {
-        naiveCost += (ld.totalFuelLbs / ppg) * ld.departurePricePerGal;
+        const needed = ld.totalFuelLbs;
+        const orderLbs = Math.max(0, needed - runningFuel);
+        const orderGal = orderLbs / ppg;
+        const fuelCost = orderGal * ld.departurePricePerGal;
+        // Check fee waiver at this stop
+        const waiver = getWaiver(ld.departureFboVendor);
+        let fee = 0;
+        if (waiver.minGallons > 0 && orderGal < waiver.minGallons) {
+          // Either pay the fee or buy up to the waiver minimum — whichever is cheaper
+          const topUpCost = waiver.minGallons * ld.departurePricePerGal;
+          const payFeeCost = fuelCost + waiver.feeWaived;
+          if (topUpCost < payFeeCost) {
+            naiveCost += topUpCost;
+          } else {
+            naiveCost += fuelCost + waiver.feeWaived;
+            fee = waiver.feeWaived;
+          }
+        } else {
+          naiveCost += fuelCost;
+        }
+        // Landing fuel after this leg (no extra carried)
+        runningFuel = Math.max(0, needed - ld.fuelToDestLbs - 300);
       }
+
       const optimizedCost = plan?.totalTripCost ?? naiveCost;
       const tankerSavings = Math.max(0, naiveCost - optimizedCost);
 

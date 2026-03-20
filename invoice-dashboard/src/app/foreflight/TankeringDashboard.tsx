@@ -375,8 +375,17 @@ function TailPlanCard({ plan: tp }: { plan: TailPlan }) {
                       <td className="py-2.5 pr-3 text-right font-mono text-gray-700">
                         {fmtNum(landingFuel)}
                       </td>
-                      <td className="py-2.5 text-right font-mono font-semibold text-gray-900">
-                        {legCost > 0 ? fmtDollars(legCost) : "—"}
+                      <td className="py-2.5 text-right">
+                        {legCost > 0 ? (
+                          <div>
+                            <span className="font-mono font-semibold text-gray-900">{fmtDollars(legCost)}</span>
+                            {(plan.feePaidByStop[i] ?? 0) > 0 && (
+                              <div className="text-[10px] text-red-500">+{fmtDollars(plan.feePaidByStop[i])} fee</div>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="font-mono text-gray-400">—</span>
+                        )}
                       </td>
                     </tr>
                   );
