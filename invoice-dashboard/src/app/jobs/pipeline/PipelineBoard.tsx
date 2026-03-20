@@ -267,12 +267,17 @@ function InfoSessionTools({ jobs, onAttendanceChecked }: { jobs: JobRow[]; onAtt
               ))}
             </div>
           )}
-          {attendanceResult.internal.length > 0 && (
+          {(attendanceResult.internal?.length ?? 0) > 0 && (
             <div className="px-2 py-1 border-t border-emerald-200 space-y-0.5">
               <div className="font-semibold text-gray-400">Baker staff:</div>
               {attendanceResult.internal.map((s, i) => (
                 <div key={`${s.email}-${i}`} className="text-gray-400">{s.name} ({s.durationMin}m) {s.date && <span>{fmtShortDate(s.date)}</span>}</div>
               ))}
+            </div>
+          )}
+          {attendanceResult.matched.length === 0 && attendanceResult.unmatched.length === 0 && (attendanceResult.internal?.length ?? 0) === 0 && attendanceResult.totalParticipants > 0 && (
+            <div className="px-2 py-1 text-gray-400">
+              {attendanceResult.totalParticipants} participants found — details may still be loading. Try refreshing.
             </div>
           )}
         </div>
