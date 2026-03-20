@@ -124,8 +124,40 @@ function MeetingLinkTool({ storageKey, placeholder, borderColor }: { storageKey:
   );
 }
 
-function InfoSessionTools({ jobs }: { jobs: JobRow[] }) {
+interface AttendanceRecord {
+  id: number;
+  meeting_date: string;
+  total_participants: number;
+  matched: { name: string; email: string; durationMin: number }[];
+  unmatched: string[];
+}
+
+function InfoSessionTools({ jobs, onAttendanceChecked }: { jobs: JobRow[]; onAttendanceChecked?: () => void }) {
   const [copied, setCopied] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [attendanceResult, setAttendanceResult] = useState<{
+    summary: string;
+    matched: { name: string; email: string; durationSec: number }[];
+    unmatched: string[];
+    totalParticipants: number;
+  } | null>(null);
+  const [attendanceError, setAttendanceError] = useState<string | null>(null);
+  const [history, setHistory] = useState<AttendanceRecord[]>([]);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [expandedRecord, setExpandedRecord] = useState<number | null>(null);
+
+  // Load history on first expand
+  const loadHistory = async () => {
+    if (historyLoaded) { setShowHistory(!showHistory); return; }
+    try {
+      const res = await fetch("/api/jobs/attendance");
+      const data = await res.json();
+      if (data.ok) setHistory(data.records ?? []);
+    } catch {}
+    setHistoryLoaded(true);
+    setShowHistory(true);
+  };
   const emails = jobs.filter((j) => j.email).map((j) => j.email!);
 
   const handleCopyEmails = () => {
@@ -134,6 +166,47 @@ function InfoSessionTools({ jobs }: { jobs: JobRow[] }) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
+  };
+
+  const handleCheckAttendance = async () => {
+    let meetLink = "";
+    try { meetLink = localStorage.getItem("info_session_meet_link") ?? ""; } catch {}
+    if (!meetLink) {
+      setAttendanceError("Enter a Google Meet link first");
+      return;
+    }
+    setChecking(true);
+    setAttendanceResult(null);
+    setAttendanceError(null);
+    try {
+      const res = await fetch("/api/jobs/attendance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ meetLink }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setAttendanceError(data.error);
+        return;
+      }
+      const parts = [];
+      if (data.markedCount > 0) parts.push(`${data.markedCount} marked attended`);
+      if (data.unmatched?.length > 0) parts.push(`${data.unmatched.length} unmatched`);
+      if (data.totalParticipants === 0) parts.push("No participants found yet");
+      setAttendanceResult({
+        summary: parts.join(", ") || "No matches",
+        matched: data.matched ?? [],
+        unmatched: data.unmatched ?? [],
+        totalParticipants: data.totalParticipants ?? 0,
+      });
+      if (data.markedCount > 0) {
+        setTimeout(() => onAttendanceChecked?.(), 2000);
+      }
+    } catch (err) {
+      setAttendanceError(String(err));
+    } finally {
+      setChecking(false);
+    }
   };
 
   return (
@@ -148,6 +221,88 @@ function InfoSessionTools({ jobs }: { jobs: JobRow[] }) {
         </button>
       </div>
       <MeetingLinkTool storageKey="info_session_meet_link" placeholder="Google Meet link..." />
+      <button
+        onClick={handleCheckAttendance}
+        disabled={checking}
+        className="w-full text-[10px] font-medium px-2 py-1 rounded border border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 disabled:opacity-50 transition-colors"
+      >
+        {checking ? "Checking..." : "Check Attendance"}
+      </button>
+      {attendanceError && (
+        <div className="text-[10px] px-2 py-1 rounded bg-red-50 text-red-600">{attendanceError}</div>
+      )}
+      {attendanceResult && (
+        <div className="text-[10px] rounded border border-emerald-200 bg-emerald-50 overflow-hidden">
+          <div className="px-2 py-1 font-semibold text-emerald-700 border-b border-emerald-200">
+            {attendanceResult.summary} ({attendanceResult.totalParticipants} total)
+          </div>
+          {attendanceResult.matched.length > 0 && (
+            <div className="px-2 py-1 space-y-0.5">
+              <div className="font-semibold text-emerald-600">Attended:</div>
+              {attendanceResult.matched.map((m) => (
+                <div key={m.email} className="text-emerald-700">
+                  {m.name} <span className="text-emerald-500">({Math.round(m.durationSec / 60)}m)</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {attendanceResult.unmatched.length > 0 && (
+            <div className="px-2 py-1 border-t border-emerald-200 space-y-0.5">
+              <div className="font-semibold text-gray-500">Not in pipeline:</div>
+              {attendanceResult.unmatched.map((u) => (
+                <div key={u} className="text-gray-500">{u}</div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      {/* History toggle */}
+      <button
+        onClick={loadHistory}
+        className="w-full text-[10px] font-medium px-2 py-1 rounded border border-gray-200 bg-white text-gray-500 hover:bg-gray-50 transition-colors"
+      >
+        {showHistory ? "Hide History" : "Past Sessions"}
+      </button>
+      {showHistory && (
+        <div className="space-y-1">
+          {history.length === 0 && (
+            <div className="text-[10px] text-gray-400 px-1">No records yet</div>
+          )}
+          {history.map((rec) => {
+            const dayLabel = new Date(rec.meeting_date + "T12:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+            const isExpanded = expandedRecord === rec.id;
+            return (
+              <div key={rec.id} className="text-[10px] rounded border border-gray-200 overflow-hidden">
+                <button
+                  onClick={() => setExpandedRecord(isExpanded ? null : rec.id)}
+                  className="w-full px-2 py-1 flex items-center justify-between bg-gray-50 hover:bg-gray-100 transition-colors text-left"
+                >
+                  <span className="font-medium text-gray-700">{dayLabel}</span>
+                  <span className="text-gray-400">
+                    {rec.matched.length} attended / {rec.total_participants} total
+                  </span>
+                </button>
+                {isExpanded && (
+                  <div className="px-2 py-1 space-y-0.5 border-t border-gray-100">
+                    {rec.matched.map((m) => (
+                      <div key={m.email} className="text-emerald-700">
+                        {m.name} <span className="text-emerald-400">({m.durationMin}m)</span>
+                      </div>
+                    ))}
+                    {rec.unmatched.length > 0 && (
+                      <div className="pt-0.5 mt-0.5 border-t border-gray-100">
+                        {rec.unmatched.map((u) => (
+                          <div key={u} className="text-gray-400">{u}</div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -948,7 +1103,12 @@ export default function PipelineBoard({
                 </span>
               </div>
 
-              {stage === "info_session" && <InfoSessionTools jobs={stageJobs} />}
+              {stage === "info_session" && (
+                <InfoSessionTools
+                  jobs={stageJobs}
+                  onAttendanceChecked={() => window.location.reload()}
+                />
+              )}
               {stage === "interview_scheduled" && (
                 <div className="px-3 py-2 border-t border-fuchsia-100">
                   <MeetingLinkTool storageKey="interview_meet_link" placeholder="Calendly or Meet link..." borderColor="fuchsia" />

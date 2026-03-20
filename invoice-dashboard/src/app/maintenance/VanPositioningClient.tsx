@@ -3535,12 +3535,28 @@ function ScheduleTab({
   const handlePublishVan = useCallback(async (vanId: number) => {
     try {
       const items = finalItemsByVan.get(vanId) ?? [];
+      // Build synthetic flight metadata for unscheduled/parked aircraft
+      // so the driver page can reconstruct stops for them
+      const syntheticFlights: { id: string; tail: string; airport: string | null }[] = [];
+      for (const item of items) {
+        if (item.arrFlight.id.startsWith("unsched_")) {
+          syntheticFlights.push({
+            id: item.arrFlight.id,
+            tail: item.arrFlight.tail_number ?? "",
+            airport: item.airport ?? item.arrFlight.arrival_icao?.replace(/^K/, "") ?? null,
+          });
+        }
+      }
       const res = await fetch("/api/vans/publish", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           date,
-          assignments: [{ vanId, flightIds: items.map((item) => item.arrFlight.id) }],
+          assignments: [{
+            vanId,
+            flightIds: items.map((item) => item.arrFlight.id),
+            ...(syntheticFlights.length > 0 ? { syntheticFlights } : {}),
+          }],
         }),
       });
       const data = await res.json();

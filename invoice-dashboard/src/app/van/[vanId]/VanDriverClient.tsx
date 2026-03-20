@@ -17,6 +17,8 @@ import {
   isOnEtDate,
   getEffectiveArrival,
   routeDistKm,
+  getAirportInfo,
+  haversineKm,
   type VanFlightItem,
   type FlightInfoEntry,
 } from "@/lib/vanUtils";
@@ -227,6 +229,7 @@ export default function VanDriverClient({
   initialFlights,
   publishedFlightIds,
   publishedAt,
+  syntheticFlights,
   mxNotes,
   fboMap,
   airportOverrides,
@@ -236,6 +239,7 @@ export default function VanDriverClient({
   initialFlights: Flight[];
   publishedFlightIds: string[] | null;
   publishedAt: string | null;
+  syntheticFlights?: { id: string; tail: string; airport: string | null }[];
   mxNotes?: MxNote[];
   fboMap?: Record<string, string>;
   airportOverrides?: [string, string][];
@@ -332,14 +336,59 @@ export default function VanDriverClient({
 
   const apOverrideMap = useMemo(() => new Map(airportOverrides ?? []), [airportOverrides]);
 
+  // Build a map of synthetic flights for quick lookup
+  const syntheticMap = useMemo(() => {
+    const map = new Map<string, { id: string; tail: string; airport: string | null }>();
+    for (const sf of syntheticFlights ?? []) {
+      map.set(sf.id, sf);
+    }
+    return map;
+  }, [syntheticFlights]);
+
   const stops = useMemo(() => {
     let items: VanFlightItem[];
     if (publishedFlightIds && publishedFlightIds.length > 0) {
       // Use Director's published schedule — preserve ordering
       items = [];
       for (const fId of publishedFlightIds) {
+        // Try real flight first
         const item = buildItemFromFlight(fId, flights, zone.lat, zone.lon);
-        if (item) items.push(item);
+        if (item) {
+          items.push(item);
+          continue;
+        }
+        // Try synthetic flight (unscheduled/parked aircraft)
+        const sf = syntheticMap.get(fId);
+        if (sf && sf.airport) {
+          const info = getAirportInfo(sf.airport);
+          const distKm = info ? Math.round(haversineKm(zone.lat, zone.lon, info.lat, info.lon)) : 0;
+          const syntheticFlight: Flight = {
+            id: sf.id,
+            ics_uid: sf.id,
+            tail_number: sf.tail,
+            departure_icao: `K${sf.airport}`,
+            arrival_icao: `K${sf.airport}`,
+            scheduled_departure: `${date}T17:00:00Z`,
+            scheduled_arrival: `${date}T17:00:00Z`,
+            summary: `Parked – ${sf.tail}`,
+            flight_type: null,
+            pic: null,
+            sic: null,
+            pax_count: null,
+            jetinsight_url: null,
+            fa_flight_id: null,
+            alerts: [],
+          };
+          items.push({
+            arrFlight: syntheticFlight,
+            nextDep: null,
+            isRepo: false,
+            nextIsRepo: false,
+            airport: sf.airport,
+            airportInfo: info,
+            distKm,
+          });
+        }
       }
     } else {
       // Fallback: auto-compute

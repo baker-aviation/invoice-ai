@@ -14,9 +14,16 @@ import { createServiceClient } from "@/lib/supabase/service";
  * Returns { published_at: string | null }
  */
 
+type SyntheticFlight = {
+  id: string;
+  tail: string;
+  airport: string | null;
+};
+
 type Assignment = {
   vanId: number;
   flightIds: string[];
+  syntheticFlights?: SyntheticFlight[];
 };
 
 type PublishBody = {
@@ -36,14 +43,15 @@ export async function GET(req: NextRequest) {
   const supa = createServiceClient();
   const { data } = await supa
     .from("van_published_schedules")
-    .select("van_id, flight_ids, published_at")
+    .select("van_id, flight_ids, synthetic_flights, published_at")
     .eq("schedule_date", date)
     .order("published_at", { ascending: false });
 
   const publishedAt = data?.[0]?.published_at ?? null;
-  const assignments = (data ?? []).map((row: { van_id: number; flight_ids: string[] }) => ({
+  const assignments = (data ?? []).map((row: any) => ({
     vanId: row.van_id,
     flightIds: row.flight_ids ?? [],
+    syntheticFlights: row.synthetic_flights ?? [],
   }));
   return NextResponse.json({ published_at: publishedAt, assignments });
 }
@@ -76,6 +84,7 @@ export async function POST(req: NextRequest) {
     van_id: a.vanId,
     schedule_date: date,
     flight_ids: a.flightIds,
+    synthetic_flights: a.syntheticFlights ?? null,
     published_by: auth.userId,
     published_at: now,
   }));
