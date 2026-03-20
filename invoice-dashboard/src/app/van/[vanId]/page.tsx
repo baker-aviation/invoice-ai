@@ -36,13 +36,15 @@ export default async function VanPage({ params }: { params: Promise<{ vanId: str
   const today = todayEtDate();
   const { data: published } = await supa
     .from("van_published_schedules")
-    .select("flight_ids, published_at")
+    .select("flight_ids, synthetic_flights, published_at")
     .eq("van_id", vanId)
     .eq("schedule_date", today)
     .maybeSingle();
 
   const publishedFlightIds = published?.flight_ids ?? null;
   const publishedAtStr = published?.published_at ?? null;
+  const syntheticFlights: { id: string; tail: string; airport: string | null }[] =
+    (published?.synthetic_flights as any[]) ?? [];
 
   const mxNotes = await fetchMxNotes().catch(() => []);
 
@@ -76,6 +78,7 @@ export default async function VanPage({ params }: { params: Promise<{ vanId: str
       initialFlights={flights ?? []}
       publishedFlightIds={publishedFlightIds}
       publishedAt={publishedAtStr}
+      syntheticFlights={syntheticFlights}
       mxNotes={mxNotes}
       fboMap={fboMap}
       airportOverrides={airportOverrides}
