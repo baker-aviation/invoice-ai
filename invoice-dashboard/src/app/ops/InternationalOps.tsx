@@ -43,13 +43,26 @@ function difficultyColor(d: string | null) {
 // ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
-export default function InternationalOps({ flights }: { flights: Flight[] }) {
+export default function InternationalOps({ flights: _parentFlights }: { flights: Flight[] }) {
   const [subTab, setSubTab] = useState<SubTab>("Flight Board");
   const [countries, setCountries] = useState<Country[]>([]);
   const [alerts, setAlerts] = useState<IntlLegAlert[]>([]);
+  const [allFlights, setAllFlights] = useState<Flight[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const intlFlights = flights
+  // The parent page only fetches 48h of flights. We need 30 days for the international board.
+  const loadFlights = useCallback(async () => {
+    try {
+      const res = await fetch("/api/ops/flights?lookahead_hours=720&lookback_hours=24");
+      const data = await res.json();
+      setAllFlights(data.flights ?? data.items ?? []);
+    } catch {
+      // Fallback to parent flights if API fails
+      setAllFlights(_parentFlights);
+    }
+  }, [_parentFlights]);
+
+  const intlFlights = allFlights
     .filter(isInternationalFlight)
     .filter((f) => {
       const dep = new Date(f.scheduled_departure);
@@ -75,8 +88,8 @@ export default function InternationalOps({ flights }: { flights: Flight[] }) {
   }, []);
 
   useEffect(() => {
-    Promise.all([loadCountries(), loadAlerts()]).finally(() => setLoading(false));
-  }, [loadCountries, loadAlerts]);
+    Promise.all([loadFlights(), loadCountries(), loadAlerts()]).finally(() => setLoading(false));
+  }, [loadFlights, loadCountries, loadAlerts]);
 
   const unackedAlerts = alerts.filter((a) => !a.acknowledged);
 
