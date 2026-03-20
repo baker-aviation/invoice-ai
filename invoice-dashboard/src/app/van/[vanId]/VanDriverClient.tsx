@@ -68,57 +68,56 @@ function matchFaFlight(
   const nDep = norm(depIcao);
   const nArr = norm(arrIcao);
 
+  // Time window limits to prevent matching stale FA flights from previous days
+  const HOURS_6 = 6 * 3600_000;
+  const HOURS_4 = 4 * 3600_000;
+
+  // Helper: pick the closest-in-time entry from a list, with optional max time window
+  function pickClosest(
+    candidates: FlightInfoEntry[],
+    maxDiffMs?: number,
+  ): FlightInfoEntry | undefined {
+    if (candidates.length === 0) return undefined;
+    if (!schedDep) return candidates.length === 1 ? candidates[0] : undefined;
+    let best: FlightInfoEntry | undefined;
+    let bestDiff = Infinity;
+    for (const c of candidates) {
+      const faDep = c.departure_time ? new Date(c.departure_time).getTime() : null;
+      const diff = faDep ? Math.abs(faDep - schedDep) : Infinity;
+      if (diff < bestDiff) { bestDiff = diff; best = c; }
+    }
+    // Reject if outside the allowed time window
+    if (maxDiffMs && bestDiff > maxDiffMs) return undefined;
+    return best;
+  }
+
   // Find all FA flights for this tail
   const tailFlights = allEntries.filter((e) => e.tail === tail);
   if (tailFlights.length === 0) return undefined;
 
-  // Find route matches (origin + destination)
+  // PRIORITY 1: Exact route match (origin + destination) — most reliable, allow wide window
   const routeMatches = tailFlights.filter((e) =>
     nDep && norm(e.origin_icao) === nDep && (!nArr || norm(e.destination_icao) === nArr)
   );
+  const routeHit = pickClosest(routeMatches);
+  if (routeHit) return routeHit;
 
-  // If multiple route matches, pick the one closest in time to scheduled departure
-  if (routeMatches.length > 1 && schedDep) {
-    let best = routeMatches[0];
-    let bestDiff = Infinity;
-    for (const rm of routeMatches) {
-      const faDep = rm.departure_time ? new Date(rm.departure_time).getTime() : null;
-      const diff = faDep ? Math.abs(faDep - schedDep) : Infinity;
-      if (diff < bestDiff) { bestDiff = diff; best = rm; }
-    }
-    return best;
-  }
-  if (routeMatches.length === 1) return routeMatches[0];
-
-  // Partial: origin matches — pick closest in time
+  // PRIORITY 2: Origin-only match — require within 6h of scheduled departure
   const originMatches = tailFlights.filter((e) => nDep && norm(e.origin_icao) === nDep);
-  if (originMatches.length > 0 && schedDep) {
-    let best = originMatches[0];
-    let bestDiff = Infinity;
-    for (const om of originMatches) {
-      const faDep = om.departure_time ? new Date(om.departure_time).getTime() : null;
-      const diff = faDep ? Math.abs(faDep - schedDep) : Infinity;
-      if (diff < bestDiff) { bestDiff = diff; best = om; }
-    }
-    return best;
-  }
-  if (originMatches.length > 0) return originMatches[0];
+  const originHit = pickClosest(originMatches, HOURS_6);
+  if (originHit) return originHit;
 
-  // Destination matches — pick closest in time (for cases where the van cares about arrival airport)
+  // PRIORITY 3: Destination-only match — weakest signal, require within 4h AND
+  // only accept if the FA flight is currently en route (not a stale landed flight)
   const destMatches = tailFlights.filter((e) => nArr && norm(e.destination_icao) === nArr);
-  if (destMatches.length > 0 && schedDep) {
-    let best = destMatches[0];
-    let bestDiff = Infinity;
-    for (const dm of destMatches) {
-      const faDep = dm.departure_time ? new Date(dm.departure_time).getTime() : null;
-      const diff = faDep ? Math.abs(faDep - schedDep) : Infinity;
-      if (diff < bestDiff) { bestDiff = diff; best = dm; }
-    }
-    return best;
-  }
-  if (destMatches.length > 0) return destMatches[0];
+  const destEnRoute = destMatches.filter((e) =>
+    e.status === "En Route" || e.status === "Airborne" ||
+    (e.progress_percent != null && e.progress_percent > 0 && e.progress_percent < 100)
+  );
+  const destHit = pickClosest(destEnRoute, HOURS_4);
+  if (destHit) return destHit;
 
-  // No route match at all — don't guess, return undefined
+  // No reliable match — don't guess
   return undefined;
 }
 
@@ -359,13 +358,13 @@ export default function VanDriverClient({
     return map;
   }, [mxNotes]);
 
-  // Find the "next" stop — first non-landed
+  // Find the "next" stop — first non-landed (using same logic as getFlightStatus)
   const nextStopIdx = useMemo(() => {
     for (let i = 0; i < stops.length; i++) {
       const tail = stops[i].arrFlight.tail_number;
       const fi = tail ? matchFaFlight(allFlightEntries, stops[i].arrFlight) : undefined;
-      const status = fi?.status;
-      if (status !== "Landed" && status !== "Arrived") return i;
+      const status = getFlightStatus(stops[i], fi);
+      if (status.label !== "Landed") return i;
     }
     return stops.length > 0 ? 0 : -1;
   }, [stops, allFlightEntries]);
