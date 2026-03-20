@@ -4,11 +4,12 @@ import { createServiceClient } from "@/lib/supabase/service";
 /**
  * GET /api/fbo-fees
  *
- * Aggregates FBO fee data from parsed invoices:
+ * Aggregates FBO fee data from parsed invoices and advertised fuel prices:
  * - FBO fees from parsed_invoices (doc_type = 'fbo_fee') line items
- * - Fuel prices from the fuel_prices table
+ * - Fuel prices from fbo_advertised_prices (the weekly fuel price sheet uploads)
  *
- * Returns per-airport, per-vendor summaries with most recent fees and avg fuel prices.
+ * Fees are aggregated per airport (not per vendor) — one card per fee type.
+ * "Baker Aviation" invoices are treated as the FBO at that airport, not as a vendor.
  */
 
 type LineItem = {
@@ -46,6 +47,9 @@ const FEE_PATTERNS: [RegExp, string][] = [
   [/cater(ing)?/i, "catering_fee"],
 ];
 
+// Skip invoices where "vendor" is actually us
+const SELF_VENDORS = /baker\s*aviation/i;
+
 function classifyFee(desc: string): string | null {
   for (const [pattern, feeType] of FEE_PATTERNS) {
     if (pattern.test(desc)) return feeType;
@@ -70,21 +74,22 @@ export async function GET() {
     return NextResponse.json({ error: fboErr.message }, { status: 500 });
   }
 
-  // 2. Get fuel prices
-  const { data: fuelPrices, error: fuelErr } = await supa
-    .from("fuel_prices")
-    .select("airport_code, vendor_name, invoice_date, base_price_per_gallon, effective_price_per_gallon, gallons, has_additive")
-    .not("airport_code", "is", null)
-    .order("invoice_date", { ascending: false })
+  // 2. Get advertised fuel prices (from fuel price sheet uploads)
+  const { data: advPrices, error: advErr } = await supa
+    .from("fbo_advertised_prices")
+    .select("fbo_vendor, airport_code, volume_tier, product, price, week_start")
+    .order("week_start", { ascending: false })
     .limit(5000);
 
-  if (fuelErr) {
-    return NextResponse.json({ error: fuelErr.message }, { status: 500 });
+  if (advErr) {
+    return NextResponse.json({ error: advErr.message }, { status: 500 });
   }
 
-  // 3. Extract fees from line items
+  // 3. Extract fees from line items, skipping self-vendor invoices
   const fees: FeeExtract[] = [];
   for (const inv of fboInvoices ?? []) {
+    if (SELF_VENDORS.test(inv.vendor_name ?? "")) continue;
+
     const items: LineItem[] = Array.isArray(inv.line_items) ? inv.line_items : [];
     for (const item of items) {
       const desc = item.description || item.category || "";
@@ -104,83 +109,68 @@ export async function GET() {
     }
   }
 
-  // 4. Aggregate fees: per airport+vendor, keep most recent of each fee type
-  type AirportVendorKey = string;
-  type FeeAgg = Record<string, { amount: number; date: string }>;
-  const feeMap = new Map<AirportVendorKey, { vendor: string; airport: string; fees: FeeAgg }>();
+  // 4. Aggregate fees per AIRPORT (not per vendor) — keep most recent of each fee type
+  type FeeAgg = Record<string, { amount: number; date: string; vendor: string }>;
+  const feeMap = new Map<string, FeeAgg>();
 
   for (const f of fees) {
-    const key = `${f.airport_code}|${f.vendor_name}`;
-    if (!feeMap.has(key)) {
-      feeMap.set(key, { vendor: f.vendor_name, airport: f.airport_code, fees: {} });
-    }
-    const entry = feeMap.get(key)!;
-    const existing = entry.fees[f.fee_type];
-    // Keep the most recent
+    if (!feeMap.has(f.airport_code)) feeMap.set(f.airport_code, {});
+    const entry = feeMap.get(f.airport_code)!;
+    const existing = entry[f.fee_type];
     if (!existing || f.invoice_date > existing.date) {
-      entry.fees[f.fee_type] = { amount: f.amount, date: f.invoice_date };
+      entry[f.fee_type] = { amount: f.amount, date: f.invoice_date, vendor: f.vendor_name };
     }
   }
 
-  // 5. Aggregate fuel prices: per airport, most recent + average
-  type FuelAgg = {
+  // 5. Aggregate advertised fuel prices per airport+vendor — most recent week only
+  type FuelEntry = {
     vendor: string;
-    latest_price: number;
-    latest_date: string;
-    avg_price: number;
-    count: number;
-    has_additive: boolean;
+    product: string;
+    price: number;
+    volume_tier: string;
+    week_start: string;
   };
-  const fuelMap = new Map<string, FuelAgg[]>();
+  const fuelMap = new Map<string, FuelEntry[]>();
 
-  // Group by airport+vendor
-  const fuelByAV = new Map<string, typeof fuelPrices>();
-  for (const fp of fuelPrices ?? []) {
-    const key = `${(fp.airport_code ?? "").toUpperCase()}|${fp.vendor_name ?? ""}`;
-    if (!fuelByAV.has(key)) fuelByAV.set(key, []);
-    fuelByAV.get(key)!.push(fp);
-  }
-
-  for (const [key, records] of fuelByAV) {
-    const [airport] = key.split("|");
-    const sorted = records.sort((a: any, b: any) => (b.invoice_date ?? "").localeCompare(a.invoice_date ?? ""));
-    const latest = sorted[0];
-    const prices = sorted.map((r: any) => r.effective_price_per_gallon ?? r.base_price_per_gallon).filter(Boolean);
-    const avg = prices.length > 0 ? prices.reduce((a: number, b: number) => a + b, 0) / prices.length : 0;
+  // Group by airport+vendor+product, keep most recent week
+  const seenFuel = new Set<string>();
+  for (const row of advPrices ?? []) {
+    const airport = (row.airport_code ?? "").toUpperCase();
+    const key = `${airport}|${row.fbo_vendor}|${row.product}|${row.volume_tier}`;
+    if (seenFuel.has(key)) continue; // already have newer week
+    seenFuel.add(key);
 
     if (!fuelMap.has(airport)) fuelMap.set(airport, []);
     fuelMap.get(airport)!.push({
-      vendor: latest.vendor_name ?? "",
-      latest_price: latest.effective_price_per_gallon ?? latest.base_price_per_gallon ?? 0,
-      latest_date: latest.invoice_date ?? "",
-      avg_price: avg,
-      count: prices.length,
-      has_additive: latest.has_additive ?? false,
+      vendor: row.fbo_vendor ?? "",
+      product: row.product ?? "",
+      price: row.price ?? 0,
+      volume_tier: row.volume_tier ?? "",
+      week_start: row.week_start ?? "",
     });
   }
 
   // 6. Build response
   const result = {
-    fees: Array.from(feeMap.values()).map((e) => ({
-      airport_code: e.airport,
-      vendor_name: e.vendor,
+    fees: Array.from(feeMap.entries()).map(([airport, feeAgg]) => ({
+      airport_code: airport,
       ...Object.fromEntries(
-        Object.entries(e.fees).map(([k, v]) => [k, v.amount])
+        Object.entries(feeAgg).map(([feeType, v]) => [feeType, v.amount])
       ),
-      latest_fee_date: Object.values(e.fees).reduce(
+      latest_fee_date: Object.values(feeAgg).reduce(
         (max, v) => (v.date > max ? v.date : max),
         ""
       ),
+      fee_vendor: Object.values(feeAgg)[0]?.vendor ?? "",
     })),
-    fuel: Array.from(fuelMap.entries()).flatMap(([airport, vendors]) =>
-      vendors.map((v) => ({
+    fuel: Array.from(fuelMap.entries()).flatMap(([airport, entries]) =>
+      entries.map((e) => ({
         airport_code: airport,
-        vendor_name: v.vendor,
-        latest_price: v.latest_price,
-        latest_date: v.latest_date,
-        avg_price: v.avg_price,
-        invoice_count: v.count,
-        has_additive: v.has_additive,
+        vendor: e.vendor,
+        product: e.product,
+        price: e.price,
+        volume_tier: e.volume_tier,
+        week_start: e.week_start,
       }))
     ),
   };

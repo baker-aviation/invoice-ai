@@ -33,7 +33,6 @@ type FboRecord = {
 
 type InvoiceFee = {
   airport_code: string;
-  vendor_name: string;
   handling_fee?: number;
   facility_fee?: number;
   security_fee?: number;
@@ -48,21 +47,21 @@ type InvoiceFee = {
   deice_fee?: number;
   catering_fee?: number;
   latest_fee_date: string;
+  fee_vendor: string;
 };
 
-type InvoiceFuel = {
+type FuelPrice = {
   airport_code: string;
-  vendor_name: string;
-  latest_price: number;
-  latest_date: string;
-  avg_price: number;
-  invoice_count: number;
-  has_additive: boolean;
+  vendor: string;
+  product: string;
+  price: number;
+  volume_tier: string;
+  week_start: string;
 };
 
 type InvoiceData = {
   fees: InvoiceFee[];
-  fuel: InvoiceFuel[];
+  fuel: FuelPrice[];
 };
 
 const fboData = fboDataRaw as FboRecord[];
@@ -97,6 +96,22 @@ const CHAIN_COLORS: Record<string, string> = {
   "Pentastar Aviation": "bg-indigo-100 text-indigo-800",
 };
 
+const FEE_LABELS: Record<string, string> = {
+  handling_fee: "Handling Fee",
+  facility_fee: "Facility Fee",
+  security_fee: "Security Fee",
+  infrastructure_fee: "Infrastructure Fee",
+  gpu_fee: "GPU",
+  hangar_fee: "Hangar",
+  lavatory_fee: "Lavatory",
+  water_fee: "Water Service",
+  parking_fee: "Parking",
+  overnight_fee: "Overnight",
+  landing_fee: "Landing Fee",
+  deice_fee: "De-Ice",
+  catering_fee: "Catering",
+};
+
 type AircraftFilter = "Citation X" | "Challenger 300";
 
 export default function FBOsPage() {
@@ -105,7 +120,6 @@ export default function FBOsPage() {
   const [invoiceData, setInvoiceData] = useState<InvoiceData | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Fetch invoice data on mount
   useEffect(() => {
     fetch("/api/fbo-fees")
       .then((r) => r.json())
@@ -114,20 +128,19 @@ export default function FBOsPage() {
       .finally(() => setLoading(false));
   }, []);
 
-  // Index invoice data by airport code
+  // Index invoice fees by airport
   const invoiceFeesByAirport = useMemo(() => {
-    const map = new Map<string, InvoiceFee[]>();
+    const map = new Map<string, InvoiceFee>();
     if (!invoiceData?.fees) return map;
     for (const f of invoiceData.fees) {
-      const key = f.airport_code.toUpperCase();
-      if (!map.has(key)) map.set(key, []);
-      map.get(key)!.push(f);
+      map.set(f.airport_code.toUpperCase(), f);
     }
     return map;
   }, [invoiceData]);
 
-  const invoiceFuelByAirport = useMemo(() => {
-    const map = new Map<string, InvoiceFuel[]>();
+  // Index fuel prices by airport — group by vendor
+  const fuelByAirport = useMemo(() => {
+    const map = new Map<string, FuelPrice[]>();
     if (!invoiceData?.fuel) return map;
     for (const f of invoiceData.fuel) {
       const key = f.airport_code.toUpperCase();
@@ -137,22 +150,16 @@ export default function FBOsPage() {
     return map;
   }, [invoiceData]);
 
-  // Get unique airports (from both scraped + invoice data)
+  // Unique airports (scraped + invoice)
   const airportCodes = useMemo(() => {
     const codes = new Set<string>();
-    fboData.forEach((r) => {
-      if (r.airport_code) codes.add(r.airport_code.toUpperCase());
-    });
-    invoiceData?.fees?.forEach((f) => {
-      if (f.airport_code) codes.add(f.airport_code.toUpperCase());
-    });
-    invoiceData?.fuel?.forEach((f) => {
-      if (f.airport_code) codes.add(f.airport_code.toUpperCase());
-    });
+    fboData.forEach((r) => { if (r.airport_code) codes.add(r.airport_code.toUpperCase()); });
+    invoiceData?.fees?.forEach((f) => { if (f.airport_code) codes.add(f.airport_code.toUpperCase()); });
+    invoiceData?.fuel?.forEach((f) => { if (f.airport_code) codes.add(f.airport_code.toUpperCase()); });
     return Array.from(codes).sort();
   }, [invoiceData]);
 
-  // Filter scraped data by search + aircraft
+  // Filter scraped data
   const filtered = useMemo(() => {
     const q = search.trim().toUpperCase();
     if (!q) return [];
@@ -168,22 +175,22 @@ export default function FBOsPage() {
     });
   }, [search, aircraft]);
 
-  // Check if airport has invoice data (even if no scraped FBO data)
+  // Airports with only invoice data
   const matchingInvoiceAirports = useMemo(() => {
     const q = search.trim().toUpperCase();
     if (!q) return new Set<string>();
     const airports = new Set<string>();
     for (const code of airportCodes) {
       if (code === q || (q.length >= 2 && code.includes(q))) {
-        if (invoiceFeesByAirport.has(code) || invoiceFuelByAirport.has(code)) {
+        if (invoiceFeesByAirport.has(code) || fuelByAirport.has(code)) {
           airports.add(code);
         }
       }
     }
     return airports;
-  }, [search, airportCodes, invoiceFeesByAirport, invoiceFuelByAirport]);
+  }, [search, airportCodes, invoiceFeesByAirport, fuelByAirport]);
 
-  // Group scraped data by airport
+  // Group by airport
   const grouped = useMemo(() => {
     const map = new Map<string, FboRecord[]>();
     filtered.forEach((r) => {
@@ -191,7 +198,6 @@ export default function FBOsPage() {
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(r);
     });
-    // Add airports that only have invoice data (no scraped data)
     for (const code of matchingInvoiceAirports) {
       if (!map.has(code)) map.set(code, []);
     }
@@ -241,7 +247,6 @@ export default function FBOsPage() {
         <span className="text-xs text-gray-400">
           {airportCodes.length} airports &middot; {fboData.length / 2} FBOs
           {loading && " · Loading invoice data..."}
-          {!loading && invoiceData && ` · ${invoiceData.fees.length} invoice fee records · ${invoiceData.fuel.length} fuel price records`}
         </span>
       </div>
 
@@ -253,8 +258,15 @@ export default function FBOsPage() {
       )}
 
       {Array.from(grouped.entries()).map(([airportCode, records]) => {
-        const airportFees = invoiceFeesByAirport.get(airportCode) ?? [];
-        const airportFuel = invoiceFuelByAirport.get(airportCode) ?? [];
+        const invFees = invoiceFeesByAirport.get(airportCode);
+        const airportFuel = fuelByAirport.get(airportCode) ?? [];
+
+        // Group fuel by vendor, then by product
+        const fuelByVendor = new Map<string, FuelPrice[]>();
+        for (const f of airportFuel) {
+          if (!fuelByVendor.has(f.vendor)) fuelByVendor.set(f.vendor, []);
+          fuelByVendor.get(f.vendor)!.push(f);
+        }
 
         return (
           <div key={airportCode} className="rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden">
@@ -268,61 +280,66 @@ export default function FBOsPage() {
               )}
               <span className="ml-auto text-xs text-slate-400">
                 {records.length > 0 && `${records.length} FBO${records.length !== 1 ? "s" : ""}`}
-                {airportFuel.length > 0 && ` · ${airportFuel.reduce((s, f) => s + f.invoice_count, 0)} fuel invoices`}
               </span>
             </div>
 
             <div className="divide-y divide-gray-100">
-              {/* Your Prices section (from invoices) */}
-              {(airportFees.length > 0 || airportFuel.length > 0) && (
+              {/* Your fees from invoices */}
+              {invFees && (
                 <div className="px-5 py-4 bg-blue-50/50">
                   <div className="flex items-center gap-2 mb-3">
-                    <span className="font-semibold text-sm text-blue-900">Your Prices</span>
+                    <span className="font-semibold text-sm text-blue-900">Your Fees</span>
                     <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-blue-100 text-blue-800">
                       From Invoices
                     </span>
+                    {invFees.fee_vendor && (
+                      <span className="text-xs text-blue-600">{invFees.fee_vendor}</span>
+                    )}
+                    {invFees.latest_fee_date && (
+                      <span className="text-xs text-gray-400 ml-auto">Last: {fmtDate(invFees.latest_fee_date)}</span>
+                    )}
                   </div>
-
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
-                    {/* Invoice fuel prices */}
-                    {airportFuel.map((f, i) => (
-                      <FeeCard
-                        key={`fuel-${i}`}
-                        label={`Jet-A${f.has_additive ? " + Add" : ""} (${f.vendor_name?.split(/\s+/).slice(0, 2).join(" ") || "Invoice"})`}
-                        value={`$${f.latest_price.toFixed(2)}/gal`}
-                        sub={`avg $${f.avg_price.toFixed(2)} · ${f.invoice_count} inv · ${fmtDate(f.latest_date)}`}
-                        yours
-                      />
-                    ))}
+                    {Object.entries(FEE_LABELS).map(([key, label]) => {
+                      const val = (invFees as Record<string, any>)[key];
+                      if (val == null || val <= 0) return null;
+                      return <FeeCard key={key} label={label} value={fmt$(val)} yours />;
+                    })}
+                  </div>
+                </div>
+              )}
 
-                    {/* Invoice fees */}
-                    {airportFees.map((f, i) => {
-                      const feeEntries: [string, number][] = [];
-                      if (f.handling_fee) feeEntries.push(["Handling", f.handling_fee]);
-                      if (f.facility_fee) feeEntries.push(["Facility", f.facility_fee]);
-                      if (f.security_fee) feeEntries.push(["Security", f.security_fee]);
-                      if (f.gpu_fee) feeEntries.push(["GPU", f.gpu_fee]);
-                      if (f.hangar_fee) feeEntries.push(["Hangar", f.hangar_fee]);
-                      if (f.lavatory_fee) feeEntries.push(["Lavatory", f.lavatory_fee]);
-                      if (f.parking_fee) feeEntries.push(["Parking", f.parking_fee]);
-                      if (f.overnight_fee) feeEntries.push(["Overnight", f.overnight_fee]);
-                      if (f.landing_fee) feeEntries.push(["Landing", f.landing_fee]);
-                      if (f.deice_fee) feeEntries.push(["De-Ice", f.deice_fee]);
-                      if (f.infrastructure_fee) feeEntries.push(["Infra", f.infrastructure_fee]);
-                      if (f.water_fee) feeEntries.push(["Water", f.water_fee]);
-                      if (f.catering_fee) feeEntries.push(["Catering", f.catering_fee]);
-
-                      if (feeEntries.length === 0) return null;
-
-                      return feeEntries.map(([label, amount], j) => (
-                        <FeeCard
-                          key={`fee-${i}-${j}`}
-                          label={`${label} (${f.vendor_name?.split(/\s+/).slice(0, 2).join(" ") || "Invoice"})`}
-                          value={fmt$(amount)}
-                          sub={fmtDate(f.latest_fee_date)}
-                          yours
-                        />
-                      ));
+              {/* Contract fuel prices from price sheets */}
+              {fuelByVendor.size > 0 && (
+                <div className="px-5 py-4 bg-amber-50/40">
+                  <div className="flex items-center gap-2 mb-3">
+                    <span className="font-semibold text-sm text-amber-900">Contract Fuel Prices</span>
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800">
+                      From Price Sheets
+                    </span>
+                  </div>
+                  <div className="space-y-3">
+                    {Array.from(fuelByVendor.entries()).map(([vendor, prices]) => {
+                      // Show most relevant: Jet A products, skip volume tiers with same price
+                      const unique = prices.filter((p, i, arr) =>
+                        arr.findIndex((x) => x.product === p.product && x.price === p.price) === i
+                      );
+                      return (
+                        <div key={vendor}>
+                          <div className="text-xs font-medium text-gray-600 mb-1.5">{vendor}</div>
+                          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2">
+                            {unique.map((p, i) => (
+                              <FeeCard
+                                key={i}
+                                label={p.product + (p.volume_tier && p.volume_tier !== "default" ? ` (${p.volume_tier})` : "")}
+                                value={`$${p.price.toFixed(2)}/gal`}
+                                sub={fmtDate(p.week_start)}
+                                fuel
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      );
                     })}
                   </div>
                 </div>
@@ -389,7 +406,7 @@ export default function FBOsPage() {
             <button type="button" onClick={() => setSearch("MKC")} className="text-blue-600 hover:underline font-medium">MKC</button>) to see FBO fees and fuel prices
           </p>
           <p className="text-gray-400 text-xs mt-2">
-            Retail prices from 8 FBO chains + your actual prices from parsed invoices
+            Your fees from invoices + contract fuel from price sheets + retail from 8 FBO chains
           </p>
         </div>
       )}
