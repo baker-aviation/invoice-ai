@@ -519,6 +519,10 @@ function buildAdvVsActual(
   }
 
   const rows: AdvVsActualRow[] = [];
+  // Debug: log canonical groups for TEB
+  for (const [k, g] of advByCanonical) {
+    if (k.startsWith("TEB")) console.log("[Fuel Debug] canonical group:", k, "entries:", g.length, "vendors:", [...new Set(g.map(x => x.adv.fbo_vendor))].join(", "));
+  }
   for (const [cKey, group] of advByCanonical) {
     // Pick the most recent entry as representative
     group.sort((a, b) => b.adv.week_start.localeCompare(a.adv.week_start));
