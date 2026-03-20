@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 
 export default function PushToScreeningButton({
   applicationId,
@@ -9,7 +10,8 @@ export default function PushToScreeningButton({
   applicationId: number;
   currentStage: string | null | undefined;
 }) {
-  const alreadyScreening =
+  const router = useRouter();
+  const alreadyInPipeline =
     currentStage === "screening" ||
     currentStage === "info_session" ||
     currentStage === "prd_faa_review" ||
@@ -21,8 +23,9 @@ export default function PushToScreeningButton({
     currentStage === "offer" ||
     currentStage === "hired";
 
-  const [pushed, setPushed] = useState(alreadyScreening);
+  const [pushed, setPushed] = useState(alreadyInPipeline);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   if (pushed) {
     return (
@@ -30,33 +33,43 @@ export default function PushToScreeningButton({
         <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M3 8.5l3.5 3.5L13 5" />
         </svg>
-        In Screening
+        In Pipeline
       </span>
     );
   }
 
   return (
-    <button
-      type="button"
-      disabled={loading}
-      onClick={async () => {
-        setLoading(true);
-        try {
-          const res = await fetch(`/api/jobs/${applicationId}/stage`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ stage: "prd_faa_review" }),
-          });
-          if (res.ok) setPushed(true);
-        } catch {
-          // ignore
-        } finally {
-          setLoading(false);
-        }
-      }}
-      className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-full bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 transition-colors"
-    >
-      {loading ? "Pushing..." : "Push to Screening"}
-    </button>
+    <div className="inline-flex items-center gap-2">
+      <button
+        type="button"
+        disabled={loading}
+        onClick={async () => {
+          setLoading(true);
+          setError(null);
+          try {
+            const res = await fetch(`/api/jobs/${applicationId}/stage`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ stage: "prd_faa_review" }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok) {
+              setPushed(true);
+              router.refresh();
+            } else {
+              setError(data.error ?? `Failed (HTTP ${res.status})`);
+            }
+          } catch (err) {
+            setError(String(err));
+          } finally {
+            setLoading(false);
+          }
+        }}
+        className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-full bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 transition-colors"
+      >
+        {loading ? "Sending..." : "Send to Pipeline"}
+      </button>
+      {error && <span className="text-xs text-red-600">{error}</span>}
+    </div>
   );
 }
