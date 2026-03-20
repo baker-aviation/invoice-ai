@@ -284,6 +284,8 @@ function computeTailDuty(
     const finalIntervals = deduped;
 
     // --- Rolling 24hr flight time (Part 135.267: ANY 24 consecutive hours) ---
+    // Only consider windows that include at least one future/in-progress leg.
+    // Past-only windows can't be changed — don't alert on them.
     const checkPoints = new Set<number>();
     for (const leg of finalIntervals) {
       checkPoints.add(leg.startMs);
@@ -295,6 +297,9 @@ function computeTailDuty(
     let maxMs = 0;
     for (const wp of checkPoints) {
       const ws = wp - WINDOW_MS;
+      // Only flag windows containing a future/in-progress leg
+      const hasFutureLeg = finalIntervals.some(l => l.endMs >= nowMs && l.startMs < wp && l.endMs > ws);
+      if (!hasFutureLeg) continue;
       let totalMs = 0;
       for (const leg of finalIntervals) {
         const os = Math.max(leg.startMs, ws);
@@ -1468,7 +1473,8 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
         }
       }
 
-      // EDCT rolling 24hr max
+      // EDCT rolling 24hr max (forward-looking only)
+      const nowMsEdct = Date.now();
       const checkPoints = new Set<number>();
       for (const leg of edctIntervals) {
         checkPoints.add(leg.startMs);
@@ -1479,6 +1485,8 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
       let maxMs = 0;
       for (const wp of checkPoints) {
         const ws = wp - WINDOW_MS;
+        const hasFutureLeg = edctIntervals.some(l => l.endMs >= nowMsEdct && l.startMs < wp && l.endMs > ws);
+        if (!hasFutureLeg) continue;
         let totalMs = 0;
         for (const leg of edctIntervals) {
           const os = Math.max(leg.startMs, ws);
