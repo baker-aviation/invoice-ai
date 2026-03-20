@@ -192,7 +192,7 @@ function InfoSessionTools({ jobs, onAttendanceChecked }: { jobs: JobRow[]; onAtt
       const parts = [];
       if (data.markedCount > 0) parts.push(`${data.markedCount} marked attended`);
       if (data.unmatched?.length > 0) parts.push(`${data.unmatched.length} unmatched`);
-      if (data.totalParticipants === 0) parts.push("No participants found yet");
+      if (data.totalParticipants === 0) parts.push(`No participants found (code: ${data.meetingCode ?? "?"})`);
       setAttendanceResult({
         summary: parts.join(", ") || "No matches",
         matched: data.matched ?? [],

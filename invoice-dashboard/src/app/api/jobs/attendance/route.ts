@@ -237,6 +237,13 @@ export async function POST(req: NextRequest) {
       matched,
       markedCount,
       unmatched,
+      _debug: {
+        meetLink,
+        extractedCode: meetingCode,
+        googleItemCount: items.length,
+        googleRawSample: items.slice(0, 2),
+        reportsUrl: reportsUrl.toString(),
+      },
     });
   } catch (err) {
     console.error("[attendance] Error:", err);
