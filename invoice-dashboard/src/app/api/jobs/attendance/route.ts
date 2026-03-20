@@ -180,22 +180,25 @@ export async function POST(req: NextRequest) {
       rawResponse = { filteredResult: rawResponse, unfilteredSample: testData };
     }
 
-    // 3. Extract participant emails from events
-    const participants: { email: string; displayName: string; durationSec: number }[] = [];
+    // 3. Extract participant emails from events (deduplicate by email, sum duration)
+    const byEmail = new Map<string, { email: string; displayName: string; durationSec: number }>();
     for (const item of items) {
-      const email = item.actor?.email;
+      const email = item.actor?.email?.toLowerCase();
       if (!email) continue;
 
       const params = item.events?.[0]?.parameters ?? [];
       const displayName = params.find((p: any) => p.name === "display_name")?.value ?? "";
-      const duration = params.find((p: any) => p.name === "duration_seconds")?.intValue ?? "0";
+      const duration = parseInt(params.find((p: any) => p.name === "duration_seconds")?.intValue ?? "0", 10);
 
-      participants.push({
-        email: email.toLowerCase(),
-        displayName,
-        durationSec: parseInt(duration, 10),
-      });
+      const existing = byEmail.get(email);
+      if (existing) {
+        existing.durationSec += duration;
+        if (!existing.displayName && displayName) existing.displayName = displayName;
+      } else {
+        byEmail.set(email, { email, displayName, durationSec: duration });
+      }
     }
+    const participants = [...byEmail.values()];
 
     // 4. Match against ALL applicants (any pipeline stage) to show names
     const supa = createServiceClient();
