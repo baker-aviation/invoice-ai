@@ -528,12 +528,18 @@ function buildAdvVsActual(
 
     // Collect unique vendor quotes for this canonical FBO
     const seenVendors = new Set<string>();
+    const seenVendorNames = new Set<string>();
     const quotes: VendorQuote[] = [];
     for (const { vKey } of group) {
       if (seenVendors.has(vKey)) continue;
       seenVendors.add(vKey);
       const q = vendorWow.get(vKey);
-      if (q) quotes.push(q);
+      if (!q) continue;
+      // Also dedup by vendor display name — same vendor across weeks can produce different vKeys
+      const vendorKey = q.fboVendor.toLowerCase();
+      if (seenVendorNames.has(vendorKey)) continue;
+      seenVendorNames.add(vendorKey);
+      quotes.push(q);
     }
     // Sort quotes: cheapest first
     quotes.sort((a, b) => a.currentPrice - b.currentPrice);
