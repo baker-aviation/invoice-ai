@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, isAuthed, isRateLimited } from "@/lib/api-auth";
 import { getAirportInfo } from "@/lib/airportCoords";
 import { detectOverflightsFromIcao } from "@/lib/overflightDetector";
+import { createServiceClient } from "@/lib/supabase/service";
 
 export const dynamic = "force-dynamic";
 
@@ -133,6 +134,24 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  const method = ffRoute ? "foreflight+great_circle" : "great_circle";
+
+  // Cache the result for future overflight badge lookups
+  try {
+    const supa = createServiceClient();
+    await supa.from("intl_route_cache").upsert({
+      dep_icao: dep,
+      arr_icao: arr,
+      ff_route: ffRoute,
+      overflights: gcOverflights,
+      method,
+      tail_used: tail ?? null,
+      cached_at: new Date().toISOString(),
+    }, { onConflict: "dep_icao,arr_icao" });
+  } catch {
+    // Non-critical — don't fail the response if cache write fails
+  }
+
   return NextResponse.json({
     departure: { icao: dep, name: depInfo.name, lat: depInfo.lat, lon: depInfo.lon },
     arrival: { icao: arr, name: arrInfo.name, lat: arrInfo.lat, lon: arrInfo.lon },
@@ -142,6 +161,6 @@ export async function GET(req: NextRequest) {
       error: ffError,
     },
     overflights: gcOverflights,
-    method: ffRoute ? "foreflight+great_circle" : "great_circle",
+    method,
   });
 }

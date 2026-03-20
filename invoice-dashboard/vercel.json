@@ -20,6 +20,10 @@
     {
       "path": "/api/cron/hasdata-cache",
       "schedule": "0 4 * * 2"
+    },
+    {
+      "path": "/api/ops/intl/warm-route-cache",
+      "schedule": "0 6 * * *"
     }
   ]
 }
