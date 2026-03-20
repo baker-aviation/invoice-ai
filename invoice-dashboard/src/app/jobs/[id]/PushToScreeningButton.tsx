@@ -26,6 +26,7 @@ export default function PushToScreeningButton({
   const [pushed, setPushed] = useState(alreadyInPipeline);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [debugMsg, setDebugMsg] = useState<string | null>(null);
 
   if (pushed) {
     return (
@@ -46,6 +47,7 @@ export default function PushToScreeningButton({
         onClick={async () => {
           setLoading(true);
           setError(null);
+          setDebugMsg(`Calling PATCH /api/jobs/${applicationId}/stage ...`);
           try {
             const res = await fetch(`/api/jobs/${applicationId}/stage`, {
               method: "PATCH",
@@ -53,6 +55,7 @@ export default function PushToScreeningButton({
               body: JSON.stringify({ stage: "prd_faa_review" }),
             });
             const text = await res.text();
+            setDebugMsg(`Response: HTTP ${res.status} — ${text.slice(0, 300)}`);
             let data: Record<string, unknown> = {};
             try { data = JSON.parse(text); } catch {}
             if (res.ok) {
@@ -61,10 +64,10 @@ export default function PushToScreeningButton({
             } else {
               const msg = (data.error as string) ?? `Failed (HTTP ${res.status}): ${text.slice(0, 200)}`;
               setError(msg);
-              console.error("[SendToPipeline]", res.status, text);
             }
           } catch (err) {
             setError(String(err));
+            setDebugMsg(`Exception: ${String(err)}`);
           } finally {
             setLoading(false);
           }
@@ -74,6 +77,7 @@ export default function PushToScreeningButton({
         {loading ? "Sending..." : "Send to Pipeline"}
       </button>
       {error && <span className="text-xs text-red-600">{error}</span>}
+      {debugMsg && <span className="text-xs text-gray-400">{debugMsg}</span>}
     </div>
   );
 }
