@@ -162,7 +162,14 @@ export default async function JobDetailPage({
                 <div className="text-sm text-gray-600">
                   {job?.email ?? "—"} {job?.phone ? `• ${job.phone}` : ""}
                 </div>
-                <div className="text-xs text-gray-400 mt-1">application_id: {applicationId}</div>
+                <div className="text-xs text-gray-400 mt-1">
+                  application_id: {applicationId}
+                  {job?.pipeline_stage && (
+                    <span className="ml-3 px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">
+                      Pipeline: {job.pipeline_stage.replace(/_/g, " ")}
+                    </span>
+                  )}
+                </div>
               </div>
 
               <div className="flex items-center gap-2">

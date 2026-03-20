@@ -52,12 +52,16 @@ export default function PushToScreeningButton({
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ stage: "prd_faa_review" }),
             });
-            const data = await res.json().catch(() => ({}));
+            const text = await res.text();
+            let data: Record<string, unknown> = {};
+            try { data = JSON.parse(text); } catch {}
             if (res.ok) {
               setPushed(true);
               router.refresh();
             } else {
-              setError(data.error ?? `Failed (HTTP ${res.status})`);
+              const msg = (data.error as string) ?? `Failed (HTTP ${res.status}): ${text.slice(0, 200)}`;
+              setError(msg);
+              console.error("[SendToPipeline]", res.status, text);
             }
           } catch (err) {
             setError(String(err));
