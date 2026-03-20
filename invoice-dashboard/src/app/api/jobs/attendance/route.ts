@@ -180,25 +180,29 @@ export async function POST(req: NextRequest) {
       rawResponse = { filteredResult: rawResponse, unfilteredSample: testData };
     }
 
-    // 3. Extract participant emails from events (deduplicate by email, sum duration)
-    const byEmail = new Map<string, { email: string; displayName: string; durationSec: number }>();
+    // 3. Extract participants, deduplicate by email+date (recurring meet links span sessions)
+    const byKey = new Map<string, { email: string; displayName: string; durationSec: number; date: string }>();
     for (const item of items) {
       const email = item.actor?.email?.toLowerCase();
       if (!email) continue;
+
+      const eventTime = item.id?.time ?? item.events?.[0]?.parameters?.find((p: any) => p.name === "start_timestamp")?.value;
+      const date = eventTime ? new Date(eventTime).toISOString().split("T")[0] : new Date().toISOString().split("T")[0];
 
       const params = item.events?.[0]?.parameters ?? [];
       const displayName = params.find((p: any) => p.name === "display_name")?.value ?? "";
       const duration = parseInt(params.find((p: any) => p.name === "duration_seconds")?.intValue ?? "0", 10);
 
-      const existing = byEmail.get(email);
+      const key = `${email}|${date}`;
+      const existing = byKey.get(key);
       if (existing) {
         existing.durationSec += duration;
         if (!existing.displayName && displayName) existing.displayName = displayName;
       } else {
-        byEmail.set(email, { email, displayName, durationSec: duration });
+        byKey.set(key, { email, displayName, durationSec: duration, date });
       }
     }
-    const participants = [...byEmail.values()];
+    const participants = [...byKey.values()];
 
     // 4. Match against ALL applicants (any pipeline stage) to show names
     const supa = createServiceClient();
@@ -207,16 +211,16 @@ export async function POST(req: NextRequest) {
       .select("application_id, candidate_name, email, pipeline_stage")
       .not("email", "is", null);
 
-    const matched: { applicationId: number; name: string; email: string; durationSec: number; stage: string | null }[] = [];
-    const unmatched: { name: string; email: string; durationMin: number }[] = [];
+    const matched: { applicationId: number; name: string; email: string; durationSec: number; stage: string | null; date: string }[] = [];
+    const unmatched: { name: string; email: string; durationMin: number; date: string }[] = [];
 
-    const internal: { name: string; email: string; durationMin: number }[] = [];
+    const internal: { name: string; email: string; durationMin: number; date: string }[] = [];
 
     for (const p of participants) {
       const isInternal = p.email.endsWith("@baker-aviation.com") || p.email.endsWith("@airninetwo.com");
 
       if (isInternal) {
-        internal.push({ name: p.displayName || p.email.split("@")[0], email: p.email, durationMin: Math.round(p.durationSec / 60) });
+        internal.push({ name: p.displayName || p.email.split("@")[0], email: p.email, durationMin: Math.round(p.durationSec / 60), date: p.date });
         continue;
       }
 
@@ -230,12 +234,14 @@ export async function POST(req: NextRequest) {
           email: p.email,
           durationSec: p.durationSec,
           stage: app.pipeline_stage,
+          date: p.date,
         });
       } else {
         unmatched.push({
           name: p.displayName || p.email,
           email: p.email,
           durationMin: Math.round(p.durationSec / 60),
+          date: p.date,
         });
       }
     }
@@ -262,7 +268,7 @@ export async function POST(req: NextRequest) {
         meet_link: meetLink,
         meeting_date: new Date().toISOString().split("T")[0],
         total_participants: participants.length,
-        matched: matched.map((m) => ({ name: m.name, email: m.email, durationMin: Math.round(m.durationSec / 60), stage: m.stage })),
+        matched: matched.map((m) => ({ name: m.name, email: m.email, durationMin: Math.round(m.durationSec / 60), stage: m.stage, date: m.date })),
         unmatched: unmatched.map((u) => `${u.name} (${u.email})`),
         checked_by: auth.email ?? null,
       });

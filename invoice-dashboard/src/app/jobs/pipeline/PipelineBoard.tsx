@@ -124,6 +124,10 @@ function MeetingLinkTool({ storageKey, placeholder, borderColor }: { storageKey:
   );
 }
 
+function fmtShortDate(d: string): string {
+  return new Date(d + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
 interface AttendanceRecord {
   id: number;
   meeting_date: string;
@@ -137,9 +141,9 @@ function InfoSessionTools({ jobs, onAttendanceChecked }: { jobs: JobRow[]; onAtt
   const [checking, setChecking] = useState(false);
   const [attendanceResult, setAttendanceResult] = useState<{
     summary: string;
-    matched: { name: string; email: string; durationSec: number; stage?: string | null }[];
-    unmatched: { name: string; email: string; durationMin: number }[];
-    internal: { name: string; email: string; durationMin: number }[];
+    matched: { name: string; email: string; durationSec: number; stage?: string | null; date?: string }[];
+    unmatched: { name: string; email: string; durationMin: number; date?: string }[];
+    internal: { name: string; email: string; durationMin: number; date?: string }[];
     totalParticipants: number;
   } | null>(null);
   const [attendanceError, setAttendanceError] = useState<string | null>(null);
@@ -241,10 +245,11 @@ function InfoSessionTools({ jobs, onAttendanceChecked }: { jobs: JobRow[]; onAtt
           {attendanceResult.matched.length > 0 && (
             <div className="px-2 py-1 space-y-0.5">
               <div className="font-semibold text-emerald-600">In Pipeline:</div>
-              {attendanceResult.matched.map((m) => (
-                <div key={m.email} className="text-emerald-700 flex items-center gap-1">
+              {attendanceResult.matched.map((m, i) => (
+                <div key={`${m.email}-${i}`} className="text-emerald-700 flex items-center gap-1 flex-wrap">
                   <span>{m.name}</span>
                   <span className="text-emerald-400">({Math.round(m.durationSec / 60)}m)</span>
+                  {m.date && <span className="text-[9px] text-emerald-400">{fmtShortDate(m.date)}</span>}
                   {m.stage && (
                     <span className="text-[9px] px-1 rounded bg-emerald-100 text-emerald-600">{m.stage.replace(/_/g, " ")}</span>
                   )}
@@ -255,9 +260,9 @@ function InfoSessionTools({ jobs, onAttendanceChecked }: { jobs: JobRow[]; onAtt
           {attendanceResult.unmatched.length > 0 && (
             <div className="px-2 py-1 border-t border-emerald-200 space-y-0.5">
               <div className="font-semibold text-gray-500">Not in pipeline:</div>
-              {attendanceResult.unmatched.map((u) => (
-                <div key={typeof u === "string" ? u : u.email} className="text-gray-500">
-                  {typeof u === "string" ? u : `${u.name} (${u.durationMin}m)`}
+              {attendanceResult.unmatched.map((u, i) => (
+                <div key={typeof u === "string" ? u : `${u.email}-${i}`} className="text-gray-500">
+                  {typeof u === "string" ? u : <>{u.name} ({u.durationMin}m) {u.date && <span className="text-gray-400">{fmtShortDate(u.date)}</span>}</>}
                 </div>
               ))}
             </div>
@@ -265,8 +270,8 @@ function InfoSessionTools({ jobs, onAttendanceChecked }: { jobs: JobRow[]; onAtt
           {attendanceResult.internal.length > 0 && (
             <div className="px-2 py-1 border-t border-emerald-200 space-y-0.5">
               <div className="font-semibold text-gray-400">Baker staff:</div>
-              {attendanceResult.internal.map((s) => (
-                <div key={s.email} className="text-gray-400">{s.name} ({s.durationMin}m)</div>
+              {attendanceResult.internal.map((s, i) => (
+                <div key={`${s.email}-${i}`} className="text-gray-400">{s.name} ({s.durationMin}m) {s.date && <span>{fmtShortDate(s.date)}</span>}</div>
               ))}
             </div>
           )}
