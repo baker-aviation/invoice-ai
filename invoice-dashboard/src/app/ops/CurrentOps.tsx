@@ -1447,6 +1447,8 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
       // Build EDCT-shifted intervals from normal intervals
       const edctIntervals = normalDuty.intervals.map(iv => ({ ...iv }));
       for (const iv of edctIntervals) {
+        // Skip legs with actual data — EDCT is moot once airborne
+        if (iv.source === "actual" || iv.source === "fa-estimate") continue;
         // Find the flight that matches this interval
         const matchedFlight = tailFlights.find(f =>
           f.departure_icao === iv.depIcao &&
