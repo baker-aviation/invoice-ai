@@ -45,7 +45,7 @@ export default function PushToScreeningButton({
           const res = await fetch(`/api/jobs/${applicationId}/stage`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ stage: "screening" }),
+            body: JSON.stringify({ stage: "prd_faa_review" }),
           });
           if (res.ok) setPushed(true);
         } catch {
