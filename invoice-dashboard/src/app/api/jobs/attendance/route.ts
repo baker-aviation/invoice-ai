@@ -197,22 +197,21 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // 4. Match against applicants in the info_session pipeline stage
+    // 4. Match against ALL applicants (any pipeline stage) to show names
     const supa = createServiceClient();
-    const { data: applicants } = await supa
+    const { data: allApplicants } = await supa
       .from("job_application_parse")
       .select("application_id, candidate_name, email, pipeline_stage")
-      .eq("pipeline_stage", "info_session");
+      .not("email", "is", null);
 
-    const matched: { applicationId: number; name: string; email: string; durationSec: number }[] = [];
-    const unmatched: string[] = [];
-
-    const applicantEmails = new Set(
-      (applicants ?? []).filter((a) => a.email).map((a) => a.email!.toLowerCase()),
-    );
+    const matched: { applicationId: number; name: string; email: string; durationSec: number; stage: string | null }[] = [];
+    const unmatched: { name: string; email: string; durationMin: number }[] = [];
 
     for (const p of participants) {
-      const app = (applicants ?? []).find(
+      // Skip internal emails
+      if (p.email.endsWith("@baker-aviation.com") || p.email.endsWith("@airninetwo.com")) continue;
+
+      const app = (allApplicants ?? []).find(
         (a) => a.email?.toLowerCase() === p.email,
       );
       if (app) {
@@ -221,18 +220,21 @@ export async function POST(req: NextRequest) {
           name: app.candidate_name,
           email: p.email,
           durationSec: p.durationSec,
+          stage: app.pipeline_stage,
         });
       } else {
-        // Don't list internal baker emails as unmatched
-        if (!p.email.endsWith("@baker-aviation.com") && !p.email.endsWith("@airninetwo.com")) {
-          unmatched.push(`${p.displayName || p.email} (${p.email})`);
-        }
+        unmatched.push({
+          name: p.displayName || p.email,
+          email: p.email,
+          durationMin: Math.round(p.durationSec / 60),
+        });
       }
     }
 
-    // 5. Auto-mark attendance for matched applicants
+    // 5. Auto-mark attendance for matched applicants in info_session stage
     let markedCount = 0;
     for (const m of matched) {
+      if (m.stage !== "info_session") continue;
       const { error } = await supa
         .from("job_application_parse")
         .update({
@@ -244,16 +246,18 @@ export async function POST(req: NextRequest) {
       if (!error) markedCount++;
     }
 
-    // 6. Save attendance record
-    await supa.from("info_session_attendance").insert({
-      meeting_code: meetingCode,
-      meet_link: meetLink,
-      meeting_date: new Date().toISOString().split("T")[0],
-      total_participants: participants.length,
-      matched: matched.map((m) => ({ name: m.name, email: m.email, durationMin: Math.round(m.durationSec / 60) })),
-      unmatched,
-      checked_by: auth.email ?? null,
-    });
+    // 6. Save attendance record (only if there were actual participants)
+    if (participants.length > 0) {
+      await supa.from("info_session_attendance").insert({
+        meeting_code: meetingCode,
+        meet_link: meetLink,
+        meeting_date: new Date().toISOString().split("T")[0],
+        total_participants: participants.length,
+        matched: matched.map((m) => ({ name: m.name, email: m.email, durationMin: Math.round(m.durationSec / 60), stage: m.stage })),
+        unmatched: unmatched.map((u) => `${u.name} (${u.email})`),
+        checked_by: auth.email ?? null,
+      });
+    }
 
     return NextResponse.json({
       ok: true,

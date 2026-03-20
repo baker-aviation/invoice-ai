@@ -137,8 +137,8 @@ function InfoSessionTools({ jobs, onAttendanceChecked }: { jobs: JobRow[]; onAtt
   const [checking, setChecking] = useState(false);
   const [attendanceResult, setAttendanceResult] = useState<{
     summary: string;
-    matched: { name: string; email: string; durationSec: number }[];
-    unmatched: string[];
+    matched: { name: string; email: string; durationSec: number; stage?: string | null }[];
+    unmatched: { name: string; email: string; durationMin: number }[];
     totalParticipants: number;
   } | null>(null);
   const [attendanceError, setAttendanceError] = useState<string | null>(null);
@@ -238,10 +238,14 @@ function InfoSessionTools({ jobs, onAttendanceChecked }: { jobs: JobRow[]; onAtt
           </div>
           {attendanceResult.matched.length > 0 && (
             <div className="px-2 py-1 space-y-0.5">
-              <div className="font-semibold text-emerald-600">Attended:</div>
+              <div className="font-semibold text-emerald-600">In Pipeline:</div>
               {attendanceResult.matched.map((m) => (
-                <div key={m.email} className="text-emerald-700">
-                  {m.name} <span className="text-emerald-500">({Math.round(m.durationSec / 60)}m)</span>
+                <div key={m.email} className="text-emerald-700 flex items-center gap-1">
+                  <span>{m.name}</span>
+                  <span className="text-emerald-400">({Math.round(m.durationSec / 60)}m)</span>
+                  {m.stage && (
+                    <span className="text-[9px] px-1 rounded bg-emerald-100 text-emerald-600">{m.stage.replace(/_/g, " ")}</span>
+                  )}
                 </div>
               ))}
             </div>
@@ -250,7 +254,9 @@ function InfoSessionTools({ jobs, onAttendanceChecked }: { jobs: JobRow[]; onAtt
             <div className="px-2 py-1 border-t border-emerald-200 space-y-0.5">
               <div className="font-semibold text-gray-500">Not in pipeline:</div>
               {attendanceResult.unmatched.map((u) => (
-                <div key={u} className="text-gray-500">{u}</div>
+                <div key={typeof u === "string" ? u : u.email} className="text-gray-500">
+                  {typeof u === "string" ? u : `${u.name} (${u.durationMin}m)`}
+                </div>
               ))}
             </div>
           )}
