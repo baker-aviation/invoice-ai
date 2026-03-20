@@ -305,9 +305,13 @@ function TripDocsPanel({ tail, dep, arr }: { tail: string; dep: string; arr: str
   const [loading, setLoading] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewName, setPreviewName] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editEntity, setEditEntity] = useState<{ type: string; id: string }>({ type: "", id: "" });
 
   const loadDocs = useCallback(async () => {
-    if (loaded) return;
     setLoading(true);
     try {
       const res = await fetch(`/api/ops/intl/trip-docs?tail=${tail}`);
@@ -316,8 +320,7 @@ function TripDocsPanel({ tail, dep, arr }: { tail: string; dep: string; arr: str
       const co = data.company ?? [];
       setAircraft(ac);
       setCompany(co);
-      // Pre-select all aircraft docs
-      setSelected(new Set(ac.map((d: TripDoc) => d.id)));
+      if (!loaded) setSelected(new Set(ac.map((d: TripDoc) => d.id)));
       setLoaded(true);
     } catch { /* ignore */ }
     setLoading(false);
@@ -332,39 +335,52 @@ function TripDocsPanel({ tail, dep, arr }: { tail: string; dep: string; arr: str
   };
 
   const selectAllGroup = (docs: TripDoc[]) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      docs.forEach((d) => next.add(d.id));
-      return next;
-    });
+    setSelected((prev) => { const next = new Set(prev); docs.forEach((d) => next.add(d.id)); return next; });
+  };
+  const deselectAllGroup = (docs: TripDoc[]) => {
+    setSelected((prev) => { const next = new Set(prev); docs.forEach((d) => next.delete(d.id)); return next; });
   };
 
-  const deselectAllGroup = (docs: TripDoc[]) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      docs.forEach((d) => next.delete(d.id));
-      return next;
-    });
+  const previewDoc = async (docId: string, name: string) => {
+    try {
+      const res = await fetch(`/api/ops/intl/documents/${docId}`);
+      const data = await res.json();
+      if (data.download_url) { setPreviewUrl(data.download_url); setPreviewName(name); }
+    } catch { /* ignore */ }
+  };
+
+  const startEdit = (d: TripDoc) => {
+    setEditingId(d.id);
+    setEditName(d.name);
+    setEditEntity({ type: d.entity_type, id: d.entity_id });
+  };
+
+  const saveEdit = async () => {
+    if (!editingId) return;
+    try {
+      await fetch(`/api/ops/intl/documents/${editingId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: editName, entity_type: editEntity.type, entity_id: editEntity.id }),
+      });
+      setEditingId(null);
+      loadDocs(); // Refresh
+    } catch { /* ignore */ }
   };
 
   const downloadSelected = async () => {
     if (selected.size === 0) return;
     setDownloading(true);
     try {
-      // Get signed URLs for selected docs
       const ids = [...selected].join(",");
       const res = await fetch(`/api/ops/intl/trip-docs?tail=${tail}&ids=${ids}`);
       const data = await res.json();
       const docs = data.documents ?? [];
-
       if (docs.length === 1) {
-        // Single doc — just download directly
         window.open(docs[0].url, "_blank");
       } else {
-        // Multiple docs — ZIP client-side
         const JSZip = (await import("jszip")).default;
         const zip = new JSZip();
-
         await Promise.all(
           docs.map(async (doc: { name: string; entity_type: string; entity_id: string; url: string }) => {
             try {
@@ -372,23 +388,48 @@ function TripDocsPanel({ tail, dep, arr }: { tail: string; dep: string; arr: str
               const blob = await response.blob();
               const folder = doc.entity_type === "aircraft" ? `Aircraft - ${doc.entity_id}` : "Company";
               zip.file(`${folder}/${doc.name}.pdf`, blob);
-            } catch { /* skip failed downloads */ }
+            } catch { /* skip */ }
           })
         );
-
         const zipBlob = await zip.generateAsync({ type: "blob" });
         const url = URL.createObjectURL(zipBlob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `${tail}_${dep}-${arr}_trip-docs.zip`;
-        a.click();
+        const a = document.createElement("a"); a.href = url; a.download = `${tail}_${dep}-${arr}_trip-docs.zip`; a.click();
         URL.revokeObjectURL(url);
       }
     } catch { /* ignore */ }
     setDownloading(false);
   };
 
-  const groupChecked = (docs: TripDoc[]) => docs.filter((d) => selected.has(d.id)).length;
+  const renderDoc = (d: TripDoc) => {
+    if (editingId === d.id) {
+      return (
+        <div key={d.id} className="flex items-center gap-1 text-xs bg-yellow-50 rounded px-1 py-1 col-span-2">
+          <input type="checkbox" checked={selected.has(d.id)} onChange={() => toggle(d.id)} className="rounded border-gray-300 text-blue-600" />
+          <input value={editName} onChange={(e) => setEditName(e.target.value)} className="flex-1 border border-gray-300 rounded px-1.5 py-0.5 text-xs" />
+          <select value={editEntity.type} onChange={(e) => setEditEntity({ ...editEntity, type: e.target.value, id: e.target.value === "company" ? "baker_aviation" : editEntity.id })} className="border border-gray-300 rounded px-1 py-0.5 text-[10px]">
+            <option value="aircraft">Aircraft</option>
+            <option value="company">Company</option>
+          </select>
+          {editEntity.type === "aircraft" && (
+            <input value={editEntity.id} onChange={(e) => setEditEntity({ ...editEntity, id: e.target.value.toUpperCase() })} placeholder="N___" className="w-16 border border-gray-300 rounded px-1 py-0.5 text-[10px]" />
+          )}
+          <button onClick={saveEdit} className="text-green-600 hover:text-green-800 text-[10px] font-medium">Save</button>
+          <button onClick={() => setEditingId(null)} className="text-gray-400 hover:text-gray-600 text-[10px]">Cancel</button>
+        </div>
+      );
+    }
+    return (
+      <div key={d.id} className="flex items-center gap-1.5 text-xs hover:bg-gray-50 rounded px-1 py-0.5 group">
+        <input type="checkbox" checked={selected.has(d.id)} onChange={() => toggle(d.id)} className="rounded border-gray-300 text-blue-600" />
+        <button onClick={() => previewDoc(d.id, d.name)} className="truncate text-left text-blue-600 hover:text-blue-800 hover:underline flex-1" title="Click to preview">
+          {d.name}
+        </button>
+        <button onClick={() => startEdit(d)} className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-gray-600 text-[10px]" title="Edit">
+          ✎
+        </button>
+      </div>
+    );
+  };
 
   return (
     <div className="mt-4 pt-3 border-t border-gray-200">
@@ -408,7 +449,6 @@ function TripDocsPanel({ tail, dep, arr }: { tail: string; dep: string; arr: str
             <p className="text-xs text-gray-400">Loading documents...</p>
           ) : (
             <>
-              {/* Aircraft docs */}
               {aircraft.length > 0 && (
                 <div>
                   <div className="flex items-center justify-between mb-1">
@@ -418,18 +458,10 @@ function TripDocsPanel({ tail, dep, arr }: { tail: string; dep: string; arr: str
                       <button onClick={() => deselectAllGroup(aircraft)} className="text-[10px] text-gray-400 hover:underline">None</button>
                     </div>
                   </div>
-                  <div className="grid grid-cols-2 gap-1">
-                    {aircraft.map((d) => (
-                      <label key={d.id} className="flex items-center gap-1.5 text-xs cursor-pointer hover:bg-gray-50 rounded px-1 py-0.5">
-                        <input type="checkbox" checked={selected.has(d.id)} onChange={() => toggle(d.id)} className="rounded border-gray-300 text-blue-600" />
-                        <span className="truncate">{d.name}</span>
-                      </label>
-                    ))}
-                  </div>
+                  <div className="grid grid-cols-2 gap-1">{aircraft.map(renderDoc)}</div>
                 </div>
               )}
 
-              {/* Company docs */}
               {company.length > 0 && (
                 <div>
                   <div className="flex items-center justify-between mb-1">
@@ -439,14 +471,7 @@ function TripDocsPanel({ tail, dep, arr }: { tail: string; dep: string; arr: str
                       <button onClick={() => deselectAllGroup(company)} className="text-[10px] text-gray-400 hover:underline">None</button>
                     </div>
                   </div>
-                  <div className="grid grid-cols-2 gap-1">
-                    {company.map((d) => (
-                      <label key={d.id} className="flex items-center gap-1.5 text-xs cursor-pointer hover:bg-gray-50 rounded px-1 py-0.5">
-                        <input type="checkbox" checked={selected.has(d.id)} onChange={() => toggle(d.id)} className="rounded border-gray-300 text-blue-600" />
-                        <span className="truncate">{d.name}</span>
-                      </label>
-                    ))}
-                  </div>
+                  <div className="grid grid-cols-2 gap-1">{company.map(renderDoc)}</div>
                 </div>
               )}
 
@@ -454,14 +479,10 @@ function TripDocsPanel({ tail, dep, arr }: { tail: string; dep: string; arr: str
                 <p className="text-xs text-gray-400">No documents found for {tail}</p>
               )}
 
-              {/* Download button */}
               {selected.size > 0 && (
                 <div className="flex justify-end">
-                  <button
-                    onClick={downloadSelected}
-                    disabled={downloading}
-                    className="inline-flex items-center gap-2 px-3 py-1.5 bg-blue-600 text-white text-xs font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
-                  >
+                  <button onClick={downloadSelected} disabled={downloading}
+                    className="inline-flex items-center gap-2 px-3 py-1.5 bg-blue-600 text-white text-xs font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors">
                     <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" /></svg>
                     {downloading ? "Zipping..." : `Download ${selected.size} doc${selected.size > 1 ? "s" : ""}`}
                   </button>
@@ -469,6 +490,24 @@ function TripDocsPanel({ tail, dep, arr }: { tail: string; dep: string; arr: str
               )}
             </>
           )}
+        </div>
+      )}
+
+      {/* PDF Preview Modal */}
+      {previewUrl && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setPreviewUrl(null)}>
+          <div className="bg-white rounded-lg shadow-2xl w-[90vw] max-w-4xl h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-2 border-b border-gray-200">
+              <h3 className="text-sm font-semibold text-gray-700 truncate">{previewName}</h3>
+              <div className="flex items-center gap-2">
+                <button onClick={() => window.open(previewUrl, "_blank")} className="text-xs text-blue-600 hover:text-blue-800">Open in new tab</button>
+                <button onClick={() => setPreviewUrl(null)} className="text-gray-400 hover:text-gray-600 text-lg leading-none">✕</button>
+              </div>
+            </div>
+            <div className="flex-1 min-h-0">
+              <iframe src={previewUrl} className="w-full h-full border-0" title={previewName} />
+            </div>
+          </div>
         </div>
       )}
     </div>

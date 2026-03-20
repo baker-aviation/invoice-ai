@@ -48,6 +48,9 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
   if (input.name !== undefined) updates.name = input.name;
   if (input.expiration_date !== undefined) updates.expiration_date = input.expiration_date;
   if (input.is_current !== undefined) updates.is_current = input.is_current;
+  if (input.entity_type !== undefined) updates.entity_type = input.entity_type;
+  if (input.entity_id !== undefined) updates.entity_id = input.entity_id;
+  if (input.document_type !== undefined) updates.document_type = input.document_type;
 
   const supa = createServiceClient();
   const { data, error } = await supa
