@@ -180,39 +180,51 @@ export async function POST(req: NextRequest) {
       rawResponse = { filteredResult: rawResponse, unfilteredSample: testData };
     }
 
-    // 3. Extract participant emails from events
-    const participants: { email: string; displayName: string; durationSec: number }[] = [];
+    // 3. Extract participants, deduplicate by email+date (recurring meet links span sessions)
+    const byKey = new Map<string, { email: string; displayName: string; durationSec: number; date: string }>();
     for (const item of items) {
-      const email = item.actor?.email;
+      const email = item.actor?.email?.toLowerCase();
       if (!email) continue;
+
+      const eventTime = item.id?.time ?? item.events?.[0]?.parameters?.find((p: any) => p.name === "start_timestamp")?.value;
+      const date = eventTime ? new Date(eventTime).toISOString().split("T")[0] : new Date().toISOString().split("T")[0];
 
       const params = item.events?.[0]?.parameters ?? [];
       const displayName = params.find((p: any) => p.name === "display_name")?.value ?? "";
-      const duration = params.find((p: any) => p.name === "duration_seconds")?.intValue ?? "0";
+      const duration = parseInt(params.find((p: any) => p.name === "duration_seconds")?.intValue ?? "0", 10);
 
-      participants.push({
-        email: email.toLowerCase(),
-        displayName,
-        durationSec: parseInt(duration, 10),
-      });
+      const key = `${email}|${date}`;
+      const existing = byKey.get(key);
+      if (existing) {
+        existing.durationSec += duration;
+        if (!existing.displayName && displayName) existing.displayName = displayName;
+      } else {
+        byKey.set(key, { email, displayName, durationSec: duration, date });
+      }
     }
+    const participants = [...byKey.values()];
 
-    // 4. Match against applicants in the info_session pipeline stage
+    // 4. Match against ALL applicants (any pipeline stage) to show names
     const supa = createServiceClient();
-    const { data: applicants } = await supa
+    const { data: allApplicants } = await supa
       .from("job_application_parse")
       .select("application_id, candidate_name, email, pipeline_stage")
-      .eq("pipeline_stage", "info_session");
+      .not("email", "is", null);
 
-    const matched: { applicationId: number; name: string; email: string; durationSec: number }[] = [];
-    const unmatched: string[] = [];
+    const matched: { applicationId: number; name: string; email: string; durationSec: number; stage: string | null; date: string }[] = [];
+    const unmatched: { name: string; email: string; durationMin: number; date: string }[] = [];
 
-    const applicantEmails = new Set(
-      (applicants ?? []).filter((a) => a.email).map((a) => a.email!.toLowerCase()),
-    );
+    const internal: { name: string; email: string; durationMin: number; date: string }[] = [];
 
     for (const p of participants) {
-      const app = (applicants ?? []).find(
+      const isInternal = p.email.endsWith("@baker-aviation.com") || p.email.endsWith("@airninetwo.com");
+
+      if (isInternal) {
+        internal.push({ name: p.displayName || p.email.split("@")[0], email: p.email, durationMin: Math.round(p.durationSec / 60), date: p.date });
+        continue;
+      }
+
+      const app = (allApplicants ?? []).find(
         (a) => a.email?.toLowerCase() === p.email,
       );
       if (app) {
@@ -221,18 +233,23 @@ export async function POST(req: NextRequest) {
           name: app.candidate_name,
           email: p.email,
           durationSec: p.durationSec,
+          stage: app.pipeline_stage,
+          date: p.date,
         });
       } else {
-        // Don't list internal baker emails as unmatched
-        if (!p.email.endsWith("@baker-aviation.com") && !p.email.endsWith("@airninetwo.com")) {
-          unmatched.push(`${p.displayName || p.email} (${p.email})`);
-        }
+        unmatched.push({
+          name: p.displayName || p.email,
+          email: p.email,
+          durationMin: Math.round(p.durationSec / 60),
+          date: p.date,
+        });
       }
     }
 
-    // 5. Auto-mark attendance for matched applicants
+    // 5. Auto-mark attendance for matched applicants in info_session stage
     let markedCount = 0;
     for (const m of matched) {
+      if (m.stage !== "info_session") continue;
       const { error } = await supa
         .from("job_application_parse")
         .update({
@@ -244,16 +261,18 @@ export async function POST(req: NextRequest) {
       if (!error) markedCount++;
     }
 
-    // 6. Save attendance record
-    await supa.from("info_session_attendance").insert({
-      meeting_code: meetingCode,
-      meet_link: meetLink,
-      meeting_date: new Date().toISOString().split("T")[0],
-      total_participants: participants.length,
-      matched: matched.map((m) => ({ name: m.name, email: m.email, durationMin: Math.round(m.durationSec / 60) })),
-      unmatched,
-      checked_by: auth.email ?? null,
-    });
+    // 6. Save attendance record (only if there were actual participants)
+    if (participants.length > 0) {
+      await supa.from("info_session_attendance").insert({
+        meeting_code: meetingCode,
+        meet_link: meetLink,
+        meeting_date: new Date().toISOString().split("T")[0],
+        total_participants: participants.length,
+        matched: matched.map((m) => ({ name: m.name, email: m.email, durationMin: Math.round(m.durationSec / 60), stage: m.stage, date: m.date })),
+        unmatched: unmatched.map((u) => `${u.name} (${u.email})`),
+        checked_by: auth.email ?? null,
+      });
+    }
 
     return NextResponse.json({
       ok: true,
@@ -262,6 +281,7 @@ export async function POST(req: NextRequest) {
       matched,
       markedCount,
       unmatched,
+      internal,
       _debug: {
         meetLink,
         extractedCode: meetingCode,
