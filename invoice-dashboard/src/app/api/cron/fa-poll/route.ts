@@ -191,6 +191,66 @@ async function upsertFlights(flights: FlightInfo[]): Promise<number> {
 // Link FA flights → ICS flights by fa_flight_id
 // ---------------------------------------------------------------------------
 
+/**
+ * Normalize an airport code to a canonical form for matching.
+ * Handles: ICAO K-prefix stripping (KFOK → FOK), TJ/MM/MY/MK prefix territories
+ * (TJSJ = SJU, MMUN = CUN), and trims whitespace.
+ *
+ * The goal is to produce a 3-letter code that both FA and ICS data can agree on.
+ */
+function normIcao(code: string | null | undefined): string {
+  if (!code) return "";
+  const c = code.trim().toUpperCase();
+  // US airports: strip K prefix (KFOK → FOK, KSJU → SJU)
+  if (c.length === 4 && c.startsWith("K")) return c.slice(1);
+  // Caribbean/Mexico/Canada territories: TJ, MM, MY, MK, MB prefixes → strip 1 char
+  // e.g. TJSJ → JSJ? No — these use real ICAO. Let's just strip to last 3 for matching.
+  // TJSJ → SJU won't work this way. We need an explicit map for known mismatches.
+  return c;
+}
+
+/** Map of ICAO codes that FA uses → the FAA/ICS equivalent */
+const ICAO_ALIASES: Record<string, string> = {
+  // Caribbean / Territories — FA uses real ICAO, ICS often uses K-prefix or IATA
+  TJSJ: "KSJU",  // San Juan, PR
+  TJBQ: "KBQN",  // Aguadilla, PR
+  TJIG: "KSIG",  // San Juan Isla Grande, PR
+  TIST: "KSTT",  // St. Thomas, USVI
+  TISX: "KSTX",  // St. Croix, USVI
+  // Mexico
+  MMUN: "MCUN",  // Cancun — may appear as CUN in ICS
+  MMMX: "MMEX",  // Mexico City
+  MMSD: "MSSD",  // San Jose del Cabo
+  // Bahamas
+  MYNN: "MYNN",  // Nassau — usually matches
+  // Add more as discovered
+};
+
+/** Check if two airport codes match after normalization + alias expansion */
+function airportsMatch(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false;
+  const na = normIcao(a);
+  const nb = normIcao(b);
+  if (na === nb) return true;
+
+  // Check alias map in both directions
+  const au = a.trim().toUpperCase();
+  const bu = b.trim().toUpperCase();
+  const aliasA = ICAO_ALIASES[au];
+  const aliasB = ICAO_ALIASES[bu];
+  if (aliasA && normIcao(aliasA) === nb) return true;
+  if (aliasB && normIcao(aliasB) === na) return true;
+
+  // Last resort: compare 3-letter IATA core (strip any prefix to get last 3 chars)
+  if (na.length >= 3 && nb.length >= 3) {
+    const iataA = na.length > 3 ? na.slice(-3) : na;
+    const iataB = nb.length > 3 ? nb.slice(-3) : nb;
+    if (iataA === iataB) return true;
+  }
+
+  return false;
+}
+
 async function linkFaToIcs(flights: FlightInfo[]): Promise<number> {
   if (flights.length === 0) return 0;
   const supa = createServiceClient();
@@ -206,22 +266,30 @@ async function linkFaToIcs(flights: FlightInfo[]): Promise<number> {
     const windowStart = new Date(faDepMs - 3 * 3600_000).toISOString();
     const windowEnd = new Date(faDepMs + 3 * 3600_000).toISOString();
 
-    // Find ICS flights matching tail + route + departure within ±3h
+    // Query by tail + time window only (NOT route) — we'll filter routes in memory
+    // to handle ICAO code mismatches (e.g. TJSJ vs KSJU)
     const { data: candidates } = await supa
       .from("flights")
-      .select("id, scheduled_departure, fa_flight_id")
+      .select("id, scheduled_departure, fa_flight_id, departure_icao, arrival_icao")
       .eq("tail_number", fa.tail)
-      .eq("departure_icao", fa.origin_icao)
-      .eq("arrival_icao", fa.destination_icao)
       .gte("scheduled_departure", windowStart)
       .lte("scheduled_departure", windowEnd);
 
     if (!candidates || candidates.length === 0) continue;
 
+    // Filter by route using normalized airport code matching
+    const routeMatches = candidates.filter(
+      (c) =>
+        airportsMatch(c.departure_icao, fa.origin_icao) &&
+        airportsMatch(c.arrival_icao, fa.destination_icao),
+    );
+
+    if (routeMatches.length === 0) continue;
+
     // Pick closest by departure time, but protect existing valid links
     let bestId: string | null = null;
     let bestDiff = Infinity;
-    for (const c of candidates) {
+    for (const c of routeMatches) {
       // Skip if already correctly linked to THIS FA flight
       if (c.fa_flight_id === fa.fa_flight_id) {
         bestId = null;

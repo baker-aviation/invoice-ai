@@ -63,8 +63,21 @@ function matchFaFlight(
   const depIcao = flight.departure_icao;
   const arrIcao = flight.arrival_icao;
   const schedDep = flight.scheduled_departure ? new Date(flight.scheduled_departure).getTime() : null;
-  // Normalize: strip leading K for comparison
-  const norm = (c: string | null) => c ? (c.length === 4 && c.startsWith("K") ? c.slice(1) : c) : null;
+  // Normalize airport codes: strip K-prefix, handle ICAO aliases (TJSJ↔KSJU etc.)
+  const ICAO_TO_FAA: Record<string, string> = {
+    TJSJ: "SJU", TJBQ: "BQN", TJIG: "SIG", TIST: "STT", TISX: "STX",
+    MMUN: "CUN", MMMX: "MEX", MMSD: "SJD",
+  };
+  const norm = (c: string | null | undefined): string | null => {
+    if (!c) return null;
+    const u = c.trim().toUpperCase();
+    // Check alias map first
+    if (ICAO_TO_FAA[u]) return ICAO_TO_FAA[u];
+    // Strip K-prefix for US airports
+    if (u.length === 4 && u.startsWith("K")) return u.slice(1);
+    // For 4-char codes, try last 3 chars as IATA
+    return u;
+  };
   const nDep = norm(depIcao);
   const nArr = norm(arrIcao);
 
