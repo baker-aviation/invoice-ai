@@ -63,12 +63,22 @@ export async function fetchJobs(
 ): Promise<JobsListResponse> {
   const supa = createServiceClient();
 
-  // Try with pipeline_stage column; fall back if migration hasn't run yet
+  // Try with all columns; fall back progressively if newer columns don't exist
   let { data, error } = await queryJobs(supa, JOB_COLUMNS_WITH_STAGE, params);
   if (error) {
-    const retry = await queryJobs(supa, JOB_COLUMNS_BASE, params);
-    data = retry.data;
-    error = retry.error;
+    console.warn("[fetchJobs] Full column query failed, trying with pipeline_stage only:", error.message);
+    // Fallback: base columns + pipeline_stage (skip newer columns like offer_status etc.)
+    const fallbackCols = JOB_COLUMNS_BASE + ", pipeline_stage, structured_notes, rejected_at, rejection_reason, deleted_at, hr_reviewed, previously_rejected";
+    const retry2 = await queryJobs(supa, fallbackCols, params);
+    if (retry2.error) {
+      console.warn("[fetchJobs] Pipeline column query also failed, using base:", retry2.error.message);
+      const retry3 = await queryJobs(supa, JOB_COLUMNS_BASE, params);
+      data = retry3.data;
+      error = retry3.error;
+    } else {
+      data = retry2.data;
+      error = null;
+    }
   }
   if (error) throw new Error(`fetchJobs failed: ${error.message}`);
 
