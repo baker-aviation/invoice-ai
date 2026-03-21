@@ -3,7 +3,8 @@ import { requireAuth, isAuthed } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 import { fetchAdvertisedPrices } from "@/lib/invoiceApi";
 import { buildBestRateByAirport, airportVariants } from "@/lib/fuelLookup";
-import { calcPpg, optimizeMultiLeg, type AircraftType, type MultiLeg, type MultiRouteInputs, type MultiLegPlan } from "@/app/tanker/model";
+import { calcPpg, optimizeMultiLeg, STD_AIRCRAFT, type AircraftType, type MultiLeg, type MultiRouteInputs, type MultiLegPlan } from "@/app/tanker/model";
+import { getFboWaiver } from "@/lib/fboFeeLookup";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -19,19 +20,6 @@ const AIRCRAFT_DEFAULTS: Record<AircraftType, {
   "CL-30":  { mlw: 34_250, zfw: 25_600, defaultBurnRate: 2500, reserveLbs: 1800 },
 };
 
-// ─── FBO fee waiver rules ──────────────────────────────────────────────
-// Minimum fuel purchase (gallons) to waive handling/ramp fees
-const FBO_WAIVERS: Record<string, { minGallons: number; feeWaived: number }> = {
-  "Signature Flight Support": { minGallons: 420, feeWaived: 1000 },
-  "Atlantic Aviation":        { minGallons: 350, feeWaived: 750 },
-  "Jet Aviation":             { minGallons: 250, feeWaived: 1000 },
-};
-
-function getWaiver(vendor: string | null): { minGallons: number; feeWaived: number } {
-  if (!vendor) return { minGallons: 0, feeWaived: 0 };
-  return FBO_WAIVERS[vendor] ?? { minGallons: 0, feeWaived: 0 };
-}
-
 // ─── Types ─────────────────────────────────────────────────────────────
 
 interface ScheduleLeg {
@@ -39,6 +27,7 @@ interface ScheduleLeg {
   arrival_icao: string;
   scheduled_departure: string;
   scheduled_arrival: string | null;
+  origin_fbo: string | null;
 }
 
 interface LegData {
@@ -49,7 +38,16 @@ interface LegData {
   flightTimeHours: number;
   departurePricePerGal: number;
   departureFboVendor: string | null;
+  departureFbo: string | null;
   ffSource: "foreflight" | "estimate";
+  waiver: {
+    fboName: string;
+    minGallons: number;
+    feeWaived: number;
+    landingFee: number;
+    securityFee: number;
+    overnightFee: number;
+  };
 }
 
 interface TailPlan {
@@ -140,17 +138,34 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // 2b. Get FBO assignments from trip_salespersons (JetInsight CSV upload)
+    const { data: tripFboRows } = await supa
+      .from("trip_salespersons")
+      .select("tail_number, origin_icao, destination_icao, origin_fbo, destination_fbo, scheduled_departure")
+      .gte("scheduled_departure", dayStart)
+      .lte("scheduled_departure", dayEnd);
+
+    // Build lookup: "TAIL|ORIG_ICAO" → FBO name
+    const fboByLeg = new Map<string, string>();
+    for (const r of tripFboRows ?? []) {
+      if (r.origin_fbo && r.tail_number && r.origin_icao) {
+        fboByLeg.set(`${r.tail_number.toUpperCase()}|${r.origin_icao}`, r.origin_fbo);
+      }
+    }
+
     // Group by tail
     const scheduleByTail = new Map<string, ScheduleLeg[]>();
     for (const f of flightRows) {
       if (!f.tail_number || !f.departure_icao || !f.arrival_icao) continue;
       const tail = f.tail_number.toUpperCase();
       if (!scheduleByTail.has(tail)) scheduleByTail.set(tail, []);
+      const originFbo = fboByLeg.get(`${tail}|${f.departure_icao}`) ?? null;
       scheduleByTail.get(tail)!.push({
         departure_icao: f.departure_icao,
         arrival_icao: f.arrival_icao,
         scheduled_departure: f.scheduled_departure,
         scheduled_arrival: f.scheduled_arrival ?? null,
+        origin_fbo: originFbo,
       });
     }
 
@@ -211,6 +226,9 @@ export async function POST(req: NextRequest) {
           if (r) { depRate = r.price; depVendor = r.vendor; break; }
         }
 
+        // FBO fee lookup: use origin_fbo from trip_salespersons if available, else best match at airport
+        const legWaiver = getFboWaiver(leg.departure_icao, leg.origin_fbo, acType);
+
         return {
           from: leg.departure_icao,
           to: leg.arrival_icao,
@@ -219,13 +237,22 @@ export async function POST(req: NextRequest) {
           flightTimeHours: flightHrs,
           departurePricePerGal: depRate,
           departureFboVendor: depVendor,
+          departureFbo: leg.origin_fbo ?? (legWaiver.fboName || null),
           ffSource: "estimate" as const,
+          waiver: {
+            fboName: legWaiver.fboName,
+            minGallons: legWaiver.minGallons,
+            feeWaived: legWaiver.feeWaived,
+            landingFee: legWaiver.landingFee,
+            securityFee: legWaiver.securityFee,
+            overnightFee: legWaiver.overnightFee,
+          },
         };
       });
 
-      // Build optimizer input (with fee waiver rules per FBO)
+      // Build optimizer input (with per-airport/aircraft fee waiver rules from fbo-fees.json)
       const multiLegs: MultiLeg[] = legData.map((ld) => {
-        const waiver = getWaiver(ld.departureFboVendor);
+        const waiver = ld.waiver;
         return {
           id: `${tail}-${ld.from}-${ld.to}`,
           from: ld.from, to: ld.to,
@@ -234,6 +261,7 @@ export async function POST(req: NextRequest) {
           flightTimeHours: ld.flightTimeHours,
           maxLandingGrossWeightLbs: defaults.mlw,
           zeroFuelWeightLbs: defaults.zfw,
+          maxFuelCapacityLbs: STD_AIRCRAFT[acType].maxFuel,
           departurePricePerGal: ld.departurePricePerGal,
           waiveFeesGallons: waiver.minGallons,
           feesWaivedDollars: waiver.feeWaived,
@@ -260,10 +288,15 @@ export async function POST(req: NextRequest) {
         let orderGal = neededLbs / ppg;
 
         // Always buy at least the fee waiver minimum (standard ops)
-        const waiver = getWaiver(ld.departureFboVendor);
+        const waiver = ld.waiver;
         if (waiver.minGallons > 0 && orderGal < waiver.minGallons) {
           orderGal = waiver.minGallons;
         }
+
+        // Cap at max fuel tank capacity
+        const maxFuel = STD_AIRCRAFT[acType].maxFuel;
+        const maxOrderLbs = Math.max(0, maxFuel - runningFuel);
+        orderGal = Math.min(orderGal, maxOrderLbs / ppg);
 
         naiveCost += orderGal * ld.departurePricePerGal;
 

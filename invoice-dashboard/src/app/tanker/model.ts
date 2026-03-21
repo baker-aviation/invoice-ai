@@ -16,8 +16,8 @@ export const STD_AIRCRAFT: Record<AircraftType, {
   zfw: number;   // zero fuel weight estimate (OEW + avg pax/crew)
   maxFuel: number; // max fuel capacity (lbs)
 }> = {
-  "CE-750": { label: "Citation X",      mlw: 31_800, zfw: 23_500, maxFuel: 14_400 },
-  "CL-30":  { label: "Challenger 300",  mlw: 34_250, zfw: 25_600, maxFuel: 13_250 },
+  "CE-750": { label: "Citation X",      mlw: 31_800, zfw: 23_500, maxFuel: 13_000 },
+  "CL-30":  { label: "Challenger 300",  mlw: 34_250, zfw: 25_600, maxFuel: 14_100 },
 };
 
 interface BurnPt { fuelLbs: number; burnLbs: number; }
@@ -228,6 +228,7 @@ export interface MultiLeg {
   flightTimeHours: number;
   maxLandingGrossWeightLbs: number;
   zeroFuelWeightLbs: number;
+  maxFuelCapacityLbs: number;
   departurePricePerGal: number;
   waiveFeesGallons: number;
   feesWaivedDollars: number;
@@ -242,6 +243,7 @@ export function makeDefaultLeg(from = "", to = ""): MultiLeg {
     flightTimeHours: 1.0,
     maxLandingGrossWeightLbs: 31800,
     zeroFuelWeightLbs: 24185,
+    maxFuelCapacityLbs: 13000,
     departurePricePerGal: 4.0,
     waiveFeesGallons: 0,
     feesWaivedDollars: 0,
@@ -343,6 +345,10 @@ export function optimizeMultiLeg(route: MultiRouteInputs, stepLbs = 100): MultiL
         if (fut >= INF) continue;
 
         const oLbs = Math.max(0, leg.requiredStartFuelLbs + depExtra - arrFuel);
+        // Enforce max fuel tank capacity
+        const depFuelTotal = arrFuel + oLbs;
+        if (leg.maxFuelCapacityLbs > 0 && depFuelTotal > leg.maxFuelCapacityLbs + 0.001) continue;
+
         const oGal = oLbs / ppg;
         const fc   = oGal * leg.departurePricePerGal;
         const fee  = leg.waiveFeesGallons > 0 && oGal + 0.001 < leg.waiveFeesGallons

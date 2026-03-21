@@ -66,15 +66,21 @@ export async function GET(req: NextRequest) {
   if (process.env.FOREFLIGHT_API_KEY) {
     // First try the recommended routes endpoint (doesn't need a tail number)
     try {
-      const routesRes = await fetch(`${FF_BASE}/routes/${dep}/${arr}`, {
+      const routesUrl = `${FF_BASE}/routes/${dep}/${arr}`;
+      console.log(`[route-analysis] Fetching recommended routes: ${routesUrl}`);
+      const routesRes = await fetch(routesUrl, {
         headers: { "x-api-key": apiKey() },
       });
+      console.log(`[route-analysis] Routes response: ${routesRes.status} ${routesRes.statusText}`);
       if (routesRes.ok) {
         const routesData = await routesRes.json();
+        console.log(`[route-analysis] Routes raw keys: ${JSON.stringify(Object.keys(routesData))}, data preview: ${JSON.stringify(routesData).slice(0, 300)}`);
         const routes = routesData.routes ?? routesData ?? [];
         if (Array.isArray(routes) && routes.length > 0) {
+          // Log first route object keys to understand structure
+          console.log(`[route-analysis] First route keys: ${JSON.stringify(Object.keys(routes[0]))}`);
           ffRecommendedRoutes = routes.slice(0, 5).map((r: Record<string, unknown>) => ({
-            routeString: (r.routeString ?? r.route ?? r.routeText ?? "") as string,
+            routeString: (r.routeString ?? r.route ?? r.routeText ?? r.routeOfFlight ?? "") as string,
             source: (r.source ?? r.type ?? "recommended") as string,
           })).filter((r: { routeString: string }) => r.routeString && r.routeString !== "DCT");
 
@@ -84,6 +90,9 @@ export async function GET(req: NextRequest) {
           }
         }
         console.log(`[route-analysis] FF routes ${dep}→${arr}: ${ffRecommendedRoutes.length} recommended, best=${ffRoute?.slice(0, 80) ?? "none"}`);
+      } else {
+        const errText = await routesRes.text();
+        console.warn(`[route-analysis] Routes endpoint ${routesRes.status}: ${errText.slice(0, 200)}`);
       }
     } catch (err) {
       console.warn(`[route-analysis] FF routes endpoint failed for ${dep}→${arr}:`, err instanceof Error ? err.message : err);
@@ -146,19 +155,31 @@ export async function GET(req: NextRequest) {
             .join(" ");
         }
 
-        // Try flightData sub-object (ForeFlight v3 structure)
-        if (!ffRoute && fd.flightData) {
+        // Try flightData sub-object
+        if (fd.flightData) {
           const fdd = fd.flightData;
-          ffRoute = fdd.route ?? fdd.routeString ?? fdd.routeToDestination?.route ?? null;
-          // Also check waypoints array
-          if (!ffRoute && fdd.waypoints && Array.isArray(fdd.waypoints)) {
-            ffRoute = fdd.waypoints.map((w: Record<string, unknown>) => w.ident ?? w.name).filter(Boolean).join(" ");
+          if (!ffRoute || ffRoute === "DCT") {
+            ffRoute = fdd.route ?? fdd.routeString ?? fdd.routeToDestination?.route ?? ffRoute;
           }
-          console.log(`[route-analysis] FF ${dep}→${arr}: flightData keys=${Object.keys(fdd).join(",")}, route=${ffRoute ? ffRoute.slice(0, 120) : "null"}`);
-        } else {
-          console.log(`[route-analysis] FF ${dep}→${arr}: route=${ffRoute ? ffRoute.slice(0, 120) : "null"}, fd keys=${Object.keys(fd).join(",")}`);
         }
 
+        // Extract route from navlog waypoints (most reliable source)
+        const navlog = fd.performance?.navlog ?? fd.performance?.waypoints;
+        if (navlog && Array.isArray(navlog) && navlog.length > 2) {
+          // Log first waypoint to understand structure
+          console.log(`[route-analysis] FF ${dep}→${arr}: navlog[0] keys=${Object.keys(navlog[0]).join(",")}`);
+          const wpRoute = navlog
+            .map((wp: Record<string, unknown>) => wp.ident ?? wp.waypointName ?? wp.name ?? wp.fixName)
+            .filter((id: unknown) => id && id !== dep && id !== arr) // exclude dep/arr
+            .join(" ");
+          if (wpRoute && wpRoute.length > 0) {
+            ffRoute = wpRoute;
+          }
+          console.log(`[route-analysis] FF ${dep}→${arr}: navlog ${navlog.length} waypoints, route=${ffRoute?.slice(0, 120) ?? "null"}`);
+        } else {
+          // Log performance keys to find navlog
+          console.log(`[route-analysis] FF ${dep}→${arr}: perf keys=${fd.performance ? Object.keys(fd.performance).join(",") : "none"}, route=${ffRoute ?? "null"}`);
+        }
 
         // Clean up the flight plan from ForeFlight dispatch
         if (ffFlightId) {

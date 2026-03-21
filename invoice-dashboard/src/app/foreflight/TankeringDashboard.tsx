@@ -5,6 +5,15 @@ import type { AircraftType, MultiLegPlan } from "@/app/tanker/model";
 
 // ─── Types matching the API response ───────────────────────────────────
 
+interface LegWaiver {
+  fboName: string;
+  minGallons: number;
+  feeWaived: number;
+  landingFee: number;
+  securityFee: number;
+  overnightFee: number;
+}
+
 interface LegData {
   from: string;
   to: string;
@@ -13,7 +22,9 @@ interface LegData {
   flightTimeHours: number;
   departurePricePerGal: number;
   departureFboVendor: string | null;
+  departureFbo: string | null;
   ffSource: "foreflight" | "estimate";
+  waiver?: LegWaiver;
 }
 
 interface TailPlan {
@@ -68,10 +79,14 @@ function fmtHrs(h: number): string {
 
 // ─── Component ─────────────────────────────────────────────────────────
 
+const FUEL_PLANNING_SLACK_CHANNEL = "C0ANTTQ6R96";
+
 export default function TankeringDashboard() {
   const [uploading, setUploading] = useState(false);
   const [uploadResult, setUploadResult] = useState<UploadResponse | null>(null);
   const [generating, setGenerating] = useState(false);
+  const [sharing, setSharing] = useState(false);
+  const [shareResult, setShareResult] = useState<string | null>(null);
   const [result, setResult] = useState<GenerateResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [targetDate, setTargetDate] = useState(() => {
@@ -141,6 +156,37 @@ export default function TankeringDashboard() {
     }
   }, [targetDate]);
 
+  // ── Share to Slack handler ──
+  const handleShareSlack = useCallback(async () => {
+    if (!result?.plans.length) return;
+    setSharing(true);
+    setShareResult(null);
+    setError(null);
+
+    try {
+      const res = await fetch("/api/fuel-planning/share-slack", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          channel: FUEL_PLANNING_SLACK_CHANNEL,
+          date: result.date,
+          plans: result.plans,
+          fleetTotals: result.fleetTotals,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? `Slack share failed: HTTP ${res.status}`);
+        return;
+      }
+      setShareResult(`Sent ${data.sent} plans to Slack`);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setSharing(false);
+    }
+  }, [result]);
+
   return (
     <div className="px-6 py-4 space-y-5 max-w-6xl mx-auto">
       {/* ── Controls ── */}
@@ -191,7 +237,24 @@ export default function TankeringDashboard() {
           >
             {generating ? "Generating Plans..." : "Generate Fuel Plans"}
           </button>
+
+          {/* Share to Slack */}
+          {result?.plans.length ? (
+            <button
+              onClick={handleShareSlack}
+              disabled={sharing}
+              className="px-5 py-2.5 bg-purple-600 text-white text-sm font-medium rounded-md hover:bg-purple-500 disabled:opacity-50 transition-colors"
+            >
+              {sharing ? "Sending..." : "📤 Share to Slack"}
+            </button>
+          ) : null}
         </div>
+
+        {shareResult && (
+          <div className="mt-3 rounded-md bg-purple-50 border border-purple-200 px-4 py-3">
+            <p className="text-sm font-medium text-purple-800">{shareResult}</p>
+          </div>
+        )}
 
         {/* Upload result */}
         {uploadResult && (
@@ -268,7 +331,7 @@ export default function TankeringDashboard() {
 
           {/* ── Per-Tail Plans ── */}
           {result.plans.map((tp) => (
-            <TailPlanCard key={tp.tail} plan={tp} />
+            <TailPlanCard key={tp.tail} plan={tp} date={result.date} />
           ))}
         </>
       ) : null}
@@ -278,10 +341,38 @@ export default function TankeringDashboard() {
 
 // ─── Tail Plan Card ────────────────────────────────────────────────────
 
-function TailPlanCard({ plan: tp }: { plan: TailPlan }) {
+function TailPlanCard({ plan: tp, date }: { plan: TailPlan; date: string }) {
   const ppg = 6.7; // standard for display conversion
   const hasError = !!tp.error;
   const plan = tp.plan;
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+
+  const handleSendToSlack = async () => {
+    if (!plan) return;
+    setSending(true);
+    try {
+      const res = await fetch("/api/fuel-planning/share-slack", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          channel: FUEL_PLANNING_SLACK_CHANNEL,
+          date,
+          plans: [tp],
+          fleetTotals: {
+            totalFuelCost: plan.totalFuelCost,
+            totalFees: plan.totalFees,
+            totalTripCost: plan.totalTripCost,
+            naiveCost: tp.naiveCost,
+            tankerSavings: tp.tankerSavings,
+            planCount: 1,
+          },
+        }),
+      });
+      if (res.ok) setSent(true);
+    } catch { /* ignore */ }
+    finally { setSending(false); }
+  };
 
   return (
     <div className={`rounded-lg border bg-white overflow-hidden ${hasError && !plan ? "border-amber-200" : "border-gray-200"}`}>
@@ -307,6 +398,19 @@ function TailPlanCard({ plan: tp }: { plan: TailPlan }) {
               {fmtDollars(plan.totalTripCost)}
             </span>
           )}
+          {plan && (
+            <button
+              onClick={handleSendToSlack}
+              disabled={sending || sent}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                sent
+                  ? "bg-green-100 text-green-700 cursor-default"
+                  : "bg-gray-100 text-gray-600 hover:bg-purple-100 hover:text-purple-700 disabled:opacity-50"
+              }`}
+            >
+              {sent ? "✓ Sent" : sending ? "Sending..." : "📤 Slack"}
+            </button>
+          )}
         </div>
       </div>
 
@@ -329,6 +433,7 @@ function TailPlanCard({ plan: tp }: { plan: TailPlan }) {
                   <th className="pb-2 pr-3 text-right">Flight Time</th>
                   <th className="pb-2 pr-3 text-right">Price/gal</th>
                   <th className="pb-2 pr-3">FBO</th>
+                  <th className="pb-2 pr-3 text-right">Handling Fee</th>
                   <th className="pb-2 pr-3 text-right">Order (lbs)</th>
                   <th className="pb-2 pr-3 text-right">Order (gal)</th>
                   <th className="pb-2 pr-3 text-right">Landing Fuel</th>
@@ -363,8 +468,34 @@ function TailPlanCard({ plan: tp }: { plan: TailPlan }) {
                           <span className="text-gray-400">N/A</span>
                         )}
                       </td>
-                      <td className="py-2.5 pr-3 text-gray-600 text-xs max-w-[120px] truncate">
-                        {leg.departureFboVendor ?? "—"}
+                      <td className="py-2.5 pr-3 text-xs max-w-[180px]">
+                        <div className="text-gray-700 truncate font-medium">
+                          {leg.departureFbo || "—"}
+                        </div>
+                        {leg.waiver && leg.waiver.minGallons > 0 && (
+                          <div className="text-[10px] text-gray-400">
+                            Waive at {fmtNum(leg.waiver.minGallons)} gal
+                          </div>
+                        )}
+                        {leg.departureFboVendor && leg.departureFboVendor !== leg.departureFbo && (
+                          <div className="text-[10px] text-blue-400 truncate">
+                            Fuel: {leg.departureFboVendor}
+                          </div>
+                        )}
+                      </td>
+                      <td className="py-2.5 pr-3 text-right text-xs">
+                        {leg.waiver && leg.waiver.feeWaived > 0 ? (
+                          <div>
+                            <span className={`font-mono font-semibold ${(plan.feePaidByStop[i] ?? 0) > 0 ? "text-red-600" : "text-green-600"}`}>
+                              {fmtDollars(leg.waiver.feeWaived)}
+                            </span>
+                            <div className={`text-[10px] ${(plan.feePaidByStop[i] ?? 0) > 0 ? "text-red-400" : "text-green-500"}`}>
+                              {(plan.feePaidByStop[i] ?? 0) > 0 ? "not waived" : "waived"}
+                            </div>
+                          </div>
+                        ) : (
+                          <span className="text-gray-400">—</span>
+                        )}
                       </td>
                       <td className={`py-2.5 pr-3 text-right font-mono font-semibold ${orderLbs > 0 ? "text-blue-700" : "text-gray-400"}`}>
                         {orderLbs > 0 ? fmtNum(orderLbs) : "—"}
@@ -393,7 +524,7 @@ function TailPlanCard({ plan: tp }: { plan: TailPlan }) {
               </tbody>
               <tfoot>
                 <tr className="border-t border-gray-200">
-                  <td colSpan={5} className="py-2.5 text-xs text-gray-500 font-medium">TOTALS</td>
+                  <td colSpan={6} className="py-2.5 text-xs text-gray-500 font-medium">TOTALS</td>
                   <td className="py-2.5 pr-3 text-right font-mono font-bold text-gray-900">
                     {fmtNum(plan.fuelOrderLbsByStop.reduce((a, b) => a + b, 0))}
                   </td>
