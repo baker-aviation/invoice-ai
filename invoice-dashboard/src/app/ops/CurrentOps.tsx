@@ -1558,12 +1558,14 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
     setFaaCheckResult(null);
     setFaaDebug(null);
     try {
-      // Dedupe flights by callsign+dept+arr
+      // Only check flights that haven't departed yet (scheduled departure in the future or within last hour)
+      const cutoff = new Date(Date.now() - 60 * 60_000).toISOString();
       const seen = new Set<string>();
       const flightList: { callsign: string; tail: string; dept: string; arr: string }[] = [];
       for (const f of flights) {
         if (!f.tail_number || !f.departure_icao || !f.arrival_icao) continue;
         if (f.id.startsWith("edct-orphan-")) continue;
+        if (f.scheduled_departure && f.scheduled_departure < cutoff) continue; // Skip departed flights
         const nums = f.tail_number.match(/\d+/)?.[0] ?? "";
         const key = `KOW${nums}|${f.departure_icao}|${f.arrival_icao}`;
         if (seen.has(key)) continue;

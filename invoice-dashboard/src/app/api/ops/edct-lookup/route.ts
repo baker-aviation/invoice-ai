@@ -176,8 +176,14 @@ export async function POST(req: NextRequest) {
     if (mapped) f.callsign = mapped;
   }
 
-  // Fire all lookups in parallel
-  const results = await Promise.all(flights.map(lookupSingleEdct));
+  // Fire lookups in batches of 10 to avoid FAA rate limiting
+  const results: FaaEdctResult[] = [];
+  const batchSize = 10;
+  for (let i = 0; i < flights.length; i += batchSize) {
+    const batch = flights.slice(i, i + batchSize);
+    const batchResults = await Promise.all(batch.map(lookupSingleEdct));
+    results.push(...batchResults);
+  }
 
   const found = results.filter((r) => r.found);
 
