@@ -116,23 +116,24 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   const multiLegs: MultiLeg[] = plan.legs.map((leg, i) => {
     const mlw = mlwOverrides[String(i)] ?? defaults.mlw;
     const zfw = zfwOverrides[String(i)] ?? defaults.zfw;
-    const maxLF = mlw - zfw;
 
     const waiver = leg.waiver ?? getFboWaiver(leg.from, null, acType) ?? {
       fboName: "", minGallons: 0, feeWaived: 0, landingFee: 0, securityFee: 0, overnightFee: 0,
     };
 
     return {
+      id: String(i),
       from: leg.from,
       to: leg.to,
       requiredStartFuelLbs: leg.totalFuelLbs,
       fuelToDestLbs: leg.fuelToDestLbs,
       flightTimeHours: leg.flightTimeHours,
+      maxLandingGrossWeightLbs: mlw,
+      zeroFuelWeightLbs: zfw,
+      maxFuelCapacityLbs: defaults.maxFuel,
       departurePricePerGal: leg.departurePricePerGal,
-      maxLandingFuelLbs: maxLF,
-      maxTankCapacityLbs: defaults.maxFuel,
-      feeWaiverMinGallons: waiver.minGallons,
-      feeDollars: waiver.feeWaived + waiver.landingFee + waiver.securityFee,
+      waiveFeesGallons: waiver.minGallons,
+      feesWaivedDollars: waiver.feeWaived + waiver.landingFee + waiver.securityFee,
     };
   });
 
