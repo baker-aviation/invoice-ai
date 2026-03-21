@@ -1548,6 +1548,52 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
   const airborne = enRouteAircraft.length;
   const onGround = parkedAircraft.length;
 
+  // FAA EDCT check
+  const [checkingFaa, setCheckingFaa] = useState(false);
+  const [faaCheckResult, setFaaCheckResult] = useState<string | null>(null);
+
+  const handleCheckFaaEdcts = useCallback(async () => {
+    setCheckingFaa(true);
+    setFaaCheckResult(null);
+    try {
+      // Build flight list: tail → KOW callsign, with departure/arrival
+      const flightList = flights
+        .filter((f) => f.tail_number && f.departure_icao && f.arrival_icao)
+        .map((f) => {
+          const nums = f.tail_number!.match(/\d+/)?.[0] ?? "";
+          return {
+            callsign: `KOW${nums}`,
+            tail: f.tail_number!,
+            dept: f.departure_icao!,
+            arr: f.arrival_icao!,
+          };
+        });
+
+      if (!flightList.length) {
+        setFaaCheckResult("No flights to check");
+        return;
+      }
+
+      const res = await fetch("/api/ops/edct-lookup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ flights: flightList }),
+      });
+      const data = await res.json();
+      if (data.found > 0) {
+        setFaaCheckResult(`Found ${data.found} FAA EDCT${data.found !== 1 ? "s" : ""} — refreshing...`);
+        // Trigger a refresh of the ops data
+        setTimeout(() => window.location.reload(), 1500);
+      } else {
+        setFaaCheckResult(`Checked ${data.checked} flights — no FAA EDCTs found`);
+      }
+    } catch (err) {
+      setFaaCheckResult(`Error: ${err}`);
+    } finally {
+      setCheckingFaa(false);
+    }
+  }, [flights]);
+
   // Collect same-day EDCT alerts across all flights
   const edctAlerts = useMemo(() => {
     const now = new Date();
@@ -1598,6 +1644,13 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
           <div className="flex items-center gap-2 rounded-lg border border-green-200 bg-green-50 px-4 py-2.5 text-sm">
             <span className="w-2.5 h-2.5 rounded-full bg-green-500" />
             <span className="font-medium text-green-800">No active EDCTs</span>
+            <button
+              onClick={handleCheckFaaEdcts}
+              disabled={checkingFaa}
+              className="ml-auto text-xs text-gray-400 hover:text-blue-600 border border-gray-200 hover:border-blue-300 rounded px-2 py-0.5 transition-colors disabled:opacity-50"
+            >
+              {checkingFaa ? "Checking..." : "Check FAA"}
+            </button>
           </div>
         ) : (
           <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
@@ -1606,6 +1659,13 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
               <span className="font-semibold text-amber-800">
                 {edctAlerts.length} Active EDCT{edctAlerts.length !== 1 ? "s" : ""}
               </span>
+              <button
+                onClick={handleCheckFaaEdcts}
+                disabled={checkingFaa}
+                className="ml-auto text-xs text-gray-500 hover:text-blue-600 border border-amber-200 hover:border-blue-300 rounded px-2 py-0.5 transition-colors disabled:opacity-50"
+              >
+                {checkingFaa ? "Checking..." : "Check FAA"}
+              </button>
             </div>
             <div className="space-y-1.5">
               {edctAlerts.map((a) => (
@@ -1653,6 +1713,11 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
               ))}
             </div>
           </div>
+        )}
+
+        {/* FAA check result */}
+        {faaCheckResult && (
+          <div className="col-span-2 text-xs text-gray-500 -mt-2 px-1">{faaCheckResult}</div>
         )}
 
         {/* Feed Status */}
