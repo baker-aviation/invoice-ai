@@ -1551,23 +1551,32 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
   // FAA EDCT check
   const [checkingFaa, setCheckingFaa] = useState(false);
   const [faaCheckResult, setFaaCheckResult] = useState<string | null>(null);
+  const [faaDebug, setFaaDebug] = useState<Array<{ callsign: string; tail: string; origin: string; destination: string; found: boolean; edct_time: string | null; filed_departure: string | null; control_element: string | null; delay_minutes: number | null; query: { dept: string; arr: string }; raw_text?: string }> | null>(null);
 
   const handleCheckFaaEdcts = useCallback(async () => {
     setCheckingFaa(true);
     setFaaCheckResult(null);
+    setFaaDebug(null);
     try {
-      // Build flight list: tail → KOW callsign, with departure/arrival
-      const flightList = flights
-        .filter((f) => f.tail_number && f.departure_icao && f.arrival_icao)
-        .map((f) => {
-          const nums = f.tail_number!.match(/\d+/)?.[0] ?? "";
-          return {
-            callsign: `KOW${nums}`,
-            tail: f.tail_number!,
-            dept: f.departure_icao!,
-            arr: f.arrival_icao!,
-          };
+      // Only check flights that haven't departed yet (scheduled departure in the future or within last hour)
+      const cutoff = new Date(Date.now() - 60 * 60_000).toISOString();
+      const seen = new Set<string>();
+      const flightList: { callsign: string; tail: string; dept: string; arr: string }[] = [];
+      for (const f of flights) {
+        if (!f.tail_number || !f.departure_icao || !f.arrival_icao) continue;
+        if (f.id.startsWith("edct-orphan-")) continue;
+        if (f.scheduled_departure && f.scheduled_departure < cutoff) continue; // Skip departed flights
+        const nums = f.tail_number.match(/\d+/)?.[0] ?? "";
+        const key = `KOW${nums}|${f.departure_icao}|${f.arrival_icao}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        flightList.push({
+          callsign: `KOW${nums}`,
+          tail: f.tail_number,
+          dept: f.departure_icao,
+          arr: f.arrival_icao,
         });
+      }
 
       if (!flightList.length) {
         setFaaCheckResult("No flights to check");
@@ -1580,10 +1589,17 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
         body: JSON.stringify({ flights: flightList }),
       });
       const data = await res.json();
+      // Show found results first, then a sample of not-found for debugging
+      const allResults = data.results ?? [];
+      const foundResults = allResults.filter((r: { found: boolean }) => r.found);
+      const notFound = allResults.filter((r: { found: boolean }) => !r.found);
+      // Show all found + sample of not-found, plus any with raw data that has "record"
+      const parseFailed = notFound.filter((r: { raw_text?: string }) => r.raw_text?.includes("record(s)"));
+      setFaaDebug([...foundResults, ...parseFailed, ...notFound.filter((r: { raw_text?: string }) => !r.raw_text?.includes("record(s)")).slice(0, 5)]);
+      if (data.stale) setFaaCheckResult(prev => (prev ?? "") + ` (${data.stale} stale skipped)`);
       if (data.found > 0) {
         setFaaCheckResult(`Found ${data.found} FAA EDCT${data.found !== 1 ? "s" : ""} — refreshing...`);
-        // Trigger a refresh of the ops data
-        setTimeout(() => window.location.reload(), 1500);
+        setTimeout(() => window.location.reload(), 2000);
       } else {
         setFaaCheckResult(`Checked ${data.checked} flights — no FAA EDCTs found`);
       }
@@ -1594,24 +1610,66 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
     }
   }, [flights]);
 
-  // Collect same-day EDCT alerts across all flights
-  const edctAlerts = useMemo(() => {
+  // Collect same-day EDCT alerts, merged by flight (route+tail)
+  type MergedEdct = {
+    key: string;
+    route: string;
+    tail: string | null;
+    departure_icao: string | null;
+    callsign: string | null;
+    ff: OpsAlert | null;
+    faa: OpsAlert | null;
+    fallback_departure?: string;
+  };
+
+  const mergedEdcts = useMemo(() => {
     const now = new Date();
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const tomorrowStart = new Date(todayStart.getTime() + 86400000);
-    const alerts: (OpsAlert & { route: string; fallback_departure?: string })[] = [];
+    const map = new Map<string, MergedEdct>();
+
     for (const f of flights) {
       for (const a of f.alerts) {
         if (a.alert_type !== "EDCT") continue;
         if (!showAcknowledged && isAcked(a)) continue;
-        // Only show EDCTs for today's flights
         const dep = new Date(a.edct_time ?? a.original_departure_time ?? f.scheduled_departure);
         if (dep < todayStart || dep >= tomorrowStart) continue;
+
         const route = [f.departure_icao, f.arrival_icao].filter(Boolean).join(" → ") || "Unknown";
-        alerts.push({ ...a, route, fallback_departure: f.scheduled_departure ?? undefined });
+        const tail = a.tail_number ?? f.tail_number;
+        const key = `${tail}|${route}`;
+        const isFaa = (a.source_message_id ?? "").startsWith("faa-edct-");
+        const isSwim = (a.source_message_id ?? "").startsWith("swim-edct-");
+        const sourceType = isFaa ? "faa" : "ff";
+
+        // Extract callsign from subject
+        const callsign = a.subject?.match(/\((KOW\d+)\)/i)?.[1]
+          ?? a.subject?.match(/EDCT[:\s]+(KOW\d+)/i)?.[1]
+          ?? (isFaa ? a.subject?.match(/FAA EDCT:\s+(KOW\d+)/i)?.[1] : null)
+          ?? null;
+
+        if (!map.has(key)) {
+          map.set(key, {
+            key,
+            route,
+            tail,
+            departure_icao: f.departure_icao,
+            callsign,
+            ff: null,
+            faa: null,
+            fallback_departure: f.scheduled_departure ?? undefined,
+          });
+        }
+        const entry = map.get(key)!;
+        if (sourceType === "faa") {
+          entry.faa = a;
+        } else {
+          entry.ff = a;
+        }
+        if (callsign && !entry.callsign) entry.callsign = callsign;
       }
     }
-    return alerts;
+    return [...map.values()];
   }, [flights, isAcked, showAcknowledged]);
 
   return (
@@ -1638,9 +1696,9 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
       </div>
 
       {/* ── EDCT + Feed Status side by side ── */}
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-[1fr_auto] gap-3">
         {/* EDCT Status */}
-        {edctAlerts.length === 0 ? (
+        {mergedEdcts.length === 0 ? (
           <div className="flex items-center gap-2 rounded-lg border border-green-200 bg-green-50 px-4 py-2.5 text-sm">
             <span className="w-2.5 h-2.5 rounded-full bg-green-500" />
             <span className="font-medium text-green-800">No active EDCTs</span>
@@ -1657,7 +1715,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
             <div className="flex items-center gap-2 mb-2 text-sm">
               <span className="w-2.5 h-2.5 rounded-full bg-amber-500" />
               <span className="font-semibold text-amber-800">
-                {edctAlerts.length} Active EDCT{edctAlerts.length !== 1 ? "s" : ""}
+                {mergedEdcts.length} Active EDCT{mergedEdcts.length !== 1 ? "s" : ""}
               </span>
               <button
                 onClick={handleCheckFaaEdcts}
@@ -1667,57 +1725,93 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                 {checkingFaa ? "Checking..." : "Check FAA"}
               </button>
             </div>
-            <div className="space-y-1.5">
-              {edctAlerts.map((a) => (
-                <div key={a.id} className={`flex items-center gap-3 text-sm text-amber-900 ${isAcked(a) ? "opacity-50" : ""}`}>
-                  <span className="font-medium">{a.route}</span>
-                  {(() => {
-                    // Extract the filed identifier (KOW callsign or N-number) from subject
-                    const filedAs = a.subject?.match(/\((KOW\d+|N\d+[A-Z]*)\)/i)?.[1]
-                      ?? a.subject?.match(/EDCT\s+(KOW\d+|N\d+[A-Z]*)/i)?.[1]
-                      ?? null;
-                    const tail = a.tail_number;
-                    const showFiledAs = filedAs && tail && filedAs.toUpperCase() !== tail.toUpperCase();
-                    return tail ? (
-                      <span className="text-amber-600">
-                        {tail}{showFiledAs && <span className="text-amber-400 text-xs ml-0.5">({filedAs})</span>}
-                      </span>
-                    ) : filedAs ? (
-                      <span className="text-amber-600">{filedAs}</span>
-                    ) : null;
-                  })()}
-                  <span className={`text-[10px] font-bold rounded px-1 py-0.5 ${
-                    (a.source_message_id ?? "").startsWith("swim-edct-")
-                      ? "bg-blue-100 text-blue-700"
-                      : "bg-amber-100 text-amber-700"
-                  }`}>{(a.source_message_id ?? "").startsWith("swim-edct-") ? "SWIM" : "FF"}</span>
-                  <span className="text-sm">
-                    {(a.original_departure_time || a.fallback_departure) && (
-                      <span className="text-amber-500 line-through">{fmt(a.original_departure_time ?? a.fallback_departure ?? "", a.airport_icao)}</span>
+            <div className="grid grid-cols-[auto_auto_auto_auto_auto_1fr_auto] gap-x-3 gap-y-1.5 items-center text-sm">
+              {mergedEdcts.map((m) => {
+                const primary = m.ff ?? m.faa;
+                if (!primary) return null;
+                const allAcked = (m.ff ? isAcked(m.ff) : true) && (m.faa ? isAcked(m.faa) : true);
+                const depIcao = m.departure_icao;
+                const opacity = allAcked ? "opacity-50" : "";
+
+                return (
+                  <Fragment key={m.key}>
+                    {/* Route */}
+                    <span className={`font-medium text-amber-900 whitespace-nowrap ${opacity}`}>{m.route}</span>
+                    {/* Tail */}
+                    <span className={`text-amber-600 whitespace-nowrap ${opacity}`}>
+                      {m.tail}{m.callsign && <span className="text-amber-400 text-xs ml-0.5">({m.callsign})</span>}
+                    </span>
+                    {/* Original departure */}
+                    <span className={`text-amber-500 line-through whitespace-nowrap text-right ${opacity}`}>
+                      {fmt(primary.original_departure_time ?? m.fallback_departure ?? "", depIcao)}
+                    </span>
+                    {/* FF EDCT */}
+                    <span className={`whitespace-nowrap ${opacity}`}>
+                      {m.ff ? (
+                        <span className="flex items-center gap-1">
+                          <span className="text-amber-800 font-bold">{m.ff.edct_time ? fmt(m.ff.edct_time, depIcao) : "—"}</span>
+                          <span className="text-[10px] font-bold rounded px-1 py-0.5 bg-amber-100 text-amber-700">FF</span>
+                        </span>
+                      ) : <span />}
+                    </span>
+                    {/* FAA EDCT */}
+                    <span className={`whitespace-nowrap ${opacity}`}>
+                      {m.faa ? (
+                        <span className="flex items-center gap-1">
+                          <span className="text-blue-700 font-bold">{m.faa.edct_time ? fmt(m.faa.edct_time, depIcao) : "—"}</span>
+                          <span className="text-[10px] font-bold rounded px-1 py-0.5 bg-blue-100 text-blue-700">FAA</span>
+                        </span>
+                      ) : <span />}
+                    </span>
+                    {/* Spacer */}
+                    <span />
+                    {/* Ack */}
+                    {allAcked ? (
+                      <span className="text-xs text-gray-400 bg-gray-100 rounded px-1.5 py-0.5 justify-self-end">Ack&apos;d</span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (m.ff && !isAcked(m.ff)) handleAck(m.ff.id);
+                          if (m.faa && !isAcked(m.faa)) handleAck(m.faa.id);
+                        }}
+                        className="text-xs text-gray-500 hover:text-green-700 hover:bg-green-50 border border-gray-200 hover:border-green-300 rounded px-1.5 py-0.5 transition-colors justify-self-end"
+                      >
+                        Ack
+                      </button>
                     )}
-                    {(a.original_departure_time || a.fallback_departure) && <span className="text-amber-400 mx-0.5">→</span>}
-                    <span className="text-amber-800 font-bold">{a.edct_time ? fmt(a.edct_time, a.airport_icao) : "—"}</span>
-                  </span>
-                  {isAcked(a) ? (
-                    <span className="ml-auto text-xs text-gray-400 bg-gray-100 rounded px-1.5 py-0.5">Ack'd</span>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => handleAck(a.id)}
-                      className="ml-auto text-xs text-gray-500 hover:text-green-700 hover:bg-green-50 border border-gray-200 hover:border-green-300 rounded px-1.5 py-0.5 transition-colors"
-                    >
-                      Ack
-                    </button>
-                  )}
-                </div>
-              ))}
+                  </Fragment>
+                );
+              })}
             </div>
           </div>
         )}
 
-        {/* FAA check result */}
+        {/* FAA check result + debug */}
         {faaCheckResult && (
-          <div className="col-span-2 text-xs text-gray-500 -mt-2 px-1">{faaCheckResult}</div>
+          <div className="col-span-2 -mt-2 px-1 space-y-1">
+            <div className="text-xs text-gray-500">{faaCheckResult}</div>
+            {faaDebug && faaDebug.length > 0 && (
+              <details className="text-xs">
+                <summary className="text-blue-500 cursor-pointer hover:text-blue-700">
+                  Debug: {faaDebug.length} result{faaDebug.length !== 1 ? "s" : ""}
+                </summary>
+                <div className="mt-1 bg-gray-50 rounded border border-gray-200 p-2 space-y-1 max-h-48 overflow-y-auto font-mono">
+                  {faaDebug.map((r, i) => (
+                    <div key={i} className={r.found ? "text-green-700" : "text-gray-400"}>
+                      <span>{r.callsign} {r.query.dept}→{r.query.arr} {r.tail}</span>
+                      {r.found
+                        ? <span> ✓ EDCT: {r.edct_time ?? "?"} Filed: {r.filed_departure ?? "?"} Delay: {r.delay_minutes ?? "?"}min Ctrl: {r.control_element ?? "?"}</span>
+                        : <span> — no EDCT</span>}
+                      {r.raw_text && r.raw_text.includes("record(s)") && !r.found && (
+                        <div className="text-red-500 ml-4 text-[9px]">RAW HAS DATA BUT PARSER FAILED: {r.raw_text.slice(0, 200)}</div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
+          </div>
         )}
 
         {/* Feed Status */}
