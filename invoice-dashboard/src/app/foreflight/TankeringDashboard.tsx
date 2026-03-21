@@ -156,7 +156,7 @@ export default function TankeringDashboard() {
     }
   }, [targetDate]);
 
-  // ── Share to Slack handler ──
+  // ── Share to Slack handler (creates links for each plan) ──
   const handleShareSlack = useCallback(async () => {
     if (!result?.plans.length) return;
     setSharing(true);
@@ -164,22 +164,23 @@ export default function TankeringDashboard() {
     setError(null);
 
     try {
-      const res = await fetch("/api/fuel-planning/share-slack", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          channel: FUEL_PLANNING_SLACK_CHANNEL,
-          date: result.date,
-          plans: result.plans,
-          fleetTotals: result.fleetTotals,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.error ?? `Slack share failed: HTTP ${res.status}`);
-        return;
+      let sentCount = 0;
+      for (const plan of result.plans) {
+        if (plan.error && !plan.plan) continue;
+        const res = await fetch("/api/fuel-planning/create-plan-link", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            tail: plan.tail,
+            aircraftType: plan.aircraftType,
+            date: result.date,
+            plan: plan,
+            send_slack: true,
+          }),
+        });
+        if (res.ok) sentCount++;
       }
-      setShareResult(`Sent ${data.sent} plans to Slack`);
+      setShareResult(`Sent ${sentCount} plans to Slack (with links)`);
     } catch (err) {
       setError(String(err));
     } finally {
