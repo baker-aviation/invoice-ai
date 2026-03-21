@@ -335,10 +335,31 @@ export default function TankeringDashboard() {
             </div>
           </div>
 
-          {/* ── Per-Tail Plans ── */}
-          {result.plans.map((tp) => (
-            <TailPlanCard key={tp.tail} plan={tp} date={result.date} />
-          ))}
+          {/* ── Per-Tail Plans — savings first (expanded), no savings (collapsed) ── */}
+          {(() => {
+            const withSavings = result.plans
+              .filter((tp) => tp.tankerSavings > 0 && !tp.error)
+              .sort((a, b) => b.tankerSavings - a.tankerSavings);
+            const noSavings = result.plans
+              .filter((tp) => tp.tankerSavings <= 0 || tp.error);
+            return (
+              <>
+                {withSavings.map((tp) => (
+                  <TailPlanCard key={tp.tail} plan={tp} date={result.date} defaultOpen />
+                ))}
+                {noSavings.length > 0 && (
+                  <div className="mt-2">
+                    <p className="text-xs text-gray-400 uppercase font-medium tracking-wide mb-2">
+                      No tankering opportunity ({noSavings.length} aircraft)
+                    </p>
+                    {noSavings.map((tp) => (
+                      <TailPlanCard key={tp.tail} plan={tp} date={result.date} defaultOpen={false} />
+                    ))}
+                  </div>
+                )}
+              </>
+            );
+          })()}
         </>
       ) : null}
     </div>
@@ -347,13 +368,14 @@ export default function TankeringDashboard() {
 
 // ─── Tail Plan Card ────────────────────────────────────────────────────
 
-function TailPlanCard({ plan: tp, date }: { plan: TailPlan; date: string }) {
+function TailPlanCard({ plan: tp, date, defaultOpen = true }: { plan: TailPlan; date: string; defaultOpen?: boolean }) {
   const ppg = 6.7; // standard for display conversion
   const hasError = !!tp.error;
   const plan = tp.plan;
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
   const [linkSent, setLinkSent] = useState<string | null>(null);
+  const [open, setOpen] = useState(defaultOpen);
 
   const handleSendToSlack = async () => {
     if (!plan) return;
@@ -382,9 +404,15 @@ function TailPlanCard({ plan: tp, date }: { plan: TailPlan; date: string }) {
 
   return (
     <div className={`rounded-lg border bg-white overflow-hidden ${hasError && !plan ? "border-amber-200" : "border-gray-200"}`}>
-      {/* Header */}
-      <div className={`px-5 py-3 flex items-center justify-between ${hasError && !plan ? "bg-amber-50" : "bg-gray-50"}`}>
+      {/* Header — click to expand/collapse */}
+      <div
+        className={`px-5 py-3 flex items-center justify-between cursor-pointer ${hasError && !plan ? "bg-amber-50" : "bg-gray-50"}`}
+        onClick={() => setOpen(!open)}
+      >
         <div className="flex items-center gap-3">
+          <svg className={`w-4 h-4 text-gray-400 transition-transform ${open ? "rotate-90" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
           <span className="text-base font-bold text-gray-900">{tp.tail}</span>
           <span className="text-xs px-2 py-0.5 rounded-full bg-gray-200 text-gray-600">
             {tp.aircraftType === "CE-750" ? "Citation X" : "Challenger 300"}
@@ -406,7 +434,7 @@ function TailPlanCard({ plan: tp, date }: { plan: TailPlan; date: string }) {
           )}
           {plan && (
             <button
-              onClick={handleSendToSlack}
+              onClick={(e) => { e.stopPropagation(); handleSendToSlack(); }}
               disabled={sending || sent}
               className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
                 sent
@@ -420,6 +448,9 @@ function TailPlanCard({ plan: tp, date }: { plan: TailPlan; date: string }) {
           )}
         </div>
       </div>
+
+      {/* Collapsible body */}
+      {!open ? null : (<>
 
       {/* Error state */}
       {hasError && !plan && (
@@ -588,6 +619,8 @@ function TailPlanCard({ plan: tp, date }: { plan: TailPlan; date: string }) {
           )}
         </div>
       )}
+
+      </>)}
     </div>
   );
 }
