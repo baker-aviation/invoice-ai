@@ -1551,7 +1551,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
   // FAA EDCT check
   const [checkingFaa, setCheckingFaa] = useState(false);
   const [faaCheckResult, setFaaCheckResult] = useState<string | null>(null);
-  const [faaDebug, setFaaDebug] = useState<Array<{ callsign: string; tail: string; origin: string; destination: string; found: boolean; edct_time: string | null; filed_departure: string | null; control_element: string | null; delay_minutes: number | null; query: { dept: string; arr: string } }> | null>(null);
+  const [faaDebug, setFaaDebug] = useState<Array<{ callsign: string; tail: string; origin: string; destination: string; found: boolean; edct_time: string | null; filed_departure: string | null; control_element: string | null; delay_minutes: number | null; query: { dept: string; arr: string }; raw_text?: string }> | null>(null);
 
   const handleCheckFaaEdcts = useCallback(async () => {
     setCheckingFaa(true);
@@ -1587,8 +1587,11 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
         body: JSON.stringify({ flights: flightList }),
       });
       const data = await res.json();
-      const foundResults = (data.results ?? []).filter((r: { found: boolean }) => r.found);
-      setFaaDebug(foundResults.length > 0 ? foundResults : (data.results ?? []).slice(0, 5));
+      // Show found results first, then a sample of not-found for debugging
+      const allResults = data.results ?? [];
+      const foundResults = allResults.filter((r: { found: boolean }) => r.found);
+      const notFound = allResults.filter((r: { found: boolean }) => !r.found);
+      setFaaDebug([...foundResults, ...notFound.slice(0, 5)]);
       if (data.found > 0) {
         setFaaCheckResult(`Found ${data.found} FAA EDCT${data.found !== 1 ? "s" : ""} — refreshing...`);
         setTimeout(() => window.location.reload(), 2000);
@@ -1735,10 +1738,13 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                 <div className="mt-1 bg-gray-50 rounded border border-gray-200 p-2 space-y-1 max-h-48 overflow-y-auto font-mono">
                   {faaDebug.map((r, i) => (
                     <div key={i} className={r.found ? "text-green-700" : "text-gray-400"}>
-                      {r.callsign} {r.query.dept}→{r.query.arr} {r.tail}
+                      <span>{r.callsign} {r.query.dept}→{r.query.arr} {r.tail}</span>
                       {r.found
-                        ? ` ✓ EDCT: ${r.edct_time ?? "?"} Filed: ${r.filed_departure ?? "?"} Delay: ${r.delay_minutes ?? "?"}min Ctrl: ${r.control_element ?? "?"}`
-                        : " — no EDCT"}
+                        ? <span> ✓ EDCT: {r.edct_time ?? "?"} Filed: {r.filed_departure ?? "?"} Delay: {r.delay_minutes ?? "?"}min Ctrl: {r.control_element ?? "?"}</span>
+                        : <span> — no EDCT</span>}
+                      {r.raw_text && r.raw_text.includes("record(s)") && !r.found && (
+                        <div className="text-red-500 ml-4 text-[9px]">RAW HAS DATA BUT PARSER FAILED: {r.raw_text.slice(0, 200)}</div>
+                      )}
                     </div>
                   ))}
                 </div>
