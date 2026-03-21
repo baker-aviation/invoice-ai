@@ -1,12 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyCronSecret } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
+import { getAirportTimezone } from "@/lib/airportTimezones";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 const EDCT_SLACK_CHANNEL = "C0A5ETR7YS2";
 const BATCH_SIZE = 15;
+
+// ─── Types ─────────────────────────────────────────────────────────────
 
 interface FlightInput {
   callsign: string;
@@ -28,20 +31,41 @@ interface FaaEdctResult {
   delay_minutes: number | null;
 }
 
-/** FAA expects 3-letter codes */
+// ─── Helpers ───────────────────────────────────────────────────────────
+
 function stripK(code: string): string {
   const u = code.toUpperCase();
   if (u.length === 4 && u.startsWith("K")) return u.slice(1);
   return u;
 }
 
-/** Parse FAA datetime "03/21/2026 16:40" → ISO string */
 function parseFaaDateTime(s: string): string | null {
   const m = s.match(/(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2})/);
   if (!m) return null;
   const [, mo, dd, yyyy, hh, mm] = m;
   return `${yyyy}-${mo}-${dd}T${hh}:${mm}:00Z`;
 }
+
+/** Format ISO time in airport local timezone: "09:33 EDT" */
+function fmtLocal(iso: string | null, airportIcao: string | null): string {
+  if (!iso) return "?";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "?";
+  const tz = getAirportTimezone(airportIcao);
+  if (!tz) return iso.slice(11, 16) + "Z";
+  try {
+    const time = d.toLocaleString("en-US", {
+      hour: "2-digit", minute: "2-digit", hour12: false, timeZone: tz,
+    });
+    const tzAbbr = d.toLocaleString("en-US", { timeZoneName: "short", timeZone: tz })
+      .split(" ").pop() ?? "";
+    return `${time} ${tzAbbr}`;
+  } catch {
+    return iso.slice(11, 16) + "Z";
+  }
+}
+
+// ─── FAA Lookup ────────────────────────────────────────────────────────
 
 async function lookupEdct(flight: FlightInput): Promise<FaaEdctResult> {
   const dept = stripK(flight.dept);
@@ -85,7 +109,6 @@ async function lookupEdct(flight: FlightInput): Promise<FaaEdctResult> {
       result.edct_time = parseFaaDateTime(dateTimes[0]);
     }
 
-    // Control element
     const afterTimes = text.split(dateTimes[dateTimes.length - 1] ?? "").pop() ?? "";
     const parts = afterTimes.trim().split(/\s+/);
     if (parts[0] && !["No", "Yes", "Notes:", "EDCT"].includes(parts[0])) {
@@ -99,10 +122,75 @@ async function lookupEdct(flight: FlightInput): Promise<FaaEdctResult> {
   }
 }
 
-function fmtZulu(iso: string | null): string {
-  if (!iso) return "?";
-  return iso.slice(11, 16) + "Z";
+// ─── Slack ─────────────────────────────────────────────────────────────
+
+async function postSlack(token: string, payload: Record<string, unknown>) {
+  await fetch("https://slack.com/api/chat.postMessage", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
 }
+
+function buildEdctSlackBlocks(
+  edct: FaaEdctResult,
+  salesperson: string | null,
+  type: "new" | "updated",
+  previousEdctTime?: string | null,
+): Record<string, unknown>[] {
+  const depIcao = edct.origin;
+  const dept = stripK(edct.origin);
+  const arr = stripK(edct.destination);
+  const edctLocal = fmtLocal(edct.edct_time, depIcao);
+  const filedLocal = fmtLocal(edct.filed_departure, depIcao);
+  const delay = edct.delay_minutes != null ? `+${edct.delay_minutes}min` : "";
+  const ctrl = edct.control_element ?? "";
+
+  const blocks: Record<string, unknown>[] = [];
+
+  if (type === "new") {
+    // New EDCT message
+    let text = `*${edct.tail}* (${edct.callsign})  ${dept} → ${arr}`;
+    text += `\nFiled: ${filedLocal}  →  EDCT: *${edctLocal}*  (${delay})`;
+    if (ctrl) text += `\nControl: ${ctrl}`;
+    if (salesperson) text += `\nSales: ${salesperson}`;
+
+    blocks.push({
+      type: "section",
+      text: { type: "mrkdwn", text },
+    });
+    blocks.push({
+      type: "context",
+      elements: [{ type: "mrkdwn", text: `New FAA EDCT  •  ${new Date().toISOString().slice(11, 16)}Z` }],
+    });
+  } else {
+    // Updated EDCT message
+    const prevLocal = fmtLocal(previousEdctTime ?? null, depIcao);
+    let text = `*${edct.tail}* (${edct.callsign})  ${dept} → ${arr}`;
+    text += `\nEDCT Updated: ${prevLocal} → *${edctLocal}*`;
+    if (edct.edct_time && previousEdctTime) {
+      const diffMin = Math.round((new Date(edct.edct_time).getTime() - new Date(previousEdctTime).getTime()) / 60000);
+      const direction = diffMin > 0 ? `${diffMin}min later` : `${Math.abs(diffMin)}min earlier`;
+      text += `  (${direction})`;
+    }
+    text += `\nFiled: ${filedLocal}  •  Delay: ${delay}`;
+    if (ctrl) text += `  •  Control: ${ctrl}`;
+    if (salesperson) text += `\nSales: ${salesperson}`;
+
+    blocks.push({
+      type: "section",
+      text: { type: "mrkdwn", text },
+    });
+    blocks.push({
+      type: "context",
+      elements: [{ type: "mrkdwn", text: `EDCT Changed  •  ${new Date().toISOString().slice(11, 16)}Z` }],
+    });
+  }
+
+  return blocks;
+}
+
+// ─── Main Handler ──────────────────────────────────────────────────────
 
 export async function GET(req: NextRequest) {
   if (!verifyCronSecret(req)) {
@@ -110,13 +198,12 @@ export async function GET(req: NextRequest) {
   }
 
   const supa = createServiceClient();
-
-  // 1. Get today's undeparted flights
   const now = new Date();
   const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
   const tomorrowStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)).toISOString();
   const oneHourAgo = new Date(now.getTime() - 60 * 60_000).toISOString();
 
+  // 1. Get today's undeparted flights
   const { data: flightRows } = await supa
     .from("flights")
     .select("tail_number, departure_icao, arrival_icao, scheduled_departure")
@@ -139,21 +226,35 @@ export async function GET(req: NextRequest) {
     if (s.label && s.callsign) callsignMap.set(s.label.toUpperCase(), s.callsign.toUpperCase());
   }
 
-  // 3. Build deduplicated flight list
+  // 3. Get salesperson map: "TAIL|DEPT_ICAO" → salesperson name
+  const { data: tripRows } = await supa
+    .from("trip_salespersons")
+    .select("tail_number, origin_icao, salesperson_name, scheduled_departure")
+    .gte("scheduled_departure", todayStart)
+    .lte("scheduled_departure", tomorrowStart);
+
+  const salespersonMap = new Map<string, string>();
+  for (const t of tripRows ?? []) {
+    if (t.tail_number && t.origin_icao && t.salesperson_name) {
+      salespersonMap.set(`${t.tail_number.toUpperCase()}|${t.origin_icao}`, t.salesperson_name);
+    }
+  }
+
+  // 4. Build deduplicated flight list
   const seen = new Set<string>();
   const flights: FlightInput[] = [];
   for (const f of flightRows) {
     if (!f.tail_number || !f.departure_icao || !f.arrival_icao) continue;
     const tail = f.tail_number.toUpperCase();
     const callsign = callsignMap.get(tail);
-    if (!callsign) continue; // Skip tails without callsign
+    if (!callsign) continue;
     const key = `${callsign}|${f.departure_icao}|${f.arrival_icao}`;
     if (seen.has(key)) continue;
     seen.add(key);
     flights.push({ callsign, tail, dept: f.departure_icao, arr: f.arrival_icao });
   }
 
-  // 4. Check FAA in batches of 15
+  // 5. Check FAA in batches
   const results: FaaEdctResult[] = [];
   for (let i = 0; i < flights.length; i += BATCH_SIZE) {
     const batch = flights.slice(i, i + BATCH_SIZE);
@@ -161,27 +262,43 @@ export async function GET(req: NextRequest) {
     results.push(...batchResults);
   }
 
-  // 5. Filter to current, non-cancelled EDCTs
+  // 6. Filter to current, non-cancelled
   const todayStartMs = new Date(todayStart).getTime();
   const found = results.filter((r) =>
     r.found && !r.cancelled && (!r.edct_time || new Date(r.edct_time).getTime() >= todayStartMs)
   );
 
-  // 6. Get existing FAA EDCT source IDs to detect NEW ones
+  // 7. Get existing FAA EDCT alerts to detect new vs updated
   const { data: existingAlerts } = await supa
     .from("ops_alerts")
-    .select("source_message_id")
+    .select("source_message_id, edct_time, raw_data")
     .like("source_message_id", "faa-edct-%")
     .gte("created_at", todayStart);
 
-  const existingIds = new Set((existingAlerts ?? []).map((a) => a.source_message_id));
+  const existingMap = new Map<string, { edct_time: string | null; history: string[] }>();
+  for (const a of existingAlerts ?? []) {
+    existingMap.set(a.source_message_id, {
+      edct_time: a.edct_time,
+      history: (a.raw_data as Record<string, unknown>)?.edct_history as string[] ?? [],
+    });
+  }
 
-  // 7. Store found EDCTs + track new ones for Slack
+  // 8. Store EDCTs + track new/updated for Slack
   const newEdcts: FaaEdctResult[] = [];
+  const updatedEdcts: { edct: FaaEdctResult; previousEdctTime: string | null }[] = [];
+  const token = process.env.SLACK_BOT_TOKEN;
 
   for (const edct of found) {
     const sourceId = `faa-edct-${edct.callsign}-${edct.origin}-${edct.destination}`;
-    const isNew = !existingIds.has(sourceId);
+    const existing = existingMap.get(sourceId);
+    const isNew = !existing;
+    const isUpdated = existing && existing.edct_time && edct.edct_time && existing.edct_time !== edct.edct_time;
+
+    // Build history
+    const history = existing?.history ?? [];
+    if (isUpdated && existing.edct_time) {
+      history.push(existing.edct_time);
+    }
 
     const delayStr = edct.delay_minutes != null ? `${edct.delay_minutes}min delay` : "";
     const ctrlStr = edct.control_element ? ` — ${edct.control_element}` : "";
@@ -194,65 +311,40 @@ export async function GET(req: NextRequest) {
       departure_icao: edct.origin,
       arrival_icao: edct.destination,
       subject: `FAA EDCT: ${edct.callsign} ${edct.origin}→${edct.destination}`,
-      body: `EDCT ${fmtZulu(edct.edct_time)} (${delayStr}${ctrlStr})`,
+      body: `EDCT ${fmtLocal(edct.edct_time, edct.origin)} (${delayStr}${ctrlStr})`,
       edct_time: edct.edct_time,
       original_departure_time: edct.filed_departure,
-      raw_data: { faa_edct: edct },
+      raw_data: { faa_edct: edct, edct_history: history },
     }, { onConflict: "source_message_id" });
 
     if (isNew) newEdcts.push(edct);
+    if (isUpdated) updatedEdcts.push({ edct, previousEdctTime: existing.edct_time });
   }
 
-  // 8. Slack notification for newly discovered EDCTs
-  if (newEdcts.length > 0) {
-    const token = process.env.SLACK_BOT_TOKEN;
-    if (token) {
-      const lines = newEdcts.map((e) => {
-        const delay = e.delay_minutes != null ? ` (+${e.delay_minutes}min)` : "";
-        const ctrl = e.control_element ? ` [${e.control_element}]` : "";
-        return `*${e.tail}* (${e.callsign})  ${stripK(e.origin)}→${stripK(e.destination)}  Filed: ${fmtZulu(e.filed_departure)} → EDCT: *${fmtZulu(e.edct_time)}*${delay}${ctrl}`;
-      });
+  // 9. Send Slack messages — one per EDCT (new or updated)
+  if (token && (newEdcts.length > 0 || updatedEdcts.length > 0)) {
+    for (const edct of newEdcts) {
+      const sp = salespersonMap.get(`${edct.tail}|${edct.origin}`) ?? null;
+      const blocks = buildEdctSlackBlocks(edct, sp, "new");
+      const fallback = `New FAA EDCT: ${edct.tail} ${stripK(edct.origin)}→${stripK(edct.destination)} EDCT ${fmtLocal(edct.edct_time, edct.origin)}`;
+      await postSlack(token, { channel: EDCT_SLACK_CHANNEL, text: fallback, blocks });
+    }
 
-      const blocks = [
-        {
-          type: "header",
-          text: { type: "plain_text", text: `New FAA EDCT${newEdcts.length > 1 ? "s" : ""} Detected`, emoji: true },
-        },
-        {
-          type: "section",
-          text: { type: "mrkdwn", text: lines.join("\n") },
-        },
-        {
-          type: "context",
-          elements: [{ type: "mrkdwn", text: `Source: FAA ATCSCC  •  ${new Date().toISOString().slice(11, 16)}Z` }],
-        },
-      ];
-
-      await fetch("https://slack.com/api/chat.postMessage", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          channel: EDCT_SLACK_CHANNEL,
-          text: `New FAA EDCT${newEdcts.length > 1 ? "s" : ""}: ${newEdcts.map((e) => `${e.tail} ${stripK(e.origin)}→${stripK(e.destination)} EDCT ${fmtZulu(e.edct_time)}`).join(", ")}`,
-          blocks,
-        }),
-      });
+    for (const { edct, previousEdctTime } of updatedEdcts) {
+      const sp = salespersonMap.get(`${edct.tail}|${edct.origin}`) ?? null;
+      const blocks = buildEdctSlackBlocks(edct, sp, "updated", previousEdctTime);
+      const fallback = `EDCT Updated: ${edct.tail} ${stripK(edct.origin)}→${stripK(edct.destination)} ${fmtLocal(previousEdctTime, edct.origin)} → ${fmtLocal(edct.edct_time, edct.origin)}`;
+      await postSlack(token, { channel: EDCT_SLACK_CHANNEL, text: fallback, blocks });
     }
   }
 
-  console.log(`[edct-tracker] Checked ${flights.length} flights, found ${found.length} EDCTs, ${newEdcts.length} new → Slack`);
+  console.log(`[edct-tracker] Checked ${flights.length}, found ${found.length}, new ${newEdcts.length}, updated ${updatedEdcts.length}`);
 
   return NextResponse.json({
     ok: true,
     checked: flights.length,
     found: found.length,
     new: newEdcts.length,
-    edcts: found.map((e) => ({
-      callsign: e.callsign, tail: e.tail,
-      route: `${e.origin}→${e.destination}`,
-      edct: fmtZulu(e.edct_time),
-      filed: fmtZulu(e.filed_departure),
-      delay: e.delay_minutes,
-    })),
+    updated: updatedEdcts.length,
   });
 }

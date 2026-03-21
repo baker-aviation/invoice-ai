@@ -156,7 +156,7 @@ export default function TankeringDashboard() {
     }
   }, [targetDate]);
 
-  // ── Share to Slack handler ──
+  // ── Share to Slack handler (creates links for each plan) ──
   const handleShareSlack = useCallback(async () => {
     if (!result?.plans.length) return;
     setSharing(true);
@@ -164,22 +164,23 @@ export default function TankeringDashboard() {
     setError(null);
 
     try {
-      const res = await fetch("/api/fuel-planning/share-slack", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          channel: FUEL_PLANNING_SLACK_CHANNEL,
-          date: result.date,
-          plans: result.plans,
-          fleetTotals: result.fleetTotals,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.error ?? `Slack share failed: HTTP ${res.status}`);
-        return;
+      let sentCount = 0;
+      for (const plan of result.plans) {
+        if (plan.error && !plan.plan) continue;
+        const res = await fetch("/api/fuel-planning/create-plan-link", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            tail: plan.tail,
+            aircraftType: plan.aircraftType,
+            date: result.date,
+            plan: plan,
+            send_slack: true,
+          }),
+        });
+        if (res.ok) sentCount++;
       }
-      setShareResult(`Sent ${data.sent} plans to Slack`);
+      setShareResult(`Sent ${sentCount} plans to Slack (with links)`);
     } catch (err) {
       setError(String(err));
     } finally {
@@ -245,8 +246,13 @@ export default function TankeringDashboard() {
               disabled={sharing}
               className="px-5 py-2.5 bg-purple-600 text-white text-sm font-medium rounded-md hover:bg-purple-500 disabled:opacity-50 transition-colors"
             >
-              {sharing ? "Sending..." : "📤 Share to Slack"}
+              {sharing ? "Sending..." : "Share to Slack"}
             </button>
+          ) : null}
+
+          {/* Send Tankering Alerts (with links) */}
+          {result?.plans.length ? (
+            <SendAlertsButton date={result.date} />
           ) : null}
         </div>
 
@@ -347,29 +353,29 @@ function TailPlanCard({ plan: tp, date }: { plan: TailPlan; date: string }) {
   const plan = tp.plan;
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
+  const [linkSent, setLinkSent] = useState<string | null>(null);
 
   const handleSendToSlack = async () => {
     if (!plan) return;
     setSending(true);
     try {
-      const res = await fetch("/api/fuel-planning/share-slack", {
+      // Create a shareable link first, then send Slack with the link included
+      const res = await fetch("/api/fuel-planning/create-plan-link", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          channel: FUEL_PLANNING_SLACK_CHANNEL,
+          tail: tp.tail,
+          aircraftType: tp.aircraftType,
           date,
-          plans: [tp],
-          fleetTotals: {
-            totalFuelCost: plan.totalFuelCost,
-            totalFees: plan.totalFees,
-            totalTripCost: plan.totalTripCost,
-            naiveCost: tp.naiveCost,
-            tankerSavings: tp.tankerSavings,
-            planCount: 1,
-          },
+          plan: tp,
+          send_slack: true,
         }),
       });
-      if (res.ok) setSent(true);
+      const data = await res.json();
+      if (data.url) {
+        setLinkSent(data.url);
+        setSent(true);
+      }
     } catch { /* ignore */ }
     finally { setSending(false); }
   };
@@ -407,8 +413,9 @@ function TailPlanCard({ plan: tp, date }: { plan: TailPlan; date: string }) {
                   ? "bg-green-100 text-green-700 cursor-default"
                   : "bg-gray-100 text-gray-600 hover:bg-purple-100 hover:text-purple-700 disabled:opacity-50"
               }`}
+              title={linkSent ?? "Send plan to Slack with shareable link"}
             >
-              {sent ? "✓ Sent" : sending ? "Sending..." : "📤 Slack"}
+              {sent ? "Sent" : sending ? "Sending..." : "Send to Slack"}
             </button>
           )}
         </div>
@@ -581,6 +588,55 @@ function TailPlanCard({ plan: tp, date }: { plan: TailPlan; date: string }) {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Send All Tankering Alerts Button ─────────────────────────────────
+
+function SendAlertsButton({ date }: { date: string }) {
+  const [sending, setSending] = useState(false);
+  const [result, setResult] = useState<{ sent: number; savingsPlans: number } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSend = async () => {
+    setSending(true);
+    setError(null);
+    setResult(null);
+    try {
+      const res = await fetch("/api/fuel-planning/send-tankering-alerts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? "Failed");
+        return;
+      }
+      setResult({ sent: data.sent, savingsPlans: data.savingsPlans });
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-3">
+      <button
+        onClick={handleSend}
+        disabled={sending}
+        className="px-5 py-2.5 bg-green-600 text-white text-sm font-medium rounded-md hover:bg-green-500 disabled:opacity-50 transition-colors"
+      >
+        {sending ? "Sending Alerts..." : "Send Tankering Alerts"}
+      </button>
+      {result && (
+        <span className="text-sm text-green-700 font-medium">
+          {result.savingsPlans} aircraft with savings, {result.sent} alerts sent
+        </span>
+      )}
+      {error && <span className="text-sm text-red-600">{error}</span>}
     </div>
   );
 }
