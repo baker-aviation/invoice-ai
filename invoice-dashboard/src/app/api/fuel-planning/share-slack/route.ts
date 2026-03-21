@@ -79,34 +79,21 @@ function acLabel(t: string): string {
 }
 
 function buildFleetSummaryBlocks(date: string, totals: FleetTotals): Record<string, unknown>[] {
-  const blocks: Record<string, unknown>[] = [
-    {
-      type: "header",
-      text: { type: "plain_text", text: `⛽ Fleet Fuel Plan — ${date}`, emoji: true },
-    },
-    {
-      type: "section",
-      fields: [
-        { type: "mrkdwn", text: `*Aircraft:*\n${totals.planCount}` },
-        { type: "mrkdwn", text: `*Total Fuel Cost:*\n${fmtDollars(totals.totalFuelCost)}` },
-        { type: "mrkdwn", text: `*Total Fees:*\n${fmtDollars(totals.totalFees)}` },
-        { type: "mrkdwn", text: `*Total Trip Cost:*\n${fmtDollars(totals.totalTripCost)}` },
-      ],
-    },
-  ];
-
+  let summary = `*${totals.planCount} aircraft*  ·  Total: *${fmtDollars(totals.totalTripCost)}*`;
   if (totals.tankerSavings > 0) {
-    blocks.push({
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text: `💰 *Tankering Savings: ${fmtDollars(totals.tankerSavings)}* (vs. standard ops ${fmtDollars(totals.naiveCost)})`,
-      },
-    });
+    summary += `  ·  Saves *${fmtDollars(totals.tankerSavings)}*`;
   }
 
-  blocks.push({ type: "divider" });
-  return blocks;
+  return [
+    {
+      type: "header",
+      text: { type: "plain_text", text: `Fuel Plan — ${date}`, emoji: true },
+    },
+    {
+      type: "section",
+      text: { type: "mrkdwn", text: summary },
+    },
+  ];
 }
 
 function buildTailBlocks(tp: TailPlan): Record<string, unknown>[] {
@@ -115,67 +102,61 @@ function buildTailBlocks(tp: TailPlan): Record<string, unknown>[] {
     return [
       {
         type: "section",
-        text: {
-          type: "mrkdwn",
-          text: `*${tp.tail}* (${acLabel(tp.aircraftType)}) — ⚠️ ${tp.error || "No plan generated"}`,
-        },
+        text: { type: "mrkdwn", text: `*${tp.tail}* ${acLabel(tp.aircraftType)} — ${tp.error || "No plan"}` },
       },
     ];
   }
 
   const blocks: Record<string, unknown>[] = [];
 
-  // Tail header
-  let headerText = `*${tp.tail}* (${acLabel(tp.aircraftType)}) — Shutdown: ${fmtNum(tp.shutdownFuel)} lbs @ ${tp.shutdownAirport}`;
-  if (tp.tankerSavings > 0) {
-    headerText += ` — 💰 Save ${fmtDollars(tp.tankerSavings)}`;
-  }
-  headerText += ` — Total: ${fmtDollars(plan.totalTripCost)}`;
-
+  // Header line
+  const savings = tp.tankerSavings > 0 ? `  ·  Save ${fmtDollars(tp.tankerSavings)}` : "";
   blocks.push({
     type: "section",
-    text: { type: "mrkdwn", text: headerText },
+    text: {
+      type: "mrkdwn",
+      text: `*${tp.tail}*  ${acLabel(tp.aircraftType)}  ·  ${fmtDollars(plan.totalTripCost)}${savings}\nShutdown ${fmtNum(tp.shutdownFuel)} lbs @ ${tp.shutdownAirport}`,
+    },
   });
 
-  // Legs table
-  const legLines: string[] = [];
+  // Legs — one compact block per leg
   for (let i = 0; i < tp.legs.length; i++) {
     const leg = tp.legs[i];
-    const orderLbs = plan.fuelOrderLbsByStop[i] ?? 0;
     const orderGal = plan.fuelOrderGalByStop[i] ?? 0;
+    const orderLbs = plan.fuelOrderLbsByStop[i] ?? 0;
     const landingFuel = plan.landingFuelByStop[i] ?? 0;
     const feePaid = plan.feePaidByStop[i] ?? 0;
-    const fbo = leg.departureFbo || leg.waiver?.fboName || "—";
-    const feeStr = leg.waiver && leg.waiver.feeWaived > 0
-      ? (feePaid > 0 ? `❌ ${fmtDollars(leg.waiver.feeWaived)}` : `✅ ${fmtDollars(leg.waiver.feeWaived)} waived`)
-      : "";
+    const fbo = leg.departureFbo || leg.waiver?.fboName || null;
 
-    legLines.push(
-      `${leg.from} → ${leg.to}  |  ${fmtHrs(leg.flightTimeHours)}  |  ${fmtDollars(leg.departurePricePerGal)}/gal  |  *${fmtNum(orderGal)} gal* (${fmtNum(orderLbs)} lbs)  |  Landing: ${fmtNum(landingFuel)} lbs`
-      + (fbo !== "—" ? `\n    _FBO: ${fbo}_` : "")
-      + (feeStr ? `  |  ${feeStr}` : "")
-    );
+    const lines: string[] = [
+      `*${leg.from} → ${leg.to}*  ${fmtHrs(leg.flightTimeHours)}  ·  ${fmtDollars(leg.departurePricePerGal)}/gal`,
+      `Order *${fmtNum(orderGal)} gal* (${fmtNum(orderLbs)} lbs)  ·  Landing ${fmtNum(landingFuel)} lbs`,
+    ];
+
+    if (fbo) {
+      let fboLine = fbo;
+      if (leg.waiver && leg.waiver.feeWaived > 0) {
+        fboLine += feePaid > 0
+          ? `  ·  ${fmtDollars(leg.waiver.feeWaived)} fee (need ${fmtNum(leg.waiver.minGallons)} gal)`
+          : `  ·  ${fmtDollars(leg.waiver.feeWaived)} fee waived`;
+      }
+      lines.push(fboLine);
+    }
+
+    blocks.push({
+      type: "section",
+      text: { type: "mrkdwn", text: lines.join("\n") },
+    });
   }
 
-  blocks.push({
-    type: "section",
-    text: { type: "mrkdwn", text: legLines.join("\n") },
-  });
-
-  // Tankering recommendations
-  const tankerRecs: string[] = [];
+  // Tankering
   for (let i = 0; i < plan.tankerOutByStop.length; i++) {
     if (plan.tankerOutByStop[i] <= 0) continue;
     const leg = tp.legs[i];
     const tankerIn = plan.tankerInByStop[i] ?? 0;
-    tankerRecs.push(
-      `🔋 *${leg.from}*: carry +${fmtNum(plan.tankerOutByStop[i])} lbs (${fmtNum(tankerIn)} lbs on arrival at ${leg.to})`
-    );
-  }
-  if (tankerRecs.length) {
     blocks.push({
-      type: "section",
-      text: { type: "mrkdwn", text: tankerRecs.join("\n") },
+      type: "context",
+      elements: [{ type: "mrkdwn", text: `Tanker at ${leg.from}: +${fmtNum(plan.tankerOutByStop[i])} lbs → ${fmtNum(tankerIn)} lbs arriving ${leg.to}` }],
     });
   }
 
@@ -220,36 +201,33 @@ export async function POST(req: NextRequest) {
   };
 
   try {
-    // 1) Fleet summary header
-    const summaryResult = await postMessage({
-      channel,
-      text: `⛽ Fleet Fuel Plan — ${date} | ${fleetTotals.planCount} aircraft | Total: ${fmtDollars(fleetTotals.totalTripCost)}${fleetTotals.tankerSavings > 0 ? ` | Save ${fmtDollars(fleetTotals.tankerSavings)}` : ""}`,
-      blocks: buildFleetSummaryBlocks(date, fleetTotals),
-    });
+    // Build all blocks into one message: fleet header + all tails
+    const allBlocks: Record<string, unknown>[] = [
+      ...buildFleetSummaryBlocks(date, fleetTotals),
+    ];
 
-    if (!summaryResult.ok) {
-      return NextResponse.json({ error: summaryResult.error ?? "Slack API error" }, { status: 502 });
-    }
-
-    // 2) Each tail as a threaded reply
-    const threadTs = summaryResult.ts;
     let sent = 0;
-
     for (const tp of plans) {
       if (!tp.plan) continue;
-      const tailBlocks = buildTailBlocks(tp);
-      const fallback = `${tp.tail} (${acLabel(tp.aircraftType)}) — ${fmtDollars(tp.plan.totalTripCost)}${tp.tankerSavings > 0 ? ` | Save ${fmtDollars(tp.tankerSavings)}` : ""}`;
-
-      await postMessage({
-        channel,
-        thread_ts: threadTs,
-        text: fallback,
-        blocks: tailBlocks,
-      });
+      allBlocks.push(...buildTailBlocks(tp));
       sent++;
     }
 
-    return NextResponse.json({ ok: true, sent, threadTs });
+    // Slack has a 50-block limit per message — truncate if needed
+    const blocks = allBlocks.slice(0, 50);
+
+    const fallback = `Fuel Plan — ${date} | ${fleetTotals.planCount} aircraft | ${fmtDollars(fleetTotals.totalTripCost)}`;
+    const result2 = await postMessage({
+      channel,
+      text: fallback,
+      blocks,
+    });
+
+    if (!result2.ok) {
+      return NextResponse.json({ error: result2.error ?? "Slack API error" }, { status: 502 });
+    }
+
+    return NextResponse.json({ ok: true, sent, ts: result2.ts });
   } catch (err) {
     console.error("[fuel-planning/share-slack] Error:", err);
     return NextResponse.json({ error: String(err) }, { status: 500 });
