@@ -24,6 +24,10 @@
     {
       "path": "/api/ops/intl/warm-route-cache",
       "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/cron/edct-tracker",
+      "schedule": "*/15 * * * *"
     }
   ]
 }
