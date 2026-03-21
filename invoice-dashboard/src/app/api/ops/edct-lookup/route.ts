@@ -26,14 +26,34 @@ interface FaaEdctResult {
   origin: string;
   destination: string;
   found: boolean;
-  edct_time: string | null;
-  original_departure: string | null;
+  edct_time: string | null;           // ISO string
+  filed_departure: string | null;     // ISO string
+  control_element: string | null;
+  cancelled: boolean;
   delay_minutes: number | null;
-  program: string | null;
   raw_text: string;
+  query: { callsign: string; dept: string; arr: string };
+}
+
+/** FAA expects 3-letter codes (no K prefix) for US airports */
+function stripK(code: string): string {
+  const u = code.toUpperCase();
+  if (u.length === 4 && u.startsWith("K")) return u.slice(1);
+  return u;
+}
+
+/** Parse FAA datetime "03/21/2026 16:40" → ISO string */
+function parseFaaDateTime(s: string): string | null {
+  const m = s.match(/(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2})/);
+  if (!m) return null;
+  const [, mo, dd, yyyy, hh, mm] = m;
+  return `${yyyy}-${mo}-${dd}T${hh}:${mm}:00Z`;
 }
 
 async function lookupSingleEdct(flight: FlightInput): Promise<FaaEdctResult> {
+  const dept = stripK(flight.dept);
+  const arr = stripK(flight.arr);
+
   const result: FaaEdctResult = {
     callsign: flight.callsign,
     tail: flight.tail,
@@ -41,20 +61,25 @@ async function lookupSingleEdct(flight: FlightInput): Promise<FaaEdctResult> {
     destination: flight.arr,
     found: false,
     edct_time: null,
-    original_departure: null,
+    filed_departure: null,
+    control_element: null,
+    cancelled: false,
     delay_minutes: null,
-    program: null,
     raw_text: "",
+    query: { callsign: flight.callsign, dept, arr },
   };
 
   try {
     const res = await fetch("https://www.fly.faa.gov/edct/showEDCT", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: `callsign=${encodeURIComponent(flight.callsign)}&dept=${encodeURIComponent(flight.dept)}&arr=${encodeURIComponent(flight.arr)}`,
+      body: `callsign=${encodeURIComponent(flight.callsign)}&dept=${encodeURIComponent(dept)}&arr=${encodeURIComponent(arr)}`,
     });
 
-    if (!res.ok) return result;
+    if (!res.ok) {
+      result.raw_text = `HTTP ${res.status}`;
+      return result;
+    }
 
     const html = await res.text();
     const text = html
@@ -69,36 +94,43 @@ async function lookupSingleEdct(flight: FlightInput): Promise<FaaEdctResult> {
       return result;
     }
 
-    result.found = true;
-
-    // Parse table data: look for Zulu time patterns
-    // FAA result table columns: Call Sign | Origin | Dest | EDCT | Orig Dep | Delay(min) | Program
-    const timePattern = /(\d{4}Z)\s+(\d{4}Z)\s+(\d+)\s+([\w\s-]+?)(?:\s+Notes|\s+EDCT\s+-)/;
-    const tableMatch = text.match(timePattern);
-    if (tableMatch) {
-      result.original_departure = tableMatch[1];
-      result.edct_time = tableMatch[2];
-      result.delay_minutes = parseInt(tableMatch[3], 10);
-      result.program = tableMatch[4].trim();
+    // Check for "found X record(s)"
+    if (!text.includes("record(s) matching")) {
       return result;
     }
 
-    // Alternative: look for sequential Zulu times
-    const zuluTimes = text.match(/\b(\d{4}Z)\b/g);
-    if (zuluTimes && zuluTimes.length >= 2) {
-      result.original_departure = zuluTimes[0];
-      result.edct_time = zuluTimes[1];
-    } else if (zuluTimes?.length === 1) {
-      result.edct_time = zuluTimes[0];
+    result.found = true;
+
+    // FAA table format: EDCT | Filed Departure Time | Control Element | Flight Cancelled?
+    // Values like: 03/21/2026 16:40 | 03/21/2026 16:00 | FCAJXW | No
+    const datetimePattern = /(\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2})/g;
+    const dateTimes = [...text.matchAll(datetimePattern)].map((m) => m[1]);
+
+    if (dateTimes.length >= 2) {
+      result.edct_time = parseFaaDateTime(dateTimes[0]);
+      result.filed_departure = parseFaaDateTime(dateTimes[1]);
+
+      // Calculate delay
+      if (result.edct_time && result.filed_departure) {
+        const edctMs = new Date(result.edct_time).getTime();
+        const filedMs = new Date(result.filed_departure).getTime();
+        result.delay_minutes = Math.round((edctMs - filedMs) / 60000);
+      }
+    } else if (dateTimes.length === 1) {
+      result.edct_time = parseFaaDateTime(dateTimes[0]);
     }
 
-    // Extract delay
-    const delayMatch = text.match(/(\d+)\s*(?:min|minutes)/i);
-    if (delayMatch) result.delay_minutes = parseInt(delayMatch[1], 10);
+    // Extract control element (e.g. FCAJXW)
+    const ctrlMatch = text.match(/(?:Control Element|FCAJXW|FCA\w+|GDP\w*|GS\w*|AFP\w*)\s*/i);
+    // More robust: look for the text between the second datetime and "No"/"Yes"
+    const afterTimes = text.split(dateTimes[dateTimes.length - 1] ?? "").pop() ?? "";
+    const ctrlParts = afterTimes.trim().split(/\s+/);
+    if (ctrlParts.length >= 1 && ctrlParts[0] && !["No", "Yes", "Notes:", "EDCT"].includes(ctrlParts[0])) {
+      result.control_element = ctrlParts[0];
+    }
 
-    // Extract program
-    const progMatch = text.match(/(?:GDP|GS|AFP|APREQ|Ground Stop|Ground Delay)[:\s]*([\w\s-]*)/i);
-    if (progMatch) result.program = progMatch[0].trim();
+    // Check cancelled
+    result.cancelled = text.includes("Yes") && text.indexOf("Yes") > text.indexOf(dateTimes[dateTimes.length - 1] ?? "");
 
     return result;
   } catch {
@@ -130,23 +162,11 @@ export async function POST(req: NextRequest) {
     const supa = createServiceClient();
 
     for (const edct of found) {
-      const sourceId = `faa-edct-${edct.callsign}-${edct.origin}-${edct.destination}`;
+      if (edct.cancelled) continue; // Skip cancelled EDCTs
 
-      // Build edct_time as full ISO if we have it
-      let edctTimeIso: string | null = null;
-      if (edct.edct_time) {
-        const now = new Date();
-        const timeStr = edct.edct_time.replace("Z", "");
-        const hh = timeStr.slice(0, 2);
-        const mm = timeStr.slice(2, 4);
-        const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(),
-          parseInt(hh), parseInt(mm)));
-        // If the time is way in the past, it might be tomorrow
-        if (d.getTime() < now.getTime() - 12 * 3600_000) {
-          d.setUTCDate(d.getUTCDate() + 1);
-        }
-        edctTimeIso = d.toISOString();
-      }
+      const sourceId = `faa-edct-${edct.callsign}-${edct.origin}-${edct.destination}`;
+      const delayStr = edct.delay_minutes != null ? `${edct.delay_minutes}min delay` : "";
+      const ctrlStr = edct.control_element ? ` — ${edct.control_element}` : "";
 
       await supa.from("ops_alerts").upsert({
         source_message_id: sourceId,
@@ -156,19 +176,9 @@ export async function POST(req: NextRequest) {
         departure_icao: edct.origin,
         arrival_icao: edct.destination,
         subject: `FAA EDCT: ${edct.callsign} ${edct.origin}→${edct.destination}`,
-        body: edct.program
-          ? `EDCT ${edct.edct_time} (${edct.delay_minutes ?? "?"}min delay) — ${edct.program}`
-          : `EDCT ${edct.edct_time}`,
-        edct_time: edctTimeIso,
-        original_departure_time: edct.original_departure
-          ? (() => {
-              const now = new Date();
-              const t = edct.original_departure!.replace("Z", "");
-              const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(),
-                parseInt(t.slice(0, 2)), parseInt(t.slice(2, 4))));
-              return d.toISOString();
-            })()
-          : null,
+        body: `EDCT ${edct.edct_time ? new Date(edct.edct_time).toISOString().slice(11, 16) + "Z" : "?"} (${delayStr}${ctrlStr})`,
+        edct_time: edct.edct_time,
+        original_departure_time: edct.filed_departure,
         raw_data: { faa_edct: edct },
       }, { onConflict: "source_message_id" });
     }
@@ -178,7 +188,7 @@ export async function POST(req: NextRequest) {
     ok: true,
     checked: results.length,
     found: found.length,
-    results: results.map(({ raw_text, ...r }) => r),
+    results,
   });
 }
 

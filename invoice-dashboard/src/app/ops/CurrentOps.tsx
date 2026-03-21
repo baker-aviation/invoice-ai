@@ -1551,23 +1551,30 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
   // FAA EDCT check
   const [checkingFaa, setCheckingFaa] = useState(false);
   const [faaCheckResult, setFaaCheckResult] = useState<string | null>(null);
+  const [faaDebug, setFaaDebug] = useState<Array<{ callsign: string; tail: string; origin: string; destination: string; found: boolean; edct_time: string | null; filed_departure: string | null; control_element: string | null; delay_minutes: number | null; query: { dept: string; arr: string } }> | null>(null);
 
   const handleCheckFaaEdcts = useCallback(async () => {
     setCheckingFaa(true);
     setFaaCheckResult(null);
+    setFaaDebug(null);
     try {
-      // Build flight list: tail → KOW callsign, with departure/arrival
-      const flightList = flights
-        .filter((f) => f.tail_number && f.departure_icao && f.arrival_icao)
-        .map((f) => {
-          const nums = f.tail_number!.match(/\d+/)?.[0] ?? "";
-          return {
-            callsign: `KOW${nums}`,
-            tail: f.tail_number!,
-            dept: f.departure_icao!,
-            arr: f.arrival_icao!,
-          };
+      // Dedupe flights by callsign+dept+arr
+      const seen = new Set<string>();
+      const flightList: { callsign: string; tail: string; dept: string; arr: string }[] = [];
+      for (const f of flights) {
+        if (!f.tail_number || !f.departure_icao || !f.arrival_icao) continue;
+        if (f.id.startsWith("edct-orphan-")) continue;
+        const nums = f.tail_number.match(/\d+/)?.[0] ?? "";
+        const key = `KOW${nums}|${f.departure_icao}|${f.arrival_icao}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        flightList.push({
+          callsign: `KOW${nums}`,
+          tail: f.tail_number,
+          dept: f.departure_icao,
+          arr: f.arrival_icao,
         });
+      }
 
       if (!flightList.length) {
         setFaaCheckResult("No flights to check");
@@ -1580,10 +1587,11 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
         body: JSON.stringify({ flights: flightList }),
       });
       const data = await res.json();
+      const foundResults = (data.results ?? []).filter((r: { found: boolean }) => r.found);
+      setFaaDebug(foundResults.length > 0 ? foundResults : (data.results ?? []).slice(0, 5));
       if (data.found > 0) {
         setFaaCheckResult(`Found ${data.found} FAA EDCT${data.found !== 1 ? "s" : ""} — refreshing...`);
-        // Trigger a refresh of the ops data
-        setTimeout(() => window.location.reload(), 1500);
+        setTimeout(() => window.location.reload(), 2000);
       } else {
         setFaaCheckResult(`Checked ${data.checked} flights — no FAA EDCTs found`);
       }
@@ -1715,9 +1723,28 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
           </div>
         )}
 
-        {/* FAA check result */}
+        {/* FAA check result + debug */}
         {faaCheckResult && (
-          <div className="col-span-2 text-xs text-gray-500 -mt-2 px-1">{faaCheckResult}</div>
+          <div className="col-span-2 -mt-2 px-1 space-y-1">
+            <div className="text-xs text-gray-500">{faaCheckResult}</div>
+            {faaDebug && faaDebug.length > 0 && (
+              <details className="text-xs">
+                <summary className="text-blue-500 cursor-pointer hover:text-blue-700">
+                  Debug: {faaDebug.length} result{faaDebug.length !== 1 ? "s" : ""}
+                </summary>
+                <div className="mt-1 bg-gray-50 rounded border border-gray-200 p-2 space-y-1 max-h-48 overflow-y-auto font-mono">
+                  {faaDebug.map((r, i) => (
+                    <div key={i} className={r.found ? "text-green-700" : "text-gray-400"}>
+                      {r.callsign} {r.query.dept}→{r.query.arr} {r.tail}
+                      {r.found
+                        ? ` ✓ EDCT: ${r.edct_time ?? "?"} Filed: ${r.filed_departure ?? "?"} Delay: ${r.delay_minutes ?? "?"}min Ctrl: ${r.control_element ?? "?"}`
+                        : " — no EDCT"}
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
+          </div>
         )}
 
         {/* Feed Status */}
