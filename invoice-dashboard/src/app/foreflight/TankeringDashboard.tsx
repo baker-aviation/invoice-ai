@@ -352,39 +352,13 @@ function TailPlanCard({ plan: tp, date }: { plan: TailPlan; date: string }) {
   const plan = tp.plan;
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
-  const [sendingLink, setSendingLink] = useState(false);
   const [linkSent, setLinkSent] = useState<string | null>(null);
 
   const handleSendToSlack = async () => {
     if (!plan) return;
     setSending(true);
     try {
-      const res = await fetch("/api/fuel-planning/share-slack", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          channel: FUEL_PLANNING_SLACK_CHANNEL,
-          date,
-          plans: [tp],
-          fleetTotals: {
-            totalFuelCost: plan.totalFuelCost,
-            totalFees: plan.totalFees,
-            totalTripCost: plan.totalTripCost,
-            naiveCost: tp.naiveCost,
-            tankerSavings: tp.tankerSavings,
-            planCount: 1,
-          },
-        }),
-      });
-      if (res.ok) setSent(true);
-    } catch { /* ignore */ }
-    finally { setSending(false); }
-  };
-
-  const handleSendAlertLink = async () => {
-    if (!plan) return;
-    setSendingLink(true);
-    try {
+      // Create a shareable link first, then send Slack with the link included
       const res = await fetch("/api/fuel-planning/create-plan-link", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -399,9 +373,10 @@ function TailPlanCard({ plan: tp, date }: { plan: TailPlan; date: string }) {
       const data = await res.json();
       if (data.url) {
         setLinkSent(data.url);
+        setSent(true);
       }
     } catch { /* ignore */ }
-    finally { setSendingLink(false); }
+    finally { setSending(false); }
   };
 
   return (
@@ -437,22 +412,9 @@ function TailPlanCard({ plan: tp, date }: { plan: TailPlan; date: string }) {
                   ? "bg-green-100 text-green-700 cursor-default"
                   : "bg-gray-100 text-gray-600 hover:bg-purple-100 hover:text-purple-700 disabled:opacity-50"
               }`}
+              title={linkSent ?? "Send plan to Slack with shareable link"}
             >
-              {sent ? "Sent" : sending ? "Sending..." : "Slack"}
-            </button>
-          )}
-          {plan && (
-            <button
-              onClick={handleSendAlertLink}
-              disabled={sendingLink || !!linkSent}
-              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                linkSent
-                  ? "bg-blue-100 text-blue-700 cursor-default"
-                  : "bg-gray-100 text-gray-600 hover:bg-blue-100 hover:text-blue-700 disabled:opacity-50"
-              }`}
-              title={linkSent ?? "Send shareable plan link to Slack"}
-            >
-              {linkSent ? "Link Sent" : sendingLink ? "Creating..." : "Send Link"}
+              {sent ? "Sent" : sending ? "Sending..." : "Send to Slack"}
             </button>
           )}
         </div>
