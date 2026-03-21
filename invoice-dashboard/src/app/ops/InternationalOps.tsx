@@ -235,8 +235,17 @@ function TripRow({ trip, countries, expanded, onToggle, onRefresh }: {
           ))}
         </span>
 
+        {/* Overall status badge */}
+        <span className={`text-[11px] px-2 py-0.5 rounded-full font-medium ml-auto whitespace-nowrap ${
+          allApproved ? "bg-green-100 text-green-700" :
+          anySubmitted ? "bg-blue-100 text-blue-700" :
+          "bg-gray-100 text-gray-500"
+        }`}>
+          {allApproved ? "Ready" : anySubmitted ? `${approved}/${total} Cleared` : "Not Started"}
+        </span>
+
         {/* Mini clearance badges */}
-        <span className="flex gap-1.5 ml-auto mr-2">
+        <span className="flex gap-1.5 mr-2">
           {clearances.map((c) => (
             <span
               key={c.id}
