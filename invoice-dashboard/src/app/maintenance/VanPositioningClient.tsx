@@ -866,8 +866,32 @@ function routeDistKm(items: VanFlightItem[]): number {
  * 2–8h:  "Aircraft Shutting Down - Aircraft leaving in X hours"
  * ≥ 8h or no next dep:  "Done for the Day - Aircraft leaving in X hours" (or just "Done for the Day")
  */
-function computeTurnLabel(nextDep: Flight | null, gapMs: number): string {
-  if (!nextDep) return "Done for the Day";
+function computeTurnLabel(nextDep: Flight | null, gapMs: number, opts?: { isOvernight?: boolean; viewDate?: string }): string {
+  const isOvernight = opts?.isOvernight ?? false;
+
+  if (!nextDep) {
+    return isOvernight ? "Parked - No flights scheduled" : "Done for the Day";
+  }
+
+  // For overnight/parked aircraft, use time from NOW until departure (not arrival→departure gap)
+  if (isOvernight) {
+    const depMs = new Date(nextDep.scheduled_departure).getTime();
+    const hoursUntilDep = Math.round((depMs - Date.now()) / 3600000);
+    const depTime = fmtUtcHM(nextDep.scheduled_departure, nextDep.departure_icao);
+    const depDate = nextDep.scheduled_departure
+      ? new Date(nextDep.scheduled_departure).toLocaleDateString("en-CA", { timeZone: "America/New_York" })
+      : null;
+    const isDepToday = depDate === opts?.viewDate;
+    if (isDepToday && hoursUntilDep < 2) {
+      return `Parked - Departing soon at ${depTime}`;
+    }
+    if (isDepToday) {
+      return `Parked - Departing at ${depTime}`;
+    }
+    return `Parked - Next flight in ${hoursUntilDep} hour${hoursUntilDep === 1 ? "" : "s"}`;
+  }
+
+  // Today's arrivals — standard turn badges
   const hours = Math.round(gapMs / 3600000);
   if (gapMs < 2 * 3600000) {
     const depTime = fmtUtcHM(nextDep.scheduled_departure, nextDep.departure_icao);
@@ -883,6 +907,8 @@ function computeTurnLabel(nextDep: Flight | null, gapMs: number): string {
 function turnBadgeClass(label: string): string {
   if (label.startsWith("Quick Turn")) return "bg-amber-100 text-amber-700";
   if (label.startsWith("Aircraft Shutting Down")) return "bg-orange-100 text-orange-700";
+  if (label.includes("Departing soon")) return "bg-amber-100 text-amber-700";
+  if (label.startsWith("Parked")) return "bg-blue-100 text-blue-700";
   return "bg-green-100 text-green-700";
 }
 
@@ -892,13 +918,14 @@ function turnBadgeClass(label: string): string {
 
 type SlackChannel = { id: string; name: string };
 /** Build Slack-ready item payloads from VanFlightItems. Used by single share and bulk share. */
-function buildSlackItems(items: VanFlightItem[], flightInfoMap: Map<string, FlightInfoEntry>, fboMap?: Record<string, string>, mxNotesByTail?: Map<string, MxNote[]>) {
+function buildSlackItems(items: VanFlightItem[], flightInfoMap: Map<string, FlightInfoEntry>, fboMap?: Record<string, string>, mxNotesByTail?: Map<string, MxNote[]>, viewDate?: string) {
   return items.map((item) => {
     const fi = flightInfoMap.get(item.arrFlight.tail_number ?? "");
     const arrMs = item.arrFlight.scheduled_arrival ? new Date(item.arrFlight.scheduled_arrival).getTime() : null;
     const gapMs = item.nextDep && arrMs
       ? new Date(item.nextDep.scheduled_departure).getTime() - arrMs : Infinity;
-    const turnLabel = computeTurnLabel(item.nextDep, gapMs);
+    const isOvernight = arrMs && viewDate ? !isOnEtDate(item.arrFlight.scheduled_arrival!, viewDate) : false;
+    const turnLabel = computeTurnLabel(item.nextDep, gapMs, { isOvernight, viewDate });
     let slackStatus: string;
     if (fi?.diverted) {
       slackStatus = "DIVERTED";
@@ -1007,7 +1034,7 @@ function SlackShareModal({
         vanId,
         homeAirport,
         date,
-        items: buildSlackItems(items, flightInfoMap, fboMap, mxNotesByTail),
+        items: buildSlackItems(items, flightInfoMap, fboMap, mxNotesByTail, date),
       };
       const res = await fetch("/api/vans/share-slack", {
         method: "POST",
@@ -1103,6 +1130,17 @@ function SlackShareModal({
 function isMel(note: MxNote): boolean {
   const text = (note.body ?? note.subject ?? "").trim().toLowerCase();
   return text.startsWith("mel ");
+}
+
+/** Content fingerprint for smart-hide: resurface MX note when airport/time/subject changes */
+function mxContentHash(n: MxNote): string {
+  return `${n.airport_icao ?? ""}|${n.start_time ?? ""}|${n.end_time ?? ""}|${n.subject ?? ""}|${n.body ?? ""}`;
+}
+
+/** Check if an MX note is hidden — matches composite key (id::hash) so note resurfaces if content changes */
+function isMxHiddenForToday(n: MxNote, hiddenIds?: Set<string>): boolean {
+  if (!hiddenIds) return false;
+  return hiddenIds.has(`${n.id}::${mxContentHash(n)}`);
 }
 
 function fmtTimeRemaining(endTime: string | null): string | null {
@@ -1261,7 +1299,7 @@ function MiddayOpportunities({
 /** Single MX note row with expandable description */
 function MxNoteRow({ note, onHideForToday, vanOverride, onVanOverride }: {
   note: MxNote;
-  onHideForToday?: (id: string) => void;
+  onHideForToday?: (note: MxNote) => void;
   vanOverride?: number | null;
   onVanOverride?: (noteId: string, vanId: number | null) => void;
 }) {
@@ -1303,10 +1341,10 @@ function MxNoteRow({ note, onHideForToday, vanOverride, onVanOverride }: {
           <div className="flex items-center gap-2 mt-1">
             {onHideForToday && (
               <button
-                onClick={() => onHideForToday(note.id)}
+                onClick={() => onHideForToday(note)}
                 className="text-[10px] font-medium text-orange-400 hover:text-orange-700 hover:bg-orange-50 border border-orange-200 rounded px-2 py-0.5 transition-colors"
               >
-                Hide for Today
+                Hide Until Changed
               </button>
             )}
             {onVanOverride && (
@@ -1329,11 +1367,11 @@ function MxNoteRow({ note, onHideForToday, vanOverride, onVanOverride }: {
 }
 
 /** Inline MX notes per aircraft — only non-MEL MX items (MELs moved to van-level accordion) */
-function MxNoteInline({ notes, hiddenIds, onHideForToday, vanOverrides, onVanOverride, viewDate }: { notes: MxNote[]; hiddenIds?: Set<string>; onHideForToday?: (id: string) => void; vanOverrides?: Map<string, number>; onVanOverride?: (noteId: string, vanId: number | null) => void; viewDate?: string }) {
+function MxNoteInline({ notes, hiddenIds, onHideForToday, vanOverrides, onVanOverride, viewDate }: { notes: MxNote[]; hiddenIds?: Set<string>; onHideForToday?: (note: MxNote) => void; vanOverrides?: Map<string, number>; onVanOverride?: (noteId: string, vanId: number | null) => void; viewDate?: string }) {
   const targetDate = viewDate ?? new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
   const toEtDate = (iso: string) => new Date(iso).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
   const visible = notes.filter((n) => {
-    if (hiddenIds?.has(n.id)) return false;
+    if (isMxHiddenForToday(n, hiddenIds)) return false;
     if (isMel(n)) return false;
     // Compare dates in ET timezone (ISO strings are UTC, display is ET)
     const startDate = n.start_time ? toEtDate(n.start_time) : null;
@@ -1416,7 +1454,7 @@ function VanMaintenanceAccordion({ items, mxNotesByTail, hiddenIds, onHideForTod
   items: VanFlightItem[];
   mxNotesByTail: Map<string, MxNote[]>;
   hiddenIds: Set<string>;
-  onHideForToday: (id: string) => void;
+  onHideForToday: (note: MxNote) => void;
   flightInfoMap: Map<string, FlightInfoEntry>;
 }) {
   const [melOpen, setMelOpen] = useState(false);
@@ -1428,7 +1466,7 @@ function VanMaintenanceAccordion({ items, mxNotesByTail, hiddenIds, onHideForTod
     const tail = item.arrFlight.tail_number ?? "";
     const notes = mxNotesByTail.get(tail) ?? [];
     for (const n of notes) {
-      if (hiddenIds.has(n.id)) continue;
+      if (isMxHiddenForToday(n, hiddenIds)) continue;
       if (isMel(n)) allMels.push({ tail, note: n });
     }
   }
@@ -1478,10 +1516,10 @@ function VanMaintenanceAccordion({ items, mxNotesByTail, hiddenIds, onHideForTod
                       </span>
                     </div>
                     <button
-                      onClick={() => onHideForToday(n.id)}
+                      onClick={() => onHideForToday(n)}
                       className={`text-[10px] font-medium ${isUrgent ? "text-red-400 hover:text-red-700" : "text-green-500 hover:text-green-700"} border ${isUrgent ? "border-red-200" : "border-green-200"} rounded px-2 py-0.5 mt-1 transition-colors`}
                     >
-                      Hide for Today
+                      Hide Until Changed
                     </button>
                   </div>
                 </div>
@@ -1662,7 +1700,7 @@ function AircraftCompactRow({
   date: string;
   mxNotes: MxNote[];
   hiddenTodayMxIds: Set<string>;
-  onHideMxForToday: (id: string) => void;
+  onHideMxForToday: (note: MxNote) => void;
   mxVanOverrides?: Map<string, number>;
   onVanOverride?: (noteId: string, vanId: number | null) => void;
   legNote: string;
@@ -1955,7 +1993,7 @@ function VanScheduleCard({
   legNotes: Map<string, string>;
   mxNotesByTail: Map<string, MxNote[]>;
   hiddenTodayMxIds: Set<string>;
-  onHideMxForToday: (id: string) => void;
+  onHideMxForToday: (note: MxNote) => void;
   mxVanOverrides?: Map<string, number>;
   onVanOverride?: (noteId: string, vanId: number | null) => void;
   onSaveNote: (flightId: string, tailNumber: string | null, note: string) => void;
@@ -2130,7 +2168,8 @@ function VanScheduleCard({
                 const groundMs = nextDep && arrTime
                   ? new Date(nextDep.scheduled_departure).getTime() - arrTime.getTime()
                   : Infinity;
-                const turnBadgeLabel = computeTurnLabel(nextDep, groundMs);
+                const isOvernight = arrTime ? !isOnEtDate(arrFlight.scheduled_arrival!, date) : false;
+                const turnBadgeLabel = computeTurnLabel(nextDep, groundMs, { isOvernight, viewDate: date });
                 const extraLegs = (allFlights && arrFlight.tail_number)
                   ? allFlights.filter((f) => {
                       if (f.tail_number !== arrFlight.tail_number) return false;
@@ -2232,7 +2271,7 @@ function ScheduleTab({
   mxNotesByTail: Map<string, MxNote[]>;
   longTermMxTails: Set<string>;
   hiddenTodayMxIds: Set<string>;
-  onHideMxForToday: (id: string) => void;
+  onHideMxForToday: (note: MxNote) => void;
   mxVanOverrides?: Map<string, number>;
   onVanOverride?: (noteId: string, vanId: number | null) => void;
   fboMap?: Record<string, string>;
@@ -3325,7 +3364,7 @@ function ScheduleTab({
             vanName: zone.name,
             vanId: zone.vanId,
             homeAirport: zone.homeAirport,
-            items: buildSlackItems(items, flightInfoMap, fboMap, mxNotesByTail),
+            items: buildSlackItems(items, flightInfoMap, fboMap, mxNotesByTail, date),
           };
         });
       if (vans.length === 0) {
@@ -3358,7 +3397,7 @@ function ScheduleTab({
           vanName: zone.name,
           vanId: zone.vanId,
           homeAirport: zone.homeAirport,
-          items: buildSlackItems(items, flightInfoMap, fboMap, mxNotesByTail),
+          items: buildSlackItems(items, flightInfoMap, fboMap, mxNotesByTail, date),
         };
       });
       const slackRes = await fetch("/api/vans/share-slack-bulk", {
@@ -3428,7 +3467,7 @@ function ScheduleTab({
         vanName: d.vanName,
         vanId: d.vanId,
         homeAirport: d.homeAirport,
-        items: buildSlackItems(finalItemsByVan.get(d.vanId) ?? [], flightInfoMap, fboMap, mxNotesByTail),
+        items: buildSlackItems(finalItemsByVan.get(d.vanId) ?? [], flightInfoMap, fboMap, mxNotesByTail, date),
         diff: {
           added: d.added,
           removed: d.removed,
@@ -3471,6 +3510,16 @@ function ScheduleTab({
       // 3) Update state + save MX fingerprints
       setPublishedAt(pubData.published_at);
       setPublishedEditsSnapshot(currentEditsFingerprint);
+      // Update published assignments so changedVans resets for sent changes
+      setPublishedAssignments(prev => {
+        const next = [...prev];
+        for (const d of changedVans) {
+          const idx = next.findIndex(a => a.vanId === d.vanId);
+          if (idx >= 0) next[idx] = { vanId: d.vanId, flightIds: d.currentFlightIds };
+          else next.push({ vanId: d.vanId, flightIds: d.currentFlightIds });
+        }
+        return next;
+      });
       // Save MX fingerprints for all vans so we detect future MX changes
       for (const zone of FIXED_VAN_ZONES) {
         const items = finalItemsByVan.get(zone.vanId) ?? [];
@@ -3504,7 +3553,7 @@ function ScheduleTab({
             vanName: zone.name,
             vanId: zone.vanId,
             homeAirport: zone.homeAirport,
-            items: buildSlackItems(items, flightInfoMap, fboMap, mxNotesByTail),
+            items: buildSlackItems(items, flightInfoMap, fboMap, mxNotesByTail, date),
           }],
         }),
       });
@@ -4791,9 +4840,11 @@ export default function VanPositioningClient({ initialFlights, mxNotes, melItems
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
 
-  // "Hide for Today" — DB-backed via drafts (shared across all admins)
-  const hideMxForToday = useCallback((id: string) => {
-    setHiddenTodayMxIds((prev) => new Set(prev).add(id));
+  // "Hide Until Changed" — DB-backed via drafts (shared across all admins)
+  // Stores composite key: id::contentHash so note resurfaces when Jawad edits it
+  const hideMxForToday = useCallback((note: MxNote) => {
+    const key = `${note.id}::${mxContentHash(note)}`;
+    setHiddenTodayMxIds((prev) => new Set(prev).add(key));
   }, []);
 
   // Callback for ScheduleTab to sync UI state loaded from drafts DB
@@ -5380,7 +5431,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, melItems
         const nowMsConf = Date.now();
         const visibleConflicts = mxConflicts.filter((c) => {
           if (c.mxNote.end_time && new Date(c.mxNote.end_time).getTime() < nowMsConf) return false;
-          if (hiddenTodayMxIds.has(c.mxNote.id)) return false;
+          if (isMxHiddenForToday(c.mxNote, hiddenTodayMxIds)) return false;
           const storedHash = dismissedConflictHashesRef.current[c.mxNote.id];
           if (!storedHash) return true;
           return storedHash !== getMxNoteHash(c.mxNote);
@@ -5461,7 +5512,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, melItems
       {/* ── MEL Items from JetInsight (standalone accordion — no end_time filter) ── */}
       {(() => {
         const melOnly = (mxNotes ?? []).filter((n) => {
-          if (hiddenTodayMxIds.has(n.id)) return false;
+          if (isMxHiddenForToday(n, hiddenTodayMxIds)) return false;
           return isMel(n);
         });
         return (
@@ -5502,7 +5553,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, melItems
                             Due {new Date(note.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}{(() => { const d = new Date(note.end_time); return d.getHours() !== 0 || d.getMinutes() !== 0 ? `, ${d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}` : ""; })()}
                           </span>
                         )}
-                        <button onClick={(e) => { e.stopPropagation(); hideMxForToday(note.id); }} className="text-gray-400 hover:text-red-600 text-xs ml-2 shrink-0" title="Hide for today">&times;</button>
+                        <button onClick={(e) => { e.stopPropagation(); hideMxForToday(note); }} className="text-gray-400 hover:text-red-600 text-xs ml-2 shrink-0" title="Hide until changed">&times;</button>
                       </div>
                       <div className="text-sm text-gray-700 mt-0.5">{note.body}</div>
                     </div>
@@ -5518,7 +5569,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, melItems
       {(() => {
         const nowMs = Date.now();
         const mxOnly = (mxNotes ?? []).filter((n) => {
-          if (hiddenTodayMxIds.has(n.id)) return false;
+          if (isMxHiddenForToday(n, hiddenTodayMxIds)) return false;
           if (n.end_time && new Date(n.end_time).getTime() < nowMs) return false;
           if (isMel(n)) return false;
           return true;
@@ -5551,7 +5602,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, melItems
                           Due {new Date(note.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}{(() => { const d = new Date(note.end_time); return d.getHours() !== 0 || d.getMinutes() !== 0 ? `, ${d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}` : ""; })()}
                         </span>
                       )}
-                      <button onClick={(e) => { e.stopPropagation(); hideMxForToday(note.id); }} className="text-gray-400 hover:text-red-600 text-xs ml-2 shrink-0" title="Hide for today">&times;</button>
+                      <button onClick={(e) => { e.stopPropagation(); hideMxForToday(note); }} className="text-gray-400 hover:text-red-600 text-xs ml-2 shrink-0" title="Hide until changed">&times;</button>
                     </div>
                     <div className="text-sm text-gray-700 mt-0.5">{note.body}</div>
                   </div>
@@ -5959,9 +6010,9 @@ export default function VanPositioningClient({ initialFlights, mxNotes, melItems
                         })}
                       </div>
                       {/* MX notes from JetInsight */}
-                      {(mxNotesByTail.get(tail ?? "") ?? []).filter((n) => { if (hiddenTodayMxIds.has(n.id)) return false; if (n.end_time && new Date(n.end_time).getTime() < Date.now()) return false; return true; }).length > 0 && (
+                      {(mxNotesByTail.get(tail ?? "") ?? []).filter((n) => { if (isMxHiddenForToday(n, hiddenTodayMxIds)) return false; if (n.end_time && new Date(n.end_time).getTime() < Date.now()) return false; return true; }).length > 0 && (
                         <div className="border-t border-orange-100 px-4 py-2 space-y-1">
-                          {(mxNotesByTail.get(tail ?? "") ?? []).filter((n) => { if (hiddenTodayMxIds.has(n.id)) return false; if (n.end_time && new Date(n.end_time).getTime() < Date.now()) return false; return true; }).map((n) => {
+                          {(mxNotesByTail.get(tail ?? "") ?? []).filter((n) => { if (isMxHiddenForToday(n, hiddenTodayMxIds)) return false; if (n.end_time && new Date(n.end_time).getTime() < Date.now()) return false; return true; }).map((n) => {
                             const mel = isMel(n);
                             const timeLeft = mel ? fmtTimeRemaining(n.end_time) : null;
                             return (
@@ -5986,10 +6037,10 @@ export default function VanPositioningClient({ initialFlights, mxNotes, melItems
                                   </span>
                                 </div>
                                 <button
-                                  onClick={() => hideMxForToday(n.id)}
+                                  onClick={() => hideMxForToday(n)}
                                   className="text-[10px] font-medium text-orange-400 hover:text-orange-700 hover:bg-orange-50 border border-orange-200 rounded px-2 py-0.5 mt-1 transition-colors"
                                 >
-                                  Hide for Today
+                                  Hide Until Changed
                                 </button>
                               </div>
                             </div>

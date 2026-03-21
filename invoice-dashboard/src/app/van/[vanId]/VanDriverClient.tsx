@@ -197,10 +197,35 @@ function getFlightStatus(
 
 /** Turn status label for an item */
 function getTurnLabel(item: VanFlightItem): string {
-  if (!item.nextDep) return "Done for the Day";
-  const schedDep = item.nextDep.scheduled_departure;
   const schedArr = item.arrFlight.scheduled_arrival;
+  const todayEt = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  const arrDate = schedArr
+    ? new Date(schedArr).toLocaleDateString("en-CA", { timeZone: "America/New_York" })
+    : null;
+  const isOvernight = arrDate ? arrDate < todayEt : false;
+
+  if (!item.nextDep) {
+    return isOvernight ? "Parked - No flights scheduled" : "Done for the Day";
+  }
+
+  const schedDep = item.nextDep.scheduled_departure;
   if (!schedArr || !schedDep) return "Done for the Day";
+
+  // For overnight aircraft, use time from NOW until departure
+  if (isOvernight) {
+    const depMs = new Date(schedDep).getTime();
+    const hoursUntilDep = Math.round((depMs - Date.now()) / 3600000);
+    const depTime = fmtUtcHM(schedDep);
+    const depDate = new Date(schedDep).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+    if (depDate === todayEt && hoursUntilDep < 2) {
+      return `Parked - Departing soon at ${depTime}`;
+    }
+    if (depDate === todayEt) {
+      return `Parked - Departing at ${depTime}`;
+    }
+    return `Parked - Next flight in ${hoursUntilDep} hour${hoursUntilDep === 1 ? "" : "s"}`;
+  }
+
   const gapMs = new Date(schedDep).getTime() - new Date(schedArr).getTime();
   const hours = Math.round(gapMs / 3600000);
   if (gapMs < 2 * 3600000) {
@@ -216,6 +241,8 @@ function getTurnLabel(item: VanFlightItem): string {
 function turnBadgeClass(label: string): string {
   if (label.startsWith("Quick Turn")) return "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200";
   if (label.startsWith("Aircraft Shutting Down")) return "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200";
+  if (label.includes("Departing soon")) return "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200";
+  if (label.startsWith("Parked")) return "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200";
   return "bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300";
 }
 
