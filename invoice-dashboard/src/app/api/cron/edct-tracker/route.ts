@@ -150,10 +150,13 @@ function buildEdctSlackBlocks(
 
   if (type === "new") {
     // New EDCT message
-    let text = `*${edct.tail}* (${edct.callsign})  ${dept} → ${arr}`;
+    const filedAs = edct.callsign !== edct.tail ? `${edct.callsign}` : "";
+    let text = `*${edct.tail}*${filedAs ? ` (${filedAs})` : ""}  ${dept} → ${arr}`;
+    if (edct.cancelled) text += `  ~cancelled~`;
     text += `\nFiled: ${filedLocal}  →  EDCT: *${edctLocal}*  (${delay})`;
     if (ctrl) text += `\nControl: ${ctrl}`;
     if (salesperson) text += `\nSales: ${salesperson}`;
+    if (edct.cancelled) text += `\n:no_entry: Flight plan cancelled — pilot may have refiled for better slot`;
 
     blocks.push({
       type: "section",
@@ -240,18 +243,30 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // 4. Build deduplicated flight list
+  // 4. Build deduplicated flight list — check both KOW callsign AND N-number
+  // Pilots sometimes file under N-number to shop for better EDCT slots
   const seen = new Set<string>();
   const flights: FlightInput[] = [];
   for (const f of flightRows) {
     if (!f.tail_number || !f.departure_icao || !f.arrival_icao) continue;
     const tail = f.tail_number.toUpperCase();
     const callsign = callsignMap.get(tail);
-    if (!callsign) continue;
-    const key = `${callsign}|${f.departure_icao}|${f.arrival_icao}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    flights.push({ callsign, tail, dept: f.departure_icao, arr: f.arrival_icao });
+
+    // Add KOW callsign lookup
+    if (callsign) {
+      const key = `${callsign}|${f.departure_icao}|${f.arrival_icao}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        flights.push({ callsign, tail, dept: f.departure_icao, arr: f.arrival_icao });
+      }
+    }
+
+    // Also add N-number lookup (pilots may file under tail number)
+    const nKey = `${tail}|${f.departure_icao}|${f.arrival_icao}`;
+    if (!seen.has(nKey)) {
+      seen.add(nKey);
+      flights.push({ callsign: tail, tail, dept: f.departure_icao, arr: f.arrival_icao });
+    }
   }
 
   // 5. Check FAA in batches
@@ -262,10 +277,10 @@ export async function GET(req: NextRequest) {
     results.push(...batchResults);
   }
 
-  // 6. Filter to current, non-cancelled
+  // 6. Filter to current (include cancelled — pilots shop for slots)
   const todayStartMs = new Date(todayStart).getTime();
   const found = results.filter((r) =>
-    r.found && !r.cancelled && (!r.edct_time || new Date(r.edct_time).getTime() >= todayStartMs)
+    r.found && (!r.edct_time || new Date(r.edct_time).getTime() >= todayStartMs)
   );
 
   // 7. Get existing FAA EDCT alerts to detect new vs updated
@@ -310,8 +325,8 @@ export async function GET(req: NextRequest) {
       tail_number: edct.tail,
       departure_icao: edct.origin,
       arrival_icao: edct.destination,
-      subject: `FAA EDCT: ${edct.callsign} ${edct.origin}→${edct.destination}`,
-      body: `EDCT ${fmtLocal(edct.edct_time, edct.origin)} (${delayStr}${ctrlStr})`,
+      subject: `FAA EDCT: ${edct.callsign} ${edct.origin}→${edct.destination}${edct.cancelled ? " (cancelled)" : ""}`,
+      body: `EDCT ${fmtLocal(edct.edct_time, edct.origin)} (${delayStr}${ctrlStr})${edct.cancelled ? " — flight plan cancelled" : ""}`,
       edct_time: edct.edct_time,
       original_departure_time: edct.filed_departure,
       raw_data: { faa_edct: edct, edct_history: history },

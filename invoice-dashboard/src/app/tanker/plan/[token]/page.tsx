@@ -57,9 +57,11 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
   const [expiresAt, setExpiresAt] = useState<string>("");
   const [recalculating, setRecalculating] = useState(false);
 
-  // Per-leg weight overrides
+  // Per-leg overrides
   const [mlwOverrides, setMlwOverrides] = useState<Record<string, number>>({});
   const [zfwOverrides, setZfwOverrides] = useState<Record<string, number>>({});
+  const [feeOverrides, setFeeOverrides] = useState<Record<string, number>>({});
+  const [waiverGalOverrides, setWaiverGalOverrides] = useState<Record<string, number>>({});
 
   // Resolve params
   useEffect(() => {
@@ -93,7 +95,12 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
       const res = await fetch(`/api/fuel-planning/shared-plan/${token}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mlw_overrides: mlwOverrides, zfw_overrides: zfwOverrides }),
+        body: JSON.stringify({
+          mlw_overrides: mlwOverrides,
+          zfw_overrides: zfwOverrides,
+          fee_overrides: feeOverrides,
+          waiver_gal_overrides: waiverGalOverrides,
+        }),
       });
       const data = await res.json();
       if (res.ok && data.plan) {
@@ -176,7 +183,9 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
                 <th className="text-right px-4 py-2 font-medium text-gray-600">Order</th>
                 <th className="text-right px-4 py-2 font-medium text-gray-600">Landing Fuel</th>
                 <th className="text-left px-4 py-2 font-medium text-gray-600">FBO</th>
-                <th className="text-right px-4 py-2 font-medium text-gray-600">Fee</th>
+                <th className="text-right px-4 py-2 font-medium text-gray-600">Handling Fee</th>
+                <th className="text-right px-4 py-2 font-medium text-gray-600">Gal to Waive</th>
+                <th className="text-right px-4 py-2 font-medium text-gray-600">Status</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
@@ -215,7 +224,18 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
                       {leg.waiver?.fboName || leg.departureFbo || "—"}
                     </td>
                     <td className="px-4 py-2 text-right text-gray-600">
-                      {feePaid > 0 ? `$${feePaid.toLocaleString()}` : <span className="text-green-600 text-xs">waived</span>}
+                      {(() => {
+                        const totalFee = (leg.waiver?.feeWaived ?? 0) + (leg.waiver?.landingFee ?? 0) + (leg.waiver?.securityFee ?? 0);
+                        return totalFee > 0 ? `$${totalFee.toLocaleString()}` : <span className="text-gray-400">—</span>;
+                      })()}
+                    </td>
+                    <td className="px-4 py-2 text-right text-gray-600">
+                      {leg.waiver?.minGallons ? `${leg.waiver.minGallons} gal` : <span className="text-gray-400">—</span>}
+                    </td>
+                    <td className="px-4 py-2 text-right">
+                      {feePaid > 0
+                        ? <span className="text-red-600 text-xs font-medium">${feePaid.toLocaleString()} paid</span>
+                        : <span className="text-green-600 text-xs font-medium">waived</span>}
                     </td>
                   </tr>
                 );
@@ -248,36 +268,61 @@ export default function SharedPlanPage({ params }: { params: Promise<{ token: st
           </div>
         )}
 
-        {/* Adjustable weights */}
+        {/* Adjustable weights & fees */}
         <div className="bg-white rounded-lg border border-gray-200 px-4 py-4">
-          <h3 className="text-sm font-semibold text-gray-800 mb-3">Adjust Weights</h3>
+          <h3 className="text-sm font-semibold text-gray-800 mb-3">Adjust Weights & Fees</h3>
           <p className="text-xs text-gray-500 mb-3">
-            Change MLW or ZFW per leg and recalculate. Defaults: MLW {acDefaults.mlw.toLocaleString()} lbs, ZFW {acDefaults.zfw.toLocaleString()} lbs
+            Override values per leg if our data is wrong, then hit Recalculate.
           </p>
-          <div className="space-y-2">
-            {plan.legs.map((leg, i) => (
-              <div key={i} className="flex items-center gap-4 text-sm">
-                <span className="w-28 text-gray-600 font-medium">{leg.from} → {leg.to}</span>
-                <div className="flex items-center gap-1">
-                  <label className="text-xs text-gray-500">MLW</label>
-                  <input
-                    type="number"
-                    value={mlwOverrides[String(i)] ?? acDefaults.mlw}
-                    onChange={(e) => setMlwOverrides({ ...mlwOverrides, [String(i)]: parseInt(e.target.value) || acDefaults.mlw })}
-                    className="w-24 text-xs border border-gray-300 rounded px-2 py-1 text-right"
-                  />
+          <div className="space-y-3">
+            {plan.legs.map((leg, i) => {
+              const totalFee = (leg.waiver?.feeWaived ?? 0) + (leg.waiver?.landingFee ?? 0) + (leg.waiver?.securityFee ?? 0);
+              return (
+                <div key={i} className="border border-gray-100 rounded-lg px-3 py-2 space-y-2">
+                  <span className="text-sm text-gray-700 font-semibold">{leg.from} → {leg.to}</span>
+                  <span className="text-xs text-gray-400 ml-2">{leg.waiver?.fboName || leg.departureFbo || ""}</span>
+                  <div className="flex flex-wrap items-center gap-4">
+                    <div className="flex items-center gap-1">
+                      <label className="text-xs text-gray-500 w-8">MLW</label>
+                      <input
+                        type="number"
+                        value={mlwOverrides[String(i)] ?? acDefaults.mlw}
+                        onChange={(e) => setMlwOverrides({ ...mlwOverrides, [String(i)]: parseInt(e.target.value) || acDefaults.mlw })}
+                        className="w-24 text-xs border border-gray-300 rounded px-2 py-1 text-right"
+                      />
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <label className="text-xs text-gray-500 w-8">ZFW</label>
+                      <input
+                        type="number"
+                        value={zfwOverrides[String(i)] ?? acDefaults.zfw}
+                        onChange={(e) => setZfwOverrides({ ...zfwOverrides, [String(i)]: parseInt(e.target.value) || acDefaults.zfw })}
+                        className="w-24 text-xs border border-gray-300 rounded px-2 py-1 text-right"
+                      />
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <label className="text-xs text-gray-500 w-16">Fee ($)</label>
+                      <input
+                        type="number"
+                        value={feeOverrides[String(i)] ?? totalFee}
+                        onChange={(e) => setFeeOverrides({ ...feeOverrides, [String(i)]: parseInt(e.target.value) || 0 })}
+                        className="w-20 text-xs border border-gray-300 rounded px-2 py-1 text-right"
+                      />
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <label className="text-xs text-gray-500 w-16">Waive @</label>
+                      <input
+                        type="number"
+                        value={waiverGalOverrides[String(i)] ?? (leg.waiver?.minGallons ?? 0)}
+                        onChange={(e) => setWaiverGalOverrides({ ...waiverGalOverrides, [String(i)]: parseInt(e.target.value) || 0 })}
+                        className="w-20 text-xs border border-gray-300 rounded px-2 py-1 text-right"
+                      />
+                      <span className="text-xs text-gray-400">gal</span>
+                    </div>
+                  </div>
                 </div>
-                <div className="flex items-center gap-1">
-                  <label className="text-xs text-gray-500">ZFW</label>
-                  <input
-                    type="number"
-                    value={zfwOverrides[String(i)] ?? acDefaults.zfw}
-                    onChange={(e) => setZfwOverrides({ ...zfwOverrides, [String(i)]: parseInt(e.target.value) || acDefaults.zfw })}
-                    className="w-24 text-xs border border-gray-300 rounded px-2 py-1 text-right"
-                  />
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
           <button
             onClick={recalculate}

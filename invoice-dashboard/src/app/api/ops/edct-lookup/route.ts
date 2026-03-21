@@ -170,17 +170,27 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Override callsigns with the real mapping
+  // Override callsigns with the real mapping + add N-number lookups
+  const expanded: FlightInput[] = [];
+  const seenKeys = new Set<string>();
   for (const f of flights) {
     const mapped = callsignMap.get(f.tail.toUpperCase());
-    if (mapped) f.callsign = mapped;
+    // KOW callsign lookup
+    if (mapped) {
+      f.callsign = mapped;
+      const key = `${mapped}|${f.dept}|${f.arr}`;
+      if (!seenKeys.has(key)) { seenKeys.add(key); expanded.push({ ...f, callsign: mapped }); }
+    }
+    // N-number lookup (pilots may file under tail)
+    const nKey = `${f.tail.toUpperCase()}|${f.dept}|${f.arr}`;
+    if (!seenKeys.has(nKey)) { seenKeys.add(nKey); expanded.push({ ...f, callsign: f.tail.toUpperCase() }); }
   }
 
   // Fire lookups in batches of 10 to avoid FAA rate limiting
   const results: FaaEdctResult[] = [];
   const batchSize = 10;
-  for (let i = 0; i < flights.length; i += batchSize) {
-    const batch = flights.slice(i, i + batchSize);
+  for (let i = 0; i < expanded.length; i += batchSize) {
+    const batch = expanded.slice(i, i + batchSize);
     const batchResults = await Promise.all(batch.map(lookupSingleEdct));
     results.push(...batchResults);
   }
@@ -194,7 +204,6 @@ export async function POST(req: NextRequest) {
 
   if (found.length > 0) {
     for (const edct of found) {
-      if (edct.cancelled) continue;
       if (edct.edct_time && new Date(edct.edct_time).getTime() < todayStart) continue;
 
       const sourceId = `faa-edct-${edct.callsign}-${edct.origin}-${edct.destination}`;
@@ -217,14 +226,14 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Count only current (non-stale, non-cancelled) as "found" for the UI
+  // Count current (non-stale) as "found" for the UI — include cancelled
   const current = found.filter((r) =>
-    !r.cancelled && (!r.edct_time || new Date(r.edct_time).getTime() >= todayStart)
+    !r.edct_time || new Date(r.edct_time).getTime() >= todayStart
   );
 
   return NextResponse.json({
     ok: true,
-    checked: results.length,
+    checked: expanded.length,
     found: current.length,
     stale: found.length - current.length,
     results,
