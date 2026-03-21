@@ -152,6 +152,26 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "flights array is required" }, { status: 400 });
   }
 
+  // Get tail → callsign mapping from ics_sources
+  const supa = createServiceClient();
+  const { data: icsSources } = await supa
+    .from("ics_sources")
+    .select("label, callsign")
+    .not("callsign", "is", null);
+
+  const callsignMap = new Map<string, string>();
+  for (const s of icsSources ?? []) {
+    if (s.label && s.callsign) {
+      callsignMap.set(s.label.toUpperCase(), s.callsign.toUpperCase());
+    }
+  }
+
+  // Override callsigns with the real mapping
+  for (const f of flights) {
+    const mapped = callsignMap.get(f.tail.toUpperCase());
+    if (mapped) f.callsign = mapped;
+  }
+
   // Fire all lookups in parallel
   const results = await Promise.all(flights.map(lookupSingleEdct));
 
@@ -159,8 +179,6 @@ export async function POST(req: NextRequest) {
 
   // Store any found EDCTs as ops_alerts (upsert by source_message_id to avoid duplicates)
   if (found.length > 0) {
-    const supa = createServiceClient();
-
     for (const edct of found) {
       if (edct.cancelled) continue; // Skip cancelled EDCTs
 
