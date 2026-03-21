@@ -385,18 +385,20 @@ function TailPlanCard({ plan: tp, date }: { plan: TailPlan; date: string }) {
     if (!plan) return;
     setSendingLink(true);
     try {
-      const res = await fetch("/api/fuel-planning/send-tankering-alerts", {
+      const res = await fetch("/api/fuel-planning/create-plan-link", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ date }),
+        body: JSON.stringify({
+          tail: tp.tail,
+          aircraftType: tp.aircraftType,
+          date,
+          plan: tp,
+          send_slack: true,
+        }),
       });
       const data = await res.json();
-      // Find the result for this tail
-      const tailResult = data.results?.find((r: { tail: string }) => r.tail === tp.tail);
-      if (tailResult?.token) {
-        setLinkSent(`${window.location.origin}/tanker/plan/${tailResult.token}`);
-      } else if (data.results?.length > 0) {
-        setLinkSent("Sent!");
+      if (data.url) {
+        setLinkSent(data.url);
       }
     } catch { /* ignore */ }
     finally { setSendingLink(false); }
@@ -439,7 +441,7 @@ function TailPlanCard({ plan: tp, date }: { plan: TailPlan; date: string }) {
               {sent ? "Sent" : sending ? "Sending..." : "Slack"}
             </button>
           )}
-          {plan && tp.tankerSavings > 0 && (
+          {plan && (
             <button
               onClick={handleSendAlertLink}
               disabled={sendingLink || !!linkSent}
