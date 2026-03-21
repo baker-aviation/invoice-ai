@@ -1332,17 +1332,21 @@ function ReqCard({ req, editing, onEdit, onSave, onDelete }: {
     if (!file) return;
     setUploading(true);
     try {
-      // Upload to Supabase storage
-      const { createClient } = await import("@/lib/supabase/client");
-      const supa = createClient();
-      const path = `requirement-attachments/${req.id}/${file.name}`;
-      const { error: uploadErr } = await supa.storage.from("intl-docs").upload(path, file, { upsert: true });
-      if (uploadErr) throw uploadErr;
-      const { data: urlData } = supa.storage.from("intl-docs").getPublicUrl(path);
-      // Save URL to requirement
-      onSave({ attachment_url: urlData.publicUrl, attachment_filename: file.name });
+      const form = new FormData();
+      form.append("file", file);
+      const res = await fetch(`/api/ops/intl/requirements/${req.id}/attach`, {
+        method: "POST",
+        body: form,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Upload failed");
+      }
+      const { requirement } = await res.json();
+      onSave({ attachment_url: requirement.attachment_url, attachment_filename: requirement.attachment_filename });
     } catch (err) {
       console.error("Upload failed:", err);
+      alert("File upload failed — check console for details.");
     } finally {
       setUploading(false);
       e.target.value = "";
