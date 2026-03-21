@@ -61,13 +61,50 @@ export async function GET(req: NextRequest) {
   let ffRoute: string | null = null;
   let ffFlightId: string | null = null;
   let ffError: string | null = null;
+  let ffRecommendedRoutes: Array<{ routeString: string; source: string }> = [];
 
-  if (tail && process.env.FOREFLIGHT_API_KEY) {
+  if (process.env.FOREFLIGHT_API_KEY) {
+    // First try the recommended routes endpoint (doesn't need a tail number)
+    try {
+      const routesUrl = `${FF_BASE}/routes/${dep}/${arr}`;
+      console.log(`[route-analysis] Fetching recommended routes: ${routesUrl}`);
+      const routesRes = await fetch(routesUrl, {
+        headers: { "x-api-key": apiKey() },
+      });
+      console.log(`[route-analysis] Routes response: ${routesRes.status} ${routesRes.statusText}`);
+      if (routesRes.ok) {
+        const routesData = await routesRes.json();
+        console.log(`[route-analysis] Routes raw keys: ${JSON.stringify(Object.keys(routesData))}, data preview: ${JSON.stringify(routesData).slice(0, 300)}`);
+        const routes = routesData.routes ?? routesData ?? [];
+        if (Array.isArray(routes) && routes.length > 0) {
+          // Log first route object keys to understand structure
+          console.log(`[route-analysis] First route keys: ${JSON.stringify(Object.keys(routes[0]))}`);
+          ffRecommendedRoutes = routes.slice(0, 5).map((r: Record<string, unknown>) => ({
+            routeString: (r.routeString ?? r.route ?? r.routeText ?? r.routeOfFlight ?? "") as string,
+            source: (r.source ?? r.type ?? "recommended") as string,
+          })).filter((r: { routeString: string }) => r.routeString && r.routeString !== "DCT");
+
+          // Use the first recommended route as the primary
+          if (ffRecommendedRoutes.length > 0) {
+            ffRoute = ffRecommendedRoutes[0].routeString;
+          }
+        }
+        console.log(`[route-analysis] FF routes ${dep}→${arr}: ${ffRecommendedRoutes.length} recommended, best=${ffRoute?.slice(0, 80) ?? "none"}`);
+      } else {
+        const errText = await routesRes.text();
+        console.warn(`[route-analysis] Routes endpoint ${routesRes.status}: ${errText.slice(0, 200)}`);
+      }
+    } catch (err) {
+      console.warn(`[route-analysis] FF routes endpoint failed for ${dep}→${arr}:`, err instanceof Error ? err.message : err);
+    }
+  }
+
+  if (!ffRoute && tail && process.env.FOREFLIGHT_API_KEY) {
     const acConfig = AIRCRAFT[tail];
     const altitude = acConfig?.altitude ?? 410;
 
     try {
-      // First get cruise profile UUID
+      // Get cruise profile UUID
       const acRes = await fetch(`${FF_BASE}/aircraft`, {
         headers: { "x-api-key": apiKey() },
       });
@@ -101,21 +138,38 @@ export async function GET(req: NextRequest) {
 
       if (flightRes.ok) {
         const flightData = await flightRes.json();
-        ffFlightId = flightData.flightId ?? null;
+        // ForeFlight wraps everything in { flight: { ... } }
+        const fd = flightData.flight ?? flightData;
+        ffFlightId = fd.flightId ?? null;
 
-        // Extract the route string from the response
-        // ForeFlight returns the auto-computed route in routeToDestination.route
-        const routeData = flightData.routeToDestination ?? flightData.route ?? {};
-        ffRoute = routeData.route ?? routeData.routeString ?? null;
+        // Extract the route string — try multiple known locations
+        const routeData = fd.routeToDestination ?? fd.route ?? {};
+        ffRoute = routeData.route ?? routeData.routeString ?? fd.routeString ?? null;
 
-        // Also check nested performance.navlog for waypoints
-        const navlog = flightData.performance?.navlog ?? flightData.navlog;
-        if (!ffRoute && navlog && Array.isArray(navlog)) {
-          // Build route from navlog waypoint names
-          ffRoute = navlog
-            .map((wp: Record<string, unknown>) => wp.ident ?? wp.name)
-            .filter(Boolean)
+        // Try flightData sub-object
+        if (fd.flightData) {
+          const fdd = fd.flightData;
+          if (!ffRoute || ffRoute === "DCT") {
+            ffRoute = fdd.route ?? fdd.routeString ?? fdd.routeToDestination?.route ?? ffRoute;
+          }
+        }
+
+        // Extract route from navlog waypoints (most reliable source)
+        const navlog = fd.performance?.navlog ?? fd.performance?.waypoints;
+        if (navlog && Array.isArray(navlog) && navlog.length > 2) {
+          // Log first waypoint to understand structure
+          console.log(`[route-analysis] FF ${dep}→${arr}: navlog[0] keys=${Object.keys(navlog[0]).join(",")}`);
+          const wpRoute = navlog
+            .map((wp: Record<string, unknown>) => wp.ident ?? wp.waypointName ?? wp.name ?? wp.fixName)
+            .filter((id: unknown) => id && id !== dep && id !== arr) // exclude dep/arr
             .join(" ");
+          if (wpRoute && wpRoute.length > 0) {
+            ffRoute = wpRoute;
+          }
+          console.log(`[route-analysis] FF ${dep}→${arr}: navlog ${navlog.length} waypoints, route=${ffRoute?.slice(0, 120) ?? "null"}`);
+        } else {
+          // Log performance keys to find navlog
+          console.log(`[route-analysis] FF ${dep}→${arr}: perf keys=${fd.performance ? Object.keys(fd.performance).join(",") : "none"}, route=${ffRoute ?? "null"}`);
         }
 
         // Clean up the flight plan from ForeFlight dispatch
@@ -132,6 +186,9 @@ export async function GET(req: NextRequest) {
     } catch (err) {
       ffError = err instanceof Error ? err.message : String(err);
     }
+
+    if (ffError) console.warn(`[route-analysis] ForeFlight error for ${dep}→${arr}:`, ffError);
+    if (ffRoute) console.log(`[route-analysis] ForeFlight route ${dep}→${arr}:`, ffRoute);
   }
 
   const method = ffRoute ? "foreflight+great_circle" : "great_circle";
@@ -157,6 +214,7 @@ export async function GET(req: NextRequest) {
     arrival: { icao: arr, name: arrInfo.name, lat: arrInfo.lat, lon: arrInfo.lon },
     foreflight: {
       route: ffRoute,
+      recommendedRoutes: ffRecommendedRoutes,
       available: !!process.env.FOREFLIGHT_API_KEY,
       error: ffError,
     },

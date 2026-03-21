@@ -464,6 +464,8 @@ export type CountryRequirement = {
   name: string;
   description: string | null;
   required_documents: string[];
+  attachment_url: string | null;
+  attachment_filename: string | null;
   sort_order: number;
   is_active: boolean;
   created_at: string;
@@ -555,6 +557,39 @@ export type IntlLegAlert = {
   acknowledged_by: string | null;
   acknowledged_at: string | null;
   created_at: string;
+};
+
+// ---------------------------------------------------------------------------
+// International Trips
+// ---------------------------------------------------------------------------
+
+export type IntlTrip = {
+  id: string;
+  tail_number: string;
+  route_icaos: string[]; // e.g. ['KTEB', 'MYNN', 'MKJP', 'KOPF']
+  flight_ids: string[];  // ordered flight IDs for each leg
+  trip_date: string;     // date of first departure
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  // Joined
+  clearances?: IntlTripClearance[];
+};
+
+export type IntlTripClearance = {
+  id: string;
+  trip_id: string;
+  clearance_type: "outbound_clearance" | "landing_permit" | "inbound_clearance" | "overflight_permit";
+  airport_icao: string;
+  status: "not_started" | "submitted" | "approved";
+  sort_order: number;
+  notes: string | null;
+  file_gcs_bucket: string | null;
+  file_gcs_key: string | null;
+  file_filename: string | null;
+  file_content_type: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 // Re-export client-safe helpers (these are also importable directly from @/lib/intlUtils)

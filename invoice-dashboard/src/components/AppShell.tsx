@@ -12,7 +12,7 @@ const NAV = [
   { href: "/ops", label: "Ops", exact: false, adminOnly: false },
   { href: "/invoices", label: "Invoices", exact: false, adminOnly: false },
   { href: "/alerts", label: "Alerts", exact: false, adminOnly: false },
-  { href: "/fuel-prices", label: "Fuel Prices", exact: false, adminOnly: false },
+  { href: "/fuel-prices", label: "Fuel / Fees", exact: false, adminOnly: false },
   { href: "/jobs", label: "Jobs", exact: false, adminOnly: false },
   { href: "/maintenance", label: "AOG Vans", exact: false, adminOnly: false },
   { href: "/vehicles", label: "Vehicles", exact: false, adminOnly: false },

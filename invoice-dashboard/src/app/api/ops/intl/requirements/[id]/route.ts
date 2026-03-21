@@ -18,7 +18,7 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
   }
 
   const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
-  const fields = ["name", "description", "requirement_type", "required_documents", "sort_order", "is_active"];
+  const fields = ["name", "description", "requirement_type", "required_documents", "sort_order", "is_active", "attachment_url", "attachment_filename"];
   for (const f of fields) {
     if (input[f] !== undefined) updates[f] = input[f];
   }

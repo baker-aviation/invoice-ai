@@ -5,13 +5,13 @@ import type {
   Flight,
   Country,
   CountryRequirement,
-  IntlLegPermit,
-  IntlLegHandler,
   IntlLegAlert,
   UsCustomsAirport,
   IntlDocument,
+  IntlTrip,
+  IntlTripClearance,
 } from "@/lib/opsApi";
-import { isInternationalFlight } from "@/lib/intlUtils";
+import { isInternationalIcao } from "@/lib/intlUtils";
 
 // ---------------------------------------------------------------------------
 // Sub-tabs within International
@@ -47,29 +47,16 @@ export default function InternationalOps({ flights: _parentFlights }: { flights:
   const [subTab, setSubTab] = useState<SubTab>("Flight Board");
   const [countries, setCountries] = useState<Country[]>([]);
   const [alerts, setAlerts] = useState<IntlLegAlert[]>([]);
-  const [allFlights, setAllFlights] = useState<Flight[]>([]);
+  const [trips, setTrips] = useState<IntlTrip[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // The parent page only fetches 48h of flights. We need 30 days for the international board.
-  const loadFlights = useCallback(async () => {
+  const loadTrips = useCallback(async () => {
     try {
-      const res = await fetch("/api/ops/flights?lookahead_hours=720&lookback_hours=24");
+      const res = await fetch("/api/ops/intl/trips");
       const data = await res.json();
-      setAllFlights(data.flights ?? data.items ?? []);
-    } catch {
-      // Fallback to parent flights if API fails
-      setAllFlights(_parentFlights);
-    }
-  }, [_parentFlights]);
-
-  const intlFlights = allFlights
-    .filter(isInternationalFlight)
-    .filter((f) => {
-      const dep = new Date(f.scheduled_departure);
-      const now = new Date();
-      return dep >= new Date(now.getTime() - 24 * 60 * 60 * 1000);
-    })
-    .sort((a, b) => new Date(a.scheduled_departure).getTime() - new Date(b.scheduled_departure).getTime());
+      setTrips(data.trips ?? []);
+    } catch { /* ignore */ }
+  }, []);
 
   const loadCountries = useCallback(async () => {
     try {
@@ -88,8 +75,8 @@ export default function InternationalOps({ flights: _parentFlights }: { flights:
   }, []);
 
   useEffect(() => {
-    Promise.all([loadFlights(), loadCountries(), loadAlerts()]).finally(() => setLoading(false));
-  }, [loadFlights, loadCountries, loadAlerts]);
+    Promise.all([loadTrips(), loadCountries(), loadAlerts()]).finally(() => setLoading(false));
+  }, [loadTrips, loadCountries, loadAlerts]);
 
   const unackedAlerts = alerts.filter((a) => !a.acknowledged);
 
@@ -135,7 +122,7 @@ export default function InternationalOps({ flights: _parentFlights }: { flights:
       {loading ? (
         <p className="text-sm text-gray-500 animate-pulse">Loading international data...</p>
       ) : subTab === "Flight Board" ? (
-        <FlightBoard flights={intlFlights} countries={countries} />
+        <TripBoard trips={trips} countries={countries} onRefresh={loadTrips} />
       ) : subTab === "Country Profiles" ? (
         <CountryProfiles countries={countries} onRefresh={loadCountries} />
       ) : subTab === "Documents" ? (
@@ -150,150 +137,694 @@ export default function InternationalOps({ flights: _parentFlights }: { flights:
 }
 
 // ===========================================================================
-// FLIGHT BOARD — 30-day international leg lookahead
+// TRIP BOARD — trip-centric view with clearance progress
 // ===========================================================================
-function FlightBoard({ flights, countries }: { flights: Flight[]; countries: Country[] }) {
+
+const CLEARANCE_STATUSES = ["not_started", "submitted", "approved"] as const;
+const CLEARANCE_LABELS: Record<string, string> = {
+  outbound_clearance: "OB Clearance",
+  landing_permit: "Landing Permit",
+  inbound_clearance: "IB Clearance",
+  overflight_permit: "Overflight Permit",
+};
+const CLEARANCE_LABELS_FULL: Record<string, string> = {
+  outbound_clearance: "Outbound Clearance",
+  landing_permit: "Landing Permit",
+  inbound_clearance: "Inbound Clearance",
+  overflight_permit: "Overflight Permit",
+};
+
+function clearanceStatusColor(s: string) {
+  switch (s) {
+    case "approved": return "bg-green-100 text-green-800";
+    case "submitted": return "bg-blue-100 text-blue-800";
+    default: return "bg-gray-100 text-gray-600";
+  }
+}
+
+function clearanceStatusLabel(s: string) {
+  switch (s) {
+    case "approved": return "Approved";
+    case "submitted": return "Submitted";
+    default: return "Not Started";
+  }
+}
+
+function TripBoard({ trips, countries, onRefresh }: { trips: IntlTrip[]; countries: Country[]; onRefresh: () => void }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
-  if (flights.length === 0) {
-    return <p className="text-sm text-gray-500">No international flights in the next 30 days.</p>;
-  }
-
-  // Group by date
-  const byDate = new Map<string, Flight[]>();
-  for (const f of flights) {
-    const d = new Date(f.scheduled_departure).toLocaleDateString("en-US", {
-      weekday: "short", month: "short", day: "numeric",
-    });
-    if (!byDate.has(d)) byDate.set(d, []);
-    byDate.get(d)!.push(f);
+  if (trips.length === 0) {
+    return <p className="text-sm text-gray-500">No international trips detected in the next 30 days.</p>;
   }
 
   return (
-    <div className="space-y-4">
-      <p className="text-xs text-gray-500">{flights.length} international leg{flights.length > 1 ? "s" : ""} in the next 30 days</p>
-      {Array.from(byDate.entries()).map(([date, dateFlights]) => (
-        <div key={date}>
-          <h3 className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-1">{date}</h3>
-          <div className="space-y-1">
-            {dateFlights.map((f) => (
-              <FlightRow
-                key={f.id}
-                flight={f}
-                countries={countries}
-                expanded={expandedId === f.id}
-                onToggle={() => setExpandedId(expandedId === f.id ? null : f.id)}
-              />
-            ))}
-          </div>
-        </div>
+    <div className="space-y-3">
+      <p className="text-xs text-gray-500">{trips.length} international trip{trips.length > 1 ? "s" : ""}</p>
+      {trips.map((trip) => (
+        <TripRow
+          key={trip.id}
+          trip={trip}
+          countries={countries}
+          expanded={expandedId === trip.id}
+          onToggle={() => setExpandedId(expandedId === trip.id ? null : trip.id)}
+          onRefresh={onRefresh}
+        />
       ))}
     </div>
   );
 }
 
-type OverflightInfo = { country_name: string; country_iso: string; fir_id: string };
-
-function FlightRow({ flight, countries, expanded, onToggle }: {
-  flight: Flight;
+function TripRow({ trip, countries, expanded, onToggle, onRefresh }: {
+  trip: IntlTrip;
   countries: Country[];
   expanded: boolean;
   onToggle: () => void;
+  onRefresh: () => void;
 }) {
-  const [overflights, setOverflights] = useState<OverflightInfo[]>([]);
-  const [ovfLoaded, setOvfLoaded] = useState(false);
+  const clearances = trip.clearances ?? [];
+  const tripDate = new Date(trip.trip_date + "T00:00:00");
+  const daysOut = Math.ceil((tripDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
 
-  const dep = new Date(flight.scheduled_departure);
-  const time = dep.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC" });
-  const daysOut = Math.ceil((dep.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
-
-  const [ffRoute, setFfRoute] = useState<string | null>(null);
-  const [routeMethod, setRouteMethod] = useState<string>("loading");
-
-  // Use fast great-circle-only endpoint for row badges (no ForeFlight call)
-  useEffect(() => {
-    if (ovfLoaded || !flight.departure_icao || !flight.arrival_icao) return;
-    setOvfLoaded(true);
-    fetch(`/api/ops/intl/overflights?dep=${flight.departure_icao}&arr=${flight.arrival_icao}`)
-      .then((r) => r.json())
-      .then((d) => {
-        setOverflights(d.overflights ?? []);
-        setRouteMethod("great_circle");
-      })
-      .catch(() => { setRouteMethod("error"); });
-  }, [flight.departure_icao, flight.arrival_icao, ovfLoaded]);
-
-  // Only fetch ForeFlight route when expanded
-  useEffect(() => {
-    if (!expanded || ffRoute !== null || !flight.departure_icao || !flight.arrival_icao || !flight.tail_number) return;
-    const params = new URLSearchParams({ dep: flight.departure_icao, arr: flight.arrival_icao, tail: flight.tail_number });
-    fetch(`/api/ops/intl/route-analysis?${params}`)
-      .then((r) => r.json())
-      .then((d) => {
-        if (d.foreflight?.route) setFfRoute(d.foreflight.route);
-        if (d.overflights?.length) setOverflights(d.overflights);
-        setRouteMethod(d.method ?? "great_circle");
-      })
-      .catch(() => {});
-  }, [expanded, ffRoute, flight.departure_icao, flight.arrival_icao, flight.tail_number]);
-
-  // Flag overflown countries that require permits
-  const ovfPermitCountries = overflights.filter((o) => {
-    const c = countries.find((c) => c.iso_code === o.country_iso);
-    return c?.overflight_permit_required;
-  });
+  // Overall progress
+  const total = clearances.length;
+  const approved = clearances.filter((c) => c.status === "approved").length;
+  const allApproved = total > 0 && approved === total;
+  const anySubmitted = clearances.some((c) => c.status === "submitted");
 
   return (
-    <div className="border border-gray-200 rounded-lg overflow-hidden">
+    <div className={`border rounded-lg overflow-hidden ${
+      allApproved ? "border-green-200" : anySubmitted ? "border-blue-200" : "border-gray-200"
+    }`}>
+      {/* Collapsed row */}
       <button
         onClick={onToggle}
-        className="w-full flex items-center gap-3 px-3 py-2 text-left hover:bg-gray-50 transition-colors"
+        className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-50 transition-colors"
       >
-        <span className="text-xs font-mono text-gray-500 w-12">{time}Z</span>
-        <span className="text-sm font-medium w-16">{flight.tail_number ?? "?"}</span>
-        <span className="text-sm">
-          <span className="font-medium">{flight.departure_icao}</span>
-          <span className="text-gray-400 mx-1">&rarr;</span>
-          <span className="font-medium">{flight.arrival_icao}</span>
+        {/* Tail */}
+        <span className="text-sm font-semibold w-20">{trip.tail_number}</span>
+
+        {/* Route: KTEB → MYNN → MKJP → KOPF */}
+        <span className="text-sm flex items-center gap-1 flex-wrap">
+          {trip.route_icaos.map((icao, i) => (
+            <span key={i} className="flex items-center gap-1">
+              {i > 0 && <span className="text-gray-300">&rarr;</span>}
+              <span className={`font-medium ${isInternationalIcao(icao) ? "text-blue-700" : "text-gray-800"}`}>
+                {icao}
+              </span>
+            </span>
+          ))}
         </span>
-        {/* Overflight badges */}
-        {overflights.length > 0 && (
-          <span className="flex gap-0.5 flex-wrap">
-            {overflights.map((o) => {
-              const needsPermit = ovfPermitCountries.some((p) => p.country_iso === o.country_iso);
-              return (
-                <span key={o.fir_id} className={`text-[10px] px-1 py-0.5 rounded ${
-                  needsPermit ? "bg-orange-100 text-orange-700 font-medium" : "bg-gray-100 text-gray-500"
-                }`} title={`Overflies ${o.country_name}${needsPermit ? " — PERMIT REQUIRED" : ""}`}>
-                  {o.country_iso}{needsPermit ? "!" : ""}
-                </span>
-              );
-            })}
-          </span>
-        )}
-        <span className="text-xs text-gray-500 ml-auto">
-          {flight.pic && <span className="mr-2">PIC: {flight.pic}</span>}
-          {flight.sic && <span>SIC: {flight.sic}</span>}
+
+        {/* Mini clearance badges */}
+        <span className="flex gap-1.5 ml-auto mr-2">
+          {clearances.map((c) => (
+            <span
+              key={c.id}
+              className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${clearanceStatusColor(c.status)}`}
+              title={`${CLEARANCE_LABELS[c.clearance_type]} (${c.airport_icao}): ${clearanceStatusLabel(c.status)}`}
+            >
+              {c.clearance_type === "outbound_clearance" ? "OB" :
+               c.clearance_type === "inbound_clearance" ? "IB" :
+               c.clearance_type === "overflight_permit" ? "OVF" :
+               c.airport_icao}
+            </span>
+          ))}
         </span>
-        <span className={`text-xs px-2 py-0.5 rounded-full ${
+
+        {/* Date badge */}
+        <span className={`text-xs px-2 py-0.5 rounded-full whitespace-nowrap ${
           daysOut <= 4 ? "bg-red-100 text-red-700" : daysOut <= 7 ? "bg-yellow-100 text-yellow-700" : "bg-gray-100 text-gray-600"
         }`}>
-          {daysOut <= 0 ? "Today" : `${daysOut}d`}
+          {tripDate.toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+          {daysOut <= 0 ? " (Today)" : ` (${daysOut}d)`}
         </span>
+
+        {/* Chevron */}
         <svg className={`w-4 h-4 text-gray-400 transition-transform ${expanded ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
         </svg>
       </button>
 
+      {/* Expanded detail */}
       {expanded && (
-        <FlightDetail flight={flight} countries={countries} overflights={overflights} ffRoute={ffRoute} routeMethod={routeMethod} />
+        <TripDetail trip={trip} countries={countries} onRefresh={onRefresh} />
       )}
     </div>
   );
 }
 
 // ===========================================================================
-// TRIP DOCS PANEL — select & download documents for a flight
+// TRIP DETAIL — expanded view with clearance cards per airport
+// ===========================================================================
+
+type OverflightInfo = { country_name: string; country_iso: string; fir_id: string };
+
+function TripDetail({ trip, countries, onRefresh }: {
+  trip: IntlTrip;
+  countries: Country[];
+  onRefresh: () => void;
+}) {
+  const [updating, setUpdating] = useState<string | null>(null);
+  const [showAddOvf, setShowAddOvf] = useState(false);
+  const [newOvfIcao, setNewOvfIcao] = useState("");
+  const [addingOvf, setAddingOvf] = useState(false);
+  const [overflights, setOverflights] = useState<OverflightInfo[]>([]);
+  const [ovfLoaded, setOvfLoaded] = useState(false);
+  const [autoCreatingOvf, setAutoCreatingOvf] = useState(false);
+  const [legRoutes, setLegRoutes] = useState<Array<{ dep: string; arr: string; route: string | null; method: string }>>([]);
+
+  const clearances = trip.clearances ?? [];
+
+  // Auto-detect overflown countries for each leg via route-analysis (ForeFlight + great-circle)
+  useEffect(() => {
+    if (ovfLoaded) return;
+    setOvfLoaded(true);
+    const route = trip.route_icaos;
+    if (route.length < 2) return;
+
+    // Use route-analysis endpoint which calls ForeFlight when available
+    const legFetches = [];
+    for (let i = 0; i < route.length - 1; i++) {
+      const dep = route[i];
+      const arr = route[i + 1];
+      const params = new URLSearchParams({ dep, arr });
+      if (trip.tail_number) params.set("tail", trip.tail_number);
+      legFetches.push(
+        fetch(`/api/ops/intl/route-analysis?${params}`)
+          .then((r) => r.json())
+          .then((d) => ({
+            dep,
+            arr,
+            overflights: d.overflights ?? [],
+            ffRoute: d.foreflight?.route ?? null,
+            method: d.method ?? "great_circle",
+          }))
+          .catch(() => ({ dep, arr, overflights: [], ffRoute: null, method: "error" }))
+      );
+    }
+    Promise.all(legFetches).then((results) => {
+      // Collect route strings per leg
+      setLegRoutes(results.map((r) => ({ dep: r.dep, arr: r.arr, route: r.ffRoute, method: r.method })));
+      const seen = new Set<string>();
+      const all: OverflightInfo[] = [];
+
+      // Add all FIR-detected overflights
+      for (const leg of results) {
+        for (const o of leg.overflights) {
+          if (!seen.has(o.country_iso)) {
+            seen.add(o.country_iso);
+            all.push(o);
+          }
+        }
+      }
+
+      // Also add countries from ICAO prefixes for all non-US airports in the route
+      // This catches cases where FIR data is incomplete (e.g., Canada)
+      const ICAO_TO_COUNTRY: Record<string, { iso: string; name: string }> = {
+        C: { iso: "CA", name: "Canada" },
+        MM: { iso: "MX", name: "Mexico" },
+        MY: { iso: "BS", name: "Bahamas" },
+        MU: { iso: "CU", name: "Cuba" },
+        MK: { iso: "JM", name: "Jamaica" },
+        MB: { iso: "TC", name: "Turks & Caicos" },
+        MD: { iso: "DO", name: "Dominican Republic" },
+        MT: { iso: "HT", name: "Haiti" },
+        MG: { iso: "GT", name: "Guatemala" },
+        MH: { iso: "HN", name: "Honduras" },
+        MR: { iso: "CR", name: "Costa Rica" },
+        MP: { iso: "PA", name: "Panama" },
+        MZ: { iso: "BZ", name: "Belize" },
+        MN: { iso: "NI", name: "Nicaragua" },
+        MS: { iso: "SV", name: "El Salvador" },
+        MW: { iso: "KY", name: "Cayman Islands" },
+        SK: { iso: "CO", name: "Colombia" },
+        SV: { iso: "VE", name: "Venezuela" },
+        SB: { iso: "BR", name: "Brazil" },
+        SE: { iso: "EC", name: "Ecuador" },
+        SP: { iso: "PE", name: "Peru" },
+        SA: { iso: "AR", name: "Argentina" },
+        SC: { iso: "CL", name: "Chile" },
+        TN: { iso: "CW", name: "Curacao" },
+        TT: { iso: "TT", name: "Trinidad & Tobago" },
+        TB: { iso: "BB", name: "Barbados" },
+        TF: { iso: "GP", name: "Guadeloupe" },
+        TX: { iso: "BM", name: "Bermuda" },
+      };
+
+      for (const icao of route) {
+        if (!isInternationalIcao(icao)) continue;
+        // Try 2-char prefix, then 1-char
+        const two = icao.slice(0, 2);
+        const one = icao.slice(0, 1);
+        const match = ICAO_TO_COUNTRY[two] ?? ICAO_TO_COUNTRY[one];
+        if (match && !seen.has(match.iso)) {
+          seen.add(match.iso);
+          all.push({ country_iso: match.iso, country_name: match.name, fir_id: icao.slice(0, 2) });
+        }
+      }
+
+      setOverflights(all);
+    });
+  }, [trip.route_icaos, ovfLoaded]);
+
+  async function updateClearanceStatus(clearanceId: string, status: string) {
+    setUpdating(clearanceId);
+    try {
+      await fetch(`/api/ops/intl/trips/${trip.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clearance_id: clearanceId, status }),
+      });
+      onRefresh();
+    } catch { /* ignore */ }
+    setUpdating(null);
+  }
+
+  async function updateClearanceNotes(clearanceId: string, notes: string) {
+    try {
+      await fetch(`/api/ops/intl/trips/${trip.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clearance_id: clearanceId, notes }),
+      });
+      onRefresh();
+    } catch { /* ignore */ }
+  }
+
+  async function addOverflightPermit() {
+    if (!newOvfIcao.trim()) return;
+    setAddingOvf(true);
+    try {
+      await fetch(`/api/ops/intl/trips/${trip.id}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clearance_type: "overflight_permit",
+          airport_icao: newOvfIcao.toUpperCase().trim(),
+        }),
+      });
+      setNewOvfIcao("");
+      setShowAddOvf(false);
+      onRefresh();
+    } catch { /* ignore */ }
+    setAddingOvf(false);
+  }
+
+  async function removeClearance(clearanceId: string) {
+    if (!confirm("Remove this clearance?")) return;
+    try {
+      await fetch(`/api/ops/intl/trips/${trip.id}?clearance_id=${clearanceId}`, {
+        method: "DELETE",
+      });
+      onRefresh();
+    } catch { /* ignore */ }
+  }
+
+  // Group clearances for display: ordered by sort_order
+  const sortedClearances = [...clearances].sort((a, b) => a.sort_order - b.sort_order);
+
+  return (
+    <div className="border-t border-gray-200 bg-gray-50 px-4 py-4 space-y-3">
+      {/* Route header */}
+      <div className="flex items-center justify-between">
+        <h4 className="text-xs font-semibold text-gray-700 uppercase tracking-wide">
+          Trip Clearance Progress
+        </h4>
+        <button
+          onClick={() => setShowAddOvf(!showAddOvf)}
+          className="text-xs text-blue-600 hover:text-blue-800 font-medium"
+        >
+          + Add Overflight Permit
+        </button>
+      </div>
+
+      {/* Add overflight form */}
+      {showAddOvf && (
+        <div className="flex gap-2 items-end p-2 bg-white border border-gray-200 rounded">
+          <div>
+            <label className="text-[10px] text-gray-500">Country/Airspace ICAO</label>
+            <input
+              value={newOvfIcao}
+              onChange={(e) => setNewOvfIcao(e.target.value.toUpperCase())}
+              placeholder="e.g. MUFH"
+              className="block w-32 text-xs border border-gray-300 rounded px-2 py-1"
+            />
+          </div>
+          <button
+            onClick={addOverflightPermit}
+            disabled={addingOvf}
+            className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+          >
+            {addingOvf ? "Adding..." : "Add"}
+          </button>
+          <button onClick={() => setShowAddOvf(false)} className="px-2 py-1 text-xs text-gray-500">Cancel</button>
+        </div>
+      )}
+
+      {/* Clearance cards */}
+      <div className="space-y-2">
+        {sortedClearances.map((c) => (
+          <ClearanceCard
+            key={c.id}
+            clearance={c}
+            countries={countries}
+            tripId={trip.id}
+            updating={updating === c.id}
+            onStatusChange={(status) => updateClearanceStatus(c.id, status)}
+            onNotesChange={(notes) => updateClearanceNotes(c.id, notes)}
+            onRemove={c.clearance_type === "overflight_permit" ? () => removeClearance(c.id) : undefined}
+            onRefresh={onRefresh}
+          />
+        ))}
+      </div>
+
+      {/* Download All button — only if any clearance has a file */}
+      {clearances.some((c) => c.file_filename) && (
+        <div className="flex justify-end">
+          <button
+            onClick={async () => {
+              try {
+                const res = await fetch(`/api/ops/intl/trips/${trip.id}`);
+                const data = await res.json();
+                const files = data.files ?? [];
+                if (files.length === 0) return;
+                if (files.length === 1) {
+                  window.open(files[0].url, "_blank");
+                  return;
+                }
+                const JSZip = (await import("jszip")).default;
+                const zip = new JSZip();
+                await Promise.all(
+                  files.map(async (f: { clearance_type: string; airport_icao: string; filename: string; url: string }) => {
+                    try {
+                      const response = await fetch(f.url);
+                      const blob = await response.blob();
+                      zip.file(`${f.clearance_type}_${f.airport_icao}_${f.filename}`, blob);
+                    } catch { /* skip */ }
+                  })
+                );
+                const zipBlob = await zip.generateAsync({ type: "blob" });
+                const url = URL.createObjectURL(zipBlob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `${trip.tail_number}_clearances.zip`;
+                a.click();
+                URL.revokeObjectURL(url);
+              } catch { /* ignore */ }
+            }}
+            className="inline-flex items-center gap-2 px-3 py-1.5 bg-blue-600 text-white text-xs font-medium rounded-lg hover:bg-blue-700 transition-colors"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+            </svg>
+            Download All Clearances
+          </button>
+        </div>
+      )}
+
+      {/* Detected overflights — suggest permits for countries that require them */}
+      {overflights.length > 0 && (() => {
+        const existingOvfIcaos = new Set(
+          clearances
+            .filter((c) => c.clearance_type === "overflight_permit")
+            .map((c) => c.airport_icao)
+        );
+        const ovfPermitCountries = overflights.filter((o) => {
+          const c = countries.find((c) => c.iso_code === o.country_iso);
+          return c?.overflight_permit_required && !existingOvfIcaos.has(o.fir_id);
+        });
+
+        return (
+          <div className="space-y-2">
+            {/* ForeFlight route strings per leg */}
+            {legRoutes.some((lr) => lr.route) && (
+              <div>
+                <h4 className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-1">Route</h4>
+                {legRoutes.filter((lr) => lr.route).map((lr, i) => (
+                  <div key={i} className="mb-1">
+                    <span className="text-[10px] text-gray-400 mr-1">{lr.dep}→{lr.arr}</span>
+                    <span className="text-[10px] bg-gray-100 text-gray-500 px-1 py-0.5 rounded mr-1">
+                      {lr.method === "foreflight+great_circle" ? "ForeFlight" : lr.method}
+                    </span>
+                    <p className="text-xs text-gray-600 font-mono bg-white border border-gray-200 rounded px-2 py-1 mt-0.5 break-all">
+                      {lr.route}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Airspace transited summary */}
+            <div>
+              <h4 className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-1">Airspace Transited</h4>
+              <div className="flex gap-1 flex-wrap">
+                {overflights.map((o) => {
+                  const c = countries.find((c) => c.iso_code === o.country_iso);
+                  const needsPermit = c?.overflight_permit_required;
+                  return (
+                    <span
+                      key={o.fir_id}
+                      className={`text-[10px] px-1.5 py-0.5 rounded ${
+                        needsPermit ? "bg-orange-100 text-orange-700 font-medium" : "bg-gray-100 text-gray-500"
+                      }`}
+                      title={`${o.country_name}${needsPermit ? " — PERMIT REQUIRED" : ""}`}
+                    >
+                      {o.country_iso} {o.country_name}{needsPermit ? " !" : ""}
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Auto-create missing overflight permits */}
+            {ovfPermitCountries.length > 0 && (
+              <div className="bg-orange-50 border border-orange-200 rounded px-3 py-2">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-xs font-medium text-orange-800">
+                      {ovfPermitCountries.length} overflight permit{ovfPermitCountries.length > 1 ? "s" : ""} may be needed:
+                    </p>
+                    <p className="text-xs text-orange-700 mt-0.5">
+                      {ovfPermitCountries.map((o) => o.country_name).join(", ")}
+                    </p>
+                  </div>
+                  <button
+                    onClick={async () => {
+                      setAutoCreatingOvf(true);
+                      for (const o of ovfPermitCountries) {
+                        await fetch(`/api/ops/intl/trips/${trip.id}`, {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({
+                            clearance_type: "overflight_permit",
+                            airport_icao: o.fir_id,
+                            notes: `${o.country_name} (${o.country_iso}) — auto-detected`,
+                          }),
+                        });
+                      }
+                      setAutoCreatingOvf(false);
+                      onRefresh();
+                    }}
+                    disabled={autoCreatingOvf}
+                    className="px-3 py-1 text-xs bg-orange-600 text-white rounded hover:bg-orange-700 disabled:opacity-50"
+                  >
+                    {autoCreatingOvf ? "Creating..." : "Auto-Add Overflight Permits"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* Trip documents */}
+      {trip.tail_number && trip.route_icaos.length >= 2 && (
+        <TripDocsPanel
+          tail={trip.tail_number}
+          dep={trip.route_icaos[0]}
+          arr={trip.route_icaos[trip.route_icaos.length - 1]}
+        />
+      )}
+    </div>
+  );
+}
+
+// ===========================================================================
+// CLEARANCE CARD — single clearance item with status control
+// ===========================================================================
+
+function ClearanceCard({ clearance, countries, tripId, updating, onStatusChange, onNotesChange, onRemove, onRefresh }: {
+  clearance: IntlTripClearance;
+  countries: Country[];
+  tripId: string;
+  updating: boolean;
+  onStatusChange: (status: string) => void;
+  onNotesChange: (notes: string) => void;
+  onRemove?: () => void;
+  onRefresh: () => void;
+}) {
+  const [editingNotes, setEditingNotes] = useState(false);
+  const [notesVal, setNotesVal] = useState(clearance.notes ?? "");
+  const [uploading, setUploading] = useState(false);
+
+  const typeLabel = CLEARANCE_LABELS_FULL[clearance.clearance_type] ?? clearance.clearance_type;
+  const isIntl = isInternationalIcao(clearance.airport_icao);
+
+  // Color coding by type
+  const typeBg = clearance.clearance_type === "outbound_clearance"
+    ? "bg-amber-50 border-amber-200"
+    : clearance.clearance_type === "landing_permit"
+    ? "bg-blue-50 border-blue-200"
+    : clearance.clearance_type === "inbound_clearance"
+    ? "bg-emerald-50 border-emerald-200"
+    : "bg-purple-50 border-purple-200"; // overflight
+
+  const typeBadgeBg = clearance.clearance_type === "outbound_clearance"
+    ? "bg-amber-100 text-amber-700"
+    : clearance.clearance_type === "landing_permit"
+    ? "bg-blue-100 text-blue-700"
+    : clearance.clearance_type === "inbound_clearance"
+    ? "bg-emerald-100 text-emerald-700"
+    : "bg-purple-100 text-purple-700";
+
+  return (
+    <div className={`border rounded-lg px-4 py-3 ${typeBg}`}>
+      <div className="flex items-center gap-3">
+        {/* Type badge */}
+        <span className={`text-[10px] font-semibold px-2 py-0.5 rounded uppercase tracking-wide ${typeBadgeBg}`}>
+          {typeLabel}
+        </span>
+
+        {/* Airport */}
+        <span className="text-sm font-bold">{clearance.airport_icao}</span>
+
+        {/* Status dropdown */}
+        <select
+          value={clearance.status}
+          onChange={(e) => onStatusChange(e.target.value)}
+          disabled={updating}
+          className={`ml-auto text-xs rounded-lg px-3 py-1.5 border-0 font-semibold cursor-pointer transition-colors ${clearanceStatusColor(clearance.status)} ${updating ? "opacity-50" : ""}`}
+        >
+          {CLEARANCE_STATUSES.map((s) => (
+            <option key={s} value={s}>{clearanceStatusLabel(s)}</option>
+          ))}
+        </select>
+
+        {/* Remove button (only for overflight permits) */}
+        {onRemove && (
+          <button
+            onClick={onRemove}
+            className="text-gray-400 hover:text-red-500 transition-colors"
+            title="Remove overflight permit"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        )}
+      </div>
+
+      {/* Notes + File */}
+      <div className="mt-2 flex items-start gap-4">
+        {/* Notes */}
+        <div className="flex-1">
+          {editingNotes ? (
+            <div className="flex gap-2 items-center">
+              <input
+                value={notesVal}
+                onChange={(e) => setNotesVal(e.target.value)}
+                className="flex-1 text-xs border border-gray-300 rounded px-2 py-1"
+                placeholder="Add notes..."
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") { onNotesChange(notesVal); setEditingNotes(false); }
+                  if (e.key === "Escape") setEditingNotes(false);
+                }}
+                autoFocus
+              />
+              <button
+                onClick={() => { onNotesChange(notesVal); setEditingNotes(false); }}
+                className="text-xs text-blue-600 hover:text-blue-800"
+              >
+                Save
+              </button>
+              <button onClick={() => setEditingNotes(false)} className="text-xs text-gray-400">Cancel</button>
+            </div>
+          ) : (
+            <button
+              onClick={() => { setNotesVal(clearance.notes ?? ""); setEditingNotes(true); }}
+              className="text-xs text-gray-500 hover:text-gray-700"
+            >
+              {clearance.notes || "Add notes..."}
+            </button>
+          )}
+        </div>
+
+        {/* File upload / view */}
+        <div className="flex items-center gap-2">
+          {clearance.file_filename ? (
+            <>
+              <button
+                onClick={async () => {
+                  const res = await fetch(`/api/ops/intl/trips/${tripId}?clearance_id=${clearance.id}`);
+                  const data = await res.json();
+                  if (data.download_url) window.open(data.download_url, "_blank");
+                }}
+                className="text-xs text-blue-600 hover:text-blue-800 flex items-center gap-1"
+                title={clearance.file_filename}
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M18.375 12.739l-7.693 7.693a4.5 4.5 0 01-6.364-6.364l10.94-10.94A3 3 0 1119.5 7.372L8.552 18.32m.009-.01l-.01.01m5.699-9.941l-7.81 7.81a1.5 1.5 0 002.112 2.13" />
+                </svg>
+                {clearance.file_filename.length > 20 ? clearance.file_filename.slice(0, 17) + "..." : clearance.file_filename}
+              </button>
+            </>
+          ) : (
+            <label className={`text-xs text-gray-400 hover:text-blue-600 cursor-pointer flex items-center gap-1 ${uploading ? "opacity-50 pointer-events-none" : ""}`}>
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+              </svg>
+              {uploading ? "Uploading..." : "Upload"}
+              <input
+                type="file"
+                className="hidden"
+                accept=".pdf,.doc,.docx,.jpg,.png"
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  setUploading(true);
+                  try {
+                    const res = await fetch(`/api/ops/intl/trips/${tripId}`, {
+                      method: "PATCH",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        clearance_id: clearance.id,
+                        filename: file.name,
+                        content_type: file.type || "application/pdf",
+                      }),
+                    });
+                    const data = await res.json();
+                    if (data.upload_url) {
+                      await fetch(data.upload_url, {
+                        method: "PUT",
+                        headers: { "Content-Type": file.type || "application/pdf" },
+                        body: file,
+                      });
+                    }
+                    onRefresh();
+                  } catch { /* ignore */ }
+                  setUploading(false);
+                }}
+              />
+            </label>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ===========================================================================
+// TRIP DOCS PANEL — select & download documents for a trip
 // ===========================================================================
 type TripDoc = { id: string; name: string; document_type: string; entity_type: string; entity_id: string };
 
@@ -509,435 +1040,6 @@ function TripDocsPanel({ tail, dep, arr }: { tail: string; dep: string; arr: str
             </div>
           </div>
         </div>
-      )}
-    </div>
-  );
-}
-
-// ===========================================================================
-// FLIGHT DETAIL — permits, handlers, checklist for a single leg
-// ===========================================================================
-function FlightDetail({ flight, countries, overflights, ffRoute, routeMethod }: { flight: Flight; countries: Country[]; overflights: OverflightInfo[]; ffRoute: string | null; routeMethod: string }) {
-  const [permits, setPermits] = useState<IntlLegPermit[]>([]);
-  const [handlers, setHandlers] = useState<IntlLegHandler[]>([]);
-  const [requirements, setRequirements] = useState<CountryRequirement[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [autoCreating, setAutoCreating] = useState(false);
-
-  // Form states
-  const [showAddPermit, setShowAddPermit] = useState(false);
-  const [showAddHandler, setShowAddHandler] = useState(false);
-  const [newPermit, setNewPermit] = useState({ country_id: "", permit_type: "landing" as string, deadline: "" });
-  const [newHandler, setNewHandler] = useState({ handler_name: "", airport_icao: flight.arrival_icao ?? "", handler_contact: "" });
-
-  // Compute relevant country IDs (memoize to avoid re-renders)
-  const relevantCountryIdStr = countries
-    .filter((c) => {
-      const prefixes = c.icao_prefixes ?? [];
-      const isDepArr = prefixes.some((p: string) => flight.departure_icao?.startsWith(p) || flight.arrival_icao?.startsWith(p));
-      const isOverflown = overflights.some((o) => o.country_iso === c.iso_code);
-      return isDepArr || isOverflown;
-    })
-    .map((c) => c.id)
-    .sort()
-    .join(",");
-
-  const loadData = useCallback(async () => {
-    try {
-      const ids = relevantCountryIdStr.split(",").filter(Boolean);
-      // Fetch permits, handlers, and all country requirements in parallel
-      const fetches: Promise<Response>[] = [
-        fetch(`/api/ops/intl/permits?flight_id=${flight.id}`),
-        fetch(`/api/ops/intl/handlers?flight_id=${flight.id}`),
-        ...ids.map((cid) => fetch(`/api/ops/intl/countries/${cid}/requirements`)),
-      ];
-      const responses = await Promise.all(fetches);
-      const jsons = await Promise.all(responses.map((r) => r.json()));
-
-      setPermits(jsons[0].permits ?? []);
-      setHandlers(jsons[1].handlers ?? []);
-      // Deduplicate requirements by name (e.g. "eAPIS Submission" appears per-country)
-      const allReqs = jsons.slice(2).flatMap((r) => r.requirements ?? []);
-      const seen = new Set<string>();
-      const deduped = allReqs.filter((r: CountryRequirement) => {
-        const key = `${r.name}|${r.requirement_type}`;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-      setRequirements(deduped);
-    } catch { /* ignore */ }
-    setLoading(false);
-  }, [flight.id, relevantCountryIdStr]);
-
-  useEffect(() => { loadData(); }, [loadData]);
-
-  async function addPermit() {
-    if (!newPermit.country_id) return;
-    await fetch("/api/ops/intl/permits", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        flight_id: flight.id,
-        country_id: newPermit.country_id,
-        permit_type: newPermit.permit_type,
-        deadline: newPermit.deadline || null,
-      }),
-    });
-    setShowAddPermit(false);
-    setNewPermit({ country_id: "", permit_type: "landing", deadline: "" });
-    loadData();
-  }
-
-  async function updatePermitStatus(permitId: string, status: string) {
-    await fetch(`/api/ops/intl/permits/${permitId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status }),
-    });
-    loadData();
-  }
-
-  async function addHandler() {
-    if (!newHandler.handler_name) return;
-    await fetch("/api/ops/intl/handlers", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        flight_id: flight.id,
-        handler_name: newHandler.handler_name,
-        handler_contact: newHandler.handler_contact || null,
-        airport_icao: newHandler.airport_icao,
-      }),
-    });
-    setShowAddHandler(false);
-    setNewHandler({ handler_name: "", airport_icao: flight.arrival_icao ?? "", handler_contact: "" });
-    loadData();
-  }
-
-  async function toggleHandlerStatus(handlerId: string, field: "requested" | "approved", value: boolean) {
-    await fetch(`/api/ops/intl/handlers/${handlerId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ [field]: value }),
-    });
-    loadData();
-  }
-
-  // Compute which permits are missing for this leg
-  const relevantIds = new Set(relevantCountryIdStr.split(",").filter(Boolean));
-  const missingPermits: Array<{ country: Country; type: "overflight" | "landing" }> = [];
-  for (const c of countries) {
-    if (!relevantIds.has(c.id)) continue;
-    const isOverflown = overflights.some((o) => o.country_iso === c.iso_code);
-    const isDestination = (c.icao_prefixes ?? []).some((p: string) =>
-      flight.departure_icao?.startsWith(p) || flight.arrival_icao?.startsWith(p)
-    );
-
-    // Check overflight permit
-    if (isOverflown && c.overflight_permit_required) {
-      const hasIt = permits.some((p) => p.country_id === c.id && p.permit_type === "overflight");
-      if (!hasIt) missingPermits.push({ country: c, type: "overflight" });
-    }
-    // Check landing permit
-    if (isDestination && c.landing_permit_required) {
-      const hasIt = permits.some((p) => p.country_id === c.id && p.permit_type === "landing");
-      if (!hasIt) missingPermits.push({ country: c, type: "landing" });
-    }
-  }
-
-  /** Compute deadline based on country lead time */
-  function computeDeadline(c: Country): string | null {
-    if (!c.permit_lead_time_days) return null;
-    const dep = new Date(flight.scheduled_departure);
-    if (c.permit_lead_time_working_days) {
-      // Subtract working days (skip weekends)
-      let remaining = c.permit_lead_time_days;
-      const d = new Date(dep);
-      while (remaining > 0) {
-        d.setDate(d.getDate() - 1);
-        const dow = d.getDay();
-        if (dow !== 0 && dow !== 6) remaining--;
-      }
-      return d.toISOString().slice(0, 10);
-    }
-    const d = new Date(dep.getTime() - c.permit_lead_time_days * 24 * 60 * 60 * 1000);
-    return d.toISOString().slice(0, 10);
-  }
-
-  async function autoCreatePermits() {
-    if (missingPermits.length === 0) return;
-    setAutoCreating(true);
-    for (const mp of missingPermits) {
-      await fetch("/api/ops/intl/permits", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          flight_id: flight.id,
-          country_id: mp.country.id,
-          permit_type: mp.type,
-          deadline: computeDeadline(mp.country),
-          notes: `Tail: ${flight.tail_number ?? "unknown"}`,
-        }),
-      });
-    }
-    setAutoCreating(false);
-    loadData();
-  }
-
-  if (loading) return <div className="px-3 py-2 text-xs text-gray-500 animate-pulse">Loading...</div>;
-
-  return (
-    <div className="border-t border-gray-200 bg-gray-50 px-4 py-3 space-y-4">
-      {/* Overflight route analysis */}
-      {/* Airspace / Overflight list */}
-      <div>
-        <div className="flex items-center gap-2 mb-1">
-          <h4 className="text-xs font-semibold text-gray-700 uppercase">Airspace Transited</h4>
-          <span className="text-[10px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded">
-            {routeMethod === "foreflight+great_circle" ? "ForeFlight + GC" : routeMethod === "great_circle" ? "Great Circle" : routeMethod === "loading" ? "analyzing..." : routeMethod}
-          </span>
-        </div>
-        {ffRoute && (
-          <p className="text-xs text-gray-600 font-mono bg-white border border-gray-200 rounded px-2 py-1 mb-1.5 break-all">
-            {ffRoute}
-          </p>
-        )}
-        {overflights.length > 0 ? (
-          <div className="space-y-1">
-            {overflights.map((o) => {
-              const c = countries.find((c) => c.iso_code === o.country_iso);
-              const needsOvfPermit = c?.overflight_permit_required;
-              const needsLandPermit = c?.landing_permit_required;
-              const isDestination = (c?.icao_prefixes ?? []).some((p: string) =>
-                flight.departure_icao?.startsWith(p) || flight.arrival_icao?.startsWith(p)
-              );
-              return (
-                <div key={o.fir_id} className={`flex items-center gap-2 text-xs px-2 py-1.5 rounded border ${
-                  needsOvfPermit ? "bg-orange-50 border-orange-200" : "bg-white border-gray-200"
-                }`}>
-                  <span className="font-medium w-6 text-center">{o.country_iso}</span>
-                  <span className="text-gray-700">{o.country_name}</span>
-                  <span className="text-gray-400 text-[10px]">FIR: {o.fir_id}</span>
-                  <span className="ml-auto flex gap-1">
-                    {isDestination && <span className="text-[10px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">DEST</span>}
-                    {needsOvfPermit && <span className="text-[10px] bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded font-medium">OVF PERMIT REQ</span>}
-                    {needsLandPermit && isDestination && <span className="text-[10px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded font-medium">LANDING PERMIT REQ</span>}
-                    {c?.permit_lead_time_days && <span className="text-[10px] bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded">{c.permit_lead_time_days}{c.permit_lead_time_working_days ? " work" : ""} days</span>}
-                    {!needsOvfPermit && !needsLandPermit && !isDestination && <span className="text-[10px] text-gray-400">transit only</span>}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        ) : routeMethod !== "loading" ? (
-          <p className="text-xs text-gray-400">No foreign airspace transited (direct US routing).</p>
-        ) : null}
-      </div>
-
-      {/* Auto-create missing permits */}
-      {missingPermits.length > 0 && (
-        <div className="bg-yellow-50 border border-yellow-200 rounded px-3 py-2">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-xs font-medium text-yellow-800">
-                {missingPermits.length} permit{missingPermits.length > 1 ? "s" : ""} not yet tracked:
-              </p>
-              <p className="text-xs text-yellow-700 mt-0.5">
-                {missingPermits.map((mp) => `${mp.country.name} (${mp.type})`).join(", ")}
-              </p>
-            </div>
-            <button
-              onClick={autoCreatePermits}
-              disabled={autoCreating}
-              className="px-3 py-1 text-xs bg-yellow-600 text-white rounded hover:bg-yellow-700 disabled:opacity-50"
-            >
-              {autoCreating ? "Creating..." : "Auto-Create Permits"}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Requirements checklist */}
-      {requirements.length > 0 && (
-        <div>
-          <h4 className="text-xs font-semibold text-gray-700 uppercase mb-1">Country Requirements</h4>
-          <div className="space-y-1">
-            {requirements.map((r) => (
-              <div key={r.id} className="flex items-start gap-2 text-xs">
-                <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
-                  r.requirement_type === "overflight" ? "bg-orange-100 text-orange-700" :
-                  r.requirement_type === "landing" ? "bg-blue-100 text-blue-700" :
-                  r.requirement_type === "customs" ? "bg-purple-100 text-purple-700" :
-                  "bg-gray-100 text-gray-600"
-                }`}>{r.requirement_type}</span>
-                <span className="font-medium">{r.name}</span>
-                {r.description && <span className="text-gray-500">— {r.description}</span>}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Permits */}
-      <div>
-        <div className="flex items-center justify-between mb-1">
-          <h4 className="text-xs font-semibold text-gray-700 uppercase">Permits</h4>
-          <button onClick={() => setShowAddPermit(!showAddPermit)} className="text-xs text-blue-600 hover:text-blue-800">
-            + Add Permit
-          </button>
-        </div>
-
-        {showAddPermit && (
-          <div className="flex gap-2 items-end mb-2 p-2 bg-white border border-gray-200 rounded">
-            <div>
-              <label className="text-[10px] text-gray-500">Country</label>
-              <select
-                value={newPermit.country_id}
-                onChange={(e) => setNewPermit({ ...newPermit, country_id: e.target.value })}
-                className="block w-40 text-xs border border-gray-300 rounded px-2 py-1"
-              >
-                <option value="">Select...</option>
-                {countries.map((c) => (
-                  <option key={c.id} value={c.id}>{c.name}</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="text-[10px] text-gray-500">Type</label>
-              <select
-                value={newPermit.permit_type}
-                onChange={(e) => setNewPermit({ ...newPermit, permit_type: e.target.value })}
-                className="block w-28 text-xs border border-gray-300 rounded px-2 py-1"
-              >
-                <option value="landing">Landing</option>
-                <option value="overflight">Overflight</option>
-              </select>
-            </div>
-            <div>
-              <label className="text-[10px] text-gray-500">Deadline</label>
-              <input
-                type="date"
-                value={newPermit.deadline}
-                onChange={(e) => setNewPermit({ ...newPermit, deadline: e.target.value })}
-                className="block text-xs border border-gray-300 rounded px-2 py-1"
-              />
-            </div>
-            <button onClick={addPermit} className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700">Save</button>
-            <button onClick={() => setShowAddPermit(false)} className="px-2 py-1 text-xs text-gray-500 hover:text-gray-700">Cancel</button>
-          </div>
-        )}
-
-        {permits.length === 0 && !showAddPermit ? (
-          <p className="text-xs text-gray-400">No permits tracked yet</p>
-        ) : (
-          <div className="space-y-1">
-            {permits.map((p) => (
-              <div key={p.id} className="flex items-center gap-2 text-xs bg-white border border-gray-200 rounded px-2 py-1.5">
-                <span className="font-medium w-28">{(p.country as Country | undefined)?.name ?? "?"}</span>
-                <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
-                  p.permit_type === "overflight" ? "bg-orange-100 text-orange-700" : "bg-blue-100 text-blue-700"
-                }`}>{p.permit_type}</span>
-                <select
-                  value={p.status}
-                  onChange={(e) => updatePermitStatus(p.id, e.target.value)}
-                  className={`text-xs rounded px-1.5 py-0.5 border-0 font-medium cursor-pointer ${statusColor(p.status)}`}
-                >
-                  <option value="not_started">Not Started</option>
-                  <option value="drafted">Drafted</option>
-                  <option value="submitted">Submitted</option>
-                  <option value="approved">Approved</option>
-                </select>
-                {p.deadline && (
-                  <span className="text-gray-500">
-                    Due: {new Date(p.deadline + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-                  </span>
-                )}
-                {p.reference_number && <span className="text-gray-400">Ref: {p.reference_number}</span>}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Handlers */}
-      <div>
-        <div className="flex items-center justify-between mb-1">
-          <h4 className="text-xs font-semibold text-gray-700 uppercase">Ground Handling</h4>
-          <button onClick={() => setShowAddHandler(!showAddHandler)} className="text-xs text-blue-600 hover:text-blue-800">
-            + Add Handler
-          </button>
-        </div>
-
-        {showAddHandler && (
-          <div className="flex gap-2 items-end mb-2 p-2 bg-white border border-gray-200 rounded">
-            <div>
-              <label className="text-[10px] text-gray-500">Handler Name</label>
-              <input
-                value={newHandler.handler_name}
-                onChange={(e) => setNewHandler({ ...newHandler, handler_name: e.target.value })}
-                placeholder="e.g. Jet Aviation"
-                className="block w-40 text-xs border border-gray-300 rounded px-2 py-1"
-              />
-            </div>
-            <div>
-              <label className="text-[10px] text-gray-500">Airport</label>
-              <input
-                value={newHandler.airport_icao}
-                onChange={(e) => setNewHandler({ ...newHandler, airport_icao: e.target.value.toUpperCase() })}
-                className="block w-20 text-xs border border-gray-300 rounded px-2 py-1"
-              />
-            </div>
-            <div>
-              <label className="text-[10px] text-gray-500">Contact</label>
-              <input
-                value={newHandler.handler_contact}
-                onChange={(e) => setNewHandler({ ...newHandler, handler_contact: e.target.value })}
-                placeholder="Phone/email"
-                className="block w-36 text-xs border border-gray-300 rounded px-2 py-1"
-              />
-            </div>
-            <button onClick={addHandler} className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700">Save</button>
-            <button onClick={() => setShowAddHandler(false)} className="px-2 py-1 text-xs text-gray-500 hover:text-gray-700">Cancel</button>
-          </div>
-        )}
-
-        {handlers.length === 0 && !showAddHandler ? (
-          <p className="text-xs text-gray-400">No handler assigned</p>
-        ) : (
-          <div className="space-y-1">
-            {handlers.map((h) => (
-              <div key={h.id} className="flex items-center gap-3 text-xs bg-white border border-gray-200 rounded px-2 py-1.5">
-                <span className="font-medium">{h.handler_name}</span>
-                <span className="text-gray-500">{h.airport_icao}</span>
-                {h.handler_contact && <span className="text-gray-400">{h.handler_contact}</span>}
-                <label className="flex items-center gap-1 ml-auto cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={h.requested}
-                    onChange={(e) => toggleHandlerStatus(h.id, "requested", e.target.checked)}
-                    className="rounded border-gray-300"
-                  />
-                  <span className={h.requested ? "text-blue-600" : "text-gray-400"}>Requested</span>
-                </label>
-                <label className="flex items-center gap-1 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={h.approved}
-                    onChange={(e) => toggleHandlerStatus(h.id, "approved", e.target.checked)}
-                    className="rounded border-gray-300"
-                  />
-                  <span className={h.approved ? "text-green-600" : "text-gray-400"}>Approved</span>
-                </label>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Trip Documents — select & download */}
-      {flight.tail_number && (
-        <TripDocsPanel tail={flight.tail_number} dep={flight.departure_icao ?? ""} arr={flight.arrival_icao ?? ""} />
       )}
     </div>
   );
@@ -1223,6 +1325,29 @@ function ReqCard({ req, editing, onEdit, onSave, onDelete }: {
     name: req.name, description: req.description ?? "", requirement_type: req.requirement_type as string,
     required_documents: req.required_documents.join(", "),
   });
+  const [uploading, setUploading] = useState(false);
+
+  const handleAttachFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      // Upload to Supabase storage
+      const { createClient } = await import("@/lib/supabase/client");
+      const supa = createClient();
+      const path = `requirement-attachments/${req.id}/${file.name}`;
+      const { error: uploadErr } = await supa.storage.from("intl-docs").upload(path, file, { upsert: true });
+      if (uploadErr) throw uploadErr;
+      const { data: urlData } = supa.storage.from("intl-docs").getPublicUrl(path);
+      // Save URL to requirement
+      onSave({ attachment_url: urlData.publicUrl, attachment_filename: file.name });
+    } catch (err) {
+      console.error("Upload failed:", err);
+    } finally {
+      setUploading(false);
+      e.target.value = "";
+    }
+  };
 
   const typeBg = req.requirement_type === "overflight" ? "bg-orange-100 text-orange-700" :
     req.requirement_type === "landing" ? "bg-blue-100 text-blue-700" :
@@ -1287,6 +1412,18 @@ function ReqCard({ req, editing, onEdit, onSave, onDelete }: {
           ))}
         </div>
       )}
+      <div className="flex items-center gap-2 mt-1">
+        {req.attachment_url ? (
+          <a href={req.attachment_url} target="_blank" rel="noopener noreferrer"
+            className="text-[11px] text-blue-600 hover:text-blue-800 flex items-center gap-1">
+            <span>📎</span> {req.attachment_filename || "Attachment"}
+          </a>
+        ) : null}
+        <label className={`opacity-0 group-hover:opacity-100 text-[10px] text-gray-400 hover:text-blue-600 cursor-pointer transition-opacity ${uploading ? "opacity-100" : ""}`}>
+          {uploading ? "Uploading..." : req.attachment_url ? "Replace" : "📎 Attach file"}
+          <input type="file" className="hidden" onChange={handleAttachFile} disabled={uploading} />
+        </label>
+      </div>
     </div>
   );
 }

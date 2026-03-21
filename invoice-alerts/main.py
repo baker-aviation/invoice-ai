@@ -418,6 +418,42 @@ def _pick_fee_details(
     return {"fee_name": fee_name, "fee_amount": fee_amount}
 
 
+def _net_after_waivers(
+    fee_amount: float,
+    matched_line_items: List[Dict[str, Any]],
+    all_line_items: List[Dict[str, Any]],
+) -> float:
+    """
+    Detect waiver/credit line items that offset a matched fee.
+
+    FBOs like Atlantic Aviation add a "Fee Waived" line with a negative amount
+    equal to the fee.  Without this check the gross fee triggers an alert even
+    though the net charge is $0.
+
+    Strategy: look for negative line items whose description contains "waiv",
+    "credit", "discount", or "adjust" that are NOT already in the matched set.
+    Sum them with the fee_amount and return the net.
+    """
+    waiver_keywords = ("waiv", "credit", "discount", "adjust")
+    matched_descs = {
+        _norm(li.get("description") or li.get("name") or "")
+        for li in matched_line_items
+    }
+
+    waiver_total = 0.0
+    for li in all_line_items:
+        desc = _norm(li.get("description") or li.get("name") or "")
+        if desc in matched_descs:
+            continue
+        amt = _to_float(li.get("total")) or 0.0
+        if amt >= 0:
+            continue
+        if any(kw in desc for kw in waiver_keywords):
+            waiver_total += amt  # amt is negative
+
+    return fee_amount + waiver_total
+
+
 def _build_slack_alert_payload(
     *,
     document_id: str,
@@ -622,6 +658,14 @@ def run_alerts(document_id: str) -> Dict[str, Any]:
 
             # ACTIONABLE ONLY
             if not fee_name or fee_amount is None or fee_amount <= 0:
+                continue
+
+            # NET WAIVERS: if a waiver/credit line item offsets this fee, skip
+            all_line_items = invoice.get("line_items") or []
+            fee_amount = _net_after_waivers(
+                fee_amount, result.matched_line_items or [], all_line_items
+            )
+            if fee_amount <= 0:
                 continue
 
             # DEDUP: skip if all matched line items were already claimed
