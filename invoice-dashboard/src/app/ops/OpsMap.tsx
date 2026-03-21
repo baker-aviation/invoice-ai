@@ -2,9 +2,10 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import L from "leaflet";
-import { MapContainer, TileLayer, Marker, Popup, Tooltip, Polyline, useMap } from "react-leaflet";
+import { MapContainer, TileLayer, Marker, Popup, Tooltip, Polyline, CircleMarker, useMap } from "react-leaflet";
 import type { AircraftPosition, FlightInfoMap } from "@/app/maintenance/MapView";
 import { getAirportInfo } from "@/lib/airportCoords";
+import type { FaaDelay } from "@/app/api/ops/faa-delays/route";
 
 /* ── Fleet type helpers ── */
 
@@ -329,6 +330,92 @@ function useVanPositions(enabled: boolean): VanPos[] {
   return vans;
 }
 
+/* ── FAA Delay layer ── */
+
+type DelayAirport = {
+  code: string;
+  lat: number;
+  lon: number;
+  name: string;
+  delays: FaaDelay[];
+};
+
+const DELAY_COLORS: Record<FaaDelay["type"], string> = {
+  ground_stop: "#dc2626",      // red
+  closure: "#7c3aed",          // purple
+  ground_delay: "#f59e0b",     // amber
+  arrival_departure: "#f97316", // orange
+};
+
+const DELAY_LABELS: Record<FaaDelay["type"], string> = {
+  ground_stop: "Ground Stop",
+  closure: "Closed",
+  ground_delay: "GDP",
+  arrival_departure: "Delay",
+};
+
+/** Severity rank — higher = worse */
+function delaySeverity(type: FaaDelay["type"]): number {
+  switch (type) {
+    case "closure": return 4;
+    case "ground_stop": return 3;
+    case "ground_delay": return 2;
+    case "arrival_departure": return 1;
+    default: return 0;
+  }
+}
+
+function worstDelay(delays: FaaDelay[]): FaaDelay["type"] {
+  let worst: FaaDelay["type"] = "arrival_departure";
+  for (const d of delays) {
+    if (delaySeverity(d.type) > delaySeverity(worst)) worst = d.type;
+  }
+  return worst;
+}
+
+function useFaaDelays(enabled: boolean): { airports: DelayAirport[]; updated: string } {
+  const [airports, setAirports] = useState<DelayAirport[]>([]);
+  const [updated, setUpdated] = useState("");
+
+  useEffect(() => {
+    if (!enabled) { setAirports([]); setUpdated(""); return; }
+    let cancelled = false;
+
+    async function load() {
+      try {
+        const res = await fetch("/api/ops/faa-delays", { cache: "no-store" });
+        const data = await res.json();
+        if (cancelled || !data.ok) return;
+        setUpdated(data.updated ?? "");
+
+        // Group delays by airport, look up coordinates
+        const byAirport = new Map<string, FaaDelay[]>();
+        for (const d of data.delays as FaaDelay[]) {
+          const list = byAirport.get(d.airport) ?? [];
+          list.push(d);
+          byAirport.set(d.airport, list);
+        }
+
+        const result: DelayAirport[] = [];
+        for (const [code, delays] of byAirport) {
+          // Try IATA code first, then ICAO with K prefix
+          const info = getAirportInfo(code) ?? getAirportInfo(`K${code}`);
+          if (info) {
+            result.push({ code, lat: info.lat, lon: info.lon, name: info.name, delays });
+          }
+        }
+        setAirports(result);
+      } catch { /* ignore */ }
+    }
+
+    load();
+    const interval = setInterval(load, 5 * 60 * 1000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [enabled]);
+
+  return { airports, updated };
+}
+
 /* ── Tile layers + map utilities ── */
 
 const LIGHT_TILES = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
@@ -421,7 +508,15 @@ function LegendPlane({ color }: { color: string }) {
   );
 }
 
-function MapLegend({ dark }: { dark: boolean }) {
+function LegendDot({ color }: { color: string }) {
+  return (
+    <svg viewBox="0 0 14 14" width="14" height="14">
+      <circle cx="7" cy="7" r="5" fill={color} fillOpacity="0.3" stroke={color} strokeWidth="2" />
+    </svg>
+  );
+}
+
+function MapLegend({ dark, showDelays }: { dark: boolean; showDelays: boolean }) {
   const bg = dark ? "bg-black/70" : "bg-white/90";
   const text = dark ? "text-gray-300" : "text-gray-700";
   const heading = dark ? "text-gray-400" : "text-gray-600";
@@ -444,6 +539,27 @@ function MapLegend({ dark }: { dark: boolean }) {
         <LegendPlane color="#93c5fd" />
         <span className={text}>Citation X - Ground</span>
       </div>
+      {showDelays && (
+        <>
+          <div className={`font-semibold ${heading} text-[10px] uppercase tracking-wider mt-2 mb-1`}>FAA Delays</div>
+          <div className="flex items-center gap-2">
+            <LegendDot color="#dc2626" />
+            <span className={text}>Ground Stop</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <LegendDot color="#7c3aed" />
+            <span className={text}>Closed</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <LegendDot color="#f59e0b" />
+            <span className={text}>Ground Delay</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <LegendDot color="#f97316" />
+            <span className={text}>Arr/Dep Delay</span>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -471,10 +587,12 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
   const [darkMode, setDarkMode] = useState(true);
   const [showRadar, setShowRadar] = useState(false);
   const [showVans, setShowVans] = useState(false);
+  const [showDelays, setShowDelays] = useState(true);
   const [holdingTails, setHoldingTails] = useState<Set<string>>(new Set());
   const [trackPositions, setTrackPositions] = useState<Map<string, [number, number]>>(new Map());
   const radarUrl = useRadarUrl(showRadar);
   const vanPositions = useVanPositions(showVans);
+  const { airports: delayAirports, updated: delaysUpdated } = useFaaDelays(showDelays);
   const containerRef = useRef<HTMLDivElement>(null);
   const { isFs, toggle: toggleFs } = useFullscreen(containerRef);
 
@@ -507,10 +625,11 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
         <ToggleBtn label={darkMode ? "Dark" : "Light"} active={darkMode} onClick={() => setDarkMode((v) => !v)} />
         <ToggleBtn label={showRadar ? "Radar ON" : "Radar"} active={showRadar} onClick={() => setShowRadar((v) => !v)} />
         <ToggleBtn label={showVans ? "Vans ON" : "AOG Vans"} active={showVans} onClick={() => setShowVans((v) => !v)} />
+        <ToggleBtn label={showDelays ? "FAA Delays ON" : "FAA Delays"} active={showDelays} onClick={() => setShowDelays((v) => !v)} />
         <ToggleBtn label={isFs ? "Exit ⛶" : "⛶"} active={isFs} onClick={toggleFs} />
       </div>
 
-      <MapLegend dark={darkMode} />
+      <MapLegend dark={darkMode} showDelays={showDelays} />
 
       <MapContainer
         center={[37.5, -96]}
@@ -606,6 +725,62 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
             </Popup>
           </Marker>
         ))}
+        {/* FAA Delay markers */}
+        {showDelays && delayAirports.map((ap) => {
+          const worst = worstDelay(ap.delays);
+          const color = DELAY_COLORS[worst];
+          const label = DELAY_LABELS[worst];
+          const isSevere = worst === "ground_stop" || worst === "closure";
+          return (
+            <CircleMarker
+              key={`delay-${ap.code}`}
+              center={[ap.lat, ap.lon]}
+              radius={isSevere ? 12 : 9}
+              pathOptions={{
+                color,
+                fillColor: color,
+                fillOpacity: isSevere ? 0.35 : 0.25,
+                weight: isSevere ? 2.5 : 2,
+              }}
+            >
+              <Tooltip permanent direction="top" offset={[0, -10]} className="fa-data-tooltip">
+                <div style={{
+                  color,
+                  fontFamily: "ui-monospace,monospace",
+                  fontSize: "10px",
+                  fontWeight: 700,
+                  whiteSpace: "nowrap",
+                  textShadow: darkMode
+                    ? "0 1px 3px rgba(0,0,0,0.9), 0 0 6px rgba(0,0,0,0.6)"
+                    : "0 1px 2px rgba(255,255,255,0.9)",
+                }}>
+                  {ap.code} <span style={{ fontSize: "9px", opacity: 0.85 }}>{label}</span>
+                </div>
+              </Tooltip>
+              <Popup>
+                <div className="text-sm space-y-1.5 min-w-[180px]">
+                  <div className="font-bold" style={{ color }}>{ap.code} — {ap.name}</div>
+                  {ap.delays.map((d, i) => (
+                    <div key={i} className="text-xs">
+                      <span className="font-semibold" style={{ color: DELAY_COLORS[d.type] }}>
+                        {DELAY_LABELS[d.type]}
+                      </span>
+                      <div className="text-gray-600">{d.detail}</div>
+                      {d.reason && d.reason !== "other" && (
+                        <div className="text-gray-400 text-[10px]">{d.reason}</div>
+                      )}
+                    </div>
+                  ))}
+                  {delaysUpdated && (
+                    <div className="text-[10px] text-gray-400 pt-1 border-t border-gray-200">
+                      FAA updated: {delaysUpdated}
+                    </div>
+                  )}
+                </div>
+              </Popup>
+            </CircleMarker>
+          );
+        })}
       </MapContainer>
     </div>
   );
