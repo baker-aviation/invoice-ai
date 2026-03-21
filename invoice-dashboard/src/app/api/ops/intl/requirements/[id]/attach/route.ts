@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, isAuthed, isRateLimited } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
-import { getGcsStorage, contentTypeForExt } from "@/lib/gcs-upload";
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -27,30 +26,37 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     return NextResponse.json({ error: "No file provided" }, { status: 400 });
   }
 
-  // Upload to GCS
-  const bucket = process.env.GCS_BUCKET || "baker-aviation-invoice-pdfs";
+  const supa = createServiceClient();
   const safeName = file.name.replace(/\//g, "_");
-  const key = `intl-docs/requirement-attachments/${id}/${Date.now()}-${safeName}`;
-  const ext = file.name.split(".").pop()?.toLowerCase();
-  const contentType = contentTypeForExt(ext);
+  const path = `requirement-attachments/${id}/${Date.now()}-${safeName}`;
+  const buf = Buffer.from(await file.arrayBuffer());
 
   try {
-    const storage = await getGcsStorage();
-    const buf = Buffer.from(await file.arrayBuffer());
-    await storage.bucket(bucket).file(key).save(buf, {
-      metadata: { contentType },
-    });
+    // Upload to Supabase Storage (service role bypasses RLS)
+    const { error: uploadErr } = await supa.storage
+      .from("intl-docs")
+      .upload(path, buf, { contentType: file.type || "application/octet-stream", upsert: true });
 
-    // Make file publicly readable
-    await storage.bucket(bucket).file(key).makePublic();
-    const publicUrl = `https://storage.googleapis.com/${bucket}/${key}`;
+    if (uploadErr) {
+      // Bucket may not exist — create it and retry
+      if (uploadErr.message?.includes("not found") || uploadErr.statusCode === "404") {
+        await supa.storage.createBucket("intl-docs", { public: true });
+        const { error: retryErr } = await supa.storage
+          .from("intl-docs")
+          .upload(path, buf, { contentType: file.type || "application/octet-stream", upsert: true });
+        if (retryErr) throw retryErr;
+      } else {
+        throw uploadErr;
+      }
+    }
+
+    const { data: urlData } = supa.storage.from("intl-docs").getPublicUrl(path);
 
     // Update requirement record
-    const supa = createServiceClient();
     const { data, error } = await supa
       .from("country_requirements")
       .update({
-        attachment_url: publicUrl,
+        attachment_url: urlData.publicUrl,
         attachment_filename: file.name,
         updated_at: new Date().toISOString(),
       })
