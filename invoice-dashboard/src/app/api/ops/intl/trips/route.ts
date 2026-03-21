@@ -240,52 +240,72 @@ export async function GET(req: NextRequest) {
       // Fetch countries that require overflight permits (for auto-tagging)
       const { data: countriesData } = await supa
         .from("countries")
-        .select("iso_code, name, overflight_permit_required");
+        .select("iso_code, name, overflight_permit_required")
+        .eq("overflight_permit_required", true);
       const countriesWithOvfReq: CountryRow[] = (countriesData ?? []) as CountryRow[];
 
-      // Upsert new trips
-      for (const dt of detected) {
-        // Check if trip already exists
-        const { data: existing } = await supa
-          .from("intl_trips")
-          .select("id, route_icaos, flight_ids")
-          .eq("tail_number", dt.tail_number)
-          .eq("trip_date", dt.trip_date)
-          .limit(1);
+      // Batch-fetch all existing trips in the date range to avoid N+1
+      const tripDates = [...new Set(detected.map((d) => d.trip_date))];
+      const tripTails = [...new Set(detected.map((d) => d.tail_number))];
+      const { data: allExisting } = await supa
+        .from("intl_trips")
+        .select("id, tail_number, trip_date, route_icaos, flight_ids")
+        .in("tail_number", tripTails)
+        .in("trip_date", tripDates);
+      const existingMap = new Map<string, { id: string; route_icaos: string[]; flight_ids: string[] }[]>();
+      for (const e of allExisting ?? []) {
+        const key = `${e.tail_number}|${e.trip_date}`;
+        if (!existingMap.has(key)) existingMap.set(key, []);
+        existingMap.get(key)!.push(e);
+      }
 
-        const match = (existing ?? []).find(
-          (e: { route_icaos: string[] }) => JSON.stringify(e.route_icaos) === JSON.stringify(dt.route_icaos)
+      // Upsert trips — updates in parallel, inserts batched
+      const updatePromises: PromiseLike<unknown>[] = [];
+      const toInsert: DetectedTrip[] = [];
+
+      for (const dt of detected) {
+        const key = `${dt.tail_number}|${dt.trip_date}`;
+        const candidates = existingMap.get(key) ?? [];
+        const match = candidates.find(
+          (e) => JSON.stringify(e.route_icaos) === JSON.stringify(dt.route_icaos)
         );
 
         if (match) {
-          // Update flight_ids if they changed
           if (JSON.stringify(match.flight_ids) !== JSON.stringify(dt.flight_ids)) {
-            await supa
-              .from("intl_trips")
-              .update({ flight_ids: dt.flight_ids, updated_at: new Date().toISOString() })
-              .eq("id", match.id);
+            updatePromises.push(
+              supa.from("intl_trips")
+                .update({ flight_ids: dt.flight_ids, updated_at: new Date().toISOString() })
+                .eq("id", match.id)
+            );
           }
         } else {
-          // Create new trip + clearances (with auto-detected overflight permits)
-          const { data: newTrip, error: tripErr } = await supa
-            .from("intl_trips")
-            .insert({
-              tail_number: dt.tail_number,
-              route_icaos: dt.route_icaos,
-              flight_ids: dt.flight_ids,
-              trip_date: dt.trip_date,
-            })
-            .select("id")
-            .single();
+          toInsert.push(dt);
+        }
+      }
 
-          if (!tripErr && newTrip) {
-            const clearances = buildDefaultClearances(dt, countriesWithOvfReq).map((c) => ({
-              ...c,
-              trip_id: newTrip.id,
-            }));
-            if (clearances.length > 0) {
-              await supa.from("intl_trip_clearances").insert(clearances);
-            }
+      // Run updates in parallel
+      if (updatePromises.length > 0) await Promise.all(updatePromises);
+
+      // Batch insert new trips
+      for (const dt of toInsert) {
+        const { data: newTrip, error: tripErr } = await supa
+          .from("intl_trips")
+          .insert({
+            tail_number: dt.tail_number,
+            route_icaos: dt.route_icaos,
+            flight_ids: dt.flight_ids,
+            trip_date: dt.trip_date,
+          })
+          .select("id")
+          .single();
+
+        if (!tripErr && newTrip) {
+          const clearances = buildDefaultClearances(dt, countriesWithOvfReq).map((c) => ({
+            ...c,
+            trip_id: newTrip.id,
+          }));
+          if (clearances.length > 0) {
+            await supa.from("intl_trip_clearances").insert(clearances);
           }
         }
       }
