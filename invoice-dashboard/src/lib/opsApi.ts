@@ -261,25 +261,53 @@ export async function fetchFlights(params: {
     flights.push(f);
   }
 
-  // Add synthetic flight entries for orphan EDCT alerts
+  // Try to match orphan EDCT alerts to real flights using normalized airport codes.
+  // EDCT may use TJSJ while schedule has KSJU (same airport, different code systems).
+  const normAirport = (c: string | null) => {
+    if (!c) return "";
+    const u = c.toUpperCase();
+    // Strip K prefix for US airports: KSJU → SJU, KTEB → TEB
+    if (u.length === 4 && u.startsWith("K")) return u.slice(1);
+    return u;
+  };
+
   for (const alert of orphanAlerts) {
-    flights.push({
-      id: `edct-orphan-${alert.id}`,
-      ics_uid: "",
-      tail_number: alert.tail_number,
-      departure_icao: alert.departure_icao,
-      arrival_icao: alert.arrival_icao,
-      scheduled_departure: alert.created_at,
-      scheduled_arrival: null,
-      summary: alert.subject,
-      flight_type: null,
-      pic: null,
-      sic: null,
-      pax_count: null,
-      jetinsight_url: null,
-      fa_flight_id: null,
-      alerts: [alert],
+    const aTail = alert.tail_number?.toUpperCase() ?? "";
+    const aDep = normAirport(alert.departure_icao);
+    const aArr = normAirport(alert.arrival_icao);
+
+    // Try to find a matching flight by tail + normalized airports
+    const matchIdx = flights.findIndex((f) => {
+      if (!f.tail_number || f.tail_number.toUpperCase() !== aTail) return false;
+      const fDep = normAirport(f.departure_icao);
+      const fArr = normAirport(f.arrival_icao);
+      return (fDep === aDep || fDep === aArr || normAirport(alert.departure_icao) === normAirport(f.departure_icao))
+        && (fArr === aArr || fArr === aDep || normAirport(alert.arrival_icao) === normAirport(f.arrival_icao));
     });
+
+    if (matchIdx !== -1) {
+      // Attach the orphan EDCT to the matched flight
+      flights[matchIdx].alerts.push(alert);
+    } else {
+      // No match — create synthetic flight entry
+      flights.push({
+        id: `edct-orphan-${alert.id}`,
+        ics_uid: "",
+        tail_number: alert.tail_number,
+        departure_icao: alert.departure_icao,
+        arrival_icao: alert.arrival_icao,
+        scheduled_departure: alert.created_at,
+        scheduled_arrival: null,
+        summary: alert.subject,
+        flight_type: null,
+        pic: null,
+        sic: null,
+        pax_count: null,
+        jetinsight_url: null,
+        fa_flight_id: null,
+        alerts: [alert],
+      });
+    }
   }
 
   return { ok: true, flights, count: flights.length };

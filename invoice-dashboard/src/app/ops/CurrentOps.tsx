@@ -2338,9 +2338,9 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
           <colgroup>
             <col style={{ width: "6%" }} />   {/* Status */}
             <col style={{ width: "6%" }} />   {/* Tail */}
-            <col style={{ width: "13%" }} />  {/* Route */}
-            <col style={{ width: "8%" }} />   {/* Departure */}
-            <col style={{ width: "8%" }} />   {/* Arrival */}
+            <col style={{ width: "10%" }} />  {/* Route */}
+            <col style={{ width: "9%" }} />   {/* Departure */}
+            <col style={{ width: "9%" }} />   {/* Arrival */}
             <col style={{ width: "6%" }} />   {/* Type */}
             <col style={{ width: "5%" }} />   {/* 10/24 */}
             <col style={{ width: "5%" }} />   {/* Rest */}
