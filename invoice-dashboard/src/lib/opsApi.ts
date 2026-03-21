@@ -1,4 +1,5 @@
 import { createServiceClient } from "@/lib/supabase/service";
+import { toIcao } from "@/lib/iataToIcao";
 
 export type NotamDates = {
   effective_start: string | null;
@@ -263,26 +264,44 @@ export async function fetchFlights(params: {
 
   // Try to match orphan EDCT alerts to real flights using normalized airport codes.
   // EDCT may use TJSJ while schedule has KSJU (same airport, different code systems).
-  const normAirport = (c: string | null) => {
-    if (!c) return "";
+  // Get all canonical forms for an airport code so KSJU matches TJSJ
+  const airportKeys = (c: string | null): string[] => {
+    if (!c) return [];
     const u = c.toUpperCase();
-    // Strip K prefix for US airports: KSJU → SJU, KTEB → TEB
-    if (u.length === 4 && u.startsWith("K")) return u.slice(1);
-    return u;
+    const keys = [u];
+    // Strip K prefix: KSJU → SJU
+    if (u.length === 4 && u.startsWith("K")) {
+      const stripped = u.slice(1);
+      keys.push(stripped);
+      // Convert IATA to ICAO: SJU → TJSJ
+      const icao = toIcao(stripped);
+      if (icao && icao !== u) keys.push(icao);
+    }
+    // 3-letter: add K prefix + ICAO lookup
+    if (u.length === 3) {
+      keys.push(`K${u}`);
+      const icao = toIcao(u);
+      if (icao) keys.push(icao);
+    }
+    return keys;
+  };
+
+  const sameAirport = (a: string | null, b: string | null): boolean => {
+    if (!a || !b) return false;
+    if (a.toUpperCase() === b.toUpperCase()) return true;
+    const aKeys = airportKeys(a);
+    const bKeys = airportKeys(b);
+    return aKeys.some((k) => bKeys.includes(k));
   };
 
   for (const alert of orphanAlerts) {
     const aTail = alert.tail_number?.toUpperCase() ?? "";
-    const aDep = normAirport(alert.departure_icao);
-    const aArr = normAirport(alert.arrival_icao);
 
     // Try to find a matching flight by tail + normalized airports
     const matchIdx = flights.findIndex((f) => {
       if (!f.tail_number || f.tail_number.toUpperCase() !== aTail) return false;
-      const fDep = normAirport(f.departure_icao);
-      const fArr = normAirport(f.arrival_icao);
-      return (fDep === aDep || fDep === aArr || normAirport(alert.departure_icao) === normAirport(f.departure_icao))
-        && (fArr === aArr || fArr === aDep || normAirport(alert.arrival_icao) === normAirport(f.arrival_icao));
+      return sameAirport(alert.departure_icao, f.departure_icao)
+        && sameAirport(alert.arrival_icao, f.arrival_icao);
     });
 
     if (matchIdx !== -1) {
