@@ -1738,22 +1738,25 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                     <span className="text-amber-600">
                       {m.tail}{m.callsign && <span className="text-amber-400 text-xs ml-0.5">({m.callsign})</span>}
                     </span>
-                    {/* Source tags */}
-                    <span className="flex gap-0.5">
-                      {m.ff && <span className="text-[10px] font-bold rounded px-1 py-0.5 bg-amber-100 text-amber-700">FF</span>}
-                      {m.faa && <span className="text-[10px] font-bold rounded px-1 py-0.5 bg-blue-100 text-blue-700">FAA</span>}
-                    </span>
-                    {/* Times — show FF time, and FAA time if different */}
-                    <span className="text-sm flex items-center gap-1">
+                    {/* Times with source tags inline */}
+                    <span className="text-sm flex items-center gap-1 whitespace-nowrap">
                       {(primary.original_departure_time || m.fallback_departure) && (
                         <span className="text-amber-500 line-through">{fmt(primary.original_departure_time ?? m.fallback_departure ?? "", depIcao)}</span>
                       )}
                       {(primary.original_departure_time || m.fallback_departure) && <span className="text-amber-400">→</span>}
-                      {m.ff && <span className="text-amber-800 font-bold">{m.ff.edct_time ? fmt(m.ff.edct_time, depIcao) : "—"}</span>}
-                      {m.faa && m.ff && m.faa.edct_time !== m.ff?.edct_time && (
-                        <span className="text-blue-700 font-bold text-xs">/ {m.faa.edct_time ? fmt(m.faa.edct_time, depIcao) : "—"}</span>
+                      {m.ff && (
+                        <>
+                          <span className="text-amber-800 font-bold">{m.ff.edct_time ? fmt(m.ff.edct_time, depIcao) : "—"}</span>
+                          <span className="text-[10px] font-bold rounded px-1 py-0.5 bg-amber-100 text-amber-700">FF</span>
+                        </>
                       )}
-                      {m.faa && !m.ff && <span className="text-blue-700 font-bold">{m.faa.edct_time ? fmt(m.faa.edct_time, depIcao) : "—"}</span>}
+                      {m.faa && (
+                        <>
+                          {m.ff && <span className="text-gray-300">/</span>}
+                          <span className="text-blue-700 font-bold">{m.faa.edct_time ? fmt(m.faa.edct_time, depIcao) : "—"}</span>
+                          <span className="text-[10px] font-bold rounded px-1 py-0.5 bg-blue-100 text-blue-700">FAA</span>
+                        </>
+                      )}
                     </span>
                     {/* Ack button — ack all alerts for this flight */}
                     {allAcked ? (
