@@ -245,8 +245,13 @@ export default function TankeringDashboard() {
               disabled={sharing}
               className="px-5 py-2.5 bg-purple-600 text-white text-sm font-medium rounded-md hover:bg-purple-500 disabled:opacity-50 transition-colors"
             >
-              {sharing ? "Sending..." : "📤 Share to Slack"}
+              {sharing ? "Sending..." : "Share to Slack"}
             </button>
+          ) : null}
+
+          {/* Send Tankering Alerts (with links) */}
+          {result?.plans.length ? (
+            <SendAlertsButton date={result.date} />
           ) : null}
         </div>
 
@@ -347,6 +352,8 @@ function TailPlanCard({ plan: tp, date }: { plan: TailPlan; date: string }) {
   const plan = tp.plan;
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
+  const [sendingLink, setSendingLink] = useState(false);
+  const [linkSent, setLinkSent] = useState<string | null>(null);
 
   const handleSendToSlack = async () => {
     if (!plan) return;
@@ -372,6 +379,27 @@ function TailPlanCard({ plan: tp, date }: { plan: TailPlan; date: string }) {
       if (res.ok) setSent(true);
     } catch { /* ignore */ }
     finally { setSending(false); }
+  };
+
+  const handleSendAlertLink = async () => {
+    if (!plan) return;
+    setSendingLink(true);
+    try {
+      const res = await fetch("/api/fuel-planning/send-tankering-alerts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date }),
+      });
+      const data = await res.json();
+      // Find the result for this tail
+      const tailResult = data.results?.find((r: { tail: string }) => r.tail === tp.tail);
+      if (tailResult?.token) {
+        setLinkSent(`${window.location.origin}/tanker/plan/${tailResult.token}`);
+      } else if (data.results?.length > 0) {
+        setLinkSent("Sent!");
+      }
+    } catch { /* ignore */ }
+    finally { setSendingLink(false); }
   };
 
   return (
@@ -408,7 +436,21 @@ function TailPlanCard({ plan: tp, date }: { plan: TailPlan; date: string }) {
                   : "bg-gray-100 text-gray-600 hover:bg-purple-100 hover:text-purple-700 disabled:opacity-50"
               }`}
             >
-              {sent ? "✓ Sent" : sending ? "Sending..." : "📤 Slack"}
+              {sent ? "Sent" : sending ? "Sending..." : "Slack"}
+            </button>
+          )}
+          {plan && tp.tankerSavings > 0 && (
+            <button
+              onClick={handleSendAlertLink}
+              disabled={sendingLink || !!linkSent}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                linkSent
+                  ? "bg-blue-100 text-blue-700 cursor-default"
+                  : "bg-gray-100 text-gray-600 hover:bg-blue-100 hover:text-blue-700 disabled:opacity-50"
+              }`}
+              title={linkSent ?? "Send shareable plan link to Slack"}
+            >
+              {linkSent ? "Link Sent" : sendingLink ? "Creating..." : "Send Link"}
             </button>
           )}
         </div>
@@ -581,6 +623,55 @@ function TailPlanCard({ plan: tp, date }: { plan: TailPlan; date: string }) {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Send All Tankering Alerts Button ─────────────────────────────────
+
+function SendAlertsButton({ date }: { date: string }) {
+  const [sending, setSending] = useState(false);
+  const [result, setResult] = useState<{ sent: number; savingsPlans: number } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSend = async () => {
+    setSending(true);
+    setError(null);
+    setResult(null);
+    try {
+      const res = await fetch("/api/fuel-planning/send-tankering-alerts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? "Failed");
+        return;
+      }
+      setResult({ sent: data.sent, savingsPlans: data.savingsPlans });
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-3">
+      <button
+        onClick={handleSend}
+        disabled={sending}
+        className="px-5 py-2.5 bg-green-600 text-white text-sm font-medium rounded-md hover:bg-green-500 disabled:opacity-50 transition-colors"
+      >
+        {sending ? "Sending Alerts..." : "Send Tankering Alerts"}
+      </button>
+      {result && (
+        <span className="text-sm text-green-700 font-medium">
+          {result.savingsPlans} aircraft with savings, {result.sent} alerts sent
+        </span>
+      )}
+      {error && <span className="text-sm text-red-600">{error}</span>}
     </div>
   );
 }
