@@ -1591,7 +1591,10 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
       const allResults = data.results ?? [];
       const foundResults = allResults.filter((r: { found: boolean }) => r.found);
       const notFound = allResults.filter((r: { found: boolean }) => !r.found);
-      setFaaDebug([...foundResults, ...notFound.slice(0, 5)]);
+      // Show all found + sample of not-found, plus any with raw data that has "record"
+      const parseFailed = notFound.filter((r: { raw_text?: string }) => r.raw_text?.includes("record(s)"));
+      setFaaDebug([...foundResults, ...parseFailed, ...notFound.filter((r: { raw_text?: string }) => !r.raw_text?.includes("record(s)")).slice(0, 5)]);
+      if (data.stale) setFaaCheckResult(prev => (prev ?? "") + ` (${data.stale} stale skipped)`);
       if (data.found > 0) {
         setFaaCheckResult(`Found ${data.found} FAA EDCT${data.found !== 1 ? "s" : ""} — refreshing...`);
         setTimeout(() => window.location.reload(), 2000);

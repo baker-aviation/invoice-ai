@@ -96,6 +96,8 @@ async function lookupSingleEdct(flight: FlightInput): Promise<FaaEdctResult> {
 
     // Check for "found X record(s)"
     if (!text.includes("record(s) matching")) {
+      // Unexpected response — log for debugging
+      console.warn(`[edct-lookup] ${flight.callsign} ${dept}→${arr}: unexpected response (no 'record(s)' and no 'No EDCT'): ${text.slice(0, 300)}`);
       return result;
     }
 
@@ -132,8 +134,10 @@ async function lookupSingleEdct(flight: FlightInput): Promise<FaaEdctResult> {
     // Check cancelled
     result.cancelled = text.includes("Yes") && text.indexOf("Yes") > text.indexOf(dateTimes[dateTimes.length - 1] ?? "");
 
+    console.log(`[edct-lookup] ${flight.callsign} ${dept}→${arr}: FOUND edct=${result.edct_time} filed=${result.filed_departure}`);
     return result;
-  } catch {
+  } catch (err) {
+    console.error(`[edct-lookup] ${flight.callsign} ${dept}→${arr}: ERROR`, err);
     return result;
   }
 }
@@ -178,14 +182,14 @@ export async function POST(req: NextRequest) {
   const found = results.filter((r) => r.found);
 
   // Store any found EDCTs as ops_alerts (upsert by source_message_id to avoid duplicates)
-  // Skip stale EDCTs (more than 2 hours in the past) and cancelled ones
-  const now = Date.now();
-  const twoHoursAgo = now - 2 * 3600_000;
+  // Skip EDCTs from before today (UTC) and cancelled ones — keep until end of day
+  const now = new Date();
+  const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).getTime();
 
   if (found.length > 0) {
     for (const edct of found) {
       if (edct.cancelled) continue;
-      if (edct.edct_time && new Date(edct.edct_time).getTime() < twoHoursAgo) continue;
+      if (edct.edct_time && new Date(edct.edct_time).getTime() < todayStart) continue;
 
       const sourceId = `faa-edct-${edct.callsign}-${edct.origin}-${edct.destination}`;
       const delayStr = edct.delay_minutes != null ? `${edct.delay_minutes}min delay` : "";
@@ -209,7 +213,7 @@ export async function POST(req: NextRequest) {
 
   // Count only current (non-stale, non-cancelled) as "found" for the UI
   const current = found.filter((r) =>
-    !r.cancelled && (!r.edct_time || new Date(r.edct_time).getTime() >= twoHoursAgo)
+    !r.cancelled && (!r.edct_time || new Date(r.edct_time).getTime() >= todayStart)
   );
 
   return NextResponse.json({
