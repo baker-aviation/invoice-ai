@@ -1325,6 +1325,29 @@ function ReqCard({ req, editing, onEdit, onSave, onDelete }: {
     name: req.name, description: req.description ?? "", requirement_type: req.requirement_type as string,
     required_documents: req.required_documents.join(", "),
   });
+  const [uploading, setUploading] = useState(false);
+
+  const handleAttachFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      // Upload to Supabase storage
+      const { createClient } = await import("@/lib/supabase/client");
+      const supa = createClient();
+      const path = `requirement-attachments/${req.id}/${file.name}`;
+      const { error: uploadErr } = await supa.storage.from("intl-docs").upload(path, file, { upsert: true });
+      if (uploadErr) throw uploadErr;
+      const { data: urlData } = supa.storage.from("intl-docs").getPublicUrl(path);
+      // Save URL to requirement
+      onSave({ attachment_url: urlData.publicUrl, attachment_filename: file.name });
+    } catch (err) {
+      console.error("Upload failed:", err);
+    } finally {
+      setUploading(false);
+      e.target.value = "";
+    }
+  };
 
   const typeBg = req.requirement_type === "overflight" ? "bg-orange-100 text-orange-700" :
     req.requirement_type === "landing" ? "bg-blue-100 text-blue-700" :
@@ -1389,6 +1412,18 @@ function ReqCard({ req, editing, onEdit, onSave, onDelete }: {
           ))}
         </div>
       )}
+      <div className="flex items-center gap-2 mt-1">
+        {req.attachment_url ? (
+          <a href={req.attachment_url} target="_blank" rel="noopener noreferrer"
+            className="text-[11px] text-blue-600 hover:text-blue-800 flex items-center gap-1">
+            <span>📎</span> {req.attachment_filename || "Attachment"}
+          </a>
+        ) : null}
+        <label className={`opacity-0 group-hover:opacity-100 text-[10px] text-gray-400 hover:text-blue-600 cursor-pointer transition-opacity ${uploading ? "opacity-100" : ""}`}>
+          {uploading ? "Uploading..." : req.attachment_url ? "Replace" : "📎 Attach file"}
+          <input type="file" className="hidden" onChange={handleAttachFile} disabled={uploading} />
+        </label>
+      </div>
     </div>
   );
 }

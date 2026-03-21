@@ -464,6 +464,8 @@ export type CountryRequirement = {
   name: string;
   description: string | null;
   required_documents: string[];
+  attachment_url: string | null;
+  attachment_filename: string | null;
   sort_order: number;
   is_active: boolean;
   created_at: string;
