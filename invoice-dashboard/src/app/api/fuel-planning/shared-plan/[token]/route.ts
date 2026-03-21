@@ -80,6 +80,8 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   const body = await req.json().catch(() => ({}));
   const mlwOverrides = (body.mlw_overrides ?? {}) as Record<string, number>;
   const zfwOverrides = (body.zfw_overrides ?? {}) as Record<string, number>;
+  const feeOverrides = (body.fee_overrides ?? {}) as Record<string, number>;
+  const waiverGalOverrides = (body.waiver_gal_overrides ?? {}) as Record<string, number>;
 
   const plan = data.plan_data as {
     tail: string;
@@ -121,6 +123,10 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       fboName: "", minGallons: 0, feeWaived: 0, landingFee: 0, securityFee: 0, overnightFee: 0,
     };
 
+    const defaultFee = waiver.feeWaived + waiver.landingFee + waiver.securityFee;
+    const fee = feeOverrides[String(i)] ?? defaultFee;
+    const waiverGal = waiverGalOverrides[String(i)] ?? waiver.minGallons;
+
     return {
       id: String(i),
       from: leg.from,
@@ -132,8 +138,8 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       zeroFuelWeightLbs: zfw,
       maxFuelCapacityLbs: defaults.maxFuel,
       departurePricePerGal: leg.departurePricePerGal,
-      waiveFeesGallons: waiver.minGallons,
-      feesWaivedDollars: waiver.feeWaived + waiver.landingFee + waiver.securityFee,
+      waiveFeesGallons: waiverGal,
+      feesWaivedDollars: fee,
     };
   });
 
@@ -155,5 +161,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     },
     mlw_overrides: mlwOverrides,
     zfw_overrides: zfwOverrides,
+    fee_overrides: feeOverrides,
+    waiver_gal_overrides: waiverGalOverrides,
   });
 }
