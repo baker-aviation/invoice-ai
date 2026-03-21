@@ -1734,7 +1734,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                 const opacity = allAcked ? "opacity-50" : "";
 
                 return (
-                  <React.Fragment key={m.key}>
+                  <Fragment key={m.key}>
                     {/* Route */}
                     <span className={`font-medium text-amber-900 whitespace-nowrap ${opacity}`}>{m.route}</span>
                     {/* Tail */}
@@ -1780,7 +1780,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                         Ack
                       </button>
                     )}
-                  </React.Fragment>
+                  </Fragment>
                 );
               })}
             </div>
