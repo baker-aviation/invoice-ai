@@ -1725,42 +1725,49 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                 {checkingFaa ? "Checking..." : "Check FAA"}
               </button>
             </div>
-            <div className="space-y-1.5">
+            <div className="grid grid-cols-[auto_auto_auto_auto_auto_1fr_auto] gap-x-3 gap-y-1.5 items-center text-sm">
               {mergedEdcts.map((m) => {
                 const primary = m.ff ?? m.faa;
                 if (!primary) return null;
                 const allAcked = (m.ff ? isAcked(m.ff) : true) && (m.faa ? isAcked(m.faa) : true);
                 const depIcao = m.departure_icao;
+                const opacity = allAcked ? "opacity-50" : "";
 
                 return (
-                  <div key={m.key} className={`flex items-center gap-3 text-sm text-amber-900 ${allAcked ? "opacity-50" : ""}`}>
-                    <span className="font-medium">{m.route}</span>
-                    <span className="text-amber-600">
+                  <React.Fragment key={m.key}>
+                    {/* Route */}
+                    <span className={`font-medium text-amber-900 whitespace-nowrap ${opacity}`}>{m.route}</span>
+                    {/* Tail */}
+                    <span className={`text-amber-600 whitespace-nowrap ${opacity}`}>
                       {m.tail}{m.callsign && <span className="text-amber-400 text-xs ml-0.5">({m.callsign})</span>}
                     </span>
-                    {/* Times with source tags inline */}
-                    <span className="text-sm flex items-center gap-1 whitespace-nowrap">
-                      {(primary.original_departure_time || m.fallback_departure) && (
-                        <span className="text-amber-500 line-through">{fmt(primary.original_departure_time ?? m.fallback_departure ?? "", depIcao)}</span>
-                      )}
-                      {(primary.original_departure_time || m.fallback_departure) && <span className="text-amber-400">→</span>}
-                      {m.ff && (
-                        <>
+                    {/* Original departure */}
+                    <span className={`text-amber-500 line-through whitespace-nowrap text-right ${opacity}`}>
+                      {fmt(primary.original_departure_time ?? m.fallback_departure ?? "", depIcao)}
+                    </span>
+                    {/* FF EDCT */}
+                    <span className={`whitespace-nowrap ${opacity}`}>
+                      {m.ff ? (
+                        <span className="flex items-center gap-1">
                           <span className="text-amber-800 font-bold">{m.ff.edct_time ? fmt(m.ff.edct_time, depIcao) : "—"}</span>
                           <span className="text-[10px] font-bold rounded px-1 py-0.5 bg-amber-100 text-amber-700">FF</span>
-                        </>
-                      )}
-                      {m.faa && (
-                        <>
-                          {m.ff && <span className="text-gray-300">/</span>}
+                        </span>
+                      ) : <span />}
+                    </span>
+                    {/* FAA EDCT */}
+                    <span className={`whitespace-nowrap ${opacity}`}>
+                      {m.faa ? (
+                        <span className="flex items-center gap-1">
                           <span className="text-blue-700 font-bold">{m.faa.edct_time ? fmt(m.faa.edct_time, depIcao) : "—"}</span>
                           <span className="text-[10px] font-bold rounded px-1 py-0.5 bg-blue-100 text-blue-700">FAA</span>
-                        </>
-                      )}
+                        </span>
+                      ) : <span />}
                     </span>
-                    {/* Ack button — ack all alerts for this flight */}
+                    {/* Spacer */}
+                    <span />
+                    {/* Ack */}
                     {allAcked ? (
-                      <span className="ml-auto text-xs text-gray-400 bg-gray-100 rounded px-1.5 py-0.5">Ack&apos;d</span>
+                      <span className="text-xs text-gray-400 bg-gray-100 rounded px-1.5 py-0.5 justify-self-end">Ack&apos;d</span>
                     ) : (
                       <button
                         type="button"
@@ -1768,12 +1775,12 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           if (m.ff && !isAcked(m.ff)) handleAck(m.ff.id);
                           if (m.faa && !isAcked(m.faa)) handleAck(m.faa.id);
                         }}
-                        className="ml-auto text-xs text-gray-500 hover:text-green-700 hover:bg-green-50 border border-gray-200 hover:border-green-300 rounded px-1.5 py-0.5 transition-colors"
+                        className="text-xs text-gray-500 hover:text-green-700 hover:bg-green-50 border border-gray-200 hover:border-green-300 rounded px-1.5 py-0.5 transition-colors justify-self-end"
                       >
                         Ack
                       </button>
                     )}
-                  </div>
+                  </React.Fragment>
                 );
               })}
             </div>
