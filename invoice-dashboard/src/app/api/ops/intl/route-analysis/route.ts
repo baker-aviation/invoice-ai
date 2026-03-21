@@ -146,15 +146,6 @@ export async function GET(req: NextRequest) {
         const routeData = fd.routeToDestination ?? fd.route ?? {};
         ffRoute = routeData.route ?? routeData.routeString ?? fd.routeString ?? null;
 
-        // Check navlog for waypoints if no route string
-        const navlog = fd.performance?.navlog ?? fd.navlog;
-        if (!ffRoute && navlog && Array.isArray(navlog)) {
-          ffRoute = navlog
-            .map((wp: Record<string, unknown>) => wp.ident ?? wp.name)
-            .filter(Boolean)
-            .join(" ");
-        }
-
         // Try flightData sub-object
         if (fd.flightData) {
           const fdd = fd.flightData;
