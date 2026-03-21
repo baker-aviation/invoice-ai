@@ -1610,24 +1610,66 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
     }
   }, [flights]);
 
-  // Collect same-day EDCT alerts across all flights
-  const edctAlerts = useMemo(() => {
+  // Collect same-day EDCT alerts, merged by flight (route+tail)
+  type MergedEdct = {
+    key: string;
+    route: string;
+    tail: string | null;
+    departure_icao: string | null;
+    callsign: string | null;
+    ff: OpsAlert | null;
+    faa: OpsAlert | null;
+    fallback_departure?: string;
+  };
+
+  const mergedEdcts = useMemo(() => {
     const now = new Date();
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const tomorrowStart = new Date(todayStart.getTime() + 86400000);
-    const alerts: (OpsAlert & { route: string; fallback_departure?: string })[] = [];
+    const map = new Map<string, MergedEdct>();
+
     for (const f of flights) {
       for (const a of f.alerts) {
         if (a.alert_type !== "EDCT") continue;
         if (!showAcknowledged && isAcked(a)) continue;
-        // Only show EDCTs for today's flights
         const dep = new Date(a.edct_time ?? a.original_departure_time ?? f.scheduled_departure);
         if (dep < todayStart || dep >= tomorrowStart) continue;
+
         const route = [f.departure_icao, f.arrival_icao].filter(Boolean).join(" → ") || "Unknown";
-        alerts.push({ ...a, route, fallback_departure: f.scheduled_departure ?? undefined });
+        const tail = a.tail_number ?? f.tail_number;
+        const key = `${tail}|${route}`;
+        const isFaa = (a.source_message_id ?? "").startsWith("faa-edct-");
+        const isSwim = (a.source_message_id ?? "").startsWith("swim-edct-");
+        const sourceType = isFaa ? "faa" : "ff";
+
+        // Extract callsign from subject
+        const callsign = a.subject?.match(/\((KOW\d+)\)/i)?.[1]
+          ?? a.subject?.match(/EDCT[:\s]+(KOW\d+)/i)?.[1]
+          ?? (isFaa ? a.subject?.match(/FAA EDCT:\s+(KOW\d+)/i)?.[1] : null)
+          ?? null;
+
+        if (!map.has(key)) {
+          map.set(key, {
+            key,
+            route,
+            tail,
+            departure_icao: f.departure_icao,
+            callsign,
+            ff: null,
+            faa: null,
+            fallback_departure: f.scheduled_departure ?? undefined,
+          });
+        }
+        const entry = map.get(key)!;
+        if (sourceType === "faa") {
+          entry.faa = a;
+        } else {
+          entry.ff = a;
+        }
+        if (callsign && !entry.callsign) entry.callsign = callsign;
       }
     }
-    return alerts;
+    return [...map.values()];
   }, [flights, isAcked, showAcknowledged]);
 
   return (
@@ -1656,7 +1698,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
       {/* ── EDCT + Feed Status side by side ── */}
       <div className="grid grid-cols-2 gap-3">
         {/* EDCT Status */}
-        {edctAlerts.length === 0 ? (
+        {mergedEdcts.length === 0 ? (
           <div className="flex items-center gap-2 rounded-lg border border-green-200 bg-green-50 px-4 py-2.5 text-sm">
             <span className="w-2.5 h-2.5 rounded-full bg-green-500" />
             <span className="font-medium text-green-800">No active EDCTs</span>
@@ -1673,7 +1715,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
             <div className="flex items-center gap-2 mb-2 text-sm">
               <span className="w-2.5 h-2.5 rounded-full bg-amber-500" />
               <span className="font-semibold text-amber-800">
-                {edctAlerts.length} Active EDCT{edctAlerts.length !== 1 ? "s" : ""}
+                {mergedEdcts.length} Active EDCT{mergedEdcts.length !== 1 ? "s" : ""}
               </span>
               <button
                 onClick={handleCheckFaaEdcts}
@@ -1684,49 +1726,53 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
               </button>
             </div>
             <div className="space-y-1.5">
-              {edctAlerts.map((a) => (
-                <div key={a.id} className={`flex items-center gap-3 text-sm text-amber-900 ${isAcked(a) ? "opacity-50" : ""}`}>
-                  <span className="font-medium">{a.route}</span>
-                  {(() => {
-                    // Extract the filed identifier (KOW callsign or N-number) from subject
-                    const filedAs = a.subject?.match(/\((KOW\d+|N\d+[A-Z]*)\)/i)?.[1]
-                      ?? a.subject?.match(/EDCT\s+(KOW\d+|N\d+[A-Z]*)/i)?.[1]
-                      ?? null;
-                    const tail = a.tail_number;
-                    const showFiledAs = filedAs && tail && filedAs.toUpperCase() !== tail.toUpperCase();
-                    return tail ? (
-                      <span className="text-amber-600">
-                        {tail}{showFiledAs && <span className="text-amber-400 text-xs ml-0.5">({filedAs})</span>}
-                      </span>
-                    ) : filedAs ? (
-                      <span className="text-amber-600">{filedAs}</span>
-                    ) : null;
-                  })()}
-                  <span className={`text-[10px] font-bold rounded px-1 py-0.5 ${
-                    (a.source_message_id ?? "").startsWith("swim-edct-")
-                      ? "bg-blue-100 text-blue-700"
-                      : "bg-amber-100 text-amber-700"
-                  }`}>{(a.source_message_id ?? "").startsWith("swim-edct-") ? "SWIM" : "FF"}</span>
-                  <span className="text-sm">
-                    {(a.original_departure_time || a.fallback_departure) && (
-                      <span className="text-amber-500 line-through">{fmt(a.original_departure_time ?? a.fallback_departure ?? "", a.airport_icao)}</span>
+              {mergedEdcts.map((m) => {
+                const primary = m.ff ?? m.faa;
+                if (!primary) return null;
+                const allAcked = (m.ff ? isAcked(m.ff) : true) && (m.faa ? isAcked(m.faa) : true);
+                const depIcao = m.departure_icao;
+
+                return (
+                  <div key={m.key} className={`flex items-center gap-3 text-sm text-amber-900 ${allAcked ? "opacity-50" : ""}`}>
+                    <span className="font-medium">{m.route}</span>
+                    <span className="text-amber-600">
+                      {m.tail}{m.callsign && <span className="text-amber-400 text-xs ml-0.5">({m.callsign})</span>}
+                    </span>
+                    {/* Source tags */}
+                    <span className="flex gap-0.5">
+                      {m.ff && <span className="text-[10px] font-bold rounded px-1 py-0.5 bg-amber-100 text-amber-700">FF</span>}
+                      {m.faa && <span className="text-[10px] font-bold rounded px-1 py-0.5 bg-blue-100 text-blue-700">FAA</span>}
+                    </span>
+                    {/* Times — show FF time, and FAA time if different */}
+                    <span className="text-sm flex items-center gap-1">
+                      {(primary.original_departure_time || m.fallback_departure) && (
+                        <span className="text-amber-500 line-through">{fmt(primary.original_departure_time ?? m.fallback_departure ?? "", depIcao)}</span>
+                      )}
+                      {(primary.original_departure_time || m.fallback_departure) && <span className="text-amber-400">→</span>}
+                      {m.ff && <span className="text-amber-800 font-bold">{m.ff.edct_time ? fmt(m.ff.edct_time, depIcao) : "—"}</span>}
+                      {m.faa && m.ff && m.faa.edct_time !== m.ff?.edct_time && (
+                        <span className="text-blue-700 font-bold text-xs">/ {m.faa.edct_time ? fmt(m.faa.edct_time, depIcao) : "—"}</span>
+                      )}
+                      {m.faa && !m.ff && <span className="text-blue-700 font-bold">{m.faa.edct_time ? fmt(m.faa.edct_time, depIcao) : "—"}</span>}
+                    </span>
+                    {/* Ack button — ack all alerts for this flight */}
+                    {allAcked ? (
+                      <span className="ml-auto text-xs text-gray-400 bg-gray-100 rounded px-1.5 py-0.5">Ack&apos;d</span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (m.ff && !isAcked(m.ff)) handleAck(m.ff.id);
+                          if (m.faa && !isAcked(m.faa)) handleAck(m.faa.id);
+                        }}
+                        className="ml-auto text-xs text-gray-500 hover:text-green-700 hover:bg-green-50 border border-gray-200 hover:border-green-300 rounded px-1.5 py-0.5 transition-colors"
+                      >
+                        Ack
+                      </button>
                     )}
-                    {(a.original_departure_time || a.fallback_departure) && <span className="text-amber-400 mx-0.5">→</span>}
-                    <span className="text-amber-800 font-bold">{a.edct_time ? fmt(a.edct_time, a.airport_icao) : "—"}</span>
-                  </span>
-                  {isAcked(a) ? (
-                    <span className="ml-auto text-xs text-gray-400 bg-gray-100 rounded px-1.5 py-0.5">Ack'd</span>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => handleAck(a.id)}
-                      className="ml-auto text-xs text-gray-500 hover:text-green-700 hover:bg-green-50 border border-gray-200 hover:border-green-300 rounded px-1.5 py-0.5 transition-colors"
-                    >
-                      Ack
-                    </button>
-                  )}
-                </div>
-              ))}
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
