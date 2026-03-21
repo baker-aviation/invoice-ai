@@ -204,6 +204,13 @@ function getTurnLabel(item: VanFlightItem): string {
     : null;
   const isOvernight = arrDate ? arrDate < todayEt : false;
 
+  // Detect pre-departure: service airport matches a departure, not the arrival
+  const arrIcaoNorm = item.arrFlight.arrival_icao?.replace(/^K/, "") ?? "";
+  if (item.airport !== arrIcaoNorm && item.nextDep?.departure_icao?.replace(/^K/, "") === item.airport) {
+    const depTime = fmtUtcHM(item.nextDep.scheduled_departure);
+    return `Pre-Departure - Departing at ${depTime}`;
+  }
+
   if (!item.nextDep) {
     return isOvernight ? "Parked - No flights scheduled" : "Done for the Day";
   }
@@ -239,6 +246,7 @@ function getTurnLabel(item: VanFlightItem): string {
 }
 
 function turnBadgeClass(label: string): string {
+  if (label.startsWith("Pre-Departure")) return "bg-violet-100 text-violet-800 dark:bg-violet-900 dark:text-violet-200";
   if (label.startsWith("Quick Turn")) return "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200";
   if (label.startsWith("Aircraft Shutting Down")) return "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200";
   if (label.includes("Departing soon")) return "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200";

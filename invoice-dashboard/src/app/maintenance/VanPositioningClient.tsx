@@ -905,6 +905,7 @@ function computeTurnLabel(nextDep: Flight | null, gapMs: number, opts?: { isOver
 
 /** Badge colors for turn labels */
 function turnBadgeClass(label: string): string {
+  if (label.startsWith("Pre-Departure")) return "bg-violet-100 text-violet-700";
   if (label.startsWith("Quick Turn")) return "bg-amber-100 text-amber-700";
   if (label.startsWith("Aircraft Shutting Down")) return "bg-orange-100 text-orange-700";
   if (label.includes("Departing soon")) return "bg-amber-100 text-amber-700";
@@ -925,7 +926,12 @@ function buildSlackItems(items: VanFlightItem[], flightInfoMap: Map<string, Flig
     const gapMs = item.nextDep && arrMs
       ? new Date(item.nextDep.scheduled_departure).getTime() - arrMs : Infinity;
     const isOvernight = arrMs && viewDate ? !isOnEtDate(item.arrFlight.scheduled_arrival!, viewDate) : false;
-    const turnLabel = computeTurnLabel(item.nextDep, gapMs, { isOvernight, viewDate });
+    // Detect pre-departure: service airport is a departure airport, not the arrival
+    const arrIcaoNorm = item.arrFlight.arrival_icao?.replace(/^K/, "") ?? "";
+    const isPreDep = item.airport !== arrIcaoNorm && item.nextDep?.departure_icao?.replace(/^K/, "") === item.airport;
+    const turnLabel = isPreDep
+      ? `Pre-Departure - Departing at ${fmtUtcHM(item.nextDep!.scheduled_departure, item.nextDep!.departure_icao)}`
+      : computeTurnLabel(item.nextDep, gapMs, { isOvernight, viewDate });
     let slackStatus: string;
     if (fi?.diverted) {
       slackStatus = "DIVERTED";
@@ -1891,22 +1897,38 @@ function AircraftCompactRow({
                     : cat === "positioning" ? "border-purple-300"
                     : cat === "maintenance" ? "border-orange-300"
                     : "border-gray-200";
-                  const isPrimary = arrIcao === airport;
+                  const isDepPrimary = dep === airport;
+                  const isArrPrimary = arrIcao === airport;
+                  const isPrimary = isDepPrimary || isArrPrimary;
                   return (
                     <div
                       key={f.id}
                       className={`flex items-center gap-2 text-xs pl-3 border-l-2 ${borderColor} ${
                         isRevenue ? "py-1 bg-green-50/60 rounded-r font-medium text-gray-700" : "py-px text-gray-400"
-                      } ${onSetPrimaryAirport && !isPrimary ? "cursor-pointer hover:bg-blue-50/50" : ""}`}
-                      onClick={(e) => {
-                        if (!onSetPrimaryAirport || isPrimary) return;
-                        e.stopPropagation();
-                        onSetPrimaryAirport(arrFlight.tail_number ?? "", arrIcao);
-                      }}
-                      title={isPrimary ? "Current service airport" : "Click to set as service airport"}
+                      }`}
                     >
                       {isPrimary && <span className="text-blue-500">📍</span>}
-                      <span className={`font-mono ${isRevenue ? "text-gray-700" : "text-gray-500"}`}>{dep} → {arrIcao}</span>
+                      <span className="font-mono">
+                        <span
+                          className={`${isRevenue ? "text-gray-700" : "text-gray-500"} ${onSetPrimaryAirport && !isDepPrimary ? "cursor-pointer hover:text-blue-600 hover:underline" : ""}`}
+                          onClick={(e) => {
+                            if (!onSetPrimaryAirport || isDepPrimary) return;
+                            e.stopPropagation();
+                            onSetPrimaryAirport(arrFlight.tail_number ?? "", dep);
+                          }}
+                          title={isDepPrimary ? "Current service airport" : `Service at ${dep} (pre-departure)`}
+                        >{dep}</span>
+                        <span className={isRevenue ? "text-gray-700" : "text-gray-500"}> → </span>
+                        <span
+                          className={`${isRevenue ? "text-gray-700" : "text-gray-500"} ${onSetPrimaryAirport && !isArrPrimary ? "cursor-pointer hover:text-blue-600 hover:underline" : ""}`}
+                          onClick={(e) => {
+                            if (!onSetPrimaryAirport || isArrPrimary) return;
+                            e.stopPropagation();
+                            onSetPrimaryAirport(arrFlight.tail_number ?? "", arrIcao);
+                          }}
+                          title={isArrPrimary ? "Current service airport" : `Service at ${arrIcao} (post-arrival)`}
+                        >{arrIcao}</span>
+                      </span>
                       <span>{fmtUtcHM(f.scheduled_departure, f.departure_icao)}{f.scheduled_arrival ? ` – ${fmtUtcHM(f.scheduled_arrival, f.arrival_icao)}` : ""}</span>
                       {ft && (
                         <span className={`rounded px-1 py-0.5 text-[10px] font-medium ${
@@ -2169,7 +2191,26 @@ function VanScheduleCard({
                   ? new Date(nextDep.scheduled_departure).getTime() - arrTime.getTime()
                   : Infinity;
                 const isOvernight = arrTime ? !isOnEtDate(arrFlight.scheduled_arrival!, date) : false;
-                const turnBadgeLabel = computeTurnLabel(nextDep, groundMs, { isOvernight, viewDate: date });
+                // Detect pre-departure: service airport is a departure airport, not an arrival
+                const arrIcaoNorm = arrFlight.arrival_icao?.replace(/^K/, "") ?? "";
+                const isPreDeparture = airport !== arrIcaoNorm && allFlights?.some((f) =>
+                  f.tail_number === arrFlight.tail_number &&
+                  f.departure_icao?.replace(/^K/, "") === airport &&
+                  (isOnEtDate(f.scheduled_departure, date) || isOnEtDate(f.scheduled_arrival, date))
+                );
+                let turnBadgeLabel: string;
+                if (isPreDeparture) {
+                  // Find the departing flight from this airport to show its departure time
+                  const depFlight = allFlights?.filter((f) =>
+                    f.tail_number === arrFlight.tail_number &&
+                    f.departure_icao?.replace(/^K/, "") === airport &&
+                    (isOnEtDate(f.scheduled_departure, date) || isOnEtDate(f.scheduled_arrival, date))
+                  ).sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure))[0];
+                  const depTime = depFlight ? fmtUtcHM(depFlight.scheduled_departure, depFlight.departure_icao) : "?";
+                  turnBadgeLabel = `Pre-Departure - Departing at ${depTime}`;
+                } else {
+                  turnBadgeLabel = computeTurnLabel(nextDep, groundMs, { isOvernight, viewDate: date });
+                }
                 const extraLegs = (allFlights && arrFlight.tail_number)
                   ? allFlights.filter((f) => {
                       if (f.tail_number !== arrFlight.tail_number) return false;
