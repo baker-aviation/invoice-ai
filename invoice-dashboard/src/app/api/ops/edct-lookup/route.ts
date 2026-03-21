@@ -178,9 +178,14 @@ export async function POST(req: NextRequest) {
   const found = results.filter((r) => r.found);
 
   // Store any found EDCTs as ops_alerts (upsert by source_message_id to avoid duplicates)
+  // Skip stale EDCTs (more than 2 hours in the past) and cancelled ones
+  const now = Date.now();
+  const twoHoursAgo = now - 2 * 3600_000;
+
   if (found.length > 0) {
     for (const edct of found) {
-      if (edct.cancelled) continue; // Skip cancelled EDCTs
+      if (edct.cancelled) continue;
+      if (edct.edct_time && new Date(edct.edct_time).getTime() < twoHoursAgo) continue;
 
       const sourceId = `faa-edct-${edct.callsign}-${edct.origin}-${edct.destination}`;
       const delayStr = edct.delay_minutes != null ? `${edct.delay_minutes}min delay` : "";
@@ -202,10 +207,16 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // Count only current (non-stale, non-cancelled) as "found" for the UI
+  const current = found.filter((r) =>
+    !r.cancelled && (!r.edct_time || new Date(r.edct_time).getTime() >= twoHoursAgo)
+  );
+
   return NextResponse.json({
     ok: true,
     checked: results.length,
-    found: found.length,
+    found: current.length,
+    stale: found.length - current.length,
     results,
   });
 }
