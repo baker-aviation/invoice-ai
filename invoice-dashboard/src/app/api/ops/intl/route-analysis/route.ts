@@ -61,13 +61,41 @@ export async function GET(req: NextRequest) {
   let ffRoute: string | null = null;
   let ffFlightId: string | null = null;
   let ffError: string | null = null;
+  let ffRecommendedRoutes: Array<{ routeString: string; source: string }> = [];
 
-  if (tail && process.env.FOREFLIGHT_API_KEY) {
+  if (process.env.FOREFLIGHT_API_KEY) {
+    // First try the recommended routes endpoint (doesn't need a tail number)
+    try {
+      const routesRes = await fetch(`${FF_BASE}/routes/${dep}/${arr}`, {
+        headers: { "x-api-key": apiKey() },
+      });
+      if (routesRes.ok) {
+        const routesData = await routesRes.json();
+        const routes = routesData.routes ?? routesData ?? [];
+        if (Array.isArray(routes) && routes.length > 0) {
+          ffRecommendedRoutes = routes.slice(0, 5).map((r: Record<string, unknown>) => ({
+            routeString: (r.routeString ?? r.route ?? r.routeText ?? "") as string,
+            source: (r.source ?? r.type ?? "recommended") as string,
+          })).filter((r: { routeString: string }) => r.routeString && r.routeString !== "DCT");
+
+          // Use the first recommended route as the primary
+          if (ffRecommendedRoutes.length > 0) {
+            ffRoute = ffRecommendedRoutes[0].routeString;
+          }
+        }
+        console.log(`[route-analysis] FF routes ${dep}→${arr}: ${ffRecommendedRoutes.length} recommended, best=${ffRoute?.slice(0, 80) ?? "none"}`);
+      }
+    } catch (err) {
+      console.warn(`[route-analysis] FF routes endpoint failed for ${dep}→${arr}:`, err instanceof Error ? err.message : err);
+    }
+  }
+
+  if (!ffRoute && tail && process.env.FOREFLIGHT_API_KEY) {
     const acConfig = AIRCRAFT[tail];
     const altitude = acConfig?.altitude ?? 410;
 
     try {
-      // First get cruise profile UUID
+      // Get cruise profile UUID
       const acRes = await fetch(`${FF_BASE}/aircraft`, {
         headers: { "x-api-key": apiKey() },
       });
@@ -101,22 +129,36 @@ export async function GET(req: NextRequest) {
 
       if (flightRes.ok) {
         const flightData = await flightRes.json();
-        ffFlightId = flightData.flightId ?? null;
+        // ForeFlight wraps everything in { flight: { ... } }
+        const fd = flightData.flight ?? flightData;
+        ffFlightId = fd.flightId ?? null;
 
-        // Extract the route string from the response
-        // ForeFlight returns the auto-computed route in routeToDestination.route
-        const routeData = flightData.routeToDestination ?? flightData.route ?? {};
-        ffRoute = routeData.route ?? routeData.routeString ?? null;
+        // Extract the route string — try multiple known locations
+        const routeData = fd.routeToDestination ?? fd.route ?? {};
+        ffRoute = routeData.route ?? routeData.routeString ?? fd.routeString ?? null;
 
-        // Also check nested performance.navlog for waypoints
-        const navlog = flightData.performance?.navlog ?? flightData.navlog;
+        // Check navlog for waypoints if no route string
+        const navlog = fd.performance?.navlog ?? fd.navlog;
         if (!ffRoute && navlog && Array.isArray(navlog)) {
-          // Build route from navlog waypoint names
           ffRoute = navlog
             .map((wp: Record<string, unknown>) => wp.ident ?? wp.name)
             .filter(Boolean)
             .join(" ");
         }
+
+        // Try flightData sub-object (ForeFlight v3 structure)
+        if (!ffRoute && fd.flightData) {
+          const fdd = fd.flightData;
+          ffRoute = fdd.route ?? fdd.routeString ?? fdd.routeToDestination?.route ?? null;
+          // Also check waypoints array
+          if (!ffRoute && fdd.waypoints && Array.isArray(fdd.waypoints)) {
+            ffRoute = fdd.waypoints.map((w: Record<string, unknown>) => w.ident ?? w.name).filter(Boolean).join(" ");
+          }
+          console.log(`[route-analysis] FF ${dep}→${arr}: flightData keys=${Object.keys(fdd).join(",")}, route=${ffRoute ? ffRoute.slice(0, 120) : "null"}`);
+        } else {
+          console.log(`[route-analysis] FF ${dep}→${arr}: route=${ffRoute ? ffRoute.slice(0, 120) : "null"}, fd keys=${Object.keys(fd).join(",")}`);
+        }
+
 
         // Clean up the flight plan from ForeFlight dispatch
         if (ffFlightId) {
@@ -132,6 +174,9 @@ export async function GET(req: NextRequest) {
     } catch (err) {
       ffError = err instanceof Error ? err.message : String(err);
     }
+
+    if (ffError) console.warn(`[route-analysis] ForeFlight error for ${dep}→${arr}:`, ffError);
+    if (ffRoute) console.log(`[route-analysis] ForeFlight route ${dep}→${arr}:`, ffRoute);
   }
 
   const method = ffRoute ? "foreflight+great_circle" : "great_circle";
@@ -157,6 +202,7 @@ export async function GET(req: NextRequest) {
     arrival: { icao: arr, name: arrInfo.name, lat: arrInfo.lat, lon: arrInfo.lon },
     foreflight: {
       route: ffRoute,
+      recommendedRoutes: ffRecommendedRoutes,
       available: !!process.env.FOREFLIGHT_API_KEY,
       error: ffError,
     },
