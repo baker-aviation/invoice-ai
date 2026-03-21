@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { verifyCronSecret } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 import { getAirportTimezone } from "@/lib/airportTimezones";
+import { postSlackMessage } from "@/lib/slack";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -123,14 +124,6 @@ async function lookupEdct(flight: FlightInput): Promise<FaaEdctResult> {
 }
 
 // ─── Slack ─────────────────────────────────────────────────────────────
-
-async function postSlack(token: string, payload: Record<string, unknown>) {
-  await fetch("https://slack.com/api/chat.postMessage", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-}
 
 function buildEdctSlackBlocks(
   edct: FaaEdctResult,
@@ -301,7 +294,6 @@ export async function GET(req: NextRequest) {
   // 8. Store EDCTs + track new/updated for Slack
   const newEdcts: FaaEdctResult[] = [];
   const updatedEdcts: { edct: FaaEdctResult; previousEdctTime: string | null }[] = [];
-  const token = process.env.SLACK_BOT_TOKEN;
 
   for (const edct of found) {
     const sourceId = `faa-edct-${edct.callsign}-${edct.origin}-${edct.destination}`;
@@ -336,20 +328,20 @@ export async function GET(req: NextRequest) {
     if (isUpdated) updatedEdcts.push({ edct, previousEdctTime: existing.edct_time });
   }
 
-  // 9. Send Slack messages — one per EDCT (new or updated)
-  if (token && (newEdcts.length > 0 || updatedEdcts.length > 0)) {
+  // 9. Send Slack messages — one per EDCT (new or updated), respects kill switch
+  if (newEdcts.length > 0 || updatedEdcts.length > 0) {
     for (const edct of newEdcts) {
       const sp = salespersonMap.get(`${edct.tail}|${edct.origin}`) ?? null;
       const blocks = buildEdctSlackBlocks(edct, sp, "new");
       const fallback = `New FAA EDCT: ${edct.tail} ${stripK(edct.origin)}→${stripK(edct.destination)} EDCT ${fmtLocal(edct.edct_time, edct.origin)}`;
-      await postSlack(token, { channel: EDCT_SLACK_CHANNEL, text: fallback, blocks });
+      await postSlackMessage({ channel: EDCT_SLACK_CHANNEL, text: fallback, blocks });
     }
 
     for (const { edct, previousEdctTime } of updatedEdcts) {
       const sp = salespersonMap.get(`${edct.tail}|${edct.origin}`) ?? null;
       const blocks = buildEdctSlackBlocks(edct, sp, "updated", previousEdctTime);
-      const fallback = `EDCT Updated: ${edct.tail} ${stripK(edct.origin)}→${stripK(edct.destination)} ${fmtLocal(previousEdctTime, edct.origin)} → ${fmtLocal(edct.edct_time, edct.origin)}`;
-      await postSlack(token, { channel: EDCT_SLACK_CHANNEL, text: fallback, blocks });
+      const fallback = `EDCT Updated: ${edct.tail} ${stripK(edct.origin)}→${stripK(edct.destination)} ${fmtLocal(previousEdctTime ?? null, edct.origin)} → ${fmtLocal(edct.edct_time, edct.origin)}`;
+      await postSlackMessage({ channel: EDCT_SLACK_CHANNEL, text: fallback, blocks });
     }
   }
 

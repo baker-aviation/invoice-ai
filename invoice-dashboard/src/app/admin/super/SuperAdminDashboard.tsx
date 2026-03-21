@@ -48,6 +48,9 @@ type DashboardData = {
   users: UserInfo[];
   queues: QueueDepth[];
   flightaware: FaHealth;
+  slackEnabled: boolean;
+  slackUpdatedAt: string | null;
+  slackUpdatedBy: string | null;
 };
 
 // ─── Styles ──────────────────────────────────────────────────────────────────
@@ -430,6 +433,39 @@ export default function SuperAdminDashboard() {
                 </div>
               );
             })()}
+
+            {/* Slack Kill Switch */}
+            <div className={`rounded-lg border p-3 flex items-center justify-between shadow-sm ${data.slackEnabled ? "bg-white" : "bg-red-50 border-red-200"}`}>
+              <div className="flex items-center gap-3">
+                <div className={`h-2.5 w-2.5 rounded-full ${data.slackEnabled ? "bg-emerald-500" : "bg-red-500"}`} />
+                <div>
+                  <div className="text-sm font-medium text-gray-900">Slack Messages</div>
+                  <div className="text-xs text-gray-400">
+                    {data.slackEnabled ? "All Slack notifications active" : "All Slack notifications PAUSED"}
+                  </div>
+                </div>
+              </div>
+              <button
+                onClick={async () => {
+                  const newState = !data.slackEnabled;
+                  const confirmed = newState || confirm("Disable ALL Slack messages? This stops EDCT alerts, trip notifications, and all other Slack posts.");
+                  if (!confirmed) return;
+                  await fetch("/api/admin/super", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ action: "toggle_slack", enabled: newState }),
+                  });
+                  fetchData();
+                }}
+                className={`text-xs font-medium px-3 py-1.5 rounded-lg border transition-colors ${
+                  data.slackEnabled
+                    ? "bg-white border-red-200 text-red-600 hover:bg-red-50"
+                    : "bg-emerald-600 border-emerald-600 text-white hover:bg-emerald-700"
+                }`}
+              >
+                {data.slackEnabled ? "Kill Slack" : "Enable Slack"}
+              </button>
+            </div>
           </div>
         </div>
 
