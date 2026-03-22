@@ -643,6 +643,35 @@ export type IntlTripClearance = {
   updated_at: string;
 };
 
+// ---------------------------------------------------------------------------
+// Pinned NOTAMs
+// ---------------------------------------------------------------------------
+
+export type NotamPin = {
+  alert_id: string;
+  pinned_by: string;
+  note: string | null;
+  created_at: string;
+};
+
+// ---------------------------------------------------------------------------
+// Custom NOTAM alerts
+// ---------------------------------------------------------------------------
+
+export type CustomNotamAlert = {
+  id: string;
+  airport_icao: string | null;
+  severity: "critical" | "warning" | "info";
+  subject: string;
+  body: string | null;
+  created_by: string;
+  created_by_name: string | null;
+  expires_at: string | null;
+  archived_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 // Re-export client-safe helpers (these are also importable directly from @/lib/intlUtils)
 import { isInternationalFlight as _isIntlFlight } from "@/lib/intlUtils";
 export { isInternationalIcao, isInternationalFlight } from "@/lib/intlUtils";
