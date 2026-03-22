@@ -374,8 +374,9 @@ function EdctRow({ alert, flight, onDismiss, fmtTime }: {
   const programStart = body.match(/Program Start Time:\s*(.+)/i)?.[1]?.trim();
   const programEnd = body.match(/Program End Time:\s*(.+)/i)?.[1]?.trim();
   const expectedArrival = body.match(/Expected Arrival Time:\s*(.+)/i)?.[1]?.trim();
-  const sourceTag = (alert.source_message_id ?? "").startsWith("swim-edct-")
-    ? "SWIM"
+  const srcId = alert.source_message_id ?? "";
+  const sourceTag = srcId.startsWith("swim-edct-") || srcId.startsWith("faa-edct-")
+    ? "FAA"
     : "FF";
 
   return (
@@ -400,7 +401,7 @@ function EdctRow({ alert, flight, onDismiss, fmtTime }: {
           <span className="font-mono text-xs text-gray-600 bg-gray-100 rounded px-1.5 py-0.5">{alert.tail_number || flight?.tail_number}</span>
         )}
         <span className={`text-[10px] font-bold rounded px-1.5 py-0.5 ${
-          sourceTag === "SWIM" ? "bg-blue-100 text-blue-700" : "bg-amber-100 text-amber-700"
+          sourceTag === "FAA" ? "bg-blue-100 text-blue-700" : "bg-amber-100 text-amber-700"
         }`}>{sourceTag}</span>
         <span className="text-xs">
           {(alert.original_departure_time || flight?.scheduled_departure) && (
@@ -422,7 +423,7 @@ function EdctRow({ alert, flight, onDismiss, fmtTime }: {
           {alert.subject && (
             <div className="col-span-2 sm:col-span-3 text-gray-800 font-medium truncate">{alert.subject}</div>
           )}
-          <div><span className="text-gray-400">Source:</span> {sourceTag === "SWIM" ? "FAA SWIM" : "ForeFlight"}</div>
+          <div><span className="text-gray-400">Source:</span> {sourceTag === "FAA" ? "FAA" : "ForeFlight"}</div>
           <div><span className="text-gray-400">Received:</span> {fmtTime(alert.created_at)}</div>
           {(alert.tail_number || flight?.tail_number) && (
             <div><span className="text-gray-400">Tail:</span> {alert.tail_number || flight?.tail_number}</div>
