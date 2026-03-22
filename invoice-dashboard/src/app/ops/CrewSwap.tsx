@@ -2100,6 +2100,25 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
     } catch { /* ignore */ }
   }
 
+  // Clear all plan versions for this swap date (testing only)
+  async function clearAllVersions() {
+    const dateStr = selectedWed.toISOString().slice(0, 10);
+    if (!confirm(`Delete ALL saved plans for ${dateStr}? This cannot be undone.`)) return;
+    if (!confirm(`Are you absolutely sure? All versions will be permanently deleted.`)) return;
+    try {
+      const res = await fetch(`/api/crew/swap-plan?swap_date=${dateStr}`, { method: "DELETE" });
+      if (res.ok) {
+        setSavedPlanMeta(null);
+        setPlanVersions([]);
+        setPlanImpacts([]);
+        setShowHistory(false);
+        addToast("success", `All plan versions for ${dateStr} deleted`);
+      } else {
+        addToast("error", "Failed to delete versions");
+      }
+    } catch { addToast("error", "Failed to delete versions"); }
+  }
+
   // Load a specific historical version
   async function loadVersion(versionId: string) {
     setLoadingVersion(true);
@@ -2514,6 +2533,12 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
         <div className="rounded-lg border bg-white shadow-sm overflow-hidden mb-2">
           <div className="px-4 py-2 bg-gray-50 border-b">
             <span className="text-xs font-semibold text-gray-600 uppercase">Plan History</span>
+            <button
+              onClick={clearAllVersions}
+              className="text-[10px] px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100 font-medium"
+            >
+              Clear All
+            </button>
           </div>
           <div className="divide-y max-h-48 overflow-y-auto">
             {planVersions.map((v) => (
