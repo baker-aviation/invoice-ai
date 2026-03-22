@@ -136,13 +136,19 @@ export async function getFlightsByRegistration(
 ): Promise<FaFlight[]> {
   const dbCallsign = callsignMap?.get(registration);
 
+  // Blocked tails: skip N-number entirely, query by callsign directly
+  const BLOCKED_TAILS: Record<string, string> = {
+    "N301HR": "KOW301",
+  };
+  const primaryIdent = BLOCKED_TAILS[registration] ?? registration;
+
   // Query by N-number first — returns last_position with lat/lon for map tracking.
   // Callsign queries return flight data but NOT positions.
   // Use start param to include yesterday's flights (duty tracker needs 3-day window).
   // NOTE: FA rejects encodeURIComponent on dates (%3A for colons → 400).
   // Use raw ISO without milliseconds.
   const startDate = new Date(Date.now() - 36 * 3600_000).toISOString().split(".")[0] + "Z";
-  const url = `${BASE}/flights/${encodeURIComponent(registration)}?start=${startDate}`;
+  const url = `${BASE}/flights/${encodeURIComponent(primaryIdent)}?start=${startDate}`;
   const res = await fetch(url, {
     headers: headers(),
     signal: AbortSignal.timeout(10000),
