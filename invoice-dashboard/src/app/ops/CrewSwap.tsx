@@ -552,7 +552,7 @@ function SwapSheetRow({ row }: { row: CrewSwapRow }) {
   );
 }
 
-function SwapSheet({ rows, view, impacts, impactedTails, lockedTails, onLockTail, onAssignCrew, pool, onChangeTransport, onSwapPointChange, badPairings, checkairmen }: {
+function SwapSheet({ rows, view, impacts, impactedTails, lockedTails, onLockTail, onAssignCrew, pool, onChangeTransport, onSwapPointChange, badPairings, checkairmen, flights, selectedWed }: {
   rows: CrewSwapRow[]; view: "role" | "aircraft"; impacts?: PlanImpact[]; impactedTails?: Set<string>;
   lockedTails?: Set<string>; onLockTail?: (tail: string) => void;
   onAssignCrew?: (tail: string, role: "PIC" | "SIC", name: string | null) => void;
@@ -561,8 +561,10 @@ function SwapSheet({ rows, view, impacts, impactedTails, lockedTails, onLockTail
   onSwapPointChange?: (tail: string, newSwapPoint: string) => void;
   badPairings?: CrewInfoData["bad_pairings"];
   checkairmen?: CrewInfoData["checkairmen"];
+  flights?: Flight[];
+  selectedWed?: Date;
 }) {
-  if (view === "aircraft") return <SwapSheetByTail rows={rows} impacts={impacts} impactedTails={impactedTails} lockedTails={lockedTails} onLockTail={onLockTail} onAssignCrew={onAssignCrew} pool={pool} onChangeTransport={onChangeTransport} onSwapPointChange={onSwapPointChange} badPairings={badPairings} checkairmen={checkairmen} />;
+  if (view === "aircraft") return <SwapSheetByTail rows={rows} impacts={impacts} impactedTails={impactedTails} lockedTails={lockedTails} onLockTail={onLockTail} onAssignCrew={onAssignCrew} pool={pool} onChangeTransport={onChangeTransport} onSwapPointChange={onSwapPointChange} badPairings={badPairings} checkairmen={checkairmen} flights={flights} selectedWed={selectedWed} />;
   return <SwapSheetByRole rows={rows} />;
 }
 
@@ -619,7 +621,7 @@ function SwapSheetByRole({ rows }: { rows: CrewSwapRow[] }) {
   );
 }
 
-function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail, onAssignCrew, pool, onChangeTransport, onSwapPointChange, badPairings, checkairmen }: {
+function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail, onAssignCrew, pool, onChangeTransport, onSwapPointChange, badPairings, checkairmen, flights, selectedWed }: {
   rows: CrewSwapRow[];
   impacts?: PlanImpact[];
   impactedTails?: Set<string>;
@@ -631,6 +633,8 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
   onSwapPointChange?: (tail: string, newSwapPoint: string) => void;
   badPairings?: CrewInfoData["bad_pairings"];
   checkairmen?: CrewInfoData["checkairmen"];
+  flights?: Flight[];
+  selectedWed?: Date;
 }) {
   // Build checkairman type lookup for enhanced CA badges
   const caTypeLookup = useMemo(() => {
@@ -935,6 +939,46 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                 })()}
               </div>
             )}
+
+            {/* Wednesday flight legs for this tail */}
+            {(() => {
+              if (!flights || !selectedWed) return null;
+              const wedStr = selectedWed.toISOString().slice(0, 10);
+              const tailFlights = flights
+                .filter((f) => f.tail_number === tail && f.scheduled_departure?.startsWith(wedStr))
+                .sort((a, b) => (a.scheduled_departure ?? "").localeCompare(b.scheduled_departure ?? ""));
+              if (tailFlights.length === 0) return null;
+
+              return (
+                <div className="px-4 py-1.5 border-b bg-slate-50 flex flex-wrap items-center gap-x-4 gap-y-0.5">
+                  {tailFlights.map((f, i) => {
+                    const depIcao = f.departure_icao;
+                    const arrIcao = f.arrival_icao;
+                    const depIata = depIcao?.length === 4 && depIcao.startsWith("K") ? depIcao.slice(1) : depIcao;
+                    const arrIata = arrIcao?.length === 4 && arrIcao.startsWith("K") ? arrIcao.slice(1) : arrIcao;
+                    const typeColor = f.flight_type?.toLowerCase().includes("charter") || f.flight_type?.toLowerCase().includes("revenue")
+                      ? "text-blue-700" : "text-gray-400";
+                    return (
+                      <span key={f.id ?? i} className="text-[10px] font-mono whitespace-nowrap">
+                        <span className={typeColor}>{depIata}</span>
+                        <span className="text-gray-300 mx-0.5">{fmtShortTime(f.scheduled_departure, depIcao)}</span>
+                        <span className="text-gray-300">{"\u2192"}</span>
+                        <span className={typeColor}>{arrIata}</span>
+                        <span className="text-gray-300 mx-0.5">{fmtShortTime(f.scheduled_arrival, arrIcao)}</span>
+                        {f.flight_type && (
+                          <span className={`ml-0.5 text-[8px] ${
+                            f.flight_type.toLowerCase().includes("charter") || f.flight_type.toLowerCase().includes("revenue")
+                              ? "text-blue-400" : "text-gray-300"
+                          }`}>
+                            {f.flight_type.slice(0, 3).toUpperCase()}
+                          </span>
+                        )}
+                      </span>
+                    );
+                  })}
+                </div>
+              );
+            })()}
 
             {/* Crew grid: oncoming on left, offgoing on right */}
             <div className="grid grid-cols-2 divide-x">
@@ -3192,7 +3236,8 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
             <SwapSheet rows={swapPlan.rows} view={swapView} impacts={planImpacts} impactedTails={impactedTails}
               lockedTails={lockedTails} onLockTail={toggleLockTail} onAssignCrew={assignCrew} pool={oncomingPool}
               onChangeTransport={openFlightPicker} onSwapPointChange={handleSwapPointChange}
-              badPairings={crewInfoData?.bad_pairings} checkairmen={crewInfoData?.checkairmen} />
+              badPairings={crewInfoData?.bad_pairings} checkairmen={crewInfoData?.checkairmen}
+              flights={flights} selectedWed={selectedWed} />
           </div>
         )}
 
