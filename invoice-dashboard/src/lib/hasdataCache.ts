@@ -334,9 +334,9 @@ export async function getHasdataCacheForOptimizer(
   totalFlights: number;
 }> {
   const supa = createServiceClient();
-  const PAGE_SIZE = 5000;
 
-  // Paginate through all rows — PostgREST max_rows is typically 10K, not 50K
+  // Only load rows that have flights (skip empty pairs — typically 40-50% of cache)
+  const PAGE_SIZE = 5000;
   const allRows: { origin_iata: string; destination_iata: string; flight_offers: unknown; offer_count: number }[] = [];
   let from = 0;
   while (true) {
@@ -344,6 +344,7 @@ export async function getHasdataCacheForOptimizer(
       .from("hasdata_flight_cache")
       .select("origin_iata, destination_iata, flight_offers, offer_count")
       .eq("cache_date", date)
+      .gt("offer_count", 0) // skip empty pairs
       .range(from, from + PAGE_SIZE - 1);
 
     if (error) {
@@ -353,11 +354,11 @@ export async function getHasdataCacheForOptimizer(
     if (!data || data.length === 0) break;
 
     allRows.push(...data);
-    if (data.length < PAGE_SIZE) break; // last page
+    if (data.length < PAGE_SIZE) break;
     from += PAGE_SIZE;
   }
 
-  console.log(`[HasdataCache] Loaded ${allRows.length} rows for ${date}`);
+  console.log(`[HasdataCache] Loaded ${allRows.length} rows with flights for ${date} (skipped empty pairs)`);
 
   const offerMap = new Map<string, FlightOffer[]>();
   let totalFlights = 0;
