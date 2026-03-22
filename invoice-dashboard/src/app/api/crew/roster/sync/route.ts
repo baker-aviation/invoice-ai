@@ -1,7 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin, isAuthed } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
-import { parseCrewInfo, type CrewRosterEntry, type WeeklySwapEntry } from "@/lib/crewInfoParser";
+import {
+  parseCrewInfo,
+  type CrewRosterEntry,
+  type WeeklySwapEntry,
+  type BadPairing,
+  type CheckairmanEntry,
+  type TrainingEntry,
+  type Recurrency299Entry,
+  type PicSwapEntry,
+  type CrewingChecklist,
+  type CalendarWeek,
+} from "@/lib/crewInfoParser";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
@@ -121,7 +132,20 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // ═══ 2. Update checkairman flags from weekly sheet ════════════════════════
+  // ═══ 2. Update checkairman flags from weekly sheet + checkairmen table ════
+
+  // Build a lookup from the parsed checkairmen data for aircraft type capabilities
+  const checkairmanTypeMap = new Map<string, { citation_x: boolean; challenger: boolean }>();
+  for (const ca of result.checkairmen) {
+    const existing = checkairmanTypeMap.get(ca.name);
+    if (existing) {
+      // Merge — a checkairman can appear in multiple rotation columns
+      if (ca.citation_x) existing.citation_x = true;
+      if (ca.challenger) existing.challenger = true;
+    } else {
+      checkairmanTypeMap.set(ca.name, { citation_x: ca.citation_x, challenger: ca.challenger });
+    }
+  }
 
   if (result.weekly_swap) {
     for (const entry of result.weekly_swap) {
@@ -129,7 +153,16 @@ export async function POST(req: NextRequest) {
         const key = `${entry.name}|${entry.role}`;
         const existing = existingMap.get(key);
         if (existing) {
-          await supa.from("crew_members").update({ is_checkairman: true }).eq("id", existing.id);
+          const types = checkairmanTypeMap.get(entry.name);
+          const checkairmanTypes: string[] = [];
+          if (types?.citation_x) checkairmanTypes.push("citation_x");
+          if (types?.challenger) checkairmanTypes.push("challenger");
+
+          const updatePayload: Record<string, unknown> = { is_checkairman: true };
+          if (checkairmanTypes.length > 0) {
+            updatePayload.checkairman_types = checkairmanTypes;
+          }
+          await supa.from("crew_members").update(updatePayload).eq("id", existing.id);
         }
       }
     }
@@ -254,6 +287,48 @@ export async function POST(req: NextRequest) {
     });
   }
 
+  // ═══ 5. Find target week from calendar_weeks ════════════════════════════
+
+  let targetWeekCrew: CalendarWeek | null = null;
+  if (result.calendar_weeks.length > 0) {
+    // Try to match the swap_date to a calendar week's date range
+    if (swapDate) {
+      const targetTs = new Date(swapDate + "T12:00:00Z").getTime();
+
+      for (const week of result.calendar_weeks) {
+        // date_range looks like "March 18, 2026 - March 25, 2026"
+        const rangeParts = week.date_range.split(/\s*-\s*/);
+        if (rangeParts.length !== 2) continue;
+        const startTs = new Date(rangeParts[0].trim() + " 00:00:00 UTC").getTime();
+        const endTs = new Date(rangeParts[1].trim() + " 23:59:59 UTC").getTime();
+        if (isNaN(startTs) || isNaN(endTs)) continue;
+        if (targetTs >= startTs && targetTs <= endTs) {
+          targetWeekCrew = week;
+          break;
+        }
+      }
+    }
+
+    // Fallback: find the next upcoming week (first week whose start >= today)
+    if (!targetWeekCrew) {
+      const now = Date.now();
+      for (const week of result.calendar_weeks) {
+        const rangeParts = week.date_range.split(/\s*-\s*/);
+        if (rangeParts.length !== 2) continue;
+        const startTs = new Date(rangeParts[0].trim() + " 00:00:00 UTC").getTime();
+        if (isNaN(startTs)) continue;
+        if (startTs >= now) {
+          targetWeekCrew = week;
+          break;
+        }
+      }
+      // If all weeks are in the past, use the last one
+      if (!targetWeekCrew) {
+        targetWeekCrew = result.calendar_weeks[result.calendar_weeks.length - 1];
+      }
+    }
+  }
+
   // ═══ Response ═════════════════════════════════════════════════════════════
 
   return NextResponse.json({
@@ -282,6 +357,14 @@ export async function POST(req: NextRequest) {
     oncoming_pool: oncomingPool,
     standby_pool: standbyPool,
     different_airports: relevantDiffAirports,
+    bad_pairings: result.bad_pairings,
+    checkairmen: result.checkairmen,
+    training_needed: result.training_needed,
+    recurrency_299: result.recurrency_299,
+    pic_swap_table: result.pic_swap_table,
+    crewing_checklist: result.crewing_checklist,
+    calendar_weeks: result.calendar_weeks,
+    target_week_crew: targetWeekCrew,
     errors: syncErrors.length > 0 ? syncErrors : undefined,
   });
 }

@@ -195,6 +195,17 @@ type SwapPlanResult = {
   };
 };
 
+type CrewInfoData = {
+  bad_pairings: { pic: string; sic: string; severity: string; notes: string }[];
+  checkairmen: { name: string; rotation: string; citation_x: boolean; challenger: boolean }[];
+  training_needed: { name: string; indoc: boolean; emergency_drill: boolean }[];
+  recurrency_299: { name: string; month: string; needs_299: boolean }[];
+  pic_swap_table: { old_pic: string | null; new_pic: string | null; tail: string | null }[];
+  crewing_checklist: { assignees: { name: string; tasks: Record<string, boolean | string> }[] } | null;
+  calendar_weeks: { date_range: string; rotation: string; pic: { citation_x: string[]; challenger: string[]; dual: string[] }; sic: { citation_x: string[]; challenger: string[]; dual: string[] } }[];
+  target_week_crew: { date_range: string; rotation: string; pic: { citation_x: string[]; challenger: string[]; dual: string[] }; sic: { citation_x: string[]; challenger: string[]; dual: string[] } } | null;
+};
+
 // ─── Toast System ───────────────────────────────────────────────────────────
 
 type Toast = { id: number; type: "success" | "error" | "warning"; msg: string };
@@ -438,15 +449,17 @@ function SwapSheetRow({ row }: { row: CrewSwapRow }) {
   );
 }
 
-function SwapSheet({ rows, view, impacts, impactedTails, lockedTails, onLockTail, onAssignCrew, pool, onChangeTransport, onSwapPointChange }: {
+function SwapSheet({ rows, view, impacts, impactedTails, lockedTails, onLockTail, onAssignCrew, pool, onChangeTransport, onSwapPointChange, badPairings, checkairmen }: {
   rows: CrewSwapRow[]; view: "role" | "aircraft"; impacts?: PlanImpact[]; impactedTails?: Set<string>;
   lockedTails?: Set<string>; onLockTail?: (tail: string) => void;
   onAssignCrew?: (tail: string, role: "PIC" | "SIC", name: string | null) => void;
   pool?: OncomingPool | null;
   onChangeTransport?: (tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing", row: CrewSwapRow) => void;
   onSwapPointChange?: (tail: string, newSwapPoint: string) => void;
+  badPairings?: CrewInfoData["bad_pairings"];
+  checkairmen?: CrewInfoData["checkairmen"];
 }) {
-  if (view === "aircraft") return <SwapSheetByTail rows={rows} impacts={impacts} impactedTails={impactedTails} lockedTails={lockedTails} onLockTail={onLockTail} onAssignCrew={onAssignCrew} pool={pool} onChangeTransport={onChangeTransport} onSwapPointChange={onSwapPointChange} />;
+  if (view === "aircraft") return <SwapSheetByTail rows={rows} impacts={impacts} impactedTails={impactedTails} lockedTails={lockedTails} onLockTail={onLockTail} onAssignCrew={onAssignCrew} pool={pool} onChangeTransport={onChangeTransport} onSwapPointChange={onSwapPointChange} badPairings={badPairings} checkairmen={checkairmen} />;
   return <SwapSheetByRole rows={rows} />;
 }
 
@@ -503,7 +516,7 @@ function SwapSheetByRole({ rows }: { rows: CrewSwapRow[] }) {
   );
 }
 
-function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail, onAssignCrew, pool, onChangeTransport, onSwapPointChange }: {
+function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail, onAssignCrew, pool, onChangeTransport, onSwapPointChange, badPairings, checkairmen }: {
   rows: CrewSwapRow[];
   impacts?: PlanImpact[];
   impactedTails?: Set<string>;
@@ -513,7 +526,25 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
   pool?: OncomingPool | null;
   onChangeTransport?: (tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing", row: CrewSwapRow) => void;
   onSwapPointChange?: (tail: string, newSwapPoint: string) => void;
+  badPairings?: CrewInfoData["bad_pairings"];
+  checkairmen?: CrewInfoData["checkairmen"];
 }) {
+  // Build checkairman type lookup for enhanced CA badges
+  const caTypeLookup = useMemo(() => {
+    const map = new Map<string, { citation_x: boolean; challenger: boolean }>();
+    if (!checkairmen) return map;
+    for (const ca of checkairmen) {
+      const existing = map.get(ca.name);
+      if (existing) {
+        if (ca.citation_x) existing.citation_x = true;
+        if (ca.challenger) existing.challenger = true;
+      } else {
+        map.set(ca.name, { citation_x: ca.citation_x, challenger: ca.challenger });
+      }
+    }
+    return map;
+  }, [checkairmen]);
+
   // Group by tail number
   const byTail = new Map<string, CrewSwapRow[]>();
   for (const r of rows) {
@@ -533,6 +564,10 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
         const tailCost = tailRows.reduce((s, r) => s + (r.cost_estimate ?? 0), 0);
         const swapLoc = onPic?.swap_location ?? onSic?.swap_location ?? offPic?.swap_location ?? "?";
         const allWarnings = tailRows.flatMap((r) => r.warnings);
+
+        // Bad pairing check (oncoming and offgoing crews)
+        const onBadPairing = badPairings ? findBadPairing(onPic?.name, onSic?.name, badPairings) : null;
+        const offBadPairing = badPairings ? findBadPairing(offPic?.name, offSic?.name, badPairings) : null;
 
         // Timing analysis: check aircraft never unattended
         const latestOnArrival = [onPic, onSic]
@@ -592,7 +627,12 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                 <div className="flex items-center gap-1.5">
                   <span className="text-sm font-medium text-gray-900 truncate">{row.name}</span>
                   <span className="text-[10px] text-gray-400">({row.home_airports.join("/")})</span>
-                  {row.is_checkairman && <span className="text-[9px] px-1 py-0.5 rounded bg-amber-100 text-amber-700">CA</span>}
+                  {row.is_checkairman && (() => {
+                    const caTypes = caTypeLookup.get(row.name);
+                    const both = caTypes?.citation_x && caTypes?.challenger;
+                    const label = !caTypes ? "CA" : both ? "CA" : caTypes.citation_x ? "CA-CX" : caTypes.challenger ? "CA-CL" : "CA";
+                    return <span className="text-[9px] px-1 py-0.5 rounded bg-amber-100 text-amber-700">{label}</span>;
+                  })()}
                   {row.is_skillbridge && <span className="text-[9px] px-1 py-0.5 rounded bg-teal-100 text-teal-700">SB</span>}
                   {canPick && (
                     <select
@@ -711,11 +751,45 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                     {hasGap ? `${gapMinutes}min overlap` : `${Math.abs(gapMinutes)}min gap — unattended`}
                   </span>
                 )}
+                {(onBadPairing || offBadPairing) && (
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${
+                    (onBadPairing?.severity === "severe" || offBadPairing?.severity === "severe")
+                      ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"
+                  }`} title={onBadPairing?.notes ?? offBadPairing?.notes ?? ""}>
+                    Bad Pairing
+                  </span>
+                )}
                 {tailCost > 0 && (
                   <span className="text-xs text-gray-500">${tailCost.toLocaleString()}</span>
                 )}
               </div>
             </div>
+
+            {/* Bad pairing banner */}
+            {(onBadPairing || offBadPairing) && (
+              <div className={`px-4 py-1.5 border-b text-[11px] ${
+                (onBadPairing?.severity === "severe" || offBadPairing?.severity === "severe") ? "bg-red-50" : "bg-amber-50"
+              }`}>
+                {onBadPairing && (
+                  <div className={`flex items-center gap-1.5 ${onBadPairing.severity === "severe" ? "text-red-700" : "text-amber-700"}`}>
+                    <span className={`text-[9px] px-1 py-0.5 rounded font-bold uppercase ${
+                      onBadPairing.severity === "severe" ? "bg-red-200 text-red-800" : "bg-amber-200 text-amber-800"
+                    }`}>{onBadPairing.severity}</span>
+                    <span>Oncoming: {onBadPairing.pic} + {onBadPairing.sic}</span>
+                    {onBadPairing.notes && <span className="text-gray-500">— {onBadPairing.notes}</span>}
+                  </div>
+                )}
+                {offBadPairing && (
+                  <div className={`flex items-center gap-1.5 ${offBadPairing.severity === "severe" ? "text-red-700" : "text-amber-700"}`}>
+                    <span className={`text-[9px] px-1 py-0.5 rounded font-bold uppercase ${
+                      offBadPairing.severity === "severe" ? "bg-red-200 text-red-800" : "bg-amber-200 text-amber-800"
+                    }`}>{offBadPairing.severity}</span>
+                    <span>Offgoing: {offBadPairing.pic} + {offBadPairing.sic}</span>
+                    {offBadPairing.notes && <span className="text-gray-500">— {offBadPairing.notes}</span>}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Impact banners */}
             {tailImpacts.length > 0 && (
@@ -770,6 +844,253 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
   );
 }
 
+// ─── Crew Info Panel (CREW INFO Excel Data) ────────────────────────────────
+
+function CrewInfoPanel({ data }: { data: CrewInfoData }) {
+  const [showBadPairings, setShowBadPairings] = useState(true);
+  const [showCheckairmen, setShowCheckairmen] = useState(false);
+  const [showTraining, setShowTraining] = useState(false);
+  const [showChecklist, setShowChecklist] = useState(false);
+  const [showCalendar, setShowCalendar] = useState(false);
+  const [showPicSwap, setShowPicSwap] = useState(false);
+
+  const severityStyle: Record<string, string> = {
+    severe: "bg-red-100 text-red-700 border-red-200",
+    moderate: "bg-amber-100 text-amber-700 border-amber-200",
+    minor: "bg-gray-100 text-gray-600 border-gray-200",
+  };
+
+  // Group checkairmen by rotation
+  const caByRotation = new Map<string, typeof data.checkairmen>();
+  for (const ca of data.checkairmen) {
+    const key = ca.rotation === "A" ? "Rotation A" : ca.rotation === "B" ? "Rotation B" : "Other";
+    if (!caByRotation.has(key)) caByRotation.set(key, []);
+    caByRotation.get(key)!.push(ca);
+  }
+
+  // Build a lookup for checkairman types (merged across rotations)
+  const caTypeLookup = new Map<string, { citation_x: boolean; challenger: boolean }>();
+  for (const ca of data.checkairmen) {
+    const existing = caTypeLookup.get(ca.name);
+    if (existing) {
+      if (ca.citation_x) existing.citation_x = true;
+      if (ca.challenger) existing.challenger = true;
+    } else {
+      caTypeLookup.set(ca.name, { citation_x: ca.citation_x, challenger: ca.challenger });
+    }
+  }
+
+  const CollapsibleSection = ({ title, count, open, toggle, children, color = "text-gray-700" }: {
+    title: string; count?: number; open: boolean; toggle: () => void; children: React.ReactNode; color?: string;
+  }) => (
+    <div className="border-b border-gray-100 last:border-b-0">
+      <button onClick={toggle} className="w-full px-3 py-2 text-left flex items-center justify-between hover:bg-gray-50/50 transition-colors">
+        <div className="flex items-center gap-2">
+          <span className={`text-[10px] font-bold uppercase tracking-wider ${color}`}>{title}</span>
+          {count !== undefined && count > 0 && (
+            <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-500">{count}</span>
+          )}
+        </div>
+        <span className="text-[10px] text-gray-400">{open ? "\u25B2" : "\u25BC"}</span>
+      </button>
+      {open && <div className="px-3 pb-2.5">{children}</div>}
+    </div>
+  );
+
+  return (
+    <div className="rounded-lg border bg-white shadow-sm overflow-hidden">
+      <div className="px-4 py-2.5 bg-indigo-50 border-b flex items-center gap-2">
+        <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-700">Crew Info</span>
+        <span className="text-[9px] text-indigo-500">from Excel sync</span>
+      </div>
+
+      {/* Bad Pairings / Crew Conflicts */}
+      <CollapsibleSection
+        title="Crew Conflicts"
+        count={data.bad_pairings.length}
+        open={showBadPairings}
+        toggle={() => setShowBadPairings(!showBadPairings)}
+        color={data.bad_pairings.some(p => p.severity === "severe") ? "text-red-700" : "text-gray-700"}
+      >
+        {data.bad_pairings.length > 0 ? (
+          <div className="space-y-1">
+            {data.bad_pairings.map((bp, i) => (
+              <div key={i} className={`flex items-center gap-2 px-2 py-1.5 rounded border text-[11px] ${severityStyle[bp.severity] ?? severityStyle.minor}`}>
+                <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase ${
+                  bp.severity === "severe" ? "bg-red-200 text-red-800" : bp.severity === "moderate" ? "bg-amber-200 text-amber-800" : "bg-gray-200 text-gray-600"
+                }`}>{bp.severity}</span>
+                <span className="font-medium">{bp.pic}</span>
+                <span className="text-gray-400">+</span>
+                <span className="font-medium">{bp.sic}</span>
+                {bp.notes && <span className="text-gray-500 truncate ml-1" title={bp.notes}>{bp.notes}</span>}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="text-[11px] text-gray-400 py-1">No bad pairings on record.</div>
+        )}
+      </CollapsibleSection>
+
+      {/* Checkairmen */}
+      <CollapsibleSection
+        title="Checkairmen"
+        count={data.checkairmen.length}
+        open={showCheckairmen}
+        toggle={() => setShowCheckairmen(!showCheckairmen)}
+        color="text-amber-700"
+      >
+        {Array.from(caByRotation.entries()).map(([group, members]) => (
+          <div key={group} className="mb-1.5 last:mb-0">
+            <div className="text-[9px] font-bold text-gray-400 uppercase mb-0.5">{group}</div>
+            <div className="flex flex-wrap gap-1">
+              {members.map((ca, i) => {
+                const types = caTypeLookup.get(ca.name);
+                const both = types?.citation_x && types?.challenger;
+                const typeLabel = both ? "CA" : types?.citation_x ? "CA-CX" : types?.challenger ? "CA-CL" : "CA";
+                return (
+                  <span key={i} className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-amber-50 border border-amber-200 text-amber-700">
+                    {ca.name}
+                    <span className="text-[8px] font-bold bg-amber-200 text-amber-800 px-1 rounded">{typeLabel}</span>
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </CollapsibleSection>
+
+      {/* Training Needed */}
+      {data.training_needed.length > 0 && (
+        <CollapsibleSection
+          title="Training Needed"
+          count={data.training_needed.length}
+          open={showTraining}
+          toggle={() => setShowTraining(!showTraining)}
+          color="text-blue-700"
+        >
+          <div className="flex flex-wrap gap-1">
+            {data.training_needed.map((t, i) => (
+              <span key={i} className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-blue-50 border border-blue-200 text-blue-700">
+                {t.name}
+                {t.indoc && <span className="text-[8px] font-bold bg-blue-200 text-blue-800 px-1 rounded">INDOC</span>}
+                {t.emergency_drill && <span className="text-[8px] font-bold bg-orange-200 text-orange-800 px-1 rounded">E-DRILL</span>}
+              </span>
+            ))}
+          </div>
+        </CollapsibleSection>
+      )}
+
+      {/* Crewing Checklist */}
+      {data.crewing_checklist && data.crewing_checklist.assignees.length > 0 && (
+        <CollapsibleSection
+          title="Crewing Checklist"
+          open={showChecklist}
+          toggle={() => setShowChecklist(!showChecklist)}
+          color="text-emerald-700"
+        >
+          <div className="space-y-2">
+            {data.crewing_checklist.assignees.map((a, ai) => (
+              <div key={ai}>
+                <div className="text-[10px] font-bold text-gray-700 mb-1">{a.name}</div>
+                <div className="grid grid-cols-2 gap-x-2 gap-y-0.5">
+                  {Object.entries(a.tasks).map(([task, val]) => {
+                    if (!task) return null;
+                    const done = val === true;
+                    const na = val === "n/a";
+                    return (
+                      <div key={task} className="flex items-center gap-1 text-[10px]">
+                        <span className={`w-3.5 h-3.5 rounded flex items-center justify-center text-[8px] font-bold ${
+                          done ? "bg-emerald-500 text-white" : na ? "bg-gray-200 text-gray-400" : "bg-gray-100 text-gray-300 border border-gray-200"
+                        }`}>
+                          {done ? "\u2713" : na ? "\u2014" : ""}
+                        </span>
+                        <span className={`truncate ${done ? "text-emerald-700" : na ? "text-gray-400 line-through" : "text-gray-500"}`} title={task}>
+                          {task}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        </CollapsibleSection>
+      )}
+
+      {/* Calendar — Target Week Crew */}
+      {data.target_week_crew && (
+        <CollapsibleSection
+          title="Target Week Crew"
+          open={showCalendar}
+          toggle={() => setShowCalendar(!showCalendar)}
+          color="text-purple-700"
+        >
+          <div className="text-[10px] text-gray-500 mb-1.5">
+            {data.target_week_crew.date_range} (Rotation {data.target_week_crew.rotation})
+          </div>
+          {(["pic", "sic"] as const).map((role) => {
+            const roleData = data.target_week_crew![role as "pic" | "sic"];
+            const total = roleData.citation_x.length + roleData.challenger.length + roleData.dual.length;
+            if (total === 0) return null;
+            return (
+              <div key={role} className="mb-1.5 last:mb-0">
+                <div className="text-[9px] font-bold uppercase text-gray-400 mb-0.5">{role === "pic" ? "Captains" : "First Officers"} ({total})</div>
+                <div className="flex flex-wrap gap-1">
+                  {roleData.citation_x.map((n, i) => (
+                    <span key={`cx-${i}`} className="text-[9px] px-1 py-0.5 rounded bg-green-50 border border-green-200 text-green-700">{n}</span>
+                  ))}
+                  {roleData.challenger.map((n, i) => (
+                    <span key={`cl-${i}`} className="text-[9px] px-1 py-0.5 rounded bg-yellow-50 border border-yellow-200 text-yellow-700">{n}</span>
+                  ))}
+                  {roleData.dual.map((n, i) => (
+                    <span key={`du-${i}`} className="text-[9px] px-1 py-0.5 rounded bg-purple-50 border border-purple-200 text-purple-700">{n}</span>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </CollapsibleSection>
+      )}
+
+      {/* PIC Swap Reference */}
+      {data.pic_swap_table.length > 0 && (
+        <CollapsibleSection
+          title="PIC Swap Reference"
+          count={data.pic_swap_table.filter(r => r.old_pic || r.new_pic).length}
+          open={showPicSwap}
+          toggle={() => setShowPicSwap(!showPicSwap)}
+        >
+          <div className="space-y-0.5">
+            {data.pic_swap_table.filter(r => r.old_pic || r.new_pic).map((row, i) => (
+              <div key={i} className="flex items-center gap-1.5 text-[10px] py-0.5">
+                <span className="text-red-600 font-medium w-[90px] truncate" title={row.old_pic ?? ""}>{row.old_pic ?? "—"}</span>
+                <span className="text-gray-400">{"\u2192"}</span>
+                <span className="text-green-600 font-medium w-[90px] truncate" title={row.new_pic ?? ""}>{row.new_pic ?? "—"}</span>
+                {row.tail && <span className="font-mono text-gray-500 text-[9px]">{row.tail}</span>}
+              </div>
+            ))}
+          </div>
+        </CollapsibleSection>
+      )}
+    </div>
+  );
+}
+
+// ─── Bad Pairing Check Helper ─────────────────────────────────────────────
+
+function findBadPairing(
+  picName: string | null | undefined,
+  sicName: string | null | undefined,
+  badPairings: CrewInfoData["bad_pairings"],
+): CrewInfoData["bad_pairings"][0] | null {
+  if (!picName || !sicName || badPairings.length === 0) return null;
+  const picNorm = picName.toLowerCase().trim();
+  const sicNorm = sicName.toLowerCase().trim();
+  return badPairings.find(
+    (bp) => bp.pic.toLowerCase().trim() === picNorm && bp.sic.toLowerCase().trim() === sicNorm
+  ) ?? null;
+}
+
 // ─── Main Component ──────────────────────────────────────────────────────────
 
 export default function CrewSwap({ flights }: { flights: Flight[] }) {
@@ -819,6 +1140,9 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
   const removeToast = useCallback((id: number) => setToasts((prev) => prev.filter((t) => t.id !== id)), []);
   // Locked tails (manual assignments the optimizer won't touch)
   const [lockedTails, setLockedTails] = useState<Set<string>>(new Set());
+  // Crew Info data from Excel sync
+  const [crewInfoData, setCrewInfoData] = useState<CrewInfoData | null>(null);
+  const [syncingCrewInfo, setSyncingCrewInfo] = useState(false);
 
   // Flight picker modal state
   const [selectedCrewSlot, setSelectedCrewSlot] = useState<{
@@ -1708,6 +2032,34 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
   }
 
   // Upload Excel roster
+  async function syncCrewInfo(file: File) {
+    setSyncingCrewInfo(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("swap_date", selectedWed.toISOString().slice(0, 10));
+      const res = await fetch("/api/crew/roster/sync", { method: "POST", body: fd });
+      if (res.ok) {
+        const data = await res.json();
+        setCrewInfoData({
+          bad_pairings: data.bad_pairings ?? [],
+          checkairmen: data.checkairmen ?? [],
+          training_needed: data.training_needed ?? [],
+          recurrency_299: data.recurrency_299 ?? [],
+          pic_swap_table: data.pic_swap_table ?? [],
+          crewing_checklist: data.crewing_checklist ?? null,
+          calendar_weeks: data.calendar_weeks ?? [],
+          target_week_crew: data.target_week_crew ?? null,
+        });
+        addToast("success", `Crew info synced: ${data.checkairmen?.length ?? 0} CAs, ${data.bad_pairings?.length ?? 0} bad pairings`);
+      }
+    } catch {
+      // Sync is supplementary — don't block the main upload
+    } finally {
+      setSyncingCrewInfo(false);
+    }
+  }
+
   async function handleUpload(file: File) {
     setUploading(true);
     setUploadError(null);
@@ -1731,6 +2083,8 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
         }
         setRotationSource("excel");
         await loadCrew();
+        // Also sync crew info data (non-blocking)
+        syncCrewInfo(file);
       }
     } catch (e) {
       setUploadError(e instanceof Error ? e.message : "Upload failed");
@@ -2067,6 +2421,34 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
           </div>
         )}
       </div>
+
+      {/* Crew Info Panel (from CREW INFO Excel sync) */}
+      {crewInfoData && (
+        <CrewInfoPanel data={crewInfoData} />
+      )}
+      {!crewInfoData && uploadResult && (
+        <div className="rounded-lg border border-dashed border-indigo-200 bg-indigo-50/30 p-3 flex items-center justify-between">
+          <div className="text-[11px] text-indigo-600">
+            Upload the <span className="font-bold">CREW INFO 2026.xlsx</span> workbook to see bad pairings, checkairmen, training, and calendar data.
+          </div>
+          <label className={`px-3 py-1.5 text-xs font-medium border rounded-lg cursor-pointer shrink-0 ${
+            syncingCrewInfo ? "bg-gray-100 text-gray-400" : "bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border-indigo-200"
+          }`}>
+            {syncingCrewInfo ? "Syncing..." : "Sync Crew Info (.xlsx)"}
+            <input
+              type="file"
+              accept=".xlsx,.xls"
+              className="hidden"
+              disabled={syncingCrewInfo}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) syncCrewInfo(f);
+                e.target.value = "";
+              }}
+            />
+          </label>
+        </div>
+      )}
 
       {/* Phase 2: Volunteer Review Panel */}
       <div className="rounded-lg border bg-white shadow-sm overflow-hidden">
@@ -2632,7 +3014,8 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
 
             <SwapSheet rows={swapPlan.rows} view={swapView} impacts={planImpacts} impactedTails={impactedTails}
               lockedTails={lockedTails} onLockTail={toggleLockTail} onAssignCrew={assignCrew} pool={oncomingPool}
-              onChangeTransport={openFlightPicker} onSwapPointChange={handleSwapPointChange} />
+              onChangeTransport={openFlightPicker} onSwapPointChange={handleSwapPointChange}
+              badPairings={crewInfoData?.bad_pairings} checkairmen={crewInfoData?.checkairmen} />
           </div>
         )}
 
