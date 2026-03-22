@@ -703,12 +703,15 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                   onChange={(e) => { if (e.target.value) onAssignCrew(tail, role, e.target.value); }}
                 >
                   <option value="">Assign crew...</option>
-                  {available.map((p) => (
-                    <option key={p.name} value={p.name}>
-                      {p.name} ({p.home_airports.join("/")})
-                      {p.is_checkairman ? " [CA]" : ""}{p.is_skillbridge ? " [SB]" : ""}
-                    </option>
-                  ))}
+                  {available.map((p) => {
+                    const typeTag = p.aircraft_type === "citation_x" ? "CX" : p.aircraft_type === "challenger" ? "CL" : p.aircraft_type === "dual" ? "DL" : "";
+                    return (
+                      <option key={p.name} value={p.name}>
+                        {p.name} ({p.home_airports.join("/")}) [{typeTag}]
+                        {p.is_checkairman ? " [CA]" : ""}{p.is_skillbridge ? " [SB]" : ""}
+                      </option>
+                    );
+                  })}
                 </select>
               ) : (
                 <span className="text-xs text-gray-400">— not assigned —</span>
@@ -737,11 +740,14 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                     >
                       <option value={row.name}>{row.name}</option>
                       <option value="">Unassign</option>
-                      {available.filter((p) => p.name !== row.name).map((p) => (
-                        <option key={p.name} value={p.name}>
-                          {p.name} ({p.home_airports.join("/")})
-                        </option>
-                      ))}
+                      {available.filter((p) => p.name !== row.name).map((p) => {
+                        const typeTag = p.aircraft_type === "citation_x" ? "CX" : p.aircraft_type === "challenger" ? "CL" : p.aircraft_type === "dual" ? "DL" : "";
+                        return (
+                          <option key={p.name} value={p.name}>
+                            {p.name} ({p.home_airports.join("/")}) [{typeTag}]
+                          </option>
+                        );
+                      })}
                     </select>
                   )}
                 </div>
@@ -1385,8 +1391,9 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
   }
 
   function openFlightPicker(tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing", row: CrewSwapRow) {
-    // Look up crew member ID from crew roster by name
-    const crewMember = crew.find((c) => c.name === row.name && c.role === role);
+    // Look up crew member ID from crew roster by name (try exact role first, then any role)
+    const crewMember = crew.find((c) => c.name === row.name && c.role === role)
+      ?? crew.find((c) => c.name === row.name);
     if (!crewMember) {
       addToast("error", `Crew member "${row.name}" not found in roster`);
       return;
