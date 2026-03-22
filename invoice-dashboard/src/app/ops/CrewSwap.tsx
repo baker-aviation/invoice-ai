@@ -1093,8 +1093,28 @@ function findBadPairing(
 
 // ─── Main Component ──────────────────────────────────────────────────────────
 
-export default function CrewSwap({ flights }: { flights: Flight[] }) {
+export default function CrewSwap({ flights: parentFlights }: { flights: Flight[] }) {
   const [selectedWed, setSelectedWed] = useState<Date>(getNextWednesday());
+  // Fetch flights covering the swap week (parent only has ±48hrs from today)
+  const [swapWeekFlights, setSwapWeekFlights] = useState<Flight[]>([]);
+  useEffect(() => {
+    // Calculate hours from now to swap date + 1 day
+    const hoursAhead = Math.max(48, Math.ceil((selectedWed.getTime() + 86400_000 - Date.now()) / 3600_000));
+    const lookback = Math.max(48, Math.ceil((Date.now() - selectedWed.getTime() + 3 * 86400_000) / 3600_000));
+    fetch(`/api/ops/flights?lookahead_hours=${hoursAhead}&lookback_hours=${lookback}`)
+      .then((r) => r.ok ? r.json() : { flights: [] })
+      .then((d) => setSwapWeekFlights(d.flights ?? []))
+      .catch(() => {});
+  }, [selectedWed]);
+
+  // Merge parent flights (today ±48hr) with swap week flights, dedup by id
+  const flights = useMemo(() => {
+    const byId = new Map<string, Flight>();
+    for (const f of parentFlights) byId.set(f.id, f);
+    for (const f of swapWeekFlights) byId.set(f.id, f);
+    return Array.from(byId.values());
+  }, [parentFlights, swapWeekFlights]);
+
   const [crew, setCrew] = useState<CrewMember[]>([]);
   const [crewLoaded, setCrewLoaded] = useState(false);
   const [uploading, setUploading] = useState(false);
