@@ -2435,7 +2435,51 @@ function buildFeasibilityMatrix(params: {
         continue;
       }
 
-      // ── RUNTIME EVALUATION PATH (fallback — original buildCandidates) ───
+      // ── RUNTIME EVALUATION PATH ───────────────────────────────────────
+      // Quick viability check first: skip buildCandidates entirely if no
+      // flights exist for any home→swap pair in the HasData map AND no
+      // ground transport is possible. This avoids ~6000 buildCandidates calls.
+      let hasAnyRoute = false;
+      const swapIatas = new Set(swapPointsToTry.map((sp) => {
+        const comms = findAllCommercialAirports(sp.icao, aliases);
+        return comms.map((c) => toIata(c));
+      }).flat());
+
+      // Check ground transport first (cheap check)
+      for (const home of homeAirports) {
+        for (const sp of swapPointsToTry) {
+          const drive = estimateDriveTime(toIcao(home), sp.icao);
+          if (drive && drive.estimated_drive_minutes <= RENTAL_MAX_MINUTES) {
+            hasAnyRoute = true;
+            break;
+          }
+        }
+        if (hasAnyRoute) break;
+      }
+
+      // Check flight map if no ground route
+      if (!hasAnyRoute && commercialFlights) {
+        for (const home of homeAirports) {
+          const homeIata = toIata(home);
+          for (const destIata of swapIatas) {
+            const key = `${homeIata}-${destIata}-${swapDate}`;
+            if (commercialFlights.has(key)) { hasAnyRoute = true; break; }
+          }
+          if (hasAnyRoute) break;
+        }
+      }
+
+      if (!hasAnyRoute) {
+        // No possible route — skip expensive buildCandidates
+        matrix.push({
+          crewName: poolEntry.name, tail, viable: false,
+          bestScore: 0, bestCost: 999, offgoingCost: 0, totalCost: 999,
+          bestType: "none", candidateCount: 0, rank: 100,
+          bestSwapIcao: swapPoints[0]?.icao ?? "", minDriveMiles: 9999,
+        });
+        continue;
+      }
+
       let allCandidates: TransportCandidate[] = [];
 
       for (const sp of swapPointsToTry) {
