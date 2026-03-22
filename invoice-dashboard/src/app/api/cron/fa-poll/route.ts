@@ -379,6 +379,23 @@ async function updateDivertedArrivals(flights: FlightInfo[]): Promise<number> {
       if (!error) {
         console.log(`[FA Poll] Diversion: updated ${fa.tail} arrival ${icsDest} → ${actualDest}`);
         updated++;
+
+        // Update the next leg's departure to the diversion airport with ? marker
+        const { data: nextLegs } = await supa
+          .from("flights")
+          .select("id, departure_icao")
+          .eq("tail_number", fa.tail)
+          .eq("departure_icao", icsDest)
+          .gt("scheduled_departure", fa.actual_arrival!)
+          .order("scheduled_departure")
+          .limit(1);
+
+        if (nextLegs && nextLegs.length > 0) {
+          await supa.from("flights")
+            .update({ departure_icao: `${actualDest}?` })
+            .eq("id", nextLegs[0].id);
+          console.log(`[FA Poll] Diversion: updated next leg ${nextLegs[0].id} departure ${icsDest} → ${actualDest}?`);
+        }
       }
     }
   }

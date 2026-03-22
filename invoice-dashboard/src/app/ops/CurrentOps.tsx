@@ -38,6 +38,19 @@ const FLIGHT_TYPE_COLORS: Record<string, string> = {
 
 const DEFAULT_TYPES = new Set(["Charter", "Revenue", "Positioning"]);
 
+/** Detect if a flight was diverted by comparing arrival_icao to the original destination in the summary */
+function isDivertedFlight(f: { arrival_icao: string | null; summary: string | null; departure_icao: string | null }): boolean {
+  if (!f.summary || !f.arrival_icao) return false;
+  // Summary format: [N818CF] BELLO (AUS - ASE) - Positioning flight
+  const m = f.summary.match(/\(([A-Z0-9]{3,4})\s*-\s*([A-Z0-9]{3,4})\)/);
+  if (!m) return false;
+  const origDest = m[2];
+  const arrClean = f.arrival_icao.replace(/\?$/, "");
+  // Compare: strip K-prefix for US airports
+  const norm = (c: string) => c.startsWith("K") && c.length === 4 ? c.slice(1) : c;
+  return norm(arrClean) !== norm(origDest);
+}
+
 type TimeRange = "Today" | "Today + Tomorrow" | "Tomorrow" | "Week" | "Month";
 
 function getTimeRange(range: TimeRange): { start: Date; end: Date } {
@@ -2346,6 +2359,11 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                                 <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded-full ${typeColor}`}>
                                   {type}
                                 </span>
+                                {(fi?.diverted || isDivertedFlight(f)) && (
+                                  <span className="px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-red-100 text-red-700">
+                                    DIVERTED
+                                  </span>
+                                )}
                                 {(() => {
                                   const edctAlert = getActiveEdct(f);
                                   if (status === "Scheduled") {
@@ -2864,6 +2882,11 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                         <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded-full ${typeColor}`}>
                           {type}
                         </span>
+                        {(fi?.diverted || isDivertedFlight(f)) && (
+                          <span className="ml-1 px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-red-100 text-red-700">
+                            DIVERTED
+                          </span>
+                        )}
                       </td>
                       <td className="px-3 py-2.5">
                         {(() => {
