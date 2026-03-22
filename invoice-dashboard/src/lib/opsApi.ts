@@ -618,10 +618,13 @@ export type IntlTrip = {
   flight_ids: string[];  // ordered flight IDs for each leg
   trip_date: string;     // date of first departure
   notes: string | null;
+  pax_data_status: "not_started" | "salesperson_notified" | "uploaded";
   created_at: string;
   updated_at: string;
   // Joined
   clearances?: IntlTripClearance[];
+  // Computed from first flight
+  jetinsight_url?: string | null;
 };
 
 export type IntlTripClearance = {

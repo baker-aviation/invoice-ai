@@ -324,11 +324,29 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Failed to list trips" }, { status: 500 });
   }
 
-  // Sort clearances by sort_order within each trip
+  // Collect all flight IDs to batch-fetch jetinsight_url
+  const allFlightIds = new Set<string>();
+  for (const t of trips ?? []) {
+    if (t.flight_ids?.[0]) allFlightIds.add(t.flight_ids[0]);
+  }
+  const jetinsightMap = new Map<string, string>();
+  if (allFlightIds.size > 0) {
+    const { data: flightRows } = await supa
+      .from("flights")
+      .select("id, jetinsight_url")
+      .in("id", [...allFlightIds])
+      .not("jetinsight_url", "is", null);
+    for (const f of flightRows ?? []) {
+      if (f.jetinsight_url) jetinsightMap.set(f.id, f.jetinsight_url);
+    }
+  }
+
+  // Sort clearances and attach jetinsight_url
   for (const t of trips ?? []) {
     if (t.clearances) {
       t.clearances.sort((a: { sort_order: number }, b: { sort_order: number }) => a.sort_order - b.sort_order);
     }
+    t.jetinsight_url = jetinsightMap.get(t.flight_ids?.[0]) ?? null;
   }
 
   return NextResponse.json({ trips: trips ?? [] });

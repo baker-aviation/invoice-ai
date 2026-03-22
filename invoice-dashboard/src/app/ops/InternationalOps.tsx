@@ -452,8 +452,56 @@ function TripDetail({ trip, countries, onRefresh }: {
   // Group clearances for display: ordered by sort_order
   const sortedClearances = [...clearances].sort((a, b) => a.sort_order - b.sort_order);
 
+  async function updatePaxStatus(status: string) {
+    try {
+      await fetch(`/api/ops/intl/trips/${trip.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pax_data_status: status }),
+      });
+      onRefresh();
+    } catch { /* ignore */ }
+  }
+
   return (
     <div className="border-t border-gray-200 bg-gray-50 px-4 py-4 space-y-3">
+      {/* JetInsight link */}
+      {trip.jetinsight_url && (
+        <a
+          href={trip.jetinsight_url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-600 hover:text-blue-800 hover:underline"
+        >
+          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+          </svg>
+          Open in JetInsight
+        </a>
+      )}
+
+      {/* JetInsight Passenger Data Status */}
+      <div className="border border-gray-200 bg-white rounded-lg px-3 py-2.5">
+        <div className="flex items-center justify-between">
+          <h4 className="text-xs font-semibold text-gray-700">JetInsight Passenger Data Uploaded?</h4>
+          <select
+            value={trip.pax_data_status ?? "not_started"}
+            onChange={(e) => updatePaxStatus(e.target.value)}
+            className={`text-xs border rounded px-2 py-1 font-medium ${
+              trip.pax_data_status === "uploaded"
+                ? "border-green-300 bg-green-50 text-green-700"
+                : trip.pax_data_status === "salesperson_notified"
+                ? "border-yellow-300 bg-yellow-50 text-yellow-700"
+                : "border-gray-300 bg-gray-50 text-gray-600"
+            }`}
+          >
+            <option value="not_started">Not Started</option>
+            <option value="salesperson_notified">Salesperson Notified</option>
+            <option value="uploaded">Passenger Data on JetInsight</option>
+          </select>
+        </div>
+      </div>
+
       {/* Route header */}
       <div className="flex items-center justify-between">
         <h4 className="text-xs font-semibold text-gray-700 uppercase tracking-wide">
