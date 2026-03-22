@@ -3052,7 +3052,7 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
           <div className="px-4 py-6 text-center text-sm text-gray-400">
             {loadingPlan ? "Loading saved plan..." : (
               routeStatus && routeStatus.total_routes > 0
-                ? `${routeStatus.total_routes} routes cached for ${routeStatus.crew_count} crew. Click Optimize to run.`
+                ? `${routeStatus.total_routes.toLocaleString()} flight options cached. Click Optimize to run.`
                 : `Upload roster then click Refresh Routes to pre-compute routes for ${selectedWed.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`
             )}
           </div>

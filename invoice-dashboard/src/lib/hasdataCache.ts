@@ -385,25 +385,47 @@ export async function getHasdataCacheForOptimizer(
 export async function getHasdataCacheStats(date: string): Promise<HasdataCacheStats | null> {
   const supa = createServiceClient();
 
-  const { data, error } = await supa
+  // Use count query to avoid Supabase row limit (default 1000)
+  const { count: totalPairs, error: countErr } = await supa
     .from("hasdata_flight_cache")
-    .select("offer_count, min_price, has_direct, fetched_at")
+    .select("id", { count: "exact", head: true })
     .eq("cache_date", date);
 
-  if (error || !data || data.length === 0) return null;
+  if (countErr || !totalPairs) return null;
 
-  const totalOffers = data.reduce((sum, r) => sum + (r.offer_count as number), 0);
-  const withFlights = data.filter((r) => (r.offer_count as number) > 0).length;
-  const withDirect = data.filter((r) => r.has_direct).length;
-  const prices = data.map((r) => r.min_price as number | null).filter((p): p is number => p != null);
-  const minPrice = prices.length > 0 ? Math.min(...prices) : null;
-  const latestFetch = data.reduce((latest, r) => {
-    const t = r.fetched_at as string;
-    return !latest || t > latest ? t : latest;
-  }, "" as string);
+  // Aggregate stats with paginated reads
+  const PAGE = 5000;
+  let totalOffers = 0, withFlights = 0, withDirect = 0;
+  let minPrice: number | null = null;
+  let latestFetch = "";
+
+  let from = 0;
+  while (true) {
+    const { data, error } = await supa
+      .from("hasdata_flight_cache")
+      .select("offer_count, min_price, has_direct, fetched_at")
+      .eq("cache_date", date)
+      .range(from, from + PAGE - 1);
+
+    if (error || !data || data.length === 0) break;
+
+    for (const r of data) {
+      const oc = r.offer_count as number;
+      totalOffers += oc;
+      if (oc > 0) withFlights++;
+      if (r.has_direct) withDirect++;
+      const p = r.min_price as number | null;
+      if (p != null && (minPrice == null || p < minPrice)) minPrice = p;
+      const t = r.fetched_at as string;
+      if (t > latestFetch) latestFetch = t;
+    }
+
+    if (data.length < PAGE) break;
+    from += PAGE;
+  }
 
   return {
-    total_pairs: data.length,
+    total_pairs: totalPairs,
     total_offers: totalOffers,
     pairs_with_flights: withFlights,
     pairs_with_direct: withDirect,
