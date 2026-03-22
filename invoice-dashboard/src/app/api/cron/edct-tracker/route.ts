@@ -300,8 +300,8 @@ export async function GET(req: NextRequest) {
   for (const edct of found) {
     const sourceId = `faa-edct-${edct.callsign}-${edct.origin}-${edct.destination}`;
     const existing = existingMap.get(sourceId);
-    const isNew = !existing;
-    const isUpdated = existing && existing.edct_time && edct.edct_time && existing.edct_time !== edct.edct_time;
+    const isNew = !existing || (existing && !existing.edct_time && !!edct.edct_time);
+    const isUpdated = !isNew && existing && existing.edct_time && edct.edct_time && existing.edct_time !== edct.edct_time;
 
     // Build history
     const history = existing?.history ?? [];
