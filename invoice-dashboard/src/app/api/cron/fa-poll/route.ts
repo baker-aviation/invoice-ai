@@ -404,6 +404,45 @@ async function updateDivertedArrivals(flights: FlightInfo[]): Promise<number> {
 }
 
 // ---------------------------------------------------------------------------
+// Confirm uncertain departures (clear ? suffix when FA shows actual departure)
+// ---------------------------------------------------------------------------
+
+async function confirmUncertainDepartures(flights: FlightInfo[]): Promise<number> {
+  const departed = flights.filter((f) => f.fa_flight_id && f.actual_departure && f.origin_icao);
+  if (departed.length === 0) return 0;
+
+  const supa = createServiceClient();
+  let confirmed = 0;
+
+  for (const fa of departed) {
+    // Find ICS flights with ? in departure_icao for this tail
+    const { data: uncertain } = await supa
+      .from("flights")
+      .select("id, departure_icao")
+      .eq("fa_flight_id", fa.fa_flight_id)
+      .like("departure_icao", "%?")
+      .limit(1);
+
+    if (!uncertain || uncertain.length === 0) continue;
+
+    const norm = (c: string | null) => c ? (c.length === 3 && /^[A-Z]/.test(c) ? `K${c}` : c) : null;
+    const confirmedIcao = norm(fa.origin_icao);
+    if (!confirmedIcao) continue;
+
+    const { error } = await supa.from("flights")
+      .update({ departure_icao: confirmedIcao })
+      .eq("id", uncertain[0].id);
+
+    if (!error) {
+      console.log(`[FA Poll] Confirmed departure: ${fa.tail} ${uncertain[0].departure_icao} → ${confirmedIcao}`);
+      confirmed++;
+    }
+  }
+
+  return confirmed;
+}
+
+// ---------------------------------------------------------------------------
 // Mode 1: En-route polling
 // ---------------------------------------------------------------------------
 
@@ -467,6 +506,9 @@ async function pollEnRoute(
 
   // Update ICS arrival airport for diverted flights
   await updateDivertedArrivals(allFlights);
+
+  // Confirm uncertain departures (clear ? suffix)
+  await confirmUncertainDepartures(allFlights);
 
   return { tails, flights: totalFlights, upserted: totalUpserted };
 }
@@ -540,6 +582,9 @@ async function pollDiscovery(
 
   // Update ICS arrival airport for diverted flights
   await updateDivertedArrivals(allFlights);
+
+  // Confirm uncertain departures (clear ? suffix)
+  await confirmUncertainDepartures(allFlights);
 
   // Cleanup: delete old completed flights (> 36h ago)
   const cutoff = new Date(now.getTime() - 36 * 3600_000).toISOString();
