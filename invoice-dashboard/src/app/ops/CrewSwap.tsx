@@ -737,6 +737,37 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                 <div className="flex items-center gap-1.5">
                   <span className="text-sm font-medium text-gray-900 truncate">{row.name}</span>
                   <span className="text-[10px] text-gray-400">({row.home_airports.join("/")})</span>
+                  {/* Per-crew swap point — show if different from tail swap point or if multiple available */}
+                  {row.swap_location && (() => {
+                    const allPts = row.all_swap_points ?? [];
+                    const crewSwapLoc = row.swap_location;
+                    const isDifferent = crewSwapLoc !== swapLoc;
+                    // PIC can swap anywhere, SIC only at SIC-eligible points
+                    const availablePts = role === "PIC" ? allPts : allPts;
+                    if (availablePts.length > 1 && onChangeTransport) {
+                      return (
+                        <select
+                          className={`text-[9px] border rounded px-1 py-0.5 font-mono ${
+                            isDifferent ? "bg-amber-50 text-amber-700 border-amber-300" : "bg-gray-50 text-gray-500"
+                          }`}
+                          value={crewSwapLoc}
+                          onChange={(e) => {
+                            // Changing per-crew swap point opens the flight picker for the new location
+                            const updatedRow = { ...row, swap_location: e.target.value };
+                            onChangeTransport(tail, role, direction, updatedRow);
+                          }}
+                        >
+                          {availablePts.map((pt) => (
+                            <option key={pt} value={pt}>@ {pt}</option>
+                          ))}
+                        </select>
+                      );
+                    }
+                    if (isDifferent) {
+                      return <span className="text-[9px] px-1 py-0.5 rounded bg-amber-50 text-amber-700 font-mono">@ {crewSwapLoc}</span>;
+                    }
+                    return null;
+                  })()}
                   {row.is_checkairman && (() => {
                     const caTypes = caTypeLookup.get(row.name);
                     const both = caTypes?.citation_x && caTypes?.challenger;
@@ -776,11 +807,11 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                     <span className="text-[11px] text-red-500 font-medium">NO TRANSPORT</span>
                   )}
                   {row.departure_time && (
-                    <span className="text-[11px] text-gray-500">dep {fmtShortTime(row.departure_time, row.direction === "oncoming" ? (row.home_airports[0] ? `K${row.home_airports[0]}` : null) : row.swap_location)}</span>
+                    <span className="text-[11px] text-gray-500">dep {fmtShortTime(row.departure_time, row.swap_location)}</span>
                   )}
                   {(row.available_time ?? row.arrival_time) && (
                     <span className="text-[11px] text-gray-500">
-                      {row.direction === "oncoming" ? "avail" : "arr"} {fmtShortTime(row.available_time ?? row.arrival_time, row.direction === "oncoming" ? row.swap_location : (row.home_airports[0] ? `K${row.home_airports[0]}` : null))}
+                      {row.direction === "oncoming" ? "avail" : "arr"} {fmtShortTime(row.available_time ?? row.arrival_time, row.swap_location)}
                     </span>
                   )}
                   {row.cost_estimate != null && (
@@ -969,14 +1000,16 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                       const arrIata = arrIcao?.length === 4 && arrIcao.startsWith("K") ? arrIcao.slice(1) : arrIcao;
                       const tag = getTypeTag(f.flight_type);
                       const isLive = tag.label === "REV" || tag.label === "OWN";
+                      // All times in swap point timezone for consistency
+                      const swapIcao = swapLoc.length === 3 ? `K${swapLoc}` : swapLoc;
                       return (
                         <div key={f.id ?? i} className="inline-flex items-center gap-1">
                           {i > 0 && <span className="text-gray-300 mx-1">|</span>}
                           <span className={`font-mono text-xs font-bold ${isLive ? "text-gray-900" : "text-gray-400"}`}>{depIata}</span>
-                          <span className="text-[10px] text-gray-400">{fmtShortTime(f.scheduled_departure, depIcao)}</span>
+                          <span className="text-[10px] text-gray-400">{fmtShortTime(f.scheduled_departure, swapIcao)}</span>
                           <span className="text-gray-300">{"\u2192"}</span>
                           <span className={`font-mono text-xs font-bold ${isLive ? "text-gray-900" : "text-gray-400"}`}>{arrIata}</span>
-                          <span className="text-[10px] text-gray-400">{fmtShortTime(f.scheduled_arrival, arrIcao)}</span>
+                          <span className="text-[10px] text-gray-400">{fmtShortTime(f.scheduled_arrival, swapIcao)}</span>
                           <span className={`text-[9px] px-1 py-0.5 rounded font-medium ${tag.cls}`}>{tag.label}</span>
                         </div>
                       );
@@ -1448,9 +1481,19 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
             updated.duty_on_time = bo.duty_on_at;
             updated.cost_estimate = bo.cost_estimate;
             updated.duration_minutes = bo.duration_minutes;
-            updated.backup_flight = bo.backup_flight;
-            updated.warnings = [];
-            updated.notes = `Recomputed for swap @ ${newSwapPoint}`;
+          } else {
+            // No transport found for new swap point — clear old transport
+            updated.travel_type = "none";
+            updated.flight_number = null;
+            updated.departure_time = null;
+            updated.arrival_time = null;
+            updated.available_time = null;
+            updated.duty_on_time = null;
+            updated.cost_estimate = null;
+            updated.duration_minutes = null;
+            updated.backup_flight = null;
+            updated.warnings = ["No transport found for new swap point"];
+            updated.notes = `Swap point changed to ${newSwapPoint} — needs manual transport`;
           }
 
           return updated;

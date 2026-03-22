@@ -1721,9 +1721,29 @@ export function buildSwapPlan(params: {
         // Bonus: 0mi avg = +120, 500mi avg = +60, 1000mi+ = 0
         const proximityBonus = Math.max(0, 120 - (avgMiles / 1000) * 120);
 
+        // ── Hard reject: if the aircraft departs this swap point before any
+        // oncoming crew could realistically arrive, skip it entirely.
+        // "before_live" time = departure of the next leg. If that's before ~09:00L,
+        // most commercial flights can't arrive in time (earliest arrivals are 07-08L).
+        // For "between_legs", use window_end (next departure).
+        let hardReject = false;
+        if (sp.position === "before_live" || sp.position === "between_legs") {
+          const spTz = getAirportTimezone(sp.icao) ?? "America/New_York";
+          const depTime = (sp.position === "between_legs" && sp.window_end) ? sp.window_end : sp.time;
+          const depLocalHour = parseFloat(
+            new Date(depTime).toLocaleString("en-US", { hour: "numeric", hour12: false, timeZone: spTz })
+          );
+          // If aircraft departs before 9am local, no commercial crew can make it
+          if (depLocalHour < 9) {
+            hardReject = true;
+          }
+        }
+
         // Ease score: lower drive = easier, self-commercial = bonus, more options = bonus
-        const ease = -minDrive + (selfCommercial ? 30 : 0) + (commAirports.length * 2)
-          - (isInternational ? 200 : 0) - timingPenalty + proximityBonus;
+        const ease = hardReject ? -9999 : (
+          -minDrive + (selfCommercial ? 30 : 0) + (commAirports.length * 2)
+          - (isInternational ? 200 : 0) - timingPenalty + proximityBonus
+        );
         if (ease > bestEase) {
           bestEase = ease;
           picSwapPoint = sp;
