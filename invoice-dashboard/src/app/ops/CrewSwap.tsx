@@ -341,6 +341,9 @@ const AIRCRAFT_COLORS: Record<string, { bg: string; text: string; label: string 
   citation_x: { bg: "bg-green-100", text: "text-green-700", label: "Cit X" },
   challenger: { bg: "bg-yellow-100", text: "text-yellow-700", label: "CL" },
   dual: { bg: "bg-purple-100", text: "text-purple-700", label: "Dual" },
+  // ICS source codes (from ics_sources.aircraft_type)
+  C750: { bg: "bg-green-100", text: "text-green-700", label: "Cit X" },
+  CL30: { bg: "bg-yellow-100", text: "text-yellow-700", label: "CL" },
 };
 
 const FLIGHT_TYPE_COLORS: Record<string, string> = {
@@ -552,7 +555,7 @@ function SwapSheetRow({ row }: { row: CrewSwapRow }) {
   );
 }
 
-function SwapSheet({ rows, view, impacts, impactedTails, lockedTails, onLockTail, onAssignCrew, pool, onChangeTransport, onSwapPointChange, badPairings, checkairmen, flights, selectedWed }: {
+function SwapSheet({ rows, view, impacts, impactedTails, lockedTails, onLockTail, onAssignCrew, pool, onChangeTransport, onSwapPointChange, badPairings, checkairmen, flights, selectedWed, tailAircraftTypes }: {
   rows: CrewSwapRow[]; view: "role" | "aircraft"; impacts?: PlanImpact[]; impactedTails?: Set<string>;
   lockedTails?: Set<string>; onLockTail?: (tail: string) => void;
   onAssignCrew?: (tail: string, role: "PIC" | "SIC", name: string | null) => void;
@@ -563,8 +566,9 @@ function SwapSheet({ rows, view, impacts, impactedTails, lockedTails, onLockTail
   checkairmen?: CrewInfoData["checkairmen"];
   flights?: Flight[];
   selectedWed?: Date;
+  tailAircraftTypes?: Record<string, string>;
 }) {
-  if (view === "aircraft") return <SwapSheetByTail rows={rows} impacts={impacts} impactedTails={impactedTails} lockedTails={lockedTails} onLockTail={onLockTail} onAssignCrew={onAssignCrew} pool={pool} onChangeTransport={onChangeTransport} onSwapPointChange={onSwapPointChange} badPairings={badPairings} checkairmen={checkairmen} flights={flights} selectedWed={selectedWed} />;
+  if (view === "aircraft") return <SwapSheetByTail rows={rows} impacts={impacts} impactedTails={impactedTails} lockedTails={lockedTails} onLockTail={onLockTail} onAssignCrew={onAssignCrew} pool={pool} onChangeTransport={onChangeTransport} onSwapPointChange={onSwapPointChange} badPairings={badPairings} checkairmen={checkairmen} flights={flights} selectedWed={selectedWed} tailAircraftTypes={tailAircraftTypes} />;
   return <SwapSheetByRole rows={rows} />;
 }
 
@@ -621,7 +625,7 @@ function SwapSheetByRole({ rows }: { rows: CrewSwapRow[] }) {
   );
 }
 
-function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail, onAssignCrew, pool, onChangeTransport, onSwapPointChange, badPairings, checkairmen, flights, selectedWed }: {
+function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail, onAssignCrew, pool, onChangeTransport, onSwapPointChange, badPairings, checkairmen, flights, selectedWed, tailAircraftTypes }: {
   rows: CrewSwapRow[];
   impacts?: PlanImpact[];
   impactedTails?: Set<string>;
@@ -635,6 +639,7 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
   checkairmen?: CrewInfoData["checkairmen"];
   flights?: Flight[];
   selectedWed?: Date;
+  tailAircraftTypes?: Record<string, string>;
 }) {
   // Build checkairman type lookup for enhanced CA badges
   const caTypeLookup = useMemo(() => {
@@ -667,7 +672,9 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
         const onSic = tailRows.find((r) => r.direction === "oncoming" && r.role === "SIC");
         const offPic = tailRows.find((r) => r.direction === "offgoing" && r.role === "PIC");
         const offSic = tailRows.find((r) => r.direction === "offgoing" && r.role === "SIC");
-        const ac = AIRCRAFT_COLORS[onPic?.aircraft_type ?? onSic?.aircraft_type ?? offPic?.aircraft_type ?? ""];
+        // Use actual aircraft type from ics_sources (tail → type), fall back to crew type
+        const tailType = tailAircraftTypes?.[tail];
+        const ac = AIRCRAFT_COLORS[tailType ?? onPic?.aircraft_type ?? onSic?.aircraft_type ?? offPic?.aircraft_type ?? ""];
         const tailCost = tailRows.reduce((s, r) => s + (r.cost_estimate ?? 0), 0);
         const swapLoc = onPic?.swap_location ?? onSic?.swap_location ?? offPic?.swap_location ?? "?";
         const allWarnings = tailRows.flatMap((r) => r.warnings);
@@ -1373,6 +1380,21 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
   // Crew Info data from Excel sync
   const [crewInfoData, setCrewInfoData] = useState<CrewInfoData | null>(null);
   const [syncingCrewInfo, setSyncingCrewInfo] = useState(false);
+
+  // Aircraft type lookup: tail number → type code (from ics_sources table)
+  const [tailAircraftTypes, setTailAircraftTypes] = useState<Record<string, string>>({});
+  useEffect(() => {
+    fetch("/api/admin/ics-sources")
+      .then((r) => r.ok ? r.json() : { sources: [] })
+      .then((d) => {
+        const map: Record<string, string> = {};
+        for (const s of d.sources ?? []) {
+          if (s.label && s.aircraft_type) map[s.label] = s.aircraft_type;
+        }
+        setTailAircraftTypes(map);
+      })
+      .catch(() => {});
+  }, []);
 
   // Flight picker modal state
   const [selectedCrewSlot, setSelectedCrewSlot] = useState<{
@@ -3369,7 +3391,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
               lockedTails={lockedTails} onLockTail={toggleLockTail} onAssignCrew={assignCrew} pool={oncomingPool}
               onChangeTransport={openFlightPicker} onSwapPointChange={handleSwapPointChange}
               badPairings={crewInfoData?.bad_pairings} checkairmen={crewInfoData?.checkairmen}
-              flights={flights} selectedWed={selectedWed} />
+              flights={flights} selectedWed={selectedWed} tailAircraftTypes={tailAircraftTypes} />
           </div>
         )}
 
