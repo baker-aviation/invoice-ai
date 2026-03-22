@@ -157,6 +157,48 @@ const RAW: [string, string, boolean][] = [
   ["KFCA", "KFCA", true],   // Kalispell (IS commercial)
   ["KGTF", "KGTF", true],   // Great Falls (IS commercial)
 
+  // Stuart FL (35mi to PBI)
+  ["KSUA", "KPBI", true],   // Stuart → Palm Beach
+  ["KSUA", "KFLL", false],  // Stuart → Fort Lauderdale (backup)
+
+  // Burlington NC (35mi to GSO, 45mi to RDU)
+  ["KBUY", "KGSO", true],   // Burlington NC → Greensboro
+  ["KBUY", "KRDU", false],  // Burlington NC → Raleigh-Durham
+
+  // Trenton NJ (36mi to PHL, 40mi to EWR)
+  ["KTTN", "KPHL", true],   // Trenton → Philadelphia
+  ["KTTN", "KEWR", false],  // Trenton → Newark
+
+  // Russellville AR (~55mi to XNA)
+  ["KRUE", "KXNA", true],   // Russellville → NW Arkansas Regional
+
+  // Moffett Field CA (8mi to SJC)
+  ["KNUQ", "KSJC", true],   // Moffett Field → San Jose
+  ["KNUQ", "KSFO", false],  // Moffett Field → San Francisco
+
+  // Mesa-Gateway AZ (22mi to PHX)
+  ["KIWA", "KPHX", true],   // Mesa-Gateway → Phoenix
+  ["KIWA", "KSDL", false],  // Mesa-Gateway → Scottsdale
+
+  // Thermal/Jacqueline Cochran CA (24mi to PSP)
+  ["KTRM", "KPSP", true],   // Thermal → Palm Springs
+
+  // Bermuda Dunes CA (14mi to PSP)
+  ["KUDD", "KPSP", true],   // Bermuda Dunes → Palm Springs
+
+  // Ohio State Univ (11mi to CMH)
+  ["KOSU", "KCMH", true],   // OSU Airport → Columbus
+
+  // Concord NC (18mi to CLT)
+  ["KJQF", "KCLT", true],   // Concord → Charlotte
+
+  // Manassas VA (already have HEF→IAD, add for completeness)
+  // San Juan PR
+  ["KSJU", "TJSJ", true],   // San Juan K-code → San Juan ICAO
+
+  // Anguilla
+  ["TQPF", "TNCM", true],   // Anguilla → St. Maarten
+
   // International — FBO to nearest commercial
   ["CYYZ", "CYYZ", true],   // Toronto Pearson (IS commercial)
   ["MROC", "MROC", true],   // San Jose Costa Rica (IS commercial)
