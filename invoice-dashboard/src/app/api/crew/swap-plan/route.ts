@@ -125,6 +125,28 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: insertErr.message }, { status: 500 });
   }
 
+  // Increment standby_count for crew on standby (rotation tracking)
+  const crewAssignment = plan_data?.crew_assignment;
+  if (crewAssignment?.standby) {
+    const standbyNames = [
+      ...(crewAssignment.standby.pic ?? []),
+      ...(crewAssignment.standby.sic ?? []),
+    ];
+    for (const name of standbyNames) {
+      const { data: crew } = await supa
+        .from("crew_members")
+        .select("id, standby_count")
+        .eq("name", name)
+        .maybeSingle();
+      if (crew) {
+        await supa
+          .from("crew_members")
+          .update({ standby_count: ((crew.standby_count as number) ?? 0) + 1 })
+          .eq("id", crew.id);
+      }
+    }
+  }
+
   return NextResponse.json({
     ok: true,
     id: newPlan.id,

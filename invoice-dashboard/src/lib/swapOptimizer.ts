@@ -1056,10 +1056,20 @@ function scoreCandidate(
 
     if (c.isBudgetCarrier) score -= 8;
 
-    // Backup flight availability
-    if (c.backups.length >= 2) score += 8;
-    else if (c.backups.length === 1) score += 4;
-    else score -= 5; // No backup
+    // Backup flight availability + quality
+    if (c.backups.length >= 2) {
+      score += 8;
+      // Bonus for high-quality backups (direct, low cost, reasonable timing)
+      const bestBackup = c.backups[0];
+      if (bestBackup.isDirect) score += 3;
+      if (bestBackup.cost <= 400) score += 2;
+    } else if (c.backups.length === 1) {
+      score += 4;
+      const backup = c.backups[0];
+      if (backup.isDirect) score += 2;
+    } else {
+      score -= 5; // No backup
+    }
   }
 
   // ── FBO arrival timing (oncoming only) ──────────────────────────────
@@ -1098,11 +1108,21 @@ function scoreCandidate(
     }
   }
 
-  // ── Offgoing: prefer later flights (1700-1800L ideal) ──────────────────
+  // ── Offgoing: prefer later flights (1700-1800L ideal for idle tails) ────
   if (task.direction === "offgoing" && c.depTime) {
     const localHour = getLocalHour(c.depTime, task.swapPoint.icao);
-    if (localHour >= 17 && localHour <= 18) score += 5;
-    else if (localHour >= 15 && localHour <= 20) score += 2;
+    const isIdle = task.swapPoint.position === "idle";
+    if (isIdle) {
+      // Idle tails: strongly prefer latest flight making midnight.
+      // 1700-1800L = ideal, earlier = progressively worse.
+      if (localHour >= 17 && localHour <= 18) score += 12;
+      else if (localHour >= 16 || localHour === 19) score += 8;
+      else if (localHour >= 14 && localHour <= 20) score += 4;
+      else if (localHour < 14) score -= 3; // too early — wastes the hold opportunity
+    } else {
+      if (localHour >= 17 && localHour <= 18) score += 5;
+      else if (localHour >= 15 && localHour <= 20) score += 2;
+    }
   }
 
   // ── Swap adjacent to live leg bonus ────────────────────────────────────
@@ -2388,7 +2408,15 @@ function buildFeasibilityMatrix(params: {
         const costNorm = Math.min(100, (totalCost / 800) * 50); // scale for round-trip
         const reliabilityNorm = 100 - entryScore;
         const proximityNorm = Math.min(100, (minDriveMin / 300) * 50);
-        const rank = costNorm * 0.40 + reliabilityNorm * 0.25 + proximityNorm * 0.20 + crewDiff * 0.15;
+        let rank = costNorm * 0.40 + reliabilityNorm * 0.25 + proximityNorm * 0.20 + crewDiff * 0.15;
+
+        // Checkairman conservation: slightly penalize assigning a CA to a standard tail.
+        // This makes the matcher prefer non-CA crew for easy tails, saving CAs for tails
+        // that need them (e.g., new hire paired, training requirements).
+        const crewMemberObj = crewRoster.find((c) => c.name === poolEntry.name && c.role === role);
+        if (crewMemberObj?.is_checkairman) {
+          rank += 5; // slight penalty — CA is still viable, just less preferred for routine tails
+        }
 
         matrix.push({
           crewName: poolEntry.name,
@@ -2497,7 +2525,13 @@ function buildFeasibilityMatrix(params: {
       const costNorm = Math.min(100, (totalCost / 800) * 50);
       const reliabilityNorm = 100 - entryScore;
       const proximityNorm = Math.min(100, (minDriveMin / 300) * 50);
-      const rank = costNorm * 0.45 + reliabilityNorm * 0.3 + proximityNorm * 0.25;
+      let rank = costNorm * 0.45 + reliabilityNorm * 0.3 + proximityNorm * 0.25;
+
+      // Checkairman conservation (same as pre-computed path)
+      const crewMemberObj2 = crewRoster.find((c) => c.name === poolEntry.name && c.role === role);
+      if (crewMemberObj2?.is_checkairman) {
+        rank += 5;
+      }
 
       matrix.push({
         crewName: poolEntry.name,
@@ -2621,10 +2655,32 @@ export function assignOncomingCrew(params: {
   assignRoleWithMatrix("oncoming_sic", oncomingPool.sic, "SIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes, preComputedOffgoing, excludeTails, offgoingDeadlines);
 
   // Remaining pool → standby
+  // SkillBridge SICs go first for forced standby, then sort by standby_count (lowest first)
   const assignedNames = new Set(details.map((d) => d.name));
+  const unassignedPics = oncomingPool.pic.filter((p) => !assignedNames.has(p.name));
+  const unassignedSics = oncomingPool.sic.filter((p) => !assignedNames.has(p.name));
+
+  // Sort SICs: SkillBridge first, then by standby_count ascending (rotate through all crew)
+  unassignedSics.sort((a, b) => {
+    // SkillBridge always goes first for forced standby
+    if (a.is_skillbridge && !b.is_skillbridge) return -1;
+    if (!a.is_skillbridge && b.is_skillbridge) return 1;
+    // Then by standby count (fewer standbys = higher priority for next standby)
+    const aCount = crewRoster.find((c) => c.name === a.name)?.standby_count ?? 0;
+    const bCount = crewRoster.find((c) => c.name === b.name)?.standby_count ?? 0;
+    return aCount - bCount;
+  });
+
+  // PICs: sort by standby_count ascending (rotate through all)
+  unassignedPics.sort((a, b) => {
+    const aCount = crewRoster.find((c) => c.name === a.name)?.standby_count ?? 0;
+    const bCount = crewRoster.find((c) => c.name === b.name)?.standby_count ?? 0;
+    return aCount - bCount;
+  });
+
   const standby = {
-    pic: oncomingPool.pic.filter((p) => !assignedNames.has(p.name)).map((p) => p.name),
-    sic: oncomingPool.sic.filter((p) => !assignedNames.has(p.name)).map((p) => p.name),
+    pic: unassignedPics.map((p) => p.name),
+    sic: unassignedSics.map((p) => p.name),
   };
 
   return { assignments: result, standby, details };
