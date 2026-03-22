@@ -85,6 +85,25 @@ export async function runParser(overrideSwapDate?: string) {
 
   const threadTs = volunteerThread.ts;
 
+  // Verify this thread belongs to the current swap week, not last week's.
+  // Thread must have been posted AFTER the previous Wednesday (swap_date - 7 days).
+  const threadDate = new Date(parseFloat(threadTs) * 1000);
+  const swapDateObj = new Date(swapDate + "T00:00:00Z");
+  const prevWednesday = new Date(swapDateObj.getTime() - 7 * 86400_000);
+  if (threadDate < prevWednesday) {
+    // Clean up any stale rows that a previous bad parse may have written for this swap_date
+    await supa.from("volunteer_responses").delete().eq("swap_date", swapDate);
+
+    return NextResponse.json({
+      ok: true,
+      parsed: 0,
+      matched: 0,
+      unknown: 0,
+      swap_date: swapDate,
+      message: `Volunteer thread found but it's from ${threadDate.toISOString().slice(0, 10)} — before this swap week. No new thread posted yet for ${swapDate}. Cleared stale data.`,
+    });
+  }
+
   // Step 2: Fetch all thread replies
   const repliesRes = await slackApi(slackToken, "conversations.replies", {
     channel: PILOTS_CHANNEL,
