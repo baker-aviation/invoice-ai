@@ -2064,16 +2064,32 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
     setUploading(true);
     setUploadError(null);
     setUploadResult(null);
+    setSyncingCrewInfo(true);
     try {
+      // Use the sync endpoint as primary — handles CREW INFO workbook + legacy weekly sheets
       const fd = new FormData();
       fd.append("file", file);
-      const res = await fetch("/api/crew/roster", { method: "POST", body: fd });
+      fd.append("swap_date", selectedWed.toISOString().slice(0, 10));
+
+      const res = await fetch("/api/crew/roster/sync", { method: "POST", body: fd });
       const data = await safeJson(res, "Upload failed");
+
       if (!res.ok) {
         setUploadError(data.error ?? "Upload failed");
       } else {
-        setUploadResult(data);
-        if (data.swap_assignments) {
+        // Set upload result (backwards-compatible shape)
+        setUploadResult({
+          ok: true,
+          total_parsed: data.roster?.total ?? 0,
+          unique_crew: data.roster?.active ?? 0,
+          upserted: data.roster?.upserted ?? 0,
+          errors: data.errors,
+          summary: {},
+          swap_assignments: data.swap_assignments,
+          oncoming_pool: data.oncoming_pool,
+        });
+
+        if (data.swap_assignments && Object.keys(data.swap_assignments).length > 0) {
           setSwapAssignments(data.swap_assignments);
           try { localStorage.setItem("swap_assignments", JSON.stringify(data.swap_assignments)); } catch {}
         }
@@ -2081,15 +2097,28 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
           setOncomingPool(data.oncoming_pool);
           try { localStorage.setItem("oncoming_pool", JSON.stringify(data.oncoming_pool)); } catch {}
         }
+
+        // Set crew info data (bad pairings, checkairmen, calendar, etc.)
+        setCrewInfoData({
+          bad_pairings: data.bad_pairings ?? [],
+          checkairmen: data.checkairmen ?? [],
+          training_needed: data.training_needed ?? [],
+          recurrency_299: data.recurrency_299 ?? [],
+          pic_swap_table: data.pic_swap_table ?? [],
+          crewing_checklist: data.crewing_checklist ?? null,
+          calendar_weeks: data.calendar_weeks ?? [],
+          target_week_crew: data.target_week_crew ?? null,
+        });
+
         setRotationSource("excel");
         await loadCrew();
-        // Also sync crew info data (non-blocking)
-        syncCrewInfo(file);
+        addToast("success", `Synced ${data.roster?.active ?? 0} crew, ${data.checkairmen?.length ?? 0} CAs, ${data.bad_pairings?.length ?? 0} conflicts`);
       }
     } catch (e) {
       setUploadError(e instanceof Error ? e.message : "Upload failed");
     } finally {
       setUploading(false);
+      setSyncingCrewInfo(false);
     }
   }
 
@@ -2313,7 +2342,7 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
             <label className={`px-3 py-1.5 text-xs font-medium border rounded-lg cursor-pointer ${
               uploading ? "bg-gray-100 text-gray-400" : "bg-blue-50 text-blue-700 hover:bg-blue-100 border-blue-200"
             }`}>
-              {uploading ? "Uploading..." : "Upload Roster (.xlsx)"}
+              {uploading ? "Syncing..." : "Upload Crew Info (.xlsx)"}
               <input
                 type="file"
                 accept=".xlsx,.xls"
