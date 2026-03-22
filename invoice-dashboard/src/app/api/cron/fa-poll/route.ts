@@ -9,6 +9,7 @@ import {
   type FlightInfo,
 } from "@/lib/flightaware";
 import { TRIPS } from "@/lib/maintenanceData";
+import { findNearestAirport } from "@/lib/airportCoords";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
@@ -278,10 +279,11 @@ async function linkFaToIcs(flights: FlightInfo[]): Promise<number> {
     if (!candidates || candidates.length === 0) continue;
 
     // Filter by route using normalized airport code matching
+    // For diverted flights, only require origin match — destination will differ
     const routeMatches = candidates.filter(
       (c) =>
         airportsMatch(c.departure_icao, fa.origin_icao) &&
-        airportsMatch(c.arrival_icao, fa.destination_icao),
+        (fa.diverted || airportsMatch(c.arrival_icao, fa.destination_icao)),
     );
 
     if (routeMatches.length === 0) continue;
@@ -330,11 +332,11 @@ async function linkFaToIcs(flights: FlightInfo[]): Promise<number> {
 // ---------------------------------------------------------------------------
 
 async function updateDivertedArrivals(flights: FlightInfo[]): Promise<number> {
-  // Only update schedule when the diverted flight has actually landed.
-  // This prevents FA's sometimes-premature "diverted" flag from overwriting
-  // the schedule while the aircraft is still airborne and FA is guessing.
+  // For diverted flights, FA keeps destination as the ORIGINAL filed destination.
+  // The actual diversion airport must be inferred from position data (lat/lon).
+  // Only update when the flight has landed (actual_arrival set) to avoid premature overwrites.
   const diverted = flights.filter((f) =>
-    f.diverted && f.fa_flight_id && f.destination_icao && f.actual_arrival != null
+    f.diverted && f.fa_flight_id && f.actual_arrival != null
   );
   if (diverted.length === 0) return 0;
 
@@ -352,19 +354,30 @@ async function updateDivertedArrivals(flights: FlightInfo[]): Promise<number> {
     if (!icsFlights || icsFlights.length === 0) continue;
     const ics = icsFlights[0];
 
+    // Determine actual diversion airport from last known position
+    let diversionIcao: string | null = null;
+    if (fa.latitude != null && fa.longitude != null) {
+      const nearest = findNearestAirport(fa.latitude, fa.longitude);
+      if (nearest) diversionIcao = nearest.code;
+    }
+
+    // Fallback: if no position data, use FA's destination (might be correct for some diversions)
+    if (!diversionIcao) diversionIcao = fa.destination_icao;
+    if (!diversionIcao) continue;
+
     // Normalize ICAO for comparison (3-letter US → K-prefix)
     const norm = (c: string | null) => c ? (c.length === 3 && /^[A-Z]/.test(c) ? `K${c}` : c) : null;
-    const faDest = norm(fa.destination_icao);
+    const actualDest = norm(diversionIcao);
     const icsDest = norm(ics.arrival_icao);
 
-    if (faDest && icsDest && faDest !== icsDest) {
+    if (actualDest && icsDest && actualDest !== icsDest) {
       const { error } = await supa
         .from("flights")
-        .update({ arrival_icao: faDest })
+        .update({ arrival_icao: actualDest })
         .eq("id", ics.id);
 
       if (!error) {
-        console.log(`[FA Poll] Diversion: updated ${fa.tail} arrival ${icsDest} → ${faDest}`);
+        console.log(`[FA Poll] Diversion: updated ${fa.tail} arrival ${icsDest} → ${actualDest}`);
         updated++;
       }
     }
