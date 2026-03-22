@@ -67,6 +67,18 @@ export async function POST(req: NextRequest) {
   await supa.from("crew_members").delete().neq("id", "00000000-0000-0000-0000-000000000000"); // delete all rows
   console.log("[Roster Sync] Cleared crew_members table — inserting fresh from Excel");
 
+  // JetInsight legal name mappings — these differ from roster display names.
+  // Stored on crew_members so auto-detect rotation can match flight PIC/SIC fields.
+  const JETINSIGHT_NAMES: Record<string, string> = {
+    "Wilder Ponte": "Wilder Ponte-Vela",
+    "Jesus Olmos": "Jesus Enrique Olmos Arias",
+    "Robert Lankford": "Robert Donald Lankford Jr",
+    "Hamilton Heatly": "Lawrence Heatly",
+    "Eddie Goble": "Edward Goble II",
+    "Dave Hill": "Ronald David Hill Jr",
+    "Luis Maestre": "Luis Maestre Giron",
+  };
+
   // No existing map needed — everything is new
   const existingMap = new Map<string, { id: string; slack_display_name: string | null }>();
 
@@ -93,6 +105,11 @@ export async function POST(req: NextRequest) {
     if (entry.slack_display_name) {
       record.slack_display_name = entry.slack_display_name;
       slackMatchedCount++;
+    }
+
+    // Store JetInsight legal name if different from display name
+    if (JETINSIGHT_NAMES[entry.name]) {
+      record.jetinsight_name = JETINSIGHT_NAMES[entry.name];
     }
 
     // Add notes for SkillBridge end date and termination
