@@ -601,7 +601,7 @@ function AlertCard({ alert, onAck, acked, ackedByName, pinned, onTogglePin }: { 
 
 // ─── Client alert card (KJAC/KSNA/after-hours — localStorage dismiss) ───────
 
-function ClientAlertCard({ alert, onDismiss, dismissed, dismissedByName }: { alert: ClientAlert; onDismiss: (key: string) => void; dismissed?: boolean; dismissedByName?: string | null }) {
+function ClientAlertCard({ alert, onDismiss, dismissed, dismissedByName, pinned, onTogglePin }: { alert: ClientAlert; onDismiss: (key: string) => void; dismissed?: boolean; dismissedByName?: string | null; pinned?: boolean; onTogglePin?: (key: string, pin: boolean) => void }) {
   const [dismissing, setDismissing] = useState(false);
 
   function handleDismiss(e: React.MouseEvent) {
@@ -634,7 +634,21 @@ function ClientAlertCard({ alert, onDismiss, dismissed, dismissedByName }: { ale
           {alert.label}
         </span>
         <span className="text-xs text-gray-700">{alert.message}</span>
-        <div className="ml-auto shrink-0">
+        <div className="ml-auto flex items-center gap-1.5 shrink-0">
+          {onTogglePin && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onTogglePin(alert.key, !pinned); }}
+              className={`text-xs rounded px-1.5 py-0.5 transition-colors border ${
+                pinned
+                  ? "text-amber-700 bg-amber-50 border-amber-300 hover:bg-amber-100"
+                  : "text-gray-400 hover:text-amber-600 bg-white border-gray-200 hover:border-amber-300 hover:bg-amber-50"
+              }`}
+              title={pinned ? "Unpin" : "Pin"}
+            >
+              {pinned ? "Pinned" : "Pin"}
+            </button>
+          )}
           {dismissed ? (
             <span className="text-xs text-gray-400 bg-gray-100 rounded px-1.5 py-0.5">
               Ack'd{dismissedByName ? ` by ${dismissedByName}` : ""}
@@ -658,7 +672,7 @@ function ClientAlertCard({ alert, onDismiss, dismissed, dismissedByName }: { ale
 // ─── Flight card ──────────────────────────────────────────────────────────────
 
 function FlightCard({
-  flight, isAcked, showAcknowledged, onAck, onAckAll, clientAlerts, dismissedClientAlerts, onDismissClient, userMap, dismissedByMap, pinnedIds, onTogglePin,
+  flight, isAcked, showAcknowledged, onAck, onAckAll, clientAlerts, dismissedClientAlerts, onDismissClient, userMap, dismissedByMap, pinnedIds, onTogglePin, pinnedKeys, onTogglePinKey,
 }: {
   flight: Flight;
   isAcked: (a: OpsAlert) => boolean;
@@ -672,6 +686,8 @@ function FlightCard({
   dismissedByMap: Map<string, string>;
   pinnedIds?: Set<string>;
   onTogglePin?: (alertId: string, pin: boolean) => void;
+  pinnedKeys?: Set<string>;
+  onTogglePinKey?: (key: string, pin: boolean) => void;
 }) {
   const visibleAlerts = (flight.alerts ?? []).filter((a) => showAcknowledged || !isAcked(a));
   const alerts = visibleAlerts;
@@ -767,7 +783,7 @@ function FlightCard({
         <div className="px-3 pb-3 space-y-1.5">
           {alerts.map((a) => <AlertCard key={a.id} alert={a} onAck={onAck} acked={isAcked(a)} ackedByName={showAcknowledged && a.acknowledged_by ? userMap.get(a.acknowledged_by) ?? null : null} pinned={pinnedIds?.has(a.id)} onTogglePin={onTogglePin} />)}
           {activeClientAlerts.map((ca) => (
-            <ClientAlertCard key={ca.key} alert={ca} onDismiss={onDismissClient} dismissed={dismissedClientAlerts.has(ca.key)} dismissedByName={showAcknowledged && dismissedByMap.has(ca.key) ? userMap.get(dismissedByMap.get(ca.key)!) ?? null : null} />
+            <ClientAlertCard key={ca.key} alert={ca} onDismiss={onDismissClient} dismissed={dismissedClientAlerts.has(ca.key)} dismissedByName={showAcknowledged && dismissedByMap.has(ca.key) ? userMap.get(dismissedByMap.get(ca.key)!) ?? null : null} pinned={pinnedKeys?.has(ca.key)} onTogglePin={onTogglePinKey} />
           ))}
         </div>
       )}
@@ -910,10 +926,19 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
   const [customAlerts, setCustomAlerts] = useState<CustomNotamAlert[]>([]);
   const [showAddCustom, setShowAddCustom] = useState(false);
 
+  const [pinnedKeys, setPinnedKeys] = useState<Set<string>>(new Set());
+
   // Load pins and custom alerts
   useEffect(() => {
     fetch("/api/ops/notam-pins").then((r) => r.json()).then((d) => {
-      setPinnedIds(new Set((d.pins ?? []).map((p: NotamPin) => p.alert_id)));
+      const ids = new Set<string>();
+      const keys = new Set<string>();
+      for (const p of d.pins ?? []) {
+        if (p.alert_id) ids.add(p.alert_id);
+        if (p.pin_key) keys.add(p.pin_key);
+      }
+      setPinnedIds(ids);
+      setPinnedKeys(keys);
     }).catch(() => {});
     fetch("/api/ops/custom-alerts").then((r) => r.json()).then((d) => {
       setCustomAlerts(d.alerts ?? []);
@@ -935,6 +960,24 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
         body: JSON.stringify({ alert_id: alertId }),
       });
       setPinnedIds((prev) => { const n = new Set(prev); n.delete(alertId); return n; });
+    }
+  }, []);
+
+  const togglePinKey = useCallback(async (key: string, pin: boolean) => {
+    if (pin) {
+      await fetch("/api/ops/notam-pins", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pin_key: key }),
+      });
+      setPinnedKeys((prev) => new Set([...prev, key]));
+    } else {
+      await fetch("/api/ops/notam-pins", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pin_key: key }),
+      });
+      setPinnedKeys((prev) => { const n = new Set(prev); n.delete(key); return n; });
     }
   }, []);
 
@@ -1286,73 +1329,38 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
 
   return (
     <div className="p-4 sm:p-6 space-y-4 bg-gray-50 min-h-screen">
-      {/* EDCT Status Box — always visible */}
-      <div className={`rounded-xl border-2 shadow-sm overflow-hidden ${
-        edctAlerts.length > 0
-          ? "border-orange-300 bg-orange-50"
-          : "border-green-300 bg-green-50"
-      }`}>
-        <div className={`px-4 py-2.5 border-b flex items-center gap-2 ${
-          edctAlerts.length > 0
-            ? "bg-orange-100 border-orange-200"
-            : "bg-green-100 border-green-200"
-        }`}>
-          {edctAlerts.length > 0 ? (
-            <>
-              <span className="w-2.5 h-2.5 rounded-full bg-orange-500 animate-pulse" />
-              <span className="text-sm font-bold text-orange-900">EDCT / Ground Delays</span>
-              <span className="text-xs font-semibold bg-orange-200 text-orange-800 rounded-full px-2 py-0.5">
-                {edctAlerts.length}
-              </span>
-            </>
-          ) : (
-            <>
-              <span className="w-2.5 h-2.5 rounded-full bg-green-500" />
-              <span className="text-sm font-bold text-green-900">EDCT / Ground Delays</span>
-              <span className="text-xs font-semibold bg-green-200 text-green-800 rounded-full px-2 py-0.5">
-                Clear
-              </span>
-            </>
-          )}
-          <span className="ml-auto text-xs text-gray-400">
-            ForeFlight + FAA SWIM
-          </span>
-        </div>
-        {edctAlerts.length > 0 ? (
-          <div className="p-3 space-y-2">
-            {edctAlerts.map(({ alert, flight }) => (
-              <EdctRow key={alert.id} alert={alert} flight={flight} onDismiss={handleAck} fmtTime={fmtTime} />
-            ))}
-          </div>
-        ) : (
-          <div className="px-4 py-3 text-sm text-green-700">
-            No active EDCT delays or ground stops
-          </div>
-        )}
-      </div>
-
-      {/* Pinned NOTAMs */}
-      {pinnedIds.size > 0 && (() => {
+      {/* Pinned Alerts */}
+      {(pinnedIds.size > 0 || pinnedKeys.size > 0) && (() => {
         const pinnedAlerts: OpsAlert[] = [];
+        const pinnedClientAlerts: ClientAlert[] = [];
         for (const f of withFilteredAlerts) {
           for (const a of f.alerts ?? []) {
             if (pinnedIds.has(a.id) && !pinnedAlerts.some((p) => p.id === a.id)) {
               pinnedAlerts.push(a);
             }
           }
+          for (const ca of clientAlertsByFlight.get(f.id) ?? []) {
+            if (pinnedKeys.has(ca.key) && !pinnedClientAlerts.some((p) => p.key === ca.key)) {
+              pinnedClientAlerts.push(ca);
+            }
+          }
         }
-        if (pinnedAlerts.length === 0) return null;
+        const totalPinned = pinnedAlerts.length + pinnedClientAlerts.length;
+        if (totalPinned === 0) return null;
         return (
           <div className="rounded-xl border-2 border-amber-300 bg-amber-50 shadow-sm overflow-hidden">
             <div className="px-4 py-2.5 border-b bg-amber-100 border-amber-200 flex items-center gap-2">
-              <span className="text-sm font-bold text-amber-900">Pinned NOTAMs</span>
+              <span className="text-sm font-bold text-amber-900">Pinned Alerts</span>
               <span className="text-xs font-semibold bg-amber-200 text-amber-800 rounded-full px-2 py-0.5">
-                {pinnedAlerts.length}
+                {totalPinned}
               </span>
             </div>
             <div className="p-3 space-y-2">
               {pinnedAlerts.map((a) => (
                 <AlertCard key={a.id} alert={a} onAck={handleAck} pinned onTogglePin={togglePin} />
+              ))}
+              {pinnedClientAlerts.map((ca) => (
+                <ClientAlertCard key={ca.key} alert={ca} onDismiss={handleDismissClient} pinned onTogglePin={togglePinKey} />
               ))}
             </div>
           </div>
@@ -1680,6 +1688,8 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
                       dismissedByMap={dismissedByMap}
                       pinnedIds={pinnedIds}
                       onTogglePin={togglePin}
+                      pinnedKeys={pinnedKeys}
+                      onTogglePinKey={togglePinKey}
                     />
                   ))}
                 </div>
