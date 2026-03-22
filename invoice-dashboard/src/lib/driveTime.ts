@@ -299,6 +299,34 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   KSTS: [38.5090, -122.8129],  // Charles M Schulz/Sonoma County, CA
   KUDD: [33.7484, -116.2748],  // Bermuda Dunes, CA
 
+  // ── Northeast / Mid-Atlantic (more) ──────────────────────────────────────
+  KAGC: [40.3544, -79.9302],   // Allegheny County (Pittsburgh area), PA
+  KBGR: [44.8074, -68.8281],   // Bangor, ME
+  KMTN: [39.3257, -76.4138],   // Martin State (Baltimore area), MD
+  KPOU: [41.6266, -73.8842],   // Dutchess County, NY
+  KPSM: [43.0779, -70.8233],   // Portsmouth/Pease, NH
+  KROC: [43.1189, -77.6724],   // Rochester, NY
+
+  // ── Midwest (more) ─────────────────────────────────────────────────────────
+  KCAK: [40.9161, -81.4422],   // Akron-Canton, OH
+  KLAN: [42.7787, -84.5874],   // Lansing (Capital Region), MI
+  KOMA: [41.3032, -95.8941],   // Omaha (Eppley Airfield), NE
+  KPTK: [42.6655, -83.4185],   // Oakland County (Pontiac), MI
+  KSBN: [41.7087, -86.3173],   // South Bend, IN
+  KYIP: [42.2379, -83.5304],   // Willow Run (Ypsilanti), MI
+
+  // ── South / Southeast (more) ───────────────────────────────────────────────
+  KMYR: [33.6797, -78.9283],   // Myrtle Beach, SC
+
+  // ── Texas (more) ───────────────────────────────────────────────────────────
+  KMAF: [31.9425, -102.2019],  // Midland-Odessa, TX
+  KMFE: [26.1758, -98.2386],   // McAllen, TX
+
+  // ── Mountain / West (more) ─────────────────────────────────────────────────
+  KFAT: [36.7762, -119.7181],  // Fresno, CA
+  KMHR: [38.5539, -121.2977],  // Sacramento Mather, CA
+  KMRY: [36.5870, -121.8430],  // Monterey, CA
+
   // ── Alaska / Hawaii / Territories ─────────────────────────────────────────
   PANC: [61.1744, -149.9964],  // Anchorage, AK
   PHNL: [21.3187, -157.9225],  // Honolulu, HI
@@ -428,6 +456,11 @@ const COMMERCIAL_AIRPORTS = new Set([
   "KALB", "KAZO", "KBFI", "KBMI", "KBZN", "KCGF", "KILM",
   "KOGD", "KPGV", "KTUS", "KSEA", "KPDX", "KSMF", "KONT",
   "KLGB", "KSDF", "KLEX", "KXNA", "KCID", "KATW",
+  // Added 2026-03-22 — next-30-day flight coverage
+  "KAVP", "KBGR", "KBTV", "KCAK", "KFAT", "KGSP", "KJAC",
+  "KLAN", "KMAF", "KMFE", "KMRY", "KMYR", "KOMA", "KRNO",
+  "KROC", "KSBA", "KSBN", "KSUN",
+  "PANC", // Anchorage (non-K ICAO)
   "CYYZ", "CYUL", "CYVR", "CYOW", "CYYC",
   "TJSJ", // San Juan, PR
 ]);

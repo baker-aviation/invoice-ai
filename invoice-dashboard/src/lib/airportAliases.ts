@@ -199,6 +199,48 @@ const RAW: [string, string, boolean][] = [
   // Anguilla
   ["TQPF", "TNCM", true],   // Anguilla → St. Maarten
 
+  // ── FBO aliases added 2026-03-22 (next-30-day flight coverage) ────────────
+
+  // Pittsburgh area
+  ["KAGC", "KPIT", true],    // Allegheny County → Pittsburgh
+
+  // New York / New Jersey area
+  ["KBLM", "KEWR", true],    // Belmar/Monmouth NJ → Newark
+  ["KBLM", "KJFK", false],   // Belmar/Monmouth NJ → JFK
+  ["KFOK", "KJFK", true],    // Westhampton Beach LI → JFK
+  ["KPOU", "KEWR", true],    // Dutchess County NY → Newark
+
+  // New England
+  ["KPSM", "KBOS", true],    // Portsmouth/Pease NH → Boston
+
+  // Mid-Atlantic / DC
+  ["KMTN", "KBWI", true],    // Martin State → Baltimore
+
+  // Virginia
+  ["KSIG", "KORF", true],    // Norfolk Bravo → Norfolk
+
+  // California
+  ["KCMA", "KBUR", true],    // Camarillo → Burbank
+  ["KMHR", "KSMF", true],    // Sacramento Mather → Sacramento
+
+  // Texas
+  ["KEDC", "KAUS", true],    // Austin Executive → Austin
+
+  // Florida
+  ["KFMY", "KRSW", true],    // Page Field → Fort Myers/RSW
+  ["KMKY", "KRSW", true],    // Marco Island → Fort Myers/RSW
+  ["KPGD", "KRSW", true],    // Punta Gorda → Fort Myers/RSW
+  ["KVNC", "KSRQ", true],    // Venice FL → Sarasota
+  ["KVRB", "KPBI", true],    // Vero Beach → Palm Beach
+
+  // Midwest
+  ["KGYY", "KMDW", true],    // Gary IN → Midway
+  ["KGYY", "KORD", false],   // Gary IN → O'Hare
+  ["KMKC", "KMCI", true],    // KC Downtown → Kansas City
+  ["KPTK", "KDTW", true],    // Oakland County/Pontiac MI → Detroit
+  ["KSUS", "KSTL", true],    // Spirit of St. Louis → St. Louis
+  ["KYIP", "KDTW", true],    // Willow Run MI → Detroit
+
   // International — FBO to nearest commercial
   ["CYYZ", "CYYZ", true],   // Toronto Pearson (IS commercial)
   ["MROC", "MROC", true],   // San Jose Costa Rica (IS commercial)
