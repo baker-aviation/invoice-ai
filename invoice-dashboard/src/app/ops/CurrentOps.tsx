@@ -2360,13 +2360,16 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                                 <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded-full ${typeColor}`}>
                                   {type}
                                 </span>
-                                {(fi?.diverted || isDivertedFlight(f)) && (
-                                  <span className="px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-red-100 text-red-700">
-                                    DIVERTED
-                                  </span>
-                                )}
                                 {(() => {
                                   const edctAlert = getActiveEdct(f);
+                                  const diverted = fi?.diverted || isDivertedFlight(f);
+                                  if (diverted) {
+                                    return (
+                                      <div className="flex flex-col">
+                                        <span className="text-xs text-red-600 font-bold">DIVERTED</span>
+                                      </div>
+                                    );
+                                  }
                                   if (status === "Scheduled") {
                                     return (
                                       <div className="flex flex-col">
@@ -2701,6 +2704,10 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                         <div className="flex flex-col gap-0.5">
                           {(() => {
                             const edctAlert = getActiveEdct(f);
+                            const diverted = fi?.diverted || isDivertedFlight(f);
+                            if (diverted) {
+                              return <span className="text-xs font-bold text-red-600">DIVERTED</span>;
+                            }
                             if (status === "Scheduled") {
                               return (
                                 <>
@@ -2883,11 +2890,6 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                         <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded-full ${typeColor}`}>
                           {type}
                         </span>
-                        {(fi?.diverted || isDivertedFlight(f)) && (
-                          <span className="ml-1 px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-red-100 text-red-700">
-                            DIVERTED
-                          </span>
-                        )}
                       </td>
                       <td className="px-3 py-2.5">
                         {(() => {
