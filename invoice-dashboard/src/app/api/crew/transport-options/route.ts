@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin, isAuthed } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
-import type { PilotRoute } from "@/lib/pilotRoutes";
+import type { FlightOffer } from "@/lib/amadeus";
 import {
   checkDutyDay,
   midnightUtc,
@@ -17,11 +17,10 @@ import { estimateDriveTime } from "@/lib/driveTime";
 import { DEFAULT_AIRPORT_ALIASES } from "@/lib/airportAliases";
 import {
   FBO_ARRIVAL_BUFFER,
-  FBO_ARRIVAL_BUFFER_PREFERRED,
-  MAX_DUTY_HOURS,
   DEPLANE_BUFFER,
   UBER_MAX_MINUTES,
   RENTAL_MAX_MINUTES,
+  DUTY_ON_BEFORE_COMMERCIAL,
 } from "@/lib/swapRules";
 
 export const dynamic = "force-dynamic";
@@ -58,14 +57,15 @@ type TransportOption = {
  *
  * Query params:
  *   crew_member_id — UUID of crew member
- *   destination_icao — swap location ICAO
+ *   destination_icao — swap location ICAO (FBO airport)
  *   swap_date — YYYY-MM-DD
  *   direction — "oncoming" | "offgoing"
  *   first_leg_dep? — ISO string of first leg departure (for FBO buffer calc)
  *   last_leg_arr? — ISO string of last leg arrival (for duty day calc)
  *
- * Returns cached transport options from pilot_routes + computed ground options,
- * with server-side feasibility checks.
+ * Primary data source: hasdata_flight_cache (Google Flights — real prices,
+ * connections, works weeks out). Falls back to pilot_routes for any additional
+ * ground transport options.
  */
 export async function GET(req: NextRequest) {
   const auth = await requireAdmin(req);
@@ -84,8 +84,8 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const firstLegDep = sp.get("first_leg_dep"); // ISO string
-  const lastLegArr = sp.get("last_leg_arr"); // ISO string
+  const firstLegDep = sp.get("first_leg_dep");
+  const lastLegArr = sp.get("last_leg_arr");
 
   const supa = createServiceClient();
 
@@ -118,52 +118,173 @@ export async function GET(req: NextRequest) {
     ...DEFAULT_AIRPORT_ALIASES.filter((a) => !dbKeys.has(`${a.fbo_icao}|${a.commercial_icao}`)),
   ];
 
-  // Load cached pilot_routes for this crew + destination + direction
-  const { data: routes, error: routeErr } = await supa
-    .from("pilot_routes")
-    .select("*")
-    .eq("crew_member_id", crewMemberId)
-    .eq("destination_icao", destinationIcao)
-    .eq("swap_date", swapDate)
-    .eq("direction", direction)
-    .order("score", { ascending: false });
+  // ── Resolve airports ──────────────────────────────────────────────────
+  // Crew home airports → IATA codes
+  const homeIatas = homeAirports.map((h) => toIata(h));
 
-  if (routeErr) {
-    return NextResponse.json({ error: routeErr.message }, { status: 500 });
+  // FBO destination → nearby commercial IATA codes
+  const commAirportsIcao = findAllCommercialAirports(destinationIcao, aliases);
+  const commIatas = commAirportsIcao.map((c) => toIata(c));
+
+  // Drive times from each commercial airport to the FBO
+  const driveToFboMap = new Map<string, number>(); // commIata → minutes
+  for (const commIcao of commAirportsIcao) {
+    const ci = toIata(commIcao);
+    if (ci === toIata(destinationIcao)) {
+      driveToFboMap.set(ci, 0); // FBO itself is commercial
+    } else {
+      const drive = estimateDriveTime(commIcao, destinationIcao);
+      if (drive) driveToFboMap.set(ci, drive.estimated_drive_minutes);
+    }
   }
 
-  // Compute feasibility for each route
+  // ── Build O→D pairs to query from hasdata_flight_cache ────────────────
+  // Oncoming: home → commercial near FBO
+  // Offgoing: commercial near FBO → home
+  const pairsToQuery: { origin: string; dest: string }[] = [];
+  for (const home of homeIatas) {
+    for (const comm of commIatas) {
+      if (home === comm) continue;
+      if (direction === "oncoming") {
+        pairsToQuery.push({ origin: home, dest: comm });
+      } else {
+        pairsToQuery.push({ origin: comm, dest: home });
+      }
+    }
+  }
+
+  // ── Query hasdata_flight_cache ────────────────────────────────────────
+  const options: TransportOption[] = [];
   const homeMidnight = homeAirports[0]
     ? midnightUtc(toIcao(homeAirports[0]), swapDate)
     : midnightUtc(destinationIcao, swapDate);
 
-  const options: TransportOption[] = [];
+  if (pairsToQuery.length > 0) {
+    // Query all relevant pairs in one go using OR filter
+    const origins = [...new Set(pairsToQuery.map((p) => p.origin))];
+    const dests = [...new Set(pairsToQuery.map((p) => p.dest))];
 
-  for (const r of (routes ?? []) as unknown as PilotRoute[]) {
-    const feasibility = computeFeasibility(r, direction, firstLegDep, lastLegArr, homeMidnight);
+    const { data: cacheRows, error: cacheErr } = await supa
+      .from("hasdata_flight_cache")
+      .select("origin_iata, destination_iata, flight_offers, offer_count")
+      .eq("cache_date", swapDate)
+      .in("origin_iata", origins)
+      .in("destination_iata", dests);
 
-    options.push({
-      type: r.route_type as TransportOption["type"],
-      flight_number: r.flight_number,
-      origin_iata: r.origin_iata,
-      destination_iata: r.via_commercial ?? toIata(destinationIcao),
-      depart_at: r.depart_at,
-      arrive_at: r.arrive_at,
-      fbo_arrive_at: r.fbo_arrive_at,
-      duty_on_at: r.duty_on_at,
-      cost_estimate: r.cost_estimate,
-      duration_minutes: r.duration_minutes,
-      is_direct: r.is_direct,
-      connection_count: r.connection_count,
-      has_backup: r.has_backup,
-      backup_flight: r.backup_flight,
-      score: r.score,
-      feasibility,
-    });
+    if (cacheErr) {
+      console.error("[TransportOptions] Cache query error:", cacheErr.message);
+    }
+
+    // Index by pair key for fast lookup
+    const validPairs = new Set(pairsToQuery.map((p) => `${p.origin}-${p.dest}`));
+    const seenFlights = new Set<string>();
+
+    for (const row of cacheRows ?? []) {
+      const pairKey = `${row.origin_iata}-${row.destination_iata}`;
+      if (!validPairs.has(pairKey)) continue;
+
+      const offers = (typeof row.flight_offers === "string"
+        ? JSON.parse(row.flight_offers as string)
+        : row.flight_offers) as FlightOffer[];
+
+      for (const offer of offers) {
+        const segs = offer.itineraries[0]?.segments ?? [];
+        if (segs.length === 0) continue;
+
+        const firstSeg = segs[0];
+        const lastSeg = segs[segs.length - 1];
+        const flightNum = segs.map((s) => `${s.carrierCode}${s.number}`).join("/");
+
+        // Dedupe by flight number
+        if (seenFlights.has(flightNum)) continue;
+        seenFlights.add(flightNum);
+
+        const price = parseFloat(offer.price.total);
+        const totalDuration = parseDuration(offer.itineraries[0]?.duration ?? "PT0M");
+        const isDirect = segs.length === 1;
+        const connectionCount = Math.max(0, segs.length - 1);
+
+        const depAt = firstSeg.departure.at;
+        const arrAt = lastSeg.arrival.at;
+
+        // Determine the commercial airport near the FBO
+        const commIata = direction === "oncoming"
+          ? lastSeg.arrival.iataCode
+          : firstSeg.departure.iataCode;
+        const driveToFboMin = driveToFboMap.get(commIata) ?? driveToFboMap.get(toIata(commIata)) ?? 0;
+
+        // Compute FBO arrival and duty-on times
+        let fboArriveAt: string | null = null;
+        let dutyOnAt: string | null = null;
+
+        if (direction === "oncoming" && arrAt) {
+          // FBO arrival = flight landing + deplane + ground transfer to FBO
+          const fboArr = fboArrivalAfterCommercial(new Date(arrAt), driveToFboMin);
+          fboArriveAt = fboArr.toISOString();
+          // Duty-on = 60min before flight departure
+          if (depAt) {
+            dutyOnAt = dutyOnForCommercial(new Date(depAt)).toISOString();
+          }
+        } else if (direction === "offgoing" && depAt) {
+          // Offgoing: crew leaves FBO, drives to commercial, flies home
+          // FBO leave time = flight departure - ground transfer - airport security (90min)
+          const fboLeaveMs = new Date(depAt).getTime() - ms(90 + driveToFboMin);
+          fboArriveAt = new Date(fboLeaveMs).toISOString(); // repurpose as FBO leave time
+        }
+
+        // Ground cost from commercial airport to FBO
+        let groundCost = 0;
+        if (driveToFboMin > 0 && driveToFboMin <= UBER_MAX_MINUTES) {
+          groundCost = Math.max(25, Math.round(driveToFboMin * 1.5)); // rough Uber estimate
+        } else if (driveToFboMin > 0) {
+          groundCost = 50; // rental shuttle estimate
+        }
+
+        const totalCost = (isNaN(price) ? 0 : Math.round(price)) + groundCost;
+
+        // Score
+        let score = 50;
+        if (totalCost <= 100) score += 20;
+        else if (totalCost <= 300) score += 10;
+        if (isDirect) score += 12;
+        else if (connectionCount === 1) score += 5;
+
+        // Feasibility
+        const feasibility = computeFeasibilityFromTimes({
+          direction,
+          dutyOnAt,
+          fboArriveAt,
+          arriveAt: arrAt,
+          routeType: "commercial",
+          firstLegDep,
+          lastLegArr,
+          homeMidnight,
+        });
+
+        options.push({
+          type: "commercial",
+          flight_number: flightNum || null,
+          origin_iata: firstSeg.departure.iataCode,
+          destination_iata: lastSeg.arrival.iataCode,
+          depart_at: depAt,
+          arrive_at: arrAt,
+          fbo_arrive_at: fboArriveAt,
+          duty_on_at: dutyOnAt,
+          cost_estimate: totalCost,
+          duration_minutes: totalDuration,
+          is_direct: isDirect,
+          connection_count: connectionCount,
+          has_backup: false,
+          backup_flight: null,
+          score,
+          feasibility,
+        });
+      }
+    }
   }
 
-  // Always include ground options computed live (in case not in pilot_routes)
-  const groundTypes = new Set(options.filter((o) => o.type !== "commercial").map((o) => `${o.type}-${o.origin_iata}`));
+  // ── Ground transport options (computed live) ───────────────────────────
+  const groundTypes = new Set<string>();
   for (const homeApt of homeAirports) {
     const homeIata = toIata(homeApt);
     const homeIcao = toIcao(homeApt);
@@ -196,18 +317,12 @@ export async function GET(req: NextRequest) {
           has_backup: false,
           backup_flight: null,
           score: isUber ? 70 : 50,
-          feasibility: {
-            duty_hours: null,
-            duty_ok: true, // ground transport within limits is always ok
-            fbo_buffer_min: null,
-            fbo_buffer_ok: true,
-            midnight_ok: true,
-          },
+          feasibility: { duty_hours: null, duty_ok: true, fbo_buffer_min: null, fbo_buffer_ok: true, midnight_ok: true },
         });
         groundTypes.add(key);
       }
 
-      // Self-drive option
+      // Self-drive
       const driveKey = `drive-${homeIata}`;
       if (!groundTypes.has(driveKey)) {
         const driveCost = Math.round(drive.estimated_drive_miles * 0.25);
@@ -227,20 +342,14 @@ export async function GET(req: NextRequest) {
           has_backup: false,
           backup_flight: null,
           score: 40,
-          feasibility: {
-            duty_hours: null,
-            duty_ok: true,
-            fbo_buffer_min: null,
-            fbo_buffer_ok: true,
-            midnight_ok: true,
-          },
+          feasibility: { duty_hours: null, duty_ok: true, fbo_buffer_min: null, fbo_buffer_ok: true, midnight_ok: true },
         });
         groundTypes.add(driveKey);
       }
     }
   }
 
-  // Sort: feasible options first, then by score descending
+  // Sort: feasible first, then by score descending
   options.sort((a, b) => {
     const aOk = a.feasibility.duty_ok && a.feasibility.fbo_buffer_ok && a.feasibility.midnight_ok ? 1 : 0;
     const bOk = b.feasibility.duty_ok && b.feasibility.fbo_buffer_ok && b.feasibility.midnight_ok ? 1 : 0;
@@ -265,15 +374,26 @@ export async function GET(req: NextRequest) {
   });
 }
 
-// ─── Feasibility computation ────────────────────────────────────────────────
+// ─── Helpers ────────────────────────────────────────────────────────────────
 
-function computeFeasibility(
-  route: PilotRoute,
-  direction: "oncoming" | "offgoing",
-  firstLegDep: string | null,
-  lastLegArr: string | null,
-  homeMidnight: Date,
-): TransportOption["feasibility"] {
+function parseDuration(iso: string): number {
+  const m = iso.match(/PT(?:(\d+)H)?(?:(\d+)M)?/);
+  if (!m) return 0;
+  return (parseInt(m[1] ?? "0") * 60) + parseInt(m[2] ?? "0");
+}
+
+function computeFeasibilityFromTimes(params: {
+  direction: "oncoming" | "offgoing";
+  dutyOnAt: string | null;
+  fboArriveAt: string | null;
+  arriveAt: string | null;
+  routeType: string;
+  firstLegDep: string | null;
+  lastLegArr: string | null;
+  homeMidnight: Date;
+}): TransportOption["feasibility"] {
+  const { direction, dutyOnAt, fboArriveAt, arriveAt, routeType, firstLegDep, lastLegArr, homeMidnight } = params;
+
   let dutyHours: number | null = null;
   let dutyOk = true;
   let fboBufferMin: number | null = null;
@@ -281,39 +401,24 @@ function computeFeasibility(
   let midnightOk = true;
 
   if (direction === "oncoming") {
-    // Duty hours: duty_on → last leg arrival (if provided)
-    if (route.duty_on_at && lastLegArr) {
-      const dutyOn = new Date(route.duty_on_at);
-      const dutyEnd = new Date(lastLegArr);
-      const check = checkDutyDay(dutyOn, dutyEnd);
+    if (dutyOnAt && lastLegArr) {
+      const check = checkDutyDay(new Date(dutyOnAt), new Date(lastLegArr));
       dutyHours = Math.round(check.hours * 10) / 10;
       dutyOk = check.valid;
     }
-
-    // FBO buffer: how many minutes before first leg departure does crew arrive at FBO
-    if (route.fbo_arrive_at && firstLegDep) {
-      const fboArr = new Date(route.fbo_arrive_at);
-      const legDep = new Date(firstLegDep);
-      fboBufferMin = Math.round((legDep.getTime() - fboArr.getTime()) / 60_000);
+    if (fboArriveAt && firstLegDep) {
+      fboBufferMin = Math.round((new Date(firstLegDep).getTime() - new Date(fboArriveAt).getTime()) / 60_000);
       fboBufferOk = fboBufferMin >= FBO_ARRIVAL_BUFFER;
     }
   } else {
-    // Offgoing: check midnight deadline
-    if (route.arrive_at) {
-      const homeArrival = new Date(route.arrive_at);
-      // Add deplane buffer for commercial
-      const effectiveArrival = route.route_type === "commercial"
+    if (arriveAt) {
+      const homeArrival = new Date(arriveAt);
+      const effectiveArrival = routeType === "commercial"
         ? new Date(homeArrival.getTime() + ms(DEPLANE_BUFFER))
         : homeArrival;
       midnightOk = effectiveArrival.getTime() <= homeMidnight.getTime();
     }
   }
 
-  return {
-    duty_hours: dutyHours,
-    duty_ok: dutyOk,
-    fbo_buffer_min: fboBufferMin,
-    fbo_buffer_ok: fboBufferOk,
-    midnight_ok: midnightOk,
-  };
+  return { duty_hours: dutyHours, duty_ok: dutyOk, fbo_buffer_min: fboBufferMin, fbo_buffer_ok: fboBufferOk, midnight_ok: midnightOk };
 }
