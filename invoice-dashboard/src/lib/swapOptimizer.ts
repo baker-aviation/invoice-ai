@@ -265,10 +265,10 @@ function isLiveType(type: string | null): boolean {
   return !!type && LIVE_TYPES.has(type.toLowerCase());
 }
 
-function ms(minutes: number): number { return minutes * 60_000; }
+export function ms(minutes: number): number { return minutes * 60_000; }
 
 /** Get local hour at an airport for a UTC timestamp */
-function getLocalHour(utcDate: Date, icao: string): number {
+export function getLocalHour(utcDate: Date, icao: string): number {
   const tz = getAirportTimezone(icao) ?? "America/New_York";
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: tz, hour: "numeric", hour12: false,
@@ -283,7 +283,7 @@ function getLocalHour(utcDate: Date, icao: string): number {
  *
  * Correct approach: guess UTC, check what local time that is, compute offset.
  */
-function localTimeToUtc(dateStr: string, hour: number, minute: number, tz: string): Date {
+export function localTimeToUtc(dateStr: string, hour: number, minute: number, tz: string): Date {
   const guess = new Date(`${dateStr}T${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:00Z`);
   // What local hour does this UTC time correspond to in the target timezone?
   const localHour = parseInt(
@@ -299,7 +299,7 @@ function localTimeToUtc(dateStr: string, hour: number, minute: number, tz: strin
 }
 
 /** Get midnight local at an airport on the NEXT day after dateStr (i.e. end of that day) */
-function midnightUtc(icao: string, dateStr: string): Date {
+export function midnightUtc(icao: string, dateStr: string): Date {
   const tz = getAirportTimezone(icao) ?? "America/New_York";
   const nextDay = new Date(dateStr);
   nextDay.setDate(nextDay.getDate() + 1);
@@ -323,7 +323,7 @@ function parseFlightTime(timeStr: string, airportIata: string): Date {
 }
 
 /** Duty-on time for commercial flight from home airport */
-function dutyOnForCommercial(flightDepTime: Date): Date {
+export function dutyOnForCommercial(flightDepTime: Date): Date {
   return new Date(flightDepTime.getTime() - ms(DUTY_ON_BEFORE_COMMERCIAL));
 }
 
@@ -333,13 +333,13 @@ function dutyOnWithDrive(driveStartTime: Date): Date {
 }
 
 /** Duty-off for offgoing crew */
-function dutyOff(lastLegArrival: Date, isInternational: boolean): Date {
+export function dutyOff(lastLegArrival: Date, isInternational: boolean): Date {
   const buffer = isInternational ? INTERNATIONAL_DUTY_OFF : DUTY_OFF_AFTER_LAST_LEG;
   return new Date(lastLegArrival.getTime() + ms(buffer));
 }
 
 /** When crew arrives at FBO after commercial flight + deplane + ground transport */
-function fboArrivalAfterCommercial(
+export function fboArrivalAfterCommercial(
   flightArrTime: Date,
   driveToFboMin: number,
 ): Date {
@@ -360,7 +360,7 @@ function latestDepartureForMidnight(
 }
 
 /** Check 14hr duty day limit */
-function checkDutyDay(dutyOn: Date, dutyEnd: Date): { valid: boolean; hours: number } {
+export function checkDutyDay(dutyOn: Date, dutyEnd: Date): { valid: boolean; hours: number } {
   const hours = (dutyEnd.getTime() - dutyOn.getTime()) / (60 * 60_000);
   return { valid: hours <= MAX_DUTY_HOURS, hours };
 }
@@ -404,7 +404,7 @@ function findCommercialAirport(fboIcao: string, aliases: AirportAlias[]): string
 }
 
 /** Get all commercial airports for an FBO (aliases first, then nearby within 30mi) */
-function findAllCommercialAirports(fboIcao: string, aliases: AirportAlias[]): string[] {
+export function findAllCommercialAirports(fboIcao: string, aliases: AirportAlias[]): string[] {
   const upper = fboIcao.toUpperCase();
   const result = new Set<string>();
 
@@ -454,12 +454,12 @@ const ICAO_IATA: Record<string, string> = {
   MSLP: "SAL", MNMG: "MGA", MPTO: "PTY",
 };
 
-function toIata(icao: string): string {
+export function toIata(icao: string): string {
   if (ICAO_IATA[icao]) return ICAO_IATA[icao];
   return icao.length === 4 && icao.startsWith("K") ? icao.slice(1) : icao;
 }
 
-function toIcao(code: string): string {
+export function toIcao(code: string): string {
   return code.length === 3 ? `K${code}` : code;
 }
 
