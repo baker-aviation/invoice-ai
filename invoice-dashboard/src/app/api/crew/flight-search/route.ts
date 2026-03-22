@@ -24,7 +24,7 @@ function checkRateLimit(userId: string): boolean {
     rateLimits.set(userId, { count: 1, resetAt: now + 60_000 });
     return true;
   }
-  if (entry.count >= 5) return false;
+  if (entry.count >= 30) return false;
   entry.count++;
   return true;
 }
