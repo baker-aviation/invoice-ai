@@ -62,15 +62,30 @@ export async function POST(req: NextRequest) {
   let deactivatedCount = 0;
   let slackMatchedCount = 0;
 
-  // Map of existing crew by name+role for fast lookup
+  // Map of existing crew by name+role for fast lookup.
+  // Also deduplicate: if multiple rows exist for the same name+role, keep the newest and delete the rest.
   const { data: existingCrew } = await supa
     .from("crew_members")
-    .select("id, name, role, slack_display_name")
-    .order("name");
+    .select("id, name, role, slack_display_name, updated_at")
+    .order("updated_at", { ascending: false });
 
   const existingMap = new Map<string, { id: string; slack_display_name: string | null }>();
+  const dupeIds: string[] = [];
   for (const c of existingCrew ?? []) {
-    existingMap.set(`${c.name}|${c.role}`, { id: c.id as string, slack_display_name: c.slack_display_name as string | null });
+    const key = `${c.name}|${c.role}`;
+    if (existingMap.has(key)) {
+      dupeIds.push(c.id as string); // older duplicate — mark for deletion
+    } else {
+      existingMap.set(key, { id: c.id as string, slack_display_name: c.slack_display_name as string | null });
+    }
+  }
+
+  // Clean up duplicates
+  if (dupeIds.length > 0) {
+    for (let i = 0; i < dupeIds.length; i += 100) {
+      await supa.from("crew_members").delete().in("id", dupeIds.slice(i, i + 100));
+    }
+    console.log(`[Roster Sync] Cleaned ${dupeIds.length} duplicate crew_members rows`);
   }
 
   // Track which names are in the new roster (to deactivate removed ones)
