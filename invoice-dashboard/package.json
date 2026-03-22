@@ -23,6 +23,7 @@
     "html-to-image": "^1.11.13",
     "jszip": "^3.10.1",
     "leaflet": "^1.9.4",
+    "leaflet-gesture-handling": "^1.2.2",
     "next": "16.1.6",
     "openai": "^6.25.0",
     "pdfjs-dist": "^4.9.155",
