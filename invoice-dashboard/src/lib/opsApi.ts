@@ -46,6 +46,7 @@ export type Flight = {
   pax_count: number | null;
   jetinsight_url: string | null;
   fa_flight_id: string | null;
+  diverted?: boolean | null;
   alerts: OpsAlert[];
 };
 

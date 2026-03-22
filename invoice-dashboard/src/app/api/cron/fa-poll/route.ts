@@ -373,7 +373,7 @@ async function updateDivertedArrivals(flights: FlightInfo[]): Promise<number> {
     if (actualDest && icsDest && actualDest !== icsDest) {
       const { error } = await supa
         .from("flights")
-        .update({ arrival_icao: actualDest })
+        .update({ arrival_icao: actualDest, diverted: true })
         .eq("id", ics.id);
 
       if (!error) {

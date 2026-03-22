@@ -1034,6 +1034,26 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
         print(f"sync_schedule: swap leg change detection error: {repr(e)}", flush=True)
         swap_alerts_created = 0
 
+    # Protect diverted flights from having their arrival/departure overwritten by ICS data.
+    # Fetch UIDs of flights marked as diverted and strip route fields from those upsert rows.
+    diverted_uids: set = set()
+    try:
+        batch_uids = [f["ics_uid"] for f in batch]
+        # Query in chunks of 100 to avoid URL length limits
+        for ui in range(0, len(batch_uids), 100):
+            uid_chunk = batch_uids[ui:ui + 100]
+            resp = supa.table(FLIGHTS_TABLE).select("ics_uid").eq("diverted", True).in_("ics_uid", uid_chunk).execute()
+            for row in (resp.data or []):
+                diverted_uids.add(row["ics_uid"])
+        if diverted_uids:
+            print(f"sync_schedule: protecting {len(diverted_uids)} diverted flights from route overwrite", flush=True)
+            for flight in batch:
+                if flight["ics_uid"] in diverted_uids:
+                    flight.pop("departure_icao", None)
+                    flight.pop("arrival_icao", None)
+    except Exception as e:
+        print(f"sync_schedule: diverted protection query failed (proceeding anyway): {repr(e)}", flush=True)
+
     # Bulk upsert in chunks of 50, with row-level fallback on failure
     CHUNK = 50
     for i in range(0, len(batch), CHUNK):
