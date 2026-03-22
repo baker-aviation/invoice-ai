@@ -125,6 +125,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: insertErr.message }, { status: 500 });
   }
 
+  // Auto-acknowledge all unacknowledged flight change alerts for this swap date.
+  // Once a plan is saved, the alerts are "consumed" — future changes will create new alerts.
+  await supa
+    .from("swap_leg_alerts")
+    .update({ acknowledged: true, acknowledged_by: auth.email, acknowledged_at: new Date().toISOString() })
+    .eq("swap_date", swap_date)
+    .eq("acknowledged", false);
+
   // Increment standby_count for crew on standby (rotation tracking)
   const crewAssignment = plan_data?.crew_assignment;
   if (crewAssignment?.standby) {

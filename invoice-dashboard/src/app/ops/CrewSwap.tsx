@@ -892,21 +892,39 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
               </div>
             )}
 
-            {/* Impact banners */}
+            {/* Impact banners — deduplicated, max 3 shown */}
             {tailImpacts.length > 0 && (
               <div className="px-4 py-2 space-y-1 border-b" style={{ background: tailImpacts.some(i => i.severity === "critical") ? "#fef2f2" : "#fffbeb" }}>
-                {tailImpacts.map((imp) => (
-                  <div key={imp.id} className="text-xs">
-                    <span className={`font-bold ${imp.severity === "critical" ? "text-red-700" : "text-amber-700"}`}>
-                      {imp.severity === "critical" ? "CRITICAL" : "WARNING"}:
-                    </span>
-                    {imp.affected_crew.map((c, ci) => (
-                      <span key={ci} className="ml-2 text-gray-700">
-                        {c.name} ({c.role} {c.direction}): {c.detail}
-                      </span>
-                    ))}
-                  </div>
-                ))}
+                {(() => {
+                  // Deduplicate by severity+crew combo to avoid repeated warnings
+                  const seen = new Set<string>();
+                  const unique = tailImpacts.filter((imp) => {
+                    const key = `${imp.severity}-${imp.affected_crew.map(c => c.name).sort().join(",")}`;
+                    if (seen.has(key)) return false;
+                    seen.add(key);
+                    return true;
+                  });
+                  const shown = unique.slice(0, 3);
+                  return (
+                    <>
+                      {shown.map((imp) => (
+                        <div key={imp.id} className="text-xs">
+                          <span className={`font-bold ${imp.severity === "critical" ? "text-red-700" : "text-amber-700"}`}>
+                            {imp.severity === "critical" ? "CRITICAL" : "WARNING"}:
+                          </span>
+                          {imp.affected_crew.map((c, ci) => (
+                            <span key={ci} className="ml-2 text-gray-700">
+                              {c.name} ({c.role} {c.direction}): {c.detail}
+                            </span>
+                          ))}
+                        </div>
+                      ))}
+                      {unique.length > 3 && (
+                        <div className="text-[10px] text-gray-400">+{unique.length - 3} more</div>
+                      )}
+                    </>
+                  );
+                })()}
               </div>
             )}
 

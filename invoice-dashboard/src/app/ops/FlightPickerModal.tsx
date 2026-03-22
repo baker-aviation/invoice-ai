@@ -315,7 +315,9 @@ export default function FlightPickerModal({
               </span>
             </div>
             <div className="text-xs text-gray-500 mt-0.5">
-              {homeAirports.join(" / ")} &rarr; {data?.destination?.iata ?? destinationIcao}
+              {direction === "oncoming"
+                ? `${homeAirports.join(" / ")} \u2192 ${data?.destination?.iata ?? destinationIcao}`
+                : `${data?.destination?.iata ?? destinationIcao} \u2192 ${homeAirports.join(" / ")}`}
               <span className="ml-2 text-gray-400">({tailNumber})</span>
             </div>
           </div>
