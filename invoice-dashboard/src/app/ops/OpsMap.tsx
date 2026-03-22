@@ -6,6 +6,7 @@ import { MapContainer, TileLayer, Marker, Popup, Tooltip, Polyline, CircleMarker
 import type { AircraftPosition, FlightInfoMap } from "@/app/maintenance/MapView";
 import { getAirportInfo } from "@/lib/airportCoords";
 import type { FaaDelay } from "@/app/api/ops/faa-delays/route";
+import type { FlowControlLine } from "@/app/api/ops/flow-controls/route";
 
 /* ── Fleet type helpers ── */
 
@@ -416,6 +417,43 @@ function useFaaDelays(enabled: boolean): { airports: DelayAirport[]; updated: st
   return { airports, updated };
 }
 
+/* ── Flow Controls (reroutes / CTOPs / AFPs from SWIM) ── */
+
+const FLOW_COLORS = [
+  "#f97316", // orange
+  "#06b6d4", // cyan
+  "#a855f7", // purple
+  "#eab308", // yellow
+  "#ec4899", // pink
+  "#14b8a6", // teal
+  "#f43f5e", // rose
+  "#84cc16", // lime
+];
+
+function useFlowControls(enabled: boolean): FlowControlLine[] {
+  const [lines, setLines] = useState<FlowControlLine[]>([]);
+
+  useEffect(() => {
+    if (!enabled) { setLines([]); return; }
+    let cancelled = false;
+
+    async function load() {
+      try {
+        const res = await fetch("/api/ops/flow-controls", { cache: "no-store" });
+        const data = await res.json();
+        if (cancelled || !data.ok) return;
+        setLines(data.lines ?? []);
+      } catch { /* ignore */ }
+    }
+
+    load();
+    const interval = setInterval(load, 5 * 60 * 1000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [enabled]);
+
+  return lines;
+}
+
 /* ── Tile layers + map utilities ── */
 
 const LIGHT_TILES = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
@@ -516,7 +554,15 @@ function LegendDot({ color }: { color: string }) {
   );
 }
 
-function MapLegend({ dark, showDelays }: { dark: boolean; showDelays: boolean }) {
+function LegendLine({ color }: { color: string }) {
+  return (
+    <svg viewBox="0 0 14 6" width="14" height="6">
+      <line x1="0" y1="3" x2="14" y2="3" stroke={color} strokeWidth="3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function MapLegend({ dark, showDelays, showFlows, flowCount }: { dark: boolean; showDelays: boolean; showFlows: boolean; flowCount: number }) {
   const bg = dark ? "bg-black/70" : "bg-white/90";
   const text = dark ? "text-gray-300" : "text-gray-700";
   const heading = dark ? "text-gray-400" : "text-gray-600";
@@ -560,6 +606,15 @@ function MapLegend({ dark, showDelays }: { dark: boolean; showDelays: boolean })
           </div>
         </>
       )}
+      {showFlows && flowCount > 0 && (
+        <>
+          <div className={`font-semibold ${heading} text-[10px] uppercase tracking-wider mt-2 mb-1`}>Flow Controls</div>
+          <div className="flex items-center gap-2">
+            <LegendLine color="#f97316" />
+            <span className={text}>Reroute / CTOP / AFP</span>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -588,11 +643,13 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
   const [showRadar, setShowRadar] = useState(false);
   const [showVans, setShowVans] = useState(false);
   const [showDelays, setShowDelays] = useState(true);
+  const [showFlows, setShowFlows] = useState(true);
   const [holdingTails, setHoldingTails] = useState<Set<string>>(new Set());
   const [trackPositions, setTrackPositions] = useState<Map<string, [number, number]>>(new Map());
   const radarUrl = useRadarUrl(showRadar);
   const vanPositions = useVanPositions(showVans);
   const { airports: delayAirports, updated: delaysUpdated } = useFaaDelays(showDelays);
+  const flowLines = useFlowControls(showFlows);
   const containerRef = useRef<HTMLDivElement>(null);
   const { isFs, toggle: toggleFs } = useFullscreen(containerRef);
 
@@ -626,10 +683,11 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
         <ToggleBtn label={showRadar ? "Radar ON" : "Radar"} active={showRadar} onClick={() => setShowRadar((v) => !v)} />
         <ToggleBtn label={showVans ? "Vans ON" : "AOG Vans"} active={showVans} onClick={() => setShowVans((v) => !v)} />
         <ToggleBtn label={showDelays ? "FAA Delays ON" : "FAA Delays"} active={showDelays} onClick={() => setShowDelays((v) => !v)} />
+        <ToggleBtn label={showFlows ? "Flow Ctrl ON" : "Flow Ctrl"} active={showFlows} onClick={() => setShowFlows((v) => !v)} />
         <ToggleBtn label={isFs ? "Exit ⛶" : "⛶"} active={isFs} onClick={toggleFs} />
       </div>
 
-      <MapLegend dark={darkMode} showDelays={showDelays} />
+      <MapLegend dark={darkMode} showDelays={showDelays} showFlows={showFlows} flowCount={flowLines.length} />
 
       <MapContainer
         center={[37.5, -96]}
@@ -779,6 +837,76 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
                 </div>
               </Popup>
             </CircleMarker>
+          );
+        })}
+
+        {/* Flow Control reroute lines */}
+        {showFlows && flowLines.map((line, idx) => {
+          const color = FLOW_COLORS[idx % FLOW_COLORS.length];
+          // Clean up reroute name for display
+          const displayName = line.name
+            .replace(/^rr\.\w+\.\w+\.\d+$/, line.subject)
+            .replace(/_/g, " ");
+          const timeRange = [
+            line.effective_at ? new Date(line.effective_at).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true, timeZone: "UTC" }) + "Z" : null,
+            line.expires_at ? new Date(line.expires_at).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true, timeZone: "UTC" }) + "Z" : null,
+          ].filter(Boolean).join(" – ");
+          return (
+            <Polyline
+              key={`flow-${line.id}`}
+              positions={line.waypoints}
+              pathOptions={{ color, weight: 4, opacity: 0.75 }}
+            >
+              <Tooltip
+                permanent
+                direction="center"
+                className="fa-data-tooltip"
+              >
+                <div style={{
+                  color,
+                  fontFamily: "ui-monospace,monospace",
+                  fontSize: "9px",
+                  fontWeight: 700,
+                  whiteSpace: "nowrap",
+                  textShadow: darkMode
+                    ? "0 1px 3px rgba(0,0,0,0.9), 0 0 6px rgba(0,0,0,0.6)"
+                    : "0 1px 2px rgba(255,255,255,0.9)",
+                }}>
+                  {line.tmiId ?? line.event_type}
+                </div>
+              </Tooltip>
+              <Popup>
+                <div className="text-sm space-y-1.5 min-w-[220px]">
+                  <div className="font-bold" style={{ color }}>{displayName}</div>
+                  {line.tmiId && <div className="text-xs font-mono text-gray-500">{line.tmiId}</div>}
+                  {line.fcaName && (
+                    <div className="text-xs">
+                      <span className="font-semibold text-gray-700">FCA:</span> {line.fcaName}
+                    </div>
+                  )}
+                  {timeRange && (
+                    <div className="text-xs">
+                      <span className="font-semibold text-gray-700">Time:</span> {timeRange}
+                    </div>
+                  )}
+                  {line.origins.length > 0 && (
+                    <div className="text-xs">
+                      <span className="font-semibold text-gray-700">From:</span>{" "}
+                      {line.origins.join(", ")}
+                    </div>
+                  )}
+                  {line.destinations.length > 0 && (
+                    <div className="text-xs">
+                      <span className="font-semibold text-gray-700">To:</span>{" "}
+                      {line.destinations.join(", ")}
+                    </div>
+                  )}
+                  <div className="text-[10px] text-gray-400 pt-1 border-t border-gray-200">
+                    Route: {line.waypointNames.join(" → ")}
+                  </div>
+                </div>
+              </Popup>
+            </Polyline>
           );
         })}
       </MapContainer>
