@@ -167,6 +167,15 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
       .update({ route_icaos: input.route_icaos, updated_at: new Date().toISOString() })
       .eq("id", id);
   }
+  if (input.pax_data_status !== undefined) {
+    if (!["not_started", "salesperson_notified", "uploaded"].includes(input.pax_data_status as string)) {
+      return NextResponse.json({ error: "Invalid pax_data_status" }, { status: 400 });
+    }
+    await supa
+      .from("intl_trips")
+      .update({ pax_data_status: input.pax_data_status, updated_at: new Date().toISOString() })
+      .eq("id", id);
+  }
 
   // Re-fetch
   const { data: trip, error } = await supa

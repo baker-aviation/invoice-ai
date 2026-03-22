@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { toPng } from "html-to-image";
 import * as XLSX from "xlsx";
 import type { Flight } from "@/lib/opsApi";
+import { getAirportTimezone } from "@/lib/airportTimezones";
+import FlightPickerModal, { type FlightPickerSelection } from "./FlightPickerModal";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -194,6 +196,17 @@ type SwapPlanResult = {
   };
 };
 
+type CrewInfoData = {
+  bad_pairings: { pic: string; sic: string; severity: string; notes: string }[];
+  checkairmen: { name: string; rotation: string; citation_x: boolean; challenger: boolean }[];
+  training_needed: { name: string; indoc: boolean; emergency_drill: boolean }[];
+  recurrency_299: { name: string; month: string; needs_299: boolean }[];
+  pic_swap_table: { old_pic: string | null; new_pic: string | null; tail: string | null }[];
+  crewing_checklist: { assignees: { name: string; tasks: Record<string, boolean | string> }[] } | null;
+  calendar_weeks: { date_range: string; rotation: string; pic: { citation_x: string[]; challenger: string[]; dual: string[] }; sic: { citation_x: string[]; challenger: string[]; dual: string[] } }[];
+  target_week_crew: { date_range: string; rotation: string; pic: { citation_x: string[]; challenger: string[]; dual: string[] }; sic: { citation_x: string[]; challenger: string[]; dual: string[] } } | null;
+};
+
 // ─── Toast System ───────────────────────────────────────────────────────────
 
 type Toast = { id: number; type: "success" | "error" | "warning"; msg: string };
@@ -309,12 +322,19 @@ function fmtTime(iso: string | null): string {
   });
 }
 
-function fmtShortTime(iso: string | null): string {
+function fmtShortTime(iso: string | null, airportIcao?: string | null): string {
   if (!iso) return "—";
-  return new Date(iso).toLocaleTimeString(undefined, {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  const d = new Date(iso);
+  const tz = airportIcao ? getAirportTimezone(airportIcao) : null;
+  const opts: Intl.DateTimeFormatOptions = { hour: "2-digit", minute: "2-digit" };
+  if (tz) opts.timeZone = tz;
+  const time = d.toLocaleTimeString("en-US", opts);
+  // Add short timezone label
+  if (tz) {
+    const tzAbbr = d.toLocaleTimeString("en-US", { timeZone: tz, timeZoneName: "short" }).split(" ").pop() ?? "";
+    return `${time} ${tzAbbr}`;
+  }
+  return time;
 }
 
 const AIRCRAFT_COLORS: Record<string, { bg: string; text: string; label: string }> = {
@@ -331,6 +351,101 @@ const FLIGHT_TYPE_COLORS: Record<string, string> = {
   Owner: "bg-emerald-100 text-emerald-700",
   "Ferry/Mx": "bg-gray-100 text-gray-700",
 };
+
+// FBO → Commercial airport reference for this week's swap locations
+const FBO_COMMERCIAL_MAP: Record<string, { airports: string[]; preferred: string }> = {
+  TEB: { airports: ["EWR", "LGA", "JFK"], preferred: "EWR" },
+  OPF: { airports: ["MIA", "FLL"], preferred: "MIA" },
+  VNY: { airports: ["BUR", "LAX"], preferred: "BUR" },
+  FXE: { airports: ["FLL", "MIA", "PBI"], preferred: "FLL" },
+  BED: { airports: ["BOS"], preferred: "BOS" },
+  HPN: { airports: ["JFK", "LGA", "EWR"], preferred: "JFK" },
+  FTW: { airports: ["DFW", "DAL"], preferred: "DFW" },
+  HEF: { airports: ["IAD", "DCA"], preferred: "IAD" },
+  SUA: { airports: ["PBI", "FLL"], preferred: "PBI" },
+  NUQ: { airports: ["SJC", "OAK", "SFO"], preferred: "SJC" },
+  OSU: { airports: ["CMH"], preferred: "CMH" },
+  IWA: { airports: ["PHX"], preferred: "PHX" },
+  TRM: { airports: ["PSP"], preferred: "PSP" },
+  UDD: { airports: ["PSP"], preferred: "PSP" },
+  JQF: { airports: ["CLT"], preferred: "CLT" },
+  HKY: { airports: ["CLT"], preferred: "CLT" },
+  BUY: { airports: ["GSO", "RDU"], preferred: "GSO" },
+  TTN: { airports: ["PHL", "EWR"], preferred: "PHL" },
+  MMU: { airports: ["EWR", "LGA"], preferred: "EWR" },
+  SDL: { airports: ["PHX"], preferred: "PHX" },
+  APF: { airports: ["RSW"], preferred: "RSW" },
+  RUE: { airports: ["XNA"], preferred: "XNA" },
+};
+
+function AirportAliasPanel({ flights, selectedWed }: { flights: Flight[]; selectedWed: Date }) {
+  const [show, setShow] = useState(false);
+
+  // Find FBO airports from this week's flights
+  const fboAirports = useMemo(() => {
+    const wedStr = selectedWed.toISOString().slice(0, 10);
+    const airports = new Set<string>();
+    for (const f of flights) {
+      if (f.scheduled_departure?.startsWith(wedStr) ||
+          (f.scheduled_departure && new Date(f.scheduled_departure) >= new Date(selectedWed.getTime() - 86400_000) &&
+           new Date(f.scheduled_departure) <= new Date(selectedWed.getTime() + 86400_000))) {
+        if (f.departure_icao) airports.add(f.departure_icao);
+        if (f.arrival_icao) airports.add(f.arrival_icao);
+      }
+    }
+    // Convert to IATA and find FBOs with aliases
+    const result: { fbo: string; airports: string[]; preferred: string }[] = [];
+    for (const icao of airports) {
+      const iata = icao.length === 4 && icao.startsWith("K") ? icao.slice(1) : icao;
+      const mapping = FBO_COMMERCIAL_MAP[iata];
+      if (mapping) {
+        result.push({ fbo: iata, ...mapping });
+      }
+    }
+    return result.sort((a, b) => a.fbo.localeCompare(b.fbo));
+  }, [flights, selectedWed]);
+
+  if (fboAirports.length === 0) return null;
+
+  return (
+    <div className="rounded-lg border bg-white shadow-sm overflow-hidden">
+      <div
+        className="px-4 py-3 bg-gray-50 border-b flex items-center justify-between cursor-pointer"
+        onClick={() => setShow(!show)}
+      >
+        <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">
+          FBO Commercial Airports ({fboAirports.length} FBOs)
+        </h3>
+        <span className="text-xs text-gray-400">{show ? "Hide" : "Show"}</span>
+      </div>
+      {show && (
+        <div className="p-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
+            {fboAirports.map((fbo) => (
+              <div key={fbo.fbo} className="rounded border px-3 py-2 bg-gray-50">
+                <div className="font-mono font-bold text-sm text-gray-900">{fbo.fbo}</div>
+                <div className="flex flex-wrap gap-1 mt-1">
+                  {fbo.airports.map((a) => (
+                    <span
+                      key={a}
+                      className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                        a === fbo.preferred
+                          ? "bg-green-100 text-green-700 font-bold"
+                          : "bg-blue-50 text-blue-600"
+                      }`}
+                    >
+                      {a}{a === fbo.preferred ? " *" : ""}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function isWednesday(iso: string, targetWed: Date): boolean {
   const d = new Date(iso);
@@ -437,13 +552,19 @@ function SwapSheetRow({ row }: { row: CrewSwapRow }) {
   );
 }
 
-function SwapSheet({ rows, view, impacts, impactedTails, lockedTails, onLockTail, onAssignCrew, pool }: {
+function SwapSheet({ rows, view, impacts, impactedTails, lockedTails, onLockTail, onAssignCrew, pool, onChangeTransport, onSwapPointChange, badPairings, checkairmen, flights, selectedWed }: {
   rows: CrewSwapRow[]; view: "role" | "aircraft"; impacts?: PlanImpact[]; impactedTails?: Set<string>;
   lockedTails?: Set<string>; onLockTail?: (tail: string) => void;
   onAssignCrew?: (tail: string, role: "PIC" | "SIC", name: string | null) => void;
   pool?: OncomingPool | null;
+  onChangeTransport?: (tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing", row: CrewSwapRow) => void;
+  onSwapPointChange?: (tail: string, newSwapPoint: string) => void;
+  badPairings?: CrewInfoData["bad_pairings"];
+  checkairmen?: CrewInfoData["checkairmen"];
+  flights?: Flight[];
+  selectedWed?: Date;
 }) {
-  if (view === "aircraft") return <SwapSheetByTail rows={rows} impacts={impacts} impactedTails={impactedTails} lockedTails={lockedTails} onLockTail={onLockTail} onAssignCrew={onAssignCrew} pool={pool} />;
+  if (view === "aircraft") return <SwapSheetByTail rows={rows} impacts={impacts} impactedTails={impactedTails} lockedTails={lockedTails} onLockTail={onLockTail} onAssignCrew={onAssignCrew} pool={pool} onChangeTransport={onChangeTransport} onSwapPointChange={onSwapPointChange} badPairings={badPairings} checkairmen={checkairmen} flights={flights} selectedWed={selectedWed} />;
   return <SwapSheetByRole rows={rows} />;
 }
 
@@ -500,7 +621,7 @@ function SwapSheetByRole({ rows }: { rows: CrewSwapRow[] }) {
   );
 }
 
-function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail, onAssignCrew, pool }: {
+function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail, onAssignCrew, pool, onChangeTransport, onSwapPointChange, badPairings, checkairmen, flights, selectedWed }: {
   rows: CrewSwapRow[];
   impacts?: PlanImpact[];
   impactedTails?: Set<string>;
@@ -508,7 +629,29 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
   onLockTail?: (tail: string) => void;
   onAssignCrew?: (tail: string, role: "PIC" | "SIC", name: string | null) => void;
   pool?: OncomingPool | null;
+  onChangeTransport?: (tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing", row: CrewSwapRow) => void;
+  onSwapPointChange?: (tail: string, newSwapPoint: string) => void;
+  badPairings?: CrewInfoData["bad_pairings"];
+  checkairmen?: CrewInfoData["checkairmen"];
+  flights?: Flight[];
+  selectedWed?: Date;
 }) {
+  // Build checkairman type lookup for enhanced CA badges
+  const caTypeLookup = useMemo(() => {
+    const map = new Map<string, { citation_x: boolean; challenger: boolean }>();
+    if (!checkairmen) return map;
+    for (const ca of checkairmen) {
+      const existing = map.get(ca.name);
+      if (existing) {
+        if (ca.citation_x) existing.citation_x = true;
+        if (ca.challenger) existing.challenger = true;
+      } else {
+        map.set(ca.name, { citation_x: ca.citation_x, challenger: ca.challenger });
+      }
+    }
+    return map;
+  }, [checkairmen]);
+
   // Group by tail number
   const byTail = new Map<string, CrewSwapRow[]>();
   for (const r of rows) {
@@ -528,6 +671,10 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
         const tailCost = tailRows.reduce((s, r) => s + (r.cost_estimate ?? 0), 0);
         const swapLoc = onPic?.swap_location ?? onSic?.swap_location ?? offPic?.swap_location ?? "?";
         const allWarnings = tailRows.flatMap((r) => r.warnings);
+
+        // Bad pairing check (oncoming and offgoing crews)
+        const onBadPairing = badPairings ? findBadPairing(onPic?.name, onSic?.name, badPairings) : null;
+        const offBadPairing = badPairings ? findBadPairing(offPic?.name, offSic?.name, badPairings) : null;
 
         // Timing analysis: check aircraft never unattended
         const latestOnArrival = [onPic, onSic]
@@ -568,12 +715,15 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                   onChange={(e) => { if (e.target.value) onAssignCrew(tail, role, e.target.value); }}
                 >
                   <option value="">Assign crew...</option>
-                  {available.map((p) => (
-                    <option key={p.name} value={p.name}>
-                      {p.name} ({p.home_airports.join("/")})
-                      {p.is_checkairman ? " [CA]" : ""}{p.is_skillbridge ? " [SB]" : ""}
-                    </option>
-                  ))}
+                  {available.map((p) => {
+                    const typeTag = p.aircraft_type === "citation_x" ? "CX" : p.aircraft_type === "challenger" ? "CL" : p.aircraft_type === "dual" ? "DL" : "";
+                    return (
+                      <option key={p.name} value={p.name}>
+                        {p.name} ({p.home_airports.join("/")}) [{typeTag}]
+                        {p.is_checkairman ? " [CA]" : ""}{p.is_skillbridge ? " [SB]" : ""}
+                      </option>
+                    );
+                  })}
                 </select>
               ) : (
                 <span className="text-xs text-gray-400">— not assigned —</span>
@@ -587,7 +737,12 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                 <div className="flex items-center gap-1.5">
                   <span className="text-sm font-medium text-gray-900 truncate">{row.name}</span>
                   <span className="text-[10px] text-gray-400">({row.home_airports.join("/")})</span>
-                  {row.is_checkairman && <span className="text-[9px] px-1 py-0.5 rounded bg-amber-100 text-amber-700">CA</span>}
+                  {row.is_checkairman && (() => {
+                    const caTypes = caTypeLookup.get(row.name);
+                    const both = caTypes?.citation_x && caTypes?.challenger;
+                    const label = !caTypes ? "CA" : both ? "CA" : caTypes.citation_x ? "CA-CX" : caTypes.challenger ? "CA-CL" : "CA";
+                    return <span className="text-[9px] px-1 py-0.5 rounded bg-amber-100 text-amber-700">{label}</span>;
+                  })()}
                   {row.is_skillbridge && <span className="text-[9px] px-1 py-0.5 rounded bg-teal-100 text-teal-700">SB</span>}
                   {canPick && (
                     <select
@@ -597,11 +752,14 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                     >
                       <option value={row.name}>{row.name}</option>
                       <option value="">Unassign</option>
-                      {available.filter((p) => p.name !== row.name).map((p) => (
-                        <option key={p.name} value={p.name}>
-                          {p.name} ({p.home_airports.join("/")})
-                        </option>
-                      ))}
+                      {available.filter((p) => p.name !== row.name).map((p) => {
+                        const typeTag = p.aircraft_type === "citation_x" ? "CX" : p.aircraft_type === "challenger" ? "CL" : p.aircraft_type === "dual" ? "DL" : "";
+                        return (
+                          <option key={p.name} value={p.name}>
+                            {p.name} ({p.home_airports.join("/")}) [{typeTag}]
+                          </option>
+                        );
+                      })}
                     </select>
                   )}
                 </div>
@@ -618,11 +776,11 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                     <span className="text-[11px] text-red-500 font-medium">NO TRANSPORT</span>
                   )}
                   {row.departure_time && (
-                    <span className="text-[11px] text-gray-500">dep {fmtShortTime(row.departure_time)}</span>
+                    <span className="text-[11px] text-gray-500">dep {fmtShortTime(row.departure_time, row.direction === "oncoming" ? (row.home_airports[0] ? `K${row.home_airports[0]}` : null) : row.swap_location)}</span>
                   )}
                   {(row.available_time ?? row.arrival_time) && (
                     <span className="text-[11px] text-gray-500">
-                      {row.direction === "oncoming" ? "avail" : "arr"} {fmtShortTime(row.available_time ?? row.arrival_time)}
+                      {row.direction === "oncoming" ? "avail" : "arr"} {fmtShortTime(row.available_time ?? row.arrival_time, row.direction === "oncoming" ? row.swap_location : (row.home_airports[0] ? `K${row.home_airports[0]}` : null))}
                     </span>
                   )}
                   {row.cost_estimate != null && (
@@ -637,6 +795,14 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                 <span className="text-amber-500 text-[10px] shrink-0" title={row.warnings.join("\n")}>
                   {row.warnings.length} warn
                 </span>
+              )}
+              {onChangeTransport && (
+                <button
+                  onClick={() => onChangeTransport(tail, role, direction, row)}
+                  className="text-[9px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-600 hover:bg-blue-100 shrink-0 font-medium"
+                >
+                  Change
+                </button>
               )}
             </div>
           );
@@ -665,14 +831,23 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                 )}
                 <span className="font-mono font-bold text-gray-900">{tail}</span>
                 {ac && <span className={`text-[10px] px-1.5 py-0.5 rounded ${ac.bg} ${ac.text}`}>{ac.label}</span>}
-                <span className="font-mono text-xs text-gray-500">
-                  @ {swapLoc}
-                  {(() => {
-                    const allPts = onPic?.all_swap_points ?? onSic?.all_swap_points ?? [];
-                    const others = [...new Set(allPts.filter(p => p !== swapLoc))];
-                    return others.length > 0 ? ` (also ${others.join(", ")})` : "";
-                  })()}
-                </span>
+                {(() => {
+                  const allPts = [...new Set(onPic?.all_swap_points ?? onSic?.all_swap_points ?? offPic?.all_swap_points ?? [])];
+                  if (allPts.length > 1 && onSwapPointChange) {
+                    return (
+                      <select
+                        className="font-mono text-xs text-gray-500 bg-white border rounded px-1.5 py-0.5 cursor-pointer hover:border-blue-300"
+                        value={swapLoc}
+                        onChange={(e) => onSwapPointChange(tail, e.target.value)}
+                      >
+                        {allPts.map((pt) => (
+                          <option key={pt} value={pt}>@ {pt}</option>
+                        ))}
+                      </select>
+                    );
+                  }
+                  return <span className="font-mono text-xs text-gray-500">@ {swapLoc}</span>;
+                })()}
               </div>
               <div className="flex items-center gap-3">
                 {tailImpacts.length > 0 && (
@@ -689,29 +864,121 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                     {hasGap ? `${gapMinutes}min overlap` : `${Math.abs(gapMinutes)}min gap — unattended`}
                   </span>
                 )}
+                {(onBadPairing || offBadPairing) && (
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${
+                    (onBadPairing?.severity === "severe" || offBadPairing?.severity === "severe")
+                      ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"
+                  }`} title={onBadPairing?.notes ?? offBadPairing?.notes ?? ""}>
+                    Bad Pairing
+                  </span>
+                )}
                 {tailCost > 0 && (
                   <span className="text-xs text-gray-500">${tailCost.toLocaleString()}</span>
                 )}
               </div>
             </div>
 
-            {/* Impact banners */}
-            {tailImpacts.length > 0 && (
-              <div className="px-4 py-2 space-y-1 border-b" style={{ background: tailImpacts.some(i => i.severity === "critical") ? "#fef2f2" : "#fffbeb" }}>
-                {tailImpacts.map((imp) => (
-                  <div key={imp.id} className="text-xs">
-                    <span className={`font-bold ${imp.severity === "critical" ? "text-red-700" : "text-amber-700"}`}>
-                      {imp.severity === "critical" ? "CRITICAL" : "WARNING"}:
-                    </span>
-                    {imp.affected_crew.map((c, ci) => (
-                      <span key={ci} className="ml-2 text-gray-700">
-                        {c.name} ({c.role} {c.direction}): {c.detail}
-                      </span>
-                    ))}
+            {/* Bad pairing banner */}
+            {(onBadPairing || offBadPairing) && (
+              <div className={`px-4 py-1.5 border-b text-[11px] ${
+                (onBadPairing?.severity === "severe" || offBadPairing?.severity === "severe") ? "bg-red-50" : "bg-amber-50"
+              }`}>
+                {onBadPairing && (
+                  <div className={`flex items-center gap-1.5 ${onBadPairing.severity === "severe" ? "text-red-700" : "text-amber-700"}`}>
+                    <span className={`text-[9px] px-1 py-0.5 rounded font-bold uppercase ${
+                      onBadPairing.severity === "severe" ? "bg-red-200 text-red-800" : "bg-amber-200 text-amber-800"
+                    }`}>{onBadPairing.severity}</span>
+                    <span>Oncoming: {onBadPairing.pic} + {onBadPairing.sic}</span>
+                    {onBadPairing.notes && <span className="text-gray-500">— {onBadPairing.notes}</span>}
                   </div>
-                ))}
+                )}
+                {offBadPairing && (
+                  <div className={`flex items-center gap-1.5 ${offBadPairing.severity === "severe" ? "text-red-700" : "text-amber-700"}`}>
+                    <span className={`text-[9px] px-1 py-0.5 rounded font-bold uppercase ${
+                      offBadPairing.severity === "severe" ? "bg-red-200 text-red-800" : "bg-amber-200 text-amber-800"
+                    }`}>{offBadPairing.severity}</span>
+                    <span>Offgoing: {offBadPairing.pic} + {offBadPairing.sic}</span>
+                    {offBadPairing.notes && <span className="text-gray-500">— {offBadPairing.notes}</span>}
+                  </div>
+                )}
               </div>
             )}
+
+            {/* Impact banners — deduplicated, max 3 shown */}
+            {tailImpacts.length > 0 && (
+              <div className="px-4 py-2 space-y-1 border-b" style={{ background: tailImpacts.some(i => i.severity === "critical") ? "#fef2f2" : "#fffbeb" }}>
+                {(() => {
+                  // Deduplicate by severity+crew combo to avoid repeated warnings
+                  const seen = new Set<string>();
+                  const unique = tailImpacts.filter((imp) => {
+                    const key = `${imp.severity}-${imp.affected_crew.map(c => c.name).sort().join(",")}`;
+                    if (seen.has(key)) return false;
+                    seen.add(key);
+                    return true;
+                  });
+                  const shown = unique.slice(0, 3);
+                  return (
+                    <>
+                      {shown.map((imp) => (
+                        <div key={imp.id} className="text-xs">
+                          <span className={`font-bold ${imp.severity === "critical" ? "text-red-700" : "text-amber-700"}`}>
+                            {imp.severity === "critical" ? "CRITICAL" : "WARNING"}:
+                          </span>
+                          {imp.affected_crew.map((c, ci) => (
+                            <span key={ci} className="ml-2 text-gray-700">
+                              {c.name} ({c.role} {c.direction}): {c.detail}
+                            </span>
+                          ))}
+                        </div>
+                      ))}
+                      {unique.length > 3 && (
+                        <div className="text-[10px] text-gray-400">+{unique.length - 3} more</div>
+                      )}
+                    </>
+                  );
+                })()}
+              </div>
+            )}
+
+            {/* Wednesday flight legs for this tail */}
+            {(() => {
+              if (!flights || !selectedWed) return null;
+              const wedStr = selectedWed.toISOString().slice(0, 10);
+              const tailFlights = flights
+                .filter((f) => f.tail_number === tail && f.scheduled_departure?.startsWith(wedStr))
+                .sort((a, b) => (a.scheduled_departure ?? "").localeCompare(b.scheduled_departure ?? ""));
+              if (tailFlights.length === 0) return null;
+
+              return (
+                <div className="px-4 py-1.5 border-b bg-slate-50 flex flex-wrap items-center gap-x-4 gap-y-0.5">
+                  {tailFlights.map((f, i) => {
+                    const depIcao = f.departure_icao;
+                    const arrIcao = f.arrival_icao;
+                    const depIata = depIcao?.length === 4 && depIcao.startsWith("K") ? depIcao.slice(1) : depIcao;
+                    const arrIata = arrIcao?.length === 4 && arrIcao.startsWith("K") ? arrIcao.slice(1) : arrIcao;
+                    const typeColor = f.flight_type?.toLowerCase().includes("charter") || f.flight_type?.toLowerCase().includes("revenue")
+                      ? "text-blue-700" : "text-gray-400";
+                    return (
+                      <span key={f.id ?? i} className="text-[10px] font-mono whitespace-nowrap">
+                        <span className={typeColor}>{depIata}</span>
+                        <span className="text-gray-300 mx-0.5">{fmtShortTime(f.scheduled_departure, depIcao)}</span>
+                        <span className="text-gray-300">{"\u2192"}</span>
+                        <span className={typeColor}>{arrIata}</span>
+                        <span className="text-gray-300 mx-0.5">{fmtShortTime(f.scheduled_arrival, arrIcao)}</span>
+                        {f.flight_type && (
+                          <span className={`ml-0.5 text-[8px] ${
+                            f.flight_type.toLowerCase().includes("charter") || f.flight_type.toLowerCase().includes("revenue")
+                              ? "text-blue-400" : "text-gray-300"
+                          }`}>
+                            {f.flight_type.slice(0, 3).toUpperCase()}
+                          </span>
+                        )}
+                      </span>
+                    );
+                  })}
+                </div>
+              );
+            })()}
 
             {/* Crew grid: oncoming on left, offgoing on right */}
             <div className="grid grid-cols-2 divide-x">
@@ -748,10 +1015,277 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
   );
 }
 
+// ─── Crew Info Panel (CREW INFO Excel Data) ────────────────────────────────
+
+function CrewInfoPanel({ data }: { data: CrewInfoData }) {
+  const [showBadPairings, setShowBadPairings] = useState(true);
+  const [showCheckairmen, setShowCheckairmen] = useState(false);
+  const [showTraining, setShowTraining] = useState(false);
+  const [showChecklist, setShowChecklist] = useState(false);
+  const [showCalendar, setShowCalendar] = useState(false);
+  const [showPicSwap, setShowPicSwap] = useState(false);
+
+  const severityStyle: Record<string, string> = {
+    severe: "bg-red-100 text-red-700 border-red-200",
+    moderate: "bg-amber-100 text-amber-700 border-amber-200",
+    minor: "bg-gray-100 text-gray-600 border-gray-200",
+  };
+
+  // Group checkairmen by rotation
+  const caByRotation = new Map<string, typeof data.checkairmen>();
+  for (const ca of data.checkairmen) {
+    const key = ca.rotation === "A" ? "Rotation A" : ca.rotation === "B" ? "Rotation B" : "Other";
+    if (!caByRotation.has(key)) caByRotation.set(key, []);
+    caByRotation.get(key)!.push(ca);
+  }
+
+  // Build a lookup for checkairman types (merged across rotations)
+  const caTypeLookup = new Map<string, { citation_x: boolean; challenger: boolean }>();
+  for (const ca of data.checkairmen) {
+    const existing = caTypeLookup.get(ca.name);
+    if (existing) {
+      if (ca.citation_x) existing.citation_x = true;
+      if (ca.challenger) existing.challenger = true;
+    } else {
+      caTypeLookup.set(ca.name, { citation_x: ca.citation_x, challenger: ca.challenger });
+    }
+  }
+
+  const CollapsibleSection = ({ title, count, open, toggle, children, color = "text-gray-700" }: {
+    title: string; count?: number; open: boolean; toggle: () => void; children: React.ReactNode; color?: string;
+  }) => (
+    <div className="border-b border-gray-100 last:border-b-0">
+      <button onClick={toggle} className="w-full px-3 py-2 text-left flex items-center justify-between hover:bg-gray-50/50 transition-colors">
+        <div className="flex items-center gap-2">
+          <span className={`text-[10px] font-bold uppercase tracking-wider ${color}`}>{title}</span>
+          {count !== undefined && count > 0 && (
+            <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-500">{count}</span>
+          )}
+        </div>
+        <span className="text-[10px] text-gray-400">{open ? "\u25B2" : "\u25BC"}</span>
+      </button>
+      {open && <div className="px-3 pb-2.5">{children}</div>}
+    </div>
+  );
+
+  return (
+    <div className="rounded-lg border bg-white shadow-sm overflow-hidden">
+      <div className="px-4 py-2.5 bg-indigo-50 border-b flex items-center gap-2">
+        <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-700">Crew Info</span>
+        <span className="text-[9px] text-indigo-500">from Excel sync</span>
+      </div>
+
+      {/* Bad Pairings / Crew Conflicts */}
+      <CollapsibleSection
+        title="Crew Conflicts"
+        count={data.bad_pairings.length}
+        open={showBadPairings}
+        toggle={() => setShowBadPairings(!showBadPairings)}
+        color={data.bad_pairings.some(p => p.severity === "severe") ? "text-red-700" : "text-gray-700"}
+      >
+        {data.bad_pairings.length > 0 ? (
+          <div className="space-y-1">
+            {data.bad_pairings.map((bp, i) => (
+              <div key={i} className={`flex items-center gap-2 px-2 py-1.5 rounded border text-[11px] ${severityStyle[bp.severity] ?? severityStyle.minor}`}>
+                <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase ${
+                  bp.severity === "severe" ? "bg-red-200 text-red-800" : bp.severity === "moderate" ? "bg-amber-200 text-amber-800" : "bg-gray-200 text-gray-600"
+                }`}>{bp.severity}</span>
+                <span className="font-medium">{bp.pic}</span>
+                <span className="text-gray-400">+</span>
+                <span className="font-medium">{bp.sic}</span>
+                {bp.notes && <span className="text-gray-500 truncate ml-1" title={bp.notes}>{bp.notes}</span>}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="text-[11px] text-gray-400 py-1">No bad pairings on record.</div>
+        )}
+      </CollapsibleSection>
+
+      {/* Checkairmen */}
+      <CollapsibleSection
+        title="Checkairmen"
+        count={data.checkairmen.length}
+        open={showCheckairmen}
+        toggle={() => setShowCheckairmen(!showCheckairmen)}
+        color="text-amber-700"
+      >
+        {Array.from(caByRotation.entries()).map(([group, members]) => (
+          <div key={group} className="mb-1.5 last:mb-0">
+            <div className="text-[9px] font-bold text-gray-400 uppercase mb-0.5">{group}</div>
+            <div className="flex flex-wrap gap-1">
+              {members.map((ca, i) => {
+                const types = caTypeLookup.get(ca.name);
+                const both = types?.citation_x && types?.challenger;
+                const typeLabel = both ? "CA" : types?.citation_x ? "CA-CX" : types?.challenger ? "CA-CL" : "CA";
+                return (
+                  <span key={i} className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-amber-50 border border-amber-200 text-amber-700">
+                    {ca.name}
+                    <span className="text-[8px] font-bold bg-amber-200 text-amber-800 px-1 rounded">{typeLabel}</span>
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </CollapsibleSection>
+
+      {/* Training Needed */}
+      {data.training_needed.length > 0 && (
+        <CollapsibleSection
+          title="Training Needed"
+          count={data.training_needed.length}
+          open={showTraining}
+          toggle={() => setShowTraining(!showTraining)}
+          color="text-blue-700"
+        >
+          <div className="flex flex-wrap gap-1">
+            {data.training_needed.map((t, i) => (
+              <span key={i} className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-blue-50 border border-blue-200 text-blue-700">
+                {t.name}
+                {t.indoc && <span className="text-[8px] font-bold bg-blue-200 text-blue-800 px-1 rounded">INDOC</span>}
+                {t.emergency_drill && <span className="text-[8px] font-bold bg-orange-200 text-orange-800 px-1 rounded">E-DRILL</span>}
+              </span>
+            ))}
+          </div>
+        </CollapsibleSection>
+      )}
+
+      {/* Crewing Checklist */}
+      {data.crewing_checklist && data.crewing_checklist.assignees.length > 0 && (
+        <CollapsibleSection
+          title="Crewing Checklist"
+          open={showChecklist}
+          toggle={() => setShowChecklist(!showChecklist)}
+          color="text-emerald-700"
+        >
+          <div className="space-y-2">
+            {data.crewing_checklist.assignees.map((a, ai) => (
+              <div key={ai}>
+                <div className="text-[10px] font-bold text-gray-700 mb-1">{a.name}</div>
+                <div className="grid grid-cols-2 gap-x-2 gap-y-0.5">
+                  {Object.entries(a.tasks).map(([task, val]) => {
+                    if (!task) return null;
+                    const done = val === true;
+                    const na = val === "n/a";
+                    return (
+                      <div key={task} className="flex items-center gap-1 text-[10px]">
+                        <span className={`w-3.5 h-3.5 rounded flex items-center justify-center text-[8px] font-bold ${
+                          done ? "bg-emerald-500 text-white" : na ? "bg-gray-200 text-gray-400" : "bg-gray-100 text-gray-300 border border-gray-200"
+                        }`}>
+                          {done ? "\u2713" : na ? "\u2014" : ""}
+                        </span>
+                        <span className={`truncate ${done ? "text-emerald-700" : na ? "text-gray-400 line-through" : "text-gray-500"}`} title={task}>
+                          {task}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        </CollapsibleSection>
+      )}
+
+      {/* Calendar — Target Week Crew */}
+      {data.target_week_crew && (
+        <CollapsibleSection
+          title="Target Week Crew"
+          open={showCalendar}
+          toggle={() => setShowCalendar(!showCalendar)}
+          color="text-purple-700"
+        >
+          <div className="text-[10px] text-gray-500 mb-1.5">
+            {data.target_week_crew.date_range} (Rotation {data.target_week_crew.rotation})
+          </div>
+          {(["pic", "sic"] as const).map((role) => {
+            const roleData = data.target_week_crew![role as "pic" | "sic"];
+            const total = roleData.citation_x.length + roleData.challenger.length + roleData.dual.length;
+            if (total === 0) return null;
+            return (
+              <div key={role} className="mb-1.5 last:mb-0">
+                <div className="text-[9px] font-bold uppercase text-gray-400 mb-0.5">{role === "pic" ? "Captains" : "First Officers"} ({total})</div>
+                <div className="flex flex-wrap gap-1">
+                  {roleData.citation_x.map((n, i) => (
+                    <span key={`cx-${i}`} className="text-[9px] px-1 py-0.5 rounded bg-green-50 border border-green-200 text-green-700">{n}</span>
+                  ))}
+                  {roleData.challenger.map((n, i) => (
+                    <span key={`cl-${i}`} className="text-[9px] px-1 py-0.5 rounded bg-yellow-50 border border-yellow-200 text-yellow-700">{n}</span>
+                  ))}
+                  {roleData.dual.map((n, i) => (
+                    <span key={`du-${i}`} className="text-[9px] px-1 py-0.5 rounded bg-purple-50 border border-purple-200 text-purple-700">{n}</span>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </CollapsibleSection>
+      )}
+
+      {/* PIC Swap Reference */}
+      {data.pic_swap_table.length > 0 && (
+        <CollapsibleSection
+          title="PIC Swap Reference"
+          count={data.pic_swap_table.filter(r => r.old_pic || r.new_pic).length}
+          open={showPicSwap}
+          toggle={() => setShowPicSwap(!showPicSwap)}
+        >
+          <div className="space-y-0.5">
+            {data.pic_swap_table.filter(r => r.old_pic || r.new_pic).map((row, i) => (
+              <div key={i} className="flex items-center gap-1.5 text-[10px] py-0.5">
+                <span className="text-red-600 font-medium w-[90px] truncate" title={row.old_pic ?? ""}>{row.old_pic ?? "—"}</span>
+                <span className="text-gray-400">{"\u2192"}</span>
+                <span className="text-green-600 font-medium w-[90px] truncate" title={row.new_pic ?? ""}>{row.new_pic ?? "—"}</span>
+                {row.tail && <span className="font-mono text-gray-500 text-[9px]">{row.tail}</span>}
+              </div>
+            ))}
+          </div>
+        </CollapsibleSection>
+      )}
+    </div>
+  );
+}
+
+// ─── Bad Pairing Check Helper ─────────────────────────────────────────────
+
+function findBadPairing(
+  picName: string | null | undefined,
+  sicName: string | null | undefined,
+  badPairings: CrewInfoData["bad_pairings"],
+): CrewInfoData["bad_pairings"][0] | null {
+  if (!picName || !sicName || badPairings.length === 0) return null;
+  const picNorm = picName.toLowerCase().trim();
+  const sicNorm = sicName.toLowerCase().trim();
+  return badPairings.find(
+    (bp) => bp.pic.toLowerCase().trim() === picNorm && bp.sic.toLowerCase().trim() === sicNorm
+  ) ?? null;
+}
+
 // ─── Main Component ──────────────────────────────────────────────────────────
 
-export default function CrewSwap({ flights }: { flights: Flight[] }) {
+export default function CrewSwap({ flights: parentFlights }: { flights: Flight[] }) {
   const [selectedWed, setSelectedWed] = useState<Date>(getNextWednesday());
+  // Fetch flights covering the swap week (parent only has ±48hrs from today)
+  const [swapWeekFlights, setSwapWeekFlights] = useState<Flight[]>([]);
+  useEffect(() => {
+    // Calculate hours from now to swap date + 1 day
+    const hoursAhead = Math.max(48, Math.ceil((selectedWed.getTime() + 86400_000 - Date.now()) / 3600_000));
+    const lookback = Math.max(48, Math.ceil((Date.now() - selectedWed.getTime() + 3 * 86400_000) / 3600_000));
+    fetch(`/api/ops/flights?lookahead_hours=${hoursAhead}&lookback_hours=${lookback}`)
+      .then((r) => r.ok ? r.json() : { flights: [] })
+      .then((d) => setSwapWeekFlights(d.flights ?? []))
+      .catch(() => {});
+  }, [selectedWed]);
+
+  // Merge parent flights (today ±48hr) with swap week flights, dedup by id
+  const flights = useMemo(() => {
+    const byId = new Map<string, Flight>();
+    for (const f of parentFlights) byId.set(f.id, f);
+    for (const f of swapWeekFlights) byId.set(f.id, f);
+    return Array.from(byId.values());
+  }, [parentFlights, swapWeekFlights]);
+
   const [crew, setCrew] = useState<CrewMember[]>([]);
   const [crewLoaded, setCrewLoaded] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -797,6 +1331,166 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
   const removeToast = useCallback((id: number) => setToasts((prev) => prev.filter((t) => t.id !== id)), []);
   // Locked tails (manual assignments the optimizer won't touch)
   const [lockedTails, setLockedTails] = useState<Set<string>>(new Set());
+  // Crew Info data from Excel sync
+  const [crewInfoData, setCrewInfoData] = useState<CrewInfoData | null>(null);
+  const [syncingCrewInfo, setSyncingCrewInfo] = useState(false);
+
+  // Flight picker modal state
+  const [selectedCrewSlot, setSelectedCrewSlot] = useState<{
+    tailNumber: string;
+    role: "PIC" | "SIC";
+    direction: "oncoming" | "offgoing";
+    crewMemberId: string;
+    crewName: string;
+    homeAirports: string[];
+    swapLocation: string;
+    firstLegDep?: string | null;
+    lastLegArr?: string | null;
+  } | null>(null);
+
+  function handleFlightSelection(selection: FlightPickerSelection) {
+    if (!swapPlan || !selectedCrewSlot) return;
+    const { tailNumber, role, direction } = selectedCrewSlot;
+
+    setSwapPlan((prev) => {
+      if (!prev) return prev;
+      const newRows = prev.rows.map((r) => {
+        if (r.tail_number !== tailNumber || r.role !== role || r.direction !== direction) return r;
+        return {
+          ...r,
+          travel_type: selection.type as CrewSwapRow["travel_type"],
+          flight_number: selection.flight_number,
+          departure_time: selection.departure_time,
+          arrival_time: selection.arrival_time,
+          travel_from: selection.travel_from,
+          travel_to: selection.travel_to,
+          cost_estimate: selection.cost_estimate,
+          duration_minutes: selection.duration_minutes,
+          available_time: selection.available_time,
+          duty_on_time: selection.duty_on_time,
+          backup_flight: selection.backup_flight,
+          warnings: [],
+          notes: "Manually selected transport",
+        };
+      });
+
+      const newCost = newRows.reduce((s, r) => s + (r.cost_estimate ?? 0), 0);
+      return { ...prev, rows: newRows, total_cost: newCost };
+    });
+
+    setSelectedCrewSlot(null);
+    addToast("success", `Transport updated for ${selectedCrewSlot.crewName} on ${tailNumber}`);
+  }
+
+  async function handleSwapPointChange(tail: string, newSwapPoint: string) {
+    if (!swapPlan) return;
+
+    // Get crew assignments for this tail
+    const tailRows = swapPlan.rows.filter((r) => r.tail_number === tail);
+    const onPic = tailRows.find((r) => r.direction === "oncoming" && r.role === "PIC");
+    const onSic = tailRows.find((r) => r.direction === "oncoming" && r.role === "SIC");
+    const offPic = tailRows.find((r) => r.direction === "offgoing" && r.role === "PIC");
+    const offSic = tailRows.find((r) => r.direction === "offgoing" && r.role === "SIC");
+
+    addToast("warning", `Recomputing transport for ${tail} @ ${newSwapPoint}...`);
+
+    try {
+      const res = await fetch("/api/crew/recompute-tail", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tail_number: tail,
+          new_swap_point: newSwapPoint,
+          swap_date: selectedWed.toISOString().slice(0, 10),
+          crew_assignments: {
+            oncoming_pic: onPic?.name ?? null,
+            oncoming_sic: onSic?.name ?? null,
+            offgoing_pic: offPic?.name ?? null,
+            offgoing_sic: offSic?.name ?? null,
+          },
+        }),
+      });
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        addToast("error", body.error ?? "Recompute failed");
+        return;
+      }
+
+      const result = await res.json();
+
+      // Update swap_location on all rows for this tail and apply best options
+      setSwapPlan((prev) => {
+        if (!prev) return prev;
+        const newRows = prev.rows.map((r) => {
+          if (r.tail_number !== tail) return r;
+          const updated = { ...r, swap_location: newSwapPoint };
+
+          // Find matching recomputed crew result
+          const match = result.crew?.find(
+            (c: { name: string; direction: string; role: string }) =>
+              c.name === r.name && c.direction === r.direction && c.role === r.role
+          );
+
+          if (match?.best_option) {
+            const bo = match.best_option;
+            updated.travel_type = bo.type as CrewSwapRow["travel_type"];
+            updated.flight_number = bo.flight_number;
+            updated.departure_time = bo.depart_at;
+            updated.arrival_time = bo.arrive_at;
+            updated.available_time = bo.fbo_arrive_at;
+            updated.duty_on_time = bo.duty_on_at;
+            updated.cost_estimate = bo.cost_estimate;
+            updated.duration_minutes = bo.duration_minutes;
+            updated.backup_flight = bo.backup_flight;
+            updated.warnings = [];
+            updated.notes = `Recomputed for swap @ ${newSwapPoint}`;
+          }
+
+          return updated;
+        });
+
+        const newCost = newRows.reduce((s, r) => s + (r.cost_estimate ?? 0), 0);
+        return { ...prev, rows: newRows, total_cost: newCost };
+      });
+
+      addToast("success", `${tail} recomputed @ ${newSwapPoint} — est. $${result.total_cost}`);
+    } catch (e) {
+      addToast("error", `Recompute failed: ${e instanceof Error ? e.message : "unknown"}`);
+    }
+  }
+
+  function openFlightPicker(tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing", row: CrewSwapRow) {
+    // Look up crew member ID from crew roster by name (try exact role first, then any role)
+    const crewMember = crew.find((c) => c.name === row.name && c.role === role)
+      ?? crew.find((c) => c.name === row.name);
+    if (!crewMember) {
+      addToast("error", `Crew member "${row.name}" not found in roster`);
+      return;
+    }
+
+    // Get first/last leg times for this tail on swap day
+    const swapDateStr = selectedWed.toISOString().slice(0, 10);
+    const tailFlights = flights.filter((f) =>
+      f.tail_number === tail &&
+      f.scheduled_departure?.startsWith(swapDateStr)
+    ).sort((a, b) => (a.scheduled_departure ?? "").localeCompare(b.scheduled_departure ?? ""));
+
+    const firstLegDep = tailFlights[0]?.scheduled_departure ?? null;
+    const lastLegArr = tailFlights[tailFlights.length - 1]?.scheduled_arrival ?? null;
+
+    setSelectedCrewSlot({
+      tailNumber: tail,
+      role,
+      direction,
+      crewMemberId: crewMember.id,
+      crewName: row.name,
+      homeAirports: row.home_airports,
+      swapLocation: row.swap_location ?? "",
+      firstLegDep,
+      lastLegArr,
+    });
+  }
 
   function toggleLockTail(tail: string) {
     setLockedTails((prev) => {
@@ -1355,6 +2049,40 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [savedPlanMeta, alertCount]);
 
+  // ── Schedule change auto-polling (2-minute interval) ────────────────
+  const prevAlertCountRef = useRef(0);
+  useEffect(() => {
+    if (activeTab !== "plan" && activeTab !== "impacts") return;
+    const swapDateStr = selectedWed.toISOString().slice(0, 10);
+
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/crew/swap-alerts?swap_date=${swapDateStr}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const newCount = data.unacknowledged_count ?? 0;
+
+        if (newCount > prevAlertCountRef.current) {
+          const delta = newCount - prevAlertCountRef.current;
+          addToast("warning", `${delta} new flight change(s) detected`);
+          setAlertCount(newCount);
+
+          // Auto-run impact analysis if we have a saved plan
+          if (savedPlanMeta && !checkingImpacts) {
+            checkImpacts();
+          }
+        }
+        prevAlertCountRef.current = newCount;
+      } catch { /* silently fail polling */ }
+    };
+
+    // Initial poll
+    poll();
+    const interval = setInterval(poll, 120_000); // 2 min
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, selectedWed, savedPlanMeta]);
+
   // Load plan version history
   async function loadPlanHistory() {
     try {
@@ -1496,20 +2224,64 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
   }
 
   // Upload Excel roster
+  async function syncCrewInfo(file: File) {
+    setSyncingCrewInfo(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("swap_date", selectedWed.toISOString().slice(0, 10));
+      const res = await fetch("/api/crew/roster/sync", { method: "POST", body: fd });
+      if (res.ok) {
+        const data = await res.json();
+        setCrewInfoData({
+          bad_pairings: data.bad_pairings ?? [],
+          checkairmen: data.checkairmen ?? [],
+          training_needed: data.training_needed ?? [],
+          recurrency_299: data.recurrency_299 ?? [],
+          pic_swap_table: data.pic_swap_table ?? [],
+          crewing_checklist: data.crewing_checklist ?? null,
+          calendar_weeks: data.calendar_weeks ?? [],
+          target_week_crew: data.target_week_crew ?? null,
+        });
+        addToast("success", `Crew info synced: ${data.checkairmen?.length ?? 0} CAs, ${data.bad_pairings?.length ?? 0} bad pairings`);
+      }
+    } catch {
+      // Sync is supplementary — don't block the main upload
+    } finally {
+      setSyncingCrewInfo(false);
+    }
+  }
+
   async function handleUpload(file: File) {
     setUploading(true);
     setUploadError(null);
     setUploadResult(null);
+    setSyncingCrewInfo(true);
     try {
+      // Use the sync endpoint as primary — handles CREW INFO workbook + legacy weekly sheets
       const fd = new FormData();
       fd.append("file", file);
-      const res = await fetch("/api/crew/roster", { method: "POST", body: fd });
+      fd.append("swap_date", selectedWed.toISOString().slice(0, 10));
+
+      const res = await fetch("/api/crew/roster/sync", { method: "POST", body: fd });
       const data = await safeJson(res, "Upload failed");
+
       if (!res.ok) {
         setUploadError(data.error ?? "Upload failed");
       } else {
-        setUploadResult(data);
-        if (data.swap_assignments) {
+        // Set upload result (backwards-compatible shape)
+        setUploadResult({
+          ok: true,
+          total_parsed: data.roster?.total ?? 0,
+          unique_crew: data.roster?.active ?? 0,
+          upserted: data.roster?.upserted ?? 0,
+          errors: data.errors,
+          summary: {},
+          swap_assignments: data.swap_assignments,
+          oncoming_pool: data.oncoming_pool,
+        });
+
+        if (data.swap_assignments && Object.keys(data.swap_assignments).length > 0) {
           setSwapAssignments(data.swap_assignments);
           try { localStorage.setItem("swap_assignments", JSON.stringify(data.swap_assignments)); } catch {}
         }
@@ -1517,13 +2289,28 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
           setOncomingPool(data.oncoming_pool);
           try { localStorage.setItem("oncoming_pool", JSON.stringify(data.oncoming_pool)); } catch {}
         }
+
+        // Set crew info data (bad pairings, checkairmen, calendar, etc.)
+        setCrewInfoData({
+          bad_pairings: data.bad_pairings ?? [],
+          checkairmen: data.checkairmen ?? [],
+          training_needed: data.training_needed ?? [],
+          recurrency_299: data.recurrency_299 ?? [],
+          pic_swap_table: data.pic_swap_table ?? [],
+          crewing_checklist: data.crewing_checklist ?? null,
+          calendar_weeks: data.calendar_weeks ?? [],
+          target_week_crew: data.target_week_crew ?? null,
+        });
+
         setRotationSource("excel");
         await loadCrew();
+        addToast("success", `Synced ${data.roster?.active ?? 0} crew, ${data.checkairmen?.length ?? 0} CAs, ${data.bad_pairings?.length ?? 0} conflicts`);
       }
     } catch (e) {
       setUploadError(e instanceof Error ? e.message : "Upload failed");
     } finally {
       setUploading(false);
+      setSyncingCrewInfo(false);
     }
   }
 
@@ -1747,7 +2534,7 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
             <label className={`px-3 py-1.5 text-xs font-medium border rounded-lg cursor-pointer ${
               uploading ? "bg-gray-100 text-gray-400" : "bg-blue-50 text-blue-700 hover:bg-blue-100 border-blue-200"
             }`}>
-              {uploading ? "Uploading..." : "Upload Roster (.xlsx)"}
+              {uploading ? "Syncing..." : "Upload Crew Info (.xlsx)"}
               <input
                 type="file"
                 accept=".xlsx,.xls"
@@ -1855,6 +2642,34 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
           </div>
         )}
       </div>
+
+      {/* Crew Info Panel (from CREW INFO Excel sync) */}
+      {crewInfoData && (
+        <CrewInfoPanel data={crewInfoData} />
+      )}
+      {!crewInfoData && uploadResult && (
+        <div className="rounded-lg border border-dashed border-indigo-200 bg-indigo-50/30 p-3 flex items-center justify-between">
+          <div className="text-[11px] text-indigo-600">
+            Upload the <span className="font-bold">CREW INFO 2026.xlsx</span> workbook to see bad pairings, checkairmen, training, and calendar data.
+          </div>
+          <label className={`px-3 py-1.5 text-xs font-medium border rounded-lg cursor-pointer shrink-0 ${
+            syncingCrewInfo ? "bg-gray-100 text-gray-400" : "bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border-indigo-200"
+          }`}>
+            {syncingCrewInfo ? "Syncing..." : "Sync Crew Info (.xlsx)"}
+            <input
+              type="file"
+              accept=".xlsx,.xls"
+              className="hidden"
+              disabled={syncingCrewInfo}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) syncCrewInfo(f);
+                e.target.value = "";
+              }}
+            />
+          </label>
+        </div>
+      )}
 
       {/* Phase 2: Volunteer Review Panel */}
       <div className="rounded-lg border bg-white shadow-sm overflow-hidden">
@@ -2170,7 +2985,7 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
                 computingRoutes ? "bg-gray-100 text-gray-400" : "bg-amber-50 text-amber-700 hover:bg-amber-100 border-amber-200"
               }`}
             >
-              {computingRoutes ? "Computing Routes..." : "Refresh Routes"}
+              {computingRoutes ? "Seeding Flights..." : "Seed Flights"}
             </button>
             <button
               onClick={() => runOptimizer()}
@@ -2419,7 +3234,10 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
             )}
 
             <SwapSheet rows={swapPlan.rows} view={swapView} impacts={planImpacts} impactedTails={impactedTails}
-              lockedTails={lockedTails} onLockTail={toggleLockTail} onAssignCrew={assignCrew} pool={oncomingPool} />
+              lockedTails={lockedTails} onLockTail={toggleLockTail} onAssignCrew={assignCrew} pool={oncomingPool}
+              onChangeTransport={openFlightPicker} onSwapPointChange={handleSwapPointChange}
+              badPairings={crewInfoData?.bad_pairings} checkairmen={crewInfoData?.checkairmen}
+              flights={flights} selectedWed={selectedWed} />
           </div>
         )}
 
@@ -2427,12 +3245,15 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
           <div className="px-4 py-6 text-center text-sm text-gray-400">
             {loadingPlan ? "Loading saved plan..." : (
               routeStatus && routeStatus.total_routes > 0
-                ? `${routeStatus.total_routes} routes cached for ${routeStatus.crew_count} crew. Click Optimize to run.`
+                ? `${routeStatus.total_routes.toLocaleString()} flight options cached. Click Optimize to run.`
                 : `Upload roster then click Refresh Routes to pre-compute routes for ${selectedWed.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`
             )}
           </div>
         )}
       </div>
+
+      {/* FBO → Commercial Airport Reference */}
+      <AirportAliasPanel flights={flights} selectedWed={selectedWed} />
 
       {/* Aircraft Schedule (collapsible) */}
       <div className="rounded-lg border bg-white shadow-sm overflow-hidden">
@@ -2601,6 +3422,24 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
 
       {/* Toast notifications */}
       <ToastContainer toasts={toasts} onDismiss={removeToast} />
+
+      {/* Flight Picker Modal */}
+      {selectedCrewSlot && (
+        <FlightPickerModal
+          crewMemberId={selectedCrewSlot.crewMemberId}
+          crewName={selectedCrewSlot.crewName}
+          crewRole={selectedCrewSlot.role}
+          homeAirports={selectedCrewSlot.homeAirports}
+          destinationIcao={selectedCrewSlot.swapLocation}
+          swapDate={selectedWed.toISOString().slice(0, 10)}
+          direction={selectedCrewSlot.direction}
+          tailNumber={selectedCrewSlot.tailNumber}
+          firstLegDep={selectedCrewSlot.firstLegDep}
+          lastLegArr={selectedCrewSlot.lastLegArr}
+          onSelect={handleFlightSelection}
+          onClose={() => setSelectedCrewSlot(null)}
+        />
+      )}
     </div>
   );
 }

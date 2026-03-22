@@ -4,7 +4,7 @@ import { requireAdmin, isAuthed } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 import { buildSwapPlan, assignOncomingCrew, twoPassAssignAndOptimize, solveOffgoingFirst, type CrewMember, type FlightLeg, type AirportAlias, type SwapAssignment, type OncomingPool } from "@/lib/swapOptimizer";
 import { DEFAULT_AIRPORT_ALIASES } from "@/lib/airportAliases";
-import { getRoutesForOptimizer } from "@/lib/pilotRoutes";
+import type { PilotRoute } from "@/lib/pilotRoutes";
 import { detectCurrentRotation } from "@/lib/crewRotationDetect";
 import { getHasdataCacheForOptimizer } from "@/lib/hasdataCache";
 
@@ -19,7 +19,7 @@ const OptimizeRequestSchema = z.object({
 }).strip();
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 60; // 1 min — no API calls, just DB reads + computation
+export const maxDuration = 300; // 5 min — DB reads + heavy computation for 30+ tails
 
 /**
  * POST /api/crew/optimize
@@ -261,44 +261,22 @@ export async function POST(req: NextRequest) {
     console.log(`[Swap Optimizer] lock_tails: optimizing ${Object.keys(swapAssignments).length} tails, ${lockTailSet.size} locked`);
   }
 
-  // ── STEP 1: Load pre-computed routes + commercial flight cache ──────────
+  // ── STEP 1: Load HasData flight cache (Google Flights — sole data source) ──
   const routeStart = Date.now();
-  // Skip pre-computed routes when force_auto_detect is set — the routes were
-  // computed for a different crew assignment, so they conflict with auto-detect.
-  const { commercialFlights, routeCount, crewRouteMap, crewOffgoingMap } = forceAutoDetect
-    ? { commercialFlights: new Map(), routeCount: 0, crewRouteMap: new Map(), crewOffgoingMap: new Map() }
-    : await getRoutesForOptimizer(swapDate);
-  const hasPreComputedRoutes = routeCount > 0;
-
-  // Always load HasData cache — provides runtime flight options for all city pairs.
-  let effectiveFlights = new Map<string, import("@/lib/amadeus").FlightOffer[]>(commercialFlights);
   const cached = await getHasdataCacheForOptimizer(swapDate);
-  if (cached.totalFlights > 0) {
-    // Merge: cached flights fill gaps not covered by pre-computed routes
-    for (const [key, offers] of cached.commercialFlights) {
-      if (!effectiveFlights.has(key)) {
-        effectiveFlights.set(key, offers);
-      } else {
-        // Merge offers, dedup by flight number
-        const existing = effectiveFlights.get(key)!;
-        const existingNums = new Set(existing.map((o) => {
-          const segs = o.itineraries?.[0]?.segments ?? [];
-          return segs.map((s) => `${s.carrierCode}${s.number}`).join("/");
-        }));
-        for (const offer of offers) {
-          const segs = offer.itineraries?.[0]?.segments ?? [];
-          const num = segs.map((s) => `${s.carrierCode}${s.number}`).join("/");
-          if (!existingNums.has(num)) existing.push(offer);
-        }
-      }
-    }
-    console.log(`[Swap Optimizer] Loaded ${routeCount} pre-computed routes + ${cached.totalFlights} cached flights (${effectiveFlights.size} total route keys) in ${Date.now() - routeStart}ms`);
-  } else if (hasPreComputedRoutes) {
-    console.log(`[Swap Optimizer] Loaded ${routeCount} pre-computed routes (${commercialFlights.size} flight keys) in ${Date.now() - routeStart}ms`);
-  } else {
-    console.log(`[Swap Optimizer] No pre-computed routes or cached flights for ${swapDate} — drive-only mode`);
-  }
+  const effectiveFlights = cached.commercialFlights;
   const hasFlightData = effectiveFlights.size > 0;
+
+  if (hasFlightData) {
+    console.log(`[Swap Optimizer] Loaded ${cached.totalFlights} HasData flights (${effectiveFlights.size} route keys) in ${Date.now() - routeStart}ms`);
+  } else {
+    console.log(`[Swap Optimizer] No HasData cache for ${swapDate} — drive-only mode. Seed HasData first.`);
+  }
+
+  // Pre-computed route maps (from pilot_routes) are no longer used for flight data.
+  // We still load them for crew-specific route scoring if available.
+  const crewRouteMap = new Map<string, import("@/lib/pilotRoutes").PilotRoute[]>();
+  const crewOffgoingMap = new Map<string, import("@/lib/pilotRoutes").PilotRoute[]>();
 
   // ── STEP 1.5: Offgoing-first analysis (Phase 5) ────────────────────────
   let offgoingFirstResult = null;
@@ -364,8 +342,8 @@ export async function POST(req: NextRequest) {
       swapDate,
       aliases,
       commercialFlights: hasFlightData ? effectiveFlights : undefined,
-      preComputedRoutes: hasPreComputedRoutes ? crewRouteMap : undefined,
-      preComputedOffgoing: hasPreComputedRoutes ? crewOffgoingMap : undefined,
+      preComputedRoutes: false ? crewRouteMap : undefined,
+      preComputedOffgoing: false ? crewOffgoingMap : undefined,
       excludeTails: unsolvableTails,
       offgoingDeadlines: offgoingFirstResult?.deadlines,
     });
@@ -385,8 +363,8 @@ export async function POST(req: NextRequest) {
         swapDate,
         aliases,
         commercialFlights: hasFlightData ? effectiveFlights : undefined,
-        preComputedRoutes: hasPreComputedRoutes ? crewRouteMap : undefined,
-        preComputedOffgoing: hasPreComputedRoutes ? crewOffgoingMap : undefined,
+        preComputedRoutes: false ? crewRouteMap : undefined,
+        preComputedOffgoing: false ? crewOffgoingMap : undefined,
         excludeTails: unsolvableTails,
         offgoingDeadlines: offgoingFirstResult?.deadlines,
       });
@@ -427,8 +405,8 @@ export async function POST(req: NextRequest) {
     ok: true,
     ...result,
     strategy,
-    routes_used: routeCount,
-    flight_cache_used: !hasPreComputedRoutes && hasFlightData,
+    routes_used: cached.totalFlights,
+    flight_cache_used: !false && hasFlightData,
     rotation_source: rotationSource,
     offgoing_first: offgoingFirstResult ? {
       deadlines: offgoingFirstResult.deadlines.map((d) => ({

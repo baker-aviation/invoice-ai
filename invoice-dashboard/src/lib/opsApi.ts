@@ -618,10 +618,13 @@ export type IntlTrip = {
   flight_ids: string[];  // ordered flight IDs for each leg
   trip_date: string;     // date of first departure
   notes: string | null;
+  pax_data_status: "not_started" | "salesperson_notified" | "uploaded";
   created_at: string;
   updated_at: string;
   // Joined
   clearances?: IntlTripClearance[];
+  // Computed from first flight
+  jetinsight_url?: string | null;
 };
 
 export type IntlTripClearance = {
@@ -636,6 +639,35 @@ export type IntlTripClearance = {
   file_gcs_key: string | null;
   file_filename: string | null;
   file_content_type: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+// ---------------------------------------------------------------------------
+// Pinned NOTAMs
+// ---------------------------------------------------------------------------
+
+export type NotamPin = {
+  alert_id: string;
+  pinned_by: string;
+  note: string | null;
+  created_at: string;
+};
+
+// ---------------------------------------------------------------------------
+// Custom NOTAM alerts
+// ---------------------------------------------------------------------------
+
+export type CustomNotamAlert = {
+  id: string;
+  airport_icao: string | null;
+  severity: "critical" | "warning" | "info";
+  subject: string;
+  body: string | null;
+  created_by: string;
+  created_by_name: string | null;
+  expires_at: string | null;
+  archived_at: string | null;
   created_at: string;
   updated_at: string;
 };

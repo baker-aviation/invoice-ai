@@ -265,10 +265,10 @@ function isLiveType(type: string | null): boolean {
   return !!type && LIVE_TYPES.has(type.toLowerCase());
 }
 
-function ms(minutes: number): number { return minutes * 60_000; }
+export function ms(minutes: number): number { return minutes * 60_000; }
 
 /** Get local hour at an airport for a UTC timestamp */
-function getLocalHour(utcDate: Date, icao: string): number {
+export function getLocalHour(utcDate: Date, icao: string): number {
   const tz = getAirportTimezone(icao) ?? "America/New_York";
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: tz, hour: "numeric", hour12: false,
@@ -283,7 +283,7 @@ function getLocalHour(utcDate: Date, icao: string): number {
  *
  * Correct approach: guess UTC, check what local time that is, compute offset.
  */
-function localTimeToUtc(dateStr: string, hour: number, minute: number, tz: string): Date {
+export function localTimeToUtc(dateStr: string, hour: number, minute: number, tz: string): Date {
   const guess = new Date(`${dateStr}T${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:00Z`);
   // What local hour does this UTC time correspond to in the target timezone?
   const localHour = parseInt(
@@ -299,7 +299,7 @@ function localTimeToUtc(dateStr: string, hour: number, minute: number, tz: strin
 }
 
 /** Get midnight local at an airport on the NEXT day after dateStr (i.e. end of that day) */
-function midnightUtc(icao: string, dateStr: string): Date {
+export function midnightUtc(icao: string, dateStr: string): Date {
   const tz = getAirportTimezone(icao) ?? "America/New_York";
   const nextDay = new Date(dateStr);
   nextDay.setDate(nextDay.getDate() + 1);
@@ -323,7 +323,7 @@ function parseFlightTime(timeStr: string, airportIata: string): Date {
 }
 
 /** Duty-on time for commercial flight from home airport */
-function dutyOnForCommercial(flightDepTime: Date): Date {
+export function dutyOnForCommercial(flightDepTime: Date): Date {
   return new Date(flightDepTime.getTime() - ms(DUTY_ON_BEFORE_COMMERCIAL));
 }
 
@@ -333,13 +333,13 @@ function dutyOnWithDrive(driveStartTime: Date): Date {
 }
 
 /** Duty-off for offgoing crew */
-function dutyOff(lastLegArrival: Date, isInternational: boolean): Date {
+export function dutyOff(lastLegArrival: Date, isInternational: boolean): Date {
   const buffer = isInternational ? INTERNATIONAL_DUTY_OFF : DUTY_OFF_AFTER_LAST_LEG;
   return new Date(lastLegArrival.getTime() + ms(buffer));
 }
 
 /** When crew arrives at FBO after commercial flight + deplane + ground transport */
-function fboArrivalAfterCommercial(
+export function fboArrivalAfterCommercial(
   flightArrTime: Date,
   driveToFboMin: number,
 ): Date {
@@ -360,7 +360,7 @@ function latestDepartureForMidnight(
 }
 
 /** Check 14hr duty day limit */
-function checkDutyDay(dutyOn: Date, dutyEnd: Date): { valid: boolean; hours: number } {
+export function checkDutyDay(dutyOn: Date, dutyEnd: Date): { valid: boolean; hours: number } {
   const hours = (dutyEnd.getTime() - dutyOn.getTime()) / (60 * 60_000);
   return { valid: hours <= MAX_DUTY_HOURS, hours };
 }
@@ -404,7 +404,7 @@ function findCommercialAirport(fboIcao: string, aliases: AirportAlias[]): string
 }
 
 /** Get all commercial airports for an FBO (aliases first, then nearby within 30mi) */
-function findAllCommercialAirports(fboIcao: string, aliases: AirportAlias[]): string[] {
+export function findAllCommercialAirports(fboIcao: string, aliases: AirportAlias[]): string[] {
   const upper = fboIcao.toUpperCase();
   const result = new Set<string>();
 
@@ -454,12 +454,12 @@ const ICAO_IATA: Record<string, string> = {
   MSLP: "SAL", MNMG: "MGA", MPTO: "PTY",
 };
 
-function toIata(icao: string): string {
+export function toIata(icao: string): string {
   if (ICAO_IATA[icao]) return ICAO_IATA[icao];
   return icao.length === 4 && icao.startsWith("K") ? icao.slice(1) : icao;
 }
 
-function toIcao(code: string): string {
+export function toIcao(code: string): string {
   return code.length === 3 ? `K${code}` : code;
 }
 
@@ -1056,10 +1056,20 @@ function scoreCandidate(
 
     if (c.isBudgetCarrier) score -= 8;
 
-    // Backup flight availability
-    if (c.backups.length >= 2) score += 8;
-    else if (c.backups.length === 1) score += 4;
-    else score -= 5; // No backup
+    // Backup flight availability + quality
+    if (c.backups.length >= 2) {
+      score += 8;
+      // Bonus for high-quality backups (direct, low cost, reasonable timing)
+      const bestBackup = c.backups[0];
+      if (bestBackup.isDirect) score += 3;
+      if (bestBackup.cost <= 400) score += 2;
+    } else if (c.backups.length === 1) {
+      score += 4;
+      const backup = c.backups[0];
+      if (backup.isDirect) score += 2;
+    } else {
+      score -= 5; // No backup
+    }
   }
 
   // ── FBO arrival timing (oncoming only) ──────────────────────────────
@@ -1098,11 +1108,21 @@ function scoreCandidate(
     }
   }
 
-  // ── Offgoing: prefer later flights (1700-1800L ideal) ──────────────────
+  // ── Offgoing: prefer later flights (1700-1800L ideal for idle tails) ────
   if (task.direction === "offgoing" && c.depTime) {
     const localHour = getLocalHour(c.depTime, task.swapPoint.icao);
-    if (localHour >= 17 && localHour <= 18) score += 5;
-    else if (localHour >= 15 && localHour <= 20) score += 2;
+    const isIdle = task.swapPoint.position === "idle";
+    if (isIdle) {
+      // Idle tails: strongly prefer latest flight making midnight.
+      // 1700-1800L = ideal, earlier = progressively worse.
+      if (localHour >= 17 && localHour <= 18) score += 12;
+      else if (localHour >= 16 || localHour === 19) score += 8;
+      else if (localHour >= 14 && localHour <= 20) score += 4;
+      else if (localHour < 14) score -= 3; // too early — wastes the hold opportunity
+    } else {
+      if (localHour >= 17 && localHour <= 18) score += 5;
+      else if (localHour >= 15 && localHour <= 20) score += 2;
+    }
   }
 
   // ── Swap adjacent to live leg bonus ────────────────────────────────────
@@ -2251,6 +2271,10 @@ function buildFeasibilityMatrix(params: {
   const { pool, role, tails, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, preComputedRoutes, preComputedOffgoing, offgoingDeadlines } = params;
   const matrix: FeasibilityEntry[] = [];
 
+  // Cache buildCandidates results by homeAirports+swapPointIcao.
+  // Many crew share the same home airport, so candidates are identical — skip recomputing.
+  const candidateCache = new Map<string, TransportCandidate[]>();
+
   for (const tail of tails) {
     const { swapPoints } = extractSwapPoints(tail, byTail, swapDate);
     if (swapPoints.length === 0) continue;
@@ -2388,7 +2412,15 @@ function buildFeasibilityMatrix(params: {
         const costNorm = Math.min(100, (totalCost / 800) * 50); // scale for round-trip
         const reliabilityNorm = 100 - entryScore;
         const proximityNorm = Math.min(100, (minDriveMin / 300) * 50);
-        const rank = costNorm * 0.40 + reliabilityNorm * 0.25 + proximityNorm * 0.20 + crewDiff * 0.15;
+        let rank = costNorm * 0.40 + reliabilityNorm * 0.25 + proximityNorm * 0.20 + crewDiff * 0.15;
+
+        // Checkairman conservation: slightly penalize assigning a CA to a standard tail.
+        // This makes the matcher prefer non-CA crew for easy tails, saving CAs for tails
+        // that need them (e.g., new hire paired, training requirements).
+        const crewMemberObj = crewRoster.find((c) => c.name === poolEntry.name && c.role === role);
+        if (crewMemberObj?.is_checkairman) {
+          rank += 5; // slight penalty — CA is still viable, just less preferred for routine tails
+        }
 
         matrix.push({
           crewName: poolEntry.name,
@@ -2407,10 +2439,71 @@ function buildFeasibilityMatrix(params: {
         continue;
       }
 
-      // ── RUNTIME EVALUATION PATH (fallback — original buildCandidates) ───
+      // ── RUNTIME EVALUATION PATH ───────────────────────────────────────
+      // Quick viability check first: skip buildCandidates entirely if no
+      // flights exist for any home→swap pair in the HasData map AND no
+      // ground transport is possible. This avoids ~6000 buildCandidates calls.
+      let hasAnyRoute = false;
+      const swapIatas = new Set(swapPointsToTry.map((sp) => {
+        const comms = findAllCommercialAirports(sp.icao, aliases);
+        return comms.map((c) => toIata(c));
+      }).flat());
+
+      // Check ground transport first (cheap check)
+      for (const home of homeAirports) {
+        for (const sp of swapPointsToTry) {
+          const drive = estimateDriveTime(toIcao(home), sp.icao);
+          if (drive && drive.estimated_drive_minutes <= RENTAL_MAX_MINUTES) {
+            hasAnyRoute = true;
+            break;
+          }
+        }
+        if (hasAnyRoute) break;
+      }
+
+      // Check flight map if no ground route
+      if (!hasAnyRoute && commercialFlights) {
+        for (const home of homeAirports) {
+          const homeIata = toIata(home);
+          for (const destIata of swapIatas) {
+            const key = `${homeIata}-${destIata}-${swapDate}`;
+            if (commercialFlights.has(key)) { hasAnyRoute = true; break; }
+          }
+          if (hasAnyRoute) break;
+        }
+      }
+
+      if (!hasAnyRoute) {
+        // No possible route — skip expensive buildCandidates
+        matrix.push({
+          crewName: poolEntry.name, tail, viable: false,
+          bestScore: 0, bestCost: 999, offgoingCost: 0, totalCost: 999,
+          bestType: "none", candidateCount: 0, rank: 100,
+          bestSwapIcao: swapPoints[0]?.icao ?? "", minDriveMiles: 9999,
+        });
+        continue;
+      }
+
       let allCandidates: TransportCandidate[] = [];
 
       for (const sp of swapPointsToTry) {
+        // Cache key: home airports + swap point ICAO (crew at the same home get identical candidates)
+        const cacheKey = `${homeAirports.sort().join(",")}->${sp.icao}`;
+        let spCandidates = candidateCache.get(cacheKey);
+
+        if (!spCandidates) {
+          const task: CrewTask = {
+            name: poolEntry.name, crewMember, role, direction: "oncoming",
+            tail, aircraftType: acType, swapPoint: sp, homeAirports,
+            candidates: [], best: null, warnings: [],
+            earlyVolunteer: poolEntry.early_volunteer,
+            lateVolunteer: poolEntry.late_volunteer,
+          };
+          spCandidates = buildCandidates(task, aliases, commercialFlights, swapDate, byTail.get(tail));
+          candidateCache.set(cacheKey, spCandidates);
+        }
+
+        // Clone and score (scores depend on the specific crew member, not just the route)
         const task: CrewTask = {
           name: poolEntry.name, crewMember, role, direction: "oncoming",
           tail, aircraftType: acType, swapPoint: sp, homeAirports,
@@ -2418,11 +2511,8 @@ function buildFeasibilityMatrix(params: {
           earlyVolunteer: poolEntry.early_volunteer,
           lateVolunteer: poolEntry.late_volunteer,
         };
-        const spCandidates = buildCandidates(task, aliases, commercialFlights, swapDate, byTail.get(tail));
-        for (const c of spCandidates) {
-          c.score = scoreCandidate(c, task, null);
-        }
-        allCandidates.push(...spCandidates);
+        const scored = spCandidates.map((c) => ({ ...c, score: scoreCandidate(c, task, null) }));
+        allCandidates.push(...scored);
       }
 
       // Deduplicate: keep only the best-scoring version of each candidate
@@ -2497,7 +2587,13 @@ function buildFeasibilityMatrix(params: {
       const costNorm = Math.min(100, (totalCost / 800) * 50);
       const reliabilityNorm = 100 - entryScore;
       const proximityNorm = Math.min(100, (minDriveMin / 300) * 50);
-      const rank = costNorm * 0.45 + reliabilityNorm * 0.3 + proximityNorm * 0.25;
+      let rank = costNorm * 0.45 + reliabilityNorm * 0.3 + proximityNorm * 0.25;
+
+      // Checkairman conservation (same as pre-computed path)
+      const crewMemberObj2 = crewRoster.find((c) => c.name === poolEntry.name && c.role === role);
+      if (crewMemberObj2?.is_checkairman) {
+        rank += 5;
+      }
 
       matrix.push({
         crewName: poolEntry.name,
@@ -2621,10 +2717,32 @@ export function assignOncomingCrew(params: {
   assignRoleWithMatrix("oncoming_sic", oncomingPool.sic, "SIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes, preComputedOffgoing, excludeTails, offgoingDeadlines);
 
   // Remaining pool → standby
+  // SkillBridge SICs go first for forced standby, then sort by standby_count (lowest first)
   const assignedNames = new Set(details.map((d) => d.name));
+  const unassignedPics = oncomingPool.pic.filter((p) => !assignedNames.has(p.name));
+  const unassignedSics = oncomingPool.sic.filter((p) => !assignedNames.has(p.name));
+
+  // Sort SICs: SkillBridge first, then by standby_count ascending (rotate through all crew)
+  unassignedSics.sort((a, b) => {
+    // SkillBridge always goes first for forced standby
+    if (a.is_skillbridge && !b.is_skillbridge) return -1;
+    if (!a.is_skillbridge && b.is_skillbridge) return 1;
+    // Then by standby count (fewer standbys = higher priority for next standby)
+    const aCount = crewRoster.find((c) => c.name === a.name)?.standby_count ?? 0;
+    const bCount = crewRoster.find((c) => c.name === b.name)?.standby_count ?? 0;
+    return aCount - bCount;
+  });
+
+  // PICs: sort by standby_count ascending (rotate through all)
+  unassignedPics.sort((a, b) => {
+    const aCount = crewRoster.find((c) => c.name === a.name)?.standby_count ?? 0;
+    const bCount = crewRoster.find((c) => c.name === b.name)?.standby_count ?? 0;
+    return aCount - bCount;
+  });
+
   const standby = {
-    pic: oncomingPool.pic.filter((p) => !assignedNames.has(p.name)).map((p) => p.name),
-    sic: oncomingPool.sic.filter((p) => !assignedNames.has(p.name)).map((p) => p.name),
+    pic: unassignedPics.map((p) => p.name),
+    sic: unassignedSics.map((p) => p.name),
   };
 
   return { assignments: result, standby, details };
