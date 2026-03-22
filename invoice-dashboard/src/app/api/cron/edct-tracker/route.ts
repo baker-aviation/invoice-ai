@@ -270,10 +270,12 @@ export async function GET(req: NextRequest) {
     results.push(...batchResults);
   }
 
-  // 6. Filter to current (include cancelled — pilots shop for slots)
+  // 6. Filter to current — require edct_time unless cancelled (pilots shop for slots)
   const todayStartMs = new Date(todayStart).getTime();
   const found = results.filter((r) =>
-    r.found && (!r.edct_time || new Date(r.edct_time).getTime() >= todayStartMs)
+    r.found && (r.edct_time
+      ? new Date(r.edct_time).getTime() >= todayStartMs
+      : r.cancelled)
   );
 
   // 7. Get existing FAA EDCT alerts to detect new vs updated
