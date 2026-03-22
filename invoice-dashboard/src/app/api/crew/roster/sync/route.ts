@@ -62,31 +62,13 @@ export async function POST(req: NextRequest) {
   let deactivatedCount = 0;
   let slackMatchedCount = 0;
 
-  // Map of existing crew by name+role for fast lookup.
-  // Also deduplicate: if multiple rows exist for the same name+role, keep the newest and delete the rest.
-  const { data: existingCrew } = await supa
-    .from("crew_members")
-    .select("id, name, role, slack_display_name, updated_at")
-    .order("updated_at", { ascending: false });
+  // Clean slate: delete all existing crew_members, then insert fresh from Excel.
+  // The Excel is the sole source of truth — no merge, no duplicates.
+  await supa.from("crew_members").delete().neq("id", "00000000-0000-0000-0000-000000000000"); // delete all rows
+  console.log("[Roster Sync] Cleared crew_members table — inserting fresh from Excel");
 
+  // No existing map needed — everything is new
   const existingMap = new Map<string, { id: string; slack_display_name: string | null }>();
-  const dupeIds: string[] = [];
-  for (const c of existingCrew ?? []) {
-    const key = `${c.name}|${c.role}`;
-    if (existingMap.has(key)) {
-      dupeIds.push(c.id as string); // older duplicate — mark for deletion
-    } else {
-      existingMap.set(key, { id: c.id as string, slack_display_name: c.slack_display_name as string | null });
-    }
-  }
-
-  // Clean up duplicates
-  if (dupeIds.length > 0) {
-    for (let i = 0; i < dupeIds.length; i += 100) {
-      await supa.from("crew_members").delete().in("id", dupeIds.slice(i, i + 100));
-    }
-    console.log(`[Roster Sync] Cleaned ${dupeIds.length} duplicate crew_members rows`);
-  }
 
   // Track which names are in the new roster (to deactivate removed ones)
   const rosterKeys = new Set<string>();
@@ -137,14 +119,9 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Deactivate crew in DB that aren't in the new roster (terminated or removed)
-  for (const [key, existing] of existingMap) {
-    if (!rosterKeys.has(key)) {
-      try {
-        await supa.from("crew_members").update({ active: false, updated_at: new Date().toISOString() }).eq("id", existing.id);
-        deactivatedCount++;
-      } catch { /* ignore */ }
-    }
+  // No deactivation needed — we wiped and re-inserted from Excel.
+  // Terminated crew are already marked active: false in the insert above.
+  {
   }
 
   // ═══ 2. Update checkairman flags from weekly sheet + checkairmen table ════
