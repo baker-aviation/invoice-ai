@@ -1,0 +1,287 @@
+import { NextRequest, NextResponse } from "next/server";
+import { requireAdmin, isAuthed } from "@/lib/api-auth";
+import { createServiceClient } from "@/lib/supabase/service";
+import { parseCrewInfo, type CrewRosterEntry, type WeeklySwapEntry } from "@/lib/crewInfoParser";
+
+export const dynamic = "force-dynamic";
+export const maxDuration = 30;
+
+/**
+ * POST /api/crew/roster/sync
+ *
+ * Upload the master CREW INFO Excel workbook. Parses:
+ *   1. CREW ROSTER → upserts all crew_members (name, home, rotation, type, rank, SB, terminated)
+ *   2. Slack names → fuzzy matches and stores slack_display_name
+ *   3. Weekly swap sheet → extracts swap assignments + oncoming pool
+ *   4. Different airports → crew temporarily at non-home locations
+ *
+ * Body: multipart/form-data with:
+ *   - file: the .xlsx file
+ *   - swap_date: (optional) YYYY-MM-DD to target a specific weekly sheet
+ *   - slack_names: (optional) JSON array of Slack display names
+ */
+export async function POST(req: NextRequest) {
+  const auth = await requireAdmin(req);
+  if (!isAuthed(auth)) return auth.error;
+
+  const formData = await req.formData();
+  const file = formData.get("file") as File | null;
+  if (!file) return NextResponse.json({ error: "No file uploaded" }, { status: 400 });
+
+  const swapDate = formData.get("swap_date") as string | null;
+  const slackNamesRaw = formData.get("slack_names") as string | null;
+  let slackNames: string[] | undefined;
+  if (slackNamesRaw) {
+    try {
+      slackNames = JSON.parse(slackNamesRaw);
+    } catch {
+      return NextResponse.json({ error: "slack_names must be valid JSON array" }, { status: 400 });
+    }
+  }
+
+  const buffer = Buffer.from(await file.arrayBuffer());
+  const result = parseCrewInfo(buffer, slackNames, swapDate ?? undefined);
+
+  const supa = createServiceClient();
+  const syncErrors: string[] = [...result.errors];
+
+  // ═══ 1. Upsert crew_members from CREW ROSTER ═════════════════════════════
+
+  let upsertedCount = 0;
+  let deactivatedCount = 0;
+  let slackMatchedCount = 0;
+
+  // Map of existing crew by name+role for fast lookup
+  const { data: existingCrew } = await supa
+    .from("crew_members")
+    .select("id, name, role, slack_display_name")
+    .order("name");
+
+  const existingMap = new Map<string, { id: string; slack_display_name: string | null }>();
+  for (const c of existingCrew ?? []) {
+    existingMap.set(`${c.name}|${c.role}`, { id: c.id as string, slack_display_name: c.slack_display_name as string | null });
+  }
+
+  // Track which names are in the new roster (to deactivate removed ones)
+  const rosterKeys = new Set<string>();
+
+  for (const entry of result.roster) {
+    const key = `${entry.name}|${entry.role}`;
+    rosterKeys.add(key);
+
+    const record: Record<string, unknown> = {
+      name: entry.name,
+      role: entry.role,
+      home_airports: entry.home_airports,
+      aircraft_types: [entry.aircraft_type],
+      rotation_group: entry.rotation === "part_time" ? null : entry.rotation,
+      is_skillbridge: entry.is_skillbridge,
+      is_checkairman: false, // will be updated from weekly sheet if available
+      active: !entry.is_terminated,
+      updated_at: new Date().toISOString(),
+    };
+
+    // Store Slack display name if matched
+    if (entry.slack_display_name) {
+      record.slack_display_name = entry.slack_display_name;
+      slackMatchedCount++;
+    }
+
+    // Add notes for SkillBridge end date and termination
+    const notesParts: string[] = [];
+    if (entry.skillbridge_end) notesParts.push(`SB ends ${entry.skillbridge_end}`);
+    if (entry.terminated_on) notesParts.push(`Terminated ${entry.terminated_on}`);
+    if (entry.rotation === "part_time") notesParts.push("Part-time / Non-standard rotation");
+    if (notesParts.length > 0) record.notes = notesParts.join("; ");
+
+    try {
+      const existing = existingMap.get(key);
+      if (existing) {
+        // Don't overwrite existing slack_display_name if we didn't get a new one
+        if (!entry.slack_display_name && existing.slack_display_name) {
+          delete record.slack_display_name;
+        }
+        await supa.from("crew_members").update(record).eq("id", existing.id);
+      } else {
+        await supa.from("crew_members").insert(record);
+      }
+      upsertedCount++;
+    } catch (e) {
+      syncErrors.push(`${entry.name}: ${e instanceof Error ? e.message : "upsert failed"}`);
+    }
+  }
+
+  // Deactivate crew in DB that aren't in the new roster (terminated or removed)
+  for (const [key, existing] of existingMap) {
+    if (!rosterKeys.has(key)) {
+      try {
+        await supa.from("crew_members").update({ active: false, updated_at: new Date().toISOString() }).eq("id", existing.id);
+        deactivatedCount++;
+      } catch { /* ignore */ }
+    }
+  }
+
+  // ═══ 2. Update checkairman flags from weekly sheet ════════════════════════
+
+  if (result.weekly_swap) {
+    for (const entry of result.weekly_swap) {
+      if (entry.is_checkairman) {
+        const key = `${entry.name}|${entry.role}`;
+        const existing = existingMap.get(key);
+        if (existing) {
+          await supa.from("crew_members").update({ is_checkairman: true }).eq("id", existing.id);
+        }
+      }
+    }
+  }
+
+  // ═══ 3. Build swap assignments from weekly sheet ══════════════════════════
+
+  type SwapAssignment = {
+    oncoming_pic: string | null;
+    oncoming_sic: string | null;
+    offgoing_pic: string | null;
+    offgoing_sic: string | null;
+  };
+
+  const swapByTail = new Map<string, SwapAssignment>();
+  type PoolEntry = {
+    name: string;
+    aircraft_type: string;
+    home_airports: string[];
+    is_checkairman: boolean;
+    is_skillbridge: boolean;
+    early_volunteer: boolean;
+    late_volunteer: boolean;
+    standby_volunteer: boolean;
+    notes: string | null;
+  };
+  const oncomingPool: { pic: PoolEntry[]; sic: PoolEntry[] } = { pic: [], sic: [] };
+  const standbyPool: { pic: PoolEntry[]; sic: PoolEntry[] } = { pic: [], sic: [] };
+
+  if (result.weekly_swap) {
+    // Build offgoing assignments (they have tail numbers)
+    for (const e of result.weekly_swap.filter((e) => e.direction === "offgoing" && e.tail_number)) {
+      const tail = e.tail_number!;
+      if (!swapByTail.has(tail)) {
+        swapByTail.set(tail, { oncoming_pic: null, oncoming_sic: null, offgoing_pic: null, offgoing_sic: null });
+      }
+      const sa = swapByTail.get(tail)!;
+      if (e.role === "PIC") sa.offgoing_pic = e.name;
+      else sa.offgoing_sic = e.name;
+    }
+
+    // Oncoming with tails (including "Staying on")
+    for (const e of result.weekly_swap.filter((e) => e.direction === "oncoming" && e.tail_number)) {
+      const tail = e.tail_number!;
+      if (!swapByTail.has(tail)) {
+        swapByTail.set(tail, { oncoming_pic: null, oncoming_sic: null, offgoing_pic: null, offgoing_sic: null });
+      }
+      const sa = swapByTail.get(tail)!;
+      if (e.role === "PIC") sa.oncoming_pic = e.name;
+      else sa.oncoming_sic = e.name;
+    }
+
+    // Oncoming without tails → pool or standby
+    const assignedOncoming = new Set<string>();
+    for (const [, sa] of swapByTail) {
+      if (sa.oncoming_pic) assignedOncoming.add(sa.oncoming_pic);
+      if (sa.oncoming_sic) assignedOncoming.add(sa.oncoming_sic);
+    }
+
+    for (const e of result.weekly_swap.filter((e) => e.direction === "oncoming" && !e.tail_number)) {
+      if (assignedOncoming.has(e.name)) continue;
+
+      const poolEntry: PoolEntry = {
+        name: e.name,
+        aircraft_type: e.aircraft_type,
+        home_airports: e.home_airports,
+        is_checkairman: e.is_checkairman,
+        is_skillbridge: e.is_skillbridge,
+        early_volunteer: e.volunteer === "early",
+        late_volunteer: e.volunteer === "late",
+        standby_volunteer: e.volunteer === "standby",
+        notes: e.notes,
+      };
+
+      // Check if this person is on standby (notes mention STANDBY)
+      const isStandby = e.notes?.toUpperCase().includes("STANDBY") || e.volunteer === "standby";
+
+      if (isStandby) {
+        if (e.role === "PIC") standbyPool.pic.push(poolEntry);
+        else standbyPool.sic.push(poolEntry);
+      } else {
+        if (e.role === "PIC") oncomingPool.pic.push(poolEntry);
+        else oncomingPool.sic.push(poolEntry);
+      }
+    }
+  }
+
+  // Convert swap assignments to plain object
+  const swapAssignments: Record<string, SwapAssignment> = {};
+  for (const [tail, sa] of swapByTail) {
+    swapAssignments[tail] = sa;
+  }
+
+  // Determine rotation groups
+  const oncomingNames = result.weekly_swap
+    ?.filter((e) => e.direction === "oncoming")
+    .map((e) => e.name) ?? [];
+  const offgoingNames = result.weekly_swap
+    ?.filter((e) => e.direction === "offgoing")
+    .map((e) => e.name) ?? [];
+
+  // Infer rotation from the sheet name (e.g., "MAR 18-MAR 25 (B)" → offgoing is B)
+  let offgoingGroup: "A" | "B" = "B";
+  let oncomingGroup: "A" | "B" = "A";
+  if (result.weekly_sheet_name) {
+    const rotMatch = result.weekly_sheet_name.match(/\(([AB])\)/);
+    if (rotMatch) {
+      // The sheet is named after the OFFGOING rotation (the crew leaving)
+      offgoingGroup = rotMatch[1] as "A" | "B";
+      oncomingGroup = offgoingGroup === "A" ? "B" : "A";
+    }
+  }
+
+  // ═══ 4. Different airports summary ════════════════════════════════════════
+
+  // Filter to entries relevant to the swap date (if provided)
+  let relevantDiffAirports = result.different_airports;
+  if (swapDate) {
+    relevantDiffAirports = result.different_airports.filter((d) => {
+      if (!d.date) return true; // undated entries always relevant
+      return d.date === swapDate;
+    });
+  }
+
+  // ═══ Response ═════════════════════════════════════════════════════════════
+
+  return NextResponse.json({
+    ok: true,
+    roster: {
+      total: result.roster.length,
+      active: result.roster.filter((r) => !r.is_terminated).length,
+      terminated: result.roster.filter((r) => r.is_terminated).length,
+      skillbridge: result.roster.filter((r) => r.is_skillbridge).length,
+      part_time: result.roster.filter((r) => r.rotation === "part_time").length,
+      upserted: upsertedCount,
+      deactivated: deactivatedCount,
+    },
+    slack: {
+      provided: slackNames?.length ?? 0,
+      matched: slackMatchedCount,
+      unmatched: (slackNames?.length ?? 0) - slackMatchedCount,
+    },
+    rotation: {
+      oncoming_group: oncomingGroup,
+      offgoing_group: offgoingGroup,
+      counts: result.rotation_counts,
+    },
+    weekly_sheet: result.weekly_sheet_name,
+    swap_assignments: swapAssignments,
+    oncoming_pool: oncomingPool,
+    standby_pool: standbyPool,
+    different_airports: relevantDiffAirports,
+    errors: syncErrors.length > 0 ? syncErrors : undefined,
+  });
+}
