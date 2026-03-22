@@ -14,10 +14,27 @@ export type FaaDelay = {
   detail: string;
 };
 
+export type FaaAfp = {
+  name: string;
+  reason: string;
+  avg: string;
+  floor: string;
+  ceiling: string;
+  afpStart: string;
+  afpEnd: string;
+  fcaStart: string;
+  fcaEnd: string;
+  /** Line geometry: array of [lat, lon] */
+  line: [number, number][] | null;
+  /** Circle geometry */
+  circle: { lat: number; lon: number; radiusNm: number } | null;
+};
+
 export type FaaDelaysResponse = {
   ok: boolean;
   updated: string;
   delays: FaaDelay[];
+  afps: FaaAfp[];
 };
 
 function extractTag(xml: string, tag: string): string {
@@ -53,7 +70,7 @@ export async function GET() {
     if (!res.ok) {
       console.error(`[faa-delays] FAA API returned HTTP ${res.status}`);
       return NextResponse.json(
-        { ok: false, updated: "", delays: [] } satisfies FaaDelaysResponse,
+        { ok: false, updated: "", delays: [], afps: [] } satisfies FaaDelaysResponse,
         { status: 502 },
       );
     }
@@ -131,8 +148,54 @@ export async function GET() {
       }
     }
 
+    // Parse Airspace Flow Programs (AFPs with FCA geometry)
+    const afps: FaaAfp[] = [];
+    for (const af of extractAllBlocks(xml, "Airspace_Flow")) {
+      const name = extractTag(af, "CTL_Element");
+      if (!name) continue;
+
+      const reason = extractTag(af, "Reason");
+      const avg = extractTag(af, "Avg");
+      const floor = extractTag(af, "Floor");
+      const ceiling = extractTag(af, "Ceiling");
+      const afpStart = extractTag(af, "AFP_StartTime");
+      const afpEnd = extractTag(af, "AFP_EndTime");
+      const fcaStart = extractTag(af, "FCA_StartDateTime");
+      const fcaEnd = extractTag(af, "FCA_EndDateTime");
+
+      // Parse Line geometry
+      let line: [number, number][] | null = null;
+      const lineBlock = af.match(/<Line>[\s\S]*?<\/Line>/);
+      if (lineBlock) {
+        const points: [number, number][] = [];
+        const pointRe = /Point\s+Lat="([^"]+)"\s+Long="([^"]+)"/g;
+        let pm;
+        while ((pm = pointRe.exec(lineBlock[0])) !== null) {
+          points.push([parseFloat(pm[1]), parseFloat(pm[2])]);
+        }
+        if (points.length >= 2) line = points;
+      }
+
+      // Parse Circle geometry
+      let circle: FaaAfp["circle"] = null;
+      const circleBlock = af.match(/<Circle[\s\S]*?<\/Circle>/);
+      if (circleBlock) {
+        const radiusMatch = circleBlock[0].match(/Radius="([^"]+)"/);
+        const centerMatch = circleBlock[0].match(/Center\s+Lat="([^"]+)"\s+Long="([^"]+)"/);
+        if (radiusMatch && centerMatch) {
+          circle = {
+            lat: parseFloat(centerMatch[1]),
+            lon: parseFloat(centerMatch[2]),
+            radiusNm: parseFloat(radiusMatch[1]),
+          };
+        }
+      }
+
+      afps.push({ name, reason, avg, floor, ceiling, afpStart, afpEnd, fcaStart, fcaEnd, line, circle });
+    }
+
     return NextResponse.json(
-      { ok: true, updated, delays } satisfies FaaDelaysResponse,
+      { ok: true, updated, delays, afps } satisfies FaaDelaysResponse,
       {
         headers: {
           "Cache-Control": "public, max-age=120, stale-while-revalidate=180",
@@ -142,7 +205,7 @@ export async function GET() {
   } catch (err) {
     console.error("[faa-delays] Failed to fetch FAA status:", err);
     return NextResponse.json(
-      { ok: false, updated: "", delays: [] } satisfies FaaDelaysResponse,
+      { ok: false, updated: "", delays: [], afps: [] } satisfies FaaDelaysResponse,
       { status: 502 },
     );
   }

@@ -5,7 +5,7 @@ import L from "leaflet";
 import { MapContainer, TileLayer, Marker, Popup, Tooltip, Polyline, CircleMarker, useMap } from "react-leaflet";
 import type { AircraftPosition, FlightInfoMap } from "@/app/maintenance/MapView";
 import { getAirportInfo } from "@/lib/airportCoords";
-import type { FaaDelay } from "@/app/api/ops/faa-delays/route";
+import type { FaaDelay, FaaAfp } from "@/app/api/ops/faa-delays/route";
 import type { FlowControlLine } from "@/app/api/ops/flow-controls/route";
 
 /* ── Fleet type helpers ── */
@@ -374,12 +374,13 @@ function worstDelay(delays: FaaDelay[]): FaaDelay["type"] {
   return worst;
 }
 
-function useFaaDelays(enabled: boolean): { airports: DelayAirport[]; updated: string } {
+function useFaaDelays(enabled: boolean): { airports: DelayAirport[]; updated: string; afps: FaaAfp[] } {
   const [airports, setAirports] = useState<DelayAirport[]>([]);
   const [updated, setUpdated] = useState("");
+  const [afps, setAfps] = useState<FaaAfp[]>([]);
 
   useEffect(() => {
-    if (!enabled) { setAirports([]); setUpdated(""); return; }
+    if (!enabled) { setAirports([]); setUpdated(""); setAfps([]); return; }
     let cancelled = false;
 
     async function load() {
@@ -388,6 +389,7 @@ function useFaaDelays(enabled: boolean): { airports: DelayAirport[]; updated: st
         const data = await res.json();
         if (cancelled || !data.ok) return;
         setUpdated(data.updated ?? "");
+        setAfps(data.afps ?? []);
 
         // Group delays by airport, look up coordinates
         const byAirport = new Map<string, FaaDelay[]>();
@@ -414,7 +416,7 @@ function useFaaDelays(enabled: boolean): { airports: DelayAirport[]; updated: st
     return () => { cancelled = true; clearInterval(interval); };
   }, [enabled]);
 
-  return { airports, updated };
+  return { airports, updated, afps };
 }
 
 /* ── Flow Controls (reroutes / CTOPs / AFPs from SWIM) ── */
@@ -604,6 +606,10 @@ function MapLegend({ dark, showDelays, showFlows, flowCount }: { dark: boolean; 
             <LegendDot color="#f97316" />
             <span className={text}>Arr/Dep Delay</span>
           </div>
+          <div className="flex items-center gap-2">
+            <LegendLine color="#e11d48" />
+            <span className={text}>AFP / FCA</span>
+          </div>
         </>
       )}
       {showFlows && flowCount > 0 && (
@@ -643,12 +649,12 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
   const [showRadar, setShowRadar] = useState(false);
   const [showVans, setShowVans] = useState(false);
   const [showDelays, setShowDelays] = useState(true);
-  const [showFlows, setShowFlows] = useState(true);
+  const [showFlows, setShowFlows] = useState(false);
   const [holdingTails, setHoldingTails] = useState<Set<string>>(new Set());
   const [trackPositions, setTrackPositions] = useState<Map<string, [number, number]>>(new Map());
   const radarUrl = useRadarUrl(showRadar);
   const vanPositions = useVanPositions(showVans);
-  const { airports: delayAirports, updated: delaysUpdated } = useFaaDelays(showDelays);
+  const { airports: delayAirports, updated: delaysUpdated, afps } = useFaaDelays(showDelays);
   const flowLines = useFlowControls(showFlows);
   const containerRef = useRef<HTMLDivElement>(null);
   const { isFs, toggle: toggleFs } = useFullscreen(containerRef);
@@ -838,6 +844,82 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
               </Popup>
             </CircleMarker>
           );
+        })}
+
+        {/* AFP / FCA lines */}
+        {showDelays && afps.map((afp) => {
+          const afpColor = "#e11d48"; // rose-600 — distinct from reroutes
+          if (afp.line && afp.line.length >= 2) {
+            return (
+              <Polyline
+                key={`afp-${afp.name}`}
+                positions={afp.line}
+                pathOptions={{ color: afpColor, weight: 5, opacity: 0.8 }}
+              >
+                <Tooltip permanent direction="center" className="fa-data-tooltip">
+                  <div style={{
+                    color: afpColor,
+                    fontFamily: "ui-monospace,monospace",
+                    fontSize: "10px",
+                    fontWeight: 700,
+                    whiteSpace: "nowrap",
+                    textShadow: darkMode
+                      ? "0 1px 3px rgba(0,0,0,0.9), 0 0 6px rgba(0,0,0,0.6)"
+                      : "0 1px 2px rgba(255,255,255,0.9)",
+                  }}>
+                    {afp.name}
+                  </div>
+                </Tooltip>
+                <Popup>
+                  <div className="text-sm space-y-1 min-w-[180px]">
+                    <div className="font-bold" style={{ color: afpColor }}>AFP: {afp.name}</div>
+                    <div className="text-xs"><span className="font-semibold">Avg delay:</span> {afp.avg}</div>
+                    <div className="text-xs"><span className="font-semibold">Reason:</span> {afp.reason}</div>
+                    <div className="text-xs"><span className="font-semibold">Time:</span> {afp.afpStart}Z – {afp.afpEnd}Z</div>
+                    <div className="text-xs"><span className="font-semibold">Altitudes:</span> FL{afp.floor} – FL{afp.ceiling}</div>
+                  </div>
+                </Popup>
+              </Polyline>
+            );
+          }
+          if (afp.circle) {
+            // Convert radius from NM to meters (1 NM = 1852m)
+            const radiusM = afp.circle.radiusNm * 1852;
+            return (
+              <CircleMarker
+                key={`afp-${afp.name}`}
+                center={[afp.circle.lat, afp.circle.lon]}
+                radius={14}
+                pathOptions={{ color: afpColor, fillColor: afpColor, fillOpacity: 0.3, weight: 2.5 }}
+              >
+                <Tooltip permanent direction="top" offset={[0, -12]} className="fa-data-tooltip">
+                  <div style={{
+                    color: afpColor,
+                    fontFamily: "ui-monospace,monospace",
+                    fontSize: "10px",
+                    fontWeight: 700,
+                    whiteSpace: "nowrap",
+                    textShadow: darkMode
+                      ? "0 1px 3px rgba(0,0,0,0.9), 0 0 6px rgba(0,0,0,0.6)"
+                      : "0 1px 2px rgba(255,255,255,0.9)",
+                  }}>
+                    {afp.name} <span style={{ fontSize: "9px", opacity: 0.85 }}>AFP</span>
+                  </div>
+                </Tooltip>
+                <Popup>
+                  <div className="text-sm space-y-1 min-w-[180px]">
+                    <div className="font-bold" style={{ color: afpColor }}>AFP: {afp.name}</div>
+                    <div className="text-xs"><span className="font-semibold">Avg delay:</span> {afp.avg}</div>
+                    <div className="text-xs"><span className="font-semibold">Reason:</span> {afp.reason}</div>
+                    <div className="text-xs"><span className="font-semibold">Time:</span> {afp.afpStart}Z – {afp.afpEnd}Z</div>
+                    <div className="text-xs"><span className="font-semibold">Radius:</span> {afp.circle.radiusNm} NM</div>
+                    <div className="text-xs"><span className="font-semibold">Altitudes:</span> FL{afp.floor} – FL{afp.ceiling}</div>
+                  </div>
+                </Popup>
+              </CircleMarker>
+            );
+          }
+          return null;
         })}
 
         {/* Flow Control reroute lines */}
