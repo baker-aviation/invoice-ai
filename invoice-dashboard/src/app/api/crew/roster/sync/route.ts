@@ -68,7 +68,6 @@ export async function POST(req: NextRequest) {
   console.log("[Roster Sync] Cleared crew_members table — inserting fresh from Excel");
 
   // JetInsight legal name mappings — these differ from roster display names.
-  // Stored on crew_members so auto-detect rotation can match flight PIC/SIC fields.
   const JETINSIGHT_NAMES: Record<string, string> = {
     "Wilder Ponte": "Wilder Ponte-Vela",
     "Jesus Olmos": "Jesus Enrique Olmos Arias",
@@ -78,6 +77,98 @@ export async function POST(req: NextRequest) {
     "Dave Hill": "Ronald David Hill Jr",
     "Luis Maestre": "Luis Maestre Giron",
   };
+
+  // Slack user ID → roster name (from slack-bakeraviation-members.csv export)
+  const SLACK_USER_IDS: Record<string, string> = {
+    "U06S0M8EF8A": "Aaron Fry", "U0AGZ7RH1EV": "Aaron Lockwood", "U07V2BQ6W6L": "Adam Veres",
+    "U08PC5F6MFX": "Adelso Sanchez Tamariz", "U09RQFSSGF3": "Alex Krichevsky",
+    "U0A3MBC6CCE": "Alexander Bengoechea", "U08MULS4MED": "Alfredo Cruz",
+    "U0ADCCG6NM7": "Andrew Brown", "U04JQ47LD8A": "Andrew Reynolds",
+    "U0AFVCSV3ED": "Anthony Ricci", "U08TNTYMP60": "Barry MacDougall",
+    "U08DZ865ADA": "Ben Choate", "U0A87SLE9H7": "Bill Betts", "U0A6ZCR36JY": "Bill Bulgier",
+    "U0ADVFJHK2A": "Blake Middleton", "U079R3W50BV": "Bob Oliver", "U04AZM86Z7T": "Brad Morton",
+    "U09N1RQG2KU": "Brad Weaver", "U06BRRQ0MPB": "Brandon Holloway",
+    "U07KP9ZFEQM": "Brian Jenkins", "U08AAMQL0PQ": "Brian Kudrle",
+    "U08BSAJASCW": "Bryan Kroneberger", "U0A6D5QCWD8": "Canton Phillips",
+    "U09TSQAF4Q2": "Cassidy Wickline", "U08THF9G613": "Charlie Thomas",
+    "U0A2GSCNJP2": "Chase Cripps", "U0A2GSALPL0": "Chris Palmer",
+    "U0AA1T3JUBY": "Chris Plappert", "U092W98LE3V": "Chris Schaefer",
+    "U085C96F45C": "Chris Unger", "U08DZ860H6G": "Chris Wilson", "U08PC5CKL85": "Chris Wood",
+    "U08K6C6RFQT": "Cole Kunze", "U09H3R740AD": "Collin Buell", "U093351572N": "Colt Mansfield",
+    "U087830PK2M": "Curtis Phillips", "U09MZPJN7L6": "Dan Cruz",
+    "U09TTSSMG2F": "Daniel Dusold", "U09U5MPTT17": "Daniel Edwards",
+    "U0A59AQKGCW": "Daniel Mack", "U09UNQ80WJG": "Daniel Minarro",
+    "U0A6ZCSEAAG": "Daniel Mustin", "U0ACT39R1L3": "Danny Wright",
+    "U0A1NH1HDA6": "Darin Moody", "U0ADXHE6CV8": "Dave Hill", "U094MNHEMQ9": "David Cerise",
+    "U0A9X8QCKFH": "David Metcalf", "U09334XUPPC": "David Wiersma",
+    "U09TPBAAW13": "Devin Holbrook", "U0AACMN5GUS": "Donald McCroan",
+    "U08THFCRP5K": "Douglas Conwell", "U0A8P8DS09E": "Eddie Goble",
+    "U079R7ENPDG": "Edward Blasko", "U0ABSD7E02Z": "Edward Green",
+    "U09H3R70733": "Edward Ley", "U0A7RFYCA5B": "Elizabeth Leus",
+    "U07LF07KA48": "Eric Gordy", "U0A1LG1S2R4": "Eric Tallberg",
+    "U04JSHV4XA8": "Erik Scheller", "U0AACMLCH0S": "Evan Gutierrez",
+    "U0ABTQAHN0N": "Felicia Rindon", "U08PHLRRM5G": "Fernand Muffoletto",
+    "U09TWBU9R4L": "Fred Fields", "U0A5BBJK4DQ": "Frederick Gilman",
+    "U08L68M5SM8": "Graeme Lang", "U076KVB3ZUJ": "Gregory Dworek",
+    "U09UD5ZQK7T": "Guillermo Garcia-Galdamez", "U09RQFVF5TK": "Hamilton Heatly",
+    "U09U3RL5QHJ": "Hector Rodriguez", "U07G9D80H9N": "Henry Brown",
+    "U0AAGS3ASGH": "Henry Freund", "U09BYGGSE9Y": "Jack Newberry",
+    "U0A4WB0QFGR": "Jacob Spencer", "U05EQAJC31Q": "James Latshaw",
+    "U0A8Y8QKATG": "James Latshaw", "U0971HT764C": "James MacGregor",
+    "U06MTCH1VLP": "James Stevens", "U0A9PE870M9": "James Sullivan",
+    "U0AD333U3B6": "Jansen Valk", "U0A1G5M33A7": "Jason Stanton",
+    "U09BYGEHUCA": "Jeffray Graham", "U08L68L1HV0": "Jesus Olmos",
+    "U0AA1T4CJJ2": "Jimmy Houston", "U076YKH4APK": "John Buerschen",
+    "U0A9X8RHCRM": "John Caputo", "U04AZM7KEF3": "John Haslett",
+    "U0AF11RH8J3": "John Sedmak", "U0A9VR8UHU2": "John Sterling",
+    "U085XJ7QAKT": "Jon Davis", "U08THF74KQV": "Jon Huggins",
+    "U04JM5UG01K": "Jon Spencer", "U0A5Q9LPWRX": "Jonathan Stack",
+    "U06G4TXVACF": "Jordan Edwards", "U0AA0FUANUV": "Jordan Thomas",
+    "U096XCUM19C": "Joseph Browning", "U0A5Q9PNAP3": "Joseph Champion",
+    "U07HYH1G5QS": "Joseph Grande", "U076KS12UKD": "Joshua Barabe",
+    "U09MLBVAVM5": "Joshua Raymond", "U07E378QPJ5": "Justin Harris",
+    "U0AAY80QHFS": "Justin Neal", "U09C0P0L7GW": "Justin Wasno",
+    "U096XCXM3SS": "Kai Gamble", "U058ZSWE456": "Karl Lenker",
+    "U08PHLS9KLJ": "Ken Ruth", "U06RXPKG6TF": "Kevin Carter",
+    "U0ADG463HQX": "Kevin Scott", "U0A7STML17G": "Kurtis Beck",
+    "U08K6C5CLCT": "Kyle Lund", "U0AHZ26U84E": "Kyle Wilson",
+    "U09N1RP2Z9Q": "Larry Swearingen", "U08PHLPD3DY": "Leonard Pangelinan",
+    "U0A57UJFAKF": "Levi Schmid", "U08K6C85P7V": "Lionel Macklin",
+    "U088MQ3RY2X": "Luis Maestre", "U062F09RJ5N": "Mark Lang",
+    "U079NA3A8ER": "Mark Smith", "U09C0NVUJG6": "Martin Saine",
+    "U09H3R6HTH7": "Matt Hill", "U09334T5N6N": "Matt Kim",
+    "U070L6D4K7W": "Matthew Curry", "U0A65LZ7VRN": "Maurice Stander",
+    "U0A7YGUQ8MA": "Mauricio Alves", "U08BHV6E1U0": "Michael Bellis",
+    "U0AA0FXQB9T": "Michael Frost", "U08R85YHLSW": "Michael Hutka",
+    "U05U93BHS8Y": "Mike Beard", "U0AFVCEE2QZ": "Nick Antognini",
+    "U0A59ARM686": "Nick Asarese", "U09334VGXSN": "Nick Seeberger",
+    "U09C0P54ZAS": "Nick Steele", "U086SGVMK6H": "Patrick Finley",
+    "U066B1A3RJ7": "Patrick Larance", "U09SFCHJYE5": "Patrick McLoughlin",
+    "U08PHLU3MJN": "Patrick Snowman", "U0AF16NRT9A": "Randy Weakley",
+    "U09UUJ64E7J": "Rick Ferrin", "U07DMKXAA8M": "Rick Taylor",
+    "U0A78N8PMUH": "Rob Whittin", "U0AGPUAE2P6": "Robert Lankford",
+    "U053RU1PHGV": "Rodolfo Garcia", "U0AACMMHRTL": "Ross Lannin",
+    "U04A6FUQF63": "Roy White", "U07UDHHCFNE": "Russell Bonds",
+    "U0AJVBYJM2L": "Ryan Delannoy", "U097CEWF51Q": "Ryan Lofswold",
+    "U096XCW4MF0": "Ryan Moore", "U07R79TDH0U": "Scott Leach",
+    "U07L4S1S76V": "Scott Moore", "U079R42ATT5": "Sean Brammer-Hogan",
+    "U0A1LG27DHC": "Sebastian Rodriquez", "U0A7RFZQCKF": "Sloan Parker",
+    "U052Y4FPTAP": "Stephen Smith", "U0AEVGJBUP8": "Terry Smith",
+    "U070HN1FG6N": "Tim Kerner", "U08THFEHDPX": "Timothy Locke",
+    "U0A1K4CFCP7": "Todd Ratzlaff", "U09R56VE2DR": "Tony Frandino",
+    "U0AGCD16L65": "Travis Douglas", "U09MYBVDWUD": "Travis Farewell",
+    "U0AFL3G0QPN": "Tyler Bachelder", "U0AFA3LB1D1": "Tyler Marsh",
+    "U058ZSWBSCQ": "Victoria Larson", "U0A11MECS3G": "Ward Lewis",
+    "U0A3H15K719": "Wesley Williamson", "U09BXUK9XSB": "Wilder Ponte",
+    "U04JHFYJ1L6": "Will Hecox", "U04KPPAFPJB": "Will Hecox",
+    "U0A57UJQM8V": "Zach Done", "U070ASQAXL2": "Zack Benz",
+  };
+
+  // Build reverse map: roster name → slack_user_id
+  const rosterToSlackId = new Map<string, string>();
+  for (const [uid, name] of Object.entries(SLACK_USER_IDS)) {
+    if (!rosterToSlackId.has(name)) rosterToSlackId.set(name, uid);
+  }
 
   // No existing map needed — everything is new
   const existingMap = new Map<string, { id: string; slack_display_name: string | null }>();
@@ -110,6 +201,12 @@ export async function POST(req: NextRequest) {
     // Store JetInsight legal name if different from display name
     if (JETINSIGHT_NAMES[entry.name]) {
       record.jetinsight_name = JETINSIGHT_NAMES[entry.name];
+    }
+
+    // Store Slack user ID for volunteer matching
+    const slackId = rosterToSlackId.get(entry.name);
+    if (slackId) {
+      record.slack_user_id = slackId;
     }
 
     // Add notes for SkillBridge end date and termination
