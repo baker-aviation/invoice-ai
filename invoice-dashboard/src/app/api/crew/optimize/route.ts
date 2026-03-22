@@ -19,7 +19,7 @@ const OptimizeRequestSchema = z.object({
 }).strip();
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 60; // 1 min — no API calls, just DB reads + computation
+export const maxDuration = 300; // 5 min — DB reads + heavy computation for 30+ tails
 
 /**
  * POST /api/crew/optimize
