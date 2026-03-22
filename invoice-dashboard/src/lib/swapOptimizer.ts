@@ -2508,7 +2508,7 @@ function buildFeasibilityMatrix(params: {
 
       for (const sp of swapPointsToTry) {
         // Cache key: home airports + swap point ICAO (crew at the same home get identical candidates)
-        const cacheKey = `${homeAirports.sort().join(",")}->${sp.icao}`;
+        const cacheKey = `${[...homeAirports].sort().join(",")}->${sp.icao}`;
         let spCandidates = candidateCache.get(cacheKey);
 
         if (!spCandidates) {
