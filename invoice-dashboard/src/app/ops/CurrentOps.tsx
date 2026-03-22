@@ -38,8 +38,9 @@ const FLIGHT_TYPE_COLORS: Record<string, string> = {
 
 const DEFAULT_TYPES = new Set(["Charter", "Revenue", "Positioning"]);
 
-/** Detect if a flight was diverted by comparing arrival_icao to the original destination in the summary */
-function isDivertedFlight(f: { arrival_icao: string | null; summary: string | null; departure_icao: string | null }): boolean {
+/** Detect if a flight was diverted by checking DB flag or comparing arrival_icao to summary */
+function isDivertedFlight(f: { arrival_icao: string | null; summary: string | null; departure_icao: string | null; diverted?: boolean | null }): boolean {
+  if (f.diverted) return true;
   if (!f.summary || !f.arrival_icao) return false;
   // Summary format: [N818CF] BELLO (AUS - ASE) - Positioning flight
   const m = f.summary.match(/\(([A-Z0-9]{3,4})\s*-\s*([A-Z0-9]{3,4})\)/);
