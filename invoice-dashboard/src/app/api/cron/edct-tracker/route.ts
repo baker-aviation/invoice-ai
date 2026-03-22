@@ -143,8 +143,9 @@ function buildEdctSlackBlocks(
 
   if (type === "new") {
     // New EDCT message
-    const filedAs = edct.callsign !== edct.tail ? `${edct.callsign}` : "";
-    let text = `*${edct.tail}*${filedAs ? ` (${filedAs})` : ""}  ${dept} → ${arr}`;
+    const isCallsign = edct.callsign !== edct.tail;
+    const tailPart = isCallsign ? `*${edct.tail}* (${edct.callsign}✱)` : `*${edct.tail}*✱ (${edct.callsign})`;
+    let text = `${tailPart}  ${dept} → ${arr}`;
     if (edct.cancelled) text += `  ~cancelled~`;
     text += `\nFiled: ${filedLocal}  →  EDCT: *${edctLocal}*  (${delay})`;
     if (ctrl) text += `\nControl: ${ctrl}`;
@@ -162,7 +163,9 @@ function buildEdctSlackBlocks(
   } else {
     // Updated EDCT message
     const prevLocal = fmtLocal(previousEdctTime ?? null, depIcao);
-    let text = `*${edct.tail}* (${edct.callsign})  ${dept} → ${arr}`;
+    const isCallsign = edct.callsign !== edct.tail;
+    const tailPart = isCallsign ? `*${edct.tail}* (${edct.callsign}✱)` : `*${edct.tail}*✱ (${edct.callsign})`;
+    let text = `${tailPart}  ${dept} → ${arr}`;
     text += `\nEDCT Updated: ${prevLocal} → *${edctLocal}*`;
     if (edct.edct_time && previousEdctTime) {
       const diffMin = Math.round((new Date(edct.edct_time).getTime() - new Date(previousEdctTime).getTime()) / 60000);
