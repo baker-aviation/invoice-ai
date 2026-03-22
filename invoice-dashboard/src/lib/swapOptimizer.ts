@@ -529,16 +529,24 @@ function buildCandidates(
     ? midnightUtc(toIcao(task.homeAirports[0]), swapDate)
     : midnightUtc(swapIcao, swapDate);
 
-  // Oncoming hard deadline: 1800L at the swap airport (offgoing crew holds until then)
-  // The ideal is arriving before the first leg, but it's a scoring preference, not a hard cutoff.
-  // Hard deadline: latest possible oncoming arrival. The REAL constraint is the per-tail
-  // offgoing deadline (handled in buildFeasibilityMatrix). This is a safety net for tails
-  // where offgoing has no booked transport. Extended from 6pm to 10pm because per-tail
-  // deadlines now handle the tight cases correctly.
+  // Oncoming hard deadline: crew MUST arrive before the aircraft leaves the swap point.
+  // For before_live: deadline = departure time of the next leg.
+  // For between_legs: deadline = window_end (departure of the leg after the gap).
+  // For after_live/idle: aircraft isn't departing, use 10pm local as safety net.
   let oncomingHardDeadline: Date | null = null;
   if (task.direction === "oncoming") {
-    const tz = getAirportTimezone(swapIcao) ?? "America/New_York";
-    oncomingHardDeadline = localTimeToUtc(swapDate, 22, 0, tz);
+    if (task.swapPoint.position === "before_live" || task.swapPoint.position === "between_legs") {
+      // Use the actual aircraft departure as the hard deadline
+      const depTime = (task.swapPoint.position === "between_legs" && task.swapPoint.window_end)
+        ? task.swapPoint.window_end
+        : task.swapPoint.time;
+      // Crew must arrive FBO_ARRIVAL_BUFFER minutes before departure
+      oncomingHardDeadline = new Date(depTime.getTime() - ms(FBO_ARRIVAL_BUFFER));
+    } else {
+      // after_live / idle — no departure constraint, use 10pm local
+      const tz = getAirportTimezone(swapIcao) ?? "America/New_York";
+      oncomingHardDeadline = localTimeToUtc(swapDate, 22, 0, tz);
+    }
   }
 
   // Estimate duty-end for oncoming crew: last leg arrival + off-duty buffer
@@ -1728,13 +1736,16 @@ export function buildSwapPlan(params: {
         // For "between_legs", use window_end (next departure).
         let hardReject = false;
         if (sp.position === "before_live" || sp.position === "between_legs") {
-          const spTz = getAirportTimezone(sp.icao) ?? "America/New_York";
           const depTime = (sp.position === "between_legs" && sp.window_end) ? sp.window_end : sp.time;
+          const spTz = getAirportTimezone(sp.icao) ?? "America/New_York";
           const depLocalHour = parseFloat(
             new Date(depTime).toLocaleString("en-US", { hour: "numeric", hour12: false, timeZone: spTz })
           );
-          // If aircraft departs before 9am local, no commercial crew can make it
-          if (depLocalHour < 9) {
+          // Hard reject if aircraft departs before 10am local — earliest realistic
+          // commercial arrival is ~7-8am, plus FBO buffer + deplane + ground transport
+          // means crew can't make anything before ~9:30am at the FBO. With 60min buffer
+          // the aircraft must depart no earlier than ~10:30am for this to work.
+          if (depLocalHour < 10) {
             hardReject = true;
           }
         }

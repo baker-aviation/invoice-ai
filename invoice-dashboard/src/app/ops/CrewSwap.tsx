@@ -697,6 +697,25 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
           ? Math.round((earliestOffDep - latestOnArrival) / 60_000)
           : null;
 
+        // Check if oncoming crew arrives AFTER aircraft departs swap point
+        let crewArrivesLate = false;
+        let aircraftDepartsAt: string | null = null;
+        if (flights && selectedWed && latestOnArrival) {
+          const wedStr = selectedWed.toISOString().slice(0, 10);
+          const swapIcao = swapLoc.length === 3 ? `K${swapLoc}` : swapLoc;
+          // Find the first departure FROM the swap point on Wed
+          const depFromSwap = flights
+            .filter((f) => f.tail_number === tail && f.departure_icao === swapIcao && f.scheduled_departure?.startsWith(wedStr))
+            .sort((a, b) => (a.scheduled_departure ?? "").localeCompare(b.scheduled_departure ?? ""))[0];
+          if (depFromSwap?.scheduled_departure) {
+            const depMs = new Date(depFromSwap.scheduled_departure).getTime();
+            aircraftDepartsAt = depFromSwap.scheduled_departure;
+            if (latestOnArrival > depMs) {
+              crewArrivesLate = true;
+            }
+          }
+        }
+
         const isLocked = lockedTails?.has(tail);
         // Build pool options for crew picker (only oncoming direction)
         const poolPics = pool?.pic ?? [];
@@ -900,6 +919,11 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                     hasGap ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"
                   }`}>
                     {hasGap ? `${gapMinutes}min overlap` : `${Math.abs(gapMinutes)}min gap — unattended`}
+                  </span>
+                )}
+                {crewArrivesLate && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded font-bold bg-red-600 text-white animate-pulse">
+                    CREW ARRIVES AFTER AIRCRAFT DEPARTS
                   </span>
                 )}
                 {(onBadPairing || offBadPairing) && (
