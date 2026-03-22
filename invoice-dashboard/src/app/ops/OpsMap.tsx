@@ -2,7 +2,11 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import L from "leaflet";
+import { GestureHandling } from "leaflet-gesture-handling";
+import "leaflet-gesture-handling/dist/leaflet-gesture-handling.css";
 import { MapContainer, TileLayer, Marker, Popup, Tooltip, Polyline, CircleMarker, useMap } from "react-leaflet";
+
+L.Map.addInitHook("addHandler", "gestureHandling", GestureHandling);
 import type { AircraftPosition, FlightInfoMap } from "@/app/maintenance/MapView";
 import { getAirportInfo } from "@/lib/airportCoords";
 import type { FaaDelay, FaaAfp } from "@/app/api/ops/faa-delays/route";
@@ -517,6 +521,15 @@ function useFullscreen(ref: React.RefObject<HTMLDivElement | null>) {
   return { isFs, toggle };
 }
 
+function EnableGestureHandling() {
+  const map = useMap();
+  useEffect(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (map as any).gestureHandling?.enable();
+  }, [map]);
+  return null;
+}
+
 function MapResizer() {
   const map = useMap();
   useEffect(() => {
@@ -699,13 +712,14 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
         center={[37.5, -96]}
         zoom={4}
         style={{ height: "500px", width: "100%" }}
-        scrollWheelZoom
+        scrollWheelZoom={false}
       >
         <TileLayer
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
           url={LIGHT_TILES}
         />
         <DarkModeFilter enabled={darkMode} />
+        <EnableGestureHandling />
         <MapResizer />
 
         {radarUrl && (
@@ -992,6 +1006,9 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
           );
         })}
       </MapContainer>
+      <div className="text-[10px] text-gray-400 text-center mt-1">
+        Use Ctrl + scroll to zoom the map &middot; Click and drag to pan
+      </div>
     </div>
   );
 }
