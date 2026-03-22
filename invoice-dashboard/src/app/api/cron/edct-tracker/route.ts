@@ -327,6 +327,8 @@ export async function GET(req: NextRequest) {
       edct_time: edct.edct_time,
       original_departure_time: edct.filed_departure,
       raw_data: { faa_edct: edct, edct_history: history },
+      // Clear ack when real EDCT replaces a ghost record
+      ...(isNew && existing ? { acknowledged_at: null, acknowledged_by: null } : {}),
     }, { onConflict: "source_message_id" });
 
     if (isNew) newEdcts.push(edct);
