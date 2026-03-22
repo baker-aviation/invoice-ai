@@ -344,6 +344,101 @@ const FLIGHT_TYPE_COLORS: Record<string, string> = {
   "Ferry/Mx": "bg-gray-100 text-gray-700",
 };
 
+// FBO → Commercial airport reference for this week's swap locations
+const FBO_COMMERCIAL_MAP: Record<string, { airports: string[]; preferred: string }> = {
+  TEB: { airports: ["EWR", "LGA", "JFK"], preferred: "EWR" },
+  OPF: { airports: ["MIA", "FLL"], preferred: "MIA" },
+  VNY: { airports: ["BUR", "LAX"], preferred: "BUR" },
+  FXE: { airports: ["FLL", "MIA", "PBI"], preferred: "FLL" },
+  BED: { airports: ["BOS"], preferred: "BOS" },
+  HPN: { airports: ["JFK", "LGA", "EWR"], preferred: "JFK" },
+  FTW: { airports: ["DFW", "DAL"], preferred: "DFW" },
+  HEF: { airports: ["IAD", "DCA"], preferred: "IAD" },
+  SUA: { airports: ["PBI", "FLL"], preferred: "PBI" },
+  NUQ: { airports: ["SJC", "OAK", "SFO"], preferred: "SJC" },
+  OSU: { airports: ["CMH"], preferred: "CMH" },
+  IWA: { airports: ["PHX"], preferred: "PHX" },
+  TRM: { airports: ["PSP"], preferred: "PSP" },
+  UDD: { airports: ["PSP"], preferred: "PSP" },
+  JQF: { airports: ["CLT"], preferred: "CLT" },
+  HKY: { airports: ["CLT"], preferred: "CLT" },
+  BUY: { airports: ["GSO", "RDU"], preferred: "GSO" },
+  TTN: { airports: ["PHL", "EWR"], preferred: "PHL" },
+  MMU: { airports: ["EWR", "LGA"], preferred: "EWR" },
+  SDL: { airports: ["PHX"], preferred: "PHX" },
+  APF: { airports: ["RSW"], preferred: "RSW" },
+  RUE: { airports: ["XNA"], preferred: "XNA" },
+};
+
+function AirportAliasPanel({ flights, selectedWed }: { flights: Flight[]; selectedWed: Date }) {
+  const [show, setShow] = useState(false);
+
+  // Find FBO airports from this week's flights
+  const fboAirports = useMemo(() => {
+    const wedStr = selectedWed.toISOString().slice(0, 10);
+    const airports = new Set<string>();
+    for (const f of flights) {
+      if (f.scheduled_departure?.startsWith(wedStr) ||
+          (f.scheduled_departure && new Date(f.scheduled_departure) >= new Date(selectedWed.getTime() - 86400_000) &&
+           new Date(f.scheduled_departure) <= new Date(selectedWed.getTime() + 86400_000))) {
+        if (f.departure_icao) airports.add(f.departure_icao);
+        if (f.arrival_icao) airports.add(f.arrival_icao);
+      }
+    }
+    // Convert to IATA and find FBOs with aliases
+    const result: { fbo: string; airports: string[]; preferred: string }[] = [];
+    for (const icao of airports) {
+      const iata = icao.length === 4 && icao.startsWith("K") ? icao.slice(1) : icao;
+      const mapping = FBO_COMMERCIAL_MAP[iata];
+      if (mapping) {
+        result.push({ fbo: iata, ...mapping });
+      }
+    }
+    return result.sort((a, b) => a.fbo.localeCompare(b.fbo));
+  }, [flights, selectedWed]);
+
+  if (fboAirports.length === 0) return null;
+
+  return (
+    <div className="rounded-lg border bg-white shadow-sm overflow-hidden">
+      <div
+        className="px-4 py-3 bg-gray-50 border-b flex items-center justify-between cursor-pointer"
+        onClick={() => setShow(!show)}
+      >
+        <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">
+          FBO Commercial Airports ({fboAirports.length} FBOs)
+        </h3>
+        <span className="text-xs text-gray-400">{show ? "Hide" : "Show"}</span>
+      </div>
+      {show && (
+        <div className="p-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
+            {fboAirports.map((fbo) => (
+              <div key={fbo.fbo} className="rounded border px-3 py-2 bg-gray-50">
+                <div className="font-mono font-bold text-sm text-gray-900">{fbo.fbo}</div>
+                <div className="flex flex-wrap gap-1 mt-1">
+                  {fbo.airports.map((a) => (
+                    <span
+                      key={a}
+                      className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                        a === fbo.preferred
+                          ? "bg-green-100 text-green-700 font-bold"
+                          : "bg-blue-50 text-blue-600"
+                      }`}
+                    >
+                      {a}{a === fbo.preferred ? " *" : ""}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function isWednesday(iso: string, targetWed: Date): boolean {
   const d = new Date(iso);
   return d.toISOString().slice(0, 10) === targetWed.toISOString().slice(0, 10);
@@ -3078,6 +3173,9 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
           </div>
         )}
       </div>
+
+      {/* FBO → Commercial Airport Reference */}
+      <AirportAliasPanel flights={flights} selectedWed={selectedWed} />
 
       {/* Aircraft Schedule (collapsible) */}
       <div className="rounded-lg border bg-white shadow-sm overflow-hidden">

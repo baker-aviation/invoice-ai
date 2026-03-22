@@ -161,48 +161,91 @@ export default function FlightPickerModal({
 
   useEffect(() => { fetchOptions(); }, [fetchOptions]);
 
+  // Resolve FBO destination to nearby commercial airports
+  // (e.g., TEB → EWR, LGA, JFK)
+  const [commAirports, setCommAirports] = useState<string[]>([]);
+  useEffect(() => {
+    // Fetch commercial airports near the FBO from the transport-options response
+    if (data?.destination?.iata) {
+      // If the destination itself is commercial-ish, include it
+      const destIata = data.destination.iata;
+      // Extract unique commercial airports from the returned flight options
+      const comms = new Set<string>();
+      for (const opt of data.options) {
+        if (opt.type === "commercial") {
+          if (direction === "oncoming" && opt.destination_iata) comms.add(opt.destination_iata);
+          if (direction === "offgoing" && opt.origin_iata) comms.add(opt.origin_iata);
+        }
+      }
+      // If no options yet, use a hardcoded fallback for known FBOs
+      if (comms.size === 0) {
+        const FBO_ALIASES: Record<string, string[]> = {
+          TEB: ["EWR", "LGA", "JFK"], OPF: ["MIA", "FLL"], VNY: ["BUR", "LAX"],
+          FXE: ["FLL", "MIA"], BED: ["BOS"], HPN: ["JFK", "LGA", "EWR"],
+          FTW: ["DFW", "DAL"], HEF: ["IAD", "DCA"], SUA: ["PBI", "FLL"],
+          NUQ: ["SJC", "OAK", "SFO"], OSU: ["CMH"], IWA: ["PHX"],
+          TRM: ["PSP"], UDD: ["PSP"], JQF: ["CLT"], HKY: ["CLT"],
+          BUY: ["GSO", "RDU"], TTN: ["PHL", "EWR"],
+        };
+        const aliases = FBO_ALIASES[destIata] ?? [destIata];
+        for (const a of aliases) comms.add(a);
+      }
+      setCommAirports([...comms]);
+    }
+  }, [data, direction]);
+
   // Live flight search — supports searching adjacent dates (Tue/Thu)
+  // Resolves FBO to commercial airports and searches correct direction
   const searchFlightsForDate = async (searchDate: string) => {
     if (searching) return;
     setSearching(true);
     setSearchError(null);
     try {
+      const destIata = destinationIcao.length === 4 && destinationIcao.startsWith("K")
+        ? destinationIcao.slice(1) : destinationIcao;
+
+      // Use resolved commercial airports, fallback to raw destination
+      const commercialDests = commAirports.length > 0 ? commAirports : [destIata];
+
       for (const home of homeAirports) {
         const homeIata = home.length === 4 && home.startsWith("K") ? home.slice(1) : home;
-        const destIata = destinationIcao.length === 4 && destinationIcao.startsWith("K")
-          ? destinationIcao.slice(1) : destinationIcao;
 
-        // For offgoing, search dest → home instead
-        const origin = direction === "oncoming" ? homeIata : destIata;
-        const dest = direction === "oncoming" ? destIata : homeIata;
+        for (const comm of commercialDests) {
+          if (homeIata === comm) continue;
 
-        const res = await fetch("/api/crew/flight-search", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ origin_iata: origin, destination_iata: dest, date: searchDate }),
-        });
+          // Oncoming: home → commercial near FBO
+          // Offgoing: commercial near FBO → home
+          const origin = direction === "oncoming" ? homeIata : comm;
+          const dest = direction === "oncoming" ? comm : homeIata;
 
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          setSearchError(body.error ?? `Search failed (HTTP ${res.status})`);
-          continue;
-        }
-
-        const result = await res.json();
-        if (result.options?.length > 0) {
-          const dateLabel = searchDate === swapDate ? "" : ` (${fmtDateShort(searchDate)})`;
-          const newOpts = (result.options as TransportOption[]).map((o) => ({
-            ...o,
-            _isLive: true,
-            _dateLabel: dateLabel,
-          }));
-          setLiveResults((prev) => {
-            const existing = new Set(prev.map((o) => `${o.flight_number}-${o.depart_at}`));
-            const fresh = newOpts.filter((o) => !existing.has(`${o.flight_number}-${o.depart_at}`));
-            return [...prev, ...fresh];
+          const res = await fetch("/api/crew/flight-search", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ origin_iata: origin, destination_iata: dest, date: searchDate }),
           });
-        }
-      }
+
+          if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            setSearchError(body.error ?? `Search failed (HTTP ${res.status})`);
+            continue;
+          }
+
+          const result = await res.json();
+          if (result.options?.length > 0) {
+            const dateLabel = searchDate === swapDate ? "" : ` (${fmtDateShort(searchDate)})`;
+            const newOpts = (result.options as TransportOption[]).map((o) => ({
+              ...o,
+              _isLive: true,
+              _dateLabel: dateLabel,
+            }));
+            setLiveResults((prev) => {
+              const existing = new Set(prev.map((o) => `${o.flight_number}-${o.depart_at}`));
+              const fresh = newOpts.filter((o) => !existing.has(`${o.flight_number}-${o.depart_at}`));
+              return [...prev, ...fresh];
+            });
+          }
+        } // end for commercialDests
+      } // end for homeAirports
     } catch (e) {
       setSearchError(e instanceof Error ? e.message : "Search failed");
     } finally {
