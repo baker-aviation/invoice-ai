@@ -235,8 +235,8 @@ export async function buildHasdataCache(
     }
   }
 
-  // Process in batches of 30 concurrent, 200ms delay between batches
-  const BATCH_SIZE = 30;
+  // Process in batches of 50 concurrent, 200ms delay between batches
+  const BATCH_SIZE = 50;
   const DELAY_MS = 200;
 
   for (let i = 0; i < pairs.length; i += BATCH_SIZE) {

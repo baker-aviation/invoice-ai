@@ -28,6 +28,7 @@ type TransportOption = {
     midnight_ok: boolean;
   };
   _isLive?: boolean; // added by live search
+  _dateLabel?: string; // e.g. " (Tue)" for adjacent date results
 };
 
 type TransportOptionsResponse = {
@@ -79,6 +80,11 @@ function fmtDuration(min: number | null): string {
   const h = Math.floor(min / 60);
   const m = min % 60;
   return h > 0 ? `${h}h${m > 0 ? ` ${m}m` : ""}` : `${m}m`;
+}
+
+function fmtDateShort(dateStr: string): string {
+  const d = new Date(dateStr + "T12:00:00Z");
+  return d.toLocaleDateString(undefined, { weekday: "short", month: "numeric", day: "numeric" });
 }
 
 function typeLabel(type: string): string {
@@ -155,26 +161,25 @@ export default function FlightPickerModal({
 
   useEffect(() => { fetchOptions(); }, [fetchOptions]);
 
-  // Live flight search
-  const searchMoreFlights = async () => {
+  // Live flight search — supports searching adjacent dates (Tue/Thu)
+  const searchFlightsForDate = async (searchDate: string) => {
     if (searching) return;
     setSearching(true);
     setSearchError(null);
     try {
-      // Search from each home airport to the destination
       for (const home of homeAirports) {
         const homeIata = home.length === 4 && home.startsWith("K") ? home.slice(1) : home;
         const destIata = destinationIcao.length === 4 && destinationIcao.startsWith("K")
           ? destinationIcao.slice(1) : destinationIcao;
 
+        // For offgoing, search dest → home instead
+        const origin = direction === "oncoming" ? homeIata : destIata;
+        const dest = direction === "oncoming" ? destIata : homeIata;
+
         const res = await fetch("/api/crew/flight-search", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            origin_iata: homeIata,
-            destination_iata: destIata,
-            date: swapDate,
-          }),
+          body: JSON.stringify({ origin_iata: origin, destination_iata: dest, date: searchDate }),
         });
 
         if (!res.ok) {
@@ -185,14 +190,15 @@ export default function FlightPickerModal({
 
         const result = await res.json();
         if (result.options?.length > 0) {
+          const dateLabel = searchDate === swapDate ? "" : ` (${fmtDateShort(searchDate)})`;
           const newOpts = (result.options as TransportOption[]).map((o) => ({
             ...o,
             _isLive: true,
+            _dateLabel: dateLabel,
           }));
           setLiveResults((prev) => {
-            // Dedupe by flight number
-            const existing = new Set(prev.map((o) => o.flight_number));
-            const fresh = newOpts.filter((o) => !existing.has(o.flight_number));
+            const existing = new Set(prev.map((o) => `${o.flight_number}-${o.depart_at}`));
+            const fresh = newOpts.filter((o) => !existing.has(`${o.flight_number}-${o.depart_at}`));
             return [...prev, ...fresh];
           });
         }
@@ -203,6 +209,17 @@ export default function FlightPickerModal({
       setSearching(false);
     }
   };
+
+  const searchMoreFlights = () => searchFlightsForDate(swapDate);
+
+  // Adjacent date helpers
+  const adjacentDate = (offset: number) => {
+    const d = new Date(swapDate + "T12:00:00Z");
+    d.setDate(d.getDate() + offset);
+    return d.toISOString().slice(0, 10);
+  };
+  const tuesdayDate = adjacentDate(-1);
+  const thursdayDate = adjacentDate(1);
 
   // Merge cached + live results
   const allOptions = (() => {
@@ -311,7 +328,29 @@ export default function FlightPickerModal({
                   : "bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100"
               }`}
             >
-              {searching ? "Searching..." : "Search More Flights"}
+              {searching ? "Searching..." : "Search Wed"}
+            </button>
+            <button
+              onClick={() => searchFlightsForDate(tuesdayDate)}
+              disabled={searching}
+              className={`px-3 py-1.5 text-xs font-medium rounded-lg border ${
+                searching
+                  ? "bg-gray-100 text-gray-400 border-gray-200"
+                  : "bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100"
+              }`}
+            >
+              {searching ? "..." : "Search Tue"}
+            </button>
+            <button
+              onClick={() => searchFlightsForDate(thursdayDate)}
+              disabled={searching}
+              className={`px-3 py-1.5 text-xs font-medium rounded-lg border ${
+                searching
+                  ? "bg-gray-100 text-gray-400 border-gray-200"
+                  : "bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100"
+              }`}
+            >
+              {searching ? "..." : "Search Thu"}
             </button>
             {searchError && <span className="text-[10px] text-red-500">{searchError}</span>}
             {liveResults.length > 0 && (
@@ -373,7 +412,9 @@ function OptionRow({
             </span>
           )}
           {opt._isLive && (
-            <span className="text-[9px] px-1 py-0.5 rounded bg-green-100 text-green-700 font-bold">LIVE</span>
+            <span className="text-[9px] px-1 py-0.5 rounded bg-green-100 text-green-700 font-bold">
+              LIVE{opt._dateLabel ?? ""}
+            </span>
           )}
           {opt.has_backup && opt.backup_flight && (
             <span className="text-[9px] text-blue-400">backup: {opt.backup_flight}</span>
