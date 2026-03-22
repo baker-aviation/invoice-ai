@@ -139,6 +139,7 @@ export async function getFlightsByRegistration(
   // Blocked tails: skip N-number entirely, query by callsign directly
   const BLOCKED_TAILS: Record<string, string> = {
     "N301HR": "KOW301",
+    "N954JS": "KOW954",
   };
   const primaryIdent = BLOCKED_TAILS[registration] ?? registration;
 
