@@ -37,12 +37,11 @@ export async function runParser(overrideSwapDate?: string) {
   const swapDate = overrideSwapDate ?? getNextWednesday();
 
   // Step 1: Find the "Volunteer Pilots" thread in #pilots
-  // Look at recent messages (last 7 days) for the thread starter
-  const weekAgo = Math.floor((Date.now() - 7 * 86400_000) / 1000);
+  // Fetch the most recent 100 messages (newest first, no oldest filter).
+  // Using `oldest` + limit=50 missed new messages when #pilots has >50 msgs/week.
   const historyRes = await slackApi(slackToken, "conversations.history", {
     channel: PILOTS_CHANNEL,
-    oldest: String(weekAgo),
-    limit: "50",
+    limit: "100",
   });
 
   if (!historyRes.ok) {
@@ -52,10 +51,8 @@ export async function runParser(overrideSwapDate?: string) {
     );
   }
 
-  // Find the LATEST bot/workflow message containing "Volunteer Pilots"
-  // conversations.history returns newest-first, but with `oldest` param it's oldest-first.
-  // Reverse to search newest-first so we get this week's thread, not last week's.
-  const messages = ((historyRes.messages ?? []) as SlackMessage[]).reverse();
+  // conversations.history without `oldest` returns newest-first — perfect for finding this week's thread
+  const messages = (historyRes.messages ?? []) as SlackMessage[];
   const volunteerThread = messages.find((m) => {
     const searchText = [
       m.text,
