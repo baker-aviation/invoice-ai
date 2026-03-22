@@ -21,6 +21,20 @@ export async function GET(req: NextRequest) {
   const supa = createServiceClient();
   const allVersions = req.nextUrl.searchParams.get("version") === "all";
 
+  // Load a specific version by ID (for version restore)
+  const versionId = req.nextUrl.searchParams.get("version_id");
+  if (versionId) {
+    const { data, error } = await supa
+      .from("swap_plans")
+      .select("*")
+      .eq("id", versionId)
+      .maybeSingle();
+
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (!data) return NextResponse.json({ error: "Version not found" }, { status: 404 });
+    return NextResponse.json({ plan: data, impacts: [] });
+  }
+
   if (allVersions) {
     const { data, error } = await supa
       .from("swap_plans")

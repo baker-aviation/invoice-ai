@@ -26,7 +26,7 @@ export async function POST(req: NextRequest) {
   // Load active plan
   const { data: plan, error: planErr } = await supa
     .from("swap_plans")
-    .select("id, plan_data")
+    .select("id, plan_data, created_at")
     .eq("swap_date", swap_date)
     .eq("status", "active")
     .maybeSingle();
@@ -34,12 +34,14 @@ export async function POST(req: NextRequest) {
   if (planErr) return NextResponse.json({ error: planErr.message }, { status: 500 });
   if (!plan) return NextResponse.json({ error: "No active plan for this date" }, { status: 404 });
 
-  // Load unacknowledged alerts
+  // Load unacknowledged alerts that were detected AFTER the plan was saved.
+  // Alerts from before the plan was created are stale — the plan already accounts for them.
   const { data: alerts, error: alertErr } = await supa
     .from("swap_leg_alerts")
     .select("*")
     .eq("swap_date", swap_date)
-    .eq("acknowledged", false);
+    .eq("acknowledged", false)
+    .gt("detected_at", plan.created_at as string);
 
   if (alertErr) return NextResponse.json({ error: alertErr.message }, { status: 500 });
   if (!alerts || alerts.length === 0) {

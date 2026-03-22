@@ -949,33 +949,39 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                 .sort((a, b) => (a.scheduled_departure ?? "").localeCompare(b.scheduled_departure ?? ""));
               if (tailFlights.length === 0) return null;
 
+              const getTypeTag = (ft: string | null) => {
+                if (!ft) return { label: "", cls: "text-gray-400 bg-gray-100" };
+                const l = ft.toLowerCase();
+                if (l.includes("charter") || l.includes("revenue")) return { label: "REV", cls: "text-blue-700 bg-blue-50" };
+                if (l.includes("position") || l.includes("ferry")) return { label: "POS", cls: "text-amber-600 bg-amber-50" };
+                if (l.includes("owner")) return { label: "OWN", cls: "text-emerald-700 bg-emerald-50" };
+                if (l.includes("maint")) return { label: "MX", cls: "text-purple-600 bg-purple-50" };
+                return { label: ft.slice(0, 3).toUpperCase(), cls: "text-gray-500 bg-gray-100" };
+              };
+
               return (
-                <div className="px-4 py-1.5 border-b bg-slate-50 flex flex-wrap items-center gap-x-4 gap-y-0.5">
-                  {tailFlights.map((f, i) => {
-                    const depIcao = f.departure_icao;
-                    const arrIcao = f.arrival_icao;
-                    const depIata = depIcao?.length === 4 && depIcao.startsWith("K") ? depIcao.slice(1) : depIcao;
-                    const arrIata = arrIcao?.length === 4 && arrIcao.startsWith("K") ? arrIcao.slice(1) : arrIcao;
-                    const typeColor = f.flight_type?.toLowerCase().includes("charter") || f.flight_type?.toLowerCase().includes("revenue")
-                      ? "text-blue-700" : "text-gray-400";
-                    return (
-                      <span key={f.id ?? i} className="text-[10px] font-mono whitespace-nowrap">
-                        <span className={typeColor}>{depIata}</span>
-                        <span className="text-gray-300 mx-0.5">{fmtShortTime(f.scheduled_departure, depIcao)}</span>
-                        <span className="text-gray-300">{"\u2192"}</span>
-                        <span className={typeColor}>{arrIata}</span>
-                        <span className="text-gray-300 mx-0.5">{fmtShortTime(f.scheduled_arrival, arrIcao)}</span>
-                        {f.flight_type && (
-                          <span className={`ml-0.5 text-[8px] ${
-                            f.flight_type.toLowerCase().includes("charter") || f.flight_type.toLowerCase().includes("revenue")
-                              ? "text-blue-400" : "text-gray-300"
-                          }`}>
-                            {f.flight_type.slice(0, 3).toUpperCase()}
-                          </span>
-                        )}
-                      </span>
-                    );
-                  })}
+                <div className="px-4 py-2 border-b bg-slate-50/80">
+                  <div className="flex flex-wrap items-center gap-x-1 gap-y-1">
+                    {tailFlights.map((f, i) => {
+                      const depIcao = f.departure_icao;
+                      const arrIcao = f.arrival_icao;
+                      const depIata = depIcao?.length === 4 && depIcao.startsWith("K") ? depIcao.slice(1) : depIcao;
+                      const arrIata = arrIcao?.length === 4 && arrIcao.startsWith("K") ? arrIcao.slice(1) : arrIcao;
+                      const tag = getTypeTag(f.flight_type);
+                      const isLive = tag.label === "REV" || tag.label === "OWN";
+                      return (
+                        <div key={f.id ?? i} className="inline-flex items-center gap-1">
+                          {i > 0 && <span className="text-gray-300 mx-1">|</span>}
+                          <span className={`font-mono text-xs font-bold ${isLive ? "text-gray-900" : "text-gray-400"}`}>{depIata}</span>
+                          <span className="text-[10px] text-gray-400">{fmtShortTime(f.scheduled_departure, depIcao)}</span>
+                          <span className="text-gray-300">{"\u2192"}</span>
+                          <span className={`font-mono text-xs font-bold ${isLive ? "text-gray-900" : "text-gray-400"}`}>{arrIata}</span>
+                          <span className="text-[10px] text-gray-400">{fmtShortTime(f.scheduled_arrival, arrIcao)}</span>
+                          <span className={`text-[9px] px-1 py-0.5 rounded font-medium ${tag.cls}`}>{tag.label}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               );
             })()}
@@ -2094,17 +2100,29 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
     } catch { /* ignore */ }
   }
 
-  // Load a specific historical version (re-fetches the full plan from the server)
+  // Load a specific historical version
   async function loadVersion(versionId: string) {
     setLoadingVersion(true);
     try {
-      // We need to fetch the full plan data. The history endpoint only returns metadata.
-      // For now, re-fetch active plan. If user wants a specific version, they would need
-      // to be able to restore it. We'll implement restore by re-saving the version's data.
-      // For MVP, just show version list. Full restore is a future enhancement.
-      setLoadingVersion(false);
-      console.log("Load version:", versionId);
-    } catch { /* ignore */ }
+      const dateStr = selectedWed.toISOString().slice(0, 10);
+      const res = await fetch(`/api/crew/swap-plan?swap_date=${dateStr}&version_id=${versionId}`);
+      if (!res.ok) { addToast("error", "Failed to load version"); return; }
+      const data = await res.json();
+      if (data.plan?.plan_data) {
+        const planData = data.plan.plan_data as SwapPlanResult;
+        setSwapPlan({ ...planData, ok: true });
+        setSavedPlanMeta({
+          id: data.plan.id,
+          version: data.plan.version,
+          created_at: data.plan.created_at,
+        });
+        if (data.plan.swap_assignments) setSwapAssignments(data.plan.swap_assignments);
+        if (data.plan.oncoming_pool) setOncomingPool(data.plan.oncoming_pool);
+        setPlanImpacts([]);
+        addToast("success", `Loaded plan v${data.plan.version}`);
+        setShowHistory(false);
+      }
+    } catch { addToast("error", "Failed to load version"); }
     finally { setLoadingVersion(false); }
   }
 
@@ -2466,6 +2484,12 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
           </div>
           <div className="flex items-center gap-2">
             <button
+              onClick={() => { loadPlanHistory(); setShowHistory(!showHistory); }}
+              className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white hover:bg-gray-50"
+            >
+              History
+            </button>
+            <button
               onClick={() => { checkImpacts(); setActiveTab("impacts"); }}
               disabled={checkingImpacts}
               className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-white hover:bg-gray-50"
@@ -2481,6 +2505,46 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                 Re-optimize Affected
               </button>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Version History Panel */}
+      {showHistory && planVersions.length > 0 && (
+        <div className="rounded-lg border bg-white shadow-sm overflow-hidden mb-2">
+          <div className="px-4 py-2 bg-gray-50 border-b">
+            <span className="text-xs font-semibold text-gray-600 uppercase">Plan History</span>
+          </div>
+          <div className="divide-y max-h-48 overflow-y-auto">
+            {planVersions.map((v) => (
+              <div key={v.id} className={`px-4 py-2 flex items-center justify-between hover:bg-gray-50 ${
+                v.status === "active" ? "bg-green-50/50" : ""
+              }`}>
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-bold text-gray-800">v{v.version}</span>
+                  <span className="text-xs text-gray-500">
+                    {new Date(v.created_at).toLocaleString(undefined, { weekday: "short", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                  </span>
+                  {v.status === "active" && (
+                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-green-100 text-green-700 font-bold">ACTIVE</span>
+                  )}
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-xs text-gray-500">${v.total_cost?.toLocaleString() ?? "—"}</span>
+                  <span className="text-xs text-gray-500">{v.solved_count ?? 0} solved</span>
+                  {v.strategy && <span className="text-[9px] text-gray-400">{v.strategy}</span>}
+                  {v.id !== savedPlanMeta?.id && (
+                    <button
+                      onClick={() => loadVersion(v.id)}
+                      disabled={loadingVersion}
+                      className="px-2 py-1 text-[10px] font-medium rounded bg-blue-50 text-blue-700 hover:bg-blue-100"
+                    >
+                      {loadingVersion ? "..." : "Load"}
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       )}
