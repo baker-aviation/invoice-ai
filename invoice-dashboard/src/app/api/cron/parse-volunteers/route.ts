@@ -52,9 +52,10 @@ export async function runParser(overrideSwapDate?: string) {
     );
   }
 
-  // Find the bot/workflow message containing "Volunteer Pilots" or volunteer keywords
-  // Workflow messages may have text in blocks/attachments, so check all possible fields
-  const messages = (historyRes.messages ?? []) as SlackMessage[];
+  // Find the LATEST bot/workflow message containing "Volunteer Pilots"
+  // conversations.history returns newest-first, but with `oldest` param it's oldest-first.
+  // Reverse to search newest-first so we get this week's thread, not last week's.
+  const messages = ((historyRes.messages ?? []) as SlackMessage[]).reverse();
   const volunteerThread = messages.find((m) => {
     const searchText = [
       m.text,
