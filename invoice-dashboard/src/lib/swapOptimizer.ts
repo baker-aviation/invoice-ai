@@ -2271,6 +2271,10 @@ function buildFeasibilityMatrix(params: {
   const { pool, role, tails, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, preComputedRoutes, preComputedOffgoing, offgoingDeadlines } = params;
   const matrix: FeasibilityEntry[] = [];
 
+  // Cache buildCandidates results by homeAirports+swapPointIcao.
+  // Many crew share the same home airport, so candidates are identical — skip recomputing.
+  const candidateCache = new Map<string, TransportCandidate[]>();
+
   for (const tail of tails) {
     const { swapPoints } = extractSwapPoints(tail, byTail, swapDate);
     if (swapPoints.length === 0) continue;
@@ -2483,6 +2487,23 @@ function buildFeasibilityMatrix(params: {
       let allCandidates: TransportCandidate[] = [];
 
       for (const sp of swapPointsToTry) {
+        // Cache key: home airports + swap point ICAO (crew at the same home get identical candidates)
+        const cacheKey = `${homeAirports.sort().join(",")}->${sp.icao}`;
+        let spCandidates = candidateCache.get(cacheKey);
+
+        if (!spCandidates) {
+          const task: CrewTask = {
+            name: poolEntry.name, crewMember, role, direction: "oncoming",
+            tail, aircraftType: acType, swapPoint: sp, homeAirports,
+            candidates: [], best: null, warnings: [],
+            earlyVolunteer: poolEntry.early_volunteer,
+            lateVolunteer: poolEntry.late_volunteer,
+          };
+          spCandidates = buildCandidates(task, aliases, commercialFlights, swapDate, byTail.get(tail));
+          candidateCache.set(cacheKey, spCandidates);
+        }
+
+        // Clone and score (scores depend on the specific crew member, not just the route)
         const task: CrewTask = {
           name: poolEntry.name, crewMember, role, direction: "oncoming",
           tail, aircraftType: acType, swapPoint: sp, homeAirports,
@@ -2490,11 +2511,8 @@ function buildFeasibilityMatrix(params: {
           earlyVolunteer: poolEntry.early_volunteer,
           lateVolunteer: poolEntry.late_volunteer,
         };
-        const spCandidates = buildCandidates(task, aliases, commercialFlights, swapDate, byTail.get(tail));
-        for (const c of spCandidates) {
-          c.score = scoreCandidate(c, task, null);
-        }
-        allCandidates.push(...spCandidates);
+        const scored = spCandidates.map((c) => ({ ...c, score: scoreCandidate(c, task, null) }));
+        allCandidates.push(...scored);
       }
 
       // Deduplicate: keep only the best-scoring version of each candidate
