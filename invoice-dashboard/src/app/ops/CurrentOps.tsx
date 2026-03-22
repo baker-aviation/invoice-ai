@@ -2276,8 +2276,15 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                                           <span className="text-red-600 font-bold ml-1">{supersedInfo!.actualDest}</span>
                                         )}
                                       </>
+                                    ) : (supersedInfo?.diverted || supersedInfo?.diverting) ? (
+                                      <span className="line-through text-red-400">{f.arrival_icao || "?"}</span>
                                     ) : (f.arrival_icao || "?")}
                                   </span>
+                                  {(supersedInfo?.diverted || supersedInfo?.diverting) && supersedInfo.actualDest && (
+                                    <div className="font-mono font-bold text-red-600">
+                                      {f.departure_icao || "?"} → {supersedInfo.actualDest}
+                                    </div>
+                                  )}
                                   {/* Position mismatch: aircraft not at departure airport per FA */}
                                   {(() => {
                                     if (isCancelled || !f.tail_number || !f.departure_icao) return null;
@@ -2778,8 +2785,15 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                                 <span className="text-red-600 font-bold ml-1">{supersedInfo!.actualDest}</span>
                               )}
                             </>
+                          ) : (supersedInfo?.diverted || supersedInfo?.diverting) ? (
+                            <span className="line-through text-red-400">{f.arrival_icao || "?"}</span>
                           ) : (f.arrival_icao || "?")}
                         </span>
+                        {(supersedInfo?.diverted || supersedInfo?.diverting) && supersedInfo.actualDest && (
+                          <div className="font-mono font-bold text-red-600">
+                            {f.departure_icao || "?"} → {supersedInfo.actualDest}
+                          </div>
+                        )}
                         {/* Position mismatch: aircraft not at departure airport per FA */}
                         {(status === "No Departure" || status === "Late") && faLoc2 && posNorm2(faLoc2.icao) !== posNorm2(f.departure_icao) && (
                           <div className="text-[10px] font-medium text-orange-600 leading-tight">

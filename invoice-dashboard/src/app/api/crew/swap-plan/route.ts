@@ -21,6 +21,20 @@ export async function GET(req: NextRequest) {
   const supa = createServiceClient();
   const allVersions = req.nextUrl.searchParams.get("version") === "all";
 
+  // Load a specific version by ID (for version restore)
+  const versionId = req.nextUrl.searchParams.get("version_id");
+  if (versionId) {
+    const { data, error } = await supa
+      .from("swap_plans")
+      .select("*")
+      .eq("id", versionId)
+      .maybeSingle();
+
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (!data) return NextResponse.json({ error: "Version not found" }, { status: 404 });
+    return NextResponse.json({ plan: data, impacts: [] });
+  }
+
   if (allVersions) {
     const { data, error } = await supa
       .from("swap_plans")
@@ -160,5 +174,44 @@ export async function POST(req: NextRequest) {
     id: newPlan.id,
     version: newPlan.version,
     created_at: newPlan.created_at,
+  });
+}
+
+/**
+ * DELETE /api/crew/swap-plan?swap_date=2026-03-25
+ * Deletes ALL plan versions for a swap date. Testing only.
+ */
+export async function DELETE(req: NextRequest) {
+  const auth = await requireAdmin(req);
+  if (!isAuthed(auth)) return auth.error;
+
+  const swapDate = req.nextUrl.searchParams.get("swap_date");
+  if (!swapDate) {
+    return NextResponse.json({ error: "swap_date required" }, { status: 400 });
+  }
+
+  const supa = createServiceClient();
+
+  // Delete impacts first (FK constraint)
+  const { data: plans } = await supa
+    .from("swap_plans")
+    .select("id")
+    .eq("swap_date", swapDate);
+
+  if (plans && plans.length > 0) {
+    const planIds = plans.map((p) => p.id as string);
+    await supa.from("swap_plan_impacts").delete().in("swap_plan_id", planIds);
+  }
+
+  // Delete all plans
+  const { data: deleted } = await supa
+    .from("swap_plans")
+    .delete()
+    .eq("swap_date", swapDate)
+    .select("id");
+
+  return NextResponse.json({
+    ok: true,
+    deleted: deleted?.length ?? 0,
   });
 }
