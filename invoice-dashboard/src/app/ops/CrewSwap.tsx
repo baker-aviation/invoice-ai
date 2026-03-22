@@ -2793,7 +2793,7 @@ export default function CrewSwap({ flights }: { flights: Flight[] }) {
                 computingRoutes ? "bg-gray-100 text-gray-400" : "bg-amber-50 text-amber-700 hover:bg-amber-100 border-amber-200"
               }`}
             >
-              {computingRoutes ? "Computing Routes..." : "Refresh Routes"}
+              {computingRoutes ? "Seeding Flights..." : "Seed Flights"}
             </button>
             <button
               onClick={() => runOptimizer()}
