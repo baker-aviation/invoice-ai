@@ -425,7 +425,11 @@ const COMMERCIAL_AIRPORTS = new Set([
   "KASE", "KEGE", "KCOS", "KGRR", "KMQT", "KTVC", "KFSD",
   "KICT", "KFAY", "KMDT", "KTWF", "KECP", "KMLB", "KGNV",
   "KMCI", "KDSM", "KGRB", "KSGF",
+  "KALB", "KAZO", "KBFI", "KBMI", "KBZN", "KCGF", "KILM",
+  "KOGD", "KPGV", "KTUS", "KSEA", "KPDX", "KSMF", "KONT",
+  "KLGB", "KSDF", "KLEX", "KXNA", "KCID", "KATW",
   "CYYZ", "CYUL", "CYVR", "CYOW", "CYYC",
+  "TJSJ", // San Juan, PR
 ]);
 
 /** Check if an airport is a known commercial airport with scheduled airline service. */
