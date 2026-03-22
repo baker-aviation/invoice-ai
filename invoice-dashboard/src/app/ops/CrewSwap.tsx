@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { toPng } from "html-to-image";
 import * as XLSX from "xlsx";
 import type { Flight } from "@/lib/opsApi";
+import { getAirportTimezone } from "@/lib/airportTimezones";
 import FlightPickerModal, { type FlightPickerSelection } from "./FlightPickerModal";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -321,12 +322,19 @@ function fmtTime(iso: string | null): string {
   });
 }
 
-function fmtShortTime(iso: string | null): string {
+function fmtShortTime(iso: string | null, airportIcao?: string | null): string {
   if (!iso) return "—";
-  return new Date(iso).toLocaleTimeString(undefined, {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  const d = new Date(iso);
+  const tz = airportIcao ? getAirportTimezone(airportIcao) : null;
+  const opts: Intl.DateTimeFormatOptions = { hour: "2-digit", minute: "2-digit" };
+  if (tz) opts.timeZone = tz;
+  const time = d.toLocaleTimeString("en-US", opts);
+  // Add short timezone label
+  if (tz) {
+    const tzAbbr = d.toLocaleTimeString("en-US", { timeZone: tz, timeZoneName: "short" }).split(" ").pop() ?? "";
+    return `${time} ${tzAbbr}`;
+  }
+  return time;
 }
 
 const AIRCRAFT_COLORS: Record<string, { bg: string; text: string; label: string }> = {
@@ -764,11 +772,11 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                     <span className="text-[11px] text-red-500 font-medium">NO TRANSPORT</span>
                   )}
                   {row.departure_time && (
-                    <span className="text-[11px] text-gray-500">dep {fmtShortTime(row.departure_time)}</span>
+                    <span className="text-[11px] text-gray-500">dep {fmtShortTime(row.departure_time, row.direction === "oncoming" ? (row.home_airports[0] ? `K${row.home_airports[0]}` : null) : row.swap_location)}</span>
                   )}
                   {(row.available_time ?? row.arrival_time) && (
                     <span className="text-[11px] text-gray-500">
-                      {row.direction === "oncoming" ? "avail" : "arr"} {fmtShortTime(row.available_time ?? row.arrival_time)}
+                      {row.direction === "oncoming" ? "avail" : "arr"} {fmtShortTime(row.available_time ?? row.arrival_time, row.direction === "oncoming" ? row.swap_location : (row.home_airports[0] ? `K${row.home_airports[0]}` : null))}
                     </span>
                   )}
                   {row.cost_estimate != null && (

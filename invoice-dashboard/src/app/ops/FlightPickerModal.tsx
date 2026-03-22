@@ -131,6 +131,11 @@ export default function FlightPickerModal({
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [liveResults, setLiveResults] = useState<TransportOption[]>([]);
+  const [showManual, setShowManual] = useState(false);
+  const [manualType, setManualType] = useState<"rental_car" | "uber" | "drive">("rental_car");
+  const [manualCost, setManualCost] = useState("");
+  const [manualDuration, setManualDuration] = useState("");
+  const [manualNotes, setManualNotes] = useState("");
 
   const fetchOptions = useCallback(async () => {
     setLoading(true);
@@ -334,8 +339,95 @@ export default function FlightPickerModal({
             <div className="p-4 bg-red-50 text-sm text-red-700">{error}</div>
           )}
 
-          {!loading && !error && allOptions.length === 0 && (
-            <div className="p-8 text-center text-sm text-gray-400">No transport options found for this route.</div>
+          {!loading && !error && allOptions.length === 0 && !showManual && (
+            <div className="p-6 text-center">
+              <div className="text-sm text-gray-400 mb-3">No transport options found for this route.</div>
+              <button
+                onClick={() => setShowManual(true)}
+                className="px-4 py-2 text-xs font-medium rounded-lg bg-orange-50 text-orange-700 border border-orange-200 hover:bg-orange-100"
+              >
+                Add Manual Transport
+              </button>
+            </div>
+          )}
+
+          {/* Manual transport entry form */}
+          {showManual && (
+            <div className="p-4 border-b bg-orange-50/50">
+              <div className="text-[10px] font-bold uppercase text-orange-600 mb-2">Manual Transport Entry</div>
+              <div className="grid grid-cols-4 gap-2">
+                <div>
+                  <label className="text-[10px] text-gray-500">Type</label>
+                  <select
+                    className="w-full text-xs border rounded px-2 py-1.5 bg-white"
+                    value={manualType}
+                    onChange={(e) => setManualType(e.target.value as typeof manualType)}
+                  >
+                    <option value="rental_car">Rental Car</option>
+                    <option value="uber">Uber</option>
+                    <option value="drive">Self-Drive</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] text-gray-500">Est. Cost ($)</label>
+                  <input
+                    type="number"
+                    className="w-full text-xs border rounded px-2 py-1.5"
+                    placeholder="80"
+                    value={manualCost}
+                    onChange={(e) => setManualCost(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-gray-500">Duration (min)</label>
+                  <input
+                    type="number"
+                    className="w-full text-xs border rounded px-2 py-1.5"
+                    placeholder="120"
+                    value={manualDuration}
+                    onChange={(e) => setManualDuration(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-gray-500">Notes</label>
+                  <input
+                    type="text"
+                    className="w-full text-xs border rounded px-2 py-1.5"
+                    placeholder="Rental to OPF"
+                    value={manualNotes}
+                    onChange={(e) => setManualNotes(e.target.value)}
+                  />
+                </div>
+              </div>
+              <div className="flex gap-2 mt-2">
+                <button
+                  onClick={() => {
+                    onSelect({
+                      type: manualType,
+                      flight_number: manualType === "rental_car" ? "RENTAL" : manualType === "uber" ? "UBER" : "DRIVE",
+                      departure_time: null,
+                      arrival_time: null,
+                      travel_from: homeAirports[0] ?? null,
+                      travel_to: destinationIcao.length === 4 && destinationIcao.startsWith("K") ? destinationIcao.slice(1) : destinationIcao,
+                      cost_estimate: parseInt(manualCost) || 0,
+                      duration_minutes: parseInt(manualDuration) || null,
+                      available_time: null,
+                      duty_on_time: null,
+                      backup_flight: null,
+                    });
+                  }}
+                  className="px-3 py-1.5 text-xs font-medium rounded-lg bg-orange-100 text-orange-700 hover:bg-orange-200"
+                >
+                  Apply
+                </button>
+                <button
+                  onClick={() => setShowManual(false)}
+                  className="px-3 py-1.5 text-xs font-medium rounded-lg bg-gray-100 text-gray-600 hover:bg-gray-200"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
           )}
 
           {!loading && flights.length > 0 && (
@@ -396,6 +488,12 @@ export default function FlightPickerModal({
               }`}
             >
               {searching ? "..." : "Search Thu"}
+            </button>
+            <button
+              onClick={() => setShowManual(!showManual)}
+              className="px-3 py-1.5 text-xs font-medium rounded-lg border bg-orange-50 text-orange-700 border-orange-200 hover:bg-orange-100"
+            >
+              {showManual ? "Hide Manual" : "Manual"}
             </button>
             {searchError && <span className="text-[10px] text-red-500">{searchError}</span>}
             {liveResults.length > 0 && (
