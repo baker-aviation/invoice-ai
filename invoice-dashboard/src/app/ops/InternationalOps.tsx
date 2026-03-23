@@ -173,29 +173,133 @@ function clearanceStatusLabel(s: string) {
 const TRIP_TIME_RANGES = [
   { key: "48h", label: "48 Hours", hours: 48 },
   { key: "7d", label: "1 Week", hours: 168 },
-  { key: "all", label: "All", hours: Infinity },
+  { key: "30d", label: "Month", hours: 720 },
 ] as const;
 type TripTimeRange = (typeof TRIP_TIME_RANGES)[number]["key"];
+type ViewMode = "trips" | "segments";
+
+// A single flight leg derived from a trip
+type FlightSegment = {
+  segmentKey: string;       // unique key for React
+  trip: IntlTrip;           // parent trip
+  legIndex: number;         // index within route (0 = first leg)
+  depIcao: string;
+  arrIcao: string;
+  departureTime: Date | null;
+  arrivalTime: Date | null;
+  clearances: IntlTripClearance[]; // clearances relevant to this leg
+  isFirstLeg: boolean;
+  isLastLeg: boolean;
+};
+
+function flattenTripsToSegments(trips: IntlTrip[]): FlightSegment[] {
+  const segments: FlightSegment[] = [];
+  for (const trip of trips) {
+    const route = trip.route_icaos;
+    const snap = trip.schedule_snapshot ?? {};
+    const totalLegs = route.length - 1;
+    for (let i = 0; i < totalLegs; i++) {
+      const flightId = trip.flight_ids[i];
+      const times = flightId ? snap[flightId] : null;
+      const isFirst = i === 0;
+      const isLast = i === totalLegs - 1;
+
+      // Map clearances to this leg
+      const legClearances = (trip.clearances ?? []).filter((c) => {
+        if (c.clearance_type === "outbound_clearance" && isFirst) return true;
+        if (c.clearance_type === "inbound_clearance" && isLast) return true;
+        if (c.clearance_type === "landing_permit" && c.airport_icao === route[i + 1]) return true;
+        if (c.clearance_type === "overflight_permit") {
+          // Match overflight to leg via notes (e.g. "... auto-detected on KTEB→MYNN")
+          const marker = `${route[i]}→${route[i + 1]}`;
+          if (c.notes?.includes(marker)) return true;
+          // If no notes marker, show on first leg as fallback for manually-added overflights
+          if (!c.notes?.includes("auto-detected on") && isFirst) return true;
+        }
+        return false;
+      });
+
+      segments.push({
+        segmentKey: `${trip.id}-leg-${i}`,
+        trip,
+        legIndex: i,
+        depIcao: route[i],
+        arrIcao: route[i + 1],
+        departureTime: times ? new Date(times.dep) : null,
+        arrivalTime: times?.arr ? new Date(times.arr) : null,
+        clearances: legClearances,
+        isFirstLeg: isFirst,
+        isLastLeg: isLast,
+      });
+    }
+  }
+  // Sort chronologically by departure time (nulls at end)
+  segments.sort((a, b) => {
+    if (!a.departureTime && !b.departureTime) return 0;
+    if (!a.departureTime) return 1;
+    if (!b.departureTime) return -1;
+    return a.departureTime.getTime() - b.departureTime.getTime();
+  });
+  return segments;
+}
 
 function TripBoard({ trips, countries, onRefresh }: { trips: IntlTrip[]; countries: Country[]; onRefresh: () => void }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [timeRange, setTimeRange] = useState<TripTimeRange>("7d");
+  const [viewMode, setViewMode] = useState<ViewMode>("trips");
 
-  const filtered = trips.filter((t) => {
-    if (timeRange === "all") return true;
+  const now = Date.now();
+
+  const filteredTrips = trips.filter((t) => {
     const range = TRIP_TIME_RANGES.find((r) => r.key === timeRange);
     if (!range) return true;
     const tripDate = new Date(t.trip_date + "T00:00:00Z");
-    return tripDate.getTime() <= Date.now() + range.hours * 3600000;
+    return tripDate.getTime() <= now + range.hours * 3600000;
+  });
+
+  const allSegments = flattenTripsToSegments(trips);
+  const filteredSegments = allSegments.filter((seg) => {
+    const range = TRIP_TIME_RANGES.find((r) => r.key === timeRange);
+    if (!range) return true;
+    const t = seg.departureTime?.getTime() ?? new Date(seg.trip.trip_date + "T00:00:00Z").getTime();
+    return t <= now + range.hours * 3600000;
   });
 
   if (trips.length === 0) {
     return <p className="text-sm text-gray-500">No international trips detected in the next 30 days.</p>;
   }
 
+  const count = viewMode === "trips" ? filteredTrips.length : filteredSegments.length;
+  const label = viewMode === "trips" ? "trip" : "segment";
+
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-3">
+        {/* View mode toggle */}
+        <div className="flex rounded-md border border-gray-200 overflow-hidden">
+          <button
+            onClick={() => setViewMode("trips")}
+            className={`px-3 py-1 text-xs font-medium transition-colors ${
+              viewMode === "trips"
+                ? "bg-gray-800 text-white"
+                : "bg-white text-gray-600 hover:bg-gray-50"
+            }`}
+          >
+            By Trip
+          </button>
+          <button
+            onClick={() => setViewMode("segments")}
+            className={`px-3 py-1 text-xs font-medium transition-colors border-l border-gray-200 ${
+              viewMode === "segments"
+                ? "bg-gray-800 text-white"
+                : "bg-white text-gray-600 hover:bg-gray-50"
+            }`}
+          >
+            By Segment
+          </button>
+        </div>
+
+        {/* Time range pills */}
         <div className="flex gap-1">
           {TRIP_TIME_RANGES.map((r) => (
             <button
@@ -211,20 +315,143 @@ function TripBoard({ trips, countries, onRefresh }: { trips: IntlTrip[]; countri
             </button>
           ))}
         </div>
-        <p className="text-xs text-gray-500">{filtered.length} trip{filtered.length !== 1 ? "s" : ""}</p>
+        <p className="text-xs text-gray-500">{count} {label}{count !== 1 ? "s" : ""}</p>
       </div>
-      {filtered.map((trip) => (
-        <TripRow
-          key={trip.id}
-          trip={trip}
-          countries={countries}
-          expanded={expandedId === trip.id}
-          onToggle={() => setExpandedId(expandedId === trip.id ? null : trip.id)}
-          onRefresh={onRefresh}
-        />
-      ))}
-      {filtered.length === 0 && (
-        <p className="text-sm text-gray-500">No international trips in this time range.</p>
+
+      {viewMode === "trips" ? (
+        <>
+          {filteredTrips.map((trip) => (
+            <TripRow
+              key={trip.id}
+              trip={trip}
+              countries={countries}
+              expanded={expandedId === trip.id}
+              onToggle={() => setExpandedId(expandedId === trip.id ? null : trip.id)}
+              onRefresh={onRefresh}
+            />
+          ))}
+          {filteredTrips.length === 0 && (
+            <p className="text-sm text-gray-500">No international trips in this time range.</p>
+          )}
+        </>
+      ) : (
+        <>
+          {filteredSegments.map((seg) => (
+            <SegmentRow
+              key={seg.segmentKey}
+              segment={seg}
+              countries={countries}
+              expanded={expandedId === seg.segmentKey}
+              onToggle={() => setExpandedId(expandedId === seg.segmentKey ? null : seg.segmentKey)}
+              onRefresh={onRefresh}
+            />
+          ))}
+          {filteredSegments.length === 0 && (
+            <p className="text-sm text-gray-500">No flight segments in this time range.</p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ===========================================================================
+// SEGMENT ROW — individual flight leg in segment view
+// ===========================================================================
+
+function SegmentRow({ segment, countries, expanded, onToggle, onRefresh }: {
+  segment: FlightSegment;
+  countries: Country[];
+  expanded: boolean;
+  onToggle: () => void;
+  onRefresh: () => void;
+}) {
+  const { trip, depIcao, arrIcao, departureTime, clearances } = segment;
+
+  const allApproved = clearances.length > 0 && clearances.every((c) => c.status === "approved");
+  const anySubmitted = clearances.some((c) => c.status === "submitted");
+
+  const daysOut = departureTime
+    ? Math.ceil((departureTime.getTime() - Date.now()) / (1000 * 60 * 60 * 24))
+    : null;
+
+  return (
+    <div className={`border rounded-lg overflow-hidden ${
+      allApproved ? "border-green-200" : anySubmitted ? "border-blue-200" : "border-gray-200"
+    }`}>
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-50 transition-colors"
+      >
+        {/* Tail */}
+        <span className="text-sm font-semibold w-20">{trip.tail_number}</span>
+
+        {/* Leg: DEP → ARR */}
+        <span className="text-sm flex items-center gap-1">
+          <span className={`font-medium ${isInternationalIcao(depIcao) ? "text-blue-700" : "text-gray-800"}`}>
+            {depIcao}
+          </span>
+          <span className="text-gray-300">&rarr;</span>
+          <span className={`font-medium ${isInternationalIcao(arrIcao) ? "text-blue-700" : "text-gray-800"}`}>
+            {arrIcao}
+          </span>
+        </span>
+
+        {/* Departure time */}
+        {departureTime && (
+          <span className="text-xs text-gray-500 tabular-nums">
+            {departureTime.toLocaleDateString("en-US", { month: "short", day: "numeric" })}{" "}
+            {departureTime.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC" })}Z
+          </span>
+        )}
+
+        {/* Clearance status badge */}
+        {clearances.length > 0 && (
+          <span className={`text-[11px] px-2 py-0.5 rounded-full font-medium ml-auto whitespace-nowrap ${
+            allApproved ? "bg-green-100 text-green-700" :
+            anySubmitted ? "bg-blue-100 text-blue-700" :
+            "bg-gray-100 text-gray-500"
+          }`}>
+            {allApproved ? "Ready" :
+             anySubmitted ? `${clearances.filter((c) => c.status === "approved").length}/${clearances.length} Cleared` :
+             "Not Started"}
+          </span>
+        )}
+
+        {/* Mini clearance badges */}
+        <span className={`flex gap-1.5 ${clearances.length === 0 ? "ml-auto" : "mr-2"}`}>
+          {clearances.map((c) => (
+            <span
+              key={c.id}
+              className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${clearanceStatusColor(c.status)}`}
+              title={`${CLEARANCE_LABELS[c.clearance_type]} (${c.airport_icao}): ${clearanceStatusLabel(c.status)}`}
+            >
+              {c.clearance_type === "outbound_clearance" ? "OB" :
+               c.clearance_type === "inbound_clearance" ? "IB" :
+               c.clearance_type === "overflight_permit" ? "OVF" :
+               c.airport_icao}
+            </span>
+          ))}
+        </span>
+
+        {/* Date badge */}
+        {daysOut !== null && (
+          <span className={`text-xs px-2 py-0.5 rounded-full whitespace-nowrap ${
+            daysOut <= 4 ? "bg-red-100 text-red-700" : daysOut <= 7 ? "bg-yellow-100 text-yellow-700" : "bg-gray-100 text-gray-600"
+          }`}>
+            {daysOut <= 0 ? "Today" : `${daysOut}d`}
+          </span>
+        )}
+
+        {/* Chevron */}
+        <svg className={`w-4 h-4 text-gray-400 transition-transform ${expanded ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {/* Expanded: show full trip detail */}
+      {expanded && (
+        <TripDetail trip={trip} countries={countries} onRefresh={onRefresh} />
       )}
     </div>
   );
