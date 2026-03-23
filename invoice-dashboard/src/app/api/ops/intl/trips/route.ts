@@ -244,19 +244,20 @@ export async function GET(req: NextRequest) {
         .eq("overflight_permit_required", true);
       const countriesWithOvfReq: CountryRow[] = (countriesData ?? []) as CountryRow[];
 
-      // Batch-fetch all existing trips in the date range to avoid N+1
-      const tripDates = [...new Set(detected.map((d) => d.trip_date))];
+      // Batch-fetch all existing trips for these tails (wider date window to catch date shifts)
       const tripTails = [...new Set(detected.map((d) => d.tail_number))];
+      const lookbackDate = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
       const { data: allExisting } = await supa
         .from("intl_trips")
-        .select("id, tail_number, trip_date, route_icaos, flight_ids, schedule_snapshot")
+        .select("id, tail_number, trip_date, route_icaos, flight_ids")
         .in("tail_number", tripTails)
-        .in("trip_date", tripDates);
-      const existingMap = new Map<string, { id: string; route_icaos: string[]; flight_ids: string[]; schedule_snapshot: unknown }[]>();
+        .gte("trip_date", lookbackDate);
+
+      // Index existing trips by tail for matching
+      const existingByTail = new Map<string, typeof allExisting>();
       for (const e of allExisting ?? []) {
-        const key = `${e.tail_number}|${e.trip_date}`;
-        if (!existingMap.has(key)) existingMap.set(key, []);
-        existingMap.get(key)!.push(e);
+        if (!existingByTail.has(e.tail_number)) existingByTail.set(e.tail_number, []);
+        existingByTail.get(e.tail_number)!.push(e);
       }
 
       // Build a lookup for schedule snapshots from flight data
@@ -265,38 +266,114 @@ export async function GET(req: NextRequest) {
         flightMap.set(f.id, { dep: f.scheduled_departure, arr: f.scheduled_arrival ?? null });
       }
 
-      // Helper: build snapshot for a set of flight IDs
-      function buildSnapshot(flightIds: string[]) {
-        const snap: Record<string, { dep: string; arr: string | null }> = {};
-        for (const fid of flightIds) {
-          const times = flightMap.get(fid);
-          if (times) snap[fid] = times;
-        }
-        return snap;
-      }
+      // Track which existing trip IDs are still matched (for orphan cleanup)
+      const matchedExistingIds = new Set<string>();
+      const detectedFlightIdSets = new Set<string>();
 
-      // Upsert trips — updates in parallel, inserts batched
+      // Upsert trips
       const updatePromises: PromiseLike<unknown>[] = [];
       const toInsert: DetectedTrip[] = [];
+      const routeChangeAlerts: { flight_id: string; old_route: string[]; new_route: string[]; tail: string }[] = [];
 
       for (const dt of detected) {
-        const key = `${dt.tail_number}|${dt.trip_date}`;
-        const candidates = existingMap.get(key) ?? [];
-        const match = candidates.find(
-          (e) => JSON.stringify(e.route_icaos) === JSON.stringify(dt.route_icaos)
+        // Collect all flight IDs from this detected trip for dedup tracking
+        for (const fid of dt.flight_ids) detectedFlightIdSets.add(fid);
+
+        const candidates = existingByTail.get(dt.tail_number) ?? [];
+
+        // 1. Try exact match: same tail + date + route
+        let match = candidates.find(
+          (e) => e.trip_date === dt.trip_date &&
+                 JSON.stringify(e.route_icaos) === JSON.stringify(dt.route_icaos)
         );
 
-        if (match) {
-          const needsFlightUpdate = JSON.stringify(match.flight_ids) !== JSON.stringify(dt.flight_ids);
-          const needsSnapshot = !match.schedule_snapshot;
+        // 2. Try flight_ids overlap: same underlying flights, route or date changed
+        if (!match) {
+          const dtFlightSet = new Set(dt.flight_ids);
+          match = candidates.find((e) => {
+            if (!e.flight_ids?.length) return false;
+            return e.flight_ids.some((fid: string) => dtFlightSet.has(fid));
+          });
+        }
 
-          if (needsFlightUpdate || needsSnapshot) {
+        // 3. Try same tail + date (within ±1 day) with no other match — likely same trip rescheduled
+        if (!match) {
+          const dtDate = new Date(dt.trip_date + "T00:00:00Z").getTime();
+          match = candidates.find((e) => {
+            if (matchedExistingIds.has(e.id)) return false; // already claimed
+            const eDate = new Date(e.trip_date + "T00:00:00Z").getTime();
+            return Math.abs(eDate - dtDate) <= 24 * 60 * 60 * 1000;
+          });
+        }
+
+        if (match) {
+          matchedExistingIds.add(match.id);
+          const routeChanged = JSON.stringify(match.route_icaos) !== JSON.stringify(dt.route_icaos);
+          const dateChanged = match.trip_date !== dt.trip_date;
+          const flightsChanged = JSON.stringify(match.flight_ids) !== JSON.stringify(dt.flight_ids);
+
+          if (routeChanged || dateChanged || flightsChanged) {
             const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
-            if (needsFlightUpdate) updates.flight_ids = dt.flight_ids;
-            if (needsSnapshot) updates.schedule_snapshot = buildSnapshot(dt.flight_ids);
+            if (routeChanged) updates.route_icaos = dt.route_icaos;
+            if (dateChanged) updates.trip_date = dt.trip_date;
+            if (flightsChanged) updates.flight_ids = dt.flight_ids;
+
             updatePromises.push(
               supa.from("intl_trips").update(updates).eq("id", match.id)
             );
+
+            // If route changed, rebuild clearances: keep status on matching airports, add new ones
+            if (routeChanged) {
+              routeChangeAlerts.push({
+                flight_id: dt.flight_ids[0],
+                old_route: match.route_icaos,
+                new_route: dt.route_icaos,
+                tail: dt.tail_number,
+              });
+
+              // Fetch existing clearances for this trip
+              const { data: existingClearances } = await supa
+                .from("intl_trip_clearances")
+                .select("*")
+                .eq("trip_id", match.id);
+
+              const newClearances = buildDefaultClearances(dt, countriesWithOvfReq);
+              const keepIds = new Set<string>();
+
+              // For each new clearance, try to find a matching existing one (same type + airport)
+              for (const nc of newClearances) {
+                const existing = (existingClearances ?? []).find(
+                  (ec) => ec.clearance_type === nc.clearance_type && ec.airport_icao === nc.airport_icao
+                );
+                if (existing) {
+                  keepIds.add(existing.id);
+                }
+              }
+
+              // Delete clearances that are no longer on the route
+              const toDelete = (existingClearances ?? []).filter((ec) => !keepIds.has(ec.id));
+              if (toDelete.length > 0) {
+                updatePromises.push(
+                  supa.from("intl_trip_clearances")
+                    .delete()
+                    .in("id", toDelete.map((c) => c.id))
+                );
+              }
+
+              // Insert clearances that are new (not matched to existing)
+              const toAdd = newClearances.filter((nc) => {
+                return !(existingClearances ?? []).some(
+                  (ec) => ec.clearance_type === nc.clearance_type && ec.airport_icao === nc.airport_icao
+                );
+              });
+              if (toAdd.length > 0) {
+                updatePromises.push(
+                  supa.from("intl_trip_clearances").insert(
+                    toAdd.map((c) => ({ ...c, trip_id: match!.id }))
+                  )
+                );
+              }
+            }
           }
         } else {
           toInsert.push(dt);
@@ -306,7 +383,20 @@ export async function GET(req: NextRequest) {
       // Run updates in parallel
       if (updatePromises.length > 0) await Promise.all(updatePromises);
 
-      // Batch insert new trips
+      // Create route change alerts
+      if (routeChangeAlerts.length > 0) {
+        const alerts = routeChangeAlerts.map((a) => ({
+          flight_id: a.flight_id,
+          alert_type: "schedule_change",
+          severity: "warning" as const,
+          message: `${a.tail} route changed: ${a.old_route.join("→")} ➜ ${a.new_route.join("→")}`,
+          acknowledged: false,
+        }));
+        const { error: alertErr } = await supa.from("intl_leg_alerts").insert(alerts);
+        if (alertErr) console.error("[intl/trips] route change alert error:", alertErr);
+      }
+
+      // Batch insert truly new trips
       for (const dt of toInsert) {
         const { data: newTrip, error: tripErr } = await supa
           .from("intl_trips")
@@ -315,7 +405,6 @@ export async function GET(req: NextRequest) {
             route_icaos: dt.route_icaos,
             flight_ids: dt.flight_ids,
             trip_date: dt.trip_date,
-            schedule_snapshot: buildSnapshot(dt.flight_ids),
           })
           .select("id")
           .single();
@@ -329,6 +418,22 @@ export async function GET(req: NextRequest) {
             await supa.from("intl_trip_clearances").insert(clearances);
           }
         }
+      }
+
+      // Clean up orphaned trips: existing trips for these tails whose flights
+      // no longer appear in any detected trip (schedule was cancelled/removed)
+      const orphanedIds = (allExisting ?? [])
+        .filter((e) => !matchedExistingIds.has(e.id))
+        .filter((e) => {
+          // Only orphan if ALL its flight_ids are absent from detected trips
+          if (!e.flight_ids?.length) return false;
+          return e.flight_ids.every((fid: string) => !detectedFlightIdSets.has(fid));
+        })
+        .map((e) => e.id);
+
+      // Don't auto-delete — just log for now. Trips might be manually created.
+      if (orphanedIds.length > 0) {
+        console.log(`[intl/trips] ${orphanedIds.length} orphaned trip(s) found:`, orphanedIds);
       }
     }
   }
