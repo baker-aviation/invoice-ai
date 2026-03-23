@@ -2434,6 +2434,19 @@ function buildFeasibilityMatrix(params: {
       }
       swapPointsToTry = [bestSp];
     }
+
+    // SIC: force to PIC's swap point when available. Only fall back to other
+    // swap points if the PIC's point has no viable transport at all.
+    if (role === "SIC" && picSwapPoints && swapPoints.length > 1) {
+      const picSp = picSwapPoints.get(tail);
+      if (picSp) {
+        const matched = swapPoints.find((sp) => sp.icao.toUpperCase() === picSp.toUpperCase());
+        if (matched) {
+          swapPointsToTry = [matched]; // force SIC to PIC's swap point
+        }
+      }
+    }
+
     const acType = tailAircraftType.get(tail) ?? "unknown";
 
     for (const poolEntry of pool) {
