@@ -2748,9 +2748,32 @@ function ScheduleTab({
         }
       }
 
-      // Flight came from uncovered pool — assign only this single flight
+      // Flight came from uncovered pool or midday opportunity — build item if needed
       if (!found) {
-        const item = allDayArrivals.find((a) => a.arrFlight.id === flightId);
+        let item = allDayArrivals.find((a) => a.arrFlight.id === flightId);
+        // Midday transient flights aren't in allDayArrivals — build a VanFlightItem from raw flight data
+        if (!item) {
+          const flight = allFlights.find((f) => f.id === flightId);
+          if (flight && flight.arrival_icao) {
+            const iata = flight.arrival_icao.replace(/^K/, "");
+            const info = getAirportInfo(iata);
+            const baseLat = liveVanPositions.get(targetVanId)?.lat ?? FIXED_VAN_ZONES.find((z) => z.vanId === targetVanId)!.lat;
+            const baseLon = liveVanPositions.get(targetVanId)?.lon ?? FIXED_VAN_ZONES.find((z) => z.vanId === targetVanId)!.lon;
+            const distKm = info ? Math.round(haversineKm(baseLat, baseLon, info.lat, info.lon)) : 0;
+            const nextDep = allFlights
+              .filter((f) => f.tail_number === flight.tail_number && f.departure_icao === flight.arrival_icao && f.scheduled_departure > (flight.scheduled_arrival ?? ""))
+              .sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure))[0] ?? null;
+            item = {
+              arrFlight: flight,
+              nextDep,
+              isRepo: isPositioningFlight(flight),
+              nextIsRepo: nextDep ? isPositioningFlight(nextDep) : false,
+              airport: iata,
+              airportInfo: info,
+              distKm,
+            };
+          }
+        }
         if (item) {
           const target = result.get(targetVanId) ?? [];
           target.push(item);
