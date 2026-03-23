@@ -1412,6 +1412,51 @@ function optimizeTail(
     }
   }
 
+  // ── Rental handoff for NO TRANSPORT offgoing: if oncoming has rental and
+  // offgoing has no viable transport BUT their home airports are within 30mi,
+  // auto-assign offgoing to take oncoming's rental car (fuel cost only).
+  for (const [onTask, offTask] of [[oncomingPic, offgoingPic], [oncomingSic, offgoingSic], [oncomingPic, offgoingSic], [oncomingSic, offgoingPic]] as [CrewTask | undefined, CrewTask | undefined][]) {
+    if (!onTask?.best || !offTask?.best) continue;
+    if (onTask.best.type !== "rental_car" && onTask.best.type !== "drive") continue;
+    if (offTask.best.type !== "none") continue; // only for NO TRANSPORT
+
+    // Check home airports within 30mi of each other
+    let closeEnough = false;
+    for (const onHome of onTask.homeAirports) {
+      for (const offHome of offTask.homeAirports) {
+        if (onHome.toUpperCase() === offHome.toUpperCase()) { closeEnough = true; break; }
+        const drive = estimateDriveTime(toIcao(onHome), toIcao(offHome));
+        if (drive && drive.straight_line_miles <= 30) { closeEnough = true; break; }
+      }
+      if (closeEnough) break;
+    }
+
+    if (closeEnough) {
+      // Assign rental handoff: offgoing takes oncoming's car, fuel-only cost
+      offTask.best = {
+        type: "rental_car",
+        flightNumber: "RENTAL (handoff)",
+        depTime: null,
+        arrTime: null,
+        from: offTask.best.from || toIata(offTask.swapPoint.icao),
+        to: offTask.homeAirports[0] ? toIata(offTask.homeAirports[0]) : "",
+        cost: RENTAL_HANDOFF_FUEL_COST,
+        durationMin: onTask.best.durationMin, // same drive as oncoming
+        isDirect: true,
+        isBudgetCarrier: false,
+        hubConnection: false,
+        connectionCount: 0,
+        offer: null,
+        drive: onTask.best.drive,
+        fboArrivalTime: null,
+        fboLeaveTime: null,
+        dutyOnTime: null,
+        score: 65,
+        backups: [],
+      };
+    }
+  }
+
   // Handle any remaining offgoing tasks (edge case: extra roles)
   for (const task of offgoing) {
     if (task === offgoingPic || task === offgoingSic) continue;
