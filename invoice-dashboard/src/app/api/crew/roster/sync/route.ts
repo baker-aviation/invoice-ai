@@ -170,6 +170,18 @@ export async function POST(req: NextRequest) {
     if (!rosterToSlackId.has(name)) rosterToSlackId.set(name, uid);
   }
 
+  // Build checkairman lookup from parsed data (needed during insert)
+  const checkairmanTypeMap = new Map<string, { citation_x: boolean; challenger: boolean }>();
+  for (const ca of result.checkairmen) {
+    const existing = checkairmanTypeMap.get(ca.name);
+    if (existing) {
+      if (ca.citation_x) existing.citation_x = true;
+      if (ca.challenger) existing.challenger = true;
+    } else {
+      checkairmanTypeMap.set(ca.name, { citation_x: ca.citation_x, challenger: ca.challenger });
+    }
+  }
+
   // No existing map needed — everything is new
   const existingMap = new Map<string, { id: string; slack_display_name: string | null }>();
 
@@ -180,6 +192,10 @@ export async function POST(req: NextRequest) {
     const key = `${entry.name}|${entry.role}`;
     rosterKeys.add(key);
 
+    // Check if this crew member is a checkairman (from parsed checkairmen data)
+    const caEntry = checkairmanTypeMap.get(entry.name);
+    const isCA = !!caEntry || result.checkairmen.some((ca) => ca.name === entry.name);
+
     const record: Record<string, unknown> = {
       name: entry.name,
       role: entry.role,
@@ -187,10 +203,18 @@ export async function POST(req: NextRequest) {
       aircraft_types: [entry.aircraft_type],
       rotation_group: entry.rotation === "part_time" ? null : entry.rotation,
       is_skillbridge: entry.is_skillbridge,
-      is_checkairman: false, // will be updated from weekly sheet if available
+      is_checkairman: isCA,
       active: !entry.is_terminated,
       updated_at: new Date().toISOString(),
     };
+
+    // Store checkairman aircraft types
+    if (caEntry) {
+      const types: string[] = [];
+      if (caEntry.citation_x) types.push("citation_x");
+      if (caEntry.challenger) types.push("challenger");
+      if (types.length > 0) record.checkairman_types = types;
+    }
 
     // Store Slack display name if matched
     if (entry.slack_display_name) {
@@ -238,41 +262,7 @@ export async function POST(req: NextRequest) {
   {
   }
 
-  // ═══ 2. Update checkairman flags from weekly sheet + checkairmen table ════
-
-  // Build a lookup from the parsed checkairmen data for aircraft type capabilities
-  const checkairmanTypeMap = new Map<string, { citation_x: boolean; challenger: boolean }>();
-  for (const ca of result.checkairmen) {
-    const existing = checkairmanTypeMap.get(ca.name);
-    if (existing) {
-      // Merge — a checkairman can appear in multiple rotation columns
-      if (ca.citation_x) existing.citation_x = true;
-      if (ca.challenger) existing.challenger = true;
-    } else {
-      checkairmanTypeMap.set(ca.name, { citation_x: ca.citation_x, challenger: ca.challenger });
-    }
-  }
-
-  if (result.weekly_swap) {
-    for (const entry of result.weekly_swap) {
-      if (entry.is_checkairman) {
-        const key = `${entry.name}|${entry.role}`;
-        const existing = existingMap.get(key);
-        if (existing) {
-          const types = checkairmanTypeMap.get(entry.name);
-          const checkairmanTypes: string[] = [];
-          if (types?.citation_x) checkairmanTypes.push("citation_x");
-          if (types?.challenger) checkairmanTypes.push("challenger");
-
-          const updatePayload: Record<string, unknown> = { is_checkairman: true };
-          if (checkairmanTypes.length > 0) {
-            updatePayload.checkairman_types = checkairmanTypes;
-          }
-          await supa.from("crew_members").update(updatePayload).eq("id", existing.id);
-        }
-      }
-    }
-  }
+  // ═══ 2. Checkairman flags already set during insert (from parsed checkairmen data) ════
 
   // ═══ 3. Build swap assignments from weekly sheet ══════════════════════════
 
