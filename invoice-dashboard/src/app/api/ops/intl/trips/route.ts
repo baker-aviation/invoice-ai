@@ -345,29 +345,37 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Failed to list trips" }, { status: 500 });
   }
 
-  // Collect all flight IDs to batch-fetch jetinsight_url
+  // Collect ALL flight IDs to batch-fetch jetinsight_url + schedule times
   const allFlightIds = new Set<string>();
   for (const t of trips ?? []) {
-    if (t.flight_ids?.[0]) allFlightIds.add(t.flight_ids[0]);
+    for (const fid of t.flight_ids ?? []) allFlightIds.add(fid);
   }
   const jetinsightMap = new Map<string, string>();
+  const flightTimesMap = new Map<string, { dep: string; arr: string | null }>();
   if (allFlightIds.size > 0) {
     const { data: flightRows } = await supa
       .from("flights")
-      .select("id, jetinsight_url")
-      .in("id", [...allFlightIds])
-      .not("jetinsight_url", "is", null);
+      .select("id, jetinsight_url, scheduled_departure, scheduled_arrival")
+      .in("id", [...allFlightIds]);
     for (const f of flightRows ?? []) {
       if (f.jetinsight_url) jetinsightMap.set(f.id, f.jetinsight_url);
+      flightTimesMap.set(f.id, { dep: f.scheduled_departure, arr: f.scheduled_arrival ?? null });
     }
   }
 
-  // Sort clearances and attach jetinsight_url
+  // Sort clearances, attach jetinsight_url, and build schedule_snapshot from flight times
   for (const t of trips ?? []) {
     if (t.clearances) {
       t.clearances.sort((a: { sort_order: number }, b: { sort_order: number }) => a.sort_order - b.sort_order);
     }
     t.jetinsight_url = jetinsightMap.get(t.flight_ids?.[0]) ?? null;
+    // Build schedule_snapshot from live flight data
+    const snap: Record<string, { dep: string; arr: string | null }> = {};
+    for (const fid of t.flight_ids ?? []) {
+      const times = flightTimesMap.get(fid);
+      if (times) snap[fid] = times;
+    }
+    t.schedule_snapshot = Object.keys(snap).length > 0 ? snap : null;
   }
 
   return NextResponse.json({ trips: trips ?? [] });
