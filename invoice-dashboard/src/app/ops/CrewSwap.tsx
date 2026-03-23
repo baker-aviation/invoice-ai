@@ -205,6 +205,8 @@ type CrewInfoData = {
   crewing_checklist: { assignees: { name: string; tasks: Record<string, boolean | string> }[] } | null;
   calendar_weeks: { date_range: string; rotation: string; pic: { citation_x: string[]; challenger: string[]; dual: string[] }; sic: { citation_x: string[]; challenger: string[]; dual: string[] } }[];
   target_week_crew: { date_range: string; rotation: string; pic: { citation_x: string[]; challenger: string[]; dual: string[] }; sic: { citation_x: string[]; challenger: string[]; dual: string[] } } | null;
+  different_airports?: { name: string; date: string | null; coming_from: string | null; going_to: string | null; notes: string | null }[];
+  roster?: { total: number; active: number; terminated: number; skillbridge: number; part_time: number };
 };
 
 // ─── Toast System ───────────────────────────────────────────────────────────
@@ -1496,10 +1498,20 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
   const [alertCount, setAlertCount] = useState(0);
   // Excluded tails (MX, owner-flown, etc.)
   const [excludedTails, setExcludedTails] = useState<Set<string>>(new Set());
+  // Review tab: crew overrides
+  const [airportOverrides, setAirportOverrides] = useState<Record<string, string>>({}); // crew name → temp airport
+  const [unavailableCrew, setUnavailableCrew] = useState<Set<string>>(new Set());
+  const [reviewChecks, setReviewChecks] = useState<Record<string, boolean>>({
+    roster_reviewed: false,
+    airports_reviewed: false,
+    volunteers_reviewed: false,
+    exclusions_reviewed: false,
+    calendar_reviewed: false,
+  });
   // Phase 5-6: Strategy
   const [strategy, setStrategy] = useState<"offgoing_first" | "oncoming_first">("offgoing_first");
   // Tabs
-  const [activeTab, setActiveTab] = useState<"setup" | "plan" | "impacts">("setup");
+  const [activeTab, setActiveTab] = useState<"setup" | "review" | "plan" | "impacts">("setup");
   // Toasts
   const [toasts, setToasts] = useState<Toast[]>([]);
   const addToast = useCallback((type: Toast["type"], msg: string) => {
@@ -2477,6 +2489,8 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
           crewing_checklist: data.crewing_checklist ?? null,
           calendar_weeks: data.calendar_weeks ?? [],
           target_week_crew: data.target_week_crew ?? null,
+          different_airports: data.different_airports ?? [],
+          roster: data.roster ?? undefined,
         });
         addToast("success", `Crew info synced: ${data.checkairmen?.length ?? 0} CAs, ${data.bad_pairings?.length ?? 0} bad pairings`);
       }
@@ -2535,6 +2549,8 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
           crewing_checklist: data.crewing_checklist ?? null,
           calendar_weeks: data.calendar_weeks ?? [],
           target_week_crew: data.target_week_crew ?? null,
+          different_airports: data.different_airports ?? [],
+          roster: data.roster ?? undefined,
         });
 
         setRotationSource("excel");
@@ -2776,6 +2792,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
       <div className="flex border-b">
         {([
           { key: "setup" as const, label: "Setup", badge: null },
+          { key: "review" as const, label: "Review", badge: Object.values(reviewChecks).every(Boolean) ? "\u2713" : `${Object.values(reviewChecks).filter(Boolean).length}/5` },
           { key: "plan" as const, label: "Plan", badge: swapPlan ? `${swapPlan.rows.length / 4 | 0} tails` : null },
           { key: "impacts" as const, label: "Impacts", badge: alertCount > 0 ? `${alertCount}` : null },
         ]).map((tab) => (
@@ -3200,6 +3217,283 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
             )}
           </div>
         )}
+      </div>
+
+      </>}
+
+      {/* ═══ REVIEW TAB ═══ */}
+      {activeTab === "review" && <>
+
+      <div className="space-y-3">
+        {/* Section 1: Roster Changes */}
+        <div className="rounded-lg border bg-white shadow-sm overflow-hidden">
+          <div className="px-4 py-3 bg-gray-50 border-b flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <input type="checkbox" checked={reviewChecks.roster_reviewed}
+                onChange={(e) => setReviewChecks((p) => ({ ...p, roster_reviewed: e.target.checked }))}
+                className="rounded border-gray-300" />
+              <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">1. Roster Changes</h3>
+            </div>
+            <span className="text-[10px] text-gray-400">{crew.length} active crew</span>
+          </div>
+          <div className="p-4 text-xs space-y-2">
+            {crew.length > 0 ? (
+              <>
+                <div className="grid grid-cols-4 gap-3">
+                  <div className="rounded bg-green-50 p-2 text-center">
+                    <div className="text-lg font-bold text-green-700">{crew.filter((c) => c.active).length}</div>
+                    <div className="text-gray-500">Active</div>
+                  </div>
+                  <div className="rounded bg-red-50 p-2 text-center">
+                    <div className="text-lg font-bold text-red-700">{crew.filter((c) => !c.active).length}</div>
+                    <div className="text-gray-500">Inactive</div>
+                  </div>
+                  <div className="rounded bg-teal-50 p-2 text-center">
+                    <div className="text-lg font-bold text-teal-700">{crew.filter((c) => c.is_skillbridge).length}</div>
+                    <div className="text-gray-500">SkillBridge</div>
+                  </div>
+                  <div className="rounded bg-purple-50 p-2 text-center">
+                    <div className="text-lg font-bold text-purple-700">{crew.filter((c) => c.is_checkairman).length}</div>
+                    <div className="text-gray-500">Checkairmen</div>
+                  </div>
+                </div>
+                {unavailableCrew.size > 0 && (
+                  <div className="text-amber-600">Marked unavailable: {[...unavailableCrew].join(", ")}</div>
+                )}
+              </>
+            ) : (
+              <div className="text-gray-400">Upload Crew Info Excel on Setup tab first.</div>
+            )}
+          </div>
+        </div>
+
+        {/* Section 2: Different Airports */}
+        <div className="rounded-lg border bg-white shadow-sm overflow-hidden">
+          <div className="px-4 py-3 bg-gray-50 border-b flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <input type="checkbox" checked={reviewChecks.airports_reviewed}
+                onChange={(e) => setReviewChecks((p) => ({ ...p, airports_reviewed: e.target.checked }))}
+                className="rounded border-gray-300" />
+              <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">2. Different Airports</h3>
+            </div>
+            <span className="text-[10px] text-gray-400">Crew NOT at home base this week</span>
+          </div>
+          <div className="p-4 text-xs">
+            {crewInfoData?.different_airports && crewInfoData.different_airports.length > 0 ? (
+              <div className="space-y-1">
+                {crewInfoData.different_airports.map((da, i) => (
+                  <div key={i} className="flex items-center gap-3 py-1 border-b border-gray-100 last:border-0">
+                    <span className="font-medium text-gray-900 w-40">{da.name}</span>
+                    {da.coming_from && <span className="text-blue-600">from {da.coming_from}</span>}
+                    {da.going_to && <span className="text-green-600">to {da.going_to}</span>}
+                    {da.notes && <span className="text-gray-400">— {da.notes}</span>}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-gray-400">No different airport entries for this week.</div>
+            )}
+            <div className="mt-3 pt-2 border-t">
+              <div className="text-[10px] font-bold text-gray-500 uppercase mb-1">Add Override</div>
+              <div className="flex gap-2">
+                <select className="text-xs border rounded px-2 py-1 bg-white flex-1"
+                  onChange={(e) => {
+                    if (e.target.value) {
+                      const name = e.target.value;
+                      const airport = prompt(`Enter temporary airport for ${name} (e.g., ATL):`);
+                      if (airport) {
+                        setAirportOverrides((p) => ({ ...p, [name]: airport.toUpperCase() }));
+                      }
+                      e.target.value = "";
+                    }
+                  }}
+                >
+                  <option value="">Select crew member...</option>
+                  {crew.filter((c) => c.active).map((c) => (
+                    <option key={c.id} value={c.name}>{c.name} ({c.home_airports.join("/")})</option>
+                  ))}
+                </select>
+              </div>
+              {Object.keys(airportOverrides).length > 0 && (
+                <div className="mt-2 space-y-1">
+                  {Object.entries(airportOverrides).map(([name, apt]) => (
+                    <div key={name} className="flex items-center gap-2 text-xs">
+                      <span className="font-medium">{name}</span>
+                      <span className="text-amber-600">→ temporarily at {apt}</span>
+                      <button onClick={() => setAirportOverrides((p) => { const n = { ...p }; delete n[name]; return n; })}
+                        className="text-red-400 hover:text-red-600">&times;</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Section 3: Volunteer Preferences */}
+        <div className="rounded-lg border bg-white shadow-sm overflow-hidden">
+          <div className="px-4 py-3 bg-gray-50 border-b flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <input type="checkbox" checked={reviewChecks.volunteers_reviewed}
+                onChange={(e) => setReviewChecks((p) => ({ ...p, volunteers_reviewed: e.target.checked }))}
+                className="rounded border-gray-300" />
+              <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">3. Volunteer Preferences</h3>
+            </div>
+            <span className="text-[10px] text-gray-400">{volunteers.length} responses</span>
+          </div>
+          <div className="p-4 text-xs">
+            {volunteers.length > 0 ? (
+              <div className="grid grid-cols-3 gap-4">
+                <div>
+                  <div className="font-bold text-green-700 mb-1">Early ({volunteers.filter((v) => v.parsed_preference === "early" || v.parsed_preference === "early_and_late").length})</div>
+                  {volunteers.filter((v) => v.parsed_preference === "early" || v.parsed_preference === "early_and_late").map((v, i) => (
+                    <div key={i} className="py-0.5 text-gray-700">{(v.crew_members as { name?: string } | null)?.name ?? `Unmatched (${v.slack_user_id})`}</div>
+                  ))}
+                </div>
+                <div>
+                  <div className="font-bold text-amber-700 mb-1">Late ({volunteers.filter((v) => v.parsed_preference === "late" || v.parsed_preference === "early_and_late").length})</div>
+                  {volunteers.filter((v) => v.parsed_preference === "late" || v.parsed_preference === "early_and_late").map((v, i) => (
+                    <div key={i} className="py-0.5 text-gray-700">{(v.crew_members as { name?: string } | null)?.name ?? `Unmatched (${v.slack_user_id})`}</div>
+                  ))}
+                </div>
+                <div>
+                  <div className="font-bold text-purple-700 mb-1">Standby ({volunteers.filter((v) => v.parsed_preference === "standby").length})</div>
+                  {volunteers.filter((v) => v.parsed_preference === "standby").map((v, i) => (
+                    <div key={i} className="py-0.5 text-gray-700">
+                      {(v.crew_members as { name?: string } | null)?.name ?? `Unmatched (${v.slack_user_id})`}
+                      {v.notes && <span className="text-gray-400 ml-1">— {v.notes}</span>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="text-gray-400">No volunteer responses. Click Parse Slack Thread on Setup tab.</div>
+            )}
+          </div>
+        </div>
+
+        {/* Section 4: Tail Exclusions */}
+        <div className="rounded-lg border bg-white shadow-sm overflow-hidden">
+          <div className="px-4 py-3 bg-gray-50 border-b flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <input type="checkbox" checked={reviewChecks.exclusions_reviewed}
+                onChange={(e) => setReviewChecks((p) => ({ ...p, exclusions_reviewed: e.target.checked }))}
+                className="rounded border-gray-300" />
+              <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">4. Exclusions</h3>
+            </div>
+            <span className="text-[10px] text-gray-400">{excludedTails.size} tails excluded</span>
+          </div>
+          <div className="p-4 text-xs">
+            <div className="text-[10px] font-bold text-gray-500 uppercase mb-2">Exclude tails (MX, owner-flown, etc.)</div>
+            <div className="flex flex-wrap gap-1.5">
+              {tailSchedules.map((ts) => (
+                <button key={ts.tail}
+                  onClick={() => setExcludedTails((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(ts.tail)) next.delete(ts.tail); else next.add(ts.tail);
+                    return next;
+                  })}
+                  className={`px-2 py-1 rounded text-[10px] font-mono font-bold border ${
+                    excludedTails.has(ts.tail)
+                      ? "bg-red-100 border-red-300 text-red-700 line-through"
+                      : "bg-white border-gray-200 text-gray-700 hover:bg-gray-50"
+                  }`}
+                >
+                  {ts.tail}
+                </button>
+              ))}
+            </div>
+            {excludedTails.size > 0 && (
+              <div className="mt-2 text-amber-600">
+                Excluded: {[...excludedTails].join(", ")} — these tails will be skipped by the optimizer
+              </div>
+            )}
+            <div className="mt-3 pt-2 border-t">
+              <div className="text-[10px] font-bold text-gray-500 uppercase mb-2">Mark crew unavailable</div>
+              <div className="flex flex-wrap gap-1.5">
+                {crew.filter((c) => c.active).slice(0, 50).map((c) => (
+                  <button key={c.id}
+                    onClick={() => setUnavailableCrew((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(c.name)) next.delete(c.name); else next.add(c.name);
+                      return next;
+                    })}
+                    className={`px-1.5 py-0.5 rounded text-[9px] border ${
+                      unavailableCrew.has(c.name)
+                        ? "bg-red-100 border-red-300 text-red-700 line-through"
+                        : "bg-white border-gray-200 text-gray-600 hover:bg-gray-50"
+                    }`}
+                  >
+                    {c.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Section 5: Calendar Preview */}
+        <div className="rounded-lg border bg-white shadow-sm overflow-hidden">
+          <div className="px-4 py-3 bg-gray-50 border-b flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <input type="checkbox" checked={reviewChecks.calendar_reviewed}
+                onChange={(e) => setReviewChecks((p) => ({ ...p, calendar_reviewed: e.target.checked }))}
+                className="rounded border-gray-300" />
+              <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">5. Calendar Confirmation</h3>
+            </div>
+            <span className="text-[10px] text-gray-400">
+              {crewInfoData?.target_week_crew ? `Rotation ${crewInfoData.target_week_crew.rotation}` : "—"}
+            </span>
+          </div>
+          <div className="p-4 text-xs">
+            {crewInfoData?.target_week_crew ? (
+              <div className="space-y-2">
+                <div className="font-medium text-gray-700">{crewInfoData.target_week_crew.date_range} (Rotation {crewInfoData.target_week_crew.rotation})</div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <div className="font-bold text-gray-600 mb-1">Captains (PICs)</div>
+                    <div className="text-[10px] text-green-700 mb-0.5">Citation X ({crewInfoData.target_week_crew.pic.citation_x.length}): {crewInfoData.target_week_crew.pic.citation_x.join(", ")}</div>
+                    <div className="text-[10px] text-yellow-700 mb-0.5">Challenger ({crewInfoData.target_week_crew.pic.challenger.length}): {crewInfoData.target_week_crew.pic.challenger.join(", ")}</div>
+                    {crewInfoData.target_week_crew.pic.dual.length > 0 && (
+                      <div className="text-[10px] text-purple-700">Dual ({crewInfoData.target_week_crew.pic.dual.length}): {crewInfoData.target_week_crew.pic.dual.join(", ")}</div>
+                    )}
+                  </div>
+                  <div>
+                    <div className="font-bold text-gray-600 mb-1">First Officers (SICs)</div>
+                    <div className="text-[10px] text-green-700 mb-0.5">Citation X ({crewInfoData.target_week_crew.sic.citation_x.length}): {crewInfoData.target_week_crew.sic.citation_x.join(", ")}</div>
+                    <div className="text-[10px] text-yellow-700 mb-0.5">Challenger ({crewInfoData.target_week_crew.sic.challenger.length}): {crewInfoData.target_week_crew.sic.challenger.join(", ")}</div>
+                    {crewInfoData.target_week_crew.sic.dual.length > 0 && (
+                      <div className="text-[10px] text-purple-700">Dual ({crewInfoData.target_week_crew.sic.dual.length}): {crewInfoData.target_week_crew.sic.dual.join(", ")}</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="text-gray-400">Upload Crew Info Excel to see calendar data.</div>
+            )}
+          </div>
+        </div>
+
+        {/* Ready to optimize */}
+        <div className={`rounded-lg border-2 p-4 text-center ${
+          Object.values(reviewChecks).every(Boolean) ? "border-green-300 bg-green-50" : "border-amber-300 bg-amber-50"
+        }`}>
+          <div className="text-sm font-medium text-gray-700 mb-2">
+            {Object.values(reviewChecks).every(Boolean)
+              ? "All checks complete — ready to optimize!"
+              : `${Object.values(reviewChecks).filter(Boolean).length}/5 checks completed`}
+          </div>
+          <button
+            onClick={() => setActiveTab("plan")}
+            className={`px-6 py-2 text-sm font-medium rounded-lg ${
+              Object.values(reviewChecks).every(Boolean)
+                ? "bg-blue-600 text-white hover:bg-blue-700"
+                : "bg-gray-200 text-gray-600 hover:bg-gray-300"
+            }`}
+          >
+            Go to Plan Tab →
+          </button>
+        </div>
       </div>
 
       </>}
