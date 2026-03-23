@@ -626,6 +626,8 @@ export type IntlTrip = {
   clearances?: IntlTripClearance[];
   // Computed from first flight
   jetinsight_url?: string | null;
+  // Per-flight departure/arrival times (keyed by flight ID)
+  schedule_snapshot?: Record<string, { dep: string; arr: string | null }> | null;
 };
 
 export type IntlTripClearance = {
