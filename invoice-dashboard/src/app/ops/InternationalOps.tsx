@@ -170,8 +170,24 @@ function clearanceStatusLabel(s: string) {
   }
 }
 
+const TRIP_TIME_RANGES = [
+  { key: "48h", label: "48 Hours", hours: 48 },
+  { key: "7d", label: "1 Week", hours: 168 },
+  { key: "all", label: "All", hours: Infinity },
+] as const;
+type TripTimeRange = (typeof TRIP_TIME_RANGES)[number]["key"];
+
 function TripBoard({ trips, countries, onRefresh }: { trips: IntlTrip[]; countries: Country[]; onRefresh: () => void }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [timeRange, setTimeRange] = useState<TripTimeRange>("7d");
+
+  const filtered = trips.filter((t) => {
+    if (timeRange === "all") return true;
+    const range = TRIP_TIME_RANGES.find((r) => r.key === timeRange);
+    if (!range) return true;
+    const tripDate = new Date(t.trip_date + "T00:00:00Z");
+    return tripDate.getTime() <= Date.now() + range.hours * 3600000;
+  });
 
   if (trips.length === 0) {
     return <p className="text-sm text-gray-500">No international trips detected in the next 30 days.</p>;
@@ -179,8 +195,25 @@ function TripBoard({ trips, countries, onRefresh }: { trips: IntlTrip[]; countri
 
   return (
     <div className="space-y-3">
-      <p className="text-xs text-gray-500">{trips.length} international trip{trips.length > 1 ? "s" : ""}</p>
-      {trips.map((trip) => (
+      <div className="flex items-center gap-3">
+        <div className="flex gap-1">
+          {TRIP_TIME_RANGES.map((r) => (
+            <button
+              key={r.key}
+              onClick={() => setTimeRange(r.key)}
+              className={`px-3 py-1 text-xs font-medium rounded-full transition-colors ${
+                timeRange === r.key
+                  ? "bg-blue-600 text-white"
+                  : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+              }`}
+            >
+              {r.label}
+            </button>
+          ))}
+        </div>
+        <p className="text-xs text-gray-500">{filtered.length} trip{filtered.length !== 1 ? "s" : ""}</p>
+      </div>
+      {filtered.map((trip) => (
         <TripRow
           key={trip.id}
           trip={trip}
@@ -190,6 +223,9 @@ function TripBoard({ trips, countries, onRefresh }: { trips: IntlTrip[]; countri
           onRefresh={onRefresh}
         />
       ))}
+      {filtered.length === 0 && (
+        <p className="text-sm text-gray-500">No international trips in this time range.</p>
+      )}
     </div>
   );
 }
