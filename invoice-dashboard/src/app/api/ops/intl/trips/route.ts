@@ -274,6 +274,7 @@ export async function GET(req: NextRequest) {
       const updatePromises: PromiseLike<unknown>[] = [];
       const toInsert: DetectedTrip[] = [];
       const routeChangeAlerts: { flight_id: string; old_route: string[]; new_route: string[]; tail: string }[] = [];
+      const tailChangeAlerts: { flight_id: string; old_tail: string; new_tail: string; route: string[] }[] = [];
 
       for (const dt of detected) {
         // Collect all flight IDs from this detected trip for dedup tracking
@@ -287,7 +288,7 @@ export async function GET(req: NextRequest) {
                  JSON.stringify(e.route_icaos) === JSON.stringify(dt.route_icaos)
         );
 
-        // 2. Try flight_ids overlap: same underlying flights, route or date changed
+        // 2. Try flight_ids overlap on same tail: same flights, route or date changed
         if (!match) {
           const dtFlightSet = new Set(dt.flight_ids);
           match = candidates.find((e) => {
@@ -296,7 +297,26 @@ export async function GET(req: NextRequest) {
           });
         }
 
-        // 3. Try same tail + date (within ±1 day) with no other match — likely same trip rescheduled
+        // 3. Try flight_ids overlap across ALL tails: aircraft swap (flights moved to different tail)
+        let tailChanged = false;
+        if (!match) {
+          const dtFlightSet = new Set(dt.flight_ids);
+          for (const [, tailTrips] of existingByTail) {
+            if (!tailTrips) continue;
+            const crossMatch = tailTrips.find((e) => {
+              if (matchedExistingIds.has(e.id)) return false;
+              if (!e.flight_ids?.length) return false;
+              return e.flight_ids.some((fid: string) => dtFlightSet.has(fid));
+            });
+            if (crossMatch) {
+              match = crossMatch;
+              tailChanged = true;
+              break;
+            }
+          }
+        }
+
+        // 4. Try same tail + date (within ±1 day) with no other match — likely same trip rescheduled
         if (!match) {
           const dtDate = new Date(dt.trip_date + "T00:00:00Z").getTime();
           match = candidates.find((e) => {
@@ -311,16 +331,28 @@ export async function GET(req: NextRequest) {
           const routeChanged = JSON.stringify(match.route_icaos) !== JSON.stringify(dt.route_icaos);
           const dateChanged = match.trip_date !== dt.trip_date;
           const flightsChanged = JSON.stringify(match.flight_ids) !== JSON.stringify(dt.flight_ids);
+          tailChanged = tailChanged || match.tail_number !== dt.tail_number;
 
-          if (routeChanged || dateChanged || flightsChanged) {
+          if (routeChanged || dateChanged || flightsChanged || tailChanged) {
             const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
             if (routeChanged) updates.route_icaos = dt.route_icaos;
             if (dateChanged) updates.trip_date = dt.trip_date;
             if (flightsChanged) updates.flight_ids = dt.flight_ids;
+            if (tailChanged) updates.tail_number = dt.tail_number;
 
             updatePromises.push(
               supa.from("intl_trips").update(updates).eq("id", match.id)
             );
+
+            // If tail changed, fire a tail_change alert (permits may need resubmission)
+            if (tailChanged) {
+              tailChangeAlerts.push({
+                flight_id: dt.flight_ids[0],
+                old_tail: match.tail_number,
+                new_tail: dt.tail_number,
+                route: dt.route_icaos,
+              });
+            }
 
             // If route changed, rebuild clearances: keep status on matching airports, add new ones
             if (routeChanged) {
@@ -383,17 +415,29 @@ export async function GET(req: NextRequest) {
       // Run updates in parallel
       if (updatePromises.length > 0) await Promise.all(updatePromises);
 
-      // Create route change alerts
-      if (routeChangeAlerts.length > 0) {
-        const alerts = routeChangeAlerts.map((a) => ({
+      // Create change alerts
+      const changeAlerts: { flight_id: string; alert_type: string; severity: string; message: string; acknowledged: boolean }[] = [];
+      for (const a of routeChangeAlerts) {
+        changeAlerts.push({
           flight_id: a.flight_id,
           alert_type: "schedule_change",
-          severity: "warning" as const,
+          severity: "warning",
           message: `${a.tail} route changed: ${a.old_route.join("→")} ➜ ${a.new_route.join("→")}`,
           acknowledged: false,
-        }));
-        const { error: alertErr } = await supa.from("intl_leg_alerts").insert(alerts);
-        if (alertErr) console.error("[intl/trips] route change alert error:", alertErr);
+        });
+      }
+      for (const a of tailChangeAlerts) {
+        changeAlerts.push({
+          flight_id: a.flight_id,
+          alert_type: "tail_change",
+          severity: "critical",
+          message: `Aircraft changed from ${a.old_tail} to ${a.new_tail} on ${a.route.join("→")} — permits may need resubmission`,
+          acknowledged: false,
+        });
+      }
+      if (changeAlerts.length > 0) {
+        const { error: alertErr } = await supa.from("intl_leg_alerts").insert(changeAlerts);
+        if (alertErr) console.error("[intl/trips] change alert error:", alertErr);
       }
 
       // Batch insert truly new trips
