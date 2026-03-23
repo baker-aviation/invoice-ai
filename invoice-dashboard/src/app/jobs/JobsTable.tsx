@@ -285,7 +285,7 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
   const [categories, setCategories] = useState<Set<string>>(new Set());
   const [softGate, setSoftGate] = useState("ALL");
   const [tags, setTags] = useState<Set<string>>(new Set());
-  const [tagMode, setTagMode] = useState<"AND" | "OR">("AND");
+  const [tagMode, setTagMode] = useState<"AND" | "OR">("OR");
   const [showRejected, setShowRejected] = useState(false);
   const [page, setPage] = useState(0);
 

@@ -2357,8 +2357,9 @@ function buildFeasibilityMatrix(params: {
   preComputedRoutes?: Map<string, PilotRoute[]>;  // crewMemberId → oncoming routes
   preComputedOffgoing?: Map<string, PilotRoute[]>;  // crewMemberId → offgoing routes
   offgoingDeadlines?: OncomingDeadline[];  // offgoing departure deadlines per tail+role
+  picSwapPoints?: Map<string, string>;  // tail → PIC swap ICAO (for SIC same-swap-point preference)
 }): FeasibilityEntry[] {
-  const { pool, role, tails, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, preComputedRoutes, preComputedOffgoing, offgoingDeadlines } = params;
+  const { pool, role, tails, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, preComputedRoutes, preComputedOffgoing, offgoingDeadlines, picSwapPoints } = params;
   const matrix: FeasibilityEntry[] = [];
 
   // Cache buildCandidates results by homeAirports+swapPointIcao.
@@ -2505,11 +2506,18 @@ function buildFeasibilityMatrix(params: {
         let rank = costNorm * 0.40 + reliabilityNorm * 0.25 + proximityNorm * 0.20 + crewDiff * 0.15;
 
         // Checkairman conservation: slightly penalize assigning a CA to a standard tail.
-        // This makes the matcher prefer non-CA crew for easy tails, saving CAs for tails
-        // that need them (e.g., new hire paired, training requirements).
         const crewMemberObj = crewRoster.find((c) => c.name === poolEntry.name && c.role === role);
         if (crewMemberObj?.is_checkairman) {
-          rank += 5; // slight penalty — CA is still viable, just less preferred for routine tails
+          rank += 5;
+        }
+
+        // SIC same-swap-point preference: penalize SIC rank when their best swap point
+        // differs from the PIC's assigned swap point on this tail. Prevents split swaps.
+        if (role === "SIC" && picSwapPoints) {
+          const picSp = picSwapPoints.get(tail);
+          if (picSp && bestSwapIcao && picSp.toUpperCase() !== bestSwapIcao.toUpperCase()) {
+            rank += 15; // strong preference to match PIC's swap point
+          }
         }
 
         matrix.push({
@@ -2685,6 +2693,15 @@ function buildFeasibilityMatrix(params: {
         rank += 5;
       }
 
+      // SIC same-swap-point preference (same as pre-computed path)
+      if (role === "SIC" && picSwapPoints) {
+        const picSp = picSwapPoints.get(tail);
+        const sicBestSwap = best?.to ? toIcao(best.to) : (swapPoints[0]?.icao ?? "");
+        if (picSp && sicBestSwap && picSp.toUpperCase() !== sicBestSwap.toUpperCase()) {
+          rank += 15;
+        }
+      }
+
       matrix.push({
         crewName: poolEntry.name,
         tail,
@@ -2804,7 +2821,14 @@ export function assignOncomingCrew(params: {
 
   // Assign PICs then SICs using feasibility matrix
   assignRoleWithMatrix("oncoming_pic", oncomingPool.pic, "PIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes, preComputedOffgoing, excludeTails, offgoingDeadlines);
-  assignRoleWithMatrix("oncoming_sic", oncomingPool.sic, "SIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes, preComputedOffgoing, excludeTails, offgoingDeadlines);
+
+  // Build PIC swap point map for SIC same-swap-point preference
+  const picSwapPoints = new Map<string, string>();
+  for (const [tail, sa] of Object.entries(result)) {
+    if (sa.oncoming_pic_swap_icao) picSwapPoints.set(tail, sa.oncoming_pic_swap_icao);
+  }
+
+  assignRoleWithMatrix("oncoming_sic", oncomingPool.sic, "SIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes, preComputedOffgoing, excludeTails, offgoingDeadlines, picSwapPoints);
 
   // Remaining pool → standby
   // SkillBridge SICs go first for forced standby, then sort by standby_count (lowest first)
@@ -3063,6 +3087,7 @@ function assignRoleWithMatrix(
   preComputedOffgoing?: Map<string, PilotRoute[]>,
   excludeTails?: Set<string>,
   offgoingDeadlines?: OncomingDeadline[],
+  picSwapPoints?: Map<string, string>,
 ): void {
   const needingTails = Object.keys(result).filter((tail) => !result[tail][field] && !excludeTails?.has(tail));
   if (needingTails.length === 0 || pool.length === 0) return;
@@ -3081,6 +3106,7 @@ function assignRoleWithMatrix(
     preComputedRoutes,
     preComputedOffgoing,
     offgoingDeadlines,
+    picSwapPoints,
   });
 
   // Only consider viable options (where real transport exists)
