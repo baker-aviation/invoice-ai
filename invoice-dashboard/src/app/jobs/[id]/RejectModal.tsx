@@ -42,6 +42,7 @@ export default function RejectModal({
   const [type, setType] = useState<RejectionType | null>(null);
   const [notes, setNotes] = useState("");
   const [loading, setLoading] = useState(false);
+  const [sendEmail, setSendEmail] = useState(true);
   const [result, setResult] = useState<{ ok: boolean; emailSent?: boolean; emailError?: string } | null>(null);
 
   const handleSelectType = (t: RejectionType) => {
@@ -59,12 +60,12 @@ export default function RejectModal({
         body: JSON.stringify({
           rejection_type: type,
           rejection_reason: notes.trim() || null,
-          send_email: true,
+          send_email: sendEmail,
         }),
       });
       const data = await res.json();
       setResult(data);
-      if (data.ok && data.emailSent && !data.emailError) {
+      if (data.ok && (data.emailSent || !sendEmail) && !data.emailError) {
         setTimeout(() => {
           onClose();
           router.refresh();
@@ -145,14 +146,26 @@ export default function RejectModal({
               <div className="text-sm font-semibold text-amber-800">Confirm Rejection</div>
               <div className="text-xs text-amber-700 mt-1">
                 This will reject <strong>{candidateName}</strong> ({TYPE_CONFIG[type].label.toLowerCase()})
-                {candidateEmail && (
+                {sendEmail && candidateEmail && (
                   <> and send a rejection email to <strong>{candidateEmail}</strong></>
-                )}.
+                )}
+                {!sendEmail && <> without sending an email</>}.
               </div>
               {!candidateEmail && (
                 <div className="text-xs text-amber-600 mt-1">No email on file — no email will be sent.</div>
               )}
             </div>
+            {candidateEmail && (
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={sendEmail}
+                  onChange={(e) => setSendEmail(e.target.checked)}
+                  className="rounded border-gray-300 text-red-600 focus:ring-red-500"
+                />
+                <span className="text-sm text-gray-700">Send rejection email to candidate</span>
+              </label>
+            )}
             {notes && (
               <div className="text-xs text-gray-500">
                 <span className="font-medium">Notes:</span> {notes}
@@ -163,7 +176,7 @@ export default function RejectModal({
                 Back
               </button>
               <button onClick={handleConfirm} disabled={loading} className="flex-1 text-sm py-2 rounded-lg bg-red-600 text-white hover:bg-red-700 font-medium disabled:opacity-50">
-                {loading ? "Rejecting..." : "Confirm & Send Email"}
+                {loading ? "Rejecting..." : sendEmail ? "Confirm & Send Email" : "Confirm Rejection"}
               </button>
             </div>
           </div>
@@ -180,6 +193,9 @@ export default function RejectModal({
                 </div>
                 {result.emailSent && !result.emailError && (
                   <div className="text-xs text-emerald-600">Rejection email sent to {candidateEmail}</div>
+                )}
+                {!result.emailSent && !result.emailError && (
+                  <div className="text-xs text-gray-400">No email sent</div>
                 )}
                 {result.emailError && (
                   <div className="rounded-lg bg-red-50 border border-red-200 p-3 text-left">
