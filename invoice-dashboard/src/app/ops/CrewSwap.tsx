@@ -815,8 +815,14 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                           }`}
                           value={crewSwapLoc}
                           onChange={(e) => {
-                            // Changing per-crew swap point opens the flight picker for the new location
-                            const updatedRow = { ...row, swap_location: e.target.value };
+                            const newLoc = e.target.value;
+                            // Update swap_location in state immediately (persists even if modal is cancelled)
+                            if (onSwapPointChange) {
+                              // Update just this crew member's swap location, not the whole tail
+                              // We use a custom approach: directly modify the row via the parent
+                            }
+                            // Open flight picker for the new location
+                            const updatedRow = { ...row, swap_location: newLoc };
                             onChangeTransport(tail, role, direction, updatedRow);
                           }}
                         >
@@ -1753,6 +1759,20 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
     if (!crewMember) {
       addToast("error", `Crew member "${row.name}" not found in roster`);
       return;
+    }
+
+    // If swap_location was changed via per-crew dropdown, persist it to state immediately
+    if (row.swap_location) {
+      setSwapPlan((prev) => {
+        if (!prev) return prev;
+        const newRows = prev.rows.map((r) => {
+          if (r.tail_number === tail && r.name === row.name && r.direction === direction && r.swap_location !== row.swap_location) {
+            return { ...r, swap_location: row.swap_location };
+          }
+          return r;
+        });
+        return { ...prev, rows: newRows };
+      });
     }
 
     // Get first/last leg times for this tail on swap day
