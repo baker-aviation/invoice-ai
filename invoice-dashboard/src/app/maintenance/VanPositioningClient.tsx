@@ -2001,6 +2001,8 @@ function VanScheduleCard({
   fboMap,
   tailToVans,
   vanDiff,
+  showComparison,
+  publishedItems,
 }: {
   zone: (typeof FIXED_VAN_ZONES)[number];
   color: string;
@@ -2034,6 +2036,8 @@ function VanScheduleCard({
   fboMap?: Record<string, string>;
   tailToVans?: Map<string, number[]>;
   vanDiff?: { added: number; removed: number; orderChanged: boolean; mxChanged: boolean } | null;
+  showComparison?: boolean;
+  publishedItems?: { flightId: string; tail: string; airport: string }[];
 }) {
   const [expanded, setExpanded] = useState(false);
   const [showSlackModal, setShowSlackModal] = useState(false);
@@ -2164,6 +2168,68 @@ function VanScheduleCard({
           <span className="text-gray-400 text-sm">{expanded ? "▲" : "▼"}</span>
         </div>
       </div>
+
+      {/* Side-by-side comparison: Published vs Current — visible without expanding */}
+      {showComparison && publishedItems && (
+        (() => {
+          const pubSet = new Set(publishedItems.map((p) => p.flightId));
+          const curSet = new Set(items.map((i) => i.arrFlight.id));
+          const hasChanges = publishedItems.length !== items.length ||
+            publishedItems.some((p) => !curSet.has(p.flightId)) ||
+            items.some((i) => !pubSet.has(i.arrFlight.id));
+          // Check order change (same set, different sequence)
+          const orderChanged = !hasChanges && publishedItems.length > 0 &&
+            publishedItems.map((p) => p.flightId).join(",") !== items.map((i) => i.arrFlight.id).join(",");
+          return (
+            <div className="border-t bg-slate-50">
+              <div className="grid grid-cols-2 divide-x divide-slate-200">
+                {/* Published column */}
+                <div className="px-3 py-2">
+                  <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Published</div>
+                  {publishedItems.length === 0 ? (
+                    <div className="text-xs text-slate-400 italic">Empty</div>
+                  ) : publishedItems.map((p, idx) => {
+                    const inCurrent = curSet.has(p.flightId);
+                    return (
+                      <div key={p.flightId} className={`flex items-center gap-2 py-0.5 text-xs ${!inCurrent ? "text-red-600 line-through" : "text-slate-600"}`}>
+                        <span className="text-[10px] text-slate-300 w-3 text-right">{idx + 1}</span>
+                        <span className="font-medium font-mono">{p.tail}</span>
+                        <span className="text-slate-400">@</span>
+                        <span className="font-mono">{p.airport}</span>
+                        {!inCurrent && <span className="text-[9px] bg-red-100 text-red-600 rounded px-1">removed</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+                {/* Current column */}
+                <div className="px-3 py-2">
+                  <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Current</div>
+                  {items.length === 0 ? (
+                    <div className="text-xs text-slate-400 italic">Empty</div>
+                  ) : items.map((item, idx) => {
+                    const inPublished = pubSet.has(item.arrFlight.id);
+                    return (
+                      <div key={item.arrFlight.id} className={`flex items-center gap-2 py-0.5 text-xs ${!inPublished ? "text-green-700 font-semibold" : "text-slate-600"}`}>
+                        <span className="text-[10px] text-slate-300 w-3 text-right">{idx + 1}</span>
+                        <span className="font-medium font-mono">{item.arrFlight.tail_number ?? "???"}</span>
+                        <span className="text-slate-400">@</span>
+                        <span className="font-mono">{item.airport}</span>
+                        {!inPublished && <span className="text-[9px] bg-green-100 text-green-700 rounded px-1">new</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+              {!hasChanges && !orderChanged && (
+                <div className="text-[10px] text-center text-slate-400 pb-1.5">No changes from published</div>
+              )}
+              {orderChanged && (
+                <div className="text-[10px] text-center text-amber-500 pb-1.5">Order changed from published</div>
+              )}
+            </div>
+          );
+        })()
+      )}
 
       {expanded && (
         <div className="border-t">
@@ -3453,6 +3519,48 @@ function ScheduleTab({
 
   const changedVanCount = changedVans.length;
 
+  // ── Published comparison toggle + lookup ──
+  const [showPublishedComparison, setShowPublishedComparison] = useState(false);
+
+  const publishedItemsByVan = useMemo(() => {
+    if (publishedAssignments.length === 0) return new Map<number, { flightId: string; tail: string; airport: string }[]>();
+    // Build a flight ID → {tail, airport} lookup from all available sources
+    const flightLookup = new Map<string, { tail: string; airport: string }>();
+    for (const [, items] of finalItemsByVan) {
+      for (const item of items) {
+        flightLookup.set(item.arrFlight.id, { tail: item.arrFlight.tail_number ?? "???", airport: item.airport });
+      }
+    }
+    for (const [, items] of baseItemsByVan) {
+      for (const item of items) {
+        if (!flightLookup.has(item.arrFlight.id)) {
+          flightLookup.set(item.arrFlight.id, { tail: item.arrFlight.tail_number ?? "???", airport: item.airport });
+        }
+      }
+    }
+    for (const item of allDayArrivals) {
+      if (!flightLookup.has(item.arrFlight.id)) {
+        flightLookup.set(item.arrFlight.id, { tail: item.arrFlight.tail_number ?? "???", airport: item.airport });
+      }
+    }
+    // Resolve published flight IDs into displayable items
+    const result = new Map<number, { flightId: string; tail: string; airport: string }[]>();
+    for (const a of publishedAssignments) {
+      const items: { flightId: string; tail: string; airport: string }[] = [];
+      for (const fid of a.flightIds) {
+        const info = flightLookup.get(fid);
+        items.push({ flightId: fid, tail: info?.tail ?? "???", airport: info?.airport ?? "?" });
+      }
+      if (a.syntheticFlights) {
+        for (const sf of a.syntheticFlights) {
+          items.push({ flightId: sf.id, tail: sf.tail, airport: sf.airport ?? "?" });
+        }
+      }
+      result.set(a.vanId, items);
+    }
+    return result;
+  }, [publishedAssignments, finalItemsByVan, baseItemsByVan, allDayArrivals]);
+
   // ── Morning Send state ──
   const [morningSentAt, setMorningSentAt] = useState<string | null>(null);
   const [morningSendStatus, setMorningSendStatus] = useState<"idle" | "sending" | "success" | "error">("idle");
@@ -3810,6 +3918,15 @@ function ScheduleTab({
               className="text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5 hover:bg-amber-100 transition-colors"
             >
               Reset all edits ({totalEdits})
+            </button>
+          )}
+          {publishedAt && (
+            <button
+              onClick={() => setShowPublishedComparison((v) => !v)}
+              className={`text-xs font-medium rounded-lg px-3 py-1.5 transition-colors ${showPublishedComparison ? "text-purple-700 bg-purple-100 border border-purple-300" : "text-purple-700 bg-purple-50 border border-purple-200 hover:bg-purple-100"}`}
+              title="Toggle side-by-side comparison of published vs current schedule"
+            >
+              {showPublishedComparison ? "Hide Comparison" : "Compare to Published"}
             </button>
           )}
           {publishedAt && (
@@ -4676,6 +4793,8 @@ function ScheduleTab({
               isDropTarget={dropTargetVan === zone.vanId}
               hasOverrides={editedVans.has(zone.vanId)}
               vanDiff={(() => { const d = changedVans.find((v) => v.vanId === zone.vanId); return d ? { added: d.added.length, removed: d.removed.length, orderChanged: d.orderChanged, mxChanged: d.mxChanged } : null; })()}
+              showComparison={showPublishedComparison && !!publishedAt}
+              publishedItems={publishedItemsByVan.get(zone.vanId) ?? []}
               flightInfoMap={flightInfoMap}
               legNotes={legNotes}
               mxNotesByTail={mxNotesByTail}
