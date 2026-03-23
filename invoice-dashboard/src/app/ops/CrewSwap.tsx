@@ -718,6 +718,19 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
           }
         }
 
+        // Classify tail legs: REV (has revenue/charter), POS (only positioning), IDLE (no legs)
+        const tailLegType: "rev" | "pos" | "idle" = (() => {
+          if (!flights || !selectedWed) return "idle";
+          const wedStr = selectedWed.toISOString().slice(0, 10);
+          const tailLegs = flights.filter((f) => f.tail_number === tail && f.scheduled_departure?.startsWith(wedStr));
+          if (tailLegs.length === 0) return "idle";
+          const hasRev = tailLegs.some((f) => {
+            const ft = (f.flight_type ?? "").toLowerCase();
+            return ft.includes("charter") || ft.includes("revenue") || ft.includes("owner");
+          });
+          return hasRev ? "rev" : "pos";
+        })();
+
         // Detect split swap: PIC and SIC swapping at different airports
         const onPicSwap = onPic?.swap_location;
         const onSicSwap = onSic?.swap_location;
@@ -919,7 +932,12 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
         const tailImpacts = impacts?.filter((i) => i.tail_number === tail && !i.resolved) ?? [];
         const isImpacted = impactedTails?.has(tail) || tailImpacts.length > 0;
         const isSolved = [onPic, onSic, offPic, offSic].every((r) => r && r.travel_type !== "none");
-        const borderColor = isImpacted ? "border-l-red-500" : !isSolved ? "border-l-amber-400" : "border-l-green-500";
+        // Border color: red=impacted, amber=unsolved, gray=idle, yellow=pos-only, green=rev+solved
+        const borderColor = isImpacted ? "border-l-red-500"
+          : !isSolved ? "border-l-amber-400"
+          : tailLegType === "idle" ? "border-l-gray-300"
+          : tailLegType === "pos" ? "border-l-yellow-400"
+          : "border-l-green-500";
 
         return (
           <div key={tail} id={`tail-${tail}`} className={`rounded-lg border border-l-4 ${borderColor} bg-white overflow-hidden ${isLocked ? "ring-2 ring-blue-300" : ""} ${tailImpacts.some(i => i.severity === "critical") ? "ring-2 ring-red-300" : ""}`}>
@@ -985,6 +1003,16 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                 {unpairedSwapPoints.length > 0 && (
                   <span className="text-[10px] px-1.5 py-0.5 rounded font-bold bg-red-100 text-red-700" title={unpairedSwapPoints.join(", ")}>
                     UNPAIRED: {unpairedSwapPoints.join(", ")}
+                  </span>
+                )}
+                {tailLegType === "idle" && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-gray-200 text-gray-600">
+                    IDLE — SCHEDULE MAY CHANGE
+                  </span>
+                )}
+                {tailLegType === "pos" && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-yellow-100 text-yellow-700">
+                    POS ONLY — MAY CHANGE
                   </span>
                 )}
                 {(onBadPairing || offBadPairing) && (
