@@ -1978,7 +1978,7 @@ export function buildSwapPlan(params: {
           }
         }
 
-        if (bestSwapPoint !== picSwapPoint) {
+        if (bestSwapPoint !== picSwapPoint && bestSwapPoint.position !== "idle") {
           warnings.push(`SIC swaps at ${toIata(bestSwapPoint.icao)} (after ${bestSwapPoint.position}) — PIC covers SIC seat for earlier legs`);
         }
 
@@ -2037,28 +2037,7 @@ export function buildSwapPlan(params: {
   // ── Staggered arrivals check ──────────────────────────────────────────
   // Group oncoming PICs by swap airport (one per tail) — only compare across tails.
   // Same-tail PIC+SIC arriving close together is expected and not worth warning about.
-  const oncomingPics = allTasks.filter((t) => t.direction === "oncoming" && t.role === "PIC" && t.best?.fboArrivalTime);
-  const byAirport = new Map<string, CrewTask[]>();
-  for (const t of oncomingPics) {
-    const icao = t.swapPoint.icao;
-    if (!byAirport.has(icao)) byAirport.set(icao, []);
-    byAirport.get(icao)!.push(t);
-  }
-  for (const [icao, picTasks] of byAirport) {
-    if (picTasks.length < 2) continue;
-    picTasks.sort((a, b) => a.best!.fboArrivalTime!.getTime() - b.best!.fboArrivalTime!.getTime());
-    for (let i = 1; i < picTasks.length; i++) {
-      const prev = picTasks[i - 1];
-      const curr = picTasks[i];
-      const gapHours = (curr.best!.fboArrivalTime!.getTime() - prev.best!.fboArrivalTime!.getTime()) / (60 * 60_000);
-      if (gapHours < STAGGER_MIN_GAP_HOURS) {
-        const warnMsg = `${toIata(icao)}: ${prev.tail} and ${curr.tail} oncoming within ${Math.round(gapHours * 60)}min — consider staggering`;
-        curr.warnings.push(warnMsg);
-        prev.warnings.push(warnMsg);
-        globalWarnings.push(warnMsg);
-      }
-    }
-  }
+  // Stagger warnings removed — not actionable enough to warrant noise in the plan.
 
   // ── Helper: generate transport notes — method + ground transport only ────
   // No routes/connections, no cross-crew sharing references.
@@ -2434,6 +2413,19 @@ function buildFeasibilityMatrix(params: {
       }
       swapPointsToTry = [bestSp];
     }
+
+    // SIC: force to PIC's swap point when available. Only fall back to other
+    // swap points if the PIC's point has no viable transport at all.
+    if (role === "SIC" && picSwapPoints && swapPoints.length > 1) {
+      const picSp = picSwapPoints.get(tail);
+      if (picSp) {
+        const matched = swapPoints.find((sp) => sp.icao.toUpperCase() === picSp.toUpperCase());
+        if (matched) {
+          swapPointsToTry = [matched]; // force SIC to PIC's swap point
+        }
+      }
+    }
+
     const acType = tailAircraftType.get(tail) ?? "unknown";
 
     for (const poolEntry of pool) {

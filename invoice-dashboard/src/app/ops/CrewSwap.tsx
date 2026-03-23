@@ -362,6 +362,7 @@ const FBO_COMMERCIAL_MAP: Record<string, { airports: string[]; preferred: string
   TEB: { airports: ["EWR", "LGA", "JFK"], preferred: "EWR" },
   OPF: { airports: ["MIA", "FLL"], preferred: "MIA" },
   VNY: { airports: ["BUR", "LAX"], preferred: "BUR" },
+  BFI: { airports: ["SEA"], preferred: "SEA" },
   FXE: { airports: ["FLL", "MIA", "PBI"], preferred: "FLL" },
   BED: { airports: ["BOS"], preferred: "BOS" },
   HPN: { airports: ["JFK", "LGA", "EWR"], preferred: "JFK" },
@@ -445,6 +446,25 @@ function AirportAliasPanel({ flights, selectedWed }: { flights: Flight[]; select
                 </div>
               </div>
             ))}
+          </div>
+          <div className="mt-2 pt-2 border-t flex items-center gap-2">
+            <button
+              onClick={() => {
+                const fbo = prompt("FBO airport code (e.g., BFI):");
+                if (!fbo) return;
+                const comm = prompt(`Commercial airport(s) near ${fbo.toUpperCase()} (comma-separated, e.g., SEA,PDX):`);
+                if (!comm) return;
+                const airports = comm.split(",").map((a) => a.trim().toUpperCase()).filter(Boolean);
+                if (airports.length === 0) return;
+                FBO_COMMERCIAL_MAP[fbo.toUpperCase()] = { airports, preferred: airports[0] };
+                setShow(false);
+                setTimeout(() => setShow(true), 50); // force re-render
+              }}
+              className="text-[10px] px-2 py-1 rounded bg-blue-50 text-blue-600 hover:bg-blue-100 border border-blue-200 font-medium"
+            >
+              + Add FBO
+            </button>
+            <span className="text-[9px] text-gray-400">Add custom FBO → commercial airport mapping</span>
           </div>
         </div>
       )}
@@ -699,21 +719,25 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
           ? Math.round((earliestOffDep - latestOnArrival) / 60_000)
           : null;
 
-        // Check if oncoming crew arrives AFTER aircraft departs swap point
+        // Check if ANY oncoming crew arrives AFTER aircraft departs THEIR swap point
         let crewArrivesLate = false;
-        let aircraftDepartsAt: string | null = null;
-        if (flights && selectedWed && latestOnArrival) {
+        if (flights && selectedWed) {
           const wedStr = selectedWed.toISOString().slice(0, 10);
-          const swapIcao = swapLoc.length === 3 ? `K${swapLoc}` : swapLoc;
-          // Find the first departure FROM the swap point on Wed
-          const depFromSwap = flights
-            .filter((f) => f.tail_number === tail && f.departure_icao === swapIcao && f.scheduled_departure?.startsWith(wedStr))
-            .sort((a, b) => (a.scheduled_departure ?? "").localeCompare(b.scheduled_departure ?? ""))[0];
-          if (depFromSwap?.scheduled_departure) {
-            const depMs = new Date(depFromSwap.scheduled_departure).getTime();
-            aircraftDepartsAt = depFromSwap.scheduled_departure;
-            if (latestOnArrival > depMs) {
-              crewArrivesLate = true;
+          for (const onCrew of [onPic, onSic]) {
+            if (!onCrew?.available_time) continue;
+            const crewSwap = onCrew.swap_location ?? swapLoc;
+            const crewSwapIcao = crewSwap.length === 3 ? `K${crewSwap}` : crewSwap;
+            const crewAvailMs = new Date(onCrew.available_time).getTime();
+            // Find the first departure FROM this crew member's swap point
+            const depFromSwap = flights
+              .filter((f) => f.tail_number === tail && f.departure_icao === crewSwapIcao && f.scheduled_departure?.startsWith(wedStr))
+              .sort((a, b) => (a.scheduled_departure ?? "").localeCompare(b.scheduled_departure ?? ""))[0];
+            if (depFromSwap?.scheduled_departure) {
+              const depMs = new Date(depFromSwap.scheduled_departure).getTime();
+              if (crewAvailMs > depMs) {
+                crewArrivesLate = true;
+                break;
+              }
             }
           }
         }

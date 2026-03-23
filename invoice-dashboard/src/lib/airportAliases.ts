@@ -219,6 +219,9 @@ const RAW: [string, string, boolean][] = [
   // Virginia
   ["KSIG", "KORF", true],    // Norfolk Bravo → Norfolk
 
+  // Pacific Northwest
+  ["KBFI", "KSEA", true],    // Boeing Field → Sea-Tac
+
   // California
   ["KCMA", "KBUR", true],    // Camarillo → Burbank
   ["KMHR", "KSMF", true],    // Sacramento Mather → Sacramento
