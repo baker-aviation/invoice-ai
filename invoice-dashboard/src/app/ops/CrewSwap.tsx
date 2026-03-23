@@ -363,6 +363,8 @@ const FBO_COMMERCIAL_MAP: Record<string, { airports: string[]; preferred: string
   OPF: { airports: ["MIA", "FLL"], preferred: "MIA" },
   VNY: { airports: ["BUR", "LAX"], preferred: "BUR" },
   BFI: { airports: ["SEA"], preferred: "SEA" },
+  OGD: { airports: ["SLC"], preferred: "SLC" },
+  CGF: { airports: ["CLE"], preferred: "CLE" },
   FXE: { airports: ["FLL", "MIA", "PBI"], preferred: "FLL" },
   BED: { airports: ["BOS"], preferred: "BOS" },
   HPN: { airports: ["JFK", "LGA", "EWR"], preferred: "JFK" },
@@ -971,7 +973,10 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
         const onSicSwap = onSic?.swap_location;
         const offPicSwap = offPic?.swap_location;
         const offSicSwap = offSic?.swap_location;
-        const isSplitSwap = (onPicSwap && onSicSwap && onPicSwap !== onSicSwap) ||
+        // Only flag split swap when both crew ARE assigned and at different airports
+        const onPicAssigned = onPic && onPic.travel_type !== "none" && !onPic.name.includes("UNASSIGNED");
+        const onSicAssigned = onSic && onSic.travel_type !== "none" && !onSic.name.includes("UNASSIGNED");
+        const isSplitSwap = (onPicAssigned && onSicAssigned && onPicSwap && onSicSwap && onPicSwap !== onSicSwap) ||
           (offPicSwap && offSicSwap && offPicSwap !== offSicSwap);
 
         // Check pairing: each swap point needs at least one oncoming AND one offgoing
