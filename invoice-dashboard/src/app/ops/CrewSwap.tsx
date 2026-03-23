@@ -384,6 +384,217 @@ const FBO_COMMERCIAL_MAP: Record<string, { airports: string[]; preferred: string
   RUE: { airports: ["XNA"], preferred: "XNA" },
 };
 
+// ─── Assign View: drag-and-drop crew assignment ─────────────────────────────
+
+function AssignView({ rows, onAssignCrew, onRecomputeTail, swapDate, standbyPics, standbySics, tailAircraftTypes }: {
+  rows: CrewSwapRow[];
+  onAssignCrew: (tail: string, role: "PIC" | "SIC", name: string | null) => void;
+  onRecomputeTail: (tail: string) => void;
+  swapDate: string;
+  standbyPics: string[];
+  standbySics: string[];
+  tailAircraftTypes?: Record<string, string>;
+}) {
+  const [dragCrew, setDragCrew] = useState<{ name: string; role: "PIC" | "SIC"; fromTail: string | null } | null>(null);
+  const [recomputing, setRecomputing] = useState<Set<string>>(new Set());
+
+  // Group rows by tail
+  const byTail = new Map<string, CrewSwapRow[]>();
+  for (const r of rows) {
+    if (!byTail.has(r.tail_number)) byTail.set(r.tail_number, []);
+    byTail.get(r.tail_number)!.push(r);
+  }
+  const tails = Array.from(byTail.entries()).sort(([a], [b]) => a.localeCompare(b));
+
+  // All assigned oncoming names
+  const assignedOncoming = new Set(rows.filter((r) => r.direction === "oncoming").map((r) => r.name));
+
+  function handleDrop(targetTail: string, targetRole: "PIC" | "SIC") {
+    if (!dragCrew) return;
+    // Remove from source tail
+    if (dragCrew.fromTail) {
+      onAssignCrew(dragCrew.fromTail, dragCrew.role, null);
+    }
+    // Assign to target
+    setTimeout(() => {
+      onAssignCrew(targetTail, targetRole, dragCrew.name);
+      // Recompute transport for affected tails
+      setRecomputing((prev) => new Set(prev).add(targetTail));
+      if (dragCrew.fromTail) setRecomputing((prev) => new Set(prev).add(dragCrew.fromTail!));
+      setTimeout(() => {
+        onRecomputeTail(targetTail);
+        if (dragCrew.fromTail) onRecomputeTail(dragCrew.fromTail);
+        setTimeout(() => {
+          setRecomputing((prev) => { const n = new Set(prev); n.delete(targetTail); if (dragCrew.fromTail) n.delete(dragCrew.fromTail); return n; });
+        }, 2000);
+      }, 100);
+    }, 50);
+    setDragCrew(null);
+  }
+
+  // Crew card component
+  function CrewCard({ name, role, homeAirports, aircraftType, fromTail, isSkillbridge }: {
+    name: string; role: "PIC" | "SIC"; homeAirports: string[]; aircraftType: string; fromTail: string | null; isSkillbridge?: boolean;
+  }) {
+    const typeTag = aircraftType === "citation_x" ? "CX" : aircraftType === "challenger" ? "CL" : aircraftType === "dual" ? "DL" : "";
+    return (
+      <div
+        draggable
+        onDragStart={(e) => {
+          setDragCrew({ name, role, fromTail });
+          e.dataTransfer.effectAllowed = "move";
+        }}
+        onDragEnd={() => setDragCrew(null)}
+        className={`px-2 py-1.5 rounded border cursor-grab active:cursor-grabbing text-xs transition-all hover:shadow ${
+          role === "PIC" ? "bg-blue-50 border-blue-200" : "bg-indigo-50 border-indigo-200"
+        } ${dragCrew?.name === name ? "opacity-50" : ""}`}
+      >
+        <div className="font-medium text-gray-900">{name}</div>
+        <div className="flex items-center gap-1 mt-0.5">
+          <span className="text-[9px] text-gray-400">{homeAirports.join("/")}</span>
+          {typeTag && <span className={`text-[8px] px-1 rounded ${role === "PIC" ? "bg-blue-100 text-blue-600" : "bg-indigo-100 text-indigo-600"}`}>{typeTag}</span>}
+          {isSkillbridge && <span className="text-[8px] px-1 rounded bg-teal-100 text-teal-600">SB</span>}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex gap-3 h-[600px]">
+      {/* Left panel: Standby / Unassigned crew */}
+      <div className="w-64 shrink-0 border rounded-lg bg-white overflow-y-auto">
+        <div className="px-3 py-2 bg-gray-50 border-b sticky top-0">
+          <div className="text-xs font-semibold text-gray-700 uppercase">Unassigned Crew</div>
+        </div>
+        <div className="p-2 space-y-3">
+          {standbyPics.length > 0 && (
+            <div>
+              <div className="text-[10px] font-bold text-blue-600 uppercase mb-1">PICs ({standbyPics.length})</div>
+              <div className="space-y-1">
+                {standbyPics.map((name) => {
+                  const crewRow = rows.find((r) => r.name === name) ?? null;
+                  return (
+                    <CrewCard key={name} name={name} role="PIC"
+                      homeAirports={crewRow?.home_airports ?? []}
+                      aircraftType={crewRow?.aircraft_type ?? "unknown"}
+                      fromTail={null}
+                      isSkillbridge={crewRow?.is_skillbridge}
+                    />
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          {standbySics.length > 0 && (
+            <div>
+              <div className="text-[10px] font-bold text-indigo-600 uppercase mb-1">SICs ({standbySics.length})</div>
+              <div className="space-y-1">
+                {standbySics.map((name) => {
+                  const crewRow = rows.find((r) => r.name === name) ?? null;
+                  return (
+                    <CrewCard key={name} name={name} role="SIC"
+                      homeAirports={crewRow?.home_airports ?? []}
+                      aircraftType={crewRow?.aircraft_type ?? "unknown"}
+                      fromTail={null}
+                      isSkillbridge={crewRow?.is_skillbridge}
+                    />
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          {standbyPics.length === 0 && standbySics.length === 0 && (
+            <div className="text-xs text-gray-400 text-center py-4">All crew assigned</div>
+          )}
+        </div>
+      </div>
+
+      {/* Right panel: Tail drop zones */}
+      <div className="flex-1 overflow-y-auto space-y-2">
+        {tails.map(([tail, tailRows]) => {
+          const onPic = tailRows.find((r) => r.direction === "oncoming" && r.role === "PIC");
+          const onSic = tailRows.find((r) => r.direction === "oncoming" && r.role === "SIC");
+          const offPic = tailRows.find((r) => r.direction === "offgoing" && r.role === "PIC");
+          const offSic = tailRows.find((r) => r.direction === "offgoing" && r.role === "SIC");
+          const swapLoc = onPic?.swap_location ?? onSic?.swap_location ?? offPic?.swap_location ?? "?";
+          const tailType = tailAircraftTypes?.[tail];
+          const ac = AIRCRAFT_COLORS[tailType ?? onPic?.aircraft_type ?? ""];
+          const tailCost = tailRows.reduce((s, r) => s + (r.cost_estimate ?? 0), 0);
+          const isRecomputing = recomputing.has(tail);
+
+          function DropSlot({ label, role, current }: { label: string; role: "PIC" | "SIC"; current: CrewSwapRow | undefined }) {
+            const [over, setOver] = useState(false);
+            return (
+              <div
+                onDragOver={(e) => { e.preventDefault(); setOver(true); }}
+                onDragLeave={() => setOver(false)}
+                onDrop={(e) => { e.preventDefault(); setOver(false); handleDrop(tail, role); }}
+                className={`rounded border-2 border-dashed p-1.5 min-h-[44px] transition-colors ${
+                  over ? "border-purple-400 bg-purple-50" : "border-gray-200 bg-gray-50/50"
+                } ${isRecomputing ? "animate-pulse" : ""}`}
+              >
+                {current ? (
+                  <CrewCard name={current.name} role={role}
+                    homeAirports={current.home_airports}
+                    aircraftType={current.aircraft_type}
+                    fromTail={tail}
+                    isSkillbridge={current.is_skillbridge}
+                  />
+                ) : (
+                  <div className="text-[10px] text-gray-400 text-center py-1">
+                    {dragCrew ? `Drop ${role} here` : `No ${role}`}
+                  </div>
+                )}
+                {current?.travel_type && current.travel_type !== "none" && (
+                  <div className="text-[9px] mt-0.5 text-gray-400">
+                    {current.flight_number ?? current.travel_type} ${current.cost_estimate ?? 0}
+                  </div>
+                )}
+              </div>
+            );
+          }
+
+          return (
+            <div key={tail} className={`rounded-lg border bg-white p-3 ${isRecomputing ? "ring-2 ring-purple-200" : ""}`}>
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <span className="font-mono font-bold text-sm">{tail}</span>
+                  {ac && <span className={`text-[9px] px-1.5 py-0.5 rounded ${ac.bg} ${ac.text}`}>{ac.label}</span>}
+                  <span className="text-[10px] text-gray-400">@ {swapLoc}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  {tailCost > 0 && <span className="text-xs text-gray-500">${tailCost.toLocaleString()}</span>}
+                  {isRecomputing && <span className="text-[9px] text-purple-600">Computing...</span>}
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <div className="text-[9px] font-bold text-green-600 uppercase mb-1">Oncoming</div>
+                  <div className="space-y-1">
+                    <DropSlot label="PIC" role="PIC" current={onPic} />
+                    <DropSlot label="SIC" role="SIC" current={onSic} />
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[9px] font-bold text-red-600 uppercase mb-1">Offgoing</div>
+                  <div className="space-y-1 text-[10px]">
+                    <div className="px-2 py-1 rounded bg-red-50/50 text-gray-600">
+                      {offPic ? `${offPic.name} (${offPic.home_airports.join("/")})` : "—"}
+                    </div>
+                    <div className="px-2 py-1 rounded bg-red-50/50 text-gray-600">
+                      {offSic ? `${offSic.name} (${offSic.home_airports.join("/")})` : "—"}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function AirportAliasPanel({ flights, selectedWed }: { flights: Flight[]; selectedWed: Date }) {
   const [show, setShow] = useState(false);
 
@@ -1565,7 +1776,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
   const [showSchedule, setShowSchedule] = useState(false);
   const swapPlanRef = useRef<HTMLDivElement>(null);
   const [exporting, setExporting] = useState(false);
-  const [swapView, setSwapView] = useState<"role" | "aircraft">("aircraft");
+  const [swapView, setSwapView] = useState<"role" | "aircraft" | "assign">("aircraft");
   const [routeStatus, setRouteStatus] = useState<RouteStatus | null>(null);
   const [computingRoutes, setComputingRoutes] = useState(false);
   const [detectingRotation, setDetectingRotation] = useState(false);
@@ -3882,6 +4093,12 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                   >
                     By Role
                   </button>
+                  <button
+                    onClick={() => setSwapView("assign")}
+                    className={`px-2.5 py-1.5 text-xs font-medium border-l ${swapView === "assign" ? "bg-purple-50 text-purple-700" : "bg-white text-gray-500 hover:bg-gray-50"}`}
+                  >
+                    Assign
+                  </button>
                 </div>
                 <button
                   onClick={exportToImage}
@@ -4144,11 +4361,31 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
               />
             )}
 
-            <SwapSheet rows={swapPlan.rows} view={swapView} impacts={savedPlanMeta ? planImpacts : []} impactedTails={savedPlanMeta ? impactedTails : new Set()}
-              lockedTails={lockedTails} onLockTail={toggleLockTail} onAssignCrew={assignCrew} pool={oncomingPool}
-              onChangeTransport={openFlightPicker} onSwapPointChange={handleSwapPointChange}
-              badPairings={crewInfoData?.bad_pairings} checkairmen={crewInfoData?.checkairmen}
-              flights={flights} selectedWed={selectedWed} tailAircraftTypes={tailAircraftTypes} />
+            {swapView === "assign" ? (
+              <AssignView
+                rows={swapPlan.rows}
+                onAssignCrew={assignCrew}
+                onRecomputeTail={(tail) => {
+                  const tailRows = swapPlan.rows.filter((r) => r.tail_number === tail);
+                  const onPic = tailRows.find((r) => r.direction === "oncoming" && r.role === "PIC");
+                  const onSic = tailRows.find((r) => r.direction === "oncoming" && r.role === "SIC");
+                  const offPic = tailRows.find((r) => r.direction === "offgoing" && r.role === "PIC");
+                  const offSic = tailRows.find((r) => r.direction === "offgoing" && r.role === "SIC");
+                  const sp = onPic?.swap_location ?? onSic?.swap_location ?? offPic?.swap_location ?? "";
+                  if (sp) handleSwapPointChange(tail, sp);
+                }}
+                swapDate={selectedWed.toISOString().slice(0, 10)}
+                standbyPics={swapPlan.crew_assignment?.standby?.pic ?? []}
+                standbySics={swapPlan.crew_assignment?.standby?.sic ?? []}
+                tailAircraftTypes={tailAircraftTypes}
+              />
+            ) : (
+              <SwapSheet rows={swapPlan.rows} view={swapView} impacts={savedPlanMeta ? planImpacts : []} impactedTails={savedPlanMeta ? impactedTails : new Set()}
+                lockedTails={lockedTails} onLockTail={toggleLockTail} onAssignCrew={assignCrew} pool={oncomingPool}
+                onChangeTransport={openFlightPicker} onSwapPointChange={handleSwapPointChange}
+                badPairings={crewInfoData?.bad_pairings} checkairmen={crewInfoData?.checkairmen}
+                flights={flights} selectedWed={selectedWed} tailAircraftTypes={tailAircraftTypes} />
+            )}
           </div>
         )}
 
