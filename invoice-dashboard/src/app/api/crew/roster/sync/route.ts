@@ -76,6 +76,7 @@ export async function POST(req: NextRequest) {
     "Eddie Goble": "Edward Goble II",
     "Dave Hill": "Ronald David Hill Jr",
     "Luis Maestre": "Luis Maestre Giron",
+    "Chris Unger": "Christopher Unger",
   };
 
   // Slack user ID → roster name (from slack-bakeraviation-members.csv export)
@@ -208,12 +209,15 @@ export async function POST(req: NextRequest) {
       updated_at: new Date().toISOString(),
     };
 
-    // Store checkairman aircraft types
+    // Store checkairman aircraft types in notes (column doesn't exist in DB yet)
     if (caEntry) {
       const types: string[] = [];
-      if (caEntry.citation_x) types.push("citation_x");
-      if (caEntry.challenger) types.push("challenger");
-      if (types.length > 0) record.checkairman_types = types;
+      if (caEntry.citation_x) types.push("CX");
+      if (caEntry.challenger) types.push("CL");
+      if (types.length > 0) {
+        const existing = record.notes ? String(record.notes) + "; " : "";
+        record.notes = existing + `CA: ${types.join("+")}`;
+      }
     }
 
     // Store Slack display name if matched
