@@ -941,9 +941,15 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
             const crewSwap = onCrew.swap_location ?? swapLoc;
             const crewSwapIcao = crewSwap.length === 3 ? `K${crewSwap}` : crewSwap;
             const crewAvailMs = new Date(onCrew.available_time).getTime();
-            // Find the first departure FROM this crew member's swap point
+            // Find the first departure FROM this crew member's swap point, skipping overnight legs (before 6 AM)
             const depFromSwap = flights
-              .filter((f) => f.tail_number === tail && f.departure_icao === crewSwapIcao && f.scheduled_departure?.startsWith(wedStr))
+              .filter((f) => {
+                if (f.tail_number !== tail || f.departure_icao !== crewSwapIcao) return false;
+                if (!f.scheduled_departure?.startsWith(wedStr)) return false;
+                // Skip overnight legs (before 6 AM local) — these are carryovers from the previous day
+                const depHour = new Date(f.scheduled_departure).getHours();
+                return depHour >= 6;
+              })
               .sort((a, b) => (a.scheduled_departure ?? "").localeCompare(b.scheduled_departure ?? ""))[0];
             if (depFromSwap?.scheduled_departure) {
               const depMs = new Date(depFromSwap.scheduled_departure).getTime();

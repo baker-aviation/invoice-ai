@@ -549,6 +549,22 @@ function buildCandidates(
     }
   }
 
+  // If aircraft departs before 8am local, only ground transport (uber/rental) can make it.
+  // Commercial flights can't arrive in time — reject commercial candidates for this swap point.
+  let groundOnlySwap = false;
+  if (task.direction === "oncoming" && (task.swapPoint.position === "before_live" || task.swapPoint.position === "between_legs")) {
+    const depTime = (task.swapPoint.position === "between_legs" && task.swapPoint.window_end)
+      ? task.swapPoint.window_end
+      : task.swapPoint.time;
+    const tz = getAirportTimezone(swapIcao) ?? "America/New_York";
+    const depLocalHour = parseFloat(
+      new Date(depTime).toLocaleString("en-US", { hour: "numeric", hour12: false, timeZone: tz })
+    );
+    if (depLocalHour < 8) {
+      groundOnlySwap = true;
+    }
+  }
+
   // Estimate duty-end for oncoming crew: last leg arrival + off-duty buffer
   // For offgoing crew: duty-end = when they arrive home (checked per-candidate)
   let oncomingDutyEnd: Date | null = null;
@@ -663,31 +679,7 @@ function buildCandidates(
         backups: [],
       });
 
-      // Also add a self-drive option (personal car) — same timing, gas-only cost.
-      // The crew may prefer driving their own car instead of Uber/rental.
-      // The if/else above only picks "uber" or "rental_car", so this never duplicates.
-      const driveCost = Math.round(drive.estimated_drive_miles * 0.25); // ~$0.25/mi gas
-      candidates.push({
-        type: "drive",
-        flightNumber: "DRIVE",
-        depTime: depTime,
-        arrTime: arrTime,
-        from: task.direction === "oncoming" ? homeIata : toIata(swapIcao),
-        to: task.direction === "oncoming" ? toIata(swapIcao) : homeIata,
-        cost: driveCost,
-        durationMin: driveMin,
-        isDirect: true,
-        isBudgetCarrier: false,
-        hubConnection: false,
-        connectionCount: 0,
-        offer: null,
-        drive,
-        fboArrivalTime: fboArr,
-        fboLeaveTime: task.direction === "offgoing" ? depTime : null,
-        dutyOnTime: dutyOn,
-        score: 0,
-        backups: [],
-      });
+      // Self-drive (personal car) removed from optimizer — available as manual override only.
     }
 
     // ── Train options (Amtrak NEC, Brightline) ────────────────────────────
@@ -822,7 +814,10 @@ function buildCandidates(
       }
     }
 
-    for (const commApt of commAirports) {
+    // Skip commercial flights entirely if aircraft departs before 8am — only ground transport viable
+    if (groundOnlySwap) {
+      // No commercial candidates — ground transport (uber/rental) already added above
+    } else for (const commApt of commAirports) {
       const commIata = toIata(commApt);
       const driveToFbo = estimateDriveTime(
         task.direction === "oncoming" ? toIcao(commIata) : swapIcao,
@@ -1786,12 +1781,15 @@ export function buildSwapPlan(params: {
           const depLocalHour = parseFloat(
             new Date(depTime).toLocaleString("en-US", { hour: "numeric", hour12: false, timeZone: spTz })
           );
-          // Hard reject if aircraft departs before 10am local — earliest realistic
-          // commercial arrival is ~7-8am, plus FBO buffer + deplane + ground transport
-          // means crew can't make anything before ~9:30am at the FBO. With 60min buffer
-          // the aircraft must depart no earlier than ~10:30am for this to work.
-          if (depLocalHour < 10) {
-            hardReject = true;
+          // Heavy penalty (not hard reject) for early departures — commercial flights
+          // can't make it but ground transport (uber/rental) still can. The per-candidate
+          // filter in buildCandidates rejects commercial when < 8am.
+          if (depLocalHour < 8) {
+            // Only ground transport viable — heavy penalty but not impossible
+            timingPenalty += 100;
+          } else if (depLocalHour < 10) {
+            // Tight for commercial — penalize but allow
+            timingPenalty += 50;
           }
         }
 
