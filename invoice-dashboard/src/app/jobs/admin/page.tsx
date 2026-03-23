@@ -5,6 +5,7 @@ import OfferTemplateEditor from "./OfferTemplateEditor";
 import CalendlyUrlEditor from "./CalendlyUrlEditor";
 import RejectionEmailEditor from "./RejectionEmailEditor";
 import InterviewEmailEditor from "./InterviewEmailEditor";
+import InfoSessionEmailEditor from "./InfoSessionEmailEditor";
 
 export default async function AdminPage() {
   const supa = createServiceClient();
@@ -31,6 +32,10 @@ export default async function AdminPage() {
         <CalendlyUrlEditor initialUrl={calendlyUrl} />
         <InterviewEmailEditor
           initialTemplate={settings?.find((s: any) => s.key === "interview_email_template")?.value ?? ""}
+        />
+        <InfoSessionEmailEditor
+          initialTemplate={settings?.find((s: any) => s.key === "info_session_email_template")?.value ?? ""}
+          initialMeetLink={settings?.find((s: any) => s.key === "info_session_meet_link")?.value ?? ""}
         />
         <RejectionEmailEditor initialTemplates={rejectionTemplates} />
         <OfferTemplateEditor initialTemplates={templates ?? []} />

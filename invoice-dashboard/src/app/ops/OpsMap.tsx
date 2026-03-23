@@ -631,7 +631,7 @@ function MapLegend({ dark, showDelays, showFlows, flowCount }: { dark: boolean; 
           <div className={`font-semibold ${heading} text-[10px] uppercase tracking-wider mt-2 mb-1`}>Flow Controls</div>
           <div className="flex items-center gap-2">
             <LegendLine color="#f97316" />
-            <span className={text}>Reroute / CTOP / AFP</span>
+            <span className={text}>CTOP / AFP</span>
           </div>
         </>
       )}

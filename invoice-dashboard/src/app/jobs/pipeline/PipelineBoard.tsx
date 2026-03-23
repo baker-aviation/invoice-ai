@@ -737,6 +737,69 @@ function SendInterviewEmailButton({ job }: { job: JobRow }) {
   );
 }
 
+function SendInfoSessionEmailButton({ job }: { job: JobRow }) {
+  const [sending, setSending] = useState(false);
+  const [sentAt, setSentAt] = useState<string | null>((job as any).info_session_email_sent_at ?? null);
+  const [error, setError] = useState("");
+
+  async function handleSend(e: React.MouseEvent) {
+    e.stopPropagation();
+    e.preventDefault();
+    if (!job.email) {
+      setError("No email");
+      return;
+    }
+    setSending(true);
+    setError("");
+    try {
+      const res = await fetch("/api/jobs/send-info-session-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ application_id: job.application_id }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(data.error ?? "Failed");
+      } else {
+        setSentAt(data.sentAt ?? new Date().toISOString());
+      }
+    } catch {
+      setError("Network error");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  if (sentAt) {
+    const dateStr = new Date(sentAt).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    return (
+      <div className="text-[10px]">
+        <span className="text-emerald-600 font-medium">Invite sent {dateStr}</span>
+        <button
+          onClick={handleSend}
+          disabled={sending}
+          className="ml-1.5 text-gray-400 hover:text-cyan-600 transition-colors"
+        >
+          {sending ? "..." : "resend"}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div onClick={(e) => e.stopPropagation()}>
+      <button
+        onClick={handleSend}
+        disabled={sending || !job.email}
+        className="text-[10px] font-medium px-2 py-1 rounded border border-cyan-300 bg-white text-cyan-700 hover:bg-cyan-50 disabled:opacity-40 transition-colors"
+      >
+        {sending ? "Sending..." : "Send Info Session Invite"}
+      </button>
+      {error && <div className="text-[10px] text-red-500 mt-0.5">{error}</div>}
+    </div>
+  );
+}
+
 function CandidateCard({
   job,
   onDragStart,
@@ -841,6 +904,13 @@ function CandidateCard({
         </div>
       )}
 
+      {/* Info session email button */}
+      {stage === "info_session" && (
+        <div className="mt-2">
+          <SendInfoSessionEmailButton job={job} />
+        </div>
+      )}
+
       {/* Info session attendance toggle */}
       {stage === "info_session" && (
         <div className="mt-2 flex items-center gap-1.5">
@@ -887,6 +957,8 @@ function CandidateCard({
 // Main board
 // ---------------------------------------------------------------------------
 
+const CARD_LIMIT = 8; // cards shown before "Show all"
+
 export default function PipelineBoard({
   initialJobs,
 }: {
@@ -898,6 +970,9 @@ export default function PipelineBoard({
   const [saving, setSaving] = useState<Set<number>>(new Set());
   const [search, setSearch] = useState("");
   const [showAddModal, setShowAddModal] = useState(false);
+  const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
+  const [expandedColumns, setExpandedColumns] = useState<Set<PipelineStage>>(new Set());
+  const [collapsedColumns, setCollapsedColumns] = useState<Set<PipelineStage>>(new Set());
 
   // Track pending API calls so we can dedup
   const pendingRef = useRef(new Set<string>());
@@ -911,6 +986,7 @@ export default function PipelineBoard({
   for (const job of jobs) {
     if (!(PIPELINE_STAGES as readonly string[]).includes(job.pipeline_stage ?? "")) continue;
     const stage = job.pipeline_stage as PipelineStage;
+    if (categoryFilter && job.category !== categoryFilter) continue;
     if (qLower) {
       const haystack = [
         job.candidate_name,
@@ -924,6 +1000,14 @@ export default function PipelineBoard({
       if (!haystack.includes(qLower)) continue;
     }
     columns.get(stage)!.push(job);
+  }
+
+  // Count all (unfiltered) for category pills
+  const categoryCounts: Record<string, number> = {};
+  for (const job of jobs) {
+    if (!(PIPELINE_STAGES as readonly string[]).includes(job.pipeline_stage ?? "")) continue;
+    const cat = job.category || "other";
+    categoryCounts[cat] = (categoryCounts[cat] || 0) + 1;
   }
 
   // ---- Drag handlers ----
@@ -1091,26 +1175,54 @@ export default function PipelineBoard({
   return (
     <div className="p-4 sm:p-6 bg-gray-50 min-h-screen">
       {/* Toolbar */}
-      <div className="mb-4 flex items-center gap-3">
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search candidates..."
-          className="max-w-xs rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm outline-none focus:border-gray-400 transition-colors"
-        />
-        <button
-          type="button"
-          onClick={() => setShowAddModal(true)}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white bg-slate-800 rounded-lg hover:bg-slate-700 transition-colors"
-        >
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-            <path d="M8 3v10M3 8h10" />
-          </svg>
-          Add Candidate
-        </button>
-        {saving.size > 0 && (
-          <span className="text-xs text-gray-400 animate-pulse">Saving...</span>
-        )}
+      <div className="mb-4 space-y-2">
+        <div className="flex items-center gap-3">
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search candidates..."
+            className="max-w-xs rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm outline-none focus:border-gray-400 transition-colors"
+          />
+          <button
+            type="button"
+            onClick={() => setShowAddModal(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white bg-slate-800 rounded-lg hover:bg-slate-700 transition-colors"
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <path d="M8 3v10M3 8h10" />
+            </svg>
+            Add Candidate
+          </button>
+          {saving.size > 0 && (
+            <span className="text-xs text-gray-400 animate-pulse">Saving...</span>
+          )}
+        </div>
+        {/* Category filter pills */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <button
+            onClick={() => setCategoryFilter(null)}
+            className={`text-[11px] font-medium px-2.5 py-1 rounded-full border transition-colors ${
+              !categoryFilter
+                ? "bg-slate-800 text-white border-slate-800"
+                : "bg-white text-gray-600 border-gray-200 hover:border-gray-400"
+            }`}
+          >
+            All ({jobs.filter(j => (PIPELINE_STAGES as readonly string[]).includes(j.pipeline_stage ?? "")).length})
+          </button>
+          {CATEGORY_OPTIONS.filter(opt => categoryCounts[opt.value]).map(opt => (
+            <button
+              key={opt.value}
+              onClick={() => setCategoryFilter(categoryFilter === opt.value ? null : opt.value)}
+              className={`text-[11px] font-medium px-2.5 py-1 rounded-full border transition-colors ${
+                categoryFilter === opt.value
+                  ? "bg-slate-800 text-white border-slate-800"
+                  : `${CATEGORY_COLORS[opt.value] ?? "bg-white text-gray-600 border-gray-200"} hover:opacity-80`
+              }`}
+            >
+              {CATEGORY_LABELS[opt.value] ?? opt.label} ({categoryCounts[opt.value]})
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Columns */}
@@ -1119,6 +1231,11 @@ export default function PipelineBoard({
           const meta = STAGE_META[stage];
           const stageJobs = columns.get(stage) ?? [];
           const isOver = dropTarget === stage;
+          const isCollapsed = collapsedColumns.has(stage);
+          const isExpanded = expandedColumns.has(stage);
+          const showLimit = !isExpanded && stageJobs.length > CARD_LIMIT;
+          const visibleJobs = showLimit ? stageJobs.slice(0, CARD_LIMIT) : stageJobs;
+          const hiddenCount = stageJobs.length - CARD_LIMIT;
 
           return (
             <div
@@ -1126,58 +1243,101 @@ export default function PipelineBoard({
               onDragOver={(e) => handleDragOver(e, stage)}
               onDragLeave={handleDragLeave}
               onDrop={(e) => handleDrop(e, stage)}
-              className={`flex-1 min-w-[200px] flex flex-col rounded-xl border bg-gray-50 transition-colors ${
+              className={`flex flex-col rounded-xl border bg-gray-50 transition-all ${
+                isCollapsed ? "min-w-[56px] max-w-[56px]" : "flex-1 min-w-[200px]"
+              } ${
                 isOver
                   ? "border-blue-400 bg-blue-50/50 ring-2 ring-blue-200"
                   : meta.color
               }`}
             >
               {/* Column header */}
-              <div
-                className={`flex items-center justify-between px-3 py-2 rounded-t-xl ${meta.headerColor}`}
+              <button
+                type="button"
+                onClick={() => {
+                  if (isCollapsed) {
+                    setCollapsedColumns(prev => { const n = new Set(prev); n.delete(stage); return n; });
+                  } else {
+                    setCollapsedColumns(prev => new Set(prev).add(stage));
+                  }
+                }}
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-t-xl ${meta.headerColor} w-full text-left cursor-pointer hover:opacity-80 transition-opacity`}
               >
-                <span className="text-xs font-semibold">{meta.label}</span>
-                <span className="text-[10px] font-bold opacity-60">
-                  {stageJobs.length}
-                </span>
-              </div>
-
-              {stage === "info_session" && (
-                <InfoSessionTools
-                  jobs={stageJobs}
-                  onAttendanceChecked={() => window.location.reload()}
-                />
-              )}
-              {stage === "interview_scheduled" && (
-                <div className="px-3 py-2 border-t border-fuchsia-100">
-                  <MeetingLinkTool storageKey="interview_meet_link" placeholder="Calendly or Meet link..." borderColor="fuchsia" />
-                </div>
-              )}
-
-              {/* Cards */}
-              <div className="flex-1 p-2 space-y-2 min-h-[120px] max-h-[calc(100vh-220px)] overflow-y-auto">
-                {stageJobs.map((job) => (
-                  <div
-                    key={job.application_id}
-                    className={
-                      draggingId === job.application_id ? "opacity-40" : ""
-                    }
-                    onDragEnd={handleDragEnd}
-                  >
-                    <CandidateCard
-                      job={job}
-                      onDragStart={handleDragStart}
-                      stage={stage}
-                      onToggleAttendance={handleToggleAttendance}
-                    />
+                {isCollapsed ? (
+                  <div className="flex flex-col items-center w-full gap-1">
+                    <span className="text-[10px] font-bold">{stageJobs.length}</span>
+                    <span className="text-[9px] font-semibold [writing-mode:vertical-lr] rotate-180 whitespace-nowrap">
+                      {meta.label}
+                    </span>
                   </div>
-                ))}
-                {stageJobs.length === 0 && (
-                  <div className="text-xs text-gray-300 text-center py-8">
-                    No candidates
-                  </div>
+                ) : (
+                  <>
+                    <span className="text-xs font-semibold flex-1">{meta.label}</span>
+                    <span className="text-[10px] font-bold opacity-60">
+                      {stageJobs.length}
+                    </span>
+                  </>
                 )}
-              </div>
+              </button>
+
+              {!isCollapsed && (
+                <>
+                  {stage === "info_session" && (
+                    <InfoSessionTools
+                      jobs={stageJobs}
+                      onAttendanceChecked={() => window.location.reload()}
+                    />
+                  )}
+                  {stage === "interview_scheduled" && (
+                    <div className="px-3 py-2 border-t border-fuchsia-100">
+                      <MeetingLinkTool storageKey="interview_meet_link" placeholder="Calendly or Meet link..." borderColor="fuchsia" />
+                    </div>
+                  )}
+
+                  {/* Cards */}
+                  <div className="flex-1 p-2 space-y-2 min-h-[120px] max-h-[calc(100vh-260px)] overflow-y-auto">
+                    {visibleJobs.map((job) => (
+                      <div
+                        key={job.application_id}
+                        className={
+                          draggingId === job.application_id ? "opacity-40" : ""
+                        }
+                        onDragEnd={handleDragEnd}
+                      >
+                        <CandidateCard
+                          job={job}
+                          onDragStart={handleDragStart}
+                          stage={stage}
+                          onToggleAttendance={handleToggleAttendance}
+                        />
+                      </div>
+                    ))}
+                    {showLimit && (
+                      <button
+                        type="button"
+                        onClick={() => setExpandedColumns(prev => new Set(prev).add(stage))}
+                        className="w-full text-[11px] font-medium text-gray-500 hover:text-gray-700 bg-white border border-gray-200 rounded-lg py-2 hover:bg-gray-50 transition-colors"
+                      >
+                        Show {hiddenCount} more...
+                      </button>
+                    )}
+                    {isExpanded && stageJobs.length > CARD_LIMIT && (
+                      <button
+                        type="button"
+                        onClick={() => setExpandedColumns(prev => { const n = new Set(prev); n.delete(stage); return n; })}
+                        className="w-full text-[11px] font-medium text-gray-400 hover:text-gray-600 bg-white border border-dashed border-gray-200 rounded-lg py-1.5 hover:bg-gray-50 transition-colors"
+                      >
+                        Collapse
+                      </button>
+                    )}
+                    {stageJobs.length === 0 && (
+                      <div className="text-xs text-gray-300 text-center py-8">
+                        No candidates
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
             </div>
           );
         })}

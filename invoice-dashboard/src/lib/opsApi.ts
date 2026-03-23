@@ -461,6 +461,7 @@ export async function fetchSwimFlowControl(): Promise<SwimFlowEvent[]> {
     .from("swim_flow_control")
     .select("id, event_type, airport_icao, status, severity, subject, body, effective_at, expires_at, created_at")
     .eq("status", "active")
+    .neq("event_type", "REROUTE")
     .order("created_at", { ascending: false })
     .limit(50);
 

@@ -3384,6 +3384,11 @@ function ScheduleTab({
   const [morningSentAt, setMorningSentAt] = useState<string | null>(null);
   const [morningSendStatus, setMorningSendStatus] = useState<"idle" | "sending" | "success" | "error">("idle");
   const [updateVansStatus, setUpdateVansStatus] = useState<"idle" | "sending" | "success" | "error">("idle");
+  const [showUpdateReview, setShowUpdateReview] = useState(false);
+  const [reviewSelectedVans, setReviewSelectedVans] = useState<Set<number>>(new Set());
+  const [reviewExcludedAdded, setReviewExcludedAdded] = useState<Map<number, Set<number>>>(new Map());
+  const [reviewExcludedRemoved, setReviewExcludedRemoved] = useState<Map<number, Set<number>>>(new Map());
+  const [reviewNotes, setReviewNotes] = useState<Map<number, string>>(new Map());
 
   // Load morning send status from localStorage on date change
   useEffect(() => {
@@ -3499,22 +3504,36 @@ function ScheduleTab({
   }, [date, finalItemsByVan, flightInfoMap, fboMap, mxNotesByTail, currentEditsFingerprint]);
 
   // ── Update Vans: diff-only Slack + republish changed vans ──
-  const handleUpdateVans = useCallback(async () => {
-    if (changedVans.length === 0) return;
+  const handleUpdateVans = useCallback(async (overrides?: {
+    selectedVanIds?: Set<number>;
+    excludedAdded?: Map<number, Set<number>>;
+    excludedRemoved?: Map<number, Set<number>>;
+    notes?: Map<number, string>;
+  }) => {
+    const activeDiffs = overrides?.selectedVanIds
+      ? changedVans.filter((d) => overrides.selectedVanIds!.has(d.vanId))
+      : changedVans;
+    if (activeDiffs.length === 0) return;
     setUpdateVansStatus("sending");
     try {
-      // 1) Post change summaries to Slack for changed vans only
-      const vans = changedVans.map((d) => ({
-        vanName: d.vanName,
-        vanId: d.vanId,
-        homeAirport: d.homeAirport,
-        items: buildSlackItems(finalItemsByVan.get(d.vanId) ?? [], flightInfoMap, fboMap, mxNotesByTail, date),
-        diff: {
-          added: d.added,
-          removed: d.removed,
-          newOrder: d.newOrder,
-        },
-      }));
+      // 1) Post change summaries to Slack for selected vans only
+      const vans = activeDiffs.map((d) => {
+        const exAdded = overrides?.excludedAdded?.get(d.vanId);
+        const exRemoved = overrides?.excludedRemoved?.get(d.vanId);
+        const note = overrides?.notes?.get(d.vanId);
+        return {
+          vanName: d.vanName,
+          vanId: d.vanId,
+          homeAirport: d.homeAirport,
+          items: buildSlackItems(finalItemsByVan.get(d.vanId) ?? [], flightInfoMap, fboMap, mxNotesByTail, date),
+          diff: {
+            added: exAdded ? d.added.filter((_, i) => !exAdded.has(i)) : d.added,
+            removed: exRemoved ? d.removed.filter((_, i) => !exRemoved.has(i)) : d.removed,
+            newOrder: d.newOrder,
+            ...(note ? { note } : {}),
+          },
+        };
+      });
       const slackRes = await fetch("/api/vans/share-slack-bulk", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -3526,8 +3545,8 @@ function ScheduleTab({
         return;
       }
 
-      // 2) Republish changed vans only
-      const assignments = changedVans.map((d) => {
+      // 2) Republish selected vans only
+      const assignments = activeDiffs.map((d) => {
         const items = finalItemsByVan.get(d.vanId) ?? [];
         const sf: { id: string; tail: string; airport: string | null }[] = [];
         for (const item of items) {
@@ -3551,10 +3570,10 @@ function ScheduleTab({
       // 3) Update state + save MX fingerprints
       setPublishedAt(pubData.published_at);
       setPublishedEditsSnapshot(currentEditsFingerprint);
-      // Update published assignments so changedVans resets for sent changes
+      // Update published assignments so changedVans resets for sent vans
       setPublishedAssignments(prev => {
         const next = [...prev];
-        for (const d of changedVans) {
+        for (const d of activeDiffs) {
           const idx = next.findIndex(a => a.vanId === d.vanId);
           if (idx >= 0) next[idx] = { vanId: d.vanId, flightIds: d.currentFlightIds };
           else next.push({ vanId: d.vanId, flightIds: d.currentFlightIds });
@@ -3752,7 +3771,13 @@ function ScheduleTab({
             </span>
           )}
           <button
-            onClick={handleUpdateVans}
+            onClick={() => {
+              setReviewSelectedVans(new Set(changedVans.map((d) => d.vanId)));
+              setReviewExcludedAdded(new Map());
+              setReviewExcludedRemoved(new Map());
+              setReviewNotes(new Map());
+              setShowUpdateReview(true);
+            }}
             disabled={updateVansStatus === "sending" || changedVanCount === 0}
             className={`text-sm font-semibold rounded-lg px-4 py-1.5 transition-colors disabled:opacity-50 ${
               changedVanCount > 0
@@ -3765,6 +3790,181 @@ function ScheduleTab({
           </button>
         </div>
       </div>
+
+      {/* Update Vans review modal */}
+      {showUpdateReview && changedVans.length > 0 && (() => {
+        const selectedCount = changedVans.filter((d) => reviewSelectedVans.has(d.vanId)).length;
+        return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowUpdateReview(false)}>
+          <div className="bg-white rounded-xl shadow-2xl max-w-xl w-full mx-4 max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
+              <div>
+                <h3 className="font-bold text-lg text-gray-900">Review Changes</h3>
+                <p className="text-xs text-gray-500 mt-0.5">{selectedCount} of {changedVans.length} van{changedVans.length > 1 ? "s" : ""} selected</p>
+              </div>
+              <button onClick={() => setShowUpdateReview(false)} className="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
+            </div>
+            <div className="overflow-y-auto px-5 py-3 space-y-3 flex-1">
+              {changedVans.map((d) => {
+                const isSelected = reviewSelectedVans.has(d.vanId);
+                const exAdded = reviewExcludedAdded.get(d.vanId) ?? new Set<number>();
+                const exRemoved = reviewExcludedRemoved.get(d.vanId) ?? new Set<number>();
+                const note = reviewNotes.get(d.vanId) ?? "";
+                const visibleAdded = d.added.filter((_, i) => !exAdded.has(i));
+                const visibleRemoved = d.removed.filter((_, i) => !exRemoved.has(i));
+                return (
+                <div key={d.vanId} className={`border rounded-lg p-3 transition-colors ${isSelected ? "border-amber-300 bg-amber-50/30" : "border-gray-200 bg-gray-50 opacity-60"}`}>
+                  {/* Van header with checkbox */}
+                  <label className="flex items-center gap-2 cursor-pointer mb-2">
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => {
+                        setReviewSelectedVans((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(d.vanId)) next.delete(d.vanId);
+                          else next.add(d.vanId);
+                          return next;
+                        });
+                      }}
+                      className="rounded border-gray-300 text-amber-600 focus:ring-amber-500"
+                    />
+                    <span className="font-semibold text-sm text-gray-800">{d.vanName}</span>
+                    <span className="text-gray-400 text-xs font-normal">({d.homeAirport})</span>
+                  </label>
+
+                  {isSelected && (
+                    <>
+                      {/* Added items */}
+                      {d.added.length > 0 && (
+                        <div className="mb-1.5 flex flex-wrap items-center gap-1">
+                          <span className="text-xs font-medium text-green-700 bg-green-50 rounded px-1.5 py-0.5">Added</span>
+                          {d.added.map((a, i) => {
+                            const excluded = exAdded.has(i);
+                            return (
+                              <span key={i} className={`inline-flex items-center gap-1 text-xs rounded px-1.5 py-0.5 ${excluded ? "line-through text-gray-400 bg-gray-100" : "text-gray-700 bg-white border border-gray-200"}`}>
+                                {a.tail} @ {a.airport}
+                                <button
+                                  onClick={() => {
+                                    setReviewExcludedAdded((prev) => {
+                                      const next = new Map(prev);
+                                      const s = new Set(next.get(d.vanId));
+                                      if (excluded) s.delete(i); else s.add(i);
+                                      next.set(d.vanId, s);
+                                      return next;
+                                    });
+                                  }}
+                                  className={`ml-0.5 leading-none ${excluded ? "text-green-500 hover:text-green-700" : "text-gray-400 hover:text-red-600"}`}
+                                  title={excluded ? "Restore" : "Remove from update"}
+                                >
+                                  {excluded ? "↩" : "×"}
+                                </button>
+                              </span>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {/* Removed items */}
+                      {d.removed.length > 0 && (
+                        <div className="mb-1.5 flex flex-wrap items-center gap-1">
+                          <span className="text-xs font-medium text-red-700 bg-red-50 rounded px-1.5 py-0.5">Removed</span>
+                          {d.removed.map((r, i) => {
+                            const excluded = exRemoved.has(i);
+                            return (
+                              <span key={i} className={`inline-flex items-center gap-1 text-xs rounded px-1.5 py-0.5 ${excluded ? "line-through text-gray-400 bg-gray-100" : "text-gray-700 bg-white border border-gray-200"}`}>
+                                {r.tail} @ {r.airport}
+                                <button
+                                  onClick={() => {
+                                    setReviewExcludedRemoved((prev) => {
+                                      const next = new Map(prev);
+                                      const s = new Set(next.get(d.vanId));
+                                      if (excluded) s.delete(i); else s.add(i);
+                                      next.set(d.vanId, s);
+                                      return next;
+                                    });
+                                  }}
+                                  className={`ml-0.5 leading-none ${excluded ? "text-green-500 hover:text-green-700" : "text-gray-400 hover:text-red-600"}`}
+                                  title={excluded ? "Restore" : "Remove from update"}
+                                >
+                                  {excluded ? "↩" : "×"}
+                                </button>
+                              </span>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {/* Order / MX badges */}
+                      <div className="flex flex-wrap gap-1 mb-2">
+                        {d.orderChanged && <span className="text-xs font-medium text-blue-700 bg-blue-50 rounded px-1.5 py-0.5">Order changed</span>}
+                        {d.mxChanged && <span className="text-xs font-medium text-purple-700 bg-purple-50 rounded px-1.5 py-0.5">MX notes updated</span>}
+                      </div>
+
+                      {/* Note field */}
+                      <input
+                        type="text"
+                        placeholder="Add a note for the driver…"
+                        value={note}
+                        onChange={(e) => {
+                          setReviewNotes((prev) => {
+                            const next = new Map(prev);
+                            if (e.target.value) next.set(d.vanId, e.target.value);
+                            else next.delete(d.vanId);
+                            return next;
+                          });
+                        }}
+                        className="w-full text-xs border border-gray-200 rounded-md px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-amber-400 focus:border-amber-400 placeholder-gray-400"
+                      />
+
+                      {/* Warning if all diff items excluded */}
+                      {visibleAdded.length === 0 && visibleRemoved.length === 0 && !d.orderChanged && !d.mxChanged && !note && (
+                        <p className="text-xs text-amber-600 mt-1.5">All changes hidden — Slack message will show no changes unless you add a note.</p>
+                      )}
+                    </>
+                  )}
+                </div>
+                );
+              })}
+            </div>
+            <div className="flex items-center justify-between px-5 py-4 border-t border-gray-200">
+              <button
+                onClick={() => {
+                  if (reviewSelectedVans.size === changedVans.length) setReviewSelectedVans(new Set());
+                  else setReviewSelectedVans(new Set(changedVans.map((d) => d.vanId)));
+                }}
+                className="text-xs text-gray-500 hover:text-gray-700 underline"
+              >
+                {reviewSelectedVans.size === changedVans.length ? "Deselect all" : "Select all"}
+              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setShowUpdateReview(false)}
+                  className="text-sm font-medium text-gray-600 hover:text-gray-800 px-4 py-2 rounded-lg hover:bg-gray-100 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => {
+                    setShowUpdateReview(false);
+                    handleUpdateVans({
+                      selectedVanIds: reviewSelectedVans,
+                      excludedAdded: reviewExcludedAdded,
+                      excludedRemoved: reviewExcludedRemoved,
+                      notes: reviewNotes,
+                    });
+                  }}
+                  disabled={updateVansStatus === "sending" || selectedCount === 0}
+                  className="text-sm font-semibold text-white bg-amber-600 hover:bg-amber-700 active:bg-amber-800 px-5 py-2 rounded-lg transition-colors disabled:opacity-50"
+                >
+                  {selectedCount === 0 ? "No Vans Selected" : `Confirm & Send (${selectedCount})`}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+        );
+      })()}
 
       {/* Publish status */}
       <div className="flex items-center gap-3 flex-wrap">

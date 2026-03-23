@@ -6,7 +6,7 @@ import navFixSeed from "@/lib/navFixes.json";
 export const dynamic = "force-dynamic";
 
 /**
- * Returns active FAA flow control events (reroutes, CTOPs, AFPs)
+ * Returns active FAA flow control events (CTOPs, AFPs)
  * with resolved waypoint coordinates for map rendering.
  */
 
@@ -145,7 +145,7 @@ export async function GET() {
     // Collect all waypoints first for batch resolution
     const allWaypoints = new Set<string>();
     const reroutes = data.filter(
-      (d) => d.event_type === "REROUTE" || d.event_type === "AFP" || d.event_type === "CTOP",
+      (d) => d.event_type === "AFP" || d.event_type === "CTOP",
     );
 
     for (const row of reroutes) {

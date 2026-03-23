@@ -101,6 +101,7 @@ export type VanChangeDiff = {
   added: { tail: string; airport: string }[];
   removed: { tail: string; airport: string }[];
   newOrder: { tail: string; airport: string }[];
+  note?: string;
 };
 
 /** Change summary header — posted as a single message to the van's Slack channel. */
@@ -121,6 +122,9 @@ export function buildVanChangeBlocks(
   }
   if (diff.newOrder.length > 0) {
     lines.push(`📋 New order: ${diff.newOrder.map((o) => `${o.tail} → ${o.airport}`).join(", ")}`);
+  }
+  if (diff.note) {
+    lines.push(`📝 Note: ${diff.note}`);
   }
 
   return [

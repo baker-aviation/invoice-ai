@@ -3922,8 +3922,8 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
               </div>
             </div>
 
-            {/* Impact action bar */}
-            {planImpacts.filter(i => !i.resolved).length > 0 && (
+            {/* Impact action bar — only show when a plan has been saved */}
+            {savedPlanMeta && planImpacts.filter(i => !i.resolved).length > 0 && (
               <div className="px-4 py-2 bg-red-50 border-b flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <span className="text-xs font-semibold text-red-700">
@@ -4098,7 +4098,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
               />
             )}
 
-            <SwapSheet rows={swapPlan.rows} view={swapView} impacts={planImpacts} impactedTails={impactedTails}
+            <SwapSheet rows={swapPlan.rows} view={swapView} impacts={savedPlanMeta ? planImpacts : []} impactedTails={savedPlanMeta ? impactedTails : new Set()}
               lockedTails={lockedTails} onLockTail={toggleLockTail} onAssignCrew={assignCrew} pool={oncomingPool}
               onChangeTransport={openFlightPicker} onSwapPointChange={handleSwapPointChange}
               badPairings={crewInfoData?.bad_pairings} checkairmen={crewInfoData?.checkairmen}
