@@ -87,6 +87,21 @@ export async function PATCH(
     }
   }
 
+  // Offer status
+  if ("offer_status" in body) {
+    const validStatuses = ["draft", "sent", "accepted", "declined"];
+    if (body.offer_status !== null && (typeof body.offer_status !== "string" || !validStatuses.includes(body.offer_status))) {
+      return NextResponse.json({ error: "Invalid offer_status" }, { status: 400 });
+    }
+    update.offer_status = body.offer_status ?? null;
+  }
+  if ("offer_sent_at" in body) {
+    if (body.offer_sent_at !== null && typeof body.offer_sent_at !== "string") {
+      return NextResponse.json({ error: "offer_sent_at must be a string or null" }, { status: 400 });
+    }
+    update.offer_sent_at = body.offer_sent_at ?? null;
+  }
+
   // Info session attendance
   if ("info_session_attended" in body) {
     update.info_session_attended = body.info_session_attended === true ? true : null;
