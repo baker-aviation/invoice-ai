@@ -824,25 +824,52 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                     return <span className="text-[9px] px-1 py-0.5 rounded bg-amber-100 text-amber-700">{label}</span>;
                   })()}
                   {row.is_skillbridge && <span className="text-[9px] px-1 py-0.5 rounded bg-teal-100 text-teal-700">SB</span>}
-                  {canPick && (
-                    <select
-                      className="text-[10px] border rounded px-1 py-0.5 bg-white text-gray-500 ml-1"
-                      value={row.name}
-                      onChange={(e) => onAssignCrew(tail, role, e.target.value || null)}
-                    >
-                      <option value={row.name}>{row.name}</option>
-                      <option value="">Unassign</option>
-                      {available.filter((p) => p.name !== row.name).map((p) => {
-                        const typeTag = p.aircraft_type === "citation_x" ? "CX" : p.aircraft_type === "challenger" ? "CL" : p.aircraft_type === "dual" ? "DL" : "";
-                        return (
-                          <option key={p.name} value={p.name}>
-                            {p.name} ({p.home_airports.join("/")}) [{typeTag}]
-                            {p.is_checkairman ? " [CA]" : ""}{p.is_skillbridge ? " [SB]" : ""}
-                          </option>
-                        );
-                      })}
-                    </select>
-                  )}
+                  {canPick && (() => {
+                    // Find tails that need this role (for "Move to..." option)
+                    const tailsNeedingRole = Object.keys(byTail).filter((t) => {
+                      if (t === tail) return false;
+                      const tRows = byTail.get(t) ?? [];
+                      const hasRole = tRows.some((r) => r.direction === "oncoming" && r.role === role && r.travel_type !== "none");
+                      return !hasRole;
+                    });
+
+                    return (
+                      <select
+                        className="text-[10px] border rounded px-1 py-0.5 bg-white text-gray-500 ml-1"
+                        value={row.name}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (val.startsWith("move:")) {
+                            // Move to another tail: unassign from current, assign to target
+                            const targetTail = val.slice(5);
+                            onAssignCrew(tail, role, null); // unassign from current
+                            setTimeout(() => onAssignCrew(targetTail, role, row.name), 50); // assign to target
+                          } else {
+                            onAssignCrew(tail, role, val || null);
+                          }
+                        }}
+                      >
+                        <option value={row.name}>{row.name}</option>
+                        <option value="">Unassign</option>
+                        {available.filter((p) => p.name !== row.name).map((p) => {
+                          const typeTag = p.aircraft_type === "citation_x" ? "CX" : p.aircraft_type === "challenger" ? "CL" : p.aircraft_type === "dual" ? "DL" : "";
+                          return (
+                            <option key={p.name} value={p.name}>
+                              {p.name} ({p.home_airports.join("/")}) [{typeTag}]
+                              {p.is_checkairman ? " [CA]" : ""}{p.is_skillbridge ? " [SB]" : ""}
+                            </option>
+                          );
+                        })}
+                        {tailsNeedingRole.length > 0 && (
+                          <optgroup label={`Move to (needs ${role})...`}>
+                            {tailsNeedingRole.map((t) => (
+                              <option key={`move:${t}`} value={`move:${t}`}>→ {t}</option>
+                            ))}
+                          </optgroup>
+                        )}
+                      </select>
+                    );
+                  })()}
                 </div>
                 <div className="flex items-center gap-3 mt-0.5">
                   {row.travel_type === "commercial" && row.flight_number ? (
@@ -1498,6 +1525,17 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
   const [alertCount, setAlertCount] = useState(0);
   // Excluded tails (MX, owner-flown, etc.)
   const [excludedTails, setExcludedTails] = useState<Set<string>>(new Set());
+  // ICS fleet (all tails from ics_sources)
+  const [icsFleet, setIcsFleet] = useState<{ label: string; aircraft_type: string }[]>([]);
+  useEffect(() => {
+    fetch("/api/admin/ics-sources")
+      .then((r) => r.ok ? r.json() : { sources: [] })
+      .then((d) => setIcsFleet((d.sources ?? []).map((s: Record<string, unknown>) => ({ label: s.label as string, aircraft_type: s.aircraft_type as string }))))
+      .catch(() => {});
+  }, []);
+  // Added tails (uncrewed aircraft added to the swap plan)
+  const [addedTails, setAddedTails] = useState<{ tail: string; type: string; location: string }[]>([]);
+
   // Review tab: crew overrides
   const [airportOverrides, setAirportOverrides] = useState<Record<string, string>>({}); // crew name → temp airport
   const [unavailableCrew, setUnavailableCrew] = useState<Set<string>>(new Set());
@@ -3428,6 +3466,61 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                   </button>
                 ))}
               </div>
+            </div>
+            <div className="mt-3 pt-2 border-t">
+              <div className="text-[10px] font-bold text-gray-500 uppercase mb-2">Add Uncrewed Aircraft</div>
+              <div className="text-[10px] text-gray-400 mb-2">Aircraft in the fleet but not currently in the swap plan (no crew assigned)</div>
+              {(() => {
+                // Tails in swap plan or flight schedule
+                const plannedTails = new Set([
+                  ...tailSchedules.map((ts) => ts.tail),
+                  ...Object.keys(swapAssignments ?? {}),
+                  ...addedTails.map((t) => t.tail),
+                ]);
+                const uncrewed = icsFleet.filter((t) => !plannedTails.has(t.label));
+
+                if (uncrewed.length === 0) return <div className="text-gray-400 text-[10px]">All fleet aircraft are in the schedule.</div>;
+
+                return (
+                  <div className="space-y-1">
+                    <div className="flex flex-wrap gap-1.5">
+                      {uncrewed.map((t) => {
+                        const acLabel = t.aircraft_type === "C750" ? "CX" : t.aircraft_type === "CL30" ? "CL" : t.aircraft_type;
+                        return (
+                          <button key={t.label}
+                            onClick={() => {
+                              const loc = prompt(`Enter current location for ${t.label} (airport code, e.g., OPF):`);
+                              if (loc) {
+                                setAddedTails((prev) => [...prev, { tail: t.label, type: t.aircraft_type, location: loc.toUpperCase() }]);
+                                addToast("success", `${t.label} added @ ${loc.toUpperCase()} — will need crew assigned`);
+                              }
+                            }}
+                            className="px-2 py-1 rounded text-[10px] font-mono font-bold border bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100"
+                          >
+                            + {t.label} [{acLabel}]
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {addedTails.length > 0 && (
+                      <div className="mt-2 space-y-1">
+                        {addedTails.map((t, i) => (
+                          <div key={i} className="flex items-center gap-2 text-xs">
+                            <span className="font-mono font-bold">{t.tail}</span>
+                            <span className="text-gray-500">@ {t.location}</span>
+                            <span className={`text-[9px] px-1 py-0.5 rounded ${t.type === "C750" ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"}`}>
+                              {t.type === "C750" ? "Cit X" : "CL"}
+                            </span>
+                            <span className="text-green-600">Added — needs oncoming crew</span>
+                            <button onClick={() => setAddedTails((prev) => prev.filter((_, j) => j !== i))}
+                              className="text-red-400 hover:text-red-600">&times;</button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
           </div>
         </div>
