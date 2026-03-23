@@ -748,8 +748,9 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
         }
         const unpairedSwapPoints: string[] = [];
         for (const [sp, crew] of swapPointCrewMap) {
-          if (crew.oncoming.length > 0 && crew.offgoing.length === 0) unpairedSwapPoints.push(`${sp} (oncoming only)`);
-          if (crew.offgoing.length > 0 && crew.oncoming.length === 0) unpairedSwapPoints.push(`${sp} (offgoing only)`);
+          // Only flag when someone is LEAVING with no one ARRIVING (aircraft unattended).
+          // Someone ARRIVING with no one LEAVING is fine — they're boarding early at an intermediate stop.
+          if (crew.offgoing.length > 0 && crew.oncoming.length === 0) unpairedSwapPoints.push(`${sp} (offgoing only — no replacement)`);
         }
 
         const isLocked = lockedTails?.has(tail);
@@ -1632,6 +1633,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
         if (r.tail_number !== tailNumber || r.role !== role || r.direction !== direction) return r;
         return {
           ...r,
+          swap_location: selectedCrewSlot.swapLocation || r.swap_location, // persist swap location from per-crew dropdown
           travel_type: selection.type as CrewSwapRow["travel_type"],
           flight_number: selection.flight_number,
           departure_time: selection.departure_time,
