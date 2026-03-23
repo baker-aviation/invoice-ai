@@ -2000,6 +2000,7 @@ function VanScheduleCard({
   onAlsoOnVan,
   fboMap,
   tailToVans,
+  vanDiff,
 }: {
   zone: (typeof FIXED_VAN_ZONES)[number];
   color: string;
@@ -2032,6 +2033,7 @@ function VanScheduleCard({
   onAlsoOnVan?: (tail: string, toVanId: number) => void;
   fboMap?: Record<string, string>;
   tailToVans?: Map<string, number[]>;
+  vanDiff?: { added: number; removed: number; orderChanged: boolean; mxChanged: boolean } | null;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [showSlackModal, setShowSlackModal] = useState(false);
@@ -2142,11 +2144,18 @@ function VanScheduleCard({
           >
             Share to Slack
           </button>
-          {hasOverrides && (
+          {vanDiff ? (
+            <span className={`text-xs rounded-full px-2 py-0.5 font-medium ${(vanDiff.added + vanDiff.removed) > 3 ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"}`}>
+              {vanDiff.added > 0 && `+${vanDiff.added}`}{vanDiff.added > 0 && vanDiff.removed > 0 && " / "}{vanDiff.removed > 0 && `−${vanDiff.removed}`}
+              {vanDiff.added === 0 && vanDiff.removed === 0 && vanDiff.orderChanged && "Reordered"}
+              {vanDiff.added === 0 && vanDiff.removed === 0 && !vanDiff.orderChanged && vanDiff.mxChanged && "MX updated"}
+              {" from published"}
+            </span>
+          ) : hasOverrides ? (
             <span className="text-xs rounded-full px-2 py-0.5 font-medium bg-amber-100 text-amber-700">
               Edited
             </span>
-          )}
+          ) : null}
           {items.length > 0 && (
             <span className={`text-xs rounded-full px-2 py-0.5 font-medium ${overLimit ? "bg-red-100 text-red-700" : "bg-slate-100 text-slate-600"}`}>
               {fmtDriveTime(totalDistKm)}{overLimit ? " ⚠" : ""}
@@ -2542,7 +2551,7 @@ function ScheduleTab({
   const [legNotes, setLegNotes] = useState<Map<string, string>>(new Map());
 
   // Published assignments used to restore overrides
-  const [publishedAssignments, setPublishedAssignments] = useState<{ vanId: number; flightIds: string[] }[]>([]);
+  const [publishedAssignments, setPublishedAssignments] = useState<{ vanId: number; flightIds: string[]; syntheticFlights?: { id: string; tail: string; airport: string | null }[] }[]>([]);
 
   // Check existing publish status + load notes + restore overrides on mount / date change
   useEffect(() => {
@@ -3061,13 +3070,10 @@ function ScheduleTab({
     return set;
   }, [overrides, baseItemsByVan]);
 
-  // ── Auto-dispatch uncovered aircraft to nearest vans ──
-  const autoDispatchUncovered = useCallback(() => {
-    if (uncoveredItems.length === 0) return;
+  // ── Auto-dispatch: pure scoring helper (no state mutation) ──
+  const computeAutoDispatchPlan = useCallback(() => {
+    if (uncoveredItems.length === 0) return [];
 
-    const newOverrides = new Map<string, number>(overrides);
-
-    // Build a map of all stops today per tail from uncoveredItems + allDayArrivals
     const stopsByTail = new Map<string, VanFlightItem[]>();
     for (const item of allDayArrivals) {
       const tail = item.arrFlight.tail_number ?? `_no_tail_${item.arrFlight.id}`;
@@ -3076,7 +3082,6 @@ function ScheduleTab({
       stopsByTail.set(tail, arr);
     }
 
-    // Build scoring list from uncovered items
     type ScoredStop = {
       item: VanFlightItem;
       score: number;
@@ -3088,11 +3093,8 @@ function ScheduleTab({
 
     for (const item of uncoveredItems) {
       const { nextDep, arrFlight } = item;
-
-      // Determine if this is EOD
       const isEOD = !nextDep || !isOnEtDate(nextDep.scheduled_departure, date);
 
-      // Compute ground time
       let groundHours = Infinity;
       if (nextDep && isOnEtDate(nextDep.scheduled_departure, date)) {
         const arrMs = new Date(arrFlight.scheduled_arrival ?? "").getTime();
@@ -3100,9 +3102,6 @@ function ScheduleTab({
         groundHours = (depMs - arrMs) / 3_600_000;
       }
 
-      const isQuickTurn = !isEOD && groundHours < 2;
-
-      // Find the tail's EOD location to check convenience
       const tail = arrFlight.tail_number ?? `_no_tail_${arrFlight.id}`;
       const tailStops = stopsByTail.get(tail) ?? [];
       const eodStop = tailStops
@@ -3113,7 +3112,6 @@ function ScheduleTab({
           return !nd || !isOnEtDate(nd.scheduled_departure, date);
         });
 
-      // Find nearest van for this item
       let bestVanId = -1;
       let bestDist = Infinity;
       const itemInfo = item.airportInfo;
@@ -3131,21 +3129,16 @@ function ScheduleTab({
 
       if (bestVanId === -1) continue;
 
-      // Score: EOD=100, longGround=50, quickTurn=10
       let score: number;
       if (isEOD) {
-        // EOD: always assign to nearest van. Highest priority.
         score = 100;
       } else if (groundHours >= 2) {
-        // Long ground: assign if drive <2hr (160km)
-        if (bestDist > 160) continue; // skip — too far for a non-EOD long ground
+        if (bestDist > 160) continue;
         score = 50;
       } else {
-        // Quick turn: only assign if van <30min drive (~45km) OR the EOD isn't convenient
         const eodInfo = eodStop?.airportInfo;
         let eodConvenient = false;
         if (eodInfo) {
-          // Check if any van is within 2hr drive (160km) of the EOD airport
           for (const z of FIXED_VAN_ZONES) {
             const vanLat = liveVanPositions.get(z.vanId)?.lat ?? z.lat;
             const vanLon = liveVanPositions.get(z.vanId)?.lon ?? z.lon;
@@ -3157,32 +3150,89 @@ function ScheduleTab({
         }
 
         if (bestDist <= 45) {
-          // Van very close — worth a quick stop
           score = 10;
         } else if (!eodConvenient) {
-          // EOD not convenient to any van — this quick turn is the best opportunity
           score = 10;
         } else {
-          continue; // skip this quick turn
+          continue;
         }
       }
 
-      // Adjust score by inverse distance (closer = slightly higher priority)
       score -= Math.min(bestDist / 100, 5);
-
       scoredStops.push({ item, score, bestVanId, bestDist });
     }
 
-    // Sort by score descending (highest priority first)
     scoredStops.sort((a, b) => b.score - a.score);
+    return scoredStops;
+  }, [uncoveredItems, allDayArrivals, date, liveVanPositions]);
 
-    // Greedily assign
-    for (const { item, bestVanId } of scoredStops) {
+  // ── Auto-dispatch uncovered aircraft to nearest vans ──
+  const autoDispatchUncovered = useCallback(() => {
+    const plan = computeAutoDispatchPlan();
+    if (plan.length === 0) return;
+    const newOverrides = new Map<string, number>(overrides);
+    for (const { item, bestVanId } of plan) {
       newOverrides.set(item.arrFlight.id, bestVanId);
     }
-
     setOverrides(newOverrides);
-  }, [uncoveredItems, overrides, allDayArrivals, date, liveVanPositions]);
+  }, [computeAutoDispatchPlan, overrides]);
+
+  // ── Restore schedule to match last-published state ──
+  const restoreToPublished = useCallback(() => {
+    if (publishedAssignments.length === 0) return;
+
+    // Build overrides: map each published flight to its published van
+    const newOverrides = new Map<string, number>();
+    const allPublishedFlightIds = new Set<string>();
+    for (const a of publishedAssignments) {
+      for (const fid of a.flightIds) {
+        allPublishedFlightIds.add(fid);
+        // Only add override if the flight's base van differs from published van
+        let baseVanId: number | undefined;
+        for (const [vanId, items] of baseItemsByVan) {
+          if (items.some((item) => item.arrFlight.id === fid)) {
+            baseVanId = vanId;
+            break;
+          }
+        }
+        if (baseVanId !== undefined && baseVanId !== a.vanId) {
+          newOverrides.set(fid, a.vanId);
+        }
+        // Flight from uncovered pool — always needs override to place it
+        if (baseVanId === undefined) {
+          newOverrides.set(fid, a.vanId);
+        }
+      }
+    }
+
+    // Build removals: any flight in baseItemsByVan NOT in any published van
+    const newRemovals = new Set<string>();
+    for (const [, items] of baseItemsByVan) {
+      for (const item of items) {
+        if (!allPublishedFlightIds.has(item.arrFlight.id)) {
+          newRemovals.add(item.arrFlight.id);
+        }
+      }
+    }
+
+    // Build unscheduled overrides from published syntheticFlights
+    const newUnscheduled = new Map<string, number>();
+    for (const a of publishedAssignments) {
+      if (a.syntheticFlights) {
+        for (const sf of a.syntheticFlights) {
+          newUnscheduled.set(sf.tail, a.vanId);
+        }
+      }
+    }
+
+    // Clear airport and sort overrides
+    setAirportOverrides(new Map());
+    setSortOverrides(new Map());
+    setOverrides(newOverrides);
+    setRemovals(newRemovals);
+    setUnscheduledOverrides(newUnscheduled);
+    overridesRestoredRef.current = date;
+  }, [publishedAssignments, baseItemsByVan, date]);
 
   // ── Drag-and-drop handlers ──
   const dragOverTargetRef = useRef<{ vanId: number; flightId: string; insertBefore: boolean } | null>(null);
@@ -3412,6 +3462,13 @@ function ScheduleTab({
   const [reviewExcludedAdded, setReviewExcludedAdded] = useState<Map<number, Set<number>>>(new Map());
   const [reviewExcludedRemoved, setReviewExcludedRemoved] = useState<Map<number, Set<number>>>(new Map());
   const [reviewNotes, setReviewNotes] = useState<Map<number, string>>(new Map());
+
+  // Auto-Dispatch confirmation modal state
+  const [showAutoDispatchReview, setShowAutoDispatchReview] = useState(false);
+  const [autoDispatchPreview, setAutoDispatchPreview] = useState<{ tail: string; airport: string; vanId: number; vanName: string; distKm: number; flightId: string }[]>([]);
+
+  // Morning Send confirmation modal state
+  const [showMorningSendReview, setShowMorningSendReview] = useState(false);
 
   // Load morning send status from localStorage on date change
   useEffect(() => {
@@ -3755,9 +3812,30 @@ function ScheduleTab({
               Reset all edits ({totalEdits})
             </button>
           )}
+          {publishedAt && (
+            <button
+              onClick={restoreToPublished}
+              className="text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-3 py-1.5 hover:bg-blue-100 transition-colors"
+              title="Restore schedule to match the last-published state"
+            >
+              Restore to Published
+            </button>
+          )}
           {uncoveredItems.length > 0 && (
             <button
-              onClick={autoDispatchUncovered}
+              onClick={() => {
+                const plan = computeAutoDispatchPlan();
+                if (plan.length === 0) return;
+                setAutoDispatchPreview(plan.map(({ item, bestVanId, bestDist }) => ({
+                  tail: item.arrFlight.tail_number ?? "???",
+                  airport: item.airport,
+                  vanId: bestVanId,
+                  vanName: FIXED_VAN_ZONES.find((z) => z.vanId === bestVanId)?.name ?? `Van ${bestVanId}`,
+                  distKm: Math.round(bestDist),
+                  flightId: item.arrFlight.id,
+                })));
+                setShowAutoDispatchReview(true);
+              }}
               className="text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-3 py-1.5 hover:bg-blue-100 transition-colors"
               title="Auto-assign uncovered aircraft to nearest vans based on priority scoring"
             >
@@ -3777,7 +3855,7 @@ function ScheduleTab({
             {slackTestStatus === "sending" ? "Sending…" : slackTestStatus === "success" ? "Sent!" : slackTestStatus === "error" ? "Failed" : "Test Van 1"}
           </button>
           <button
-            onClick={handleMorningSend}
+            onClick={() => setShowMorningSendReview(true)}
             disabled={morningSendStatus === "sending"}
             className={`text-sm font-semibold rounded-lg px-4 py-1.5 transition-colors disabled:opacity-50 ${
               morningSentAt
@@ -3988,6 +4066,115 @@ function ScheduleTab({
         </div>
         );
       })()}
+
+      {/* Auto-Dispatch review modal */}
+      {showAutoDispatchReview && autoDispatchPreview.length > 0 && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowAutoDispatchReview(false)}>
+          <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full mx-4 max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
+              <div>
+                <h3 className="font-bold text-lg text-gray-900">Auto-Dispatch Preview</h3>
+                <p className="text-xs text-gray-500 mt-0.5">{autoDispatchPreview.length} aircraft will be assigned</p>
+              </div>
+              <button onClick={() => setShowAutoDispatchReview(false)} className="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
+            </div>
+            <div className="overflow-y-auto px-5 py-3 space-y-2 flex-1">
+              {(() => {
+                const byVan = new Map<number, typeof autoDispatchPreview>();
+                for (const p of autoDispatchPreview) {
+                  const arr = byVan.get(p.vanId) ?? [];
+                  arr.push(p);
+                  byVan.set(p.vanId, arr);
+                }
+                return Array.from(byVan.entries()).map(([vanId, items]) => (
+                  <div key={vanId} className="border border-gray-200 rounded-lg p-3">
+                    <div className="font-semibold text-sm text-gray-800 mb-1.5">{items[0].vanName}</div>
+                    <div className="space-y-1">
+                      {items.map((p) => (
+                        <div key={p.flightId} className="flex items-center justify-between text-xs text-gray-600">
+                          <span className="font-medium text-gray-800">{p.tail} <span className="text-gray-400">@</span> {p.airport}</span>
+                          <span className="text-gray-400">{p.distKm} km</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ));
+              })()}
+            </div>
+            <div className="flex items-center justify-end gap-3 px-5 py-4 border-t border-gray-200">
+              <button
+                onClick={() => setShowAutoDispatchReview(false)}
+                className="text-sm font-medium text-gray-600 hover:text-gray-800 px-4 py-2 rounded-lg hover:bg-gray-100 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  setShowAutoDispatchReview(false);
+                  autoDispatchUncovered();
+                }}
+                className="text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 active:bg-blue-800 px-5 py-2 rounded-lg transition-colors"
+              >
+                Confirm Dispatch ({autoDispatchPreview.length})
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Morning Send confirmation modal */}
+      {showMorningSendReview && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowMorningSendReview(false)}>
+          <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full mx-4 max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
+              <div>
+                <h3 className="font-bold text-lg text-gray-900">Morning Send</h3>
+                <p className="text-xs text-gray-500 mt-0.5">Full schedule to all van Slack channels</p>
+              </div>
+              <button onClick={() => setShowMorningSendReview(false)} className="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
+            </div>
+            <div className="overflow-y-auto px-5 py-3 space-y-2 flex-1">
+              {morningSentAt && (
+                <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs text-amber-800 font-medium">
+                  Already sent today at {new Date(morningSentAt).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", timeZone: "America/New_York" })} ET — this will re-send.
+                </div>
+              )}
+              <div className="bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 text-xs text-blue-800">
+                This will send the full schedule to <span className="font-semibold">ALL</span> van Slack channels and publish the schedule.
+              </div>
+              {FIXED_VAN_ZONES.map((zone) => {
+                const items = finalItemsByVan.get(zone.vanId) ?? [];
+                const tails = items.map((i) => i.arrFlight.tail_number ?? "???");
+                return (
+                  <div key={zone.vanId} className="flex items-center justify-between border border-gray-200 rounded-lg px-3 py-2">
+                    <span className="text-sm font-medium text-gray-800">{zone.name}</span>
+                    <span className="text-xs text-gray-500">
+                      {items.length === 0 ? "No aircraft" : `${items.length} aircraft — ${tails.join(", ")}`}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="flex items-center justify-end gap-3 px-5 py-4 border-t border-gray-200">
+              <button
+                onClick={() => setShowMorningSendReview(false)}
+                className="text-sm font-medium text-gray-600 hover:text-gray-800 px-4 py-2 rounded-lg hover:bg-gray-100 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  setShowMorningSendReview(false);
+                  handleMorningSend();
+                }}
+                className="text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 active:bg-blue-800 px-5 py-2 rounded-lg transition-colors"
+              >
+                Confirm &amp; Send to All Vans
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Publish status */}
       <div className="flex items-center gap-3 flex-wrap">
@@ -4488,6 +4675,7 @@ function ScheduleTab({
               samsaraVanName={vanZoneNames.get(zone.vanId)}
               isDropTarget={dropTargetVan === zone.vanId}
               hasOverrides={editedVans.has(zone.vanId)}
+              vanDiff={(() => { const d = changedVans.find((v) => v.vanId === zone.vanId); return d ? { added: d.added.length, removed: d.removed.length, orderChanged: d.orderChanged, mxChanged: d.mxChanged } : null; })()}
               flightInfoMap={flightInfoMap}
               legNotes={legNotes}
               mxNotesByTail={mxNotesByTail}

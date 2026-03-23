@@ -77,6 +77,7 @@ export async function POST(req: NextRequest) {
     "Dave Hill": "Ronald David Hill Jr",
     "Luis Maestre": "Luis Maestre Giron",
     "Chris Unger": "Christopher Unger",
+    "Ken Ruth": "Kenneth Ruth",
   };
 
   // Slack user ID → roster name (from slack-bakeraviation-members.csv export)

@@ -244,6 +244,12 @@ const RAW: [string, string, boolean][] = [
   ["KSUS", "KSTL", true],    // Spirit of St. Louis → St. Louis
   ["KYIP", "KDTW", true],    // Willow Run MI → Detroit
 
+  // Utah
+  ["KOGD", "KSLC", true],    // Ogden → Salt Lake City
+
+  // Ohio
+  ["KCGF", "KCLE", true],    // Cuyahoga County → Cleveland
+
   // International — FBO to nearest commercial
   ["CYYZ", "CYYZ", true],   // Toronto Pearson (IS commercial)
   ["MROC", "MROC", true],   // San Jose Costa Rica (IS commercial)
