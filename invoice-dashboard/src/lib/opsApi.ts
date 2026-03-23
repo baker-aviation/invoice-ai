@@ -597,7 +597,7 @@ export type UsCustomsAirport = {
 export type IntlLegAlert = {
   id: string;
   flight_id: string | null;
-  alert_type: "deadline_approaching" | "permit_resubmit" | "customs_conflict" | "tail_change";
+  alert_type: "deadline_approaching" | "permit_resubmit" | "customs_conflict" | "tail_change" | "schedule_change";
   severity: "critical" | "warning" | "info";
   message: string;
   related_country_id: string | null;

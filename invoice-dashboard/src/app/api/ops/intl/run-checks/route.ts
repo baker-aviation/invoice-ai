@@ -9,7 +9,8 @@ import { isInternationalIcao } from "@/lib/intlUtils";
  * Combined endpoint that runs all international ops checks:
  * 1. Deadline approaching alerts (permits not approved near deadline)
  * 2. Tail-change detection (aircraft swapped on legs with active permits)
- * 3. Customs hour conflicts (international arrival outside customs hours)
+ * 3. Schedule change detection (departure/arrival shifted 30+ min from snapshot)
+ * 4. Customs hour conflicts (international arrival outside customs hours)
  *
  * Call this after JI sync or on a 30-minute cron.
  * Also callable from the "Resync JI" button flow.
@@ -124,7 +125,99 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  // ── 4. Customs hour conflicts ───────────────────────────────────────
+  // ── 4. Schedule change detection ───────────────────────────────────
+  // Compare current flight times to the snapshot stored on each intl_trip.
+  // Alert if any leg shifted by 30+ minutes.
+  {
+    const { data: tripsWithSnapshot } = await supa
+      .from("intl_trips")
+      .select("id, tail_number, flight_ids, schedule_snapshot")
+      .gte("trip_date", new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10))
+      .not("schedule_snapshot", "is", null);
+
+    if (tripsWithSnapshot && tripsWithSnapshot.length > 0) {
+      // Build current flight times lookup
+      const currentTimes = new Map<string, { dep: string; arr: string | null }>();
+      for (const f of intlFlights) {
+        currentTimes.set(f.id, { dep: f.scheduled_departure, arr: f.scheduled_arrival ?? null });
+      }
+
+      const THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes
+      const snapshotUpdates: Array<{ tripId: string; snapshot: Record<string, { dep: string; arr: string | null }> }> = [];
+
+      for (const trip of tripsWithSnapshot) {
+        const snapshot = trip.schedule_snapshot as Record<string, { dep: string; arr: string | null }> | null;
+        if (!snapshot || !trip.flight_ids) continue;
+
+        let tripChanged = false;
+        const newSnapshot = { ...snapshot };
+
+        for (const fid of trip.flight_ids as string[]) {
+          const curr = currentTimes.get(fid);
+          const prev = snapshot[fid];
+          if (!curr || !prev) {
+            // Flight is new or was removed — update snapshot but don't alert
+            if (curr) { newSnapshot[fid] = curr; tripChanged = true; }
+            continue;
+          }
+
+          const depDelta = Math.abs(new Date(curr.dep).getTime() - new Date(prev.dep).getTime());
+          const arrDelta = curr.arr && prev.arr
+            ? Math.abs(new Date(curr.arr).getTime() - new Date(prev.arr).getTime())
+            : 0;
+
+          if (depDelta >= THRESHOLD_MS || arrDelta >= THRESHOLD_MS) {
+            // Check for existing unacked schedule_change alert for this flight
+            const { count } = await supa
+              .from("intl_leg_alerts")
+              .select("id", { count: "exact", head: true })
+              .eq("flight_id", fid)
+              .eq("alert_type", "schedule_change")
+              .eq("acknowledged", false);
+
+            if ((count ?? 0) === 0) {
+              const flight = intlFlights.find((f) => f.id === fid);
+              const leg = flight ? `${flight.departure_icao}→${flight.arrival_icao}` : fid;
+              const prevDep = new Date(prev.dep).toISOString().slice(11, 16);
+              const currDep = new Date(curr.dep).toISOString().slice(11, 16);
+              // Signed shift: positive = delayed, negative = moved earlier
+              const depShiftMin = Math.round(
+                (new Date(curr.dep).getTime() - new Date(prev.dep).getTime()) / 60000
+              );
+
+              alertsToCreate.push({
+                flight_id: fid,
+                alert_type: "schedule_change",
+                severity: depDelta >= 2 * 60 * 60 * 1000 ? "critical" : "warning",
+                message: `${trip.tail_number} ${leg} departure moved ${prevDep}Z → ${currDep}Z (${depShiftMin > 0 ? "+" : ""}${depShiftMin}min). Verify customs/handler timing.`,
+              });
+            }
+
+            // Update snapshot to current times so we don't re-alert
+            newSnapshot[fid] = curr;
+            tripChanged = true;
+          }
+        }
+
+        if (tripChanged) {
+          snapshotUpdates.push({ tripId: trip.id, snapshot: newSnapshot });
+        }
+      }
+
+      // Batch-update snapshots
+      if (snapshotUpdates.length > 0) {
+        await Promise.all(
+          snapshotUpdates.map((u) =>
+            supa.from("intl_trips")
+              .update({ schedule_snapshot: u.snapshot, updated_at: now.toISOString() })
+              .eq("id", u.tripId)
+          )
+        );
+      }
+    }
+  }
+
+  // ── 5. Customs hour conflicts ───────────────────────────────────────
   const { data: customsAirports } = await supa
     .from("us_customs_airports")
     .select("icao, hours_open, hours_close, timezone, airport_name");
@@ -161,7 +254,7 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // ── 5. Insert all alerts ────────────────────────────────────────────
+  // ── 6. Insert all alerts ────────────────────────────────────────────
   if (alertsToCreate.length > 0) {
     const { error } = await supa.from("intl_leg_alerts").insert(alertsToCreate);
     if (error) {

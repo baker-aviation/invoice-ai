@@ -229,7 +229,7 @@ export async function GET(req: NextRequest) {
 
     const { data: flights } = await supa
       .from("flights")
-      .select("id, tail_number, departure_icao, arrival_icao, scheduled_departure")
+      .select("id, tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival")
       .gte("scheduled_departure", lookback)
       .lte("scheduled_departure", lookahead)
       .order("scheduled_departure");
@@ -249,14 +249,30 @@ export async function GET(req: NextRequest) {
       const tripTails = [...new Set(detected.map((d) => d.tail_number))];
       const { data: allExisting } = await supa
         .from("intl_trips")
-        .select("id, tail_number, trip_date, route_icaos, flight_ids")
+        .select("id, tail_number, trip_date, route_icaos, flight_ids, schedule_snapshot")
         .in("tail_number", tripTails)
         .in("trip_date", tripDates);
-      const existingMap = new Map<string, { id: string; route_icaos: string[]; flight_ids: string[] }[]>();
+      const existingMap = new Map<string, { id: string; route_icaos: string[]; flight_ids: string[]; schedule_snapshot: unknown }[]>();
       for (const e of allExisting ?? []) {
         const key = `${e.tail_number}|${e.trip_date}`;
         if (!existingMap.has(key)) existingMap.set(key, []);
         existingMap.get(key)!.push(e);
+      }
+
+      // Build a lookup for schedule snapshots from flight data
+      const flightMap = new Map<string, { dep: string; arr: string | null }>();
+      for (const f of flights as Array<{ id: string; scheduled_departure: string; scheduled_arrival: string | null }>) {
+        flightMap.set(f.id, { dep: f.scheduled_departure, arr: f.scheduled_arrival ?? null });
+      }
+
+      // Helper: build snapshot for a set of flight IDs
+      function buildSnapshot(flightIds: string[]) {
+        const snap: Record<string, { dep: string; arr: string | null }> = {};
+        for (const fid of flightIds) {
+          const times = flightMap.get(fid);
+          if (times) snap[fid] = times;
+        }
+        return snap;
       }
 
       // Upsert trips — updates in parallel, inserts batched
@@ -271,11 +287,15 @@ export async function GET(req: NextRequest) {
         );
 
         if (match) {
-          if (JSON.stringify(match.flight_ids) !== JSON.stringify(dt.flight_ids)) {
+          const needsFlightUpdate = JSON.stringify(match.flight_ids) !== JSON.stringify(dt.flight_ids);
+          const needsSnapshot = !match.schedule_snapshot;
+
+          if (needsFlightUpdate || needsSnapshot) {
+            const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
+            if (needsFlightUpdate) updates.flight_ids = dt.flight_ids;
+            if (needsSnapshot) updates.schedule_snapshot = buildSnapshot(dt.flight_ids);
             updatePromises.push(
-              supa.from("intl_trips")
-                .update({ flight_ids: dt.flight_ids, updated_at: new Date().toISOString() })
-                .eq("id", match.id)
+              supa.from("intl_trips").update(updates).eq("id", match.id)
             );
           }
         } else {
@@ -295,6 +315,7 @@ export async function GET(req: NextRequest) {
             route_icaos: dt.route_icaos,
             flight_ids: dt.flight_ids,
             trip_date: dt.trip_date,
+            schedule_snapshot: buildSnapshot(dt.flight_ids),
           })
           .select("id")
           .single();
