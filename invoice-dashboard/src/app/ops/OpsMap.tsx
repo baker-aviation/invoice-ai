@@ -43,15 +43,16 @@ function acDivIcon(track: number | null, color: string, onGround: boolean, alert
   return L.divIcon({ html: svg, className: "", iconSize: [ringSize, ringSize], iconAnchor: [ringHalf, ringHalf], popupAnchor: [0, -ringHalf] });
 }
 
-/** Map label — tail number + optional DIVERTED/HOLDING alert */
-function acDataLabel(ac: AircraftPosition, _fi: FlightInfoMap | undefined, fleetLookup: Map<string, string>, alertLabel?: string, dark?: boolean): string {
+/** Map label — tail number + optional DIVERTED/HOLDING alert + optional FL badge */
+function acDataLabel(ac: AircraftPosition, _fi: FlightInfoMap | undefined, fleetLookup: Map<string, string>, alertLabel?: string, dark?: boolean, flLabel?: string): string {
   const color = getAcColor(fleetLookup, ac.tail, ac.on_ground);
   const alertColor = alertLabel === "DIVERTING" ? "#d97706" : "#ef4444"; // amber for diverting, red for diverted/holding
   const alertHtml = alertLabel ? ` <span style="color:${alertColor};font-size:10px;font-weight:bold">${alertLabel}</span>` : "";
+  const flHtml = flLabel ? ` <span style="color:#d97706;font-size:10px;font-weight:600;opacity:0.85">${flLabel}</span>` : "";
   const bg = dark
     ? "text-shadow: 0 1px 3px rgba(0,0,0,0.9), 0 0 6px rgba(0,0,0,0.6)"
     : "background:rgba(255,255,255,0.85);padding:1px 4px;border-radius:3px;border:1px solid rgba(0,0,0,0.12)";
-  return `<div style="color:${color};font-family:ui-monospace,monospace;font-size:11px;font-weight:700;white-space:nowrap;${bg};line-height:1.3">${ac.tail}${alertHtml}</div>`;
+  return `<div style="color:${color};font-family:ui-monospace,monospace;font-size:11px;font-weight:700;white-space:nowrap;${bg};line-height:1.3">${ac.tail}${alertHtml}${flHtml}</div>`;
 }
 
 function fmtEta(iso: string | null | undefined): string {
@@ -682,6 +683,36 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
     }
   }
 
+  /* ── FL470 level-off alert: show FL when level below FL470 for 20+ min ── */
+  const levelBelowTimersRef = useRef<Map<string, number>>(new Map());
+  const levelBelowFL470 = useMemo(() => {
+    const LEVEL_FPM = 300;          // |baro_rate| below this = level flight
+    const FL470_FT = 47000;
+    const DELAY_MS = 20 * 60_000;   // 20 minutes
+    const now = Date.now();
+    const result = new Map<string, string>();
+    const activeTails = new Set<string>();
+
+    for (const ac of aircraft) {
+      if (ac.on_ground || ac.alt_baro == null || ac.baro_rate == null) continue;
+      const isLevel = Math.abs(ac.baro_rate) < LEVEL_FPM;
+      if (isLevel && ac.alt_baro < FL470_FT) {
+        activeTails.add(ac.tail);
+        if (!levelBelowTimersRef.current.has(ac.tail)) {
+          levelBelowTimersRef.current.set(ac.tail, now);
+        }
+        if (now - levelBelowTimersRef.current.get(ac.tail)! >= DELAY_MS) {
+          result.set(ac.tail, fmtAlt(ac.alt_baro));
+        }
+      }
+    }
+    // Clear tails no longer level below FL470
+    for (const tail of levelBelowTimersRef.current.keys()) {
+      if (!activeTails.has(tail)) levelBelowTimersRef.current.delete(tail);
+    }
+    return result;
+  }, [aircraft]);
+
   const handleHoldingDetected = useCallback((tails: Set<string>) => {
     setHoldingTails(tails);
     onHoldingDetectedProp?.(tails);
@@ -752,7 +783,7 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
               zIndexOffset={ac.on_ground ? 1000 : 2000}
             >
               <Tooltip permanent direction="right" offset={[12, 0]} className="fa-data-tooltip">
-                <div dangerouslySetInnerHTML={{ __html: acDataLabel(ac, fi, fleetLookup, alertLabel, darkMode) }} />
+                <div dangerouslySetInnerHTML={{ __html: acDataLabel(ac, fi, fleetLookup, alertLabel, darkMode, levelBelowFL470.get(ac.tail)) }} />
               </Tooltip>
               <Popup>
                 <div className="text-sm space-y-1">
