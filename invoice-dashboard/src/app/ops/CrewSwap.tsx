@@ -362,6 +362,7 @@ const FBO_COMMERCIAL_MAP: Record<string, { airports: string[]; preferred: string
   TEB: { airports: ["EWR", "LGA", "JFK"], preferred: "EWR" },
   OPF: { airports: ["MIA", "FLL"], preferred: "MIA" },
   VNY: { airports: ["BUR", "LAX"], preferred: "BUR" },
+  BFI: { airports: ["SEA"], preferred: "SEA" },
   FXE: { airports: ["FLL", "MIA", "PBI"], preferred: "FLL" },
   BED: { airports: ["BOS"], preferred: "BOS" },
   HPN: { airports: ["JFK", "LGA", "EWR"], preferred: "JFK" },
@@ -445,6 +446,25 @@ function AirportAliasPanel({ flights, selectedWed }: { flights: Flight[]; select
                 </div>
               </div>
             ))}
+          </div>
+          <div className="mt-2 pt-2 border-t flex items-center gap-2">
+            <button
+              onClick={() => {
+                const fbo = prompt("FBO airport code (e.g., BFI):");
+                if (!fbo) return;
+                const comm = prompt(`Commercial airport(s) near ${fbo.toUpperCase()} (comma-separated, e.g., SEA,PDX):`);
+                if (!comm) return;
+                const airports = comm.split(",").map((a) => a.trim().toUpperCase()).filter(Boolean);
+                if (airports.length === 0) return;
+                FBO_COMMERCIAL_MAP[fbo.toUpperCase()] = { airports, preferred: airports[0] };
+                setShow(false);
+                setTimeout(() => setShow(true), 50); // force re-render
+              }}
+              className="text-[10px] px-2 py-1 rounded bg-blue-50 text-blue-600 hover:bg-blue-100 border border-blue-200 font-medium"
+            >
+              + Add FBO
+            </button>
+            <span className="text-[9px] text-gray-400">Add custom FBO → commercial airport mapping</span>
           </div>
         </div>
       )}

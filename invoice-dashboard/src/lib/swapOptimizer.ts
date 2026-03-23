@@ -1978,7 +1978,7 @@ export function buildSwapPlan(params: {
           }
         }
 
-        if (bestSwapPoint !== picSwapPoint) {
+        if (bestSwapPoint !== picSwapPoint && bestSwapPoint.position !== "idle") {
           warnings.push(`SIC swaps at ${toIata(bestSwapPoint.icao)} (after ${bestSwapPoint.position}) — PIC covers SIC seat for earlier legs`);
         }
 
