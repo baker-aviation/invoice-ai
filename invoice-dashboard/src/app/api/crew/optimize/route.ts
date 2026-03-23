@@ -16,6 +16,11 @@ const OptimizeRequestSchema = z.object({
   force_auto_detect: z.boolean().optional(),
   lock_tails: z.array(z.string()).optional(),
   locked_rows: z.array(z.any()).optional(),
+  required_pairings: z.array(z.object({
+    pic: z.string(),
+    sic: z.string(),
+    reason: z.string(),
+  })).optional(),
 }).strip();
 
 export const dynamic = "force-dynamic";
@@ -57,6 +62,7 @@ export async function POST(req: NextRequest) {
   const clientSwapAssignments = parsed.data.swap_assignments as Record<string, SwapAssignment> | undefined;
   const clientOncomingPool = parsed.data.oncoming_pool as OncomingPool | undefined;
   const lockTails = parsed.data.lock_tails as string[] | undefined;
+  const requiredPairings = parsed.data.required_pairings as { pic: string; sic: string; reason: string }[] | undefined;
   const lockedRows = parsed.data.locked_rows as unknown[] | undefined;
   const lockTailSet = lockTails ? new Set(lockTails) : null;
 
@@ -347,9 +353,31 @@ export async function POST(req: NextRequest) {
       excludeTails: unsolvableTails,
       offgoingDeadlines: offgoingFirstResult?.deadlines,
     });
-    result = twoPass.result;
     assignmentResult = twoPass.assignmentResult;
     swapAssignments = twoPass.assignmentResult.assignments;
+
+    // Apply required pairings to two-pass result
+    if (requiredPairings && requiredPairings.length > 0) {
+      for (const pairing of requiredPairings) {
+        const picTail = Object.entries(swapAssignments).find(([, sa]) => sa.oncoming_pic === pairing.pic)?.[0];
+        if (!picTail) continue;
+        if (swapAssignments[picTail].oncoming_sic === pairing.sic) continue;
+        for (const [, sa] of Object.entries(swapAssignments)) {
+          if (sa.oncoming_sic === pairing.sic) sa.oncoming_sic = null;
+        }
+        swapAssignments[picTail].oncoming_sic = pairing.sic;
+        console.log(`[Pairing] Forced "${pairing.sic}" onto ${picTail} with "${pairing.pic}" (${pairing.reason})`);
+      }
+    }
+
+    // Re-run transport plan with updated assignments
+    result = buildSwapPlan({
+      flights, crewRoster, aliases, swapDate,
+      commercialFlights: hasFlightData ? effectiveFlights : undefined,
+      swapAssignments: Object.keys(swapAssignments).length > 0 ? swapAssignments : undefined,
+      oncomingPool: effectivePool ?? undefined,
+      strategy,
+    });
     console.log(`[Swap Optimizer] Two-pass took ${((Date.now() - twoPassStart) / 1000).toFixed(1)}s`);
   } else {
     // ── Single-pass (legacy or no volunteers) ───────────────────────────
@@ -370,6 +398,44 @@ export async function POST(req: NextRequest) {
       });
       swapAssignments = assignmentResult.assignments;
       console.log(`[Swap Optimizer] Assignment took ${((Date.now() - assignStart) / 1000).toFixed(1)}s`);
+    }
+
+    // ── Apply required pairings: force paired SIC onto same tail as paired PIC ──
+    if (requiredPairings && requiredPairings.length > 0) {
+      for (const pairing of requiredPairings) {
+        // Find which tail the PIC was assigned to
+        const picTail = Object.entries(swapAssignments).find(([, sa]) => sa.oncoming_pic === pairing.pic)?.[0];
+        if (!picTail) {
+          console.log(`[Pairing] PIC "${pairing.pic}" not assigned to any tail — skipping pairing with "${pairing.sic}"`);
+          continue;
+        }
+
+        // Check if the SIC is already on that tail
+        const currentSic = swapAssignments[picTail].oncoming_sic;
+        if (currentSic === pairing.sic) {
+          console.log(`[Pairing] "${pairing.pic}" + "${pairing.sic}" already on ${picTail}`);
+          continue;
+        }
+
+        // Remove the SIC from wherever they're currently assigned
+        for (const [tail, sa] of Object.entries(swapAssignments)) {
+          if (sa.oncoming_sic === pairing.sic) {
+            sa.oncoming_sic = null;
+            console.log(`[Pairing] Removed "${pairing.sic}" from ${tail} SIC`);
+          }
+        }
+
+        // If the PIC's tail already has a SIC, move that SIC to the pool
+        if (currentSic && currentSic !== pairing.sic) {
+          console.log(`[Pairing] Displaced "${currentSic}" from ${picTail} SIC (replaced by "${pairing.sic}" for ${pairing.reason})`);
+          // The displaced SIC will be re-assigned by the transport plan
+          swapAssignments[picTail].oncoming_sic = null;
+        }
+
+        // Assign the paired SIC to the PIC's tail
+        swapAssignments[picTail].oncoming_sic = pairing.sic;
+        console.log(`[Pairing] Forced "${pairing.sic}" onto ${picTail} with "${pairing.pic}" (${pairing.reason})`);
+      }
     }
 
     const transportStart = Date.now();

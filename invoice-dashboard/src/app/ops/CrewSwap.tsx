@@ -2654,6 +2654,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
           strategy,
           lock_tails: lockTailsArr,
           locked_rows: lockedRows,
+          required_pairings: requiredPairings.length > 0 ? requiredPairings : undefined,
         }),
       });
       const text = await res.text();
