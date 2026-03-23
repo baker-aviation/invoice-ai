@@ -718,6 +718,19 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
           }
         }
 
+        // Classify tail legs: REV (has revenue/charter), POS (only positioning), IDLE (no legs)
+        const tailLegType: "rev" | "pos" | "idle" = (() => {
+          if (!flights || !selectedWed) return "idle";
+          const wedStr = selectedWed.toISOString().slice(0, 10);
+          const tailLegs = flights.filter((f) => f.tail_number === tail && f.scheduled_departure?.startsWith(wedStr));
+          if (tailLegs.length === 0) return "idle";
+          const hasRev = tailLegs.some((f) => {
+            const ft = (f.flight_type ?? "").toLowerCase();
+            return ft.includes("charter") || ft.includes("revenue") || ft.includes("owner");
+          });
+          return hasRev ? "rev" : "pos";
+        })();
+
         // Detect split swap: PIC and SIC swapping at different airports
         const onPicSwap = onPic?.swap_location;
         const onSicSwap = onSic?.swap_location;
@@ -735,8 +748,9 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
         }
         const unpairedSwapPoints: string[] = [];
         for (const [sp, crew] of swapPointCrewMap) {
-          if (crew.oncoming.length > 0 && crew.offgoing.length === 0) unpairedSwapPoints.push(`${sp} (oncoming only)`);
-          if (crew.offgoing.length > 0 && crew.oncoming.length === 0) unpairedSwapPoints.push(`${sp} (offgoing only)`);
+          // Only flag when someone is LEAVING with no one ARRIVING (aircraft unattended).
+          // Someone ARRIVING with no one LEAVING is fine — they're boarding early at an intermediate stop.
+          if (crew.offgoing.length > 0 && crew.oncoming.length === 0) unpairedSwapPoints.push(`${sp} (offgoing only — no replacement)`);
         }
 
         const isLocked = lockedTails?.has(tail);
@@ -919,7 +933,12 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
         const tailImpacts = impacts?.filter((i) => i.tail_number === tail && !i.resolved) ?? [];
         const isImpacted = impactedTails?.has(tail) || tailImpacts.length > 0;
         const isSolved = [onPic, onSic, offPic, offSic].every((r) => r && r.travel_type !== "none");
-        const borderColor = isImpacted ? "border-l-red-500" : !isSolved ? "border-l-amber-400" : "border-l-green-500";
+        // Border color: red=impacted, amber=unsolved, gray=idle, yellow=pos-only, green=rev+solved
+        const borderColor = isImpacted ? "border-l-red-500"
+          : !isSolved ? "border-l-amber-400"
+          : tailLegType === "idle" ? "border-l-gray-300"
+          : tailLegType === "pos" ? "border-l-yellow-400"
+          : "border-l-green-500";
 
         return (
           <div key={tail} id={`tail-${tail}`} className={`rounded-lg border border-l-4 ${borderColor} bg-white overflow-hidden ${isLocked ? "ring-2 ring-blue-300" : ""} ${tailImpacts.some(i => i.severity === "critical") ? "ring-2 ring-red-300" : ""}`}>
@@ -985,6 +1004,16 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                 {unpairedSwapPoints.length > 0 && (
                   <span className="text-[10px] px-1.5 py-0.5 rounded font-bold bg-red-100 text-red-700" title={unpairedSwapPoints.join(", ")}>
                     UNPAIRED: {unpairedSwapPoints.join(", ")}
+                  </span>
+                )}
+                {tailLegType === "idle" && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-gray-200 text-gray-600">
+                    IDLE — SCHEDULE MAY CHANGE
+                  </span>
+                )}
+                {tailLegType === "pos" && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-yellow-100 text-yellow-700">
+                    POS ONLY — MAY CHANGE
                   </span>
                 )}
                 {(onBadPairing || offBadPairing) && (
@@ -1535,6 +1564,8 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
   }, []);
   // Added tails (uncrewed aircraft added to the swap plan)
   const [addedTails, setAddedTails] = useState<{ tail: string; type: string; location: string }[]>([]);
+  // Required crew pairings (CA + trainee on same tail)
+  const [requiredPairings, setRequiredPairings] = useState<{ pic: string; sic: string; reason: string }[]>([]);
 
   // Review tab: crew overrides
   const [airportOverrides, setAirportOverrides] = useState<Record<string, string>>({}); // crew name → temp airport
@@ -1602,6 +1633,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
         if (r.tail_number !== tailNumber || r.role !== role || r.direction !== direction) return r;
         return {
           ...r,
+          swap_location: selectedCrewSlot.swapLocation || r.swap_location, // persist swap location from per-crew dropdown
           travel_type: selection.type as CrewSwapRow["travel_type"],
           flight_number: selection.flight_number,
           departure_time: selection.departure_time,
@@ -2652,6 +2684,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
           strategy,
           lock_tails: lockTailsArr,
           locked_rows: lockedRows,
+          required_pairings: requiredPairings.length > 0 ? requiredPairings : undefined,
         }),
       });
       const text = await res.text();
@@ -3322,9 +3355,33 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                 {crewInfoData.different_airports.map((da, i) => (
                   <div key={i} className="flex items-center gap-3 py-1 border-b border-gray-100 last:border-0">
                     <span className="font-medium text-gray-900 w-40">{da.name}</span>
-                    {da.coming_from && <span className="text-blue-600">from {da.coming_from}</span>}
-                    {da.going_to && <span className="text-green-600">to {da.going_to}</span>}
-                    {da.notes && <span className="text-gray-400">— {da.notes}</span>}
+                    {da.coming_from && (
+                      <span className="text-blue-600">from{" "}
+                        <input type="text" defaultValue={da.coming_from}
+                          className="w-12 text-xs border-b border-blue-300 bg-transparent text-blue-700 font-bold text-center"
+                          onBlur={(e) => {
+                            const val = e.target.value.toUpperCase().trim();
+                            if (val && val !== da.coming_from) {
+                              setAirportOverrides((p) => ({ ...p, [da.name]: val }));
+                            }
+                          }}
+                        />
+                      </span>
+                    )}
+                    {da.going_to && (
+                      <span className="text-green-600">to{" "}
+                        <input type="text" defaultValue={da.going_to}
+                          className="w-12 text-xs border-b border-green-300 bg-transparent text-green-700 font-bold text-center"
+                          onBlur={(e) => {
+                            const val = e.target.value.toUpperCase().trim();
+                            if (val && val !== da.going_to) {
+                              setAirportOverrides((p) => ({ ...p, [da.name]: val }));
+                            }
+                          }}
+                        />
+                      </span>
+                    )}
+                    {da.notes && <span className="text-gray-400 text-[10px]">— {da.notes}</span>}
                   </div>
                 ))}
               </div>
@@ -3567,6 +3624,102 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
           </div>
         </div>
 
+        {/* Section 6: Required Pairings */}
+        <div className="rounded-lg border bg-white shadow-sm overflow-hidden">
+          <div className="px-4 py-3 bg-gray-50 border-b flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">6. Required Pairings</h3>
+            <span className="text-[10px] text-gray-400">CA + trainee on same tail (.299, training rides)</span>
+          </div>
+          <div className="p-4 text-xs space-y-3">
+            {/* Existing pairings */}
+            {requiredPairings.length > 0 && (
+              <div className="space-y-1">
+                {requiredPairings.map((p, i) => (
+                  <div key={i} className="flex items-center gap-2 py-1 px-2 rounded bg-purple-50 border border-purple-200">
+                    <span className="text-[9px] px-1 py-0.5 rounded bg-purple-200 text-purple-800 font-bold">PAIRED</span>
+                    <span className="font-medium text-purple-900">{p.pic}</span>
+                    <span className="text-purple-400">+</span>
+                    <span className="font-medium text-purple-900">{p.sic}</span>
+                    <span className="text-gray-400">— {p.reason}</span>
+                    <button onClick={() => setRequiredPairings((prev) => prev.filter((_, j) => j !== i))}
+                      className="ml-auto text-red-400 hover:text-red-600">&times;</button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Add new pairing */}
+            <div className="border rounded p-3 bg-gray-50">
+              <div className="text-[10px] font-bold text-gray-500 uppercase mb-2">Add Pairing</div>
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <label className="text-[10px] text-gray-500">Checkairman (PIC)</label>
+                  <select id="pairing-pic" className="w-full text-xs border rounded px-2 py-1.5 bg-white">
+                    <option value="">Select CA...</option>
+                    {(crewInfoData?.checkairmen ?? []).map((ca) => {
+                      const typeLabel = ca.citation_x && ca.challenger ? "CX+CL" : ca.citation_x ? "CX" : ca.challenger ? "CL" : "";
+                      return <option key={ca.name} value={ca.name}>{ca.name} [{typeLabel}] (Rot {ca.rotation})</option>;
+                    })}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] text-gray-500">Trainee (SIC)</label>
+                  <select id="pairing-sic" className="w-full text-xs border rounded px-2 py-1.5 bg-white">
+                    <option value="">Select crew...</option>
+                    {/* Show crew needing training + recurrency */}
+                    {(crewInfoData?.training_needed ?? []).length > 0 && (
+                      <optgroup label="Training Needed">
+                        {crewInfoData!.training_needed.map((t) => (
+                          <option key={`train-${t.name}`} value={t.name}>{t.name} {t.indoc ? "[INDOC]" : ""}{t.emergency_drill ? "[E-DRILL]" : ""}</option>
+                        ))}
+                      </optgroup>
+                    )}
+                    {(crewInfoData?.recurrency_299 ?? []).length > 0 && (
+                      <optgroup label=".299 Recurrency">
+                        {crewInfoData!.recurrency_299.map((r) => (
+                          <option key={`299-${r.name}`} value={r.name}>{r.name} (.299 {r.month})</option>
+                        ))}
+                      </optgroup>
+                    )}
+                    <optgroup label="All Crew">
+                      {crew.filter((c) => c.active && c.role === "SIC").map((c) => (
+                        <option key={c.id} value={c.name}>{c.name}</option>
+                      ))}
+                    </optgroup>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] text-gray-500">Reason</label>
+                  <div className="flex gap-1">
+                    <select id="pairing-reason" className="flex-1 text-xs border rounded px-2 py-1.5 bg-white">
+                      <option value=".299 check ride">.299 Check Ride</option>
+                      <option value="INDOC training">INDOC Training</option>
+                      <option value="Emergency drill">Emergency Drill</option>
+                      <option value="Line check">Line Check</option>
+                      <option value="Other">Other</option>
+                    </select>
+                    <button
+                      onClick={() => {
+                        const pic = (document.getElementById("pairing-pic") as HTMLSelectElement)?.value;
+                        const sic = (document.getElementById("pairing-sic") as HTMLSelectElement)?.value;
+                        const reason = (document.getElementById("pairing-reason") as HTMLSelectElement)?.value;
+                        if (pic && sic) {
+                          setRequiredPairings((prev) => [...prev, { pic, sic, reason }]);
+                          (document.getElementById("pairing-pic") as HTMLSelectElement).value = "";
+                          (document.getElementById("pairing-sic") as HTMLSelectElement).value = "";
+                        }
+                      }}
+                      className="px-3 py-1.5 text-xs font-medium rounded bg-purple-100 text-purple-700 hover:bg-purple-200"
+                    >
+                      Add
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         {/* Ready to optimize */}
         <div className={`rounded-lg border-2 p-4 text-center ${
           Object.values(reviewChecks).every(Boolean) ? "border-green-300 bg-green-50" : "border-amber-300 bg-amber-50"
@@ -3771,8 +3924,8 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
               </div>
             </div>
 
-            {/* Impact action bar */}
-            {planImpacts.filter(i => !i.resolved).length > 0 && (
+            {/* Impact action bar — only show when a plan has been saved */}
+            {savedPlanMeta && planImpacts.filter(i => !i.resolved).length > 0 && (
               <div className="px-4 py-2 bg-red-50 border-b flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <span className="text-xs font-semibold text-red-700">
@@ -3947,7 +4100,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
               />
             )}
 
-            <SwapSheet rows={swapPlan.rows} view={swapView} impacts={planImpacts} impactedTails={impactedTails}
+            <SwapSheet rows={swapPlan.rows} view={swapView} impacts={savedPlanMeta ? planImpacts : []} impactedTails={savedPlanMeta ? impactedTails : new Set()}
               lockedTails={lockedTails} onLockTail={toggleLockTail} onAssignCrew={assignCrew} pool={oncomingPool}
               onChangeTransport={openFlightPicker} onSwapPointChange={handleSwapPointChange}
               badPairings={crewInfoData?.bad_pairings} checkairmen={crewInfoData?.checkairmen}

@@ -170,14 +170,19 @@ function MultiSelectDropdown({
   options,
   selected,
   onChange,
+  mode,
+  onModeChange,
 }: {
   label: string;
   options: { key: string; label: string }[];
   selected: Set<string>;
   onChange: (s: Set<string>) => void;
+  mode?: "AND" | "OR";
+  onModeChange?: (m: "AND" | "OR") => void;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const showModeToggle = mode !== undefined && onModeChange !== undefined;
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -214,7 +219,34 @@ function MultiSelectDropdown({
         </svg>
       </button>
       {open && (
-        <div className="absolute z-20 mt-1 left-0 w-44 bg-white rounded-lg border border-gray-200 shadow-lg py-1">
+        <div className="absolute z-20 mt-1 left-0 w-48 bg-white rounded-lg border border-gray-200 shadow-lg py-1">
+          {showModeToggle && selected.size > 1 && (
+            <div className="px-3 py-1.5 border-b border-gray-100 flex items-center gap-1.5">
+              <span className="text-[10px] text-gray-400">Match:</span>
+              <button
+                type="button"
+                onClick={() => onModeChange("AND")}
+                className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border transition-colors ${
+                  mode === "AND"
+                    ? "bg-slate-800 text-white border-slate-800"
+                    : "bg-white text-gray-500 border-gray-200 hover:border-gray-400"
+                }`}
+              >
+                All
+              </button>
+              <button
+                type="button"
+                onClick={() => onModeChange("OR")}
+                className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border transition-colors ${
+                  mode === "OR"
+                    ? "bg-slate-800 text-white border-slate-800"
+                    : "bg-white text-gray-500 border-gray-200 hover:border-gray-400"
+                }`}
+              >
+                Any
+              </button>
+            </div>
+          )}
           {options.map((opt) => (
             <label
               key={opt.key}
@@ -253,6 +285,7 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
   const [categories, setCategories] = useState<Set<string>>(new Set());
   const [softGate, setSoftGate] = useState("ALL");
   const [tags, setTags] = useState<Set<string>>(new Set());
+  const [tagMode, setTagMode] = useState<"AND" | "OR">("AND");
   const [showRejected, setShowRejected] = useState(false);
   const [page, setPage] = useState(0);
 
@@ -304,11 +337,20 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
       if (softGate === "MET" && !isMet) return false;
       if (softGate === "NOT_MET" && isMet) return false;
 
-      // Tags: candidate must match ALL selected tags
+      // Tags filter: AND = must match ALL, OR = must match at least ONE
       if (tags.size > 0) {
-        for (const t of tags) {
-          const opt = TAG_OPTIONS.find((o) => o.key === t);
-          if (opt && !opt.test(j)) return false;
+        if (tagMode === "AND") {
+          for (const t of tags) {
+            const opt = TAG_OPTIONS.find((o) => o.key === t);
+            if (opt && !opt.test(j)) return false;
+          }
+        } else {
+          let matchedAny = false;
+          for (const t of tags) {
+            const opt = TAG_OPTIONS.find((o) => o.key === t);
+            if (opt && opt.test(j)) { matchedAny = true; break; }
+          }
+          if (!matchedAny) return false;
         }
       }
 
@@ -331,7 +373,7 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
 
       return haystack.includes(query);
     });
-  }, [initialJobs, q, categories, softGate, tags, showRejected]);
+  }, [initialJobs, q, categories, softGate, tags, tagMode, showRejected]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const paged = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
@@ -343,6 +385,7 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
     setCategories(new Set());
     setSoftGate("ALL");
     setTags(new Set());
+    setTagMode("AND");
     setShowRejected(false);
     setPage(0);
   };
@@ -399,9 +442,21 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
             options={TAG_OPTIONS.map((o) => ({ key: o.key, label: o.label }))}
             selected={tags}
             onChange={(s) => { setTags(s); setPage(0); }}
+            mode={tagMode}
+            onModeChange={(m) => { setTagMode(m); setPage(0); }}
           />
           {tags.size > 0 && (
             <div className="flex items-center gap-1 flex-wrap">
+              {tags.size > 1 && (
+                <button
+                  type="button"
+                  onClick={() => { setTagMode(tagMode === "AND" ? "OR" : "AND"); setPage(0); }}
+                  className="text-[10px] font-bold px-1.5 py-0.5 rounded border border-gray-300 bg-gray-50 text-gray-500 hover:bg-gray-100 transition-colors"
+                  title={tagMode === "AND" ? "Showing candidates with ALL tags — click for ANY" : "Showing candidates with ANY tag — click for ALL"}
+                >
+                  {tagMode === "AND" ? "ALL" : "ANY"}
+                </button>
+              )}
               {Array.from(tags).map((k) => (
                 <span key={k} className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold rounded-full bg-slate-100 text-slate-700 border border-slate-200">
                   {k}
