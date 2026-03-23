@@ -72,6 +72,7 @@ const ALERT_TYPE_LABELS: Record<string, string> = {
   NOTAM_AD_RESTRICTED: "AD",
   NOTAM_PPR: "PPR",
   NOTAM_OTHER: "NOTAM",
+  OCEANIC_HF: "OCEANIC HF",
 };
 
 // ─── NOTAM helpers ────────────────────────────────────────────────────────────
@@ -311,12 +312,13 @@ function saveDismissed(dismissed: Set<string>): void {
 
 // ─── Filter categories ───────────────────────────────────────────────────────
 
-type AlertFilter = "ALL" | "NOTAMS" | "PPR" | "LATE";
+type AlertFilter = "ALL" | "NOTAMS" | "PPR" | "OCEANIC" | "LATE";
 
 const FILTER_OPTIONS: { key: AlertFilter; label: string; description: string }[] = [
   { key: "ALL", label: "All Flights", description: "Every scheduled flight" },
   { key: "NOTAMS", label: "NOTAMs", description: "Flights with active NOTAMs" },
   { key: "PPR", label: "PPRs", description: "Prior permission required" },
+  { key: "OCEANIC", label: "Oceanic HF", description: "Aircraft lacking dual HF on oceanic legs" },
   { key: "LATE", label: "After Hrs", description: "Departures or arrivals 8 PM – 7 AM local (excl. 24/7 airports)" },
 ];
 
@@ -355,7 +357,7 @@ const TIME_RANGES: { key: TimeRange; label: string; hours: number }[] = [
 
 const ALERT_TYPES_SHOWN = new Set([
   "NOTAM_RUNWAY", "NOTAM_AERODROME", "NOTAM_AD_RESTRICTED",
-  "NOTAM_TFR", "NOTAM_PPR",
+  "NOTAM_TFR", "NOTAM_PPR", "OCEANIC_HF",
 ]);
 
 // ─── EDCT expandable row (status box) ────────────────────────────────────────
@@ -1204,6 +1206,13 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
       );
     }
 
+    // Oceanic HF filter — flights with OCEANIC_HF alerts
+    if (activeFilter === "OCEANIC") {
+      return timeFiltered.filter((f) =>
+        f.alerts?.some((a) => a.alert_type === "OCEANIC_HF")
+      );
+    }
+
     // After-hours filter (departure or arrival between 8 PM – 7 AM local, excl. 24/7 airports)
     if (activeFilter === "LATE") {
       return timeFiltered.filter((f) =>
@@ -1265,8 +1274,8 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
 
   // Alert counts per category (for pill badges)
   const alertCounts = useMemo(() => {
-    const counts: Record<string, number> = { NOTAMS: 0, PPR: 0, LATE: 0 };
-    const flightsCounted = { NOTAMS: new Set<string>(), PPR: new Set<string>(), LATE: new Set<string>() };
+    const counts: Record<string, number> = { NOTAMS: 0, PPR: 0, OCEANIC: 0, LATE: 0 };
+    const flightsCounted = { NOTAMS: new Set<string>(), PPR: new Set<string>(), OCEANIC: new Set<string>(), LATE: new Set<string>() };
     for (const f of timeFiltered) {
       // Server alerts — count flights with NOTAM alerts
       for (const a of f.alerts ?? []) {
@@ -1278,6 +1287,10 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
         if (a.alert_type === "NOTAM_PPR" && !flightsCounted.PPR.has(f.id)) {
           counts.PPR++;
           flightsCounted.PPR.add(f.id);
+        }
+        if (a.alert_type === "OCEANIC_HF" && !flightsCounted.OCEANIC.has(f.id)) {
+          counts.OCEANIC++;
+          flightsCounted.OCEANIC.add(f.id);
         }
       }
 

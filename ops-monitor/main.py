@@ -116,6 +116,134 @@ FLIGHTS_TABLE = "flights"
 OPS_ALERTS_TABLE = "ops_alerts"
 SWAP_LEG_ALERTS_TABLE = "swap_leg_alerts"
 
+# ─── Oceanic HF radio check ──────────────────────────────────────────────────
+# These 4 aircraft lack dual HF radios required for oceanic operations.
+OCEANIC_RESTRICTED_TAILS = {"N301HR", "N860TX", "N957JS", "N883TR"}
+
+# ICAO prefixes that count as "oceanic destination" from a US/Canada departure.
+# Caribbean east-of-Cuba islands:
+_OCEANIC_CARIBBEAN_PREFIXES = (
+    "MB",  # Turks & Caicos
+    "MT",  # Haiti
+    "MD",  # Dominican Republic
+    "TJ",  # Puerto Rico
+    "TI",  # US Virgin Islands
+    "TN",  # Netherlands Antilles (St. Maarten, Aruba, Curaçao)
+    "TF",  # French Antilles (Guadeloupe, Martinique)
+    "TK",  # St. Kitts
+    "TL",  # St. Lucia
+    "TB",  # Barbados
+    "TT",  # Trinidad & Tobago
+    "TV",  # St. Vincent
+    "TD",  # Dominica
+    "TG",  # Grenada
+    "TQ",  # Anguilla
+    "TR",  # Montserrat
+    "TX",  # Bermuda
+)
+# Transatlantic / transpacific / Middle East:
+_OCEANIC_INTL_PREFIXES = (
+    "E",   # Northern Europe (EGLL, EHAM, etc.)
+    "L",   # Southern Europe (LFPG, LIRF, etc.)
+    "B",   # Iceland / Greenland (BIKF)
+    "O",   # Middle East (OMDB, OEJN)
+    "Z",   # China
+    "R",   # Japan / Korea (RJTT, RKSI)
+    "V",   # South / Southeast Asia (VHHH)
+    "W",   # Indonesia / Malaysia
+)
+_OCEANIC_HAWAII_PREFIX = "PH"  # Hawaii (PHNL, PHOG)
+_US_CANADA_PREFIXES = ("K", "C")
+
+
+def _is_oceanic_leg(dep_icao: str, arr_icao: str) -> bool:
+    """Return True if the dep→arr pair crosses oceanic airspace."""
+    if not dep_icao or not arr_icao:
+        return False
+    dep = dep_icao.upper()
+    arr = arr_icao.upper()
+
+    def _is_domestic(icao: str) -> bool:
+        return any(icao.startswith(p) for p in _US_CANADA_PREFIXES)
+
+    def _is_oceanic_dest(icao: str) -> bool:
+        if any(icao.startswith(p) for p in _OCEANIC_CARIBBEAN_PREFIXES):
+            return True
+        if any(icao.startswith(p) for p in _OCEANIC_INTL_PREFIXES):
+            return True
+        if icao.startswith(_OCEANIC_HAWAII_PREFIX):
+            return True
+        return False
+
+    # Either direction: domestic ↔ oceanic destination
+    if _is_domestic(dep) and _is_oceanic_dest(arr):
+        return True
+    if _is_oceanic_dest(dep) and _is_domestic(arr):
+        return True
+    return False
+
+
+def _check_oceanic_hf_alerts(supa, flights_batch: List[Dict[str, Any]]) -> int:
+    """
+    Scan synced flights for HF-restricted tails on oceanic legs.
+    Creates/updates OCEANIC_HF alerts in ops_alerts. Returns count created.
+    """
+    alerts: List[Dict[str, Any]] = []
+    for f in flights_batch:
+        tail = (f.get("tail_number") or "").upper()
+        if tail not in OCEANIC_RESTRICTED_TAILS:
+            continue
+        dep = f.get("departure_icao") or ""
+        arr = f.get("arrival_icao") or ""
+        if not _is_oceanic_leg(dep, arr):
+            continue
+        fid = f.get("id") or f.get("ics_uid")  # flight_id if available
+        source_id = f"oceanic-hf-{tail}-{dep}-{arr}-{f.get('ics_uid', '')}"
+        alerts.append({
+            "alert_type": "OCEANIC_HF",
+            "severity": "critical",
+            "airport_icao": dep,
+            "tail_number": tail,
+            "subject": f"OCEANIC EQUIPMENT CONFLICT — {tail}",
+            "body": (
+                f"{tail} is scheduled on an oceanic leg ({dep} → {arr}) "
+                f"but lacks dual HF radios. Aircraft swap will save $3,000, advise Ops."
+            ),
+            "source_message_id": source_id,
+            "raw_data": json.dumps({
+                "tail": tail,
+                "departure_icao": dep,
+                "arrival_icao": arr,
+                "ics_uid": f.get("ics_uid"),
+                "scheduled_departure": f.get("scheduled_departure"),
+                "reason": "dual_hf_required_for_oceanic",
+            }),
+            "created_at": _utc_now(),
+        })
+
+    if not alerts:
+        return 0
+
+    # Dedup client-side
+    seen: set = set()
+    deduped: list = []
+    for a in alerts:
+        if a["source_message_id"] not in seen:
+            seen.add(a["source_message_id"])
+            deduped.append(a)
+
+    try:
+        res = supa.table(OPS_ALERTS_TABLE).upsert(
+            deduped, on_conflict="source_message_id"
+        ).execute()
+        created = len(res.data) if res.data else 0
+        if created:
+            print(f"oceanic_hf: created/updated {created} alerts", flush=True)
+        return created
+    except Exception as e:
+        print(f"oceanic_hf upsert error: {repr(e)}", flush=True)
+        return 0
+
 # ─── Airport coordinates for TFR proximity checks ────────────────────────────
 # Baker's common airports + major nearby airports. (lat, lon) in decimal degrees.
 AIRPORT_COORDS: Dict[str, Tuple[float, float]] = {
@@ -1431,11 +1559,14 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
         except Exception as e:
             print(f"sync_schedule cleanup error: {repr(e)}", flush=True)
 
-    t_total = _time.monotonic() - t0
-    print(f"sync_schedule: done in {t_total:.1f}s — upserted={upserted} skipped={skipped} errors={errors} cleaned={cleaned} deleted={deleted} mx_notes={mx_created}", flush=True)
-    log_pipeline_run("flight-sync", items=upserted, duration_ms=int(t_total * 1000), message=f"upserted={upserted} skipped={skipped} mx_notes={mx_created}")
+    # ── Oceanic HF radio check ──────────────────────────────────────────────
+    oceanic_hf = _check_oceanic_hf_alerts(supa, batch)
 
-    return {"ok": True, "upserted": upserted, "skipped": skipped, "errors": errors, "cleaned": cleaned, "deleted": deleted, "mx_notes": mx_created, "fetch_secs": round(t_fetch, 1), "total_secs": round(t_total, 1)}
+    t_total = _time.monotonic() - t0
+    print(f"sync_schedule: done in {t_total:.1f}s — upserted={upserted} skipped={skipped} errors={errors} cleaned={cleaned} deleted={deleted} mx_notes={mx_created} oceanic_hf={oceanic_hf}", flush=True)
+    log_pipeline_run("flight-sync", items=upserted, duration_ms=int(t_total * 1000), message=f"upserted={upserted} skipped={skipped} mx_notes={mx_created} oceanic_hf={oceanic_hf}")
+
+    return {"ok": True, "upserted": upserted, "skipped": skipped, "errors": errors, "cleaned": cleaned, "deleted": deleted, "mx_notes": mx_created, "oceanic_hf": oceanic_hf, "fetch_secs": round(t_fetch, 1), "total_secs": round(t_total, 1)}
 
 
 # ─── Job: pull_edct ───────────────────────────────────────────────────────────
