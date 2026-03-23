@@ -157,12 +157,19 @@ export default function FlightPickerModal({
       }
       const json = await res.json();
       setData(json);
+      // Auto-search live if cache returned no commercial flights
+      const commercialCount = (json.options ?? []).filter((o: TransportOption) => o.type === "commercial").length;
+      if (commercialCount === 0) {
+        setShouldAutoSearch(true);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load options");
     } finally {
       setLoading(false);
     }
   }, [crewMemberId, destinationIcao, swapDate, direction, firstLegDep, lastLegArr]);
+
+  const [shouldAutoSearch, setShouldAutoSearch] = useState(false);
 
   useEffect(() => { fetchOptions(); }, [fetchOptions]);
 
@@ -259,6 +266,15 @@ export default function FlightPickerModal({
   };
 
   const searchMoreFlights = () => searchFlightsForDate(swapDate);
+
+  // Auto-trigger live search when cache returned no commercial flights
+  useEffect(() => {
+    if (shouldAutoSearch && !searching && !loading) {
+      setShouldAutoSearch(false);
+      searchFlightsForDate(swapDate);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shouldAutoSearch, searching, loading]);
 
   // Adjacent date helpers
   const adjacentDate = (offset: number) => {
