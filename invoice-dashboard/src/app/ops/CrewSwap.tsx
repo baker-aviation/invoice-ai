@@ -1100,6 +1100,49 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
               </div>
             </div>
 
+            {/* Rental handoff suggestions */}
+            {(() => {
+              // Check if oncoming has a rental and a matching offgoing at the same swap point has NO TRANSPORT
+              // AND they're coming from / going to the same area (home airports overlap or within driving distance)
+              const handoffs: { oncoming: string; offgoing: string; swapPt: string; homeArea: string }[] = [];
+              const oncomingWithRental = [onPic, onSic].filter((r) => r && (r.travel_type === "rental_car" || r.travel_type === "drive"));
+              const offgoingNoTransport = [offPic, offSic].filter((r) => r && r.travel_type === "none");
+
+              for (const on of oncomingWithRental) {
+                for (const off of offgoingNoTransport) {
+                  if (!on || !off) continue;
+                  // Must be at the same swap point
+                  const onSp = on.swap_location ?? swapLoc;
+                  const offSp = off.swap_location ?? swapLoc;
+                  if (onSp !== offSp) continue;
+                  // Check if they're from the same area (any home airport in common, or within 100mi)
+                  const onHomes = new Set(on.home_airports.map((a) => a.toUpperCase()));
+                  const offHomes = off.home_airports.map((a) => a.toUpperCase());
+                  const sameArea = offHomes.some((h) => onHomes.has(h));
+                  if (sameArea) {
+                    handoffs.push({
+                      oncoming: on.name,
+                      offgoing: off.name,
+                      swapPt: onSp,
+                      homeArea: on.home_airports.join("/"),
+                    });
+                  }
+                }
+              }
+
+              if (handoffs.length === 0) return null;
+              return (
+                <div className="px-4 py-1.5 bg-teal-50 border-t text-[10px] text-teal-700 space-y-0.5">
+                  {handoffs.map((h, i) => (
+                    <div key={i} className="flex items-center gap-1.5">
+                      <span className="text-[9px] px-1 py-0.5 rounded bg-teal-100 text-teal-800 font-bold">RENTAL HANDOFF</span>
+                      <span>{h.oncoming} (oncoming) rental → {h.offgoing} (offgoing) takes car back to {h.homeArea}</span>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+
             {/* Tail-level warnings */}
             {allWarnings.length > 0 && (
               <div className="px-4 py-1.5 bg-amber-50 border-t text-[10px] text-amber-700 space-y-0.5">
