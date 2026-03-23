@@ -835,6 +835,7 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                         return (
                           <option key={p.name} value={p.name}>
                             {p.name} ({p.home_airports.join("/")}) [{typeTag}]
+                            {p.is_checkairman ? " [CA]" : ""}{p.is_skillbridge ? " [SB]" : ""}
                           </option>
                         );
                       })}
@@ -3470,6 +3471,46 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                   )}
                 </div>
               )
+            )}
+
+            {/* Volunteer preferences quick reference */}
+            {volunteers.length > 0 && (
+              <div className="border-b">
+                <button
+                  onClick={() => setShowVolunteers(!showVolunteers)}
+                  className="w-full px-4 py-1.5 text-[10px] text-gray-500 hover:bg-gray-50 flex items-center justify-between"
+                >
+                  <span>Volunteer Preferences ({volunteers.length})</span>
+                  <span>{showVolunteers ? "Hide" : "Show"}</span>
+                </button>
+                {showVolunteers && (
+                  <div className="px-4 py-2 bg-blue-50/30 text-xs space-y-1">
+                    <div className="grid grid-cols-3 gap-2">
+                      <div>
+                        <span className="font-semibold text-green-700">Early: </span>
+                        <span className="text-gray-600">
+                          {volunteers.filter((v) => v.parsed_preference === "early" || v.parsed_preference === "early_and_late")
+                            .map((v) => (v.crew_members as { name?: string } | null)?.name ?? "?").join(", ") || "none"}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="font-semibold text-amber-700">Late: </span>
+                        <span className="text-gray-600">
+                          {volunteers.filter((v) => v.parsed_preference === "late" || v.parsed_preference === "early_and_late")
+                            .map((v) => (v.crew_members as { name?: string } | null)?.name ?? "?").join(", ") || "none"}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="font-semibold text-purple-700">Standby: </span>
+                        <span className="text-gray-600">
+                          {volunteers.filter((v) => v.parsed_preference === "standby")
+                            .map((v) => (v.crew_members as { name?: string } | null)?.name ?? "?").join(", ") || "none"}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
             )}
 
             {/* Plan history (collapsible) */}

@@ -129,11 +129,10 @@ export async function runParser(overrideSwapDate?: string) {
     });
   }
 
-  // Step 3: Load crew members for matching
+  // Step 3: Load ALL crew members for matching (include inactive — they can still volunteer)
   const { data: crewMembers } = await supa
     .from("crew_members")
-    .select("id, name, slack_user_id")
-    .eq("active", true);
+    .select("id, name, slack_user_id");
 
   const crew = crewMembers ?? [];
 
