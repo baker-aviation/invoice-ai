@@ -134,17 +134,16 @@ export async function getFlightsByRegistration(
   registration: string,
   callsignMap?: Map<string, string>,
 ): Promise<FaFlight[]> {
+  // Derive KOW callsign from N-number (e.g. N301HR → KOW301) and use as primary.
+  // Baker fleet N-numbers are LADD-blocked on the FA API — callsign queries
+  // return full live tracking data with a single call, no fallback needed.
   const dbCallsign = callsignMap?.get(registration);
+  const derivedCallsign = (() => {
+    const digits = registration.replace(/\D/g, "");
+    return digits ? `KOW${digits}` : null;
+  })();
+  const primaryIdent = dbCallsign ?? derivedCallsign ?? registration;
 
-  // Blocked tails: skip N-number entirely, query by callsign directly
-  const BLOCKED_TAILS: Record<string, string> = {
-    "N301HR": "KOW301",
-    "N954JS": "KOW954",
-  };
-  const primaryIdent = BLOCKED_TAILS[registration] ?? registration;
-
-  // Query by N-number first — returns last_position with lat/lon for map tracking.
-  // Callsign queries return flight data but NOT positions.
   // Use start param to include yesterday's flights (duty tracker needs 3-day window).
   // NOTE: FA rejects encodeURIComponent on dates (%3A for colons → 400).
   // Use raw ISO without milliseconds.
@@ -161,30 +160,7 @@ export async function getFlightsByRegistration(
   }
   const data = await res.json();
   let flights = (data.flights ?? []) as FaFlight[];
-  console.log(`[FA] ${registration}: ${flights.length} flights`);
-
-  // Fallback: if N-number returned nothing (LADD-blocked), try callsign
-  if (flights.length === 0) {
-    const fallbackIdent = dbCallsign ?? (() => {
-      const digits = registration.replace(/\D/g, "");
-      return digits ? `KOW${digits}` : null;
-    })();
-    if (fallbackIdent) {
-      console.log(`[FA] ${registration}: trying callsign fallback ${fallbackIdent}`);
-      const fbUrl = `${BASE}/flights/${encodeURIComponent(fallbackIdent)}`;
-      try {
-        const fbRes = await fetch(fbUrl, {
-          headers: headers(),
-          signal: AbortSignal.timeout(10000),
-        });
-        if (fbRes.ok) {
-          const fbData = await fbRes.json();
-          flights = (fbData.flights ?? []) as FaFlight[];
-          console.log(`[FA] ${fallbackIdent}: ${flights.length} flights (fallback for ${registration})`);
-        }
-      } catch { /* ignore fallback errors */ }
-    }
-  }
+  console.log(`[FA] ${registration} (${primaryIdent}): ${flights.length} flights`);
 
   return flights;
 }
