@@ -1059,14 +1059,19 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                       const depIcao = f.departure_icao;
                       const arrIcao = f.arrival_icao;
                       const depIata = depIcao?.length === 4 && depIcao.startsWith("K") ? depIcao.slice(1) : depIcao;
+                      // Highlight legs added/changed since plan was saved
+                      const isNewLeg = tailImpacts.length > 0 && f.id && tailImpacts.some((imp) =>
+                        imp.affected_crew.some((c) => c.detail?.includes("New leg added"))
+                      );
                       const arrIata = arrIcao?.length === 4 && arrIcao.startsWith("K") ? arrIcao.slice(1) : arrIcao;
                       const tag = getTypeTag(f.flight_type);
                       const isLive = tag.label === "REV" || tag.label === "OWN";
                       // All times in swap point timezone for consistency
                       const swapIcao = swapLoc.length === 3 ? `K${swapLoc}` : swapLoc;
                       return (
-                        <div key={f.id ?? i} className="inline-flex items-center gap-1">
+                        <div key={f.id ?? i} className={`inline-flex items-center gap-1 ${isNewLeg ? "bg-yellow-100 px-1.5 py-0.5 rounded ring-1 ring-yellow-300" : ""}`}>
                           {i > 0 && <span className="text-gray-300 mx-1">|</span>}
+                          {isNewLeg && <span className="text-[8px] font-bold text-yellow-700">NEW</span>}
                           <span className={`font-mono text-xs font-bold ${isLive ? "text-gray-900" : "text-gray-400"}`}>{depIata}</span>
                           <span className="text-[10px] text-gray-400">{fmtShortTime(f.scheduled_departure, swapIcao)}</span>
                           <span className="text-gray-300">{"\u2192"}</span>
