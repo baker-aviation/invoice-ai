@@ -663,31 +663,7 @@ function buildCandidates(
         backups: [],
       });
 
-      // Also add a self-drive option (personal car) — same timing, gas-only cost.
-      // The crew may prefer driving their own car instead of Uber/rental.
-      // The if/else above only picks "uber" or "rental_car", so this never duplicates.
-      const driveCost = Math.round(drive.estimated_drive_miles * 0.25); // ~$0.25/mi gas
-      candidates.push({
-        type: "drive",
-        flightNumber: "DRIVE",
-        depTime: depTime,
-        arrTime: arrTime,
-        from: task.direction === "oncoming" ? homeIata : toIata(swapIcao),
-        to: task.direction === "oncoming" ? toIata(swapIcao) : homeIata,
-        cost: driveCost,
-        durationMin: driveMin,
-        isDirect: true,
-        isBudgetCarrier: false,
-        hubConnection: false,
-        connectionCount: 0,
-        offer: null,
-        drive,
-        fboArrivalTime: fboArr,
-        fboLeaveTime: task.direction === "offgoing" ? depTime : null,
-        dutyOnTime: dutyOn,
-        score: 0,
-        backups: [],
-      });
+      // Self-drive (personal car) removed from optimizer — available as manual override only.
     }
 
     // ── Train options (Amtrak NEC, Brightline) ────────────────────────────
