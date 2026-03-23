@@ -1805,6 +1805,17 @@ export function buildSwapPlan(params: {
           picSwapPoint = sp;
         }
       }
+
+      // If ALL swap points were hard-rejected (bestEase <= -9999), fall back to
+      // the last swap point (typically where the aircraft ends up — after_live/idle).
+      // This is better than leaving the PIC unassigned.
+      if (bestEase <= -9999 && swapPoints.length > 0) {
+        // Prefer after_live or idle points (where aircraft ends up)
+        const fallback = swapPoints.find((sp) => sp.position === "after_live" || sp.position === "idle")
+          ?? swapPoints[swapPoints.length - 1];
+        picSwapPoint = fallback;
+        globalWarnings.push(`${tail}: all swap points had timing conflicts — falling back to ${toIata(fallback.icao)}`);
+      }
     }
 
     // Validate: never 2 SICs on the same tail (2 PICs is OK on swap day)
@@ -1958,8 +1969,11 @@ export function buildSwapPlan(params: {
             c.score = scoreCandidate(c, tempTask, null);
           }
           const topScore = candidates.reduce((max, c) => Math.max(max, c.score), 0);
-          if (topScore > bestScore) {
-            bestScore = topScore;
+          // Strong preference for PIC's swap point (+20 bonus) — only split if SIC truly can't reach it
+          const isPicPoint = sp.icao.toUpperCase() === picSwapPoint.icao.toUpperCase();
+          const adjustedScore = isPicPoint ? topScore + 20 : topScore;
+          if (adjustedScore > bestScore) {
+            bestScore = adjustedScore;
             bestSwapPoint = sp;
           }
         }

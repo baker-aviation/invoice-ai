@@ -1143,6 +1143,35 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
               );
             })()}
 
+            {/* Repositioning warning: next leg departs from different airport than swap point */}
+            {(() => {
+              if (!flights || !selectedWed) return null;
+              const wedStr = selectedWed.toISOString().slice(0, 10);
+              const swapIcao = swapLoc.length === 3 ? `K${swapLoc}` : swapLoc;
+              const tailLegs = flights
+                .filter((f) => f.tail_number === tail && f.scheduled_departure?.startsWith(wedStr))
+                .sort((a, b) => (a.scheduled_departure ?? "").localeCompare(b.scheduled_departure ?? ""));
+
+              // Find the first leg that departs AFTER the swap point
+              // If the swap point is at this airport, the next departure should also be from here
+              const nextDep = tailLegs.find((f) => f.departure_icao !== swapIcao);
+              if (!nextDep) return null;
+
+              // Only warn if there's a leg FROM the swap point followed by a leg from elsewhere
+              const legsFromSwap = tailLegs.filter((f) => f.departure_icao === swapIcao);
+              const legsNotFromSwap = tailLegs.filter((f) => f.departure_icao !== swapIcao);
+              if (legsFromSwap.length === 0 && legsNotFromSwap.length > 0) {
+                const nextIata = nextDep.departure_icao?.length === 4 && nextDep.departure_icao.startsWith("K")
+                  ? nextDep.departure_icao.slice(1) : nextDep.departure_icao;
+                return (
+                  <div className="px-4 py-1 border-t bg-orange-50 text-[10px] text-orange-700">
+                    Aircraft repositions to {nextIata} before next leg — swap point may change if schedule updates
+                  </div>
+                );
+              }
+              return null;
+            })()}
+
             {/* Tail-level warnings */}
             {allWarnings.length > 0 && (
               <div className="px-4 py-1.5 bg-amber-50 border-t text-[10px] text-amber-700 space-y-0.5">
