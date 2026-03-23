@@ -48,9 +48,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ impacts: [], summary: { critical: 0, warning: 0, info: 0, total: 0 } });
   }
 
-  // Run impact analysis
+  // Run impact analysis — deduplicate per tail (multiple alerts for same tail → one impact)
   const planRows = (plan.plan_data as { rows?: unknown[] })?.rows ?? [];
-  const impacts: PlanImpact[] = [];
+  const rawImpacts: PlanImpact[] = [];
 
   for (const alert of alerts) {
     const impact = analyzeAlertImpact(
@@ -63,10 +63,34 @@ export async function POST(req: NextRequest) {
         new_value: alert.new_value,
       },
     );
-    if (impact) impacts.push(impact);
+    if (impact) rawImpacts.push(impact);
   }
 
-  // Upsert impacts
+  // Merge impacts by tail_number — keep highest severity, combine affected crew
+  const impactsByTail = new Map<string, PlanImpact>();
+  for (const imp of rawImpacts) {
+    const existing = impactsByTail.get(imp.tail_number);
+    if (!existing) {
+      impactsByTail.set(imp.tail_number, { ...imp });
+    } else {
+      // Merge: upgrade severity if needed
+      const severityRank = { critical: 3, warning: 2, info: 1 };
+      if (severityRank[imp.severity] > severityRank[existing.severity]) {
+        existing.severity = imp.severity;
+      }
+      // Merge affected crew (dedupe by name)
+      const existingNames = new Set(existing.affected_crew.map((c) => c.name));
+      for (const c of imp.affected_crew) {
+        if (!existingNames.has(c.name)) {
+          existing.affected_crew.push(c);
+          existingNames.add(c.name);
+        }
+      }
+    }
+  }
+  const impacts = Array.from(impactsByTail.values());
+
+  // Upsert impacts (use first alert_id per tail as the key)
   if (impacts.length > 0) {
     const rows = impacts.map((imp) => ({
       swap_plan_id: plan.id,

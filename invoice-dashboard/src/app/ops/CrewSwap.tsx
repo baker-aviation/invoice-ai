@@ -716,6 +716,27 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
           }
         }
 
+        // Detect split swap: PIC and SIC swapping at different airports
+        const onPicSwap = onPic?.swap_location;
+        const onSicSwap = onSic?.swap_location;
+        const offPicSwap = offPic?.swap_location;
+        const offSicSwap = offSic?.swap_location;
+        const isSplitSwap = (onPicSwap && onSicSwap && onPicSwap !== onSicSwap) ||
+          (offPicSwap && offSicSwap && offPicSwap !== offSicSwap);
+
+        // Check pairing: each swap point needs at least one oncoming AND one offgoing
+        const swapPointCrewMap = new Map<string, { oncoming: string[]; offgoing: string[] }>();
+        for (const r of tailRows) {
+          const sp = r.swap_location ?? swapLoc;
+          if (!swapPointCrewMap.has(sp)) swapPointCrewMap.set(sp, { oncoming: [], offgoing: [] });
+          swapPointCrewMap.get(sp)![r.direction].push(r.name);
+        }
+        const unpairedSwapPoints: string[] = [];
+        for (const [sp, crew] of swapPointCrewMap) {
+          if (crew.oncoming.length > 0 && crew.offgoing.length === 0) unpairedSwapPoints.push(`${sp} (oncoming only)`);
+          if (crew.offgoing.length > 0 && crew.oncoming.length === 0) unpairedSwapPoints.push(`${sp} (offgoing only)`);
+        }
+
         const isLocked = lockedTails?.has(tail);
         // Build pool options for crew picker (only oncoming direction)
         const poolPics = pool?.pic ?? [];
@@ -924,6 +945,16 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                 {crewArrivesLate && (
                   <span className="text-[10px] px-1.5 py-0.5 rounded font-bold bg-red-600 text-white animate-pulse">
                     CREW ARRIVES AFTER AIRCRAFT DEPARTS
+                  </span>
+                )}
+                {isSplitSwap && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded font-bold bg-purple-100 text-purple-700">
+                    SPLIT SWAP
+                  </span>
+                )}
+                {unpairedSwapPoints.length > 0 && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded font-bold bg-red-100 text-red-700" title={unpairedSwapPoints.join(", ")}>
+                    UNPAIRED: {unpairedSwapPoints.join(", ")}
                   </span>
                 )}
                 {(onBadPairing || offBadPairing) && (
