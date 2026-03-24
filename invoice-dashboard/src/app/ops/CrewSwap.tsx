@@ -2821,6 +2821,71 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
   }
 
   // Upload Excel roster
+  async function syncFromGoogleSheet() {
+    setSyncingCrewInfo(true);
+    setUploading(true);
+    setUploadError(null);
+    try {
+      const res = await fetch("/api/crew/roster/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          source: "google_sheets",
+          swap_date: selectedWed.toISOString().slice(0, 10),
+        }),
+      });
+      const data = await safeJson(res, "Google Sheets sync failed");
+
+      if (!res.ok) {
+        setUploadError(data.error ?? "Sync failed");
+        addToast("error", data.error ?? "Google Sheets sync failed");
+      } else {
+        setUploadResult({
+          ok: true,
+          total_parsed: data.roster?.total ?? 0,
+          unique_crew: data.roster?.active ?? 0,
+          upserted: data.roster?.upserted ?? 0,
+          errors: data.errors,
+          summary: {},
+          swap_assignments: data.swap_assignments,
+          oncoming_pool: data.oncoming_pool,
+        });
+
+        if (data.swap_assignments && Object.keys(data.swap_assignments).length > 0) {
+          setSwapAssignments(data.swap_assignments);
+          try { localStorage.setItem("swap_assignments", JSON.stringify(data.swap_assignments)); } catch {}
+        }
+        if (data.oncoming_pool) {
+          setOncomingPool(data.oncoming_pool);
+          try { localStorage.setItem("oncoming_pool", JSON.stringify(data.oncoming_pool)); } catch {}
+        }
+
+        setCrewInfoData({
+          bad_pairings: data.bad_pairings ?? [],
+          checkairmen: data.checkairmen ?? [],
+          training_needed: data.training_needed ?? [],
+          recurrency_299: data.recurrency_299 ?? [],
+          pic_swap_table: data.pic_swap_table ?? [],
+          crewing_checklist: data.crewing_checklist ?? null,
+          calendar_weeks: data.calendar_weeks ?? [],
+          target_week_crew: data.target_week_crew ?? null,
+          different_airports: data.different_airports ?? [],
+          roster: data.roster ?? undefined,
+        });
+
+        setRotationSource("excel");
+        await loadCrew();
+        addToast("success", `Synced from Google Sheet: ${data.roster?.active ?? 0} crew, ${data.checkairmen?.length ?? 0} CAs`);
+      }
+    } catch (e) {
+      setUploadError(e instanceof Error ? e.message : "Sync failed");
+      addToast("error", "Google Sheets sync failed");
+    } finally {
+      setSyncingCrewInfo(false);
+      setUploading(false);
+    }
+  }
+
   async function syncCrewInfo(file: File) {
     setSyncingCrewInfo(true);
     try {
@@ -3186,10 +3251,19 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                 {showRoster ? "Hide" : "Show"} Roster
               </button>
             )}
+            <button
+              onClick={syncFromGoogleSheet}
+              disabled={uploading || syncingCrewInfo}
+              className={`px-3 py-1.5 text-xs font-medium border rounded-lg ${
+                uploading || syncingCrewInfo ? "bg-gray-100 text-gray-400" : "bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border-emerald-200"
+              }`}
+            >
+              {syncingCrewInfo ? "Syncing..." : "Sync from Google Sheet"}
+            </button>
             <label className={`px-3 py-1.5 text-xs font-medium border rounded-lg cursor-pointer ${
               uploading ? "bg-gray-100 text-gray-400" : "bg-blue-50 text-blue-700 hover:bg-blue-100 border-blue-200"
             }`}>
-              {uploading ? "Syncing..." : "Upload Crew Info (.xlsx)"}
+              {uploading ? "Syncing..." : "Upload .xlsx"}
               <input
                 type="file"
                 accept=".xlsx,.xls"
@@ -3348,24 +3422,35 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
       {!crewInfoData && uploadResult && (
         <div className="rounded-lg border border-dashed border-indigo-200 bg-indigo-50/30 p-3 flex items-center justify-between">
           <div className="text-[11px] text-indigo-600">
-            Upload the <span className="font-bold">CREW INFO 2026.xlsx</span> workbook to see bad pairings, checkairmen, training, and calendar data.
+            Sync <span className="font-bold">CREW INFO 2026</span> to see bad pairings, checkairmen, and calendar data.
           </div>
-          <label className={`px-3 py-1.5 text-xs font-medium border rounded-lg cursor-pointer shrink-0 ${
-            syncingCrewInfo ? "bg-gray-100 text-gray-400" : "bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border-indigo-200"
-          }`}>
-            {syncingCrewInfo ? "Syncing..." : "Sync Crew Info (.xlsx)"}
-            <input
-              type="file"
-              accept=".xlsx,.xls"
-              className="hidden"
+          <div className="flex gap-2 shrink-0">
+            <button
+              onClick={syncFromGoogleSheet}
               disabled={syncingCrewInfo}
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) syncCrewInfo(f);
-                e.target.value = "";
-              }}
-            />
-          </label>
+              className={`px-3 py-1.5 text-xs font-medium border rounded-lg ${
+                syncingCrewInfo ? "bg-gray-100 text-gray-400" : "bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border-emerald-200"
+              }`}
+            >
+              {syncingCrewInfo ? "Syncing..." : "Sync from Sheet"}
+            </button>
+            <label className={`px-3 py-1.5 text-xs font-medium border rounded-lg cursor-pointer ${
+              syncingCrewInfo ? "bg-gray-100 text-gray-400" : "bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border-indigo-200"
+            }`}>
+              {syncingCrewInfo ? "Syncing..." : "Upload .xlsx"}
+              <input
+                type="file"
+                accept=".xlsx,.xls"
+                className="hidden"
+                disabled={syncingCrewInfo}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) syncCrewInfo(f);
+                  e.target.value = "";
+                }}
+              />
+            </label>
+          </div>
         </div>
       )}
 

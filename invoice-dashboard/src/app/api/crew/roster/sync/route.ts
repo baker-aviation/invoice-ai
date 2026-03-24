@@ -13,21 +13,23 @@ import {
   type CrewingChecklist,
   type CalendarWeek,
 } from "@/lib/crewInfoParser";
+import { downloadAsXlsx } from "@/lib/googleSheets";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 30;
+export const maxDuration = 60;
 
 /**
  * POST /api/crew/roster/sync
  *
- * Upload the master CREW INFO Excel workbook. Parses:
- *   1. CREW ROSTER → upserts all crew_members (name, home, rotation, type, rank, SB, terminated)
- *   2. Slack names → fuzzy matches and stores slack_display_name
- *   3. Weekly swap sheet → extracts swap assignments + oncoming pool
- *   4. Different airports → crew temporarily at non-home locations
+ * Two modes:
+ *   1. File upload: multipart/form-data with file field
+ *   2. Google Sheets: JSON body with { source: "google_sheets" }
  *
- * Body: multipart/form-data with:
- *   - file: the .xlsx file
+ * Both paths parse through the same crewInfoParser pipeline.
+ *
+ * Body options:
+ *   - file: the .xlsx file (multipart)
+ *   - source: "google_sheets" to pull live from Google Sheets (JSON body)
  *   - swap_date: (optional) YYYY-MM-DD to target a specific weekly sheet
  *   - slack_names: (optional) JSON array of Slack display names
  */
@@ -35,22 +37,50 @@ export async function POST(req: NextRequest) {
   const auth = await requireAdmin(req);
   if (!isAuthed(auth)) return auth.error;
 
-  const formData = await req.formData();
-  const file = formData.get("file") as File | null;
-  if (!file) return NextResponse.json({ error: "No file uploaded" }, { status: 400 });
-
-  const swapDate = formData.get("swap_date") as string | null;
-  const slackNamesRaw = formData.get("slack_names") as string | null;
+  let buffer: Buffer;
+  let swapDate: string | null = null;
   let slackNames: string[] | undefined;
-  if (slackNamesRaw) {
-    try {
-      slackNames = JSON.parse(slackNamesRaw);
-    } catch {
-      return NextResponse.json({ error: "slack_names must be valid JSON array" }, { status: 400 });
-    }
-  }
+  let dataSource = "file_upload";
 
-  const buffer = Buffer.from(await file.arrayBuffer());
+  const contentType = req.headers.get("content-type") ?? "";
+
+  if (contentType.includes("application/json")) {
+    // JSON body — Google Sheets mode
+    const body = await req.json();
+    if (body.source !== "google_sheets") {
+      return NextResponse.json({ error: "JSON body requires source: 'google_sheets'" }, { status: 400 });
+    }
+    swapDate = body.swap_date ?? null;
+    if (body.slack_names) slackNames = body.slack_names;
+    dataSource = "google_sheets";
+
+    try {
+      console.log("[Roster Sync] Downloading CREW INFO from Google Sheets...");
+      buffer = await downloadAsXlsx();
+      console.log(`[Roster Sync] Downloaded ${(buffer.length / 1024).toFixed(0)}KB from Google Sheets`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Unknown error";
+      console.error("[Roster Sync] Google Sheets download failed:", msg);
+      return NextResponse.json({ error: `Google Sheets sync failed: ${msg}` }, { status: 500 });
+    }
+  } else {
+    // Multipart form — file upload mode
+    const formData = await req.formData();
+    const file = formData.get("file") as File | null;
+    if (!file) return NextResponse.json({ error: "No file uploaded" }, { status: 400 });
+
+    swapDate = formData.get("swap_date") as string | null;
+    const slackNamesRaw = formData.get("slack_names") as string | null;
+    if (slackNamesRaw) {
+      try {
+        slackNames = JSON.parse(slackNamesRaw);
+      } catch {
+        return NextResponse.json({ error: "slack_names must be valid JSON array" }, { status: 400 });
+      }
+    }
+
+    buffer = Buffer.from(await file.arrayBuffer());
+  }
   const result = parseCrewInfo(buffer, slackNames, swapDate ?? undefined);
 
   const supa = createServiceClient();
@@ -62,10 +92,24 @@ export async function POST(req: NextRequest) {
   let deactivatedCount = 0;
   let slackMatchedCount = 0;
 
+  // Preserve grades, restrictions, and checkairman_types before wiping.
+  // These are set manually in the app UI and should survive re-syncs.
+  const { data: existingCrew } = await supa
+    .from("crew_members")
+    .select("name, role, grade, restrictions, checkairman_types");
+  const preservedData = new Map<string, { grade: number; restrictions: Record<string, boolean>; checkairman_types: string[] }>();
+  for (const c of existingCrew ?? []) {
+    preservedData.set(`${c.name}|${c.role}`, {
+      grade: c.grade ?? 3,
+      restrictions: c.restrictions ?? {},
+      checkairman_types: c.checkairman_types ?? [],
+    });
+  }
+
   // Clean slate: delete all existing crew_members, then insert fresh from Excel.
   // The Excel is the sole source of truth — no merge, no duplicates.
   await supa.from("crew_members").delete().neq("id", "00000000-0000-0000-0000-000000000000"); // delete all rows
-  console.log("[Roster Sync] Cleared crew_members table — inserting fresh from Excel");
+  console.log(`[Roster Sync] Cleared crew_members table — inserting fresh from ${dataSource}. Preserved grades for ${preservedData.size} crew.`);
 
   // JetInsight legal name mappings — these differ from roster display names.
   const JETINSIGHT_NAMES: Record<string, string> = {
@@ -198,6 +242,18 @@ export async function POST(req: NextRequest) {
     const caEntry = checkairmanTypeMap.get(entry.name);
     const isCA = !!caEntry || result.checkairmen.some((ca) => ca.name === entry.name);
 
+    // Restore preserved grade and restrictions from previous sync
+    const preserved = preservedData.get(`${entry.name}|${entry.role}`);
+
+    // Build checkairman_types from parsed Excel data
+    const caTypes: string[] = [];
+    if (caEntry) {
+      if (caEntry.citation_x) caTypes.push("citation_x");
+      if (caEntry.challenger) caTypes.push("challenger");
+    }
+    // If no parsed CA types but we had them before, keep the old ones
+    const finalCaTypes = caTypes.length > 0 ? caTypes : (preserved?.checkairman_types ?? []);
+
     const record: Record<string, unknown> = {
       name: entry.name,
       role: entry.role,
@@ -206,20 +262,12 @@ export async function POST(req: NextRequest) {
       rotation_group: entry.rotation === "part_time" ? null : entry.rotation,
       is_skillbridge: entry.is_skillbridge,
       is_checkairman: isCA,
+      checkairman_types: finalCaTypes,
+      grade: preserved?.grade ?? 3,
+      restrictions: preserved?.restrictions ?? {},
       active: !entry.is_terminated,
       updated_at: new Date().toISOString(),
     };
-
-    // Store checkairman aircraft types in notes (column doesn't exist in DB yet)
-    if (caEntry) {
-      const types: string[] = [];
-      if (caEntry.citation_x) types.push("CX");
-      if (caEntry.challenger) types.push("CL");
-      if (types.length > 0) {
-        const existing = record.notes ? String(record.notes) + "; " : "";
-        record.notes = existing + `CA: ${types.join("+")}`;
-      }
-    }
 
     // Store Slack display name if matched
     if (entry.slack_display_name) {
@@ -434,6 +482,7 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({
     ok: true,
+    source: dataSource,
     roster: {
       total: result.roster.length,
       active: result.roster.filter((r) => !r.is_terminated).length,
