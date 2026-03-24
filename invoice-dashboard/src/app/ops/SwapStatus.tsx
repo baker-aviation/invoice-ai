@@ -38,6 +38,8 @@ type SwapStatusData = {
   sheet_name: string;
   oncoming: CrewTravel[];
   offgoing: CrewTravel[];
+  fa_flights_resolved?: number;
+  fa_flights_total?: number;
   last_updated: string;
 };
 
@@ -172,10 +174,22 @@ function CrewCard({ crew, onStatusOverride }: {
       </div>
 
       {/* Times */}
-      <div className="flex items-center gap-4 text-[11px] text-gray-500">
+      <div className="flex items-center gap-4 text-[11px] text-gray-500 flex-wrap">
         {crew.date && <span>Date: {crew.date}</span>}
         {crew.duty_on && <span>Duty On: <span className="font-mono text-gray-700">{fmtTime24(crew.duty_on)}</span></span>}
-        {crew.arrival_time && <span>Arrival: <span className="font-mono text-gray-700">{fmtTime24(crew.arrival_time)}</span></span>}
+        {crew.live_departure ? (
+          <span>Dep: <span className="font-mono text-blue-700">{new Date(crew.live_departure).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "America/New_York" })} ET</span></span>
+        ) : crew.duty_on ? null : null}
+        {crew.live_arrival ? (
+          <span>ETA: <span className={`font-mono ${crew.delay_minutes && crew.delay_minutes > 15 ? "text-amber-700 font-bold" : "text-green-700"}`}>
+            {new Date(crew.live_arrival).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "America/New_York" })} ET
+          </span></span>
+        ) : crew.arrival_time ? (
+          <span>Sched Arr: <span className="font-mono text-gray-700">{fmtTime24(crew.arrival_time)}</span></span>
+        ) : null}
+        {crew.delay_minutes != null && crew.delay_minutes > 0 && (
+          <span className="font-mono text-amber-700 font-bold">+{crew.delay_minutes}min</span>
+        )}
         {crew.price && crew.price !== "---" && <span className="text-gray-400">{crew.price}</span>}
         {!crew.verified_ticket && crew.transport_type === "commercial" && (
           <span className="text-red-500 font-medium">UNVERIFIED</span>
@@ -184,6 +198,13 @@ function CrewCard({ crew, onStatusOverride }: {
           <span className="text-green-600 font-medium">VERIFIED</span>
         )}
       </div>
+
+      {/* Status detail (from FA) */}
+      {crew.status_detail && (
+        <div className={`text-[10px] font-medium ${crew.status === "cancelled" || crew.status === "delayed" ? "text-amber-600" : "text-blue-500"}`}>
+          {crew.status_detail}
+        </div>
+      )}
 
       {/* Notes */}
       {crew.notes && (
@@ -293,7 +314,14 @@ export default function SwapStatus() {
           {data && <div className="text-xs text-gray-500">{data.sheet_name} — {data.swap_date}</div>}
         </div>
         <div className="flex items-center gap-2">
-          {data && <span className="text-[10px] text-gray-400">Updated {new Date(data.last_updated).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}</span>}
+          {data && (
+            <span className="text-[10px] text-gray-400">
+              Updated {new Date(data.last_updated).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
+              {data.fa_flights_resolved != null && (
+                <span className="ml-1 text-blue-500">FA: {data.fa_flights_resolved}/{data.fa_flights_total}</span>
+              )}
+            </span>
+          )}
           <button
             onClick={loadStatus}
             disabled={loading}

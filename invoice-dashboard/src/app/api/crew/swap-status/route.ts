@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin, isAuthed } from "@/lib/api-auth";
 import { listSheets, getSheetData } from "@/lib/googleSheets";
+import { batchGetCommercialStatus, type CommercialFlightStatus } from "@/lib/flightaware";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 300; // 5 min — may need to query ~100 flights at 1/sec
 
 type CrewTravel = {
   name: string;
@@ -235,11 +237,123 @@ export async function GET(req: NextRequest) {
       ? `2026-${monthMap[dateMatch[1].toUpperCase()] ?? "01"}-${dateMatch[2].padStart(2, "0")}`
       : new Date().toISOString().slice(0, 10);
 
+    // ── Enrich with FlightAware live status ─────────────────────────────
+    const allCrew = [...oncoming, ...offgoing];
+    const commercialFlightLegs = new Set<string>();
+    for (const crew of allCrew) {
+      if (crew.transport_type === "commercial") {
+        for (const fn of crew.flight_numbers) {
+          commercialFlightLegs.add(fn);
+        }
+      }
+    }
+
+    // Determine which date each flight is on (some crew travel day before: 3/24)
+    // Group flights by their travel date for the FA query
+    const flightsByDate = new Map<string, string[]>();
+    for (const crew of allCrew) {
+      if (crew.transport_type !== "commercial") continue;
+      let flightDate = swapDate; // default to swap date
+      if (crew.date) {
+        const dm = crew.date.match(/(\d{1,2})\/(\d{1,2})/);
+        if (dm) flightDate = `2026-${dm[1].padStart(2, "0")}-${dm[2].padStart(2, "0")}`;
+      }
+      for (const fn of crew.flight_numbers) {
+        if (!flightsByDate.has(flightDate)) flightsByDate.set(flightDate, []);
+        flightsByDate.get(flightDate)!.push(fn);
+      }
+    }
+
+    // Fetch live status from FlightAware (skip if no commercial flights)
+    let faStatusMap = new Map<string, CommercialFlightStatus>();
+    if (commercialFlightLegs.size > 0) {
+      try {
+        // Fetch each date group
+        for (const [date, flights] of flightsByDate) {
+          const dateResults = await batchGetCommercialStatus(flights, date);
+          for (const [fn, status] of dateResults) {
+            faStatusMap.set(fn, status);
+          }
+        }
+        console.log(`[SwapStatus] FA enrichment: ${faStatusMap.size}/${commercialFlightLegs.size} flights resolved`);
+      } catch (e) {
+        console.error("[SwapStatus] FA enrichment failed (using time-based guess):", e instanceof Error ? e.message : e);
+      }
+    }
+
+    // Apply FA status to crew entries
+    for (const crew of allCrew) {
+      if (crew.transport_type !== "commercial" || crew.flight_numbers.length === 0) continue;
+
+      // For connections, use the LAST leg's status (that's what determines arrival)
+      // But if any leg is cancelled/delayed, flag it
+      let worstStatus: CrewTravel["status"] = "arrived_fbo";
+      let totalDelay = 0;
+      let anyLanded = false;
+      let allLanded = true;
+      let anyCancelled = false;
+      let lastLegStatus: CommercialFlightStatus | null = null;
+
+      for (const fn of crew.flight_numbers) {
+        const fa = faStatusMap.get(fn);
+        if (!fa) { allLanded = false; continue; }
+
+        if (fa.cancelled) anyCancelled = true;
+        if (fa.status === "Landed" || fa.status === "Arrived") anyLanded = true;
+        else allLanded = false;
+        if (fa.arrival_delay_minutes) totalDelay += fa.arrival_delay_minutes;
+        lastLegStatus = fa;
+      }
+
+      if (anyCancelled) {
+        crew.status = "cancelled";
+        crew.status_detail = "Flight cancelled";
+      } else if (lastLegStatus) {
+        // Map FA status to our status
+        switch (lastLegStatus.status) {
+          case "Scheduled": crew.status = "scheduled"; break;
+          case "Departed": crew.status = "departed"; break;
+          case "En Route": crew.status = "en_route"; break;
+          case "Landed":
+          case "Arrived":
+            crew.status = "landed"; break;
+          case "Diverted":
+            crew.status = "delayed";
+            crew.status_detail = "Flight diverted";
+            break;
+          default: crew.status = "scheduled";
+        }
+
+        // If first leg landed but second hasn't departed yet → first leg done
+        if (crew.flight_numbers.length > 1 && !allLanded && anyLanded) {
+          const firstFa = faStatusMap.get(crew.flight_numbers[0]);
+          if (firstFa?.status === "Landed" || firstFa?.status === "Arrived") {
+            crew.status = "en_route"; // in transit between connections
+            crew.status_detail = `${crew.flight_numbers[0]} landed, connecting to ${crew.flight_numbers[crew.flight_numbers.length - 1]}`;
+          }
+        }
+
+        if (totalDelay > 15) {
+          crew.delay_minutes = totalDelay;
+          if (crew.status !== "cancelled") {
+            crew.status_detail = `Delayed ${totalDelay}min`;
+            if (crew.status === "scheduled") crew.status = "delayed";
+          }
+        }
+
+        // Set live times from FA
+        crew.live_departure = lastLegStatus.actual_departure ?? lastLegStatus.estimated_departure ?? null;
+        crew.live_arrival = lastLegStatus.actual_arrival ?? lastLegStatus.estimated_arrival ?? null;
+      }
+    }
+
     return NextResponse.json({
       swap_date: swapDate,
       sheet_name: targetSheet,
       oncoming,
       offgoing,
+      fa_flights_resolved: faStatusMap.size,
+      fa_flights_total: commercialFlightLegs.size,
       last_updated: new Date().toISOString(),
     });
   } catch (e) {
