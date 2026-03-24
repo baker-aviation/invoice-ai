@@ -2,8 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, isAuthed } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 import { isInternationalIcao } from "@/lib/intlUtils";
-import { getFlightsByRegistration } from "@/lib/flightaware";
-import type { FaFlight } from "@/lib/flightaware";
 
 /**
  * POST /api/ops/intl/run-checks
@@ -257,8 +255,8 @@ export async function POST(req: NextRequest) {
   }
 
   // ── 6. FlightAware delay & diversion detection ─────────────────────
-  // Check upcoming intl flights (next 48h) against FA for live delay/diversion data.
-  // Only query unique tails to minimize API calls.
+  // Read from fa_flights table (populated by fa-poll cron every 10 min) instead
+  // of calling FA API directly — zero extra API cost.
   const DELAY_THRESHOLD_MIN = 20;
   const fortyEightHoursOut = new Date(now.getTime() + 48 * 60 * 60 * 1000);
   const upcomingIntl = intlFlights.filter((f) => {
@@ -269,127 +267,120 @@ export async function POST(req: NextRequest) {
   const uniqueTails = [...new Set(upcomingIntl.map((f) => f.tail_number).filter(Boolean))] as string[];
   let faDelayCount = 0;
 
-  if (uniqueTails.length > 0 && process.env.FLIGHTAWARE_API_KEY) {
-    // Fetch callsign map from ics_sources for KOW-prefix lookups
-    const { data: icsSources } = await supa
-      .from("ics_sources")
-      .select("tail_number, callsign")
-      .in("tail_number", uniqueTails);
-    const callsignMap = new Map<string, string>();
-    for (const src of icsSources ?? []) {
-      if (src.tail_number && src.callsign) callsignMap.set(src.tail_number, src.callsign);
-    }
+  if (uniqueTails.length > 0) {
+    // Fetch cached FA data from fa_flights table (updated every 10 min by fa-poll cron)
+    const { data: faRows } = await supa
+      .from("fa_flights")
+      .select("fa_flight_id, tail, origin_icao, destination_icao, departure_time, arrival_time, actual_departure, actual_arrival, status, diverted, cancelled, progress_percent")
+      .in("tail", uniqueTails)
+      .gte("updated_at", new Date(now.getTime() - 30 * 60 * 1000).toISOString()); // only fresh data (last 30 min)
 
-    // Build lookups: exact match (tail+dep+arr) and origin-only (tail+dep) for diversions
-    const flightLookupExact = new Map<string, typeof upcomingIntl[0]>();
-    const flightLookupOrigin = new Map<string, typeof upcomingIntl[0]>();
-    for (const f of upcomingIntl) {
-      if (f.tail_number) {
-        flightLookupExact.set(`${f.tail_number}|${f.departure_icao}|${f.arrival_icao}`, f);
-        // Origin-only lookup — if multiple flights from same origin, last one wins (fine for diversion matching)
-        flightLookupOrigin.set(`${f.tail_number}|${f.departure_icao}`, f);
+    if (faRows && faRows.length > 0) {
+      // Build lookups: exact match (tail+dep+arr) and origin-only (tail+dep) for diversions
+      const flightLookupExact = new Map<string, typeof upcomingIntl[0]>();
+      const flightLookupOrigin = new Map<string, typeof upcomingIntl[0]>();
+      for (const f of upcomingIntl) {
+        if (f.tail_number) {
+          flightLookupExact.set(`${f.tail_number}|${f.departure_icao}|${f.arrival_icao}`, f);
+          flightLookupOrigin.set(`${f.tail_number}|${f.departure_icao}`, f);
+        }
       }
-    }
 
-    for (const tail of uniqueTails) {
-      try {
-        const faFlights = await getFlightsByRegistration(tail, callsignMap);
+      for (const fa of faRows) {
+        // Allow diverted+cancelled through — FA marks diversions as both
+        if (fa.cancelled && !fa.diverted) continue;
+        const faOrigin = fa.origin_icao;
+        const faDest = fa.destination_icao;
+        if (!faOrigin || !fa.tail) continue;
 
-        for (const fa of faFlights) {
-          // Allow diverted+cancelled flights through — FA marks diversions as both
-          if (fa.cancelled && !fa.diverted) continue;
-          const faOrigin = fa.origin?.code_icao ?? fa.origin?.code;
-          const faDest = fa.destination?.code_icao ?? fa.destination?.code;
-          if (!faOrigin) continue;
+        // Match to our DB flight — try exact first, fall back to origin-only for diversions
+        const dbFlight = (faDest ? flightLookupExact.get(`${fa.tail}|${faOrigin}|${faDest}`) : null)
+          ?? flightLookupOrigin.get(`${fa.tail}|${faOrigin}`);
+        if (!dbFlight) continue;
 
-          // Match to our DB flight — try exact first, fall back to origin-only for diversions
-          const dbFlight = (faDest ? flightLookupExact.get(`${tail}|${faOrigin}|${faDest}`) : null)
-            ?? flightLookupOrigin.get(`${tail}|${faOrigin}`);
-          if (!dbFlight) continue;
+        // ── Diversion check ──
+        if (fa.diverted) {
+          const divertedTo = faDest ?? "unknown";
+          const originalDest = dbFlight.arrival_icao ?? "unknown";
+          const { count } = await supa
+            .from("intl_leg_alerts")
+            .select("id", { count: "exact", head: true })
+            .eq("flight_id", dbFlight.id)
+            .eq("alert_type", "diversion")
+            .eq("acknowledged", false);
 
-          // ── Diversion check ──
-          if (fa.diverted) {
-            const divertedTo = faDest ?? "unknown";
-            const originalDest = dbFlight.arrival_icao ?? "unknown";
-            const { count } = await supa
-              .from("intl_leg_alerts")
-              .select("id", { count: "exact", head: true })
-              .eq("flight_id", dbFlight.id)
-              .eq("alert_type", "diversion")
-              .eq("acknowledged", false);
-
-            if ((count ?? 0) === 0) {
-              // Find delay from the active sibling entry (ghost entry has garbage delay values)
-              const sibling = faFlights.find((s) =>
-                !s.cancelled && !s.diverted &&
-                (s.origin?.code_icao ?? s.origin?.code) === faOrigin &&
-                s.registration === fa.registration
+          if ((count ?? 0) === 0) {
+            // Find delay from the active sibling entry (ghost entry has garbage values)
+            const sibling = faRows.find((s) =>
+              !s.cancelled && !s.diverted &&
+              s.origin_icao === faOrigin &&
+              s.tail === fa.tail
+            );
+            let delayMin: number | null = null;
+            if (sibling?.actual_departure && sibling?.departure_time) {
+              const diff = Math.round(
+                (new Date(sibling.actual_departure).getTime() - new Date(sibling.departure_time).getTime()) / 60000
               );
-              const delayMin = sibling?.departure_delay != null && sibling.departure_delay > 0
-                ? Math.round(sibling.departure_delay / 60)
-                : null;
-              const delayNote = delayMin && delayMin >= DELAY_THRESHOLD_MIN ? ` (delayed ${delayMin}min)` : "";
-
-              const divMsg = divertedTo !== originalDest
-                ? `DIVERTED: ${tail} ${faOrigin}→${originalDest} diverted to ${divertedTo}${delayNote}. Check permits and customs for new routing.`
-                : `DIVERTED: ${tail} ${faOrigin}→${originalDest} has been diverted${delayNote}. Check permits and customs for new routing.`;
-              alertsToCreate.push({
-                flight_id: dbFlight.id,
-                alert_type: "diversion",
-                severity: "critical",
-                message: divMsg,
-              });
-              faDelayCount++;
+              if (diff > 0) delayMin = diff;
             }
-            continue; // don't also create a delay alert for diverted flights
-          }
+            const delayNote = delayMin && delayMin >= DELAY_THRESHOLD_MIN ? ` (delayed ${delayMin}min)` : "";
 
-          // ── Delay check ──
-          const depDelay = fa.departure_delay != null ? Math.round(fa.departure_delay / 60) : null;
-          if (depDelay != null && depDelay >= DELAY_THRESHOLD_MIN) {
-            // Check for existing unacked delay alert on this flight
-            const { data: existing } = await supa
-              .from("intl_leg_alerts")
-              .select("id, message")
-              .eq("flight_id", dbFlight.id)
-              .eq("alert_type", "delay")
-              .eq("acknowledged", false)
-              .limit(1);
-
-            const alreadyAlerted = existing && existing.length > 0;
-
-            // Re-alert if delay worsened by 30+ min
-            if (alreadyAlerted) {
-              const prevMatch = existing[0].message.match(/delayed (\d+)\s*min/i);
-              const prevMin = prevMatch ? parseInt(prevMatch[1]) : 0;
-              if (depDelay - prevMin < 30) continue; // not significantly worse
-              // Acknowledge the old alert before creating updated one
-              await supa.from("intl_leg_alerts")
-                .update({ acknowledged: true, acknowledged_by: "system", acknowledged_at: now.toISOString() })
-                .eq("id", existing[0].id);
-            }
-
-            const scheduledDep = fa.scheduled_out ?? dbFlight.scheduled_departure;
-            const estDep = fa.estimated_out ?? fa.scheduled_out;
-            const schedTime = scheduledDep ? new Date(scheduledDep).toISOString().slice(11, 16) : "??:??";
-            const estTime = estDep ? new Date(estDep).toISOString().slice(11, 16) : "??:??";
-
+            const divMsg = divertedTo !== originalDest
+              ? `DIVERTED: ${fa.tail} ${faOrigin}→${originalDest} diverted to ${divertedTo}${delayNote}. Check permits and customs for new routing.`
+              : `DIVERTED: ${fa.tail} ${faOrigin}→${originalDest} has been diverted${delayNote}. Check permits and customs for new routing.`;
             alertsToCreate.push({
               flight_id: dbFlight.id,
-              alert_type: "delay",
-              severity: depDelay >= 60 ? "critical" : "warning",
-              message: `${tail} ${faOrigin}→${faDest} delayed ${depDelay}min (sched ${schedTime}Z → est ${estTime}Z). Verify customs/handler timing.`,
+              alert_type: "diversion",
+              severity: "critical",
+              message: divMsg,
             });
             faDelayCount++;
           }
+          continue;
         }
 
-        // Rate limit between tails
-        if (uniqueTails.indexOf(tail) < uniqueTails.length - 1) {
-          await new Promise((r) => setTimeout(r, 500));
+        // ── Delay check ──
+        // Compute delay: compare FA departure_time (actual/estimated) vs our scheduled departure
+        let depDelayMin: number | null = null;
+        const faDepTime = fa.actual_departure ?? fa.departure_time;
+        if (faDepTime && dbFlight.scheduled_departure) {
+          const diff = Math.round(
+            (new Date(faDepTime).getTime() - new Date(dbFlight.scheduled_departure).getTime()) / 60000
+          );
+          if (diff > 0) depDelayMin = diff;
         }
-      } catch (err) {
-        console.error(`[intl/run-checks] FA error for ${tail}:`, err instanceof Error ? err.message : err);
+
+        if (depDelayMin != null && depDelayMin >= DELAY_THRESHOLD_MIN) {
+          const { data: existing } = await supa
+            .from("intl_leg_alerts")
+            .select("id, message")
+            .eq("flight_id", dbFlight.id)
+            .eq("alert_type", "delay")
+            .eq("acknowledged", false)
+            .limit(1);
+
+          const alreadyAlerted = existing && existing.length > 0;
+
+          if (alreadyAlerted) {
+            const prevMatch = existing[0].message.match(/delayed (\d+)\s*min/i);
+            const prevMin = prevMatch ? parseInt(prevMatch[1]) : 0;
+            if (depDelayMin - prevMin < 30) continue;
+            await supa.from("intl_leg_alerts")
+              .update({ acknowledged: true, acknowledged_by: "system", acknowledged_at: now.toISOString() })
+              .eq("id", existing[0].id);
+          }
+
+          const schedTime = new Date(dbFlight.scheduled_departure).toISOString().slice(11, 16);
+          const estTime = faDepTime ? new Date(faDepTime).toISOString().slice(11, 16) : "??:??";
+
+          alertsToCreate.push({
+            flight_id: dbFlight.id,
+            alert_type: "delay",
+            severity: depDelayMin >= 60 ? "critical" : "warning",
+            message: `${fa.tail} ${faOrigin}→${faDest} delayed ${depDelayMin}min (sched ${schedTime}Z → est ${estTime}Z). Verify customs/handler timing.`,
+          });
+          faDelayCount++;
+        }
       }
     }
   }
