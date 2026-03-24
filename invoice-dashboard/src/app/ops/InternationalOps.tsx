@@ -50,9 +50,10 @@ export default function InternationalOps({ flights: _parentFlights }: { flights:
   const [trips, setTrips] = useState<IntlTrip[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const loadTrips = useCallback(async () => {
+  const loadTrips = useCallback(async (autoDetect = true) => {
     try {
-      const res = await fetch("/api/ops/intl/trips");
+      const qs = autoDetect ? "" : "?auto_detect=false";
+      const res = await fetch("/api/ops/intl/trips" + qs);
       const data = await res.json();
       setTrips(data.trips ?? []);
     } catch { /* ignore */ }
@@ -75,7 +76,10 @@ export default function InternationalOps({ flights: _parentFlights }: { flights:
   }, []);
 
   useEffect(() => {
-    Promise.all([loadTrips(), loadCountries(), loadAlerts()]).finally(() => setLoading(false));
+    // Fast load: fetch cached trips without auto-detection, then detect in background
+    Promise.all([loadTrips(false), loadCountries(), loadAlerts()])
+      .finally(() => setLoading(false))
+      .then(() => loadTrips(true)); // background: run detection and refresh
   }, [loadTrips, loadCountries, loadAlerts]);
 
   const unackedAlerts = alerts.filter((a) => !a.acknowledged);
