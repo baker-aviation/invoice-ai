@@ -518,8 +518,12 @@ export async function getCommercialFlightStatus(
     const flights = (data.flights ?? []) as FaFlight[];
     if (flights.length === 0) return null;
 
-    // Pick the best match for target date
-    const f = flights[0]; // FA returns most relevant first
+    // Pick the flight that matches the target date (FA may return multiple days)
+    // Compare scheduled_out date against targetDate
+    const f = flights.find(fl => {
+      const depDate = (fl.scheduled_out ?? fl.estimated_out ?? "").slice(0, 10);
+      return depDate === targetDate;
+    }) ?? flights[0]; // fallback to first if no exact date match
 
     const depDelay = f.departure_delay != null ? Math.round(f.departure_delay / 60) : null;
     const arrDelay = f.arrival_delay != null ? Math.round(f.arrival_delay / 60) : null;

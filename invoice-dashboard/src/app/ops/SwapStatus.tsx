@@ -249,6 +249,7 @@ export default function SwapStatus() {
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<"all" | "oncoming" | "offgoing">("all");
   const [statusFilter, setStatusFilter] = useState<"all" | "flights_only" | "problems">("all");
+  const [viewMode, setViewMode] = useState<"list" | "cards">("list");
 
   const [enriching, setEnriching] = useState(false);
 
@@ -354,7 +355,7 @@ export default function SwapStatus() {
       {data && <SummaryBar data={data} />}
 
       {/* Filters */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
         <div className="flex bg-gray-100 rounded-lg p-0.5">
           {(["all", "oncoming", "offgoing"] as const).map(f => (
             <button
@@ -381,6 +382,19 @@ export default function SwapStatus() {
             </button>
           ))}
         </div>
+        <div className="flex bg-gray-100 rounded-lg p-0.5">
+          {(["list", "cards"] as const).map(v => (
+            <button
+              key={v}
+              onClick={() => setViewMode(v)}
+              className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
+                viewMode === v ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              {v === "list" ? "List" : "Cards"}
+            </button>
+          ))}
+        </div>
         <span className="text-[10px] text-gray-400 ml-2">{filtered.length} shown</span>
       </div>
 
@@ -389,8 +403,89 @@ export default function SwapStatus() {
         <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
       )}
 
-      {/* Crew cards */}
-      {data && (
+      {/* List view */}
+      {data && viewMode === "list" && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead className="bg-gray-50 text-left text-[10px] text-gray-500 uppercase tracking-wider sticky top-0">
+              <tr>
+                <th className="px-2 py-1.5">Status</th>
+                <th className="px-2 py-1.5">Name</th>
+                <th className="px-2 py-1.5">Role</th>
+                <th className="px-2 py-1.5">Dir</th>
+                <th className="px-2 py-1.5">Tail</th>
+                <th className="px-2 py-1.5">Transport</th>
+                <th className="px-2 py-1.5">Flight</th>
+                <th className="px-2 py-1.5">Date</th>
+                <th className="px-2 py-1.5">Duty On</th>
+                <th className="px-2 py-1.5">ETA</th>
+                <th className="px-2 py-1.5">Delay</th>
+                <th className="px-2 py-1.5">Ticket</th>
+                <th className="px-2 py-1.5">Notes</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {filtered.map((crew) => {
+                const sc = statusColor(crew.status);
+                const tb = transportBadge(crew.transport_type);
+                const eta = crew.live_arrival
+                  ? new Date(crew.live_arrival).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "America/New_York" })
+                  : crew.arrival_time ? fmtTime24(crew.arrival_time) : "—";
+                return (
+                  <tr key={`${crew.name}-${crew.direction}`} className={`hover:bg-gray-50 ${
+                    crew.status === "cancelled" ? "bg-red-50/50" :
+                    crew.status === "delayed" ? "bg-amber-50/50" :
+                    crew.status === "landed" || crew.status === "arrived_fbo" ? "bg-green-50/30" : ""
+                  }`}>
+                    <td className="px-2 py-1.5">
+                      <span className={`inline-block text-[9px] px-1.5 py-0.5 rounded-full border font-medium whitespace-nowrap ${sc}`}>
+                        {statusLabel(crew.status, crew.delay_minutes)}
+                      </span>
+                    </td>
+                    <td className="px-2 py-1.5 font-medium text-gray-900 whitespace-nowrap">{crew.name}</td>
+                    <td className="px-2 py-1.5">
+                      <span className={`text-[9px] px-1 py-0.5 rounded font-bold ${
+                        crew.role === "PIC" ? "bg-blue-100 text-blue-700" : "bg-purple-100 text-purple-700"
+                      }`}>{crew.role}</span>
+                    </td>
+                    <td className="px-2 py-1.5 text-[10px] text-gray-500">{crew.direction === "oncoming" ? "ON" : "OFF"}</td>
+                    <td className="px-2 py-1.5 font-mono text-[10px] font-bold text-gray-700">{crew.tail_number || "—"}</td>
+                    <td className="px-2 py-1.5">
+                      <span className={`text-[9px] px-1 py-0.5 rounded font-medium ${tb.cls}`}>{tb.label}</span>
+                    </td>
+                    <td className="px-2 py-1.5 font-mono text-[10px] text-gray-700 whitespace-nowrap">
+                      {crew.flight_numbers.length > 0 ? crew.flight_numbers.join(" → ") : "—"}
+                    </td>
+                    <td className="px-2 py-1.5 text-[10px] text-gray-500">{crew.date ?? "—"}</td>
+                    <td className="px-2 py-1.5 font-mono text-[10px] text-gray-600">{crew.duty_on ? fmtTime24(crew.duty_on) : "—"}</td>
+                    <td className={`px-2 py-1.5 font-mono text-[10px] ${crew.delay_minutes && crew.delay_minutes > 15 ? "text-amber-700 font-bold" : "text-gray-700"}`}>
+                      {eta}
+                    </td>
+                    <td className="px-2 py-1.5 text-[10px]">
+                      {crew.delay_minutes != null && crew.delay_minutes > 0 ? (
+                        <span className="text-amber-700 font-bold">+{crew.delay_minutes}m</span>
+                      ) : "—"}
+                    </td>
+                    <td className="px-2 py-1.5 text-[10px]">
+                      {crew.transport_type === "commercial" ? (
+                        crew.verified_ticket
+                          ? <span className="text-green-600 font-medium">OK</span>
+                          : <span className="text-red-500 font-medium">NO</span>
+                      ) : <span className="text-gray-300">—</span>}
+                    </td>
+                    <td className="px-2 py-1.5 text-[10px] text-gray-400 max-w-[200px] truncate" title={crew.notes ?? crew.status_detail ?? ""}>
+                      {crew.status_detail ?? crew.notes ?? "—"}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Card view */}
+      {data && viewMode === "cards" && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
           {filtered.map((crew) => (
             <CrewCard key={`${crew.name}-${crew.direction}`} crew={crew} onStatusOverride={handleStatusOverride} />
