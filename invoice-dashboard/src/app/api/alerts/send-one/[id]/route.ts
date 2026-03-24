@@ -125,21 +125,28 @@ export async function POST(
     });
 
     if (slackRes.ok) {
-      // Update alert status
-      await supa
+      // Update alert status (non-blocking so DB errors don't mask a successful send)
+      supa
         .from("invoice_alerts")
         .update({ slack_status: "sent", slack_error: null })
-        .eq("id", id);
+        .eq("id", id)
+        .then(({ error: updateErr }) => {
+          if (updateErr) console.error("Failed to update alert status:", updateErr);
+        });
 
       return NextResponse.json({ ok: true, sent: true, alert_id: id });
     } else {
       const errText = await slackRes.text().catch(() => "");
-      await supa
+
+      supa
         .from("invoice_alerts")
         .update({ slack_status: "error", slack_error: errText.slice(0, 1000) })
-        .eq("id", id);
+        .eq("id", id)
+        .then(({ error: updateErr }) => {
+          if (updateErr) console.error("Failed to update alert status:", updateErr);
+        });
 
-      return NextResponse.json({ error: "Slack delivery failed" }, { status: 502 });
+      return NextResponse.json({ error: "Slack delivery failed", detail: errText.slice(0, 200) }, { status: 502 });
     }
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? "Slack request failed" }, { status: 502 });

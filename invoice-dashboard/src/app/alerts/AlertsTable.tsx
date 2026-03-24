@@ -170,10 +170,14 @@ export default function AlertsTable({ initialAlerts, pdfUrls = {} }: { initialAl
       if (res.ok) {
         setShareStates((prev) => ({ ...prev, [alertId]: "success" }));
       } else {
-        console.error("share error", data);
+        const msg = data?.error || data?.detail || `HTTP ${res.status}`;
+        console.error("share error", msg, data);
+        alert(`Send failed: ${msg}`);
         setShareStates((prev) => ({ ...prev, [alertId]: "error" }));
       }
-    } catch {
+    } catch (e: any) {
+      console.error("share error", e);
+      alert(`Send failed: ${e?.message || "Network error"}`);
       setShareStates((prev) => ({ ...prev, [alertId]: "error" }));
     }
   };
