@@ -486,7 +486,7 @@ export async function GET(req: NextRequest) {
   const { data: trips, error } = await supa
     .from("intl_trips")
     .select("*, clearances:intl_trip_clearances(*)")
-    .gte("trip_date", new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10))
+    .gte("trip_date", new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10))
     .order("trip_date", { ascending: true });
 
   if (error) {

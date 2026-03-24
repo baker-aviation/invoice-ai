@@ -448,6 +448,173 @@ export function toFlightInfo(tail: string, f: FaFlight): FlightInfo {
 }
 
 // ---------------------------------------------------------------------------
+// Commercial Flight Status (for crew swap status tracking)
+// ---------------------------------------------------------------------------
+
+export type CommercialFlightStatus = {
+  flight_number: string;
+  status: "Scheduled" | "Departed" | "En Route" | "Landed" | "Arrived" | "Cancelled" | "Diverted" | "Unknown";
+  origin_icao: string | null;
+  origin_iata: string | null;
+  destination_icao: string | null;
+  destination_iata: string | null;
+  scheduled_departure: string | null;
+  scheduled_arrival: string | null;
+  estimated_departure: string | null;
+  estimated_arrival: string | null;
+  actual_departure: string | null;
+  actual_arrival: string | null;
+  departure_delay_minutes: number | null;
+  arrival_delay_minutes: number | null;
+  gate_origin: string | null;
+  gate_destination: string | null;
+  terminal_origin: string | null;
+  terminal_destination: string | null;
+  progress_percent: number | null;
+  cancelled: boolean;
+  diverted: boolean;
+};
+
+/**
+ * Look up a commercial flight by airline flight number (e.g., "AA1042", "UA299").
+ * Converts IATA ident to ICAO (AA→AAL, UA→UAL) for the FA API.
+ * Returns the flight instance closest to the target date.
+ */
+export async function getCommercialFlightStatus(
+  flightNumber: string,
+  targetDate: string, // YYYY-MM-DD
+): Promise<CommercialFlightStatus | null> {
+  // FA API wants ICAO idents (AAL1042 not AA1042)
+  const iataToIcao: Record<string, string> = {
+    AA: "AAL", DL: "DAL", UA: "UAL", WN: "SWA", AS: "ASA",
+    NK: "NKS", B6: "JBU", F9: "FFT", G4: "AAY", HA: "HAL",
+    NE: "RPA", // Republic Airways (American Eagle)
+    // Add more as needed
+  };
+
+  const match = flightNumber.match(/^([A-Z]{2})(\d+)$/i);
+  if (!match) return null;
+
+  const [, airlineIata, num] = match;
+  const airlineIcao = iataToIcao[airlineIata.toUpperCase()] ?? airlineIata.toUpperCase();
+  const faIdent = `${airlineIcao}${num}`;
+
+  const startDate = `${targetDate}T00:00:00Z`;
+  const endDate = `${targetDate}T23:59:59Z`;
+  const url = `${BASE}/flights/${encodeURIComponent(faIdent)}?start=${startDate}&end=${endDate}`;
+
+  try {
+    const res = await fetch(url, {
+      headers: headers(),
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!res.ok) {
+      if (res.status === 429) console.warn(`[FA Commercial] Rate limited for ${flightNumber}`);
+      return null;
+    }
+
+    const data = await res.json();
+    const flights = (data.flights ?? []) as FaFlight[];
+    if (flights.length === 0) return null;
+
+    // Pick the flight that matches the target date (FA may return multiple days)
+    // Compare scheduled_out date against targetDate
+    const f = flights.find(fl => {
+      const depDate = (fl.scheduled_out ?? fl.estimated_out ?? "").slice(0, 10);
+      return depDate === targetDate;
+    }) ?? flights[0]; // fallback to first if no exact date match
+
+    const depDelay = f.departure_delay != null ? Math.round(f.departure_delay / 60) : null;
+    const arrDelay = f.arrival_delay != null ? Math.round(f.arrival_delay / 60) : null;
+
+    let status: CommercialFlightStatus["status"] = "Unknown";
+    if (f.cancelled) status = "Cancelled";
+    else if (f.diverted) status = "Diverted";
+    else if (f.actual_in || f.actual_on) status = "Landed";
+    else if (f.actual_off || f.actual_out) status = f.progress_percent != null && f.progress_percent > 0 ? "En Route" : "Departed";
+    else if (f.status === "En Route") status = "En Route";
+    else status = "Scheduled";
+
+    return {
+      flight_number: flightNumber,
+      status,
+      origin_icao: f.origin?.code_icao ?? f.origin?.code ?? null,
+      origin_iata: f.origin?.code_iata ?? null,
+      destination_icao: f.destination?.code_icao ?? f.destination?.code ?? null,
+      destination_iata: f.destination?.code_iata ?? null,
+      scheduled_departure: f.scheduled_out ?? null,
+      scheduled_arrival: f.scheduled_in ?? f.scheduled_on ?? null,
+      estimated_departure: f.estimated_out ?? null,
+      estimated_arrival: f.estimated_in ?? f.estimated_on ?? null,
+      actual_departure: f.actual_out ?? f.actual_off ?? null,
+      actual_arrival: f.actual_in ?? f.actual_on ?? null,
+      departure_delay_minutes: depDelay,
+      arrival_delay_minutes: arrDelay,
+      gate_origin: null, // FA doesn't return gates in /flights
+      gate_destination: null,
+      terminal_origin: null,
+      terminal_destination: null,
+      progress_percent: f.progress_percent ?? null,
+      cancelled: f.cancelled,
+      diverted: f.diverted,
+    };
+  } catch (e) {
+    console.error(`[FA Commercial] ${flightNumber}: ${e instanceof Error ? e.message : e}`);
+    return null;
+  }
+}
+
+/**
+ * Batch fetch status for multiple commercial flights.
+ * Rate-limited to ~1 req/sec to stay within FA limits.
+ * Skips flights that have already been cached as landed.
+ */
+const _commercialCache = new Map<string, { status: CommercialFlightStatus; cachedAt: number }>();
+
+export async function batchGetCommercialStatus(
+  flightNumbers: string[],
+  targetDate: string,
+): Promise<Map<string, CommercialFlightStatus>> {
+  const results = new Map<string, CommercialFlightStatus>();
+  const unique = [...new Set(flightNumbers)];
+  const now = Date.now();
+
+  // Return cached landed flights immediately (they won't change)
+  const toFetch: string[] = [];
+  for (const fn of unique) {
+    const cached = _commercialCache.get(`${fn}|${targetDate}`);
+    if (cached) {
+      // Landed flights are permanent; others cache for 5 min
+      const ttl = (cached.status.status === "Landed" || cached.status.status === "Cancelled") ? 3600_000 : 300_000;
+      if (now - cached.cachedAt < ttl) {
+        results.set(fn, cached.status);
+        continue;
+      }
+    }
+    toFetch.push(fn);
+  }
+
+  console.log(`[FA Commercial] Fetching ${toFetch.length} flights (${unique.length - toFetch.length} cached)`);
+
+  for (let i = 0; i < toFetch.length; i++) {
+    const fn = toFetch[i];
+    const status = await getCommercialFlightStatus(fn, targetDate);
+    if (status) {
+      results.set(fn, status);
+      _commercialCache.set(`${fn}|${targetDate}`, { status, cachedAt: now });
+    }
+    // Rate limit: 100 req/sec on Premium — batch freely
+    // Small pause every 50 to avoid burst issues
+    if (i < toFetch.length - 1 && (i + 1) % 50 === 0) {
+      await new Promise(r => setTimeout(r, 100));
+    }
+  }
+
+  return results;
+}
+
+// ---------------------------------------------------------------------------
 // Bulk Schedule Fetching (for swap optimizer route computation)
 // ---------------------------------------------------------------------------
 

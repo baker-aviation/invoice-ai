@@ -424,6 +424,15 @@ export function estimateDriveTime(originIcao: string, destIcao: string): DriveEs
 }
 
 /**
+ * Get airport coordinates (lat, lon) by ICAO code.
+ */
+export function getAirportCoords(icao: string): { lat: number; lon: number } | null {
+  const coords = AIRPORT_COORDS[icao.toUpperCase()];
+  if (!coords) return null;
+  return { lat: coords[0], lon: coords[1] };
+}
+
+/**
  * Check if an airport is in our coordinate database.
  */
 export function hasCoords(icao: string): boolean {

@@ -16,7 +16,10 @@ type CrewMember = {
   home_airports: string[];
   aircraft_types: string[];
   is_checkairman: boolean;
+  checkairman_types: string[];
   is_skillbridge: boolean;
+  grade: number;
+  restrictions: Record<string, boolean>;
   priority: number;
   active: boolean;
   notes: string | null;
@@ -159,7 +162,9 @@ type CrewSwapRow = {
   duty_on_time: string | null;
   duty_off_time: string | null;
   is_checkairman: boolean;
+  checkairman_types: string[];
   is_skillbridge: boolean;
+  grade: number;
   volunteer_status: string | null;
   notes: string | null;
   warnings: string[];
@@ -268,7 +273,7 @@ function TailStatusGrid({ rows, impactedTails, onTileClick }: {
     if (!byTail.has(r.tail_number)) byTail.set(r.tail_number, []);
     byTail.get(r.tail_number)!.push(r);
   }
-  const tails = Array.from(byTail.entries()).sort(([a], [b]) => a.localeCompare(b));
+  const tails = sortTailEntries(Array.from(byTail.entries()), (_tail, rows2) => rows2[0]?.aircraft_type ?? "");
 
   return (
     <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-2 p-4">
@@ -315,28 +320,54 @@ function getNextWednesday(): Date {
   return wed;
 }
 
-function fmtTime(iso: string | null): string {
+function fmtTime(iso: string | null, airportIcao?: string | null): string {
   if (!iso) return "—";
-  return new Date(iso).toLocaleTimeString(undefined, {
-    hour: "2-digit",
-    minute: "2-digit",
-    timeZoneName: "short",
-  });
+  const d = new Date(iso);
+  const tz = airportIcao ? getAirportTimezone(airportIcao) : null;
+  const opts: Intl.DateTimeFormatOptions = { hour: "2-digit", minute: "2-digit", hour12: false };
+  if (tz) opts.timeZone = tz;
+  const time = d.toLocaleTimeString("en-GB", opts);
+  if (tz) {
+    const tzAbbr = d.toLocaleTimeString("en-US", { timeZone: tz, timeZoneName: "short" }).split(" ").pop() ?? "";
+    return `${time} ${tzAbbr}`;
+  }
+  return time;
 }
 
 function fmtShortTime(iso: string | null, airportIcao?: string | null): string {
   if (!iso) return "—";
   const d = new Date(iso);
   const tz = airportIcao ? getAirportTimezone(airportIcao) : null;
-  const opts: Intl.DateTimeFormatOptions = { hour: "2-digit", minute: "2-digit" };
+  const opts: Intl.DateTimeFormatOptions = { hour: "2-digit", minute: "2-digit", hour12: false };
   if (tz) opts.timeZone = tz;
-  const time = d.toLocaleTimeString("en-US", opts);
-  // Add short timezone label
+  const time = d.toLocaleTimeString("en-GB", opts);
   if (tz) {
     const tzAbbr = d.toLocaleTimeString("en-US", { timeZone: tz, timeZoneName: "short" }).split(" ").pop() ?? "";
     return `${time} ${tzAbbr}`;
   }
   return time;
+}
+
+/**
+ * Sort tails: Challengers first (numeric), then Citations (numeric).
+ * Uses tailAircraftTypes or falls back to CrewSwapRow aircraft_type.
+ */
+function sortTailEntries<T>(
+  entries: [string, T][],
+  getType: (tail: string, data: T) => string,
+): [string, T][] {
+  const typeOrder: Record<string, number> = { challenger: 0, CL30: 0, dual: 1, citation_x: 2, C750: 2 };
+  return entries.sort(([a, aData], [b, bData]) => {
+    const aType = getType(a, aData);
+    const bType = getType(b, bData);
+    const aOrder = typeOrder[aType] ?? 3;
+    const bOrder = typeOrder[bType] ?? 3;
+    if (aOrder !== bOrder) return aOrder - bOrder;
+    // Within same type, sort by numeric portion of tail number
+    const aNum = parseInt(a.replace(/\D/g, "")) || 0;
+    const bNum = parseInt(b.replace(/\D/g, "")) || 0;
+    return aNum - bNum;
+  });
 }
 
 const AIRCRAFT_COLORS: Record<string, { bg: string; text: string; label: string }> = {
@@ -406,7 +437,7 @@ function AssignView({ rows, onAssignCrew, onRecomputeTail, swapDate, standbyPics
     if (!byTail.has(r.tail_number)) byTail.set(r.tail_number, []);
     byTail.get(r.tail_number)!.push(r);
   }
-  const tails = Array.from(byTail.entries()).sort(([a], [b]) => a.localeCompare(b));
+  const tails = sortTailEntries(Array.from(byTail.entries()), (tail) => tailAircraftTypes?.[tail] ?? "");
 
   // All assigned oncoming names
   const assignedOncoming = new Set(rows.filter((r) => r.direction === "oncoming").map((r) => r.name));
@@ -898,7 +929,7 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
     if (!byTail.has(r.tail_number)) byTail.set(r.tail_number, []);
     byTail.get(r.tail_number)!.push(r);
   }
-  const tails = Array.from(byTail.entries()).sort(([a], [b]) => a.localeCompare(b));
+  const tails = sortTailEntries(Array.from(byTail.entries()), (tail) => tailAircraftTypes?.[tail] ?? rows.find(r => r.tail_number === tail)?.aircraft_type ?? "");
 
   return (
     <div className="space-y-3 p-3">
@@ -1509,7 +1540,7 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
 function CrewInfoPanel({ data }: { data: CrewInfoData }) {
   const [showBadPairings, setShowBadPairings] = useState(true);
   const [showCheckairmen, setShowCheckairmen] = useState(false);
-  const [showTraining, setShowTraining] = useState(false);
+  // training_needed section removed per user request
   const [showChecklist, setShowChecklist] = useState(false);
   const [showCalendar, setShowCalendar] = useState(false);
   const [showPicSwap, setShowPicSwap] = useState(false);
@@ -1619,26 +1650,7 @@ function CrewInfoPanel({ data }: { data: CrewInfoData }) {
         ))}
       </CollapsibleSection>
 
-      {/* Training Needed */}
-      {data.training_needed.length > 0 && (
-        <CollapsibleSection
-          title="Training Needed"
-          count={data.training_needed.length}
-          open={showTraining}
-          toggle={() => setShowTraining(!showTraining)}
-          color="text-blue-700"
-        >
-          <div className="flex flex-wrap gap-1">
-            {data.training_needed.map((t, i) => (
-              <span key={i} className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-blue-50 border border-blue-200 text-blue-700">
-                {t.name}
-                {t.indoc && <span className="text-[8px] font-bold bg-blue-200 text-blue-800 px-1 rounded">INDOC</span>}
-                {t.emergency_drill && <span className="text-[8px] font-bold bg-orange-200 text-orange-800 px-1 rounded">E-DRILL</span>}
-              </span>
-            ))}
-          </div>
-        </CollapsibleSection>
-      )}
+      {/* Training Needed section removed */}
 
       {/* Crewing Checklist */}
       {data.crewing_checklist && data.crewing_checklist.assignees.length > 0 && (
@@ -2089,7 +2101,9 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
           duty_on_time: null,
           duty_off_time: null,
           is_checkairman: poolEntry?.is_checkairman ?? false,
+          checkairman_types: [],
           is_skillbridge: poolEntry?.is_skillbridge ?? false,
+          grade: 3,
           volunteer_status: null,
           notes: "Manually assigned",
           warnings: ["Manual assignment — transport not calculated"],
@@ -2807,6 +2821,71 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
   }
 
   // Upload Excel roster
+  async function syncFromGoogleSheet() {
+    setSyncingCrewInfo(true);
+    setUploading(true);
+    setUploadError(null);
+    try {
+      const res = await fetch("/api/crew/roster/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          source: "google_sheets",
+          swap_date: selectedWed.toISOString().slice(0, 10),
+        }),
+      });
+      const data = await safeJson(res, "Google Sheets sync failed");
+
+      if (!res.ok) {
+        setUploadError(data.error ?? "Sync failed");
+        addToast("error", data.error ?? "Google Sheets sync failed");
+      } else {
+        setUploadResult({
+          ok: true,
+          total_parsed: data.roster?.total ?? 0,
+          unique_crew: data.roster?.active ?? 0,
+          upserted: data.roster?.upserted ?? 0,
+          errors: data.errors,
+          summary: {},
+          swap_assignments: data.swap_assignments,
+          oncoming_pool: data.oncoming_pool,
+        });
+
+        if (data.swap_assignments && Object.keys(data.swap_assignments).length > 0) {
+          setSwapAssignments(data.swap_assignments);
+          try { localStorage.setItem("swap_assignments", JSON.stringify(data.swap_assignments)); } catch {}
+        }
+        if (data.oncoming_pool) {
+          setOncomingPool(data.oncoming_pool);
+          try { localStorage.setItem("oncoming_pool", JSON.stringify(data.oncoming_pool)); } catch {}
+        }
+
+        setCrewInfoData({
+          bad_pairings: data.bad_pairings ?? [],
+          checkairmen: data.checkairmen ?? [],
+          training_needed: data.training_needed ?? [],
+          recurrency_299: data.recurrency_299 ?? [],
+          pic_swap_table: data.pic_swap_table ?? [],
+          crewing_checklist: data.crewing_checklist ?? null,
+          calendar_weeks: data.calendar_weeks ?? [],
+          target_week_crew: data.target_week_crew ?? null,
+          different_airports: data.different_airports ?? [],
+          roster: data.roster ?? undefined,
+        });
+
+        setRotationSource("excel");
+        await loadCrew();
+        addToast("success", `Synced from Google Sheet: ${data.roster?.active ?? 0} crew, ${data.checkairmen?.length ?? 0} CAs`);
+      }
+    } catch (e) {
+      setUploadError(e instanceof Error ? e.message : "Sync failed");
+      addToast("error", "Google Sheets sync failed");
+    } finally {
+      setSyncingCrewInfo(false);
+      setUploading(false);
+    }
+  }
+
   async function syncCrewInfo(file: File) {
     setSyncingCrewInfo(true);
     try {
@@ -3036,7 +3115,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
             <div className="flex items-center gap-2">
               <span className="text-sm font-bold text-gray-800">v{savedPlanMeta.version}</span>
               <span className="text-xs text-gray-500">
-                saved {new Date(savedPlanMeta.created_at).toLocaleString(undefined, { weekday: "short", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                saved {new Date(savedPlanMeta.created_at).toLocaleString(undefined, { weekday: "short", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })}
               </span>
             </div>
             {swapPlan && (
@@ -3099,7 +3178,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                 <div className="flex items-center gap-3">
                   <span className="text-sm font-bold text-gray-800">v{v.version}</span>
                   <span className="text-xs text-gray-500">
-                    {new Date(v.created_at).toLocaleString(undefined, { weekday: "short", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                    {new Date(v.created_at).toLocaleString(undefined, { weekday: "short", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })}
                   </span>
                   {v.status === "active" && (
                     <span className="text-[9px] px-1.5 py-0.5 rounded bg-green-100 text-green-700 font-bold">ACTIVE</span>
@@ -3172,10 +3251,19 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                 {showRoster ? "Hide" : "Show"} Roster
               </button>
             )}
+            <button
+              onClick={syncFromGoogleSheet}
+              disabled={uploading || syncingCrewInfo}
+              className={`px-3 py-1.5 text-xs font-medium border rounded-lg ${
+                uploading || syncingCrewInfo ? "bg-gray-100 text-gray-400" : "bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border-emerald-200"
+              }`}
+            >
+              {syncingCrewInfo ? "Syncing..." : "Sync from Google Sheet"}
+            </button>
             <label className={`px-3 py-1.5 text-xs font-medium border rounded-lg cursor-pointer ${
               uploading ? "bg-gray-100 text-gray-400" : "bg-blue-50 text-blue-700 hover:bg-blue-100 border-blue-200"
             }`}>
-              {uploading ? "Syncing..." : "Upload Crew Info (.xlsx)"}
+              {uploading ? "Syncing..." : "Upload .xlsx"}
               <input
                 type="file"
                 accept=".xlsx,.xls"
@@ -3229,6 +3317,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                 <tr>
                   <th className="px-4 py-2">Name</th>
                   <th className="px-4 py-2">Role</th>
+                  <th className="px-4 py-2">Grade</th>
                   <th className="px-4 py-2">Home</th>
                   <th className="px-4 py-2">Aircraft</th>
                   <th className="px-4 py-2">Flags</th>
@@ -3236,7 +3325,20 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {crew.map((c) => (
+                {crew.map((c) => {
+                  const gradeColors: Record<number, string> = {
+                    1: "bg-red-100 text-red-700 border-red-200",
+                    2: "bg-amber-100 text-amber-700 border-amber-200",
+                    3: "bg-gray-100 text-gray-600 border-gray-200",
+                    4: "bg-green-100 text-green-700 border-green-200",
+                  };
+                  const gradeLabels: Record<number, string> = { 1: "1", 2: "2", 3: "3", 4: "4" };
+                  const caTypes = c.checkairman_types ?? [];
+                  const caLabel = caTypes.length === 0 ? "CA"
+                    : caTypes.includes("citation_x") && caTypes.includes("challenger") ? "CA"
+                    : caTypes.includes("citation_x") ? "CA-CX"
+                    : caTypes.includes("challenger") ? "CA-CL" : "CA";
+                  return (
                   <tr key={c.id} className="hover:bg-gray-50">
                     <td className="px-4 py-2 font-medium text-gray-900">{c.name}</td>
                     <td className="px-4 py-2">
@@ -3245,6 +3347,33 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                       }`}>
                         {c.role}
                       </span>
+                    </td>
+                    <td className="px-4 py-2">
+                      <select
+                        value={c.grade ?? 3}
+                        onChange={async (e) => {
+                          const newGrade = parseInt(e.target.value);
+                          const prev = c.grade;
+                          // Optimistic update
+                          setCrew((prev2) => prev2.map((cr) => cr.id === c.id ? { ...cr, grade: newGrade } : cr));
+                          try {
+                            const res = await fetch("/api/crew/roster/update-field", {
+                              method: "PATCH",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ id: c.id, field: "grade", value: newGrade }),
+                            });
+                            if (!res.ok) throw new Error("Failed");
+                          } catch {
+                            setCrew((prev2) => prev2.map((cr) => cr.id === c.id ? { ...cr, grade: prev } : cr));
+                          }
+                        }}
+                        className={`text-xs px-1.5 py-0.5 rounded border cursor-pointer ${gradeColors[c.grade ?? 3] ?? gradeColors[3]}`}
+                      >
+                        <option value={1}>1 - Needs work</option>
+                        <option value={2}>2 - New</option>
+                        <option value={3}>3 - Solid</option>
+                        <option value={4}>4 - Expert</option>
+                      </select>
                     </td>
                     <td className="px-4 py-2 font-mono text-xs text-gray-600">
                       {c.home_airports.join(" / ")}
@@ -3263,15 +3392,17 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                     </td>
                     <td className="px-4 py-2">
                       <div className="flex gap-1">
-                        {c.is_checkairman && <span className="text-xs px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">CA</span>}
+                        {c.is_checkairman && <span className="text-xs px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">{caLabel}</span>}
                         {c.is_skillbridge && <span className="text-xs px-1.5 py-0.5 rounded bg-teal-100 text-teal-700">SB</span>}
+                        {c.restrictions?.no_international && <span className="text-xs px-1.5 py-0.5 rounded bg-red-100 text-red-700">No Intl</span>}
                       </div>
                     </td>
                     <td className="px-4 py-2 text-xs text-gray-400 max-w-[200px] truncate">
                       {c.notes ?? "—"}
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -3291,24 +3422,35 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
       {!crewInfoData && uploadResult && (
         <div className="rounded-lg border border-dashed border-indigo-200 bg-indigo-50/30 p-3 flex items-center justify-between">
           <div className="text-[11px] text-indigo-600">
-            Upload the <span className="font-bold">CREW INFO 2026.xlsx</span> workbook to see bad pairings, checkairmen, training, and calendar data.
+            Sync <span className="font-bold">CREW INFO 2026</span> to see bad pairings, checkairmen, and calendar data.
           </div>
-          <label className={`px-3 py-1.5 text-xs font-medium border rounded-lg cursor-pointer shrink-0 ${
-            syncingCrewInfo ? "bg-gray-100 text-gray-400" : "bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border-indigo-200"
-          }`}>
-            {syncingCrewInfo ? "Syncing..." : "Sync Crew Info (.xlsx)"}
-            <input
-              type="file"
-              accept=".xlsx,.xls"
-              className="hidden"
+          <div className="flex gap-2 shrink-0">
+            <button
+              onClick={syncFromGoogleSheet}
               disabled={syncingCrewInfo}
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) syncCrewInfo(f);
-                e.target.value = "";
-              }}
-            />
-          </label>
+              className={`px-3 py-1.5 text-xs font-medium border rounded-lg ${
+                syncingCrewInfo ? "bg-gray-100 text-gray-400" : "bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border-emerald-200"
+              }`}
+            >
+              {syncingCrewInfo ? "Syncing..." : "Sync from Sheet"}
+            </button>
+            <label className={`px-3 py-1.5 text-xs font-medium border rounded-lg cursor-pointer ${
+              syncingCrewInfo ? "bg-gray-100 text-gray-400" : "bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border-indigo-200"
+            }`}>
+              {syncingCrewInfo ? "Syncing..." : "Upload .xlsx"}
+              <input
+                type="file"
+                accept=".xlsx,.xls"
+                className="hidden"
+                disabled={syncingCrewInfo}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) syncCrewInfo(f);
+                  e.target.value = "";
+                }}
+              />
+            </label>
+          </div>
         </div>
       )}
 
@@ -3932,14 +4074,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                   <label className="text-[10px] text-gray-500">Trainee (SIC)</label>
                   <select id="pairing-sic" className="w-full text-xs border rounded px-2 py-1.5 bg-white">
                     <option value="">Select crew...</option>
-                    {/* Show crew needing training + recurrency */}
-                    {(crewInfoData?.training_needed ?? []).length > 0 && (
-                      <optgroup label="Training Needed">
-                        {crewInfoData!.training_needed.map((t) => (
-                          <option key={`train-${t.name}`} value={t.name}>{t.name} {t.indoc ? "[INDOC]" : ""}{t.emergency_drill ? "[E-DRILL]" : ""}</option>
-                        ))}
-                      </optgroup>
-                    )}
+                    {/* Show crew needing recurrency */}
                     {(crewInfoData?.recurrency_299 ?? []).length > 0 && (
                       <optgroup label=".299 Recurrency">
                         {crewInfoData!.recurrency_299.map((r) => (
@@ -4041,7 +4176,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                 routeStatus.is_stale ? "bg-amber-50 text-amber-600" : "bg-green-50 text-green-600"
               }`}>
                 {routeStatus.total_routes} routes cached
-                {routeStatus.last_computed && ` (${new Date(routeStatus.last_computed).toLocaleString(undefined, { hour: "2-digit", minute: "2-digit" })})`}
+                {routeStatus.last_computed && ` (${new Date(routeStatus.last_computed).toLocaleString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false })})`}
                 {routeStatus.is_stale && " — stale"}
               </span>
             )}
@@ -4185,7 +4320,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
               <div className="flex items-center gap-3">
                 {savedPlanMeta && (
                   <span className="text-xs text-green-600">
-                    Saved v{savedPlanMeta.version} — {new Date(savedPlanMeta.created_at).toLocaleString(undefined, { weekday: "short", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                    Saved v{savedPlanMeta.version} — {new Date(savedPlanMeta.created_at).toLocaleString(undefined, { weekday: "short", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })}
                   </span>
                 )}
                 {planImpacts.filter(i => !i.resolved).length > 0 && (
@@ -4345,7 +4480,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                             {v.status}
                           </span>
                           <span className="text-gray-500">
-                            {new Date(v.created_at).toLocaleString(undefined, { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                            {new Date(v.created_at).toLocaleString(undefined, { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })}
                           </span>
                         </div>
                         <div className="flex items-center gap-2 text-gray-500">
@@ -4524,7 +4659,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                     {a.new_value && typeof a.new_value === "object" && JSON.stringify(a.new_value).slice(0, 100)}
                   </span>
                   <span className="text-[10px] text-gray-400">
-                    {new Date(a.detected_at).toLocaleString(undefined, { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                    {new Date(a.detected_at).toLocaleString(undefined, { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })}
                   </span>
                 </div>
                 <button
