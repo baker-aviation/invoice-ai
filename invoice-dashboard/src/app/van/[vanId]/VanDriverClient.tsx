@@ -32,6 +32,16 @@ function todayEtDate(): string {
   return new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
 }
 
+/** Format arrival time with day name: "Mon 9:30 PM" — for overnight items. */
+function fmtArrWithDay(iso: string, airportIcao: string | null | undefined): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "—";
+  const tz = getAirportTimezone(airportIcao) ?? "America/New_York";
+  const day = d.toLocaleDateString("en-US", { weekday: "short", timeZone: tz });
+  const time = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: tz });
+  return `${day} ${time}`;
+}
+
 /** Format an ISO time in the airport's local timezone as "2:30 PM EDT". */
 function fmtLocalTime(iso: string | null | undefined, airportIcao: string | null | undefined): string {
   if (!iso) return "\u2014";
@@ -776,8 +786,15 @@ function StopCard({
           </div>
           <div className="text-right">
             {isOvernight ? (
-              <div className="text-sm font-medium text-green-600 dark:text-green-400 tabular-nums">
-                Landed prev. day
+              <div className="flex flex-col items-end">
+                <div className="text-xs text-gray-400 tabular-nums">
+                  Arrived {item.arrFlight.scheduled_arrival ? fmtArrWithDay(item.arrFlight.scheduled_arrival, item.arrFlight.arrival_icao) : "prev. day"}
+                </div>
+                {item.nextDep && (
+                  <div className="text-sm font-bold text-slate-700 dark:text-slate-200 tabular-nums">
+                    Departs {fmtLocalTime(item.nextDep.scheduled_departure, item.nextDep.departure_icao)}
+                  </div>
+                )}
               </div>
             ) : (
               <>
@@ -837,7 +854,7 @@ function StopCard({
         ) : (
           <div className="flex items-center gap-3 mb-2 flex-wrap">
             <span className="text-xs text-gray-500 dark:text-gray-400">
-              Arrived prev. day &middot; {fmtDriveTime(item.distKm)}
+              Arrived {item.arrFlight.scheduled_arrival ? fmtArrWithDay(item.arrFlight.scheduled_arrival, item.arrFlight.arrival_icao) : "prev. day"} &middot; {fmtDriveTime(item.distKm)}
             </span>
           </div>
         )}

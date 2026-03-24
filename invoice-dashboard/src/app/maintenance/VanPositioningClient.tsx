@@ -422,6 +422,16 @@ function fmtDriveTime(distKm: number): string {
   return m === 0 ? `${h}h drive` : `${h}h ${m}m drive`;
 }
 
+/** Format arrival time with day name: "Mon 9:30 PM" — for overnight items. */
+function fmtArrWithDay(iso: string, icao?: string | null): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "—";
+  const tz = airportTz(icao);
+  const day = d.toLocaleDateString("en-US", { weekday: "short", timeZone: tz });
+  const time = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: tz });
+  return `${day} ${time}`;
+}
+
 /** Format a UTC ISO timestamp to "HH:MM TZ" in the airport's local timezone. */
 function fmtUtcHM(iso: string, icao?: string | null): string {
   const d = new Date(iso);
@@ -995,7 +1005,7 @@ function buildSlackItems(items: VanFlightItem[], flightInfoMap: Map<string, Flig
       airport: item.airport,
       fbo,
       arrivalTime: isOvernight
-        ? "Landed prev. day"
+        ? `Parked overnight · Arrived ${item.arrFlight.scheduled_arrival ? fmtArrWithDay(item.arrFlight.scheduled_arrival, item.arrFlight.arrival_icao) : "prev. day"}`
         : item.arrFlight.scheduled_arrival ? fmtUtcHM(item.arrFlight.scheduled_arrival, item.arrFlight.arrival_icao) : "—",
       status: isOvernight ? "Landed" : slackStatus,
       nextDep: item.nextDep
@@ -1800,10 +1810,15 @@ function AircraftCompactRow({
           )}
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          {/* Schedule times + ETA — for overnight/parked items, just show "Landed" */}
+          {/* Schedule times + ETA — overnight: show arrival day + departure as hero */}
           <div className="text-right text-xs whitespace-nowrap">
             {isOvernight ? (
-              <span className="text-gray-400 italic">Landed prev. day</span>
+              <div className="flex flex-col items-end">
+                <span className="text-gray-400">Arrived {arrFlight.scheduled_arrival ? fmtArrWithDay(arrFlight.scheduled_arrival, arrFlight.arrival_icao) : "prev. day"}</span>
+                {nextDep && (
+                  <span className="font-semibold text-gray-700">Departs {fmtUtcHM(nextDep.scheduled_departure, nextDep.departure_icao)}</span>
+                )}
+              </div>
             ) : (
               <>
                 {arrFlight.scheduled_departure && (
@@ -2281,12 +2296,18 @@ function VanScheduleCard({
             <div className={`px-4 py-6 text-sm text-center ${isDropTarget ? "text-blue-500 font-medium" : "text-gray-400"}`}>
               {isDropTarget ? "Drop aircraft here" : "No arrivals in area today."}
             </div>
-          ) : (
-            <div className="divide-y">
-              {items.map(({ arrFlight, nextDep, isRepo, nextIsRepo, airport, airportInfo, distKm }) => {
-                // Only use FA live data when viewing today — tomorrow's flights aren't flying yet
-                const todayEt = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
-                const isViewingToday = date === todayEt;
+          ) : (() => {
+            // Split items into overnight (parked) vs today's arrivals
+            const todayEt = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+            const isViewingToday = date === todayEt;
+            const overnightItems = items.filter(({ arrFlight }) =>
+              arrFlight.scheduled_arrival ? !isOnVanScheduleDate(arrFlight.scheduled_arrival, date) : false
+            );
+            const todayItems = items.filter(({ arrFlight }) =>
+              !arrFlight.scheduled_arrival || isOnVanScheduleDate(arrFlight.scheduled_arrival, date)
+            );
+
+            const renderItem = ({ arrFlight, nextDep, isRepo, nextIsRepo, airport, airportInfo, distKm }: VanFlightItem, isOvernightItem: boolean) => {
                 const fi = isViewingToday ? flightInfoMap.get(arrFlight.tail_number ?? "") : undefined;
                 const arrTime = arrFlight.scheduled_arrival ? new Date(arrFlight.scheduled_arrival) : null;
                 const hasLanded = isViewingToday && arrTime !== null && arrTime < now;
@@ -2299,7 +2320,7 @@ function VanScheduleCard({
                 const groundMs = nextDep && arrTime
                   ? new Date(nextDep.scheduled_departure).getTime() - arrTime.getTime()
                   : Infinity;
-                const isOvernight = arrTime ? !isOnVanScheduleDate(arrFlight.scheduled_arrival!, date) : false;
+                const isOvernight = isOvernightItem;
                 // Detect pre-departure: service airport is a departure airport, not an arrival
                 const arrIcaoNorm = arrFlight.arrival_icao?.replace(/^K/, "") ?? "";
                 const isPreDeparture = airport !== arrIcaoNorm && allFlights?.some((f) =>
@@ -2373,9 +2394,31 @@ function VanScheduleCard({
                     onAlsoOnVan={onAlsoOnVan}
                   />
                 );
-              })}
-            </div>
-          )}
+            };
+
+            return (
+              <div>
+                {overnightItems.length > 0 && (
+                  <>
+                    <div className="px-4 py-1.5 bg-blue-50 border-b border-blue-100">
+                      <span className="text-[10px] font-semibold text-blue-600 uppercase tracking-wider">Parked Overnight</span>
+                    </div>
+                    <div className="divide-y">{overnightItems.map((item) => renderItem(item, true))}</div>
+                  </>
+                )}
+                {todayItems.length > 0 && (
+                  <>
+                    {overnightItems.length > 0 && (
+                      <div className="px-4 py-1.5 bg-gray-50 border-b border-gray-100">
+                        <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Arriving Today</span>
+                      </div>
+                    )}
+                    <div className="divide-y">{todayItems.map((item) => renderItem(item, false))}</div>
+                  </>
+                )}
+              </div>
+            );
+          })()}
           {/* Maintenance Notes + Service Checklists moved to van driver view (/van/[vanId]) */}
           {isDropTarget && items.length > 0 && (
             <div className="px-4 py-2 text-xs text-blue-500 font-medium text-center bg-blue-50/50 border-t border-dashed border-blue-200">
