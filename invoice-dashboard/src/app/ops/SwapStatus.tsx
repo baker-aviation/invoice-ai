@@ -250,10 +250,13 @@ export default function SwapStatus() {
   const [filter, setFilter] = useState<"all" | "oncoming" | "offgoing">("all");
   const [statusFilter, setStatusFilter] = useState<"all" | "flights_only" | "problems">("all");
 
+  const [enriching, setEnriching] = useState(false);
+
   const loadStatus = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
+      // Step 1: Load sheet data (fast, ~2s)
       const res = await fetch("/api/crew/swap-status");
       if (!res.ok) {
         const d = await res.json().catch(() => ({ error: "Failed to load" }));
@@ -262,6 +265,20 @@ export default function SwapStatus() {
       }
       const d = await res.json();
       setData(d);
+
+      // Step 2: Enrich with FlightAware (separate call, may take longer)
+      setEnriching(true);
+      try {
+        const liveRes = await fetch("/api/crew/swap-status?live=true");
+        if (liveRes.ok) {
+          const liveData = await liveRes.json();
+          setData(liveData);
+        }
+      } catch {
+        // FA enrichment failed — keep sheet data with time-based guesses
+      } finally {
+        setEnriching(false);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Network error");
     } finally {
@@ -322,12 +339,13 @@ export default function SwapStatus() {
               )}
             </span>
           )}
+          {enriching && <span className="text-[10px] text-blue-500 animate-pulse">Fetching live flight status...</span>}
           <button
             onClick={loadStatus}
-            disabled={loading}
+            disabled={loading || enriching}
             className="px-3 py-1.5 text-xs font-medium border rounded-lg bg-blue-50 text-blue-700 hover:bg-blue-100 border-blue-200 disabled:opacity-50"
           >
-            {loading ? "Loading..." : "Refresh"}
+            {loading ? "Loading..." : enriching ? "Enriching..." : "Refresh"}
           </button>
         </div>
       </div>

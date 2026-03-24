@@ -140,6 +140,9 @@ export async function GET(req: NextRequest) {
   const auth = await requireAdmin(req);
   if (!isAuthed(auth)) return auth.error;
 
+  // ?live=true enables FlightAware enrichment (separate call to avoid timeout)
+  const live = req.nextUrl.searchParams.get("live") === "true";
+
   try {
     // Find the current swap sheet (closest to today with "MAR 25" or next swap)
     const sheets = await listSheets();
@@ -237,17 +240,29 @@ export async function GET(req: NextRequest) {
       ? `2026-${monthMap[dateMatch[1].toUpperCase()] ?? "01"}-${dateMatch[2].padStart(2, "0")}`
       : new Date().toISOString().slice(0, 10);
 
-    // ── Enrich with FlightAware live status ─────────────────────────────
+    // ── Collect commercial flight legs ────────────────────────────────────
     const allCrew = [...oncoming, ...offgoing];
     const commercialFlightLegs = new Set<string>();
     for (const crew of allCrew) {
       if (crew.transport_type === "commercial") {
-        for (const fn of crew.flight_numbers) {
-          commercialFlightLegs.add(fn);
-        }
+        for (const fn of crew.flight_numbers) commercialFlightLegs.add(fn);
       }
     }
 
+    // Without ?live=true, return sheet data with time-based status guesses only
+    if (!live) {
+      return NextResponse.json({
+        swap_date: swapDate,
+        sheet_name: targetSheet,
+        oncoming,
+        offgoing,
+        fa_flights_resolved: null,
+        fa_flights_total: commercialFlightLegs.size,
+        last_updated: new Date().toISOString(),
+      });
+    }
+
+    // ── FlightAware live enrichment ──────────────────────────────────────
     // Determine which date each flight is on (some crew travel day before: 3/24)
     // Group flights by their travel date for the FA query
     const flightsByDate = new Map<string, string[]>();
