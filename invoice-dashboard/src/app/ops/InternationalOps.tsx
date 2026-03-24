@@ -451,9 +451,9 @@ function SegmentRow({ segment, countries, expanded, onToggle, onRefresh }: {
         {/* Date badge */}
         {daysOut !== null && (
           <span className={`text-xs px-2 py-0.5 rounded-full whitespace-nowrap ${
-            daysOut <= 4 ? "bg-red-100 text-red-700" : daysOut <= 7 ? "bg-yellow-100 text-yellow-700" : "bg-gray-100 text-gray-600"
+            daysOut < 0 ? "bg-gray-100 text-gray-400" : daysOut === 0 ? "bg-red-100 text-red-700" : daysOut <= 4 ? "bg-red-100 text-red-700" : daysOut <= 7 ? "bg-yellow-100 text-yellow-700" : "bg-gray-100 text-gray-600"
           }`}>
-            {daysOut <= 0 ? "Today" : `${daysOut}d`}
+            {daysOut < 0 ? `${Math.abs(daysOut)}d ago` : daysOut === 0 ? "Today" : `${daysOut}d`}
           </span>
         )}
 
@@ -566,10 +566,10 @@ function TripRow({ trip, countries, expanded, onToggle, onRefresh }: {
 
         {/* Date badge */}
         <span className={`text-xs px-2 py-0.5 rounded-full whitespace-nowrap ${
-          daysOut <= 4 ? "bg-red-100 text-red-700" : daysOut <= 7 ? "bg-yellow-100 text-yellow-700" : "bg-gray-100 text-gray-600"
+          daysOut < 0 ? "bg-gray-100 text-gray-400" : daysOut === 0 ? "bg-red-100 text-red-700" : daysOut <= 4 ? "bg-red-100 text-red-700" : daysOut <= 7 ? "bg-yellow-100 text-yellow-700" : "bg-gray-100 text-gray-600"
         }`}>
           {tripDate.toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-          {daysOut <= 0 ? " (Today)" : ` (${daysOut}d)`}
+          {daysOut < 0 ? ` (${Math.abs(daysOut)}d ago)` : daysOut === 0 ? " (Today)" : ` (${daysOut}d)`}
         </span>
 
         {/* Chevron */}

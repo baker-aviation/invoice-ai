@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { timingSafeEqual } from "crypto";
 import { createServiceClient } from "@/lib/supabase/service";
+import { isInternationalIcao } from "@/lib/intlUtils";
+import { sendIntlAlertSlack } from "@/lib/intlAlertSlack";
 
 export const dynamic = "force-dynamic";
 
@@ -159,6 +161,59 @@ export async function POST(req: NextRequest) {
       }
     } catch (err) {
       console.error("[FA Webhook] ICS link failed:", err);
+    }
+  }
+
+  // ── International flight alert (real-time diversion/delay via webhook) ──
+  // Fire immediately when FA pushes a diversion for an intl flight — no polling delay.
+  if (registration && origin && (eventCode === "diverted" || eventCode === "departure")) {
+    const isIntl = isInternationalIcao(origin) || isInternationalIcao(destination);
+    if (isIntl) {
+      try {
+        if (eventCode === "diverted") {
+          // Find the original destination from our flights table
+          const { data: icsMatch } = await supa
+            .from("flights")
+            .select("id, arrival_icao, scheduled_departure")
+            .eq("tail_number", registration)
+            .eq("departure_icao", origin)
+            .gte("scheduled_departure", new Date(Date.now() - 24 * 3600_000).toISOString())
+            .lte("scheduled_departure", new Date(Date.now() + 48 * 3600_000).toISOString())
+            .order("scheduled_departure", { ascending: false })
+            .limit(1);
+
+          const dbFlight = icsMatch?.[0];
+          if (dbFlight) {
+            // Check for existing unacked diversion alert
+            const { count } = await supa
+              .from("intl_leg_alerts")
+              .select("id", { count: "exact", head: true })
+              .eq("flight_id", dbFlight.id)
+              .eq("alert_type", "diversion")
+              .eq("acknowledged", false);
+
+            if ((count ?? 0) === 0) {
+              const originalDest = dbFlight.arrival_icao ?? "unknown";
+              const divertedTo = destination ?? "unknown";
+              const msg = divertedTo !== originalDest
+                ? `DIVERTED: ${registration} ${origin}→${originalDest} diverted to ${divertedTo}. Check permits and customs for new routing.`
+                : `DIVERTED: ${registration} ${origin}→${originalDest} has been diverted. Check permits and customs for new routing.`;
+
+              await supa.from("intl_leg_alerts").insert({
+                flight_id: dbFlight.id,
+                alert_type: "diversion",
+                severity: "critical",
+                message: msg,
+              });
+              await sendIntlAlertSlack([{ flight_id: dbFlight.id, alert_type: "diversion", severity: "critical", message: msg }]);
+              console.log(`[FA Webhook] Intl diversion alert fired for ${registration}`);
+            }
+          }
+        }
+        // Note: delay detection stays in run-checks (FA doesn't push delay magnitude — only departure event)
+      } catch (err) {
+        console.error("[FA Webhook] Intl alert error:", err instanceof Error ? err.message : err);
+      }
     }
   }
 
