@@ -117,7 +117,10 @@ export async function POST(req: NextRequest) {
     home_airports: (c.home_airports as string[]) ?? [],
     aircraft_types: (c.aircraft_types as string[]) ?? [],
     is_checkairman: (c.is_checkairman as boolean) ?? false,
+    checkairman_types: (c.checkairman_types as string[]) ?? [],
     is_skillbridge: (c.is_skillbridge as boolean) ?? false,
+    grade: (c.grade as number) ?? 3,
+    restrictions: (c.restrictions as Record<string, boolean>) ?? {},
     priority: (c.priority as number) ?? 0,
     rotation_group: (c.rotation_group as "A" | "B" | null) ?? null,
   }));

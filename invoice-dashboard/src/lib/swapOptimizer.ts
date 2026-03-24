@@ -117,7 +117,13 @@ export type CrewMember = {
   home_airports: string[];
   aircraft_types: string[];
   is_checkairman: boolean;
+  /** Aircraft types this crew member is a checkairman for (e.g., ["citation_x"], ["challenger"], or both) */
+  checkairman_types: string[];
   is_skillbridge: boolean;
+  /** Crew grade 1-4: 1=struggling, 2=new but ok, 3=average, 4=rock solid/can train */
+  grade: number;
+  /** Per-crew restrictions (e.g., { no_international: true }) */
+  restrictions: Record<string, boolean>;
   priority: number;
   standby_count?: number;
   rotation_group?: "A" | "B" | null;
@@ -173,7 +179,9 @@ export type CrewSwapRow = {
   duty_on_time: string | null;
   duty_off_time: string | null;
   is_checkairman: boolean;
+  checkairman_types: string[];
   is_skillbridge: boolean;
+  grade: number;
   volunteer_status: string | null;
   notes: string | null;
   warnings: string[];
@@ -2171,7 +2179,9 @@ export function buildSwapPlan(params: {
       duty_on_time: best?.dutyOnTime?.toISOString() ?? null,
       duty_off_time: null,
       is_checkairman: task.crewMember?.is_checkairman ?? false,
+      checkairman_types: task.crewMember?.checkairman_types ?? [],
       is_skillbridge: task.crewMember?.is_skillbridge ?? false,
+      grade: task.crewMember?.grade ?? 3,
       volunteer_status: (() => {
         if (stayingNames.has(task.name)) return null;
         if (task.crewMember?.is_skillbridge) {
@@ -2434,6 +2444,25 @@ function buildFeasibilityMatrix(params: {
 
       // Find or create a CrewMember from the roster for this pool entry
       const crewMember = findCrewByName(crewRoster, poolEntry.name, role);
+
+      // ── Per-crew restrictions (e.g., no_international) ─────────────────
+      if (crewMember?.restrictions?.no_international) {
+        // Check if this tail has any international legs on swap day
+        const tailLegs = byTail.get(tail) ?? [];
+        const wedStr = swapDate;
+        const hasIntlLeg = tailLegs.some((leg) => {
+          if (!leg.scheduled_departure?.startsWith(wedStr)) return false;
+          const dep = leg.departure_icao?.toUpperCase() ?? "";
+          const arr = leg.arrival_icao?.toUpperCase() ?? "";
+          // International = not starting with K (US) or C (Canada) and not territory
+          const isIntl = (icao: string) => !icao.startsWith("K") && !icao.startsWith("CY") && !TERRITORY_AIRPORTS.has(icao);
+          return isIntl(dep) || isIntl(arr);
+        });
+        if (hasIntlLeg) {
+          matrix.push({ crewName: poolEntry.name, tail, viable: false, bestScore: 0, bestCost: 999, offgoingCost: 0, totalCost: 999, bestType: "none", candidateCount: 0, rank: 999, bestSwapIcao: "", minDriveMiles: 9999 });
+          continue;
+        }
+      }
       const homeAirports = crewMember?.home_airports?.length ? crewMember.home_airports : poolEntry.home_airports;
 
       if (homeAirports.length === 0) {
@@ -3100,7 +3129,28 @@ function assignRoleWithMatrix(
   });
 
   // Only consider viable options (where real transport exists)
-  const viableOptions = matrix.filter((m) => m.viable);
+  let viableOptions = matrix.filter((m) => m.viable);
+
+  // ── Grade-based pairing enforcement (sum >= 4) ─────────────────────────
+  // When assigning SICs, filter out pairings where PIC + SIC grade < 4.
+  // E.g., grade-1 SIC can't pair with grade-1 or grade-2 PIC.
+  if (role === "SIC") {
+    const MIN_GRADE_SUM = 4;
+    viableOptions = viableOptions.filter((opt) => {
+      const sicCrew = crewRoster.find((c) => c.name === opt.crewName && c.role === "SIC");
+      const sicGrade = sicCrew?.grade ?? 3;
+      // Find the PIC already assigned to this tail
+      const picName = result[opt.tail]?.oncoming_pic;
+      if (!picName) return true; // No PIC assigned yet — allow, will re-check later
+      const picCrew = crewRoster.find((c) => c.name === picName && c.role === "PIC");
+      const picGrade = picCrew?.grade ?? 3;
+      if (sicGrade + picGrade < MIN_GRADE_SUM) {
+        console.log(`[GradeCheck] Blocked ${opt.crewName} (SIC grade ${sicGrade}) + ${picName} (PIC grade ${picGrade}) = ${sicGrade + picGrade} < ${MIN_GRADE_SUM}`);
+        return false;
+      }
+      return true;
+    });
+  }
 
   // Count viable tails per crew AND viable crew per tail
   const viableTailsPerCrew = new Map<string, number>();
