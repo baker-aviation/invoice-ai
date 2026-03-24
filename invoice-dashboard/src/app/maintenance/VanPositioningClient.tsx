@@ -667,6 +667,8 @@ function computeZoneItems(
     // Walk forward: if there's a same-day departure from this airport, follow it.
     // Stop at the last revenue/charter leg — don't follow positioning/repo legs
     // so the van is assigned to the service airport, not the repo destination.
+    // Use isOnEtDate (midnight boundary) — NOT isOnVanScheduleDate — so red-eye
+    // departures after midnight (e.g. 00:01 MST = 2:01 AM ET) don't get followed.
     let current = endOfDayFlight;
     for (let i = 0; i < 5; i++) { // max 5 hops to prevent infinite loops
       const nextLeg = allFlights.find(
@@ -674,7 +676,7 @@ function computeZoneItems(
           f.tail_number === current.tail_number &&
           f.departure_icao === current.arrival_icao &&
           f.scheduled_departure > (current.scheduled_arrival ?? "") &&
-          isOnVanScheduleDate(f.scheduled_departure, date),
+          isOnEtDate(f.scheduled_departure, date),
       );
       if (!nextLeg || !nextLeg.arrival_icao) break;
       // If the next leg is positioning/repo, stop here — van services at current airport
