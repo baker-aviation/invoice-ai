@@ -18,8 +18,17 @@ function getAuth(): GoogleAuth {
   const keyJson = process.env.GCP_SERVICE_ACCOUNT_KEY;
   if (!keyJson) throw new Error("GCP_SERVICE_ACCOUNT_KEY not set");
 
-  const credentials = JSON.parse(keyJson);
-  _auth = new GoogleAuth({ credentials, scopes: SCOPES });
+  // Handle both raw JSON and base64-encoded JSON
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(keyJson);
+  } catch {
+    // Try base64 decode
+    const decoded = Buffer.from(keyJson, "base64").toString("utf8");
+    parsed = JSON.parse(decoded);
+  }
+
+  _auth = new GoogleAuth({ credentials: parsed, scopes: SCOPES });
   return _auth;
 }
 

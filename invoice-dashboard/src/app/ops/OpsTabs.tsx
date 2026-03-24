@@ -8,8 +8,9 @@ import OpsBoard from "./OpsBoard";
 import DutyTracker from "./DutyTracker";
 import CrewSwap from "./CrewSwap";
 import InternationalOps from "./InternationalOps";
+import SwapStatus from "./SwapStatus";
 
-const TABS = ["Current Ops", "Flight Time & Rest", "NOTAMs & PPRs", "Crew Swap", "International"] as const;
+const TABS = ["Current Ops", "Flight Time & Rest", "NOTAMs & PPRs", "Crew Swap", "Swap Status", "International"] as const;
 type Tab = (typeof TABS)[number];
 
 export default function OpsTabs({ flights, bakerPprAirports, advertisedPrices, mxNotes = [], swimFlow = [] }: { flights: Flight[]; bakerPprAirports: string[]; advertisedPrices: AdvertisedPriceRow[]; mxNotes?: MxNote[]; swimFlow?: SwimFlowEvent[] }) {
@@ -84,6 +85,8 @@ export default function OpsTabs({ flights, bakerPprAirports, advertisedPrices, m
         <OpsBoard initialFlights={flights} bakerPprAirports={bakerPprAirports} />
       ) : tab === "Crew Swap" ? (
         <CrewSwap flights={flights} />
+      ) : tab === "Swap Status" ? (
+        <SwapStatus />
       ) : (
         <InternationalOps flights={flights} />
       )}
