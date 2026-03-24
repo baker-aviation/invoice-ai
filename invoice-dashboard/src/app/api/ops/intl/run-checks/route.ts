@@ -280,11 +280,14 @@ export async function POST(req: NextRequest) {
       if (src.tail_number && src.callsign) callsignMap.set(src.tail_number, src.callsign);
     }
 
-    // Build a lookup: tail+depIcao+arrIcao → flight row (to match FA flights back to our DB flights)
-    const flightLookup = new Map<string, typeof upcomingIntl[0]>();
+    // Build lookups: exact match (tail+dep+arr) and origin-only (tail+dep) for diversions
+    const flightLookupExact = new Map<string, typeof upcomingIntl[0]>();
+    const flightLookupOrigin = new Map<string, typeof upcomingIntl[0]>();
     for (const f of upcomingIntl) {
       if (f.tail_number) {
-        flightLookup.set(`${f.tail_number}|${f.departure_icao}|${f.arrival_icao}`, f);
+        flightLookupExact.set(`${f.tail_number}|${f.departure_icao}|${f.arrival_icao}`, f);
+        // Origin-only lookup — if multiple flights from same origin, last one wins (fine for diversion matching)
+        flightLookupOrigin.set(`${f.tail_number}|${f.departure_icao}`, f);
       }
     }
 
@@ -293,17 +296,21 @@ export async function POST(req: NextRequest) {
         const faFlights = await getFlightsByRegistration(tail, callsignMap);
 
         for (const fa of faFlights) {
-          if (fa.cancelled) continue;
+          // Allow diverted+cancelled flights through — FA marks diversions as both
+          if (fa.cancelled && !fa.diverted) continue;
           const faOrigin = fa.origin?.code_icao ?? fa.origin?.code;
           const faDest = fa.destination?.code_icao ?? fa.destination?.code;
-          if (!faOrigin || !faDest) continue;
+          if (!faOrigin) continue;
 
-          // Match to our DB flight
-          const dbFlight = flightLookup.get(`${tail}|${faOrigin}|${faDest}`);
+          // Match to our DB flight — try exact first, fall back to origin-only for diversions
+          const dbFlight = (faDest ? flightLookupExact.get(`${tail}|${faOrigin}|${faDest}`) : null)
+            ?? flightLookupOrigin.get(`${tail}|${faOrigin}`);
           if (!dbFlight) continue;
 
           // ── Diversion check ──
           if (fa.diverted) {
+            const divertedTo = faDest ?? "unknown";
+            const originalDest = dbFlight.arrival_icao ?? "unknown";
             const { count } = await supa
               .from("intl_leg_alerts")
               .select("id", { count: "exact", head: true })
@@ -312,11 +319,14 @@ export async function POST(req: NextRequest) {
               .eq("acknowledged", false);
 
             if ((count ?? 0) === 0) {
+              const divMsg = divertedTo !== originalDest
+                ? `DIVERTED: ${tail} ${faOrigin}→${originalDest} diverted to ${divertedTo}. Check permits and customs for new routing.`
+                : `DIVERTED: ${tail} ${faOrigin}→${originalDest} has been diverted. Check permits and customs for new routing.`;
               alertsToCreate.push({
                 flight_id: dbFlight.id,
                 alert_type: "diversion",
                 severity: "critical",
-                message: `DIVERTED: ${tail} ${faOrigin}→${faDest} has been diverted. Check permits and customs for new routing.`,
+                message: divMsg,
               });
               faDelayCount++;
             }
