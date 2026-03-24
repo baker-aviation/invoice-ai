@@ -248,7 +248,7 @@ export default function SwapStatus() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<"all" | "oncoming" | "offgoing">("all");
-  const [statusFilter, setStatusFilter] = useState<"all" | "flights_only" | "problems">("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "flights_only" | "problems" | "standby">("all");
   const [viewMode, setViewMode] = useState<"list" | "cards">("list");
 
   const [enriching, setEnriching] = useState(false);
@@ -304,10 +304,16 @@ export default function SwapStatus() {
                filter === "offgoing" ? data.offgoing :
                [...data.oncoming, ...data.offgoing];
 
-    if (statusFilter === "flights_only") {
-      list = list.filter(c => c.transport_type === "commercial" || c.transport_type === "brightline");
-    } else if (statusFilter === "problems") {
-      list = list.filter(c => c.status === "delayed" || c.status === "cancelled" || (!c.verified_ticket && c.transport_type === "commercial"));
+    if (statusFilter === "standby") {
+      list = list.filter(c => c.transport_type === "standby");
+    } else {
+      // Hide standby by default
+      list = list.filter(c => c.transport_type !== "standby");
+      if (statusFilter === "flights_only") {
+        list = list.filter(c => c.transport_type === "commercial" || c.transport_type === "brightline");
+      } else if (statusFilter === "problems") {
+        list = list.filter(c => c.status === "delayed" || c.status === "cancelled" || (!c.verified_ticket && c.transport_type === "commercial"));
+      }
     }
 
     // Sort: problems first, then by arrival time
@@ -370,7 +376,7 @@ export default function SwapStatus() {
           ))}
         </div>
         <div className="flex bg-gray-100 rounded-lg p-0.5">
-          {(["all", "flights_only", "problems"] as const).map(f => (
+          {(["all", "flights_only", "problems", "standby"] as const).map(f => (
             <button
               key={f}
               onClick={() => setStatusFilter(f)}
@@ -378,7 +384,7 @@ export default function SwapStatus() {
                 statusFilter === f ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"
               }`}
             >
-              {f === "all" ? "All Transport" : f === "flights_only" ? "Flights Only" : "Problems"}
+              {f === "all" ? "All Active" : f === "flights_only" ? "Flights Only" : f === "problems" ? "Problems" : "Standby"}
             </button>
           ))}
         </div>
