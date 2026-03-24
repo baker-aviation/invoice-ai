@@ -4,6 +4,12 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import { Badge } from "@/components/Badge";
 
+/** Vendors to hide from the alerts table (case-insensitive substring match) */
+const EXCLUDED_VENDORS = [
+  "starr indemnity",
+  "textron aviation",
+];
+
 type AlertRow = {
   id: string;
   created_at?: string | null;
@@ -84,7 +90,10 @@ export default function AlertsTable({ initialAlerts, pdfUrls = {} }: { initialAl
     const set = new Set<string>();
     for (const a of alerts) {
       const v = norm(a.vendor);
-      if (v) set.add(v);
+      if (!v) continue;
+      const lower = v.toLowerCase();
+      if (EXCLUDED_VENDORS.some((ex) => lower.includes(ex))) continue;
+      set.add(v);
     }
     return Array.from(set).sort((a, b) => a.localeCompare(b));
   }, [alerts]);
@@ -93,6 +102,10 @@ export default function AlertsTable({ initialAlerts, pdfUrls = {} }: { initialAl
     const qn = q.trim().toLowerCase();
 
     return alerts.filter((a) => {
+      // Exclude non-FBO vendors (insurance, OEMs, etc.)
+      const vLower = norm(a.vendor).toLowerCase();
+      if (vLower && EXCLUDED_VENDORS.some((ex) => vLower.includes(ex))) return false;
+
       if (airport !== "all") {
         const ac = norm(a.airport_code).toUpperCase();
         if (ac !== airport) return false;
