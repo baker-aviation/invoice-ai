@@ -297,7 +297,7 @@ async function main() {
   console.log("\n👥 Loading crew roster from Supabase...");
   const { data: crewData, error: crewErr } = await supa
     .from("crew_members")
-    .select("id, name, role, home_airports, aircraft_types, is_checkairman, is_skillbridge, priority, rotation_group, active")
+    .select("id, name, role, home_airports, aircraft_types, is_checkairman, checkairman_types, is_skillbridge, grade, restrictions, priority, rotation_group, active")
     .eq("active", true);
 
   if (crewErr || !crewData) {
@@ -311,7 +311,10 @@ async function main() {
     home_airports: c.home_airports ?? [],
     aircraft_types: c.aircraft_types ?? [],
     is_checkairman: c.is_checkairman ?? false,
+    checkairman_types: c.checkairman_types ?? [],
     is_skillbridge: c.is_skillbridge ?? false,
+    grade: c.grade ?? 3,
+    restrictions: c.restrictions ?? {},
     priority: c.priority ?? 0,
     standby_count: 0,
     rotation_group: c.rotation_group ?? null,

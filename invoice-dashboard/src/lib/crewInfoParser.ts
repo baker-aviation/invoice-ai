@@ -659,30 +659,93 @@ export function parseCrewInfo(
       const dateRange = headerMatch[1].trim();
       const rotation = headerMatch[2].toUpperCase() as "A" | "B";
 
-      // Extract names from the 9-row block
-      // i+1: PIC row 1 (Captains), i+3: PIC row 2 (counts + more names)
-      // i+5: SIC row 1 (First Officers), i+7: SIC row 2 (counts + more names)
-      const extractNames = (rowIdx: number): { citation_x: string[]; challenger: string[]; dual: string[] } => {
+      // Extract names from the 9-row block using header detection.
+      // i+1: PIC header row (contains "Captains (PICs)" + type sub-headers in columns)
+      // i+5: SIC header row (contains "First Officers (SICs)" + type sub-headers)
+      // Types are detected from sub-header text ("Citation X", "Challenger", "Dual")
+      // in the label row, then names are read from the following rows.
+      //
+      // The label row (e.g., i+1) contains header text like "Citation X (22):" or "Challenger (11):"
+      // Names follow in columns after each header.
+
+      // Detect column boundaries from the label/header row for a role section
+      const detectTypeBoundaries = (labelRowIdx: number): { cx: [number, number]; cl: [number, number]; du: [number, number] } => {
+        const defaultBounds = { cx: [4, 17] as [number, number], cl: [21, 30] as [number, number], du: [31, 35] as [number, number] };
+        if (labelRowIdx >= rows.length) return defaultBounds;
+
+        // Scan the label row for type headers
+        const labelRow = rows[labelRowIdx] as unknown[];
+        let cxStart = -1, clStart = -1, duStart = -1;
+
+        // Also check the row itself and the header row above (i) for type labels
+        for (let j = 0; j < Math.min(labelRow.length, 40); j++) {
+          const cellStr = String(labelRow[j] ?? "").toLowerCase().trim();
+          if (cellStr.includes("citation") && cxStart < 0) cxStart = j;
+          else if (cellStr.includes("challenger") && clStart < 0) clStart = j;
+          else if (cellStr.includes("dual") && duStart < 0) duStart = j;
+        }
+
+        // If we found at least Citation X and Challenger, use detected boundaries
+        if (cxStart >= 0 && clStart >= 0) {
+          const cxEnd = clStart - 1;
+          const clEnd = duStart >= 0 ? duStart - 1 : Math.min(labelRow.length - 1, clStart + 14);
+          const duEnd = duStart >= 0 ? Math.min(labelRow.length - 1, duStart + 6) : -1;
+          return {
+            cx: [cxStart, Math.max(cxStart, cxEnd)],
+            cl: [clStart, Math.max(clStart, clEnd)],
+            du: duStart >= 0 ? [duStart, Math.max(duStart, duEnd)] : [999, 999],
+          };
+        }
+
+        return defaultBounds;
+      };
+
+      // Cross-reference names with roster to validate/correct aircraft type assignment
+      const rosterTypeMap = new Map<string, "citation_x" | "challenger" | "dual">();
+      for (const r of roster) {
+        rosterTypeMap.set(r.name.toLowerCase().trim(), r.aircraft_type);
+      }
+
+      const extractNames = (rowIdx: number, bounds: ReturnType<typeof detectTypeBoundaries>): { citation_x: string[]; challenger: string[]; dual: string[] } => {
         if (rowIdx >= rows.length) return { citation_x: [], challenger: [], dual: [] };
         const row = rows[rowIdx] as unknown[];
         const citation_x: string[] = [];
         const challenger: string[] = [];
         const dual: string[] = [];
 
-        for (let j = 4; j < Math.min(row.length, 35); j++) {
+        for (let j = 0; j < Math.min(row.length, 40); j++) {
           const name = String(row[j] ?? "").trim();
-          if (!name || typeof row[j] === "number") continue; // skip dates and counts
-          if (j <= 17) citation_x.push(name);
-          else if (j >= 21 && j <= 30) challenger.push(name);
-          else if (j >= 31) dual.push(name);
+          if (!name || typeof row[j] === "number") continue;
+          // Skip header-like text
+          if (name.toLowerCase().includes("citation") || name.toLowerCase().includes("challenger") ||
+              name.toLowerCase().includes("dual") || name.toLowerCase().includes("captain") ||
+              name.toLowerCase().includes("first officer") || /^\(\d+\)/.test(name) || /^\d+$/.test(name)) continue;
+
+          // Cross-reference with roster for correct type
+          const rosterType = rosterTypeMap.get(name.toLowerCase().trim());
+          if (rosterType) {
+            if (rosterType === "citation_x") citation_x.push(name);
+            else if (rosterType === "challenger") challenger.push(name);
+            else if (rosterType === "dual") dual.push(name);
+            continue;
+          }
+
+          // Fall back to column position
+          if (j >= bounds.cx[0] && j <= bounds.cx[1]) citation_x.push(name);
+          else if (j >= bounds.cl[0] && j <= bounds.cl[1]) challenger.push(name);
+          else if (j >= bounds.du[0] && j <= bounds.du[1]) dual.push(name);
         }
         return { citation_x, challenger, dual };
       };
 
-      const picRow1 = extractNames(i + 1);
-      const picRow2 = extractNames(i + 3);
-      const sicRow1 = extractNames(i + 5);
-      const sicRow2 = extractNames(i + 7);
+      // Detect boundaries from the label rows
+      const picBounds = detectTypeBoundaries(i + 1);
+      const sicBounds = detectTypeBoundaries(i + 5);
+
+      const picRow1 = extractNames(i + 2, picBounds); // names row under PIC header
+      const picRow2 = extractNames(i + 3, picBounds);
+      const sicRow1 = extractNames(i + 6, sicBounds); // names row under SIC header
+      const sicRow2 = extractNames(i + 7, sicBounds);
 
       // Merge rows
       const pic = {
