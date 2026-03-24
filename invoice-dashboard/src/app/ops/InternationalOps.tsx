@@ -254,19 +254,29 @@ function TripBoard({ trips, countries, onRefresh }: { trips: IntlTrip[]; countri
 
   const now = Date.now();
 
+  // Trip view: show trips that have at least one future leg, up to the selected range
   const filteredTrips = trips.filter((t) => {
     const range = TRIP_TIME_RANGES.find((r) => r.key === timeRange);
+    const snap = t.schedule_snapshot ?? {};
+    const flightTimes = Object.values(snap).map((s) => new Date(s.dep).getTime());
+    const hasFutureLeg = flightTimes.length > 0
+      ? flightTimes.some((ft) => ft > now)
+      : new Date(t.trip_date + "T00:00:00Z").getTime() > now; // fallback if no snapshot
+    if (!hasFutureLeg) return false;
     if (!range) return true;
-    const tripDate = new Date(t.trip_date + "T00:00:00Z");
-    return tripDate.getTime() <= now + range.hours * 3600000;
+    // Upper bound: earliest future leg must be within the time range
+    const earliestFuture = Math.min(...flightTimes.filter((ft) => ft > now));
+    return (isFinite(earliestFuture) ? earliestFuture : new Date(t.trip_date + "T00:00:00Z").getTime()) <= now + range.hours * 3600000;
   });
 
+  // Segment view: only show segments with future departures
   const allSegments = flattenTripsToSegments(trips);
   const filteredSegments = allSegments.filter((seg) => {
+    const depTime = seg.departureTime?.getTime() ?? new Date(seg.trip.trip_date + "T00:00:00Z").getTime();
+    if (depTime <= now) return false; // past segments hidden
     const range = TRIP_TIME_RANGES.find((r) => r.key === timeRange);
     if (!range) return true;
-    const t = seg.departureTime?.getTime() ?? new Date(seg.trip.trip_date + "T00:00:00Z").getTime();
-    return t <= now + range.hours * 3600000;
+    return depTime <= now + range.hours * 3600000;
   });
 
   if (trips.length === 0) {
@@ -471,12 +481,22 @@ function TripRow({ trip, countries, expanded, onToggle, onRefresh }: {
   const clearances = trip.clearances ?? [];
   const tripDate = new Date(trip.trip_date + "T00:00:00");
   const daysOut = Math.ceil((tripDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+  const now = Date.now();
 
   // Overall progress
   const total = clearances.length;
   const approved = clearances.filter((c) => c.status === "approved").length;
   const allApproved = total > 0 && approved === total;
   const anySubmitted = clearances.some((c) => c.status === "submitted");
+
+  // Determine which legs are completed (departure in the past)
+  const snap = trip.schedule_snapshot ?? {};
+  const legCompleted: boolean[] = [];
+  for (let i = 0; i < trip.route_icaos.length - 1; i++) {
+    const fid = trip.flight_ids[i];
+    const times = fid ? snap[fid] : null;
+    legCompleted.push(times ? new Date(times.dep).getTime() <= now : false);
+  }
 
   return (
     <div className={`border rounded-lg overflow-hidden ${
@@ -490,17 +510,34 @@ function TripRow({ trip, countries, expanded, onToggle, onRefresh }: {
         {/* Tail */}
         <span className="text-sm font-semibold w-20">{trip.tail_number}</span>
 
-        {/* Route: KTEB → MYNN → MKJP → KOPF */}
+        {/* Route: KTEB → MYNN → MKJP → KOPF — completed legs greyed out */}
         <span className="text-sm flex items-center gap-1 flex-wrap">
-          {trip.route_icaos.map((icao, i) => (
-            <span key={i} className="flex items-center gap-1">
-              {i > 0 && <span className="text-gray-300">&rarr;</span>}
-              <span className={`font-medium ${isInternationalIcao(icao) ? "text-blue-700" : "text-gray-800"}`}>
-                {icao}
+          {trip.route_icaos.map((icao, i) => {
+            // An airport is "done" if the leg departing FROM it is completed
+            // The final airport is "done" if the leg arriving INTO it is completed
+            const isDone = i < legCompleted.length ? legCompleted[i] : (i > 0 && legCompleted[i - 1]);
+            const arrowDone = i > 0 && legCompleted[i - 1];
+            return (
+              <span key={i} className="flex items-center gap-1">
+                {i > 0 && <span className={arrowDone ? "text-gray-200 line-through" : "text-gray-300"}>&rarr;</span>}
+                <span className={
+                  isDone
+                    ? "font-medium text-gray-300 line-through"
+                    : `font-medium ${isInternationalIcao(icao) ? "text-blue-700" : "text-gray-800"}`
+                }>
+                  {icao}
+                </span>
               </span>
-            </span>
-          ))}
+            );
+          })}
         </span>
+
+        {/* Completed legs indicator */}
+        {legCompleted.some(Boolean) && (
+          <span className="text-[10px] px-2 py-0.5 rounded-full bg-gray-100 text-gray-400 font-medium whitespace-nowrap">
+            {legCompleted.filter(Boolean).length}/{legCompleted.length} legs done
+          </span>
+        )}
 
         {/* Overall status badge */}
         <span className={`text-[11px] px-2 py-0.5 rounded-full font-medium ml-auto whitespace-nowrap ${
