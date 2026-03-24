@@ -350,7 +350,7 @@ export async function GET(req: NextRequest) {
 
         if (totalDelay > 15) {
           crew.delay_minutes = totalDelay;
-          if (crew.status !== "cancelled") {
+          if ((crew.status as string) !== "cancelled") {
             crew.status_detail = `Delayed ${totalDelay}min`;
             if (crew.status === "scheduled") crew.status = "delayed";
           }
