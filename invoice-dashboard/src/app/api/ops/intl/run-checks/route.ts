@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, isAuthed } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 import { isInternationalIcao } from "@/lib/intlUtils";
+import { getFlightsByRegistration } from "@/lib/flightaware";
+import type { FaFlight } from "@/lib/flightaware";
 
 /**
  * POST /api/ops/intl/run-checks
@@ -254,12 +256,135 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // ── 6. Insert all alerts ────────────────────────────────────────────
+  // ── 6. FlightAware delay & diversion detection ─────────────────────
+  // Check upcoming intl flights (next 48h) against FA for live delay/diversion data.
+  // Only query unique tails to minimize API calls.
+  const DELAY_THRESHOLD_MIN = 20;
+  const fortyEightHoursOut = new Date(now.getTime() + 48 * 60 * 60 * 1000);
+  const upcomingIntl = intlFlights.filter((f) => {
+    const dep = new Date(f.scheduled_departure);
+    return dep >= now && dep <= fortyEightHoursOut;
+  });
+
+  const uniqueTails = [...new Set(upcomingIntl.map((f) => f.tail_number).filter(Boolean))] as string[];
+  let faDelayCount = 0;
+
+  if (uniqueTails.length > 0 && process.env.FLIGHTAWARE_API_KEY) {
+    // Fetch callsign map from ics_sources for KOW-prefix lookups
+    const { data: icsSources } = await supa
+      .from("ics_sources")
+      .select("tail_number, callsign")
+      .in("tail_number", uniqueTails);
+    const callsignMap = new Map<string, string>();
+    for (const src of icsSources ?? []) {
+      if (src.tail_number && src.callsign) callsignMap.set(src.tail_number, src.callsign);
+    }
+
+    // Build a lookup: tail+depIcao+arrIcao → flight row (to match FA flights back to our DB flights)
+    const flightLookup = new Map<string, typeof upcomingIntl[0]>();
+    for (const f of upcomingIntl) {
+      if (f.tail_number) {
+        flightLookup.set(`${f.tail_number}|${f.departure_icao}|${f.arrival_icao}`, f);
+      }
+    }
+
+    for (const tail of uniqueTails) {
+      try {
+        const faFlights = await getFlightsByRegistration(tail, callsignMap);
+
+        for (const fa of faFlights) {
+          if (fa.cancelled) continue;
+          const faOrigin = fa.origin?.code_icao ?? fa.origin?.code;
+          const faDest = fa.destination?.code_icao ?? fa.destination?.code;
+          if (!faOrigin || !faDest) continue;
+
+          // Match to our DB flight
+          const dbFlight = flightLookup.get(`${tail}|${faOrigin}|${faDest}`);
+          if (!dbFlight) continue;
+
+          // ── Diversion check ──
+          if (fa.diverted) {
+            const { count } = await supa
+              .from("intl_leg_alerts")
+              .select("id", { count: "exact", head: true })
+              .eq("flight_id", dbFlight.id)
+              .eq("alert_type", "diversion")
+              .eq("acknowledged", false);
+
+            if ((count ?? 0) === 0) {
+              alertsToCreate.push({
+                flight_id: dbFlight.id,
+                alert_type: "diversion",
+                severity: "critical",
+                message: `DIVERTED: ${tail} ${faOrigin}→${faDest} has been diverted. Check permits and customs for new routing.`,
+              });
+              faDelayCount++;
+            }
+            continue; // don't also create a delay alert for diverted flights
+          }
+
+          // ── Delay check ──
+          const depDelay = fa.departure_delay != null ? Math.round(fa.departure_delay / 60) : null;
+          if (depDelay != null && depDelay >= DELAY_THRESHOLD_MIN) {
+            // Check for existing unacked delay alert on this flight
+            const { data: existing } = await supa
+              .from("intl_leg_alerts")
+              .select("id, message")
+              .eq("flight_id", dbFlight.id)
+              .eq("alert_type", "delay")
+              .eq("acknowledged", false)
+              .limit(1);
+
+            const alreadyAlerted = existing && existing.length > 0;
+
+            // Re-alert if delay worsened by 30+ min
+            if (alreadyAlerted) {
+              const prevMatch = existing[0].message.match(/delayed (\d+)\s*min/i);
+              const prevMin = prevMatch ? parseInt(prevMatch[1]) : 0;
+              if (depDelay - prevMin < 30) continue; // not significantly worse
+              // Acknowledge the old alert before creating updated one
+              await supa.from("intl_leg_alerts")
+                .update({ acknowledged: true, acknowledged_by: "system", acknowledged_at: now.toISOString() })
+                .eq("id", existing[0].id);
+            }
+
+            const scheduledDep = fa.scheduled_out ?? dbFlight.scheduled_departure;
+            const estDep = fa.estimated_out ?? fa.scheduled_out;
+            const schedTime = scheduledDep ? new Date(scheduledDep).toISOString().slice(11, 16) : "??:??";
+            const estTime = estDep ? new Date(estDep).toISOString().slice(11, 16) : "??:??";
+
+            alertsToCreate.push({
+              flight_id: dbFlight.id,
+              alert_type: "delay",
+              severity: depDelay >= 60 ? "critical" : "warning",
+              message: `${tail} ${faOrigin}→${faDest} delayed ${depDelay}min (sched ${schedTime}Z → est ${estTime}Z). Verify customs/handler timing.`,
+            });
+            faDelayCount++;
+          }
+        }
+
+        // Rate limit between tails
+        if (uniqueTails.indexOf(tail) < uniqueTails.length - 1) {
+          await new Promise((r) => setTimeout(r, 500));
+        }
+      } catch (err) {
+        console.error(`[intl/run-checks] FA error for ${tail}:`, err instanceof Error ? err.message : err);
+      }
+    }
+  }
+
+  // ── 7. Insert all alerts ────────────────────────────────────────────
   if (alertsToCreate.length > 0) {
     const { error } = await supa.from("intl_leg_alerts").insert(alertsToCreate);
     if (error) {
       console.error("[intl/run-checks] insert error:", error);
       return NextResponse.json({ error: "Failed to create alerts" }, { status: 500 });
+    }
+
+    // ── 8. Slack notification for delay/diversion alerts ──────────────
+    const slackAlerts = alertsToCreate.filter((a) => a.alert_type === "delay" || a.alert_type === "diversion");
+    if (slackAlerts.length > 0) {
+      await sendIntlDelaySlack(slackAlerts);
     }
   }
 
@@ -268,5 +393,68 @@ export async function POST(req: NextRequest) {
     intl_flights: intlFlights.length,
     permits_checked: (permits ?? []).length,
     alerts_created: alertsToCreate.length,
+    fa_delay_alerts: faDelayCount,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Slack: post delay/diversion alerts to #customs-bosses
+// ---------------------------------------------------------------------------
+
+const INTL_DELAY_SLACK_CHANNEL = "C05M76JGKNG"; // #customs-bosses
+
+async function sendIntlDelaySlack(
+  alerts: Array<{ flight_id: string; alert_type: string; severity: string; message: string }>,
+) {
+  const token = process.env.SLACK_BOT_TOKEN;
+  if (!token) {
+    console.warn("[intl/slack] SLACK_BOT_TOKEN not set — skipping Slack notification");
+    return;
+  }
+
+  const blocks: Array<Record<string, unknown>> = [
+    {
+      type: "header",
+      text: { type: "plain_text", text: `International Flight Alert${alerts.length > 1 ? "s" : ""}` },
+    },
+  ];
+
+  for (const a of alerts) {
+    const emoji = a.alert_type === "diversion" ? ":rotating_light:" : a.severity === "critical" ? ":warning:" : ":clock3:";
+    const label = a.alert_type === "diversion" ? "DIVERTED" : "DELAYED";
+    blocks.push({
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `${emoji} *${label}*\n${a.message}`,
+      },
+    });
+  }
+
+  blocks.push({
+    type: "context",
+    elements: [{ type: "mrkdwn", text: `Detected at ${new Date().toISOString().slice(11, 16)}Z by Baker Ops Monitor` }],
+  });
+
+  const fallback = alerts.map((a) => a.message).join("\n");
+
+  try {
+    const res = await fetch("https://slack.com/api/chat.postMessage", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        channel: INTL_DELAY_SLACK_CHANNEL,
+        text: fallback,
+        blocks,
+      }),
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      console.error("[intl/slack] Slack error:", data.error);
+    } else {
+      console.log(`[intl/slack] Posted ${alerts.length} delay/diversion alert(s) to #customs-bosses`);
+    }
+  } catch (err) {
+    console.error("[intl/slack] Slack fetch error:", err instanceof Error ? err.message : err);
+  }
 }
