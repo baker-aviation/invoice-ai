@@ -153,6 +153,22 @@ function isOnEtDate(utcIso: string | null | undefined, etDate: string): boolean 
   return utcToEtDate(utcIso) === etDate;
 }
 
+/**
+ * Van schedule day boundary: 5 AM ET.
+ * Flights arriving between midnight and 5 AM ET are treated as "yesterday" for
+ * van scheduling purposes. This prevents late-night Pacific time flights (e.g.
+ * 21:10 PDT = 00:10 EDT) from bleeding into the next day's morning plan.
+ * Those aircraft still appear via the overnight/parked logic with correct "Parked" display.
+ */
+const VAN_DAY_START_HOUR_ET = 5;
+
+function isOnVanScheduleDate(utcIso: string | null | undefined, etDate: string): boolean {
+  if (!utcIso) return false;
+  // Shift back by VAN_DAY_START_HOUR_ET hours — a 2 AM ET flight becomes "9 PM ET yesterday"
+  const shifted = new Date(new Date(utcIso).getTime() - VAN_DAY_START_HOUR_ET * 3600000);
+  return shifted.toLocaleDateString("en-CA", { timeZone: DISPLAY_TZ }) === etDate;
+}
+
 // ── Airport-local timezone lookup (state-based fallback) ──
 const STATE_TZ: Record<string, string> = {
   // Eastern
@@ -576,9 +592,10 @@ function computeZoneItems(
   baseLon: number,
 ): VanFlightItem[] {
   // All arrivals today (any airport, not filtered by zone yet)
+  // Uses van schedule date boundary (5 AM ET) so late-night Pacific flights don't bleed
   const arrivalsToday = allFlights.filter((f) => {
     if (!f.arrival_icao || !f.scheduled_arrival) return false;
-    if (!isOnEtDate(f.scheduled_arrival, date)) return false;
+    if (!isOnVanScheduleDate(f.scheduled_arrival, date)) return false;
     const ft = inferFlightType(f);
     const cat = getFilterCategory(ft);
     if (cat === "other") return false;
@@ -657,7 +674,7 @@ function computeZoneItems(
           f.tail_number === current.tail_number &&
           f.departure_icao === current.arrival_icao &&
           f.scheduled_departure > (current.scheduled_arrival ?? "") &&
-          isOnEtDate(f.scheduled_departure, date),
+          isOnVanScheduleDate(f.scheduled_departure, date),
       );
       if (!nextLeg || !nextLeg.arrival_icao) break;
       // If the next leg is positioning/repo, stop here — van services at current airport
@@ -729,7 +746,7 @@ function computeZoneItems(
 function computeAllDayArrivals(allFlights: Flight[], date: string): VanFlightItem[] {
   const arrivalsToday = allFlights.filter((f) => {
     if (!f.arrival_icao || !f.scheduled_arrival) return false;
-    if (!isOnEtDate(f.scheduled_arrival, date)) return false;
+    if (!isOnVanScheduleDate(f.scheduled_arrival, date)) return false;
     // Skip same-airport maintenance blocks (e.g. MYNN→MYNN) — not real legs
     if (f.departure_icao && f.departure_icao === f.arrival_icao) return false;
     // Hide "other" category flights from the AOG schedule
@@ -775,7 +792,7 @@ function computeAllDayArrivals(allFlights: Flight[], date: string): VanFlightIte
         if (groundHours < 2 && !isPositioningFlight(nextDep)) return false;
       }
       if (isPositioningFlight(nextDep)) return true;
-      return !isOnEtDate(nextDep.scheduled_departure, date);
+      return !isOnVanScheduleDate(nextDep.scheduled_departure, date);
     });
 
   // Dedup by flight ID only (not by tail) — keep all arrivals per tail for multi-van support
@@ -784,24 +801,28 @@ function computeAllDayArrivals(allFlights: Flight[], date: string): VanFlightIte
     byFlightId.set(item.arrFlight.id, item);
   }
 
-  // Add overnight/parked aircraft: arrived BEFORE today, next departure is today or later.
+  // Add overnight/parked aircraft: arrived BEFORE today, next departure is in the future.
   // These are sitting at an airport and serviceable by a van today.
+  const nowIso = new Date().toISOString();
   const todayTails = new Set(rawItems.map((i) => i.arrFlight.tail_number).filter(Boolean));
   const overnightArrivals = allFlights.filter((f) => {
     if (!f.arrival_icao || !f.scheduled_arrival || !f.tail_number) return false;
-    // Must have arrived before today
-    if (isOnEtDate(f.scheduled_arrival, date)) return false;
-    const arrDate = new Date(f.scheduled_arrival).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
-    if (arrDate >= date) return false;
+    // Must have arrived before today (using van schedule date boundary)
+    if (isOnVanScheduleDate(f.scheduled_arrival, date)) return false;
+    // Must have arrived in the past (not a future date's flight)
+    if (f.scheduled_arrival > nowIso) return false;
     // Skip same-airport maintenance blocks
     if (f.departure_icao && f.departure_icao === f.arrival_icao) return false;
     // Skip if tail already has arrivals today (already covered)
     if (todayTails.has(f.tail_number)) return false;
-    // Must have a next departure today or later from the arrival airport
+    // Must have a FUTURE departure from the arrival airport (aircraft still there)
     const nextDep = allFlights.find(
-      (d) => d.tail_number === f.tail_number && d.departure_icao === f.arrival_icao && d.scheduled_departure >= `${date}T00:00:00`,
+      (d) => d.tail_number === f.tail_number &&
+             d.departure_icao === f.arrival_icao &&
+             d.scheduled_departure > (f.scheduled_arrival ?? "") &&
+             d.scheduled_departure > nowIso,
     );
-    if (!nextDep) return false; // no upcoming departure = probably not in our window
+    if (!nextDep) return false; // no future departure = aircraft already left or no schedule
     // Skip if already in byFlightId
     if (byFlightId.has(f.id)) return false;
     return true;
@@ -820,7 +841,7 @@ function computeAllDayArrivals(allFlights: Flight[], date: string): VanFlightIte
     const iata = arr.arrival_icao!.replace(/^K/, "");
     const info = getAirportInfo(iata);
     const nextDep = allFlights
-      .filter((f) => f.tail_number === arr.tail_number && f.departure_icao === arr.arrival_icao && f.scheduled_departure >= `${date}T00:00:00`)
+      .filter((f) => f.tail_number === arr.tail_number && f.departure_icao === arr.arrival_icao && f.scheduled_departure > (arr.scheduled_arrival ?? "") && f.scheduled_departure > nowIso)
       .sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure))[0] ?? null;
     byFlightId.set(arr.id, {
       arrFlight: arr,
@@ -925,7 +946,7 @@ function buildSlackItems(items: VanFlightItem[], flightInfoMap: Map<string, Flig
     const arrMs = item.arrFlight.scheduled_arrival ? new Date(item.arrFlight.scheduled_arrival).getTime() : null;
     const gapMs = item.nextDep && arrMs
       ? new Date(item.nextDep.scheduled_departure).getTime() - arrMs : Infinity;
-    const isOvernight = arrMs && viewDate ? !isOnEtDate(item.arrFlight.scheduled_arrival!, viewDate) : false;
+    const isOvernight = arrMs && viewDate ? !isOnVanScheduleDate(item.arrFlight.scheduled_arrival!, viewDate) : false;
     // Detect pre-departure: service airport is a departure airport, not the arrival
     const arrIcaoNorm = item.arrFlight.arrival_icao?.replace(/^K/, "") ?? "";
     const isPreDep = item.airport !== arrIcaoNorm && item.nextDep?.departure_icao?.replace(/^K/, "") === item.airport;
@@ -971,8 +992,10 @@ function buildSlackItems(items: VanFlightItem[], flightInfoMap: Map<string, Flig
       tail: item.arrFlight.tail_number ?? "—",
       airport: item.airport,
       fbo,
-      arrivalTime: item.arrFlight.scheduled_arrival ? fmtUtcHM(item.arrFlight.scheduled_arrival, item.arrFlight.arrival_icao) : "—",
-      status: slackStatus,
+      arrivalTime: isOvernight
+        ? "Landed prev. day"
+        : item.arrFlight.scheduled_arrival ? fmtUtcHM(item.arrFlight.scheduled_arrival, item.arrFlight.arrival_icao) : "—",
+      status: isOvernight ? "Landed" : slackStatus,
       nextDep: item.nextDep
         ? `Flying again ${fmtUtcHM(item.nextDep.scheduled_departure, item.nextDep.departure_icao)}`
         : "Staying Overnight",
@@ -1679,7 +1702,7 @@ function LegNoteInline({
 function AircraftCompactRow({
   arrFlight, nextDep, isRepo, nextIsRepo, airport, airportInfo, distKm,
   fi, arrTime, hasLanded, delayMin, isEnRoute, faLanded,
-  turnBadgeLabel, hasMaintenance, extraLegs,
+  turnBadgeLabel, hasMaintenance, extraLegs, isOvernight,
   color, zone, date,
   mxNotes, hiddenTodayMxIds, onHideMxForToday, mxVanOverrides, onVanOverride,
   legNote, onSaveNote, onDragStart, onDragOverItem, onRemove, onSetPrimaryAirport,
@@ -1701,6 +1724,7 @@ function AircraftCompactRow({
   turnBadgeLabel: string;
   hasMaintenance: boolean;
   extraLegs: Flight[];
+  isOvernight?: boolean;
   color: string;
   zone: (typeof FIXED_VAN_ZONES)[number];
   date: string;
@@ -1774,13 +1798,19 @@ function AircraftCompactRow({
           )}
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          {/* Schedule times + ETA */}
+          {/* Schedule times + ETA — for overnight/parked items, just show "Landed" */}
           <div className="text-right text-xs whitespace-nowrap">
-            {arrFlight.scheduled_departure && (
-              <span className="text-gray-400">{fmtUtcHM(arrFlight.scheduled_departure, arrFlight.departure_icao)}</span>
-            )}
-            {arrTime && (
-              <span className="text-gray-400">{" → "}<span className="font-medium text-gray-700">{fmtUtcHM(arrFlight.scheduled_arrival!, arrFlight.arrival_icao)}</span></span>
+            {isOvernight ? (
+              <span className="text-gray-400 italic">Landed prev. day</span>
+            ) : (
+              <>
+                {arrFlight.scheduled_departure && (
+                  <span className="text-gray-400">{fmtUtcHM(arrFlight.scheduled_departure, arrFlight.departure_icao)}</span>
+                )}
+                {arrTime && (
+                  <span className="text-gray-400">{" → "}<span className="font-medium text-gray-700">{fmtUtcHM(arrFlight.scheduled_arrival!, arrFlight.arrival_icao)}</span></span>
+                )}
+              </>
             )}
           </div>
           {/* Status badge */}
@@ -1792,6 +1822,8 @@ function AircraftCompactRow({
             <span className="text-xs font-semibold rounded-full px-2 py-0.5 bg-blue-100 text-blue-700">
               En Route
             </span>
+          ) : isOvernight ? (
+            <span className="text-xs font-semibold rounded-full px-2 py-0.5 bg-green-100 text-green-700">Landed</span>
           ) : (
             <span className={`text-xs font-semibold rounded-full px-2 py-0.5 ${hasLanded ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-600"}`}>
               {hasLanded ? "Landed" : "Scheduled"}
@@ -2265,13 +2297,13 @@ function VanScheduleCard({
                 const groundMs = nextDep && arrTime
                   ? new Date(nextDep.scheduled_departure).getTime() - arrTime.getTime()
                   : Infinity;
-                const isOvernight = arrTime ? !isOnEtDate(arrFlight.scheduled_arrival!, date) : false;
+                const isOvernight = arrTime ? !isOnVanScheduleDate(arrFlight.scheduled_arrival!, date) : false;
                 // Detect pre-departure: service airport is a departure airport, not an arrival
                 const arrIcaoNorm = arrFlight.arrival_icao?.replace(/^K/, "") ?? "";
                 const isPreDeparture = airport !== arrIcaoNorm && allFlights?.some((f) =>
                   f.tail_number === arrFlight.tail_number &&
                   f.departure_icao?.replace(/^K/, "") === airport &&
-                  (isOnEtDate(f.scheduled_departure, date) || isOnEtDate(f.scheduled_arrival, date))
+                  (isOnVanScheduleDate(f.scheduled_departure, date) || isOnVanScheduleDate(f.scheduled_arrival, date))
                 );
                 let turnBadgeLabel: string;
                 if (isPreDeparture) {
@@ -2279,7 +2311,7 @@ function VanScheduleCard({
                   const depFlight = allFlights?.filter((f) =>
                     f.tail_number === arrFlight.tail_number &&
                     f.departure_icao?.replace(/^K/, "") === airport &&
-                    (isOnEtDate(f.scheduled_departure, date) || isOnEtDate(f.scheduled_arrival, date))
+                    (isOnVanScheduleDate(f.scheduled_departure, date) || isOnVanScheduleDate(f.scheduled_arrival, date))
                   ).sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure))[0];
                   const depTime = depFlight ? fmtUtcHM(depFlight.scheduled_departure, depFlight.departure_icao) : "?";
                   turnBadgeLabel = `Pre-Departure - Departing at ${depTime}`;
@@ -2290,7 +2322,7 @@ function VanScheduleCard({
                   ? allFlights.filter((f) => {
                       if (f.tail_number !== arrFlight.tail_number) return false;
                       if (f.id === arrFlight.id) return false;
-                      if (!(isOnEtDate(f.scheduled_departure, date) || isOnEtDate(f.scheduled_arrival, date))) return false;
+                      if (!(isOnVanScheduleDate(f.scheduled_departure, date) || isOnVanScheduleDate(f.scheduled_arrival, date))) return false;
                       return getFilterCategory(inferFlightType(f)) !== "other";
                     }).sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure))
                   : [];
@@ -2298,7 +2330,7 @@ function VanScheduleCard({
                   f.tail_number === arrFlight.tail_number &&
                   f.departure_icao && f.arrival_icao &&
                   f.departure_icao === f.arrival_icao &&
-                  (isOnEtDate(f.scheduled_departure, date) || isOnEtDate(f.scheduled_arrival, date))
+                  (isOnVanScheduleDate(f.scheduled_departure, date) || isOnVanScheduleDate(f.scheduled_arrival, date))
                 );
                 return (
                   <AircraftCompactRow
@@ -2319,6 +2351,7 @@ function VanScheduleCard({
                     turnBadgeLabel={turnBadgeLabel}
                     hasMaintenance={hasMaintenance}
                     extraLegs={extraLegs}
+                    isOvernight={isOvernight}
                     color={color}
                     zone={zone}
                     date={date}
@@ -2827,9 +2860,13 @@ function ScheduleTab({
       if (!found) {
         let item = allDayArrivals.find((a) => a.arrFlight.id === flightId);
         // Midday transient flights aren't in allDayArrivals — build a VanFlightItem from raw flight data
+        // Date guard: only allow flights that belong to the selected schedule date
         if (!item) {
           const flight = allFlights.find((f) => f.id === flightId);
-          if (flight && flight.arrival_icao) {
+          if (flight && flight.arrival_icao && (
+            isOnVanScheduleDate(flight.scheduled_arrival, date) ||
+            isOnVanScheduleDate(flight.scheduled_departure, date)
+          )) {
             const iata = flight.arrival_icao.replace(/^K/, "");
             const info = getAirportInfo(iata);
             const baseLat = liveVanPositions.get(targetVanId)?.lat ?? FIXED_VAN_ZONES.find((z) => z.vanId === targetVanId)!.lat;

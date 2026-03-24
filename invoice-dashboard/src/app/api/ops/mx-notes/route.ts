@@ -12,7 +12,7 @@ export async function GET(req: NextRequest) {
   const supa = createServiceClient();
   const { data, error } = await supa
     .from("ops_alerts")
-    .select("id, tail_number, airport_icao, subject, body, created_at, acknowledged_at, raw_data")
+    .select("id, tail_number, airport_icao, subject, body, created_at, acknowledged_at, raw_data, scheduled_date, assigned_van")
     .eq("alert_type", "MX_NOTE")
     .is("acknowledged_at", null)
     .order("created_at", { ascending: false })
@@ -60,6 +60,8 @@ export async function GET(req: NextRequest) {
       created_at: row.created_at,
       acknowledged_at: row.acknowledged_at,
       attachment_count: attachmentCounts[row.id as string] ?? 0,
+      scheduled_date: (row as Record<string, unknown>).scheduled_date ?? null,
+      assigned_van: (row as Record<string, unknown>).assigned_van ?? null,
     };
   });
 

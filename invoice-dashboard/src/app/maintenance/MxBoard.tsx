@@ -199,7 +199,7 @@ export default function MxBoard({
     if (!subject) return;
     setLoading(true);
     try {
-      await fetch("/api/ops/mx-notes", {
+      const res = await fetch("/api/ops/mx-notes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -209,6 +209,12 @@ export default function MxBoard({
           airport_icao: (fd.get("airport") as string)?.trim().toUpperCase() || undefined,
         }),
       });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "Save failed" }));
+        alert(err.error || "Failed to create MX note");
+        setLoading(false);
+        return;
+      }
       setShowCreateNote(null);
       await refreshNotes();
     } catch { /* ignore */ }

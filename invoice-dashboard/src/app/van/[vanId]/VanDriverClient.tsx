@@ -719,6 +719,11 @@ function StopCard({
   const schedArrLocal = fmtLocalTime(item.arrFlight.scheduled_arrival, item.arrFlight.arrival_icao);
   const faEtaLocal = fi?.arrival_time ? fmtLocalTime(fi.arrival_time, item.arrFlight.arrival_icao) : null;
   const turnLabel = getTurnLabel(item);
+  const todayEt = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  const arrDateEt = item.arrFlight.scheduled_arrival
+    ? new Date(item.arrFlight.scheduled_arrival).toLocaleDateString("en-CA", { timeZone: "America/New_York" })
+    : null;
+  const isOvernight = arrDateEt ? arrDateEt < todayEt : false;
 
   // Auto-expand when this becomes the next stop
   const prevIsNext = useRef(isNext);
@@ -757,18 +762,26 @@ function StopCard({
             </span>
           </div>
           <div className="text-right">
-            <div className="text-sm font-bold text-slate-700 dark:text-slate-200 tabular-nums">
-              Sched {schedArrLocal}
-            </div>
-            {fi?.actual_arrival && (
-              <div className="text-xs font-medium text-green-600 dark:text-green-400 tabular-nums">
-                Landed {fmtLocalTime(fi.actual_arrival, item.arrFlight.arrival_icao)}
+            {isOvernight ? (
+              <div className="text-sm font-medium text-green-600 dark:text-green-400 tabular-nums">
+                Landed prev. day
               </div>
-            )}
-            {!fi?.actual_arrival && faEtaLocal && faEtaLocal !== schedArrLocal && status.label !== "Landed" && (
-              <div className="text-xs font-medium text-blue-600 dark:text-blue-400 tabular-nums">
-                FA Est {faEtaLocal}
-              </div>
+            ) : (
+              <>
+                <div className="text-sm font-bold text-slate-700 dark:text-slate-200 tabular-nums">
+                  Sched {schedArrLocal}
+                </div>
+                {fi?.actual_arrival && (
+                  <div className="text-xs font-medium text-green-600 dark:text-green-400 tabular-nums">
+                    Landed {fmtLocalTime(fi.actual_arrival, item.arrFlight.arrival_icao)}
+                  </div>
+                )}
+                {!fi?.actual_arrival && faEtaLocal && faEtaLocal !== schedArrLocal && status.label !== "Landed" && (
+                  <div className="text-xs font-medium text-blue-600 dark:text-blue-400 tabular-nums">
+                    FA Est {faEtaLocal}
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>
@@ -794,19 +807,27 @@ function StopCard({
           )}
         </div>
 
-        {/* Time info */}
-        <div className="flex items-center gap-3 mb-2 flex-wrap">
-          <span className="text-xs text-gray-500 dark:text-gray-400">
-            Dep {fmtUtcHM(fi?.departure_time ?? item.arrFlight.scheduled_departure)}
-          </span>
-          <span className="text-gray-300 dark:text-gray-600">&rarr;</span>
-          <span className="text-xs text-gray-500 dark:text-gray-400">
-            Arr {arrTime}
-          </span>
-          <span className="text-xs text-gray-400 dark:text-gray-500">
-            &middot; {fmtDriveTime(item.distKm)}
-          </span>
-        </div>
+        {/* Time info — suppress for overnight/parked aircraft (yesterday's times are confusing) */}
+        {!isOvernight ? (
+          <div className="flex items-center gap-3 mb-2 flex-wrap">
+            <span className="text-xs text-gray-500 dark:text-gray-400">
+              Dep {fmtUtcHM(fi?.departure_time ?? item.arrFlight.scheduled_departure)}
+            </span>
+            <span className="text-gray-300 dark:text-gray-600">&rarr;</span>
+            <span className="text-xs text-gray-500 dark:text-gray-400">
+              Arr {arrTime}
+            </span>
+            <span className="text-xs text-gray-400 dark:text-gray-500">
+              &middot; {fmtDriveTime(item.distKm)}
+            </span>
+          </div>
+        ) : (
+          <div className="flex items-center gap-3 mb-2 flex-wrap">
+            <span className="text-xs text-gray-500 dark:text-gray-400">
+              Arrived prev. day &middot; {fmtDriveTime(item.distKm)}
+            </span>
+          </div>
+        )}
 
         {/* Badges row */}
         <div className="flex items-center gap-2 flex-wrap">
