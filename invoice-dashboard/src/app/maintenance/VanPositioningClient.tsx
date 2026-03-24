@@ -252,7 +252,7 @@ function DayStrip({
     <div className="flex gap-2 overflow-x-auto pb-1">
       {dates.map((date, i) => {
         const dt = new Date(date + "T12:00:00");
-        const weekday = i === 0 ? "Today" : i === 1 ? "Tomorrow" : dt.toLocaleDateString("en-US", { weekday: "short" });
+        const weekday = i === 0 ? "Yesterday" : i === 1 ? "Today" : i === 2 ? "Tomorrow" : dt.toLocaleDateString("en-US", { weekday: "short" });
         const dayLabel = fmtShortDate(date);
         const isSelected = i === selectedIdx;
         return (
@@ -2395,6 +2395,7 @@ function VanScheduleCard({
 function ScheduleTab({
   allFlights,
   date,
+  readOnly,
   liveVanPositions,
   liveVanAddresses,
   vanZoneNames,
@@ -2415,6 +2416,7 @@ function ScheduleTab({
 }: {
   allFlights: Flight[];
   date: string;
+  readOnly?: boolean;
   liveVanPositions: Map<number, { lat: number; lon: number }>;
   liveVanAddresses: Map<number, string | null>;
   vanZoneNames: Map<number, string>;
@@ -2553,11 +2555,12 @@ function ScheduleTab({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useLayoutEffect(() => { suppressSaveRef.current = true; }, [date]);
 
-  // Auto-save on every change (including parent UI-state props)
+  // Auto-save on every change (including parent UI-state props) — skip in read-only mode
   useEffect(() => {
+    if (readOnly) return;
     saveDraftToDb(overrides, removals, unscheduledOverrides, airportOverrides, sortOverrides);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [overrides, removals, unscheduledOverrides, airportOverrides, sortOverrides, wontSeeTodayTails, hiddenTodayMxIds, dismissedConflictVersion, saveDraftToDb]);
+  }, [overrides, removals, unscheduledOverrides, airportOverrides, sortOverrides, wontSeeTodayTails, hiddenTodayMxIds, dismissedConflictVersion, saveDraftToDb, readOnly]);
 
   // Load drafts from DB on mount/date change, fall back to localStorage
   const loadDraftsFromDb = useCallback(async (targetDate: string) => {
@@ -2605,8 +2608,9 @@ function ScheduleTab({
   }, []);
   loadDraftsFromDbRef.current = loadDraftsFromDb;
 
-  // Poll DB every 15s for other admins' changes
+  // Poll DB every 15s for other admins' changes — skip in read-only mode
   useEffect(() => {
+    if (readOnly) return;
     const poll = setInterval(async () => {
       // Don't poll while a save is in-flight — would revert to stale data
       if (suppressSaveRef.current) return;
@@ -2660,8 +2664,17 @@ function ScheduleTab({
     setPublishError(null);
     setPublishedEditsSnapshot("");
     setPublishedAssignments([]);
-    // Load shared draft overrides from DB (falls back to localStorage)
-    loadDraftsFromDb(date);
+    // In read-only mode (yesterday), skip draft loading — let published assignments drive the view
+    if (!readOnly) {
+      loadDraftsFromDb(date);
+    } else {
+      // Clear any stale overrides
+      setOverrides(new Map());
+      setRemovals(new Set());
+      setUnscheduledOverrides(new Map());
+      setAirportOverrides(new Map());
+      setSortOverrides(new Map());
+    }
     fetch(`/api/vans/publish?date=${date}`)
       .then((r) => r.json())
       .then((d) => {
@@ -2670,15 +2683,17 @@ function ScheduleTab({
       })
       .catch(() => {});
     // Load existing notes
-    fetch(`/api/vans/notes?date=${date}`)
-      .then((r) => r.json())
-      .then((d) => {
-        const map = new Map<string, string>();
-        for (const n of d.notes ?? []) map.set(n.flight_id, n.note);
-        setLegNotes(map);
-      })
-      .catch(() => {});
-  }, [date, loadDraftsFromDb]);
+    if (!readOnly) {
+      fetch(`/api/vans/notes?date=${date}`)
+        .then((r) => r.json())
+        .then((d) => {
+          const map = new Map<string, string>();
+          for (const n of d.notes ?? []) map.set(n.flight_id, n.note);
+          setLegNotes(map);
+        })
+        .catch(() => {});
+    }
+  }, [date, loadDraftsFromDb, readOnly]);
 
   const totalEdits = overrides.size + removals.size + unscheduledOverrides.size + airportOverrides.size;
 
@@ -4365,8 +4380,8 @@ function ScheduleTab({
         </div>
       )}
 
-      {/* ── Unassigned aircraft pool (draggable into vans) ── */}
-      {uncoveredItems.length > 0 && (() => {
+      {/* ── Unassigned aircraft pool (draggable into vans) — hidden in read-only ── */}
+      {!readOnly && uncoveredItems.length > 0 && (() => {
         // Group uncovered items by tail
         const uncoveredByTail = new Map<string, VanFlightItem[]>();
         for (const item of uncoveredItems) {
@@ -4709,8 +4724,8 @@ function ScheduleTab({
         );
       })()}
 
-      {/* ── Reviewed — Won't Be Seen Today ── */}
-      {(() => {
+      {/* ── Reviewed — Won't Be Seen Today — hidden in read-only ── */}
+      {!readOnly && (() => {
         // Tails assigned to any van — exclude from won't-see
         const vanAssignedTails = new Set<string>();
         for (const items of finalItemsByVan.values()) {
@@ -4812,13 +4827,19 @@ function ScheduleTab({
         );
       })()}
 
+      {readOnly && (
+        <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-2 text-sm text-amber-800 font-medium">
+          Yesterday&apos;s published schedule (read-only)
+        </div>
+      )}
+
       {FIXED_VAN_ZONES.map((zone) => {
         const color = VAN_COLORS[(zone.vanId - 1) % VAN_COLORS.length];
         return (
           <div
             key={zone.vanId}
-            onDragEnter={() => handleDragEnterZone(zone.vanId)}
-            onDragLeave={() => handleDragLeaveZone()}
+            onDragEnter={readOnly ? undefined : () => handleDragEnterZone(zone.vanId)}
+            onDragLeave={readOnly ? undefined : () => handleDragLeaveZone()}
           >
             <VanScheduleCard
               zone={zone}
@@ -4841,14 +4862,14 @@ function ScheduleTab({
               onHideMxForToday={onHideMxForToday}
               mxVanOverrides={mxVanOverrides}
               onVanOverride={onVanOverride}
-              onSaveNote={saveLegNote}
-              onDragStart={handleDragStart}
-              onDragOverItem={handleDragOverItem}
-              onDragOver={handleDragOver}
-              onDrop={handleDrop}
-              onDragLeave={() => handleDragLeaveZone()}
-              onRemove={handleRemove}
-              onPublishVan={handlePublishVan}
+              onSaveNote={readOnly ? (() => {}) : saveLegNote}
+              onDragStart={readOnly ? (() => {}) : handleDragStart}
+              onDragOverItem={readOnly ? (() => {}) : handleDragOverItem}
+              onDragOver={readOnly ? (() => {}) : handleDragOver}
+              onDrop={readOnly ? (() => {}) : handleDrop}
+              onDragLeave={readOnly ? (() => {}) : () => handleDragLeaveZone()}
+              onRemove={readOnly ? (() => {}) : handleRemove}
+              onPublishVan={readOnly ? undefined : handlePublishVan}
               onSetPrimaryAirport={(tail, apt) => {
                 setAirportOverrides((prev) => {
                   const next = new Map(prev);
@@ -5346,8 +5367,22 @@ function MxAdminTab() {
 }
 
 export default function VanPositioningClient({ initialFlights, mxNotes, melItems = [], aircraftTags = [], fboMap = {} }: { initialFlights: Flight[]; mxNotes?: MxNote[]; melItems?: MelItem[]; aircraftTags?: AircraftTag[]; fboMap?: Record<string, string> }) {
-  const dates = useMemo(() => getDateRange(2), []); // today + tomorrow
-  const [dayIdx, setDayIdx] = useState(0);
+  // 3-day range: yesterday, today, tomorrow
+  const dates = useMemo(() => {
+    const today = new Date();
+    const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
+    const yStr = [yesterday.getFullYear(), String(yesterday.getMonth() + 1).padStart(2, "0"), String(yesterday.getDate()).padStart(2, "0")].join("-");
+    return [yStr, ...getDateRange(2)];
+  }, []);
+  // Default to Today (idx 1). Between midnight and 2 AM ET, still default to Today
+  // since that's the schedule the overnight dispatcher was building as "tomorrow."
+  const [dayIdx, setDayIdx] = useState(() => {
+    const etHour = parseInt(new Date().toLocaleTimeString("en-US", { hour: "2-digit", hour12: false, timeZone: "America/New_York" }));
+    // After 2 AM: default to Today (idx 1). Before 2 AM: also Today (idx 1).
+    // The date range already shifted at midnight, so "Today" is correct in both cases.
+    return 1;
+  });
+  const isYesterday = dayIdx === 0;
   const [activeTab, setActiveTab] = useState<"map" | "schedule" | "flights" | "mx-admin">("schedule");
   const [viewMode, setViewMode] = useState<"map" | "list">("map");
   const [selectedVan, setSelectedVan] = useState<number | null>(null);
@@ -6465,7 +6500,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, melItems
 
       {/* ── Schedule tab ── */}
       {activeTab === "schedule" && (
-        <ScheduleTab allFlights={activeFlights} date={selectedDate} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} flightInfoMap={flightInfoMap} mxNotesByTail={mxNotesByTail} longTermMxTails={longTermMxTails} hiddenTodayMxIds={hiddenTodayMxIds} onHideMxForToday={hideMxForToday} mxVanOverrides={mxVanOverrides} onVanOverride={handleVanOverride} fboMap={fboMap} wontSeeTodayTails={wontSeeTodayTails} onMarkWontSee={handleMarkWontSee} onRestoreWontSee={handleRestoreWontSee} onSyncDraftUiState={handleSyncDraftUiState} dismissedConflictsRef={dismissedConflictHashesRef} dismissedConflictVersion={dismissedConflictVersion} />
+        <ScheduleTab allFlights={activeFlights} date={selectedDate} readOnly={isYesterday} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} flightInfoMap={flightInfoMap} mxNotesByTail={mxNotesByTail} longTermMxTails={longTermMxTails} hiddenTodayMxIds={hiddenTodayMxIds} onHideMxForToday={hideMxForToday} mxVanOverrides={mxVanOverrides} onVanOverride={handleVanOverride} fboMap={fboMap} wontSeeTodayTails={wontSeeTodayTails} onMarkWontSee={handleMarkWontSee} onRestoreWontSee={handleRestoreWontSee} onSyncDraftUiState={handleSyncDraftUiState} dismissedConflictsRef={dismissedConflictHashesRef} dismissedConflictVersion={dismissedConflictVersion} />
       )}
 
       {/* ── Flight Schedule tab — grouped by aircraft ── */}

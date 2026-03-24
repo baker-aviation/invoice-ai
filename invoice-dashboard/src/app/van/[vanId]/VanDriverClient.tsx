@@ -292,6 +292,7 @@ export default function VanDriverClient({
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
   const [, setTick] = useState(0); // force re-render for countdowns
   const [dismissedMxIds, setDismissedMxIds] = useState<Set<string>>(new Set());
+  const [liveMxNotes, setLiveMxNotes] = useState<MxNote[]>(mxNotes ?? []);
 
   const dismissMxNote = useCallback(async (id: string) => {
     setDismissedMxIds((prev) => new Set(prev).add(id));
@@ -348,15 +349,27 @@ export default function VanDriverClient({
     setRefreshing(false);
   }, []);
 
-  // Auto-refresh every 5 minutes
+  // Refresh MX notes from API (so new notes from admin appear without page reload)
+  const refreshMxNotes = useCallback(async () => {
+    try {
+      const res = await fetch("/api/ops/mx-notes");
+      if (res.ok) {
+        const data = await res.json();
+        if (data.notes) setLiveMxNotes(data.notes);
+      }
+    } catch { /* keep existing */ }
+  }, []);
+
+  // Auto-refresh every 5 minutes (flights + FA + MX notes)
   useEffect(() => {
     fetchFlightInfo();
     const interval = setInterval(() => {
       fetchFlightInfo();
       refreshFlights();
+      refreshMxNotes();
     }, 300_000);
     return () => clearInterval(interval);
-  }, [fetchFlightInfo, refreshFlights]);
+  }, [fetchFlightInfo, refreshFlights, refreshMxNotes]);
 
   // Tick every 30s for countdown updates
   useEffect(() => {
@@ -446,14 +459,14 @@ export default function VanDriverClient({
 
   const mxNotesByTail = useMemo(() => {
     const map = new Map<string, MxNote[]>();
-    for (const n of mxNotes ?? []) {
+    for (const n of liveMxNotes) {
       if (!n.tail_number) continue;
       const arr = map.get(n.tail_number) ?? [];
       arr.push(n);
       map.set(n.tail_number, arr);
     }
     return map;
-  }, [mxNotes]);
+  }, [liveMxNotes]);
 
   // Find the "next" stop — first non-landed (using same logic as getFlightStatus)
   const nextStopIdx = useMemo(() => {
