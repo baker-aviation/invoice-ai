@@ -600,9 +600,10 @@ export async function batchGetCommercialStatus(
       results.set(fn, status);
       _commercialCache.set(`${fn}|${targetDate}`, { status, cachedAt: now });
     }
-    // Rate limit: 1 req/sec
-    if (i < toFetch.length - 1) {
-      await new Promise(r => setTimeout(r, 1100));
+    // Rate limit: 100 req/sec on Premium — batch freely
+    // Small pause every 50 to avoid burst issues
+    if (i < toFetch.length - 1 && (i + 1) % 50 === 0) {
+      await new Promise(r => setTimeout(r, 100));
     }
   }
 
