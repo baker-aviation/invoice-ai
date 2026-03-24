@@ -4,6 +4,7 @@ import { createServiceClient } from "@/lib/supabase/service";
 import {
   getFlightsByRegistration,
   getFlightPosition,
+  getFleetViaOperator,
   toFlightInfo,
   type FaFlight,
   type FlightInfo,
@@ -14,7 +15,7 @@ import { findNearestAirport } from "@/lib/airportCoords";
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
 
-const DISCOVERY_INTERVAL_MS = 18 * 60_000; // 18 minutes
+const DISCOVERY_INTERVAL_MS = 10 * 60_000; // match cron interval — operator endpoint is cheap
 const PAUSE_MS = 500; // pause between sequential tail fetches
 
 // ---------------------------------------------------------------------------
@@ -72,7 +73,7 @@ function shouldIncludeFlight(f: FaFlight, now: number): boolean {
 
   // Skip estimated arrival > 2h ago with no landing
   if (!landed) {
-    const estArr = f.estimated_on ?? f.scheduled_on;
+    const estArr = f.predicted_on ?? f.estimated_on ?? f.scheduled_on;
     if (estArr) {
       const estArrMs = new Date(estArr).getTime();
       if (estArrMs < now - 2 * 3600_000) return false;
@@ -532,50 +533,59 @@ async function shouldRunDiscovery(): Promise<boolean> {
 }
 
 async function pollDiscovery(
-  callsignMap: Map<string, string>,
+  _callsignMap: Map<string, string>,
 ): Promise<{ tails: string[]; flights: number; upserted: number; cleaned: number }> {
   const supa = createServiceClient();
   const now = new Date();
-  const past36h = new Date(now.getTime() - 36 * 3600_000).toISOString();
-  const future4h = new Date(now.getTime() + 4 * 3600_000).toISOString();
+  const nowMs = now.getTime();
 
-  // Tails with scheduled flights in next 4h or last 36h
-  const { data: dbFlights } = await supa
-    .from("flights")
-    .select("tail_number")
-    .gte("scheduled_departure", past36h)
-    .lte("scheduled_departure", future4h);
+  // Use operator endpoint — fetches all fleet flights in ~5 paginated calls
+  // instead of 20+ per-tail calls (~75-80% cost savings)
+  const { flights: rawFlights, apiCalls } = await getFleetViaOperator("KOW");
 
-  const scheduledTails = (dbFlights ?? [])
-    .map((f) => f.tail_number as string | null)
-    .filter((t): t is string => !!t);
+  console.log(`[FA Poll] Discovery via /operators/KOW: ${rawFlights.length} flights in ${apiCalls} API calls`);
 
-  // Fallback tails from maintenance data
-  const fallbackTails = [...new Set(TRIPS.map((t) => t.tail))];
-
-  const tails = [...new Set([...scheduledTails, ...fallbackTails])];
-
-  console.log(
-    `[FA Poll] Discovery: ${tails.length} tails (${scheduledTails.length} scheduled + ${fallbackTails.length} fallback, deduped)`,
-  );
-
-  let totalFlights = 0;
-  let totalUpserted = 0;
+  // Group by registration (tail), filter, convert to FlightInfo
   const allFlights: FlightInfo[] = [];
+  const tailSet = new Set<string>();
 
-  for (let i = 0; i < tails.length; i++) {
-    try {
-      const flights = await fetchAndProcessTail(tails[i], callsignMap);
-      totalFlights += flights.length;
-      totalUpserted += await upsertFlights(flights);
-      allFlights.push(...flights);
-    } catch (err) {
-      console.error(`[FA Poll] Error discovering ${tails[i]}:`, err instanceof Error ? err.message : err);
+  for (const f of rawFlights) {
+    const tail = f.registration ?? f.ident?.replace(/^KOW/, "N") ?? null;
+    if (!tail) continue;
+    tailSet.add(tail);
+
+    if (!shouldIncludeFlight(f, nowMs)) continue;
+
+    const info = toFlightInfo(tail, f);
+
+    // Fetch position for en-route flights missing last_position
+    const faEnRoute = f.status === "En Route" || f.status === "Diverted";
+    if (
+      info.latitude == null &&
+      (f.actual_off != null || f.actual_out != null || faEnRoute) &&
+      f.actual_on == null &&
+      f.actual_in == null &&
+      f.fa_flight_id
+    ) {
+      console.log(`[FA Poll] ${tail} ${f.fa_flight_id}: fetching position...`);
+      const pos = await getFlightPosition(f.fa_flight_id);
+      if (pos) {
+        info.latitude = pos.latitude;
+        info.longitude = pos.longitude;
+        info.altitude = pos.altitude ?? null;
+        info.groundspeed = pos.groundspeed ?? null;
+        info.heading = pos.heading ?? null;
+      }
     }
-    if (i < tails.length - 1) {
-      await new Promise((r) => setTimeout(r, PAUSE_MS));
-    }
+
+    allFlights.push(info);
   }
+
+  const tails = [...tailSet];
+  const totalFlights = allFlights.length;
+  const totalUpserted = await upsertFlights(allFlights);
+
+  console.log(`[FA Poll] Discovery: ${totalFlights} flights from ${tails.length} tails (${apiCalls} API calls vs ~${tails.length} old per-tail calls)`);
 
   // Link FA flights to ICS flights by fa_flight_id
   await linkFaToIcs(allFlights);

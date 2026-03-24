@@ -69,6 +69,11 @@ export type FaFlight = {
   scheduled_in: string | null;
   estimated_in: string | null;
   actual_in: string | null;
+  // Foresight predicted times (Premium tier — ML-powered, more accurate than estimated)
+  predicted_out: string | null;
+  predicted_off: string | null;
+  predicted_on: string | null;
+  predicted_in: string | null;
   // Route
   route: string | null;
   route_distance: number | null; // nautical miles
@@ -300,10 +305,10 @@ export async function getActiveFlights(
               const landedMs = new Date(landed).getTime();
               if (landedMs < now - 36 * 3600_000) continue;
             }
-            // Filter flights whose estimated arrival passed >2h ago with no
+            // Filter flights whose estimated/predicted arrival passed >2h ago with no
             // actual landing recorded — FA lost track, flight is done.
             if (!landed) {
-              const estArr = f.estimated_on ?? f.scheduled_on;
+              const estArr = f.predicted_on ?? f.estimated_on ?? f.scheduled_on;
               if (estArr) {
                 const estArrMs = new Date(estArr).getTime();
                 if (estArrMs < now - 2 * 3600_000) continue;
@@ -428,8 +433,8 @@ export function toFlightInfo(tail: string, f: FaFlight): FlightInfo {
     destination_name: f.destination?.name ?? null,
     status: f.status,
     progress_percent: f.progress_percent,
-    departure_time: f.actual_out ?? f.estimated_out ?? f.estimated_off ?? f.scheduled_out,
-    arrival_time: f.estimated_on ?? f.scheduled_on,
+    departure_time: f.actual_out ?? f.predicted_out ?? f.estimated_out ?? f.estimated_off ?? f.scheduled_out,
+    arrival_time: f.predicted_on ?? f.estimated_on ?? f.scheduled_on,
     scheduled_arrival: f.scheduled_on,
     actual_departure: f.actual_out ?? f.actual_off ?? null,
     actual_arrival: f.actual_in ?? f.actual_on ?? null,
@@ -545,8 +550,8 @@ export async function getCommercialFlightStatus(
       destination_iata: f.destination?.code_iata ?? null,
       scheduled_departure: f.scheduled_out ?? null,
       scheduled_arrival: f.scheduled_in ?? f.scheduled_on ?? null,
-      estimated_departure: f.estimated_out ?? null,
-      estimated_arrival: f.estimated_in ?? f.estimated_on ?? null,
+      estimated_departure: f.predicted_out ?? f.estimated_out ?? null,
+      estimated_arrival: f.predicted_in ?? f.predicted_on ?? f.estimated_in ?? f.estimated_on ?? null,
       actual_departure: f.actual_out ?? f.actual_off ?? null,
       actual_arrival: f.actual_in ?? f.actual_on ?? null,
       departure_delay_minutes: depDelay,
@@ -848,4 +853,61 @@ function estimateFlightPrice(durationMin: number, airline: string): number {
 function icaoToIata(code: string): string {
   if (code.length === 4 && code.startsWith("K")) return code.slice(1);
   return code;
+}
+
+// ---------------------------------------------------------------------------
+// Operator Fleet Endpoint (replaces per-tail discovery polling)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetch all Baker fleet flights via /operators/KOW/flights.
+ * Returns scheduled + en_route + arrived flights in one batch.
+ * Uses KOW callsign-based operator query, which bypasses LADD blocking.
+ *
+ * Cost: ~5 paginated calls vs 20+ per-tail calls = ~75-80% savings.
+ */
+export async function getFleetViaOperator(
+  operatorCode = "KOW",
+): Promise<{ flights: FaFlight[]; apiCalls: number }> {
+  const allFlights: FaFlight[] = [];
+  let url: string | null = `${BASE}/operators/${encodeURIComponent(operatorCode)}/flights`;
+  let apiCalls = 0;
+  let retries = 0;
+
+  while (url && apiCalls < 10) {
+    apiCalls++;
+    const res = await fetch(url, {
+      headers: headers(),
+      signal: AbortSignal.timeout(15000),
+    });
+
+    if (!res.ok) {
+      if (res.status === 401) throw new Error("FlightAware: invalid API key");
+      if (res.status === 429 && retries < 3) {
+        retries++;
+        console.warn(`[FA Fleet] Rate limited — retry ${retries}/3`);
+        await new Promise((r) => setTimeout(r, 2000 * retries));
+        continue;
+      }
+      console.warn(`[FA Fleet] HTTP ${res.status} — stopping pagination`);
+      break;
+    }
+    retries = 0;
+
+    const data = await res.json();
+
+    // Operator endpoint returns { scheduled: [], en_route: [], arrived: [] }
+    for (const category of ["scheduled", "en_route", "arrived"] as const) {
+      const flights = (data[category] ?? []) as FaFlight[];
+      allFlights.push(...flights);
+    }
+
+    const next = data.links?.next as string | undefined;
+    url = next ? (next.startsWith("http") ? next : `${BASE}${next}`) : null;
+  }
+
+  console.log(
+    `[FA Fleet] ${operatorCode}: ${allFlights.length} flights from ${apiCalls} API calls`,
+  );
+  return { flights: allFlights, apiCalls };
 }

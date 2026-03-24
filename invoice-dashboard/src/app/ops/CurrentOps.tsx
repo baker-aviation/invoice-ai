@@ -950,7 +950,23 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
         if (hasLanded) {
           // Landed: compare FA destination vs scheduled arrival
           if (faDest && schedDest && faDest === schedDest) {
-            // False alarm — landed at scheduled airport. Skip supersededMap entirely.
+            // FA ghost entry has same dest as scheduled — but there may be a sibling
+            // entry from the same tail+origin with a DIFFERENT destination (the real diversion target).
+            // FA creates: ghost (TQPF→KOPF, diverted+cancelled) + active (TQPF→MBPV, en-route).
+            let siblingDest: string | null = null;
+            for (const [k, v] of flightInfo) {
+              if (!k.startsWith(`${f.tail_number}|${f.departure_icao}|`)) continue;
+              const vDest = normIcao(v.destination_icao);
+              if (vDest && vDest !== schedDest && !v.diverted) {
+                siblingDest = vDest;
+                break;
+              }
+            }
+            if (siblingDest) {
+              // Real diversion — sibling entry reveals actual destination
+              superseded.set(f.id, { actualDest: siblingDest, diverted: true, diverting: false });
+            }
+            // No sibling → truly landed at scheduled airport, skip supersededMap
             continue;
           }
           // Confirmed diversion — landed at different airport
