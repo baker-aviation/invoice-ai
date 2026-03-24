@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { verifyCronSecret } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 import {
   getFlightsByRegistration,
@@ -8,6 +9,7 @@ import {
   type FlightInfo,
 } from "@/lib/flightaware";
 import { TRIPS } from "@/lib/maintenanceData";
+import { findNearestAirport } from "@/lib/airportCoords";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
@@ -20,9 +22,7 @@ const PAUSE_MS = 500; // pause between sequential tail fetches
 // ---------------------------------------------------------------------------
 
 function authorize(req: NextRequest): boolean {
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret) return false;
-  return req.headers.get("authorization") === `Bearer ${cronSecret}`;
+  return verifyCronSecret(req);
 }
 
 // ---------------------------------------------------------------------------
@@ -189,6 +189,260 @@ async function upsertFlights(flights: FlightInfo[]): Promise<number> {
 }
 
 // ---------------------------------------------------------------------------
+// Link FA flights → ICS flights by fa_flight_id
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalize an airport code to a canonical form for matching.
+ * Handles: ICAO K-prefix stripping (KFOK → FOK), TJ/MM/MY/MK prefix territories
+ * (TJSJ = SJU, MMUN = CUN), and trims whitespace.
+ *
+ * The goal is to produce a 3-letter code that both FA and ICS data can agree on.
+ */
+function normIcao(code: string | null | undefined): string {
+  if (!code) return "";
+  const c = code.trim().toUpperCase();
+  // US airports: strip K prefix (KFOK → FOK, KSJU → SJU)
+  if (c.length === 4 && c.startsWith("K")) return c.slice(1);
+  // Caribbean/Mexico/Canada territories: TJ, MM, MY, MK, MB prefixes → strip 1 char
+  // e.g. TJSJ → JSJ? No — these use real ICAO. Let's just strip to last 3 for matching.
+  // TJSJ → SJU won't work this way. We need an explicit map for known mismatches.
+  return c;
+}
+
+/** Map of ICAO codes that FA uses → the FAA/ICS equivalent */
+const ICAO_ALIASES: Record<string, string> = {
+  // Caribbean / Territories — FA uses real ICAO, ICS often uses K-prefix or IATA
+  TJSJ: "KSJU",  // San Juan, PR
+  TJBQ: "KBQN",  // Aguadilla, PR
+  TJIG: "KSIG",  // San Juan Isla Grande, PR
+  TIST: "KSTT",  // St. Thomas, USVI
+  TISX: "KSTX",  // St. Croix, USVI
+  // Mexico
+  MMUN: "MCUN",  // Cancun — may appear as CUN in ICS
+  MMMX: "MMEX",  // Mexico City
+  MMSD: "MSSD",  // San Jose del Cabo
+  // Bahamas
+  MYNN: "MYNN",  // Nassau — usually matches
+  // Add more as discovered
+};
+
+/** Check if two airport codes match after normalization + alias expansion */
+function airportsMatch(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false;
+  const na = normIcao(a);
+  const nb = normIcao(b);
+  if (na === nb) return true;
+
+  // Check alias map in both directions
+  const au = a.trim().toUpperCase();
+  const bu = b.trim().toUpperCase();
+  const aliasA = ICAO_ALIASES[au];
+  const aliasB = ICAO_ALIASES[bu];
+  if (aliasA && normIcao(aliasA) === nb) return true;
+  if (aliasB && normIcao(aliasB) === na) return true;
+
+  // Last resort: compare 3-letter IATA core (strip any prefix to get last 3 chars)
+  if (na.length >= 3 && nb.length >= 3) {
+    const iataA = na.length > 3 ? na.slice(-3) : na;
+    const iataB = nb.length > 3 ? nb.slice(-3) : nb;
+    if (iataA === iataB) return true;
+  }
+
+  return false;
+}
+
+async function linkFaToIcs(flights: FlightInfo[]): Promise<number> {
+  if (flights.length === 0) return 0;
+  const supa = createServiceClient();
+  let linked = 0;
+
+  for (const fa of flights) {
+    if (!fa.fa_flight_id || !fa.tail || !fa.origin_icao || !fa.destination_icao) continue;
+
+    const faDep = fa.departure_time ?? fa.actual_departure;
+    if (!faDep) continue;
+
+    const faDepMs = new Date(faDep).getTime();
+    const windowStart = new Date(faDepMs - 3 * 3600_000).toISOString();
+    const windowEnd = new Date(faDepMs + 3 * 3600_000).toISOString();
+
+    // Query by tail + time window only (NOT route) — we'll filter routes in memory
+    // to handle ICAO code mismatches (e.g. TJSJ vs KSJU)
+    const { data: candidates } = await supa
+      .from("flights")
+      .select("id, scheduled_departure, fa_flight_id, departure_icao, arrival_icao")
+      .eq("tail_number", fa.tail)
+      .gte("scheduled_departure", windowStart)
+      .lte("scheduled_departure", windowEnd);
+
+    if (!candidates || candidates.length === 0) continue;
+
+    // Filter by route using normalized airport code matching
+    // For diverted flights, only require origin match — destination will differ
+    const routeMatches = candidates.filter(
+      (c) =>
+        airportsMatch(c.departure_icao, fa.origin_icao) &&
+        (fa.diverted || airportsMatch(c.arrival_icao, fa.destination_icao)),
+    );
+
+    if (routeMatches.length === 0) continue;
+
+    // Pick closest by departure time, but protect existing valid links
+    let bestId: string | null = null;
+    let bestDiff = Infinity;
+    for (const c of routeMatches) {
+      // Skip if already correctly linked to THIS FA flight
+      if (c.fa_flight_id === fa.fa_flight_id) {
+        bestId = null;
+        break;
+      }
+      // Skip candidates that already have a different fa_flight_id —
+      // don't steal a link that was already established for another FA flight
+      if (c.fa_flight_id) continue;
+      const diff = Math.abs(new Date(c.scheduled_departure).getTime() - faDepMs);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        bestId = c.id;
+      }
+    }
+
+    if (bestId) {
+      const { error } = await supa
+        .from("flights")
+        .update({ fa_flight_id: fa.fa_flight_id })
+        .eq("id", bestId);
+
+      if (!error) {
+        linked++;
+      } else {
+        console.error(`[FA Poll] linkFaToIcs error for ${fa.fa_flight_id}:`, error.message);
+      }
+    }
+  }
+
+  if (linked > 0) {
+    console.log(`[FA Poll] Linked ${linked} FA flights to ICS flights`);
+  }
+  return linked;
+}
+
+// ---------------------------------------------------------------------------
+// Update ICS schedule when a flight diverts to a different airport
+// ---------------------------------------------------------------------------
+
+async function updateDivertedArrivals(flights: FlightInfo[]): Promise<number> {
+  // For diverted flights, FA keeps destination as the ORIGINAL filed destination.
+  // The actual diversion airport must be inferred from position data (lat/lon).
+  // Only update when the flight has landed (actual_arrival set) to avoid premature overwrites.
+  const diverted = flights.filter((f) =>
+    f.diverted && f.fa_flight_id && f.actual_arrival != null
+  );
+  if (diverted.length === 0) return 0;
+
+  const supa = createServiceClient();
+  let updated = 0;
+
+  for (const fa of diverted) {
+    // Find the linked ICS flight
+    const { data: icsFlights } = await supa
+      .from("flights")
+      .select("id, arrival_icao")
+      .eq("fa_flight_id", fa.fa_flight_id)
+      .limit(1);
+
+    if (!icsFlights || icsFlights.length === 0) continue;
+    const ics = icsFlights[0];
+
+    // Determine actual diversion airport from last known position
+    let diversionIcao: string | null = null;
+    if (fa.latitude != null && fa.longitude != null) {
+      const nearest = findNearestAirport(fa.latitude, fa.longitude);
+      if (nearest) diversionIcao = nearest.code;
+    }
+
+    // Fallback: if no position data, use FA's destination (might be correct for some diversions)
+    if (!diversionIcao) diversionIcao = fa.destination_icao;
+    if (!diversionIcao) continue;
+
+    // Normalize ICAO for comparison (3-letter US → K-prefix)
+    const norm = (c: string | null) => c ? (c.length === 3 && /^[A-Z]/.test(c) ? `K${c}` : c) : null;
+    const actualDest = norm(diversionIcao);
+    const icsDest = norm(ics.arrival_icao);
+
+    if (actualDest && icsDest && actualDest !== icsDest) {
+      const { error } = await supa
+        .from("flights")
+        .update({ arrival_icao: actualDest, diverted: true })
+        .eq("id", ics.id);
+
+      if (!error) {
+        console.log(`[FA Poll] Diversion: updated ${fa.tail} arrival ${icsDest} → ${actualDest}`);
+        updated++;
+
+        // Update the next leg's departure to the diversion airport with ? marker
+        const { data: nextLegs } = await supa
+          .from("flights")
+          .select("id, departure_icao")
+          .eq("tail_number", fa.tail)
+          .eq("departure_icao", icsDest)
+          .gt("scheduled_departure", fa.actual_arrival!)
+          .order("scheduled_departure")
+          .limit(1);
+
+        if (nextLegs && nextLegs.length > 0) {
+          await supa.from("flights")
+            .update({ departure_icao: `${actualDest}?` })
+            .eq("id", nextLegs[0].id);
+          console.log(`[FA Poll] Diversion: updated next leg ${nextLegs[0].id} departure ${icsDest} → ${actualDest}?`);
+        }
+      }
+    }
+  }
+
+  return updated;
+}
+
+// ---------------------------------------------------------------------------
+// Confirm uncertain departures (clear ? suffix when FA shows actual departure)
+// ---------------------------------------------------------------------------
+
+async function confirmUncertainDepartures(flights: FlightInfo[]): Promise<number> {
+  const departed = flights.filter((f) => f.fa_flight_id && f.actual_departure && f.origin_icao);
+  if (departed.length === 0) return 0;
+
+  const supa = createServiceClient();
+  let confirmed = 0;
+
+  for (const fa of departed) {
+    // Find ICS flights with ? in departure_icao for this tail
+    const { data: uncertain } = await supa
+      .from("flights")
+      .select("id, departure_icao")
+      .eq("fa_flight_id", fa.fa_flight_id)
+      .like("departure_icao", "%?")
+      .limit(1);
+
+    if (!uncertain || uncertain.length === 0) continue;
+
+    const norm = (c: string | null) => c ? (c.length === 3 && /^[A-Z]/.test(c) ? `K${c}` : c) : null;
+    const confirmedIcao = norm(fa.origin_icao);
+    if (!confirmedIcao) continue;
+
+    const { error } = await supa.from("flights")
+      .update({ departure_icao: confirmedIcao })
+      .eq("id", uncertain[0].id);
+
+    if (!error) {
+      console.log(`[FA Poll] Confirmed departure: ${fa.tail} ${uncertain[0].departure_icao} → ${confirmedIcao}`);
+      confirmed++;
+    }
+  }
+
+  return confirmed;
+}
+
+// ---------------------------------------------------------------------------
 // Mode 1: En-route polling
 // ---------------------------------------------------------------------------
 
@@ -203,10 +457,27 @@ async function pollEnRoute(
     .select("tail")
     .in("status", ["En Route", "Diverted"]);
 
-  const tails = [...new Set((enRouteRows ?? []).map((r) => r.tail as string))];
+  const enRouteTails = new Set((enRouteRows ?? []).map((r) => r.tail as string));
+
+  // Also check tails with ICS flights scheduled to depart in the last 8h but not yet
+  // marked en-route in fa_flights. This closes the gap where FA's website shows
+  // "En Route" but our DB still has "Scheduled"/"Filed" from the last discovery poll.
+  // 8h covers the longest domestic flights (e.g. KORL→KLAS ~5h).
+  const recentDepCutoff = new Date(Date.now() - 8 * 3600_000).toISOString();
+  const { data: recentDepRows } = await supa
+    .from("flights")
+    .select("tail_number")
+    .lt("scheduled_departure", new Date().toISOString())
+    .gt("scheduled_departure", recentDepCutoff);
+
+  for (const row of recentDepRows ?? []) {
+    if (row.tail_number) enRouteTails.add(row.tail_number);
+  }
+
+  const tails = [...enRouteTails];
 
   if (tails.length === 0) {
-    console.log("[FA Poll] No en-route flights found");
+    console.log("[FA Poll] No en-route or recently-departed flights found");
     return { tails: [], flights: 0, upserted: 0 };
   }
 
@@ -214,12 +485,14 @@ async function pollEnRoute(
 
   let totalFlights = 0;
   let totalUpserted = 0;
+  const allFlights: FlightInfo[] = [];
 
   for (let i = 0; i < tails.length; i++) {
     try {
       const flights = await fetchAndProcessTail(tails[i], callsignMap);
       totalFlights += flights.length;
       totalUpserted += await upsertFlights(flights);
+      allFlights.push(...flights);
     } catch (err) {
       console.error(`[FA Poll] Error polling ${tails[i]}:`, err instanceof Error ? err.message : err);
     }
@@ -227,6 +500,15 @@ async function pollEnRoute(
       await new Promise((r) => setTimeout(r, PAUSE_MS));
     }
   }
+
+  // Link FA flights to ICS flights by fa_flight_id
+  await linkFaToIcs(allFlights);
+
+  // Update ICS arrival airport for diverted flights
+  await updateDivertedArrivals(allFlights);
+
+  // Confirm uncertain departures (clear ? suffix)
+  await confirmUncertainDepartures(allFlights);
 
   return { tails, flights: totalFlights, upserted: totalUpserted };
 }
@@ -279,12 +561,14 @@ async function pollDiscovery(
 
   let totalFlights = 0;
   let totalUpserted = 0;
+  const allFlights: FlightInfo[] = [];
 
   for (let i = 0; i < tails.length; i++) {
     try {
       const flights = await fetchAndProcessTail(tails[i], callsignMap);
       totalFlights += flights.length;
       totalUpserted += await upsertFlights(flights);
+      allFlights.push(...flights);
     } catch (err) {
       console.error(`[FA Poll] Error discovering ${tails[i]}:`, err instanceof Error ? err.message : err);
     }
@@ -292,6 +576,15 @@ async function pollDiscovery(
       await new Promise((r) => setTimeout(r, PAUSE_MS));
     }
   }
+
+  // Link FA flights to ICS flights by fa_flight_id
+  await linkFaToIcs(allFlights);
+
+  // Update ICS arrival airport for diverted flights
+  await updateDivertedArrivals(allFlights);
+
+  // Confirm uncertain departures (clear ? suffix)
+  await confirmUncertainDepartures(allFlights);
 
   // Cleanup: delete old completed flights (> 36h ago)
   const cutoff = new Date(now.getTime() - 36 * 3600_000).toISOString();
@@ -301,11 +594,12 @@ async function pollDiscovery(
     .lt("actual_arrival", cutoff)
     .not("actual_arrival", "is", null);
 
-  // Also clean stale diverted/cancelled flights that never landed (> 36h old by updated_at)
+  // Also clean any flight that never recorded a landing and hasn't been updated in 36h.
+  // This catches En Route / Scheduled flights where FA lost track and never sent actual_arrival.
+  // Without this, ghost tracks persist on the map indefinitely.
   const { count: cleaned2 } = await supa
     .from("fa_flights")
     .delete({ count: "exact" })
-    .in("status", ["Diverted", "Cancelled"])
     .is("actual_arrival", null)
     .lt("updated_at", cutoff);
 

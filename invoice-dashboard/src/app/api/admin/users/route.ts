@@ -54,7 +54,7 @@ export async function PUT(req: NextRequest) {
   const auth = await requireAdmin(req);
   if (!isAuthed(auth)) return auth.error;
 
-  if (isRateLimited(auth.userId, 30)) {
+  if (await isRateLimited(auth.userId, 30)) {
     return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
   }
 
@@ -102,7 +102,7 @@ export async function PATCH(req: NextRequest) {
   const auth = await requireAdmin(req);
   if (!isAuthed(auth)) return auth.error;
 
-  if (isRateLimited(auth.userId, 30)) {
+  if (await isRateLimited(auth.userId, 30)) {
     return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
   }
 
@@ -150,7 +150,7 @@ export async function DELETE(req: NextRequest) {
   const auth = await requireAdmin(req);
   if (!isAuthed(auth)) return auth.error;
 
-  if (isRateLimited(auth.userId, 10)) {
+  if (await isRateLimited(auth.userId, 10)) {
     return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
   }
 

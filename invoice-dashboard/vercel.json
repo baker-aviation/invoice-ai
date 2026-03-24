@@ -12,6 +12,22 @@
     {
       "path": "/api/cron/fa-poll",
       "schedule": "*/3 * * * *"
+    },
+    {
+      "path": "/api/cron/parse-volunteers",
+      "schedule": "0 0 * * 1"
+    },
+    {
+      "path": "/api/cron/hasdata-cache",
+      "schedule": "0 4 * * 2"
+    },
+    {
+      "path": "/api/ops/intl/warm-route-cache",
+      "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/cron/edct-tracker",
+      "schedule": "*/15 * * * *"
     }
   ]
 }

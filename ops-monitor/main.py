@@ -114,6 +114,135 @@ MS_CLIENT_SECRET = os.getenv("MS_CLIENT_SECRET")
 
 FLIGHTS_TABLE = "flights"
 OPS_ALERTS_TABLE = "ops_alerts"
+SWAP_LEG_ALERTS_TABLE = "swap_leg_alerts"
+
+# ─── Oceanic HF radio check ──────────────────────────────────────────────────
+# These 4 aircraft lack dual HF radios required for oceanic operations.
+OCEANIC_RESTRICTED_TAILS = {"N301HR", "N860TX", "N957JS", "N883TR"}
+
+# ICAO prefixes that count as "oceanic destination" from a US/Canada departure.
+# Caribbean east-of-Cuba islands:
+_OCEANIC_CARIBBEAN_PREFIXES = (
+    "MB",  # Turks & Caicos
+    "MT",  # Haiti
+    "MD",  # Dominican Republic
+    "TJ",  # Puerto Rico
+    "TI",  # US Virgin Islands
+    "TN",  # Netherlands Antilles (St. Maarten, Aruba, Curaçao)
+    "TF",  # French Antilles (Guadeloupe, Martinique)
+    "TK",  # St. Kitts
+    "TL",  # St. Lucia
+    "TB",  # Barbados
+    "TT",  # Trinidad & Tobago
+    "TV",  # St. Vincent
+    "TD",  # Dominica
+    "TG",  # Grenada
+    "TQ",  # Anguilla
+    "TR",  # Montserrat
+    "TX",  # Bermuda
+)
+# Transatlantic / transpacific / Middle East:
+_OCEANIC_INTL_PREFIXES = (
+    "E",   # Northern Europe (EGLL, EHAM, etc.)
+    "L",   # Southern Europe (LFPG, LIRF, etc.)
+    "B",   # Iceland / Greenland (BIKF)
+    "O",   # Middle East (OMDB, OEJN)
+    "Z",   # China
+    "R",   # Japan / Korea (RJTT, RKSI)
+    "V",   # South / Southeast Asia (VHHH)
+    "W",   # Indonesia / Malaysia
+)
+_OCEANIC_HAWAII_PREFIX = "PH"  # Hawaii (PHNL, PHOG)
+_US_CANADA_PREFIXES = ("K", "C")
+
+
+def _is_oceanic_leg(dep_icao: str, arr_icao: str) -> bool:
+    """Return True if the dep→arr pair crosses oceanic airspace."""
+    if not dep_icao or not arr_icao:
+        return False
+    dep = dep_icao.upper()
+    arr = arr_icao.upper()
+
+    def _is_domestic(icao: str) -> bool:
+        return any(icao.startswith(p) for p in _US_CANADA_PREFIXES)
+
+    def _is_oceanic_dest(icao: str) -> bool:
+        if any(icao.startswith(p) for p in _OCEANIC_CARIBBEAN_PREFIXES):
+            return True
+        if any(icao.startswith(p) for p in _OCEANIC_INTL_PREFIXES):
+            return True
+        if icao.startswith(_OCEANIC_HAWAII_PREFIX):
+            return True
+        return False
+
+    # Either direction: domestic ↔ oceanic destination
+    if _is_domestic(dep) and _is_oceanic_dest(arr):
+        return True
+    if _is_oceanic_dest(dep) and _is_domestic(arr):
+        return True
+    return False
+
+
+def _check_oceanic_hf_alerts(supa, flights_batch: List[Dict[str, Any]]) -> int:
+    """
+    Scan synced flights for HF-restricted tails on oceanic legs.
+    Creates/updates OCEANIC_HF alerts in ops_alerts. Returns count created.
+    """
+    alerts: List[Dict[str, Any]] = []
+    for f in flights_batch:
+        tail = (f.get("tail_number") or "").upper()
+        if tail not in OCEANIC_RESTRICTED_TAILS:
+            continue
+        dep = f.get("departure_icao") or ""
+        arr = f.get("arrival_icao") or ""
+        if not _is_oceanic_leg(dep, arr):
+            continue
+        fid = f.get("id") or f.get("ics_uid")  # flight_id if available
+        source_id = f"oceanic-hf-{tail}-{dep}-{arr}-{f.get('ics_uid', '')}"
+        alerts.append({
+            "alert_type": "OCEANIC_HF",
+            "severity": "critical",
+            "airport_icao": dep,
+            "tail_number": tail,
+            "subject": f"OCEANIC EQUIPMENT CONFLICT — {tail}",
+            "body": (
+                f"{tail} is scheduled on an oceanic leg ({dep} → {arr}) "
+                f"but lacks dual HF radios. Aircraft swap will save $3,000, advise Ops."
+            ),
+            "source_message_id": source_id,
+            "raw_data": json.dumps({
+                "tail": tail,
+                "departure_icao": dep,
+                "arrival_icao": arr,
+                "ics_uid": f.get("ics_uid"),
+                "scheduled_departure": f.get("scheduled_departure"),
+                "reason": "dual_hf_required_for_oceanic",
+            }),
+            "created_at": _utc_now(),
+        })
+
+    if not alerts:
+        return 0
+
+    # Dedup client-side
+    seen: set = set()
+    deduped: list = []
+    for a in alerts:
+        if a["source_message_id"] not in seen:
+            seen.add(a["source_message_id"])
+            deduped.append(a)
+
+    try:
+        res = supa.table(OPS_ALERTS_TABLE).upsert(
+            deduped, on_conflict="source_message_id"
+        ).execute()
+        created = len(res.data) if res.data else 0
+        if created:
+            print(f"oceanic_hf: created/updated {created} alerts", flush=True)
+        return created
+    except Exception as e:
+        print(f"oceanic_hf upsert error: {repr(e)}", flush=True)
+        return 0
 
 # ─── Airport coordinates for TFR proximity checks ────────────────────────────
 # Baker's common airports + major nearby airports. (lat, lon) in decimal degrees.
@@ -694,6 +823,121 @@ def get_notams(airports: str = Query(..., description="Comma-separated ICAO code
     return {"ok": True, "notams": res.data or [], "airports": icaos}
 
 
+# ─── Swap leg change detection ────────────────────────────────────────────────
+
+def _detect_swap_leg_changes(supa_client, batch: list, swap_date_str: str):
+    """Compare incoming flights against existing DB rows for the swap date.
+    Insert alerts for material changes (airport, time) on swap-day flights."""
+    from datetime import date as _date, timedelta as _timedelta
+    try:
+        swap_date = _date.fromisoformat(swap_date_str)
+    except (ValueError, TypeError):
+        return 0
+
+    # Filter batch to only flights on swap day (or day before)
+    swap_day_uids = []
+    uid_to_new = {}
+    for row in batch:
+        dep_str = row.get("scheduled_departure", "")
+        if not dep_str:
+            continue
+        dep_date_str = dep_str[:10]
+        # Check if flight is on swap day (Wednesday) or Tuesday before
+        day_before = (swap_date - _timedelta(days=1)).isoformat()
+        if dep_date_str == swap_date_str or dep_date_str == day_before:
+            uid = row.get("ics_uid")
+            if uid:
+                swap_day_uids.append(uid)
+                uid_to_new[uid] = row
+
+    if not swap_day_uids:
+        return 0
+
+    # Fetch existing flights by ics_uid
+    existing_map = {}
+    for i in range(0, len(swap_day_uids), 50):
+        chunk = swap_day_uids[i:i+50]
+        try:
+            res = supa_client.table(FLIGHTS_TABLE) \
+                .select("id, ics_uid, tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival") \
+                .in_("ics_uid", chunk) \
+                .execute()
+            for r in (res.data or []):
+                existing_map[r["ics_uid"]] = r
+        except Exception:
+            pass
+
+    # Compare and generate alerts
+    alerts = []
+    for uid, new_row in uid_to_new.items():
+        old = existing_map.get(uid)
+        if not old:
+            # New flight — only alert if it's a new addition on swap day
+            alerts.append({
+                "flight_id": None,
+                "tail_number": new_row.get("tail_number", ""),
+                "change_type": "added",
+                "old_value": None,
+                "new_value": {"departure_icao": new_row.get("departure_icao"), "arrival_icao": new_row.get("arrival_icao"),
+                              "scheduled_departure": new_row.get("scheduled_departure")},
+                "swap_date": swap_date_str,
+            })
+            continue
+
+        flight_id = old.get("id")
+        tail = old.get("tail_number", "")
+
+        # Check airport changes
+        if (old.get("departure_icao") != new_row.get("departure_icao") or
+            old.get("arrival_icao") != new_row.get("arrival_icao")):
+            alerts.append({
+                "flight_id": flight_id,
+                "tail_number": tail,
+                "change_type": "airport_change",
+                "old_value": {"departure_icao": old.get("departure_icao"), "arrival_icao": old.get("arrival_icao")},
+                "new_value": {"departure_icao": new_row.get("departure_icao"), "arrival_icao": new_row.get("arrival_icao")},
+                "swap_date": swap_date_str,
+            })
+
+        # Check time changes (>15min difference = material)
+        old_dep = old.get("scheduled_departure", "")
+        new_dep = new_row.get("scheduled_departure", "")
+        if old_dep and new_dep and old_dep != new_dep:
+            try:
+                from dateutil.parser import isoparse as _isoparse
+                old_dt = _isoparse(old_dep)
+                new_dt = _isoparse(new_dep)
+                if abs((new_dt - old_dt).total_seconds()) > 900:  # >15min
+                    alerts.append({
+                        "flight_id": flight_id,
+                        "tail_number": tail,
+                        "change_type": "time_change",
+                        "old_value": {"scheduled_departure": old_dep, "scheduled_arrival": old.get("scheduled_arrival")},
+                        "new_value": {"scheduled_departure": new_dep, "scheduled_arrival": new_row.get("scheduled_arrival")},
+                        "swap_date": swap_date_str,
+                    })
+            except Exception:
+                pass
+
+    if not alerts:
+        return 0
+
+    # Insert alerts
+    inserted = 0
+    try:
+        import json as _json
+        for a in alerts:
+            a["old_value"] = _json.dumps(a["old_value"]) if a["old_value"] else None
+            a["new_value"] = _json.dumps(a["new_value"]) if a["new_value"] else None
+        supa_client.table(SWAP_LEG_ALERTS_TABLE).insert(alerts).execute()
+        inserted = len(alerts)
+        print(f"sync_schedule: created {inserted} swap leg alerts for {swap_date_str}", flush=True)
+    except Exception as e:
+        print(f"sync_schedule: swap leg alert insert error: {repr(e)}", flush=True)
+
+    return inserted
+
+
 # ─── Job: sync_schedule ───────────────────────────────────────────────────────
 
 
@@ -751,7 +995,9 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
     all_components: list = []
     feed_results: dict = {}
     pool = ThreadPoolExecutor(max_workers=min(len(ics_urls), 8))
-    future_to_url = {pool.submit(_fetch_ics_events, url, now): url for url in ics_urls}
+    # Fetch events ending after 48h ago so cleanup can purge stale past flights too
+    ics_cutoff_past = now - timedelta(hours=48)
+    future_to_url = {pool.submit(_fetch_ics_events, url, ics_cutoff_past): url for url in ics_urls}
     try:
         for future in as_completed(future_to_url, timeout=60):
             url = future_to_url[future]
@@ -904,6 +1150,38 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
     t_parse = _time.monotonic() - t0
     print(f"sync_schedule: parsed {len(batch)} flights to upsert, {skipped} skipped in {t_parse:.1f}s", flush=True)
 
+    # ── Detect swap-day flight changes before upserting ──────────────────
+    try:
+        today = datetime.now(timezone.utc).date()
+        days_until_wed = (2 - today.weekday()) % 7  # 2 = Wednesday
+        if days_until_wed == 0:
+            days_until_wed = 7 if today.weekday() > 2 else 0
+        next_wed = today + timedelta(days=days_until_wed)
+        swap_alerts_created = _detect_swap_leg_changes(supa, batch, next_wed.isoformat())
+    except Exception as e:
+        print(f"sync_schedule: swap leg change detection error: {repr(e)}", flush=True)
+        swap_alerts_created = 0
+
+    # Protect diverted flights from having their arrival/departure overwritten by ICS data.
+    # Fetch UIDs of flights marked as diverted and strip route fields from those upsert rows.
+    diverted_uids: set = set()
+    try:
+        batch_uids = [f["ics_uid"] for f in batch]
+        # Query in chunks of 100 to avoid URL length limits
+        for ui in range(0, len(batch_uids), 100):
+            uid_chunk = batch_uids[ui:ui + 100]
+            resp = supa.table(FLIGHTS_TABLE).select("ics_uid").eq("diverted", True).in_("ics_uid", uid_chunk).execute()
+            for row in (resp.data or []):
+                diverted_uids.add(row["ics_uid"])
+        if diverted_uids:
+            print(f"sync_schedule: protecting {len(diverted_uids)} diverted flights from route overwrite", flush=True)
+            for flight in batch:
+                if flight["ics_uid"] in diverted_uids:
+                    flight.pop("departure_icao", None)
+                    flight.pop("arrival_icao", None)
+    except Exception as e:
+        print(f"sync_schedule: diverted protection query failed (proceeding anyway): {repr(e)}", flush=True)
+
     # Bulk upsert in chunks of 50, with row-level fallback on failure
     CHUNK = 50
     for i in range(0, len(batch), CHUNK):
@@ -923,14 +1201,53 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
                     print(f"sync_schedule row upsert error uid={row.get('ics_uid','?')}: {repr(row_err)}", flush=True)
 
     # ── Upsert MX_NOTE alerts from maintenance events ───────────────────
+    # Protect manually-edited notes: if a user has set assigned_van,
+    # scheduled_date, or changed airport_icao, don't overwrite those fields.
     mx_created = 0
     if mx_alerts_batch:
         print(f"sync_schedule: upserting {len(mx_alerts_batch)} MX_NOTE alerts", flush=True)
         try:
-            res = supa.table(OPS_ALERTS_TABLE).upsert(
-                mx_alerts_batch, on_conflict="source_message_id"
-            ).execute()
-            mx_created = len(res.data) if res.data else 0
+            # Check which notes have been manually edited
+            source_ids = [a["source_message_id"] for a in mx_alerts_batch]
+            edited_ids = set()
+            for i in range(0, len(source_ids), 50):
+                chunk = source_ids[i:i+50]
+                existing = supa.table(OPS_ALERTS_TABLE).select(
+                    "source_message_id"
+                ).in_("source_message_id", chunk).or_(
+                    "assigned_van.not.is.null,scheduled_date.not.is.null"
+                ).execute()
+                for row in (existing.data or []):
+                    edited_ids.add(row["source_message_id"])
+
+            # Split: full upsert for untouched notes, partial update for edited ones
+            new_batch = [a for a in mx_alerts_batch if a["source_message_id"] not in edited_ids]
+            edited_batch = [a for a in mx_alerts_batch if a["source_message_id"] in edited_ids]
+
+            if new_batch:
+                res = supa.table(OPS_ALERTS_TABLE).upsert(
+                    new_batch, on_conflict="source_message_id"
+                ).execute()
+                mx_created += len(res.data) if res.data else 0
+
+            # For edited notes, only update raw_data (timestamps) — preserve user edits
+            # Batch via upsert with onConflict to avoid N+1 updates
+            if edited_batch:
+                edited_upsert = [
+                    {"source_message_id": a["source_message_id"], "raw_data": a["raw_data"],
+                     "alert_type": a.get("alert_type", "MX_NOTE")}
+                    for a in edited_batch
+                ]
+                for i in range(0, len(edited_upsert), 50):
+                    chunk = edited_upsert[i:i + 50]
+                    supa.table(OPS_ALERTS_TABLE).upsert(
+                        chunk, on_conflict="source_message_id",
+                        ignore_duplicates=False,
+                    ).execute()
+                mx_created += len(edited_batch)
+
+            if edited_ids:
+                print(f"sync_schedule: preserved manual edits on {len(edited_ids)} MX_NOTE(s)", flush=True)
         except Exception as e:
             print(f"sync_schedule MX_NOTE upsert error: {repr(e)}", flush=True)
 
@@ -947,33 +1264,198 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
     # ── Cleanup: remove non-flight entries already in the DB ─────────────
     cleaned = 0
     try:
-        # 0. Purge stale flights: delete DB rows whose ics_uid is no longer in
-        #    the fresh ICS data.  This handles legs that JetInsight removed or
-        #    replaced (new UID).  Scoped to flights departing between now and
-        #    the lookahead cutoff so we don't touch historical rows.
+        # 0. Flight revision detection: find DB rows whose ics_uid is no
+        #    longer in the fresh ICS data.  Instead of deleting them (which
+        #    cascade-deletes permits, handlers, and van assignments), try to
+        #    match each stale flight to a revised version in the new batch.
+        #    If matched, UPDATE the existing row in-place (preserving flight_id
+        #    and all linked work) and create a FLIGHT_REVISION ops_alert.
+        #    Only delete truly cancelled flights with no match.
         fresh_uids = {f["ics_uid"] for f in batch}
+        batch_by_uid = {f["ics_uid"]: f for f in batch}
         if fresh_uids:
-            # Fetch all ics_uids currently in the DB within the sync window
-            window_start = now.isoformat()
+            window_start = (now - timedelta(hours=48)).isoformat()
             window_end = cutoff.isoformat()
             db_rows = (
                 supa.table(FLIGHTS_TABLE)
-                .select("id, ics_uid")
+                .select("id, ics_uid, tail_number, departure_icao, arrival_icao, "
+                        "scheduled_departure, scheduled_arrival, pic, sic, summary")
                 .gte("scheduled_departure", window_start)
                 .lte("scheduled_departure", window_end)
                 .limit(10000)
                 .execute()
             )
-            stale_ids = [
-                r["id"] for r in (db_rows.data or [])
+            stale_rows = [
+                r for r in (db_rows.data or [])
                 if r.get("ics_uid") and r["ics_uid"] not in fresh_uids
             ]
-            for i in range(0, len(stale_ids), 50):
-                chunk_ids = stale_ids[i:i + 50]
+
+            # Build index of new batch flights by route signature for matching
+            # Key: "dep|arr" → list of batch flights (loose match by route)
+            batch_route_index: Dict[str, list] = {}
+            for f in batch:
+                d = f.get("departure_icao") or ""
+                a = f.get("arrival_icao") or ""
+                if d and a:
+                    batch_route_index.setdefault(f"{d}|{a}", []).append(f)
+
+            revised_count = 0
+            cancelled_ids: List[str] = []
+
+            for stale in stale_rows:
+                sd = stale.get("departure_icao") or ""
+                sa = stale.get("arrival_icao") or ""
+                st_dep = stale.get("scheduled_departure") or ""
+
+                # Try to find a matching revised flight in the batch:
+                # Same route (dep+arr), within 6 hours, not yet matched
+                match = None
+                route_key = f"{sd}|{sa}"
+                for candidate in batch_route_index.get(route_key, []):
+                    # Skip if this candidate's UID is already in the DB
+                    # (it'll be handled by the normal upsert)
+                    c_uid = candidate["ics_uid"]
+                    if c_uid in {r["ics_uid"] for r in (db_rows.data or []) if r["ics_uid"] in fresh_uids}:
+                        continue
+                    try:
+                        t_old = datetime.fromisoformat(st_dep.replace("Z", "+00:00"))
+                        t_new = datetime.fromisoformat(candidate["scheduled_departure"].replace("Z", "+00:00"))
+                    except (ValueError, KeyError):
+                        continue
+                    if abs((t_new - t_old).total_seconds()) <= 6 * 3600:
+                        match = candidate
+                        break
+
+                if not match:
+                    # Also try matching by tail + time window (route may have changed)
+                    st_tail = stale.get("tail_number") or ""
+                    if st_tail:
+                        for f in batch:
+                            if f.get("tail_number") != st_tail:
+                                continue
+                            if f["ics_uid"] in {r["ics_uid"] for r in (db_rows.data or []) if r["ics_uid"] in fresh_uids}:
+                                continue
+                            try:
+                                t_old = datetime.fromisoformat(st_dep.replace("Z", "+00:00"))
+                                t_new = datetime.fromisoformat(f["scheduled_departure"].replace("Z", "+00:00"))
+                            except (ValueError, KeyError):
+                                continue
+                            if abs((t_new - t_old).total_seconds()) <= 6 * 3600:
+                                match = f
+                                break
+
+                if match:
+                    # ── Matched: this is a revision, not a cancellation ────
+                    # Build list of what changed
+                    changes = []
+                    old_tail = stale.get("tail_number") or ""
+                    new_tail = match.get("tail_number") or ""
+                    if old_tail != new_tail and old_tail and new_tail:
+                        changes.append(f"Tail: {old_tail} → {new_tail}")
+
+                    old_dep_t = stale.get("scheduled_departure") or ""
+                    new_dep_t = match.get("scheduled_departure") or ""
+                    if old_dep_t != new_dep_t:
+                        # Format times for readability
+                        try:
+                            old_fmt = datetime.fromisoformat(old_dep_t.replace("Z", "+00:00")).strftime("%H:%MZ")
+                            new_fmt = datetime.fromisoformat(new_dep_t.replace("Z", "+00:00")).strftime("%H:%MZ")
+                            changes.append(f"Departure: {old_fmt} → {new_fmt}")
+                        except ValueError:
+                            changes.append(f"Departure time changed")
+
+                    old_arr_t = stale.get("scheduled_arrival") or ""
+                    new_arr_t = match.get("scheduled_arrival") or ""
+                    if old_arr_t != new_arr_t and old_arr_t and new_arr_t:
+                        try:
+                            old_fmt = datetime.fromisoformat(old_arr_t.replace("Z", "+00:00")).strftime("%H:%MZ")
+                            new_fmt = datetime.fromisoformat(new_arr_t.replace("Z", "+00:00")).strftime("%H:%MZ")
+                            changes.append(f"Arrival: {old_fmt} → {new_fmt}")
+                        except ValueError:
+                            changes.append(f"Arrival time changed")
+
+                    old_pic = stale.get("pic") or ""
+                    new_pic = match.get("pic") or ""
+                    if old_pic != new_pic and (old_pic or new_pic):
+                        changes.append(f"PIC: {old_pic or '(none)'} → {new_pic or '(none)'}")
+
+                    old_sic = stale.get("sic") or ""
+                    new_sic = match.get("sic") or ""
+                    if old_sic != new_sic and (old_sic or new_sic):
+                        changes.append(f"SIC: {old_sic or '(none)'} → {new_sic or '(none)'}")
+
+                    old_dep = stale.get("departure_icao") or ""
+                    new_dep = match.get("departure_icao") or ""
+                    old_arr = stale.get("arrival_icao") or ""
+                    new_arr = match.get("arrival_icao") or ""
+                    if old_dep != new_dep or old_arr != new_arr:
+                        changes.append(f"Route: {old_dep}-{old_arr} → {new_dep}-{new_arr}")
+
+                    if changes:
+                        # Update the existing flight row in place (preserves flight_id)
+                        update_data = {k: v for k, v in match.items()}
+                        # Replace the ics_uid with the new one
+                        supa.table(FLIGHTS_TABLE).update(update_data).eq("id", stale["id"]).execute()
+
+                        # Create a FLIGHT_REVISION ops_alert
+                        change_summary = "; ".join(changes)
+                        tail = new_tail or old_tail
+                        dep_icao = new_dep or old_dep
+                        arr_icao = new_arr or old_arr
+                        try:
+                            supa.table(OPS_ALERTS_TABLE).insert({
+                                "flight_id": stale["id"],
+                                "alert_type": "FLIGHT_REVISION",
+                                "severity": "info",
+                                "tail_number": tail,
+                                "departure_icao": dep_icao,
+                                "arrival_icao": arr_icao,
+                                "subject": f"Flight revised: {tail} {dep_icao}-{arr_icao}",
+                                "body": change_summary,
+                                "source_message_id": f"rev_{stale['ics_uid']}_{match['ics_uid']}",
+                            }).execute()
+                        except Exception as alert_err:
+                            print(f"sync_schedule: revision alert error: {repr(alert_err)}", flush=True)
+
+                        # Also create intl_leg_alert for international flights
+                        _is_intl = not (dep_icao.startswith("K") and arr_icao.startswith("K"))
+                        if _is_intl:
+                            try:
+                                supa.table("intl_leg_alerts").insert({
+                                    "flight_id": stale["id"],
+                                    "alert_type": "flight_revision",
+                                    "severity": "warning",
+                                    "message": f"{tail} {dep_icao}-{arr_icao}: {change_summary}",
+                                }).execute()
+                            except Exception:
+                                pass  # Non-critical; ops_alert is the primary record
+
+                        # Remove the matched flight from batch so it's not upserted as a new row
+                        # (we already updated the existing row)
+                        batch = [f for f in batch if f["ics_uid"] != match["ics_uid"]]
+                        fresh_uids.discard(match["ics_uid"])
+
+                        revised_count += 1
+                        print(f"sync_schedule: revised flight {tail} {dep_icao}-{arr_icao}: {change_summary}", flush=True)
+                    else:
+                        # UID changed but nothing else meaningful changed — just update ics_uid
+                        supa.table(FLIGHTS_TABLE).update({"ics_uid": match["ics_uid"]}).eq("id", stale["id"]).execute()
+                        batch = [f for f in batch if f["ics_uid"] != match["ics_uid"]]
+                        fresh_uids.discard(match["ics_uid"])
+                else:
+                    # No match — this flight was genuinely cancelled
+                    cancelled_ids.append(stale["id"])
+
+            # Delete genuinely cancelled flights
+            for i in range(0, len(cancelled_ids), 50):
+                chunk_ids = cancelled_ids[i:i + 50]
                 supa.table(FLIGHTS_TABLE).delete().in_("id", chunk_ids).execute()
                 cleaned += len(chunk_ids)
-            if stale_ids:
-                print(f"sync_schedule: purged {len(stale_ids)} stale flights from DB", flush=True)
+
+            if revised_count:
+                print(f"sync_schedule: detected {revised_count} flight revision(s) (preserved work)", flush=True)
+            if cancelled_ids:
+                print(f"sync_schedule: purged {len(cancelled_ids)} cancelled flights from DB", flush=True)
         # 0b. Delete cross-feed duplicates already in the DB — same
         #     (tail, dep, arr, dep_time) but different ics_uid.
         if dup_uids:
@@ -985,7 +1467,7 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
         # Also scan for existing cross-feed dups (from before this fix)
         dup_scan = (
             supa.table(FLIGHTS_TABLE)
-            .select("id, tail_number, departure_icao, arrival_icao, scheduled_departure")
+            .select("id, tail_number, departure_icao, arrival_icao, scheduled_departure, pic")
             .gte("scheduled_departure", now.isoformat())
             .lte("scheduled_departure", cutoff.isoformat())
             .limit(10000)
@@ -1014,30 +1496,41 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
         for skip_type in _SKIP_FLIGHT_TYPES:
             res = supa.table(FLIGHTS_TABLE).delete().eq("flight_type", skip_type).execute()
             cleaned += len(res.data or [])
-        # 2. Delete same-departure/arrival rows (Supabase client can't compare
-        #    two columns, so fetch then delete by ID)
-        dup_res = supa.table(FLIGHTS_TABLE).select("id, departure_icao, arrival_icao").limit(10000).execute()
-        dup_ids = [
-            r["id"] for r in (dup_res.data or [])
-            if r.get("departure_icao") and r.get("arrival_icao")
-            and r["departure_icao"] == r["arrival_icao"]
-        ]
-        for i in range(0, len(dup_ids), 50):
-            chunk_ids = dup_ids[i:i + 50]
-            supa.table(FLIGHTS_TABLE).delete().in_("id", chunk_ids).execute()
-            cleaned += len(chunk_ids)
-        # 3. Delete rows whose summary contains non-flight keywords
-        for kw in _SKIP_SUMMARY_KEYWORDS:
-            kw_res = supa.table(FLIGHTS_TABLE).select("id, summary").ilike("summary", f"%{kw}%").execute()
-            kw_ids = [r["id"] for r in (kw_res.data or [])]
-            for i in range(0, len(kw_ids), 50):
-                chunk_ids = kw_ids[i:i + 50]
+        # 2. Delete same-departure/arrival rows (server-side RPC)
+        try:
+            rpc_res = supa.rpc("cleanup_same_airport_flights").execute()
+            same_apt = rpc_res.data if isinstance(rpc_res.data, int) else 0
+            cleaned += same_apt
+        except Exception:
+            # Fallback if RPC not yet deployed
+            dup_res = supa.table(FLIGHTS_TABLE).select("id, departure_icao, arrival_icao").limit(10000).execute()
+            dup_ids = [
+                r["id"] for r in (dup_res.data or [])
+                if r.get("departure_icao") and r.get("arrival_icao")
+                and r["departure_icao"] == r["arrival_icao"]
+            ]
+            for i in range(0, len(dup_ids), 50):
+                chunk_ids = dup_ids[i:i + 50]
                 supa.table(FLIGHTS_TABLE).delete().in_("id", chunk_ids).execute()
                 cleaned += len(chunk_ids)
+        # 3. Delete rows whose summary contains non-flight keywords (server-side RPC)
+        try:
+            rpc_res = supa.rpc("cleanup_flights_by_summary", {"keywords": list(_SKIP_SUMMARY_KEYWORDS)}).execute()
+            kw_cleaned = rpc_res.data if isinstance(rpc_res.data, int) else 0
+            cleaned += kw_cleaned
+        except Exception:
+            # Fallback if RPC not yet deployed
+            for kw in _SKIP_SUMMARY_KEYWORDS:
+                kw_res = supa.table(FLIGHTS_TABLE).select("id, summary").ilike("summary", f"%{kw}%").execute()
+                kw_ids = [r["id"] for r in (kw_res.data or [])]
+                for i in range(0, len(kw_ids), 50):
+                    chunk_ids = kw_ids[i:i + 50]
+                    supa.table(FLIGHTS_TABLE).delete().in_("id", chunk_ids).execute()
+                    cleaned += len(chunk_ids)
     except Exception as e:
         print(f"sync_schedule cleanup error: {repr(e)}", flush=True)
 
-    # ── Cleanup: delete future flights that no longer appear in any ICS feed ──
+    # ── Cleanup: delete recent+future flights that no longer appear in any ICS feed ──
     # Only run cleanup if we successfully fetched at least 1 feed (avoid
     # wiping everything if all feeds failed).
     deleted = 0
@@ -1045,10 +1538,11 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
     successful_feeds = sum(1 for v in feed_results.values() if isinstance(v, int))
     if successful_feeds > 0 and live_uids:
         try:
-            # Find future flights in DB whose ics_uid is NOT in the current feed
+            # Find recent+future flights in DB whose ics_uid is NOT in the current feed
+            # Include 48h of past flights so revised/removed legs get cleaned up
             existing = supa.table(FLIGHTS_TABLE) \
                 .select("id, ics_uid") \
-                .gte("scheduled_departure", now.isoformat()) \
+                .gte("scheduled_departure", (now - timedelta(hours=48)).isoformat()) \
                 .limit(10000) \
                 .execute()
             stale_ids = [
@@ -1065,10 +1559,14 @@ def sync_schedule(lookahead_hours: int = Query(720, ge=1, le=720)):
         except Exception as e:
             print(f"sync_schedule cleanup error: {repr(e)}", flush=True)
 
+    # ── Oceanic HF radio check ──────────────────────────────────────────────
+    oceanic_hf = _check_oceanic_hf_alerts(supa, batch)
+
     t_total = _time.monotonic() - t0
-    print(f"sync_schedule: done in {t_total:.1f}s — upserted={upserted} skipped={skipped} errors={errors} cleaned={cleaned} deleted={deleted} mx_notes={mx_created}", flush=True)
-    log_pipeline_run("flight-sync", items=upserted, duration_ms=int(t_total * 1000), message=f"upserted={upserted} skipped={skipped} mx_notes={mx_created}")
-    return {"ok": True, "upserted": upserted, "skipped": skipped, "errors": errors, "cleaned": cleaned, "deleted": deleted, "mx_notes": mx_created, "fetch_secs": round(t_fetch, 1), "total_secs": round(t_total, 1)}
+    print(f"sync_schedule: done in {t_total:.1f}s — upserted={upserted} skipped={skipped} errors={errors} cleaned={cleaned} deleted={deleted} mx_notes={mx_created} oceanic_hf={oceanic_hf}", flush=True)
+    log_pipeline_run("flight-sync", items=upserted, duration_ms=int(t_total * 1000), message=f"upserted={upserted} skipped={skipped} mx_notes={mx_created} oceanic_hf={oceanic_hf}")
+
+    return {"ok": True, "upserted": upserted, "skipped": skipped, "errors": errors, "cleaned": cleaned, "deleted": deleted, "mx_notes": mx_created, "oceanic_hf": oceanic_hf, "fetch_secs": round(t_fetch, 1), "total_secs": round(t_total, 1)}
 
 
 # ─── Job: pull_edct ───────────────────────────────────────────────────────────
@@ -1576,7 +2074,7 @@ def _run_check_notams(lookahead_hours: int) -> dict:
 
     flights_res = (
         supa.table(FLIGHTS_TABLE)
-        .select("*")
+        .select("id, departure_icao, arrival_icao, scheduled_departure, tail_number")
         .gte("scheduled_departure", now.isoformat())
         .lte("scheduled_departure", cutoff.isoformat())
         .limit(10000)
@@ -1897,7 +2395,7 @@ def debug_notam_test(airport: str = Query("KJFK")):
         r = requests.get(
             f"{NMS_API_BASE}/v1/notams",
             headers={"Authorization": f"Bearer {token}", "nmsResponseFormat": "GEOJSON"},
-            params={"location": icao, "classification": "DOMESTIC,FDC"},
+            params={"location": icao},
             timeout=(5, 10),
         )
         nms_result["status_code"] = r.status_code
@@ -2010,7 +2508,7 @@ def _fetch_notams(icao: str, token: str) -> List[Dict]:
                 "Authorization": f"Bearer {token}",
                 "nmsResponseFormat": "GEOJSON",
             },
-            params={"location": icao, "classification": "DOMESTIC,FDC"},
+            params={"location": icao},
             timeout=(5, 10),
         )
         print(f"NMS NOTAM {icao}: status={r.status_code} body={r.text[:200]!r}", flush=True)
@@ -2064,6 +2562,9 @@ def _fetch_notams_legacy(icao: str) -> List[Dict]:
 
 def _is_relevant_notam_msg(msg: str) -> bool:
     m = msg.upper()
+    # Skip canceled NOTAMs
+    if "CANCELED" in m or "CANCELLED" in m:
+        return False
     # Runway closures
     if re.search(r"(RWY|RUNWAY).{0,60}(CLSD|CLOSED)", m):
         # Exclude equipment / lighting NOTAMs that mention RWY but aren't
@@ -2093,8 +2594,11 @@ def _is_relevant_notam_msg(msg: str) -> bool:
     # TFR
     if re.search(r"\bTFR\b|TEMPORARY FLIGHT RESTRICTION", m):
         return True
-    # PPR
-    if re.search(r"\bPPR\b|PRIOR PERMISSION REQUIRED", m):
+    # PPR / prior approval
+    if re.search(r"\bPPR\b|PRIOR PERMISSION REQUIRED|PRIOR APPROVAL REQUIRED", m):
+        return True
+    # Traffic restrictions (e.g. "GA IFR TFC RESTRICTED", "TRAFFIC RESTRICTED")
+    if re.search(r"(TFC|TRAFFIC).{0,30}(RSTD|RESTRICTED)", m):
         return True
     return False
 
@@ -2130,8 +2634,10 @@ def _is_ignorable_runway(msg_upper: str) -> bool:
 
 def _classify_notam(msg: str) -> str:
     m = msg.upper()
-    if re.search(r"\bPPR\b|PRIOR PERMISSION REQUIRED", m):
+    if re.search(r"\bPPR\b|PRIOR PERMISSION REQUIRED|PRIOR APPROVAL REQUIRED", m):
         return "NOTAM_PPR"
+    if re.search(r"(TFC|TRAFFIC).{0,30}(RSTD|RESTRICTED)", m):
+        return "NOTAM_AD_RESTRICTED"
     if re.search(r"\bRWY\b|RUNWAY", m):
         return "NOTAM_RUNWAY"
     if re.search(r"TFR|TEMPORARY FLIGHT", m):
@@ -2180,3 +2686,131 @@ def job_pull_swim():
         message=f"pos={stats.get('positions_upserted',0)} flow={stats.get('flow_control_upserted',0)} notams={stats.get('notams_upserted',0)}",
     )
     return {"ok": True, **stats}
+
+
+@app.post("/jobs/notam_consumer")
+def notam_consumer():
+    """Long-running NOTAM stream consumer — holds Solace connection open ~250s.
+
+    Triggered by Cloud Scheduler every 5 minutes. Receives NOTAMs in real-time,
+    filters to trip airports, writes to swim_notams + ops_alerts.
+    """
+    from swim_client import drain_notam_stream  # Lazy import
+
+    HARD_TIMEOUT = 270  # seconds — under Cloud Run's 300s limit
+    result: Dict[str, Any] = {}
+    error: Optional[Exception] = None
+
+    def _run():
+        nonlocal result, error
+        try:
+            result = drain_notam_stream(max_secs=250)
+        except Exception as e:
+            error = e
+
+    worker = threading.Thread(target=_run)
+    worker.start()
+    worker.join(timeout=HARD_TIMEOUT)
+
+    if worker.is_alive():
+        print("[notam_consumer] Hard timeout reached — returning partial results", flush=True)
+        log_pipeline_run("notam-consumer", status="timeout", message="Hard timeout at 270s")
+        return {"ok": False, "error": "timeout", **result}
+
+    if error:
+        print(f"[notam_consumer] exception: {error}", flush=True)
+        log_pipeline_run("notam-consumer", status="error", message=str(error)[:200])
+        raise HTTPException(500, detail=f"NOTAM consumer failed: {error}")
+
+    duration_ms = int(result.get("duration_secs", 0) * 1000)
+    total_items = result.get("notams_upserted", 0) + result.get("alerts_created", 0)
+    log_pipeline_run(
+        "notam-consumer",
+        items=total_items,
+        duration_ms=duration_ms,
+        message=f"recv={result.get('messages_received',0)} notams={result.get('notams_upserted',0)} alerts={result.get('alerts_created',0)}",
+    )
+    return {"ok": True, **result}
+
+
+@app.post("/jobs/cleanup")
+def cleanup():
+    """Delete stale records to keep tables lean.
+
+    Retention policy:
+      - swim_notams          → 1 day  (raw SWIM feed, replaced on reconnect)
+      - swim_positions       → 7 days (ADS-B position reports, queried with 24h window)
+      - flight_events        → 7 days (FA webhook events)
+      - ops_alerts NOTAM_*   → 1 day  (rebuilt by check_notams every 30 min)
+      - ops_alerts TFR_*     → 1 day  (rebuilt by check_notams every 30 min)
+      - ops_alerts SWIM_*    → 7 days (flight events / diversions)
+      - ops_alerts MX_NOTE   → 30 days (maintenance notes, kept for reference)
+      - pipeline_runs        → 7 days (execution logs)
+      - salesperson_notifications_sent → 30 days (dedup records)
+    """
+    supa = sb()
+    now = datetime.now(timezone.utc)
+    deleted: Dict[str, int] = {}
+
+    cutoffs = {
+        "swim_notams_1d": now - timedelta(days=1),
+        "notam_alerts_1d": now - timedelta(days=1),
+        "7d": now - timedelta(days=7),
+        "swim_alerts_7d": now - timedelta(days=7),
+        "mx_alerts_30d": now - timedelta(days=30),
+        "30d": now - timedelta(days=30),
+    }
+
+    # swim_notams — 1 day
+    r = supa.table("swim_notams").delete().lt(
+        "created_at", cutoffs["swim_notams_1d"].isoformat()
+    ).execute()
+    deleted["swim_notams"] = len(r.data or [])
+
+    # ops_alerts NOTAM_* and TFR_* — 1 day
+    for prefix in ("NOTAM_", "TFR_"):
+        r = supa.table("ops_alerts").delete().like(
+            "alert_type", f"{prefix}%"
+        ).lt("created_at", cutoffs["notam_alerts_1d"].isoformat()).execute()
+        deleted[f"ops_alerts_{prefix.lower().rstrip('_')}"] = len(r.data or [])
+
+    # ops_alerts SWIM_* — 7 days
+    r = supa.table("ops_alerts").delete().like(
+        "alert_type", "SWIM_%"
+    ).lt("created_at", cutoffs["swim_alerts_7d"].isoformat()).execute()
+    deleted["ops_alerts_swim"] = len(r.data or [])
+
+    # ops_alerts MX_NOTE — 30 days
+    r = supa.table("ops_alerts").delete().eq(
+        "alert_type", "MX_NOTE"
+    ).lt("created_at", cutoffs["mx_alerts_30d"].isoformat()).execute()
+    deleted["ops_alerts_mx_note"] = len(r.data or [])
+
+    # swim_positions — 7 days
+    r = supa.table("swim_positions").delete().lt(
+        "event_time", cutoffs["7d"].isoformat()
+    ).execute()
+    deleted["swim_positions"] = len(r.data or [])
+
+    # flight_events — 7 days
+    r = supa.table("flight_events").delete().lt(
+        "received_at", cutoffs["7d"].isoformat()
+    ).execute()
+    deleted["flight_events"] = len(r.data or [])
+
+    # pipeline_runs — 7 days
+    r = supa.table("pipeline_runs").delete().lt(
+        "started_at", cutoffs["7d"].isoformat()
+    ).execute()
+    deleted["pipeline_runs"] = len(r.data or [])
+
+    # salesperson_notifications_sent — 30 days
+    r = supa.table("salesperson_notifications_sent").delete().lt(
+        "sent_at", cutoffs["30d"].isoformat()
+    ).execute()
+    deleted["salesperson_notifications_sent"] = len(r.data or [])
+
+    total = sum(deleted.values())
+    print(f"[cleanup] deleted {total} rows: {deleted}", flush=True)
+    log_pipeline_run("cleanup", items=total, message=str(deleted))
+    return {"ok": True, "deleted": deleted, "total": total}

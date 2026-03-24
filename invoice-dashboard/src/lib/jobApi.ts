@@ -10,7 +10,7 @@ const JOB_COLUMNS =
   "id, application_id, created_at, updated_at, hiring_stage, category, employment_type, candidate_name, email, phone, location, total_time_hours, turbine_time_hours, pic_time_hours, sic_time_hours, has_citation_x, has_challenger_300_type_rating, type_ratings, has_part_135, has_part_121, soft_gate_pic_met, soft_gate_pic_status, needs_review, notes, model, info_session_data, structured_notes, rejected_at, rejection_reason, deleted_at";
 
 const JOB_COLUMNS_WITH_STAGE =
-  "id, application_id, created_at, updated_at, pipeline_stage, category, employment_type, candidate_name, email, phone, location, total_time_hours, turbine_time_hours, pic_time_hours, sic_time_hours, has_citation_x, has_challenger_300_type_rating, type_ratings, has_part_135, has_part_121, soft_gate_pic_met, soft_gate_pic_status, needs_review, notes, model, info_session_data, structured_notes, rejected_at, rejection_reason, deleted_at";
+  "id, application_id, created_at, updated_at, pipeline_stage, category, employment_type, candidate_name, email, phone, location, total_time_hours, turbine_time_hours, pic_time_hours, sic_time_hours, has_citation_x, has_challenger_300_type_rating, type_ratings, has_part_135, has_part_121, soft_gate_pic_met, soft_gate_pic_status, needs_review, notes, model, info_session_data, structured_notes, rejected_at, rejection_reason, deleted_at, offer_status, offer_sent_at, info_session_attended, info_session_attended_at, hr_reviewed, previously_rejected";
 
 const JOB_COLUMNS_BASE =
   "id, application_id, created_at, updated_at, category, employment_type, candidate_name, email, phone, location, total_time_hours, turbine_time_hours, pic_time_hours, sic_time_hours, has_citation_x, has_challenger_300_type_rating, type_ratings, has_part_135, has_part_121, soft_gate_pic_met, soft_gate_pic_status, needs_review, notes, model, info_session_data";
@@ -63,12 +63,22 @@ export async function fetchJobs(
 ): Promise<JobsListResponse> {
   const supa = createServiceClient();
 
-  // Try with pipeline_stage column; fall back if migration hasn't run yet
+  // Try with all columns; fall back progressively if newer columns don't exist
   let { data, error } = await queryJobs(supa, JOB_COLUMNS_WITH_STAGE, params);
   if (error) {
-    const retry = await queryJobs(supa, JOB_COLUMNS_BASE, params);
-    data = retry.data;
-    error = retry.error;
+    console.warn("[fetchJobs] Full column query failed, trying with pipeline_stage only:", error.message);
+    // Fallback: base columns + pipeline_stage (skip newer columns like offer_status etc.)
+    const fallbackCols = JOB_COLUMNS_BASE + ", pipeline_stage, structured_notes, rejected_at, rejection_reason, rejection_type, deleted_at, hr_reviewed, previously_rejected, interview_email_sent_at";
+    const retry2 = await queryJobs(supa, fallbackCols, params);
+    if (retry2.error) {
+      console.warn("[fetchJobs] Pipeline column query also failed, using base:", retry2.error.message);
+      const retry3 = await queryJobs(supa, JOB_COLUMNS_BASE, params);
+      data = retry3.data;
+      error = retry3.error;
+    } else {
+      data = retry2.data;
+      error = null;
+    }
   }
   if (error) throw new Error(`fetchJobs failed: ${error.message}`);
 
@@ -171,14 +181,26 @@ export async function fetchJobDetail(applicationId: string | number): Promise<Jo
     .maybeSingle();
 
   if (first.error) {
-    const retry = await supa
+    // Fallback: base columns + pipeline_stage (skip newest columns)
+    const fallbackCols = JOB_COLUMNS_BASE + ", pipeline_stage, structured_notes, rejected_at, rejection_reason, rejection_type, deleted_at, hr_reviewed, previously_rejected, interview_email_sent_at";
+    const retry2 = await supa
       .from("job_application_parse")
-      .select(JOB_COLUMNS_BASE)
+      .select(fallbackCols)
       .eq("application_id", Number(id))
       .limit(1)
       .maybeSingle();
-    jobRow = retry.data;
-    jobErr = retry.error;
+    if (retry2.error) {
+      const retry3 = await supa
+        .from("job_application_parse")
+        .select(JOB_COLUMNS_BASE)
+        .eq("application_id", Number(id))
+        .limit(1)
+        .maybeSingle();
+      jobRow = retry3.data;
+      jobErr = retry3.error;
+    } else {
+      jobRow = retry2.data;
+    }
   } else {
     jobRow = first.data;
   }
@@ -190,7 +212,7 @@ export async function fetchJobDetail(applicationId: string | number): Promise<Jo
   // Fetch file metadata from Supabase (include GCS location for signing)
   const { data: fileRows } = await supa
     .from("job_application_files")
-    .select("id, filename, content_type, size_bytes, created_at, gcs_bucket, gcs_key")
+    .select("id, filename, content_type, size_bytes, created_at, gcs_bucket, gcs_key, file_category")
     .eq("application_id", Number(id))
     .order("created_at", { ascending: true });
 
@@ -259,15 +281,24 @@ export async function fetchLinkedLors(parseId: number | null | undefined): Promi
 // ---------------------------------------------------------------------------
 
 export async function fetchPreviousRejections(
-  email: string,
+  fields: { email?: string | null; phone?: string | null; candidate_name?: string | null },
   excludeId: number,
 ): Promise<{ id: number; application_id: number; rejected_at: string; rejection_reason: string | null }[]> {
-  if (!email) return [];
+  const { email, phone, candidate_name } = fields;
+  if (!email && !phone && !candidate_name) return [];
+
   const supa = createServiceClient();
+
+  // Build OR conditions for matching on email, phone, or name
+  const orClauses: string[] = [];
+  if (email) orClauses.push(`email.eq.${email}`);
+  if (phone) orClauses.push(`phone.eq.${phone}`);
+  if (candidate_name) orClauses.push(`candidate_name.eq.${candidate_name}`);
+
   const { data, error } = await supa
     .from("job_application_parse")
-    .select("id, application_id, rejected_at, rejection_reason")
-    .eq("email", email)
+    .select("id, application_id, rejected_at, rejection_reason, candidate_name, email, phone")
+    .or(orClauses.join(","))
     .not("rejected_at", "is", null)
     .is("deleted_at", null)
     .neq("id", excludeId);

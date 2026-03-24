@@ -2,9 +2,15 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import L from "leaflet";
-import { MapContainer, TileLayer, Marker, Popup, Tooltip, Polyline, useMap } from "react-leaflet";
+import { GestureHandling } from "leaflet-gesture-handling";
+import "leaflet-gesture-handling/dist/leaflet-gesture-handling.css";
+import { MapContainer, TileLayer, Marker, Popup, Tooltip, Polyline, CircleMarker, useMap } from "react-leaflet";
+
+L.Map.addInitHook("addHandler", "gestureHandling", GestureHandling);
 import type { AircraftPosition, FlightInfoMap } from "@/app/maintenance/MapView";
 import { getAirportInfo } from "@/lib/airportCoords";
+import type { FaaDelay, FaaAfp } from "@/app/api/ops/faa-delays/route";
+import type { FlowControlLine } from "@/app/api/ops/flow-controls/route";
 
 /* ── Fleet type helpers ── */
 
@@ -37,14 +43,16 @@ function acDivIcon(track: number | null, color: string, onGround: boolean, alert
   return L.divIcon({ html: svg, className: "", iconSize: [ringSize, ringSize], iconAnchor: [ringHalf, ringHalf], popupAnchor: [0, -ringHalf] });
 }
 
-/** Map label — tail number + optional DIVERTED/HOLDING alert */
-function acDataLabel(ac: AircraftPosition, _fi: FlightInfoMap | undefined, fleetLookup: Map<string, string>, alertLabel?: string, dark?: boolean): string {
+/** Map label — tail number + optional DIVERTED/HOLDING alert + optional FL badge */
+function acDataLabel(ac: AircraftPosition, _fi: FlightInfoMap | undefined, fleetLookup: Map<string, string>, alertLabel?: string, dark?: boolean, flLabel?: string): string {
   const color = getAcColor(fleetLookup, ac.tail, ac.on_ground);
-  const alertHtml = alertLabel ? ` <span style="color:#ef4444;font-size:10px;font-weight:bold">${alertLabel}</span>` : "";
+  const alertColor = alertLabel === "DIVERTING" ? "#d97706" : "#ef4444"; // amber for diverting, red for diverted/holding
+  const alertHtml = alertLabel ? ` <span style="color:${alertColor};font-size:10px;font-weight:bold">${alertLabel}</span>` : "";
+  const flHtml = flLabel ? ` <span style="color:#d97706;font-size:10px;font-weight:600;opacity:0.85">${flLabel}</span>` : "";
   const bg = dark
     ? "text-shadow: 0 1px 3px rgba(0,0,0,0.9), 0 0 6px rgba(0,0,0,0.6)"
     : "background:rgba(255,255,255,0.85);padding:1px 4px;border-radius:3px;border:1px solid rgba(0,0,0,0.12)";
-  return `<div style="color:${color};font-family:ui-monospace,monospace;font-size:11px;font-weight:700;white-space:nowrap;${bg};line-height:1.3">${ac.tail}${alertHtml}</div>`;
+  return `<div style="color:${color};font-family:ui-monospace,monospace;font-size:11px;font-weight:700;white-space:nowrap;${bg};line-height:1.3">${ac.tail}${alertHtml}${flHtml}</div>`;
 }
 
 function fmtEta(iso: string | null | undefined): string {
@@ -171,11 +179,26 @@ function FlightTracks({
   }, [flightInfo, airborneSet, enRouteKey]);
 
   useEffect(() => {
-    // Throttle: only refetch tracks every 2.5 min
-    if (Date.now() - lastFetchRef.current < 150_000 && tracks.size > 0) return;
-
     const enRoute = enRouteRef.current;
     if (enRoute.length === 0) { setTracks(new Map()); setFallbacks(new Map()); onHoldingDetected(new Set()); onLatestPositions(new Map()); return; }
+
+    // Always evict tracks for tails that are no longer en-route (prevents ghost tracks)
+    const enRouteTails = new Set(enRoute.map(fi => fi.tail));
+    setTracks(prev => {
+      if ([...prev.keys()].every(t => enRouteTails.has(t))) return prev;
+      const next = new Map(prev);
+      for (const t of next.keys()) if (!enRouteTails.has(t)) next.delete(t);
+      return next;
+    });
+    setFallbacks(prev => {
+      if ([...prev.keys()].every(t => enRouteTails.has(t))) return prev;
+      const next = new Map(prev);
+      for (const t of next.keys()) if (!enRouteTails.has(t)) next.delete(t);
+      return next;
+    });
+
+    // Throttle: only refetch tracks from FA every 2.5 min
+    if (Date.now() - lastFetchRef.current < 150_000 && tracks.size > 0) return;
 
     const controller = new AbortController();
     lastFetchRef.current = Date.now();
@@ -304,10 +327,138 @@ function useVanPositions(enabled: boolean): VanPos[] {
       } catch { /* ignore */ }
     }
     load();
-    const interval = setInterval(load, 240_000); // refresh every 4 min
-    return () => { cancelled = true; clearInterval(interval); };
+    const jitter = () => 240_000 + Math.random() * 30_000;
+    let tid: ReturnType<typeof setTimeout>;
+    const tick = () => { load(); tid = setTimeout(tick, jitter()); };
+    tid = setTimeout(tick, jitter());
+    return () => { cancelled = true; clearTimeout(tid); };
   }, [enabled]);
   return vans;
+}
+
+/* ── FAA Delay layer ── */
+
+type DelayAirport = {
+  code: string;
+  lat: number;
+  lon: number;
+  name: string;
+  delays: FaaDelay[];
+};
+
+const DELAY_COLORS: Record<FaaDelay["type"], string> = {
+  ground_stop: "#dc2626",      // red
+  closure: "#7c3aed",          // purple
+  ground_delay: "#f59e0b",     // amber
+  arrival_departure: "#f97316", // orange
+};
+
+const DELAY_LABELS: Record<FaaDelay["type"], string> = {
+  ground_stop: "Ground Stop",
+  closure: "Closed",
+  ground_delay: "GDP",
+  arrival_departure: "Delay",
+};
+
+/** Severity rank — higher = worse */
+function delaySeverity(type: FaaDelay["type"]): number {
+  switch (type) {
+    case "closure": return 4;
+    case "ground_stop": return 3;
+    case "ground_delay": return 2;
+    case "arrival_departure": return 1;
+    default: return 0;
+  }
+}
+
+function worstDelay(delays: FaaDelay[]): FaaDelay["type"] {
+  let worst: FaaDelay["type"] = "arrival_departure";
+  for (const d of delays) {
+    if (delaySeverity(d.type) > delaySeverity(worst)) worst = d.type;
+  }
+  return worst;
+}
+
+function useFaaDelays(enabled: boolean): { airports: DelayAirport[]; updated: string; afps: FaaAfp[] } {
+  const [airports, setAirports] = useState<DelayAirport[]>([]);
+  const [updated, setUpdated] = useState("");
+  const [afps, setAfps] = useState<FaaAfp[]>([]);
+
+  useEffect(() => {
+    if (!enabled) { setAirports([]); setUpdated(""); setAfps([]); return; }
+    let cancelled = false;
+
+    async function load() {
+      try {
+        const res = await fetch("/api/ops/faa-delays", { cache: "no-store" });
+        const data = await res.json();
+        if (cancelled || !data.ok) return;
+        setUpdated(data.updated ?? "");
+        setAfps(data.afps ?? []);
+
+        // Group delays by airport, look up coordinates
+        const byAirport = new Map<string, FaaDelay[]>();
+        for (const d of data.delays as FaaDelay[]) {
+          const list = byAirport.get(d.airport) ?? [];
+          list.push(d);
+          byAirport.set(d.airport, list);
+        }
+
+        const result: DelayAirport[] = [];
+        for (const [code, delays] of byAirport) {
+          // Try IATA code first, then ICAO with K prefix
+          const info = getAirportInfo(code) ?? getAirportInfo(`K${code}`);
+          if (info) {
+            result.push({ code, lat: info.lat, lon: info.lon, name: info.name, delays });
+          }
+        }
+        setAirports(result);
+      } catch { /* ignore */ }
+    }
+
+    load();
+    const interval = setInterval(load, 5 * 60 * 1000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [enabled]);
+
+  return { airports, updated, afps };
+}
+
+/* ── Flow Controls (reroutes / CTOPs / AFPs from SWIM) ── */
+
+const FLOW_COLORS = [
+  "#f97316", // orange
+  "#06b6d4", // cyan
+  "#a855f7", // purple
+  "#eab308", // yellow
+  "#ec4899", // pink
+  "#14b8a6", // teal
+  "#f43f5e", // rose
+  "#84cc16", // lime
+];
+
+function useFlowControls(enabled: boolean): FlowControlLine[] {
+  const [lines, setLines] = useState<FlowControlLine[]>([]);
+
+  useEffect(() => {
+    if (!enabled) { setLines([]); return; }
+    let cancelled = false;
+
+    async function load() {
+      try {
+        const res = await fetch("/api/ops/flow-controls", { cache: "no-store" });
+        const data = await res.json();
+        if (cancelled || !data.ok) return;
+        setLines(data.lines ?? []);
+      } catch { /* ignore */ }
+    }
+
+    load();
+    const interval = setInterval(load, 5 * 60 * 1000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [enabled]);
+
+  return lines;
 }
 
 /* ── Tile layers + map utilities ── */
@@ -371,6 +522,15 @@ function useFullscreen(ref: React.RefObject<HTMLDivElement | null>) {
   return { isFs, toggle };
 }
 
+function EnableGestureHandling() {
+  const map = useMap();
+  useEffect(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (map as any).gestureHandling?.enable();
+  }, [map]);
+  return null;
+}
+
 function MapResizer() {
   const map = useMap();
   useEffect(() => {
@@ -402,7 +562,23 @@ function LegendPlane({ color }: { color: string }) {
   );
 }
 
-function MapLegend({ dark }: { dark: boolean }) {
+function LegendDot({ color }: { color: string }) {
+  return (
+    <svg viewBox="0 0 14 14" width="14" height="14">
+      <circle cx="7" cy="7" r="5" fill={color} fillOpacity="0.3" stroke={color} strokeWidth="2" />
+    </svg>
+  );
+}
+
+function LegendLine({ color }: { color: string }) {
+  return (
+    <svg viewBox="0 0 14 6" width="14" height="6">
+      <line x1="0" y1="3" x2="14" y2="3" stroke={color} strokeWidth="3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function MapLegend({ dark, showDelays, showFlows, flowCount }: { dark: boolean; showDelays: boolean; showFlows: boolean; flowCount: number }) {
   const bg = dark ? "bg-black/70" : "bg-white/90";
   const text = dark ? "text-gray-300" : "text-gray-700";
   const heading = dark ? "text-gray-400" : "text-gray-600";
@@ -425,6 +601,40 @@ function MapLegend({ dark }: { dark: boolean }) {
         <LegendPlane color="#93c5fd" />
         <span className={text}>Citation X - Ground</span>
       </div>
+      {showDelays && (
+        <>
+          <div className={`font-semibold ${heading} text-[10px] uppercase tracking-wider mt-2 mb-1`}>FAA Delays</div>
+          <div className="flex items-center gap-2">
+            <LegendDot color="#dc2626" />
+            <span className={text}>Ground Stop</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <LegendDot color="#7c3aed" />
+            <span className={text}>Closed</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <LegendDot color="#f59e0b" />
+            <span className={text}>Ground Delay</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <LegendDot color="#f97316" />
+            <span className={text}>Arr/Dep Delay</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <LegendLine color="#e11d48" />
+            <span className={text}>AFP / FCA</span>
+          </div>
+        </>
+      )}
+      {showFlows && flowCount > 0 && (
+        <>
+          <div className={`font-semibold ${heading} text-[10px] uppercase tracking-wider mt-2 mb-1`}>Flow Controls</div>
+          <div className="flex items-center gap-2">
+            <LegendLine color="#f97316" />
+            <span className={text}>CTOP / AFP</span>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -452,9 +662,14 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
   const [darkMode, setDarkMode] = useState(true);
   const [showRadar, setShowRadar] = useState(false);
   const [showVans, setShowVans] = useState(false);
+  const [showDelays, setShowDelays] = useState(true);
+  const [showFlows, setShowFlows] = useState(false);
   const [holdingTails, setHoldingTails] = useState<Set<string>>(new Set());
+  const [trackPositions, setTrackPositions] = useState<Map<string, [number, number]>>(new Map());
   const radarUrl = useRadarUrl(showRadar);
   const vanPositions = useVanPositions(showVans);
+  const { airports: delayAirports, updated: delaysUpdated, afps } = useFaaDelays(showDelays);
+  const flowLines = useFlowControls(showFlows);
   const containerRef = useRef<HTMLDivElement>(null);
   const { isFs, toggle: toggleFs } = useFullscreen(containerRef);
 
@@ -467,6 +682,36 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
       else fleetLookup.set(fi.tail, "Other");
     }
   }
+
+  /* ── FL470 level-off alert: show FL when level below FL470 for 20+ min ── */
+  const levelBelowTimersRef = useRef<Map<string, number>>(new Map());
+  const levelBelowFL470 = useMemo(() => {
+    const LEVEL_FPM = 300;          // |baro_rate| below this = level flight
+    const FL470_FT = 47000;
+    const DELAY_MS = 20 * 60_000;   // 20 minutes
+    const now = Date.now();
+    const result = new Map<string, string>();
+    const activeTails = new Set<string>();
+
+    for (const ac of aircraft) {
+      if (ac.on_ground || ac.alt_baro == null || ac.baro_rate == null) continue;
+      const isLevel = Math.abs(ac.baro_rate) < LEVEL_FPM;
+      if (isLevel && ac.alt_baro < FL470_FT) {
+        activeTails.add(ac.tail);
+        if (!levelBelowTimersRef.current.has(ac.tail)) {
+          levelBelowTimersRef.current.set(ac.tail, now);
+        }
+        if (now - levelBelowTimersRef.current.get(ac.tail)! >= DELAY_MS) {
+          result.set(ac.tail, fmtAlt(ac.alt_baro));
+        }
+      }
+    }
+    // Clear tails no longer level below FL470
+    for (const tail of levelBelowTimersRef.current.keys()) {
+      if (!activeTails.has(tail)) levelBelowTimersRef.current.delete(tail);
+    }
+    return result;
+  }, [aircraft]);
 
   const handleHoldingDetected = useCallback((tails: Set<string>) => {
     setHoldingTails(tails);
@@ -487,44 +732,49 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
         <ToggleBtn label={darkMode ? "Dark" : "Light"} active={darkMode} onClick={() => setDarkMode((v) => !v)} />
         <ToggleBtn label={showRadar ? "Radar ON" : "Radar"} active={showRadar} onClick={() => setShowRadar((v) => !v)} />
         <ToggleBtn label={showVans ? "Vans ON" : "AOG Vans"} active={showVans} onClick={() => setShowVans((v) => !v)} />
+        <ToggleBtn label={showDelays ? "FAA Delays ON" : "FAA Delays"} active={showDelays} onClick={() => setShowDelays((v) => !v)} />
+        <ToggleBtn label={showFlows ? "Flow Ctrl ON" : "Flow Ctrl"} active={showFlows} onClick={() => setShowFlows((v) => !v)} />
         <ToggleBtn label={isFs ? "Exit ⛶" : "⛶"} active={isFs} onClick={toggleFs} />
       </div>
 
-      <MapLegend dark={darkMode} />
+      <MapLegend dark={darkMode} showDelays={showDelays} showFlows={showFlows} flowCount={flowLines.length} />
 
       <MapContainer
         center={[37.5, -96]}
         zoom={4}
         style={{ height: "500px", width: "100%" }}
-        scrollWheelZoom
+        scrollWheelZoom={false}
       >
         <TileLayer
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
           url={LIGHT_TILES}
         />
         <DarkModeFilter enabled={darkMode} />
+        <EnableGestureHandling />
         <MapResizer />
 
         {radarUrl && (
           <TileLayer key={`radar-${radarUrl}`} url={radarUrl} opacity={0.65} zIndex={300} />
         )}
 
-        <FlightTracks aircraft={aircraft} flightInfo={flightInfo} fleetLookup={fleetLookup} onHoldingDetected={handleHoldingDetected} onLatestPositions={() => {}} />
+        <FlightTracks aircraft={aircraft} flightInfo={flightInfo} fleetLookup={fleetLookup} onHoldingDetected={handleHoldingDetected} onLatestPositions={setTrackPositions} />
 
         {aircraft.map((ac) => {
           const fi = flightInfo.get(ac.tail);
           const color = getAcColor(fleetLookup, ac.tail, ac.on_ground);
-          const isDiverted = fi?.diverted === true;
-          const divertedStale = isDiverted &&
-            fi.actual_arrival != null &&
-            Date.now() - new Date(fi.actual_arrival).getTime() > 5 * 3600_000;
+          // Show DIVERTED while in-air OR for 30 min after landing at diversion airport.
+          // After 30 min the badge clears, preventing bleed into later legs.
+          const isDiverted = fi?.diverted === true && (
+            fi.status === "Diverted" ||
+            (fi.actual_arrival != null && Date.now() - new Date(fi.actual_arrival).getTime() < 30 * 60_000)
+          );
           const isHolding = holdingTails.has(ac.tail);
-          const showMapAlert = (isDiverted && !divertedStale) || isHolding;
-          const hasAlert = showMapAlert;
-          const alertLabel = (isDiverted && !divertedStale) ? "DIVERTED" : isHolding ? "HOLDING" : undefined;
-          // Use position from fa_flights (updated by cron every 3 min)
-          const markerLat = ac.lat;
-          const markerLon = ac.lon;
+          const hasAlert = isDiverted || isHolding;
+          const alertLabel = isDiverted ? "DIVERTED" : isHolding ? "HOLDING" : undefined;
+          // Prefer track endpoint (real-time FA) over DB position (3-min cron lag)
+          const trackPos = trackPositions.get(ac.tail);
+          const markerLat = trackPos ? trackPos[0] : ac.lat;
+          const markerLon = trackPos ? trackPos[1] : ac.lon;
           return (
             <Marker
               key={`ac-${ac.tail}`}
@@ -533,7 +783,7 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
               zIndexOffset={ac.on_ground ? 1000 : 2000}
             >
               <Tooltip permanent direction="right" offset={[12, 0]} className="fa-data-tooltip">
-                <div dangerouslySetInnerHTML={{ __html: acDataLabel(ac, fi, fleetLookup, alertLabel, darkMode) }} />
+                <div dangerouslySetInnerHTML={{ __html: acDataLabel(ac, fi, fleetLookup, alertLabel, darkMode, levelBelowFL470.get(ac.tail)) }} />
               </Tooltip>
               <Popup>
                 <div className="text-sm space-y-1">
@@ -561,7 +811,6 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
                       </span>
                     )}
                   </div>
-                  {isDiverted && <div className="text-xs font-semibold text-red-600">DIVERTED</div>}
                   {isHolding && <div className="text-xs font-semibold text-red-600">HOLDING PATTERN</div>}
                 </div>
               </Popup>
@@ -585,7 +834,212 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
             </Popup>
           </Marker>
         ))}
+        {/* FAA Delay markers */}
+        {showDelays && delayAirports.map((ap) => {
+          const worst = worstDelay(ap.delays);
+          const color = DELAY_COLORS[worst];
+          const label = DELAY_LABELS[worst];
+          const isSevere = worst === "ground_stop" || worst === "closure";
+          return (
+            <CircleMarker
+              key={`delay-${ap.code}`}
+              center={[ap.lat, ap.lon]}
+              radius={isSevere ? 12 : 9}
+              pathOptions={{
+                color,
+                fillColor: color,
+                fillOpacity: isSevere ? 0.35 : 0.25,
+                weight: isSevere ? 2.5 : 2,
+              }}
+            >
+              <Tooltip permanent direction="top" offset={[0, -10]} className="fa-data-tooltip">
+                <div style={{
+                  color,
+                  fontFamily: "ui-monospace,monospace",
+                  fontSize: "10px",
+                  fontWeight: 700,
+                  whiteSpace: "nowrap",
+                  textShadow: darkMode
+                    ? "0 1px 3px rgba(0,0,0,0.9), 0 0 6px rgba(0,0,0,0.6)"
+                    : "0 1px 2px rgba(255,255,255,0.9)",
+                }}>
+                  {ap.code} <span style={{ fontSize: "9px", opacity: 0.85 }}>{label}</span>
+                </div>
+              </Tooltip>
+              <Popup>
+                <div className="text-sm space-y-1.5 min-w-[180px]">
+                  <div className="font-bold" style={{ color }}>{ap.code} — {ap.name}</div>
+                  {ap.delays.map((d, i) => (
+                    <div key={i} className="text-xs">
+                      <span className="font-semibold" style={{ color: DELAY_COLORS[d.type] }}>
+                        {DELAY_LABELS[d.type]}
+                      </span>
+                      <div className="text-gray-600">{d.detail}</div>
+                      {d.reason && d.reason !== "other" && (
+                        <div className="text-gray-400 text-[10px]">{d.reason}</div>
+                      )}
+                    </div>
+                  ))}
+                  {delaysUpdated && (
+                    <div className="text-[10px] text-gray-400 pt-1 border-t border-gray-200">
+                      FAA updated: {delaysUpdated}
+                    </div>
+                  )}
+                </div>
+              </Popup>
+            </CircleMarker>
+          );
+        })}
+
+        {/* AFP / FCA lines */}
+        {showDelays && afps.map((afp) => {
+          const afpColor = "#e11d48"; // rose-600 — distinct from reroutes
+          if (afp.line && afp.line.length >= 2) {
+            return (
+              <Polyline
+                key={`afp-${afp.name}`}
+                positions={afp.line}
+                pathOptions={{ color: afpColor, weight: 5, opacity: 0.8 }}
+              >
+                <Tooltip permanent direction="center" className="fa-data-tooltip">
+                  <div style={{
+                    color: afpColor,
+                    fontFamily: "ui-monospace,monospace",
+                    fontSize: "10px",
+                    fontWeight: 700,
+                    whiteSpace: "nowrap",
+                    textShadow: darkMode
+                      ? "0 1px 3px rgba(0,0,0,0.9), 0 0 6px rgba(0,0,0,0.6)"
+                      : "0 1px 2px rgba(255,255,255,0.9)",
+                  }}>
+                    {afp.name}
+                  </div>
+                </Tooltip>
+                <Popup>
+                  <div className="text-sm space-y-1 min-w-[180px]">
+                    <div className="font-bold" style={{ color: afpColor }}>AFP: {afp.name}</div>
+                    <div className="text-xs"><span className="font-semibold">Avg delay:</span> {afp.avg}</div>
+                    <div className="text-xs"><span className="font-semibold">Reason:</span> {afp.reason}</div>
+                    <div className="text-xs"><span className="font-semibold">Time:</span> {afp.afpStart}Z – {afp.afpEnd}Z</div>
+                    <div className="text-xs"><span className="font-semibold">Altitudes:</span> FL{afp.floor} – FL{afp.ceiling}</div>
+                  </div>
+                </Popup>
+              </Polyline>
+            );
+          }
+          if (afp.circle) {
+            // Convert radius from NM to meters (1 NM = 1852m)
+            const radiusM = afp.circle.radiusNm * 1852;
+            return (
+              <CircleMarker
+                key={`afp-${afp.name}`}
+                center={[afp.circle.lat, afp.circle.lon]}
+                radius={14}
+                pathOptions={{ color: afpColor, fillColor: afpColor, fillOpacity: 0.3, weight: 2.5 }}
+              >
+                <Tooltip permanent direction="top" offset={[0, -12]} className="fa-data-tooltip">
+                  <div style={{
+                    color: afpColor,
+                    fontFamily: "ui-monospace,monospace",
+                    fontSize: "10px",
+                    fontWeight: 700,
+                    whiteSpace: "nowrap",
+                    textShadow: darkMode
+                      ? "0 1px 3px rgba(0,0,0,0.9), 0 0 6px rgba(0,0,0,0.6)"
+                      : "0 1px 2px rgba(255,255,255,0.9)",
+                  }}>
+                    {afp.name} <span style={{ fontSize: "9px", opacity: 0.85 }}>AFP</span>
+                  </div>
+                </Tooltip>
+                <Popup>
+                  <div className="text-sm space-y-1 min-w-[180px]">
+                    <div className="font-bold" style={{ color: afpColor }}>AFP: {afp.name}</div>
+                    <div className="text-xs"><span className="font-semibold">Avg delay:</span> {afp.avg}</div>
+                    <div className="text-xs"><span className="font-semibold">Reason:</span> {afp.reason}</div>
+                    <div className="text-xs"><span className="font-semibold">Time:</span> {afp.afpStart}Z – {afp.afpEnd}Z</div>
+                    <div className="text-xs"><span className="font-semibold">Radius:</span> {afp.circle.radiusNm} NM</div>
+                    <div className="text-xs"><span className="font-semibold">Altitudes:</span> FL{afp.floor} – FL{afp.ceiling}</div>
+                  </div>
+                </Popup>
+              </CircleMarker>
+            );
+          }
+          return null;
+        })}
+
+        {/* Flow Control reroute lines */}
+        {showFlows && flowLines.map((line, idx) => {
+          const color = FLOW_COLORS[idx % FLOW_COLORS.length];
+          // Clean up reroute name for display
+          const displayName = line.name
+            .replace(/^rr\.\w+\.\w+\.\d+$/, line.subject)
+            .replace(/_/g, " ");
+          const timeRange = [
+            line.effective_at ? new Date(line.effective_at).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true, timeZone: "UTC" }) + "Z" : null,
+            line.expires_at ? new Date(line.expires_at).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true, timeZone: "UTC" }) + "Z" : null,
+          ].filter(Boolean).join(" – ");
+          return (
+            <Polyline
+              key={`flow-${line.id}`}
+              positions={line.waypoints}
+              pathOptions={{ color, weight: 4, opacity: 0.75 }}
+            >
+              <Tooltip
+                permanent
+                direction="center"
+                className="fa-data-tooltip"
+              >
+                <div style={{
+                  color,
+                  fontFamily: "ui-monospace,monospace",
+                  fontSize: "9px",
+                  fontWeight: 700,
+                  whiteSpace: "nowrap",
+                  textShadow: darkMode
+                    ? "0 1px 3px rgba(0,0,0,0.9), 0 0 6px rgba(0,0,0,0.6)"
+                    : "0 1px 2px rgba(255,255,255,0.9)",
+                }}>
+                  {line.tmiId ?? line.event_type}
+                </div>
+              </Tooltip>
+              <Popup>
+                <div className="text-sm space-y-1.5 min-w-[220px]">
+                  <div className="font-bold" style={{ color }}>{displayName}</div>
+                  {line.tmiId && <div className="text-xs font-mono text-gray-500">{line.tmiId}</div>}
+                  {line.fcaName && (
+                    <div className="text-xs">
+                      <span className="font-semibold text-gray-700">FCA:</span> {line.fcaName}
+                    </div>
+                  )}
+                  {timeRange && (
+                    <div className="text-xs">
+                      <span className="font-semibold text-gray-700">Time:</span> {timeRange}
+                    </div>
+                  )}
+                  {line.origins.length > 0 && (
+                    <div className="text-xs">
+                      <span className="font-semibold text-gray-700">From:</span>{" "}
+                      {line.origins.join(", ")}
+                    </div>
+                  )}
+                  {line.destinations.length > 0 && (
+                    <div className="text-xs">
+                      <span className="font-semibold text-gray-700">To:</span>{" "}
+                      {line.destinations.join(", ")}
+                    </div>
+                  )}
+                  <div className="text-[10px] text-gray-400 pt-1 border-t border-gray-200">
+                    Route: {line.waypointNames.join(" → ")}
+                  </div>
+                </div>
+              </Popup>
+            </Polyline>
+          );
+        })}
       </MapContainer>
+      <div className="text-[10px] text-gray-400 text-center mt-1">
+        Use Ctrl + scroll to zoom the map &middot; Click and drag to pan
+      </div>
     </div>
   );
 }

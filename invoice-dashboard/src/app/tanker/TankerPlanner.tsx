@@ -1,12 +1,13 @@
 "use client";
 
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useCallback } from "react";
 import {
   AircraftType, AIRCRAFT_TYPES, TankerInputs, DEFAULT_INPUTS,
   computeResult, getOptimumTankerOut, getMaxTankerOut85, getPlannedArrival, calcPpg,
   MultiLeg, MultiRouteInputs, DEFAULT_MULTI, makeDefaultLeg,
   optimizeMultiLeg, getMultiPlannedArrival, getMultiMaxLF, MultiLegPlan,
 } from "./model";
+import { getFboWaiver, getFboOptionsAtAirport, type FboWaiver } from "@/lib/fboFeeLookup";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -223,6 +224,54 @@ function ResultsPanel({
   );
 }
 
+// ── FBO picker (shared by single & multi) ────────────────────────────────────
+
+function FboPicker({
+  airport,
+  aircraftType,
+  onSelect,
+  selectedFbo,
+}: {
+  airport: string;
+  aircraftType: AircraftType;
+  onSelect: (w: FboWaiver) => void;
+  selectedFbo: string;
+}) {
+  const options = useMemo(
+    () => (airport.length >= 3 ? getFboOptionsAtAirport(airport, aircraftType) : []),
+    [airport, aircraftType],
+  );
+
+  if (!options.length) return null;
+
+  return (
+    <div className="space-y-1">
+      <span className="text-xs font-medium text-gray-500 uppercase tracking-wide leading-none">FBO</span>
+      <select
+        value={selectedFbo}
+        onChange={e => {
+          const picked = options.find(o => o.fboName === e.target.value);
+          if (picked) onSelect(picked);
+        }}
+        className="border border-gray-200 rounded-lg px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+      >
+        {options.map(o => (
+          <option key={o.fboName} value={o.fboName}>
+            {o.fboName} — ${n0(o.feeWaived)}/{n0(o.minGallons)}gal
+          </option>
+        ))}
+      </select>
+      {selectedFbo && (
+        <div className="text-xs text-green-600 font-medium">
+          Fee: ${n0(options.find(o => o.fboName === selectedFbo)?.feeWaived ?? 0)} waived at {n0(options.find(o => o.fboName === selectedFbo)?.minGallons ?? 0)} gal
+          {(options.find(o => o.fboName === selectedFbo)?.landingFee ?? 0) > 0 &&
+            ` · Landing: $${n0(options.find(o => o.fboName === selectedFbo)!.landingFee)}`}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Single-leg form ───────────────────────────────────────────────────────────
 
 function SingleLegPlanner() {
@@ -231,9 +280,35 @@ function SingleLegPlanner() {
   const [manualOut, setManualOut] = useState(0);
   const [route, setRoute] = useState("");
   const [showFueling, setShowFueling] = useState(false);
+  const [destAirport, setDestAirport] = useState("");
+  const [selectedFbo, setSelectedFbo] = useState("");
 
   const set = (key: keyof TankerInputs) => (v: number) =>
     setInp(prev => ({ ...prev, [key]: v }));
+
+  const handleDestAirportChange = useCallback((v: string) => {
+    setDestAirport(v);
+    if (v.length >= 3) {
+      const waiver = getFboWaiver(v, null, inp.aircraftType);
+      if (waiver.fboName) {
+        setInp(prev => ({
+          ...prev,
+          fuelPurchaseToWaiveFeesGallons: waiver.minGallons,
+          feesWaivedDollars: waiver.feeWaived,
+        }));
+        setSelectedFbo(waiver.fboName);
+      }
+    }
+  }, [inp.aircraftType]);
+
+  const handleFboSelect = useCallback((w: FboWaiver) => {
+    setSelectedFbo(w.fboName);
+    setInp(prev => ({
+      ...prev,
+      fuelPurchaseToWaiveFeesGallons: w.minGallons,
+      feesWaivedDollars: w.feeWaived,
+    }));
+  }, []);
 
   const result = useMemo(
     () => computeResult(inp, useManual ? manualOut : undefined),
@@ -296,8 +371,9 @@ function SingleLegPlanner() {
             <Grid3>
               <NumInput label="Next Leg Start Fuel (lbs)" value={inp.nextLegStartFuel} onChange={set("nextLegStartFuel")} />
               <NumInput label="Next Leg Buffer (lbs)" value={inp.nextLegBufferLbs} onChange={set("nextLegBufferLbs")} />
-              <div />
+              <TextInput label="Dest Airport" value={destAirport} onChange={handleDestAirportChange} placeholder="KTEB" />
             </Grid3>
+            <FboPicker airport={destAirport} aircraftType={inp.aircraftType} onSelect={handleFboSelect} selectedFbo={selectedFbo} />
             <Grid2>
               <NumInput label="Waiver Min (gal)" value={inp.fuelPurchaseToWaiveFeesGallons} onChange={set("fuelPurchaseToWaiveFeesGallons")}
                 note="0 = no waiver program" />
@@ -373,6 +449,8 @@ function SingleLegPlanner() {
 
 function MultiLegPlanner() {
   const [route, setRoute] = useState<MultiRouteInputs>(DEFAULT_MULTI);
+  const [acType, setAcType] = useState<AircraftType>("CE-750");
+  const [legFbos, setLegFbos] = useState<Record<string, string>>({});
 
   const setGlobal = (key: keyof Omit<MultiRouteInputs, "legs">) => (v: number) =>
     setRoute(r => ({ ...r, [key]: v }));
@@ -380,8 +458,24 @@ function MultiLegPlanner() {
   const setLeg = (id: string, key: keyof Omit<MultiLeg, "id" | "from" | "to">) => (v: number) =>
     setRoute(r => ({ ...r, legs: r.legs.map(l => l.id === id ? { ...l, [key]: v } : l) }));
 
-  const setLegStr = (id: string, key: "from" | "to") => (v: string) =>
+  const setLegStr = (id: string, key: "from" | "to") => (v: string) => {
     setRoute(r => ({ ...r, legs: r.legs.map(l => l.id === id ? { ...l, [key]: v } : l) }));
+    // Auto-populate waiver fields when departure airport is entered
+    if (key === "from" && v.length >= 3) {
+      const waiver = getFboWaiver(v, null, acType);
+      if (waiver.fboName) {
+        setRoute(r => ({
+          ...r,
+          legs: r.legs.map(l =>
+            l.id === id
+              ? { ...l, [key]: v, waiveFeesGallons: waiver.minGallons, feesWaivedDollars: waiver.feeWaived }
+              : l
+          ),
+        }));
+        setLegFbos(prev => ({ ...prev, [id]: waiver.fboName }));
+      }
+    }
+  };
 
   const addLeg = () => {
     const last = route.legs.at(-1);
@@ -400,6 +494,21 @@ function MultiLegPlanner() {
     <div className="space-y-4">
       {/* Global settings */}
       <SectionCard title="Global Settings">
+        <div className="flex gap-2 mb-2">
+          {AIRCRAFT_TYPES.map(ac => (
+            <button
+              key={ac}
+              onClick={() => setAcType(ac)}
+              className={`flex-1 py-2 rounded-xl text-sm font-semibold border transition ${
+                acType === ac
+                  ? "bg-gray-900 text-white border-gray-900"
+                  : "bg-white text-gray-600 border-gray-200 hover:border-gray-400"
+              }`}
+            >
+              {ac}
+            </button>
+          ))}
+        </div>
         <Grid3>
           <NumInput label="Start Shutdown Fuel (lbs)" value={route.startShutdownFuelLbs} onChange={setGlobal("startShutdownFuelLbs")} />
           <NumInput label="Carry Cost (%/hr)" value={route.carryCostPctPerHour} onChange={setGlobal("carryCostPctPerHour")} step={0.01} />
@@ -456,7 +565,17 @@ function MultiLegPlanner() {
             </Grid2>
 
             {/* MLW / ZFW + fees (collapsible) */}
-            <LegAdvanced leg={leg} i={i} setLeg={setLeg} paf={paf} maxLF={maxLF} />
+            <LegAdvanced leg={leg} i={i} setLeg={setLeg} paf={paf} maxLF={maxLF} acType={acType} fboName={legFbos[leg.id] ?? ""} onFboSelect={(w) => {
+              setLegFbos(prev => ({ ...prev, [leg.id]: w.fboName }));
+              setRoute(r => ({
+                ...r,
+                legs: r.legs.map(l =>
+                  l.id === leg.id
+                    ? { ...l, waiveFeesGallons: w.minGallons, feesWaivedDollars: w.feeWaived }
+                    : l
+                ),
+              }));
+            }} />
           </div>
         );
       })}
@@ -475,20 +594,32 @@ function MultiLegPlanner() {
 }
 
 function LegAdvanced({
-  leg, i, setLeg, paf, maxLF,
+  leg, i, setLeg, paf, maxLF, acType, fboName, onFboSelect,
 }: {
   leg: MultiLeg;
   i: number;
   setLeg: (id: string, key: keyof Omit<MultiLeg, "id" | "from" | "to">) => (v: number) => void;
   paf: number;
   maxLF: number;
+  acType: AircraftType;
+  fboName: string;
+  onFboSelect: (w: FboWaiver) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const hasWaiver = leg.waiveFeesGallons > 0;
+
   return (
     <div>
-      <button onClick={() => setOpen(o => !o)} className="text-xs text-blue-500 hover:underline">
-        {open ? "Hide MLW / fee settings ▲" : "MLW / fee settings ▼"}
-      </button>
+      <div className="flex items-center gap-3">
+        <button onClick={() => setOpen(o => !o)} className="text-xs text-blue-500 hover:underline">
+          {open ? "Hide MLW / fee settings ▲" : "MLW / fee settings ▼"}
+        </button>
+        {!open && hasWaiver && fboName && (
+          <span className="text-xs text-green-600 font-medium">
+            {fboName} — ${n0(leg.feesWaivedDollars)}/{n0(leg.waiveFeesGallons)}gal
+          </span>
+        )}
+      </div>
       {open && (
         <div className="mt-3 space-y-3">
           <Grid2>
@@ -498,6 +629,7 @@ function LegAdvanced({
           <div className="text-xs text-gray-400">
             Planned arrival: {n0(paf)} lbs &nbsp;·&nbsp; Max landing fuel: {n0(maxLF)} lbs
           </div>
+          <FboPicker airport={leg.from} aircraftType={acType} onSelect={onFboSelect} selectedFbo={fboName} />
           <Grid2>
             <NumInput label="Waiver Min (gal)" value={leg.waiveFeesGallons} onChange={setLeg(leg.id, "waiveFeesGallons")} />
             <NumInput label="Fee if Not Waived ($)" value={leg.feesWaivedDollars} onChange={setLeg(leg.id, "feesWaivedDollars")} />

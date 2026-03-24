@@ -83,7 +83,7 @@ const PIPELINES = [
 export async function GET(req: NextRequest) {
   const auth = await requireSuperAdmin(req);
   if (!isAuthed(auth)) return auth.error;
-  if (isRateLimited(auth.userId, 10)) {
+  if (await isRateLimited(auth.userId, 10)) {
     return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
 
@@ -206,6 +206,13 @@ export async function GET(req: NextRequest) {
     return { name: svc.name, status, lastRun: bestRun.created_at, staleMins };
   });
 
+  // Slack kill switch status
+  const { data: slackSetting } = await supa
+    .from("app_settings")
+    .select("value, updated_at, updated_by")
+    .eq("key", "slack_enabled")
+    .single();
+
   return NextResponse.json({
     checked_at: new Date().toISOString(),
     services: serviceResults,
@@ -214,5 +221,40 @@ export async function GET(req: NextRequest) {
     users: userData,
     queues: queueData,
     flightaware: faData,
+    slackEnabled: slackSetting?.value !== "false",
+    slackUpdatedAt: slackSetting?.updated_at ?? null,
+    slackUpdatedBy: slackSetting?.updated_by ?? null,
   });
+}
+
+/**
+ * POST /api/admin/super
+ * Toggle app settings (e.g. Slack kill switch)
+ * Body: { action: "toggle_slack", enabled: boolean }
+ */
+export async function POST(req: NextRequest) {
+  const auth = await requireSuperAdmin(req);
+  if (!isAuthed(auth)) return auth.error;
+
+  const body = await req.json().catch(() => null);
+  if (!body?.action) {
+    return NextResponse.json({ error: "action required" }, { status: 400 });
+  }
+
+  const supa = createServiceClient();
+
+  if (body.action === "toggle_slack") {
+    const enabled = body.enabled !== false;
+    await supa.from("app_settings").upsert({
+      key: "slack_enabled",
+      value: enabled ? "true" : "false",
+      updated_at: new Date().toISOString(),
+      updated_by: auth.userId,
+    }, { onConflict: "key" });
+
+    console.log(`[super-admin] Slack ${enabled ? "ENABLED" : "DISABLED"} by ${auth.userId}`);
+    return NextResponse.json({ ok: true, slack_enabled: enabled });
+  }
+
+  return NextResponse.json({ error: "Unknown action" }, { status: 400 });
 }

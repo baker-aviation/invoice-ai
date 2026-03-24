@@ -9,6 +9,17 @@
 export type AircraftType = "CE-750" | "CL-30";
 export const AIRCRAFT_TYPES: AircraftType[] = ["CE-750", "CL-30"];
 
+/** Standard operating weights used by the automated tankering planner */
+export const STD_AIRCRAFT: Record<AircraftType, {
+  label: string;
+  mlw: number;   // max landing gross weight (lbs)
+  zfw: number;   // zero fuel weight estimate (OEW + avg pax/crew)
+  maxFuel: number; // max fuel capacity (lbs)
+}> = {
+  "CE-750": { label: "Citation X",      mlw: 31_800, zfw: 23_500, maxFuel: 13_000 },
+  "CL-30":  { label: "Challenger 300",  mlw: 34_250, zfw: 25_600, maxFuel: 14_100 },
+};
+
 interface BurnPt { fuelLbs: number; burnLbs: number; }
 
 const CURVES: Record<AircraftType, BurnPt[]> = {
@@ -217,6 +228,7 @@ export interface MultiLeg {
   flightTimeHours: number;
   maxLandingGrossWeightLbs: number;
   zeroFuelWeightLbs: number;
+  maxFuelCapacityLbs: number;
   departurePricePerGal: number;
   waiveFeesGallons: number;
   feesWaivedDollars: number;
@@ -231,6 +243,7 @@ export function makeDefaultLeg(from = "", to = ""): MultiLeg {
     flightTimeHours: 1.0,
     maxLandingGrossWeightLbs: 31800,
     zeroFuelWeightLbs: 24185,
+    maxFuelCapacityLbs: 13000,
     departurePricePerGal: 4.0,
     waiveFeesGallons: 0,
     feesWaivedDollars: 0,
@@ -306,20 +319,36 @@ export function optimizeMultiLeg(route: MultiRouteInputs, stepLbs = 100): MultiL
       const arrE = aj * stepLbs;
       if (arrE > maxOuts[i] + 0.001) continue;
 
+      // Fuel available at this stop before purchasing
+      const arrFuel = i === 0
+        ? route.startShutdownFuelLbs
+        : getMultiPlannedArrival(route, i - 1) + arrE;
+
+      // Minimum outgoing extra: can't depart with less fuel than we have
+      // (can't dump fuel), so depFuel >= arrFuel.
+      // depFuel = requiredStart + depExtra, arrFuel = paPrev + arrE
+      // depExtra >= arrFuel - requiredStart
+      const minDepExtra = Math.max(0, arrFuel - leg.requiredStartFuelLbs);
+      const minOJ = Math.min(maxOJ, Math.round(snap(minDepExtra) / stepLbs));
+
       let best = INF, bestOJ = -1;
-      for (let oj = aj; oj <= maxOJ; oj++) {   // can't dump fuel: outExtra >= arrExtra
+      for (let oj = minOJ; oj <= maxOJ; oj++) {
         const outE = oj * stepLbs;
-        const inE  = outE * (1 - cf);
+
+        // Actual departure extra (can't be less than what we already have)
+        const depExtra = Math.max(outE, minDepExtra);
+        const inE  = depExtra * (1 - cf);
         if (inE > maxIn + 0.001) continue;
 
         const nextAJ = Math.min(maxJ, Math.round(snap(inE) / stepLbs));
         const fut    = dp[i + 1][nextAJ];
         if (fut >= INF) continue;
 
-        const shutdown = i === 0
-          ? route.startShutdownFuelLbs
-          : getMultiPlannedArrival(route, i - 1) + arrE;
-        const oLbs = Math.max(0, leg.requiredStartFuelLbs + outE - shutdown);
+        const oLbs = Math.max(0, leg.requiredStartFuelLbs + depExtra - arrFuel);
+        // Enforce max fuel tank capacity
+        const depFuelTotal = arrFuel + oLbs;
+        if (leg.maxFuelCapacityLbs > 0 && depFuelTotal > leg.maxFuelCapacityLbs + 0.001) continue;
+
         const oGal = oLbs / ppg;
         const fc   = oGal * leg.departurePricePerGal;
         const fee  = leg.waiveFeesGallons > 0 && oGal + 0.001 < leg.waiveFeesGallons
@@ -345,14 +374,18 @@ export function optimizeMultiLeg(route: MultiRouteInputs, stepLbs = 100): MultiL
     if (oj < 0) return null;
     const arrE = aj * stepLbs;
     const outE = oj * stepLbs;
-    const inE  = outE * (1 - cfs[i]);
 
-    tOuts.push(outE); tIns.push(inE);
-
-    const shutdown = i === 0
+    const arrFuel = i === 0
       ? route.startShutdownFuelLbs
       : getMultiPlannedArrival(route, i - 1) + arrE;
-    const oLbs = Math.max(0, leg.requiredStartFuelLbs + outE - shutdown);
+
+    // Actual departure extra (can't dump fuel)
+    const depExtra = Math.max(outE, arrFuel - leg.requiredStartFuelLbs);
+    const inE  = depExtra * (1 - cfs[i]);
+
+    tOuts.push(depExtra); tIns.push(inE);
+
+    const oLbs = Math.max(0, leg.requiredStartFuelLbs + depExtra - arrFuel);
     const oGal = oLbs / ppg;
     oLbsArr.push(oLbs); oGalArr.push(oGal);
 

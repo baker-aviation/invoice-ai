@@ -25,26 +25,54 @@ export default async function VanPage({ params }: { params: Promise<{ vanId: str
   const past = new Date(now.getTime() - 12 * 60 * 60 * 1000).toISOString();
   const future = new Date(now.getTime() + 36 * 60 * 60 * 1000).toISOString();
 
-  const { data: flights } = await supa
+  const { data: flightsRaw } = await supa
     .from("flights")
     .select("*")
     .gte("scheduled_departure", past)
     .lte("scheduled_departure", future)
     .order("scheduled_departure", { ascending: true });
 
+  const flights = flightsRaw ?? [];
+
   // Check for a published schedule for this van today
   const today = todayEtDate();
   const { data: published } = await supa
     .from("van_published_schedules")
-    .select("flight_ids, published_at")
+    .select("flight_ids, synthetic_flights, published_at")
     .eq("van_id", vanId)
     .eq("schedule_date", today)
     .maybeSingle();
 
   const publishedFlightIds = published?.flight_ids ?? null;
+
+  // Backfill any published flights that fell outside the time window
+  // (e.g. flights that departed yesterday evening but arrive overnight)
+  if (publishedFlightIds && publishedFlightIds.length > 0) {
+    const loadedIds = new Set(flights.map((f: any) => f.id));
+    const missingIds = (publishedFlightIds as string[]).filter((id: string) => !loadedIds.has(id) && !id.startsWith("unsched_"));
+    if (missingIds.length > 0) {
+      const { data: extraFlights } = await supa
+        .from("flights")
+        .select("*")
+        .in("id", missingIds);
+      if (extraFlights) {
+        flights.push(...extraFlights);
+      }
+    }
+  }
   const publishedAtStr = published?.published_at ?? null;
+  const syntheticFlights: { id: string; tail: string; airport: string | null }[] =
+    (published?.synthetic_flights as any[]) ?? [];
 
   const mxNotes = await fetchMxNotes().catch(() => []);
+
+  // Fetch airport overrides from draft overrides (e.g. N201HR → VNY)
+  const { data: draftRow } = await supa
+    .from("van_draft_overrides")
+    .select("airport_overrides")
+    .eq("date", today)
+    .maybeSingle();
+  const airportOverrides: [string, string][] = (draftRow?.airport_overrides as [string, string][]) ?? [];
 
   // Build FBO lookup from trip_salespersons (tail:dest_icao → fbo name)
   const { data: fboRows } = await supa
@@ -65,11 +93,13 @@ export default async function VanPage({ params }: { params: Promise<{ vanId: str
     <VanDriverClient
       vanId={vanId}
       zone={zone}
-      initialFlights={flights ?? []}
+      initialFlights={flights}
       publishedFlightIds={publishedFlightIds}
       publishedAt={publishedAtStr}
+      syntheticFlights={syntheticFlights}
       mxNotes={mxNotes}
       fboMap={fboMap}
+      airportOverrides={airportOverrides}
     />
   );
 }

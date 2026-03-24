@@ -17,7 +17,7 @@ gcloud run deploy "${SERVICE_NAME}" \
   --cpu 1 \
   --memory 2Gi \
   --timeout 300 \
-  --max-instances 3 \
+  --max-instances 10 \
   --cpu-boost \
   --startup-probe="" \
   --set-env-vars "FOREFLIGHT_MAILBOX=ForeFlight@baker-aviation.com" \

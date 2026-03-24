@@ -36,13 +36,14 @@ const CreateSchema = z.object({
   label: z.string().min(1).max(100),
   url: z.string().url().max(2000),
   callsign: z.string().max(20).optional().nullable(),
+  aircraft_type: z.string().max(10).optional().nullable(),
   enabled: z.boolean().optional().default(true),
 });
 
 export async function POST(req: NextRequest) {
   const auth = await requireAdmin(req);
   if (!isAuthed(auth)) return auth.error;
-  if (isRateLimited(auth.userId, 20)) {
+  if (await isRateLimited(auth.userId, 20)) {
     return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
   }
 
@@ -81,13 +82,14 @@ const UpdateSchema = z.object({
   label: z.string().min(1).max(100).optional(),
   url: z.string().url().max(2000).optional(),
   callsign: z.string().max(20).optional().nullable(),
+  aircraft_type: z.string().max(10).optional().nullable(),
   enabled: z.boolean().optional(),
 });
 
 export async function PUT(req: NextRequest) {
   const auth = await requireAdmin(req);
   if (!isAuthed(auth)) return auth.error;
-  if (isRateLimited(auth.userId, 20)) {
+  if (await isRateLimited(auth.userId, 20)) {
     return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
   }
 

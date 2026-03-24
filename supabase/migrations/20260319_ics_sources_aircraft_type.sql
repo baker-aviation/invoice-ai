@@ -1,0 +1,1 @@
+ALTER TABLE ics_sources ADD COLUMN IF NOT EXISTS aircraft_type VARCHAR(10);

@@ -38,6 +38,20 @@ const FLIGHT_TYPE_COLORS: Record<string, string> = {
 
 const DEFAULT_TYPES = new Set(["Charter", "Revenue", "Positioning"]);
 
+/** Detect if a flight was diverted by checking DB flag or comparing arrival_icao to summary */
+function isDivertedFlight(f: { arrival_icao: string | null; summary: string | null; departure_icao: string | null; diverted?: boolean | null }): boolean {
+  if (f.diverted) return true;
+  if (!f.summary || !f.arrival_icao) return false;
+  // Summary format: [N818CF] BELLO (AUS - ASE) - Positioning flight
+  const m = f.summary.match(/\(([A-Z0-9]{3,4})\s*-\s*([A-Z0-9]{3,4})\)/);
+  if (!m) return false;
+  const origDest = m[2];
+  const arrClean = f.arrival_icao.replace(/\?$/, "");
+  // Compare: strip K-prefix for US airports
+  const norm = (c: string) => c.startsWith("K") && c.length === 4 ? c.slice(1) : c;
+  return norm(arrClean) !== norm(origDest);
+}
+
 type TimeRange = "Today" | "Today + Tomorrow" | "Tomorrow" | "Week" | "Month";
 
 function getTimeRange(range: TimeRange): { start: Date; end: Date } {
@@ -148,17 +162,33 @@ function computeTailDuty(
   const tailIntervals = new Map<string, DutyInterval[]>();
   for (const f of flights) {
     if (!f.tail_number) continue;
+    // Skip synthetic EDCT-orphan flights (not real ICS legs)
+    if (f.id.startsWith("edct-orphan-")) continue;
     const ft = (f.flight_type ?? "").toLowerCase();
     if (ft && !DUTY_FLIGHT_TYPES.has(ft)) continue;
 
-    // Match FA data: prefer exact route match, fall back to closest departure time
+    // Match FA data: direct ID match first, then route+time heuristics as fallback
     const tailFaFlights = faByTail.get(f.tail_number) ?? [];
     let fi: FlightInfoMap | undefined;
-    fi = tailFaFlights.find(
-      (fa) => fa.origin_icao === f.departure_icao && fa.destination_icao === f.arrival_icao,
-    );
+    const schedMs = new Date(f.scheduled_departure).getTime();
+
+    // 1. Direct ID match (if ICS flight has fa_flight_id linked)
+    if (f.fa_flight_id) {
+      fi = tailFaFlights.find(fa => fa.fa_flight_id === f.fa_flight_id);
+    }
+
+    // 2. Fallback: exact route match within 6h
+    if (!fi) {
+      fi = tailFaFlights.find((fa) => {
+        if (fa.origin_icao !== f.departure_icao || fa.destination_icao !== f.arrival_icao) return false;
+        const faDep = fa.departure_time ?? fa.actual_departure;
+        if (!faDep) return true;
+        return Math.abs(new Date(faDep).getTime() - schedMs) < 6 * 60 * 60 * 1000;
+      });
+    }
+
+    // 3. Fallback: closest departure time within 2h
     if (!fi && tailFaFlights.length > 0) {
-      const schedMs = new Date(f.scheduled_departure).getTime();
       let bestDiff = Infinity;
       for (const fa of tailFaFlights) {
         const faDep = fa.departure_time ?? fa.actual_departure;
@@ -268,6 +298,8 @@ function computeTailDuty(
     const finalIntervals = deduped;
 
     // --- Rolling 24hr flight time (Part 135.267: ANY 24 consecutive hours) ---
+    // Only consider windows that include at least one future/in-progress leg.
+    // Past-only windows can't be changed — don't alert on them.
     const checkPoints = new Set<number>();
     for (const leg of finalIntervals) {
       checkPoints.add(leg.startMs);
@@ -279,6 +311,9 @@ function computeTailDuty(
     let maxMs = 0;
     for (const wp of checkPoints) {
       const ws = wp - WINDOW_MS;
+      // Only flag windows containing a future/in-progress leg
+      const hasFutureLeg = finalIntervals.some(l => l.endMs >= nowMs && l.startMs < wp && l.endMs > ws);
+      if (!hasFutureLeg) continue;
       let totalMs = 0;
       for (const leg of finalIntervals) {
         const os = Math.max(leg.startMs, ws);
@@ -402,29 +437,37 @@ function delayColorClass(scheduledIso: string, actualIso: string): string {
   return "text-green-600";
 }
 
-/** Look up FA data: try route-specific key first, fall back to tail-only if route matches.
- *  Both paths reject stale FA data (>6h from scheduled departure) to avoid
- *  showing yesterday's actuals on today's leg of the same route. */
+/** Look up FA data: try bucketed route key first, then unbucketed, then tail-only.
+ *  All paths reject stale FA data (>90min from scheduled departure) to avoid
+ *  blending data between legs of the same aircraft. */
 function matchFlightInfo(
   map: Map<string, FlightInfoMap>,
   routeKey: string,
   tail: string,
   departureIcao: string | null,
   scheduledDep?: string,
+  arrivalIcao?: string | null,
 ): FlightInfoMap | undefined {
+  const STALE_MS = 90 * 60_000; // 90 minutes
   const isStale = (fi: FlightInfoMap) => {
     if (!scheduledDep) return false;
     const faDep = fi.actual_departure ?? fi.departure_time;
     if (!faDep) return false;
-    return Math.abs(new Date(faDep).getTime() - new Date(scheduledDep).getTime()) > 3 * 3600_000;
+    return Math.abs(new Date(faDep).getTime() - new Date(scheduledDep).getTime()) > STALE_MS;
   };
+  // 1. Try bucketed route key (tail|dep|arr|bucket)
+  if (scheduledDep) {
+    const h = new Date(scheduledDep).getUTCHours();
+    const bucket = String(Math.floor(h / 3));
+    const bucketed = map.get(`${routeKey}|${bucket}`);
+    if (bucketed && !isStale(bucketed)) return bucketed;
+  }
+  // 2. Try unbucketed route key (tail|dep|arr) — catches cases where FA dep drifted to adjacent bucket
   const byRoute = map.get(routeKey);
   if (byRoute && !isStale(byRoute)) return byRoute;
-  // Tail-only fallback: only use if the FA flight's origin matches AND not stale
-  const byTail = map.get(tail);
-  if (byTail && departureIcao && byTail.origin_icao === departureIcao && !isStale(byTail)) {
-    return byTail;
-  }
+  // Tail-only fallback removed — was the source of cross-leg status bleed.
+  // Flights without a route match will correctly show as "Scheduled" until
+  // the FA poll cron or webhook links them via fa_flight_id.
   return undefined;
 }
 
@@ -510,6 +553,12 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
   const [flightInfo, setFlightInfo] = useState<Map<string, FlightInfoMap>>(new Map());
   const [tripSalespersons, setTripSalespersons] = useState<TripSalesperson[]>([]);
 
+  // Flight remarks (day-of notes)
+  type FlightRemark = { id: string; flight_id: string; remark: string; created_by: string | null; updated_at: string };
+  const [remarks, setRemarks] = useState<Map<string, FlightRemark>>(new Map());
+  const [editingRemarkId, setEditingRemarkId] = useState<string | null>(null);
+  const [remarkDraft, setRemarkDraft] = useState("");
+
   // SWIM flight status
   type SwimFlightStatus = { tail_number: string; departure_icao: string | null; arrival_icao: string | null; status: string; event_time: string; etd: string | null; eta: string | null; actual_departure: string | null; actual_arrival: string | null; latitude?: number | null; longitude?: number | null; groundspeed_kt?: number | null };
   type FeedStatus = { name: string; status: "ok" | "error" | "off"; count: number; updated_at?: string; error?: string };
@@ -571,6 +620,19 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
     fetch(`/api/ops/alerts/${id}/acknowledge`, { method: "POST" }).catch(() => {});
   }, []);
 
+  const handleAckAll = useCallback((flightId: string, alertIds: string[]) => {
+    setLocalAckedIds((prev) => {
+      const next = new Set(prev);
+      for (const id of alertIds) next.add(id);
+      return next;
+    });
+    fetch("/api/ops/alerts/acknowledge-bulk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ flight_id: flightId }),
+    }).catch(() => {});
+  }, []);
+
   // Fetch FlightAware data (primary source for both positions and flight info)
   const fetchFlightInfo = useCallback(async () => {
     try {
@@ -583,15 +645,27 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
           MYNN: "KNAS", MWCR: "KGCM", TXKF: "KBDA", TAPA: "KANU",
           TUPJ: "MBPV",  // Beef Island / Tortola BVI
         };
-        // Key by tail|origin|dest so each scheduled leg can find its FA match
+        // Key by tail|origin|dest|depBucket so same-route legs don't collide.
+        // depBucket is the 3h window the FA departure falls into, so legs >3h apart
+        // each get their own slot in the map.
+        const bucketHours = (iso: string | null | undefined): string => {
+          if (!iso) return "";
+          const h = new Date(iso).getUTCHours();
+          return String(Math.floor(h / 3));          // 0-7 (eight 3-h buckets per day)
+        };
         const map = new Map<string, FlightInfoMap>();
         const positions: AircraftPosition[] = [];
         for (const fi of data.flights ?? []) {
-          const key = `${fi.tail}|${fi.origin_icao ?? ""}|${fi.destination_icao ?? ""}`;
+          const bucket = bucketHours(fi.departure_time ?? fi.actual_departure);
+          const key = `${fi.tail}|${fi.origin_icao ?? ""}|${fi.destination_icao ?? ""}|${bucket}`;
           // Prefer the entry that's actively flying (has position or actual departure)
           const existing = map.get(key);
           const isMoreActive = !existing || fi.latitude != null || fi.actual_departure != null;
           if (isMoreActive) map.set(key, fi);
+          // Also store without bucket for backward-compat route lookups (matchFlightInfo
+          // tries bucketed key first, then falls back to unbucketed)
+          const unbucketedKey = `${fi.tail}|${fi.origin_icao ?? ""}|${fi.destination_icao ?? ""}`;
+          if (!map.has(unbucketedKey) || isMoreActive) map.set(unbucketedKey, fi);
           // Index all alias combinations (origin/dest independently)
           const altOrig = FA_ALIASES[fi.origin_icao ?? ""];
           const altDest = FA_ALIASES[fi.destination_icao ?? ""];
@@ -602,8 +676,10 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
             if (altDest) dests.push(altDest);
             for (const o of origins) {
               for (const d of dests) {
-                const k = `${fi.tail}|${o}|${d}`;
+                const k = `${fi.tail}|${o}|${d}|${bucket}`;
                 if (!map.has(k) || isMoreActive) map.set(k, fi);
+                const kUnbucketed = `${fi.tail}|${o}|${d}`;
+                if (!map.has(kUnbucketed) || isMoreActive) map.set(kUnbucketed, fi);
               }
             }
           }
@@ -628,11 +704,17 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
           }
           // Also index by ident (callsign) so lookups work either way
           if (fi.ident && fi.ident !== fi.tail) {
-            const identKey = `${fi.ident}|${fi.origin_icao ?? ""}|${fi.destination_icao ?? ""}`;
+            const identKey = `${fi.ident}|${fi.origin_icao ?? ""}|${fi.destination_icao ?? ""}|${bucket}`;
             if (!map.has(identKey) || fi.latitude != null) map.set(identKey, fi);
+            const identKeyUnbucketed = `${fi.ident}|${fi.origin_icao ?? ""}|${fi.destination_icao ?? ""}`;
+            if (!map.has(identKeyUnbucketed) || fi.latitude != null) map.set(identKeyUnbucketed, fi);
             if (!map.has(fi.ident) || (fi.latitude != null && fi.longitude != null)) {
               map.set(fi.ident, fi);
             }
+          }
+          // Index by fa_flight_id for direct lookup from ICS flights
+          if (fi.fa_flight_id) {
+            map.set(`fa:${fi.fa_flight_id}`, fi);
           }
           // Synthesize map positions from en-route flights only
           // Skip: flights that have landed, or ghost flights (departed >6h ago, no landing)
@@ -723,16 +805,60 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
     } catch { /* ignore */ }
   }, []);
 
-  // Poll every 5 minutes
+  // Fetch flight remarks
+  const fetchRemarks = useCallback(async () => {
+    try {
+      const res = await fetch("/api/ops/remarks", { cache: "no-store" });
+      if (res.ok) {
+        const data = await res.json();
+        const map = new Map<string, FlightRemark>();
+        for (const [fid, r] of Object.entries(data.remarks ?? {})) {
+          map.set(fid, r as FlightRemark);
+        }
+        setRemarks(map);
+      }
+    } catch { /* ignore */ }
+  }, []);
+
+  const saveRemark = useCallback(async (flightId: string, text: string) => {
+    try {
+      const res = await fetch("/api/ops/remarks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ flight_id: flightId, remark: text }),
+      });
+      if (res.ok) {
+        // Optimistic update
+        if (text.trim() === "") {
+          setRemarks((prev) => { const m = new Map(prev); m.delete(flightId); return m; });
+        } else {
+          setRemarks((prev) => {
+            const m = new Map(prev);
+            m.set(flightId, { id: "", flight_id: flightId, remark: text.trim(), created_by: null, updated_at: new Date().toISOString() });
+            return m;
+          });
+        }
+      }
+    } catch { /* ignore */ }
+    setEditingRemarkId(null);
+  }, []);
+
+  // Poll every 5 minutes (with jitter to prevent thundering herd across clients)
   useEffect(() => {
     fetchFlightInfo();
     fetchSwimStatus();
     fetchTripSalespersons();
-    const interval = setInterval(fetchFlightInfo, 300_000); // 5 min — matches server cache TTL
-    const swimInterval = setInterval(fetchSwimStatus, 300_000); // 5 min same as FA
-    const spInterval = setInterval(fetchTripSalespersons, 300_000);
-    return () => { clearInterval(interval); clearInterval(swimInterval); clearInterval(spInterval); };
-  }, [fetchFlightInfo, fetchSwimStatus, fetchTripSalespersons]);
+    fetchRemarks();
+    const jitter = () => 300_000 + Math.random() * 30_000; // 5 min + 0-30s jitter
+    let i1: ReturnType<typeof setTimeout>, i2: ReturnType<typeof setTimeout>,
+        i3: ReturnType<typeof setTimeout>, i4: ReturnType<typeof setTimeout>;
+    const loop = (fn: () => void) => { const tick = () => { fn(); id = setTimeout(tick, jitter()); }; let id = setTimeout(tick, jitter()); return () => clearTimeout(id); };
+    const c1 = loop(fetchFlightInfo);
+    const c2 = loop(fetchSwimStatus);
+    const c3 = loop(fetchTripSalespersons);
+    const c4 = loop(fetchRemarks);
+    return () => { c1(); c2(); c3(); c4(); };
+  }, [fetchFlightInfo, fetchSwimStatus, fetchTripSalespersons, fetchRemarks]);
 
   // Lazy-load extended flights when switching to Week/Month
   useEffect(() => {
@@ -786,8 +912,8 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
   // Detect legs superseded by FA (route changed after schedule) + inject FA replacement legs
   // Also detect diversions (FA says diverted — original destination gets strikethrough)
   const { displayFlights, supersededMap } = useMemo(() => {
-    // Map from flight.id → { actualDest, diverted } for cancelled/diverted rendering
-    const superseded = new Map<string, { actualDest: string | null; diverted: boolean }>();
+    // Map from flight.id → { actualDest, diverted, diverting } for cancelled/diverted rendering
+    const superseded = new Map<string, { actualDest: string | null; diverted: boolean; diverting: boolean }>();
     const replacements: Flight[] = [];
     const addedRoutes = new Set<string>();
 
@@ -798,24 +924,54 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
       // If FA matched this leg's route but says it's diverted, find diversion airport
       // from last known position (FA's destination stays as the original filed dest)
       const routeKey = `${f.tail_number}|${f.departure_icao}|${f.arrival_icao ?? ""}`;
-      const routeFi = flightInfo.get(routeKey) ?? (flightInfo.get(f.tail_number)?.diverted ? flightInfo.get(f.tail_number) : undefined);
+      // Fall back to tail-level FA entry only if diverted AND departure time is within 3h of scheduled
+      const tailFallback = (() => {
+        const tfi = f.tail_number ? flightInfo.get(f.tail_number) : undefined;
+        if (!tfi?.diverted) return undefined;
+        const faDepIso = tfi.departure_time ?? tfi.actual_departure;
+        if (faDepIso) {
+          const diff = Math.abs(new Date(faDepIso).getTime() - new Date(f.scheduled_departure).getTime());
+          if (diff > 3 * 3600_000) return undefined; // Stale FA entry from a different day/flight
+        }
+        return tfi;
+      })();
+      const routeFi = flightInfo.get(routeKey) ?? tailFallback;
       if (routeFi?.diverted) {
-        let divertedTo: string | null = null;
-        if (routeFi.latitude != null && routeFi.longitude != null) {
-          const nearest = findNearestAirport(routeFi.latitude, routeFi.longitude);
-          if (nearest) {
-            // Normalize to ICAO (K-prefix for US 3-letter codes)
-            let code = nearest.code;
-            if (code.length === 3 && /^[A-Z]/.test(code)) code = `K${code}`;
-            // Don't show if it matches the departure or original destination
-            const depNorm = f.departure_icao?.length === 3 ? `K${f.departure_icao}` : f.departure_icao;
-            const arrNorm = f.arrival_icao?.length === 3 ? `K${f.arrival_icao}` : f.arrival_icao;
-            if (code !== depNorm && code !== arrNorm) {
-              divertedTo = code;
+        // FA often doesn't populate actual_arrival for diverted flights.
+        // Also check progress and ETA as landed signals.
+        const hasLanded = routeFi.actual_arrival != null
+          || (routeFi.progress_percent != null && routeFi.progress_percent >= 100)
+          || (routeFi.arrival_time != null && new Date(routeFi.arrival_time).getTime() < Date.now());
+        // Normalize ICAO codes for comparison (3-letter US → K-prefix)
+        const normIcao = (c: string | null | undefined) => c ? (c.length === 3 && /^[A-Z]/.test(c) ? `K${c}` : c) : null;
+        const faDest = normIcao(routeFi.destination_icao);
+        const schedDest = normIcao(f.arrival_icao);
+
+        if (hasLanded) {
+          // Landed: compare FA destination vs scheduled arrival
+          if (faDest && schedDest && faDest === schedDest) {
+            // False alarm — landed at scheduled airport. Skip supersededMap entirely.
+            continue;
+          }
+          // Confirmed diversion — landed at different airport
+          superseded.set(f.id, { actualDest: faDest, diverted: true, diverting: false });
+        } else {
+          // Airborne: FA says diverted but not yet landed — soft "diverting" state
+          let divertedTo: string | null = null;
+          if (routeFi.latitude != null && routeFi.longitude != null) {
+            const nearest = findNearestAirport(routeFi.latitude, routeFi.longitude);
+            if (nearest) {
+              let code = nearest.code;
+              if (code.length === 3 && /^[A-Z]/.test(code)) code = `K${code}`;
+              const depNorm = normIcao(f.departure_icao);
+              const arrNorm = schedDest;
+              if (code !== depNorm && code !== arrNorm) {
+                divertedTo = code;
+              }
             }
           }
+          superseded.set(f.id, { actualDest: divertedTo, diverted: false, diverting: true });
         }
-        superseded.set(f.id, { actualDest: divertedTo, diverted: true });
         continue;
       }
 
@@ -841,7 +997,24 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
         if (diff > 3 * 3600_000) continue;
       }
 
-      superseded.set(f.id, { actualDest: tailFi.destination_icao, diverted: tailFi.diverted });
+      // Two-tier diversion: check if landed + dest matches scheduled
+      const normIcaoB = (c: string | null | undefined) => c ? (c.length === 3 && /^[A-Z]/.test(c) ? `K${c}` : c) : null;
+      let routeDiverted = false;
+      let routeDiverting = false;
+      if (tailFi.diverted) {
+        const hasLanded = tailFi.actual_arrival != null
+          || (tailFi.progress_percent != null && tailFi.progress_percent >= 100)
+          || (tailFi.arrival_time != null && new Date(tailFi.arrival_time).getTime() < Date.now());
+        const faDest = normIcaoB(tailFi.destination_icao);
+        const schedDest = normIcaoB(f.arrival_icao);
+        if (hasLanded && faDest && schedDest && faDest === schedDest) {
+          // False alarm — landed at scheduled airport, skip supersededMap
+          continue;
+        }
+        routeDiverted = hasLanded;
+        routeDiverting = !hasLanded;
+      }
+      superseded.set(f.id, { actualDest: tailFi.destination_icao, diverted: routeDiverted, diverting: routeDiverting });
 
       // Inject replacement (once per route), skip if already in schedule
       const replRouteKey = `${f.tail_number}|${tailFi.origin_icao}|${tailFi.destination_icao}`;
@@ -868,6 +1041,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
         sic: null,
         pax_count: null,
         jetinsight_url: null,
+        fa_flight_id: null,
         alerts: [],
       });
     }
@@ -906,30 +1080,54 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
     const map = new Map<string, "scheduled" | "enroute" | "arrived">();
     const now = new Date();
     for (const f of displayFlights) {
-      const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
-      const fi = f.tail_number ? matchFlightInfo(flightInfo, routeKey, f.tail_number, f.departure_icao, f.scheduled_departure) : undefined;
+      // Primary: direct fa_flight_id match
+      let fi: FlightInfoMap | undefined;
+      let idMatched = false;
+      if (f.fa_flight_id && flightInfo.has(`fa:${f.fa_flight_id}`)) {
+        fi = flightInfo.get(`fa:${f.fa_flight_id}`);
+        idMatched = true;
+      }
+      // Secondary: route-key match (for flights not yet linked)
+      if (!fi && f.tail_number) {
+        const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
+        fi = matchFlightInfo(flightInfo, routeKey, f.tail_number, f.departure_icao, f.scheduled_departure, f.arrival_icao);
+      }
+
       const arrivalDate = f.scheduled_arrival ? new Date(f.scheduled_arrival) : null;
-      const faEta = fi && fi.destination_icao === f.arrival_icao && fi.arrival_time ? new Date(fi.arrival_time) : null;
+      // For ID-matched flights, always trust ETA; for route-matched, require dest match
+      const faEta = fi && (idMatched || fi.destination_icao === f.arrival_icao) && fi.arrival_time ? new Date(fi.arrival_time) : null;
       const arrivalPassed = (arrivalDate && arrivalDate < now) || (faEta && faEta < now);
 
       // Check SWIM status — route-specific only for "En Route" to avoid bleeding across legs
+      const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
       const swimRoute = swimStatus.get(routeKey);
       const swim = swimRoute ?? (f.tail_number ? swimStatus.get(`${f.tail_number}||`) : undefined);
       const swimRouteStale = isSwimStale(swimRoute, f.scheduled_departure);
       const swimEntryStale = isSwimStale(swim, f.scheduled_departure);
-      const fiRouteMatch = fi && fi.destination_icao === f.arrival_icao;
+      // ID-matched flights are always "route matched" — the FA leg IS this leg
+      const fiRouteMatch = idMatched || (fi && fi.destination_icao === f.arrival_icao);
 
       // FA is primary source; SWIM supplements when FA hasn't detected takeoff yet
+      const schedArrPassed = arrivalDate && arrivalDate < now;
+      const arrOvMin = arrivalDate && schedArrPassed ? (now.getTime() - arrivalDate.getTime()) / 60_000 : 0;
+      // "Late" / "No Departure" flights (15min–2h overdue with no FA dep) stay in "scheduled" filter
+      const noDepConds = !fi?.actual_departure && !fi?.actual_arrival
+        && !fi?.status?.includes("En Route") && !fi?.status?.includes("Landed");
+      const isLateOrNoDep = arrOvMin >= 15 && arrOvMin <= 120 && noDepConds;
       if (fi?.diverted || supersededMap.has(f.id)) {
         map.set(f.id, "arrived");
       } else if (fiRouteMatch && (fi?.actual_arrival || fi?.status?.includes("Arrived") || fi?.status?.includes("Landed"))) {
         map.set(f.id, "arrived");
+      } else if (isLateOrNoDep) {
+        map.set(f.id, "scheduled"); // Late / No Departure — keep in scheduled filter
       } else if (arrivalPassed) {
         map.set(f.id, "arrived");
       } else if (fiRouteMatch && fi?.status?.includes("En Route")) {
         map.set(f.id, "enroute");
-      } else if (fiRouteMatch && fi?.departure_time && !fi?.actual_arrival && new Date(fi.departure_time) < now && (!faEta || faEta > now)) {
-        map.set(f.id, "enroute"); // LADD: FA has departure time passed, ETA in future — plane is flying
+      } else if (fiRouteMatch && fi?.actual_departure && !fi?.actual_arrival
+        && new Date(fi.actual_departure) < now && (!faEta || faEta > now)
+        && !fi?.status?.includes("Scheduled") && !fi?.status?.includes("Cancelled")) {
+        map.set(f.id, "enroute"); // LADD: FA has actual departure + not scheduled/cancelled
       } else if (!swimRouteStale && swimRoute?.status === "En Route") {
         map.set(f.id, "enroute"); // SWIM detected takeoff (works with or without FA route match)
       } else if (!fiRouteMatch && !swimEntryStale && swim?.status === "Arrived") {
@@ -1217,6 +1415,31 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
     return set;
   }, [swimFlow]);
 
+  // Per-tail FA last-known location (most recent landed flight's destination)
+  const tailFaLocation = useMemo(() => {
+    const normIcao = (c: string | null | undefined) => c ? (c.length === 3 && /^[A-Z]/.test(c) ? `K${c}` : c) : null;
+    const map = new Map<string, { icao: string; landedAt: string | null }>();
+    const flyingTails = new Set(enRouteAircraft.map((a) => a.tail));
+    for (const fi of faFlightsRaw) {
+      if (!fi.tail || flyingTails.has(fi.tail)) continue;
+      // Only consider flights that have actually landed
+      const hasLanded = fi.actual_arrival != null
+        || (fi.status?.includes("Landed") || fi.status?.includes("Arrived"))
+        || (fi.progress_percent != null && fi.progress_percent >= 100);
+      if (!hasLanded || !fi.destination_icao) continue;
+      // Only trust FA data from the last 24 hours
+      const landedTime = fi.actual_arrival ?? fi.arrival_time;
+      if (landedTime && Date.now() - new Date(landedTime).getTime() > 24 * 3600_000) continue;
+      const existing = map.get(fi.tail);
+      const existingTime = existing?.landedAt ? new Date(existing.landedAt).getTime() : 0;
+      const thisTime = landedTime ? new Date(landedTime).getTime() : 0;
+      if (!existing || thisTime > existingTime) {
+        map.set(fi.tail, { icao: normIcao(fi.destination_icao) ?? fi.destination_icao, landedAt: landedTime });
+      }
+    }
+    return map;
+  }, [faFlightsRaw, enRouteAircraft]);
+
   // Per-tail duty summary (24hr flight time + crew rest)
   const tailDuty = useMemo(() => computeTailDuty(flights, faFlightsRaw), [flights, faFlightsRaw]);
 
@@ -1238,6 +1461,8 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
       // Build EDCT-shifted intervals from normal intervals
       const edctIntervals = normalDuty.intervals.map(iv => ({ ...iv }));
       for (const iv of edctIntervals) {
+        // Skip legs that have actually departed — EDCT is moot once airborne
+        if (iv.source === "actual" && iv.startMs < Date.now()) continue;
         // Find the flight that matches this interval
         const matchedFlight = tailFlights.find(f =>
           f.departure_icao === iv.depIcao &&
@@ -1252,17 +1477,20 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
         iv.startMs += deltaMs;
         iv.endMs += deltaMs;
       }
-      // Cascade: push subsequent legs forward if they overlap
+      // Cascade: push subsequent legs forward if gap < 30 min (minimum turnaround)
+      const MIN_TURN_MS = 30 * 60_000;
       edctIntervals.sort((a, b) => a.startMs - b.startMs);
       for (let i = 1; i < edctIntervals.length; i++) {
-        if (edctIntervals[i].startMs < edctIntervals[i - 1].endMs) {
-          const shift = edctIntervals[i - 1].endMs - edctIntervals[i].startMs;
+        const gap = edctIntervals[i].startMs - edctIntervals[i - 1].endMs;
+        if (gap < MIN_TURN_MS) {
+          const shift = MIN_TURN_MS - gap;
           edctIntervals[i].startMs += shift;
           edctIntervals[i].endMs += shift;
         }
       }
 
-      // EDCT rolling 24hr max
+      // EDCT rolling 24hr max (forward-looking only)
+      const nowMsEdct = Date.now();
       const checkPoints = new Set<number>();
       for (const leg of edctIntervals) {
         checkPoints.add(leg.startMs);
@@ -1273,6 +1501,8 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
       let maxMs = 0;
       for (const wp of checkPoints) {
         const ws = wp - WINDOW_MS;
+        const hasFutureLeg = edctIntervals.some(l => l.endMs >= nowMsEdct && l.startMs < wp && l.endMs > ws);
+        if (!hasFutureLeg) continue;
         let totalMs = 0;
         for (const leg of edctIntervals) {
           const os = Math.max(leg.startMs, ws);
@@ -1332,24 +1562,128 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
   const airborne = enRouteAircraft.length;
   const onGround = parkedAircraft.length;
 
-  // Collect same-day EDCT alerts across all flights
-  const edctAlerts = useMemo(() => {
+  // FAA EDCT check
+  const [checkingFaa, setCheckingFaa] = useState(false);
+  const [faaCheckResult, setFaaCheckResult] = useState<string | null>(null);
+  const [faaDebug, setFaaDebug] = useState<Array<{ callsign: string; tail: string; origin: string; destination: string; found: boolean; edct_time: string | null; filed_departure: string | null; control_element: string | null; delay_minutes: number | null; query: { dept: string; arr: string }; raw_text?: string }> | null>(null);
+
+  const handleCheckFaaEdcts = useCallback(async () => {
+    setCheckingFaa(true);
+    setFaaCheckResult(null);
+    setFaaDebug(null);
+    try {
+      // Only check flights that haven't departed yet (scheduled departure in the future or within last hour)
+      const cutoff = new Date(Date.now() - 60 * 60_000).toISOString();
+      const seen = new Set<string>();
+      const flightList: { callsign: string; tail: string; dept: string; arr: string }[] = [];
+      for (const f of flights) {
+        if (!f.tail_number || !f.departure_icao || !f.arrival_icao) continue;
+        if (f.id.startsWith("edct-orphan-")) continue;
+        if (f.scheduled_departure && f.scheduled_departure < cutoff) continue; // Skip departed flights
+        const nums = f.tail_number.match(/\d+/)?.[0] ?? "";
+        const key = `KOW${nums}|${f.departure_icao}|${f.arrival_icao}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        flightList.push({
+          callsign: `KOW${nums}`,
+          tail: f.tail_number,
+          dept: f.departure_icao,
+          arr: f.arrival_icao,
+        });
+      }
+
+      if (!flightList.length) {
+        setFaaCheckResult("No flights to check");
+        return;
+      }
+
+      const res = await fetch("/api/ops/edct-lookup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ flights: flightList }),
+      });
+      const data = await res.json();
+      // Show found results first, then a sample of not-found for debugging
+      const allResults = data.results ?? [];
+      const foundResults = allResults.filter((r: { found: boolean }) => r.found);
+      const notFound = allResults.filter((r: { found: boolean }) => !r.found);
+      // Show all found + sample of not-found, plus any with raw data that has "record"
+      const parseFailed = notFound.filter((r: { raw_text?: string }) => r.raw_text?.includes("record(s)"));
+      setFaaDebug([...foundResults, ...parseFailed, ...notFound.filter((r: { raw_text?: string }) => !r.raw_text?.includes("record(s)")).slice(0, 5)]);
+      if (data.stale) setFaaCheckResult(prev => (prev ?? "") + ` (${data.stale} stale skipped)`);
+      if (data.found > 0) {
+        setFaaCheckResult(`Found ${data.found} FAA EDCT${data.found !== 1 ? "s" : ""} — refreshing...`);
+        setTimeout(() => window.location.reload(), 2000);
+      } else {
+        setFaaCheckResult(`Checked ${data.checked} flights — no FAA EDCTs found`);
+      }
+    } catch (err) {
+      setFaaCheckResult(`Error: ${err}`);
+    } finally {
+      setCheckingFaa(false);
+    }
+  }, [flights]);
+
+  // Collect same-day EDCT alerts, merged by flight (route+tail)
+  type MergedEdct = {
+    key: string;
+    route: string;
+    tail: string | null;
+    departure_icao: string | null;
+    callsign: string | null;
+    ff: OpsAlert | null;
+    faa: OpsAlert | null;
+    fallback_departure?: string;
+  };
+
+  const mergedEdcts = useMemo(() => {
     const now = new Date();
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const tomorrowStart = new Date(todayStart.getTime() + 86400000);
-    const alerts: (OpsAlert & { route: string; fallback_departure?: string })[] = [];
+    const map = new Map<string, MergedEdct>();
+
     for (const f of flights) {
       for (const a of f.alerts) {
         if (a.alert_type !== "EDCT") continue;
         if (!showAcknowledged && isAcked(a)) continue;
-        // Only show EDCTs for today's flights
         const dep = new Date(a.edct_time ?? a.original_departure_time ?? f.scheduled_departure);
         if (dep < todayStart || dep >= tomorrowStart) continue;
+
         const route = [f.departure_icao, f.arrival_icao].filter(Boolean).join(" → ") || "Unknown";
-        alerts.push({ ...a, route, fallback_departure: f.scheduled_departure ?? undefined });
+        const tail = a.tail_number ?? f.tail_number;
+        const key = `${tail}|${route}`;
+        const isFaa = (a.source_message_id ?? "").startsWith("faa-edct-");
+        const isSwim = (a.source_message_id ?? "").startsWith("swim-edct-");
+        const sourceType = isFaa ? "faa" : "ff";
+
+        // Extract callsign from subject
+        const callsign = a.subject?.match(/\((KOW\d+)\)/i)?.[1]
+          ?? a.subject?.match(/EDCT[:\s]+(KOW\d+)/i)?.[1]
+          ?? (isFaa ? a.subject?.match(/FAA EDCT:\s+(KOW\d+)/i)?.[1] : null)
+          ?? null;
+
+        if (!map.has(key)) {
+          map.set(key, {
+            key,
+            route,
+            tail,
+            departure_icao: f.departure_icao,
+            callsign,
+            ff: null,
+            faa: null,
+            fallback_departure: f.scheduled_departure ?? undefined,
+          });
+        }
+        const entry = map.get(key)!;
+        if (sourceType === "faa") {
+          entry.faa = a;
+        } else {
+          entry.ff = a;
+        }
+        if (callsign && !entry.callsign) entry.callsign = callsign;
       }
     }
-    return alerts;
+    return [...map.values()];
   }, [flights, isAcked, showAcknowledged]);
 
   return (
@@ -1376,66 +1710,121 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
       </div>
 
       {/* ── EDCT + Feed Status side by side ── */}
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-[1fr_auto] gap-3">
         {/* EDCT Status */}
-        {edctAlerts.length === 0 ? (
+        {mergedEdcts.length === 0 ? (
           <div className="flex items-center gap-2 rounded-lg border border-green-200 bg-green-50 px-4 py-2.5 text-sm">
             <span className="w-2.5 h-2.5 rounded-full bg-green-500" />
             <span className="font-medium text-green-800">No active EDCTs</span>
+            <button
+              onClick={handleCheckFaaEdcts}
+              disabled={checkingFaa}
+              className="ml-auto text-xs text-gray-400 hover:text-blue-600 border border-gray-200 hover:border-blue-300 rounded px-2 py-0.5 transition-colors disabled:opacity-50"
+            >
+              {checkingFaa ? "Checking..." : "Check FAA"}
+            </button>
           </div>
         ) : (
           <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
             <div className="flex items-center gap-2 mb-2 text-sm">
               <span className="w-2.5 h-2.5 rounded-full bg-amber-500" />
               <span className="font-semibold text-amber-800">
-                {edctAlerts.length} Active EDCT{edctAlerts.length !== 1 ? "s" : ""}
+                {mergedEdcts.length} Active EDCT{mergedEdcts.length !== 1 ? "s" : ""}
               </span>
+              <button
+                onClick={handleCheckFaaEdcts}
+                disabled={checkingFaa}
+                className="ml-auto text-xs text-gray-500 hover:text-blue-600 border border-amber-200 hover:border-blue-300 rounded px-2 py-0.5 transition-colors disabled:opacity-50"
+              >
+                {checkingFaa ? "Checking..." : "Check FAA"}
+              </button>
             </div>
-            <div className="space-y-1.5">
-              {edctAlerts.map((a) => (
-                <div key={a.id} className={`flex items-center gap-3 text-sm text-amber-900 ${isAcked(a) ? "opacity-50" : ""}`}>
-                  <span className="font-medium">{a.route}</span>
-                  {(() => {
-                    // Extract the filed identifier (KOW callsign or N-number) from subject
-                    const filedAs = a.subject?.match(/\((KOW\d+|N\d+[A-Z]*)\)/i)?.[1]
-                      ?? a.subject?.match(/EDCT\s+(KOW\d+|N\d+[A-Z]*)/i)?.[1]
-                      ?? null;
-                    const tail = a.tail_number;
-                    const showFiledAs = filedAs && tail && filedAs.toUpperCase() !== tail.toUpperCase();
-                    return tail ? (
-                      <span className="text-amber-600">
-                        {tail}{showFiledAs && <span className="text-amber-400 text-xs ml-0.5">({filedAs})</span>}
-                      </span>
-                    ) : filedAs ? (
-                      <span className="text-amber-600">{filedAs}</span>
-                    ) : null;
-                  })()}
-                  <span className={`text-[10px] font-bold rounded px-1 py-0.5 ${
-                    (a.source_message_id ?? "").startsWith("swim-edct-")
-                      ? "bg-blue-100 text-blue-700"
-                      : "bg-amber-100 text-amber-700"
-                  }`}>{(a.source_message_id ?? "").startsWith("swim-edct-") ? "SWIM" : "FF"}</span>
-                  <span className="text-sm">
-                    {(a.original_departure_time || a.fallback_departure) && (
-                      <span className="text-amber-500 line-through">{fmt(a.original_departure_time ?? a.fallback_departure ?? "", a.airport_icao)}</span>
+            <div className="grid grid-cols-[auto_auto_auto_auto_auto_1fr_auto] gap-x-3 gap-y-1.5 items-center text-sm">
+              {mergedEdcts.map((m) => {
+                const primary = m.ff ?? m.faa;
+                if (!primary) return null;
+                const allAcked = (m.ff ? isAcked(m.ff) : true) && (m.faa ? isAcked(m.faa) : true);
+                const depIcao = m.departure_icao;
+                const opacity = allAcked ? "opacity-50" : "";
+
+                return (
+                  <Fragment key={m.key}>
+                    {/* Route */}
+                    <span className={`font-medium text-amber-900 whitespace-nowrap ${opacity}`}>{m.route}</span>
+                    {/* Tail */}
+                    <span className={`text-amber-600 whitespace-nowrap ${opacity}`}>
+                      {m.tail}{m.callsign && <span className="text-amber-400 text-xs ml-0.5">({m.callsign})</span>}
+                    </span>
+                    {/* Original departure */}
+                    <span className={`text-amber-500 line-through whitespace-nowrap text-right ${opacity}`}>
+                      {fmt(primary.original_departure_time ?? m.fallback_departure ?? "", depIcao)}
+                    </span>
+                    {/* FF EDCT */}
+                    <span className={`whitespace-nowrap ${opacity}`}>
+                      {m.ff ? (
+                        <span className="flex items-center gap-1">
+                          <span className="text-amber-800 font-bold">{m.ff.edct_time ? fmt(m.ff.edct_time, depIcao) : "—"}</span>
+                          <span className="text-[10px] font-bold rounded px-1 py-0.5 bg-amber-100 text-amber-700">FF</span>
+                        </span>
+                      ) : <span />}
+                    </span>
+                    {/* FAA EDCT */}
+                    <span className={`whitespace-nowrap ${opacity}`}>
+                      {m.faa ? (
+                        <span className="flex items-center gap-1">
+                          <span className="text-blue-700 font-bold">{m.faa.edct_time ? fmt(m.faa.edct_time, depIcao) : "—"}</span>
+                          <span className="text-[10px] font-bold rounded px-1 py-0.5 bg-blue-100 text-blue-700">FAA</span>
+                        </span>
+                      ) : <span />}
+                    </span>
+                    {/* Spacer */}
+                    <span />
+                    {/* Ack */}
+                    {allAcked ? (
+                      <span className="text-xs text-gray-400 bg-gray-100 rounded px-1.5 py-0.5 justify-self-end">Ack&apos;d</span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (m.ff && !isAcked(m.ff)) handleAck(m.ff.id);
+                          if (m.faa && !isAcked(m.faa)) handleAck(m.faa.id);
+                        }}
+                        className="text-xs text-gray-500 hover:text-green-700 hover:bg-green-50 border border-gray-200 hover:border-green-300 rounded px-1.5 py-0.5 transition-colors justify-self-end"
+                      >
+                        Ack
+                      </button>
                     )}
-                    {(a.original_departure_time || a.fallback_departure) && <span className="text-amber-400 mx-0.5">→</span>}
-                    <span className="text-amber-800 font-bold">{a.edct_time ? fmt(a.edct_time, a.airport_icao) : "—"}</span>
-                  </span>
-                  {isAcked(a) ? (
-                    <span className="ml-auto text-xs text-gray-400 bg-gray-100 rounded px-1.5 py-0.5">Ack'd</span>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => handleAck(a.id)}
-                      className="ml-auto text-xs text-gray-500 hover:text-green-700 hover:bg-green-50 border border-gray-200 hover:border-green-300 rounded px-1.5 py-0.5 transition-colors"
-                    >
-                      Ack
-                    </button>
-                  )}
-                </div>
-              ))}
+                  </Fragment>
+                );
+              })}
             </div>
+          </div>
+        )}
+
+        {/* FAA check result + debug */}
+        {faaCheckResult && (
+          <div className="col-span-2 -mt-2 px-1 space-y-1">
+            <div className="text-xs text-gray-500">{faaCheckResult}</div>
+            {faaDebug && faaDebug.length > 0 && (
+              <details className="text-xs">
+                <summary className="text-blue-500 cursor-pointer hover:text-blue-700">
+                  Debug: {faaDebug.length} result{faaDebug.length !== 1 ? "s" : ""}
+                </summary>
+                <div className="mt-1 bg-gray-50 rounded border border-gray-200 p-2 space-y-1 max-h-48 overflow-y-auto font-mono">
+                  {faaDebug.map((r, i) => (
+                    <div key={i} className={r.found ? "text-green-700" : "text-gray-400"}>
+                      <span>{r.callsign} {r.query.dept}→{r.query.arr} {r.tail}</span>
+                      {r.found
+                        ? <span> ✓ EDCT: {r.edct_time ?? "?"} Filed: {r.filed_departure ?? "?"} Delay: {r.delay_minutes ?? "?"}min Ctrl: {r.control_element ?? "?"}</span>
+                        : <span> — no EDCT</span>}
+                      {r.raw_text && r.raw_text.includes("record(s)") && !r.found && (
+                        <div className="text-red-500 ml-4 text-[9px]">RAW HAS DATA BUT PARSER FAILED: {r.raw_text.slice(0, 200)}</div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
           </div>
         )}
 
@@ -1718,16 +2107,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                       <div className="flex items-center justify-between px-4 py-2.5 bg-gray-50 border-b border-gray-200">
                         <span className="inline-flex items-center gap-1.5 font-mono font-bold text-gray-900">
                           {tail}
-                          {(() => {
-                            const tailFi = flightInfo.get(tail);
-                            if (tailFi?.diverted) return (
-                              <span className="relative flex h-2.5 w-2.5" title="DIVERTED">
-                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
-                                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500" />
-                              </span>
-                            );
-                            return null;
-                          })()}
+                          {/* Diversion dots disabled — FA diverted flag too unreliable */}
                         </span>
                         <div className="flex items-center gap-2">
                           {duty && (() => {
@@ -1792,8 +2172,17 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                       </div>
                       <div className="divide-y divide-gray-100">
                         {tailFlights.map((f) => {
-                          const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
-                          const fi = f.tail_number ? matchFlightInfo(flightInfo, routeKey, f.tail_number, f.departure_icao, f.scheduled_departure) : undefined;
+                          // Primary: direct fa_flight_id match
+                          let fi: FlightInfoMap | undefined;
+                          let idMatched = false;
+                          if (f.fa_flight_id && flightInfo.has(`fa:${f.fa_flight_id}`)) {
+                            fi = flightInfo.get(`fa:${f.fa_flight_id}`);
+                            idMatched = true;
+                          }
+                          if (!fi && f.tail_number) {
+                            const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
+                            fi = matchFlightInfo(flightInfo, routeKey, f.tail_number, f.departure_icao, f.scheduled_departure, f.arrival_icao);
+                          }
                           const type = f.flight_type || "Other";
                           const typeColor = FLIGHT_TYPE_COLORS[type] || "bg-gray-100 text-gray-700";
 
@@ -1802,22 +2191,49 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           let isFiled = false;
                           const arrivalDate = f.scheduled_arrival ? new Date(f.scheduled_arrival) : null;
                           const now = new Date();
-                          const fiRouteMatch = fi && fi.destination_icao === f.arrival_icao;
+                          const fiRouteMatch = idMatched || (fi && fi.destination_icao === f.arrival_icao);
                           const faEta = fiRouteMatch && fi?.arrival_time ? new Date(fi.arrival_time) : null;
                           const arrivalPassed = (arrivalDate && arrivalDate < now) || (faEta && faEta < now);
+                          // "No Departure" uses only the scheduled arrival — FA ETA being in the past
+                          // just means FA's estimate was wrong, not that the plane didn't depart.
+                          const schedArrPassed = arrivalDate && arrivalDate < now;
                           // Check SWIM status — route-specific for "En Route", tail fallback for others
+                          const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
                           const swimRouteMatch = swimStatus.get(routeKey);
                           const swimEntry = swimRouteMatch ?? (f.tail_number ? swimStatus.get(`${f.tail_number}||`) : undefined);
                           const swimRouteStale = isSwimStale(swimRouteMatch, f.scheduled_departure);
                           const swimEntryStale = isSwimStale(swimEntry, f.scheduled_departure);
+                          // Position mismatch: FA says aircraft is NOT at departure airport
+                          const posNorm = (c: string | null | undefined) => c ? (c.length === 3 && /^[A-Z]/.test(c) ? `K${c}` : c) : null;
+                          const faLoc = f.tail_number ? tailFaLocation.get(f.tail_number) : null;
+                          const atDeparture = !faLoc || posNorm(faLoc.icao) === posNorm(f.departure_icao);
+                          const faAtDest = faLoc && f.arrival_icao && posNorm(faLoc.icao) === posNorm(f.arrival_icao);
+
                           // FA primary; SWIM supplements when FA hasn't detected takeoff yet
+                          // Timeline after scheduled arrival passes (FA has no actual dep/arr):
+                          //   +15min → "Late"  |  +60min → "No Departure"  |  +2h → assume "Arrived"
+                          const arrMs = arrivalDate ? arrivalDate.getTime() : 0;
+                          const arrOverdueMin = arrMs > 0 && schedArrPassed ? (now.getTime() - arrMs) / 60_000 : 0;
+                          const noDepStale = arrOverdueMin > 120;
+                          const noDepConditions = !fi?.actual_departure && !fi?.actual_arrival
+                            && !fi?.status?.includes("En Route") && !fi?.status?.includes("Landed");
                           if (fiRouteMatch && (fi?.actual_arrival || fi?.status?.includes("Arrived") || fi?.status?.includes("Landed"))) {
                             status = "Arrived"; statusColor = "text-green-600 font-medium";
+                          } else if (arrOverdueMin >= 60 && !noDepStale && fiRouteMatch && noDepConditions && !faAtDest) {
+                            status = "No Departure"; statusColor = "text-orange-600 font-bold";
+                          } else if (arrOverdueMin >= 60 && !noDepStale && !fiRouteMatch && faLoc && !fi?.actual_departure && !faAtDest) {
+                            status = "No Departure"; statusColor = "text-orange-600 font-bold";
+                          } else if (arrOverdueMin >= 15 && !noDepStale && fiRouteMatch && noDepConditions && !faAtDest) {
+                            status = "Late"; statusColor = "text-amber-600 font-bold";
+                          } else if (arrOverdueMin >= 15 && !noDepStale && !fiRouteMatch && faLoc && !fi?.actual_departure && !faAtDest) {
+                            status = "Late"; statusColor = "text-amber-600 font-bold";
                           } else if (arrivalPassed) {
                             status = "Arrived"; statusColor = "text-green-600 font-medium";
                           } else if (fiRouteMatch && fi?.status?.includes("En Route")) {
                             status = "En Route"; statusColor = "text-blue-600 font-medium";
-                          } else if (fiRouteMatch && fi?.departure_time && !fi?.actual_arrival && new Date(fi.departure_time) < now && (!faEta || faEta > now)) {
+                          } else if (fiRouteMatch && fi?.actual_departure && !fi?.actual_arrival
+                            && new Date(fi.actual_departure) < now && (!faEta || faEta > now)
+                            && !fi?.status?.includes("Scheduled") && !fi?.status?.includes("Cancelled")) {
                             status = "En Route"; statusColor = "text-blue-600 font-medium";
                           } else if (!swimRouteStale && swimRouteMatch?.status === "En Route") {
                             status = "En Route"; statusColor = "text-blue-600 font-medium";
@@ -1832,34 +2248,55 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           } else if (fi?.actual_arrival) {
                             status = "Arrived"; statusColor = "text-green-600 font-medium";
                           }
-                          if (fi?.diverted) { status = "DIVERTED"; statusColor = "text-red-600 font-bold"; }
-                          else if (f.tail_number && holdingTails.has(f.tail_number) && status === "En Route") { status = "HOLDING"; statusColor = "text-red-600 font-bold animate-pulse"; }
+                          // Diversion display disabled — FA diverted flag too unreliable (re-enable later)
+                          if (f.tail_number && holdingTails.has(f.tail_number) && status === "En Route") { status = "HOLDING"; statusColor = "text-red-600 font-bold animate-pulse"; }
 
                           const supersedInfo = supersededMap.get(f.id);
-                          const isCancelled = !!supersedInfo;
+                          const isCancelled = !!supersedInfo && !supersedInfo.diverting && !supersedInfo.diverted;
                           const isFaSourced = f.id.startsWith("fa-");
                           if (isCancelled) {
                             status = supersedInfo.diverted ? "DIVERTED" : "Cancelled";
-                            statusColor = "text-red-600 font-medium";
+                            statusColor = supersedInfo.diverted ? "text-red-600 font-bold" : "text-red-600 font-medium";
                           }
 
                           const actualDepIso = isCancelled ? null : (fi?.actual_departure ?? (!swimEntryStale ? swimEntry?.actual_departure : null) ?? null);
                           const actualArrIso = isCancelled ? null : (fi?.actual_arrival ?? (!swimEntryStale ? swimEntry?.actual_arrival : null) ?? null);
 
+
                           return (
                             <div key={f.id} className={`px-4 py-2 text-xs ${isCancelled ? "opacity-50 bg-gray-50" : ""} ${isFaSourced ? "bg-blue-50/40" : ""}`}>
                               <div className="flex items-center gap-3">
-                                <span className="font-mono font-medium w-28 shrink-0 text-gray-800">
-                                  {f.departure_icao || "?"} →{" "}
-                                  {isCancelled ? (
-                                    <>
+                                <div className="w-28 shrink-0">
+                                  <span className="font-mono font-medium text-gray-800">
+                                    {f.departure_icao || "?"} →{" "}
+                                    {isCancelled ? (
+                                      <>
+                                        <span className="line-through text-red-400">{f.arrival_icao || "?"}</span>
+                                        {supersedInfo!.actualDest && (
+                                          <span className="text-red-600 font-bold ml-1">{supersedInfo!.actualDest}</span>
+                                        )}
+                                      </>
+                                    ) : (supersedInfo?.diverted || supersedInfo?.diverting) ? (
                                       <span className="line-through text-red-400">{f.arrival_icao || "?"}</span>
-                                      {supersedInfo.actualDest && (
-                                        <span className="text-red-600 font-bold ml-1">{supersedInfo.actualDest}</span>
-                                      )}
-                                    </>
-                                  ) : (f.arrival_icao || "?")}
-                                </span>
+                                    ) : (f.arrival_icao || "?")}
+                                  </span>
+                                  {(supersedInfo?.diverted || supersedInfo?.diverting) && supersedInfo.actualDest && (
+                                    <div className="font-mono font-bold text-red-600">
+                                      {f.departure_icao || "?"} → {supersedInfo.actualDest}
+                                    </div>
+                                  )}
+                                  {/* Position mismatch: aircraft not at departure airport per FA */}
+                                  {(() => {
+                                    if (isCancelled || !f.tail_number || !f.departure_icao) return null;
+                                    if (status !== "Scheduled" && status !== "No Departure" && status !== "Late" && !isFiled) return null;
+                                    if (!faLoc || atDeparture) return null;
+                                    return (
+                                      <div className="text-[10px] font-medium text-orange-600 leading-tight">
+                                        Aircraft at {faLoc.icao}
+                                      </div>
+                                    );
+                                  })()}
+                                </div>
                                 <div className="w-36 shrink-0">
                                   <div className="text-gray-500">
                                     {fmt(f.scheduled_departure, f.departure_icao)}
@@ -1878,14 +2315,15 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                                         </div>
                                       );
                                     }
-                                    // Show FA estimated departure when available and differs from schedule
+                                    // Show FA estimated departure only when LATER than scheduled (≥5min)
+                                    // If FA says earlier than scheduled, ignore it — nobody's departing early
                                     if (!isCancelled && fi?.departure_time && !fi.actual_departure) {
                                       const faDepMs = new Date(fi.departure_time).getTime();
                                       const schedMs = new Date(f.scheduled_departure).getTime();
                                       const diffMin = Math.round((faDepMs - schedMs) / 60_000);
-                                      if (Math.abs(diffMin) >= 5) {
+                                      if (diffMin >= 5) {
                                         return (
-                                          <div className={`text-[10px] font-medium ${diffMin > 15 ? "text-red-600" : diffMin > 0 ? "text-amber-600" : "text-green-600"}`}>
+                                          <div className={`text-[10px] font-medium ${diffMin > 15 ? "text-red-600" : "text-amber-600"}`}>
                                             FA Est: {fmt(fi.departure_time, f.departure_icao)}
                                           </div>
                                         );
@@ -1904,7 +2342,11 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                                     </div>
                                   ) : !isCancelled && fiRouteMatch && fi?.arrival_time && (fi?.actual_departure || fi?.departure_time) && !actualArrIso ? (
                                     <div className="text-[10px] text-blue-600 font-medium">
-                                      ETA: {fmt(fi.arrival_time, f.arrival_icao)}
+                                      ETA: {fmt(
+                                        f.scheduled_arrival && new Date(fi.arrival_time).getTime() < new Date(f.scheduled_arrival).getTime()
+                                          ? f.scheduled_arrival : fi.arrival_time,
+                                        f.arrival_icao,
+                                      )}
                                     </div>
                                   ) : !isCancelled && status === "En Route" && !swimRouteStale && swimRouteMatch?.eta ? (
                                     <div className="text-[10px] text-blue-600 font-medium">
@@ -1927,6 +2369,14 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                                 </span>
                                 {(() => {
                                   const edctAlert = getActiveEdct(f);
+                                  const diverted = fi?.diverted || isDivertedFlight(f);
+                                  if (diverted) {
+                                    return (
+                                      <div className="flex flex-col">
+                                        <span className="text-xs text-red-600 font-bold">DIVERTED</span>
+                                      </div>
+                                    );
+                                  }
                                   if (status === "Scheduled") {
                                     return (
                                       <div className="flex flex-col">
@@ -1958,7 +2408,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                                 {/* Time-based progress bar for en route flights */}
                                 {!isCancelled && status === "En Route" && (() => {
                                   const depStr = (!swimRouteStale ? swimRouteMatch?.etd : null) ?? fi?.actual_departure ?? fi?.departure_time ?? (!swimEntryStale ? swimEntry?.actual_departure : null);
-                                  let arrStr = (!swimRouteStale ? swimRouteMatch?.eta : null) ?? (fiRouteMatch ? fi?.arrival_time : null) ?? (!swimEntryStale ? swimEntry?.eta : null);
+                                  let arrStr = (fiRouteMatch ? fi?.arrival_time : null) ?? (!swimRouteStale ? swimRouteMatch?.eta : null) ?? (!swimEntryStale ? swimEntry?.eta : null);
                                   if (!arrStr && f.scheduled_arrival && f.scheduled_departure && depStr) {
                                     const delayMs = new Date(depStr).getTime() - new Date(f.scheduled_departure).getTime();
                                     arrStr = new Date(new Date(f.scheduled_arrival).getTime() + delayMs).toISOString();
@@ -2003,6 +2453,40 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                                   return null;
                                 })()}
                               </div>
+                              {/* Remark row */}
+                              {editingRemarkId === f.id ? (
+                                <div className="px-4 pb-2">
+                                  <input
+                                    type="text"
+                                    autoFocus
+                                    className="w-full text-xs border border-blue-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                                    maxLength={500}
+                                    placeholder="Add a remark..."
+                                    value={remarkDraft}
+                                    onChange={(e) => setRemarkDraft(e.target.value)}
+                                    onBlur={() => saveRemark(f.id, remarkDraft)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Enter") { e.preventDefault(); saveRemark(f.id, remarkDraft); }
+                                      if (e.key === "Escape") setEditingRemarkId(null);
+                                    }}
+                                  />
+                                </div>
+                              ) : remarks.get(f.id) ? (
+                                <div
+                                  className="px-4 pb-2 text-xs text-gray-500 italic cursor-pointer hover:text-gray-700"
+                                  onClick={() => { setEditingRemarkId(f.id); setRemarkDraft(remarks.get(f.id)?.remark ?? ""); }}
+                                  title="Click to edit"
+                                >
+                                  {remarks.get(f.id)!.remark}
+                                </div>
+                              ) : (
+                                <div
+                                  className="px-4 pb-1 cursor-pointer group"
+                                  onClick={() => { setEditingRemarkId(f.id); setRemarkDraft(""); }}
+                                >
+                                  <span className="text-[10px] text-gray-300 group-hover:text-gray-400 italic">+ remark</span>
+                                </div>
+                              )}
                             </div>
                           );
                         })}
@@ -2037,19 +2521,20 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
 
       {/* ── Schedule table ── */}
       {viewMode === "table" && (
-      <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
-        <table className="w-full text-sm">
+      <div className="rounded-xl border border-gray-200 bg-white overflow-x-auto">
+        <table className="w-full table-fixed text-sm min-w-[1100px]">
           <colgroup>
-            <col style={{ width: "9%" }} />   {/* Status */}
-            <col style={{ width: "7%" }} />   {/* Tail */}
-            <col style={{ width: "11%" }} />  {/* Route */}
-            <col style={{ width: "13%" }} />  {/* Departure */}
-            <col style={{ width: "13%" }} />  {/* Arrival */}
-            <col style={{ width: "7%" }} />   {/* Type */}
+            <col style={{ width: "6%" }} />   {/* Status */}
+            <col style={{ width: "6%" }} />   {/* Tail */}
+            <col style={{ width: "10%" }} />  {/* Route */}
+            <col style={{ width: "9%" }} />   {/* Departure */}
+            <col style={{ width: "9%" }} />   {/* Arrival */}
+            <col style={{ width: "6%" }} />   {/* Type */}
             <col style={{ width: "5%" }} />   {/* 10/24 */}
             <col style={{ width: "5%" }} />   {/* Rest */}
-            <col style={{ width: "5%" }} />   {/* Alerts */}
-            <col style={{ width: "9%" }} />   {/* Sales */}
+            <col style={{ width: "7%" }} />   {/* Alerts */}
+            <col style={{ width: "7%" }} />   {/* Sales */}
+            <col style={{ width: "12%" }} />  {/* Remarks */}
           </colgroup>
           <thead>
             <tr className="bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -2063,7 +2548,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
               <th className="px-3 py-3">Rest</th>
               <th className="px-3 py-3">
                 <div className="flex flex-col gap-0.5">
-                  <span>NOTAMs, PPRs & TFRs</span>
+                  <span className="whitespace-nowrap">Alerts</span>
                   <div className="flex rounded border border-gray-200 bg-white p-0.5 w-fit font-normal normal-case tracking-normal">
                     <button
                       type="button"
@@ -2091,22 +2576,29 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                 </div>
               </th>
               <th className="px-3 py-3">Sales</th>
+              <th className="px-3 py-3">Remarks</th>
             </tr>
           </thead>
           <tbody>
             {tableFlights.length === 0 ? (
               <tr>
-                <td colSpan={10} className="px-4 py-8 text-center text-gray-400">
+                <td colSpan={11} className="px-4 py-8 text-center text-gray-400">
                   No flights scheduled for selected filters
                 </td>
               </tr>
             ) : (
               tableFlights.map((f) => {
-                // Look up FlightAware info by route-specific key first, then fall back to tail-only
-                const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
-                const fi = f.tail_number
-                  ? matchFlightInfo(flightInfo, routeKey, f.tail_number, f.departure_icao, f.scheduled_departure)
-                  : undefined;
+                // Primary: direct fa_flight_id match
+                let fi: FlightInfoMap | undefined;
+                let idMatched = false;
+                if (f.fa_flight_id && flightInfo.has(`fa:${f.fa_flight_id}`)) {
+                  fi = flightInfo.get(`fa:${f.fa_flight_id}`);
+                  idMatched = true;
+                }
+                if (!fi && f.tail_number) {
+                  const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
+                  fi = matchFlightInfo(flightInfo, routeKey, f.tail_number, f.departure_icao, f.scheduled_departure, f.arrival_icao);
+                }
                 const allAlerts = f.alerts ?? [];
                 const alerts = showAcknowledged ? allAlerts : allAlerts.filter((a) => !isAcked(a));
                 const alertCount = alerts.length;
@@ -2118,6 +2610,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                 let status = "Scheduled";
                 let statusColor = "text-gray-500";
                 let isFiled = false;
+                const routeKey = `${f.tail_number}|${f.departure_icao ?? ""}|${f.arrival_icao ?? ""}`;
                 const swimRouteMatch = swimStatus.get(routeKey);
                 const swimEntry = swimRouteMatch ?? (f.tail_number ? swimStatus.get(`${f.tail_number}||`) : undefined);
                 const swimRouteStale = isSwimStale(swimRouteMatch, f.scheduled_departure);
@@ -2125,18 +2618,41 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
 
                 const arrivalDate = f.scheduled_arrival ? new Date(f.scheduled_arrival) : null;
                 const now = new Date();
-                const fiRouteMatch = fi && fi.destination_icao === f.arrival_icao;
+                const fiRouteMatch = idMatched || (fi && fi.destination_icao === f.arrival_icao);
                 const faEta = fiRouteMatch && fi?.arrival_time ? new Date(fi.arrival_time) : null;
                 const arrivalPassed = (arrivalDate && arrivalDate < now) || (faEta && faEta < now);
+                // "No Departure" uses only scheduled arrival — FA ETA in the past just means stale estimate
+                const schedArrPassed2 = arrivalDate && arrivalDate < now;
+
+                // Position mismatch: FA says aircraft is NOT at departure airport
+                const posNorm2 = (c: string | null | undefined) => c ? (c.length === 3 && /^[A-Z]/.test(c) ? `K${c}` : c) : null;
+                const faLoc2 = f.tail_number ? tailFaLocation.get(f.tail_number) : null;
+                const faAtDest2 = faLoc2 && f.arrival_icao && posNorm2(faLoc2.icao) === posNorm2(f.arrival_icao);
 
                 // FA primary; SWIM supplements when FA hasn't detected takeoff yet
+                // Timeline: +15min → "Late"  |  +60min → "No Departure"  |  +2h → assume "Arrived"
+                const arrMs2 = arrivalDate ? arrivalDate.getTime() : 0;
+                const arrOverdueMin2 = arrMs2 > 0 && schedArrPassed2 ? (now.getTime() - arrMs2) / 60_000 : 0;
+                const noDepStale2 = arrOverdueMin2 > 120;
+                const noDepConditions2 = !fi?.actual_departure && !fi?.actual_arrival
+                  && !fi?.status?.includes("En Route") && !fi?.status?.includes("Landed");
                 if (fiRouteMatch && (fi?.actual_arrival || fi?.status?.includes("Arrived") || fi?.status?.includes("Landed"))) {
                   status = "Arrived"; statusColor = "text-green-600 font-medium";
+                } else if (arrOverdueMin2 >= 60 && !noDepStale2 && fiRouteMatch && noDepConditions2 && !faAtDest2) {
+                  status = "No Departure"; statusColor = "text-orange-600 font-bold";
+                } else if (arrOverdueMin2 >= 60 && !noDepStale2 && !fiRouteMatch && faLoc2 && !fi?.actual_departure && !faAtDest2) {
+                  status = "No Departure"; statusColor = "text-orange-600 font-bold";
+                } else if (arrOverdueMin2 >= 15 && !noDepStale2 && fiRouteMatch && noDepConditions2 && !faAtDest2) {
+                  status = "Late"; statusColor = "text-amber-600 font-bold";
+                } else if (arrOverdueMin2 >= 15 && !noDepStale2 && !fiRouteMatch && faLoc2 && !fi?.actual_departure && !faAtDest2) {
+                  status = "Late"; statusColor = "text-amber-600 font-bold";
                 } else if (arrivalPassed) {
                   status = "Arrived"; statusColor = "text-green-600 font-medium";
                 } else if (fiRouteMatch && fi?.status?.includes("En Route")) {
                   status = "En Route"; statusColor = "text-blue-600 font-medium";
-                } else if (fiRouteMatch && fi?.departure_time && !fi?.actual_arrival && new Date(fi.departure_time) < now && (!faEta || faEta > now)) {
+                } else if (fiRouteMatch && fi?.actual_departure && !fi?.actual_arrival
+                  && new Date(fi.actual_departure) < now && (!faEta || faEta > now)
+                  && !fi?.status?.includes("Scheduled") && !fi?.status?.includes("Cancelled")) {
                   status = "En Route"; statusColor = "text-blue-600 font-medium";
                 } else if (!swimRouteStale && swimRouteMatch?.status === "En Route") {
                   status = "En Route"; statusColor = "text-blue-600 font-medium";
@@ -2152,20 +2668,18 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                   status = "Arrived"; statusColor = "text-green-600 font-medium";
                 }
 
-                if (fi?.diverted) {
-                  status = "DIVERTED";
-                  statusColor = "text-red-600 font-bold";
-                } else if (f.tail_number && holdingTails.has(f.tail_number) && (status === "En Route")) {
+                // Diversion display disabled — FA diverted flag too unreliable (re-enable later)
+                if (f.tail_number && holdingTails.has(f.tail_number) && (status === "En Route")) {
                   status = "HOLDING";
                   statusColor = "text-red-600 font-bold animate-pulse";
                 }
 
-                // Check if this leg is superseded by FA (route changed or diverted)
+                // Check if this leg is superseded by FA (route changed only, not diverted)
                 const supersedInfo = supersededMap.get(f.id);
-                const isCancelled = !!supersedInfo;
+                const isCancelled = !!supersedInfo && !supersedInfo.diverting && !supersedInfo.diverted;
                 const isFaSourced = f.id.startsWith("fa-");
                 if (isCancelled) {
-                  status = supersedInfo.diverted ? "DIVERTED" : "Cancelled";
+                  status = "Cancelled";
                   statusColor = "text-red-600 font-medium";
                 }
 
@@ -2181,7 +2695,8 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                   const routeMatches = !fi.origin_icao || !f.departure_icao || fi.origin_icao === f.departure_icao;
                   if (routeMatches) {
                     const diffMin = Math.round((faDep - icsDep) / 60000);
-                    if (Math.abs(diffMin) >= MISMATCH_THRESHOLD_MIN) {
+                    // Only flag delays (positive diff), not early estimates
+                    if (diffMin >= MISMATCH_THRESHOLD_MIN) {
                       depMismatchMin = diffMin;
                     }
                   }
@@ -2196,6 +2711,10 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                         <div className="flex flex-col gap-0.5">
                           {(() => {
                             const edctAlert = getActiveEdct(f);
+                            const diverted = fi?.diverted || isDivertedFlight(f);
+                            if (diverted) {
+                              return <span className="text-xs font-bold text-red-600">DIVERTED</span>;
+                            }
                             if (status === "Scheduled") {
                               return (
                                 <>
@@ -2253,12 +2772,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                       <td className="px-3 py-2.5 font-mono font-semibold text-gray-900">
                         <span className="inline-flex items-center gap-1.5">
                           {f.tail_number || "—"}
-                          {(fi?.diverted || supersedInfo?.diverted) && (
-                            <span className="relative flex h-2.5 w-2.5" title="DIVERTED">
-                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
-                              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500" />
-                            </span>
-                          )}
+                          {/* Diversion dots disabled — FA diverted flag too unreliable */}
                         </span>
                       </td>
                       <td className="px-3 py-2.5">
@@ -2267,16 +2781,29 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           {isCancelled ? (
                             <>
                               <span className="line-through text-red-400">{f.arrival_icao || "?"}</span>
-                              {supersedInfo.actualDest && (
-                                <span className="text-red-600 font-bold ml-1">{supersedInfo.actualDest}</span>
+                              {supersedInfo!.actualDest && (
+                                <span className="text-red-600 font-bold ml-1">{supersedInfo!.actualDest}</span>
                               )}
                             </>
+                          ) : (supersedInfo?.diverted || supersedInfo?.diverting) ? (
+                            <span className="line-through text-red-400">{f.arrival_icao || "?"}</span>
                           ) : (f.arrival_icao || "?")}
                         </span>
+                        {(supersedInfo?.diverted || supersedInfo?.diverting) && supersedInfo.actualDest && (
+                          <div className="font-mono font-bold text-red-600">
+                            {f.departure_icao || "?"} → {supersedInfo.actualDest}
+                          </div>
+                        )}
+                        {/* Position mismatch: aircraft not at departure airport per FA */}
+                        {(status === "No Departure" || status === "Late") && faLoc2 && posNorm2(faLoc2.icao) !== posNorm2(f.departure_icao) && (
+                          <div className="text-[10px] font-medium text-orange-600 leading-tight">
+                            Aircraft at {faLoc2.icao}
+                          </div>
+                        )}
                         {/* Time-based progress bar + remaining for en route flights */}
                         {!isCancelled && status === "En Route" && (() => {
                           const depStr = (!swimRouteStale ? swimRouteMatch?.etd : null) ?? fi?.actual_departure ?? fi?.departure_time ?? (!swimEntryStale ? swimEntry?.actual_departure : null);
-                          let arrStr = (!swimRouteStale ? swimRouteMatch?.eta : null) ?? (fiRouteMatch ? fi?.arrival_time : null) ?? (!swimEntryStale ? swimEntry?.eta : null);
+                          let arrStr = (fiRouteMatch ? fi?.arrival_time : null) ?? (!swimRouteStale ? swimRouteMatch?.eta : null) ?? (!swimEntryStale ? swimEntry?.eta : null);
                           if (!arrStr && f.scheduled_arrival && f.scheduled_departure && depStr) {
                             const delayMs = new Date(depStr).getTime() - new Date(f.scheduled_departure).getTime();
                             arrStr = new Date(new Date(f.scheduled_arrival).getTime() + delayMs).toISOString();
@@ -2314,7 +2841,8 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                         ) : !isCancelled ? (() => {
                           const edctAlert = getActiveEdct(f);
                           const faEstDiff = fi?.departure_time ? Math.round((new Date(fi.departure_time).getTime() - new Date(f.scheduled_departure).getTime()) / 60_000) : 0;
-                          const showFaEst = fi?.departure_time && Math.abs(faEstDiff) >= 5;
+                          // Only show FA estimate if it's LATER than scheduled (≥5min delay)
+                          const showFaEst = fi?.departure_time && faEstDiff >= 5;
                           return (
                             <>
                               {edctAlert && (
@@ -2324,7 +2852,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                                 </div>
                               )}
                               {showFaEst && (
-                                <div className={`text-[10px] font-medium mt-0.5 ${faEstDiff > 15 ? "text-red-600" : faEstDiff > 0 ? "text-amber-600" : "text-green-600"}`}>
+                                <div className={`text-[10px] font-medium mt-0.5 ${faEstDiff > 15 ? "text-red-600" : "text-amber-600"}`}>
                                   FA Est: {fmt(fi!.departure_time!, f.departure_icao)}
                                 </div>
                               )}
@@ -2340,7 +2868,11 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           </div>
                         ) : !isCancelled && fiRouteMatch && fi?.arrival_time && (fi?.actual_departure || fi?.departure_time) && !fi?.actual_arrival ? (
                           <div className="text-[10px] text-blue-600 font-medium mt-0.5">
-                            ETA: {fmt(fi.arrival_time, f.arrival_icao)}
+                            ETA: {fmt(
+                              f.scheduled_arrival && new Date(fi.arrival_time).getTime() < new Date(f.scheduled_arrival).getTime()
+                                ? f.scheduled_arrival : fi.arrival_time,
+                              f.arrival_icao,
+                            )}
                           </div>
                         ) : !isCancelled && status === "En Route" && !swimRouteStale && swimRouteMatch?.eta ? (
                           <div className="text-[10px] text-blue-600 font-medium mt-0.5">
@@ -2438,17 +2970,28 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                         })()}
                       </td>
                       <td className="px-3 py-2.5">
-                        {alertCount > 0 && (
-                          <button
-                            onClick={() => toggleExpanded(f.id)}
-                            className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full bg-red-100 text-red-700 hover:bg-red-200 transition-colors cursor-pointer"
-                          >
-                            <span className={`inline-block transition-transform ${isExpanded ? "rotate-90" : ""}`}>
-                              &#9656;
-                            </span>
-                            {alertCount}
-                          </button>
-                        )}
+                        <div className="flex items-center gap-1.5">
+                          {alertCount > 0 && (
+                            <button
+                              onClick={() => toggleExpanded(f.id)}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full bg-red-100 text-red-700 hover:bg-red-200 transition-colors cursor-pointer"
+                            >
+                              <span className={`inline-block transition-transform ${isExpanded ? "rotate-90" : ""}`}>
+                                &#9656;
+                              </span>
+                              {alertCount}
+                            </button>
+                          )}
+                          {isExpanded && alerts.some((a) => !isAcked(a)) && (
+                            <button
+                              type="button"
+                              onClick={() => handleAckAll(f.id, alerts.filter((a) => !isAcked(a)).map((a) => a.id))}
+                              className="text-[10px] text-gray-500 hover:text-green-700 hover:bg-green-50 border border-gray-200 hover:border-green-300 rounded px-1.5 py-0.5 transition-colors whitespace-nowrap"
+                            >
+                              Ack All
+                            </button>
+                          )}
+                        </div>
                       </td>
                       <td className="px-3 py-2.5">
                         {(() => {
@@ -2459,10 +3002,35 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           return <span className="text-xs text-gray-700">{sp}</span>;
                         })()}
                       </td>
+                      <td className="px-2 py-2.5">
+                        {editingRemarkId === f.id ? (
+                          <input
+                            type="text"
+                            autoFocus
+                            className="w-full text-xs border border-blue-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                            maxLength={500}
+                            value={remarkDraft}
+                            onChange={(e) => setRemarkDraft(e.target.value)}
+                            onBlur={() => saveRemark(f.id, remarkDraft)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") { e.preventDefault(); saveRemark(f.id, remarkDraft); }
+                              if (e.key === "Escape") setEditingRemarkId(null);
+                            }}
+                          />
+                        ) : (
+                          <div
+                            className="text-xs text-gray-600 cursor-pointer hover:bg-gray-100 rounded px-1.5 py-1 min-h-[24px] truncate"
+                            title={remarks.get(f.id)?.remark ?? "Click to add remark"}
+                            onClick={() => { setEditingRemarkId(f.id); setRemarkDraft(remarks.get(f.id)?.remark ?? ""); }}
+                          >
+                            {remarks.get(f.id)?.remark || <span className="text-gray-300 italic">—</span>}
+                          </div>
+                        )}
+                      </td>
                     </tr>
                     {isExpanded && alerts.map((alert) => (
                       <tr key={alert.id} className={`border-t border-dashed border-gray-100 ${isAcked(alert) ? "bg-gray-50/40 opacity-60" : "bg-red-50/40"}`}>
-                        <td colSpan={10} className="px-4 py-3">
+                        <td colSpan={11} className="px-4 py-3">
                           <div className={`rounded-lg border p-3 text-xs ${isAcked(alert) ? "bg-gray-50 text-gray-700 border-gray-200" : SEVERITY_COLORS[alert.severity] || "bg-gray-50 text-gray-700 border-gray-200"}`}>
                             <div className="flex items-start justify-between gap-2">
                               <div className="space-y-1 flex-1">

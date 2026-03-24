@@ -130,9 +130,16 @@ function fmtDateShort(ms: number): string {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
 }
 
+/**
+ * Find the max rolling 24hr flight time, but only for windows that include
+ * at least one future leg (startMs or endMs >= now). Past-only windows are
+ * informational — we can't change them, so don't alert on them.
+ * Past legs still COUNT toward future windows (they're in the rolling total).
+ */
 function findMaxRolling24(legs: LegInterval[]): number {
   if (legs.length === 0) return 0;
   const WINDOW_MS = 24 * 60 * 60 * 1000;
+  const nowMs = Date.now();
   const checkPoints = new Set<number>();
   for (const leg of legs) {
     checkPoints.add(leg.startMs);
@@ -143,6 +150,9 @@ function findMaxRolling24(legs: LegInterval[]): number {
   let maxTotalMs = 0;
   for (const windowEnd of checkPoints) {
     const windowStart = windowEnd - WINDOW_MS;
+    // Only consider windows that include at least one future/in-progress leg
+    const hasFutureLeg = legs.some(l => l.endMs >= nowMs && l.startMs < windowEnd && l.endMs > windowStart);
+    if (!hasFutureLeg) continue;
     let totalMs = 0;
     for (const leg of legs) {
       const os = Math.max(leg.startMs, windowStart);
@@ -247,6 +257,7 @@ function buildRestPeriods(dps: DutyPeriod[]): RestPeriod[] {
  *  Returns "dpIdx-legIdx" key or null. */
 function findBreachLeg(dps: DutyPeriod[]): string | null {
   const WINDOW_MS = 24 * 60 * 60 * 1000;
+  const nowMs = Date.now();
   const allLegs: { dpIdx: number; legIdx: number; leg: LegInterval }[] = [];
   for (let d = 0; d < dps.length; d++) {
     for (let l = 0; l < dps[d].legs.length; l++) {
@@ -255,8 +266,10 @@ function findBreachLeg(dps: DutyPeriod[]): string | null {
   }
   allLegs.sort((a, b) => a.leg.startMs - b.leg.startMs);
 
-  // For each leg, compute rolling 24hr total at that leg's end
+  // For each FUTURE leg, compute rolling 24hr total at that leg's end
+  // Only flag legs that haven't departed yet — past breaches can't be fixed
   for (let i = 0; i < allLegs.length; i++) {
+    if (allLegs[i].leg.startMs < nowMs) continue; // skip already-departed legs
     const windowEnd = allLegs[i].leg.endMs;
     const windowStart = windowEnd - WINDOW_MS;
     let totalMin = 0;
@@ -370,8 +383,11 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
 
   useEffect(() => {
     fetchFaData(true);
-    const interval = setInterval(() => fetchFaData(false), POLL_INTERVAL_MS);
-    return () => clearInterval(interval);
+    const jitter = () => POLL_INTERVAL_MS + Math.random() * 30_000;
+    let id: ReturnType<typeof setTimeout>;
+    const tick = () => { fetchFaData(false); id = setTimeout(tick, jitter()); };
+    id = setTimeout(tick, jitter());
+    return () => clearTimeout(id);
   }, [fetchFaData]);
 
   // Group FA flights by tail for flexible matching
@@ -392,19 +408,33 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
 
     for (const f of flights) {
       if (!f.tail_number) continue;
+      // Skip synthetic EDCT-orphan flights (not real ICS legs)
+      if (f.id.startsWith("edct-orphan-")) continue;
       const ft = (f.flight_type ?? "").toLowerCase();
       if (ft && !DUTY_FLIGHT_TYPES.has(ft)) continue;
 
-      // Match FA data: prefer exact route match, fall back to closest departure time
+      // Match FA data: direct ID match first, then route+time heuristics as fallback
       const tailFaFlights = faByTail.get(f.tail_number) ?? [];
       let fi: FlightInfoMap | undefined;
-      // Try exact route match first
-      fi = tailFaFlights.find(
-        (fa) => fa.origin_icao === f.departure_icao && fa.destination_icao === f.arrival_icao
-      );
-      // Fall back: match by closest scheduled departure time (within 2h)
+      const schedMs = new Date(f.scheduled_departure).getTime();
+
+      // 1. Direct ID match (if ICS flight has fa_flight_id linked)
+      if (f.fa_flight_id) {
+        fi = tailFaFlights.find(fa => fa.fa_flight_id === f.fa_flight_id);
+      }
+
+      // 2. Fallback: exact route match within 6h
+      if (!fi) {
+        fi = tailFaFlights.find((fa) => {
+          if (fa.origin_icao !== f.departure_icao || fa.destination_icao !== f.arrival_icao) return false;
+          const faDep = fa.departure_time ?? fa.actual_departure;
+          if (!faDep) return true; // no departure time yet — allow match
+          return Math.abs(new Date(faDep).getTime() - schedMs) < 6 * 60 * 60 * 1000;
+        });
+      }
+
+      // 3. Fallback: closest departure time within 2h
       if (!fi && tailFaFlights.length > 0) {
-        const schedMs = new Date(f.scheduled_departure).getTime();
         let bestDiff = Infinity;
         for (const fa of tailFaFlights) {
           const faDep = fa.departure_time ?? fa.actual_departure;
@@ -580,8 +610,9 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
         const edctLegs = validLegs.map(leg => ({ ...leg }));
         // Sort by departure time
         edctLegs.sort((a, b) => a.startMs - b.startMs);
-        // Apply EDCT shifts
+        // Apply EDCT shifts (skip legs that have actually departed — EDCT is moot once airborne)
         for (const leg of edctLegs) {
+          if (leg.source === "actual" && leg.startMs < Date.now()) continue;
           const matchedFlight = tailFlights.find(f =>
             f.departure_icao === leg.departure_icao &&
             f.arrival_icao === leg.arrival_icao &&
@@ -595,11 +626,13 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
           leg.startMs += deltaMs;
           leg.endMs += deltaMs;
         }
-        // Cascade: if leg N ends after leg N+1 starts, push N+1 forward
+        // Cascade: push subsequent legs forward if gap < 30 min (minimum turnaround)
+        const MIN_TURN_MS = 30 * 60_000;
         edctLegs.sort((a, b) => a.startMs - b.startMs);
         for (let i = 1; i < edctLegs.length; i++) {
-          if (edctLegs[i].startMs < edctLegs[i - 1].endMs) {
-            const shift = edctLegs[i - 1].endMs - edctLegs[i].startMs;
+          const gap = edctLegs[i].startMs - edctLegs[i - 1].endMs;
+          if (gap < MIN_TURN_MS) {
+            const shift = MIN_TURN_MS - gap;
             edctLegs[i].startMs += shift;
             edctLegs[i].endMs += shift;
           }
@@ -644,6 +677,7 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
         const el = validLegs.map(leg => ({ ...leg }));
         el.sort((a, b) => a.startMs - b.startMs);
         for (const leg of el) {
+          if (leg.source === "actual" && leg.startMs < Date.now()) continue;
           const mf = tailFlights.find(f =>
             f.departure_icao === leg.departure_icao &&
             f.arrival_icao === leg.arrival_icao &&

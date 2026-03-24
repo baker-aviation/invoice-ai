@@ -9,10 +9,14 @@ import type { HiringStage, JobRow } from "@/lib/types";
 // ---------------------------------------------------------------------------
 
 const STAGES: { key: HiringStage; label: string; color: string }[] = [
+  { key: "prd_faa_review", label: "Pending PRD Upload", color: "bg-orange-50 border-orange-300" },
+  { key: "chief_pilot_review", label: "Chief Pilot Review", color: "bg-red-50 border-red-300" },
   { key: "screening", label: "Screening", color: "bg-blue-50 border-blue-300" },
   { key: "info_session", label: "Info Session", color: "bg-cyan-50 border-cyan-300" },
-  { key: "prd_faa_review", label: "PRD / FAA Review", color: "bg-orange-50 border-orange-300" },
-  { key: "interview", label: "Interview", color: "bg-violet-50 border-violet-300" },
+  { key: "tims_review", label: "Tim's Review", color: "bg-teal-50 border-teal-300" },
+  { key: "interview_pre", label: "Need to Schedule Interview", color: "bg-violet-50 border-violet-300" },
+  { key: "interview_scheduled", label: "Scheduled for Interview", color: "bg-fuchsia-50 border-fuchsia-300" },
+  { key: "interview_post", label: "Interview Completed", color: "bg-purple-50 border-purple-300" },
   { key: "pending_offer", label: "Pending Offer", color: "bg-pink-50 border-pink-300" },
   { key: "offer", label: "Offer", color: "bg-amber-50 border-amber-300" },
   { key: "hired", label: "Hired", color: "bg-emerald-50 border-emerald-300" },
@@ -61,10 +65,14 @@ export default function PipelineBoard({ initialJobs }: { initialJobs: JobRow[] }
       : jobs;
 
     const map: Record<HiringStage, JobRow[]> = {
+      prd_faa_review: [],
+      chief_pilot_review: [],
       screening: [],
       info_session: [],
-      prd_faa_review: [],
-      interview: [],
+      tims_review: [],
+      interview_pre: [],
+      interview_scheduled: [],
+      interview_post: [],
       pending_offer: [],
       offer: [],
       hired: [],
@@ -337,7 +345,7 @@ function CreateModal({
       location,
       category,
       notes,
-      hiring_stage: "screening",
+      hiring_stage: "prd_faa_review",
     });
     setSaving(false);
   };

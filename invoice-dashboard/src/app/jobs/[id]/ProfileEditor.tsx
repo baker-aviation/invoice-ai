@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import RejectModal from "./RejectModal";
 
 const CATEGORY_OPTIONS = [
   { value: "pilot_pic", label: "Pilot — PIC" },
@@ -69,6 +70,7 @@ export default function ProfileEditor({ data }: { data: ProfileData }) {
 
   // Reject state
   const [showRejectForm, setShowRejectForm] = useState(false);
+  const [showRejectModal, setShowRejectModal] = useState(false);
   const [rejectionReason, setRejectionReason] = useState("");
   const [rejecting, setRejecting] = useState(false);
 
@@ -224,7 +226,7 @@ export default function ProfileEditor({ data }: { data: ProfileData }) {
           </button>
         ) : (
           <button
-            onClick={() => setShowRejectForm(true)}
+            onClick={() => setShowRejectModal(true)}
             className="text-xs px-3 py-1.5 rounded border border-red-200 text-red-600 hover:bg-red-50 font-medium"
           >
             Reject Application
@@ -237,34 +239,14 @@ export default function ProfileEditor({ data }: { data: ProfileData }) {
           Delete Profile
         </button>
 
-        {/* Inline reject form */}
-        {showRejectForm && (
-          <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50" onClick={() => setShowRejectForm(false)}>
-            <div className="bg-white rounded-xl p-5 shadow-lg max-w-md w-full mx-4 space-y-3" onClick={(e) => e.stopPropagation()}>
-              <div className="text-sm font-semibold text-red-700">Reject Application</div>
-              <textarea
-                value={rejectionReason}
-                onChange={(e) => setRejectionReason(e.target.value)}
-                placeholder="Reason for rejection (optional)..."
-                className="w-full rounded border border-gray-300 px-3 py-2 text-sm outline-none focus:border-red-400 min-h-[80px]"
-              />
-              <div className="flex gap-2 justify-end">
-                <button
-                  onClick={() => setShowRejectForm(false)}
-                  className="text-xs px-3 py-1.5 rounded border border-gray-200 text-gray-600 hover:bg-gray-50 font-medium"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleReject}
-                  disabled={rejecting}
-                  className="text-xs px-3 py-1.5 rounded bg-red-600 text-white hover:bg-red-700 font-medium disabled:opacity-40"
-                >
-                  {rejecting ? "Rejecting..." : "Confirm Reject"}
-                </button>
-              </div>
-            </div>
-          </div>
+        {/* Rejection modal */}
+        {showRejectModal && (
+          <RejectModal
+            applicationId={data.applicationId}
+            candidateName={data.candidate_name ?? ""}
+            candidateEmail={data.email ?? null}
+            onClose={() => setShowRejectModal(false)}
+          />
         )}
 
         {/* Confirm delete modal */}

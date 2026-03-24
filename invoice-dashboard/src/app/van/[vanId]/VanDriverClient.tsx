@@ -17,6 +17,8 @@ import {
   isOnEtDate,
   getEffectiveArrival,
   routeDistKm,
+  getAirportInfo,
+  haversineKm,
   type VanFlightItem,
   type FlightInfoEntry,
 } from "@/lib/vanUtils";
@@ -53,6 +55,87 @@ function fmtLocalTime(iso: string | null | undefined, airportIcao: string | null
   }
 }
 
+/** Match best FA flight to a specific van leg by route (origin→dest + tail). */
+function matchFaFlight(
+  allEntries: FlightInfoEntry[],
+  flight: Flight,
+): FlightInfoEntry | undefined {
+  const tail = flight.tail_number;
+  if (!tail) return undefined;
+  const depIcao = flight.departure_icao;
+  const arrIcao = flight.arrival_icao;
+  const schedDep = flight.scheduled_departure ? new Date(flight.scheduled_departure).getTime() : null;
+  // Normalize airport codes: strip K-prefix, handle ICAO aliases (TJSJ↔KSJU etc.)
+  const ICAO_TO_FAA: Record<string, string> = {
+    TJSJ: "SJU", TJBQ: "BQN", TJIG: "SIG", TIST: "STT", TISX: "STX",
+    MMUN: "CUN", MMMX: "MEX", MMSD: "SJD",
+  };
+  const norm = (c: string | null | undefined): string | null => {
+    if (!c) return null;
+    const u = c.trim().toUpperCase();
+    // Check alias map first
+    if (ICAO_TO_FAA[u]) return ICAO_TO_FAA[u];
+    // Strip K-prefix for US airports
+    if (u.length === 4 && u.startsWith("K")) return u.slice(1);
+    // For 4-char codes, try last 3 chars as IATA
+    return u;
+  };
+  const nDep = norm(depIcao);
+  const nArr = norm(arrIcao);
+
+  // Time window limits to prevent matching stale FA flights from previous days
+  const HOURS_6 = 6 * 3600_000;
+  const HOURS_4 = 4 * 3600_000;
+
+  // Helper: pick the closest-in-time entry from a list, with optional max time window
+  function pickClosest(
+    candidates: FlightInfoEntry[],
+    maxDiffMs?: number,
+  ): FlightInfoEntry | undefined {
+    if (candidates.length === 0) return undefined;
+    if (!schedDep) return candidates.length === 1 ? candidates[0] : undefined;
+    let best: FlightInfoEntry | undefined;
+    let bestDiff = Infinity;
+    for (const c of candidates) {
+      const faDep = c.departure_time ? new Date(c.departure_time).getTime() : null;
+      const diff = faDep ? Math.abs(faDep - schedDep) : Infinity;
+      if (diff < bestDiff) { bestDiff = diff; best = c; }
+    }
+    // Reject if outside the allowed time window
+    if (maxDiffMs && bestDiff > maxDiffMs) return undefined;
+    return best;
+  }
+
+  // Find all FA flights for this tail
+  const tailFlights = allEntries.filter((e) => e.tail === tail);
+  if (tailFlights.length === 0) return undefined;
+
+  // PRIORITY 1: Exact route match (origin + destination) — most reliable, allow wide window
+  const routeMatches = tailFlights.filter((e) =>
+    nDep && norm(e.origin_icao) === nDep && (!nArr || norm(e.destination_icao) === nArr)
+  );
+  const routeHit = pickClosest(routeMatches);
+  if (routeHit) return routeHit;
+
+  // PRIORITY 2: Origin-only match — require within 6h of scheduled departure
+  const originMatches = tailFlights.filter((e) => nDep && norm(e.origin_icao) === nDep);
+  const originHit = pickClosest(originMatches, HOURS_6);
+  if (originHit) return originHit;
+
+  // PRIORITY 3: Destination-only match — weakest signal, require within 4h AND
+  // only accept if the FA flight is currently en route (not a stale landed flight)
+  const destMatches = tailFlights.filter((e) => nArr && norm(e.destination_icao) === nArr);
+  const destEnRoute = destMatches.filter((e) =>
+    e.status === "En Route" || e.status === "Airborne" ||
+    (e.progress_percent != null && e.progress_percent > 0 && e.progress_percent < 100)
+  );
+  const destHit = pickClosest(destEnRoute, HOURS_4);
+  if (destHit) return destHit;
+
+  // No reliable match — don't guess
+  return undefined;
+}
+
 /** Flight type to readable badge label */
 function flightTypeBadge(flight: Flight): { label: string; color: string } {
   const ft = inferFlightType(flight);
@@ -82,7 +165,7 @@ function getFlightStatus(
   }
   if (fi?.progress_percent != null && fi.progress_percent > 0 && fi.progress_percent < 100) {
     return {
-      label: `En Route (${fi.progress_percent}%)`,
+      label: "En Route",
       accent: "text-blue-600 dark:text-blue-400",
       borderColor: "border-l-blue-500",
     };
@@ -112,17 +195,63 @@ function getFlightStatus(
   return { label: "Scheduled", accent: "text-gray-500 dark:text-gray-400", borderColor: "border-l-gray-300 dark:border-l-gray-600" };
 }
 
-/** Turn status for an item */
-function getTurnLabel(item: VanFlightItem): string | null {
-  if (!item.nextDep) return "Done for day";
-  const schedDep = item.nextDep.scheduled_departure;
+/** Turn status label for an item */
+function getTurnLabel(item: VanFlightItem): string {
   const schedArr = item.arrFlight.scheduled_arrival;
-  if (schedArr && schedDep) {
-    const groundMin = (new Date(schedDep).getTime() - new Date(schedArr).getTime()) / 60000;
-    if (groundMin >= 240) return "Done for day";
-    if (groundMin < 120) return "Quickturn";
+  const todayEt = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  const arrDate = schedArr
+    ? new Date(schedArr).toLocaleDateString("en-CA", { timeZone: "America/New_York" })
+    : null;
+  const isOvernight = arrDate ? arrDate < todayEt : false;
+
+  // Detect pre-departure: service airport matches a departure, not the arrival
+  const arrIcaoNorm = item.arrFlight.arrival_icao?.replace(/^K/, "") ?? "";
+  if (item.airport !== arrIcaoNorm && item.nextDep?.departure_icao?.replace(/^K/, "") === item.airport) {
+    const depTime = fmtUtcHM(item.nextDep.scheduled_departure);
+    return `Pre-Departure - Departing at ${depTime}`;
   }
-  return null;
+
+  if (!item.nextDep) {
+    return isOvernight ? "Parked - No flights scheduled" : "Done for the Day";
+  }
+
+  const schedDep = item.nextDep.scheduled_departure;
+  if (!schedArr || !schedDep) return "Done for the Day";
+
+  // For overnight aircraft, use time from NOW until departure
+  if (isOvernight) {
+    const depMs = new Date(schedDep).getTime();
+    const hoursUntilDep = Math.round((depMs - Date.now()) / 3600000);
+    const depTime = fmtUtcHM(schedDep);
+    const depDate = new Date(schedDep).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+    if (depDate === todayEt && hoursUntilDep < 2) {
+      return `Parked - Departing soon at ${depTime}`;
+    }
+    if (depDate === todayEt) {
+      return `Parked - Departing at ${depTime}`;
+    }
+    return `Parked - Next flight in ${hoursUntilDep} hour${hoursUntilDep === 1 ? "" : "s"}`;
+  }
+
+  const gapMs = new Date(schedDep).getTime() - new Date(schedArr).getTime();
+  const hours = Math.round(gapMs / 3600000);
+  if (gapMs < 2 * 3600000) {
+    const depTime = fmtUtcHM(schedDep);
+    return `Quick Turn - Aircraft leaving after ${depTime}`;
+  }
+  if (gapMs < 8 * 3600000) {
+    return `Aircraft Shutting Down - Aircraft leaving in ${hours} hour${hours === 1 ? "" : "s"}`;
+  }
+  return `Done for the Day - Aircraft leaving in ${hours} hour${hours === 1 ? "" : "s"}`;
+}
+
+function turnBadgeClass(label: string): string {
+  if (label.startsWith("Pre-Departure")) return "bg-violet-100 text-violet-800 dark:bg-violet-900 dark:text-violet-200";
+  if (label.startsWith("Quick Turn")) return "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200";
+  if (label.startsWith("Aircraft Shutting Down")) return "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200";
+  if (label.includes("Departing soon")) return "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200";
+  if (label.startsWith("Parked")) return "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200";
+  return "bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300";
 }
 
 // ---------------------------------------------------------------------------
@@ -135,16 +264,20 @@ export default function VanDriverClient({
   initialFlights,
   publishedFlightIds,
   publishedAt,
+  syntheticFlights,
   mxNotes,
   fboMap,
+  airportOverrides,
 }: {
   vanId: number;
   zone: VanZone;
   initialFlights: Flight[];
   publishedFlightIds: string[] | null;
   publishedAt: string | null;
+  syntheticFlights?: { id: string; tail: string; airport: string | null }[];
   mxNotes?: MxNote[];
   fboMap?: Record<string, string>;
+  airportOverrides?: [string, string][];
 }) {
   /** Look up destination FBO for a flight from trip_salespersons data */
   const lookupFbo = useCallback((f: Flight): string | null => {
@@ -153,6 +286,7 @@ export default function VanDriverClient({
   }, [fboMap]);
 
   const [flights, setFlights] = useState<Flight[]>(initialFlights);
+  const [allFlightEntries, setAllFlightEntries] = useState<FlightInfoEntry[]>([]);
   const [flightInfoMap, setFlightInfoMap] = useState<Map<string, FlightInfoEntry>>(new Map());
   const [refreshing, setRefreshing] = useState(false);
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
@@ -177,9 +311,16 @@ export default function VanDriverClient({
       if (!res.ok) return;
       const data = await res.json();
       const entries: FlightInfoEntry[] = data.flights ?? data ?? [];
+      setAllFlightEntries(entries);
+      // Build a simple tail→best-flight map (en-route preferred over scheduled/landed)
       const map = new Map<string, FlightInfoEntry>();
       for (const e of entries) {
-        if (e.tail) map.set(e.tail, e);
+        if (!e.tail) continue;
+        const existing = map.get(e.tail);
+        const eIsEnRoute = e.status?.includes("En Route");
+        if (!existing || eIsEnRoute || (!existing.status?.includes("En Route") && !existing.status?.includes("Landed"))) {
+          map.set(e.tail, e);
+        }
       }
       setFlightInfoMap(map);
       setLastRefresh(new Date());
@@ -228,20 +369,78 @@ export default function VanDriverClient({
   // ---------------------------------------------------------------------------
   const date = todayEtDate();
 
+  const apOverrideMap = useMemo(() => new Map(airportOverrides ?? []), [airportOverrides]);
+
+  // Build a map of synthetic flights for quick lookup
+  const syntheticMap = useMemo(() => {
+    const map = new Map<string, { id: string; tail: string; airport: string | null }>();
+    for (const sf of syntheticFlights ?? []) {
+      map.set(sf.id, sf);
+    }
+    return map;
+  }, [syntheticFlights]);
+
   const stops = useMemo(() => {
+    let items: VanFlightItem[];
     if (publishedFlightIds && publishedFlightIds.length > 0) {
       // Use Director's published schedule — preserve ordering
-      const items: VanFlightItem[] = [];
+      items = [];
       for (const fId of publishedFlightIds) {
+        // Try real flight first
         const item = buildItemFromFlight(fId, flights, zone.lat, zone.lon);
-        if (item) items.push(item);
+        if (item) {
+          items.push(item);
+          continue;
+        }
+        // Try synthetic flight (unscheduled/parked aircraft)
+        const sf = syntheticMap.get(fId);
+        if (sf && sf.airport) {
+          const info = getAirportInfo(sf.airport);
+          const distKm = info ? Math.round(haversineKm(zone.lat, zone.lon, info.lat, info.lon)) : 0;
+          const syntheticFlight: Flight = {
+            id: sf.id,
+            ics_uid: sf.id,
+            tail_number: sf.tail,
+            departure_icao: `K${sf.airport}`,
+            arrival_icao: `K${sf.airport}`,
+            scheduled_departure: `${date}T17:00:00Z`,
+            scheduled_arrival: `${date}T17:00:00Z`,
+            summary: `Parked – ${sf.tail}`,
+            flight_type: null,
+            pic: null,
+            sic: null,
+            pax_count: null,
+            jetinsight_url: null,
+            fa_flight_id: null,
+            alerts: [],
+          };
+          items.push({
+            arrFlight: syntheticFlight,
+            nextDep: null,
+            isRepo: false,
+            nextIsRepo: false,
+            airport: sf.airport,
+            airportInfo: info,
+            distKm,
+          });
+        }
       }
-      return items;
+    } else {
+      // Fallback: auto-compute
+      items = computeZoneItems(zone, flights, date, zone.lat, zone.lon);
+      items = greedySort(items, zone.lat, zone.lon);
     }
-    // Fallback: auto-compute
-    const items = computeZoneItems(zone, flights, date, zone.lat, zone.lon);
-    return greedySort(items, zone.lat, zone.lon);
-  }, [zone, flights, date, publishedFlightIds]);
+    // Apply airport overrides (e.g. N201HR → VNY instead of raw arrival airport)
+    if (apOverrideMap.size > 0) {
+      for (const item of items) {
+        const override = apOverrideMap.get(item.arrFlight.tail_number ?? "");
+        if (override) {
+          item.airport = override.replace(/^K/, "");
+        }
+      }
+    }
+    return items;
+  }, [zone, flights, date, publishedFlightIds, apOverrideMap]);
 
   const totalRouteKm = useMemo(() => routeDistKm(stops), [stops]);
 
@@ -256,16 +455,16 @@ export default function VanDriverClient({
     return map;
   }, [mxNotes]);
 
-  // Find the "next" stop — first non-landed
+  // Find the "next" stop — first non-landed (using same logic as getFlightStatus)
   const nextStopIdx = useMemo(() => {
     for (let i = 0; i < stops.length; i++) {
       const tail = stops[i].arrFlight.tail_number;
-      const fi = tail ? flightInfoMap.get(tail) : undefined;
-      const status = fi?.status;
-      if (status !== "Landed" && status !== "Arrived") return i;
+      const fi = tail ? matchFaFlight(allFlightEntries, stops[i].arrFlight) : undefined;
+      const status = getFlightStatus(stops[i], fi);
+      if (status.label !== "Landed") return i;
     }
     return stops.length > 0 ? 0 : -1;
-  }, [stops, flightInfoMap]);
+  }, [stops, allFlightEntries]);
 
   // ---------------------------------------------------------------------------
   // Render
@@ -335,7 +534,7 @@ export default function VanDriverClient({
               index={idx}
               isNext={idx === nextStopIdx}
               fi={item.arrFlight.tail_number
-                ? flightInfoMap.get(item.arrFlight.tail_number)
+                ? matchFaFlight(allFlightEntries, item.arrFlight)
                 : undefined}
               flightInfoMap={flightInfoMap}
               tailMxNotes={mxNotesByTail.get(item.arrFlight.tail_number ?? "") ?? []}
@@ -445,14 +644,14 @@ const TAIL_TYPE_MAP: Record<string, string> = {
   N520FX: "CL30", N541FX: "CL30", N533FX: "CL30", N526FX: "CL30",
   N548FX: "CL30", N555FX: "CL30", N554FX: "CL30", N521FX: "CL30",
   N371BD: "CL30", N883TR: "CL30", N416F: "CL30", N519FX: "CL30",
-  N552FX: "CL30", N553FX: "CL30",
+  N552FX: "CL30", N553FX: "CL30", N529FX: "CL30",
   // Cessna Citation X (C750)
   N992MG: "C750", N513JB: "C750", N957JS: "C750", N954JS: "C750",
   N860TX: "C750", N700LH: "C750", N106PC: "C750", N818CF: "C750",
   N733FL: "C750", N988TX: "C750", N703TX: "C750", N910E: "C750",
   N102VR: "C750", N998CX: "C750", N51GB: "C750", N939TX: "C750",
   N301HR: "C750", N971JS: "C750", N125DZ: "C750", N955GH: "C750",
-  N125TH: "C750", N201HR: "C750",
+  N125TH: "C750", N201HR: "C750", N187CR: "C750",
 };
 
 function getDriverServiceChecklists(): Record<string, { label: string; steps: string[] }> {
@@ -561,20 +760,18 @@ function StopCard({
             <div className="text-sm font-bold text-slate-700 dark:text-slate-200 tabular-nums">
               Sched {schedArrLocal}
             </div>
-            {faEtaLocal && faEtaLocal !== schedArrLocal && status.label !== "Landed" && (
+            {fi?.actual_arrival && (
+              <div className="text-xs font-medium text-green-600 dark:text-green-400 tabular-nums">
+                Landed {fmtLocalTime(fi.actual_arrival, item.arrFlight.arrival_icao)}
+              </div>
+            )}
+            {!fi?.actual_arrival && faEtaLocal && faEtaLocal !== schedArrLocal && status.label !== "Landed" && (
               <div className="text-xs font-medium text-blue-600 dark:text-blue-400 tabular-nums">
-                FA ETA {faEtaLocal}
+                FA Est {faEtaLocal}
               </div>
             )}
           </div>
         </div>
-        {countdown && status.label !== "Landed" && (
-          <div className="mt-0.5">
-            <span className="text-xs font-medium text-blue-600 dark:text-blue-400">
-              Landing {countdown}
-            </span>
-          </div>
-        )}
       </div>
 
       {expanded && <div className="px-4 pb-4">
@@ -604,7 +801,7 @@ function StopCard({
           </span>
           <span className="text-gray-300 dark:text-gray-600">&rarr;</span>
           <span className="text-xs text-gray-500 dark:text-gray-400">
-            ETA {arrTime}
+            Arr {arrTime}
           </span>
           <span className="text-xs text-gray-400 dark:text-gray-500">
             &middot; {fmtDriveTime(item.distKm)}
@@ -616,17 +813,9 @@ function StopCard({
           <span className={`text-xs px-2 py-1 rounded-full font-medium ${badge.color}`}>
             {badge.label}
           </span>
-          {turnLabel && (
-            <span
-              className={`text-xs px-2 py-1 rounded-full font-medium ${
-                turnLabel === "Quickturn"
-                  ? "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200"
-                  : "bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300"
-              }`}
-            >
-              {turnLabel}
-            </span>
-          )}
+          <span className={`text-xs px-2 py-1 rounded-full font-medium ${turnBadgeClass(turnLabel)}`}>
+            {turnLabel}
+          </span>
           {fi?.diverted && (
             <span className="text-xs px-2 py-1 rounded-full font-medium bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200">
               DIVERTED
@@ -646,15 +835,14 @@ function StopCard({
         {(() => {
           const now = Date.now();
           const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+          const toEtDate = (iso: string) => new Date(iso).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
           const visible = tailMxNotes.filter((n) => {
             if (dismissedMxIds.has(n.id)) return false;
-            // Hide past notes
-            if (n.end_time && new Date(n.end_time).getTime() < now) return false;
-            // Only show notes relevant to today (start_time on or before today, end_time on or after today)
-            if (n.start_time) {
-              const startDate = n.start_time.slice(0, 10);
-              if (startDate > todayStr) return false; // future note
-            }
+            const startDate = n.start_time ? toEtDate(n.start_time) : null;
+            const endDate = n.end_time ? toEtDate(n.end_time) : startDate; // no end_time = single-day
+            if (!startDate && !endDate) return true;
+            if (startDate && startDate > todayStr) return false; // future
+            if (endDate && endDate < todayStr) return false; // past
             return true;
           });
           if (!visible.length) return null;

@@ -107,11 +107,22 @@ export default function RejectedTable({ initialJobs }: { initialJobs: any[] }) {
                     {j.location ?? <span className="text-gray-300">—</span>}
                   </td>
                   <td className="px-4 py-2.5 text-gray-600 max-w-[300px]">
-                    {j.rejection_reason ? (
-                      <span className="truncate block" title={j.rejection_reason}>{j.rejection_reason}</span>
-                    ) : (
-                      <span className="text-gray-300 italic">No reason given</span>
-                    )}
+                    <div className="flex items-center gap-1.5">
+                      {j.rejection_type && (
+                        <span className={`inline-block rounded-full px-1.5 py-0.5 text-[10px] font-semibold border ${
+                          j.rejection_type === "hard" ? "bg-red-50 text-red-600 border-red-200"
+                            : j.rejection_type === "soft" ? "bg-amber-50 text-amber-600 border-amber-200"
+                            : "bg-gray-50 text-gray-500 border-gray-200"
+                        }`}>
+                          {j.rejection_type === "hard" ? "Hard" : j.rejection_type === "soft" ? "Soft" : "Left"}
+                        </span>
+                      )}
+                      {j.rejection_reason ? (
+                        <span className="truncate block" title={j.rejection_reason}>{j.rejection_reason}</span>
+                      ) : (
+                        <span className="text-gray-300 italic">No reason given</span>
+                      )}
+                    </div>
                   </td>
                   <td className="px-4 py-2.5 text-right text-xs text-gray-400 whitespace-nowrap">
                     {fmtDate(j.created_at)}

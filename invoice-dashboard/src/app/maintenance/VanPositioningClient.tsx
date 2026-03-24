@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useState, useMemo, useEffect, useRef, useCallback } from "react";
+import { useState, useMemo, useEffect, useLayoutEffect, useRef, useCallback } from "react";
 import type { Flight, MxNote, AircraftTag } from "@/lib/opsApi";
 import {
   computeOvernightPositions,
@@ -18,6 +18,8 @@ import {
 } from "@/lib/maintenanceData";
 import { getAirportInfo } from "@/lib/airportCoords";
 import type { AircraftPosition } from "./MapView";
+import MxBoard from "./MxBoard";
+import type { MelItem } from "@/lib/opsApi";
 
 // Leaflet requires SSR to be disabled
 const MapView = dynamic(() => import("./MapView"), {
@@ -536,13 +538,15 @@ type VanFlightItem = {
   airport:    string;    // IATA
   airportInfo: ReturnType<typeof getAirportInfo>;
   distKm:     number;
+  isTransitStop?: boolean;  // true if this is a short ground-time stop (not EOD)
+  isLastChance?: boolean;   // true if this is the last time this tail visits any van zone today
 };
 
 type FlightInfoEntry = {
   tail: string; ident: string; origin_icao: string | null; origin_name: string | null;
   destination_icao: string | null; destination_name: string | null; status: string | null;
   progress_percent: number | null; departure_time: string | null; arrival_time: string | null;
-  route_distance_nm: number | null; diverted: boolean;
+  actual_arrival: string | null; route_distance_nm: number | null; diverted: boolean;
   aircraft_type?: string | null; // ICAO type code e.g. "C750", "CL30"
   latitude?: number | null; longitude?: number | null; altitude?: number | null;
   groundspeed?: number | null; heading?: number | null;
@@ -726,13 +730,15 @@ function computeAllDayArrivals(allFlights: Flight[], date: string): VanFlightIte
   const arrivalsToday = allFlights.filter((f) => {
     if (!f.arrival_icao || !f.scheduled_arrival) return false;
     if (!isOnEtDate(f.scheduled_arrival, date)) return false;
+    // Skip same-airport maintenance blocks (e.g. MYNN→MYNN) — not real legs
+    if (f.departure_icao && f.departure_icao === f.arrival_icao) return false;
     // Hide "other" category flights from the AOG schedule
     const ft = inferFlightType(f);
     const cat = getFilterCategory(ft);
     if (cat === "other") return false;
-    const iata = f.arrival_icao.replace(/^K/, "");
-    const info = getAirportInfo(iata);
-    return !!(info && isContiguous48(info.state));
+    // Allow all arrivals including international — they show in unassigned with a tag
+    // (computeZoneItems still filters to contiguous 48 for auto van assignment)
+    return true;
   });
 
   const rawItems = arrivalsToday
@@ -772,36 +778,63 @@ function computeAllDayArrivals(allFlights: Flight[], date: string): VanFlightIte
       return !isOnEtDate(nextDep.scheduled_departure, date);
     });
 
-  // Deduplicate by tail — keep last arrival (no van base for uncovered pool)
-  // Use flight ID as key for flights with no tail number to avoid collapsing them
-  const byTail = new Map<string, VanFlightItem>();
+  // Dedup by flight ID only (not by tail) — keep all arrivals per tail for multi-van support
+  const byFlightId = new Map<string, VanFlightItem>();
   for (const item of rawItems) {
-    const key = item.arrFlight.tail_number || `_no_tail_${item.arrFlight.id}`;
-    const existing = byTail.get(key);
-    if (
-      !existing ||
-      (item.arrFlight.scheduled_arrival ?? "") > (existing.arrFlight.scheduled_arrival ?? "")
-    ) {
-      byTail.set(key, item);
+    byFlightId.set(item.arrFlight.id, item);
+  }
+
+  // Add overnight/parked aircraft: arrived BEFORE today, next departure is today or later.
+  // These are sitting at an airport and serviceable by a van today.
+  const todayTails = new Set(rawItems.map((i) => i.arrFlight.tail_number).filter(Boolean));
+  const overnightArrivals = allFlights.filter((f) => {
+    if (!f.arrival_icao || !f.scheduled_arrival || !f.tail_number) return false;
+    // Must have arrived before today
+    if (isOnEtDate(f.scheduled_arrival, date)) return false;
+    const arrDate = new Date(f.scheduled_arrival).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+    if (arrDate >= date) return false;
+    // Skip same-airport maintenance blocks
+    if (f.departure_icao && f.departure_icao === f.arrival_icao) return false;
+    // Skip if tail already has arrivals today (already covered)
+    if (todayTails.has(f.tail_number)) return false;
+    // Must have a next departure today or later from the arrival airport
+    const nextDep = allFlights.find(
+      (d) => d.tail_number === f.tail_number && d.departure_icao === f.arrival_icao && d.scheduled_departure >= `${date}T00:00:00`,
+    );
+    if (!nextDep) return false; // no upcoming departure = probably not in our window
+    // Skip if already in byFlightId
+    if (byFlightId.has(f.id)) return false;
+    return true;
+  });
+
+  // For each overnight tail, keep only the LATEST arrival (the one that parked the aircraft)
+  const overnightByTail = new Map<string, Flight>();
+  for (const f of overnightArrivals) {
+    const existing = overnightByTail.get(f.tail_number!);
+    if (!existing || (f.scheduled_arrival ?? "") > (existing.scheduled_arrival ?? "")) {
+      overnightByTail.set(f.tail_number!, f);
     }
   }
 
-  // Second pass: remove tailless duplicates that match a tailed flight on same route+time
-  const tailedSigs = new Set<string>();
-  for (const item of byTail.values()) {
-    if (!item.arrFlight.tail_number) continue;
-    const sig = `${item.arrFlight.departure_icao}|${item.arrFlight.arrival_icao}|${item.arrFlight.scheduled_departure}|${item.arrFlight.scheduled_arrival ?? ""}`;
-    tailedSigs.add(sig);
-  }
-  for (const [key, item] of byTail) {
-    if (item.arrFlight.tail_number) continue;
-    const sig = `${item.arrFlight.departure_icao}|${item.arrFlight.arrival_icao}|${item.arrFlight.scheduled_departure}|${item.arrFlight.scheduled_arrival ?? ""}`;
-    if (tailedSigs.has(sig)) byTail.delete(key);
+  for (const [, arr] of overnightByTail) {
+    const iata = arr.arrival_icao!.replace(/^K/, "");
+    const info = getAirportInfo(iata);
+    const nextDep = allFlights
+      .filter((f) => f.tail_number === arr.tail_number && f.departure_icao === arr.arrival_icao && f.scheduled_departure >= `${date}T00:00:00`)
+      .sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure))[0] ?? null;
+    byFlightId.set(arr.id, {
+      arrFlight: arr,
+      nextDep,
+      isRepo: false,
+      nextIsRepo: nextDep ? isPositioningFlight(nextDep) : false,
+      airport: iata,
+      airportInfo: info,
+      distKm: 0,
+    });
   }
 
-  return Array.from(byTail.values()).sort((a, b) =>
-    (a.arrFlight.scheduled_arrival ?? "").localeCompare(b.arrFlight.scheduled_arrival ?? ""),
-  );
+  return Array.from(byFlightId.values())
+    .sort((a, b) => (a.arrFlight.scheduled_arrival ?? "").localeCompare(b.arrFlight.scheduled_arrival ?? ""));
 }
 
 /** Recalculate distKm for items relative to a van's base position. */
@@ -825,20 +858,80 @@ function routeDistKm(items: VanFlightItem[]): number {
 }
 
 // ---------------------------------------------------------------------------
+// Turn label helpers
+// ---------------------------------------------------------------------------
+
+/** Compute the turn status label for an aircraft.
+ * < 2h:  "Quick Turn - Aircraft leaving after HH:MM TZ"
+ * 2–8h:  "Aircraft Shutting Down - Aircraft leaving in X hours"
+ * ≥ 8h or no next dep:  "Done for the Day - Aircraft leaving in X hours" (or just "Done for the Day")
+ */
+function computeTurnLabel(nextDep: Flight | null, gapMs: number, opts?: { isOvernight?: boolean; viewDate?: string }): string {
+  const isOvernight = opts?.isOvernight ?? false;
+
+  if (!nextDep) {
+    return isOvernight ? "Parked - No flights scheduled" : "Done for the Day";
+  }
+
+  // For overnight/parked aircraft, use time from NOW until departure (not arrival→departure gap)
+  if (isOvernight) {
+    const depMs = new Date(nextDep.scheduled_departure).getTime();
+    const hoursUntilDep = Math.round((depMs - Date.now()) / 3600000);
+    const depTime = fmtUtcHM(nextDep.scheduled_departure, nextDep.departure_icao);
+    const depDate = nextDep.scheduled_departure
+      ? new Date(nextDep.scheduled_departure).toLocaleDateString("en-CA", { timeZone: "America/New_York" })
+      : null;
+    const isDepToday = depDate === opts?.viewDate;
+    if (isDepToday && hoursUntilDep < 2) {
+      return `Parked - Departing soon at ${depTime}`;
+    }
+    if (isDepToday) {
+      return `Parked - Departing at ${depTime}`;
+    }
+    return `Parked - Next flight in ${hoursUntilDep} hour${hoursUntilDep === 1 ? "" : "s"}`;
+  }
+
+  // Today's arrivals — standard turn badges
+  const hours = Math.round(gapMs / 3600000);
+  if (gapMs < 2 * 3600000) {
+    const depTime = fmtUtcHM(nextDep.scheduled_departure, nextDep.departure_icao);
+    return `Quick Turn - Aircraft leaving after ${depTime}`;
+  }
+  if (gapMs < 8 * 3600000) {
+    return `Aircraft Shutting Down - Aircraft leaving in ${hours} hour${hours === 1 ? "" : "s"}`;
+  }
+  return `Done for the Day - Aircraft leaving in ${hours} hour${hours === 1 ? "" : "s"}`;
+}
+
+/** Badge colors for turn labels */
+function turnBadgeClass(label: string): string {
+  if (label.startsWith("Pre-Departure")) return "bg-violet-100 text-violet-700";
+  if (label.startsWith("Quick Turn")) return "bg-amber-100 text-amber-700";
+  if (label.startsWith("Aircraft Shutting Down")) return "bg-orange-100 text-orange-700";
+  if (label.includes("Departing soon")) return "bg-amber-100 text-amber-700";
+  if (label.startsWith("Parked")) return "bg-blue-100 text-blue-700";
+  return "bg-green-100 text-green-700";
+}
+
+// ---------------------------------------------------------------------------
 // Slack share modal for a van's schedule
 // ---------------------------------------------------------------------------
 
 type SlackChannel = { id: string; name: string };
 /** Build Slack-ready item payloads from VanFlightItems. Used by single share and bulk share. */
-function buildSlackItems(items: VanFlightItem[], flightInfoMap: Map<string, FlightInfoEntry>, fboMap?: Record<string, string>, mxNotesByTail?: Map<string, MxNote[]>) {
+function buildSlackItems(items: VanFlightItem[], flightInfoMap: Map<string, FlightInfoEntry>, fboMap?: Record<string, string>, mxNotesByTail?: Map<string, MxNote[]>, viewDate?: string) {
   return items.map((item) => {
     const fi = flightInfoMap.get(item.arrFlight.tail_number ?? "");
     const arrMs = item.arrFlight.scheduled_arrival ? new Date(item.arrFlight.scheduled_arrival).getTime() : null;
     const gapMs = item.nextDep && arrMs
       ? new Date(item.nextDep.scheduled_departure).getTime() - arrMs : Infinity;
-    const turnLabel = !item.nextDep || gapMs >= 6 * 3600000
-      ? "Done for day"
-      : gapMs < 2 * 3600000 ? "Quickturn" : undefined;
+    const isOvernight = arrMs && viewDate ? !isOnEtDate(item.arrFlight.scheduled_arrival!, viewDate) : false;
+    // Detect pre-departure: service airport is a departure airport, not the arrival
+    const arrIcaoNorm = item.arrFlight.arrival_icao?.replace(/^K/, "") ?? "";
+    const isPreDep = item.airport !== arrIcaoNorm && item.nextDep?.departure_icao?.replace(/^K/, "") === item.airport;
+    const turnLabel = isPreDep
+      ? `Pre-Departure - Departing at ${fmtUtcHM(item.nextDep!.scheduled_departure, item.nextDep!.departure_icao)}`
+      : computeTurnLabel(item.nextDep, gapMs, { isOvernight, viewDate });
     let slackStatus: string;
     if (fi?.diverted) {
       slackStatus = "DIVERTED";
@@ -858,14 +951,18 @@ function buildSlackItems(items: VanFlightItem[], flightInfoMap: Map<string, Flig
     const fbo = fboMap?.[`${item.arrFlight.tail_number}:${arrIcao}`]
       ?? fboMap?.[`${item.arrFlight.tail_number}:${arrIcaoStripped}`]
       ?? null;
-    // Gather today's MX notes for this tail
+    // Gather today's MX notes for this tail (ET timezone, same logic as MxNoteInline)
     const tailNotes = mxNotesByTail?.get(item.arrFlight.tail_number ?? "") ?? [];
-    const nowMs = Date.now();
     const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+    const toEtDate = (iso: string) => new Date(iso).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
     const mxNoteTexts = tailNotes
       .filter((n) => {
-        if (n.end_time && new Date(n.end_time).getTime() < nowMs) return false;
-        if (n.start_time && n.start_time.slice(0, 10) > todayStr) return false;
+        if (isMel(n)) return false;
+        const startDate = n.start_time ? toEtDate(n.start_time) : null;
+        const endDate = n.end_time ? toEtDate(n.end_time) : startDate; // no end_time = single-day
+        if (!startDate && !endDate) return true;
+        if (startDate && startDate > todayStr) return false; // future
+        if (endDate && endDate < todayStr) return false; // past
         return true;
       })
       .map((n) => `${n.airport_icao ?? ""} — ${n.body ?? ""}`.trim());
@@ -943,7 +1040,7 @@ function SlackShareModal({
         vanId,
         homeAirport,
         date,
-        items: buildSlackItems(items, flightInfoMap, fboMap, mxNotesByTail),
+        items: buildSlackItems(items, flightInfoMap, fboMap, mxNotesByTail, date),
       };
       const res = await fetch("/api/vans/share-slack", {
         method: "POST",
@@ -1041,6 +1138,17 @@ function isMel(note: MxNote): boolean {
   return text.startsWith("mel ");
 }
 
+/** Content fingerprint for smart-hide: resurface MX note when airport/time/subject changes */
+function mxContentHash(n: MxNote): string {
+  return `${n.airport_icao ?? ""}|${n.start_time ?? ""}|${n.end_time ?? ""}|${n.subject ?? ""}|${n.body ?? ""}`;
+}
+
+/** Check if an MX note is hidden — matches composite key (id::hash) so note resurfaces if content changes */
+function isMxHiddenForToday(n: MxNote, hiddenIds?: Set<string>): boolean {
+  if (!hiddenIds) return false;
+  return hiddenIds.has(`${n.id}::${mxContentHash(n)}`);
+}
+
 function fmtTimeRemaining(endTime: string | null): string | null {
   if (!endTime) return null;
   const end = new Date(endTime).getTime() + 24 * 60 * 60 * 1000; // end of that day
@@ -1060,14 +1168,149 @@ function daysRemaining(endTime: string | null): number {
   return Math.floor((end - Date.now()) / (24 * 60 * 60 * 1000));
 }
 
+// ---------------------------------------------------------------------------
+// Midday Service Opportunities — aircraft with 2h+ ground time near a van
+// ---------------------------------------------------------------------------
+
+type MiddayWindow = {
+  flightId: string;
+  tail: string;
+  airport: string;
+  city: string;
+  landTime: Date;
+  nextDepTime: Date;
+  groundMin: number;
+  mxNoteCount: number;
+};
+
+function MiddayOpportunities({
+  zone,
+  allFlights,
+  date,
+  overnightTails,
+  mxNotesByTail,
+  onAddToVan,
+}: {
+  zone: (typeof FIXED_VAN_ZONES)[number];
+  allFlights: Flight[];
+  date: string;
+  overnightTails: Set<string>;
+  mxNotesByTail: Map<string, MxNote[]>;
+  onAddToVan?: (flightId: string, vanId: number) => void;
+}) {
+  const windows = useMemo(() => {
+    const results: MiddayWindow[] = [];
+    const MIN_GROUND_MIN = 120; // 2 hours
+    const MAX_DIST_KM = 200; // ~125 miles from van home
+
+    // Group flights by tail for this date
+    const byTail = new Map<string, Flight[]>();
+    for (const f of allFlights) {
+      if (!f.tail_number || !f.arrival_icao) continue;
+      if (!isOnEtDate(f.scheduled_departure, date) && !isOnEtDate(f.scheduled_arrival ?? f.scheduled_departure, date)) continue;
+      if (!byTail.has(f.tail_number)) byTail.set(f.tail_number, []);
+      byTail.get(f.tail_number)!.push(f);
+    }
+
+    for (const [tail, flights] of byTail) {
+      // Skip tails already on this van's overnight list
+      if (overnightTails.has(tail)) continue;
+
+      const sorted = [...flights].sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure));
+      for (let i = 0; i < sorted.length - 1; i++) {
+        const leg = sorted[i];
+        const nextLeg = sorted[i + 1];
+        if (!leg.scheduled_arrival || !leg.arrival_icao) continue;
+
+        const landTime = new Date(leg.scheduled_arrival);
+        const nextDepTime = new Date(nextLeg.scheduled_departure);
+        const groundMin = Math.round((nextDepTime.getTime() - landTime.getTime()) / 60000);
+        if (groundMin < MIN_GROUND_MIN) continue;
+
+        // Check if this airport is near this van's zone
+        const info = getAirportInfo(leg.arrival_icao.replace(/^K/, "")) ?? getAirportInfo(leg.arrival_icao);
+        if (!info) continue;
+        const dist = haversineKm(info.lat, info.lon, zone.lat, zone.lon);
+        if (dist > MAX_DIST_KM) continue;
+
+        const mxNotes = mxNotesByTail.get(tail) ?? [];
+        results.push({
+          flightId: leg.id,
+          tail,
+          airport: leg.arrival_icao.replace(/^K/, ""),
+          city: info.city ? `${info.city}${info.state ? `, ${info.state}` : ""}` : "",
+          landTime,
+          nextDepTime,
+          groundMin,
+          mxNoteCount: mxNotes.length,
+        });
+      }
+    }
+
+    // Sort by ground time descending (biggest windows first)
+    results.sort((a, b) => b.groundMin - a.groundMin);
+    return results;
+  }, [zone, allFlights, date, overnightTails, mxNotesByTail]);
+
+  if (windows.length === 0) return null;
+
+  function fmtHM(d: Date) {
+    return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: "America/New_York" });
+  }
+
+  function fmtGround(min: number) {
+    const h = Math.floor(min / 60);
+    const m = min % 60;
+    return m > 0 ? `${h}h${m}m` : `${h}h`;
+  }
+
+  return (
+    <div className="px-4 py-2 bg-amber-50/50 border-b border-amber-200">
+      <div className="flex items-center gap-2 mb-1.5">
+        <span className="text-[10px] font-bold text-amber-700 uppercase tracking-wide">Midday Opportunities</span>
+        <span className="text-[10px] text-amber-500">{windows.length} aircraft with 2h+ ground time nearby</span>
+      </div>
+      <div className="space-y-1">
+        {windows.map((w, i) => (
+          <div key={`${w.tail}-${i}`} className="flex items-center gap-2 text-xs">
+            <span className="font-mono font-semibold text-gray-800 w-16">{w.tail}</span>
+            <span className="text-gray-600">{w.airport}</span>
+            {w.city && <span className="text-gray-400 text-[11px]">{w.city}</span>}
+            <span className="text-amber-700 font-medium">
+              {fmtHM(w.landTime)} – {fmtHM(w.nextDepTime)}
+            </span>
+            <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${w.groundMin >= 240 ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"}`}>
+              {fmtGround(w.groundMin)}
+            </span>
+            {w.mxNoteCount > 0 && (
+              <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-orange-100 text-orange-700">
+                {w.mxNoteCount} MX
+              </span>
+            )}
+            {onAddToVan && (
+              <button
+                onClick={() => onAddToVan(w.flightId, zone.vanId)}
+                className="px-2 py-0.5 text-[10px] font-medium text-amber-700 hover:text-white bg-amber-100 hover:bg-amber-600 border border-amber-300 rounded transition-colors"
+              >
+                + Add
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /** Single MX note row with expandable description */
 function MxNoteRow({ note, onHideForToday, vanOverride, onVanOverride }: {
   note: MxNote;
-  onHideForToday?: (id: string) => void;
+  onHideForToday?: (note: MxNote) => void;
   vanOverride?: number | null;
   onVanOverride?: (noteId: string, vanId: number | null) => void;
 }) {
   const [descOpen, setDescOpen] = useState(false);
+  const effectiveVan = note.assigned_van ?? vanOverride ?? null;
   return (
     <div className="rounded-lg px-3 py-1.5 bg-orange-50 border border-orange-200">
       <div className="flex items-start gap-2">
@@ -1075,7 +1318,7 @@ function MxNoteRow({ note, onHideForToday, vanOverride, onVanOverride }: {
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-xs font-medium text-orange-700">{note.airport_icao}</span>
-            <span className="text-xs text-gray-700">{note.body}</span>
+            <span className="text-xs text-gray-700">{note.subject || note.body}</span>
             {note.description && (
               <button
                 onClick={() => setDescOpen((v) => !v)}
@@ -1084,6 +1327,11 @@ function MxNoteRow({ note, onHideForToday, vanOverride, onVanOverride }: {
                 {descOpen ? "hide notes" : "notes"}
                 <svg className={`w-2.5 h-2.5 inline ml-0.5 transition-transform ${descOpen ? "rotate-180" : ""}`} fill="none" viewBox="0 0 10 10" stroke="currentColor" strokeWidth={2}><path d="M2.5 3.5l2.5 2.5 2.5-2.5" /></svg>
               </button>
+            )}
+            {effectiveVan && (
+              <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-100 text-green-700">
+                V{effectiveVan}{note.scheduled_date ? ` · ${new Date(note.scheduled_date + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : ""}
+              </span>
             )}
             {note.end_time && (
               <span className="text-[11px] text-gray-400 ml-auto shrink-0">
@@ -1099,10 +1347,10 @@ function MxNoteRow({ note, onHideForToday, vanOverride, onVanOverride }: {
           <div className="flex items-center gap-2 mt-1">
             {onHideForToday && (
               <button
-                onClick={() => onHideForToday(note.id)}
+                onClick={() => onHideForToday(note)}
                 className="text-[10px] font-medium text-orange-400 hover:text-orange-700 hover:bg-orange-50 border border-orange-200 rounded px-2 py-0.5 transition-colors"
               >
-                Hide for Today
+                Hide Until Changed
               </button>
             )}
             {onVanOverride && (
@@ -1125,17 +1373,16 @@ function MxNoteRow({ note, onHideForToday, vanOverride, onVanOverride }: {
 }
 
 /** Inline MX notes per aircraft — only non-MEL MX items (MELs moved to van-level accordion) */
-function MxNoteInline({ notes, hiddenIds, onHideForToday, vanOverrides, onVanOverride, viewDate }: { notes: MxNote[]; hiddenIds?: Set<string>; onHideForToday?: (id: string) => void; vanOverrides?: Map<string, number>; onVanOverride?: (noteId: string, vanId: number | null) => void; viewDate?: string }) {
+function MxNoteInline({ notes, hiddenIds, onHideForToday, vanOverrides, onVanOverride, viewDate }: { notes: MxNote[]; hiddenIds?: Set<string>; onHideForToday?: (note: MxNote) => void; vanOverrides?: Map<string, number>; onVanOverride?: (noteId: string, vanId: number | null) => void; viewDate?: string }) {
   const targetDate = viewDate ?? new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  const toEtDate = (iso: string) => new Date(iso).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
   const visible = notes.filter((n) => {
-    if (hiddenIds?.has(n.id)) return false;
+    if (isMxHiddenForToday(n, hiddenIds)) return false;
     if (isMel(n)) return false;
-    // Use start/end dates to determine if note is relevant to the viewed date
-    const startDate = n.start_time?.slice(0, 10) ?? null;
-    const endDate = n.end_time?.slice(0, 10) ?? startDate;
-    // If we have no date info at all, show the note
+    // Compare dates in ET timezone (ISO strings are UTC, display is ET)
+    const startDate = n.start_time ? toEtDate(n.start_time) : null;
+    const endDate = n.end_time ? toEtDate(n.end_time) : startDate;
     if (!startDate && !endDate) return true;
-    // Note spans [startDate, endDate] — show if targetDate falls in that range
     if (startDate && startDate > targetDate) return false; // future
     if (endDate && endDate < targetDate) return false; // past
     return true;
@@ -1213,7 +1460,7 @@ function VanMaintenanceAccordion({ items, mxNotesByTail, hiddenIds, onHideForTod
   items: VanFlightItem[];
   mxNotesByTail: Map<string, MxNote[]>;
   hiddenIds: Set<string>;
-  onHideForToday: (id: string) => void;
+  onHideForToday: (note: MxNote) => void;
   flightInfoMap: Map<string, FlightInfoEntry>;
 }) {
   const [melOpen, setMelOpen] = useState(false);
@@ -1225,7 +1472,7 @@ function VanMaintenanceAccordion({ items, mxNotesByTail, hiddenIds, onHideForTod
     const tail = item.arrFlight.tail_number ?? "";
     const notes = mxNotesByTail.get(tail) ?? [];
     for (const n of notes) {
-      if (hiddenIds.has(n.id)) continue;
+      if (isMxHiddenForToday(n, hiddenIds)) continue;
       if (isMel(n)) allMels.push({ tail, note: n });
     }
   }
@@ -1275,10 +1522,10 @@ function VanMaintenanceAccordion({ items, mxNotesByTail, hiddenIds, onHideForTod
                       </span>
                     </div>
                     <button
-                      onClick={() => onHideForToday(n.id)}
+                      onClick={() => onHideForToday(n)}
                       className={`text-[10px] font-medium ${isUrgent ? "text-red-400 hover:text-red-700" : "text-green-500 hover:text-green-700"} border ${isUrgent ? "border-red-200" : "border-green-200"} rounded px-2 py-0.5 mt-1 transition-colors`}
                     >
-                      Hide for Today
+                      Hide Until Changed
                     </button>
                   </div>
                 </div>
@@ -1432,10 +1679,11 @@ function LegNoteInline({
 function AircraftCompactRow({
   arrFlight, nextDep, isRepo, nextIsRepo, airport, airportInfo, distKm,
   fi, arrTime, hasLanded, delayMin, isEnRoute, faLanded,
-  doneForDay, isQuickturn, hasMaintenance, extraLegs,
+  turnBadgeLabel, hasMaintenance, extraLegs,
   color, zone, date,
   mxNotes, hiddenTodayMxIds, onHideMxForToday, mxVanOverrides, onVanOverride,
-  legNote, onSaveNote, onDragStart, onRemove, onSetPrimaryAirport,
+  legNote, onSaveNote, onDragStart, onDragOverItem, onRemove, onSetPrimaryAirport,
+  multiVisitVans, onSwapToVan, onAlsoOnVan,
 }: {
   arrFlight: Flight;
   nextDep: Flight | null;
@@ -1450,8 +1698,7 @@ function AircraftCompactRow({
   delayMin: number;
   isEnRoute: boolean;
   faLanded: boolean;
-  doneForDay: boolean;
-  isQuickturn: boolean;
+  turnBadgeLabel: string;
   hasMaintenance: boolean;
   extraLegs: Flight[];
   color: string;
@@ -1459,21 +1706,43 @@ function AircraftCompactRow({
   date: string;
   mxNotes: MxNote[];
   hiddenTodayMxIds: Set<string>;
-  onHideMxForToday: (id: string) => void;
+  onHideMxForToday: (note: MxNote) => void;
   mxVanOverrides?: Map<string, number>;
   onVanOverride?: (noteId: string, vanId: number | null) => void;
   legNote: string;
   onSaveNote: (flightId: string, tailNumber: string | null, note: string) => void;
   onDragStart: (e: React.DragEvent, flightId: string, fromVanId: number) => void;
+  onDragOverItem: (vanId: number, flightId: string, insertBefore: boolean) => void;
   onRemove: (flightId: string) => void;
   onSetPrimaryAirport?: (tail: string, airport: string) => void;
+  multiVisitVans?: number[];
+  onSwapToVan?: (flightId: string, toVanId: number) => void;
+  onAlsoOnVan?: (tail: string, toVanId: number) => void;
 }) {
   const [detailOpen, setDetailOpen] = useState(false);
+  const [vanMenuOpen, setVanMenuOpen] = useState(false);
+  const vanMenuRef = useRef<HTMLDivElement>(null);
+
+  // Close van menu on click outside
+  useEffect(() => {
+    if (!vanMenuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (vanMenuRef.current && !vanMenuRef.current.contains(e.target as Node)) setVanMenuOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [vanMenuOpen]);
 
   return (
     <div
       draggable
       onDragStart={(e) => onDragStart(e, arrFlight.id, zone.vanId)}
+      onDragOver={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const rect = e.currentTarget.getBoundingClientRect();
+        onDragOverItem(zone.vanId, arrFlight.id, e.clientY < rect.top + rect.height / 2);
+      }}
       className="px-4 py-2 cursor-grab active:cursor-grabbing hover:bg-gray-50/50"
     >
       {/* ── Compact row: tail + airport + ETA/schedule + drive time + status + remove ── */}
@@ -1488,11 +1757,20 @@ function AircraftCompactRow({
           <span className="font-mono font-semibold text-sm">{arrFlight.tail_number ?? "—"}</span>
           <span className="text-xs text-gray-500">{airport}{airportInfo ? ` · ${airportInfo.city}, ${airportInfo.state}` : ""}</span>
           <span className="text-xs text-gray-400">· {fmtDriveTime(distKm)}</span>
-          {isQuickturn && (
-            <span className="text-xs font-semibold bg-amber-100 text-amber-700 rounded-full px-2 py-0.5">Quickturn</span>
+          <span className={`text-xs font-semibold rounded-full px-2 py-0.5 ${turnBadgeClass(turnBadgeLabel)}`}>{turnBadgeLabel}</span>
+          {mxNotes.filter((n) => !isMel(n) && (n.assigned_van === zone.vanId || !n.assigned_van)).length > 0 && (
+            <button
+              onClick={(e) => { e.stopPropagation(); setDetailOpen((v) => !v); }}
+              className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-orange-100 text-orange-700 hover:bg-orange-200 transition-colors cursor-pointer"
+              title={mxNotes.filter((n) => !isMel(n) && (n.assigned_van === zone.vanId || !n.assigned_van)).map((n) => `${n.airport_icao ?? ""} — ${n.subject || n.body || n.description || ""}`).join("\n")}
+            >
+              {mxNotes.filter((n) => !isMel(n) && (n.assigned_van === zone.vanId || !n.assigned_van)).length} MX
+            </button>
           )}
-          {doneForDay && (
-            <span className="text-xs font-semibold bg-green-100 text-green-700 rounded-full px-2 py-0.5">Done for day</span>
+          {multiVisitVans && multiVisitVans.length >= 2 && (
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-700" title={`Also serviced by V${multiVisitVans.filter(v => v !== zone.vanId).join(", V")}`}>
+              {"\uD83D\uDD04"} {multiVisitVans.length} stops today
+            </span>
           )}
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -1504,15 +1782,6 @@ function AircraftCompactRow({
             {arrTime && (
               <span className="text-gray-400">{" → "}<span className="font-medium text-gray-700">{fmtUtcHM(arrFlight.scheduled_arrival!, arrFlight.arrival_icao)}</span></span>
             )}
-            {isEnRoute && fi?.arrival_time && !faLanded && (() => {
-              const countdown = fmtTimeUntil(fi.arrival_time!);
-              const etaColorClass = delayMin > 30 ? "text-red-600" : delayMin > 15 ? "text-amber-600" : delayMin < -5 ? "text-green-600" : "text-blue-600";
-              return countdown ? (
-                <span className={`ml-1 font-medium ${etaColorClass}`}>
-                  ETA {countdown}
-                </span>
-              ) : null;
-            })()}
           </div>
           {/* Status badge */}
           {fi?.diverted ? (
@@ -1521,18 +1790,12 @@ function AircraftCompactRow({
             <span className="text-xs font-semibold rounded-full px-2 py-0.5 bg-green-100 text-green-700">Landed</span>
           ) : isEnRoute ? (
             <span className="text-xs font-semibold rounded-full px-2 py-0.5 bg-blue-100 text-blue-700">
-              En Route{fi?.progress_percent != null ? ` ${fi.progress_percent}%` : ""}
+              En Route
             </span>
           ) : (
             <span className={`text-xs font-semibold rounded-full px-2 py-0.5 ${hasLanded ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-600"}`}>
               {hasLanded ? "Landed" : "Scheduled"}
             </span>
-          )}
-          {!fi?.diverted && !faLanded && !hasLanded && delayMin > 30 && (
-            <span className="text-xs font-semibold rounded-full px-2 py-0.5 bg-red-100 text-red-700">Delayed ~{delayMin}m</span>
-          )}
-          {!fi?.diverted && !faLanded && !hasLanded && delayMin > 15 && delayMin <= 30 && (
-            <span className="text-xs font-semibold rounded-full px-2 py-0.5 bg-amber-100 text-amber-700">Delayed ~{delayMin}m</span>
           )}
           {/* Expand/collapse detail */}
           <button
@@ -1544,6 +1807,52 @@ function AircraftCompactRow({
               <path d="M3 4.5l3 3 3-3" />
             </svg>
           </button>
+          {/* Van swap / add-to-van menu */}
+          {(onSwapToVan || onAlsoOnVan) && (
+            <div className="relative" ref={vanMenuRef}>
+              <button
+                onClick={(e) => { e.stopPropagation(); setVanMenuOpen((v) => !v); }}
+                className={`p-1 rounded-md transition-colors ${vanMenuOpen ? "text-blue-600 bg-blue-50" : "text-gray-300 hover:text-blue-600 hover:bg-blue-50"}`}
+                title="Move or add to another van"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 14 14" stroke="currentColor" strokeWidth={1.8}>
+                  <path d="M2 5h7M9 5l-2.5-2.5M9 5L6.5 7.5M12 9H5M5 9l2.5-2.5M5 9l2.5 2.5" />
+                </svg>
+              </button>
+              {vanMenuOpen && (
+                <div
+                  className="absolute right-0 top-full mt-1 z-50 bg-white border border-gray-200 rounded-lg shadow-lg py-1 min-w-[160px]"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="px-3 py-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Swap to</div>
+                  {FIXED_VAN_ZONES.filter((z) => z.vanId !== zone.vanId).map((z) => (
+                    <button
+                      key={`swap-${z.vanId}`}
+                      className="w-full text-left px-3 py-1 text-xs hover:bg-blue-50 text-gray-700 hover:text-blue-700 transition-colors"
+                      onClick={() => { onSwapToVan?.(arrFlight.id, z.vanId); setVanMenuOpen(false); }}
+                    >
+                      V{z.vanId} {z.name}
+                    </button>
+                  ))}
+                  {onAlsoOnVan && (
+                    <>
+                      <div className="border-t border-gray-100 my-1" />
+                      <div className="px-3 py-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Also show on</div>
+                      {FIXED_VAN_ZONES.filter((z) => z.vanId !== zone.vanId && !(multiVisitVans ?? []).includes(z.vanId)).map((z) => (
+                        <button
+                          key={`also-${z.vanId}`}
+                          className="w-full text-left px-3 py-1 text-xs hover:bg-indigo-50 text-gray-700 hover:text-indigo-700 transition-colors"
+                          onClick={() => { onAlsoOnVan(arrFlight.tail_number ?? "", z.vanId); setVanMenuOpen(false); }}
+                        >
+                          V{z.vanId} {z.name}
+                        </button>
+                      ))}
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
           <button
             onClick={(e) => { e.stopPropagation(); onRemove(arrFlight.id); }}
             className="p-1 rounded-md text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors"
@@ -1588,22 +1897,38 @@ function AircraftCompactRow({
                     : cat === "positioning" ? "border-purple-300"
                     : cat === "maintenance" ? "border-orange-300"
                     : "border-gray-200";
-                  const isPrimary = arrIcao === airport;
+                  const isDepPrimary = dep === airport;
+                  const isArrPrimary = arrIcao === airport;
+                  const isPrimary = isDepPrimary || isArrPrimary;
                   return (
                     <div
                       key={f.id}
                       className={`flex items-center gap-2 text-xs pl-3 border-l-2 ${borderColor} ${
                         isRevenue ? "py-1 bg-green-50/60 rounded-r font-medium text-gray-700" : "py-px text-gray-400"
-                      } ${onSetPrimaryAirport && !isPrimary ? "cursor-pointer hover:bg-blue-50/50" : ""}`}
-                      onClick={(e) => {
-                        if (!onSetPrimaryAirport || isPrimary) return;
-                        e.stopPropagation();
-                        onSetPrimaryAirport(arrFlight.tail_number ?? "", arrIcao);
-                      }}
-                      title={isPrimary ? "Current service airport" : "Click to set as service airport"}
+                      }`}
                     >
                       {isPrimary && <span className="text-blue-500">📍</span>}
-                      <span className={`font-mono ${isRevenue ? "text-gray-700" : "text-gray-500"}`}>{dep} → {arrIcao}</span>
+                      <span className="font-mono">
+                        <span
+                          className={`${isRevenue ? "text-gray-700" : "text-gray-500"} ${onSetPrimaryAirport && !isDepPrimary ? "cursor-pointer hover:text-blue-600 hover:underline" : ""}`}
+                          onClick={(e) => {
+                            if (!onSetPrimaryAirport || isDepPrimary) return;
+                            e.stopPropagation();
+                            onSetPrimaryAirport(arrFlight.tail_number ?? "", dep);
+                          }}
+                          title={isDepPrimary ? "Current service airport" : `Service at ${dep} (pre-departure)`}
+                        >{dep}</span>
+                        <span className={isRevenue ? "text-gray-700" : "text-gray-500"}> → </span>
+                        <span
+                          className={`${isRevenue ? "text-gray-700" : "text-gray-500"} ${onSetPrimaryAirport && !isArrPrimary ? "cursor-pointer hover:text-blue-600 hover:underline" : ""}`}
+                          onClick={(e) => {
+                            if (!onSetPrimaryAirport || isArrPrimary) return;
+                            e.stopPropagation();
+                            onSetPrimaryAirport(arrFlight.tail_number ?? "", arrIcao);
+                          }}
+                          title={isArrPrimary ? "Current service airport" : `Service at ${arrIcao} (post-arrival)`}
+                        >{arrIcao}</span>
+                      </span>
                       <span>{fmtUtcHM(f.scheduled_departure, f.departure_icao)}{f.scheduled_arrival ? ` – ${fmtUtcHM(f.scheduled_arrival, f.arrival_icao)}` : ""}</span>
                       {ft && (
                         <span className={`rounded px-1 py-0.5 text-[10px] font-medium ${
@@ -1663,12 +1988,21 @@ function VanScheduleCard({
   onVanOverride,
   onSaveNote,
   onDragStart,
+  onDragOverItem,
   onDragOver,
   onDrop,
   onDragLeave,
   onRemove,
   onSetPrimaryAirport,
+  onPublishVan,
+  onAddToVan,
+  onSwapToVan,
+  onAlsoOnVan,
   fboMap,
+  tailToVans,
+  vanDiff,
+  showComparison,
+  publishedItems,
 }: {
   zone: (typeof FIXED_VAN_ZONES)[number];
   color: string;
@@ -1684,20 +2018,30 @@ function VanScheduleCard({
   legNotes: Map<string, string>;
   mxNotesByTail: Map<string, MxNote[]>;
   hiddenTodayMxIds: Set<string>;
-  onHideMxForToday: (id: string) => void;
+  onHideMxForToday: (note: MxNote) => void;
   mxVanOverrides?: Map<string, number>;
   onVanOverride?: (noteId: string, vanId: number | null) => void;
   onSaveNote: (flightId: string, tailNumber: string | null, note: string) => void;
   onDragStart: (e: React.DragEvent, flightId: string, fromVanId: number) => void;
+  onDragOverItem: (vanId: number, flightId: string, insertBefore: boolean) => void;
   onDragOver: (e: React.DragEvent) => void;
   onDrop: (e: React.DragEvent, toVanId: number) => void;
   onDragLeave: (e: React.DragEvent) => void;
   onRemove: (flightId: string) => void;  // delete aircraft from this van
   onSetPrimaryAirport?: (tail: string, airport: string) => void;
+  onPublishVan?: (vanId: number) => Promise<void>;
+  onAddToVan?: (flightId: string, vanId: number) => void;
+  onSwapToVan?: (flightId: string, toVanId: number) => void;
+  onAlsoOnVan?: (tail: string, toVanId: number) => void;
   fboMap?: Record<string, string>;
+  tailToVans?: Map<string, number[]>;
+  vanDiff?: { added: number; removed: number; orderChanged: boolean; mxChanged: boolean } | null;
+  showComparison?: boolean;
+  publishedItems?: { flightId: string; tail: string; airport: string }[];
 }) {
   const [expanded, setExpanded] = useState(false);
   const [showSlackModal, setShowSlackModal] = useState(false);
+  const [publishingVan, setPublishingVan] = useState(false);
   const [showLocation, setShowLocation] = useState(false);
   const dragTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const now = new Date();
@@ -1787,6 +2131,16 @@ function VanScheduleCard({
               <svg className="w-3.5 h-3.5 inline -mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
             </button>
           )}
+          {onPublishVan && (
+            <button
+              onClick={async (e) => { e.stopPropagation(); setPublishingVan(true); await onPublishVan(zone.vanId); setPublishingVan(false); }}
+              disabled={publishingVan}
+              className="text-xs text-blue-600 hover:text-blue-800 hover:bg-blue-50 border border-gray-200 hover:border-blue-300 rounded-lg px-2 py-1 transition-colors font-medium disabled:opacity-50"
+              title="Update this van's driver page"
+            >
+              {publishingVan ? "Updating..." : "Update Schedule"}
+            </button>
+          )}
           <button
             onClick={(e) => { e.stopPropagation(); setShowSlackModal(true); }}
             className="text-xs text-gray-500 hover:text-purple-700 hover:bg-purple-50 border border-gray-200 hover:border-purple-300 rounded-lg px-2 py-1 transition-colors font-medium"
@@ -1794,11 +2148,18 @@ function VanScheduleCard({
           >
             Share to Slack
           </button>
-          {hasOverrides && (
+          {vanDiff ? (
+            <span className={`text-xs rounded-full px-2 py-0.5 font-medium ${(vanDiff.added + vanDiff.removed) > 3 ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"}`}>
+              {vanDiff.added > 0 && `+${vanDiff.added}`}{vanDiff.added > 0 && vanDiff.removed > 0 && " / "}{vanDiff.removed > 0 && `−${vanDiff.removed}`}
+              {vanDiff.added === 0 && vanDiff.removed === 0 && vanDiff.orderChanged && "Reordered"}
+              {vanDiff.added === 0 && vanDiff.removed === 0 && !vanDiff.orderChanged && vanDiff.mxChanged && "MX updated"}
+              {" from published"}
+            </span>
+          ) : hasOverrides ? (
             <span className="text-xs rounded-full px-2 py-0.5 font-medium bg-amber-100 text-amber-700">
               Edited
             </span>
-          )}
+          ) : null}
           {items.length > 0 && (
             <span className={`text-xs rounded-full px-2 py-0.5 font-medium ${overLimit ? "bg-red-100 text-red-700" : "bg-slate-100 text-slate-600"}`}>
               {fmtDriveTime(totalDistKm)}{overLimit ? " ⚠" : ""}
@@ -1808,8 +2169,80 @@ function VanScheduleCard({
         </div>
       </div>
 
+      {/* Side-by-side comparison: Published vs Current — visible without expanding */}
+      {showComparison && publishedItems && (
+        (() => {
+          const pubSet = new Set(publishedItems.map((p) => p.flightId));
+          const curSet = new Set(items.map((i) => i.arrFlight.id));
+          const hasChanges = publishedItems.length !== items.length ||
+            publishedItems.some((p) => !curSet.has(p.flightId)) ||
+            items.some((i) => !pubSet.has(i.arrFlight.id));
+          // Check order change (same set, different sequence)
+          const orderChanged = !hasChanges && publishedItems.length > 0 &&
+            publishedItems.map((p) => p.flightId).join(",") !== items.map((i) => i.arrFlight.id).join(",");
+          return (
+            <div className="border-t bg-slate-50">
+              <div className="grid grid-cols-2 divide-x divide-slate-200">
+                {/* Published column */}
+                <div className="px-3 py-2">
+                  <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Published</div>
+                  {publishedItems.length === 0 ? (
+                    <div className="text-xs text-slate-400 italic">Empty</div>
+                  ) : publishedItems.map((p, idx) => {
+                    const inCurrent = curSet.has(p.flightId);
+                    return (
+                      <div key={p.flightId} className={`flex items-center gap-2 py-0.5 text-xs ${!inCurrent ? "text-red-600 line-through" : "text-slate-600"}`}>
+                        <span className="text-[10px] text-slate-300 w-3 text-right">{idx + 1}</span>
+                        <span className="font-medium font-mono">{p.tail}</span>
+                        <span className="text-slate-400">@</span>
+                        <span className="font-mono">{p.airport}</span>
+                        {!inCurrent && <span className="text-[9px] bg-red-100 text-red-600 rounded px-1">removed</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+                {/* Current column */}
+                <div className="px-3 py-2">
+                  <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Current</div>
+                  {items.length === 0 ? (
+                    <div className="text-xs text-slate-400 italic">Empty</div>
+                  ) : items.map((item, idx) => {
+                    const inPublished = pubSet.has(item.arrFlight.id);
+                    return (
+                      <div key={item.arrFlight.id} className={`flex items-center gap-2 py-0.5 text-xs ${!inPublished ? "text-green-700 font-semibold" : "text-slate-600"}`}>
+                        <span className="text-[10px] text-slate-300 w-3 text-right">{idx + 1}</span>
+                        <span className="font-medium font-mono">{item.arrFlight.tail_number ?? "???"}</span>
+                        <span className="text-slate-400">@</span>
+                        <span className="font-mono">{item.airport}</span>
+                        {!inPublished && <span className="text-[9px] bg-green-100 text-green-700 rounded px-1">new</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+              {!hasChanges && !orderChanged && (
+                <div className="text-[10px] text-center text-slate-400 pb-1.5">No changes from published</div>
+              )}
+              {orderChanged && (
+                <div className="text-[10px] text-center text-amber-500 pb-1.5">Order changed from published</div>
+              )}
+            </div>
+          );
+        })()
+      )}
+
       {expanded && (
         <div className="border-t">
+          {allFlights && (
+            <MiddayOpportunities
+              zone={zone}
+              allFlights={allFlights}
+              date={date}
+              overnightTails={new Set(items.map((it) => it.arrFlight.tail_number).filter(Boolean) as string[])}
+              mxNotesByTail={mxNotesByTail}
+              onAddToVan={onAddToVan}
+            />
+          )}
           {items.length === 0 ? (
             <div className={`px-4 py-6 text-sm text-center ${isDropTarget ? "text-blue-500 font-medium" : "text-gray-400"}`}>
               {isDropTarget ? "Drop aircraft here" : "No arrivals in area today."}
@@ -1817,9 +2250,12 @@ function VanScheduleCard({
           ) : (
             <div className="divide-y">
               {items.map(({ arrFlight, nextDep, isRepo, nextIsRepo, airport, airportInfo, distKm }) => {
-                const fi = flightInfoMap.get(arrFlight.tail_number ?? "");
+                // Only use FA live data when viewing today — tomorrow's flights aren't flying yet
+                const todayEt = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+                const isViewingToday = date === todayEt;
+                const fi = isViewingToday ? flightInfoMap.get(arrFlight.tail_number ?? "") : undefined;
                 const arrTime = arrFlight.scheduled_arrival ? new Date(arrFlight.scheduled_arrival) : null;
-                const hasLanded = arrTime !== null && arrTime < now;
+                const hasLanded = isViewingToday && arrTime !== null && arrTime < now;
                 const faEtaMs = fi?.arrival_time ? new Date(fi.arrival_time).getTime() : null;
                 const schedMs = arrTime ? arrTime.getTime() : null;
                 const delayMs = (faEtaMs != null && schedMs != null) ? faEtaMs - schedMs : 0;
@@ -1829,8 +2265,27 @@ function VanScheduleCard({
                 const groundMs = nextDep && arrTime
                   ? new Date(nextDep.scheduled_departure).getTime() - arrTime.getTime()
                   : Infinity;
-                const doneForDay = !nextDep || groundMs >= 6 * 3600000;
-                const isQuickturn = !!nextDep && groundMs < 2 * 3600000;
+                const isOvernight = arrTime ? !isOnEtDate(arrFlight.scheduled_arrival!, date) : false;
+                // Detect pre-departure: service airport is a departure airport, not an arrival
+                const arrIcaoNorm = arrFlight.arrival_icao?.replace(/^K/, "") ?? "";
+                const isPreDeparture = airport !== arrIcaoNorm && allFlights?.some((f) =>
+                  f.tail_number === arrFlight.tail_number &&
+                  f.departure_icao?.replace(/^K/, "") === airport &&
+                  (isOnEtDate(f.scheduled_departure, date) || isOnEtDate(f.scheduled_arrival, date))
+                );
+                let turnBadgeLabel: string;
+                if (isPreDeparture) {
+                  // Find the departing flight from this airport to show its departure time
+                  const depFlight = allFlights?.filter((f) =>
+                    f.tail_number === arrFlight.tail_number &&
+                    f.departure_icao?.replace(/^K/, "") === airport &&
+                    (isOnEtDate(f.scheduled_departure, date) || isOnEtDate(f.scheduled_arrival, date))
+                  ).sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure))[0];
+                  const depTime = depFlight ? fmtUtcHM(depFlight.scheduled_departure, depFlight.departure_icao) : "?";
+                  turnBadgeLabel = `Pre-Departure - Departing at ${depTime}`;
+                } else {
+                  turnBadgeLabel = computeTurnLabel(nextDep, groundMs, { isOvernight, viewDate: date });
+                }
                 const extraLegs = (allFlights && arrFlight.tail_number)
                   ? allFlights.filter((f) => {
                       if (f.tail_number !== arrFlight.tail_number) return false;
@@ -1861,8 +2316,7 @@ function VanScheduleCard({
                     delayMin={delayMin}
                     isEnRoute={isEnRoute}
                     faLanded={faLanded}
-                    doneForDay={doneForDay}
-                    isQuickturn={isQuickturn}
+                    turnBadgeLabel={turnBadgeLabel}
                     hasMaintenance={hasMaintenance}
                     extraLegs={extraLegs}
                     color={color}
@@ -1876,8 +2330,12 @@ function VanScheduleCard({
                     legNote={legNotes.get(arrFlight.id) ?? ""}
                     onSaveNote={onSaveNote}
                     onDragStart={onDragStart}
+                    onDragOverItem={onDragOverItem}
                     onRemove={onRemove}
                     onSetPrimaryAirport={onSetPrimaryAirport}
+                    multiVisitVans={tailToVans?.get(arrFlight.tail_number ?? "")}
+                    onSwapToVan={onSwapToVan}
+                    onAlsoOnVan={onAlsoOnVan}
                   />
                 );
               })}
@@ -1913,6 +2371,12 @@ function ScheduleTab({
   mxVanOverrides,
   onVanOverride,
   fboMap,
+  wontSeeTodayTails,
+  onMarkWontSee,
+  onRestoreWontSee,
+  onSyncDraftUiState,
+  dismissedConflictsRef: parentDismissedConflictsRef,
+  dismissedConflictVersion,
 }: {
   allFlights: Flight[];
   date: string;
@@ -1923,10 +2387,16 @@ function ScheduleTab({
   mxNotesByTail: Map<string, MxNote[]>;
   longTermMxTails: Set<string>;
   hiddenTodayMxIds: Set<string>;
-  onHideMxForToday: (id: string) => void;
+  onHideMxForToday: (note: MxNote) => void;
   mxVanOverrides?: Map<string, number>;
   onVanOverride?: (noteId: string, vanId: number | null) => void;
   fboMap?: Record<string, string>;
+  wontSeeTodayTails: Set<string>;
+  onMarkWontSee: (tail: string) => void;
+  onRestoreWontSee: (tail: string) => void;
+  onSyncDraftUiState?: (data: { wont_see_tails?: string[]; dismissed_conflicts?: Record<string, string>; hidden_mx_ids?: string[] }) => void;
+  dismissedConflictsRef?: React.MutableRefObject<Record<string, string>>;
+  dismissedConflictVersion?: number;
 }) {
   const hasLive = liveVanPositions.size > 0;
 
@@ -1958,6 +2428,7 @@ function ScheduleTab({
 
   const [unassignedOpen, setUnassignedOpen] = useState(false);
   const [unscheduledOpen, setUnscheduledOpen] = useState(false);
+  const [wontSeeOpen, setWontSeeOpen] = useState(false);
   const unassignedDragTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const unscheduledDragTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -1975,14 +2446,26 @@ function ScheduleTab({
     } catch { return new Map(); }
   });
 
+  const [sortOverrides, setSortOverrides] = useState<Map<number, string[]>>(new Map());
+
   // Track the last DB updated_at to avoid overwriting fresher data
   const draftUpdatedAtRef = useRef<string | null>(null);
-  // Suppress DB save while loading from DB
-  const suppressSaveRef = useRef(false);
+  // Suppress DB save while loading from DB — start suppressed until initial load completes
+  const suppressSaveRef = useRef(true);
+
+  // DB-backed UI state refs — synced from parent props for inclusion in draft saves
+  const wontSeeTailsRef = useRef<string[]>([]);
+  const hiddenMxIdsRef = useRef<string[]>([]);
+  useEffect(() => { wontSeeTailsRef.current = [...wontSeeTodayTails]; }, [wontSeeTodayTails]);
+  useEffect(() => { hiddenMxIdsRef.current = [...hiddenTodayMxIds]; }, [hiddenTodayMxIds]);
+
+  // Ref to loadDraftsFromDb so saveDraftToDb can call it on conflict without
+  // circular declaration ordering issues (loadDraftsFromDb is defined after saveDraftToDb).
+  const loadDraftsFromDbRef = useRef<((d: string) => Promise<void>) | null>(null);
 
   // Save drafts to DB (debounced) + localStorage fallback
   const saveDraftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const saveDraftToDb = useCallback((o: Map<string, number>, r: Set<string>, u: Map<string, number>) => {
+  const saveDraftToDb = useCallback((o: Map<string, number>, r: Set<string>, u: Map<string, number>, a: Map<string, string>, s: Map<number, string[]>) => {
     // localStorage fallback (immediate)
     try {
       if (o.size > 0) localStorage.setItem(`vanOverrides-${date}`, JSON.stringify([...o]));
@@ -1991,16 +2474,15 @@ function ScheduleTab({
       else localStorage.removeItem(`vanRemovals-${date}`);
       if (u.size > 0) localStorage.setItem(`vanUnscheduled-${date}`, JSON.stringify([...u]));
       else localStorage.removeItem(`vanUnscheduled-${date}`);
-      // Airport overrides (localStorage only — no DB migration needed)
-      if (airportOverrides.size > 0) localStorage.setItem(`vanAirportOverrides-${date}`, JSON.stringify([...airportOverrides]));
+      if (a.size > 0) localStorage.setItem(`vanAirportOverrides-${date}`, JSON.stringify([...a]));
       else localStorage.removeItem(`vanAirportOverrides-${date}`);
     } catch {}
     // DB save (debounced 500ms)
     if (suppressSaveRef.current) return;
     if (saveDraftTimer.current) clearTimeout(saveDraftTimer.current);
     saveDraftTimer.current = setTimeout(() => {
-      const now = new Date().toISOString();
-      draftUpdatedAtRef.current = now;
+      // Suppress polling while save is in-flight so it doesn't revert our changes
+      suppressSaveRef.current = true;
       fetch("/api/vans/drafts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2009,15 +2491,38 @@ function ScheduleTab({
           overrides: [...o],
           removals: [...r],
           unscheduled: [...u],
+          wont_see_tails: wontSeeTailsRef.current,
+          dismissed_conflicts: parentDismissedConflictsRef?.current ?? {},
+          hidden_mx_ids: hiddenMxIdsRef.current,
+          airport_overrides: [...a],
+          sort_overrides: [...s],
+          expected_updated_at: draftUpdatedAtRef.current,
         }),
-      }).catch(() => {});
+      }).then(async (res) => {
+        if (res.ok) {
+          const d = await res.json().catch(() => null);
+          if (d?.updated_at) draftUpdatedAtRef.current = d.updated_at;
+        } else if (res.status === 409) {
+          // Conflict — another dispatcher saved. Reload their changes.
+          loadDraftsFromDbRef.current?.(date);
+        }
+      }).catch(() => {}).finally(() => {
+        suppressSaveRef.current = false;
+      });
     }, 500);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [date]);
 
-  // Auto-save on every change
+  // Suppress auto-save during date transitions — runs synchronously before
+  // useEffect so the auto-save can't write stale overrides to the new date.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useLayoutEffect(() => { suppressSaveRef.current = true; }, [date]);
+
+  // Auto-save on every change (including parent UI-state props)
   useEffect(() => {
-    saveDraftToDb(overrides, removals, unscheduledOverrides);
-  }, [overrides, removals, unscheduledOverrides, saveDraftToDb]);
+    saveDraftToDb(overrides, removals, unscheduledOverrides, airportOverrides, sortOverrides);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [overrides, removals, unscheduledOverrides, airportOverrides, sortOverrides, wontSeeTodayTails, hiddenTodayMxIds, dismissedConflictVersion, saveDraftToDb]);
 
   // Load drafts from DB on mount/date change, fall back to localStorage
   const loadDraftsFromDb = useCallback(async (targetDate: string) => {
@@ -2031,6 +2536,14 @@ function ScheduleTab({
           setOverrides(new Map(d.overrides ?? []));
           setRemovals(new Set(d.removals ?? []));
           setUnscheduledOverrides(new Map(d.unscheduled ?? []));
+          setAirportOverrides(new Map(d.airport_overrides ?? []));
+          setSortOverrides(new Map(d.sort_overrides ?? []));
+          // Sync DB-backed UI state to parent
+          onSyncDraftUiState?.({
+            wont_see_tails: d.wont_see_tails ?? [],
+            dismissed_conflicts: d.dismissed_conflicts ?? {},
+            hidden_mx_ids: d.hidden_mx_ids ?? [],
+          });
           suppressSaveRef.current = false;
           return;
         }
@@ -2055,10 +2568,15 @@ function ScheduleTab({
     } catch { setAirportOverrides(new Map()); }
     suppressSaveRef.current = false;
   }, []);
+  loadDraftsFromDbRef.current = loadDraftsFromDb;
 
   // Poll DB every 15s for other admins' changes
   useEffect(() => {
     const poll = setInterval(async () => {
+      // Don't poll while a save is in-flight — would revert to stale data
+      if (suppressSaveRef.current) return;
+      // Don't poll while the debounce timer is pending — local changes haven't been saved yet
+      if (saveDraftTimer.current) return;
       try {
         const res = await fetch(`/api/vans/drafts?date=${date}`);
         if (!res.ok) return;
@@ -2070,6 +2588,14 @@ function ScheduleTab({
           setOverrides(new Map(d.overrides ?? []));
           setRemovals(new Set(d.removals ?? []));
           setUnscheduledOverrides(new Map(d.unscheduled ?? []));
+          setAirportOverrides(new Map(d.airport_overrides ?? []));
+          setSortOverrides(new Map(d.sort_overrides ?? []));
+          // Sync DB-backed UI state from other admins
+          onSyncDraftUiState?.({
+            wont_see_tails: d.wont_see_tails ?? [],
+            dismissed_conflicts: d.dismissed_conflicts ?? {},
+            hidden_mx_ids: d.hidden_mx_ids ?? [],
+          });
           setTimeout(() => { suppressSaveRef.current = false; }, 100);
         }
       } catch {}
@@ -2091,7 +2617,7 @@ function ScheduleTab({
   const [legNotes, setLegNotes] = useState<Map<string, string>>(new Map());
 
   // Published assignments used to restore overrides
-  const [publishedAssignments, setPublishedAssignments] = useState<{ vanId: number; flightIds: string[] }[]>([]);
+  const [publishedAssignments, setPublishedAssignments] = useState<{ vanId: number; flightIds: string[]; syntheticFlights?: { id: string; tail: string; airport: string | null }[] }[]>([]);
 
   // Check existing publish status + load notes + restore overrides on mount / date change
   useEffect(() => {
@@ -2139,6 +2665,55 @@ function ScheduleTab({
 
   const [dropTargetVan, setDropTargetVan] = useState<number | null>(null);
   const dragCounterRef = useRef(0);
+
+  // Auto-scroll when dragging near the top/bottom edge of the viewport
+  useEffect(() => {
+    const EDGE_ZONE = 120; // px from top/bottom edge to start scrolling
+    const MAX_SPEED = 18; // max px per animation frame
+    let animFrame: number | null = null;
+    let curY = 0;
+    let isDragging = false;
+
+    function scroll() {
+      const { innerHeight } = window;
+      const distFromTop = curY;
+      const distFromBottom = innerHeight - curY;
+      let speed = 0;
+      if (distFromTop < EDGE_ZONE) {
+        speed = -Math.round(MAX_SPEED * (1 - distFromTop / EDGE_ZONE));
+      } else if (distFromBottom < EDGE_ZONE) {
+        speed = Math.round(MAX_SPEED * (1 - distFromBottom / EDGE_ZONE));
+      }
+      if (speed !== 0 && isDragging) {
+        window.scrollBy(0, speed);
+        animFrame = requestAnimationFrame(scroll);
+      } else {
+        animFrame = null;
+      }
+    }
+
+    function onDragOver(e: DragEvent) {
+      curY = e.clientY;
+      if (animFrame === null) animFrame = requestAnimationFrame(scroll);
+    }
+    function onDragStart() { isDragging = true; }
+    function onDragEnd() {
+      isDragging = false;
+      if (animFrame !== null) { cancelAnimationFrame(animFrame); animFrame = null; }
+    }
+
+    document.addEventListener("dragstart", onDragStart);
+    document.addEventListener("dragover", onDragOver);
+    document.addEventListener("dragend", onDragEnd);
+    document.addEventListener("drop", onDragEnd);
+    return () => {
+      document.removeEventListener("dragstart", onDragStart);
+      document.removeEventListener("dragover", onDragOver);
+      document.removeEventListener("dragend", onDragEnd);
+      document.removeEventListener("drop", onDragEnd);
+      if (animFrame !== null) cancelAnimationFrame(animFrame);
+    };
+  }, []);
 
   // Compute base items for every zone, then deduplicate across zones
   // so each aircraft only appears in the closest van's card.
@@ -2228,7 +2803,7 @@ function ScheduleTab({
 
     // Move overridden flights
     for (const [flightId, targetVanId] of overrides) {
-      if (removals.has(flightId)) continue; // removed trumps move
+      if (removals.has(flightId)) { continue; }
 
       // Check if this flight is already in a van (from base items)
       let found = false;
@@ -2248,9 +2823,32 @@ function ScheduleTab({
         }
       }
 
-      // Flight came from uncovered pool — find it in allDayArrivals
+      // Flight came from uncovered pool or midday opportunity — build item if needed
       if (!found) {
-        const item = allDayArrivals.find((a) => a.arrFlight.id === flightId);
+        let item = allDayArrivals.find((a) => a.arrFlight.id === flightId);
+        // Midday transient flights aren't in allDayArrivals — build a VanFlightItem from raw flight data
+        if (!item) {
+          const flight = allFlights.find((f) => f.id === flightId);
+          if (flight && flight.arrival_icao) {
+            const iata = flight.arrival_icao.replace(/^K/, "");
+            const info = getAirportInfo(iata);
+            const baseLat = liveVanPositions.get(targetVanId)?.lat ?? FIXED_VAN_ZONES.find((z) => z.vanId === targetVanId)!.lat;
+            const baseLon = liveVanPositions.get(targetVanId)?.lon ?? FIXED_VAN_ZONES.find((z) => z.vanId === targetVanId)!.lon;
+            const distKm = info ? Math.round(haversineKm(baseLat, baseLon, info.lat, info.lon)) : 0;
+            const nextDep = allFlights
+              .filter((f) => f.tail_number === flight.tail_number && f.departure_icao === flight.arrival_icao && f.scheduled_departure > (flight.scheduled_arrival ?? ""))
+              .sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure))[0] ?? null;
+            item = {
+              arrFlight: flight,
+              nextDep,
+              isRepo: isPositioningFlight(flight),
+              nextIsRepo: nextDep ? isPositioningFlight(nextDep) : false,
+              airport: iata,
+              airportInfo: info,
+              distKm,
+            };
+          }
+        }
         if (item) {
           const target = result.get(targetVanId) ?? [];
           target.push(item);
@@ -2284,6 +2882,7 @@ function ScheduleTab({
         sic: null,
         pax_count: null,
         jetinsight_url: null,
+        fa_flight_id: null,
         alerts: [],
       };
       const item: VanFlightItem = {
@@ -2350,29 +2949,126 @@ function ScheduleTab({
       }
     }
 
-    // Recalculate distances + greedy sort for each van, then re-sort by FA ETA
+    // Detect tails intentionally placed on multiple vans via explicit user overrides
+    const intentionalDualTails = new Set<string>();
+    const tailExplicitVans = new Map<string, Set<number>>();
+    for (const [flightId, targetVanId] of overrides) {
+      for (const items of result.values()) {
+        const item = items.find((i) => i.arrFlight.id === flightId);
+        if (item?.arrFlight.tail_number) {
+          const s = tailExplicitVans.get(item.arrFlight.tail_number) ?? new Set();
+          s.add(targetVanId);
+          tailExplicitVans.set(item.arrFlight.tail_number, s);
+        }
+      }
+    }
+    // Tails also on a van via unscheduledOverrides count as explicit
+    for (const [tail, vanId] of unscheduledOverrides) {
+      const s = tailExplicitVans.get(tail) ?? new Set();
+      s.add(vanId);
+      tailExplicitVans.set(tail, s);
+    }
+    for (const [tail, vans] of tailExplicitVans) {
+      if (vans.size > 1) intentionalDualTails.add(tail);
+    }
+
+    // Tail-level dedup: if the same tail ended up in multiple vans (e.g. MX
+    // override duplicated it, or base recomputation shifted zone ownership),
+    // keep only the explicitly overridden placement, else the closest van.
+    // Skip tails that the user intentionally placed on multiple vans.
+    const tailVanWinner = new Map<string, number>(); // tail → winning vanId
+    for (const [vanId, items] of result) {
+      for (const item of items) {
+        const tail = item.arrFlight.tail_number;
+        if (!tail) continue;
+        if (intentionalDualTails.has(tail)) continue;
+        const existing = tailVanWinner.get(tail);
+        if (existing === undefined) {
+          tailVanWinner.set(tail, vanId);
+        } else {
+          // Prefer the van with an explicit override for this flight
+          const thisHasOverride = overrides.get(item.arrFlight.id) === vanId;
+          const existingItem = result.get(existing)?.find((i) => i.arrFlight.tail_number === tail);
+          const existingHasOverride = existingItem ? overrides.get(existingItem.arrFlight.id) === existing : false;
+          if (thisHasOverride && !existingHasOverride) {
+            tailVanWinner.set(tail, vanId);
+          } else if (!thisHasOverride && existingHasOverride) {
+            // keep existing
+          } else if (item.distKm < (existingItem?.distKm ?? Infinity)) {
+            tailVanWinner.set(tail, vanId);
+          }
+        }
+      }
+    }
+    // Remove losers (but keep intentional dual-van tails)
+    for (const [vanId, items] of result) {
+      result.set(vanId, items.filter((item) => {
+        const tail = item.arrFlight.tail_number;
+        if (!tail) return true;
+        if (intentionalDualTails.has(tail)) return true;
+        return tailVanWinner.get(tail) === vanId;
+      }));
+    }
+
+    // Recalculate distances + apply sort overrides or default arrival-time sort
     for (const zone of FIXED_VAN_ZONES) {
       const items = result.get(zone.vanId) ?? [];
       const baseLat = liveVanPositions.get(zone.vanId)?.lat ?? zone.lat;
       const baseLon = liveVanPositions.get(zone.vanId)?.lon ?? zone.lon;
       const withDist = recalcDist(items, baseLat, baseLon);
-      // Sort by scheduled arrival time (earliest first)
-      const sorted = withDist.sort((a, b) =>
-        (a.arrFlight.scheduled_arrival ?? "").localeCompare(b.arrFlight.scheduled_arrival ?? ""),
-      );
-      result.set(zone.vanId, sorted);
+      const customOrder = sortOverrides.get(zone.vanId);
+      if (customOrder && customOrder.length > 0) {
+        // Apply manual sort: items in customOrder first (in that order), then remaining by arrival time
+        const orderIndex = new Map(customOrder.map((id, i) => [id, i]));
+        withDist.sort((a, b) => {
+          const ai = orderIndex.get(a.arrFlight.id);
+          const bi = orderIndex.get(b.arrFlight.id);
+          if (ai !== undefined && bi !== undefined) return ai - bi;
+          if (ai !== undefined) return -1;
+          if (bi !== undefined) return 1;
+          return (a.arrFlight.scheduled_arrival ?? "").localeCompare(b.arrFlight.scheduled_arrival ?? "");
+        });
+      } else {
+        withDist.sort((a, b) =>
+          (a.arrFlight.scheduled_arrival ?? "").localeCompare(b.arrFlight.scheduled_arrival ?? ""),
+        );
+      }
+      result.set(zone.vanId, withDist);
     }
 
     return result;
-  }, [baseItemsByVan, overrides, removals, liveVanPositions, allDayArrivals, flightInfoMap, unscheduledOverrides, allFlights, date, airportOverrides]);
+  }, [baseItemsByVan, overrides, removals, liveVanPositions, allDayArrivals, flightInfoMap, unscheduledOverrides, allFlights, date, airportOverrides, sortOverrides]);
+
+  // Build tail → vanIds map for multi-visit detection
+  const tailToVans = useMemo(() => {
+    const map = new Map<string, number[]>();
+    for (const [vanId, items] of finalItemsByVan) {
+      for (const item of items) {
+        const tail = item.arrFlight.tail_number;
+        if (!tail) continue;
+        const arr = map.get(tail) ?? [];
+        if (!arr.includes(vanId)) arr.push(vanId);
+        map.set(tail, arr);
+      }
+    }
+    return map;
+  }, [finalItemsByVan]);
 
   // Uncovered aircraft: arrivals today not assigned to any van
+  // If ANY leg for a tail is assigned, exclude ALL legs for that tail
   const uncoveredItems = useMemo(() => {
     const assignedIds = new Set<string>();
+    const assignedTails = new Set<string>();
     for (const items of finalItemsByVan.values()) {
-      for (const item of items) assignedIds.add(item.arrFlight.id);
+      for (const item of items) {
+        assignedIds.add(item.arrFlight.id);
+        if (item.arrFlight.tail_number) assignedTails.add(item.arrFlight.tail_number);
+      }
     }
-    return allDayArrivals.filter((item) => !assignedIds.has(item.arrFlight.id));
+    return allDayArrivals.filter((item) => {
+      if (item.arrFlight.tail_number && assignedTails.has(item.arrFlight.tail_number)) return false;
+      return !assignedIds.has(item.arrFlight.id);
+    });
   }, [allDayArrivals, finalItemsByVan]);
 
   // Unscheduled aircraft: fleet tails with NO flights on this date
@@ -2440,7 +3136,173 @@ function ScheduleTab({
     return set;
   }, [overrides, baseItemsByVan]);
 
+  // ── Auto-dispatch: pure scoring helper (no state mutation) ──
+  const computeAutoDispatchPlan = useCallback(() => {
+    if (uncoveredItems.length === 0) return [];
+
+    const stopsByTail = new Map<string, VanFlightItem[]>();
+    for (const item of allDayArrivals) {
+      const tail = item.arrFlight.tail_number ?? `_no_tail_${item.arrFlight.id}`;
+      const arr = stopsByTail.get(tail) ?? [];
+      arr.push(item);
+      stopsByTail.set(tail, arr);
+    }
+
+    type ScoredStop = {
+      item: VanFlightItem;
+      score: number;
+      bestVanId: number;
+      bestDist: number;
+    };
+
+    const scoredStops: ScoredStop[] = [];
+
+    for (const item of uncoveredItems) {
+      const { nextDep, arrFlight } = item;
+      const isEOD = !nextDep || !isOnEtDate(nextDep.scheduled_departure, date);
+
+      let groundHours = Infinity;
+      if (nextDep && isOnEtDate(nextDep.scheduled_departure, date)) {
+        const arrMs = new Date(arrFlight.scheduled_arrival ?? "").getTime();
+        const depMs = new Date(nextDep.scheduled_departure).getTime();
+        groundHours = (depMs - arrMs) / 3_600_000;
+      }
+
+      const tail = arrFlight.tail_number ?? `_no_tail_${arrFlight.id}`;
+      const tailStops = stopsByTail.get(tail) ?? [];
+      const eodStop = tailStops
+        .slice()
+        .sort((a, b) => (b.arrFlight.scheduled_arrival ?? "").localeCompare(a.arrFlight.scheduled_arrival ?? ""))
+        .find((s) => {
+          const nd = s.nextDep;
+          return !nd || !isOnEtDate(nd.scheduled_departure, date);
+        });
+
+      let bestVanId = -1;
+      let bestDist = Infinity;
+      const itemInfo = item.airportInfo;
+      if (itemInfo) {
+        for (const z of FIXED_VAN_ZONES) {
+          const vanLat = liveVanPositions.get(z.vanId)?.lat ?? z.lat;
+          const vanLon = liveVanPositions.get(z.vanId)?.lon ?? z.lon;
+          const d = haversineKm(vanLat, vanLon, itemInfo.lat, itemInfo.lon);
+          if (d < bestDist) {
+            bestDist = d;
+            bestVanId = z.vanId;
+          }
+        }
+      }
+
+      if (bestVanId === -1) continue;
+
+      let score: number;
+      if (isEOD) {
+        score = 100;
+      } else if (groundHours >= 2) {
+        if (bestDist > 160) continue;
+        score = 50;
+      } else {
+        const eodInfo = eodStop?.airportInfo;
+        let eodConvenient = false;
+        if (eodInfo) {
+          for (const z of FIXED_VAN_ZONES) {
+            const vanLat = liveVanPositions.get(z.vanId)?.lat ?? z.lat;
+            const vanLon = liveVanPositions.get(z.vanId)?.lon ?? z.lon;
+            if (haversineKm(vanLat, vanLon, eodInfo.lat, eodInfo.lon) <= 160) {
+              eodConvenient = true;
+              break;
+            }
+          }
+        }
+
+        if (bestDist <= 45) {
+          score = 10;
+        } else if (!eodConvenient) {
+          score = 10;
+        } else {
+          continue;
+        }
+      }
+
+      score -= Math.min(bestDist / 100, 5);
+      scoredStops.push({ item, score, bestVanId, bestDist });
+    }
+
+    scoredStops.sort((a, b) => b.score - a.score);
+    return scoredStops;
+  }, [uncoveredItems, allDayArrivals, date, liveVanPositions]);
+
+  // ── Auto-dispatch uncovered aircraft to nearest vans ──
+  const autoDispatchUncovered = useCallback(() => {
+    const plan = computeAutoDispatchPlan();
+    if (plan.length === 0) return;
+    const newOverrides = new Map<string, number>(overrides);
+    for (const { item, bestVanId } of plan) {
+      newOverrides.set(item.arrFlight.id, bestVanId);
+    }
+    setOverrides(newOverrides);
+  }, [computeAutoDispatchPlan, overrides]);
+
+  // ── Restore schedule to match last-published state ──
+  const restoreToPublished = useCallback(() => {
+    if (publishedAssignments.length === 0) return;
+
+    // Build overrides: map each published flight to its published van
+    const newOverrides = new Map<string, number>();
+    const allPublishedFlightIds = new Set<string>();
+    for (const a of publishedAssignments) {
+      for (const fid of a.flightIds) {
+        allPublishedFlightIds.add(fid);
+        // Only add override if the flight's base van differs from published van
+        let baseVanId: number | undefined;
+        for (const [vanId, items] of baseItemsByVan) {
+          if (items.some((item) => item.arrFlight.id === fid)) {
+            baseVanId = vanId;
+            break;
+          }
+        }
+        if (baseVanId !== undefined && baseVanId !== a.vanId) {
+          newOverrides.set(fid, a.vanId);
+        }
+        // Flight from uncovered pool — always needs override to place it
+        if (baseVanId === undefined) {
+          newOverrides.set(fid, a.vanId);
+        }
+      }
+    }
+
+    // Build removals: any flight in baseItemsByVan NOT in any published van
+    const newRemovals = new Set<string>();
+    for (const [, items] of baseItemsByVan) {
+      for (const item of items) {
+        if (!allPublishedFlightIds.has(item.arrFlight.id)) {
+          newRemovals.add(item.arrFlight.id);
+        }
+      }
+    }
+
+    // Build unscheduled overrides from published syntheticFlights
+    const newUnscheduled = new Map<string, number>();
+    for (const a of publishedAssignments) {
+      if (a.syntheticFlights) {
+        for (const sf of a.syntheticFlights) {
+          newUnscheduled.set(sf.tail, a.vanId);
+        }
+      }
+    }
+
+    // Clear airport and sort overrides
+    setAirportOverrides(new Map());
+    setSortOverrides(new Map());
+    setOverrides(newOverrides);
+    setRemovals(newRemovals);
+    setUnscheduledOverrides(newUnscheduled);
+    overridesRestoredRef.current = date;
+  }, [publishedAssignments, baseItemsByVan, date]);
+
   // ── Drag-and-drop handlers ──
+  const dragOverTargetRef = useRef<{ vanId: number; flightId: string; insertBefore: boolean } | null>(null);
+
   const handleDragStart = useCallback((e: React.DragEvent, flightId: string, fromVanId: number) => {
     e.dataTransfer.setData("text/plain", JSON.stringify({ flightId, fromVanId }));
     e.dataTransfer.effectAllowed = "move";
@@ -2451,6 +3313,10 @@ function ScheduleTab({
     e.dataTransfer.dropEffect = "move";
   }, []);
 
+  const handleDragOverItem = useCallback((vanId: number, flightId: string, insertBefore: boolean) => {
+    dragOverTargetRef.current = { vanId, flightId, insertBefore };
+  }, []);
+
   const handleDrop = useCallback((e: React.DragEvent, toVanId: number) => {
     e.preventDefault();
     dragCounterRef.current = 0;
@@ -2458,6 +3324,30 @@ function ScheduleTab({
 
     try {
       const { flightId, fromVanId } = JSON.parse(e.dataTransfer.getData("text/plain"));
+
+      // Same-van drop = reorder within the van
+      if (fromVanId === toVanId && fromVanId > 0) {
+        const target = dragOverTargetRef.current;
+        dragOverTargetRef.current = null;
+        if (!target || target.flightId === flightId) return; // dropped on itself
+        const items = finalItemsByVan.get(toVanId) ?? [];
+        const ids = items.map((i) => i.arrFlight.id);
+        // Remove the dragged item
+        const fromIdx = ids.indexOf(flightId);
+        if (fromIdx === -1) return;
+        ids.splice(fromIdx, 1);
+        // Insert at target position
+        const toIdx = ids.indexOf(target.flightId);
+        if (toIdx === -1) return;
+        ids.splice(target.insertBefore ? toIdx : toIdx + 1, 0, flightId);
+        setSortOverrides((prev) => {
+          const next = new Map(prev);
+          next.set(toVanId, ids);
+          return next;
+        });
+        return;
+      }
+      dragOverTargetRef.current = null;
       if (fromVanId === toVanId) return;
 
       // Handle unscheduled aircraft drops (synthetic IDs start with "unsched_")
@@ -2486,7 +3376,7 @@ function ScheduleTab({
         return next;
       });
     } catch { /* ignore bad data */ }
-  }, []);
+  }, [finalItemsByVan]);
 
   const handleRemove = useCallback((flightId: string) => {
     // Handle unscheduled aircraft removal
@@ -2543,6 +3433,159 @@ function ScheduleTab({
 
   const hasUnpublishedChanges = publishedAt && currentEditsFingerprint !== publishedEditsSnapshot;
 
+  // ── Per-van change detection (for Update Vans) ──
+  type VanDiff = {
+    vanId: number;
+    vanName: string;
+    homeAirport: string;
+    added: { tail: string; airport: string }[];
+    removed: { tail: string; airport: string }[];
+    orderChanged: boolean;
+    mxChanged: boolean;
+    currentFlightIds: string[];
+    newOrder: { tail: string; airport: string }[];
+  };
+
+  const changedVans = useMemo<VanDiff[]>(() => {
+    if (publishedAssignments.length === 0) return [];
+    const diffs: VanDiff[] = [];
+
+    // Build a flight ID → tail+airport lookup from all current items across vans
+    const flightLookup = new Map<string, { tail: string; airport: string }>();
+    for (const [, items] of finalItemsByVan) {
+      for (const item of items) {
+        flightLookup.set(item.arrFlight.id, {
+          tail: item.arrFlight.tail_number ?? "???",
+          airport: item.airport,
+        });
+      }
+    }
+    // Also index from allDayArrivals for removed flights that are no longer in any van
+    for (const [, items] of baseItemsByVan) {
+      for (const item of items) {
+        if (!flightLookup.has(item.arrFlight.id)) {
+          flightLookup.set(item.arrFlight.id, {
+            tail: item.arrFlight.tail_number ?? "???",
+            airport: item.airport,
+          });
+        }
+      }
+    }
+
+    for (const zone of FIXED_VAN_ZONES) {
+      const currentItems = finalItemsByVan.get(zone.vanId) ?? [];
+      const currentIds = currentItems.map((i) => i.arrFlight.id);
+      const pubAssignment = publishedAssignments.find((a) => a.vanId === zone.vanId);
+      const pubIds = pubAssignment?.flightIds ?? [];
+
+      const currentSet = new Set(currentIds);
+      const pubSet = new Set(pubIds);
+
+      const addedIds = currentIds.filter((id) => !pubSet.has(id));
+      const removedIds = pubIds.filter((id) => !currentSet.has(id));
+
+      // Order changed if same set of IDs but different sequence
+      const sameSet = addedIds.length === 0 && removedIds.length === 0;
+      const orderChanged = sameSet && currentIds.join(",") !== pubIds.join(",");
+
+      // Check if MX notes changed for any aircraft in this van
+      const currentMxFingerprint = currentItems
+        .map((i) => {
+          const tail = i.arrFlight.tail_number ?? "";
+          const notes = (mxNotesByTail.get(tail) ?? []).filter((n) => !isMel(n));
+          return notes.map((n) => n.id).sort().join(",");
+        })
+        .join("|");
+      const pubMxKey = `vanMxFingerprint-${date}-${zone.vanId}`;
+      const pubMxFingerprint = typeof window !== "undefined" ? localStorage.getItem(pubMxKey) : null;
+      const mxChanged = pubMxFingerprint != null && currentMxFingerprint !== pubMxFingerprint;
+
+      if (addedIds.length === 0 && removedIds.length === 0 && !orderChanged && !mxChanged) continue;
+
+      diffs.push({
+        vanId: zone.vanId,
+        vanName: zone.name,
+        homeAirport: zone.homeAirport,
+        added: addedIds.map((id) => flightLookup.get(id) ?? { tail: "???", airport: "?" }),
+        removed: removedIds.map((id) => flightLookup.get(id) ?? { tail: "???", airport: "?" }),
+        orderChanged,
+        mxChanged,
+        currentFlightIds: currentIds,
+        newOrder: currentItems.map((i) => ({ tail: i.arrFlight.tail_number ?? "???", airport: i.airport })),
+      });
+    }
+    return diffs;
+  }, [finalItemsByVan, baseItemsByVan, publishedAssignments, mxNotesByTail, date]);
+
+  const changedVanCount = changedVans.length;
+
+  // ── Published comparison toggle + lookup ──
+  const [showPublishedComparison, setShowPublishedComparison] = useState(false);
+
+  const publishedItemsByVan = useMemo(() => {
+    if (publishedAssignments.length === 0) return new Map<number, { flightId: string; tail: string; airport: string }[]>();
+    // Build a flight ID → {tail, airport} lookup from all available sources
+    const flightLookup = new Map<string, { tail: string; airport: string }>();
+    for (const [, items] of finalItemsByVan) {
+      for (const item of items) {
+        flightLookup.set(item.arrFlight.id, { tail: item.arrFlight.tail_number ?? "???", airport: item.airport });
+      }
+    }
+    for (const [, items] of baseItemsByVan) {
+      for (const item of items) {
+        if (!flightLookup.has(item.arrFlight.id)) {
+          flightLookup.set(item.arrFlight.id, { tail: item.arrFlight.tail_number ?? "???", airport: item.airport });
+        }
+      }
+    }
+    for (const item of allDayArrivals) {
+      if (!flightLookup.has(item.arrFlight.id)) {
+        flightLookup.set(item.arrFlight.id, { tail: item.arrFlight.tail_number ?? "???", airport: item.airport });
+      }
+    }
+    // Resolve published flight IDs into displayable items
+    const result = new Map<number, { flightId: string; tail: string; airport: string }[]>();
+    for (const a of publishedAssignments) {
+      const items: { flightId: string; tail: string; airport: string }[] = [];
+      for (const fid of a.flightIds) {
+        const info = flightLookup.get(fid);
+        items.push({ flightId: fid, tail: info?.tail ?? "???", airport: info?.airport ?? "?" });
+      }
+      if (a.syntheticFlights) {
+        for (const sf of a.syntheticFlights) {
+          items.push({ flightId: sf.id, tail: sf.tail, airport: sf.airport ?? "?" });
+        }
+      }
+      result.set(a.vanId, items);
+    }
+    return result;
+  }, [publishedAssignments, finalItemsByVan, baseItemsByVan, allDayArrivals]);
+
+  // ── Morning Send state ──
+  const [morningSentAt, setMorningSentAt] = useState<string | null>(null);
+  const [morningSendStatus, setMorningSendStatus] = useState<"idle" | "sending" | "success" | "error">("idle");
+  const [updateVansStatus, setUpdateVansStatus] = useState<"idle" | "sending" | "success" | "error">("idle");
+  const [showUpdateReview, setShowUpdateReview] = useState(false);
+  const [reviewSelectedVans, setReviewSelectedVans] = useState<Set<number>>(new Set());
+  const [reviewExcludedAdded, setReviewExcludedAdded] = useState<Map<number, Set<number>>>(new Map());
+  const [reviewExcludedRemoved, setReviewExcludedRemoved] = useState<Map<number, Set<number>>>(new Map());
+  const [reviewNotes, setReviewNotes] = useState<Map<number, string>>(new Map());
+
+  // Auto-Dispatch confirmation modal state
+  const [showAutoDispatchReview, setShowAutoDispatchReview] = useState(false);
+  const [autoDispatchPreview, setAutoDispatchPreview] = useState<{ tail: string; airport: string; vanId: number; vanName: string; distKm: number; flightId: string }[]>([]);
+
+  // Morning Send confirmation modal state
+  const [showMorningSendReview, setShowMorningSendReview] = useState(false);
+
+  // Load morning send status from localStorage on date change
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(`vanMorningSent-${date}`);
+      setMorningSentAt(stored);
+    } catch { setMorningSentAt(null); }
+  }, [date]);
+
   const shareVansToSlack = useCallback(async (vanIds?: number[]) => {
     setSlackBulkStatus("sending");
     try {
@@ -2551,16 +3594,13 @@ function ScheduleTab({
         .filter((zone) => !vanIds || vanIds.includes(zone.vanId))
         .map((zone) => {
           const items = finalItemsByVan.get(zone.vanId) ?? [];
-          // For targeted test pushes, send even if empty so we verify Slack works
-          if (!isTest && items.length === 0) return null;
           return {
             vanName: zone.name,
             vanId: zone.vanId,
             homeAirport: zone.homeAirport,
-            items: buildSlackItems(items, flightInfoMap, fboMap, mxNotesByTail),
+            items: buildSlackItems(items, flightInfoMap, fboMap, mxNotesByTail, date),
           };
-        })
-        .filter(Boolean);
+        });
       if (vans.length === 0) {
         setSlackBulkStatus("idle");
         return;
@@ -2580,6 +3620,171 @@ function ScheduleTab({
 
   const shareAllToSlack = useCallback(() => shareVansToSlack(), [shareVansToSlack]);
 
+  // ── Morning Send: full Slack summary + publish all vans ──
+  const handleMorningSend = useCallback(async () => {
+    setMorningSendStatus("sending");
+    try {
+      // 1) Post full schedule to Slack
+      const vans = FIXED_VAN_ZONES.map((zone) => {
+        const items = finalItemsByVan.get(zone.vanId) ?? [];
+        return {
+          vanName: zone.name,
+          vanId: zone.vanId,
+          homeAirport: zone.homeAirport,
+          items: buildSlackItems(items, flightInfoMap, fboMap, mxNotesByTail, date),
+        };
+      });
+      const slackRes = await fetch("/api/vans/share-slack-bulk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date, vans, mode: "morning" }),
+      });
+      const slackData = await slackRes.json();
+      if (!slackData.ok) {
+        setMorningSendStatus("error");
+        return;
+      }
+
+      // 2) Publish schedule to all vans
+      const assignments = FIXED_VAN_ZONES.map((zone) => {
+        const zoneItems = finalItemsByVan.get(zone.vanId) ?? [];
+        const sf: { id: string; tail: string; airport: string | null }[] = [];
+        for (const item of zoneItems) {
+          if (item.arrFlight.id.startsWith("unsched_")) {
+            sf.push({ id: item.arrFlight.id, tail: item.arrFlight.tail_number ?? "", airport: item.airport ?? item.arrFlight.arrival_icao?.replace(/^K/, "") ?? null });
+          }
+        }
+        return { vanId: zone.vanId, flightIds: zoneItems.map((i) => i.arrFlight.id).filter((id) => !id.startsWith("unsched_")), ...(sf.length > 0 ? { syntheticFlights: sf } : {}) };
+      });
+      const pubRes = await fetch("/api/vans/publish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date, assignments }),
+      });
+      const pubData = await pubRes.json();
+      if (!pubRes.ok) {
+        setMorningSendStatus("error");
+        setPublishError(pubData.error ?? "Publish failed");
+        return;
+      }
+
+      // 3) Update state
+      const sentTime = new Date().toISOString();
+      setPublishedAt(pubData.published_at);
+      setPublishedEditsSnapshot(currentEditsFingerprint);
+      setMorningSentAt(sentTime);
+      try { localStorage.setItem(`vanMorningSent-${date}`, sentTime); } catch {}
+      // Save MX fingerprints as baseline for change detection
+      for (const zone of FIXED_VAN_ZONES) {
+        const items = finalItemsByVan.get(zone.vanId) ?? [];
+        const fp = items.map((i) => {
+          const tail = i.arrFlight.tail_number ?? "";
+          const notes = (mxNotesByTail.get(tail) ?? []).filter((n) => !isMel(n));
+          return notes.map((n) => n.id).sort().join(",");
+        }).join("|");
+        try { localStorage.setItem(`vanMxFingerprint-${date}-${zone.vanId}`, fp); } catch {}
+      }
+      setMorningSendStatus("success");
+      setTimeout(() => setMorningSendStatus("idle"), 3000);
+    } catch {
+      setMorningSendStatus("error");
+    }
+  }, [date, finalItemsByVan, flightInfoMap, fboMap, mxNotesByTail, currentEditsFingerprint]);
+
+  // ── Update Vans: diff-only Slack + republish changed vans ──
+  const handleUpdateVans = useCallback(async (overrides?: {
+    selectedVanIds?: Set<number>;
+    excludedAdded?: Map<number, Set<number>>;
+    excludedRemoved?: Map<number, Set<number>>;
+    notes?: Map<number, string>;
+  }) => {
+    const activeDiffs = overrides?.selectedVanIds
+      ? changedVans.filter((d) => overrides.selectedVanIds!.has(d.vanId))
+      : changedVans;
+    if (activeDiffs.length === 0) return;
+    setUpdateVansStatus("sending");
+    try {
+      // 1) Post change summaries to Slack for selected vans only
+      const vans = activeDiffs.map((d) => {
+        const exAdded = overrides?.excludedAdded?.get(d.vanId);
+        const exRemoved = overrides?.excludedRemoved?.get(d.vanId);
+        const note = overrides?.notes?.get(d.vanId);
+        return {
+          vanName: d.vanName,
+          vanId: d.vanId,
+          homeAirport: d.homeAirport,
+          items: buildSlackItems(finalItemsByVan.get(d.vanId) ?? [], flightInfoMap, fboMap, mxNotesByTail, date),
+          diff: {
+            added: exAdded ? d.added.filter((_, i) => !exAdded.has(i)) : d.added,
+            removed: exRemoved ? d.removed.filter((_, i) => !exRemoved.has(i)) : d.removed,
+            newOrder: d.newOrder,
+            ...(note ? { note } : {}),
+          },
+        };
+      });
+      const slackRes = await fetch("/api/vans/share-slack-bulk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date, vans, mode: "update" }),
+      });
+      const slackData = await slackRes.json();
+      if (!slackData.ok) {
+        setUpdateVansStatus("error");
+        return;
+      }
+
+      // 2) Republish selected vans only
+      const assignments = activeDiffs.map((d) => {
+        const items = finalItemsByVan.get(d.vanId) ?? [];
+        const sf: { id: string; tail: string; airport: string | null }[] = [];
+        for (const item of items) {
+          if (item.arrFlight.id.startsWith("unsched_")) {
+            sf.push({ id: item.arrFlight.id, tail: item.arrFlight.tail_number ?? "", airport: item.airport ?? item.arrFlight.arrival_icao?.replace(/^K/, "") ?? null });
+          }
+        }
+        return { vanId: d.vanId, flightIds: d.currentFlightIds.filter((id: string) => !id.startsWith("unsched_")), ...(sf.length > 0 ? { syntheticFlights: sf } : {}) };
+      });
+      const pubRes = await fetch("/api/vans/publish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date, assignments }),
+      });
+      const pubData = await pubRes.json();
+      if (!pubRes.ok) {
+        setUpdateVansStatus("error");
+        return;
+      }
+
+      // 3) Update state + save MX fingerprints
+      setPublishedAt(pubData.published_at);
+      setPublishedEditsSnapshot(currentEditsFingerprint);
+      // Update published assignments so changedVans resets for sent vans
+      setPublishedAssignments(prev => {
+        const next = [...prev];
+        for (const d of activeDiffs) {
+          const idx = next.findIndex(a => a.vanId === d.vanId);
+          if (idx >= 0) next[idx] = { vanId: d.vanId, flightIds: d.currentFlightIds };
+          else next.push({ vanId: d.vanId, flightIds: d.currentFlightIds });
+        }
+        return next;
+      });
+      // Save MX fingerprints for all vans so we detect future MX changes
+      for (const zone of FIXED_VAN_ZONES) {
+        const items = finalItemsByVan.get(zone.vanId) ?? [];
+        const fp = items.map((i) => {
+          const tail = i.arrFlight.tail_number ?? "";
+          const notes = (mxNotesByTail.get(tail) ?? []).filter((n) => !isMel(n));
+          return notes.map((n) => n.id).sort().join(",");
+        }).join("|");
+        try { localStorage.setItem(`vanMxFingerprint-${date}-${zone.vanId}`, fp); } catch {}
+      }
+      setUpdateVansStatus("success");
+      setTimeout(() => setUpdateVansStatus("idle"), 3000);
+    } catch {
+      setUpdateVansStatus("error");
+    }
+  }, [date, changedVans, finalItemsByVan, flightInfoMap, fboMap, mxNotesByTail, currentEditsFingerprint]);
+
   const testVanToSlack = useCallback(async (vanId: number) => {
     setSlackTestStatus("sending");
     try {
@@ -2596,7 +3801,7 @@ function ScheduleTab({
             vanName: zone.name,
             vanId: zone.vanId,
             homeAirport: zone.homeAirport,
-            items: buildSlackItems(items, flightInfoMap, fboMap, mxNotesByTail),
+            items: buildSlackItems(items, flightInfoMap, fboMap, mxNotesByTail, date),
           }],
         }),
       });
@@ -2614,10 +3819,16 @@ function ScheduleTab({
     setPublishing(true);
     setPublishError(null);
     try {
-      const assignments = FIXED_VAN_ZONES.map((zone) => ({
-        vanId: zone.vanId,
-        flightIds: (finalItemsByVan.get(zone.vanId) ?? []).map((item) => item.arrFlight.id),
-      }));
+      const assignments = FIXED_VAN_ZONES.map((zone) => {
+        const zoneItems = finalItemsByVan.get(zone.vanId) ?? [];
+        const sf: { id: string; tail: string; airport: string | null }[] = [];
+        for (const item of zoneItems) {
+          if (item.arrFlight.id.startsWith("unsched_")) {
+            sf.push({ id: item.arrFlight.id, tail: item.arrFlight.tail_number ?? "", airport: item.airport ?? item.arrFlight.arrival_icao?.replace(/^K/, "") ?? null });
+          }
+        }
+        return { vanId: zone.vanId, flightIds: zoneItems.map((i) => i.arrFlight.id).filter((id) => !id.startsWith("unsched_")), ...(sf.length > 0 ? { syntheticFlights: sf } : {}) };
+      });
       const res = await fetch("/api/vans/publish", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2629,14 +3840,50 @@ function ScheduleTab({
       } else {
         setPublishedAt(data.published_at);
         setPublishedEditsSnapshot(currentEditsFingerprint);
-        // Auto-post all vans to Slack after successful publish
-        shareAllToSlack();
       }
     } catch {
       setPublishError("Network error");
     }
     setPublishing(false);
-  }, [date, finalItemsByVan, currentEditsFingerprint, shareAllToSlack]);
+  }, [date, finalItemsByVan, currentEditsFingerprint]);
+
+  const handlePublishVan = useCallback(async (vanId: number) => {
+    try {
+      const items = finalItemsByVan.get(vanId) ?? [];
+      // Build synthetic flight metadata for unscheduled/parked aircraft
+      // so the driver page can reconstruct stops for them
+      const syntheticFlights: { id: string; tail: string; airport: string | null }[] = [];
+      for (const item of items) {
+        if (item.arrFlight.id.startsWith("unsched_")) {
+          syntheticFlights.push({
+            id: item.arrFlight.id,
+            tail: item.arrFlight.tail_number ?? "",
+            airport: item.airport ?? item.arrFlight.arrival_icao?.replace(/^K/, "") ?? null,
+          });
+        }
+      }
+      // Separate real flight IDs (UUIDs) from synthetic IDs
+      const realFlightIds = items
+        .map((item) => item.arrFlight.id)
+        .filter((id) => !id.startsWith("unsched_"));
+      const res = await fetch("/api/vans/publish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          date,
+          assignments: [{
+            vanId,
+            flightIds: realFlightIds,
+            ...(syntheticFlights.length > 0 ? { syntheticFlights } : {}),
+          }],
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setPublishedAt(data.published_at);
+      }
+    } catch { /* ignore */ }
+  }, [date, finalItemsByVan]);
 
   return (
     <div className="space-y-3">
@@ -2654,12 +3901,62 @@ function ScheduleTab({
           {totalEdits > 0 && (
             <button
               onClick={() => {
-                setOverrides(new Map()); setRemovals(new Set()); setUnscheduledOverrides(new Map()); setAirportOverrides(new Map());
+                setOverrides(new Map()); setRemovals(new Set()); setUnscheduledOverrides(new Map()); setAirportOverrides(new Map()); setSortOverrides(new Map());
                 try { localStorage.removeItem(`vanOverrides-${date}`); localStorage.removeItem(`vanRemovals-${date}`); localStorage.removeItem(`vanUnscheduled-${date}`); localStorage.removeItem(`vanAirportOverrides-${date}`); } catch {}
+                // Also clear DB so polling/refresh don't restore old overrides
+                fetch("/api/vans/drafts", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ date, overrides: [], removals: [], unscheduled: [], airport_overrides: [] }),
+                }).then(async (res) => {
+                  const d = await res.json().catch(() => null);
+                  if (d?.updated_at) draftUpdatedAtRef.current = d.updated_at;
+                }).catch(() => {});
+                // Prevent published-assignments restore from immediately re-applying
+                overridesRestoredRef.current = date;
               }}
               className="text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5 hover:bg-amber-100 transition-colors"
             >
               Reset all edits ({totalEdits})
+            </button>
+          )}
+          {publishedAt && (
+            <button
+              onClick={() => setShowPublishedComparison((v) => !v)}
+              className={`text-xs font-medium rounded-lg px-3 py-1.5 transition-colors ${showPublishedComparison ? "text-purple-700 bg-purple-100 border border-purple-300" : "text-purple-700 bg-purple-50 border border-purple-200 hover:bg-purple-100"}`}
+              title="Toggle side-by-side comparison of published vs current schedule"
+            >
+              {showPublishedComparison ? "Hide Comparison" : "Compare to Published"}
+            </button>
+          )}
+          {publishedAt && (
+            <button
+              onClick={restoreToPublished}
+              className="text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-3 py-1.5 hover:bg-blue-100 transition-colors"
+              title="Restore schedule to match the last-published state"
+            >
+              Restore to Published
+            </button>
+          )}
+          {uncoveredItems.length > 0 && (
+            <button
+              onClick={() => {
+                const plan = computeAutoDispatchPlan();
+                if (plan.length === 0) return;
+                setAutoDispatchPreview(plan.map(({ item, bestVanId, bestDist }) => ({
+                  tail: item.arrFlight.tail_number ?? "???",
+                  airport: item.airport,
+                  vanId: bestVanId,
+                  vanName: FIXED_VAN_ZONES.find((z) => z.vanId === bestVanId)?.name ?? `Van ${bestVanId}`,
+                  distKm: Math.round(bestDist),
+                  flightId: item.arrFlight.id,
+                })));
+                setShowAutoDispatchReview(true);
+              }}
+              className="text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-3 py-1.5 hover:bg-blue-100 transition-colors"
+              title="Auto-assign uncovered aircraft to nearest vans based on priority scoring"
+            >
+              Auto-Dispatch All ({uncoveredItems.length})
             </button>
           )}
           <button
@@ -2675,21 +3972,326 @@ function ScheduleTab({
             {slackTestStatus === "sending" ? "Sending…" : slackTestStatus === "success" ? "Sent!" : slackTestStatus === "error" ? "Failed" : "Test Van 1"}
           </button>
           <button
-            onClick={shareAllToSlack}
-            disabled={slackBulkStatus === "sending"}
-            className="text-sm font-medium text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 hover:border-purple-300 disabled:opacity-50 rounded-lg px-3 py-1.5 transition-colors"
+            onClick={() => setShowMorningSendReview(true)}
+            disabled={morningSendStatus === "sending"}
+            className={`text-sm font-semibold rounded-lg px-4 py-1.5 transition-colors disabled:opacity-50 ${
+              morningSentAt
+                ? "text-green-700 bg-green-50 border border-green-200 hover:bg-green-100"
+                : "text-white bg-blue-600 hover:bg-blue-700 active:bg-blue-800"
+            }`}
           >
-            {slackBulkStatus === "sending" ? "Sharing…" : slackBulkStatus === "success" ? "Shared!" : "Share All to Slack"}
+            {morningSendStatus === "sending" ? "Sending…" : morningSendStatus === "success" ? "Sent!" : morningSentAt ? "Re-send Morning" : "Morning Send"}
           </button>
+          {morningSentAt && (
+            <span className="text-xs text-green-600 font-medium flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-green-500 inline-block" />
+              Sent {new Date(morningSentAt).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", timeZone: "America/New_York" })} ET
+            </span>
+          )}
           <button
-            onClick={handlePublish}
-            disabled={publishing}
-            className="text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 active:bg-blue-800 disabled:bg-blue-400 rounded-lg px-4 py-1.5 transition-colors"
+            onClick={() => {
+              setReviewSelectedVans(new Set(changedVans.map((d) => d.vanId)));
+              setReviewExcludedAdded(new Map());
+              setReviewExcludedRemoved(new Map());
+              setReviewNotes(new Map());
+              setShowUpdateReview(true);
+            }}
+            disabled={updateVansStatus === "sending" || changedVanCount === 0}
+            className={`text-sm font-semibold rounded-lg px-4 py-1.5 transition-colors disabled:opacity-50 ${
+              changedVanCount > 0
+                ? "text-white bg-amber-600 hover:bg-amber-700 active:bg-amber-800"
+                : "text-gray-400 bg-gray-100 border border-gray-200"
+            }`}
+            title={changedVanCount === 0 ? "No vans have changed" : `${changedVanCount} van${changedVanCount > 1 ? "s" : ""} changed`}
           >
-            {publishing ? "Sending…" : "Send to Vans"}
+            {updateVansStatus === "sending" ? "Updating…" : updateVansStatus === "success" ? "Updated!" : changedVanCount > 0 ? `Update Vans (${changedVanCount})` : "No Changes"}
           </button>
         </div>
       </div>
+
+      {/* Update Vans review modal */}
+      {showUpdateReview && changedVans.length > 0 && (() => {
+        const selectedCount = changedVans.filter((d) => reviewSelectedVans.has(d.vanId)).length;
+        return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowUpdateReview(false)}>
+          <div className="bg-white rounded-xl shadow-2xl max-w-xl w-full mx-4 max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
+              <div>
+                <h3 className="font-bold text-lg text-gray-900">Review Changes</h3>
+                <p className="text-xs text-gray-500 mt-0.5">{selectedCount} of {changedVans.length} van{changedVans.length > 1 ? "s" : ""} selected</p>
+              </div>
+              <button onClick={() => setShowUpdateReview(false)} className="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
+            </div>
+            <div className="overflow-y-auto px-5 py-3 space-y-3 flex-1">
+              {changedVans.map((d) => {
+                const isSelected = reviewSelectedVans.has(d.vanId);
+                const exAdded = reviewExcludedAdded.get(d.vanId) ?? new Set<number>();
+                const exRemoved = reviewExcludedRemoved.get(d.vanId) ?? new Set<number>();
+                const note = reviewNotes.get(d.vanId) ?? "";
+                const visibleAdded = d.added.filter((_, i) => !exAdded.has(i));
+                const visibleRemoved = d.removed.filter((_, i) => !exRemoved.has(i));
+                return (
+                <div key={d.vanId} className={`border rounded-lg p-3 transition-colors ${isSelected ? "border-amber-300 bg-amber-50/30" : "border-gray-200 bg-gray-50 opacity-60"}`}>
+                  {/* Van header with checkbox */}
+                  <label className="flex items-center gap-2 cursor-pointer mb-2">
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => {
+                        setReviewSelectedVans((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(d.vanId)) next.delete(d.vanId);
+                          else next.add(d.vanId);
+                          return next;
+                        });
+                      }}
+                      className="rounded border-gray-300 text-amber-600 focus:ring-amber-500"
+                    />
+                    <span className="font-semibold text-sm text-gray-800">{d.vanName}</span>
+                    <span className="text-gray-400 text-xs font-normal">({d.homeAirport})</span>
+                  </label>
+
+                  {isSelected && (
+                    <>
+                      {/* Added items */}
+                      {d.added.length > 0 && (
+                        <div className="mb-1.5 flex flex-wrap items-center gap-1">
+                          <span className="text-xs font-medium text-green-700 bg-green-50 rounded px-1.5 py-0.5">Added</span>
+                          {d.added.map((a, i) => {
+                            const excluded = exAdded.has(i);
+                            return (
+                              <span key={i} className={`inline-flex items-center gap-1 text-xs rounded px-1.5 py-0.5 ${excluded ? "line-through text-gray-400 bg-gray-100" : "text-gray-700 bg-white border border-gray-200"}`}>
+                                {a.tail} @ {a.airport}
+                                <button
+                                  onClick={() => {
+                                    setReviewExcludedAdded((prev) => {
+                                      const next = new Map(prev);
+                                      const s = new Set(next.get(d.vanId));
+                                      if (excluded) s.delete(i); else s.add(i);
+                                      next.set(d.vanId, s);
+                                      return next;
+                                    });
+                                  }}
+                                  className={`ml-0.5 leading-none ${excluded ? "text-green-500 hover:text-green-700" : "text-gray-400 hover:text-red-600"}`}
+                                  title={excluded ? "Restore" : "Remove from update"}
+                                >
+                                  {excluded ? "↩" : "×"}
+                                </button>
+                              </span>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {/* Removed items */}
+                      {d.removed.length > 0 && (
+                        <div className="mb-1.5 flex flex-wrap items-center gap-1">
+                          <span className="text-xs font-medium text-red-700 bg-red-50 rounded px-1.5 py-0.5">Removed</span>
+                          {d.removed.map((r, i) => {
+                            const excluded = exRemoved.has(i);
+                            return (
+                              <span key={i} className={`inline-flex items-center gap-1 text-xs rounded px-1.5 py-0.5 ${excluded ? "line-through text-gray-400 bg-gray-100" : "text-gray-700 bg-white border border-gray-200"}`}>
+                                {r.tail} @ {r.airport}
+                                <button
+                                  onClick={() => {
+                                    setReviewExcludedRemoved((prev) => {
+                                      const next = new Map(prev);
+                                      const s = new Set(next.get(d.vanId));
+                                      if (excluded) s.delete(i); else s.add(i);
+                                      next.set(d.vanId, s);
+                                      return next;
+                                    });
+                                  }}
+                                  className={`ml-0.5 leading-none ${excluded ? "text-green-500 hover:text-green-700" : "text-gray-400 hover:text-red-600"}`}
+                                  title={excluded ? "Restore" : "Remove from update"}
+                                >
+                                  {excluded ? "↩" : "×"}
+                                </button>
+                              </span>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {/* Order / MX badges */}
+                      <div className="flex flex-wrap gap-1 mb-2">
+                        {d.orderChanged && <span className="text-xs font-medium text-blue-700 bg-blue-50 rounded px-1.5 py-0.5">Order changed</span>}
+                        {d.mxChanged && <span className="text-xs font-medium text-purple-700 bg-purple-50 rounded px-1.5 py-0.5">MX notes updated</span>}
+                      </div>
+
+                      {/* Note field */}
+                      <input
+                        type="text"
+                        placeholder="Add a note for the driver…"
+                        value={note}
+                        onChange={(e) => {
+                          setReviewNotes((prev) => {
+                            const next = new Map(prev);
+                            if (e.target.value) next.set(d.vanId, e.target.value);
+                            else next.delete(d.vanId);
+                            return next;
+                          });
+                        }}
+                        className="w-full text-xs border border-gray-200 rounded-md px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-amber-400 focus:border-amber-400 placeholder-gray-400"
+                      />
+
+                      {/* Warning if all diff items excluded */}
+                      {visibleAdded.length === 0 && visibleRemoved.length === 0 && !d.orderChanged && !d.mxChanged && !note && (
+                        <p className="text-xs text-amber-600 mt-1.5">All changes hidden — Slack message will show no changes unless you add a note.</p>
+                      )}
+                    </>
+                  )}
+                </div>
+                );
+              })}
+            </div>
+            <div className="flex items-center justify-between px-5 py-4 border-t border-gray-200">
+              <button
+                onClick={() => {
+                  if (reviewSelectedVans.size === changedVans.length) setReviewSelectedVans(new Set());
+                  else setReviewSelectedVans(new Set(changedVans.map((d) => d.vanId)));
+                }}
+                className="text-xs text-gray-500 hover:text-gray-700 underline"
+              >
+                {reviewSelectedVans.size === changedVans.length ? "Deselect all" : "Select all"}
+              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setShowUpdateReview(false)}
+                  className="text-sm font-medium text-gray-600 hover:text-gray-800 px-4 py-2 rounded-lg hover:bg-gray-100 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => {
+                    setShowUpdateReview(false);
+                    handleUpdateVans({
+                      selectedVanIds: reviewSelectedVans,
+                      excludedAdded: reviewExcludedAdded,
+                      excludedRemoved: reviewExcludedRemoved,
+                      notes: reviewNotes,
+                    });
+                  }}
+                  disabled={updateVansStatus === "sending" || selectedCount === 0}
+                  className="text-sm font-semibold text-white bg-amber-600 hover:bg-amber-700 active:bg-amber-800 px-5 py-2 rounded-lg transition-colors disabled:opacity-50"
+                >
+                  {selectedCount === 0 ? "No Vans Selected" : `Confirm & Send (${selectedCount})`}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+        );
+      })()}
+
+      {/* Auto-Dispatch review modal */}
+      {showAutoDispatchReview && autoDispatchPreview.length > 0 && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowAutoDispatchReview(false)}>
+          <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full mx-4 max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
+              <div>
+                <h3 className="font-bold text-lg text-gray-900">Auto-Dispatch Preview</h3>
+                <p className="text-xs text-gray-500 mt-0.5">{autoDispatchPreview.length} aircraft will be assigned</p>
+              </div>
+              <button onClick={() => setShowAutoDispatchReview(false)} className="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
+            </div>
+            <div className="overflow-y-auto px-5 py-3 space-y-2 flex-1">
+              {(() => {
+                const byVan = new Map<number, typeof autoDispatchPreview>();
+                for (const p of autoDispatchPreview) {
+                  const arr = byVan.get(p.vanId) ?? [];
+                  arr.push(p);
+                  byVan.set(p.vanId, arr);
+                }
+                return Array.from(byVan.entries()).map(([vanId, items]) => (
+                  <div key={vanId} className="border border-gray-200 rounded-lg p-3">
+                    <div className="font-semibold text-sm text-gray-800 mb-1.5">{items[0].vanName}</div>
+                    <div className="space-y-1">
+                      {items.map((p) => (
+                        <div key={p.flightId} className="flex items-center justify-between text-xs text-gray-600">
+                          <span className="font-medium text-gray-800">{p.tail} <span className="text-gray-400">@</span> {p.airport}</span>
+                          <span className="text-gray-400">{p.distKm} km</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ));
+              })()}
+            </div>
+            <div className="flex items-center justify-end gap-3 px-5 py-4 border-t border-gray-200">
+              <button
+                onClick={() => setShowAutoDispatchReview(false)}
+                className="text-sm font-medium text-gray-600 hover:text-gray-800 px-4 py-2 rounded-lg hover:bg-gray-100 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  setShowAutoDispatchReview(false);
+                  autoDispatchUncovered();
+                }}
+                className="text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 active:bg-blue-800 px-5 py-2 rounded-lg transition-colors"
+              >
+                Confirm Dispatch ({autoDispatchPreview.length})
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Morning Send confirmation modal */}
+      {showMorningSendReview && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowMorningSendReview(false)}>
+          <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full mx-4 max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
+              <div>
+                <h3 className="font-bold text-lg text-gray-900">Morning Send</h3>
+                <p className="text-xs text-gray-500 mt-0.5">Full schedule to all van Slack channels</p>
+              </div>
+              <button onClick={() => setShowMorningSendReview(false)} className="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
+            </div>
+            <div className="overflow-y-auto px-5 py-3 space-y-2 flex-1">
+              {morningSentAt && (
+                <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs text-amber-800 font-medium">
+                  Already sent today at {new Date(morningSentAt).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", timeZone: "America/New_York" })} ET — this will re-send.
+                </div>
+              )}
+              <div className="bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 text-xs text-blue-800">
+                This will send the full schedule to <span className="font-semibold">ALL</span> van Slack channels and publish the schedule.
+              </div>
+              {FIXED_VAN_ZONES.map((zone) => {
+                const items = finalItemsByVan.get(zone.vanId) ?? [];
+                const tails = items.map((i) => i.arrFlight.tail_number ?? "???");
+                return (
+                  <div key={zone.vanId} className="flex items-center justify-between border border-gray-200 rounded-lg px-3 py-2">
+                    <span className="text-sm font-medium text-gray-800">{zone.name}</span>
+                    <span className="text-xs text-gray-500">
+                      {items.length === 0 ? "No aircraft" : `${items.length} aircraft — ${tails.join(", ")}`}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="flex items-center justify-end gap-3 px-5 py-4 border-t border-gray-200">
+              <button
+                onClick={() => setShowMorningSendReview(false)}
+                className="text-sm font-medium text-gray-600 hover:text-gray-800 px-4 py-2 rounded-lg hover:bg-gray-100 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  setShowMorningSendReview(false);
+                  handleMorningSend();
+                }}
+                className="text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 active:bg-blue-800 px-5 py-2 rounded-lg transition-colors"
+              >
+                Confirm &amp; Send to All Vans
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Publish status */}
       <div className="flex items-center gap-3 flex-wrap">
@@ -2702,10 +4304,10 @@ function ScheduleTab({
         {hasUnpublishedChanges && (
           <span className="text-xs text-amber-600 font-medium flex items-center gap-1">
             <span className="w-1.5 h-1.5 rounded-full bg-amber-500 inline-block" />
-            Unpublished changes
+            Unpublished changes{changedVanCount > 0 ? ` (${changedVanCount} van${changedVanCount > 1 ? "s" : ""})` : ""}
           </span>
         )}
-        {!publishedAt && !publishing && (
+        {!publishedAt && !morningSendStatus && (
           <span className="text-xs text-gray-400">Not yet published for this date</span>
         )}
         {publishError && (
@@ -2752,7 +4354,11 @@ function ScheduleTab({
           }
         }
 
-        const uncoveredTails = Array.from(uncoveredByTail.keys());
+        const uncoveredTails = Array.from(uncoveredByTail.keys()).filter(
+          (t) => t === "_no_tail" || !wontSeeTodayTails.has(t),
+        );
+
+        if (uncoveredTails.length === 0) return null;
 
         return (
           <div
@@ -2791,7 +4397,6 @@ function ScheduleTab({
               {uncoveredTails.map((tailKey) => {
                 const items = uncoveredByTail.get(tailKey) ?? [];
                 const tail = items[0].arrFlight.tail_number;
-                const primaryItem = items[0]; // for drag-and-drop assignment
                 const allLegs = allLegsByTail.get(tailKey) ?? [];
                 // Check for maintenance (same-airport flights)
                 const hasMaintenance = allLegs.some((f) =>
@@ -2801,20 +4406,23 @@ function ScheduleTab({
                 const lastItem = items[items.length - 1];
                 const nextDep = lastItem?.nextDep ?? null;
                 const nextIsRepo = lastItem?.nextIsRepo ?? false;
-                const lastArrTime = lastItem?.arrFlight.scheduled_arrival
-                  ? new Date(lastItem.arrFlight.scheduled_arrival).getTime() : null;
-                const uncovGroundMs = nextDep && lastArrTime
-                  ? new Date(nextDep.scheduled_departure).getTime() - lastArrTime : Infinity;
-                const uncovDoneForDay = !nextDep || uncovGroundMs >= 6 * 3600000;
-                const uncovQuickturn = !!nextDep && uncovGroundMs < 2 * 3600000;
+
+                // Helper: find nearest van for an arrival airport
+                const findNearestVan = (arrIcao: string | null | undefined): { vanId: number; name: string; distKm: number } | null => {
+                  if (!arrIcao) return null;
+                  const info = getAirportInfo(arrIcao.replace(/^K/, ""));
+                  if (!info) return null;
+                  let best: { vanId: number; name: string; distKm: number } | null = null;
+                  for (const z of FIXED_VAN_ZONES) {
+                    const d = haversineKm(info.lat, info.lon, z.lat, z.lon);
+                    if (!best || d < best.distKm) best = { vanId: z.vanId, name: z.name, distKm: d };
+                  }
+                  return best;
+                };
+
                 return (
-                  <div
-                    key={tailKey}
-                    draggable
-                    onDragStart={(e) => handleDragStart(e, primaryItem.arrFlight.id, 0)}
-                    className="px-4 py-2 cursor-grab active:cursor-grabbing hover:bg-red-50/50"
-                  >
-                    {/* Header: tail number + badges + assign dropdown */}
+                  <div key={tailKey} className="px-4 py-2">
+                    {/* Header: tail number + badges + Won't See */}
                     <div className="flex items-center justify-between gap-4 mb-1">
                       <div className="flex items-center gap-2 flex-wrap">
                         <div className="w-2.5 h-2.5 rounded-full bg-red-300 flex-shrink-0" />
@@ -2825,59 +4433,117 @@ function ScheduleTab({
                             Maintenance Scheduled
                           </span>
                         )}
-                        {/* Quickturn + Done-for-day badges hidden for unassigned aircraft */}
                       </div>
-                      <select
-                        className="text-xs border border-red-200 rounded-lg px-2 py-1.5 bg-white text-red-700 font-medium cursor-pointer hover:border-red-400 focus:outline-none focus:ring-2 focus:ring-red-300 appearance-none"
-                        style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 5l3 3 3-3' fill='none' stroke='%23b91c1c' stroke-width='1.5'/%3E%3C/svg%3E\")", backgroundRepeat: "no-repeat", backgroundPosition: "right 6px center", paddingRight: "22px" }}
-                        value=""
-                        onChange={(e) => {
-                          const vanId = Number(e.target.value);
-                          if (!vanId) return;
-                          setRemovals((prev) => {
-                            if (!prev.has(primaryItem.arrFlight.id)) return prev;
-                            const next = new Set(prev);
-                            next.delete(primaryItem.arrFlight.id);
-                            return next;
-                          });
-                          setOverrides((prev) => {
-                            const next = new Map(prev);
-                            next.set(primaryItem.arrFlight.id, vanId);
-                            return next;
-                          });
-                        }}
-                      >
-                        <option value="">Assign…</option>
-                        {FIXED_VAN_ZONES.map((z) => (
-                          <option key={z.vanId} value={z.vanId}>
-                            V{z.vanId} – {z.name}
-                          </option>
-                        ))}
-                      </select>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {/* Assign All to Nearest — only show when multiple legs */}
+                        {items.length > 1 && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setOverrides((prev) => {
+                                const next = new Map(prev);
+                                for (const item of items) {
+                                  const nearest = findNearestVan(item.arrFlight.arrival_icao);
+                                  if (nearest) {
+                                    next.set(item.arrFlight.id, nearest.vanId);
+                                  }
+                                }
+                                return next;
+                              });
+                              setRemovals((prev) => {
+                                const next = new Set(prev);
+                                for (const item of items) next.delete(item.arrFlight.id);
+                                return next;
+                              });
+                            }}
+                            className="text-[10px] font-medium text-blue-600 hover:text-blue-800 hover:bg-blue-50 border border-blue-200 rounded px-2 py-1 transition-colors"
+                            title="Assign all legs to their nearest van"
+                          >
+                            Assign All to Nearest
+                          </button>
+                        )}
+                        {tail && tail !== "_no_tail" && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); onMarkWontSee(tail); }}
+                            className="text-[10px] font-medium text-gray-400 hover:text-gray-700 hover:bg-gray-100 border border-gray-200 rounded px-2 py-1 shrink-0 transition-colors"
+                            title="Mark as reviewed — won't be seen today"
+                          >
+                            Won&apos;t See
+                          </button>
+                        )}
+                      </div>
                     </div>
-                    {/* All legs + flying again */}
-                    <div className="ml-5 space-y-0">
-                      {allLegs.map((f) => {
-                        const ft = inferFlightType(f);
+                    {/* Per-leg rows: each independently draggable + assignable */}
+                    <div className="ml-5 space-y-0.5">
+                      {items.map((item) => {
+                        const dep = item.arrFlight.departure_icao?.replace(/^K/, "") ?? "?";
+                        const arrIcao = item.arrFlight.arrival_icao?.replace(/^K/, "") ?? "?";
+                        const ft = inferFlightType(item.arrFlight);
                         const cat = getFilterCategory(ft);
-                        const dep = f.departure_icao?.replace(/^K/, "") ?? "?";
-                        const arrIcao = f.arrival_icao?.replace(/^K/, "") ?? "?";
                         const isMaint = dep === arrIcao;
+                        const nearest = findNearestVan(item.arrFlight.arrival_icao);
+                        const isInternational = !item.airportInfo || !isContiguous48(item.airportInfo.state ?? "");
                         return (
-                          <div key={f.id} className="flex items-center gap-2 text-xs text-gray-600 py-px">
-                            <span className="font-mono">{dep} → {arrIcao}</span>
-                            <span>{fmtUtcHM(f.scheduled_departure, f.departure_icao)}{f.scheduled_arrival ? ` – ${fmtUtcHM(f.scheduled_arrival, f.arrival_icao)}` : ""}</span>
-                            {ft && (
-                              <span className={`rounded px-1 py-0.5 text-[10px] font-medium ${
-                                isMaint ? "bg-orange-50 text-orange-600"
-                                : cat === "charter" ? "bg-green-50 text-green-600"
-                                : cat === "positioning" ? "bg-purple-50 text-purple-600"
-                                : cat === "maintenance" ? "bg-orange-50 text-orange-600"
-                                : "bg-gray-50 text-gray-500"
-                              }`}>
-                                {ft}
-                              </span>
-                            )}
+                          <div
+                            key={item.arrFlight.id}
+                            draggable
+                            onDragStart={(e) => handleDragStart(e, item.arrFlight.id, 0)}
+                            className="flex items-center justify-between gap-2 py-1 px-2 -mx-2 rounded cursor-grab active:cursor-grabbing hover:bg-red-50/80 group"
+                          >
+                            <div className="flex items-center gap-2 text-xs text-gray-600 min-w-0">
+                              <span className="font-mono font-medium">{dep} → {arrIcao}</span>
+                              <span>{fmtUtcHM(item.arrFlight.scheduled_departure, item.arrFlight.departure_icao)}{item.arrFlight.scheduled_arrival ? ` – ${fmtUtcHM(item.arrFlight.scheduled_arrival, item.arrFlight.arrival_icao)}` : ""}</span>
+                              {isInternational && (
+                                <span className="rounded px-1 py-0.5 text-[10px] font-medium bg-blue-50 text-blue-600">International</span>
+                              )}
+                              {ft && (
+                                <span className={`rounded px-1 py-0.5 text-[10px] font-medium ${
+                                  isMaint ? "bg-orange-50 text-orange-600"
+                                  : cat === "charter" ? "bg-green-50 text-green-600"
+                                  : cat === "positioning" ? "bg-purple-50 text-purple-600"
+                                  : cat === "maintenance" ? "bg-orange-50 text-orange-600"
+                                  : "bg-gray-50 text-gray-500"
+                                }`}>
+                                  {ft}
+                                </span>
+                              )}
+                            </div>
+                            {/* Per-leg assign dropdown */}
+                            <div
+                              draggable={false}
+                              onDragStart={(e) => { e.stopPropagation(); e.preventDefault(); }}
+                              onMouseDown={(e) => e.stopPropagation()}
+                              onPointerDown={(e) => e.stopPropagation()}
+                              className="shrink-0"
+                            >
+                              <select
+                                className="text-xs border border-red-200 rounded-lg px-2 py-1 bg-white text-red-700 font-medium cursor-pointer hover:border-red-400 focus:outline-none focus:ring-2 focus:ring-red-300"
+                                defaultValue=""
+                                onChange={(e) => {
+                                  const vanId = Number(e.target.value);
+                                  if (!vanId) return;
+                                  e.target.value = ""; // reset dropdown
+                                  setRemovals((prev) => {
+                                    if (!prev.has(item.arrFlight.id)) return prev;
+                                    const next = new Set(prev);
+                                    next.delete(item.arrFlight.id);
+                                    return next;
+                                  });
+                                  setOverrides((prev) => {
+                                    const next = new Map(prev);
+                                    next.set(item.arrFlight.id, vanId);
+                                    return next;
+                                  });
+                                }}
+                              >
+                                <option value="">{nearest ? `Assign (nearest: V${nearest.vanId})` : "Assign…"}</option>
+                                {FIXED_VAN_ZONES.map((z) => (
+                                  <option key={z.vanId} value={z.vanId}>
+                                    V{z.vanId} – {z.name}{nearest && z.vanId === nearest.vanId ? " ★" : ""}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
                           </div>
                         );
                       })}
@@ -2904,7 +4570,7 @@ function ScheduleTab({
       {(() => {
         // Filter out tails already assigned to a van via unscheduledOverrides
         const visibleUnscheduled = unscheduledAircraft.filter(
-          (a) => !unscheduledOverrides.has(a.tail) && !longTermMxTails.has(a.tail),
+          (a) => !unscheduledOverrides.has(a.tail) && !longTermMxTails.has(a.tail) && !wontSeeTodayTails.has(a.tail),
         );
         if (visibleUnscheduled.length === 0) return null;
 
@@ -2961,6 +4627,8 @@ function ScheduleTab({
                       <span className="text-xs bg-amber-100 text-amber-700 rounded px-1.5 py-0.5">No Schedule</span>
                     </div>
                     <select
+                      draggable={false}
+                      onMouseDown={(e) => e.stopPropagation()}
                       className="text-xs border border-amber-200 rounded-lg px-2 py-1.5 bg-white text-amber-700 font-medium cursor-pointer hover:border-amber-400 focus:outline-none focus:ring-2 focus:ring-amber-300 appearance-none"
                       style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 5l3 3 3-3' fill='none' stroke='%23b45309' stroke-width='1.5'/%3E%3C/svg%3E\")", backgroundRepeat: "no-repeat", backgroundPosition: "right 6px center", paddingRight: "22px" }}
                       value=""
@@ -2981,6 +4649,13 @@ function ScheduleTab({
                         </option>
                       ))}
                     </select>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onMarkWontSee(ac.tail); }}
+                      className="text-[10px] font-medium text-gray-400 hover:text-gray-700 hover:bg-gray-100 border border-gray-200 rounded px-2 py-1 shrink-0 transition-colors"
+                      title="Mark as reviewed — won't be seen today"
+                    >
+                      Won&apos;t See
+                    </button>
                   </div>
                   {ac.airportInfo && (
                     <div className="ml-5 text-xs text-gray-500 mt-0.5">
@@ -2991,6 +4666,109 @@ function ScheduleTab({
                 </div>
               ))}
             </div>}
+          </div>
+        );
+      })()}
+
+      {/* ── Reviewed — Won't Be Seen Today ── */}
+      {(() => {
+        // Tails assigned to any van — exclude from won't-see
+        const vanAssignedTails = new Set<string>();
+        for (const items of finalItemsByVan.values()) {
+          for (const item of items) {
+            if (item.arrFlight.tail_number) vanAssignedTails.add(item.arrFlight.tail_number);
+          }
+        }
+        // Collect won't-see tails from both unassigned and unscheduled pools
+        const wontSeeTails: { tail: string; airport: string | null; source: string }[] = [];
+        // From unassigned (uncovered items — only tails NOT in any van)
+        if (uncoveredItems.length > 0) {
+          const uncoveredByTailWS = new Map<string, VanFlightItem[]>();
+          for (const item of uncoveredItems) {
+            const key = item.arrFlight.tail_number || "_no_tail";
+            const arr = uncoveredByTailWS.get(key) ?? [];
+            arr.push(item);
+            uncoveredByTailWS.set(key, arr);
+          }
+          for (const tailKey of uncoveredByTailWS.keys()) {
+            if (tailKey === "_no_tail") continue;
+            if (vanAssignedTails.has(tailKey)) continue;
+            if (wontSeeTodayTails.has(tailKey)) {
+              const items = uncoveredByTailWS.get(tailKey) ?? [];
+              const apt = items[0]?.airport ?? null;
+              wontSeeTails.push({ tail: tailKey, airport: apt, source: "Unassigned" });
+            }
+          }
+        }
+        // From unscheduled
+        for (const ac of unscheduledAircraft) {
+          if (unscheduledOverrides.has(ac.tail) || longTermMxTails.has(ac.tail)) continue;
+          if (vanAssignedTails.has(ac.tail)) continue;
+          if (wontSeeTodayTails.has(ac.tail)) {
+            wontSeeTails.push({ tail: ac.tail, airport: ac.airport, source: "Unscheduled" });
+          }
+        }
+        return (
+          <div
+            className="border-2 border-dashed border-slate-300 rounded-xl bg-slate-50/50 overflow-hidden"
+            onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; }}
+            onDrop={(e) => {
+              e.preventDefault();
+              try {
+                const data = JSON.parse(e.dataTransfer.getData("text/plain"));
+                const tail = data?.tailNumber ?? data?.tail;
+                if (tail) onMarkWontSee(tail);
+              } catch { /* ignore non-JSON drags */ }
+            }}
+          >
+            <div
+              className="px-4 py-3 flex items-center justify-between cursor-pointer hover:bg-slate-100"
+              onClick={() => setWontSeeOpen((v) => !v)}
+            >
+              <div className="flex items-center gap-2">
+                <div className="w-6 h-6 rounded-full bg-slate-200 flex items-center justify-center text-xs text-slate-600 font-bold">
+                  &#10003;
+                </div>
+                <div>
+                  <div className="text-sm font-semibold text-slate-700">
+                    Reviewed — Won&apos;t Be Seen Today
+                    <span className="ml-1.5 text-xs font-normal text-slate-500">({wontSeeTails.length})</span>
+                  </div>
+                  {!wontSeeOpen && (
+                    <div className="text-xs text-slate-500">
+                      {wontSeeTails.length === 0
+                        ? "Drag aircraft here or click \"Won\u2019t See\" to mark as reviewed"
+                        : "Aircraft reviewed and marked as not needing service today"}
+                    </div>
+                  )}
+                </div>
+              </div>
+              <span className="text-gray-400 text-sm">{wontSeeOpen ? "\u25B2" : "\u25BC"}</span>
+            </div>
+            {wontSeeOpen && (
+              <div className="border-t border-slate-200 divide-y divide-slate-100">
+                {wontSeeTails.length === 0 ? (
+                  <div className="px-4 py-3 text-xs text-slate-400 italic">No aircraft reviewed yet</div>
+                ) : wontSeeTails.map((item) => (
+                  <div key={item.tail} className="px-4 py-2 flex items-center justify-between gap-4">
+                    <div className="flex items-center gap-2">
+                      <div className="w-2.5 h-2.5 rounded-full bg-slate-300 flex-shrink-0" />
+                      <span className="font-mono font-semibold text-sm">{item.tail}</span>
+                      {item.airport && (
+                        <span className="text-xs text-gray-500 font-mono">{item.airport}</span>
+                      )}
+                      <span className="text-[10px] bg-slate-200 text-slate-600 rounded px-1.5 py-0.5">{item.source}</span>
+                    </div>
+                    <button
+                      onClick={() => onRestoreWontSee(item.tail)}
+                      className="text-xs font-semibold text-blue-600 hover:text-blue-800 border border-blue-200 rounded px-2.5 py-1 shrink-0 transition-colors hover:bg-blue-50"
+                    >
+                      Restore
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         );
       })()}
@@ -3014,6 +4792,9 @@ function ScheduleTab({
               samsaraVanName={vanZoneNames.get(zone.vanId)}
               isDropTarget={dropTargetVan === zone.vanId}
               hasOverrides={editedVans.has(zone.vanId)}
+              vanDiff={(() => { const d = changedVans.find((v) => v.vanId === zone.vanId); return d ? { added: d.added.length, removed: d.removed.length, orderChanged: d.orderChanged, mxChanged: d.mxChanged } : null; })()}
+              showComparison={showPublishedComparison && !!publishedAt}
+              publishedItems={publishedItemsByVan.get(zone.vanId) ?? []}
               flightInfoMap={flightInfoMap}
               legNotes={legNotes}
               mxNotesByTail={mxNotesByTail}
@@ -3023,20 +4804,112 @@ function ScheduleTab({
               onVanOverride={onVanOverride}
               onSaveNote={saveLegNote}
               onDragStart={handleDragStart}
+              onDragOverItem={handleDragOverItem}
               onDragOver={handleDragOver}
               onDrop={handleDrop}
               onDragLeave={() => handleDragLeaveZone()}
               onRemove={handleRemove}
+              onPublishVan={handlePublishVan}
               onSetPrimaryAirport={(tail, apt) => {
                 setAirportOverrides((prev) => {
                   const next = new Map(prev);
                   next.set(tail, apt);
-                  // Persist immediately
-                  try { localStorage.setItem(`vanAirportOverrides-${date}`, JSON.stringify([...next])); } catch {}
+                  return next;
+                });
+                // Also reassign to closest van zone if the new airport is in a different zone
+                const aptInfo = getAirportInfo(apt);
+                if (aptInfo) {
+                  const closest = FIXED_VAN_ZONES
+                    .map((z) => ({
+                      vanId: z.vanId,
+                      dist: haversineKm(aptInfo.lat, aptInfo.lon,
+                        liveVanPositions.get(z.vanId)?.lat ?? z.lat,
+                        liveVanPositions.get(z.vanId)?.lon ?? z.lon),
+                    }))
+                    .sort((a, b) => a.dist - b.dist)[0];
+                  if (closest) {
+                    // Find the flight for this tail and its current van
+                    for (const [vanId, items] of finalItemsByVan) {
+                      const item = items.find((i) => i.arrFlight.tail_number === tail);
+                      if (item && vanId !== closest.vanId) {
+                        setOverrides((prev) => {
+                          const next = new Map(prev);
+                          next.set(item.arrFlight.id, closest.vanId);
+                          return next;
+                        });
+                        break;
+                      }
+                    }
+                  }
+                }
+              }}
+              onAddToVan={(flightId, vanId) => {
+                setRemovals((prev) => {
+                  if (!prev.has(flightId)) return prev;
+                  const next = new Set(prev);
+                  next.delete(flightId);
+                  return next;
+                });
+                setOverrides((prev) => {
+                  const next = new Map(prev);
+                  next.set(flightId, vanId);
                   return next;
                 });
               }}
+              onSwapToVan={(flightId, toVanId) => {
+                // Move aircraft to a different van (same as drag-and-drop)
+                setRemovals((prev) => {
+                  if (!prev.has(flightId)) return prev;
+                  const next = new Set(prev);
+                  next.delete(flightId);
+                  return next;
+                });
+                setOverrides((prev) => {
+                  const next = new Map(prev);
+                  next.set(flightId, toVanId);
+                  return next;
+                });
+              }}
+              onAlsoOnVan={(tail, toVanId) => {
+                // Add aircraft to a second van (dual placement)
+                // Find any flight for this tail and create override on the new van
+                const allItems = [...finalItemsByVan.values()].flat();
+                const tailItem = allItems.find((i) => i.arrFlight.tail_number === tail);
+                if (!tailItem) return;
+                // Find a different flight ID for the same tail to put on the second van
+                // (so both overrides can coexist: flight_A → van1, flight_B → van2)
+                const tailFlights = allDayArrivals.filter((a) => a.arrFlight.tail_number === tail);
+                const usedFlightId = tailItem.arrFlight.id;
+                const altFlight = tailFlights.find((a) => a.arrFlight.id !== usedFlightId);
+                if (altFlight) {
+                  // Use a different flight for the second van
+                  setOverrides((prev) => {
+                    const next = new Map(prev);
+                    next.set(altFlight.arrFlight.id, toVanId);
+                    return next;
+                  });
+                } else {
+                  // Only one flight — use unscheduled override for dual placement
+                  setUnscheduledOverrides((prev) => {
+                    const next = new Map(prev);
+                    next.set(tail, toVanId);
+                    return next;
+                  });
+                }
+                // Also ensure the original van has an explicit override so dual detection works
+                const currentVanId = [...finalItemsByVan.entries()].find(([, items]) =>
+                  items.some((i) => i.arrFlight.tail_number === tail)
+                )?.[0];
+                if (currentVanId !== undefined && !overrides.has(usedFlightId)) {
+                  setOverrides((prev) => {
+                    const next = new Map(prev);
+                    next.set(usedFlightId, currentVanId);
+                    return next;
+                  });
+                }
+              }}
               fboMap={fboMap}
+              tailToVans={tailToVans}
             />
           </div>
         );
@@ -3433,7 +5306,7 @@ function MxAdminTab() {
   );
 }
 
-export default function VanPositioningClient({ initialFlights, mxNotes, aircraftTags = [], fboMap = {} }: { initialFlights: Flight[]; mxNotes?: MxNote[]; aircraftTags?: AircraftTag[]; fboMap?: Record<string, string> }) {
+export default function VanPositioningClient({ initialFlights, mxNotes, melItems = [], aircraftTags = [], fboMap = {} }: { initialFlights: Flight[]; mxNotes?: MxNote[]; melItems?: MelItem[]; aircraftTags?: AircraftTag[]; fboMap?: Record<string, string> }) {
   const dates = useMemo(() => getDateRange(2), []); // today + tomorrow
   const [dayIdx, setDayIdx] = useState(0);
   const [activeTab, setActiveTab] = useState<"map" | "schedule" | "flights" | "mx-admin">("schedule");
@@ -3443,6 +5316,11 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
   const [melAccordionOpen, setMelAccordionOpen] = useState(false);
   const [mxConflictsOpen, setMxConflictsOpen] = useState(false);
   const [dismissedMxIds, setDismissedMxIds] = useState<Set<string>>(new Set());
+
+  // DB-backed UI state (shared across all admins via drafts API)
+  const [wontSeeTodayTails, setWontSeeTodayTails] = useState<Set<string>>(new Set());
+  const [hiddenTodayMxIds, setHiddenTodayMxIds] = useState<Set<string>>(new Set());
+  const dismissedConflictHashesRef = useRef<Record<string, string>>({});
 
   // Van overrides for MX notes — allows assigning individual MX notes to different vans
   const [mxVanOverrides, setMxVanOverrides] = useState<Map<string, number>>(new Map());
@@ -3517,65 +5395,46 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
     } catch { /* ignore */ }
   }, []);
 
-  // Dismiss conflicts by content hash — reappears if MX note changes
-  const dismissedConflictHashesRef = useRef<Record<string, string>>({});
-  // Load from localStorage on first render
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem("dismissedConflictHashes");
-      if (stored) dismissedConflictHashesRef.current = JSON.parse(stored);
-    } catch { /* ignore */ }
-  }, []);
-
+  // Dismiss conflicts by content hash — reappears if MX note changes (DB-backed via drafts)
   const getMxNoteHash = useCallback((note: { body?: string | null; start_time?: string | null; end_time?: string | null; airport_icao?: string | null }) => {
     return `${note.body ?? ""}|${note.start_time ?? ""}|${note.end_time ?? ""}|${note.airport_icao ?? ""}`;
   }, []);
 
-  const [, setDismissedConflictIds] = useState<Set<string>>(() => {
-    if (typeof window === "undefined") return new Set();
-    try {
-      const stored: Record<string, string> = JSON.parse(localStorage.getItem("dismissedConflictHashes") ?? "{}");
-      dismissedConflictHashesRef.current = stored;
-      return new Set(Object.keys(stored));
-    } catch { return new Set(); }
-  });
-
+  const [dismissedConflictVersion, setDismissedConflictVersion] = useState(0);
   const dismissConflict = useCallback((id: string, mxNote: { body?: string | null; start_time?: string | null; end_time?: string | null; airport_icao?: string | null }) => {
     const hash = getMxNoteHash(mxNote);
-    setDismissedConflictIds((prev) => {
-      const next = new Set(prev).add(id);
-      try {
-        const stored: Record<string, string> = JSON.parse(localStorage.getItem("dismissedConflictHashes") ?? "{}");
-        stored[id] = hash;
-        localStorage.setItem("dismissedConflictHashes", JSON.stringify(stored));
-        dismissedConflictHashesRef.current = stored;
-      } catch { /* ignore */ }
-      return next;
-    });
+    dismissedConflictHashesRef.current = { ...dismissedConflictHashesRef.current, [id]: hash };
+    setDismissedConflictVersion((c) => c + 1);
   }, [getMxNoteHash]);
 
   const [schedTypeFilter, setSchedTypeFilter] = useState<string>("all");
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
 
-  // "Hide for Today" — stored in localStorage, auto-expires next day
-  const [hiddenTodayMxIds, setHiddenTodayMxIds] = useState<Set<string>>(() => {
-    if (typeof window === "undefined") return new Set();
-    try {
-      const stored = JSON.parse(localStorage.getItem("hiddenTodayMx") ?? "{}");
-      const today = new Date().toISOString().slice(0, 10);
-      if (stored.date === today) return new Set(stored.ids ?? []);
-      localStorage.removeItem("hiddenTodayMx");
-    } catch { /* ignore */ }
-    return new Set();
-  });
-  const hideMxForToday = useCallback((id: string) => {
-    setHiddenTodayMxIds((prev) => {
-      const next = new Set(prev).add(id);
-      const today = new Date().toISOString().slice(0, 10);
-      localStorage.setItem("hiddenTodayMx", JSON.stringify({ date: today, ids: [...next] }));
-      return next;
-    });
+  // "Hide Until Changed" — DB-backed via drafts (shared across all admins)
+  // Stores composite key: id::contentHash so note resurfaces when Jawad edits it
+  const hideMxForToday = useCallback((note: MxNote) => {
+    const key = `${note.id}::${mxContentHash(note)}`;
+    setHiddenTodayMxIds((prev) => new Set(prev).add(key));
+  }, []);
+
+  // Callback for ScheduleTab to sync UI state loaded from drafts DB
+  const handleSyncDraftUiState = useCallback((data: { wont_see_tails?: string[]; dismissed_conflicts?: Record<string, string>; hidden_mx_ids?: string[] }) => {
+    if (data.wont_see_tails) setWontSeeTodayTails(new Set(data.wont_see_tails));
+    if (data.dismissed_conflicts) {
+      dismissedConflictHashesRef.current = data.dismissed_conflicts;
+      setDismissedConflictVersion((c) => c + 1);
+    }
+    if (data.hidden_mx_ids) setHiddenTodayMxIds(new Set(data.hidden_mx_ids));
+  }, []);
+
+  // "Won't Be Seen Today" — DB-backed via drafts (shared across all admins)
+  const handleMarkWontSee = useCallback((tail: string) => {
+    setWontSeeTodayTails((prev) => new Set(prev).add(tail));
+  }, []);
+
+  const handleRestoreWontSee = useCallback((tail: string) => {
+    setWontSeeTodayTails((prev) => { const next = new Set(prev); next.delete(tail); return next; });
   }, []);
 
   async function handleResync() {
@@ -3899,8 +5758,11 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
 
   useEffect(() => { loadSamsara(); }, []);
   useEffect(() => {
-    const id = setInterval(loadSamsara, 240_000);
-    return () => clearInterval(id);
+    const jitter = () => 240_000 + Math.random() * 30_000;
+    let tid: ReturnType<typeof setTimeout>;
+    const tick = () => { loadSamsara(); tid = setTimeout(tick, jitter()); };
+    tid = setTimeout(tick, jitter());
+    return () => clearTimeout(tid);
   }, []);
 
   const aogSamsaraVans = useMemo(
@@ -4004,8 +5866,11 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
       } catch {}
     }
     loadDiags();
-    const id = setInterval(loadDiags, 300_000); // refresh every 5 min
-    return () => clearInterval(id);
+    const jitterD = () => 300_000 + Math.random() * 30_000;
+    let tidD: ReturnType<typeof setTimeout>;
+    const tickD = () => { loadDiags(); tidD = setTimeout(tickD, jitterD()); };
+    tidD = setTimeout(tickD, jitterD());
+    return () => clearTimeout(tidD);
   }, []);
 
   // ── FlightAware flight info (ETA, route, origin/destination, positions) ──
@@ -4056,8 +5921,11 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
       }
     }
     loadFlightInfo();
-    const id = setInterval(loadFlightInfo, 300_000); // refresh every 5 min
-    return () => { cancelled = true; clearInterval(id); };
+    const jitterFI = () => 300_000 + Math.random() * 30_000;
+    let tidFI: ReturnType<typeof setTimeout>;
+    const tickFI = () => { loadFlightInfo(); tidFI = setTimeout(tickFI, jitterFI()); };
+    tidFI = setTimeout(tickFI, jitterFI());
+    return () => { cancelled = true; clearTimeout(tidFI); };
   }, []);
 
   return (
@@ -4134,7 +6002,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
         const nowMsConf = Date.now();
         const visibleConflicts = mxConflicts.filter((c) => {
           if (c.mxNote.end_time && new Date(c.mxNote.end_time).getTime() < nowMsConf) return false;
-          if (hiddenTodayMxIds.has(c.mxNote.id)) return false;
+          if (isMxHiddenForToday(c.mxNote, hiddenTodayMxIds)) return false;
           const storedHash = dismissedConflictHashesRef.current[c.mxNote.id];
           if (!storedHash) return true;
           return storedHash !== getMxNoteHash(c.mxNote);
@@ -4212,21 +6080,73 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
         );
       })()}
 
-      {/* ── MX Notes from JetInsight (accordion) ── */}
+      {/* ── MEL Items from JetInsight (standalone accordion — no end_time filter) ── */}
+      {(() => {
+        const melOnly = (mxNotes ?? []).filter((n) => {
+          if (isMxHiddenForToday(n, hiddenTodayMxIds)) return false;
+          return isMel(n);
+        });
+        return (
+          <div className={`rounded-xl border-2 px-5 py-4 shadow-sm ${melOnly.length > 0 ? "border-yellow-300 bg-yellow-50" : "border-slate-200 bg-slate-50"}`}>
+            <button
+              onClick={() => setMelAccordionOpen((v) => !v)}
+              className="flex items-center gap-3 w-full text-left"
+            >
+              <div className={`w-10 h-10 rounded-full flex items-center justify-center text-xl shrink-0 font-bold ${melOnly.length > 0 ? "bg-yellow-100 text-yellow-700" : "bg-slate-100 text-slate-400"}`}>!</div>
+              <div className={`text-base font-bold flex-1 ${melOnly.length > 0 ? "text-yellow-800" : "text-slate-500"}`}>
+                MEL Items ({melOnly.length})
+              </div>
+              <svg className={`w-5 h-5 transition-transform ${melOnly.length > 0 ? "text-yellow-600" : "text-slate-400"} ${melAccordionOpen ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+            {melAccordionOpen && (
+              <div className="flex flex-col gap-2 ml-[52px] mt-2">
+                {melOnly.length === 0 ? (
+                  <div className="text-xs text-slate-400 italic py-1">No active MEL items</div>
+                ) : melOnly.map((note) => {
+                  const timeLeft = fmtTimeRemaining(note.end_time);
+                  const days = daysRemaining(note.end_time);
+                  const isUrgent = days < 5;
+                  return (
+                    <div key={note.id} className={`bg-white rounded-lg px-3 py-2 ${isUrgent ? "border border-red-300" : "border border-green-300"}`}>
+                      <div className="flex items-center gap-2">
+                        <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${isUrgent ? "bg-red-100 text-red-700" : "bg-green-100 text-green-700"}`}>MEL</span>
+                        <span className="text-xs font-bold text-gray-800">{note.tail_number}</span>
+                        <span className="text-xs text-gray-600">{note.airport_icao}</span>
+                        {timeLeft && (
+                          <span className={`text-[10px] font-semibold rounded-full px-1.5 py-0.5 ${timeLeft === "overdue" ? "bg-red-100 text-red-700" : isUrgent ? "bg-red-100 text-red-700" : "bg-green-100 text-green-700"}`}>
+                            {timeLeft}
+                          </span>
+                        )}
+                        {note.end_time && (
+                          <span className="text-[11px] text-gray-500 ml-auto">
+                            Due {new Date(note.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}{(() => { const d = new Date(note.end_time); return d.getHours() !== 0 || d.getMinutes() !== 0 ? `, ${d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}` : ""; })()}
+                          </span>
+                        )}
+                        <button onClick={(e) => { e.stopPropagation(); hideMxForToday(note); }} className="text-gray-400 hover:text-red-600 text-xs ml-2 shrink-0" title="Hide until changed">&times;</button>
+                      </div>
+                      <div className="text-sm text-gray-700 mt-0.5">{note.body}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* ── MX Notes from JetInsight (accordion — excludes MEL) ── */}
       {(() => {
         const nowMs = Date.now();
-        const visibleNotes = (mxNotes ?? []).filter((n) => {
-          if (hiddenTodayMxIds.has(n.id)) return false;
+        const mxOnly = (mxNotes ?? []).filter((n) => {
+          if (isMxHiddenForToday(n, hiddenTodayMxIds)) return false;
           if (n.end_time && new Date(n.end_time).getTime() < nowMs) return false;
+          if (isMel(n)) return false;
           return true;
         });
-        const mxOnly = visibleNotes.filter((n) => !isMel(n));
-        const melOnly = visibleNotes.filter((n) => isMel(n));
-        if (visibleNotes.length === 0) return null;
+        if (mxOnly.length === 0) return null;
         return (
-          <>
-          {/* MX Notes accordion */}
-          {mxOnly.length > 0 && (
           <div className="rounded-xl border-2 border-orange-300 bg-orange-50 px-5 py-4 shadow-sm">
             <button
               onClick={() => setMxNotesOpen((v) => !v)}
@@ -4253,7 +6173,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
                           Due {new Date(note.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}{(() => { const d = new Date(note.end_time); return d.getHours() !== 0 || d.getMinutes() !== 0 ? `, ${d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}` : ""; })()}
                         </span>
                       )}
-                      <button onClick={(e) => { e.stopPropagation(); hideMxForToday(note.id); }} className="text-gray-400 hover:text-red-600 text-xs ml-2 shrink-0" title="Hide for today">&times;</button>
+                      <button onClick={(e) => { e.stopPropagation(); hideMxForToday(note); }} className="text-gray-400 hover:text-red-600 text-xs ml-2 shrink-0" title="Hide until changed">&times;</button>
                     </div>
                     <div className="text-sm text-gray-700 mt-0.5">{note.body}</div>
                   </div>
@@ -4261,56 +6181,6 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
               </div>
             )}
           </div>
-          )}
-
-          {/* MEL accordion */}
-          {melOnly.length > 0 && (
-          <div className="rounded-xl border-2 border-yellow-300 bg-yellow-50 px-5 py-4 shadow-sm">
-            <button
-              onClick={() => setMelAccordionOpen((v) => !v)}
-              className="flex items-center gap-3 w-full text-left"
-            >
-              <div className="w-10 h-10 rounded-full flex items-center justify-center text-xl shrink-0 bg-yellow-100 text-yellow-700 font-bold">!</div>
-              <div className="text-base font-bold text-yellow-800 flex-1">
-                MEL Items ({melOnly.length})
-              </div>
-              <svg className={`w-5 h-5 text-yellow-600 transition-transform ${melAccordionOpen ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-              </svg>
-            </button>
-            {melAccordionOpen && (
-              <div className="flex flex-col gap-2 ml-[52px] mt-2">
-                {melOnly.map((note) => {
-                  const timeLeft = fmtTimeRemaining(note.end_time);
-                  const days = daysRemaining(note.end_time);
-                  const isUrgent = days < 5;
-                  return (
-                    <div key={note.id} className={`bg-white rounded-lg px-3 py-2 ${isUrgent ? "border border-red-300" : "border border-green-300"}`}>
-                      <div className="flex items-center gap-2">
-                        <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${isUrgent ? "bg-red-100 text-red-700" : "bg-green-100 text-green-700"}`}>MEL</span>
-                        <span className="text-xs font-bold text-gray-800">{note.tail_number}</span>
-                        <span className="text-xs text-gray-600">{note.airport_icao}</span>
-                        {timeLeft && (
-                          <span className={`text-[10px] font-semibold rounded-full px-1.5 py-0.5 ${timeLeft === "overdue" ? "bg-red-100 text-red-700" : isUrgent ? "bg-red-100 text-red-700" : "bg-green-100 text-green-700"}`}>
-                            {timeLeft}
-                          </span>
-                        )}
-                        {note.end_time && (
-                          <span className="text-[11px] text-gray-500 ml-auto">
-                            Due {new Date(note.end_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })}{(() => { const d = new Date(note.end_time); return d.getHours() !== 0 || d.getMinutes() !== 0 ? `, ${d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}` : ""; })()}
-                          </span>
-                        )}
-                        <button onClick={(e) => { e.stopPropagation(); hideMxForToday(note.id); }} className="text-gray-400 hover:text-red-600 text-xs ml-2 shrink-0" title="Hide for today">&times;</button>
-                      </div>
-                      <div className="text-sm text-gray-700 mt-0.5">{note.body}</div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-          )}
-          </>
         );
       })()}
 
@@ -4556,7 +6426,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
 
       {/* ── Schedule tab ── */}
       {activeTab === "schedule" && (
-        <ScheduleTab allFlights={activeFlights} date={selectedDate} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} flightInfoMap={flightInfoMap} mxNotesByTail={mxNotesByTail} longTermMxTails={longTermMxTails} hiddenTodayMxIds={hiddenTodayMxIds} onHideMxForToday={hideMxForToday} mxVanOverrides={mxVanOverrides} onVanOverride={handleVanOverride} fboMap={fboMap} />
+        <ScheduleTab allFlights={activeFlights} date={selectedDate} liveVanPositions={liveVanPositions} liveVanAddresses={liveVanAddresses} vanZoneNames={vanZoneNames} flightInfoMap={flightInfoMap} mxNotesByTail={mxNotesByTail} longTermMxTails={longTermMxTails} hiddenTodayMxIds={hiddenTodayMxIds} onHideMxForToday={hideMxForToday} mxVanOverrides={mxVanOverrides} onVanOverride={handleVanOverride} fboMap={fboMap} wontSeeTodayTails={wontSeeTodayTails} onMarkWontSee={handleMarkWontSee} onRestoreWontSee={handleRestoreWontSee} onSyncDraftUiState={handleSyncDraftUiState} dismissedConflictsRef={dismissedConflictHashesRef} dismissedConflictVersion={dismissedConflictVersion} />
       )}
 
       {/* ── Flight Schedule tab — grouped by aircraft ── */}
@@ -4698,7 +6568,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
                               )}
                               {isEnRoute && (
                                 <span className="text-xs rounded-full px-2 py-0.5 font-semibold bg-blue-100 text-blue-700">
-                                  En Route{fi?.progress_percent != null ? ` ${fi.progress_percent}%` : ""}
+                                  En Route
                                 </span>
                               )}
                               {isLanded && (
@@ -4711,9 +6581,9 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
                         })}
                       </div>
                       {/* MX notes from JetInsight */}
-                      {(mxNotesByTail.get(tail ?? "") ?? []).filter((n) => { if (hiddenTodayMxIds.has(n.id)) return false; if (n.end_time && new Date(n.end_time).getTime() < Date.now()) return false; return true; }).length > 0 && (
+                      {(mxNotesByTail.get(tail ?? "") ?? []).filter((n) => { if (isMxHiddenForToday(n, hiddenTodayMxIds)) return false; if (n.end_time && new Date(n.end_time).getTime() < Date.now()) return false; return true; }).length > 0 && (
                         <div className="border-t border-orange-100 px-4 py-2 space-y-1">
-                          {(mxNotesByTail.get(tail ?? "") ?? []).filter((n) => { if (hiddenTodayMxIds.has(n.id)) return false; if (n.end_time && new Date(n.end_time).getTime() < Date.now()) return false; return true; }).map((n) => {
+                          {(mxNotesByTail.get(tail ?? "") ?? []).filter((n) => { if (isMxHiddenForToday(n, hiddenTodayMxIds)) return false; if (n.end_time && new Date(n.end_time).getTime() < Date.now()) return false; return true; }).map((n) => {
                             const mel = isMel(n);
                             const timeLeft = mel ? fmtTimeRemaining(n.end_time) : null;
                             return (
@@ -4738,10 +6608,10 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
                                   </span>
                                 </div>
                                 <button
-                                  onClick={() => hideMxForToday(n.id)}
+                                  onClick={() => hideMxForToday(n)}
                                   className="text-[10px] font-medium text-orange-400 hover:text-orange-700 hover:bg-orange-50 border border-orange-200 rounded px-2 py-0.5 mt-1 transition-colors"
                                 >
-                                  Hide for Today
+                                  Hide Until Changed
                                 </button>
                               </div>
                             </div>
@@ -4760,7 +6630,11 @@ export default function VanPositioningClient({ initialFlights, mxNotes, aircraft
 
       {/* ── MX Admin tab ── */}
       {activeTab === "mx-admin" && (
-        <MxAdminTab />
+        <div className="space-y-8">
+          <MxBoard flights={initialFlights} mxNotes={mxNotes} melItems={melItems} />
+          <hr className="border-gray-200" />
+          <MxAdminTab />
+        </div>
       )}
 
       {/* ── Long-Term Maintenance section ── */}

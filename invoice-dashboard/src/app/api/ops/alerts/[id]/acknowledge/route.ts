@@ -11,7 +11,7 @@ export async function POST(
   const auth = await requireAuth(req);
   if (!isAuthed(auth)) return auth.error;
 
-  if (isRateLimited(auth.userId)) {
+  if (await isRateLimited(auth.userId)) {
     return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
   }
 

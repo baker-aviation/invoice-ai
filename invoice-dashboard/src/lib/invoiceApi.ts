@@ -30,11 +30,15 @@ export async function fetchInvoices(params: {
     .limit(limit);
 
   if (params.q) {
-    const q = params.q.replace(/%/g, "");
-    const pattern = `%${q}%`;
-    query = query.or(
-      `vendor_name.ilike.${pattern},invoice_number.ilike.${pattern},airport_code.ilike.${pattern},tail_number.ilike.${pattern},document_id.ilike.${pattern}`
-    );
+    // Strip characters that act as PostgREST filter operators:
+    //   , = condition separator  ( ) = grouping  % = SQL wildcard (we add our own)
+    const q = params.q.replace(/[%,()]/g, "").trim();
+    if (q.length > 0) {
+      const pattern = `%${q}%`;
+      query = query.or(
+        `vendor_name.ilike.${pattern},invoice_number.ilike.${pattern},airport_code.ilike.${pattern},tail_number.ilike.${pattern}`
+      );
+    }
   }
   if (params.vendor) query = query.ilike("vendor_name", `%${params.vendor}%`);
   if (params.doc_type) query = query.eq("doc_type", params.doc_type);

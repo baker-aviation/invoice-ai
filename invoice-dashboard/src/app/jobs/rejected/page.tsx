@@ -11,7 +11,7 @@ async function fetchRejected() {
   const { data, error } = await supa
     .from("job_application_parse")
     .select(
-      "id, application_id, candidate_name, email, phone, location, category, rejected_at, rejection_reason, pipeline_stage, created_at"
+      "id, application_id, candidate_name, email, phone, location, category, rejected_at, rejection_reason, rejection_type, pipeline_stage, created_at"
     )
     .not("rejected_at", "is", null)
     .is("deleted_at", null)

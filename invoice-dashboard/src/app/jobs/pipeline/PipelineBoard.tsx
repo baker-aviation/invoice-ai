@@ -13,6 +13,16 @@ const STAGE_META: Record<
   PipelineStage,
   { label: string; color: string; headerColor: string }
 > = {
+  prd_faa_review: {
+    label: "Pending PRD Upload",
+    color: "border-orange-200",
+    headerColor: "bg-orange-100 text-orange-700",
+  },
+  chief_pilot_review: {
+    label: "Chief Pilot Review",
+    color: "border-red-200",
+    headerColor: "bg-red-100 text-red-700",
+  },
   screening: {
     label: "Screening",
     color: "border-blue-200",
@@ -23,15 +33,25 @@ const STAGE_META: Record<
     color: "border-cyan-200",
     headerColor: "bg-cyan-100 text-cyan-700",
   },
-  prd_faa_review: {
-    label: "PRD / FAA Review",
-    color: "border-orange-200",
-    headerColor: "bg-orange-100 text-orange-700",
+  tims_review: {
+    label: "Tim's Review",
+    color: "border-teal-200",
+    headerColor: "bg-teal-100 text-teal-700",
   },
-  interview: {
-    label: "Interview",
+  interview_pre: {
+    label: "Need to Schedule Interview",
     color: "border-violet-200",
     headerColor: "bg-violet-100 text-violet-700",
+  },
+  interview_scheduled: {
+    label: "Scheduled for Interview",
+    color: "border-fuchsia-200",
+    headerColor: "bg-fuchsia-100 text-fuchsia-700",
+  },
+  interview_post: {
+    label: "Interview Completed",
+    color: "border-purple-200",
+    headerColor: "bg-purple-100 text-purple-700",
   },
   pending_offer: {
     label: "Pending Offer",
@@ -67,6 +87,254 @@ const CATEGORY_LABELS: Record<string, string> = {
   line_service: "Line",
   other: "Other",
 };
+
+function MeetingLinkTool({ storageKey, placeholder, borderColor }: { storageKey: string; placeholder?: string; borderColor?: string }) {
+  const [meetLink, setMeetLink] = useState(() => {
+    try { return localStorage.getItem(storageKey) ?? ""; } catch { return ""; }
+  });
+  const [copied, setCopied] = useState(false);
+
+  const handleChange = (val: string) => {
+    setMeetLink(val);
+    try { localStorage.setItem(storageKey, val); } catch {}
+  };
+
+  return (
+    <div className="space-y-1.5">
+      <input
+        type="text"
+        value={meetLink}
+        onChange={(e) => handleChange(e.target.value)}
+        placeholder={placeholder ?? "Meeting link..."}
+        className={`w-full text-[10px] px-2 py-1 rounded border border-gray-200 focus:border-${borderColor ?? "cyan"}-400 focus:outline-none`}
+      />
+      {meetLink && (
+        <button
+          onClick={() => {
+            navigator.clipboard.writeText(meetLink);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+          }}
+          className="text-[10px] font-medium px-2 py-1 rounded border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 transition-colors"
+        >
+          {copied ? "Copied!" : "Copy Meet Link"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function fmtShortDate(d: string): string {
+  return new Date(d + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+interface AttendanceRecord {
+  id: number;
+  meeting_date: string;
+  total_participants: number;
+  matched: { name: string; email: string; durationMin: number }[];
+  unmatched: string[];
+}
+
+function InfoSessionTools({ jobs, onAttendanceChecked }: { jobs: JobRow[]; onAttendanceChecked?: () => void }) {
+  const [copied, setCopied] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [attendanceResult, setAttendanceResult] = useState<{
+    summary: string;
+    matched: { name: string; email: string; durationSec: number; stage?: string | null; date?: string }[];
+    unmatched: { name: string; email: string; durationMin: number; date?: string }[];
+    internal: { name: string; email: string; durationMin: number; date?: string }[];
+    totalParticipants: number;
+  } | null>(null);
+  const [attendanceError, setAttendanceError] = useState<string | null>(null);
+  const [history, setHistory] = useState<AttendanceRecord[]>([]);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [expandedRecord, setExpandedRecord] = useState<number | null>(null);
+
+  // Load history on first expand
+  const loadHistory = async () => {
+    if (historyLoaded) { setShowHistory(!showHistory); return; }
+    try {
+      const res = await fetch("/api/jobs/attendance");
+      const data = await res.json();
+      if (data.ok) setHistory(data.records ?? []);
+    } catch {}
+    setHistoryLoaded(true);
+    setShowHistory(true);
+  };
+  const emails = jobs.filter((j) => j.email).map((j) => j.email!);
+
+  const handleCopyEmails = () => {
+    const text = emails.join(", ");
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  const handleCheckAttendance = async () => {
+    let meetLink = "";
+    try { meetLink = localStorage.getItem("info_session_meet_link") ?? ""; } catch {}
+    if (!meetLink) {
+      setAttendanceError("Enter a Google Meet link first");
+      return;
+    }
+    setChecking(true);
+    setAttendanceResult(null);
+    setAttendanceError(null);
+    try {
+      const res = await fetch("/api/jobs/attendance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ meetLink }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setAttendanceError(data.error);
+        return;
+      }
+      const parts = [];
+      if (data.markedCount > 0) parts.push(`${data.markedCount} marked attended`);
+      if (data.unmatched?.length > 0) parts.push(`${data.unmatched.length} unmatched`);
+      if (data.totalParticipants === 0) parts.push(`No participants found (code: ${data.meetingCode ?? "?"})`);
+      if (data.totalParticipants > 0 && !data.matched?.length && !data.unmatched?.length && !data.internal?.length) {
+        parts.push(`${data.totalParticipants} participants (all filtered — check domains)`);
+      }
+      setAttendanceResult({
+        summary: parts.join(", ") || `${data.totalParticipants} participants`,
+        matched: data.matched ?? [],
+        unmatched: data.unmatched ?? [],
+        internal: data.internal ?? [],
+        totalParticipants: data.totalParticipants ?? 0,
+      });
+      if (data.markedCount > 0) {
+        setTimeout(() => onAttendanceChecked?.(), 2000);
+      }
+    } catch (err) {
+      setAttendanceError(String(err));
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  return (
+    <div className="px-3 py-2 border-t border-cyan-100 space-y-2">
+      <div className="flex items-center gap-2">
+        <button
+          onClick={handleCopyEmails}
+          disabled={emails.length === 0}
+          className="text-[10px] font-medium px-2 py-1 rounded border border-cyan-300 bg-white text-cyan-700 hover:bg-cyan-50 disabled:opacity-40 transition-colors"
+        >
+          {copied ? "Copied!" : `Copy ${emails.length} Email${emails.length !== 1 ? "s" : ""}`}
+        </button>
+      </div>
+      <MeetingLinkTool storageKey="info_session_meet_link" placeholder="Google Meet link..." />
+      <button
+        onClick={handleCheckAttendance}
+        disabled={checking}
+        className="w-full text-[10px] font-medium px-2 py-1 rounded border border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 disabled:opacity-50 transition-colors"
+      >
+        {checking ? "Checking..." : "Check Attendance"}
+      </button>
+      {attendanceError && (
+        <div className="text-[10px] px-2 py-1 rounded bg-red-50 text-red-600">{attendanceError}</div>
+      )}
+      {attendanceResult && (
+        <div className="text-[10px] rounded border border-emerald-200 bg-emerald-50 overflow-hidden">
+          <div className="px-2 py-1 font-semibold text-emerald-700 border-b border-emerald-200">
+            {attendanceResult.summary} ({attendanceResult.totalParticipants} total)
+          </div>
+          {attendanceResult.matched.length > 0 && (
+            <div className="px-2 py-1 space-y-0.5">
+              <div className="font-semibold text-emerald-600">In Pipeline:</div>
+              {attendanceResult.matched.map((m, i) => (
+                <div key={`${m.email}-${i}`} className="text-emerald-700 flex items-center gap-1 flex-wrap">
+                  <span>{m.name}</span>
+                  <span className="text-emerald-400">({Math.round(m.durationSec / 60)}m)</span>
+                  {m.date && <span className="text-[9px] text-emerald-400">{fmtShortDate(m.date)}</span>}
+                  {m.stage && (
+                    <span className="text-[9px] px-1 rounded bg-emerald-100 text-emerald-600">{m.stage.replace(/_/g, " ")}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+          {attendanceResult.unmatched.length > 0 && (
+            <div className="px-2 py-1 border-t border-emerald-200 space-y-0.5">
+              <div className="font-semibold text-gray-500">Not in pipeline:</div>
+              {attendanceResult.unmatched.map((u, i) => (
+                <div key={typeof u === "string" ? u : `${u.email}-${i}`} className="text-gray-500">
+                  {typeof u === "string" ? u : <>{u.name} ({u.durationMin}m) {u.date && <span className="text-gray-400">{fmtShortDate(u.date)}</span>}</>}
+                </div>
+              ))}
+            </div>
+          )}
+          {(attendanceResult.internal?.length ?? 0) > 0 && (
+            <div className="px-2 py-1 border-t border-emerald-200 space-y-0.5">
+              <div className="font-semibold text-gray-400">Baker staff:</div>
+              {attendanceResult.internal.map((s, i) => (
+                <div key={`${s.email}-${i}`} className="text-gray-400">{s.name} ({s.durationMin}m) {s.date && <span>{fmtShortDate(s.date)}</span>}</div>
+              ))}
+            </div>
+          )}
+          {attendanceResult.matched.length === 0 && attendanceResult.unmatched.length === 0 && (attendanceResult.internal?.length ?? 0) === 0 && attendanceResult.totalParticipants > 0 && (
+            <div className="px-2 py-1 text-gray-400 text-[9px] break-all">
+              {attendanceResult.totalParticipants} participants — matched:{attendanceResult.matched.length} unmatched:{attendanceResult.unmatched.length} internal:{attendanceResult.internal?.length ?? "undefined"}
+            </div>
+          )}
+        </div>
+      )}
+      {/* History toggle */}
+      <button
+        onClick={loadHistory}
+        className="w-full text-[10px] font-medium px-2 py-1 rounded border border-gray-200 bg-white text-gray-500 hover:bg-gray-50 transition-colors"
+      >
+        {showHistory ? "Hide History" : "Past Sessions"}
+      </button>
+      {showHistory && (
+        <div className="space-y-1">
+          {history.length === 0 && (
+            <div className="text-[10px] text-gray-400 px-1">No records yet</div>
+          )}
+          {history.map((rec) => {
+            const dayLabel = new Date(rec.meeting_date + "T12:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+            const isExpanded = expandedRecord === rec.id;
+            return (
+              <div key={rec.id} className="text-[10px] rounded border border-gray-200 overflow-hidden">
+                <button
+                  onClick={() => setExpandedRecord(isExpanded ? null : rec.id)}
+                  className="w-full px-2 py-1 flex items-center justify-between bg-gray-50 hover:bg-gray-100 transition-colors text-left"
+                >
+                  <span className="font-medium text-gray-700">{dayLabel}</span>
+                  <span className="text-gray-400">
+                    {rec.matched.length} attended / {rec.total_participants} total
+                  </span>
+                </button>
+                {isExpanded && (
+                  <div className="px-2 py-1 space-y-0.5 border-t border-gray-100">
+                    {rec.matched.map((m) => (
+                      <div key={m.email} className="text-emerald-700">
+                        {m.name} <span className="text-emerald-400">({m.durationMin}m)</span>
+                      </div>
+                    ))}
+                    {rec.unmatched.length > 0 && (
+                      <div className="pt-0.5 mt-0.5 border-t border-gray-100">
+                        {rec.unmatched.map((u) => (
+                          <div key={u} className="text-gray-400">{u}</div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 const CATEGORY_COLORS: Record<string, string> = {
   pilot_pic: "bg-emerald-100 text-emerald-800 border-emerald-200",
@@ -157,7 +425,7 @@ function AddCandidateModal({
         location: form.location.trim() || null,
         category: form.category || null,
         notes: form.notes.trim() || null,
-        pipeline_stage: "screening",
+        pipeline_stage: "prd_faa_review",
       };
       if (isPilot) {
         if (form.total_time_hours) payload.total_time_hours = Number(form.total_time_hours);
@@ -201,7 +469,7 @@ function AddCandidateModal({
         application_id: data.application_id,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
-        pipeline_stage: "screening",
+        pipeline_stage: "prd_faa_review",
         category: form.category || null,
         employment_type: null,
         candidate_name: form.candidate_name.trim(),
@@ -381,12 +649,167 @@ function AddCandidateModal({
 // Candidate card
 // ---------------------------------------------------------------------------
 
+function OfferStatusBadge({ status }: { status: string | null | undefined }) {
+  if (!status || status === "draft") {
+    return (
+      <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-gray-100 text-gray-500 border-gray-200">
+        No Offer
+      </span>
+    );
+  }
+  const map: Record<string, string> = {
+    sent: "bg-blue-100 text-blue-700 border-blue-200",
+    accepted: "bg-emerald-100 text-emerald-700 border-emerald-200",
+    declined: "bg-red-100 text-red-700 border-red-200",
+  };
+  const labels: Record<string, string> = {
+    sent: "Offer Sent",
+    accepted: "Accepted",
+    declined: "Declined",
+  };
+  return (
+    <span className={`inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold ${map[status] ?? "bg-gray-100 text-gray-500 border-gray-200"}`}>
+      {labels[status] ?? status}
+    </span>
+  );
+}
+
+function SendInterviewEmailButton({ job }: { job: JobRow }) {
+  const [sending, setSending] = useState(false);
+  const [sentAt, setSentAt] = useState<string | null>((job as any).interview_email_sent_at ?? null);
+  const [error, setError] = useState("");
+
+  async function handleSend(e: React.MouseEvent) {
+    e.stopPropagation();
+    e.preventDefault();
+    if (!job.email) {
+      setError("No email");
+      return;
+    }
+    setSending(true);
+    setError("");
+    try {
+      const res = await fetch("/api/jobs/send-interview-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ application_id: job.application_id }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(data.error ?? "Failed");
+      } else {
+        setSentAt(data.sentAt ?? new Date().toISOString());
+      }
+    } catch {
+      setError("Network error");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  if (sentAt) {
+    const dateStr = new Date(sentAt).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    return (
+      <div className="text-[10px]">
+        <span className="text-emerald-600 font-medium">Email sent {dateStr}</span>
+        <button
+          onClick={handleSend}
+          disabled={sending}
+          className="ml-1.5 text-gray-400 hover:text-violet-600 transition-colors"
+        >
+          {sending ? "..." : "resend"}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div onClick={(e) => e.stopPropagation()}>
+      <button
+        onClick={handleSend}
+        disabled={sending || !job.email}
+        className="text-[10px] font-medium px-2 py-1 rounded border border-violet-300 bg-white text-violet-700 hover:bg-violet-50 disabled:opacity-40 transition-colors"
+      >
+        {sending ? "Sending..." : "Send Scheduling Email"}
+      </button>
+      {error && <div className="text-[10px] text-red-500 mt-0.5">{error}</div>}
+    </div>
+  );
+}
+
+function SendInfoSessionEmailButton({ job }: { job: JobRow }) {
+  const [sending, setSending] = useState(false);
+  const [sentAt, setSentAt] = useState<string | null>((job as any).info_session_email_sent_at ?? null);
+  const [error, setError] = useState("");
+
+  async function handleSend(e: React.MouseEvent) {
+    e.stopPropagation();
+    e.preventDefault();
+    if (!job.email) {
+      setError("No email");
+      return;
+    }
+    setSending(true);
+    setError("");
+    try {
+      const res = await fetch("/api/jobs/send-info-session-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ application_id: job.application_id }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(data.error ?? "Failed");
+      } else {
+        setSentAt(data.sentAt ?? new Date().toISOString());
+      }
+    } catch {
+      setError("Network error");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  if (sentAt) {
+    const dateStr = new Date(sentAt).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    return (
+      <div className="text-[10px]">
+        <span className="text-emerald-600 font-medium">Invite sent {dateStr}</span>
+        <button
+          onClick={handleSend}
+          disabled={sending}
+          className="ml-1.5 text-gray-400 hover:text-cyan-600 transition-colors"
+        >
+          {sending ? "..." : "resend"}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div onClick={(e) => e.stopPropagation()}>
+      <button
+        onClick={handleSend}
+        disabled={sending || !job.email}
+        className="text-[10px] font-medium px-2 py-1 rounded border border-cyan-300 bg-white text-cyan-700 hover:bg-cyan-50 disabled:opacity-40 transition-colors"
+      >
+        {sending ? "Sending..." : "Send Info Session Invite"}
+      </button>
+      {error && <div className="text-[10px] text-red-500 mt-0.5">{error}</div>}
+    </div>
+  );
+}
+
 function CandidateCard({
   job,
   onDragStart,
+  stage,
+  onToggleAttendance,
 }: {
   job: JobRow;
   onDragStart: (e: React.DragEvent, applicationId: number) => void;
+  stage: PipelineStage;
+  onToggleAttendance?: (applicationId: number, attended: boolean) => void;
 }) {
   const isPilot =
     job.category === "pilot_pic" || job.category === "pilot_sic";
@@ -438,6 +861,24 @@ function CandidateCard({
             {catLabel}
           </span>
         )}
+        {/* Source tag */}
+        {job.model === "google-form-intake" ? (
+          <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-red-50 text-red-600 border-red-200">Google</span>
+        ) : job.model === "manual" ? (
+          <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-gray-50 text-gray-500 border-gray-200">Manual</span>
+        ) : job.model ? (
+          <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-indigo-50 text-indigo-600 border-indigo-200">Hiring@</span>
+        ) : null}
+        {/* HR Reviewed badge */}
+        {job.hr_reviewed ? (
+          <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-emerald-50 text-emerald-700 border-emerald-200">HR Reviewed</span>
+        ) : (
+          <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-gray-50 text-gray-400 border-gray-200">HR Pending</span>
+        )}
+        {/* Previously Rejected badge */}
+        {job.previously_rejected && (
+          <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-red-50 text-red-600 border-red-200">Prev. Rejected</span>
+        )}
         {job.location && (
           <span className="text-[10px] text-gray-400 truncate max-w-[100px]">
             {job.location}
@@ -456,6 +897,53 @@ function CandidateCard({
         </div>
       )}
 
+      {/* Interview scheduling email button */}
+      {stage === "interview_pre" && (
+        <div className="mt-2">
+          <SendInterviewEmailButton job={job} />
+        </div>
+      )}
+
+      {/* Info session email button */}
+      {stage === "info_session" && (
+        <div className="mt-2">
+          <SendInfoSessionEmailButton job={job} />
+        </div>
+      )}
+
+      {/* Info session attendance toggle */}
+      {stage === "info_session" && (
+        <div className="mt-2 flex items-center gap-1.5">
+          <label
+            className="flex items-center gap-1.5 cursor-pointer"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <input
+              type="checkbox"
+              checked={!!job.info_session_attended}
+              onChange={(e) => {
+                e.stopPropagation();
+                onToggleAttendance?.(job.application_id, e.target.checked);
+              }}
+              className="rounded border-gray-300 text-emerald-600 focus:ring-emerald-500 h-3.5 w-3.5"
+            />
+            <span className="text-[10px] text-gray-500">Attended</span>
+          </label>
+          {job.info_session_attended && (
+            <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-emerald-100 text-emerald-700 border-emerald-200">
+              Attended
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Offer status badge */}
+      {(stage === "pending_offer" || stage === "offer") && (
+        <div className="mt-2">
+          <OfferStatusBadge status={job.offer_status} />
+        </div>
+      )}
+
       {job.created_at && (
         <div className="mt-1.5 text-[10px] text-gray-300">
           {fmtDate(job.created_at)}
@@ -469,6 +957,8 @@ function CandidateCard({
 // Main board
 // ---------------------------------------------------------------------------
 
+const CARD_LIMIT = 8; // cards shown before "Show all"
+
 export default function PipelineBoard({
   initialJobs,
 }: {
@@ -480,6 +970,9 @@ export default function PipelineBoard({
   const [saving, setSaving] = useState<Set<number>>(new Set());
   const [search, setSearch] = useState("");
   const [showAddModal, setShowAddModal] = useState(false);
+  const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
+  const [expandedColumns, setExpandedColumns] = useState<Set<PipelineStage>>(new Set());
+  const [collapsedColumns, setCollapsedColumns] = useState<Set<PipelineStage>>(new Set());
 
   // Track pending API calls so we can dedup
   const pendingRef = useRef(new Set<string>());
@@ -493,6 +986,7 @@ export default function PipelineBoard({
   for (const job of jobs) {
     if (!(PIPELINE_STAGES as readonly string[]).includes(job.pipeline_stage ?? "")) continue;
     const stage = job.pipeline_stage as PipelineStage;
+    if (categoryFilter && job.category !== categoryFilter) continue;
     if (qLower) {
       const haystack = [
         job.candidate_name,
@@ -506,6 +1000,14 @@ export default function PipelineBoard({
       if (!haystack.includes(qLower)) continue;
     }
     columns.get(stage)!.push(job);
+  }
+
+  // Count all (unfiltered) for category pills
+  const categoryCounts: Record<string, number> = {};
+  for (const job of jobs) {
+    if (!(PIPELINE_STAGES as readonly string[]).includes(job.pipeline_stage ?? "")) continue;
+    const cat = job.category || "other";
+    categoryCounts[cat] = (categoryCounts[cat] || 0) + 1;
   }
 
   // ---- Drag handlers ----
@@ -602,6 +1104,70 @@ export default function PipelineBoard({
     setDropTarget(null);
   }, []);
 
+  const handleToggleAttendance = useCallback(
+    async (applicationId: number, attended: boolean) => {
+      // Optimistic update
+      setJobs((prev) =>
+        prev.map((j) =>
+          j.application_id === applicationId
+            ? {
+                ...j,
+                info_session_attended: attended || null,
+                info_session_attended_at: attended
+                  ? new Date().toISOString()
+                  : null,
+              }
+            : j,
+        ),
+      );
+
+      try {
+        const res = await fetch(`/api/jobs/${applicationId}/profile`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            info_session_attended: attended ? true : null,
+            info_session_attended_at: attended
+              ? new Date().toISOString()
+              : null,
+          }),
+        });
+        if (!res.ok) {
+          // Revert on failure
+          setJobs((prev) =>
+            prev.map((j) =>
+              j.application_id === applicationId
+                ? {
+                    ...j,
+                    info_session_attended: attended ? null : true,
+                    info_session_attended_at: attended
+                      ? null
+                      : j.info_session_attended_at,
+                  }
+                : j,
+            ),
+          );
+        }
+      } catch {
+        // Revert on network error
+        setJobs((prev) =>
+          prev.map((j) =>
+            j.application_id === applicationId
+              ? {
+                  ...j,
+                  info_session_attended: attended ? null : true,
+                  info_session_attended_at: attended
+                    ? null
+                    : j.info_session_attended_at,
+                }
+              : j,
+          ),
+        );
+      }
+    },
+    [],
+  );
+
   const handleCreated = useCallback((newJob: JobRow) => {
     setJobs((prev) => [newJob, ...prev]);
   }, []);
@@ -609,26 +1175,54 @@ export default function PipelineBoard({
   return (
     <div className="p-4 sm:p-6 bg-gray-50 min-h-screen">
       {/* Toolbar */}
-      <div className="mb-4 flex items-center gap-3">
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search candidates..."
-          className="max-w-xs rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm outline-none focus:border-gray-400 transition-colors"
-        />
-        <button
-          type="button"
-          onClick={() => setShowAddModal(true)}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white bg-slate-800 rounded-lg hover:bg-slate-700 transition-colors"
-        >
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-            <path d="M8 3v10M3 8h10" />
-          </svg>
-          Add Candidate
-        </button>
-        {saving.size > 0 && (
-          <span className="text-xs text-gray-400 animate-pulse">Saving...</span>
-        )}
+      <div className="mb-4 space-y-2">
+        <div className="flex items-center gap-3">
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search candidates..."
+            className="max-w-xs rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm outline-none focus:border-gray-400 transition-colors"
+          />
+          <button
+            type="button"
+            onClick={() => setShowAddModal(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white bg-slate-800 rounded-lg hover:bg-slate-700 transition-colors"
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <path d="M8 3v10M3 8h10" />
+            </svg>
+            Add Candidate
+          </button>
+          {saving.size > 0 && (
+            <span className="text-xs text-gray-400 animate-pulse">Saving...</span>
+          )}
+        </div>
+        {/* Category filter pills */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <button
+            onClick={() => setCategoryFilter(null)}
+            className={`text-[11px] font-medium px-2.5 py-1 rounded-full border transition-colors ${
+              !categoryFilter
+                ? "bg-slate-800 text-white border-slate-800"
+                : "bg-white text-gray-600 border-gray-200 hover:border-gray-400"
+            }`}
+          >
+            All ({jobs.filter(j => (PIPELINE_STAGES as readonly string[]).includes(j.pipeline_stage ?? "")).length})
+          </button>
+          {CATEGORY_OPTIONS.filter(opt => categoryCounts[opt.value]).map(opt => (
+            <button
+              key={opt.value}
+              onClick={() => setCategoryFilter(categoryFilter === opt.value ? null : opt.value)}
+              className={`text-[11px] font-medium px-2.5 py-1 rounded-full border transition-colors ${
+                categoryFilter === opt.value
+                  ? "bg-slate-800 text-white border-slate-800"
+                  : `${CATEGORY_COLORS[opt.value] ?? "bg-white text-gray-600 border-gray-200"} hover:opacity-80`
+              }`}
+            >
+              {CATEGORY_LABELS[opt.value] ?? opt.label} ({categoryCounts[opt.value]})
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Columns */}
@@ -637,6 +1231,11 @@ export default function PipelineBoard({
           const meta = STAGE_META[stage];
           const stageJobs = columns.get(stage) ?? [];
           const isOver = dropTarget === stage;
+          const isCollapsed = collapsedColumns.has(stage);
+          const isExpanded = expandedColumns.has(stage);
+          const showLimit = !isExpanded && stageJobs.length > CARD_LIMIT;
+          const visibleJobs = showLimit ? stageJobs.slice(0, CARD_LIMIT) : stageJobs;
+          const hiddenCount = stageJobs.length - CARD_LIMIT;
 
           return (
             <div
@@ -644,44 +1243,101 @@ export default function PipelineBoard({
               onDragOver={(e) => handleDragOver(e, stage)}
               onDragLeave={handleDragLeave}
               onDrop={(e) => handleDrop(e, stage)}
-              className={`flex-1 min-w-[200px] flex flex-col rounded-xl border bg-gray-50 transition-colors ${
+              className={`flex flex-col rounded-xl border bg-gray-50 transition-all ${
+                isCollapsed ? "min-w-[56px] max-w-[56px]" : "flex-1 min-w-[200px]"
+              } ${
                 isOver
                   ? "border-blue-400 bg-blue-50/50 ring-2 ring-blue-200"
                   : meta.color
               }`}
             >
               {/* Column header */}
-              <div
-                className={`flex items-center justify-between px-3 py-2 rounded-t-xl ${meta.headerColor}`}
+              <button
+                type="button"
+                onClick={() => {
+                  if (isCollapsed) {
+                    setCollapsedColumns(prev => { const n = new Set(prev); n.delete(stage); return n; });
+                  } else {
+                    setCollapsedColumns(prev => new Set(prev).add(stage));
+                  }
+                }}
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-t-xl ${meta.headerColor} w-full text-left cursor-pointer hover:opacity-80 transition-opacity`}
               >
-                <span className="text-xs font-semibold">{meta.label}</span>
-                <span className="text-[10px] font-bold opacity-60">
-                  {stageJobs.length}
-                </span>
-              </div>
-
-              {/* Cards */}
-              <div className="flex-1 p-2 space-y-2 min-h-[120px] max-h-[calc(100vh-220px)] overflow-y-auto">
-                {stageJobs.map((job) => (
-                  <div
-                    key={job.application_id}
-                    className={
-                      draggingId === job.application_id ? "opacity-40" : ""
-                    }
-                    onDragEnd={handleDragEnd}
-                  >
-                    <CandidateCard
-                      job={job}
-                      onDragStart={handleDragStart}
-                    />
+                {isCollapsed ? (
+                  <div className="flex flex-col items-center w-full gap-1">
+                    <span className="text-[10px] font-bold">{stageJobs.length}</span>
+                    <span className="text-[9px] font-semibold [writing-mode:vertical-lr] rotate-180 whitespace-nowrap">
+                      {meta.label}
+                    </span>
                   </div>
-                ))}
-                {stageJobs.length === 0 && (
-                  <div className="text-xs text-gray-300 text-center py-8">
-                    No candidates
-                  </div>
+                ) : (
+                  <>
+                    <span className="text-xs font-semibold flex-1">{meta.label}</span>
+                    <span className="text-[10px] font-bold opacity-60">
+                      {stageJobs.length}
+                    </span>
+                  </>
                 )}
-              </div>
+              </button>
+
+              {!isCollapsed && (
+                <>
+                  {stage === "info_session" && (
+                    <InfoSessionTools
+                      jobs={stageJobs}
+                      onAttendanceChecked={() => window.location.reload()}
+                    />
+                  )}
+                  {stage === "interview_scheduled" && (
+                    <div className="px-3 py-2 border-t border-fuchsia-100">
+                      <MeetingLinkTool storageKey="interview_meet_link" placeholder="Calendly or Meet link..." borderColor="fuchsia" />
+                    </div>
+                  )}
+
+                  {/* Cards */}
+                  <div className="flex-1 p-2 space-y-2 min-h-[120px] max-h-[calc(100vh-260px)] overflow-y-auto">
+                    {visibleJobs.map((job) => (
+                      <div
+                        key={job.application_id}
+                        className={
+                          draggingId === job.application_id ? "opacity-40" : ""
+                        }
+                        onDragEnd={handleDragEnd}
+                      >
+                        <CandidateCard
+                          job={job}
+                          onDragStart={handleDragStart}
+                          stage={stage}
+                          onToggleAttendance={handleToggleAttendance}
+                        />
+                      </div>
+                    ))}
+                    {showLimit && (
+                      <button
+                        type="button"
+                        onClick={() => setExpandedColumns(prev => new Set(prev).add(stage))}
+                        className="w-full text-[11px] font-medium text-gray-500 hover:text-gray-700 bg-white border border-gray-200 rounded-lg py-2 hover:bg-gray-50 transition-colors"
+                      >
+                        Show {hiddenCount} more...
+                      </button>
+                    )}
+                    {isExpanded && stageJobs.length > CARD_LIMIT && (
+                      <button
+                        type="button"
+                        onClick={() => setExpandedColumns(prev => { const n = new Set(prev); n.delete(stage); return n; })}
+                        className="w-full text-[11px] font-medium text-gray-400 hover:text-gray-600 bg-white border border-dashed border-gray-200 rounded-lg py-1.5 hover:bg-gray-50 transition-colors"
+                      >
+                        Collapse
+                      </button>
+                    )}
+                    {stageJobs.length === 0 && (
+                      <div className="text-xs text-gray-300 text-center py-8">
+                        No candidates
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
             </div>
           );
         })}

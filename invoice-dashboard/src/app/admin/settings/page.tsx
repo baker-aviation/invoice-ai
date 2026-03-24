@@ -131,8 +131,8 @@ export default function SettingsPage() {
       fd.append("file", file);
       const res = await fetch("/api/admin/trip-salespersons/upload", { method: "POST", body: fd });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
-      setCsvResult(`Uploaded ${data.upserted} trip(s) from ${data.totalParsed} parsed rows.`);
+      if (!res.ok) throw new Error(data.detail ? `${data.error}: ${data.detail}` : (data.error ?? `HTTP ${res.status}`));
+      setCsvResult(`Uploaded ${data.inserted ?? data.upserted} trip(s) from ${data.totalParsed} parsed rows.`);
       fileInput.value = "";
     } catch (err) {
       setCsvResult(err instanceof Error ? err.message : "Upload failed");

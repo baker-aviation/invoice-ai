@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
+import { timingSafeEqual } from "crypto";
 import { createServerClient } from "@supabase/ssr";
+import { getRedis } from "@/lib/redis";
 
 // ---------------------------------------------------------------------------
 // Shared API-route authentication helpers
@@ -70,12 +72,24 @@ export async function requireAdmin(req: NextRequest): Promise<AuthResult> {
 }
 
 // ---------------------------------------------------------------------------
-// In-memory rate limiter (per-user, sliding window)
+// Cron secret verification (constant-time comparison)
+// ---------------------------------------------------------------------------
+
+export function verifyCronSecret(req: NextRequest): boolean {
+  const cronSecret = process.env.CRON_SECRET;
+  if (!cronSecret) return false;
+  const header = req.headers.get("authorization") ?? "";
+  const expected = `Bearer ${cronSecret}`;
+  if (header.length !== expected.length) return false;
+  return timingSafeEqual(Buffer.from(header), Buffer.from(expected));
+}
+
+// ---------------------------------------------------------------------------
+// Rate limiter — Redis-backed (global) with in-memory fallback
 //
-// Note: on Vercel serverless, each cold-start gets a fresh map. This means
-// rate limiting is per-instance, not global. For this internal dashboard with
-// a small number of users this is acceptable. If stricter enforcement is
-// needed, swap to Vercel KV or Upstash Redis.
+// Uses Upstash Redis sliding window when available (shared across all Vercel
+// instances). Falls back to per-instance in-memory map if Redis is not
+// configured, which is acceptable for small teams but not for 50+ users.
 // ---------------------------------------------------------------------------
 
 const rateLimitMap = new Map<string, number[]>();
@@ -101,25 +115,50 @@ function cleanupStaleEntries(windowMs: number): void {
   }
 }
 
-export function isRateLimited(
+function isRateLimitedInMemory(
   userId: string,
-  maxRequests = DEFAULT_MAX,
-  windowMs = DEFAULT_WINDOW_MS,
+  maxRequests: number,
+  windowMs: number,
 ): boolean {
   cleanupStaleEntries(windowMs);
-
   const now = Date.now();
   const timestamps = rateLimitMap.get(userId) ?? [];
   const recent = timestamps.filter((t) => now - t < windowMs);
-
   if (recent.length >= maxRequests) {
     rateLimitMap.set(userId, recent);
     return true;
   }
-
   recent.push(now);
   rateLimitMap.set(userId, recent);
   return false;
+}
+
+export async function isRateLimited(
+  userId: string,
+  maxRequests = DEFAULT_MAX,
+  windowMs = DEFAULT_WINDOW_MS,
+): Promise<boolean> {
+  const redis = getRedis();
+  if (!redis) {
+    // Fallback to in-memory (per-instance) rate limiting
+    return isRateLimitedInMemory(userId, maxRequests, windowMs);
+  }
+
+  try {
+    const key = `rl:${userId}`;
+    const windowSec = Math.ceil(windowMs / 1000);
+
+    // Atomic increment + TTL via Redis
+    const count = await redis.incr(key);
+    if (count === 1) {
+      // First request in window — set expiry
+      await redis.expire(key, windowSec);
+    }
+    return count > maxRequests;
+  } catch {
+    // Redis error — fall back to in-memory
+    return isRateLimitedInMemory(userId, maxRequests, windowMs);
+  }
 }
 
 /**

@@ -16,7 +16,7 @@ export async function POST(req: NextRequest) {
   if (!isAuthed(auth)) return auth.error;
 
   // 2. Rate limit — 10 invites per minute per admin
-  if (isRateLimited(auth.userId, 10)) {
+  if (await isRateLimited(auth.userId, 10)) {
     return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
   }
 
@@ -44,7 +44,10 @@ export async function POST(req: NextRequest) {
   const supabase = createClient(supabaseUrl, serviceKey);
   const results: { email: string; status: string; error?: string; link?: string }[] = [];
 
-  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || `https://${req.headers.get("host")}`;
+  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL;
+  if (!siteUrl) {
+    return NextResponse.json({ error: "NEXT_PUBLIC_SITE_URL not configured" }, { status: 500 });
+  }
 
   for (const email of parsed.data.emails) {
     const { data, error } = await supabase.auth.admin.generateLink({

@@ -2,7 +2,7 @@
 
 import { useState, useMemo, useCallback, useEffect } from "react";
 import Link from "next/link";
-import type { Flight, OpsAlert } from "@/lib/opsApi";
+import type { Flight, OpsAlert, NotamPin, CustomNotamAlert } from "@/lib/opsApi";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -72,6 +72,7 @@ const ALERT_TYPE_LABELS: Record<string, string> = {
   NOTAM_AD_RESTRICTED: "AD",
   NOTAM_PPR: "PPR",
   NOTAM_OTHER: "NOTAM",
+  OCEANIC_HF: "OCEANIC HF",
 };
 
 // ─── NOTAM helpers ────────────────────────────────────────────────────────────
@@ -311,12 +312,13 @@ function saveDismissed(dismissed: Set<string>): void {
 
 // ─── Filter categories ───────────────────────────────────────────────────────
 
-type AlertFilter = "ALL" | "NOTAMS" | "PPR" | "LATE";
+type AlertFilter = "ALL" | "NOTAMS" | "PPR" | "OCEANIC" | "LATE";
 
 const FILTER_OPTIONS: { key: AlertFilter; label: string; description: string }[] = [
   { key: "ALL", label: "All Flights", description: "Every scheduled flight" },
   { key: "NOTAMS", label: "NOTAMs", description: "Flights with active NOTAMs" },
   { key: "PPR", label: "PPRs", description: "Prior permission required" },
+  { key: "OCEANIC", label: "Oceanic HF", description: "Aircraft lacking dual HF on oceanic legs" },
   { key: "LATE", label: "After Hrs", description: "Departures or arrivals 8 PM – 7 AM local (excl. 24/7 airports)" },
 ];
 
@@ -355,7 +357,7 @@ const TIME_RANGES: { key: TimeRange; label: string; hours: number }[] = [
 
 const ALERT_TYPES_SHOWN = new Set([
   "NOTAM_RUNWAY", "NOTAM_AERODROME", "NOTAM_AD_RESTRICTED",
-  "NOTAM_TFR", "NOTAM_PPR", "EDCT",
+  "NOTAM_TFR", "NOTAM_PPR", "OCEANIC_HF",
 ]);
 
 // ─── EDCT expandable row (status box) ────────────────────────────────────────
@@ -374,8 +376,9 @@ function EdctRow({ alert, flight, onDismiss, fmtTime }: {
   const programStart = body.match(/Program Start Time:\s*(.+)/i)?.[1]?.trim();
   const programEnd = body.match(/Program End Time:\s*(.+)/i)?.[1]?.trim();
   const expectedArrival = body.match(/Expected Arrival Time:\s*(.+)/i)?.[1]?.trim();
-  const sourceTag = (alert.source_message_id ?? "").startsWith("swim-edct-")
-    ? "SWIM"
+  const srcId = alert.source_message_id ?? "";
+  const sourceTag = srcId.startsWith("swim-edct-") || srcId.startsWith("faa-edct-")
+    ? "FAA"
     : "FF";
 
   return (
@@ -400,7 +403,7 @@ function EdctRow({ alert, flight, onDismiss, fmtTime }: {
           <span className="font-mono text-xs text-gray-600 bg-gray-100 rounded px-1.5 py-0.5">{alert.tail_number || flight?.tail_number}</span>
         )}
         <span className={`text-[10px] font-bold rounded px-1.5 py-0.5 ${
-          sourceTag === "SWIM" ? "bg-blue-100 text-blue-700" : "bg-amber-100 text-amber-700"
+          sourceTag === "FAA" ? "bg-blue-100 text-blue-700" : "bg-amber-100 text-amber-700"
         }`}>{sourceTag}</span>
         <span className="text-xs">
           {(alert.original_departure_time || flight?.scheduled_departure) && (
@@ -422,7 +425,7 @@ function EdctRow({ alert, flight, onDismiss, fmtTime }: {
           {alert.subject && (
             <div className="col-span-2 sm:col-span-3 text-gray-800 font-medium truncate">{alert.subject}</div>
           )}
-          <div><span className="text-gray-400">Source:</span> {sourceTag === "SWIM" ? "FAA SWIM" : "ForeFlight"}</div>
+          <div><span className="text-gray-400">Source:</span> {sourceTag === "FAA" ? "FAA" : "ForeFlight"}</div>
           <div><span className="text-gray-400">Received:</span> {fmtTime(alert.created_at)}</div>
           {(alert.tail_number || flight?.tail_number) && (
             <div><span className="text-gray-400">Tail:</span> {alert.tail_number || flight?.tail_number}</div>
@@ -445,7 +448,7 @@ function EdctRow({ alert, flight, onDismiss, fmtTime }: {
 
 // ─── Alert inline card (server-side NOTAM/EDCT alerts) ──────────────────────
 
-function AlertCard({ alert, onAck, acked, ackedByName }: { alert: OpsAlert; onAck: (id: string) => void; acked?: boolean; ackedByName?: string | null }) {
+function AlertCard({ alert, onAck, acked, ackedByName, pinned, onTogglePin }: { alert: OpsAlert; onAck: (id: string) => void; acked?: boolean; ackedByName?: string | null; pinned?: boolean; onTogglePin?: (alertId: string, pin: boolean) => void }) {
   const [expanded, setExpanded] = useState(false);
   const [acking, setAcking] = useState(false);
 
@@ -505,10 +508,33 @@ function AlertCard({ alert, onAck, acked, ackedByName }: { alert: OpsAlert; onAc
           </span>
         )}
         <div className="ml-auto flex items-center gap-1.5 shrink-0">
+          {onTogglePin && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onTogglePin(alert.id, !pinned); }}
+              className={`text-xs rounded px-1.5 py-0.5 transition-colors border ${
+                pinned
+                  ? "text-amber-700 bg-amber-50 border-amber-300 hover:bg-amber-100"
+                  : "text-gray-400 hover:text-amber-600 bg-white border-gray-200 hover:border-amber-300 hover:bg-amber-50"
+              }`}
+              title={pinned ? "Unpin this NOTAM" : "Pin this NOTAM"}
+            >
+              {pinned ? "Pinned" : "Pin"}
+            </button>
+          )}
           {acked ? (
-            <span className="text-xs text-gray-400 bg-gray-100 rounded px-1.5 py-0.5">
+            <button
+              type="button"
+              onClick={async (e) => {
+                e.stopPropagation();
+                await fetch(`/api/ops/alerts/${alert.id}/acknowledge`, { method: "DELETE" });
+                onAck(alert.id);
+              }}
+              className="text-xs text-gray-400 hover:text-orange-600 bg-gray-100 hover:bg-orange-50 border border-transparent hover:border-orange-200 rounded px-1.5 py-0.5 transition-colors cursor-pointer"
+              title="Click to un-acknowledge"
+            >
               Ack'd{ackedByName ? ` by ${ackedByName}` : ""}
-            </span>
+            </button>
           ) : (
             <button
               type="button"
@@ -577,7 +603,7 @@ function AlertCard({ alert, onAck, acked, ackedByName }: { alert: OpsAlert; onAc
 
 // ─── Client alert card (KJAC/KSNA/after-hours — localStorage dismiss) ───────
 
-function ClientAlertCard({ alert, onDismiss, dismissed, dismissedByName }: { alert: ClientAlert; onDismiss: (key: string) => void; dismissed?: boolean; dismissedByName?: string | null }) {
+function ClientAlertCard({ alert, onDismiss, dismissed, dismissedByName, pinned, onTogglePin }: { alert: ClientAlert; onDismiss: (key: string) => void; dismissed?: boolean; dismissedByName?: string | null; pinned?: boolean; onTogglePin?: (key: string, pin: boolean) => void }) {
   const [dismissing, setDismissing] = useState(false);
 
   function handleDismiss(e: React.MouseEvent) {
@@ -610,7 +636,21 @@ function ClientAlertCard({ alert, onDismiss, dismissed, dismissedByName }: { ale
           {alert.label}
         </span>
         <span className="text-xs text-gray-700">{alert.message}</span>
-        <div className="ml-auto shrink-0">
+        <div className="ml-auto flex items-center gap-1.5 shrink-0">
+          {onTogglePin && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onTogglePin(alert.key, !pinned); }}
+              className={`text-xs rounded px-1.5 py-0.5 transition-colors border ${
+                pinned
+                  ? "text-amber-700 bg-amber-50 border-amber-300 hover:bg-amber-100"
+                  : "text-gray-400 hover:text-amber-600 bg-white border-gray-200 hover:border-amber-300 hover:bg-amber-50"
+              }`}
+              title={pinned ? "Unpin" : "Pin"}
+            >
+              {pinned ? "Pinned" : "Pin"}
+            </button>
+          )}
           {dismissed ? (
             <span className="text-xs text-gray-400 bg-gray-100 rounded px-1.5 py-0.5">
               Ack'd{dismissedByName ? ` by ${dismissedByName}` : ""}
@@ -634,26 +674,33 @@ function ClientAlertCard({ alert, onDismiss, dismissed, dismissedByName }: { ale
 // ─── Flight card ──────────────────────────────────────────────────────────────
 
 function FlightCard({
-  flight, isAcked, showAcknowledged, onAck, clientAlerts, dismissedClientAlerts, onDismissClient, userMap, dismissedByMap,
+  flight, isAcked, showAcknowledged, onAck, onAckAll, clientAlerts, dismissedClientAlerts, onDismissClient, userMap, dismissedByMap, pinnedIds, onTogglePin, pinnedKeys, onTogglePinKey,
 }: {
   flight: Flight;
   isAcked: (a: OpsAlert) => boolean;
   showAcknowledged: boolean;
   onAck: (id: string) => void;
+  onAckAll: (flightId: string, alertIds: string[]) => void;
   clientAlerts: ClientAlert[];
   dismissedClientAlerts: Set<string>;
   onDismissClient: (key: string) => void;
   userMap: Map<string, string>;
   dismissedByMap: Map<string, string>;
+  pinnedIds?: Set<string>;
+  onTogglePin?: (alertId: string, pin: boolean) => void;
+  pinnedKeys?: Set<string>;
+  onTogglePinKey?: (key: string, pin: boolean) => void;
 }) {
   const visibleAlerts = (flight.alerts ?? []).filter((a) => showAcknowledged || !isAcked(a));
   const alerts = visibleAlerts;
+  const unackedServerAlerts = (flight.alerts ?? []).filter((a) => !isAcked(a));
   const activeClientAlerts = clientAlerts.filter((ca) => showAcknowledged || !dismissedClientAlerts.has(ca.key));
   const hasCritical = alerts.some((a) => a.severity === "critical");
   const hasWarning = alerts.some((a) => a.severity === "warning");
   const hasLate = activeClientAlerts.some((ca) => ca.type === "AFTER_HOURS");
   const hasAirport = activeClientAlerts.some((ca) => ca.type.startsWith("AIRPORT_"));
   const totalAlertCount = alerts.length + activeClientAlerts.length;
+  const [ackingAll, setAckingAll] = useState(false);
 
   const borderColor = hasCritical
     ? "border-red-300"
@@ -719,14 +766,26 @@ function FlightCard({
           ) : (
             <span className="text-xs font-medium text-green-700 bg-green-50 px-2 py-0.5 rounded-full">Clear</span>
           )}
+          {unackedServerAlerts.length >= 2 && (
+            <button
+              onClick={() => {
+                setAckingAll(true);
+                onAckAll(flight.id, unackedServerAlerts.map((a) => a.id));
+              }}
+              disabled={ackingAll}
+              className="text-[10px] font-medium px-2 py-1 rounded bg-gray-100 text-gray-600 hover:bg-green-100 hover:text-green-700 transition-colors disabled:opacity-50"
+            >
+              {ackingAll ? "..." : "Ack All"}
+            </button>
+          )}
         </div>
       </div>
       {/* Alerts (server + client) */}
       {totalAlertCount > 0 && (
         <div className="px-3 pb-3 space-y-1.5">
-          {alerts.map((a) => <AlertCard key={a.id} alert={a} onAck={onAck} acked={isAcked(a)} ackedByName={showAcknowledged && a.acknowledged_by ? userMap.get(a.acknowledged_by) ?? null : null} />)}
+          {alerts.map((a) => <AlertCard key={a.id} alert={a} onAck={onAck} acked={isAcked(a)} ackedByName={showAcknowledged && a.acknowledged_by ? userMap.get(a.acknowledged_by) ?? null : null} pinned={pinnedIds?.has(a.id)} onTogglePin={onTogglePin} />)}
           {activeClientAlerts.map((ca) => (
-            <ClientAlertCard key={ca.key} alert={ca} onDismiss={onDismissClient} dismissed={dismissedClientAlerts.has(ca.key)} dismissedByName={showAcknowledged && dismissedByMap.has(ca.key) ? userMap.get(dismissedByMap.get(ca.key)!) ?? null : null} />
+            <ClientAlertCard key={ca.key} alert={ca} onDismiss={onDismissClient} dismissed={dismissedClientAlerts.has(ca.key)} dismissedByName={showAcknowledged && dismissedByMap.has(ca.key) ? userMap.get(dismissedByMap.get(ca.key)!) ?? null : null} pinned={pinnedKeys?.has(ca.key)} onTogglePin={onTogglePinKey} />
           ))}
         </div>
       )}
@@ -762,6 +821,79 @@ function DayHeader({ dateStr, flightCount, criticalCount, warningCount }: {
   );
 }
 
+// ─── Add Custom Alert form ───────────────────────────────────────────────────
+
+function AddCustomAlertForm({ onAdd }: { onAdd: (data: { airport_icao?: string; severity: string; subject: string; body?: string; expires_at?: string }) => void }) {
+  const [airport, setAirport] = useState("");
+  const [severity, setSeverity] = useState("info");
+  const [subject, setSubject] = useState("");
+  const [body, setBody] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  return (
+    <div className="p-3 border-b border-gray-200 bg-gray-50 space-y-2">
+      <div className="flex gap-2 flex-wrap">
+        <div>
+          <label className="text-[10px] text-gray-500 block">Airport ICAO (optional)</label>
+          <input
+            value={airport}
+            onChange={(e) => setAirport(e.target.value.toUpperCase())}
+            placeholder="e.g. KTEB"
+            className="block w-24 text-xs border border-gray-300 rounded px-2 py-1"
+          />
+        </div>
+        <div>
+          <label className="text-[10px] text-gray-500 block">Severity</label>
+          <select
+            value={severity}
+            onChange={(e) => setSeverity(e.target.value)}
+            className="block text-xs border border-gray-300 rounded px-2 py-1"
+          >
+            <option value="info">Info</option>
+            <option value="warning">Warning</option>
+            <option value="critical">Critical</option>
+          </select>
+        </div>
+        <div className="flex-1 min-w-[200px]">
+          <label className="text-[10px] text-gray-500 block">Subject *</label>
+          <input
+            value={subject}
+            onChange={(e) => setSubject(e.target.value)}
+            placeholder="Short description"
+            maxLength={200}
+            className="block w-full text-xs border border-gray-300 rounded px-2 py-1"
+          />
+        </div>
+      </div>
+      <div>
+        <label className="text-[10px] text-gray-500 block">Details (optional)</label>
+        <textarea
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+          placeholder="Additional details..."
+          rows={2}
+          maxLength={2000}
+          className="block w-full text-xs border border-gray-300 rounded px-2 py-1 resize-none"
+        />
+      </div>
+      <div className="flex justify-end">
+        <button
+          type="button"
+          disabled={!subject.trim() || saving}
+          onClick={async () => {
+            setSaving(true);
+            await onAdd({ airport_icao: airport || undefined, severity, subject: subject.trim(), body: body.trim() || undefined });
+            setSaving(false);
+          }}
+          className="px-3 py-1 text-xs bg-teal-600 text-white rounded hover:bg-teal-700 disabled:opacity-50"
+        >
+          {saving ? "Saving..." : "Create Alert"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main board ───────────────────────────────────────────────────────────────
 
 function filterAlerts(flights: Flight[]): Flight[] {
@@ -792,6 +924,82 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
   const [activeRange, setActiveRange] = useState<TimeRange>("7D");
   const [localAckedIds, setLocalAckedIds] = useState<Set<string>>(new Set());
   const [showAcknowledged, setShowAcknowledged] = useState(false);
+  const [pinnedIds, setPinnedIds] = useState<Set<string>>(new Set());
+  const [customAlerts, setCustomAlerts] = useState<CustomNotamAlert[]>([]);
+  const [showAddCustom, setShowAddCustom] = useState(false);
+
+  const [pinnedKeys, setPinnedKeys] = useState<Set<string>>(new Set());
+
+  // Load pins and custom alerts
+  useEffect(() => {
+    fetch("/api/ops/notam-pins").then((r) => r.json()).then((d) => {
+      const ids = new Set<string>();
+      const keys = new Set<string>();
+      for (const p of d.pins ?? []) {
+        if (p.alert_id) ids.add(p.alert_id);
+        if (p.pin_key) keys.add(p.pin_key);
+      }
+      setPinnedIds(ids);
+      setPinnedKeys(keys);
+    }).catch(() => {});
+    fetch("/api/ops/custom-alerts").then((r) => r.json()).then((d) => {
+      setCustomAlerts(d.alerts ?? []);
+    }).catch(() => {});
+  }, []);
+
+  const togglePin = useCallback(async (alertId: string, pin: boolean) => {
+    if (pin) {
+      await fetch("/api/ops/notam-pins", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ alert_id: alertId }),
+      });
+      setPinnedIds((prev) => new Set([...prev, alertId]));
+    } else {
+      await fetch("/api/ops/notam-pins", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ alert_id: alertId }),
+      });
+      setPinnedIds((prev) => { const n = new Set(prev); n.delete(alertId); return n; });
+    }
+  }, []);
+
+  const togglePinKey = useCallback(async (key: string, pin: boolean) => {
+    if (pin) {
+      await fetch("/api/ops/notam-pins", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pin_key: key }),
+      });
+      setPinnedKeys((prev) => new Set([...prev, key]));
+    } else {
+      await fetch("/api/ops/notam-pins", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pin_key: key }),
+      });
+      setPinnedKeys((prev) => { const n = new Set(prev); n.delete(key); return n; });
+    }
+  }, []);
+
+  const addCustomAlert = useCallback(async (data: { airport_icao?: string; severity: string; subject: string; body?: string; expires_at?: string }) => {
+    const res = await fetch("/api/ops/custom-alerts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    if (res.ok) {
+      const { alert } = await res.json();
+      setCustomAlerts((prev) => [alert, ...prev]);
+      setShowAddCustom(false);
+    }
+  }, []);
+
+  const archiveCustomAlert = useCallback(async (id: string) => {
+    await fetch(`/api/ops/custom-alerts/${id}`, { method: "DELETE" });
+    setCustomAlerts((prev) => prev.filter((a) => a.id !== id));
+  }, []);
   const [dismissedClientAlerts, setDismissedClientAlerts] = useState<Set<string>>(new Set());
   const [dismissedByMap, setDismissedByMap] = useState<Map<string, string>>(new Map()); // alert_key → userId
   const [userMap, setUserMap] = useState<Map<string, string>>(new Map());
@@ -840,6 +1048,20 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
   const handleAck = useCallback((id: string) => {
     setLocalAckedIds((prev) => new Set(prev).add(id));
     fetch(`/api/ops/alerts/${id}/acknowledge`, { method: "POST" }).catch(() => {});
+  }, []);
+
+  const handleAckAll = useCallback((flightId: string, alertIds: string[]) => {
+    // Optimistically mark all as acked
+    setLocalAckedIds((prev) => {
+      const next = new Set(prev);
+      for (const id of alertIds) next.add(id);
+      return next;
+    });
+    fetch("/api/ops/alerts/acknowledge-bulk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ flight_id: flightId }),
+    }).catch(() => {});
   }, []);
 
   // An alert is "acknowledged" if the server has it acked OR we optimistically acked it
@@ -984,6 +1206,13 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
       );
     }
 
+    // Oceanic HF filter — flights with OCEANIC_HF alerts
+    if (activeFilter === "OCEANIC") {
+      return timeFiltered.filter((f) =>
+        f.alerts?.some((a) => a.alert_type === "OCEANIC_HF")
+      );
+    }
+
     // After-hours filter (departure or arrival between 8 PM – 7 AM local, excl. 24/7 airports)
     if (activeFilter === "LATE") {
       return timeFiltered.filter((f) =>
@@ -1045,8 +1274,8 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
 
   // Alert counts per category (for pill badges)
   const alertCounts = useMemo(() => {
-    const counts: Record<string, number> = { NOTAMS: 0, PPR: 0, LATE: 0 };
-    const flightsCounted = { NOTAMS: new Set<string>(), PPR: new Set<string>(), LATE: new Set<string>() };
+    const counts: Record<string, number> = { NOTAMS: 0, PPR: 0, OCEANIC: 0, LATE: 0 };
+    const flightsCounted = { NOTAMS: new Set<string>(), PPR: new Set<string>(), OCEANIC: new Set<string>(), LATE: new Set<string>() };
     for (const f of timeFiltered) {
       // Server alerts — count flights with NOTAM alerts
       for (const a of f.alerts ?? []) {
@@ -1058,6 +1287,10 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
         if (a.alert_type === "NOTAM_PPR" && !flightsCounted.PPR.has(f.id)) {
           counts.PPR++;
           flightsCounted.PPR.add(f.id);
+        }
+        if (a.alert_type === "OCEANIC_HF" && !flightsCounted.OCEANIC.has(f.id)) {
+          counts.OCEANIC++;
+          flightsCounted.OCEANIC.add(f.id);
         }
       }
 
@@ -1109,49 +1342,104 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
 
   return (
     <div className="p-4 sm:p-6 space-y-4 bg-gray-50 min-h-screen">
-      {/* EDCT Status Box — always visible */}
-      <div className={`rounded-xl border-2 shadow-sm overflow-hidden ${
-        edctAlerts.length > 0
-          ? "border-orange-300 bg-orange-50"
-          : "border-green-300 bg-green-50"
-      }`}>
-        <div className={`px-4 py-2.5 border-b flex items-center gap-2 ${
-          edctAlerts.length > 0
-            ? "bg-orange-100 border-orange-200"
-            : "bg-green-100 border-green-200"
-        }`}>
-          {edctAlerts.length > 0 ? (
-            <>
-              <span className="w-2.5 h-2.5 rounded-full bg-orange-500 animate-pulse" />
-              <span className="text-sm font-bold text-orange-900">EDCT / Ground Delays</span>
-              <span className="text-xs font-semibold bg-orange-200 text-orange-800 rounded-full px-2 py-0.5">
-                {edctAlerts.length}
+      {/* Pinned Alerts */}
+      {(pinnedIds.size > 0 || pinnedKeys.size > 0) && (() => {
+        const pinnedAlerts: OpsAlert[] = [];
+        const pinnedClientAlerts: ClientAlert[] = [];
+        for (const f of withFilteredAlerts) {
+          for (const a of f.alerts ?? []) {
+            if (pinnedIds.has(a.id) && !pinnedAlerts.some((p) => p.id === a.id)) {
+              pinnedAlerts.push(a);
+            }
+          }
+          for (const ca of clientAlertsByFlight.get(f.id) ?? []) {
+            if (pinnedKeys.has(ca.key) && !pinnedClientAlerts.some((p) => p.key === ca.key)) {
+              pinnedClientAlerts.push(ca);
+            }
+          }
+        }
+        const totalPinned = pinnedAlerts.length + pinnedClientAlerts.length;
+        if (totalPinned === 0) return null;
+        return (
+          <div className="rounded-xl border-2 border-amber-300 bg-amber-50 shadow-sm overflow-hidden">
+            <div className="px-4 py-2.5 border-b bg-amber-100 border-amber-200 flex items-center gap-2">
+              <span className="text-sm font-bold text-amber-900">Pinned Alerts</span>
+              <span className="text-xs font-semibold bg-amber-200 text-amber-800 rounded-full px-2 py-0.5">
+                {totalPinned}
               </span>
-            </>
-          ) : (
-            <>
-              <span className="w-2.5 h-2.5 rounded-full bg-green-500" />
-              <span className="text-sm font-bold text-green-900">EDCT / Ground Delays</span>
-              <span className="text-xs font-semibold bg-green-200 text-green-800 rounded-full px-2 py-0.5">
-                Clear
-              </span>
-            </>
+            </div>
+            <div className="p-3 space-y-2">
+              {pinnedAlerts.map((a) => (
+                <AlertCard key={a.id} alert={a} onAck={handleAck} pinned onTogglePin={togglePin} />
+              ))}
+              {pinnedClientAlerts.map((ca) => (
+                <ClientAlertCard key={ca.key} alert={ca} onDismiss={handleDismissClient} pinned onTogglePin={togglePinKey} />
+              ))}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Custom Alerts */}
+      <div className="rounded-xl border bg-white shadow-sm overflow-hidden">
+        <div className="px-4 py-2.5 border-b bg-gray-50 flex items-center gap-2">
+          <span className="text-sm font-bold text-gray-800">Custom Alerts</span>
+          {customAlerts.length > 0 && (
+            <span className="text-xs font-semibold bg-teal-100 text-teal-800 rounded-full px-2 py-0.5">
+              {customAlerts.length}
+            </span>
           )}
-          <span className="ml-auto text-xs text-gray-400">
-            ForeFlight + FAA SWIM
-          </span>
+          <button
+            type="button"
+            onClick={() => setShowAddCustom(!showAddCustom)}
+            className="ml-auto text-xs font-medium text-blue-600 hover:text-blue-800"
+          >
+            {showAddCustom ? "Cancel" : "+ Add Alert"}
+          </button>
         </div>
-        {edctAlerts.length > 0 ? (
+        {showAddCustom && <AddCustomAlertForm onAdd={addCustomAlert} />}
+        {customAlerts.length > 0 ? (
           <div className="p-3 space-y-2">
-            {edctAlerts.map(({ alert, flight }) => (
-              <EdctRow key={alert.id} alert={alert} flight={flight} onDismiss={handleAck} fmtTime={fmtTime} />
+            {customAlerts.map((a) => (
+              <div
+                key={a.id}
+                className={`rounded-lg border text-sm px-3 py-2 flex items-start gap-2 ${
+                  a.severity === "critical" ? "border-red-200 bg-red-50/60" :
+                  a.severity === "warning" ? "border-amber-200 bg-amber-50/60" :
+                  "border-teal-200 bg-teal-50/60"
+                }`}
+              >
+                <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-mono font-semibold shrink-0 ${
+                  a.severity === "critical" ? "bg-red-100 text-red-800 border border-red-200" :
+                  a.severity === "warning" ? "bg-amber-100 text-amber-800 border border-amber-200" :
+                  "bg-teal-100 text-teal-800 border border-teal-200"
+                }`}>
+                  Custom
+                </span>
+                {a.airport_icao && (
+                  <span className="font-mono font-semibold text-gray-800 text-xs shrink-0">{a.airport_icao}</span>
+                )}
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-medium text-gray-800">{a.subject}</p>
+                  {a.body && <p className="text-xs text-gray-600 mt-0.5 line-clamp-2">{a.body}</p>}
+                  <p className="text-[10px] text-gray-400 mt-0.5">
+                    {a.created_by_name ?? "Unknown"} · {fmtTime(a.created_at)}
+                    {a.expires_at && <> · Expires {fmtTime(a.expires_at)}</>}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => archiveCustomAlert(a.id)}
+                  className="text-xs text-gray-400 hover:text-red-600 hover:bg-red-50 border border-gray-200 hover:border-red-300 rounded px-1.5 py-0.5 transition-colors shrink-0"
+                >
+                  Dismiss
+                </button>
+              </div>
             ))}
           </div>
-        ) : (
-          <div className="px-4 py-3 text-sm text-green-700">
-            No active EDCT delays or ground stops
-          </div>
-        )}
+        ) : !showAddCustom ? (
+          <div className="px-4 py-3 text-sm text-gray-500">No custom alerts</div>
+        ) : null}
       </div>
 
       {/* Summary bar */}
@@ -1405,11 +1693,16 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
                       isAcked={isAcked}
                       showAcknowledged={showAcknowledged}
                       onAck={handleAck}
+                      onAckAll={handleAckAll}
                       clientAlerts={clientAlertsByFlight.get(f.id) ?? []}
                       dismissedClientAlerts={dismissedClientAlerts}
                       onDismissClient={handleDismissClient}
                       userMap={userMap}
                       dismissedByMap={dismissedByMap}
+                      pinnedIds={pinnedIds}
+                      onTogglePin={togglePin}
+                      pinnedKeys={pinnedKeys}
+                      onTogglePinKey={togglePinKey}
                     />
                   ))}
                 </div>

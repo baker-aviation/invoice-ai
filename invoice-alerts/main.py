@@ -418,6 +418,42 @@ def _pick_fee_details(
     return {"fee_name": fee_name, "fee_amount": fee_amount}
 
 
+def _net_after_waivers(
+    fee_amount: float,
+    matched_line_items: List[Dict[str, Any]],
+    all_line_items: List[Dict[str, Any]],
+) -> float:
+    """
+    Detect waiver/credit line items that offset a matched fee.
+
+    FBOs like Atlantic Aviation add a "Fee Waived" line with a negative amount
+    equal to the fee.  Without this check the gross fee triggers an alert even
+    though the net charge is $0.
+
+    Strategy: look for negative line items whose description contains "waiv",
+    "credit", "discount", or "adjust" that are NOT already in the matched set.
+    Sum them with the fee_amount and return the net.
+    """
+    waiver_keywords = ("waiv", "credit", "discount", "adjust")
+    matched_descs = {
+        _norm(li.get("description") or li.get("name") or "")
+        for li in matched_line_items
+    }
+
+    waiver_total = 0.0
+    for li in all_line_items:
+        desc = _norm(li.get("description") or li.get("name") or "")
+        if desc in matched_descs:
+            continue
+        amt = _to_float(li.get("total")) or 0.0
+        if amt >= 0:
+            continue
+        if any(kw in desc for kw in waiver_keywords):
+            waiver_total += amt  # amt is negative
+
+    return fee_amount + waiver_total
+
+
 def _build_slack_alert_payload(
     *,
     document_id: str,
@@ -622,6 +658,14 @@ def run_alerts(document_id: str) -> Dict[str, Any]:
 
             # ACTIONABLE ONLY
             if not fee_name or fee_amount is None or fee_amount <= 0:
+                continue
+
+            # NET WAIVERS: if a waiver/credit line item offsets this fee, skip
+            all_line_items = invoice.get("line_items") or []
+            fee_amount = _net_after_waivers(
+                fee_amount, result.matched_line_items or [], all_line_items
+            )
+            if fee_amount <= 0:
                 continue
 
             # DEDUP: skip if all matched line items were already claimed
@@ -1497,41 +1541,9 @@ def _process_fuel_price(invoice: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if stored is None:
         return {"document_id": doc_id, "status": "upsert_failed"}
 
-    # If price increase detected, post to Slack immediately
+    # Fuel price increase Slack alerts are disabled — price tracking still runs
+    # (stored in fuel_prices table) but no Slack notification is sent.
     slack_result = None
-    if increase and SLACK_WEBHOOK_URL:
-        signed_url = None
-        try:
-            doc = _fetch_document_row(doc_id)
-            if doc:
-                bucket = doc.get("gcs_bucket") or doc.get("storage_bucket") or ""
-                path = doc.get("gcs_path") or doc.get("storage_path") or ""
-                if bucket and path:
-                    signed_url = _get_gcs_signed_url(bucket, path)
-        except Exception:
-            pass
-
-        payload = build_fuel_price_slack_payload(
-            airport_code=data["airport_code"] or "???",
-            vendor_name=data.get("vendor_name"),
-            new_price=data["effective_price_per_gallon"],
-            previous_price=increase["previous_price"],
-            pct_change=increase["price_change_pct"],
-            base_price=data["base_price_per_gallon"],
-            gallons=data["gallons"],
-            invoice_date=data.get("invoice_date"),
-            tail_number=data.get("tail_number"),
-            document_id=doc_id,
-            signed_pdf_url=signed_url,
-        )
-        slack_result = _slack_post(payload)
-        _record_event("fuel_price_increase_alert", doc_id, {
-            "airport_code": data["airport_code"],
-            "new_price": data["effective_price_per_gallon"],
-            "previous_price": increase["previous_price"],
-            "pct_change": increase["price_change_pct"],
-            "slack_result": slack_result,
-        })
 
     return {
         "document_id": doc_id,

@@ -7,8 +7,9 @@ import CurrentOps from "./CurrentOps";
 import OpsBoard from "./OpsBoard";
 import DutyTracker from "./DutyTracker";
 import CrewSwap from "./CrewSwap";
+import InternationalOps from "./InternationalOps";
 
-const TABS = ["Current Ops", "Flight Time & Rest", "NOTAMs & PPRs", "Crew Swap"] as const;
+const TABS = ["Current Ops", "Flight Time & Rest", "NOTAMs & PPRs", "Crew Swap", "International"] as const;
 type Tab = (typeof TABS)[number];
 
 export default function OpsTabs({ flights, bakerPprAirports, advertisedPrices, mxNotes = [], swimFlow = [] }: { flights: Flight[]; bakerPprAirports: string[]; advertisedPrices: AdvertisedPriceRow[]; mxNotes?: MxNote[]; swimFlow?: SwimFlowEvent[] }) {
@@ -35,6 +36,8 @@ export default function OpsTabs({ flights, bakerPprAirports, advertisedPrices, m
       const upserted = data.upserted ?? 0;
       const skipped = data.skipped ?? 0;
       setSyncMsg(`${upserted} upserted, ${skipped} skipped`);
+      // Fire international ops checks after sync (non-blocking)
+      fetch("/api/ops/intl/run-checks", { method: "POST" }).catch(() => {});
       setTimeout(() => window.location.reload(), 1500);
     } catch (err) {
       setSyncMsg(err instanceof Error ? err.message : "Network error");
@@ -44,7 +47,7 @@ export default function OpsTabs({ flights, bakerPprAirports, advertisedPrices, m
   }
 
   return (
-    <div className="px-6 py-4 space-y-4">
+    <div className="px-3 py-4 space-y-4">
       {/* Tab bar */}
       <div className="flex gap-1 border-b border-gray-200">
         {TABS.map((t) => (
@@ -79,8 +82,10 @@ export default function OpsTabs({ flights, bakerPprAirports, advertisedPrices, m
         <DutyTracker flights={flights} scrollToTail={scrollToTail} onScrollComplete={() => setScrollToTail(null)} />
       ) : tab === "NOTAMs & PPRs" ? (
         <OpsBoard initialFlights={flights} bakerPprAirports={bakerPprAirports} />
-      ) : (
+      ) : tab === "Crew Swap" ? (
         <CrewSwap flights={flights} />
+      ) : (
+        <InternationalOps flights={flights} />
       )}
     </div>
   );

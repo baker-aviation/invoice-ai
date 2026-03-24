@@ -94,3 +94,62 @@ export function buildVanSlackFallbackText(vanName: string, date: string): string
 export function buildAircraftFallbackText(item: VanSlackItem): string {
   return `${item.tail} → ${item.airport} — ${item.arrivalTime}`;
 }
+
+// ── Change summary blocks (for Update Vans) ──
+
+export type VanChangeDiff = {
+  added: { tail: string; airport: string }[];
+  removed: { tail: string; airport: string }[];
+  newOrder: { tail: string; airport: string }[];
+  note?: string;
+};
+
+/** Change summary header — posted as a single message to the van's Slack channel. */
+export function buildVanChangeBlocks(
+  vanName: string,
+  vanId: number,
+  date: string,
+  diff: VanChangeDiff,
+) {
+  const vanUrl = `${VAN_BASE_URL}/van/${vanId}`;
+  const lines: string[] = [];
+
+  if (diff.added.length > 0) {
+    lines.push(diff.added.map((a) => `➕ Added: *${a.tail}* @ ${a.airport}`).join("\n"));
+  }
+  if (diff.removed.length > 0) {
+    lines.push(diff.removed.map((r) => `➖ Removed: *${r.tail}* @ ${r.airport}`).join("\n"));
+  }
+  if (diff.newOrder.length > 0) {
+    lines.push(`📋 New order: ${diff.newOrder.map((o) => `${o.tail} → ${o.airport}`).join(", ")}`);
+  }
+  if (diff.note) {
+    lines.push(`📝 Note: ${diff.note}`);
+  }
+
+  return [
+    {
+      type: "header",
+      text: { type: "plain_text", text: `🔄 ${vanName} (V${vanId}) — Schedule Update`, emoji: true },
+    },
+    {
+      type: "section",
+      text: { type: "mrkdwn", text: lines.join("\n\n") || "_No changes_" },
+    },
+    {
+      type: "actions",
+      elements: [
+        {
+          type: "button",
+          text: { type: "plain_text", text: "📋 Open Van Schedule", emoji: true },
+          url: vanUrl,
+          action_id: `open_van_update_${vanId}`,
+        },
+      ],
+    },
+  ];
+}
+
+export function buildVanChangeFallbackText(vanName: string, date: string): string {
+  return `Schedule Update: ${vanName} — ${date}`;
+}

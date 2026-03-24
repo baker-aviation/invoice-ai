@@ -36,7 +36,8 @@ export async function GET(req: NextRequest) {
       .gte("scheduled_departure", start)
       .lte("scheduled_departure", end)
       .order("scheduled_departure"),
-    supa.from("crew_members").select("*").eq("active", true),
+    // Include all crew (not just active) so terminated crew with jetinsight_name still match
+    supa.from("crew_members").select("*"),
   ]);
 
   if (flightsRes.error) {
@@ -61,6 +62,7 @@ export async function GET(req: NextRequest) {
   const crewRoster: CrewMember[] = (crewRes.data ?? []).map((c) => ({
     id: c.id as string,
     name: c.name as string,
+    jetinsight_name: (c.jetinsight_name as string | null) ?? null,
     role: c.role as "PIC" | "SIC",
     home_airports: (c.home_airports as string[]) ?? [],
     aircraft_types: (c.aircraft_types as string[]) ?? [],

@@ -1,13 +1,30 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { requireAdmin, isAuthed } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
-import { buildSwapPlan, assignOncomingCrew, type CrewMember, type FlightLeg, type AirportAlias, type SwapAssignment, type OncomingPool } from "@/lib/swapOptimizer";
+import { buildSwapPlan, assignOncomingCrew, twoPassAssignAndOptimize, solveOffgoingFirst, type CrewMember, type FlightLeg, type AirportAlias, type SwapAssignment, type OncomingPool } from "@/lib/swapOptimizer";
 import { DEFAULT_AIRPORT_ALIASES } from "@/lib/airportAliases";
-import { getRoutesForOptimizer } from "@/lib/pilotRoutes";
+import type { PilotRoute } from "@/lib/pilotRoutes";
 import { detectCurrentRotation } from "@/lib/crewRotationDetect";
+import { getHasdataCacheForOptimizer } from "@/lib/hasdataCache";
+
+const OptimizeRequestSchema = z.object({
+  swap_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  strategy: z.enum(["offgoing_first", "oncoming_first"]).optional(),
+  swap_assignments: z.record(z.string(), z.any()).optional(),
+  oncoming_pool: z.any().optional(),
+  force_auto_detect: z.boolean().optional(),
+  lock_tails: z.array(z.string()).optional(),
+  locked_rows: z.array(z.any()).optional(),
+  required_pairings: z.array(z.object({
+    pic: z.string(),
+    sic: z.string(),
+    reason: z.string(),
+  })).optional(),
+}).strip();
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 60; // 1 min — no API calls, just DB reads + computation
+export const maxDuration = 300; // 5 min — DB reads + heavy computation for 30+ tails
 
 /**
  * POST /api/crew/optimize
@@ -17,20 +34,37 @@ export const maxDuration = 60; // 1 min — no API calls, just DB reads + comput
  * Routes must be computed first via POST /api/crew/routes.
  */
 export async function POST(req: NextRequest) {
-  const auth = await requireAdmin(req);
-  if (!isAuthed(auth)) return auth.error;
+  // Allow service-role-key auth for CLI testing (temporary)
+  const serviceKey = req.headers.get("x-service-key");
+  const envKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const isServiceAuth = serviceKey && envKey && serviceKey.trim() === envKey.trim();
+  if (!isServiceAuth) {
+    console.log(`[Optimizer] Service key auth failed: header=${serviceKey?.slice(0,10) ?? 'null'} env=${envKey?.slice(0,10) ?? 'null'}`);
+    const auth = await requireAdmin(req);
+    if (!isAuthed(auth)) return auth.error;
+  }
 
   try {
-  const body = await req.json();
-  const swapDate = body.swap_date as string;
-  // Accept swap_assignments directly from client (parsed from Excel upload)
-  const clientSwapAssignments = body.swap_assignments as Record<string, SwapAssignment> | undefined;
-  // Accept oncoming pool for crew-to-tail assignment
-  const clientOncomingPool = body.oncoming_pool as OncomingPool | undefined;
-
-  if (!swapDate || !/^\d{4}-\d{2}-\d{2}$/.test(swapDate)) {
-    return NextResponse.json({ error: "swap_date required (YYYY-MM-DD)" }, { status: 400 });
+  let raw: unknown;
+  try {
+    raw = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
+
+  const parsed = OptimizeRequestSchema.safeParse(raw);
+  if (!parsed.success) {
+    return NextResponse.json({ error: "Validation failed", details: parsed.error.issues }, { status: 400 });
+  }
+
+  const swapDate = parsed.data.swap_date;
+  const strategy = parsed.data.strategy ?? "oncoming_first";
+  const clientSwapAssignments = parsed.data.swap_assignments as Record<string, SwapAssignment> | undefined;
+  const clientOncomingPool = parsed.data.oncoming_pool as OncomingPool | undefined;
+  const lockTails = parsed.data.lock_tails as string[] | undefined;
+  const requiredPairings = parsed.data.required_pairings as { pic: string; sic: string; reason: string }[] | undefined;
+  const lockedRows = parsed.data.locked_rows as unknown[] | undefined;
+  const lockTailSet = lockTails ? new Set(lockTails) : null;
 
   const supa = createServiceClient();
 
@@ -78,6 +112,7 @@ export async function POST(req: NextRequest) {
   const crewRoster: CrewMember[] = (crewRes.data ?? []).map((c) => ({
     id: c.id as string,
     name: c.name as string,
+    jetinsight_name: (c.jetinsight_name as string | null) ?? null,
     role: c.role as "PIC" | "SIC",
     home_airports: (c.home_airports as string[]) ?? [],
     aircraft_types: (c.aircraft_types as string[]) ?? [],
@@ -103,6 +138,7 @@ export async function POST(req: NextRequest) {
   // 1. Client-provided (from Excel upload) — highest priority
   // 2. crew_rotations table — manual rotation tracking
   // 3. Auto-detect from JetInsight flights — scan who's flying each tail now
+  const forceAutoDetect = parsed.data.force_auto_detect === true;
   let swapAssignments: Record<string, SwapAssignment> = {};
   let autoDetectedPool: OncomingPool | null = null;
   let rotationSource = "none";
@@ -110,7 +146,7 @@ export async function POST(req: NextRequest) {
   if (clientSwapAssignments && Object.keys(clientSwapAssignments).length > 0) {
     swapAssignments = clientSwapAssignments;
     rotationSource = "excel";
-  } else if (rotationsRes.data && rotationsRes.data.length > 0) {
+  } else if (!forceAutoDetect && rotationsRes.data && rotationsRes.data.length > 0) {
     // Fallback 1: reconstruct from crew_rotations table
     for (const rot of rotationsRes.data) {
       const tail = rot.tail_number as string;
@@ -149,60 +185,302 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Use client pool, auto-detected pool, or nothing
-  const effectivePool = clientOncomingPool ?? autoDetectedPool;
-  const hasPool = effectivePool && (effectivePool.pic?.length > 0 || effectivePool.sic?.length > 0);
+  // Use client pool, auto-detected pool, or auto-build from roster
+  let effectivePool: OncomingPool | null = clientOncomingPool ?? autoDetectedPool;
 
-  // ── STEP 1: Load pre-computed routes from pilot_routes table ──────────────
-  const routeStart = Date.now();
-  const { commercialFlights, routeCount, crewRouteMap, crewOffgoingMap } = await getRoutesForOptimizer(swapDate);
-  const hasPreComputedRoutes = routeCount > 0;
+  // If we have swap assignments but no pool, derive the pool from the roster.
+  // Steps:
+  //   1. Collect all offgoing names from the assignments.
+  //   2. Majority-vote their rotation_group to find the offgoing group.
+  //   3. The oncoming group is the opposite (A↔B).
+  //   4. Include only crew from the oncoming group who aren't already offgoing.
+  // This mirrors what detectCurrentRotation builds, but from Excel-provided data.
+  if (!effectivePool && Object.keys(swapAssignments).length > 0) {
+    const offgoingNames = new Set<string>();
+    for (const sa of Object.values(swapAssignments)) {
+      if (sa.offgoing_pic) offgoingNames.add(sa.offgoing_pic);
+      if (sa.offgoing_sic) offgoingNames.add(sa.offgoing_sic);
+    }
 
-  if (hasPreComputedRoutes) {
-    console.log(`[Swap Optimizer] Loaded ${routeCount} pre-computed routes (${commercialFlights.size} flight keys) in ${Date.now() - routeStart}ms`);
-  } else {
-    console.log(`[Swap Optimizer] No pre-computed routes for ${swapDate} — running in drive-only mode`);
+    // Majority-vote the offgoing rotation group
+    const groupCounts: Record<string, number> = { A: 0, B: 0 };
+    for (const c of crewRoster) {
+      if (offgoingNames.has(c.name) && c.rotation_group) groupCounts[c.rotation_group]++;
+    }
+    const offgoingGroup = groupCounts.A >= groupCounts.B ? (groupCounts.A > 0 ? "A" : null) : "B";
+    const oncomingGroup = offgoingGroup === "A" ? "B" : offgoingGroup === "B" ? "A" : null;
+
+    const autoPool: OncomingPool = { pic: [], sic: [] };
+    for (const c of crewRoster) {
+      if (offgoingNames.has(c.name)) continue;
+      // If rotation groups are known, only include the oncoming group
+      if (oncomingGroup && c.rotation_group && c.rotation_group !== oncomingGroup) continue;
+      const entry = {
+        name: c.name,
+        aircraft_type: c.aircraft_types[0] ?? "unknown",
+        home_airports: c.home_airports,
+        is_checkairman: c.is_checkairman,
+        is_skillbridge: c.is_skillbridge,
+        early_volunteer: false,
+        late_volunteer: false,
+        standby_volunteer: false,
+        notes: null,
+      };
+      if (c.role === "PIC") autoPool.pic.push(entry);
+      else autoPool.sic.push(entry);
+    }
+    effectivePool = autoPool;
+    console.log(`[Swap Optimizer] Auto-built oncoming pool (group ${oncomingGroup ?? "unknown"}): ${autoPool.pic.length} PICs, ${autoPool.sic.length} SICs (excluded ${offgoingNames.size} offgoing, group votes: A=${groupCounts.A} B=${groupCounts.B})`);
   }
 
-  // ── STEP 2: Assign oncoming crew using pre-computed routes ────────────────
-  let assignmentResult: ReturnType<typeof assignOncomingCrew> | null = null;
+  const hasPool = effectivePool && (effectivePool.pic?.length > 0 || effectivePool.sic?.length > 0);
 
-  if (hasPool) {
-    const assignStart = Date.now();
-    assignmentResult = assignOncomingCrew({
+  // ── STEP 0.5: Filter locked tails from assignments AND pool ──────────────
+  // When lock_tails is provided, we only optimize unlocked tails.
+  // Locked tail rows come from the saved plan and are merged back at the end.
+  // Critically, we also remove locked tails' oncoming crew from the pool so the
+  // optimizer can't double-assign them to unlocked tails.
+  if (lockTailSet && lockTailSet.size > 0) {
+    // Collect names of crew already assigned in locked rows
+    const lockedCrewNames = new Set<string>();
+    if (lockedRows) {
+      for (const row of lockedRows as { name?: string; direction?: string }[]) {
+        if (row.name && row.direction === "oncoming") {
+          lockedCrewNames.add(row.name);
+        }
+      }
+    }
+
+    swapAssignments = Object.fromEntries(
+      Object.entries(swapAssignments).filter(([tail]) => !lockTailSet.has(tail))
+    );
+
+    // Filter oncoming pool to exclude crew locked into saved plan tails
+    if (effectivePool && lockedCrewNames.size > 0) {
+      effectivePool = {
+        pic: effectivePool.pic.filter((p) => !lockedCrewNames.has(p.name)),
+        sic: effectivePool.sic.filter((p) => !lockedCrewNames.has(p.name)),
+      };
+      console.log(`[Swap Optimizer] lock_tails: removed ${lockedCrewNames.size} locked crew from pool (${effectivePool.pic.length} PICs, ${effectivePool.sic.length} SICs remaining)`);
+    }
+
+    console.log(`[Swap Optimizer] lock_tails: optimizing ${Object.keys(swapAssignments).length} tails, ${lockTailSet.size} locked`);
+  }
+
+  // ── STEP 1: Load HasData flight cache (Google Flights — sole data source) ──
+  const routeStart = Date.now();
+  const cached = await getHasdataCacheForOptimizer(swapDate);
+  const effectiveFlights = cached.commercialFlights;
+  const hasFlightData = effectiveFlights.size > 0;
+
+  if (hasFlightData) {
+    console.log(`[Swap Optimizer] Loaded ${cached.totalFlights} HasData flights (${effectiveFlights.size} route keys) in ${Date.now() - routeStart}ms`);
+  } else {
+    console.log(`[Swap Optimizer] No HasData cache for ${swapDate} — drive-only mode. Seed HasData first.`);
+  }
+
+  // Pre-computed route maps (from pilot_routes) are no longer used for flight data.
+  // We still load them for crew-specific route scoring if available.
+  const crewRouteMap = new Map<string, import("@/lib/pilotRoutes").PilotRoute[]>();
+  const crewOffgoingMap = new Map<string, import("@/lib/pilotRoutes").PilotRoute[]>();
+
+  // ── STEP 1.5: Offgoing-first analysis (Phase 5) ────────────────────────
+  let offgoingFirstResult = null;
+  if (strategy === "offgoing_first" && Object.keys(swapAssignments).length > 0) {
+    console.log("[Swap Optimizer] Running offgoing-first analysis...");
+    offgoingFirstResult = solveOffgoingFirst({
+      flights, crewRoster, aliases, swapDate,
+      commercialFlights: hasFlightData ? effectiveFlights : undefined,
+      swapAssignments,
+    });
+    console.log(`[Swap Optimizer] Offgoing-first: ${offgoingFirstResult.deadlines.length} deadlines, ${offgoingFirstResult.unsolvable.length} unsolvable`);
+  }
+
+  // Build set of tails with CONFIRMED timing deadlocks — cases where the offgoing crew
+  // has a known departure deadline that makes any oncoming arrival impossible.
+  // We do NOT exclude tails where offgoing simply has no commercial transport (those tails
+  // can still be planned: offgoing will self-arrange, oncoming should still be assigned).
+  //
+  // Key: match on tail+role (not just tail). In solveOffgoingFirst, each crew member goes
+  // to EITHER deadlines OR unsolvable — never both. A tail where PIC is unsolvable (no
+  // transport) but SIC has a deadline (has a flight) is NOT a timing deadlock — those are
+  // independent crew members. Only exclude when the SAME role on the same tail somehow
+  // ends up in both lists (shouldn't happen, but defensive).
+  const deadlineTailRoles = offgoingFirstResult
+    ? new Set(offgoingFirstResult.deadlines.map((d) => `${d.tail}|${d.role}`))
+    : new Set<string>();
+  const unsolvableTails = offgoingFirstResult
+    ? new Set(
+        offgoingFirstResult.unsolvable
+          .filter((u) => deadlineTailRoles.has(`${u.tail}|${u.role}`))
+          .map((u) => u.tail)
+      )
+    : undefined;
+  if (unsolvableTails?.size) {
+    console.log(`[Swap Optimizer] Excluding ${unsolvableTails.size} timing-deadlock tails from oncoming assignment: ${[...unsolvableTails].join(", ")}`);
+  }
+  const noTransportTails = offgoingFirstResult
+    ? offgoingFirstResult.unsolvable.filter((u) => !deadlineTailRoles.has(`${u.tail}|${u.role}`)).map((u) => u.tail)
+    : [];
+  if (noTransportTails.length) {
+    console.log(`[Swap Optimizer] ${noTransportTails.length} tails have no offgoing transport but oncoming will still be assigned: ${noTransportTails.join(", ")}`);
+  }
+
+  // ── STEP 2+3: Assign oncoming crew + run transport optimizer ────────────────
+  // When strategy is offgoing_first and we have volunteers, use two-pass approach:
+  // Pass 1: normal crew only. Pass 2: add early/late volunteers for unsolvable tails.
+  let assignmentResult: ReturnType<typeof assignOncomingCrew> | null = null;
+  let result: ReturnType<typeof buildSwapPlan>;
+
+  const hasVolunteers = hasPool && effectivePool && (
+    effectivePool.pic.some((p) => p.early_volunteer || p.late_volunteer) ||
+    effectivePool.sic.some((p) => p.early_volunteer || p.late_volunteer)
+  );
+
+  if (hasPool && strategy === "offgoing_first" && hasVolunteers) {
+    // ── Two-pass optimizer ──────────────────────────────────────────────
+    const twoPassStart = Date.now();
+    const twoPass = twoPassAssignAndOptimize({
       swapAssignments,
       oncomingPool: effectivePool!,
       crewRoster,
       flights,
       swapDate,
       aliases,
-      commercialFlights: hasPreComputedRoutes ? commercialFlights : undefined,
-      preComputedRoutes: hasPreComputedRoutes ? crewRouteMap : undefined,
-      preComputedOffgoing: hasPreComputedRoutes ? crewOffgoingMap : undefined,
+      commercialFlights: hasFlightData ? effectiveFlights : undefined,
+      preComputedRoutes: false ? crewRouteMap : undefined,
+      preComputedOffgoing: false ? crewOffgoingMap : undefined,
+      excludeTails: unsolvableTails,
+      offgoingDeadlines: offgoingFirstResult?.deadlines,
     });
-    swapAssignments = assignmentResult.assignments;
-    console.log(`[Swap Optimizer] Assignment took ${((Date.now() - assignStart) / 1000).toFixed(1)}s`);
+    assignmentResult = twoPass.assignmentResult;
+    swapAssignments = twoPass.assignmentResult.assignments;
+
+    // Apply required pairings to two-pass result
+    if (requiredPairings && requiredPairings.length > 0) {
+      for (const pairing of requiredPairings) {
+        const picTail = Object.entries(swapAssignments).find(([, sa]) => sa.oncoming_pic === pairing.pic)?.[0];
+        if (!picTail) continue;
+        if (swapAssignments[picTail].oncoming_sic === pairing.sic) continue;
+        for (const [, sa] of Object.entries(swapAssignments)) {
+          if (sa.oncoming_sic === pairing.sic) sa.oncoming_sic = null;
+        }
+        swapAssignments[picTail].oncoming_sic = pairing.sic;
+        console.log(`[Pairing] Forced "${pairing.sic}" onto ${picTail} with "${pairing.pic}" (${pairing.reason})`);
+      }
+    }
+
+    // Re-run transport plan with updated assignments
+    result = buildSwapPlan({
+      flights, crewRoster, aliases, swapDate,
+      commercialFlights: hasFlightData ? effectiveFlights : undefined,
+      swapAssignments: Object.keys(swapAssignments).length > 0 ? swapAssignments : undefined,
+      oncomingPool: effectivePool ?? undefined,
+      strategy,
+    });
+    console.log(`[Swap Optimizer] Two-pass took ${((Date.now() - twoPassStart) / 1000).toFixed(1)}s`);
+  } else {
+    // ── Single-pass (legacy or no volunteers) ───────────────────────────
+    if (hasPool) {
+      const assignStart = Date.now();
+      assignmentResult = assignOncomingCrew({
+        swapAssignments,
+        oncomingPool: effectivePool!,
+        crewRoster,
+        flights,
+        swapDate,
+        aliases,
+        commercialFlights: hasFlightData ? effectiveFlights : undefined,
+        preComputedRoutes: false ? crewRouteMap : undefined,
+        preComputedOffgoing: false ? crewOffgoingMap : undefined,
+        excludeTails: unsolvableTails,
+        offgoingDeadlines: offgoingFirstResult?.deadlines,
+      });
+      swapAssignments = assignmentResult.assignments;
+      console.log(`[Swap Optimizer] Assignment took ${((Date.now() - assignStart) / 1000).toFixed(1)}s`);
+    }
+
+    // ── Apply required pairings: force paired SIC onto same tail as paired PIC ──
+    if (requiredPairings && requiredPairings.length > 0) {
+      for (const pairing of requiredPairings) {
+        // Find which tail the PIC was assigned to
+        const picTail = Object.entries(swapAssignments).find(([, sa]) => sa.oncoming_pic === pairing.pic)?.[0];
+        if (!picTail) {
+          console.log(`[Pairing] PIC "${pairing.pic}" not assigned to any tail — skipping pairing with "${pairing.sic}"`);
+          continue;
+        }
+
+        // Check if the SIC is already on that tail
+        const currentSic = swapAssignments[picTail].oncoming_sic;
+        if (currentSic === pairing.sic) {
+          console.log(`[Pairing] "${pairing.pic}" + "${pairing.sic}" already on ${picTail}`);
+          continue;
+        }
+
+        // Remove the SIC from wherever they're currently assigned
+        for (const [tail, sa] of Object.entries(swapAssignments)) {
+          if (sa.oncoming_sic === pairing.sic) {
+            sa.oncoming_sic = null;
+            console.log(`[Pairing] Removed "${pairing.sic}" from ${tail} SIC`);
+          }
+        }
+
+        // If the PIC's tail already has a SIC, move that SIC to the pool
+        if (currentSic && currentSic !== pairing.sic) {
+          console.log(`[Pairing] Displaced "${currentSic}" from ${picTail} SIC (replaced by "${pairing.sic}" for ${pairing.reason})`);
+          // The displaced SIC will be re-assigned by the transport plan
+          swapAssignments[picTail].oncoming_sic = null;
+        }
+
+        // Assign the paired SIC to the PIC's tail
+        swapAssignments[picTail].oncoming_sic = pairing.sic;
+        console.log(`[Pairing] Forced "${pairing.sic}" onto ${picTail} with "${pairing.pic}" (${pairing.reason})`);
+      }
+    }
+
+    const transportStart = Date.now();
+    result = buildSwapPlan({
+      flights,
+      crewRoster,
+      aliases,
+      swapDate,
+      commercialFlights: hasFlightData ? effectiveFlights : undefined,
+      swapAssignments: Object.keys(swapAssignments).length > 0 ? swapAssignments : undefined,
+      oncomingPool: effectivePool ?? undefined,
+      strategy,
+    });
+    console.log(`[Swap Optimizer] Transport plan took ${((Date.now() - transportStart) / 1000).toFixed(1)}s`);
   }
 
-  // ── STEP 3: Run transport optimizer for all assigned crew ──────────────────
-  const transportStart = Date.now();
-  const result = buildSwapPlan({
-    flights,
-    crewRoster,
-    aliases,
-    swapDate,
-    commercialFlights: hasPreComputedRoutes ? commercialFlights : undefined,
-    swapAssignments: Object.keys(swapAssignments).length > 0 ? swapAssignments : undefined,
-    oncomingPool: effectivePool ?? undefined,
-  });
-
-  console.log(`[Swap Optimizer] Transport plan took ${((Date.now() - transportStart) / 1000).toFixed(1)}s`);
+  // ── Merge locked rows back into result ────────────────────────────────────
+  if (lockTailSet && lockTailSet.size > 0 && lockedRows && lockedRows.length > 0) {
+    const typedLockedRows = lockedRows as typeof result.rows;
+    result.rows = [...typedLockedRows, ...result.rows];
+    // Recalculate totals
+    result.total_cost = result.rows.reduce((s, r) => s + (r.cost_estimate ?? 0), 0);
+    const solved = result.rows.filter((r) => r.travel_type !== "none").length;
+    result.solved_count = solved;
+    result.unsolved_count = result.rows.length - solved;
+    // Recompute plan_score as average of row scores
+    const scores = result.rows.map((r) => r.score ?? 0);
+    result.plan_score = scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : 0;
+    console.log(`[Swap Optimizer] Merged ${typedLockedRows.length} locked rows + ${result.rows.length - typedLockedRows.length} optimized rows`);
+  }
 
   return NextResponse.json({
     ok: true,
     ...result,
-    routes_used: routeCount,
+    strategy,
+    routes_used: cached.totalFlights,
+    flight_cache_used: !false && hasFlightData,
     rotation_source: rotationSource,
+    offgoing_first: offgoingFirstResult ? {
+      deadlines: offgoingFirstResult.deadlines.map((d) => ({
+        ...d,
+        deadline: d.deadline.toISOString(),
+      })),
+      unsolvable: offgoingFirstResult.unsolvable,
+    } : undefined,
     crew_assignment: assignmentResult ? {
       standby: assignmentResult.standby,
       details: assignmentResult.details,

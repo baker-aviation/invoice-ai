@@ -277,11 +277,97 @@ function normFboKey(fbo: string): string {
     .trim();
 }
 
+// ---------------------------------------------------------------------------
+// Canonical FBO brand mapping — collapses vendor naming variations
+// ---------------------------------------------------------------------------
+
+const FBO_BRAND_PATTERNS: [RegExp, string][] = [
+  [/\bsignature\b|flight\s*support/i, "Signature"],
+  [/\batlantic\b/i, "Atlantic Aviation"],
+  [/\bjet\s*aviation\b/i, "Jet Aviation"],
+  [/\bsheltair\b/i, "Sheltair"],
+  [/\bclay\s*lacy\b/i, "Clay Lacy"],
+  [/\bmill(?:ion)?\s*air\b/i, "Million Air"],
+  [/\bhenriksen\b/i, "Henriksen"],
+  [/\bwilson\s*air\b/i, "Wilson Air"],
+  [/\bfountainhead\b/i, "Fountainhead"],
+  [/\bross\s*aviation\b/i, "Ross Aviation"],
+  [/\bbanyan\b/i, "Banyan"],
+  [/\bcutter\b/i, "Cutter Aviation"],
+  [/\bepic\b/i, "Epic Aviation"],
+  [/\bglobal\s*select\b/i, "Global Select"],
+  [/\bkaiser\b/i, "Kaiser Air"],
+  [/\bpentastar\b/i, "Pentastar"],
+  [/\bpriester\b/i, "Priester"],
+  [/\bxo\s*jet\b|\bxojet\b/i, "XOJet"],
+  [/\btac\s*air\b/i, "TAC Air"],
+];
+
+/** Location qualifiers (East, West, South, Terminal N, etc.) */
+const LOCATION_RE = /[\s\-–·]*(?:east(?:\/west)?|west|south|north|terminal\s*\d+)/i;
+
+/** Airport code suffixes vendors stick on FBO names (e.g. "Atlantic TEB", "Jet Aviation KTEB") */
+const AIRPORT_SUFFIX_RE = /[\s\-–·]*(?:K?[A-Z]{3})$/;
+
+type CanonicalFbo = { brand: string; location: string | null };
+
+function canonicalFbo(rawFbo: string, airportCode?: string): CanonicalFbo {
+  const cleaned = rawFbo.trim();
+
+  // 1. Match known brand
+  for (const [pattern, brand] of FBO_BRAND_PATTERNS) {
+    if (pattern.test(cleaned)) {
+      // Extract location qualifier before stripping
+      const locMatch = cleaned.match(LOCATION_RE);
+      const location = locMatch
+        ? locMatch[0].replace(/^[\s\-–·]+/, "").replace(/\b\w/g, (c) => c.toUpperCase())
+        : null;
+      return { brand, location };
+    }
+  }
+
+  // 2. Unknown brand — strip airport code suffix and return as-is
+  let brand = cleaned;
+  if (airportCode) {
+    const iata = airportCode.replace(/^K/, "");
+    brand = brand.replace(new RegExp(`[\\s\\-–·]*K?${iata}$`, "i"), "");
+  }
+  brand = brand.replace(AIRPORT_SUFFIX_RE, "").trim();
+  const locMatch = brand.match(LOCATION_RE);
+  const location = locMatch
+    ? locMatch[0].replace(/^[\s\-–·]+/, "").replace(/\b\w/g, (c) => c.toUpperCase())
+    : null;
+  if (location) brand = brand.replace(LOCATION_RE, "").trim();
+  return { brand: brand || cleaned, location };
+}
+
+/** Create a grouping key from canonical FBO + airport */
+function canonicalFboKey(rawFbo: string, airportCode: string): string {
+  const { brand, location } = canonicalFbo(rawFbo, airportCode);
+  const key = normFboKey(brand) + (location ? `|${location.toLowerCase()}` : "");
+  return `${normAirport(airportCode)}|${key}`;
+}
+
+type VendorQuote = {
+  fboVendor: string;
+  volumeTier: string;
+  tailNumbers: string | null;
+  currentWeek: string;
+  currentPrice: number;
+  prevWeek: string | null;
+  prevPrice: number | null;
+  wowChange: number | null;
+  wowChangePct: number | null;
+};
+
 type AdvVsActualRow = {
   key: string;
   airport: string;
   fboVendor: string;
   fboName: string | null;  // specific FBO at airport (e.g. "Atlantic Aviation - HOU")
+  canonicalBrand: string | null;   // e.g. "Signature"
+  canonicalLocation: string | null; // e.g. "East"
+  vendorQuotes: VendorQuote[];     // per-vendor pricing for this FBO
   volumeTier: string;
   tailNumbers: string | null;
   currentWeek: string;
@@ -362,7 +448,7 @@ function buildAdvVsActual(
   }
   for (const adv of filteredAdv) {
     const fbo = extractFboName(adv.product) ?? "";
-    const wk = `${adv.fbo_vendor}|${normAirport(adv.airport_code)}|${normFboKey(fbo)}|${adv.week_start}`;
+    const wk = `${adv.fbo_vendor}|${normAirport(adv.airport_code)}|${normFboKey(fbo)}|${getWeekMonday(adv.week_start)}`;
     const existing = seenByWeek.get(wk);
     if (!existing) {
       seenByWeek.set(wk, adv);
@@ -388,31 +474,90 @@ function buildAdvVsActual(
     }
   }
 
-  const advByIdentity = new Map<string, AdvertisedPriceRow[]>();
+  // --- Step 1: Group by (vendor, airport, fboName, week) as before for WoW ---
+  const advByVendorIdentity = new Map<string, AdvertisedPriceRow[]>();
   for (const adv of dedupedAdv) {
     const fbo = extractFboName(adv.product) ?? "";
     const key = `${adv.fbo_vendor}|${normAirport(adv.airport_code)}|${normFboKey(fbo)}`;
-    if (!advByIdentity.has(key)) advByIdentity.set(key, []);
-    advByIdentity.get(key)!.push(adv);
+    if (!advByVendorIdentity.has(key)) advByVendorIdentity.set(key, []);
+    advByVendorIdentity.get(key)!.push(adv);
   }
 
-  const rows: AdvVsActualRow[] = [];
-  for (const [, group] of advByIdentity) {
-    // Sort by week desc
+  // Build per-vendor WoW data
+  const vendorWow = new Map<string, VendorQuote>();
+  for (const [vKey, group] of advByVendorIdentity) {
     group.sort((a, b) => b.week_start.localeCompare(a.week_start));
     const latest = group[0];
     const prev = group.length > 1 ? group[1] : null;
-
     let wowChange: number | null = null;
     let wowChangePct: number | null = null;
     if (prev) {
       wowChange = Math.round((latest.price - prev.price) * 10000) / 10000;
-      if (prev.price > 0) {
-        wowChangePct = Math.round(((latest.price - prev.price) / prev.price) * 1000) / 10;
-      }
+      if (prev.price > 0) wowChangePct = Math.round(((latest.price - prev.price) / prev.price) * 1000) / 10;
+    }
+    vendorWow.set(vKey, {
+      fboVendor: latest.fbo_vendor,
+      volumeTier: latest.volume_tier,
+      tailNumbers: latest.tail_numbers,
+      currentWeek: latest.week_start,
+      currentPrice: latest.price,
+      prevWeek: prev?.week_start ?? null,
+      prevPrice: prev?.price ?? null,
+      wowChange,
+      wowChangePct,
+    });
+  }
+
+  // --- Step 2: Group by canonical FBO (airport + brand + location) ---
+  const advByCanonical = new Map<string, { adv: AdvertisedPriceRow; vKey: string }[]>();
+  for (const adv of dedupedAdv) {
+    const fbo = extractFboName(adv.product) ?? adv.fbo_vendor;
+    const cKey = canonicalFboKey(fbo, adv.airport_code);
+    if (!advByCanonical.has(cKey)) advByCanonical.set(cKey, []);
+    const vKey = `${adv.fbo_vendor}|${normAirport(adv.airport_code)}|${normFboKey(extractFboName(adv.product) ?? "")}`;
+    advByCanonical.get(cKey)!.push({ adv, vKey });
+  }
+
+  const rows: AdvVsActualRow[] = [];
+  for (const [cKey, group] of advByCanonical) {
+    // Pick the most recent entry as representative
+    group.sort((a, b) => b.adv.week_start.localeCompare(a.adv.week_start));
+    const latest = group[0].adv;
+    const fboRaw = extractFboName(latest.product) ?? latest.fbo_vendor;
+    const canon = canonicalFbo(fboRaw, latest.airport_code);
+
+    // Collect unique vendor quotes for this canonical FBO
+    const seenVendors = new Set<string>();
+    const quotes: VendorQuote[] = [];
+    for (const { vKey } of group) {
+      if (seenVendors.has(vKey)) continue;
+      seenVendors.add(vKey);
+      const q = vendorWow.get(vKey);
+      if (!q) continue;
+      // Dedup by vendor display name — same vendor can appear with different vKeys
+      // due to airport code variants (KTEB vs TEB) or product format differences
+      const vendorDisplayKey = `${q.fboVendor.toLowerCase()}|${q.volumeTier}`;
+      if (seenVendors.has(vendorDisplayKey)) continue;
+      seenVendors.add(vendorDisplayKey);
+      quotes.push(q);
+    }
+    // Sort quotes: cheapest first
+    quotes.sort((a, b) => a.currentPrice - b.currentPrice);
+
+    // Use cheapest vendor quote as the "headline" price
+    const best = quotes[0] ?? null;
+    // Find previous week across all vendors for WoW
+    const allPrevPrices = quotes.filter((q) => q.prevPrice != null);
+    const bestPrev = allPrevPrices.length > 0 ? allPrevPrices.sort((a, b) => a.prevPrice! - b.prevPrice!)[0] : null;
+
+    let wowChange: number | null = null;
+    let wowChangePct: number | null = null;
+    if (best && bestPrev?.prevPrice != null) {
+      wowChange = Math.round((best.currentPrice - bestPrev.prevPrice) * 10000) / 10000;
+      if (bestPrev.prevPrice > 0) wowChangePct = Math.round(((best.currentPrice - bestPrev.prevPrice) / bestPrev.prevPrice) * 1000) / 10;
     }
 
-    // Actual avg for this airport (all vendors/sources) — try all airport code variants
+    // Actual avg for this airport
     const variants = airportVariants(latest.airport_code);
     let bucket: { prices: number[]; count: number } | undefined;
     for (const v of variants) {
@@ -424,7 +569,7 @@ function buildAdvVsActual(
       : null;
     const invoiceCount = bucket?.count ?? 0;
 
-    // Actual avg at this airport within ±10 days of the advertised week_start
+    // Recent 7-day avg
     const weekDate = new Date(latest.week_start + "T12:00:00");
     const minDate = new Date(weekDate.getTime() - 3 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
     const maxDate = new Date(weekDate.getTime() + 10 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
@@ -439,26 +584,26 @@ function buildAdvVsActual(
       : null;
     const recent7dCount = recentPrices.length;
 
-    // vs Adv uses 7-day avg if available, otherwise all-time
     const comparePrice = recent7dAvg ?? actualAvg;
     let vsActualPct: number | null = null;
-    if (comparePrice != null && latest.price > 0) {
-      vsActualPct = Math.round(((comparePrice - latest.price) / latest.price) * 1000) / 10;
+    if (comparePrice != null && best && best.currentPrice > 0) {
+      vsActualPct = Math.round(((comparePrice - best.currentPrice) / best.currentPrice) * 1000) / 10;
     }
 
     rows.push({
-      key: `${latest.id}`,
-      airport: latest.airport_code.length === 4 && latest.airport_code.startsWith("K")
-        ? latest.airport_code.slice(1)
-        : latest.airport_code,
-      fboVendor: latest.fbo_vendor,
+      key: cKey,
+      airport: normAirport(latest.airport_code),
+      fboVendor: best?.fboVendor ?? latest.fbo_vendor,
       fboName: extractFboName(latest.product),
-      volumeTier: latest.volume_tier,
-      tailNumbers: latest.tail_numbers,
-      currentWeek: latest.week_start,
-      currentPrice: latest.price,
-      prevWeek: prev?.week_start ?? null,
-      prevPrice: prev?.price ?? null,
+      canonicalBrand: canon.brand,
+      canonicalLocation: canon.location,
+      vendorQuotes: quotes,
+      volumeTier: best?.volumeTier ?? latest.volume_tier,
+      tailNumbers: best?.tailNumbers ?? latest.tail_numbers,
+      currentWeek: quotes.reduce((newest, q) => q.currentWeek > newest ? q.currentWeek : newest, best?.currentWeek ?? latest.week_start),
+      currentPrice: best?.currentPrice ?? latest.price,
+      prevWeek: bestPrev?.prevWeek ?? null,
+      prevPrice: bestPrev?.prevPrice ?? null,
       wowChange,
       wowChangePct,
       actualAvgPrice: actualAvg,
@@ -622,6 +767,7 @@ export default function FuelPricesTable({
   const [showImportModal, setShowImportModal] = useState(false);
   const [volumeGallons, setVolumeGallons] = useState<string>("");
   const [compareJetFbo, setCompareJetFbo] = useState(false);
+  const [hideStale, setHideStale] = useState(true);
   const [isPulling, setIsPulling] = useState(false);
   const [pullResult, setPullResult] = useState<string | null>(null);
   const [extendedAdv, setExtendedAdv] = useState<AdvertisedPriceRow[] | null>(null);
@@ -892,11 +1038,12 @@ export default function FuelPricesTable({
     if (compareJetFbo) {
       // Match rows where the FBO (by vendor or fboName) is Jet Aviation, Atlantic, or Signature
       function isTargetFbo(r: AdvVsActualRow): boolean {
+        const brand = (r.canonicalBrand ?? "").toLowerCase();
+        if (brand === "jet aviation" || brand === "atlantic aviation" || brand === "signature") return true;
+        // Fallback: check raw names
         const vendor = r.fboVendor.toLowerCase();
         const fbo = (r.fboName ?? "").toLowerCase();
-        // Direct vendor match
         if (vendor === "jet aviation" || vendor === "signature flight support") return true;
-        // FBO name contains target names (e.g. WFS "JET AVIATION" FBO, Avfuel "Atlantic Aviation")
         if (fbo.includes("jet aviation") || fbo.includes("atlantic") || fbo.includes("signature")) return true;
         return false;
       }
@@ -915,13 +1062,17 @@ export default function FuelPricesTable({
     if (search) {
       const q = search.toLowerCase();
       rows = rows.filter((r) =>
-        [r.airport, r.fboVendor, r.fboName, r.tailNumbers]
+        [r.airport, r.fboVendor, r.fboName, r.canonicalBrand, r.canonicalLocation, r.tailNumbers]
           .filter(Boolean)
           .some((f) => String(f).toLowerCase().includes(q)),
       );
     }
+    if (hideStale) {
+      const staleCutoff = new Date(Date.now() - 8 * 86400000).toISOString().split("T")[0];
+      rows = rows.filter((r) => r.currentWeek >= staleCutoff);
+    }
     return rows;
-  }, [advVsActual, airportFilter, vendorFilter, search, compareJetFbo]);
+  }, [advVsActual, airportFilter, vendorFilter, search, compareJetFbo, hideStale]);
 
   // Cheapest price per airport — only rows with data ≤8 days old
   const cheapestByAirport = useMemo(() => {
@@ -1356,6 +1507,18 @@ export default function FuelPricesTable({
             >
               Compare FBOs
             </button>
+            <button
+              type="button"
+              onClick={() => { setHideStale((v) => !v); setPage(0); }}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md border transition-colors ${
+                hideStale
+                  ? "bg-amber-100 text-amber-800 border-amber-300"
+                  : "bg-white text-gray-600 border-gray-200 hover:border-gray-400 hover:bg-gray-50"
+              }`}
+              title="Hide prices older than 8 days"
+            >
+              {hideStale ? "Stale Hidden" : "Show All"}
+            </button>
             {!extendedAdv && (
               <button
                 type="button"
@@ -1762,7 +1925,7 @@ export default function FuelPricesTable({
               <thead>
                 <tr className="bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   <th className="px-4 py-3">Airport</th>
-                  <th className="px-4 py-3">FBO Vendor</th>
+                  <th className="px-4 py-3">FBO / Vendors</th>
                   <th className="px-4 py-3">Tier</th>
                   <th className="px-4 py-3">Tails</th>
                   <th className="px-4 py-3 text-right">
@@ -1806,9 +1969,34 @@ export default function FuelPricesTable({
                       }`}
                     >
                       <td className="px-4 py-2.5 whitespace-nowrap font-semibold">{row.airport}</td>
-                      <td className="px-4 py-2.5 whitespace-nowrap max-w-[220px] text-xs text-gray-600" title={row.fboName ? `${row.fboName} (${row.fboVendor})` : row.fboVendor}>
-                        <div className="truncate font-medium">{row.fboName ?? row.fboVendor}</div>
-                        {row.fboName && <div className="text-[10px] text-gray-400 truncate">{row.fboVendor}</div>}
+                      <td className="px-4 py-2.5 max-w-[280px] text-xs text-gray-600">
+                        <div className="truncate font-medium">
+                          {row.canonicalBrand ?? row.fboName ?? row.fboVendor}
+                          {row.canonicalLocation && <span className="text-gray-400 font-normal ml-1">({row.canonicalLocation})</span>}
+                        </div>
+                        {row.vendorQuotes.length > 1 ? (
+                          <div className="mt-0.5 space-y-0">
+                            {row.vendorQuotes.map((q) => {
+                              const isFboDirect = row.canonicalBrand
+                                ? FBO_BRAND_PATTERNS.some(([pat, brand]) => brand === row.canonicalBrand && pat.test(q.fboVendor))
+                                : false;
+                              return (
+                                <div key={q.fboVendor} className="flex items-center gap-1.5 text-[10px]">
+                                  <span className={`truncate max-w-[100px] ${isFboDirect ? "text-indigo-600 font-semibold" : "text-gray-400"}`}>{q.fboVendor}</span>
+                                  {isFboDirect && <span className="text-[8px] font-bold px-1 py-px rounded bg-indigo-100 text-indigo-700 shrink-0">FBO</span>}
+                                  <span className="font-mono text-gray-500">{fmt$(q.currentPrice)}</span>
+                                  <span className="text-gray-300">{q.volumeTier}</span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div className="text-[10px] text-gray-400 truncate">
+                            {row.fboVendor}
+                            {row.canonicalBrand && FBO_BRAND_PATTERNS.some(([pat, brand]) => brand === row.canonicalBrand && pat.test(row.fboVendor))
+                              && <span className="ml-1 text-[8px] font-bold px-1 py-px rounded bg-indigo-100 text-indigo-700">FBO</span>}
+                          </div>
+                        )}
                       </td>
                       <td className="px-4 py-2.5 whitespace-nowrap text-xs text-gray-500">{row.volumeTier}</td>
                       <td className="px-4 py-2.5 text-xs text-gray-500 max-w-[120px] truncate" title={row.tailNumbers || "All"}>{row.tailNumbers || "All"}</td>
@@ -1817,7 +2005,7 @@ export default function FuelPricesTable({
                           const weekDate = new Date(row.currentWeek + "T12:00:00");
                           const now = new Date();
                           const diffDays = Math.floor((now.getTime() - weekDate.getTime()) / 86400000);
-                          const isStale = diffDays > 6;
+                          const isStale = diffDays > 8;
                           return (
                             <span className={`${isCheapest ? "inline-flex items-center gap-1" : ""} ${isStale ? "text-amber-600" : "text-green-700"}`}>
                               {fmt$(row.currentPrice)}

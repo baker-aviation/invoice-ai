@@ -1,15 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin, isAuthed } from "@/lib/api-auth";
-import { computeAllRoutes, getRouteStatus, clearRoutes } from "@/lib/pilotRoutes";
+import { buildHasdataCache, getHasdataCacheStats } from "@/lib/hasdataCache";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 300; // 5 min — FlightAware bulk (~60 calls) + HasData pricing (~100 calls)
+export const maxDuration = 300; // 5 min — HasData seeding (~3000 city pairs at 50 concurrent)
 
 /**
  * POST /api/crew/routes
- * Body: { swap_date: "2026-03-18" }
+ * Body: { swap_date: "2026-03-25", mode?: "seed" | "fill" | "refresh" }
  *
- * Triggers route computation for all crew members to all swap-day airports.
+ * Seeds the HasData flight cache (Google Flights) for all crew × swap city pairs.
+ * This is the sole flight data source for both the optimizer and flight picker.
  */
 export async function POST(req: NextRequest) {
   const auth = await requireAdmin(req);
@@ -18,38 +19,37 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const swapDate = body.swap_date as string;
+    const mode = (body.mode as "seed" | "fill" | "refresh") ?? "fill";
 
     if (!swapDate || !/^\d{4}-\d{2}-\d{2}$/.test(swapDate)) {
       return NextResponse.json({ error: "swap_date required (YYYY-MM-DD)" }, { status: 400 });
     }
 
-    console.log(`[Routes API] Computing routes for ${swapDate}`);
-    const result = await computeAllRoutes(swapDate);
+    console.log(`[Routes API] Seeding HasData cache for ${swapDate} (mode: ${mode})`);
+    const result = await buildHasdataCache(swapDate, mode);
 
     return NextResponse.json({
       ok: true,
       swap_date: swapDate,
-      crew_processed: result.crewProcessed,
-      total_routes: result.totalRoutes,
-      flightaware_calls: result.flightAwareCalls,
-      hasdata_calls: result.hasDataCalls,
-      scheduled_flights: result.totalScheduledFlights,
-      priced_pairs: result.pricedPairs,
-      errors: result.errors.length > 0 ? result.errors : undefined,
+      mode,
+      pairs_queried: result.pairs_queried,
+      offers_cached: result.offers_cached,
+      duration_ms: result.duration_ms,
+      errors: result.errors.length > 0 ? result.errors.slice(0, 20) : undefined,
     });
   } catch (e) {
     console.error("[Routes API] Error:", e);
     return NextResponse.json(
-      { error: e instanceof Error ? e.message : "Route computation failed" },
+      { error: e instanceof Error ? e.message : "HasData seeding failed" },
       { status: 500 },
     );
   }
 }
 
 /**
- * GET /api/crew/routes?date=2026-03-18
+ * GET /api/crew/routes?date=2026-03-25
  *
- * Get computation status/summary for a swap date.
+ * Get HasData cache stats for a swap date.
  */
 export async function GET(req: NextRequest) {
   const auth = await requireAdmin(req);
@@ -60,24 +60,26 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "date query param required (YYYY-MM-DD)" }, { status: 400 });
   }
 
-  const status = await getRouteStatus(date);
-  return NextResponse.json(status);
-}
-
-/**
- * DELETE /api/crew/routes?date=2026-03-18
- *
- * Clear cached routes for a swap date.
- */
-export async function DELETE(req: NextRequest) {
-  const auth = await requireAdmin(req);
-  if (!isAuthed(auth)) return auth.error;
-
-  const date = req.nextUrl.searchParams.get("date");
-  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-    return NextResponse.json({ error: "date query param required (YYYY-MM-DD)" }, { status: 400 });
+  const stats = await getHasdataCacheStats(date);
+  if (!stats) {
+    return NextResponse.json({
+      swap_date: date,
+      total_routes: 0,
+      crew_count: 0,
+      destination_count: 0,
+      last_computed: null,
+      is_stale: true,
+    });
   }
 
-  const result = await clearRoutes(date);
-  return NextResponse.json({ ok: true, deleted: result.deleted });
+  return NextResponse.json({
+    swap_date: date,
+    total_routes: stats.total_pairs,
+    total_offers: stats.total_offers,
+    pairs_with_flights: stats.pairs_with_flights,
+    pairs_with_direct: stats.pairs_with_direct,
+    min_price: stats.min_price_overall,
+    last_computed: stats.last_fetched,
+    is_stale: !stats.last_fetched || (Date.now() - new Date(stats.last_fetched).getTime()) > 12 * 60 * 60 * 1000,
+  });
 }

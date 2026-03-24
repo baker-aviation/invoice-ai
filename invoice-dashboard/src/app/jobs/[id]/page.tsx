@@ -8,7 +8,9 @@ import AttachFileButton from "./AttachFileButton";
 import TypeRatingsEditor from "./TypeRatingsEditor";
 import ProfileEditor from "./ProfileEditor";
 import ReviewBadge from "./ReviewBadge";
+import HrReviewedBadge from "./HrReviewedBadge";
 import PushToScreeningButton from "./PushToScreeningButton";
+import OfferPreview from "./OfferPreview";
 
 function fmtDate(s: any) {
   return String(s ?? "").replace("T", " ").replace("+00:00", "Z");
@@ -92,10 +94,11 @@ export default async function JobDetailPage({
     const lors = await fetchLinkedLors(job?.id);
     const isPilot = job?.category === "pilot_pic" || job?.category === "pilot_sic";
 
-    // Check for previously rejected applications with the same email
-    const previousRejections = job?.email
-      ? await fetchPreviousRejections(job.email, job.id)
-      : [];
+    // Check for previously rejected applications with same email, phone, or name
+    const previousRejections = await fetchPreviousRejections(
+      { email: job?.email, phone: job?.phone, candidate_name: job?.candidate_name },
+      job.id,
+    );
 
     const isRejected = !!job?.rejected_at;
 
@@ -104,9 +107,12 @@ export default async function JobDetailPage({
         <Topbar title="Job detail" />
 
         <div className="p-6 space-y-4">
-          <div className="text-sm">
+          <div className="flex items-center gap-4 text-sm">
             <Link href="/jobs" className="text-blue-600 hover:underline">
               ← Back to Jobs
+            </Link>
+            <Link href="/jobs/pipeline" className="text-blue-600 hover:underline">
+              ← Return to Pipeline
             </Link>
           </div>
 
@@ -156,11 +162,25 @@ export default async function JobDetailPage({
                 <div className="text-sm text-gray-600">
                   {job?.email ?? "—"} {job?.phone ? `• ${job.phone}` : ""}
                 </div>
-                <div className="text-xs text-gray-400 mt-1">application_id: {applicationId}</div>
+                <div className="text-xs text-gray-400 mt-1">
+                  application_id: {applicationId}
+                  {job?.pipeline_stage && (
+                    <span className="ml-3 px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">
+                      Pipeline: {job.pipeline_stage.replace(/_/g, " ")}
+                    </span>
+                  )}
+                </div>
               </div>
 
               <div className="flex items-center gap-2">
                 {isRejected && <Badge variant="danger">Rejected</Badge>}
+                {job?.previously_rejected && !isRejected && (
+                  <Badge variant="warning">Previously Rejected</Badge>
+                )}
+                <HrReviewedBadge
+                  applicationId={Number(applicationId)}
+                  initialHrReviewed={!!job?.hr_reviewed}
+                />
                 <PushToScreeningButton
                   applicationId={Number(applicationId)}
                   currentStage={job?.pipeline_stage ?? null}
@@ -344,6 +364,37 @@ export default async function JobDetailPage({
             </div>
           )}
 
+          {/* PRD Document */}
+          {(() => {
+            const prdFiles = files.filter((f: any) => f.file_category === "prd");
+            return (
+              <div className="rounded-xl border bg-white p-4 shadow-sm">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-sm font-semibold text-gray-900">PRD Document</h3>
+                  <AttachFileButton applicationId={Number(applicationId)} parseId={job.id} defaultCategory="prd" />
+                </div>
+                {prdFiles.length === 0 ? (
+                  <p className="text-sm text-gray-400">No PRD uploaded yet.</p>
+                ) : (
+                  prdFiles.map((f: any) => (
+                    <a key={f.id} href={f.signed_url} target="_blank" rel="noreferrer"
+                      className="flex items-center gap-2 text-sm text-blue-600 hover:underline">
+                      <span>📄</span> {f.filename}
+                    </a>
+                  ))
+                )}
+              </div>
+            );
+          })()}
+
+          {/* Offer Letter */}
+          <div className="rounded-xl border bg-white p-4 shadow-sm">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-semibold">Offer Letter</div>
+              <OfferPreview applicationId={Number(applicationId)} initialOfferStatus={job.offer_status ?? null} />
+            </div>
+          </div>
+
           <div className="rounded-xl border bg-white p-4 shadow-sm">
             <div className="flex items-center justify-between">
               <div className="text-sm font-semibold">Files</div>
@@ -391,9 +442,12 @@ export default async function JobDetailPage({
       <>
         <Topbar title="Job detail" />
         <div className="p-6 space-y-4">
-          <div className="text-sm">
+          <div className="flex items-center gap-4 text-sm">
             <Link href="/jobs" className="text-blue-600 hover:underline">
               ← Back to Jobs
+            </Link>
+            <Link href="/jobs/pipeline" className="text-blue-600 hover:underline">
+              ← Return to Pipeline
             </Link>
           </div>
 

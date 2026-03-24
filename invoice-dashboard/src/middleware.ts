@@ -27,7 +27,7 @@ export async function middleware(request: NextRequest) {
   }
 
   // CSRF: reject cross-origin state-changing requests (skip for external webhooks)
-  const csrfExemptPaths = ["/api/aircraft/webhook"];
+  const csrfExemptPaths = ["/api/aircraft/webhook", "/api/public/form-intake"];
   if (MUTATING_METHODS.has(request.method) && !csrfExemptPaths.some((p) => request.nextUrl.pathname === p)) {
     const origin = request.headers.get("origin");
     const host = request.headers.get("host");
@@ -50,7 +50,8 @@ export async function middleware(request: NextRequest) {
     publicApiPaths.some((p) => request.nextUrl.pathname === p) ||
     request.nextUrl.pathname.startsWith("/api/cron/") ||
     request.nextUrl.pathname.startsWith("/api/fuel-prices/advertised/pull-mailbox") ||
-    request.nextUrl.pathname.startsWith("/api/public/form/") ||
+    request.nextUrl.pathname.startsWith("/api/fuel-planning/shared-plan/") ||
+    request.nextUrl.pathname.startsWith("/api/public/form") ||
     request.nextUrl.pathname.startsWith("/api/public/info-session") ||
     request.nextUrl.pathname.startsWith("/form/")
   ) {
@@ -84,7 +85,7 @@ export async function middleware(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser();
 
-  if (!user && !request.nextUrl.pathname.startsWith("/login") && !request.nextUrl.pathname.startsWith("/auth/") && !request.nextUrl.pathname.startsWith("/van/") && request.nextUrl.pathname !== "/invite") {
+  if (!user && !request.nextUrl.pathname.startsWith("/login") && !request.nextUrl.pathname.startsWith("/auth/") && !request.nextUrl.pathname.startsWith("/van/") && !request.nextUrl.pathname.startsWith("/tanker/plan/") && request.nextUrl.pathname !== "/invite") {
     // API routes get a 401 JSON response, not a redirect to /login
     if (request.nextUrl.pathname.startsWith("/api/")) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

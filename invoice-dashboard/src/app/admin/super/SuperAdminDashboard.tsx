@@ -48,6 +48,9 @@ type DashboardData = {
   users: UserInfo[];
   queues: QueueDepth[];
   flightaware: FaHealth;
+  slackEnabled: boolean;
+  slackUpdatedAt: string | null;
+  slackUpdatedBy: string | null;
 };
 
 // ─── Styles ──────────────────────────────────────────────────────────────────
@@ -114,6 +117,7 @@ type IcsSource = {
   label: string;
   url: string;
   callsign: string | null;
+  aircraft_type: string | null;
   enabled: boolean;
   last_sync_at: string | null;
   last_sync_ok: boolean | null;
@@ -135,11 +139,13 @@ export default function SuperAdminDashboard() {
   const [icsNewLabel, setIcsNewLabel] = useState("");
   const [icsNewUrl, setIcsNewUrl] = useState("");
   const [icsNewCallsign, setIcsNewCallsign] = useState("");
+  const [icsNewAircraftType, setIcsNewAircraftType] = useState("");
   const [icsAdding, setIcsAdding] = useState(false);
   const [icsEditId, setIcsEditId] = useState<number | null>(null);
   const [icsEditLabel, setIcsEditLabel] = useState("");
   const [icsEditUrl, setIcsEditUrl] = useState("");
   const [icsEditCallsign, setIcsEditCallsign] = useState("");
+  const [icsEditAircraftType, setIcsEditAircraftType] = useState("");
   const [icsSaving, setIcsSaving] = useState(false);
 
   const fetchData = useCallback(async () => {
@@ -167,8 +173,11 @@ export default function SuperAdminDashboard() {
 
   useEffect(() => {
     fetchData();
-    const id = setInterval(fetchData, 60_000); // refresh every minute
-    return () => clearInterval(id);
+    const jitter = () => 60_000 + Math.random() * 10_000; // 1 min + 0-10s jitter
+    let tid: ReturnType<typeof setTimeout>;
+    const tick = () => { fetchData(); tid = setTimeout(tick, jitter()); };
+    tid = setTimeout(tick, jitter());
+    return () => clearTimeout(tid);
   }, [fetchData]);
 
   async function triggerPipeline(slug: string) {
@@ -237,7 +246,7 @@ export default function SuperAdminDashboard() {
       const res = await fetch("/api/admin/ics-sources", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ label: icsNewLabel.trim(), url: icsNewUrl.trim(), callsign: icsNewCallsign.trim() || null }),
+        body: JSON.stringify({ label: icsNewLabel.trim(), url: icsNewUrl.trim(), callsign: icsNewCallsign.trim() || null, aircraft_type: icsNewAircraftType.trim() || null }),
       });
       if (!res.ok) {
         const d = await res.json();
@@ -246,6 +255,7 @@ export default function SuperAdminDashboard() {
       setIcsNewLabel("");
       setIcsNewUrl("");
       setIcsNewCallsign("");
+      setIcsNewAircraftType("");
       await fetchIcsSources();
     } catch (err) {
       setIcsError(err instanceof Error ? err.message : "Failed to add");
@@ -275,7 +285,7 @@ export default function SuperAdminDashboard() {
       const res = await fetch("/api/admin/ics-sources", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: icsEditId, label: icsEditLabel.trim(), url: icsEditUrl.trim(), callsign: icsEditCallsign.trim() || null }),
+        body: JSON.stringify({ id: icsEditId, label: icsEditLabel.trim(), url: icsEditUrl.trim(), callsign: icsEditCallsign.trim() || null, aircraft_type: icsEditAircraftType.trim() || null }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setIcsEditId(null);
@@ -423,6 +433,39 @@ export default function SuperAdminDashboard() {
                 </div>
               );
             })()}
+
+            {/* Slack Kill Switch */}
+            <div className={`rounded-lg border p-3 flex items-center justify-between shadow-sm ${data.slackEnabled ? "bg-white" : "bg-red-50 border-red-200"}`}>
+              <div className="flex items-center gap-3">
+                <div className={`h-2.5 w-2.5 rounded-full ${data.slackEnabled ? "bg-emerald-500" : "bg-red-500"}`} />
+                <div>
+                  <div className="text-sm font-medium text-gray-900">Slack Messages</div>
+                  <div className="text-xs text-gray-400">
+                    {data.slackEnabled ? "All Slack notifications active" : "All Slack notifications PAUSED"}
+                  </div>
+                </div>
+              </div>
+              <button
+                onClick={async () => {
+                  const newState = !data.slackEnabled;
+                  const confirmed = newState || confirm("Disable ALL Slack messages? This stops EDCT alerts, trip notifications, and all other Slack posts.");
+                  if (!confirmed) return;
+                  await fetch("/api/admin/super", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ action: "toggle_slack", enabled: newState }),
+                  });
+                  fetchData();
+                }}
+                className={`text-xs font-medium px-3 py-1.5 rounded-lg border transition-colors ${
+                  data.slackEnabled
+                    ? "bg-white border-red-200 text-red-600 hover:bg-red-50"
+                    : "bg-emerald-600 border-emerald-600 text-white hover:bg-emerald-700"
+                }`}
+              >
+                {data.slackEnabled ? "Kill Slack" : "Enable Slack"}
+              </button>
+            </div>
           </div>
         </div>
 
@@ -607,6 +650,14 @@ export default function SuperAdminDashboard() {
             className="border border-gray-300 rounded-md px-3 py-2 text-sm w-36 font-mono focus:outline-none focus:ring-2 focus:ring-slate-500"
           />
           <input
+            type="text"
+            value={icsNewAircraftType}
+            onChange={(e) => setIcsNewAircraftType(e.target.value)}
+            placeholder="e.g. C750"
+            maxLength={10}
+            className="border border-gray-300 rounded-md px-3 py-2 text-sm w-28 font-mono focus:outline-none focus:ring-2 focus:ring-slate-500"
+          />
+          <input
             type="url"
             value={icsNewUrl}
             onChange={(e) => setIcsNewUrl(e.target.value)}
@@ -636,6 +687,7 @@ export default function SuperAdminDashboard() {
                   <th className="text-left px-4 py-2 text-xs font-medium text-gray-500 w-8">On</th>
                   <th className="text-left px-4 py-2 text-xs font-medium text-gray-500">Label</th>
                   <th className="text-left px-4 py-2 text-xs font-medium text-gray-500 w-28">Callsign</th>
+                  <th className="text-left px-4 py-2 text-xs font-medium text-gray-500 w-24">Aircraft Type</th>
                   <th className="text-left px-4 py-2 text-xs font-medium text-gray-500">URL</th>
                   <th className="text-left px-4 py-2 text-xs font-medium text-gray-500 w-28">Last Sync</th>
                   <th className="text-right px-4 py-2 text-xs font-medium text-gray-500 w-24">Actions</th>
@@ -687,6 +739,20 @@ export default function SuperAdminDashboard() {
                     <td className="px-4 py-2">
                       {icsEditId === s.id ? (
                         <input
+                          type="text"
+                          value={icsEditAircraftType}
+                          onChange={(e) => setIcsEditAircraftType(e.target.value)}
+                          placeholder="e.g. C750"
+                          maxLength={10}
+                          className="border border-gray-300 rounded px-2 py-1 text-xs font-mono w-20 focus:outline-none focus:ring-2 focus:ring-slate-500"
+                        />
+                      ) : (
+                        <span className="font-mono text-xs text-gray-600">{s.aircraft_type || "—"}</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2">
+                      {icsEditId === s.id ? (
+                        <input
                           type="url"
                           value={icsEditUrl}
                           onChange={(e) => setIcsEditUrl(e.target.value)}
@@ -733,6 +799,7 @@ export default function SuperAdminDashboard() {
                               setIcsEditId(s.id);
                               setIcsEditLabel(s.label);
                               setIcsEditCallsign(s.callsign ?? "");
+                              setIcsEditAircraftType(s.aircraft_type ?? "");
                               setIcsEditUrl(s.url);
                             }}
                             className="text-xs text-gray-500 hover:text-slate-800 px-2 py-1 rounded hover:bg-gray-50"

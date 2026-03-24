@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { verifyCronSecret } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 import { getAirportTimezone } from "@/lib/airportTimezones";
 
@@ -9,8 +10,7 @@ import { getAirportTimezone } from "@/lib/airportTimezones";
  * Same logic as /api/admin/trip-notifications/daily-summary but uses CRON_SECRET.
  */
 export async function POST(req: NextRequest) {
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret || req.headers.get("authorization") !== `Bearer ${cronSecret}`) {
+  if (!verifyCronSecret(req)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

@@ -14,7 +14,7 @@ import { createServiceClient } from "@/lib/supabase/service";
 export async function POST(req: NextRequest) {
   const auth = await requireAdmin(req);
   if ("error" in auth) return auth.error;
-  if (isRateLimited(auth.userId, 5)) {
+  if (await isRateLimited(auth.userId, 5)) {
     return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
 
@@ -95,6 +95,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "No valid rows found in CSV" }, { status: 400 });
   }
 
+  // Dedupe: keep last occurrence per unique key (same trip/tail/origin/dest)
+  const deduped = new Map<string, (typeof rows)[0]>();
+  for (const r of rows) {
+    deduped.set(`${r.trip_id}|${r.tail_number}|${r.origin_icao}|${r.destination_icao}`, r);
+  }
+  const uniqueRows = [...deduped.values()];
+
   const supa = createServiceClient();
 
   // Clear existing data before inserting fresh upload
@@ -103,8 +110,8 @@ export async function POST(req: NextRequest) {
   let inserted = 0;
   const batchSize = 500;
 
-  for (let i = 0; i < rows.length; i += batchSize) {
-    const batch = rows.slice(i, i + batchSize);
+  for (let i = 0; i < uniqueRows.length; i += batchSize) {
+    const batch = uniqueRows.slice(i, i + batchSize);
     const { data, error } = await supa
       .from("trip_salespersons")
       .upsert(batch, { onConflict: "trip_id,tail_number,origin_icao,destination_icao" })
@@ -113,14 +120,14 @@ export async function POST(req: NextRequest) {
     if (error) {
       console.error("[trip-salespersons/upload] Supabase error:", error);
       return NextResponse.json(
-        { error: "Database upsert failed", detail: error.message, inserted, totalParsed: rows.length },
+        { error: "Database upsert failed", detail: error.message, inserted, totalParsed: uniqueRows.length },
         { status: 500 },
       );
     }
     inserted += data?.length ?? 0;
   }
 
-  return NextResponse.json({ ok: true, inserted, totalParsed: rows.length });
+  return NextResponse.json({ ok: true, inserted, totalParsed: uniqueRows.length });
 }
 
 // --- Helpers ---

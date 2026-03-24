@@ -27,6 +27,7 @@ from collections import Counter
 from dataclasses import dataclass
 from decimal import Decimal
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional
 
 from dotenv import load_dotenv
@@ -715,6 +716,7 @@ def build_normal_messages(pdf_text: str) -> List[dict]:
         "LINE ITEM RULES:\n"
         "- Extract ALL BILLABLE line items you can find (rows with real amounts).\n"
         "- EXCLUDE headers, section titles, notes, payment terms, and summary lines.\n"
+        "- INCLUDE discount, credit, and waiver lines (e.g. 'Fee Waived', 'Cust Discount', 'Credit') — extract them with NEGATIVE amounts. Parenthesized amounts like ($1,902.00) are negative.\n"
         "- EXCLUDE lines that are purely percentage tax breakdowns (e.g., 'SALES TAX 2.9%') unless explicitly charged as a dollar amount.\n"
         "- Only fill quantity/unit_price/tax if explicitly shown on the SAME row.\n"
         "- If not explicitly shown, set those fields to null.\n"
@@ -823,6 +825,7 @@ def build_rescue_messages(pdf_text: str, first_pass: Dict[str, Any], reason: str
         "Common miss patterns:\n"
         "- Do not miss rows that are off to the right (amount column).\n"
         "- Do not treat a section subtotal as the grand total.\n"
+        "- Do not drop discount/credit/waiver lines (e.g. 'Fee Waived', 'Cust Discount'). Extract them with NEGATIVE amounts. Parenthesized amounts like ($1,902.00) are negative.\n"
         "- If the document shows both an Invoice Number and a Ref Number, treat the Invoice Number as invoice_number.\n"
     )
 

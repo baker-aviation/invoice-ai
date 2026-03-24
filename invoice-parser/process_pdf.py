@@ -106,21 +106,45 @@ def scrub_obj(x):
 # ---------------------------
 
 INV_PATTERNS = [
+    # World Fuel invoice numbers: 8+ digits hyphen 4-5 digits (e.g. 27379628-21101)
+    re.compile(r"\b(\d{8,}-\d{4,5})\b"),
     re.compile(r"\bFUEL\s+TICKET\s+(\d{4,})\b", re.I),
+    # World Fuel fuel ticket: header on one line, number on next line
+    re.compile(r"FUEL\s+TICKET\b[^\n]*\n\s*(?:\d{1,2}-[A-Z]{3}-\d{4}\s+)?(\d{5,7})\b", re.I),
     re.compile(r"\bRef Number\s+([A-Z0-9-]{6,})\b", re.I),
     re.compile(r"\bInvoice\s+(?:No\.?|#|Number)?\s*([A-Z0-9-]{3,})\b", re.I),
     re.compile(r"\bCredit Memo No\.?:\s*([A-Z0-9-]{3,})\b", re.I),
     re.compile(r"\bINV\d{6,}\b", re.I),
 ]
 
+# IDs that are clearly column headers / labels, not real invoice numbers
+_BAD_INV_ID = re.compile(
+    r"^(?:PAGE|DATE|CUSTOMER|TOTAL|USD|AMOUNT|NUMBER|NUMBERS|THE|AND|FOR|"
+    r"TAX|NET|INVOICE|PERIOD|DETAIL|SUMMARY|REPORT|BALANCE|STATEMENT|World|"
+    r"TO|FROM|OR|OF|IN|AT|BY|ON|NO|USD|EA|USG|"
+    r"STATUS|TYPE|SALE|PAID|CARD|METHOD|CODE|AUTH)$",
+    re.I,
+)
+
+# "CC Invoice #:" is a credit card transaction number, not a real invoice.
+# Check if "Invoice" in a match is preceded by "CC" within 4 chars.
+_CC_INVOICE_RE = re.compile(r"\bCC\s+Invoice\b", re.I)
+
+def _is_cc_invoice(text: str, match_start: int) -> bool:
+    """Return True if the Invoice match is part of a 'CC Invoice #:' pattern."""
+    lookback = max(0, match_start - 4)
+    return bool(_CC_INVOICE_RE.search(text[lookback:match_start + 8]))
+
 def detect_invoice_ids(text: str) -> List[str]:
     ids = set()
     for pat in INV_PATTERNS:
         for m in pat.finditer(text or ""):
-            if m.groups():
-                ids.add(m.group(1))
-            else:
-                ids.add(m.group(0))
+            val = m.group(1) if m.groups() else m.group(0)
+            if _BAD_INV_ID.match(val):
+                continue
+            if _is_cc_invoice(text, m.start()):
+                continue
+            ids.add(val)
 
     # For Avfuel activity invoices, also detect receipt numbers (7-9 digit
     # integers at the start of table rows) so they appear in detected_invoice_ids.
@@ -157,7 +181,12 @@ def maybe_statement_gate(text: str, invoice_ids: List[str]) -> Tuple[bool, int]:
 # ---------------------------
 
 _SECTION_BOUNDARY_PATTERNS = [
+    # World Fuel invoice numbers: 8+ digits hyphen 4-5 digits (e.g. 27379628-21101)
+    re.compile(r"\b(\d{8,}-\d{4,5})\b"),
     re.compile(r"\bFUEL\s+TICKET\s+(\d{4,})\b", re.I),
+    # NOTE: WF multiline fuel ticket pattern intentionally excluded here —
+    # it creates duplicate section boundaries alongside the invoice number pattern.
+    # It's only needed in INV_PATTERNS (for ID count) and split_statement.py (page ID).
     re.compile(r"\bRef Number\s+([A-Z0-9][A-Z0-9-]*)\b", re.I),
     re.compile(r"\bInvoice\s+(?:No\.?|#|Number)\s*:?\s*([A-Z0-9][A-Z0-9-]{2,})\b", re.I),
     re.compile(r"\bCredit Memo\s+(?:No\.?|#|Number)\s*:?\s*([A-Z0-9][A-Z0-9-]{2,})\b", re.I),
@@ -166,7 +195,8 @@ _SECTION_BOUNDARY_PATTERNS = [
 
 # IDs that are clearly not invoice numbers
 _BAD_SECTION_ID = re.compile(
-    r"^(?:PAGE|DATE|CUSTOMER|TOTAL|USD|AMOUNT|NUMBER|NUMBERS|THE|AND|FOR|TAX|NET|INVOICE|PERIOD|DETAIL|SUMMARY|REPORT|BALANCE|STATEMENT)$", re.I
+    r"^(?:PAGE|DATE|CUSTOMER|TOTAL|USD|AMOUNT|NUMBER|NUMBERS|THE|AND|FOR|TAX|NET|INVOICE|PERIOD|DETAIL|SUMMARY|REPORT|BALANCE|STATEMENT|"
+    r"STATUS|TYPE|SALE|PAID|CARD|METHOD|CODE|AUTH)$", re.I
 )
 
 
@@ -289,6 +319,9 @@ def split_text_into_sections(text: str) -> List[Tuple[str, str]]:
             if not inv_id or len(inv_id) < 3:
                 continue
             if _BAD_SECTION_ID.match(inv_id):
+                continue
+            # Skip "CC Invoice #:" matches — credit card transaction numbers
+            if _is_cc_invoice(text, m.start()):
                 continue
             # Find start of the line containing this match
             line_start = text.rfind("\n", 0, m.start())
@@ -462,6 +495,29 @@ class Supa:
             # Treat business-unique duplicates as handled (do not crash worker)
             if resp.status_code == 409 and "parsed_invoices_business_unique" in (resp.text or ""):
                 raise DuplicateInvoiceError(resp.text)
+            # DB trigger on parsed_invoices auto-creates invoice_alerts rows;
+            # when splitting produces multiple invoices per document, the
+            # trigger hits a unique constraint on (rule_id, document_id).
+            # Safe to retry the upsert after clearing the conflicting alert.
+            if resp.status_code == 409 and "invoice_alerts_unique_rule_doc" in (resp.text or ""):
+                # Delete the conflicting alert and retry once
+                try:
+                    import json as _json
+                    err = _json.loads(resp.text)
+                    # Extract document_id from the error details
+                    self._rest("DELETE", "invoice_alerts", params={
+                        "document_id": f"eq.{json_body.get('document_id', '')}",
+                    }, prefer="return=minimal")
+                except Exception:
+                    pass
+                # Retry the original request
+                resp2 = requests.request(method, endpoint, params=params, json=json_body, headers=headers, timeout=120)
+                if resp2.status_code < 300:
+                    if resp2.text.strip():
+                        return resp2.json()
+                    return None
+                # If retry also fails, fall through to raise
+                resp = resp2
             raise RuntimeError(f"Supabase REST error {resp.status_code}: {resp.text}")
 
         if resp.text.strip():
@@ -1046,6 +1102,21 @@ def process_one_pdf(
         airport_sections = _subsplit_by_airport(text, pdf_path.stem)
         if len(airport_sections) >= 2:
             text_sections = airport_sections
+
+    # Clear stale alerts before re-parsing — a DB trigger on parsed_invoices
+    # auto-creates alert rows keyed on (rule_id, document_id). When splitting
+    # produces multiple parsed_invoices per document, the second insert would
+    # hit a unique constraint if stale alerts from a previous parse remain.
+    if did_split or len(text_sections) >= 2:
+        try:
+            supa._rest(
+                "DELETE",
+                "invoice_alerts",
+                params={"document_id": f"eq.{document_id}"},
+                prefer="return=minimal",
+            )
+        except Exception:
+            pass  # best-effort; alerts table may not exist in all envs
 
     try:
         if did_split:

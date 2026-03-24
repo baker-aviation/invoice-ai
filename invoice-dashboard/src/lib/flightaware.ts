@@ -134,15 +134,21 @@ export async function getFlightsByRegistration(
   registration: string,
   callsignMap?: Map<string, string>,
 ): Promise<FaFlight[]> {
+  // Derive KOW callsign from N-number (e.g. N301HR → KOW301) and use as primary.
+  // Baker fleet N-numbers are LADD-blocked on the FA API — callsign queries
+  // return full live tracking data with a single call, no fallback needed.
   const dbCallsign = callsignMap?.get(registration);
+  const derivedCallsign = (() => {
+    const digits = registration.replace(/\D/g, "");
+    return digits ? `KOW${digits}` : null;
+  })();
+  const primaryIdent = dbCallsign ?? derivedCallsign ?? registration;
 
-  // Query by N-number first — returns last_position with lat/lon for map tracking.
-  // Callsign queries return flight data but NOT positions.
   // Use start param to include yesterday's flights (duty tracker needs 3-day window).
   // NOTE: FA rejects encodeURIComponent on dates (%3A for colons → 400).
   // Use raw ISO without milliseconds.
   const startDate = new Date(Date.now() - 36 * 3600_000).toISOString().split(".")[0] + "Z";
-  const url = `${BASE}/flights/${encodeURIComponent(registration)}?start=${startDate}`;
+  const url = `${BASE}/flights/${encodeURIComponent(primaryIdent)}?start=${startDate}`;
   const res = await fetch(url, {
     headers: headers(),
     signal: AbortSignal.timeout(10000),
@@ -154,30 +160,7 @@ export async function getFlightsByRegistration(
   }
   const data = await res.json();
   let flights = (data.flights ?? []) as FaFlight[];
-  console.log(`[FA] ${registration}: ${flights.length} flights`);
-
-  // Fallback: if N-number returned nothing (LADD-blocked), try callsign
-  if (flights.length === 0) {
-    const fallbackIdent = dbCallsign ?? (() => {
-      const digits = registration.replace(/\D/g, "");
-      return digits ? `KOW${digits}` : null;
-    })();
-    if (fallbackIdent) {
-      console.log(`[FA] ${registration}: trying callsign fallback ${fallbackIdent}`);
-      const fbUrl = `${BASE}/flights/${encodeURIComponent(fallbackIdent)}`;
-      try {
-        const fbRes = await fetch(fbUrl, {
-          headers: headers(),
-          signal: AbortSignal.timeout(10000),
-        });
-        if (fbRes.ok) {
-          const fbData = await fbRes.json();
-          flights = (fbData.flights ?? []) as FaFlight[];
-          console.log(`[FA] ${fallbackIdent}: ${flights.length} flights (fallback for ${registration})`);
-        }
-      } catch { /* ignore fallback errors */ }
-    }
-  }
+  console.log(`[FA] ${registration} (${primaryIdent}): ${flights.length} flights`);
 
   return flights;
 }
@@ -519,10 +502,11 @@ export async function fetchScheduledDepartures(
   const seenFlightIds = new Set<string>(); // dedupe codeshares
   let cursor: string | null = null;
   let page = 0;
+  let retries = 0;
 
-  let url: string = `${BASE}/schedules/${start}/${end}?origin=${originIcao}&max_pages=5`;
+  let url: string = `${BASE}/schedules/${start}/${end}?origin=${originIcao}&max_pages=10`;
 
-  do {
+  while (page < 10) {
     if (cursor) {
       url = cursor.startsWith("http") ? cursor : `${BASE}${cursor}`;
     }
@@ -536,13 +520,15 @@ export async function fetchScheduledDepartures(
       const text = await res.text();
       console.warn(`[FA Sched] ${res.status} for ${originIcao} on ${date}: ${text.slice(0, 200)}`);
       if (res.status === 401) throw new Error("FlightAware: invalid API key");
-      if (res.status === 429) {
-        console.warn("[FA Sched] Rate limited — backing off");
-        await new Promise((r) => setTimeout(r, 3000));
-        continue;
+      if (res.status === 429 && retries < 3) {
+        retries++;
+        console.warn(`[FA Sched] Rate limited — retry ${retries}/3 after backoff`);
+        await new Promise((r) => setTimeout(r, 2000 * retries));
+        continue; // retry same page
       }
       break;
     }
+    retries = 0; // reset on success
 
     const data = await res.json();
     const scheduled: FaScheduleEntry[] = data.scheduled ?? [];
@@ -584,7 +570,8 @@ export async function fetchScheduledDepartures(
 
     cursor = data.links?.next ?? null;
     page++;
-  } while (cursor && page < 5);
+    if (!cursor) break; // no more pages
+  }
 
   return flights;
 }

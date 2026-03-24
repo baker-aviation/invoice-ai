@@ -7,20 +7,34 @@ import { fetchAdvertisedPrices } from "@/lib/invoiceApi";
 import { createClient } from "@/lib/supabase/server";
 import OpsTabs from "./OpsTabs";
 
-export default async function OpsPage() {
-  let error: string | null = null;
-  // lookback 48h so "Today" filter never loses earlier flights as the UTC day progresses,
-  // and duty tracking can see yesterday's legs for rolling-24hr calculations.
+// Fetch ops data on each request (no unstable_cache — payload exceeds
+// Vercel's 2 MB cache-item limit when flights + alerts are large).
+async function getOpsData() {
   const [data, advertisedPrices, mxNotes, swimFlow, pprRows] = await Promise.all([
     fetchFlights({ lookahead_hours: 48, lookback_hours: 48 }).catch((e) => {
-      error = String(e);
-      return { ok: false, flights: [] as any[], count: 0, error: null as string | null };
+      console.error("[ops/page] fetchFlights error:", e);
+      return { ok: false, flights: [] as any[], count: 0, error: String(e) };
     }),
     fetchAdvertisedPrices({ recentWeeks: 4 }).catch(() => []),
     fetchMxNotes().catch(() => []),
     fetchSwimFlowControl().catch(() => []),
     createClient().then((s) => s.from("baker_ppr_airports").select("icao")).then((r) => r.data).catch(() => []),
   ]);
+  return { data, advertisedPrices, mxNotes, swimFlow, pprRows };
+}
+
+export default async function OpsPage() {
+  let error: string | null = null;
+  const { data, advertisedPrices, mxNotes, swimFlow, pprRows } = await getOpsData().catch((e) => {
+    error = String(e);
+    return {
+      data: { ok: false, flights: [] as any[], count: 0, error: null as string | null },
+      advertisedPrices: [],
+      mxNotes: [],
+      swimFlow: [],
+      pprRows: [],
+    };
+  });
   const bakerPprAirports: string[] = (pprRows ?? []).map((r: { icao: string }) => r.icao);
 
   const displayError = error || (data.ok === false && (data as any).error ? (data as any).error : null);

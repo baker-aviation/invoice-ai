@@ -8,11 +8,31 @@ INV_RE = re.compile(r"\bInvoice\s+(?:No\.?|Number)?\s*[:#]?\s*([A-Z0-9-]+)\b", r
 CREDIT_RE = re.compile(r"\bCredit Memo No\.?\s*[:#]?\s*([A-Z0-9-]+)\b", re.IGNORECASE)
 FUEL_TICKET_RE = re.compile(r"\bFUEL\s+TICKET\s+(\d{4,})\b", re.IGNORECASE)
 
+# World Fuel invoice numbers: 8+ digits hyphen 4-5 digits (e.g. 27379628-21101)
+WF_INV_RE = re.compile(r"\b(\d{8,}-\d{4,5})\b")
+
+# World Fuel fuel ticket: header "FUEL TICKET" on one line, number on next line
+# (pypdf may put them on the same or separate lines; date like 16-MAR-2026 may precede)
+WF_FUEL_TICKET_RE = re.compile(
+    r"FUEL\s+TICKET\b[^\n]*\n\s*(?:\d{1,2}-[A-Z]{3}-\d{4}\s+)?(\d{5,7})\b", re.IGNORECASE
+)
+
+# IDs that are clearly column headers / labels, not real invoice numbers
+_BAD_PAGE_ID = re.compile(
+    r"^(?:PAGE|DATE|CUSTOMER|TOTAL|USD|AMOUNT|NUMBER|NUMBERS|THE|AND|FOR|"
+    r"TAX|NET|INVOICE|PERIOD|DETAIL|SUMMARY|REPORT|BALANCE|STATEMENT|World|"
+    r"TO|FROM|OR|OF|IN|AT|BY|ON|NO|USD|EA|USG|"
+    r"STATUS|TYPE|SALE|PAID|CARD|METHOD|CODE|AUTH)$",
+    re.IGNORECASE,
+)
+
 def page_invoice_id(text: str) -> Optional[str]:
-    for rx in (FUEL_TICKET_RE, REF_RE, CREDIT_RE, INV_RE):
+    for rx in (WF_INV_RE, FUEL_TICKET_RE, WF_FUEL_TICKET_RE, REF_RE, CREDIT_RE, INV_RE):
         m = rx.search(text or "")
         if m:
-            return m.group(1).strip()
+            val = m.group(1).strip()
+            if not _BAD_PAGE_ID.match(val):
+                return val
     return None
 
 def split_pdf_by_invoice(pdf_path: str) -> List[Dict[str, Any]]:
