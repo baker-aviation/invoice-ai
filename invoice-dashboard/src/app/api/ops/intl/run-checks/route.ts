@@ -319,9 +319,20 @@ export async function POST(req: NextRequest) {
               .eq("acknowledged", false);
 
             if ((count ?? 0) === 0) {
+              // Find delay from the active sibling entry (ghost entry has garbage delay values)
+              const sibling = faFlights.find((s) =>
+                !s.cancelled && !s.diverted &&
+                (s.origin?.code_icao ?? s.origin?.code) === faOrigin &&
+                s.registration === fa.registration
+              );
+              const delayMin = sibling?.departure_delay != null && sibling.departure_delay > 0
+                ? Math.round(sibling.departure_delay / 60)
+                : null;
+              const delayNote = delayMin && delayMin >= DELAY_THRESHOLD_MIN ? ` (delayed ${delayMin}min)` : "";
+
               const divMsg = divertedTo !== originalDest
-                ? `DIVERTED: ${tail} ${faOrigin}→${originalDest} diverted to ${divertedTo}. Check permits and customs for new routing.`
-                : `DIVERTED: ${tail} ${faOrigin}→${originalDest} has been diverted. Check permits and customs for new routing.`;
+                ? `DIVERTED: ${tail} ${faOrigin}→${originalDest} diverted to ${divertedTo}${delayNote}. Check permits and customs for new routing.`
+                : `DIVERTED: ${tail} ${faOrigin}→${originalDest} has been diverted${delayNote}. Check permits and customs for new routing.`;
               alertsToCreate.push({
                 flight_id: dbFlight.id,
                 alert_type: "diversion",
