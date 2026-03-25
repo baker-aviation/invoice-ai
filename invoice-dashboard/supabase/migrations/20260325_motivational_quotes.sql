@@ -1,0 +1,65 @@
+-- Add quotes_enabled toggle to salesperson_slack_map
+ALTER TABLE salesperson_slack_map
+ADD COLUMN IF NOT EXISTS quotes_enabled boolean NOT NULL DEFAULT false;
+
+-- Create motivational_quotes table
+CREATE TABLE IF NOT EXISTS motivational_quotes (
+  id bigserial PRIMARY KEY,
+  quote text NOT NULL,
+  author text,
+  category text NOT NULL DEFAULT 'sales',
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Seed with curated sales quotes
+INSERT INTO motivational_quotes (quote, author, category) VALUES
+  ('Every "no" brings you closer to a "yes."', 'Mark Cuban', 'sales'),
+  ('Success is walking from failure to failure with no loss of enthusiasm.', 'Winston Churchill', 'sales'),
+  ('The harder the conflict, the more glorious the triumph.', 'Thomas Paine', 'motivation'),
+  ('Don''t watch the clock; do what it does. Keep going.', 'Sam Levenson', 'motivation'),
+  ('Sales are contingent upon the attitude of the salesman, not the attitude of the prospect.', 'W. Clement Stone', 'sales'),
+  ('Our greatest weakness lies in giving up. The most certain way to succeed is always to try just one more time.', 'Thomas Edison', 'motivation'),
+  ('Opportunities don''t happen. You create them.', 'Chris Grosser', 'sales'),
+  ('I never dreamed about success. I worked for it.', 'Estée Lauder', 'sales'),
+  ('Stop selling. Start helping.', 'Zig Ziglar', 'sales'),
+  ('You don''t close a sale; you open a relationship.', 'Patricia Fripp', 'sales'),
+  ('The secret of getting ahead is getting started.', 'Mark Twain', 'motivation'),
+  ('Act as if what you do makes a difference. It does.', 'William James', 'motivation'),
+  ('Quality performance starts with a positive attitude.', 'Jeffrey Gitomer', 'sales'),
+  ('Become the person who would attract the results you seek.', 'Jim Cathcart', 'sales'),
+  ('If you are not taking care of your customer, your competitor will.', 'Bob Hooey', 'sales'),
+  ('Success usually comes to those who are too busy to be looking for it.', 'Henry David Thoreau', 'motivation'),
+  ('The best time to plant a tree was 20 years ago. The second best time is now.', 'Chinese Proverb', 'motivation'),
+  ('Be genuinely interested in everyone you meet and everyone you meet will be genuinely interested in you.', 'Rasheed Ogunlaru', 'sales'),
+  ('Your attitude, not your aptitude, will determine your altitude.', 'Zig Ziglar', 'motivation'),
+  ('The difference between a successful person and others is not a lack of strength, not a lack of knowledge, but rather a lack of will.', 'Vince Lombardi', 'motivation'),
+  ('Motivation is what gets you started. Habit is what keeps you going.', 'Jim Rohn', 'motivation'),
+  ('A goal is a dream with a deadline.', 'Napoleon Hill', 'sales'),
+  ('Hustle beats talent when talent doesn''t hustle.', 'Ross Simmonds', 'sales'),
+  ('The sale begins when the customer says no.', 'Elmer Letterman', 'sales'),
+  ('You miss 100% of the shots you don''t take.', 'Wayne Gretzky', 'sales'),
+  ('Nothing great was ever achieved without enthusiasm.', 'Ralph Waldo Emerson', 'motivation'),
+  ('Work like there is someone working 24 hours a day to take it away from you.', 'Mark Cuban', 'sales'),
+  ('It''s not about having the right opportunities. It''s about handling the opportunities right.', 'Mark Hunter', 'sales'),
+  ('People don''t buy for logical reasons. They buy for emotional reasons.', 'Zig Ziglar', 'sales'),
+  ('Don''t be afraid to give up the good to go for the great.', 'John D. Rockefeller', 'motivation'),
+  ('The key is not to call the decision maker. The key is to have the decision maker call you.', 'Jeffrey Gitomer', 'sales'),
+  ('I attribute my success to this: I never gave or took any excuse.', 'Florence Nightingale', 'motivation'),
+  ('In the middle of every difficulty lies opportunity.', 'Albert Einstein', 'motivation'),
+  ('What you do today can improve all your tomorrows.', 'Ralph Marston', 'motivation'),
+  ('It is not the strongest of the species that survive, nor the most intelligent, but the one most responsive to change.', 'Charles Darwin', 'motivation'),
+  ('Revenue is vanity, profit is sanity, but cash is king.', 'Unknown', 'sales'),
+  ('The top salespeople in the world are not selling. They are building trust.', 'Jeb Blount', 'sales'),
+  ('Make a customer, not a sale.', 'Katherine Barchetti', 'sales'),
+  ('Pretend that every single person you meet has a sign around their neck that says "Make me feel important."', 'Mary Kay Ash', 'sales'),
+  ('Do what you can, with what you have, where you are.', 'Theodore Roosevelt', 'motivation'),
+  ('The only place success comes before work is in the dictionary.', 'Vidal Sassoon', 'motivation'),
+  ('Champions keep playing until they get it right.', 'Billie Jean King', 'motivation'),
+  ('The road to Easy Street goes through the sewer.', 'John Madden', 'motivation'),
+  ('Persistence guarantees that results are inevitable.', 'Paramahansa Yogananda', 'motivation'),
+  ('I have never worked a day in my life without selling. If I believe in something, I sell it, and I sell it hard.', 'Estée Lauder', 'sales'),
+  ('There are no shortcuts to any place worth going.', 'Beverly Sills', 'motivation'),
+  ('Today''s preparation determines tomorrow''s achievement.', 'Unknown', 'motivation'),
+  ('Success is not final, failure is not fatal: it is the courage to continue that counts.', 'Winston Churchill', 'motivation'),
+  ('The only way to do great work is to love what you do.', 'Steve Jobs', 'motivation'),
+  ('Winners are not afraid of losing. But losers are. Failure is part of the process of success.', 'Robert Kiyosaki', 'sales');
