@@ -31,6 +31,11 @@ const nextConfig: NextConfig = {
   async headers() {
     return [{ source: "/(.*)", headers: securityHeaders }];
   },
+  async redirects() {
+    return [
+      { source: "/alerts", destination: "/invoices?tab=alerts", permanent: true },
+    ];
+  },
 };
 
 export default nextConfig;

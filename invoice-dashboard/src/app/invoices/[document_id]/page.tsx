@@ -6,6 +6,7 @@ import { inferCategory, CATEGORY_COLORS } from "@/lib/invoiceCategory";
 import ReparseButton from "./ReparseButton";
 import PdfViewer from "./PdfViewer";
 import CategorySelect from "./CategorySelect";
+import PinButton from "./PinButton";
 import { AutoRefresh } from "@/components/AutoRefresh";
 import { createClient } from "@/lib/supabase/server";
 
@@ -61,6 +62,18 @@ export default async function InvoiceDetailPage({
             ← Back to Invoices
           </Link>
           <ReparseButton documentId={document_id} />
+          <PinButton
+            documentId={document_id}
+            initial={{
+              pinned: invoices[0]?.pinned ?? false,
+              pin_note: invoices[0]?.pin_note ?? null,
+              pinned_by: invoices[0]?.pinned_by ?? null,
+              pinned_at: invoices[0]?.pinned_at ?? null,
+              pin_resolved: invoices[0]?.pin_resolved ?? false,
+              resolved_by: invoices[0]?.resolved_by ?? null,
+              resolved_at: invoices[0]?.resolved_at ?? null,
+            }}
+          />
           <span className="text-xs text-gray-400 ml-auto">document_id: {document_id}</span>
         </div>
 

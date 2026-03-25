@@ -13,6 +13,13 @@ export type InvoiceListItem = {
   review_required: boolean | null;
   risk_score: number | null;
   has_line_items?: boolean;
+  pinned?: boolean;
+  pin_note?: string | null;
+  pinned_by?: string | null;
+  pinned_at?: string | null;
+  pin_resolved?: boolean;
+  resolved_by?: string | null;
+  resolved_at?: string | null;
 };
 
 export type InvoiceListResponse = {
