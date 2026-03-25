@@ -729,10 +729,11 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
             map.set(`fa:${fi.fa_flight_id}`, fi);
           }
           // Synthesize map positions from en-route flights only
-          // Skip: flights that have landed, or ghost flights (departed >6h ago, no landing)
+          // Skip: flights that have landed, completed (100%), or ghost flights (departed >6h ago, no landing)
           const faDepMs = fi.actual_departure ? new Date(fi.actual_departure).getTime() : null;
           const isGhostFlight = faDepMs && !fi.actual_arrival && (Date.now() - faDepMs > 6 * 3600_000);
-          if (fi.latitude != null && fi.longitude != null && !hasLanded && !isGhostFlight) {
+          const isCompleted = fi.progress_percent != null && fi.progress_percent >= 100;
+          if (fi.latitude != null && fi.longitude != null && !hasLanded && !isGhostFlight && !isCompleted) {
             // Determine on_ground from FA status and altitude
             const faStatus = (fi.status ?? "").toLowerCase();
             const isAirborne = faStatus.includes("en route") || faStatus.includes("diverted")
