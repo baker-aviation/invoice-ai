@@ -4,7 +4,6 @@ type NavItem = { href: string; label: string };
 
 const nav: NavItem[] = [
   { href: "/", label: "Invoices" },
-  { href: "/alerts", label: "Alerts" },
 ];
 
 export function Sidebar() {
