@@ -146,6 +146,7 @@ function FlightTracks({
   const [tracks, setTracks] = useState<Map<string, [number, number][]>>(new Map());
   const [fallbacks, setFallbacks] = useState<Map<string, [number, number][]>>(new Map());
   const lastFetchRef = useRef(0);
+  const latestPositionsRef = useRef<Map<string, [number, number]>>(new Map());
 
   // Build set of airborne tails + quick lookup
   const airborneSet = useMemo(() => {
@@ -169,7 +170,11 @@ function FlightTracks({
     const enRoute: FlightInfoMap[] = [];
     for (const tail of airborneSet) {
       const fi = flightInfo.get(tail);
-      if (fi && fi.fa_flight_id) enRoute.push(fi);
+      if (!fi || !fi.fa_flight_id) continue;
+      // Skip stale FA entries from completed flights (aircraft departed on new leg)
+      if (fi.actual_arrival != null) continue;
+      if (fi.progress_percent != null && fi.progress_percent >= 100) continue;
+      enRoute.push(fi);
     }
     const key = enRoute.map(f => f.fa_flight_id).sort().join(",");
     if (key !== enRouteKey) {
@@ -180,9 +185,9 @@ function FlightTracks({
 
   useEffect(() => {
     const enRoute = enRouteRef.current;
-    if (enRoute.length === 0) { setTracks(new Map()); setFallbacks(new Map()); onHoldingDetected(new Set()); onLatestPositions(new Map()); return; }
+    if (enRoute.length === 0) { setTracks(new Map()); setFallbacks(new Map()); onHoldingDetected(new Set()); latestPositionsRef.current = new Map(); onLatestPositions(new Map()); return; }
 
-    // Always evict tracks for tails that are no longer en-route (prevents ghost tracks)
+    // Always evict tracks/positions for tails that are no longer en-route (prevents ghost tracks)
     const enRouteTails = new Set(enRoute.map(fi => fi.tail));
     setTracks(prev => {
       if ([...prev.keys()].every(t => enRouteTails.has(t))) return prev;
@@ -196,6 +201,13 @@ function FlightTracks({
       for (const t of next.keys()) if (!enRouteTails.has(t)) next.delete(t);
       return next;
     });
+    // Evict stale marker positions so aircraft falls back to ADS-B location
+    if ([...latestPositionsRef.current.keys()].some(t => !enRouteTails.has(t))) {
+      const next = new Map(latestPositionsRef.current);
+      for (const t of next.keys()) if (!enRouteTails.has(t)) next.delete(t);
+      latestPositionsRef.current = next;
+      onLatestPositions(next);
+    }
 
     // Throttle: only refetch tracks from FA every 2.5 min
     if (Date.now() - lastFetchRef.current < 150_000 && tracks.size > 0) return;
@@ -254,6 +266,7 @@ function FlightTracks({
         setTracks(newTracks);
         setFallbacks(newFallbacks);
         onHoldingDetected(holdingTails);
+        latestPositionsRef.current = latestPositions;
         onLatestPositions(latestPositions);
       }
     })();
