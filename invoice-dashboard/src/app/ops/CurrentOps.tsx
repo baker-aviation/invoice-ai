@@ -52,6 +52,18 @@ function isDivertedFlight(f: { arrival_icao: string | null; summary: string | nu
   return norm(arrClean) !== norm(origDest);
 }
 
+/** Extract original destination from summary when arrival_icao differs (diversion) */
+function getOriginalDest(f: { arrival_icao: string | null; summary: string | null }): string | null {
+  if (!f.summary || !f.arrival_icao) return null;
+  const m = f.summary.match(/\(([A-Z0-9]{3,4})\s*-\s*([A-Z0-9]{3,4})\)/);
+  if (!m) return null;
+  const origDest = m[2];
+  const arrClean = f.arrival_icao.replace(/\?$/, "");
+  const norm = (c: string) => c.startsWith("K") && c.length === 4 ? c.slice(1) : c;
+  if (norm(arrClean) !== norm(origDest)) return origDest;
+  return null;
+}
+
 type TimeRange = "Today" | "Today + Tomorrow" | "Tomorrow" | "Week" | "Month";
 
 function getTimeRange(range: TimeRange): { start: Date; end: Date } {
@@ -2279,6 +2291,10 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                           const actualArrIso = isCancelled ? null : (fi?.actual_arrival ?? (!swimEntryStale ? swimEntry?.actual_arrival : null) ?? null);
 
 
+                          // Diversion detected via DB flag or summary mismatch (no supersedInfo)
+                          const dbDiverted = !supersedInfo && (fi?.diverted || isDivertedFlight(f));
+                          const origDest = dbDiverted ? getOriginalDest(f) : null;
+
                           return (
                             <div key={f.id} className={`px-4 py-2 text-xs ${isCancelled ? "opacity-50 bg-gray-50" : ""} ${isFaSourced ? "bg-blue-50/40" : ""}`}>
                               <div className="flex items-center gap-3">
@@ -2294,11 +2310,18 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                                       </>
                                     ) : (supersedInfo?.diverted || supersedInfo?.diverting) ? (
                                       <span className="line-through text-red-400">{f.arrival_icao || "?"}</span>
+                                    ) : origDest ? (
+                                      <span className="line-through text-red-400">{origDest}</span>
                                     ) : (f.arrival_icao || "?")}
                                   </span>
                                   {(supersedInfo?.diverted || supersedInfo?.diverting) && supersedInfo.actualDest && (
                                     <div className="font-mono font-bold text-red-600">
                                       {f.departure_icao || "?"} → {supersedInfo.actualDest}
+                                    </div>
+                                  )}
+                                  {origDest && (
+                                    <div className="font-mono font-bold text-red-600">
+                                      {f.departure_icao || "?"} → {f.arrival_icao}
                                     </div>
                                   )}
                                   {/* Position mismatch: aircraft not at departure airport per FA */}
