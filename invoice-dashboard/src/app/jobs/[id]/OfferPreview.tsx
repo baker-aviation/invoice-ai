@@ -90,13 +90,14 @@ export default function OfferPreview({
 
   const handleStatusChange = async (newStatus: string) => {
     const prev = offerStatus;
-    setOfferStatus(newStatus);
+    const value = newStatus || null; // "" → null for DB
+    setOfferStatus(value);
     try {
       const res = await fetch(`/api/jobs/${applicationId}/profile`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          offer_status: newStatus,
+          offer_status: value,
           ...(newStatus === "sent"
             ? { offer_sent_at: new Date().toISOString() }
             : {}),
