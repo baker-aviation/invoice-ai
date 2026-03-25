@@ -762,12 +762,30 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
         {aircraft.map((ac) => {
           const fi = flightInfo.get(ac.tail);
           const color = getAcColor(fleetLookup, ac.tail, ac.on_ground);
-          // Show DIVERTED while in-air OR for 30 min after landing at diversion airport.
-          // After 30 min the badge clears, preventing bleed into later legs.
-          const isDiverted = fi?.diverted === true && (
-            fi.status === "Diverted" ||
-            (fi.actual_arrival != null && Date.now() - new Date(fi.actual_arrival).getTime() < 30 * 60_000)
-          );
+          // Show DIVERTED while diverting in-air OR for 30 min after landing.
+          // Clears once the aircraft departs on a new leg (airborne again after landing).
+          const isDiverted = fi?.diverted === true && (() => {
+            // Landed: show for 30 min after arrival
+            if (fi.actual_arrival != null) {
+              const since = Date.now() - new Date(fi.actual_arrival).getTime();
+              // If airborne again after landing, the aircraft departed on a new leg — clear
+              if (!ac.on_ground && since > 5 * 60_000) return false;
+              return since < 30 * 60_000;
+            }
+            // No actual_arrival from FA — use ETA as proxy
+            if (fi.arrival_time != null) {
+              const since = Date.now() - new Date(fi.arrival_time).getTime();
+              if (since > 0 && !ac.on_ground) return false; // past ETA + airborne = new leg
+              return since < 30 * 60_000;
+            }
+            // No arrival data: still diverting if airborne, stale if on ground too long
+            if (!ac.on_ground) return true;
+            // On ground with no arrival info — cap at 2h from departure
+            if (fi.actual_departure) {
+              return Date.now() - new Date(fi.actual_departure).getTime() < 2 * 3600_000;
+            }
+            return false;
+          })();
           const isHolding = holdingTails.has(ac.tail);
           const hasAlert = isDiverted || isHolding;
           const alertLabel = isDiverted ? "DIVERTED" : isHolding ? "HOLDING" : undefined;
