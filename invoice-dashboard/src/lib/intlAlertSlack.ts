@@ -10,7 +10,7 @@ export type IntlSlackAlert = {
 };
 
 /**
- * Post international delay/diversion alerts to #customs-bosses Slack channel.
+ * Post international alerts (delay, diversion, schedule change) to #customs-bosses Slack channel.
  * Used by both run-checks (polling) and the FA webhook (real-time push).
  */
 export async function sendIntlAlertSlack(alerts: IntlSlackAlert[]): Promise<void> {
@@ -30,8 +30,8 @@ export async function sendIntlAlertSlack(alerts: IntlSlackAlert[]): Promise<void
   ];
 
   for (const a of alerts) {
-    const emoji = a.alert_type === "diversion" ? ":rotating_light:" : a.severity === "critical" ? ":warning:" : ":clock3:";
-    const label = a.alert_type === "diversion" ? "DIVERTED" : "DELAYED";
+    const emoji = a.alert_type === "diversion" ? ":rotating_light:" : a.alert_type === "schedule_change" ? ":calendar:" : a.severity === "critical" ? ":warning:" : ":clock3:";
+    const label = a.alert_type === "diversion" ? "DIVERTED" : a.alert_type === "schedule_change" ? "SCHEDULE CHANGE" : "DELAYED";
     blocks.push({
       type: "section",
       text: {
@@ -62,7 +62,7 @@ export async function sendIntlAlertSlack(alerts: IntlSlackAlert[]): Promise<void
     if (!data.ok) {
       console.error("[intl/slack] Slack error:", data.error);
     } else {
-      console.log(`[intl/slack] Posted ${alerts.length} delay/diversion alert(s) to #customs-bosses`);
+      console.log(`[intl/slack] Posted ${alerts.length} alert(s) to #customs-bosses`);
     }
   } catch (err) {
     console.error("[intl/slack] Slack fetch error:", err instanceof Error ? err.message : err);

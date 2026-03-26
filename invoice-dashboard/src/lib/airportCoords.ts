@@ -155,6 +155,7 @@ const AIRPORTS: Record<string, AirportInfo> = {
   ICT: { code: "ICT", name: "Wichita Eisenhower National", lat: 37.6499, lon: -97.4331, city: "Wichita", state: "KS" },
   IND: { code: "IND", name: "Indianapolis Intl", lat: 39.7173, lon: -86.2944, city: "Indianapolis", state: "IN" },
   ISP: { code: "ISP", name: "Long Island MacArthur", lat: 40.7952, lon: -73.1002, city: "Ronkonkoma", state: "NY" },
+  IWA: { code: "IWA", name: "Phoenix-Mesa Gateway", lat: 33.3078, lon: -111.6556, city: "Mesa", state: "AZ" },
   JAC: { code: "JAC", name: "Jackson Hole", lat: 43.6073, lon: -110.7377, city: "Jackson", state: "WY" },
   JAN: { code: "JAN", name: "Jackson-Medgar Wiley Evers Intl", lat: 32.3112, lon: -90.0759, city: "Jackson", state: "MS" },
   JAX: { code: "JAX", name: "Jacksonville Intl", lat: 30.4941, lon: -81.6879, city: "Jacksonville", state: "FL" },

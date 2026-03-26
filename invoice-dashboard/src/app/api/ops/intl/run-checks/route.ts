@@ -143,7 +143,7 @@ export async function POST(req: NextRequest) {
         currentTimes.set(f.id, { dep: f.scheduled_departure, arr: f.scheduled_arrival ?? null });
       }
 
-      const THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes
+      const THRESHOLD_MS = 60 * 60 * 1000; // 1 hour
       const snapshotUpdates: Array<{ tripId: string; snapshot: Record<string, { dep: string; arr: string | null }> }> = [];
 
       for (const trip of tripsWithSnapshot) {
@@ -395,7 +395,7 @@ export async function POST(req: NextRequest) {
     }
 
     // ── 8. Slack notification for delay/diversion alerts ──────────────
-    const slackAlerts = alertsToCreate.filter((a) => a.alert_type === "delay" || a.alert_type === "diversion");
+    const slackAlerts = alertsToCreate.filter((a) => a.alert_type === "delay" || a.alert_type === "diversion" || a.alert_type === "schedule_change");
     if (slackAlerts.length > 0) {
       await sendIntlAlertSlack(slackAlerts);
     }

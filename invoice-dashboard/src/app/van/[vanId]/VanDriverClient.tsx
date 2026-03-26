@@ -295,7 +295,11 @@ export default function VanDriverClient({
     return fboMap[`${f.tail_number}:${f.arrival_icao}`] ?? null;
   }, [fboMap]);
 
+  const date = todayEtDate();
   const [flights, setFlights] = useState<Flight[]>(initialFlights);
+  const [livePublishedFlightIds, setLivePublishedFlightIds] = useState<string[] | null>(publishedFlightIds);
+  const [livePublishedAt, setLivePublishedAt] = useState<string | null>(publishedAt);
+  const [liveSyntheticFlights, setLiveSyntheticFlights] = useState(syntheticFlights);
   const [allFlightEntries, setAllFlightEntries] = useState<FlightInfoEntry[]>([]);
   const [flightInfoMap, setFlightInfoMap] = useState<Map<string, FlightInfoEntry>>(new Map());
   const [refreshing, setRefreshing] = useState(false);
@@ -370,16 +374,32 @@ export default function VanDriverClient({
     } catch { /* keep existing */ }
   }, []);
 
-  // Auto-refresh every 5 minutes (flights + FA + MX notes)
+  // Refresh published schedule (picks up adds/removes by Director without page reload)
+  const refreshPublished = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/vans/publish?date=${date}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const myAssignment = (data.assignments ?? []).find((a: any) => a.vanId === vanId);
+      if (myAssignment) {
+        setLivePublishedFlightIds(myAssignment.flightIds);
+        setLiveSyntheticFlights(myAssignment.syntheticFlights ?? []);
+        if (data.published_at) setLivePublishedAt(data.published_at);
+      }
+    } catch { /* keep existing */ }
+  }, [date, vanId]);
+
+  // Auto-refresh every 5 minutes (flights + FA + MX notes + published schedule)
   useEffect(() => {
     fetchFlightInfo();
     const interval = setInterval(() => {
       fetchFlightInfo();
       refreshFlights();
       refreshMxNotes();
+      refreshPublished();
     }, 300_000);
     return () => clearInterval(interval);
-  }, [fetchFlightInfo, refreshFlights, refreshMxNotes]);
+  }, [fetchFlightInfo, refreshFlights, refreshMxNotes, refreshPublished]);
 
   // Tick every 30s for countdown updates
   useEffect(() => {
@@ -390,25 +410,24 @@ export default function VanDriverClient({
   // ---------------------------------------------------------------------------
   // Compute stops
   // ---------------------------------------------------------------------------
-  const date = todayEtDate();
 
   const apOverrideMap = useMemo(() => new Map(airportOverrides ?? []), [airportOverrides]);
 
   // Build a map of synthetic flights for quick lookup
   const syntheticMap = useMemo(() => {
     const map = new Map<string, { id: string; tail: string; airport: string | null }>();
-    for (const sf of syntheticFlights ?? []) {
+    for (const sf of liveSyntheticFlights ?? []) {
       map.set(sf.id, sf);
     }
     return map;
-  }, [syntheticFlights]);
+  }, [liveSyntheticFlights]);
 
   const stops = useMemo(() => {
     let items: VanFlightItem[];
-    if (publishedFlightIds && publishedFlightIds.length > 0) {
+    if (livePublishedFlightIds && livePublishedFlightIds.length > 0) {
       // Use Director's published schedule — preserve ordering
       items = [];
-      for (const fId of publishedFlightIds) {
+      for (const fId of livePublishedFlightIds) {
         // Try real flight first
         const item = buildItemFromFlight(fId, flights, zone.lat, zone.lon);
         if (item) {
@@ -463,7 +482,7 @@ export default function VanDriverClient({
       }
     }
     return items;
-  }, [zone, flights, date, publishedFlightIds, apOverrideMap]);
+  }, [zone, flights, date, livePublishedFlightIds, syntheticMap, apOverrideMap]);
 
   const totalRouteKm = useMemo(() => routeDistKm(stops), [stops]);
 
@@ -519,11 +538,11 @@ export default function VanDriverClient({
       </div>
 
       {/* Published schedule banner */}
-      {publishedAt && publishedFlightIds && publishedFlightIds.length > 0 && (
+      {livePublishedAt && livePublishedFlightIds && livePublishedFlightIds.length > 0 && (
         <div className="bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 rounded-xl px-4 py-2.5 mb-4 flex items-center gap-2">
           <span className="w-1.5 h-1.5 rounded-full bg-blue-500 inline-block flex-shrink-0" />
           <span className="text-sm text-blue-700 dark:text-blue-300 font-medium">
-            Schedule set by Director &middot; {new Date(publishedAt).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", timeZone: "America/New_York" })} ET
+            Schedule set by Director &middot; {new Date(livePublishedAt).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", timeZone: "America/New_York" })} ET
           </span>
         </div>
       )}

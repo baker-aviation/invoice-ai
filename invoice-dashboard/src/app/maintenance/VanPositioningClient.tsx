@@ -961,10 +961,20 @@ function buildSlackItems(items: VanFlightItem[], flightInfoMap: Map<string, Flig
     const isOvernight = arrMs && viewDate ? !isOnVanScheduleDate(item.arrFlight.scheduled_arrival!, viewDate) : false;
     // Detect pre-departure: service airport is a departure airport, not the arrival
     const arrIcaoNorm = item.arrFlight.arrival_icao?.replace(/^K/, "") ?? "";
-    const isPreDep = item.airport !== arrIcaoNorm && item.nextDep?.departure_icao?.replace(/^K/, "") === item.airport;
-    const turnLabel = isPreDep
-      ? `Pre-Departure - Departing at ${fmtUtcHM(item.nextDep!.scheduled_departure, item.nextDep!.departure_icao)}`
-      : computeTurnLabel(item.nextDep, gapMs, { isOvernight, viewDate });
+    const arrDepIcaoNorm = item.arrFlight.departure_icao?.replace(/^K/, "") ?? "";
+    const isPreDep = item.airport !== arrIcaoNorm && (
+      arrDepIcaoNorm === item.airport || item.nextDep?.departure_icao?.replace(/^K/, "") === item.airport
+    );
+    let turnLabel: string;
+    if (isPreDep) {
+      if (arrDepIcaoNorm === item.airport) {
+        turnLabel = `Pre-Departure - Departing at ${fmtUtcHM(item.arrFlight.scheduled_departure, item.arrFlight.departure_icao)}`;
+      } else {
+        turnLabel = `Pre-Departure - Departing at ${fmtUtcHM(item.nextDep!.scheduled_departure, item.nextDep!.departure_icao)}`;
+      }
+    } else {
+      turnLabel = computeTurnLabel(item.nextDep, gapMs, { isOvernight, viewDate });
+    }
     let slackStatus: string;
     if (fi?.diverted) {
       slackStatus = "DIVERTED";
@@ -2330,13 +2340,22 @@ function VanScheduleCard({
                 );
                 let turnBadgeLabel: string;
                 if (isPreDeparture) {
-                  // Find the departing flight from this airport to show its departure time
-                  const depFlight = allFlights?.filter((f) =>
-                    f.tail_number === arrFlight.tail_number &&
-                    f.departure_icao?.replace(/^K/, "") === airport &&
-                    (isOnVanScheduleDate(f.scheduled_departure, date) || isOnVanScheduleDate(f.scheduled_arrival, date))
-                  ).sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure))[0];
-                  const depTime = depFlight ? fmtUtcHM(depFlight.scheduled_departure, depFlight.departure_icao) : "?";
+                  // If the arrFlight itself departs from the service airport, use its time directly.
+                  // Otherwise find the next departure from this airport AFTER the arrival
+                  // (prevents picking a phantom earlier trip from a different NJN booking).
+                  const arrDepIcao = arrFlight.departure_icao?.replace(/^K/, "") ?? "";
+                  let depTime: string;
+                  if (arrDepIcao === airport) {
+                    depTime = fmtUtcHM(arrFlight.scheduled_departure, arrFlight.departure_icao);
+                  } else {
+                    const depFlight = allFlights?.filter((f) =>
+                      f.tail_number === arrFlight.tail_number &&
+                      f.departure_icao?.replace(/^K/, "") === airport &&
+                      f.scheduled_departure > (arrFlight.scheduled_arrival ?? "") &&
+                      (isOnVanScheduleDate(f.scheduled_departure, date) || isOnVanScheduleDate(f.scheduled_arrival, date))
+                    ).sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure))[0];
+                    depTime = depFlight ? fmtUtcHM(depFlight.scheduled_departure, depFlight.departure_icao) : "?";
+                  }
                   turnBadgeLabel = `Pre-Departure - Departing at ${depTime}`;
                 } else {
                   turnBadgeLabel = computeTurnLabel(nextDep, groundMs, { isOvernight, viewDate: date });
