@@ -102,7 +102,7 @@ export async function POST(req: NextRequest) {
         const changeData = await postMessage({
           channel,
           text: buildVanChangeFallbackText(van.vanName, date),
-          blocks: buildVanChangeBlocks(van.vanName, van.vanId, date, van.diff),
+          blocks: buildVanChangeBlocks(van.vanName, van.vanId, date, van.diff, van.items),
         });
         results.push({ vanId: van.vanId, ok: changeData.ok, error: changeData.ok ? undefined : (changeData.error ?? "Slack API error") });
         continue;

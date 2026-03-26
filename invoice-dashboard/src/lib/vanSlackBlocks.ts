@@ -104,18 +104,33 @@ export type VanChangeDiff = {
   note?: string;
 };
 
+/** Format an added item in the same style as a regular aircraft block. */
+function formatAddedItem(a: { tail: string; airport: string }, items?: VanSlackItem[]): string {
+  const match = items?.find((i) => i.tail === a.tail);
+  if (!match) return `➕ Added: *${a.tail}* @ ${a.airport}`;
+
+  const fboLabel = match.fbo ? ` · ${match.fbo}` : "";
+  let line = `➕ *${match.tail}* → ${match.airport}${fboLabel}`;
+  line += `\nArrival: ${match.arrivalTime}`;
+  if (match.driveTime) line += `\nDrive: ${match.driveTime}`;
+  if (match.turnStatus) line += `\nTurn: ${match.turnStatus}`;
+  if (match.nextDep) line += `\n↳ _${match.nextDep}_`;
+  return line;
+}
+
 /** Change summary header — posted as a single message to the van's Slack channel. */
 export function buildVanChangeBlocks(
   vanName: string,
   vanId: number,
   date: string,
   diff: VanChangeDiff,
+  items?: VanSlackItem[],
 ) {
   const vanUrl = `${VAN_BASE_URL}/van/${vanId}`;
   const lines: string[] = [];
 
   if (diff.added.length > 0) {
-    lines.push(diff.added.map((a) => `➕ Added: *${a.tail}* @ ${a.airport}`).join("\n"));
+    lines.push(diff.added.map((a) => formatAddedItem(a, items)).join("\n\n"));
   }
   if (diff.removed.length > 0) {
     lines.push(diff.removed.map((r) => `➖ Removed: *${r.tail}* @ ${r.airport}`).join("\n"));
