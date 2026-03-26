@@ -124,7 +124,7 @@ export async function POST(req: NextRequest) {
   const alertsToCreate: Array<{
     document_id: string;
     parsed_invoice_id: string;
-    rule_id: null;
+    rule_id: string | null;
     status: string;
     slack_status: string;
     match_reason: string;
@@ -169,7 +169,7 @@ export async function POST(req: NextRequest) {
 
       // Dedup check
       const dedupKey = `${inv.document_id}|${feeType}`;
-      if (existingKeys.has(dedupKey)) continue;
+      if (existingParsedIds.has(dedupKey)) continue;
 
       // Look up published rate
       for (const acType of typesToCheck) {
@@ -222,7 +222,7 @@ export async function POST(req: NextRequest) {
               matched_line_items: [{ description: desc, total: charged }],
             },
           });
-          existingKeys.add(dedupKey); // prevent duplicates within same run
+          existingParsedIds.add(dedupKey); // prevent duplicates within same run
           break; // don't check the other aircraft type
         }
       }
