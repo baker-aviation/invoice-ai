@@ -3049,15 +3049,42 @@ function ScheduleTab({
     }
 
     // Apply airport overrides (user clicked a specific leg to set primary airport)
+    // When the override airport differs from arrFlight's arrival, try to swap to
+    // a flight that actually arrives at the override airport so times are correct.
     if (airportOverrides.size > 0) {
-      for (const items of result.values()) {
-        for (const item of items) {
+      for (const [vanId, items] of result) {
+        for (let idx = 0; idx < items.length; idx++) {
+          const item = items[idx];
           const tail = item.arrFlight.tail_number;
           if (!tail) continue;
           const overrideAirport = airportOverrides.get(tail);
           if (!overrideAirport || overrideAirport === item.airport) continue;
           const info = getAirportInfo(overrideAirport);
-          if (info) {
+          if (!info) continue;
+          // Try to find a flight that actually arrives at the override airport
+          const arrIcaoTarget = `K${overrideAirport}`;
+          const betterFlight = allFlights?.find((f) =>
+            f.tail_number === tail &&
+            (f.arrival_icao === arrIcaoTarget || f.arrival_icao === overrideAirport) &&
+            f.scheduled_arrival &&
+            isOnVanScheduleDate(f.scheduled_arrival, date)
+          );
+          if (betterFlight) {
+            const baseLat2 = FIXED_VAN_ZONES.find((z) => z.vanId === vanId)?.lat ?? info.lat;
+            const baseLon2 = FIXED_VAN_ZONES.find((z) => z.vanId === vanId)?.lon ?? info.lon;
+            const nextDep = allFlights
+              .filter((f) => f.tail_number === tail && f.departure_icao === betterFlight.arrival_icao && f.scheduled_departure > (betterFlight.scheduled_arrival ?? ""))
+              .sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure))[0] ?? null;
+            items[idx] = {
+              arrFlight: betterFlight,
+              nextDep,
+              isRepo: isPositioningFlight(betterFlight),
+              nextIsRepo: nextDep ? isPositioningFlight(nextDep) : false,
+              airport: overrideAirport,
+              airportInfo: info,
+              distKm: Math.round(haversineKm(baseLat2, baseLon2, info.lat, info.lon)),
+            };
+          } else {
             item.airport = overrideAirport;
             item.airportInfo = info;
           }
