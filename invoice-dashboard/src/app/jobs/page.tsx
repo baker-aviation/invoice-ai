@@ -8,7 +8,7 @@ import UploadButton from "./UploadButton";
 import { AutoRefresh } from "@/components/AutoRefresh";
 
 export default async function JobsPage() {
-  const data = await fetchJobs({ limit: 200 });
+  const data = await fetchJobs({ limit: 1000 });
   const jobs = data.jobs ?? [];
 
   return (
