@@ -3,6 +3,28 @@ import { requireAuth, isAuthed, isRateLimited } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 import { getGcsStorage } from "@/lib/gcs-upload";
 
+/**
+ * GET /api/ops/intl/send-docs-email?trip_id=xxx
+ * Returns email send history for a trip.
+ */
+export async function GET(req: NextRequest) {
+  const auth = await requireAuth(req);
+  if (!isAuthed(auth)) return auth.error;
+
+  const tripId = req.nextUrl.searchParams.get("trip_id");
+  if (!tripId) return NextResponse.json({ emails: [] });
+
+  const supa = createServiceClient();
+  const { data } = await supa
+    .from("intl_doc_emails")
+    .select("id, sent_to, sent_cc, subject, document_count, sent_by_name, sent_at")
+    .eq("trip_id", tripId)
+    .order("sent_at", { ascending: false })
+    .limit(10);
+
+  return NextResponse.json({ emails: data ?? [] });
+}
+
 async function getGraphToken(): Promise<string> {
   const tenant = process.env.MS_TENANT_ID;
   const clientId = process.env.MS_CLIENT_ID;
@@ -51,7 +73,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Rate limit — max 5 emails per minute" }, { status: 429 });
   }
 
-  let input: { to: string[]; cc?: string[]; subject: string; body: string; document_ids: string[] };
+  let input: { to: string[]; cc?: string[]; subject: string; body: string; document_ids: string[]; trip_id?: string };
   try {
     input = await req.json();
   } catch {
@@ -159,6 +181,26 @@ export async function POST(req: NextRequest) {
       { error: `Email send failed (HTTP ${sendRes.status})`, detail: errText.slice(0, 300) },
       { status: 500 },
     );
+  }
+
+  // Log the send to intl_doc_emails
+  if (input.trip_id) {
+    // Look up user name for the log
+    const { data: profile } = await supa
+      .from("profiles")
+      .select("full_name")
+      .eq("id", auth.userId)
+      .single();
+
+    await supa.from("intl_doc_emails").insert({
+      trip_id: input.trip_id,
+      sent_to: input.to,
+      sent_cc: input.cc ?? [],
+      subject: input.subject,
+      document_count: attachments.length,
+      sent_by: auth.userId,
+      sent_by_name: profile?.full_name ?? null,
+    });
   }
 
   return NextResponse.json({
