@@ -547,7 +547,7 @@ export async function GET(req: NextRequest) {
     // Backfill: seed snapshot in DB if missing so run-checks has a baseline
     if (!t.schedule_snapshot && computedSnap) {
       snapshotBackfills.push(
-        supa.from("intl_trips").update({ schedule_snapshot: computedSnap }).eq("id", t.id)
+        supa.from("intl_trips").update({ schedule_snapshot: computedSnap }).eq("id", t.id).then()
       );
     }
 
