@@ -282,11 +282,15 @@ export async function GET(req: NextRequest) {
   );
 
   // 7. Get existing FAA EDCT alerts to detect new vs updated
+  // Look back 48h — an EDCT detected yesterday evening (before UTC midnight)
+  // would have yesterday's created_at and get missed by a todayStart filter,
+  // causing the same alert to re-post to Slack every cron cycle.
+  const alertLookback = new Date(now.getTime() - 48 * 60 * 60_000).toISOString();
   const { data: existingAlerts } = await supa
     .from("ops_alerts")
     .select("source_message_id, edct_time, raw_data")
     .like("source_message_id", "faa-edct-%")
-    .gte("created_at", todayStart);
+    .gte("created_at", alertLookback);
 
   const existingMap = new Map<string, { edct_time: string | null; history: string[] }>();
   for (const a of existingAlerts ?? []) {
