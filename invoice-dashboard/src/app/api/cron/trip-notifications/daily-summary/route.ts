@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { verifyCronSecret } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 import { getAirportTimezone } from "@/lib/airportTimezones";
+import { getRandomQuote } from "@/lib/quotes";
 
 /**
  * POST /api/cron/trip-notifications/daily-summary
@@ -33,15 +34,17 @@ export async function POST(req: NextRequest) {
   // 1. Load all salesperson → Slack mappings
   const { data: slackMap } = await supa
     .from("salesperson_slack_map")
-    .select("salesperson_name, slack_user_id");
+    .select("salesperson_name, slack_user_id, quotes_enabled");
 
   if (!slackMap || slackMap.length === 0) {
     return NextResponse.json({ ok: true, sent: 0, message: "No salesperson Slack mappings configured" });
   }
 
   const slackLookup = new Map<string, string>();
+  const quotesLookup = new Map<string, boolean>();
   for (const m of slackMap) {
     slackLookup.set(m.salesperson_name.toLowerCase(), m.slack_user_id);
+    quotesLookup.set(m.salesperson_name.toLowerCase(), m.quotes_enabled ?? false);
   }
 
   // 2. Query trip_salespersons for tomorrow's legs
@@ -131,6 +134,7 @@ export async function POST(req: NextRequest) {
     const personLegs = liveLegsByPerson.get(spNameLower);
 
     let message: string;
+    const wantsQuote = quotesLookup.get(spNameLower) === true;
 
     if (!personLegs || personLegs.length === 0) {
       message = `Good Evening ${firstName},\n\nFor ${dateLabel}, you have no sold legs.`;
@@ -168,6 +172,14 @@ export async function POST(req: NextRequest) {
         "",
         ...legLines,
       ].join("\n");
+    }
+
+    // Append motivational quote if enabled for this salesperson
+    if (wantsQuote) {
+      const quote = await getRandomQuote();
+      if (quote) {
+        message += `\n\n${quote}`;
+      }
     }
 
     try {

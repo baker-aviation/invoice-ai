@@ -12,7 +12,15 @@ type SlackMapping = {
   id: number;
   salesperson_name: string;
   slack_user_id: string;
+  quotes_enabled: boolean;
   created_at: string;
+};
+
+type Quote = {
+  id: number;
+  quote: string;
+  author: string | null;
+  category: string;
 };
 
 export default function SettingsPage() {
@@ -58,6 +66,14 @@ export default function SettingsPage() {
   const [summaryLogLoading, setSummaryLogLoading] = useState(false);
   const [summaryLogError, setSummaryLogError] = useState<string | null>(null);
   const [summaryLogLoaded, setSummaryLogLoaded] = useState(false);
+
+  // Motivational quotes state
+  const [quotes, setQuotes] = useState<Quote[]>([]);
+  const [quotesLoading, setQuotesLoading] = useState(true);
+  const [newQuoteText, setNewQuoteText] = useState("");
+  const [newQuoteAuthor, setNewQuoteAuthor] = useState("");
+  const [newQuoteCategory, setNewQuoteCategory] = useState("sales");
+  const [addingQuote, setAddingQuote] = useState(false);
 
   // Notification log state
   type NotifLog = {
@@ -196,6 +212,82 @@ export default function SettingsPage() {
       setSlackError(err instanceof Error ? err.message : "Test DM failed");
     } finally {
       setTestingSlackId(null);
+    }
+  }
+
+  // ── Quotes fetching & handlers ─────────────────────────────────────────────
+
+  const fetchQuotes = useCallback(async () => {
+    try {
+      const res = await fetch("/api/admin/quotes");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setQuotes(data.quotes ?? []);
+    } catch {
+      // Silently fail — table may not exist yet
+    } finally {
+      setQuotesLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchQuotes();
+  }, [fetchQuotes]);
+
+  async function handleToggleQuotes(name: string, enabled: boolean) {
+    try {
+      const res = await fetch("/api/admin/salesperson-slack", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ salesperson_name: name, quotes_enabled: enabled }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await fetchSlackMappings();
+    } catch (err) {
+      setSlackError(err instanceof Error ? err.message : "Failed to toggle quotes");
+    }
+  }
+
+  async function handleAddQuote(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newQuoteText.trim()) return;
+    setAddingQuote(true);
+    try {
+      const res = await fetch("/api/admin/quotes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          quote: newQuoteText.trim(),
+          author: newQuoteAuthor.trim() || null,
+          category: newQuoteCategory,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error ?? `HTTP ${res.status}`);
+      }
+      setNewQuoteText("");
+      setNewQuoteAuthor("");
+      setNewQuoteCategory("sales");
+      await fetchQuotes();
+    } catch (err) {
+      setSlackError(err instanceof Error ? err.message : "Failed to add quote");
+    } finally {
+      setAddingQuote(false);
+    }
+  }
+
+  async function handleDeleteQuote(id: number) {
+    try {
+      const res = await fetch("/api/admin/quotes", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await fetchQuotes();
+    } catch (err) {
+      setSlackError(err instanceof Error ? err.message : "Failed to delete quote");
     }
   }
 
@@ -462,6 +554,7 @@ export default function SettingsPage() {
               <tr>
                 <th className="text-left px-4 py-2 font-medium text-gray-600">Salesperson</th>
                 <th className="text-left px-4 py-2 font-medium text-gray-600">Slack User ID</th>
+                <th className="text-center px-4 py-2 font-medium text-gray-600 w-24">Quotes</th>
                 <th className="text-right px-4 py-2 font-medium text-gray-600 w-36">Actions</th>
               </tr>
             </thead>
@@ -470,6 +563,22 @@ export default function SettingsPage() {
                 <tr key={m.id} className="border-t border-gray-100">
                   <td className="px-4 py-2 font-medium text-gray-800">{m.salesperson_name}</td>
                   <td className="px-4 py-2 font-mono text-xs text-gray-500">{m.slack_user_id}</td>
+                  <td className="px-4 py-2 text-center">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleQuotes(m.salesperson_name, !m.quotes_enabled)}
+                      className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+                        m.quotes_enabled ? "bg-emerald-500" : "bg-gray-300"
+                      }`}
+                      title={m.quotes_enabled ? "Quotes enabled — click to disable" : "Quotes disabled — click to enable"}
+                    >
+                      <span
+                        className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
+                          m.quotes_enabled ? "translate-x-[18px]" : "translate-x-[3px]"
+                        }`}
+                      />
+                    </button>
+                  </td>
                   <td className="px-4 py-2 text-right">
                     <div className="flex items-center justify-end gap-1">
                       <button
@@ -495,6 +604,93 @@ export default function SettingsPage() {
           </table>
         </div>
       )}
+
+      {/* ── Motivational Quotes ──────────────────────────────────────────── */}
+      <hr className="my-8 border-gray-200" />
+      <h2 className="text-lg font-semibold text-slate-900 mb-1">Motivational Quotes</h2>
+      <p className="text-sm text-gray-500 mb-4">
+        Curated quotes appended to the evening summary for salespeople with quotes enabled above.
+      </p>
+
+      <form onSubmit={handleAddQuote} className="mb-4 flex gap-2">
+        <input
+          type="text"
+          value={newQuoteText}
+          onChange={(e) => setNewQuoteText(e.target.value)}
+          placeholder="Quote text"
+          className="flex-1 border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500"
+        />
+        <input
+          type="text"
+          value={newQuoteAuthor}
+          onChange={(e) => setNewQuoteAuthor(e.target.value)}
+          placeholder="Author (optional)"
+          className="border border-gray-300 rounded-md px-3 py-2 text-sm w-40 focus:outline-none focus:ring-2 focus:ring-slate-500"
+        />
+        <select
+          value={newQuoteCategory}
+          onChange={(e) => setNewQuoteCategory(e.target.value)}
+          className="border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500"
+        >
+          <option value="sales">Sales</option>
+          <option value="motivation">Motivation</option>
+        </select>
+        <button
+          type="submit"
+          disabled={addingQuote || !newQuoteText.trim()}
+          className="bg-slate-900 text-white rounded-md px-5 py-2 text-sm font-medium hover:bg-slate-700 disabled:opacity-50 whitespace-nowrap"
+        >
+          {addingQuote ? "Adding…" : "Add Quote"}
+        </button>
+      </form>
+
+      {quotesLoading ? (
+        <div className="text-sm text-gray-400 py-4 text-center">Loading…</div>
+      ) : quotes.length === 0 ? (
+        <div className="text-sm text-gray-400 py-4 text-center border border-dashed border-gray-300 rounded-lg">
+          No quotes configured. Run the migration to seed the initial set.
+        </div>
+      ) : (
+        <div className="border border-gray-200 rounded-lg overflow-hidden max-h-80 overflow-y-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 sticky top-0">
+              <tr>
+                <th className="text-left px-4 py-2 font-medium text-gray-600">Quote</th>
+                <th className="text-left px-4 py-2 font-medium text-gray-600 w-36">Author</th>
+                <th className="text-left px-4 py-2 font-medium text-gray-600 w-24">Category</th>
+                <th className="text-right px-4 py-2 font-medium text-gray-600 w-16"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {quotes.map((q) => (
+                <tr key={q.id} className="border-t border-gray-100">
+                  <td className="px-4 py-2 text-gray-700 italic">&ldquo;{q.quote}&rdquo;</td>
+                  <td className="px-4 py-2 text-gray-500 text-xs">{q.author ?? "—"}</td>
+                  <td className="px-4 py-2">
+                    <span className={`inline-block rounded-full border px-2 py-0.5 text-[10px] font-semibold ${
+                      q.category === "sales"
+                        ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                        : "bg-blue-50 text-blue-700 border-blue-200"
+                    }`}>
+                      {q.category}
+                    </span>
+                  </td>
+                  <td className="px-4 py-2 text-right">
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteQuote(q.id)}
+                      className="text-xs text-gray-400 hover:text-red-600 px-2 py-1 rounded hover:bg-red-50"
+                    >
+                      Remove
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <p className="text-xs text-gray-400 mt-2">{quotes.length} quote(s) in rotation</p>
 
       {/* ── Test Notifications ─────────────────────────────────────────────── */}
       <hr className="my-8 border-gray-200" />
