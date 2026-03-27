@@ -319,6 +319,28 @@ const OVERFLOW_START_ID    = FIXED_VAN_ZONES.length + 1; // 9
 const MAX_OVERFLOW_VANS    = MAX_TOTAL_VANS - FIXED_VAN_ZONES.length; // 8
 const OVERFLOW_GROUP_KM    = 450;   // max radius to merge unassigned aircraft into one overflow van
 
+/**
+ * Given an airport ICAO code (e.g. "KSBN"), find the nearest van zone within
+ * service radius (~200 km / 2 hr drive). Returns the vanId or null.
+ */
+export function findNearestVanZone(airportIcao: string): number | null {
+  if (!airportIcao) return null;
+  const iata = airportIcao.replace(/^K/, "");
+  const info = getAirportInfo(iata);
+  if (!info) return null;
+
+  let bestVanId: number | null = null;
+  let bestDist = Infinity;
+  for (const zone of FIXED_VAN_ZONES) {
+    const dist = haversineKm(info.lat, info.lon, zone.lat, zone.lon);
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestVanId = zone.vanId;
+    }
+  }
+  return bestDist <= 200 ? bestVanId : null;
+}
+
 export const haversineKm = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
   const R = 6371;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
