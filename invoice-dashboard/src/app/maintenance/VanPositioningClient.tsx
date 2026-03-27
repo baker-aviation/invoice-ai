@@ -3075,9 +3075,9 @@ function ScheduleTab({
           sourceItem = items.find((item) => item.arrFlight.tail_number === tail);
           if (sourceItem) break;
         }
-        // Also check allDayArrivals if not in any van
+        // Also check allDayArrivals if not in any van — but respect removals
         if (!sourceItem) {
-          sourceItem = allDayArrivals.find((a) => a.arrFlight.tail_number === tail);
+          sourceItem = allDayArrivals.find((a) => a.arrFlight.tail_number === tail && !removals.has(a.arrFlight.id));
         }
         if (sourceItem) {
           targetItems.push({ ...sourceItem });
