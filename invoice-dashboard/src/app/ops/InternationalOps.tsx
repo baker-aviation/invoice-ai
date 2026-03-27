@@ -334,32 +334,87 @@ function TripBoard({ trips, countries, onRefresh }: { trips: IntlTrip[]; countri
 
       {viewMode === "trips" ? (
         <>
-          {filteredTrips.map((trip) => (
-            <TripRow
-              key={trip.id}
-              trip={trip}
-              countries={countries}
-              expanded={expandedId === trip.id}
-              onToggle={() => setExpandedId(expandedId === trip.id ? null : trip.id)}
-              onRefresh={onRefresh}
-            />
-          ))}
+          {(() => {
+            // Group trips by date with day headers
+            let lastDate = "";
+            return filteredTrips.map((trip) => {
+              const snap = trip.schedule_snapshot ?? {};
+              const depTimes = Object.values(snap).map((s) => new Date(s.dep).getTime()).filter((t) => t > now);
+              const earliest = depTimes.length > 0 ? Math.min(...depTimes) : new Date(trip.trip_date + "T00:00:00Z").getTime();
+              const dateStr = new Date(earliest).toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric", timeZone: "UTC" });
+              const dateKey = new Date(earliest).toISOString().slice(0, 10);
+              const showHeader = dateKey !== lastDate;
+              lastDate = dateKey;
+
+              // Day label relative to today
+              const todayStr = new Date().toISOString().slice(0, 10);
+              const tomorrowStr = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+              const dayLabel = dateKey === todayStr ? "Today" : dateKey === tomorrowStr ? "Tomorrow" : "";
+
+              return (
+                <div key={trip.id}>
+                  {showHeader && (
+                    <div className="flex items-center gap-2 pt-3 pb-1 first:pt-0">
+                      <div className="h-px flex-1 bg-gray-200" />
+                      <span className="text-xs font-semibold text-gray-500 whitespace-nowrap">
+                        {dayLabel ? `${dayLabel} — ${dateStr}` : dateStr}
+                      </span>
+                      <div className="h-px flex-1 bg-gray-200" />
+                    </div>
+                  )}
+                  <TripRow
+                    trip={trip}
+                    countries={countries}
+                    expanded={expandedId === trip.id}
+                    onToggle={() => setExpandedId(expandedId === trip.id ? null : trip.id)}
+                    onRefresh={onRefresh}
+                  />
+                </div>
+              );
+            });
+          })()}
           {filteredTrips.length === 0 && (
             <p className="text-sm text-gray-500">No international trips in this time range.</p>
           )}
         </>
       ) : (
         <>
-          {filteredSegments.map((seg) => (
-            <SegmentRow
-              key={seg.segmentKey}
-              segment={seg}
-              countries={countries}
-              expanded={expandedId === seg.segmentKey}
-              onToggle={() => setExpandedId(expandedId === seg.segmentKey ? null : seg.segmentKey)}
-              onRefresh={onRefresh}
-            />
-          ))}
+          {(() => {
+            // Group segments by date with day headers
+            let lastDate = "";
+            return filteredSegments.map((seg) => {
+              const depTime = seg.departureTime?.getTime() ?? new Date(seg.trip.trip_date + "T00:00:00Z").getTime();
+              const dateStr = new Date(depTime).toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric", timeZone: "UTC" });
+              const dateKey = new Date(depTime).toISOString().slice(0, 10);
+              const showHeader = dateKey !== lastDate;
+              lastDate = dateKey;
+
+              const todayStr = new Date().toISOString().slice(0, 10);
+              const tomorrowStr = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+              const dayLabel = dateKey === todayStr ? "Today" : dateKey === tomorrowStr ? "Tomorrow" : "";
+
+              return (
+                <div key={seg.segmentKey}>
+                  {showHeader && (
+                    <div className="flex items-center gap-2 pt-3 pb-1 first:pt-0">
+                      <div className="h-px flex-1 bg-gray-200" />
+                      <span className="text-xs font-semibold text-gray-500 whitespace-nowrap">
+                        {dayLabel ? `${dayLabel} — ${dateStr}` : dateStr}
+                      </span>
+                      <div className="h-px flex-1 bg-gray-200" />
+                    </div>
+                  )}
+                  <SegmentRow
+                    segment={seg}
+                    countries={countries}
+                    expanded={expandedId === seg.segmentKey}
+                    onToggle={() => setExpandedId(expandedId === seg.segmentKey ? null : seg.segmentKey)}
+                    onRefresh={onRefresh}
+                  />
+                </div>
+              );
+            });
+          })()}
           {filteredSegments.length === 0 && (
             <p className="text-sm text-gray-500">No flight segments in this time range.</p>
           )}
