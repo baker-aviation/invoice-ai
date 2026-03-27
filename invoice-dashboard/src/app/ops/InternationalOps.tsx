@@ -1056,6 +1056,7 @@ function TripDetail({ trip, countries, onRefresh }: {
       {/* Trip documents */}
       {trip.tail_number && trip.route_icaos.length >= 2 && (
         <TripDocsPanel
+          tripId={trip.id}
           tail={trip.tail_number}
           dep={trip.route_icaos[0]}
           arr={trip.route_icaos[trip.route_icaos.length - 1]}
@@ -1244,7 +1245,9 @@ function ClearanceCard({ clearance, countries, tripId, updating, onStatusChange,
 // ===========================================================================
 type TripDoc = { id: string; name: string; document_type: string; entity_type: string; entity_id: string };
 
-function TripDocsPanel({ tail, dep, arr }: { tail: string; dep: string; arr: string }) {
+type DocEmailLog = { id: string; sent_to: string[]; sent_cc: string[]; subject: string; document_count: number; sent_by_name: string | null; sent_at: string };
+
+function TripDocsPanel({ tripId, tail, dep, arr }: { tripId: string; tail: string; dep: string; arr: string }) {
   const [open, setOpen] = useState(false);
   const [aircraft, setAircraft] = useState<TripDoc[]>([]);
   const [company, setCompany] = useState<TripDoc[]>([]);
@@ -1264,6 +1267,14 @@ function TripDocsPanel({ tail, dep, arr }: { tail: string; dep: string; arr: str
   const [emailBody, setEmailBody] = useState("");
   const [sending, setSending] = useState(false);
   const [sendResult, setSendResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [emailLog, setEmailLog] = useState<DocEmailLog[]>([]);
+
+  const loadEmailLog = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/ops/intl/send-docs-email?trip_id=${tripId}`);
+      if (res.ok) { const data = await res.json(); setEmailLog(data.emails ?? []); }
+    } catch { /* ignore */ }
+  }, [tripId]);
 
   const loadDocs = useCallback(async () => {
     setLoading(true);
@@ -1276,9 +1287,10 @@ function TripDocsPanel({ tail, dep, arr }: { tail: string; dep: string; arr: str
       setCompany(co);
       if (!loaded) setSelected(new Set(ac.map((d: TripDoc) => d.id)));
       setLoaded(true);
+      loadEmailLog();
     } catch { /* ignore */ }
     setLoading(false);
-  }, [tail, loaded]);
+  }, [tail, loaded, loadEmailLog]);
 
   const toggle = (id: string) => {
     setSelected((prev) => {
@@ -1382,11 +1394,13 @@ function TripDocsPanel({ tail, dep, arr }: { tail: string; dep: string; arr: str
           subject: emailSubject,
           body: emailBody,
           document_ids: [...selected],
+          trip_id: tripId,
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Send failed");
       setSendResult({ ok: true, message: `Sent to ${toAddrs.join(", ")}` });
+      loadEmailLog();
       setTimeout(() => setShowEmailModal(false), 2000);
     } catch (err: unknown) {
       setSendResult({ ok: false, message: err instanceof Error ? err.message : "Send failed" });
@@ -1471,6 +1485,27 @@ function TripDocsPanel({ tail, dep, arr }: { tail: string; dep: string; arr: str
 
               {aircraft.length === 0 && company.length === 0 && (
                 <p className="text-xs text-gray-400">No documents found for {tail}</p>
+              )}
+
+              {/* Email send history */}
+              {emailLog.length > 0 && (
+                <div className="bg-green-50 border border-green-200 rounded-lg px-3 py-2 space-y-1">
+                  {emailLog.map((e) => {
+                    const d = new Date(e.sent_at);
+                    const dateStr = d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+                    const timeStr = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+                    return (
+                      <div key={e.id} className="flex items-center gap-2 text-xs text-green-800">
+                        <svg className="w-3.5 h-3.5 text-green-600 flex-shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                        <span className="font-medium">Emailed {e.document_count} doc{e.document_count !== 1 ? "s" : ""}</span>
+                        <span className="text-green-600">to {e.sent_to.join(", ")}</span>
+                        <span className="text-green-500 ml-auto whitespace-nowrap">{e.sent_by_name ?? "Unknown"} &middot; {dateStr} {timeStr}</span>
+                      </div>
+                    );
+                  })}
+                </div>
               )}
 
               {selected.size > 0 && (
