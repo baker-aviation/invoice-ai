@@ -1202,6 +1202,13 @@ function TripDocsPanel({ tail, dep, arr }: { tail: string; dep: string; arr: str
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [editEntity, setEditEntity] = useState<{ type: string; id: string }>({ type: "", id: "" });
+  const [showEmailModal, setShowEmailModal] = useState(false);
+  const [emailTo, setEmailTo] = useState("");
+  const [emailCc, setEmailCc] = useState("");
+  const [emailSubject, setEmailSubject] = useState("");
+  const [emailBody, setEmailBody] = useState("");
+  const [sending, setSending] = useState(false);
+  const [sendResult, setSendResult] = useState<{ ok: boolean; message: string } | null>(null);
 
   const loadDocs = useCallback(async () => {
     setLoading(true);
@@ -1292,6 +1299,46 @@ function TripDocsPanel({ tail, dep, arr }: { tail: string; dep: string; arr: str
     setDownloading(false);
   };
 
+  const openEmailModal = () => {
+    const docCount = selected.size;
+    setEmailSubject(`Baker Aviation — Trip Documents (${tail}, ${dep}→${arr})`);
+    setEmailBody(
+      `Please find attached ${docCount} trip document${docCount > 1 ? "s" : ""} for aircraft ${tail}.\n\nPlease let us know if you need anything else.\n\nBest regards,\nBaker Aviation Handling`
+    );
+    setEmailTo("");
+    setEmailCc("");
+    setSendResult(null);
+    setShowEmailModal(true);
+  };
+
+  const sendEmail = async () => {
+    if (!emailTo.trim()) return;
+    setSending(true);
+    setSendResult(null);
+    try {
+      const toAddrs = emailTo.split(/[,;\s]+/).map((s) => s.trim()).filter(Boolean);
+      const ccAddrs = emailCc ? emailCc.split(/[,;\s]+/).map((s) => s.trim()).filter(Boolean) : [];
+      const res = await fetch("/api/ops/intl/send-docs-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          to: toAddrs,
+          cc: ccAddrs,
+          subject: emailSubject,
+          body: emailBody,
+          document_ids: [...selected],
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Send failed");
+      setSendResult({ ok: true, message: `Sent to ${toAddrs.join(", ")}` });
+      setTimeout(() => setShowEmailModal(false), 2000);
+    } catch (err: unknown) {
+      setSendResult({ ok: false, message: err instanceof Error ? err.message : "Send failed" });
+    }
+    setSending(false);
+  };
+
   const renderDoc = (d: TripDoc) => {
     if (editingId === d.id) {
       return (
@@ -1372,7 +1419,14 @@ function TripDocsPanel({ tail, dep, arr }: { tail: string; dep: string; arr: str
               )}
 
               {selected.size > 0 && (
-                <div className="flex justify-end">
+                <div className="flex justify-end gap-2">
+                  <button onClick={openEmailModal}
+                    className="inline-flex items-center gap-2 px-3 py-1.5 bg-green-600 text-white text-xs font-medium rounded-lg hover:bg-green-700 transition-colors">
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75" />
+                    </svg>
+                    {`Email ${selected.size} doc${selected.size > 1 ? "s" : ""}`}
+                  </button>
                   <button onClick={downloadSelected} disabled={downloading}
                     className="inline-flex items-center gap-2 px-3 py-1.5 bg-blue-600 text-white text-xs font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors">
                     <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" /></svg>
@@ -1398,6 +1452,104 @@ function TripDocsPanel({ tail, dep, arr }: { tail: string; dep: string; arr: str
             </div>
             <div className="flex-1 min-h-0">
               <iframe src={previewUrl} className="w-full h-full border-0" title={previewName} />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Email Compose Modal */}
+      {showEmailModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowEmailModal(false)}>
+          <div className="bg-white rounded-lg shadow-2xl w-[90vw] max-w-lg flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200">
+              <h3 className="text-sm font-semibold text-gray-700">Email Trip Documents</h3>
+              <button onClick={() => setShowEmailModal(false)} className="text-gray-400 hover:text-gray-600 text-lg leading-none">✕</button>
+            </div>
+
+            <div className="px-4 py-3 space-y-3 overflow-y-auto max-h-[70vh]">
+              {/* From (locked) */}
+              <div>
+                <label className="text-xs font-medium text-gray-500 block mb-1">From</label>
+                <div className="text-xs text-gray-600 bg-gray-50 rounded px-2 py-1.5">handling@baker-aviation.com</div>
+              </div>
+
+              {/* To */}
+              <div>
+                <label className="text-xs font-medium text-gray-500 block mb-1">To <span className="text-red-500">*</span></label>
+                <input
+                  value={emailTo}
+                  onChange={(e) => setEmailTo(e.target.value)}
+                  placeholder="recipient@example.com (comma-separated)"
+                  className="w-full border border-gray-300 rounded px-2 py-1.5 text-xs focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+
+              {/* CC */}
+              <div>
+                <label className="text-xs font-medium text-gray-500 block mb-1">CC</label>
+                <input
+                  value={emailCc}
+                  onChange={(e) => setEmailCc(e.target.value)}
+                  placeholder="cc@example.com (optional)"
+                  className="w-full border border-gray-300 rounded px-2 py-1.5 text-xs focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+
+              {/* Subject */}
+              <div>
+                <label className="text-xs font-medium text-gray-500 block mb-1">Subject</label>
+                <input
+                  value={emailSubject}
+                  onChange={(e) => setEmailSubject(e.target.value)}
+                  className="w-full border border-gray-300 rounded px-2 py-1.5 text-xs focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+
+              {/* Body */}
+              <div>
+                <label className="text-xs font-medium text-gray-500 block mb-1">Message</label>
+                <textarea
+                  value={emailBody}
+                  onChange={(e) => setEmailBody(e.target.value)}
+                  rows={6}
+                  className="w-full border border-gray-300 rounded px-2 py-1.5 text-xs focus:ring-1 focus:ring-blue-500 focus:border-blue-500 resize-y"
+                />
+              </div>
+
+              {/* Attachments list */}
+              <div>
+                <label className="text-xs font-medium text-gray-500 block mb-1">Attachments ({selected.size})</label>
+                <div className="bg-gray-50 rounded px-2 py-1.5 space-y-0.5 max-h-28 overflow-y-auto">
+                  {[...aircraft, ...company].filter((d) => selected.has(d.id)).map((d) => (
+                    <div key={d.id} className="text-xs text-gray-600 flex items-center gap-1.5">
+                      <svg className="w-3 h-3 text-red-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                        <path d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" />
+                      </svg>
+                      {d.name}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Result feedback */}
+              {sendResult && (
+                <div className={`text-xs rounded px-2 py-1.5 ${sendResult.ok ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"}`}>
+                  {sendResult.message}
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-2 px-4 py-3 border-t border-gray-200">
+              <button onClick={() => setShowEmailModal(false)} className="px-3 py-1.5 text-xs text-gray-600 hover:text-gray-800">
+                Cancel
+              </button>
+              <button
+                onClick={sendEmail}
+                disabled={sending || !emailTo.trim()}
+                className="inline-flex items-center gap-2 px-4 py-1.5 bg-green-600 text-white text-xs font-medium rounded-lg hover:bg-green-700 disabled:opacity-50 transition-colors"
+              >
+                {sending ? "Sending..." : "Send Email"}
+              </button>
             </div>
           </div>
         </div>

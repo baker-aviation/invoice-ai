@@ -530,7 +530,7 @@ export async function GET(req: NextRequest) {
   }
 
   // Sort clearances, attach jetinsight_url, and build schedule_snapshot from flight times
-  const snapshotBackfills: Promise<unknown>[] = [];
+  const snapshotBackfills: PromiseLike<unknown>[] = [];
   for (const t of trips ?? []) {
     if (t.clearances) {
       t.clearances.sort((a: { sort_order: number }, b: { sort_order: number }) => a.sort_order - b.sort_order);
