@@ -9,6 +9,7 @@ export type AirportInfo = {
 };
 
 const AIRPORTS: Record<string, AirportInfo> = {
+  "1B1": { code: "1B1", name: "Columbia County", lat: 42.2913, lon: -73.7103, city: "Hudson", state: "NY" },
   TEB: { code: "TEB", name: "Teterboro", lat: 40.8501, lon: -74.0608, city: "Teterboro", state: "NJ" },
   PSP: { code: "PSP", name: "Palm Springs Intl", lat: 33.8297, lon: -116.5067, city: "Palm Springs", state: "CA" },
   VNY: { code: "VNY", name: "Van Nuys", lat: 34.2098, lon: -118.4899, city: "Van Nuys", state: "CA" },
@@ -216,6 +217,7 @@ const AIRPORTS: Record<string, AirportInfo> = {
   SAN: { code: "SAN", name: "San Diego Intl", lat: 32.7336, lon: -117.1897, city: "San Diego", state: "CA" },
   SAT: { code: "SAT", name: "San Antonio Intl", lat: 29.5337, lon: -98.4698, city: "San Antonio", state: "TX" },
   SAV: { code: "SAV", name: "Savannah Hilton Head Intl", lat: 32.1276, lon: -81.2021, city: "Savannah", state: "GA" },
+  SBN: { code: "SBN", name: "South Bend Intl", lat: 41.7087, lon: -86.3173, city: "South Bend", state: "IN" },
   SDF: { code: "SDF", name: "Louisville Muhammad Ali Intl", lat: 38.1744, lon: -85.736, city: "Louisville", state: "KY" },
   SDM: { code: "SDM", name: "Brown Field Muni", lat: 32.5723, lon: -116.9803, city: "San Diego", state: "CA" },
   SEA: { code: "SEA", name: "Seattle-Tacoma Intl", lat: 47.4502, lon: -122.3088, city: "Seattle", state: "WA" },
@@ -248,10 +250,17 @@ export function getAirportInfo(code: string): AirportInfo | null {
   const curated = AIRPORTS[code];
   if (curated) return curated;
 
-  // Fallback to worldwide dataset
-  const entry = worldwide[code];
+  // Try K-stripped version against curated (KSBN → SBN, KTEB → TEB)
+  const stripped = code.replace(/^K/, "");
+  if (stripped !== code) {
+    const curatedStripped = AIRPORTS[stripped];
+    if (curatedStripped) return curatedStripped;
+  }
+
+  // Fallback to worldwide dataset (try original, then stripped)
+  const entry = worldwide[code] ?? (stripped !== code ? worldwide[stripped] : undefined);
   if (entry) {
-    return { code, name: entry[2], lat: entry[0], lon: entry[1], city: "", state: "" };
+    return { code: stripped !== code ? stripped : code, name: entry[2], lat: entry[0], lon: entry[1], city: "", state: "" };
   }
   return null;
 }

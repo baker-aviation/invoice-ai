@@ -10,6 +10,7 @@ import {
   getDateRange,
   isContiguous48,
   haversineKm,
+  findNearestVanZone,
   FIXED_VAN_ZONES,
   FALLBACK_TAILS,
   BAKER_FLEET,
@@ -1347,6 +1348,23 @@ function MiddayOpportunities({
   );
 }
 
+/**
+ * Compute the effective van for an MX note.
+ * Priority: assigned_van (DB) → override (legacy map) → auto-detect from airport_icao → null
+ */
+function getEffectiveMxVan(note: MxNote, overrides?: Map<string, number>): number | null {
+  return note.assigned_van ?? overrides?.get(note.id) ?? findNearestVanZone(note.airport_icao ?? "") ?? null;
+}
+
+/** Should this MX note be shown on a given van's card? */
+function shouldShowMxOnVan(note: MxNote, vanId: number, overrides?: Map<string, number>): boolean {
+  if (isMel(note)) return false;
+  const ev = getEffectiveMxVan(note, overrides);
+  // If we know which van it belongs to, only show on that van.
+  // If we can't determine a van (no airport, no assignment), show on all (backward compat).
+  return ev === null || ev === vanId;
+}
+
 /** Single MX note row with expandable description */
 function MxNoteRow({ note, onHideForToday, vanOverride, onVanOverride }: {
   note: MxNote;
@@ -1355,7 +1373,9 @@ function MxNoteRow({ note, onHideForToday, vanOverride, onVanOverride }: {
   onVanOverride?: (noteId: string, vanId: number | null) => void;
 }) {
   const [descOpen, setDescOpen] = useState(false);
-  const effectiveVan = note.assigned_van ?? vanOverride ?? null;
+  const autoVanId = findNearestVanZone(note.airport_icao ?? "");
+  const autoVanZone = autoVanId != null ? FIXED_VAN_ZONES.find((z) => z.vanId === autoVanId) : null;
+  const effectiveVan = note.assigned_van ?? vanOverride ?? autoVanId ?? null;
   return (
     <div className="rounded-lg px-3 py-1.5 bg-orange-50 border border-orange-200">
       <div className="flex items-start gap-2">
@@ -1374,8 +1394,8 @@ function MxNoteRow({ note, onHideForToday, vanOverride, onVanOverride }: {
               </button>
             )}
             {effectiveVan && (
-              <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-100 text-green-700">
-                V{effectiveVan}{note.scheduled_date ? ` · ${new Date(note.scheduled_date + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : ""}
+              <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${!note.assigned_van && !vanOverride && autoVanId ? "bg-blue-100 text-blue-700" : "bg-green-100 text-green-700"}`}>
+                V{effectiveVan}{!note.assigned_van && !vanOverride && autoVanId ? " (auto)" : ""}{note.scheduled_date ? ` · ${new Date(note.scheduled_date + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : ""}
               </span>
             )}
             {note.end_time && (
@@ -1404,7 +1424,7 @@ function MxNoteRow({ note, onHideForToday, vanOverride, onVanOverride }: {
                 onChange={(e) => onVanOverride(note.id, e.target.value ? Number(e.target.value) : null)}
                 className="text-[10px] border border-orange-200 rounded px-1.5 py-0.5 bg-white text-gray-600"
               >
-                <option value="">Default Van</option>
+                <option value="">{autoVanZone ? `Auto: V${autoVanId} ${autoVanZone.name}` : "Default Van"}</option>
                 {FIXED_VAN_ZONES.map((z) => (
                   <option key={z.vanId} value={z.vanId}>V{z.vanId} {z.name}</option>
                 ))}
@@ -1418,12 +1438,14 @@ function MxNoteRow({ note, onHideForToday, vanOverride, onVanOverride }: {
 }
 
 /** Inline MX notes per aircraft — only non-MEL MX items (MELs moved to van-level accordion) */
-function MxNoteInline({ notes, hiddenIds, onHideForToday, vanOverrides, onVanOverride, viewDate }: { notes: MxNote[]; hiddenIds?: Set<string>; onHideForToday?: (note: MxNote) => void; vanOverrides?: Map<string, number>; onVanOverride?: (noteId: string, vanId: number | null) => void; viewDate?: string }) {
+function MxNoteInline({ notes, hiddenIds, onHideForToday, vanOverrides, onVanOverride, viewDate, vanId }: { notes: MxNote[]; hiddenIds?: Set<string>; onHideForToday?: (note: MxNote) => void; vanOverrides?: Map<string, number>; onVanOverride?: (noteId: string, vanId: number | null) => void; viewDate?: string; vanId?: number }) {
   const targetDate = viewDate ?? new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
   const toEtDate = (iso: string) => new Date(iso).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
   const visible = notes.filter((n) => {
     if (isMxHiddenForToday(n, hiddenIds)) return false;
     if (isMel(n)) return false;
+    // Filter by van — only show notes that belong to this van
+    if (vanId != null && !shouldShowMxOnVan(n, vanId, vanOverrides)) return false;
     // Compare dates in ET timezone (ISO strings are UTC, display is ET)
     const startDate = n.start_time ? toEtDate(n.start_time) : null;
     const endDate = n.end_time ? toEtDate(n.end_time) : startDate;
@@ -1804,13 +1826,13 @@ function AircraftCompactRow({
           <span className="text-xs text-gray-500">{airport}{airportInfo ? ` · ${airportInfo.city}, ${airportInfo.state}` : ""}</span>
           <span className="text-xs text-gray-400">· {fmtDriveTime(distKm)}</span>
           <span className={`text-xs font-semibold rounded-full px-2 py-0.5 ${turnBadgeClass(turnBadgeLabel)}`}>{turnBadgeLabel}</span>
-          {mxNotes.filter((n) => !isMel(n) && (n.assigned_van === zone.vanId || !n.assigned_van)).length > 0 && (
+          {mxNotes.filter((n) => shouldShowMxOnVan(n, zone.vanId, mxVanOverrides)).length > 0 && (
             <button
               onClick={(e) => { e.stopPropagation(); setDetailOpen((v) => !v); }}
               className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-orange-100 text-orange-700 hover:bg-orange-200 transition-colors cursor-pointer"
-              title={mxNotes.filter((n) => !isMel(n) && (n.assigned_van === zone.vanId || !n.assigned_van)).map((n) => `${n.airport_icao ?? ""} — ${n.subject || n.body || n.description || ""}`).join("\n")}
+              title={mxNotes.filter((n) => shouldShowMxOnVan(n, zone.vanId, mxVanOverrides)).map((n) => `${n.airport_icao ?? ""} — ${n.subject || n.body || n.description || ""}`).join("\n")}
             >
-              {mxNotes.filter((n) => !isMel(n) && (n.assigned_van === zone.vanId || !n.assigned_van)).length} MX
+              {mxNotes.filter((n) => shouldShowMxOnVan(n, zone.vanId, mxVanOverrides)).length} MX
             </button>
           )}
           {multiVisitVans && multiVisitVans.length >= 2 && (
@@ -1935,7 +1957,7 @@ function AircraftCompactRow({
       )}
 
       {/* MX notes from JetInsight (non-MEL only — MELs in van accordion) */}
-      <MxNoteInline notes={mxNotes} hiddenIds={hiddenTodayMxIds} onHideForToday={onHideMxForToday} vanOverrides={mxVanOverrides} onVanOverride={onVanOverride} viewDate={date} />
+      <MxNoteInline notes={mxNotes} hiddenIds={hiddenTodayMxIds} onHideForToday={onHideMxForToday} vanOverrides={mxVanOverrides} onVanOverride={onVanOverride} viewDate={date} vanId={zone.vanId} />
 
       {/* ── Expandable detail section ── */}
       {detailOpen && (
@@ -5504,13 +5526,22 @@ export default function VanPositioningClient({ initialFlights, mxNotes, melItems
   }, []);
 
   const handleVanOverride = useCallback(async (noteId: string, vanId: number | null) => {
-    // Optimistic update
+    // Optimistic update — local override map
     setMxVanOverrides((prev) => {
       const next = new Map(prev);
       if (vanId == null) next.delete(noteId);
       else next.set(noteId, vanId);
       return next;
     });
+    // Persist assigned_van on the MX note itself (drives the filter)
+    try {
+      await fetch(`/api/ops/mx-notes/${noteId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ assigned_van: vanId }),
+      });
+    } catch { /* non-fatal */ }
+    // Also update legacy override table (drives aircraft card duplication)
     try {
       await fetch("/api/ops/mx-van-override", {
         method: "POST",
