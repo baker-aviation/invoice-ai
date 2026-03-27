@@ -1365,6 +1365,22 @@ function shouldShowMxOnVan(note: MxNote, vanId: number, overrides?: Map<string, 
   return ev === null || ev === vanId;
 }
 
+/** Full visibility check for MX notes on a van card — van routing + date range + hidden status. */
+function isMxNoteVisibleOnVan(
+  note: MxNote, vanId: number, overrides: Map<string, number> | undefined,
+  hiddenIds: Set<string> | undefined, viewDate: string,
+): boolean {
+  if (isMxHiddenForToday(note, hiddenIds)) return false;
+  if (!shouldShowMxOnVan(note, vanId, overrides)) return false;
+  const toEtDate = (iso: string) => new Date(iso).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  const startDate = note.start_time ? toEtDate(note.start_time) : null;
+  const endDate = note.end_time ? toEtDate(note.end_time) : startDate;
+  if (!startDate && !endDate) return true;
+  if (startDate && startDate > viewDate) return false;
+  if (endDate && endDate < viewDate) return false;
+  return true;
+}
+
 /** Single MX note row with expandable description */
 function MxNoteRow({ note, onHideForToday, vanOverride, onVanOverride }: {
   note: MxNote;
@@ -1826,13 +1842,13 @@ function AircraftCompactRow({
           <span className="text-xs text-gray-500">{airport}{airportInfo ? ` · ${airportInfo.city}, ${airportInfo.state}` : ""}</span>
           <span className="text-xs text-gray-400">· {fmtDriveTime(distKm)}</span>
           <span className={`text-xs font-semibold rounded-full px-2 py-0.5 ${turnBadgeClass(turnBadgeLabel)}`}>{turnBadgeLabel}</span>
-          {mxNotes.filter((n) => shouldShowMxOnVan(n, zone.vanId, mxVanOverrides)).length > 0 && (
+          {mxNotes.filter((n) => isMxNoteVisibleOnVan(n, zone.vanId, mxVanOverrides, hiddenTodayMxIds, date)).length > 0 && (
             <button
               onClick={(e) => { e.stopPropagation(); setDetailOpen((v) => !v); }}
               className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-orange-100 text-orange-700 hover:bg-orange-200 transition-colors cursor-pointer"
-              title={mxNotes.filter((n) => shouldShowMxOnVan(n, zone.vanId, mxVanOverrides)).map((n) => `${n.airport_icao ?? ""} — ${n.subject || n.body || n.description || ""}`).join("\n")}
+              title={mxNotes.filter((n) => isMxNoteVisibleOnVan(n, zone.vanId, mxVanOverrides, hiddenTodayMxIds, date)).map((n) => `${n.airport_icao ?? ""} — ${n.subject || n.body || n.description || ""}`).join("\n")}
             >
-              {mxNotes.filter((n) => shouldShowMxOnVan(n, zone.vanId, mxVanOverrides)).length} MX
+              {mxNotes.filter((n) => isMxNoteVisibleOnVan(n, zone.vanId, mxVanOverrides, hiddenTodayMxIds, date)).length} MX
             </button>
           )}
           {multiVisitVans && multiVisitVans.length >= 2 && (
