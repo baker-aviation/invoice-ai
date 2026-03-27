@@ -337,7 +337,16 @@ export async function GET(req: NextRequest) {
             const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
             if (routeChanged) updates.route_icaos = dt.route_icaos;
             if (dateChanged) updates.trip_date = dt.trip_date;
-            if (flightsChanged) updates.flight_ids = dt.flight_ids;
+            if (flightsChanged) {
+              updates.flight_ids = dt.flight_ids;
+              // Rebuild snapshot baseline for the new flight set
+              const newSnap: Record<string, { dep: string; arr: string | null }> = {};
+              for (const fid of dt.flight_ids) {
+                const times = flightMap.get(fid);
+                if (times) newSnap[fid] = times;
+              }
+              if (Object.keys(newSnap).length > 0) updates.schedule_snapshot = newSnap;
+            }
             if (tailChanged) updates.tail_number = dt.tail_number;
 
             updatePromises.push(
@@ -442,6 +451,13 @@ export async function GET(req: NextRequest) {
 
       // Batch insert truly new trips
       for (const dt of toInsert) {
+        // Build initial schedule_snapshot so run-checks has a baseline
+        const initSnap: Record<string, { dep: string; arr: string | null }> = {};
+        for (const fid of dt.flight_ids) {
+          const times = flightMap.get(fid);
+          if (times) initSnap[fid] = times;
+        }
+
         const { data: newTrip, error: tripErr } = await supa
           .from("intl_trips")
           .insert({
@@ -449,6 +465,7 @@ export async function GET(req: NextRequest) {
             route_icaos: dt.route_icaos,
             flight_ids: dt.flight_ids,
             trip_date: dt.trip_date,
+            schedule_snapshot: Object.keys(initSnap).length > 0 ? initSnap : null,
           })
           .select("id")
           .single();
@@ -513,6 +530,7 @@ export async function GET(req: NextRequest) {
   }
 
   // Sort clearances, attach jetinsight_url, and build schedule_snapshot from flight times
+  const snapshotBackfills: Promise<unknown>[] = [];
   for (const t of trips ?? []) {
     if (t.clearances) {
       t.clearances.sort((a: { sort_order: number }, b: { sort_order: number }) => a.sort_order - b.sort_order);
@@ -524,8 +542,18 @@ export async function GET(req: NextRequest) {
       const times = flightTimesMap.get(fid);
       if (times) snap[fid] = times;
     }
-    t.schedule_snapshot = Object.keys(snap).length > 0 ? snap : null;
+    const computedSnap = Object.keys(snap).length > 0 ? snap : null;
+
+    // Backfill: seed snapshot in DB if missing so run-checks has a baseline
+    if (!t.schedule_snapshot && computedSnap) {
+      snapshotBackfills.push(
+        supa.from("intl_trips").update({ schedule_snapshot: computedSnap }).eq("id", t.id)
+      );
+    }
+
+    t.schedule_snapshot = computedSnap;
   }
+  if (snapshotBackfills.length > 0) await Promise.all(snapshotBackfills);
 
   return NextResponse.json({ trips: trips ?? [] });
 }

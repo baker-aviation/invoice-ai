@@ -143,7 +143,7 @@ export async function POST(req: NextRequest) {
         currentTimes.set(f.id, { dep: f.scheduled_departure, arr: f.scheduled_arrival ?? null });
       }
 
-      const THRESHOLD_MS = 60 * 60 * 1000; // 1 hour
+      const THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes
       const snapshotUpdates: Array<{ tripId: string; snapshot: Record<string, { dep: string; arr: string | null }> }> = [];
 
       for (const trip of tripsWithSnapshot) {
@@ -189,7 +189,7 @@ export async function POST(req: NextRequest) {
               alertsToCreate.push({
                 flight_id: fid,
                 alert_type: "schedule_change",
-                severity: depDelta >= 2 * 60 * 60 * 1000 ? "critical" : "warning",
+                severity: depDelta >= 60 * 60 * 1000 ? "critical" : "warning",
                 message: `${trip.tail_number} ${leg} departure moved ${prevDep}Z → ${currDep}Z (${depShiftMin > 0 ? "+" : ""}${depShiftMin}min). Verify customs/handler timing.`,
               });
             }
