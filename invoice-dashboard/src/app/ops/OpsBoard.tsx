@@ -3,6 +3,7 @@
 import { useState, useMemo, useCallback, useEffect } from "react";
 import Link from "next/link";
 import type { Flight, OpsAlert, NotamPin, CustomNotamAlert } from "@/lib/opsApi";
+import { fmtTimeInTz } from "@/lib/airportTimezones";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -362,6 +363,11 @@ const ALERT_TYPES_SHOWN = new Set([
 
 // ─── EDCT expandable row (status box) ────────────────────────────────────────
 
+function fmtEdctLocal(iso: string | null | undefined, depIcao: string | null | undefined): string {
+  if (!iso) return "—";
+  return fmtTimeInTz(iso, depIcao, true);
+}
+
 function EdctRow({ alert, flight, onDismiss, fmtTime }: {
   alert: OpsAlert;
   flight: Flight | null;
@@ -369,6 +375,7 @@ function EdctRow({ alert, flight, onDismiss, fmtTime }: {
   fmtTime: (s: string) => string;
 }) {
   const [open, setOpen] = useState(false);
+  const depIcao = alert.departure_icao ?? flight?.departure_icao;
 
   // Extract program info from body
   const body = alert.body ?? "";
@@ -407,10 +414,10 @@ function EdctRow({ alert, flight, onDismiss, fmtTime }: {
         }`}>{sourceTag}</span>
         <span className="text-xs">
           {(alert.original_departure_time || flight?.scheduled_departure) && (
-            <span className="text-gray-500 line-through">{alert.original_departure_time ?? fmtTime(flight?.scheduled_departure ?? "")}</span>
+            <span className="text-gray-500 line-through">{fmtEdctLocal(alert.original_departure_time ?? flight?.scheduled_departure, depIcao)}</span>
           )}
           {(alert.original_departure_time || flight?.scheduled_departure) && <span className="text-gray-400 mx-0.5">→</span>}
-          <span className="text-orange-800 font-bold">{alert.edct_time ?? "—"}</span>
+          <span className="text-orange-800 font-bold">{fmtEdctLocal(alert.edct_time, depIcao)}</span>
         </span>
         <button
           type="button"
@@ -435,10 +442,10 @@ function EdctRow({ alert, flight, onDismiss, fmtTime }: {
           {programEnd && <div><span className="text-gray-400">Program end:</span> {programEnd}</div>}
           {expectedArrival && <div><span className="text-gray-400">Expected arrival:</span> {expectedArrival}</div>}
           {alert.original_departure_time && (
-            <div><span className="text-gray-400">Original dep:</span> {alert.original_departure_time}</div>
+            <div><span className="text-gray-400">Original dep:</span> {fmtEdctLocal(alert.original_departure_time, depIcao)}</div>
           )}
           {alert.edct_time && (
-            <div><span className="text-gray-400">New EDCT:</span> <span className="font-semibold text-orange-700">{alert.edct_time}</span></div>
+            <div><span className="text-gray-400">New EDCT:</span> <span className="font-semibold text-orange-700">{fmtEdctLocal(alert.edct_time, depIcao)}</span></div>
           )}
         </div>
       )}
@@ -493,9 +500,9 @@ function AlertCard({ alert, onAck, acked, ackedByName, pinned, onTogglePin }: { 
         )}
         {alert.edct_time && (
           <span className="text-xs">
-            <span className="text-gray-500 line-through">{alert.original_departure_time ?? ""}</span>
+            <span className="text-gray-500 line-through">{fmtEdctLocal(alert.original_departure_time, alert.departure_icao)}</span>
             {alert.original_departure_time && <span className="text-gray-400 mx-0.5">→</span>}
-            <span className="text-orange-700 font-bold">{alert.edct_time}</span>
+            <span className="text-orange-700 font-bold">{fmtEdctLocal(alert.edct_time, alert.departure_icao)}</span>
           </span>
         )}
         {/* ── NOTAM effective times (inline) ── */}

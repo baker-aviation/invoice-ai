@@ -172,6 +172,7 @@ const AIRPORT_TZ: Record<string, string> = {
   KIWA: "America/Phoenix",    // Phoenix-Mesa, AZ
   KJAC: "America/Denver",     // Jackson Hole, WY
   KPHX: "America/Phoenix",    // Phoenix, AZ
+  KRIL: "America/Denver",     // Rifle/Garfield Co, CO
   KABQ: "America/Denver",     // Albuquerque, NM
   KSDL: "America/Phoenix",    // Scottsdale, AZ
   KSLC: "America/Denver",     // Salt Lake City, UT
@@ -246,6 +247,107 @@ const AIRPORT_TZ: Record<string, string> = {
   TNCM: "America/Curacao",    // St. Maarten
   TQPF: "America/Puerto_Rico", // Anguilla (AST, same offset as PR)
   TVSA: "America/Barbados",   // Arnos Vale, St. Vincent
+
+  // ── Additional Baker Aviation airports ──────────────
+
+  // Eastern
+  "K1B1": "America/New_York",   // Hudson, NY (Columbia County)
+  K2IS: "America/New_York",     // Clewiston, FL (Airglades)
+  KACK: "America/New_York",     // Nantucket, MA
+  KAGS: "America/New_York",     // Augusta, GA
+  KAVL: "America/New_York",     // Asheville, NC
+  KBDL: "America/New_York",     // Windsor Locks, CT (Bradley)
+  KBGR: "America/New_York",     // Bangor, ME
+  KBUF: "America/New_York",     // Buffalo, NY
+  KCDW: "America/New_York",     // Caldwell, NJ (Essex County)
+  KCGF: "America/New_York",     // Cleveland, OH (Cuyahoga County)
+  KCHA: "America/New_York",     // Chattanooga, TN
+  KCRW: "America/New_York",     // Charleston, WV
+  KCVG: "America/New_York",     // Cincinnati, OH
+  KFPR: "America/New_York",     // Fort Pierce, FL
+  KGNV: "America/New_York",     // Gainesville, FL
+  KGRR: "America/New_York",     // Grand Rapids, MI
+  KGSP: "America/New_York",     // Greer, SC (Greenville-Spartanburg)
+  KHEF: "America/New_York",     // Manassas, VA
+  KISP: "America/New_York",     // Ronkonkoma, NY (Long Island MacArthur)
+  KJZI: "America/New_York",     // Charleston Exec, SC
+  KLEX: "America/New_York",     // Lexington, KY
+  KLAL: "America/New_York",     // Lakeland, FL
+  KLUK: "America/New_York",     // Cincinnati, OH (Lunken)
+  KLYH: "America/New_York",     // Lynchburg, VA
+  KMHT: "America/New_York",     // Manchester, NH
+  KMLB: "America/New_York",     // Melbourne, FL
+  KMMU: "America/New_York",     // Morristown, NJ
+  KMTN: "America/New_York",     // Baltimore, MD (Martin State)
+  KMVY: "America/New_York",     // Vineyard Haven, MA (Martha's Vineyard)
+  KMYR: "America/New_York",     // Myrtle Beach, SC
+  KPSM: "America/New_York",     // Portsmouth, NH (Pease)
+  KPTK: "America/New_York",     // Pontiac, MI (Oakland County)
+  KPVD: "America/New_York",     // Providence, RI
+  KPWM: "America/New_York",     // Portland, ME
+  KRIC: "America/New_York",     // Richmond, VA
+  KROC: "America/New_York",     // Rochester, NY
+  KRYY: "America/New_York",     // Kennesaw, GA (McCollum Field)
+  KSBN: "America/New_York",     // South Bend, IN
+  KSDF: "America/New_York",     // Louisville, KY
+  KSGJ: "America/New_York",     // St. Augustine, FL
+  KSWF: "America/New_York",     // New Windsor, NY (Stewart)
+  KSYR: "America/New_York",     // Syracuse, NY
+  KTYS: "America/New_York",     // Knoxville, TN (Eastern TN)
+  KVDF: "America/New_York",     // Tampa, FL (Tampa Executive)
+
+  // Central
+  KGFK: "America/Chicago",      // Grand Forks, ND
+  KGGG: "America/Chicago",      // Longview, TX
+  KGPT: "America/Chicago",      // Gulfport, MS
+  KHSV: "America/Chicago",      // Huntsville, AL
+  KJWN: "America/Chicago",      // Nashville, TN (John C Tune)
+  KLFT: "America/Chicago",      // Lafayette, LA
+  KLIT: "America/Chicago",      // Little Rock, AR
+  KLNK: "America/Chicago",      // Lincoln, NE
+  KMEM: "America/Chicago",      // Memphis, TN
+  KMKE: "America/Chicago",      // Milwaukee, WI
+  KMOB: "America/Chicago",      // Mobile, AL
+  KMSN: "America/Chicago",      // Madison, WI
+  KMSP: "America/Chicago",      // Minneapolis, MN
+  KNEW: "America/Chicago",      // New Orleans, LA (Lakefront)
+  KOMA: "America/Chicago",      // Omaha, NE
+  KPNS: "America/Chicago",      // Pensacola, FL (panhandle)
+  KTKI: "America/Chicago",      // McKinney, TX
+  KVPS: "America/Chicago",      // Valparaiso, FL (Destin-FWB, panhandle)
+
+  // Mountain
+  KMTJ: "America/Denver",       // Montrose, CO
+  KSAF: "America/Denver",       // Santa Fe, NM
+
+  // Arizona (no DST)
+  KDVT: "America/Phoenix",      // Phoenix, AZ (Deer Valley)
+  KFFZ: "America/Phoenix",      // Mesa, AZ (Falcon Field)
+  KTUS: "America/Phoenix",      // Tucson, AZ
+
+  // Idaho
+  KLWS: "America/Boise",        // Lewiston, ID
+
+  // Pacific
+  KHIO: "America/Los_Angeles",  // Hillsboro, OR
+  KMRY: "America/Los_Angeles",  // Monterey, CA
+  KPAE: "America/Los_Angeles",  // Everett, WA (Paine Field)
+  KRNO: "America/Los_Angeles",  // Reno, NV
+  KSDM: "America/Los_Angeles",  // San Diego, CA (Brown Field)
+  KSMF: "America/Los_Angeles",  // Sacramento, CA
+  KSMO: "America/Los_Angeles",  // Santa Monica, CA
+  KTTD: "America/Los_Angeles",  // Troutdale, OR
+  KYKM: "America/Los_Angeles",  // Yakima, WA
+
+  // Hawaii
+  KHNL: "Pacific/Honolulu",     // Honolulu, HI (alt code)
+  KOGG: "Pacific/Honolulu",     // Kahului, Maui, HI
+
+  // International additions
+  MDLR: "America/Santo_Domingo", // La Romana, Dominican Republic
+  TNCA: "America/Curacao",      // Oranjestad, Aruba (same offset)
+  TAPA: "America/Puerto_Rico",  // Antigua (AST)
+  TXKF: "Atlantic/Bermuda",     // Hamilton, Bermuda
 };
 
 /**
@@ -254,7 +356,13 @@ const AIRPORT_TZ: Record<string, string> = {
  */
 export function getAirportTimezone(icao: string | null | undefined): string | null {
   if (!icao) return null;
-  return AIRPORT_TZ[icao.toUpperCase()] ?? null;
+  const upper = icao.toUpperCase();
+  // Direct ICAO lookup
+  const direct = AIRPORT_TZ[upper];
+  if (direct) return direct;
+  // Try K-prefix for 3-letter FAA codes (e.g. "RIL" → "KRIL")
+  if (upper.length === 3) return AIRPORT_TZ["K" + upper] ?? null;
+  return null;
 }
 
 /**
