@@ -74,7 +74,7 @@ export async function POST(req: NextRequest) {
       location: location?.trim(),
       category: category?.trim(),
       notes: notes?.trim(),
-      hiring_stage: (hiring_stage as HiringStage) ?? "prd_faa_review",
+      hiring_stage: (hiring_stage as HiringStage) ?? undefined,
     });
     return NextResponse.json({ ok: true, job: row }, { status: 201 });
   } catch {

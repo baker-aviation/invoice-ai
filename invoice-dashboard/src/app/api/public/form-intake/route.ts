@@ -289,7 +289,7 @@ export async function POST(req: NextRequest) {
           has_challenger_300_type_rating: body.has_cl30_type ?? false,
           type_ratings: typeRatings.length > 0 ? typeRatings : null,
           category,
-          pipeline_stage: "prd_faa_review",
+          pipeline_stage: "",
           info_session_data: infoSessionData,
           model: "google-form-intake",
         })
