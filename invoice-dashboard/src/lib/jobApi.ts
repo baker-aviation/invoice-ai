@@ -147,7 +147,7 @@ export async function createCandidate(fields: {
       location: fields.location || null,
       category: fields.category || null,
       notes: fields.notes || null,
-      hiring_stage: fields.hiring_stage ?? "screening",
+      hiring_stage: fields.hiring_stage ?? null,
       created_at: now,
       updated_at: now,
     })

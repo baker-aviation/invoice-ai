@@ -277,6 +277,113 @@ function MultiSelectDropdown({
 }
 
 // ---------------------------------------------------------------------------
+// Quick reject button (inline on table row)
+// ---------------------------------------------------------------------------
+
+function QuickRejectButton({
+  applicationId,
+  candidateName,
+  candidateEmail,
+  onRejected,
+}: {
+  applicationId: number;
+  candidateName: string;
+  candidateEmail: string | null;
+  onRejected: () => void;
+}) {
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [sendEmail, setSendEmail] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setShowConfirm(false);
+    }
+    if (showConfirm) {
+      document.addEventListener("mousedown", handleClick);
+      return () => document.removeEventListener("mousedown", handleClick);
+    }
+  }, [showConfirm]);
+
+  async function handleReject() {
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/jobs/${applicationId}/reject`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          rejection_type: "hard",
+          rejection_reason: null,
+          send_email: sendEmail,
+        }),
+      });
+      if (res.ok) {
+        setShowConfirm(false);
+        onRejected();
+      }
+    } catch {
+      // silent
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); setShowConfirm(true); }}
+        className="inline-flex items-center justify-center w-7 h-7 rounded-md text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors"
+        title="Quick reject"
+      >
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M4 4l8 8M12 4l-8 8" />
+        </svg>
+      </button>
+      {showConfirm && (
+        <div
+          className="absolute right-0 top-8 z-30 w-64 bg-white rounded-xl border border-gray-200 shadow-xl p-3 space-y-2"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="text-sm font-medium text-gray-900">
+            Reject {candidateName.split(/\s+/)[0]}?
+          </div>
+          {candidateEmail && (
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={sendEmail}
+                onChange={(e) => setSendEmail(e.target.checked)}
+                className="rounded border-gray-300 text-red-600 focus:ring-red-500"
+              />
+              <span className="text-xs text-gray-600">Send rejection email</span>
+            </label>
+          )}
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setShowConfirm(false)}
+              className="flex-1 text-xs py-1.5 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleReject}
+              disabled={loading}
+              className="flex-1 text-xs py-1.5 rounded-lg bg-red-600 text-white hover:bg-red-700 font-medium disabled:opacity-50"
+            >
+              {loading ? "..." : "Reject"}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main table
 // ---------------------------------------------------------------------------
 
@@ -286,7 +393,10 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
   const [softGate, setSoftGate] = useState("ALL");
   const [tags, setTags] = useState<Set<string>>(new Set());
   const [tagMode, setTagMode] = useState<"AND" | "OR">("OR");
+  const [sources, setSources] = useState<Set<string>>(new Set());
   const [showRejected, setShowRejected] = useState(false);
+  const [showInPipeline, setShowInPipeline] = useState(false);
+  const [recentlyRejected, setRecentlyRejected] = useState<Set<number>>(new Set());
   const [page, setPage] = useState(0);
 
   // Build a set of emails that have been rejected (for "Prev. Rejected" badge)
@@ -313,6 +423,12 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
       .map(([k]) => ({ key: k, label: categoryLabel(k) }));
   }, [initialJobs]);
 
+  const SOURCE_OPTIONS = [
+    { key: "google-form-intake", label: "Google Form" },
+    { key: "manual", label: "Manual" },
+    { key: "email", label: "Hiring@ Email" },
+  ];
+
   const TAG_OPTIONS: { key: string; label: string; test: (j: any) => boolean }[] = [
     { key: "CE-750", label: "CE-750", test: hasCitationX },
     { key: "CL-300", label: "CL-300", test: hasChallenger },
@@ -327,6 +443,17 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
     return initialJobs.filter((j) => {
       // Hide rejected by default unless toggled
       if (!showRejected && j.rejected_at) return false;
+      if (recentlyRejected.has(j.application_id)) return false;
+
+      // Hide candidates already in the pipeline unless toggled
+      const inPipeline = j.pipeline_stage && j.pipeline_stage !== "";
+      if (!showInPipeline && inPipeline) return false;
+
+      // Source filter
+      if (sources.size > 0) {
+        const jobSource = j.model === "google-form-intake" ? "google-form-intake" : j.model === "manual" ? "manual" : "email";
+        if (!sources.has(jobSource)) return false;
+      }
 
       const jCategory = normalize(j.category);
       const jSoft = normalize(j.soft_gate_pic_status);
@@ -373,12 +500,12 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
 
       return haystack.includes(query);
     });
-  }, [initialJobs, q, categories, softGate, tags, tagMode, showRejected]);
+  }, [initialJobs, q, categories, softGate, tags, tagMode, showRejected, showInPipeline, sources, recentlyRejected]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const paged = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
 
-  const hasActiveFilters = categories.size > 0 || softGate !== "ALL" || tags.size > 0 || showRejected || q !== "";
+  const hasActiveFilters = categories.size > 0 || softGate !== "ALL" || tags.size > 0 || sources.size > 0 || showRejected || showInPipeline || q !== "";
 
   const clear = () => {
     setQ("");
@@ -386,7 +513,9 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
     setSoftGate("ALL");
     setTags(new Set());
     setTagMode("AND");
+    setSources(new Set());
     setShowRejected(false);
+    setShowInPipeline(false);
     setPage(0);
   };
 
@@ -466,6 +595,34 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
             </div>
           )}
           <div className="w-px h-5 bg-gray-200" />
+          <MultiSelectDropdown
+            label="Source"
+            options={SOURCE_OPTIONS}
+            selected={sources}
+            onChange={(s) => { setSources(s); setPage(0); }}
+          />
+          {sources.size > 0 && (
+            <div className="flex items-center gap-1 flex-wrap">
+              {Array.from(sources).map((k) => (
+                <span key={k} className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold rounded-full bg-slate-100 text-slate-700 border border-slate-200">
+                  {SOURCE_OPTIONS.find(o => o.key === k)?.label ?? k}
+                  <button type="button" onClick={() => { const s = new Set(sources); s.delete(k); setSources(s); setPage(0); }} className="text-slate-400 hover:text-slate-600">&times;</button>
+                </span>
+              ))}
+            </div>
+          )}
+          <div className="w-px h-5 bg-gray-200" />
+          <button
+            type="button"
+            onClick={() => { setShowInPipeline(!showInPipeline); setPage(0); }}
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-full border transition-colors ${
+              showInPipeline
+                ? "bg-blue-50 text-blue-600 border-blue-200"
+                : "bg-white text-gray-500 border-gray-200 hover:border-gray-400"
+            }`}
+          >
+            Show in pipeline
+          </button>
           <button
             type="button"
             onClick={() => { setShowRejected(!showRejected); setPage(0); }}
@@ -493,8 +650,9 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
                 <th className="px-4 py-2.5 text-right">PIC</th>
                 <th className="px-4 py-2.5">PIC Gate</th>
                 <th className="px-4 py-2.5">Ratings</th>
+                <th className="px-4 py-2.5">Source</th>
                 <th className="px-4 py-2.5 text-right">Date</th>
-                <th className="px-4 py-2.5 w-10"></th>
+                <th className="px-4 py-2.5 w-20"></th>
               </tr>
             </thead>
 
@@ -585,21 +743,45 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
                       </div>
                     </td>
 
+                    <td className="px-4 py-2.5">
+                      {j.model === "google-form-intake" ? (
+                        <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-red-50 text-red-600 border-red-200">Google</span>
+                      ) : j.model === "manual" ? (
+                        <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-gray-50 text-gray-500 border-gray-200">Manual</span>
+                      ) : j.model ? (
+                        <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-indigo-50 text-indigo-600 border-indigo-200">Hiring@</span>
+                      ) : (
+                        <span className="text-gray-300">—</span>
+                      )}
+                    </td>
+
                     <td className="px-4 py-2.5 text-right text-xs text-gray-400 whitespace-nowrap">
                       {fmtDate(j.created_at)}
                     </td>
 
-                    <td className="px-2 py-2.5 text-right">
-                      {j.application_id ? (
-                        <Link
-                          href={`/jobs/${j.application_id}`}
-                          className="inline-flex items-center justify-center w-7 h-7 rounded-md text-gray-400 hover:text-blue-600 hover:bg-blue-50 transition-colors"
-                        >
-                          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M6 3l5 5-5 5" />
-                          </svg>
-                        </Link>
-                      ) : null}
+                    <td className="px-2 py-2.5">
+                      <div className="flex items-center justify-end gap-1">
+                        {!j.rejected_at && (
+                          <QuickRejectButton
+                            applicationId={j.application_id}
+                            candidateName={j.candidate_name ?? "Unknown"}
+                            candidateEmail={j.email ?? null}
+                            onRejected={() => {
+                              setRecentlyRejected((prev) => new Set(prev).add(j.application_id));
+                            }}
+                          />
+                        )}
+                        {j.application_id ? (
+                          <Link
+                            href={`/jobs/${j.application_id}`}
+                            className="inline-flex items-center justify-center w-7 h-7 rounded-md text-gray-400 hover:text-blue-600 hover:bg-blue-50 transition-colors"
+                          >
+                            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M6 3l5 5-5 5" />
+                            </svg>
+                          </Link>
+                        ) : null}
+                      </div>
                     </td>
                   </tr>
                 );
@@ -607,7 +789,7 @@ export default function JobsTable({ initialJobs }: { initialJobs: any[] }) {
 
               {paged.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="px-4 py-12 text-center text-gray-400">
+                  <td colSpan={10} className="px-4 py-12 text-center text-gray-400">
                     No candidates match the current filters.
                   </td>
                 </tr>

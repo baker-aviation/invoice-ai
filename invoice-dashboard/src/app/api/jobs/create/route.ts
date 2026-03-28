@@ -33,8 +33,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid category" }, { status: 400 });
   }
 
-  const stage = body.pipeline_stage ?? "prd_faa_review";
-  if (!(PIPELINE_STAGES as readonly string[]).includes(stage)) {
+  const stage = body.pipeline_stage ?? null;
+  if (stage && !(PIPELINE_STAGES as readonly string[]).includes(stage)) {
     return NextResponse.json({ error: "Invalid pipeline_stage" }, { status: 400 });
   }
 
@@ -93,7 +93,7 @@ export async function POST(req: NextRequest) {
         employment_type: body.employment_type ?? null,
         total_time_hours: body.total_time_hours ?? null,
         pic_time_hours: body.pic_time_hours ?? null,
-        pipeline_stage: stage,
+        pipeline_stage: stage ?? "",
         notes: String(body.notes ?? "").trim() || null,
         model: "manual",
         previously_rejected: previouslyRejected,
