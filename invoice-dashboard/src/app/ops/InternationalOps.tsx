@@ -251,6 +251,8 @@ function TripBoard({ trips, countries, onRefresh }: { trips: IntlTrip[]; countri
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [timeRange, setTimeRange] = useState<TripTimeRange>("7d");
   const [viewMode, setViewMode] = useState<ViewMode>("trips");
+  const [cbpChecking, setCbpChecking] = useState(false);
+  const [cbpMsg, setCbpMsg] = useState<string | null>(null);
 
   const now = Date.now();
 
@@ -330,6 +332,31 @@ function TripBoard({ trips, countries, onRefresh }: { trips: IntlTrip[]; countri
           ))}
         </div>
         <p className="text-xs text-gray-500">{count} {label}{count !== 1 ? "s" : ""}</p>
+
+        {/* Check CBP Replies button */}
+        <button
+          onClick={async () => {
+            setCbpChecking(true);
+            try {
+              const res = await fetch("/api/ops/intl/parse-cbp-replies", { method: "POST" });
+              const data = await res.json();
+              const n = data.repliesProcessed ?? 0;
+              const a = data.autoApproved ?? 0;
+              setCbpMsg(n === 0 ? "No new replies" : `${n} new repl${n > 1 ? "ies" : "y"}${a > 0 ? `, ${a} auto-approved` : ""}`);
+              if (n > 0) onRefresh();
+              setTimeout(() => setCbpMsg(null), 4000);
+            } catch { setCbpMsg("Error"); }
+            setCbpChecking(false);
+          }}
+          disabled={cbpChecking}
+          className="ml-auto inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-lg bg-gray-100 text-gray-700 hover:bg-gray-200 disabled:opacity-50 transition-colors"
+        >
+          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75" />
+          </svg>
+          {cbpChecking ? "Checking..." : "Check CBP"}
+        </button>
+        {cbpMsg && <span className="text-xs text-green-600">{cbpMsg}</span>}
       </div>
 
       {viewMode === "trips" ? (
@@ -660,8 +687,25 @@ function TripDetail({ trip, countries, onRefresh }: {
   const [ovfLoaded, setOvfLoaded] = useState(false);
   const [autoCreatingOvf, setAutoCreatingOvf] = useState(false);
   const [legRoutes, setLegRoutes] = useState<Array<{ dep: string; arr: string; route: string | null; method: string }>>([]);
+  const [cbpReplies, setCbpReplies] = useState<Record<string, CbpReply>>({});
 
   const clearances = trip.clearances ?? [];
+
+  // Fetch CBP replies for this trip
+  useEffect(() => {
+    fetch(`/api/ops/intl/parse-cbp-replies?trip_id=${trip.id}`)
+      .then((r) => r.json())
+      .then((d) => {
+        const map: Record<string, CbpReply> = {};
+        for (const r of d.replies ?? []) {
+          if (r.clearance_id && (!map[r.clearance_id] || new Date(r.parsed_at) > new Date(map[r.clearance_id].parsed_at))) {
+            map[r.clearance_id] = r;
+          }
+        }
+        setCbpReplies(map);
+      })
+      .catch(() => {});
+  }, [trip.id]);
 
   // Auto-detect overflown countries for each leg via route-analysis (ForeFlight + great-circle)
   useEffect(() => {
@@ -910,6 +954,7 @@ function TripDetail({ trip, countries, onRefresh }: {
             onNotesChange={(notes) => updateClearanceNotes(c.id, notes)}
             onRemove={c.clearance_type === "overflight_permit" ? () => removeClearance(c.id) : undefined}
             onRefresh={onRefresh}
+            cbpReply={cbpReplies[c.id] ?? null}
           />
         ))}
       </div>
@@ -1070,7 +1115,9 @@ function TripDetail({ trip, countries, onRefresh }: {
 // CLEARANCE CARD — single clearance item with status control
 // ===========================================================================
 
-function ClearanceCard({ clearance, countries, tripId, updating, onStatusChange, onNotesChange, onRemove, onRefresh }: {
+type CbpReply = { id: string; status: string; log_number: string | null; officer: string | null; from_address: string; parsed_at: string; attachments?: Array<{ name: string; gcs_key: string; gcs_bucket: string }> };
+
+function ClearanceCard({ clearance, countries, tripId, updating, onStatusChange, onNotesChange, onRemove, onRefresh, cbpReply }: {
   clearance: IntlTripClearance;
   countries: Country[];
   tripId: string;
@@ -1079,6 +1126,7 @@ function ClearanceCard({ clearance, countries, tripId, updating, onStatusChange,
   onNotesChange: (notes: string) => void;
   onRemove?: () => void;
   onRefresh: () => void;
+  cbpReply?: CbpReply | null;
 }) {
   const [editingNotes, setEditingNotes] = useState(false);
   const [notesVal, setNotesVal] = useState(clearance.notes ?? "");
@@ -1140,6 +1188,28 @@ function ClearanceCard({ clearance, countries, tripId, updating, onStatusChange,
           </button>
         )}
       </div>
+
+      {/* CBP Reply badge */}
+      {cbpReply && (
+        <div className={`mt-2 flex items-center gap-2 text-xs rounded px-2 py-1.5 ${
+          cbpReply.status === "approved" ? "bg-green-100 text-green-800" :
+          cbpReply.status === "denied" ? "bg-red-100 text-red-800" :
+          "bg-blue-100 text-blue-800"
+        }`}>
+          <span className="font-semibold">
+            {cbpReply.status === "approved" ? "CBP Approved" : cbpReply.status === "denied" ? "CBP Denied" : "CBP Reply"}
+          </span>
+          {cbpReply.log_number && <span>Log# {cbpReply.log_number}</span>}
+          {cbpReply.officer && <span>({cbpReply.officer})</span>}
+          <span className="text-opacity-60 ml-auto">{cbpReply.from_address}</span>
+          {cbpReply.attachments && cbpReply.attachments.length > 0 && (
+            <span className="flex items-center gap-0.5">
+              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M18.375 12.739l-7.693 7.693a4.5 4.5 0 01-6.364-6.364l10.94-10.94A3 3 0 1119.5 7.372L8.552 18.32m.009-.01l-.01.01m5.699-9.941l-7.81 7.81a1.5 1.5 0 002.112 2.13" /></svg>
+              {cbpReply.attachments.length}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Notes + File */}
       <div className="mt-2 flex items-start gap-4">
