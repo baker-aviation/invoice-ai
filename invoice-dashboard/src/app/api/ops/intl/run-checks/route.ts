@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireAuth, isAuthed } from "@/lib/api-auth";
+import { requireAuth, isAuthed, verifyCronSecret } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 import { isInternationalIcao } from "@/lib/intlUtils";
 import { sendIntlAlertSlack } from "@/lib/intlAlertSlack";
@@ -16,9 +16,22 @@ import { sendIntlAlertSlack } from "@/lib/intlAlertSlack";
  * Call this after JI sync or on a 30-minute cron.
  * Also callable from the "Resync JI" button flow.
  */
+/** GET — Vercel cron entry point */
+export async function GET(req: NextRequest) {
+  if (!verifyCronSecret(req)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  return runChecks();
+}
+
+/** POST — manual trigger from dashboard */
 export async function POST(req: NextRequest) {
   const auth = await requireAuth(req);
   if (!isAuthed(auth)) return auth.error;
+  return runChecks();
+}
+
+async function runChecks() {
 
   const supa = createServiceClient();
   const now = new Date();
