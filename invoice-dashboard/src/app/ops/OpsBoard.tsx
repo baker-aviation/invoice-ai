@@ -3,6 +3,7 @@
 import { useState, useMemo, useCallback, useEffect } from "react";
 import Link from "next/link";
 import type { Flight, OpsAlert, NotamPin, CustomNotamAlert } from "@/lib/opsApi";
+import type { AllRwysClosedAlert } from "@/lib/runwayData";
 import { fmtTimeInTz } from "@/lib/airportTimezones";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -620,25 +621,30 @@ function ClientAlertCard({ alert, onDismiss, dismissed, dismissedByName, pinned,
   }
 
   const isLate = alert.type === "AFTER_HOURS";
+  const isRwyClosed = alert.type === "ALL_RWYS_CLOSED";
 
   return (
     <div
       className={`rounded-lg border text-sm ${
         dismissed
           ? "border-gray-200 bg-gray-50/60 opacity-60"
-          : isLate
-            ? "border-purple-200 bg-purple-50/60"
-            : "border-blue-200 bg-blue-50/60"
+          : isRwyClosed
+            ? "border-red-300 bg-red-50/80"
+            : isLate
+              ? "border-purple-200 bg-purple-50/60"
+              : "border-blue-200 bg-blue-50/60"
       }`}
     >
       <div className="px-3 py-2 flex items-center gap-2">
-        <span className={`w-2 h-2 rounded-full shrink-0 ${dismissed ? "bg-gray-400" : isLate ? "bg-purple-500" : "bg-blue-500"}`} />
+        <span className={`w-2 h-2 rounded-full shrink-0 ${dismissed ? "bg-gray-400" : isRwyClosed ? "bg-red-600" : isLate ? "bg-purple-500" : "bg-blue-500"}`} />
         <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-mono font-semibold ${
           dismissed
             ? "bg-gray-100 text-gray-500 border border-gray-200"
-            : isLate
-              ? "bg-purple-100 text-purple-800 border border-purple-200"
-              : "bg-blue-100 text-blue-800 border border-blue-200"
+            : isRwyClosed
+              ? "bg-red-100 text-red-800 border border-red-300"
+              : isLate
+                ? "bg-purple-100 text-purple-800 border border-purple-200"
+                : "bg-blue-100 text-blue-800 border border-blue-200"
         }`}>
           {alert.label}
         </span>
@@ -709,7 +715,8 @@ function FlightCard({
   const alerts = visibleAlerts;
   const unackedServerAlerts = (flight.alerts ?? []).filter((a) => !isAcked(a) && !suppressedIds.has(a.id));
   const activeClientAlerts = showFiltered ? [] : clientAlerts.filter((ca) => showAcknowledged || !dismissedClientAlerts.has(ca.key));
-  const hasCritical = alerts.some((a) => a.severity === "critical");
+  const hasRwyClosed = activeClientAlerts.some((ca) => ca.type === "ALL_RWYS_CLOSED");
+  const hasCritical = hasRwyClosed || alerts.some((a) => a.severity === "critical");
   const hasWarning = alerts.some((a) => a.severity === "warning");
   const hasLate = activeClientAlerts.some((ca) => ca.type === "AFTER_HOURS");
   const hasAirport = activeClientAlerts.some((ca) => ca.type.startsWith("AIRPORT_"));
@@ -927,7 +934,7 @@ function filterAlerts(flights: Flight[]): Flight[] {
   });
 }
 
-export default function OpsBoard({ initialFlights, bakerPprAirports, suppressedRunwayNotamIds = [] }: { initialFlights: Flight[]; bakerPprAirports: string[]; suppressedRunwayNotamIds?: string[] }) {
+export default function OpsBoard({ initialFlights, bakerPprAirports, suppressedRunwayNotamIds = [], allRunwaysClosedAlerts = [] }: { initialFlights: Flight[]; bakerPprAirports: string[]; suppressedRunwayNotamIds?: string[]; allRunwaysClosedAlerts?: AllRwysClosedAlert[] }) {
   const now = useMemo(() => new Date(), []);
   const BAKER_PPR_AIRPORTS = useMemo(() => new Set(bakerPprAirports), [bakerPprAirports]);
   const [activeFilter, setActiveFilter] = useState<AlertFilter>("ALL");
@@ -1099,11 +1106,34 @@ export default function OpsBoard({ initialFlights, bakerPprAirports, suppressedR
   // Apply alert type filtering
   const withFilteredAlerts = useMemo(() => filterAlerts(initialFlights), [initialFlights]);
 
-  // Generate client-side alerts (KJAC/KSNA + after-hours)
+  // Index all-runways-closed alerts by flight ID
+  const rwysClosedByFlight = useMemo(() => {
+    const map = new Map<string, AllRwysClosedAlert[]>();
+    for (const a of allRunwaysClosedAlerts) {
+      if (!map.has(a.flightId)) map.set(a.flightId, []);
+      map.get(a.flightId)!.push(a);
+    }
+    return map;
+  }, [allRunwaysClosedAlerts]);
+
+  // Generate client-side alerts (KJAC/KSNA + after-hours + all-rwys-closed)
   const clientAlertsByFlight = useMemo(() => {
     const map = new Map<string, ClientAlert[]>();
     for (const f of withFilteredAlerts) {
       const alerts: ClientAlert[] = [];
+
+      // ALL RUNWAYS CLOSED — critical alert at top
+      for (const rc of rwysClosedByFlight.get(f.id) ?? []) {
+        const phase = rc.phase === "departure" ? "Departing" : "Landing";
+        alerts.push({
+          key: `all-rwys-closed-${rc.phase}-${rc.airportIcao}-${f.id}`,
+          flightId: f.id,
+          type: "ALL_RWYS_CLOSED",
+          label: "ALL RWYS CLSD",
+          severity: "critical",
+          message: `${phase} ${rc.airportIcao} — all runways ≥5000 ft closed ${rc.closureWindow}`,
+        });
+      }
 
       // Check departure and arrival against restricted airports
       const seen = new Set<string>();
@@ -1169,7 +1199,7 @@ export default function OpsBoard({ initialFlights, bakerPprAirports, suppressedR
       }
     }
     return map;
-  }, [withFilteredAlerts, BAKER_PPR_AIRPORTS]);
+  }, [withFilteredAlerts, BAKER_PPR_AIRPORTS, rwysClosedByFlight]);
 
   // Apply time range
   const cutoff = useMemo(() => {

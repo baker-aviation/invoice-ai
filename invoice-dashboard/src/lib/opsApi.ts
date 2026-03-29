@@ -1,6 +1,6 @@
 import { createServiceClient } from "@/lib/supabase/service";
 import { toIcao } from "@/lib/iataToIcao";
-import { getRunwaySuppressedIds } from "@/lib/runwayData";
+import { getRunwaySuppressedIds, detectAllRunwaysClosed, type AllRwysClosedAlert } from "@/lib/runwayData";
 
 export type NotamDates = {
   effective_start: string | null;
@@ -57,6 +57,8 @@ export type FlightsResponse = {
   count: number;
   /** NOTAM_RUNWAY alert IDs suppressed because airport still has 5000+ ft paved open */
   suppressedRunwayNotamIds?: string[];
+  /** Flights where ALL runways are closed within ±2hrs of departure/arrival */
+  allRunwaysClosedAlerts?: AllRwysClosedAlert[];
 };
 
 // ---------------------------------------------------------------------------
@@ -339,7 +341,10 @@ export async function fetchFlights(params: {
     }
   }
 
-  return { ok: true, flights, count: flights.length, suppressedRunwayNotamIds };
+  // Detect flights where ALL runways are closed within ±2hrs of departure/arrival
+  const allRunwaysClosedAlerts = detectAllRunwaysClosed(flights);
+
+  return { ok: true, flights, count: flights.length, suppressedRunwayNotamIds, allRunwaysClosedAlerts };
 }
 
 // ---------------------------------------------------------------------------
@@ -651,6 +656,7 @@ export type IntlTripClearance = {
   file_gcs_key: string | null;
   file_filename: string | null;
   file_content_type: string | null;
+  handler_status: { status: string; from: string; note: string; date: string } | null;
   created_at: string;
   updated_at: string;
 };

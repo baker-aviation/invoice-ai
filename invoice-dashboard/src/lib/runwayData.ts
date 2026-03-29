@@ -282,3 +282,135 @@ export function filterRunwayClosureNotams<
   const suppressed = new Set(getRunwaySuppressedIds(alerts, minLength_ft));
   return alerts.filter((a) => !suppressed.has(a.id));
 }
+
+// ---------------------------------------------------------------------------
+// ALL RUNWAYS CLOSED detection (flight-level)
+// ---------------------------------------------------------------------------
+
+export type AllRwysClosedAlert = {
+  flightId: string;
+  airportIcao: string;
+  phase: "departure" | "arrival";
+  closureWindow: string; // human-readable, e.g. "10:30Z–13:30Z"
+};
+
+/**
+ * Check if ALL 5000+ ft paved runways at an airport are closed during a
+ * time window (flight time ± buffer). Returns the closure description if so.
+ */
+function allRunwaysClosed(
+  airportCode: string,
+  flightTimeMs: number,
+  closures: ParsedClosure[],
+  bufferMs: number,
+  minLength_ft: number,
+): string | null {
+  const info = getRunways(airportCode);
+  if (!info) return null;
+
+  const pavedLong = info.runways.filter(
+    (r) => (r.surface === "A" || r.surface === "C") && r.length_ft >= minLength_ft,
+  );
+  if (pavedLong.length === 0) return null; // no usable runways in dataset
+
+  const flightWindow: TimeWindow = {
+    start: flightTimeMs - bufferMs,
+    end: flightTimeMs + bufferMs,
+  };
+
+  // For each paved runway, check if there's a closure that covers the flight window
+  const uncoveredRunway = pavedLong.find((rwy) => {
+    // Is there a closure for this runway that overlaps the flight window?
+    const covered = closures.some((c) => {
+      if (!runwayMatches(rwy, c.designator)) return false;
+      if (!c.window) return false;
+      return windowsOverlap(c.window, flightWindow);
+    });
+    return !covered;
+  });
+
+  // If every runway is covered by a closure, all are closed
+  if (uncoveredRunway) return null;
+
+  // Build human-readable closure window (earliest start to latest end among overlapping closures)
+  const overlapping = closures.filter((c) => c.window && windowsOverlap(c.window, flightWindow));
+  if (overlapping.length === 0) return null;
+  const earliest = Math.min(...overlapping.map((c) => c.window!.start));
+  const latest = Math.max(...overlapping.map((c) => c.window!.end));
+  const fmt = (ms: number) => {
+    const d = new Date(ms);
+    return `${String(d.getUTCMonth() + 1).padStart(2, "0")}/${String(d.getUTCDate()).padStart(2, "0")} ${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}Z`;
+  };
+  return `${fmt(earliest)}–${fmt(latest)}`;
+}
+
+/**
+ * For each flight, check if ALL 5000+ ft paved runways at the departure or
+ * arrival airport are closed within ±bufferHours of the scheduled time.
+ * Returns alerts to display prominently on the flight card.
+ */
+export function detectAllRunwaysClosed(
+  flights: Array<{
+    id: string;
+    departure_icao: string | null;
+    arrival_icao: string | null;
+    scheduled_departure: string;
+    scheduled_arrival: string | null;
+    alerts: Array<{
+      alert_type: string;
+      body: string | null;
+      airport_icao: string | null;
+      notam_dates: { effective_start?: string | null; effective_end?: string | null; start_date_utc?: string | null; end_date_utc?: string | null } | null;
+    }>;
+  }>,
+  bufferHours = 2,
+  minLength_ft = 5000,
+): AllRwysClosedAlert[] {
+  const bufferMs = bufferHours * 3600000;
+  const results: AllRwysClosedAlert[] = [];
+
+  for (const f of flights) {
+    // Collect all runway closure NOTAMs across flight alerts, grouped by airport
+    const closuresByAirport = new Map<string, ParsedClosure[]>();
+    for (const a of f.alerts ?? []) {
+      if (a.alert_type !== "NOTAM_RUNWAY" || !a.body || !a.airport_icao) continue;
+      const desig = parseClosedRunway(a.body);
+      if (!desig) continue;
+      const key = a.airport_icao.toUpperCase();
+      if (!closuresByAirport.has(key)) closuresByAirport.set(key, []);
+      closuresByAirport.get(key)!.push({
+        id: "", // not needed here
+        designator: desig,
+        window: parseTimeWindow(a.notam_dates),
+      });
+    }
+
+    // Check departure airport
+    if (f.departure_icao) {
+      const icao = f.departure_icao.toUpperCase();
+      const closures = closuresByAirport.get(icao) ?? [];
+      if (closures.length > 0) {
+        const depMs = new Date(f.scheduled_departure).getTime();
+        const window = allRunwaysClosed(icao, depMs, closures, bufferMs, minLength_ft);
+        if (window) {
+          results.push({ flightId: f.id, airportIcao: icao, phase: "departure", closureWindow: window });
+        }
+      }
+    }
+
+    // Check arrival airport
+    if (f.arrival_icao && f.scheduled_arrival) {
+      const icao = f.arrival_icao.toUpperCase();
+      const closures = closuresByAirport.get(icao) ?? [];
+      if (closures.length > 0) {
+        const arrMs = new Date(f.scheduled_arrival).getTime();
+        const window = allRunwaysClosed(icao, arrMs, closures, bufferMs, minLength_ft);
+        if (window) {
+          results.push({ flightId: f.id, airportIcao: icao, phase: "arrival", closureWindow: window });
+        }
+      }
+    }
+  }
+
+  return results;
+}

@@ -13,7 +13,7 @@ async function getOpsData() {
   const [data, advertisedPrices, mxNotes, swimFlow, pprRows] = await Promise.all([
     fetchFlights({ lookahead_hours: 48, lookback_hours: 48 }).catch((e) => {
       console.error("[ops/page] fetchFlights error:", e);
-      return { ok: false, flights: [] as any[], count: 0, suppressedRunwayNotamIds: [] as string[], error: String(e) };
+      return { ok: false, flights: [] as any[], count: 0, suppressedRunwayNotamIds: [] as string[], allRunwaysClosedAlerts: [] as any[], error: String(e) };
     }),
     fetchAdvertisedPrices({ recentWeeks: 4 }).catch(() => []),
     fetchMxNotes().catch(() => []),
@@ -28,7 +28,7 @@ export default async function OpsPage() {
   const { data, advertisedPrices, mxNotes, swimFlow, pprRows } = await getOpsData().catch((e) => {
     error = String(e);
     return {
-      data: { ok: false, flights: [] as any[], count: 0, suppressedRunwayNotamIds: [] as string[], error: null as string | null },
+      data: { ok: false, flights: [] as any[], count: 0, suppressedRunwayNotamIds: [] as string[], allRunwaysClosedAlerts: [] as any[], error: null as string | null },
       advertisedPrices: [],
       mxNotes: [],
       swimFlow: [],
@@ -48,7 +48,7 @@ export default async function OpsPage() {
           <strong>API error:</strong> {displayError}
         </div>
       )}
-      <OpsTabs flights={data.flights} bakerPprAirports={bakerPprAirports} advertisedPrices={advertisedPrices} mxNotes={mxNotes} swimFlow={swimFlow} suppressedRunwayNotamIds={data.suppressedRunwayNotamIds ?? []} />
+      <OpsTabs flights={data.flights} bakerPprAirports={bakerPprAirports} advertisedPrices={advertisedPrices} mxNotes={mxNotes} swimFlow={swimFlow} suppressedRunwayNotamIds={data.suppressedRunwayNotamIds ?? []} allRunwaysClosedAlerts={data.allRunwaysClosedAlerts ?? []} />
     </>
   );
 }
