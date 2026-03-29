@@ -13,7 +13,7 @@ import SwapStatus from "./SwapStatus";
 const TABS = ["Current Ops", "Flight Time & Rest", "NOTAMs & PPRs", "Crew Swap", "Swap Status", "International"] as const;
 type Tab = (typeof TABS)[number];
 
-export default function OpsTabs({ flights, bakerPprAirports, advertisedPrices, mxNotes = [], swimFlow = [] }: { flights: Flight[]; bakerPprAirports: string[]; advertisedPrices: AdvertisedPriceRow[]; mxNotes?: MxNote[]; swimFlow?: SwimFlowEvent[] }) {
+export default function OpsTabs({ flights, bakerPprAirports, advertisedPrices, mxNotes = [], swimFlow = [], suppressedRunwayNotamIds = [] }: { flights: Flight[]; bakerPprAirports: string[]; advertisedPrices: AdvertisedPriceRow[]; mxNotes?: MxNote[]; swimFlow?: SwimFlowEvent[]; suppressedRunwayNotamIds?: string[] }) {
   const [tab, setTab] = useState<Tab>("Current Ops");
   const [scrollToTail, setScrollToTail] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
@@ -82,7 +82,7 @@ export default function OpsTabs({ flights, bakerPprAirports, advertisedPrices, m
       ) : tab === "Flight Time & Rest" ? (
         <DutyTracker flights={flights} scrollToTail={scrollToTail} onScrollComplete={() => setScrollToTail(null)} />
       ) : tab === "NOTAMs & PPRs" ? (
-        <OpsBoard initialFlights={flights} bakerPprAirports={bakerPprAirports} />
+        <OpsBoard initialFlights={flights} bakerPprAirports={bakerPprAirports} suppressedRunwayNotamIds={suppressedRunwayNotamIds} />
       ) : tab === "Crew Swap" ? (
         <CrewSwap flights={flights} />
       ) : tab === "Swap Status" ? (

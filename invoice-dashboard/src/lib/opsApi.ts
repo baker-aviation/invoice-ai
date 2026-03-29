@@ -1,5 +1,6 @@
 import { createServiceClient } from "@/lib/supabase/service";
 import { toIcao } from "@/lib/iataToIcao";
+import { getRunwaySuppressedIds } from "@/lib/runwayData";
 
 export type NotamDates = {
   effective_start: string | null;
@@ -54,6 +55,8 @@ export type FlightsResponse = {
   ok: boolean;
   flights: Flight[];
   count: number;
+  /** NOTAM_RUNWAY alert IDs suppressed because airport still has 5000+ ft paved open */
+  suppressedRunwayNotamIds?: string[];
 };
 
 // ---------------------------------------------------------------------------
@@ -206,6 +209,12 @@ export async function fetchFlights(params: {
     }
   }
 
+  // Compute suppressed NOTAM_RUNWAY IDs (airport still has 5000+ ft paved open).
+  // Alerts stay attached to flights — frontend uses these IDs to show/hide.
+  const allAlerts: OpsAlert[] = [];
+  for (const alerts of alertsByFlight.values()) allAlerts.push(...alerts);
+  const suppressedRunwayNotamIds = getRunwaySuppressedIds(allAlerts);
+
   const orphanAlerts: OpsAlert[] = (orphanRows ?? []).map((row) => ({
     id: row.id as string,
     flight_id: null,
@@ -330,7 +339,7 @@ export async function fetchFlights(params: {
     }
   }
 
-  return { ok: true, flights, count: flights.length };
+  return { ok: true, flights, count: flights.length, suppressedRunwayNotamIds };
 }
 
 // ---------------------------------------------------------------------------

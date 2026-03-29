@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/service";
 import { requireAuth, isAuthed } from "@/lib/api-auth";
+import { filterRunwayClosureNotams } from "@/lib/runwayData";
 
 export const dynamic = "force-dynamic";
 
@@ -42,8 +43,13 @@ export async function GET(
     return NextResponse.json({ error: "Failed to fetch NOTAMs" }, { status: 500 });
   }
 
+  // Filter out runway closure NOTAMs when airport still has a 5000+ ft paved runway open
+  const filtered = filterRunwayClosureNotams(
+    (data ?? []).map((d) => ({ ...d, airport_icao: d.airport_icao ?? upper })),
+  );
+
   // Sort: priority types first (RWY, AD, PPR, TFR), then by date
-  const sorted = (data ?? []).sort((a, b) => {
+  const sorted = filtered.sort((a, b) => {
     const pa = TYPE_PRIORITY[a.alert_type] ?? 99;
     const pb = TYPE_PRIORITY[b.alert_type] ?? 99;
     if (pa !== pb) return pa - pb;
