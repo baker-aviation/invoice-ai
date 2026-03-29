@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useMapPreferences } from "@/hooks/useMapPreferences";
 import L from "leaflet";
 import { GestureHandling } from "leaflet-gesture-handling";
 import "leaflet-gesture-handling/dist/leaflet-gesture-handling.css";
@@ -672,11 +673,10 @@ function ToggleBtn({ label, active, onClick }: { label: string; active: boolean;
 /* ── Main map component ── */
 
 export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHoldingDetectedProp }: Props) {
-  const [darkMode, setDarkMode] = useState(true);
-  const [showRadar, setShowRadar] = useState(false);
-  const [showVans, setShowVans] = useState(false);
-  const [showDelays, setShowDelays] = useState(true);
-  const [showFlows, setShowFlows] = useState(false);
+  const { prefs, toggle } = useMapPreferences("ops_map", {
+    darkMode: true, showRadar: false, showVans: false, showDelays: true, showFlows: false,
+  });
+  const { darkMode, showRadar, showVans, showDelays, showFlows } = prefs;
   const [holdingTails, setHoldingTails] = useState<Set<string>>(new Set());
   const [trackPositions, setTrackPositions] = useState<Map<string, [number, number]>>(new Map());
   const radarUrl = useRadarUrl(showRadar);
@@ -742,11 +742,11 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
       `}</style>
 
       <div className="absolute top-2 right-2 z-[1000] flex gap-1.5">
-        <ToggleBtn label={darkMode ? "Dark" : "Light"} active={darkMode} onClick={() => setDarkMode((v) => !v)} />
-        <ToggleBtn label={showRadar ? "Radar ON" : "Radar"} active={showRadar} onClick={() => setShowRadar((v) => !v)} />
-        <ToggleBtn label={showVans ? "Vans ON" : "AOG Vans"} active={showVans} onClick={() => setShowVans((v) => !v)} />
-        <ToggleBtn label={showDelays ? "FAA Delays ON" : "FAA Delays"} active={showDelays} onClick={() => setShowDelays((v) => !v)} />
-        <ToggleBtn label={showFlows ? "Flow Ctrl ON" : "Flow Ctrl"} active={showFlows} onClick={() => setShowFlows((v) => !v)} />
+        <ToggleBtn label={darkMode ? "Dark" : "Light"} active={!!darkMode} onClick={() => toggle("darkMode")} />
+        <ToggleBtn label={showRadar ? "Radar ON" : "Radar"} active={!!showRadar} onClick={() => toggle("showRadar")} />
+        <ToggleBtn label={showVans ? "Vans ON" : "AOG Vans"} active={!!showVans} onClick={() => toggle("showVans")} />
+        <ToggleBtn label={showDelays ? "FAA Delays ON" : "FAA Delays"} active={!!showDelays} onClick={() => toggle("showDelays")} />
+        <ToggleBtn label={showFlows ? "Flow Ctrl ON" : "Flow Ctrl"} active={!!showFlows} onClick={() => toggle("showFlows")} />
         <ToggleBtn label={isFs ? "Exit ⛶" : "⛶"} active={isFs} onClick={toggleFs} />
       </div>
 

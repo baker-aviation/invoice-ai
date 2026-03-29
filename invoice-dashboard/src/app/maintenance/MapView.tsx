@@ -8,6 +8,7 @@
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import { useMapPreferences } from "@/hooks/useMapPreferences";
 import L from "leaflet";
 import { MapContainer, TileLayer, Circle, Marker, Popup, Tooltip, Polyline, useMap } from "react-leaflet";
 import type { VanAssignment } from "@/lib/maintenanceData";
@@ -356,11 +357,10 @@ function useRadarUrl(enabled: boolean): string | null {
 /* ── Main component ── */
 
 export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive, aircraftPositions, flightInfo }: Props) {
-  const [showLabels, setShowLabels] = useState(true);
-  const [showRings, setShowRings] = useState(true);
-  const [showVans, setShowVans] = useState(true);
-  const [darkMode, setDarkMode] = useState(true);
-  const [showRadar, setShowRadar] = useState(false);
+  const { prefs, toggle } = useMapPreferences("van_map", {
+    showLabels: true, showRings: true, showVans: true, darkMode: true, showRadar: false,
+  });
+  const { showLabels, showRings, showVans, darkMode, showRadar } = prefs;
   const radarUrl = useRadarUrl(showRadar);
   const containerRef = useRef<HTMLDivElement>(null);
   const { isFs, toggle: toggleFs } = useFullscreen(containerRef);
@@ -400,11 +400,11 @@ export default function MapView({ vans, colors, liveVanPositions, liveVanIsLive,
     <div ref={containerRef} className="relative">
       {/* Toggle controls */}
       <div className="absolute top-2 right-2 z-[1000] flex gap-1.5">
-        <ToggleButton label="Labels" active={showLabels} onClick={() => setShowLabels((v) => !v)} />
-        <ToggleButton label="Rings" active={showRings} onClick={() => setShowRings((v) => !v)} />
-        <ToggleButton label="Vans" active={showVans} onClick={() => setShowVans((v) => !v)} />
-        <ToggleButton label={darkMode ? "Dark" : "Light"} active={darkMode} onClick={() => setDarkMode((v) => !v)} />
-        <ToggleButton label={showRadar ? "Radar ON" : "Radar"} active={showRadar} onClick={() => setShowRadar((v) => !v)} />
+        <ToggleButton label="Labels" active={!!showLabels} onClick={() => toggle("showLabels")} />
+        <ToggleButton label="Rings" active={!!showRings} onClick={() => toggle("showRings")} />
+        <ToggleButton label="Vans" active={!!showVans} onClick={() => toggle("showVans")} />
+        <ToggleButton label={darkMode ? "Dark" : "Light"} active={!!darkMode} onClick={() => toggle("darkMode")} />
+        <ToggleButton label={showRadar ? "Radar ON" : "Radar"} active={!!showRadar} onClick={() => toggle("showRadar")} />
         <ToggleButton label={isFs ? "Exit ⛶" : "⛶"} active={isFs} onClick={toggleFs} />
       </div>
 
