@@ -707,8 +707,9 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
     const activeTails = new Set<string>();
 
     for (const ac of aircraft) {
-      if (ac.on_ground || ac.alt_baro == null || ac.baro_rate == null) continue;
-      const isLevel = Math.abs(ac.baro_rate) < LEVEL_FPM;
+      if (ac.on_ground || ac.alt_baro == null) continue;
+      // Treat null baro_rate as level (FA sometimes omits it); 20-min timer guards false positives
+      const isLevel = ac.baro_rate == null || Math.abs(ac.baro_rate) < LEVEL_FPM;
       if (isLevel && ac.alt_baro < FL470_FT) {
         activeTails.add(ac.tail);
         if (!levelBelowTimersRef.current.has(ac.tail)) {
