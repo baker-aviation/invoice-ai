@@ -8,7 +8,10 @@ import { GoogleAuth } from "google-auth-library";
 
 const CREW_INFO_SHEET_ID = "16xYT4JvQGsSQXeoqn50TetqCzs8bOtJKuZvvbgu993w";
 const SHEETS_API = "https://sheets.googleapis.com/v4/spreadsheets";
-const SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"];
+const SCOPES = [
+  "https://www.googleapis.com/auth/spreadsheets.readonly",
+  "https://www.googleapis.com/auth/drive.readonly",
+];
 
 let _auth: GoogleAuth | null = null;
 
@@ -96,18 +99,31 @@ export async function getMultipleSheets(sheetNames: string[]): Promise<Map<strin
 
 /**
  * Download the entire spreadsheet as an xlsx buffer (for the existing parser).
- * This is the simplest integration path — the Google Sheets export endpoint
- * returns the same format as the uploaded file.
+ * Uses the Google Drive API export endpoint (works with service accounts).
  */
 export async function downloadAsXlsx(): Promise<Buffer> {
   const token = await getAccessToken();
+  // Drive API export — works with service account auth (unlike docs.google.com/export)
   const res = await fetch(
-    `https://docs.google.com/spreadsheets/d/${CREW_INFO_SHEET_ID}/export?exportFormat=xlsx`,
+    `https://www.googleapis.com/drive/v3/files/${CREW_INFO_SHEET_ID}/export?mimeType=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`,
     { headers: { Authorization: `Bearer ${token}` } },
   );
-  if (!res.ok) throw new Error(`Sheet export error: ${res.status} ${await res.text()}`);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Drive export error: ${res.status} ${text.slice(0, 200)}`);
+  }
   const arrayBuffer = await res.arrayBuffer();
   return Buffer.from(arrayBuffer);
+}
+
+/**
+ * List weekly swap sheet tabs (e.g., "MAR 25-APR 1 (A)").
+ */
+export async function listWeeklySheets(): Promise<string[]> {
+  const sheets = await listSheets();
+  return sheets
+    .map(s => s.title)
+    .filter(n => /^[A-Z]{3}\s+\d+-[A-Z]{3}\s+\d+\s*\([AB]\)$/i.test(n));
 }
 
 export { CREW_INFO_SHEET_ID };
