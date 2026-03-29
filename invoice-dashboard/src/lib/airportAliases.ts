@@ -299,6 +299,90 @@ const RAW: [string, string, boolean][] = [
   // Jamaica
   ["MKJP", "MKJP", true],   // Kingston Jamaica (IS commercial)
 
+  // ── FBO aliases added 2026-03-29 (14-day lookahead gap scan) ──────────
+
+  // Florida
+  ["KAPF", "KRSW", true],    // Naples Municipal → Fort Myers/RSW (35mi)
+  ["KTMB", "KMIA", true],    // Kendall-Tamiami → Miami (15mi)
+  ["KSEF", "KMCO", true],    // Sebring FL → Orlando
+  ["KEYW", "KEYW", true],    // Key West (IS commercial)
+
+  // Montana / Wyoming / Mountain
+  ["KBZN", "KBZN", true],    // Bozeman (IS commercial)
+  ["KJAC", "KJAC", true],    // Jackson Hole (IS commercial)
+  ["KHDN", "KDEN", true],    // Hayden/Steamboat Springs → Denver
+
+  // California / West Coast
+  ["KSBA", "KSBA", true],    // Santa Barbara (IS commercial)
+  ["KSTS", "KSFO", true],    // Sonoma County/Santa Rosa → San Francisco
+
+  // Texas
+  ["KCLL", "KIAH", true],    // College Station → Houston IAH
+  ["KMDD", "KMAF", true],    // Midland Airpark → Midland Intl
+  ["KMAF", "KMAF", true],    // Midland Intl (IS commercial)
+  ["KACT", "KDFW", true],    // Waco → DFW
+
+  // Mississippi
+  ["KJAN", "KJAN", true],    // Jackson MS (IS commercial)
+  ["KGPT", "KGPT", true],    // Gulfport-Biloxi (IS commercial)
+
+  // Mid-Atlantic / Northeast
+  ["KILG", "KPHL", true],    // Wilmington DE → Philadelphia (30mi)
+  ["KBAF", "KBDL", true],    // Westfield MA → Hartford (25mi)
+  ["KBVY", "KBOS", true],    // Beverly MA → Boston (25mi)
+  ["KLWM", "KBOS", true],    // Lawrence MA → Boston (26mi)
+  ["KABE", "KPHL", true],    // Allentown → Philadelphia (55mi)
+  ["KABE", "KEWR", false],   // Allentown → Newark (70mi)
+
+  // Ohio / PA
+  ["KCAK", "KCLE", true],    // Akron-Canton → Cleveland
+  ["KCAK", "KCAK", false],   // Akron-Canton (has limited commercial)
+  ["KMQS", "KPHL", true],    // Chester County PA → Philadelphia
+  ["KAAO", "KCMH", true],    // Wooster/Wayne County OH → Columbus
+  ["KERI", "KERI", true],    // Erie (IS commercial — limited)
+  ["KERI", "KBUF", false],   // Erie → Buffalo (backup)
+
+  // Midwest / Wisconsin
+  ["KMKE", "KMKE", true],    // Milwaukee (IS commercial)
+  ["KSGF", "KSGF", true],    // Springfield MO (IS commercial)
+
+  // South Carolina / Southeast
+  ["KAIK", "KCAE", true],    // Aiken SC → Columbia SC
+  ["KSSI", "KJAX", true],    // St. Simons Island GA → Jacksonville
+  ["KMYR", "KMYR", true],    // Myrtle Beach (IS commercial)
+
+  // Idaho / Utah
+  ["KBOI", "KBOI", true],    // Boise (IS commercial)
+  ["KPGA", "KSLC", true],    // Page AZ → Salt Lake City
+
+  // Vermont
+  ["KBTV", "KBTV", true],    // Burlington VT (IS commercial)
+
+  // Oklahoma
+  ["KOKC", "KOKC", true],    // Oklahoma City (IS commercial)
+
+  // Alaska
+  ["KANC", "KANC", true],    // Anchorage (IS commercial)
+
+  // USVI
+  ["KSTT", "KSTT", true],    // St. Thomas (IS commercial)
+  ["KSTX", "KSTX", true],    // St. Croix (IS commercial)
+
+  // Wyoming
+  ["KAFO", "KDEN", true],    // Afton WY → Denver
+  ["KEKS", "KBZN", true],    // Ennis/Big Sky MT → Bozeman
+
+  // International
+  ["TNCM", "TNCM", true],    // St. Maarten (IS commercial)
+  ["MMSD", "MMSD", true],    // Los Cabos Mexico (IS commercial)
+  ["MMUN", "MMUN", true],    // Cancun Mexico (IS commercial)
+  ["MWCR", "MWCR", true],    // Grand Cayman (IS commercial)
+  ["MYAT", "MYNN", true],    // Exuma Bahamas → Nassau
+  ["CYFJ", "CYYZ", true],    // Collingwood ON → Toronto Pearson
+  ["MSLP", "MSLP", true],    // San Salvador, El Salvador (IS commercial)
+  ["TAPA", "TAPA", true],    // Antigua (IS commercial)
+  ["1B1", "KBOS", true],     // Hudson MA → Boston (30mi)
+
   // International — FBO to nearest commercial
   ["CYYZ", "CYYZ", true],   // Toronto Pearson (IS commercial)
   ["MROC", "MROC", true],   // San Jose Costa Rica (IS commercial)
