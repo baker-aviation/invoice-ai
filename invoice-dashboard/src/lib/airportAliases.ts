@@ -250,6 +250,55 @@ const RAW: [string, string, boolean][] = [
   // Ohio
   ["KCGF", "KCLE", true],    // Cuyahoga County → Cleveland
 
+  // ── FBO aliases added 2026-03-29 (Apr 2 swap coverage gaps) ─────────────
+
+  // California
+  ["KAPC", "KOAK", true],    // Napa County → Oakland
+  ["KAPC", "KSFO", false],   // Napa County → San Francisco
+  ["KLGB", "KLGB", true],    // Long Beach (IS commercial — JetBlue)
+  ["KLGB", "KLAX", false],   // Long Beach → LAX (backup)
+
+  // Pennsylvania / Mid-Atlantic
+  ["KAVP", "KAVP", true],    // Wilkes-Barre (IS commercial — United Express)
+  ["KMDT", "KMDT", true],    // Harrisburg (IS commercial — AA/United)
+  ["KRDG", "KPHL", true],    // Reading PA → Philadelphia
+
+  // Illinois / Midwest
+  ["KBMI", "KBMI", true],    // Bloomington IL (IS commercial — AA)
+  ["KDEC", "KIND", true],    // Decatur IL → Indianapolis
+  ["KUGN", "KORD", true],    // Waukegan IL → O'Hare
+  ["KUGN", "KMDW", false],   // Waukegan IL → Midway
+
+  // Florida
+  ["KTIX", "KMCO", true],    // Titusville/Space Coast → Orlando
+  ["KJZI", "KCHS", true],    // Charleston Executive → Charleston
+
+  // Texas
+  ["KMFE", "KMFE", true],    // McAllen (IS commercial — AA/United)
+  ["KGPI", "KGPI", true],    // Glacier Park (IS commercial — same as Kalispell)
+  ["KFAT", "KFAT", true],    // Fresno (IS commercial)
+
+  // Mountain / Remote
+  ["KSUN", "KBOI", true],    // Hailey/Sun Valley → Boise
+  ["KSUN", "KSLC", false],   // Hailey/Sun Valley → Salt Lake City
+  ["KTEX", "KDEN", true],    // Telluride → Denver
+  ["KHII", "KPHX", true],    // Lake Havasu → Phoenix
+
+  // Nashville area
+  ["KJWN", "KBNA", true],    // Nashville area exec → Nashville
+
+  // Michigan / Detroit
+  // KYIP already mapped to DTW above
+
+  // Obscure / rare (map to nearest major hub)
+  ["KLUM", "KDEN", true],    // Lumberton? → Denver (verify)
+  ["KCPP", "KDEN", true],    // Casper? → Denver (verify)
+  ["KOEO", "KORD", true],    // L'Anse/Baraga MI → O'Hare (verify)
+  ["KSRC", "KLIT", true],    // Searcy AR → Little Rock (verify)
+
+  // Jamaica
+  ["MKJP", "MKJP", true],   // Kingston Jamaica (IS commercial)
+
   // International — FBO to nearest commercial
   ["CYYZ", "CYYZ", true],   // Toronto Pearson (IS commercial)
   ["MROC", "MROC", true],   // San Jose Costa Rica (IS commercial)
