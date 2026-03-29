@@ -1100,6 +1100,21 @@ function TripDetail({ trip, countries, onRefresh }: {
         );
       })()}
 
+      {/* Passengers */}
+      {trip.leg_passengers && trip.leg_passengers.length > 0 && (
+        <div className="mt-4 pt-3 border-t border-gray-200">
+          <h4 className="text-xs font-bold uppercase tracking-wide text-gray-500 mb-2">Passengers</h4>
+          <div className="space-y-1.5">
+            {trip.leg_passengers.map((lp: { dep: string; arr: string; passengers: string }, i: number) => (
+              <div key={i} className="text-xs">
+                <span className="font-medium text-gray-600">{lp.dep}→{lp.arr}:</span>{" "}
+                <span className="text-gray-700">{lp.passengers}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Trip documents */}
       {trip.tail_number && trip.route_icaos.length >= 2 && (
         <TripDocsPanel
