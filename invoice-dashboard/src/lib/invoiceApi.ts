@@ -203,7 +203,7 @@ export async function fetchAlerts(params: {
 
   let query = supa
     .from("invoice_alerts")
-    .select("id, created_at, document_id, rule_id, status, slack_status, match_payload")
+    .select("id, created_at, document_id, rule_id, status, slack_status, match_payload, acknowledged, acknowledged_by, acknowledged_at")
     .order("created_at", { ascending: false })
     .limit(limit);
 
@@ -219,12 +219,12 @@ export async function fetchAlerts(params: {
     if (row.document_id) docIds.add(row.document_id as string);
   }
 
-  // Batch-fetch parsed_invoices for fallback vendor/tail/airport
-  const invoiceLookup = new Map<string, { vendor_name: string | null; tail_number: string | null; airport_code: string | null }>();
+  // Batch-fetch parsed_invoices for fallback vendor/tail/airport + pin status
+  const invoiceLookup = new Map<string, { vendor_name: string | null; tail_number: string | null; airport_code: string | null; pinned: boolean; pin_note: string | null; pin_resolved: boolean }>();
   if (docIds.size > 0) {
     const { data: invoiceRows } = await supa
       .from("parsed_invoices")
-      .select("document_id, vendor_name, tail_number, airport_code")
+      .select("document_id, vendor_name, tail_number, airport_code, pinned, pin_note, pin_resolved")
       .in("document_id", [...docIds]);
 
     for (const inv of invoiceRows ?? []) {
@@ -232,6 +232,9 @@ export async function fetchAlerts(params: {
         vendor_name: inv.vendor_name as string | null,
         tail_number: inv.tail_number as string | null,
         airport_code: inv.airport_code as string | null,
+        pinned: (inv.pinned as boolean) ?? false,
+        pin_note: (inv.pin_note as string) ?? null,
+        pin_resolved: (inv.pin_resolved as boolean) ?? false,
       });
     }
   }
@@ -264,6 +267,12 @@ export async function fetchAlerts(params: {
       fee_name: feeName,
       fee_amount: feeAmount,
       currency: (mp.currency as string | undefined) ?? null,
+      pinned: fallback?.pinned ?? false,
+      pin_note: fallback?.pin_note ?? null,
+      pin_resolved: fallback?.pin_resolved ?? false,
+      acknowledged: (row.acknowledged as boolean) ?? false,
+      acknowledged_by: (row.acknowledged_by as string) ?? null,
+      acknowledged_at: (row.acknowledged_at as string) ?? null,
     });
   }
 

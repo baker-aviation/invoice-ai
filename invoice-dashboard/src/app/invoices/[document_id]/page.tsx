@@ -12,10 +12,24 @@ import { createClient } from "@/lib/supabase/server";
 
 export default async function InvoiceDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ document_id: string }>;
+  searchParams: Promise<{ from?: string }>;
 }) {
   const { document_id } = await params;
+  const { from } = await searchParams;
+
+  const backHref = from === "alerts"
+    ? "/invoices?tab=alerts"
+    : from === "review"
+    ? "/invoices?tab=review"
+    : "/invoices";
+  const backLabel = from === "alerts"
+    ? "← Back to Alerts"
+    : from === "review"
+    ? "← Back to Review"
+    : "← Back to Invoices";
 
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -33,8 +47,8 @@ export default async function InvoiceDetailPage({
         <AutoRefresh intervalSeconds={8} />
         <div className="p-6 space-y-4">
           <div className="flex items-center gap-3">
-            <Link href="/invoices" className="rounded-md border px-3 py-2 text-sm">
-              ← Back to Invoices
+            <Link href={backHref} className="rounded-md border px-3 py-2 text-sm">
+              {backLabel}
             </Link>
             {isAdmin && <ReparseButton documentId={document_id} />}
             <span className="text-xs text-gray-400 ml-auto">document_id: {document_id}</span>

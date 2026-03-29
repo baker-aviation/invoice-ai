@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, isAuthed, isRateLimited } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 import { signGcsUrl } from "@/lib/gcs";
+import { isSlackEnabled } from "@/lib/slack";
 
 const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL;
 
@@ -25,6 +26,10 @@ export async function POST(
 
   if (!SLACK_WEBHOOK_URL) {
     return NextResponse.json({ error: "Slack webhook not configured" }, { status: 503 });
+  }
+
+  if (!(await isSlackEnabled())) {
+    return NextResponse.json({ error: "Slack is disabled via kill switch" }, { status: 403 });
   }
 
   const { id } = await params;
