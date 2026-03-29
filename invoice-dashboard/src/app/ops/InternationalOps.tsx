@@ -1115,7 +1115,7 @@ function TripDetail({ trip, countries, onRefresh }: {
 // CLEARANCE CARD — single clearance item with status control
 // ===========================================================================
 
-type CbpReply = { id: string; status: string; log_number: string | null; officer: string | null; from_address: string; parsed_at: string; attachments?: Array<{ name: string; gcs_key: string; gcs_bucket: string }> };
+type CbpReply = { id: string; status: string; log_number: string | null; officer: string | null; from_address: string; subject: string; raw_body: string | null; parsed_at: string; attachments?: Array<{ name: string; gcs_key: string; gcs_bucket: string }> };
 
 function ClearanceCard({ clearance, countries, tripId, updating, onStatusChange, onNotesChange, onRemove, onRefresh, cbpReply }: {
   clearance: IntlTripClearance;
@@ -1131,6 +1131,7 @@ function ClearanceCard({ clearance, countries, tripId, updating, onStatusChange,
   const [editingNotes, setEditingNotes] = useState(false);
   const [notesVal, setNotesVal] = useState(clearance.notes ?? "");
   const [uploading, setUploading] = useState(false);
+  const [cbpExpanded, setCbpExpanded] = useState(false);
 
   const typeLabel = CLEARANCE_LABELS_FULL[clearance.clearance_type] ?? clearance.clearance_type;
   const isIntl = isInternationalIcao(clearance.airport_icao);
@@ -1189,24 +1190,40 @@ function ClearanceCard({ clearance, countries, tripId, updating, onStatusChange,
         )}
       </div>
 
-      {/* CBP Reply badge */}
+      {/* CBP Reply badge (clickable to expand email) */}
       {cbpReply && (
-        <div className={`mt-2 flex items-center gap-2 text-xs rounded px-2 py-1.5 ${
-          cbpReply.status === "approved" ? "bg-green-100 text-green-800" :
-          cbpReply.status === "denied" ? "bg-red-100 text-red-800" :
-          "bg-blue-100 text-blue-800"
-        }`}>
-          <span className="font-semibold">
-            {cbpReply.status === "approved" ? "CBP Approved" : cbpReply.status === "denied" ? "CBP Denied" : "CBP Reply"}
-          </span>
-          {cbpReply.log_number && <span>Log# {cbpReply.log_number}</span>}
-          {cbpReply.officer && <span>({cbpReply.officer})</span>}
-          <span className="text-opacity-60 ml-auto">{cbpReply.from_address}</span>
-          {cbpReply.attachments && cbpReply.attachments.length > 0 && (
-            <span className="flex items-center gap-0.5">
-              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M18.375 12.739l-7.693 7.693a4.5 4.5 0 01-6.364-6.364l10.94-10.94A3 3 0 1119.5 7.372L8.552 18.32m.009-.01l-.01.01m5.699-9.941l-7.81 7.81a1.5 1.5 0 002.112 2.13" /></svg>
-              {cbpReply.attachments.length}
+        <div className="mt-2">
+          <button
+            onClick={() => setCbpExpanded(!cbpExpanded)}
+            className={`w-full flex items-center gap-2 text-xs rounded px-2 py-1.5 text-left transition-colors ${
+              cbpReply.status === "approved" ? "bg-green-100 text-green-800 hover:bg-green-150" :
+              cbpReply.status === "denied" ? "bg-red-100 text-red-800 hover:bg-red-150" :
+              "bg-blue-100 text-blue-800 hover:bg-blue-150"
+            }`}
+          >
+            <svg className={`w-3 h-3 flex-shrink-0 transition-transform ${cbpExpanded ? "rotate-90" : ""}`} fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+            </svg>
+            <span className="font-semibold">
+              {cbpReply.status === "approved" ? "CBP Approved" : cbpReply.status === "denied" ? "CBP Denied" : "CBP Reply"}
             </span>
+            {cbpReply.log_number && <span>Log# {cbpReply.log_number}</span>}
+            {cbpReply.officer && <span>({cbpReply.officer})</span>}
+            <span className="opacity-60 ml-auto">{cbpReply.from_address}</span>
+            {cbpReply.attachments && cbpReply.attachments.length > 0 && (
+              <span className="flex items-center gap-0.5">
+                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M18.375 12.739l-7.693 7.693a4.5 4.5 0 01-6.364-6.364l10.94-10.94A3 3 0 1119.5 7.372L8.552 18.32m.009-.01l-.01.01m5.699-9.941l-7.81 7.81a1.5 1.5 0 002.112 2.13" /></svg>
+                {cbpReply.attachments.length}
+              </span>
+            )}
+          </button>
+          {cbpExpanded && cbpReply.raw_body && (
+            <div className="mt-1 rounded border border-gray-200 bg-white px-3 py-2 text-xs text-gray-700 whitespace-pre-wrap max-h-48 overflow-y-auto">
+              <div className="text-[10px] text-gray-400 mb-1.5">
+                From: {cbpReply.from_address} &middot; {new Date(cbpReply.parsed_at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
+              </div>
+              {cbpReply.raw_body.replace(/<[^>]+>/g, " ").replace(/&nbsp;/gi, " ").replace(/\s{2,}/g, "\n").split(/From: Baker|_{10,}/)[0]?.trim().substring(0, 2000)}
+            </div>
           )}
         </div>
       )}

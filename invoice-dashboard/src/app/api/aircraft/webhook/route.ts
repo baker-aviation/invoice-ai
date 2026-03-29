@@ -3,6 +3,10 @@ import { timingSafeEqual } from "crypto";
 import { createServiceClient } from "@/lib/supabase/service";
 import { isInternationalIcao } from "@/lib/intlUtils";
 import { sendIntlAlertSlack } from "@/lib/intlAlertSlack";
+import {
+  isDiversionDistanceReasonable,
+  createPendingDiversion,
+} from "@/lib/diversionCheck";
 
 export const dynamic = "force-dynamic";
 
@@ -164,8 +168,8 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // ── International flight alert (real-time diversion/delay via webhook) ──
-  // Fire immediately when FA pushes a diversion for an intl flight — no polling delay.
+  // ── International flight alert (diversion/delay via webhook) ──
+  // Diversions are held for ~5 min verification (distance check + fa-poll re-verify).
   if (registration && origin && (eventCode === "diverted" || eventCode === "departure")) {
     const isIntl = isInternationalIcao(origin) || isInternationalIcao(destination);
     if (isIntl) {
@@ -199,14 +203,31 @@ export async function POST(req: NextRequest) {
                 ? `DIVERTED: ${registration} ${origin}→${originalDest} diverted to ${divertedTo}. Check permits and customs for new routing.`
                 : `DIVERTED: ${registration} ${origin}→${originalDest} has been diverted. Check permits and customs for new routing.`;
 
-              await supa.from("intl_leg_alerts").insert({
-                flight_id: dbFlight.id,
-                alert_type: "diversion",
-                severity: "critical",
-                message: msg,
+              // Distance sanity check — suppress clearly bogus diversions
+              const distCheck = isDiversionDistanceReasonable({
+                origin_icao: origin,
+                destination_icao: originalDest,
+                diverted_to_icao: divertedTo,
               });
-              await sendIntlAlertSlack([{ flight_id: dbFlight.id, alert_type: "diversion", severity: "critical", message: msg }]);
-              console.log(`[FA Webhook] Intl diversion alert fired for ${registration}`);
+
+              if (!distCheck.reasonable) {
+                console.log(`[FA Webhook] Suppressed bogus diversion for ${registration}: ${distCheck.reason}`);
+              } else {
+                // Hold for ~5 min verification instead of firing immediately
+                const inserted = await createPendingDiversion({
+                  fa_flight_id: faFlightId!,
+                  registration,
+                  origin_icao: origin,
+                  destination_icao: divertedTo,
+                  original_destination: originalDest,
+                  flight_id: dbFlight.id,
+                  message: msg,
+                  source: "webhook",
+                });
+                if (inserted) {
+                  console.log(`[FA Webhook] Intl diversion held for verification: ${registration} ${origin}→${originalDest} → ${divertedTo}`);
+                }
+              }
             }
           }
         }
