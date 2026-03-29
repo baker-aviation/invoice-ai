@@ -52,6 +52,16 @@ export async function POST(req: NextRequest) {
     }
     swapDate = body.swap_date ?? null;
     if (body.slack_names) slackNames = body.slack_names;
+    // Optional: specific weekly tab to parse (e.g., "MAR 25-APR 1 (A)")
+    // If provided, extract the swap date from the tab name
+    if (body.week && typeof body.week === "string") {
+      const monthMap: Record<string, string> = { JAN: "01", FEB: "02", MAR: "03", APR: "04", MAY: "05", JUN: "06", JUL: "07", AUG: "08", SEP: "09", OCT: "10", NOV: "11", DEC: "12" };
+      // Extract end date from "MAR 25-APR 1 (A)" → the swap Wednesday is the start date
+      const m = body.week.match(/([A-Z]{3})\s+(\d+)/i);
+      if (m) {
+        swapDate = `2026-${monthMap[m[1].toUpperCase()] ?? "03"}-${m[2].padStart(2, "0")}`;
+      }
+    }
     dataSource = "google_sheets";
 
     try {

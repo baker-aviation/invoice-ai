@@ -1857,6 +1857,17 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
   const [lockedTails, setLockedTails] = useState<Set<string>>(new Set());
   // Crew Info data from Excel sync
   const [crewInfoData, setCrewInfoData] = useState<CrewInfoData | null>(null);
+  // Google Sheets week selector
+  const [availableWeeks, setAvailableWeeks] = useState<string[]>([]);
+  const [selectedWeek, setSelectedWeek] = useState<string>("");
+  useEffect(() => {
+    fetch("/api/crew/sheet-weeks").then(r => r.ok ? r.json() : { weeks: [] }).then(d => {
+      setAvailableWeeks(d.weeks ?? []);
+      // Default to first week that hasn't passed
+      if (d.weeks?.length > 0 && !selectedWeek) setSelectedWeek(d.weeks[d.weeks.length - 1]);
+    }).catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [syncingCrewInfo, setSyncingCrewInfo] = useState(false);
 
   // Aircraft type lookup: tail number → type code (from ics_sources table)
@@ -2832,6 +2843,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
         body: JSON.stringify({
           source: "google_sheets",
           swap_date: selectedWed.toISOString().slice(0, 10),
+          week: selectedWeek || undefined,
         }),
       });
       const data = await safeJson(res, "Google Sheets sync failed");
@@ -3251,6 +3263,17 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                 {showRoster ? "Hide" : "Show"} Roster
               </button>
             )}
+            {availableWeeks.length > 0 && (
+              <select
+                value={selectedWeek}
+                onChange={(e) => setSelectedWeek(e.target.value)}
+                className="text-xs border rounded-lg px-2 py-1.5 bg-white text-gray-700"
+              >
+                {availableWeeks.map(w => (
+                  <option key={w} value={w}>{w}</option>
+                ))}
+              </select>
+            )}
             <button
               onClick={syncFromGoogleSheet}
               disabled={uploading || syncingCrewInfo}
@@ -3258,7 +3281,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                 uploading || syncingCrewInfo ? "bg-gray-100 text-gray-400" : "bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border-emerald-200"
               }`}
             >
-              {syncingCrewInfo ? "Syncing..." : "Sync from Google Sheet"}
+              {syncingCrewInfo ? "Syncing..." : "Sync from Sheet"}
             </button>
             <label className={`px-3 py-1.5 text-xs font-medium border rounded-lg cursor-pointer ${
               uploading ? "bg-gray-100 text-gray-400" : "bg-blue-50 text-blue-700 hover:bg-blue-100 border-blue-200"
