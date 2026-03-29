@@ -6111,7 +6111,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, melItems
               tail: f.tail,
               lat: f.latitude,
               lon: f.longitude,
-              alt_baro: f.altitude ?? null,
+              alt_baro: f.altitude != null ? f.altitude * 100 : null, // FA returns hundreds of feet → convert to feet
               gs: f.groundspeed ?? null,
               track: f.heading ?? null,
               baro_rate: null,

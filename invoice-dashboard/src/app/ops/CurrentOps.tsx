@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useState, useEffect, useCallback, useMemo, Fragment } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from "react";
 import type { Flight, OpsAlert, MxNote, SwimFlowEvent } from "@/lib/opsApi";
 import type { AdvertisedPriceRow } from "@/lib/types";
 import { FALLBACK_TAILS, BAKER_FLEET } from "@/lib/maintenanceData";
@@ -589,6 +589,13 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
   const [showActual, setShowActual] = useState(false);
   const [viewMode, setViewMode] = useState<"table" | "aircraft">("table");
 
+  // Fleet filters
+  const [fleetTypeFilter, setFleetTypeFilter] = useState<Set<string>>(new Set(FLEET_ORDER));
+  const [airGroundFilter, setAirGroundFilter] = useState<"all" | "in-air" | "on-ground">("all");
+  const [tailSearch, setTailSearch] = useState("");
+  const [selectedTails, setSelectedTails] = useState<Set<string>>(new Set());
+  const [tailDropdownOpen, setTailDropdownOpen] = useState(false);
+
   // Shorthand for formatting times — uses departure or arrival airport TZ
   // Strips today's date prefix so "Mar 14, 15:12 PDT" → "15:12 PDT" when today is Mar 14
   const fmt = useCallback(
@@ -743,7 +750,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
               tail: fi.tail,
               lat: fi.latitude,
               lon: fi.longitude,
-              alt_baro: fi.altitude ?? null,
+              alt_baro: fi.altitude != null ? fi.altitude * 100 : null, // FA returns hundreds of feet → convert to feet
               gs: fi.groundspeed ?? null,
               track: fi.heading ?? null,
               baro_rate: null,
@@ -1291,21 +1298,45 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
     [longTermMxAircraft],
   );
 
-  // Flights for the table view — exclude long-term MX tails
+  // Tails currently in the air (for air/ground filter)
+  const inAirTails = useMemo(() => {
+    const set = new Set<string>();
+    for (const pos of enRouteAircraft) {
+      if (!pos.on_ground) set.add(pos.tail);
+    }
+    return set;
+  }, [enRouteAircraft]);
+
+  // Fleet filter helper: should this tail pass through the fleet filters?
+  const passesTailFilter = useCallback((tail: string | null): boolean => {
+    if (!tail) return true; // Unassigned flights always pass
+    // Tail selection filter
+    if (selectedTails.size > 0 && !selectedTails.has(tail)) return false;
+    // Air/ground filter
+    if (airGroundFilter === "in-air" && !inAirTails.has(tail)) return false;
+    if (airGroundFilter === "on-ground" && inAirTails.has(tail)) return false;
+    // Fleet type filter
+    const fleetType = tailFleetType.get(tail) ?? "Other";
+    if (!fleetTypeFilter.has(fleetType)) return false;
+    return true;
+  }, [selectedTails, airGroundFilter, inAirTails, fleetTypeFilter, tailFleetType]);
+
+  // Flights for the table view — exclude long-term MX tails + apply fleet filters
   const tableFlights = useMemo(() => {
     return statusFilteredFlights.filter(
-      (f) => !f.tail_number || !longTermMxTails.has(f.tail_number),
+      (f) => (!f.tail_number || !longTermMxTails.has(f.tail_number)) && passesTailFilter(f.tail_number),
     );
-  }, [statusFilteredFlights, longTermMxTails]);
+  }, [statusFilteredFlights, longTermMxTails, passesTailFilter]);
 
   // Group filtered flights by fleet type → tail for aircraft card view
-  // Exclude long-term MX tails from normal fleet groups
+  // Exclude long-term MX tails from normal fleet groups + apply fleet filters
   const flightsByFleetType = useMemo(() => {
     // First group by tail
     const byTail = new Map<string, Flight[]>();
     for (const f of statusFilteredFlights) {
       const tail = f.tail_number || "Unassigned";
       if (tail !== "Unassigned" && longTermMxTails.has(tail)) continue;
+      if (tail !== "Unassigned" && !passesTailFilter(tail)) continue;
       if (!byTail.has(tail)) byTail.set(tail, []);
       byTail.get(tail)!.push(f);
     }
@@ -1327,7 +1358,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
       (a, b) => (FLEET_ORDER.indexOf(a[0]) === -1 ? 99 : FLEET_ORDER.indexOf(a[0]))
               - (FLEET_ORDER.indexOf(b[0]) === -1 ? 99 : FLEET_ORDER.indexOf(b[0]))
     );
-  }, [statusFilteredFlights, tailFleetType, longTermMxTails]);
+  }, [statusFilteredFlights, tailFleetType, longTermMxTails, passesTailFilter]);
 
   function toggleExpanded(flightId: string) {
     setExpandedFlights((prev) => {
@@ -1346,6 +1377,19 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
       return next;
     });
   }
+
+  // Click-outside to close tail dropdown
+  const tailDropdownRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!tailDropdownOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (tailDropdownRef.current && !tailDropdownRef.current.contains(e.target as Node)) {
+        setTailDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [tailDropdownOpen]);
 
   // Compute parked aircraft positions from schedule + FA data
   const parkedAircraft = useMemo(() => {
@@ -2116,6 +2160,151 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
               {label}
             </button>
           ))}
+        </div>
+      </div>
+
+      {/* ── Fleet filters row ── */}
+      <div className="flex flex-wrap items-center gap-4">
+        {/* Air / Ground */}
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Fleet:</span>
+          {([["all", "All"], ["in-air", "In Air"], ["on-ground", "On Ground"]] as const).map(([val, label]) => (
+            <button
+              key={val}
+              onClick={() => setAirGroundFilter(val)}
+              className={`px-3 py-1 text-xs font-medium rounded-full transition-all ${
+                airGroundFilter === val
+                  ? val === "in-air" ? "bg-blue-100 text-blue-700"
+                  : val === "on-ground" ? "bg-amber-100 text-amber-700"
+                  : "bg-gray-800 text-white"
+                  : "bg-gray-100 text-gray-400 opacity-50"
+              }`}
+            >
+              {label}
+              {val === "in-air" && <span className="ml-1 opacity-70">{inAirTails.size}</span>}
+            </button>
+          ))}
+        </div>
+
+        <span className="text-gray-300">|</span>
+
+        {/* Fleet type */}
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Aircraft:</span>
+          {FLEET_ORDER.map((ft) => {
+            const active = fleetTypeFilter.has(ft);
+            return (
+              <button
+                key={ft}
+                onClick={() => {
+                  setFleetTypeFilter((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(ft)) next.delete(ft);
+                    else next.add(ft);
+                    return next;
+                  });
+                }}
+                className={`px-3 py-1 text-xs font-medium rounded-full transition-all ${
+                  active
+                    ? ft === "Challenger 300" ? "bg-indigo-100 text-indigo-700"
+                    : ft === "Challenger 350" ? "bg-violet-100 text-violet-700"
+                    : ft === "Citation X" ? "bg-teal-100 text-teal-700"
+                    : "bg-gray-200 text-gray-700"
+                    : "bg-gray-100 text-gray-400 opacity-50"
+                }`}
+              >
+                {ft === "Challenger 300" ? "CL300" : ft === "Challenger 350" ? "CL350" : ft === "Citation X" ? "CitX" : ft}
+              </button>
+            );
+          })}
+        </div>
+
+        <span className="text-gray-300">|</span>
+
+        {/* Tail search / multi-select */}
+        <div ref={tailDropdownRef} className="relative flex items-center gap-2">
+          <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Tail:</span>
+          <div className="relative">
+            <input
+              type="text"
+              value={tailSearch}
+              onChange={(e) => { setTailSearch(e.target.value.toUpperCase()); setTailDropdownOpen(true); }}
+              onFocus={() => setTailDropdownOpen(true)}
+              placeholder={selectedTails.size > 0 ? `${selectedTails.size} selected` : "Search tails…"}
+              className="w-36 px-3 py-1 text-xs font-mono rounded-full border border-gray-200 bg-white focus:outline-none focus:ring-2 focus:ring-gray-300 placeholder:text-gray-400"
+            />
+            {tailDropdownOpen && (
+              <div
+                className="absolute top-full left-0 mt-1 w-48 max-h-64 overflow-y-auto bg-white border border-gray-200 rounded-lg shadow-lg z-50"
+                onMouseDown={(e) => e.preventDefault()}
+              >
+                {selectedTails.size > 0 && (
+                  <button
+                    onClick={() => { setSelectedTails(new Set()); setTailSearch(""); setTailDropdownOpen(false); }}
+                    className="w-full px-3 py-1.5 text-xs text-left text-red-600 hover:bg-red-50 border-b border-gray-100"
+                  >
+                    Clear all ({selectedTails.size})
+                  </button>
+                )}
+                {BAKER_FLEET
+                  .filter((t) => !tailSearch || t.includes(tailSearch))
+                  .map((tail) => {
+                    const isSelected = selectedTails.has(tail);
+                    const ft = tailFleetType.get(tail) ?? "Other";
+                    const isFlying = inAirTails.has(tail);
+                    return (
+                      <button
+                        key={tail}
+                        onClick={() => {
+                          setSelectedTails((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(tail)) next.delete(tail);
+                            else next.add(tail);
+                            return next;
+                          });
+                        }}
+                        className={`w-full px-3 py-1.5 text-xs text-left flex items-center justify-between hover:bg-gray-50 ${
+                          isSelected ? "bg-gray-100 font-medium" : ""
+                        }`}
+                      >
+                        <span className="font-mono">{isSelected ? "✓ " : ""}{tail}</span>
+                        <span className="flex items-center gap-1.5">
+                          {isFlying && <span className="w-1.5 h-1.5 rounded-full bg-blue-500" title="In Air" />}
+                          <span className="text-gray-400">{ft === "Challenger 300" ? "CL3" : ft === "Challenger 350" ? "CL35" : ft === "Citation X" ? "CX" : "?"}</span>
+                        </span>
+                      </button>
+                    );
+                  })}
+              </div>
+            )}
+          </div>
+          {/* Selected tail chips */}
+          {selectedTails.size > 0 && selectedTails.size <= 5 && (
+            <div className="flex items-center gap-1 flex-wrap">
+              {[...selectedTails].sort().map((tail) => (
+                <span
+                  key={tail}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-mono font-medium rounded-full bg-gray-800 text-white"
+                >
+                  {tail}
+                  <button
+                    onClick={() => setSelectedTails((prev) => { const next = new Set(prev); next.delete(tail); return next; })}
+                    className="hover:text-red-300 ml-0.5"
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+          {selectedTails.size > 5 && (
+            <button
+              onClick={() => { setSelectedTails(new Set()); setTailSearch(""); }}
+              className="px-2 py-0.5 text-[10px] font-medium rounded-full bg-gray-800 text-white hover:bg-red-700"
+            >
+              {selectedTails.size} tails ×
+            </button>
+          )}
         </div>
       </div>
 
