@@ -74,18 +74,20 @@ function extractTailAndDate(subject: string): { tail: string | null; dateStr: st
 }
 
 function parseCbpBody(bodyHtml: string): {
-  status: "approved" | "denied" | "info";
+  status: "approved" | "received" | "denied" | "info";
   logNumber: string | null;
   officer: string | null;
 } {
   const text = bodyHtml.replace(/<[^>]+>/g, " ").replace(/&nbsp;/gi, " ").replace(/\s+/g, " ").trim();
   const replyPart = text.split(/From: Baker|_{10,}/)[0] || text;
 
-  let status: "approved" | "denied" | "info" = "info";
+  let status: "approved" | "received" | "denied" | "info" = "info";
   if (/\b(denied|not\s+approved|rejected)\b/i.test(replyPart)) {
     status = "denied";
-  } else if (/\b(approved|clearance\s+granted|confirmed|authorized|log\s*#\s*\d)/i.test(replyPart)) {
+  } else if (/\b(approved|clearance\s+granted|landing\s+rights\s+granted|confirmed|authorized|log\s*#\s*\d)/i.test(replyPart)) {
     status = "approved";
+  } else if (/\b(received|well\s+received|info\s+received|flight\s+info\s+received|clearance\s+will\s+be\s+granted)\b/i.test(replyPart)) {
+    status = "received";
   }
 
   const logMatch = replyPart.match(/log\s*#?\s*:?\s*(\d{4,6})/i);
@@ -482,14 +484,14 @@ async function runParser(lookbackHours = 48) {
         attachments: attachments.length > 0 ? attachments : [],
       });
 
-      // Auto-approve
-      if (status === "approved" && clearanceId) {
-        const notesParts = ["CBP Approved"];
+      // Auto-update clearance status based on CBP reply
+      if (clearanceId && (status === "approved" || status === "received")) {
+        const notesParts = [status === "approved" ? "CBP Approved" : "CBP Received"];
         if (logNumber) notesParts.push(`Log# ${logNumber}`);
         if (officer) notesParts.push(`Officer: ${officer}`);
         notesParts.push(`(auto-parsed ${new Date().toISOString().slice(0, 16)}Z)`);
-        await supa.from("intl_trip_clearances").update({ status: "approved", notes: notesParts.join(" — ") }).eq("id", clearanceId);
-        stats.autoApproved++;
+        await supa.from("intl_trip_clearances").update({ status, notes: notesParts.join(" — ") }).eq("id", clearanceId);
+        if (status === "approved") stats.autoApproved++;
       }
 
       stats.cbp++;
