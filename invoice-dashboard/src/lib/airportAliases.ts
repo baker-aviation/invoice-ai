@@ -381,6 +381,7 @@ const RAW: [string, string, boolean][] = [
   ["CYFJ", "CYYZ", true],    // Collingwood ON → Toronto Pearson
   ["MSLP", "MSLP", true],    // San Salvador, El Salvador (IS commercial)
   ["TAPA", "TAPA", true],    // Antigua (IS commercial)
+  ["MMAN", "MMAN", true],    // Monterrey Mexico (IS commercial — AA/United)
   ["1B1", "KBOS", true],     // Hudson MA → Boston (30mi)
 
   // International — FBO to nearest commercial

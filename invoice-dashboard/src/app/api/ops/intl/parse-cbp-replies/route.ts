@@ -256,6 +256,11 @@ export async function POST(req: NextRequest) {
   const auth = await requireAuth(req);
   if (!isAuthed(auth)) return auth.error;
 
+  // Reprocess attachments mode: re-check rows with empty attachments
+  if (req.nextUrl.searchParams.get("reprocess_attachments") === "true") {
+    return reprocessAttachments();
+  }
+
   // Allow custom lookback for backfill (e.g. ?lookback=30d)
   const lookbackParam = req.nextUrl.searchParams.get("lookback");
   let lookbackHours = 48;
@@ -268,6 +273,83 @@ export async function POST(req: NextRequest) {
   }
 
   return runParser(lookbackHours);
+}
+
+// ---------------------------------------------------------------------------
+// Reprocess: download attachments for previously parsed rows that have none
+// ---------------------------------------------------------------------------
+async function reprocessAttachments() {
+  const supa = createServiceClient();
+  const mailbox = process.env.OUTLOOK_HANDLING_MAILBOX || process.env.OUTLOOK_SHARED_MAILBOX;
+  if (!mailbox) return NextResponse.json({ error: "No mailbox" }, { status: 500 });
+
+  let token: string;
+  try { token = await getGraphToken(); } catch {
+    return NextResponse.json({ error: "Graph auth failed" }, { status: 500 });
+  }
+
+  // Get rows with empty attachments from CBP or Pinnacle
+  const { data: rows } = await supa
+    .from("intl_cbp_replies")
+    .select("id, message_id, from_address, trip_id, subject")
+    .or("attachments.is.null,attachments.eq.[]")
+    .order("parsed_at", { ascending: false });
+
+  const targets = (rows ?? []).filter((r) => {
+    const a = r.from_address.toLowerCase();
+    return a.includes("cbp.dhs.gov") || a.includes("pinnacle-ops.com");
+  });
+
+  let downloaded = 0;
+  let attached = 0;
+  let noAttachments = 0;
+  let errors = 0;
+
+  for (const row of targets) {
+    try {
+      const atts = await downloadAttachments(token, mailbox, row.message_id,
+        row.from_address.toLowerCase().includes("pinnacle") ? "intl/permits" : "intl/cbp-replies");
+
+      if (atts.length === 0) { noAttachments++; continue; }
+
+      // Update the reply row
+      await supa.from("intl_cbp_replies").update({ attachments: atts }).eq("id", row.id);
+      downloaded += atts.length;
+
+      // For Pinnacle permits: attach first PDF to a clearance
+      if (row.from_address.toLowerCase().includes("pinnacle") && /permit\s*confirm/i.test(row.subject) && row.trip_id) {
+        const pdfAtt = atts.find((a) => a.content_type === "application/pdf") ?? atts[0];
+        const { data: clearances } = await supa
+          .from("intl_trip_clearances")
+          .select("id, file_gcs_key")
+          .eq("trip_id", row.trip_id)
+          .in("clearance_type", ["overflight_permit", "landing_permit"]);
+
+        const noFile = (clearances ?? []).filter((c) => !c.file_gcs_key);
+        const target = noFile[0] ?? clearances?.[0];
+        if (target) {
+          await supa.from("intl_trip_clearances").update({
+            file_gcs_bucket: pdfAtt.gcs_bucket,
+            file_gcs_key: pdfAtt.gcs_key,
+            file_filename: pdfAtt.name,
+            file_content_type: pdfAtt.content_type,
+          }).eq("id", target.id);
+          attached++;
+        }
+      }
+    } catch {
+      errors++;
+    }
+  }
+
+  return NextResponse.json({
+    ok: true,
+    rowsChecked: targets.length,
+    attachmentsDownloaded: downloaded,
+    permitsAttachedToClearances: attached,
+    noAttachments,
+    errors,
+  });
 }
 
 // ---------------------------------------------------------------------------

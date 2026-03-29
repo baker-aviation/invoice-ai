@@ -129,6 +129,7 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   KASH: [42.7817, -71.5148],   // Nashua/Boire (NH)
   KPWM: [43.6462, -70.3093],   // Portland (ME)
   KBTV: [44.4720, -73.1533],   // Burlington (VT)
+  KBUF: [42.9405, -78.7322],   // Buffalo NY
   KBDL: [41.9389, -72.6832],   // Hartford/Bradley
   KSWF: [41.5041, -74.1048],   // Stewart/Newburgh
   KISP: [40.7952, -73.1002],   // Long Island/Islip
@@ -466,7 +467,7 @@ const COMMERCIAL_AIRPORTS = new Set([
   "KOGD", "KPGV", "KTUS", "KSEA", "KPDX", "KSMF", "KONT",
   "KLGB", "KSDF", "KLEX", "KXNA", "KCID", "KATW",
   // Added 2026-03-22 — next-30-day flight coverage
-  "KAVP", "KBGR", "KBTV", "KCAK", "KFAT", "KGSP", "KJAC",
+  "KAVP", "KBGR", "KBTV", "KBUF", "KCAK", "KFAT", "KGSP", "KJAC",
   "KLAN", "KMAF", "KMFE", "KMRY", "KMYR", "KOMA", "KRNO",
   "KROC", "KSBA", "KSBN", "KSUN",
   "PANC", // Anchorage (non-K ICAO)

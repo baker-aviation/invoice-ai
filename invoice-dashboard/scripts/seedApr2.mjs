@@ -23,7 +23,7 @@ if (!SUPABASE_URL || !SUPABASE_KEY || !HASDATA_KEY) {
 }
 
 const supa = createClient(SUPABASE_URL, SUPABASE_KEY);
-const SWAP_DATE = "2026-04-02";
+const SWAP_DATE = process.argv[2] ?? "2026-04-02";
 const HASDATA_URL = "https://api.hasdata.com/scrape/google/flights";
 
 // ─── Step 1: Compute city pairs ──────────────────────────────────────────────

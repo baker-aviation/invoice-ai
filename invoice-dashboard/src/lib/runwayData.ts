@@ -127,9 +127,150 @@ function runwayMatches(rwy: RunwayInfo, designator: string): boolean {
 /** Time window for a NOTAM closure */
 type TimeWindow = { start: number; end: number };
 
+// ---------------------------------------------------------------------------
+// Recurring schedule parsing (e.g. "MON-FRI 0400-0930", "DLY 0600-1400")
+// ---------------------------------------------------------------------------
+
+const DAY_NAMES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"] as const;
+const DAY_INDEX: Record<string, number> = { SUN: 0, MON: 1, TUE: 2, WED: 3, THU: 4, FRI: 5, SAT: 6 };
+
+type RecurringSchedule = {
+  /** Which UTC days of week the closure applies (0=Sun..6=Sat) */
+  days: Set<number>;
+  /** Daily start time in minutes from midnight UTC */
+  startMinUTC: number;
+  /** Daily end time in minutes from midnight UTC */
+  endMinUTC: number;
+  /** Overall NOTAM validity period */
+  validFrom: number;
+  validTo: number;
+};
+
+/** Parse day-of-week pattern from NOTAM body. */
+function parseDays(text: string): Set<number> | null {
+  const upper = text.toUpperCase();
+
+  // "DLY" = daily
+  if (/\bDLY\b/.test(upper)) return new Set([0, 1, 2, 3, 4, 5, 6]);
+
+  // Range: "MON-FRI", "MON-SAT", "TUE-THU"
+  const rangeMatch = upper.match(/\b(SUN|MON|TUE|WED|THU|FRI|SAT)\s*-\s*(SUN|MON|TUE|WED|THU|FRI|SAT)\b/);
+  if (rangeMatch) {
+    const start = DAY_INDEX[rangeMatch[1]];
+    const end = DAY_INDEX[rangeMatch[2]];
+    const days = new Set<number>();
+    if (start <= end) {
+      for (let i = start; i <= end; i++) days.add(i);
+    } else {
+      // Wrap around: e.g. FRI-MON = FRI, SAT, SUN, MON
+      for (let i = start; i < 7; i++) days.add(i);
+      for (let i = 0; i <= end; i++) days.add(i);
+    }
+    return days;
+  }
+
+  // List: "SAT SUN", "MON WED FRI"
+  const listMatch = upper.match(/\b((?:(?:SUN|MON|TUE|WED|THU|FRI|SAT)\s*){2,})\b/);
+  if (listMatch) {
+    const days = new Set<number>();
+    for (const d of DAY_NAMES) {
+      if (listMatch[1].includes(d)) days.add(DAY_INDEX[d]);
+    }
+    if (days.size > 0) return days;
+  }
+
+  return null;
+}
+
+/** Parse recurring schedule from NOTAM body + effective dates. */
+function parseRecurringSchedule(
+  body: string | null,
+  dates: { effective_start?: string | null; effective_end?: string | null; start_date_utc?: string | null; end_date_utc?: string | null } | null,
+): RecurringSchedule | null {
+  if (!body || !dates) return null;
+
+  const days = parseDays(body);
+  if (!days) return null;
+
+  // Parse daily time window: "0400-0930", "0600-1400"
+  // Must appear near the day pattern (within same NOTAM line)
+  const timeMatch = body.match(/\b(\d{4})\s*-\s*(\d{4})\b/);
+  if (!timeMatch) return null;
+
+  const startHHMM = timeMatch[1];
+  const endHHMM = timeMatch[2];
+  const sh = parseInt(startHHMM.slice(0, 2)), sm = parseInt(startHHMM.slice(2));
+  const eh = parseInt(endHHMM.slice(0, 2)), em = parseInt(endHHMM.slice(2));
+  // Validate hours/minutes are within range
+  if (sh > 23 || sm > 59 || eh > 23 || em > 59) return null;
+  const startMinUTC = sh * 60 + sm;
+  const endMinUTC = eh * 60 + em;
+
+  // Need overall validity dates
+  const startStr = dates.effective_start ?? dates.start_date_utc;
+  const endStr = dates.effective_end ?? dates.end_date_utc;
+  if (!startStr || !endStr) return null;
+  const validFrom = new Date(startStr).getTime();
+  const validTo = new Date(endStr).getTime();
+  if (isNaN(validFrom) || isNaN(validTo)) return null;
+
+  return { days, startMinUTC, endMinUTC, validFrom, validTo };
+}
+
+/** Check if a specific timestamp falls within a recurring schedule. */
+function isActiveAt(schedule: RecurringSchedule, timeMs: number): boolean {
+  if (timeMs < schedule.validFrom || timeMs > schedule.validTo) return false;
+
+  const d = new Date(timeMs);
+  const dayOfWeek = d.getUTCDay(); // 0=Sun
+  if (!schedule.days.has(dayOfWeek)) return false;
+
+  const minuteOfDay = d.getUTCHours() * 60 + d.getUTCMinutes();
+
+  if (schedule.startMinUTC <= schedule.endMinUTC) {
+    // Normal: e.g. 0400-0930
+    return minuteOfDay >= schedule.startMinUTC && minuteOfDay < schedule.endMinUTC;
+  } else {
+    // Overnight: e.g. 2200-0600 → active if >= 2200 OR < 0600
+    return minuteOfDay >= schedule.startMinUTC || minuteOfDay < schedule.endMinUTC;
+  }
+}
+
+/** Check if a recurring schedule overlaps with a time window. */
+function recurringOverlapsWindow(schedule: RecurringSchedule, window: TimeWindow): boolean {
+  // Check each day within the window
+  const dayMs = 86400000;
+  const startDay = Math.floor(window.start / dayMs) * dayMs;
+  const endDay = Math.ceil(window.end / dayMs) * dayMs;
+
+  for (let day = startDay; day <= endDay; day += dayMs) {
+    const d = new Date(day);
+    const dayOfWeek = d.getUTCDay();
+    if (!schedule.days.has(dayOfWeek)) continue;
+    if (day < schedule.validFrom - dayMs || day > schedule.validTo) continue;
+
+    // Build the actual closure window for this specific day
+    let closureStart = day + schedule.startMinUTC * 60000;
+    let closureEnd: number;
+    if (schedule.startMinUTC <= schedule.endMinUTC) {
+      closureEnd = day + schedule.endMinUTC * 60000;
+    } else {
+      closureEnd = day + dayMs + schedule.endMinUTC * 60000;
+    }
+
+    // Clamp to overall validity
+    closureStart = Math.max(closureStart, schedule.validFrom);
+    closureEnd = Math.min(closureEnd, schedule.validTo);
+
+    if (closureStart < window.end && window.start < closureEnd) return true;
+  }
+  return false;
+}
+
 /** Parse effective start/end from NOTAM date fields into epoch ms. */
 function parseTimeWindow(
   dates: { effective_start?: string | null; effective_end?: string | null; start_date_utc?: string | null; end_date_utc?: string | null } | null,
+  body?: string | null,
 ): TimeWindow | null {
   if (!dates) return null;
   const startStr = dates.effective_start ?? dates.start_date_utc;
@@ -141,9 +282,18 @@ function parseTimeWindow(
   return { start, end };
 }
 
-/** Check if two time windows overlap */
+/** Check if two time windows overlap. */
 function windowsOverlap(a: TimeWindow, b: TimeWindow): boolean {
   return a.start < b.end && b.start < a.end;
+}
+
+/** Check if a parsed closure is active during a given time window, respecting recurring schedules. */
+function closureActiveInWindow(closure: ParsedClosure, window: TimeWindow): boolean {
+  if (closure.recurring) {
+    return recurringOverlapsWindow(closure.recurring, window);
+  }
+  if (!closure.window) return false;
+  return windowsOverlap(closure.window, window);
 }
 
 type NotamInput = {
@@ -159,6 +309,7 @@ type ParsedClosure = {
   id: string;
   designator: string;
   window: TimeWindow | null;
+  recurring: RecurringSchedule | null;
 };
 
 /**
@@ -195,6 +346,7 @@ export function getSuppressedRunwayNotamIds(
       id: n.id,
       designator,
       window: parseTimeWindow(n),
+      recurring: parseRecurringSchedule(n.body, n),
     });
   }
 
@@ -209,13 +361,18 @@ export function getSuppressedRunwayNotamIds(
 
     // Check if every other runway has an overlapping closure during this window
     const allOthersCovered = otherRunways.every((rwy) => {
-      // Find closures that close THIS runway and overlap in time
       return closures.some((other) => {
         if (other.id === closure.id) return false;
         if (!runwayMatches(rwy, other.designator)) return false;
-        // If either NOTAM has no time window, be conservative (assume overlap)
-        if (!closure.window || !other.window) return true;
-        return windowsOverlap(closure.window, other.window);
+        // If either has no window and no recurring schedule, be conservative
+        if (!closure.window || (!other.window && !other.recurring)) return true;
+        if (other.recurring && closure.window) {
+          return recurringOverlapsWindow(other.recurring, closure.window);
+        }
+        if (other.window && closure.window) {
+          return windowsOverlap(closure.window, other.window);
+        }
+        return true;
       });
     });
 
@@ -320,11 +477,9 @@ function allRunwaysClosed(
 
   // For each paved runway, check if there's a closure that covers the flight window
   const uncoveredRunway = pavedLong.find((rwy) => {
-    // Is there a closure for this runway that overlaps the flight window?
     const covered = closures.some((c) => {
       if (!runwayMatches(rwy, c.designator)) return false;
-      if (!c.window) return false;
-      return windowsOverlap(c.window, flightWindow);
+      return closureActiveInWindow(c, flightWindow);
     });
     return !covered;
   });
@@ -332,15 +487,28 @@ function allRunwaysClosed(
   // If every runway is covered by a closure, all are closed
   if (uncoveredRunway) return null;
 
-  // Build human-readable closure window (earliest start to latest end among overlapping closures)
-  const overlapping = closures.filter((c) => c.window && windowsOverlap(c.window, flightWindow));
-  if (overlapping.length === 0) return null;
-  const earliest = Math.min(...overlapping.map((c) => c.window!.start));
-  const latest = Math.max(...overlapping.map((c) => c.window!.end));
+  // Build human-readable description
   const fmt = (ms: number) => {
     const d = new Date(ms);
     return `${String(d.getUTCMonth() + 1).padStart(2, "0")}/${String(d.getUTCDate()).padStart(2, "0")} ${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}Z`;
   };
+
+  // Check for recurring closures first
+  const recurringActive = closures.filter((c) => c.recurring && recurringOverlapsWindow(c.recurring, flightWindow));
+  if (recurringActive.length > 0) {
+    const sched = recurringActive[0].recurring!;
+    const dayNames = [...sched.days].sort().map((d) => DAY_NAMES[d]).join("/");
+    const startH = String(Math.floor(sched.startMinUTC / 60)).padStart(2, "0");
+    const startM = String(sched.startMinUTC % 60).padStart(2, "0");
+    const endH = String(Math.floor(sched.endMinUTC / 60)).padStart(2, "0");
+    const endM = String(sched.endMinUTC % 60).padStart(2, "0");
+    return `${dayNames} ${startH}${startM}–${endH}${endM}Z`;
+  }
+
+  const overlapping = closures.filter((c) => c.window && windowsOverlap(c.window, flightWindow));
+  if (overlapping.length === 0) return null;
+  const earliest = Math.min(...overlapping.map((c) => c.window!.start));
+  const latest = Math.max(...overlapping.map((c) => c.window!.end));
   return `${fmt(earliest)}–${fmt(latest)}`;
 }
 
@@ -379,9 +547,10 @@ export function detectAllRunwaysClosed(
       const key = a.airport_icao.toUpperCase();
       if (!closuresByAirport.has(key)) closuresByAirport.set(key, []);
       closuresByAirport.get(key)!.push({
-        id: "", // not needed here
+        id: "",
         designator: desig,
         window: parseTimeWindow(a.notam_dates),
+        recurring: parseRecurringSchedule(a.body, a.notam_dates),
       });
     }
 

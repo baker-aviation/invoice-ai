@@ -9,7 +9,7 @@ import { signGcsUrl } from "@/lib/gcs";
 import AlertsTable from "./AlertsTable";
 
 export default async function AlertsPage() {
-  const data = await fetchAlerts({ limit: 200 });
+  const data = await fetchAlerts({ limit: 1000 });
   const alerts = data.alerts ?? [];
 
   // Batch-sign PDF URLs for all unique document_ids

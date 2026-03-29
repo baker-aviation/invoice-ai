@@ -144,7 +144,7 @@ import Link from "next/link";
 function PinCard({ inv, isResolved }: { inv: InvoiceListItem; isResolved: boolean }) {
   return (
     <Link
-      href={`/invoices/${inv.document_id}`}
+      href={`/invoices/${inv.document_id}?from=review`}
       className={`block rounded-lg border p-3 hover:bg-gray-50 transition-colors ${
         isResolved ? "border-gray-200 opacity-60" : "border-red-200 bg-red-50"
       }`}

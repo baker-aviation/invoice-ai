@@ -47,6 +47,12 @@ export type AlertRow = {
   fee_name: string | null;
   fee_amount: number | null;
   currency: string | null;
+  pinned?: boolean;
+  pin_note?: string | null;
+  pin_resolved?: boolean;
+  acknowledged?: boolean;
+  acknowledged_by?: string | null;
+  acknowledged_at?: string | null;
 };
 
 export type AlertsResponse = {

@@ -12,7 +12,7 @@ export default async function InvoicesPage() {
   // Fetch invoices and alerts in parallel
   const [invoiceData, alertData] = await Promise.all([
     fetchInvoices({ limit: 1000 }),
-    fetchAlerts({ limit: 200 }),
+    fetchAlerts({ limit: 1000 }),
   ]);
 
   const invoices = invoiceData.invoices ?? [];

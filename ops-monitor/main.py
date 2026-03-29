@@ -2120,40 +2120,44 @@ def _run_check_notams(lookahead_hours: int) -> dict:
     finally:
         pool.shutdown(wait=False)  # abandon any still-running socket threads
 
+    # Build NOTAM alerts per airport (not per flight) to avoid duplicates.
+    # One NOTAM → one row per airport_icao, matched to flights at query time.
     alerts_to_insert = []
-    for flight in flights:
-        fid = flight["id"]
-        for icao in [flight.get("departure_icao"), flight.get("arrival_icao")]:
-            if not icao:
+    seen_notam_keys: set = set()
+    for icao in airports:
+        for feature in notams_by_airport.get(icao, []):
+            # NMS GeoJSON: feature.properties.coreNOTAMData.notam
+            core_data = (
+                feature.get("properties", {})
+                .get("coreNOTAMData", {})
+            )
+            notam_data = core_data.get("notam", {})
+            if not notam_data:
                 continue
-            for feature in notams_by_airport.get(icao, []):
-                # NMS GeoJSON: feature.properties.coreNOTAMData.notam
-                core_data = (
-                    feature.get("properties", {})
-                    .get("coreNOTAMData", {})
-                )
-                notam_data = core_data.get("notam", {})
-                if not notam_data:
-                    continue
-                # NMS uses "text", legacy API uses "traditionalMessage"
-                msg = notam_data.get("text") or notam_data.get("traditionalMessage") or ""
-                if not _is_relevant_notam_msg(msg):
-                    continue
-                notam_id = notam_data.get("id", "") or notam_data.get("number", "")
-                # Extract dates from notam_data AND coreNOTAMData (dates may
-                # live at either level depending on the FAA API version).
-                notam_dates = _pick_dates(notam_data, core_data)
-                alerts_to_insert.append({
-                    "flight_id": fid,
-                    "alert_type": _classify_notam(msg),
-                    "severity": _notam_severity(msg),
-                    "airport_icao": notam_data.get("icaoLocation") or icao,
-                    "subject": notam_data.get("number", "")[:500],
-                    "body": msg[:2000],
-                    "source_message_id": f"nms-{notam_id}-{fid}",
-                    "raw_data": {"notam_dates": notam_dates} if notam_dates else None,
-                    "created_at": _utc_now(),
-                })
+            # NMS uses "text", legacy API uses "traditionalMessage"
+            msg = notam_data.get("text") or notam_data.get("traditionalMessage") or ""
+            if not _is_relevant_notam_msg(msg):
+                continue
+            notam_id = notam_data.get("id", "") or notam_data.get("number", "")
+            airport_icao = notam_data.get("icaoLocation") or icao
+            dedup_key = f"nms-{notam_id}-{airport_icao}"
+            if dedup_key in seen_notam_keys:
+                continue
+            seen_notam_keys.add(dedup_key)
+            # Extract dates from notam_data AND coreNOTAMData (dates may
+            # live at either level depending on the FAA API version).
+            notam_dates = _pick_dates(notam_data, core_data)
+            alerts_to_insert.append({
+                "flight_id": None,
+                "alert_type": _classify_notam(msg),
+                "severity": _notam_severity(msg),
+                "airport_icao": airport_icao,
+                "subject": notam_data.get("number", "")[:500],
+                "body": msg[:2000],
+                "source_message_id": dedup_key,
+                "raw_data": {"notam_dates": notam_dates} if notam_dates else None,
+                "created_at": _utc_now(),
+            })
 
     alerts_created = 0
     if alerts_to_insert:
