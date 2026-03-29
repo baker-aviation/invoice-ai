@@ -443,16 +443,29 @@ async function runParser(lookbackHours = 48) {
 
         if (clearances && clearances.length > 0) {
           let candidates = clearances;
+
+          // Filter by clearance type from subject
           if (clearanceType) {
             const typed = candidates.filter((c) => c.clearance_type === clearanceType);
             if (typed.length > 0) candidates = typed;
           }
+
+          // Filter by airport ICAO from the from address
           if (fromIcao) {
             const byAirport = candidates.filter((c) => c.airport_icao === fromIcao);
-            if (byAirport.length > 0) { candidates = byAirport; if (matchConfidence === "unmatched") matchConfidence = "low"; }
+            if (byAirport.length > 0) {
+              candidates = byAirport;
+              if (matchConfidence === "unmatched") matchConfidence = "low";
+            } else {
+              // Airport in email doesn't match any clearance on this trip — don't guess
+              candidates = [];
+            }
           }
-          const pending = candidates.find((c) => c.status !== "approved");
-          clearanceId = pending?.id ?? candidates[0]?.id ?? null;
+
+          if (candidates.length > 0) {
+            const pending = candidates.find((c) => c.status !== "approved");
+            clearanceId = pending?.id ?? candidates[0]?.id ?? null;
+          }
         }
       }
 
