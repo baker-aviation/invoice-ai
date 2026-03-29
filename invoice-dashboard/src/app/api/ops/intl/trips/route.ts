@@ -15,6 +15,7 @@ type MinFlight = {
   departure_icao: string | null;
   arrival_icao: string | null;
   scheduled_departure: string;
+  jetinsight_url?: string | null;
 };
 
 type DetectedTrip = {
@@ -22,6 +23,7 @@ type DetectedTrip = {
   route_icaos: string[];
   flight_ids: string[];
   trip_date: string;
+  jetinsight_trip_id: string | null;
 };
 
 function detectTrips(flights: MinFlight[]): DetectedTrip[] {
@@ -80,11 +82,17 @@ function detectTrips(flights: MinFlight[]): DetectedTrip[] {
           if (!isInternationalIcao(lastArrival)) break;
         }
 
+        // Extract JI trip ID from first flight's jetinsight_url
+        const jiUrl = f.jetinsight_url ?? tailFlights.slice(i, j).find((x) => x.jetinsight_url)?.jetinsight_url;
+        const jiMatch = jiUrl?.match(/\/trips\/([A-Za-z0-9]+)/);
+        const jetinsight_trip_id = jiMatch ? jiMatch[1] : null;
+
         trips.push({
           tail_number: tail,
           route_icaos: route,
           flight_ids: flightIds,
           trip_date: new Date(f.scheduled_departure).toISOString().slice(0, 10),
+          jetinsight_trip_id,
         });
 
         i = j;
@@ -229,7 +237,7 @@ export async function GET(req: NextRequest) {
 
     const { data: flights } = await supa
       .from("flights")
-      .select("id, tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival")
+      .select("id, tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, jetinsight_url")
       .gte("scheduled_departure", lookback)
       .lte("scheduled_departure", lookahead)
       .order("scheduled_departure");
@@ -244,20 +252,20 @@ export async function GET(req: NextRequest) {
         .eq("overflight_permit_required", true);
       const countriesWithOvfReq: CountryRow[] = (countriesData ?? []) as CountryRow[];
 
-      // Batch-fetch all existing trips for these tails (wider date window to catch date shifts)
-      const tripTails = [...new Set(detected.map((d) => d.tail_number))];
+      // Batch-fetch all existing trips (wider date window to catch date shifts + tail changes)
       const lookbackDate = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
       const { data: allExisting } = await supa
         .from("intl_trips")
-        .select("id, tail_number, trip_date, route_icaos, flight_ids")
-        .in("tail_number", tripTails)
+        .select("id, tail_number, trip_date, route_icaos, flight_ids, jetinsight_trip_id")
         .gte("trip_date", lookbackDate);
 
-      // Index existing trips by tail for matching
+      // Index existing trips by tail and by JI trip ID for matching
       const existingByTail = new Map<string, typeof allExisting>();
+      const existingByJiId = new Map<string, NonNullable<typeof allExisting>[0]>();
       for (const e of allExisting ?? []) {
         if (!existingByTail.has(e.tail_number)) existingByTail.set(e.tail_number, []);
         existingByTail.get(e.tail_number)!.push(e);
+        if (e.jetinsight_trip_id) existingByJiId.set(e.jetinsight_trip_id, e);
       }
 
       // Build a lookup for schedule snapshots from flight data
@@ -282,11 +290,24 @@ export async function GET(req: NextRequest) {
 
         const candidates = existingByTail.get(dt.tail_number) ?? [];
 
+        // 0. Try JI trip ID match first — the most stable identifier
+        let match: NonNullable<typeof allExisting>[0] | undefined;
+        let tailChanged = false;
+        if (dt.jetinsight_trip_id) {
+          const jiMatch = existingByJiId.get(dt.jetinsight_trip_id);
+          if (jiMatch && !matchedExistingIds.has(jiMatch.id)) {
+            match = jiMatch;
+            tailChanged = jiMatch.tail_number !== dt.tail_number;
+          }
+        }
+
         // 1. Try exact match: same tail + date + route
-        let match = candidates.find(
-          (e) => e.trip_date === dt.trip_date &&
-                 JSON.stringify(e.route_icaos) === JSON.stringify(dt.route_icaos)
-        );
+        if (!match) {
+          match = candidates.find(
+            (e) => e.trip_date === dt.trip_date &&
+                   JSON.stringify(e.route_icaos) === JSON.stringify(dt.route_icaos)
+          );
+        }
 
         // 2. Try flight_ids overlap on same tail: same flights, route or date changed
         if (!match) {
@@ -298,7 +319,6 @@ export async function GET(req: NextRequest) {
         }
 
         // 3. Try flight_ids overlap across ALL tails: aircraft swap (flights moved to different tail)
-        let tailChanged = false;
         if (!match) {
           const dtFlightSet = new Set(dt.flight_ids);
           for (const [, tailTrips] of existingByTail) {
@@ -332,8 +352,9 @@ export async function GET(req: NextRequest) {
           const dateChanged = match.trip_date !== dt.trip_date;
           const flightsChanged = JSON.stringify(match.flight_ids) !== JSON.stringify(dt.flight_ids);
           tailChanged = tailChanged || match.tail_number !== dt.tail_number;
+          const jiIdChanged = dt.jetinsight_trip_id && match.jetinsight_trip_id !== dt.jetinsight_trip_id;
 
-          if (routeChanged || dateChanged || flightsChanged || tailChanged) {
+          if (routeChanged || dateChanged || flightsChanged || tailChanged || jiIdChanged) {
             const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
             if (routeChanged) updates.route_icaos = dt.route_icaos;
             if (dateChanged) updates.trip_date = dt.trip_date;
@@ -348,29 +369,44 @@ export async function GET(req: NextRequest) {
               if (Object.keys(newSnap).length > 0) updates.schedule_snapshot = newSnap;
             }
             if (tailChanged) updates.tail_number = dt.tail_number;
+            if (jiIdChanged) updates.jetinsight_trip_id = dt.jetinsight_trip_id;
 
             updatePromises.push(
               supa.from("intl_trips").update(updates).eq("id", match.id)
             );
 
-            // If tail changed, fire a tail_change alert (permits may need resubmission)
-            if (tailChanged) {
-              tailChangeAlerts.push({
-                flight_id: dt.flight_ids[0],
-                old_tail: match.tail_number,
-                new_tail: dt.tail_number,
-                route: dt.route_icaos,
-              });
+            // Check if trip has been "started" (any clearance beyond not_started)
+            // Only fire change alerts if someone is actively working this trip
+            const { data: clearanceStatuses } = await supa
+              .from("intl_trip_clearances")
+              .select("status")
+              .eq("trip_id", match.id);
+            const tripStarted = (clearanceStatuses ?? []).some(
+              (c) => c.status !== "not_started"
+            );
+
+            if (tripStarted) {
+              // If tail changed, fire a tail_change alert (permits may need resubmission)
+              if (tailChanged) {
+                tailChangeAlerts.push({
+                  flight_id: dt.flight_ids[0],
+                  old_tail: match.tail_number,
+                  new_tail: dt.tail_number,
+                  route: dt.route_icaos,
+                });
+              }
             }
 
-            // If route changed, rebuild clearances: keep status on matching airports, add new ones
+            // If route changed, always rebuild clearances (but only alert if started)
             if (routeChanged) {
-              routeChangeAlerts.push({
-                flight_id: dt.flight_ids[0],
-                old_route: match.route_icaos,
-                new_route: dt.route_icaos,
-                tail: dt.tail_number,
-              });
+              if (tripStarted) {
+                routeChangeAlerts.push({
+                  flight_id: dt.flight_ids[0],
+                  old_route: match.route_icaos,
+                  new_route: dt.route_icaos,
+                  tail: dt.tail_number,
+                });
+              }
 
               // Fetch existing clearances for this trip
               const { data: existingClearances } = await supa
@@ -466,6 +502,7 @@ export async function GET(req: NextRequest) {
             flight_ids: dt.flight_ids,
             trip_date: dt.trip_date,
             schedule_snapshot: Object.keys(initSnap).length > 0 ? initSnap : null,
+            jetinsight_trip_id: dt.jetinsight_trip_id,
           })
           .select("id")
           .single();
@@ -607,7 +644,7 @@ export async function POST(req: NextRequest) {
   const { data: countriesData } = await supa
     .from("countries")
     .select("iso_code, name, overflight_permit_required");
-  const detected: DetectedTrip = { tail_number, route_icaos, flight_ids: [], trip_date };
+  const detected: DetectedTrip = { tail_number, route_icaos, flight_ids: [], trip_date, jetinsight_trip_id: null };
   const clearances = buildDefaultClearances(detected, (countriesData ?? []) as CountryRow[]).map((c) => ({
     ...c,
     trip_id: newTrip.id,
