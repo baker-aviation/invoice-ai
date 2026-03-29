@@ -163,9 +163,18 @@ export async function fetchFlights(params: {
     alertBatches.push(flightIds.slice(i, i + 200));
   }
 
-  // Orphan EDCT query runs in parallel with alert batches
+  // Collect all airports from flights for NOTAM query
+  const flightAirports = new Set<string>();
+  for (const f of flightRows) {
+    if (f.departure_icao) flightAirports.add(f.departure_icao as string);
+    if (f.arrival_icao) flightAirports.add(f.arrival_icao as string);
+  }
+  const airportList = [...flightAirports];
+
+  // Orphan EDCT + per-flight alerts + airport-level NOTAMs — all in parallel
   const edctPast = new Date(now.getTime() - 48 * 60 * 60 * 1000).toISOString();
-  const [alertResults, { data: orphanRows }] = await Promise.all([
+  const notamCutoff = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const [alertResults, { data: orphanRows }, { data: notamRows }] = await Promise.all([
     Promise.all(alertBatches.map((batch) =>
       supa.from("ops_alerts").select(ALERT_COLUMNS).in("flight_id", batch)
     )),
@@ -178,36 +187,79 @@ export async function fetchFlights(params: {
       .gte("created_at", edctPast)
       .order("created_at", { ascending: false })
       .limit(50),
+    // Airport-level NOTAMs (flight_id IS NULL, new dedup scheme)
+    airportList.length > 0
+      ? supa
+          .from("ops_alerts")
+          .select(ALERT_COLUMNS)
+          .like("alert_type", "NOTAM_%")
+          .is("flight_id", null)
+          .is("acknowledged_at", null)
+          .in("airport_icao", airportList)
+          .gte("created_at", notamCutoff)
+          .order("created_at", { ascending: false })
+          .limit(500)
+      : Promise.resolve({ data: [] as any[], error: null }),
   ]);
 
+  // Helper to build OpsAlert from a DB row
+  function rowToAlert(row: Record<string, unknown>): OpsAlert {
+    return {
+      id: row.id as string,
+      flight_id: row.flight_id as string | null,
+      alert_type: row.alert_type as string,
+      severity: row.severity as string,
+      airport_icao: row.airport_icao as string | null,
+      departure_icao: row.departure_icao as string | null,
+      arrival_icao: row.arrival_icao as string | null,
+      tail_number: row.tail_number as string | null,
+      subject: row.subject as string | null,
+      body: row.body as string | null,
+      edct_time: row.edct_time as string | null,
+      original_departure_time: row.original_departure_time as string | null,
+      acknowledged_at: row.acknowledged_at as string | null,
+      acknowledged_by: row.acknowledged_by as string | null,
+      created_at: row.created_at as string,
+      notam_dates: extractNotamDates(row.raw_data),
+      source_message_id: row.source_message_id as string | null,
+    };
+  }
+
+  // Process per-flight alerts (EDCTs, OCEANIC_HF, and legacy per-flight NOTAMs)
   for (const { data: alertRows, error: alertErr } of alertResults) {
     if (alertErr) throw new Error(`fetchFlights alerts failed: ${alertErr.message}`);
     for (const row of alertRows ?? []) {
       if (isNoiseNotam(row as { alert_type: string; body: string | null })) continue;
-
-      const alert: OpsAlert = {
-        id: row.id as string,
-        flight_id: row.flight_id as string | null,
-        alert_type: row.alert_type as string,
-        severity: row.severity as string,
-        airport_icao: row.airport_icao as string | null,
-        departure_icao: row.departure_icao as string | null,
-        arrival_icao: row.arrival_icao as string | null,
-        tail_number: row.tail_number as string | null,
-        subject: row.subject as string | null,
-        body: row.body as string | null,
-        edct_time: row.edct_time as string | null,
-        original_departure_time: row.original_departure_time as string | null,
-        acknowledged_at: row.acknowledged_at as string | null,
-        acknowledged_by: row.acknowledged_by as string | null,
-        created_at: row.created_at as string,
-        notam_dates: extractNotamDates(row.raw_data),
-        source_message_id: row.source_message_id as string | null,
-      };
-
+      const alert = rowToAlert(row);
       const fid = alert.flight_id ?? "";
       if (!alertsByFlight.has(fid)) alertsByFlight.set(fid, []);
       alertsByFlight.get(fid)!.push(alert);
+    }
+  }
+
+  // Distribute airport-level NOTAMs to flights by matching departure/arrival ICAO
+  const notamAlertsByAirport = new Map<string, OpsAlert[]>();
+  for (const row of notamRows ?? []) {
+    if (isNoiseNotam(row as { alert_type: string; body: string | null })) continue;
+    const alert = rowToAlert(row);
+    const icao = (alert.airport_icao ?? "").toUpperCase();
+    if (!notamAlertsByAirport.has(icao)) notamAlertsByAirport.set(icao, []);
+    notamAlertsByAirport.get(icao)!.push(alert);
+  }
+  for (const f of flightRows) {
+    const fid = f.id as string;
+    if (!alertsByFlight.has(fid)) alertsByFlight.set(fid, []);
+    const flightAlerts = alertsByFlight.get(fid)!;
+    // Attach NOTAMs from departure and arrival airports (dedup by alert ID)
+    const seen = new Set(flightAlerts.map((a) => a.id));
+    for (const icao of [f.departure_icao as string | null, f.arrival_icao as string | null]) {
+      if (!icao) continue;
+      for (const notam of notamAlertsByAirport.get(icao.toUpperCase()) ?? []) {
+        if (!seen.has(notam.id)) {
+          seen.add(notam.id);
+          flightAlerts.push(notam);
+        }
+      }
     }
   }
 
