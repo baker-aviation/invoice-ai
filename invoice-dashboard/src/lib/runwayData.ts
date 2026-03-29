@@ -126,8 +126,11 @@ function runwayMatches(rwy: RunwayInfo, designator: string): boolean {
 
 /**
  * Given NOTAM_RUNWAY alerts for an airport, return the IDs of alerts that
- * can be suppressed because the airport still has at least one paved runway
- * >= minLength_ft open after accounting for all closures in the batch.
+ * can be suppressed because the airport has at least one OTHER paved runway
+ * >= minLength_ft that this specific NOTAM does NOT close.
+ *
+ * Each NOTAM is evaluated independently — we don't aggregate closures across
+ * the batch because they typically have different effective times.
  *
  * Conservative: if we can't parse which runway a NOTAM closes, or if the
  * airport isn't in our dataset, we do NOT suppress it.
@@ -141,29 +144,19 @@ export function getSuppressedRunwayNotamIds(
   const info = getRunways(airportCode);
   if (!info) return suppress; // unknown airport → show everything
 
-  // Collect all closed runway designators from the batch
-  const closedDesignators: string[] = [];
-  const parseable: Array<{ id: string; designator: string }> = [];
-  for (const n of notams) {
-    if (!n.body) continue;
-    const d = parseClosedRunway(n.body);
-    if (d) {
-      closedDesignators.push(d);
-      parseable.push({ id: n.id, designator: d });
-    }
-  }
-
-  // Determine which paved runways >= minLength remain open
   const pavedLong = info.runways.filter(
     (r) => (r.surface === "A" || r.surface === "C") && r.length_ft >= minLength_ft,
   );
-  const openPavedLong = pavedLong.filter(
-    (r) => !closedDesignators.some((d) => runwayMatches(r, d)),
-  );
+  if (pavedLong.length === 0) return suppress; // no usable runways at all
 
-  // If at least one usable runway remains, suppress all parseable closure NOTAMs
-  if (openPavedLong.length > 0) {
-    for (const p of parseable) suppress.add(p.id);
+  for (const n of notams) {
+    if (!n.body) continue;
+    const designator = parseClosedRunway(n.body);
+    if (!designator) continue;
+
+    // Check if there's another 5000+ ft paved runway NOT closed by this NOTAM
+    const otherOpen = pavedLong.some((r) => !runwayMatches(r, designator));
+    if (otherOpen) suppress.add(n.id);
   }
 
   return suppress;
