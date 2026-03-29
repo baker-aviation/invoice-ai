@@ -44,9 +44,16 @@ export async function GET(
   }
 
   // Filter out runway closure NOTAMs when airport still has a 5000+ ft paved runway open
-  const filtered = filterRunwayClosureNotams(
-    (data ?? []).map((d) => ({ ...d, airport_icao: d.airport_icao ?? upper })),
-  );
+  const withDates = (data ?? []).map((d) => {
+    let notam_dates: Record<string, string | null> | null = null;
+    try {
+      const rd = typeof d.raw_data === "string" ? JSON.parse(d.raw_data) : d.raw_data;
+      const nd = rd?.notam_dates;
+      if (nd) notam_dates = nd;
+    } catch { /* ignore */ }
+    return { ...d, airport_icao: d.airport_icao ?? upper, notam_dates };
+  });
+  const filtered = filterRunwayClosureNotams(withDates);
 
   // Sort: priority types first (RWY, AD, PPR, TFR), then by date
   const sorted = filtered.sort((a, b) => {

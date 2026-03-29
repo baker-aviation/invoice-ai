@@ -124,39 +124,105 @@ function runwayMatches(rwy: RunwayInfo, designator: string): boolean {
   return desigEnds.some((d) => ends.includes(d));
 }
 
+/** Time window for a NOTAM closure */
+type TimeWindow = { start: number; end: number };
+
+/** Parse effective start/end from NOTAM date fields into epoch ms. */
+function parseTimeWindow(
+  dates: { effective_start?: string | null; effective_end?: string | null; start_date_utc?: string | null; end_date_utc?: string | null } | null,
+): TimeWindow | null {
+  if (!dates) return null;
+  const startStr = dates.effective_start ?? dates.start_date_utc;
+  const endStr = dates.effective_end ?? dates.end_date_utc;
+  if (!startStr || !endStr) return null;
+  const start = new Date(startStr).getTime();
+  const end = new Date(endStr).getTime();
+  if (isNaN(start) || isNaN(end)) return null;
+  return { start, end };
+}
+
+/** Check if two time windows overlap */
+function windowsOverlap(a: TimeWindow, b: TimeWindow): boolean {
+  return a.start < b.end && b.start < a.end;
+}
+
+type NotamInput = {
+  id: string;
+  body: string | null;
+  effective_start?: string | null;
+  effective_end?: string | null;
+  start_date_utc?: string | null;
+  end_date_utc?: string | null;
+};
+
+type ParsedClosure = {
+  id: string;
+  designator: string;
+  window: TimeWindow | null;
+};
+
 /**
  * Given NOTAM_RUNWAY alerts for an airport, return the IDs of alerts that
- * can be suppressed because the airport has at least one OTHER paved runway
- * >= minLength_ft that this specific NOTAM does NOT close.
+ * can be suppressed because a 5000+ ft paved runway remains open during the
+ * closure window.
  *
- * Each NOTAM is evaluated independently — we don't aggregate closures across
- * the batch because they typically have different effective times.
+ * Time-aware: if two closures at the same airport overlap in time and cover
+ * ALL 5000+ ft paved runways, neither is suppressed.
  *
- * Conservative: if we can't parse which runway a NOTAM closes, or if the
- * airport isn't in our dataset, we do NOT suppress it.
+ * Conservative: if we can't parse the runway, dates, or airport → show it.
  */
 export function getSuppressedRunwayNotamIds(
   airportCode: string,
-  notams: Array<{ id: string; body: string | null }>,
+  notams: NotamInput[],
   minLength_ft = 5000,
 ): Set<string> {
   const suppress = new Set<string>();
   const info = getRunways(airportCode);
-  if (!info) return suppress; // unknown airport → show everything
+  if (!info) return suppress;
 
   const pavedLong = info.runways.filter(
     (r) => (r.surface === "A" || r.surface === "C") && r.length_ft >= minLength_ft,
   );
-  if (pavedLong.length === 0) return suppress; // no usable runways at all
+  if (pavedLong.length === 0) return suppress;
 
+  // Parse all closures
+  const closures: ParsedClosure[] = [];
   for (const n of notams) {
     if (!n.body) continue;
     const designator = parseClosedRunway(n.body);
     if (!designator) continue;
+    closures.push({
+      id: n.id,
+      designator,
+      window: parseTimeWindow(n),
+    });
+  }
 
-    // Check if there's another 5000+ ft paved runway NOT closed by this NOTAM
-    const otherOpen = pavedLong.some((r) => !runwayMatches(r, designator));
-    if (otherOpen) suppress.add(n.id);
+  for (const closure of closures) {
+    // Find all other paved runways this NOTAM does NOT close
+    const otherRunways = pavedLong.filter((r) => !runwayMatches(r, closure.designator));
+
+    if (otherRunways.length === 0) {
+      // This is the only 5000+ ft runway — always show
+      continue;
+    }
+
+    // Check if every other runway has an overlapping closure during this window
+    const allOthersCovered = otherRunways.every((rwy) => {
+      // Find closures that close THIS runway and overlap in time
+      return closures.some((other) => {
+        if (other.id === closure.id) return false;
+        if (!runwayMatches(rwy, other.designator)) return false;
+        // If either NOTAM has no time window, be conservative (assume overlap)
+        if (!closure.window || !other.window) return true;
+        return windowsOverlap(closure.window, other.window);
+      });
+    });
+
+    // Suppress only if at least one other runway is NOT covered by overlapping closures
+    if (!allOthersCovered) {
+      suppress.add(closure.id);
+    }
   }
 
   return suppress;
@@ -164,18 +230,31 @@ export function getSuppressedRunwayNotamIds(
 
 /**
  * Collect suppressed NOTAM_RUNWAY IDs across all airports in a flat alert list.
- * Returns an array of alert IDs that can be hidden (airport still has 5000+ ft paved open).
+ * Accepts OpsAlert-shaped objects (with notam_dates for time-aware filtering).
  */
 export function getRunwaySuppressedIds<
-  T extends { id: string; alert_type: string; body: string | null; airport_icao: string | null },
+  T extends {
+    id: string;
+    alert_type: string;
+    body: string | null;
+    airport_icao: string | null;
+    notam_dates?: { effective_start?: string | null; effective_end?: string | null; start_date_utc?: string | null; end_date_utc?: string | null } | null;
+  },
 >(alerts: T[], minLength_ft = 5000): string[] {
   // Group NOTAM_RUNWAY alerts by airport
-  const byAirport = new Map<string, T[]>();
+  const byAirport = new Map<string, NotamInput[]>();
   for (const a of alerts) {
     if (a.alert_type !== "NOTAM_RUNWAY" || !a.airport_icao) continue;
     const key = a.airport_icao.toUpperCase();
     if (!byAirport.has(key)) byAirport.set(key, []);
-    byAirport.get(key)!.push(a);
+    byAirport.get(key)!.push({
+      id: a.id,
+      body: a.body,
+      effective_start: a.notam_dates?.effective_start,
+      effective_end: a.notam_dates?.effective_end,
+      start_date_utc: a.notam_dates?.start_date_utc,
+      end_date_utc: a.notam_dates?.end_date_utc,
+    });
   }
 
   const suppressed = new Set<string>();
@@ -192,7 +271,13 @@ export function getRunwaySuppressedIds<
  * Convenience wrapper around getRunwaySuppressedIds.
  */
 export function filterRunwayClosureNotams<
-  T extends { id: string; alert_type: string; body: string | null; airport_icao: string | null },
+  T extends {
+    id: string;
+    alert_type: string;
+    body: string | null;
+    airport_icao: string | null;
+    notam_dates?: { effective_start?: string | null; effective_end?: string | null; start_date_utc?: string | null; end_date_utc?: string | null } | null;
+  },
 >(alerts: T[], minLength_ft = 5000): T[] {
   const suppressed = new Set(getRunwaySuppressedIds(alerts, minLength_ft));
   return alerts.filter((a) => !suppressed.has(a.id));
