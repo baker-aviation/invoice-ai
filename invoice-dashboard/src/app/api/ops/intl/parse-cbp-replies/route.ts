@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireAuth, isAuthed } from "@/lib/api-auth";
+import { requireAuth, isAuthed, verifyCronSecret } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 import { getGcsStorage } from "@/lib/gcs-upload";
 
@@ -124,6 +124,12 @@ function parseBody(bodyHtml: string): {
 // GET — fetch CBP replies for a trip
 // ---------------------------------------------------------------------------
 export async function GET(req: NextRequest) {
+  // Vercel cron calls GET with Authorization header — run the parser
+  if (verifyCronSecret(req)) {
+    return runParser();
+  }
+
+  // Normal authenticated GET — fetch replies for a trip
   const auth = await requireAuth(req);
   if (!isAuthed(auth)) return auth.error;
 
@@ -145,14 +151,12 @@ export async function GET(req: NextRequest) {
 // POST — poll handling mailbox, parse CBP replies, update clearances
 // ---------------------------------------------------------------------------
 export async function POST(req: NextRequest) {
-  // Allow cron secret OR authenticated user
-  const cronSecret = req.headers.get("x-cron-secret") || req.nextUrl.searchParams.get("cron_secret");
-  if (cronSecret === process.env.CRON_SECRET) {
-    // Cron auth OK
-  } else {
-    const auth = await requireAuth(req);
-    if (!isAuthed(auth)) return auth.error;
-  }
+  const auth = await requireAuth(req);
+  if (!isAuthed(auth)) return auth.error;
+  return runParser();
+}
+
+async function runParser() {
 
   const supa = createServiceClient();
   const mailbox = process.env.OUTLOOK_HANDLING_MAILBOX || process.env.OUTLOOK_SHARED_MAILBOX;
