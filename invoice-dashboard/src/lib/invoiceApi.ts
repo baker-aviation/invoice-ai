@@ -199,7 +199,7 @@ export async function fetchAlerts(params: {
   slack_status?: string;
 } = {}): Promise<AlertsResponse> {
   const supa = createServiceClient();
-  const limit = params.limit ?? 200;
+  const limit = params.limit ?? 1000;
 
   let query = supa
     .from("invoice_alerts")
