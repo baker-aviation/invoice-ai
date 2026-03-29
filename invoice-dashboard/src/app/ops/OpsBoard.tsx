@@ -690,11 +690,11 @@ function FlightCard({
   flight, isAcked, showAcknowledged, showFiltered, suppressedIds, onAck, onAckAll, clientAlerts, dismissedClientAlerts, onDismissClient, userMap, dismissedByMap, pinnedIds, onTogglePin, pinnedKeys, onTogglePinKey,
 }: {
   flight: Flight;
-  isAcked: (a: OpsAlert) => boolean;
+  isAcked: (a: OpsAlert, flightId?: string) => boolean;
   showAcknowledged: boolean;
   showFiltered: boolean;
   suppressedIds: Set<string>;
-  onAck: (id: string) => void;
+  onAck: (alertId: string, flightId: string) => void;
   onAckAll: (flightId: string, alertIds: string[]) => void;
   clientAlerts: ClientAlert[];
   dismissedClientAlerts: Set<string>;
@@ -706,14 +706,15 @@ function FlightCard({
   pinnedKeys?: Set<string>;
   onTogglePinKey?: (key: string, pin: boolean) => void;
 }) {
+  const fid = flight.id;
   const visibleAlerts = (flight.alerts ?? []).filter((a) => {
     const isSuppressed = suppressedIds.has(a.id);
-    if (showFiltered) return isSuppressed; // filtered tab: only show suppressed
-    if (isSuppressed) return false; // normal view: hide suppressed
-    return showAcknowledged || !isAcked(a);
+    if (showFiltered) return isSuppressed;
+    if (isSuppressed) return false;
+    return showAcknowledged || !isAcked(a, fid);
   });
   const alerts = visibleAlerts;
-  const unackedServerAlerts = (flight.alerts ?? []).filter((a) => !isAcked(a) && !suppressedIds.has(a.id));
+  const unackedServerAlerts = (flight.alerts ?? []).filter((a) => !isAcked(a, fid) && !suppressedIds.has(a.id));
   const activeClientAlerts = showFiltered ? [] : clientAlerts.filter((ca) => showAcknowledged || !dismissedClientAlerts.has(ca.key));
   const hasRwyClosed = activeClientAlerts.some((ca) => ca.type === "ALL_RWYS_CLOSED");
   const hasCritical = hasRwyClosed || alerts.some((a) => a.severity === "critical");
@@ -804,7 +805,7 @@ function FlightCard({
       {/* Alerts (server + client) */}
       {totalAlertCount > 0 && (
         <div className="px-3 pb-3 space-y-1.5">
-          {alerts.map((a) => <AlertCard key={a.id} alert={a} onAck={onAck} acked={isAcked(a)} ackedByName={showAcknowledged && a.acknowledged_by ? userMap.get(a.acknowledged_by) ?? null : null} pinned={pinnedIds?.has(a.id)} onTogglePin={onTogglePin} />)}
+          {alerts.map((a) => <AlertCard key={a.id} alert={a} onAck={(id) => onAck(id, fid)} acked={isAcked(a, fid)} ackedByName={showAcknowledged && a.acknowledged_by ? userMap.get(a.acknowledged_by) ?? null : null} pinned={pinnedIds?.has(a.id)} onTogglePin={onTogglePin} />)}
           {activeClientAlerts.map((ca) => (
             <ClientAlertCard key={ca.key} alert={ca} onDismiss={onDismissClient} dismissed={dismissedClientAlerts.has(ca.key)} dismissedByName={showAcknowledged && dismissedByMap.has(ca.key) ? userMap.get(dismissedByMap.get(ca.key)!) ?? null : null} pinned={pinnedKeys?.has(ca.key)} onTogglePin={onTogglePinKey} />
           ))}
@@ -944,6 +945,9 @@ export default function OpsBoard({ initialFlights, bakerPprAirports, suppressedR
   const [showAllTypes, setShowAllTypes] = useState(false);
   const [activeRange, setActiveRange] = useState<TimeRange>("7D");
   const [localAckedIds, setLocalAckedIds] = useState<Set<string>>(new Set());
+  // Per-flight NOTAM acks: Set of "alertId:flightId" composite keys
+  const [notamFlightAcks, setNotamFlightAcks] = useState<Set<string>>(new Set());
+  const [notamAckUsers, setNotamAckUsers] = useState<Map<string, string>>(new Map());
   const [showAcknowledged, setShowAcknowledged] = useState(false);
   const [showFiltered, setShowFiltered] = useState(false);
   const suppressedIds = useMemo(() => new Set(suppressedRunwayNotamIds), [suppressedRunwayNotamIds]);
@@ -969,6 +973,34 @@ export default function OpsBoard({ initialFlights, bakerPprAirports, suppressedR
       setCustomAlerts(d.alerts ?? []);
     }).catch(() => {});
   }, []);
+
+  // Load per-flight NOTAM acks
+  useEffect(() => {
+    const flightIds = initialFlights.map((f) => f.id);
+    if (flightIds.length === 0) return;
+    // Batch flight IDs (URL length limit)
+    const batches: string[][] = [];
+    for (let i = 0; i < flightIds.length; i += 100) {
+      batches.push(flightIds.slice(i, i + 100));
+    }
+    Promise.all(
+      batches.map((batch) =>
+        fetch(`/api/ops/alerts/notam-ack?flight_ids=${batch.join(",")}`).then((r) => r.json())
+      ),
+    ).then((results) => {
+      const acks = new Set<string>();
+      const users = new Map<string, string>();
+      for (const r of results) {
+        for (const a of r.acks ?? []) {
+          const key = `${a.alert_id}:${a.flight_id}`;
+          acks.add(key);
+          if (a.user_id) users.set(key, a.user_id);
+        }
+      }
+      setNotamFlightAcks(acks);
+      setNotamAckUsers(users);
+    }).catch(() => {});
+  }, [initialFlights]);
 
   const togglePin = useCallback(async (alertId: string, pin: boolean) => {
     if (pin) {
@@ -1068,27 +1100,53 @@ export default function OpsBoard({ initialFlights, bakerPprAirports, suppressedR
       .catch(() => {});
   }, [showAcknowledged]);
 
-  const handleAck = useCallback((id: string) => {
-    setLocalAckedIds((prev) => new Set(prev).add(id));
-    fetch(`/api/ops/alerts/${id}/acknowledge`, { method: "POST" }).catch(() => {});
-  }, []);
-
-  const handleAckAll = useCallback((flightId: string, alertIds: string[]) => {
-    // Optimistically mark all as acked
-    setLocalAckedIds((prev) => {
-      const next = new Set(prev);
-      for (const id of alertIds) next.add(id);
-      return next;
-    });
-    fetch("/api/ops/alerts/acknowledge-bulk", {
+  const handleAck = useCallback((alertId: string, flightId: string) => {
+    // Shared NOTAMs (flight_id null on the alert) use per-flight ack table
+    const compositeKey = `${alertId}:${flightId}`;
+    setNotamFlightAcks((prev) => new Set(prev).add(compositeKey));
+    setLocalAckedIds((prev) => new Set(prev).add(compositeKey));
+    fetch("/api/ops/alerts/notam-ack", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ flight_id: flightId }),
+      body: JSON.stringify({ alert_id: alertId, flight_id: flightId }),
     }).catch(() => {});
   }, []);
 
-  // An alert is "acknowledged" if the server has it acked OR we optimistically acked it
-  const isAcked = useCallback((a: OpsAlert) => a.acknowledged_at != null || localAckedIds.has(a.id), [localAckedIds]);
+  const handleAckAll = useCallback((flightId: string, alertIds: string[]) => {
+    setNotamFlightAcks((prev) => {
+      const next = new Set(prev);
+      for (const id of alertIds) next.add(`${id}:${flightId}`);
+      return next;
+    });
+    setLocalAckedIds((prev) => {
+      const next = new Set(prev);
+      for (const id of alertIds) next.add(`${id}:${flightId}`);
+      return next;
+    });
+    // Ack each alert via per-flight endpoint
+    for (const id of alertIds) {
+      fetch("/api/ops/alerts/notam-ack", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ alert_id: id, flight_id: flightId }),
+      }).catch(() => {});
+    }
+  }, []);
+
+  // An alert is "acknowledged" if:
+  // - The alert row itself has acknowledged_at (legacy per-flight alerts), OR
+  // - There's a per-flight NOTAM ack for this alert+flight combo
+  const isAcked = useCallback(
+    (a: OpsAlert, flightId?: string) => {
+      if (a.acknowledged_at != null) return true;
+      if (flightId) {
+        const key = `${a.id}:${flightId}`;
+        return notamFlightAcks.has(key) || localAckedIds.has(key);
+      }
+      return localAckedIds.has(a.id);
+    },
+    [localAckedIds, notamFlightAcks],
+  );
 
   const handleDismissClient = useCallback((key: string) => {
     // Optimistic update
@@ -1310,13 +1368,13 @@ export default function OpsBoard({ initialFlights, bakerPprAirports, suppressedR
   }, [filtered]);
 
   // Stats (exclude suppressed runway NOTAMs from counts)
-  const isVisible = (a: OpsAlert) => !isAcked(a) && !suppressedIds.has(a.id);
+  const isVisibleInFlight = (a: OpsAlert, fid: string) => !isAcked(a, fid) && !suppressedIds.has(a.id);
   const totalFlights = timeFiltered.length;
-  const totalAlerts = timeFiltered.reduce((n, f) => n + (f.alerts?.filter(isVisible).length ?? 0), 0);
-  const criticalFlights = timeFiltered.filter((f) => f.alerts?.some((a) => a.severity === "critical" && isVisible(a))).length;
+  const totalAlerts = timeFiltered.reduce((n, f) => n + (f.alerts?.filter((a) => isVisibleInFlight(a, f.id)).length ?? 0), 0);
+  const criticalFlights = timeFiltered.filter((f) => f.alerts?.some((a) => a.severity === "critical" && isVisibleInFlight(a, f.id))).length;
   const warningFlights = timeFiltered.filter((f) =>
-    f.alerts?.some((a) => a.severity === "warning" && isVisible(a)) &&
-    !f.alerts?.some((a) => a.severity === "critical" && isVisible(a))
+    f.alerts?.some((a) => a.severity === "warning" && isVisibleInFlight(a, f.id)) &&
+    !f.alerts?.some((a) => a.severity === "critical" && isVisibleInFlight(a, f.id))
   ).length;
 
   // Alert counts per category (for pill badges)
@@ -1326,7 +1384,7 @@ export default function OpsBoard({ initialFlights, bakerPprAirports, suppressedR
     for (const f of timeFiltered) {
       // Server alerts — count flights with NOTAM alerts (excluding suppressed runway NOTAMs)
       for (const a of f.alerts ?? []) {
-        if (isAcked(a) || suppressedIds.has(a.id)) continue;
+        if (isAcked(a, f.id) || suppressedIds.has(a.id)) continue;
         if (a.alert_type.startsWith("NOTAM") && !flightsCounted.NOTAMS.has(f.id)) {
           counts.NOTAMS++;
           flightsCounted.NOTAMS.add(f.id);
@@ -1370,7 +1428,7 @@ export default function OpsBoard({ initialFlights, bakerPprAirports, suppressedR
     for (const f of withFilteredAlerts) {
       for (const a of f.alerts ?? []) {
         if (a.alert_type !== "EDCT") continue;
-        if (isAcked(a)) continue;
+        if (isAcked(a, f.id)) continue;
         // Show if flight departs in the future or within last 24 hours
         const depTime = new Date(f.scheduled_departure);
         if (depTime >= lookback) {
@@ -1417,7 +1475,7 @@ export default function OpsBoard({ initialFlights, bakerPprAirports, suppressedR
             </div>
             <div className="p-3 space-y-2">
               {pinnedAlerts.map((a) => (
-                <AlertCard key={a.id} alert={a} onAck={handleAck} pinned onTogglePin={togglePin} />
+                <AlertCard key={a.id} alert={a} onAck={(id) => handleAck(id, "")} pinned onTogglePin={togglePin} />
               ))}
               {pinnedClientAlerts.map((ca) => (
                 <ClientAlertCard key={ca.key} alert={ca} onDismiss={handleDismissClient} pinned onTogglePin={togglePinKey} />
@@ -1735,11 +1793,11 @@ export default function OpsBoard({ initialFlights, bakerPprAirports, suppressedR
         <div className="space-y-1">
           {byDay.map(({ date, flights: dayFlights }) => {
             const dayCritical = dayFlights.filter((f) =>
-              f.alerts?.some((a) => a.severity === "critical" && isVisible(a))
+              f.alerts?.some((a) => a.severity === "critical" && isVisibleInFlight(a, f.id))
             ).length;
             const dayWarning = dayFlights.filter((f) =>
-              f.alerts?.some((a) => a.severity === "warning" && isVisible(a)) &&
-              !f.alerts?.some((a) => a.severity === "critical" && isVisible(a))
+              f.alerts?.some((a) => a.severity === "warning" && isVisibleInFlight(a, f.id)) &&
+              !f.alerts?.some((a) => a.severity === "critical" && isVisibleInFlight(a, f.id))
             ).length;
 
             return (
