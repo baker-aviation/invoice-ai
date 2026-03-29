@@ -103,9 +103,76 @@ function detectHolding(positions: { heading?: number | null }[]): boolean {
   return cumulative >= 300;
 }
 
+/* ── Step climb stall detection ── */
+
+const STEP_CLIMB_ALTS = [
+  { fl: "FL410", min: 40500, max: 41500 },
+  { fl: "FL430", min: 42500, max: 43500 },
+  { fl: "FL450", min: 44500, max: 45500 },
+];
+const STEP_STALL_MS = 15 * 60_000; // 15 minutes
+
+type AltitudePlateau = {
+  flightLevel: string;
+  altitudeFt: number;
+  startTime: Date;
+  endTime: Date;
+  durationMin: number;
+  isCurrent: boolean;
+  isStale: boolean; // 15+ min at a step climb altitude
+};
+
+function stepClimbProfile(trackPoints: TrackPoint[]): AltitudePlateau[] {
+  const pts = trackPoints.filter(p => p.altitude != null && p.timestamp);
+  if (pts.length < 2) return [];
+
+  const TOLERANCE = 500; // same step if within ±500ft
+  const plateaus: AltitudePlateau[] = [];
+  let groupStart = 0;
+
+  for (let i = 1; i <= pts.length; i++) {
+    const baseAlt = pts[groupStart].altitude!;
+    const currAlt = i < pts.length ? pts[i].altitude! : null;
+
+    if (currAlt == null || Math.abs(currAlt - baseAlt) > TOLERANCE) {
+      const groupPts = pts.slice(groupStart, i);
+      const avgAlt = groupPts.reduce((s, p) => s + p.altitude!, 0) / groupPts.length;
+      const start = new Date(groupPts[0].timestamp!);
+      const end = new Date(groupPts[groupPts.length - 1].timestamp!);
+      const durMin = (end.getTime() - start.getTime()) / 60_000;
+
+      // Only include plateaus above FL180 and lasting at least 1 minute
+      if (avgAlt >= 18000 && durMin >= 1) {
+        const isStepAlt = STEP_CLIMB_ALTS.some(s => avgAlt >= s.min && avgAlt <= s.max);
+        plateaus.push({
+          flightLevel: fmtAlt(Math.round(avgAlt)),
+          altitudeFt: Math.round(avgAlt),
+          startTime: start,
+          endTime: end,
+          durationMin: Math.round(durMin),
+          isCurrent: false,
+          isStale: isStepAlt && durMin >= 15,
+        });
+      }
+      groupStart = i;
+    }
+  }
+
+  // Mark last plateau as current & use now for its duration
+  if (plateaus.length > 0) {
+    const last = plateaus[plateaus.length - 1];
+    last.isCurrent = true;
+    last.durationMin = Math.round((Date.now() - last.startTime.getTime()) / 60_000);
+    const isStepAlt = STEP_CLIMB_ALTS.some(s => last.altitudeFt >= s.min && last.altitudeFt <= s.max);
+    last.isStale = isStepAlt && last.durationMin >= 15;
+  }
+
+  return plateaus;
+}
+
 /* ── FlightTracks — actual FA track polylines for airborne aircraft ── */
 
-type TrackPoint = { latitude: number; longitude: number; heading?: number | null };
+type TrackPoint = { latitude: number; longitude: number; heading?: number | null; altitude?: number | null; timestamp?: string | null };
 
 /** Strip leading "K" from US ICAO codes (e.g. KTEB→TEB) for airport lookup */
 function stripK(icao: string | null | undefined): string | null {
@@ -137,12 +204,14 @@ function FlightTracks({
   fleetLookup,
   onHoldingDetected,
   onLatestPositions,
+  onAltitudeTracks,
 }: {
   aircraft: AircraftPosition[];
   flightInfo: Map<string, FlightInfoMap>;
   fleetLookup: Map<string, string>;
   onHoldingDetected: (tails: Set<string>) => void;
   onLatestPositions: (positions: Map<string, [number, number]>) => void;
+  onAltitudeTracks: (tracks: Map<string, TrackPoint[]>) => void;
 }) {
   const [tracks, setTracks] = useState<Map<string, [number, number][]>>(new Map());
   const [fallbacks, setFallbacks] = useState<Map<string, [number, number][]>>(new Map());
@@ -220,6 +289,7 @@ function FlightTracks({
       const newFallbacks = new Map<string, [number, number][]>();
       const holdingTails = new Set<string>();
       const latestPositions = new Map<string, [number, number]>();
+      const newAltTracks = new Map<string, TrackPoint[]>();
 
       // Single batch request — FA rate-limits at 1 req/sec, so the server
       // fetches tracks sequentially with pauses instead of parallel calls
@@ -250,6 +320,7 @@ function FlightTracks({
             const fb = buildFallbackRoute(fi, acByTail.get(fi.tail));
             if (fb) newFallbacks.set(fi.tail, fb);
           }
+          if (rawPositions.length > 0) newAltTracks.set(fi.tail, rawPositions);
           if (detectHolding(rawPositions)) holdingTails.add(fi.tail);
         }
       } catch (err) {
@@ -269,6 +340,7 @@ function FlightTracks({
         onHoldingDetected(holdingTails);
         latestPositionsRef.current = latestPositions;
         onLatestPositions(latestPositions);
+        onAltitudeTracks(newAltTracks);
       }
     })();
     return () => controller.abort();
@@ -679,6 +751,7 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
   const { darkMode, showRadar, showVans, showDelays, showFlows } = prefs;
   const [holdingTails, setHoldingTails] = useState<Set<string>>(new Set());
   const [trackPositions, setTrackPositions] = useState<Map<string, [number, number]>>(new Map());
+  const [altitudeTracks, setAltitudeTracks] = useState<Map<string, TrackPoint[]>>(new Map());
   const radarUrl = useRadarUrl(showRadar);
   const vanPositions = useVanPositions(showVans);
   const { airports: delayAirports, updated: delaysUpdated, afps } = useFaaDelays(showDelays);
@@ -727,6 +800,36 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
     return result;
   }, [aircraft]);
 
+  /* ── Step climb stall alert: ↑FL4XX when level at a step altitude for 15+ min ── */
+  const stepClimbTimersRef = useRef<Map<string, number>>(new Map());
+  const stepClimbAlerts = useMemo(() => {
+    const LEVEL_FPM = 300;
+    const now = Date.now();
+    const result = new Map<string, string>();
+    const activeTails = new Set<string>();
+
+    for (const ac of aircraft) {
+      if (ac.on_ground || ac.alt_baro == null) continue;
+      const isLevel = ac.baro_rate == null || Math.abs(ac.baro_rate) < LEVEL_FPM;
+      if (!isLevel) continue;
+
+      const step = STEP_CLIMB_ALTS.find(s => ac.alt_baro! >= s.min && ac.alt_baro! <= s.max);
+      if (!step) continue;
+
+      activeTails.add(ac.tail);
+      if (!stepClimbTimersRef.current.has(ac.tail)) {
+        stepClimbTimersRef.current.set(ac.tail, now);
+      }
+      if (now - stepClimbTimersRef.current.get(ac.tail)! >= STEP_STALL_MS) {
+        result.set(ac.tail, `↑${step.fl}`);
+      }
+    }
+    for (const tail of stepClimbTimersRef.current.keys()) {
+      if (!activeTails.has(tail)) stepClimbTimersRef.current.delete(tail);
+    }
+    return result;
+  }, [aircraft]);
+
   const handleHoldingDetected = useCallback((tails: Set<string>) => {
     setHoldingTails(tails);
     onHoldingDetectedProp?.(tails);
@@ -771,7 +874,7 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
           <TileLayer key={`radar-${radarUrl}`} url={radarUrl} opacity={0.65} zIndex={300} />
         )}
 
-        <FlightTracks aircraft={aircraft} flightInfo={flightInfo} fleetLookup={fleetLookup} onHoldingDetected={handleHoldingDetected} onLatestPositions={setTrackPositions} />
+        <FlightTracks aircraft={aircraft} flightInfo={flightInfo} fleetLookup={fleetLookup} onHoldingDetected={handleHoldingDetected} onLatestPositions={setTrackPositions} onAltitudeTracks={setAltitudeTracks} />
 
         {aircraft.map((ac) => {
           const fi = flightInfo.get(ac.tail);
@@ -815,7 +918,7 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
               zIndexOffset={ac.on_ground ? 1000 : 2000}
             >
               <Tooltip permanent direction="right" offset={[12, 0]} className="fa-data-tooltip">
-                <div dangerouslySetInnerHTML={{ __html: acDataLabel(ac, fi, fleetLookup, alertLabel, darkMode, levelBelowFL470.get(ac.tail)) }} />
+                <div dangerouslySetInnerHTML={{ __html: acDataLabel(ac, fi, fleetLookup, alertLabel, darkMode, stepClimbAlerts.get(ac.tail) ?? levelBelowFL470.get(ac.tail)) }} />
               </Tooltip>
               <Popup>
                 <div className="text-sm space-y-1">
@@ -844,6 +947,36 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
                     )}
                   </div>
                   {isHolding && <div className="text-xs font-semibold text-red-600">HOLDING PATTERN</div>}
+                  {/* Step climb profile */}
+                  {!ac.on_ground && (() => {
+                    const trackPts = altitudeTracks.get(ac.tail);
+                    if (!trackPts || trackPts.length < 2) return null;
+                    const profile = stepClimbProfile(trackPts);
+                    if (profile.length === 0) return null;
+                    return (
+                      <div className="text-xs mt-1.5 pt-1.5 border-t border-gray-200">
+                        <div className="text-gray-500 font-medium mb-0.5">Step Climb Profile</div>
+                        <div className="font-mono space-y-px">
+                          {profile.map((p, i) => (
+                            <div
+                              key={i}
+                              className={`flex gap-2 ${p.isCurrent ? "font-semibold text-gray-900" : "text-gray-500"} ${p.isStale ? "!text-amber-600" : ""}`}
+                            >
+                              <span className="w-[3ch] shrink-0">{p.isCurrent ? "▸" : ""}</span>
+                              <span className="w-[5ch] shrink-0">{p.flightLevel}</span>
+                              <span className="w-[4ch] shrink-0 text-right">{p.durationMin}m</span>
+                              <span className="text-gray-400 shrink-0">
+                                {p.startTime.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC" })}z
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                        {profile.some(p => p.isCurrent && p.isStale) && (
+                          <div className="text-amber-600 font-semibold mt-0.5">⚠ Level {profile.find(p => p.isCurrent)!.durationMin}+ min at step</div>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
               </Popup>
             </Marker>
