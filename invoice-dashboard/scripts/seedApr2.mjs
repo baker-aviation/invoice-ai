@@ -124,9 +124,27 @@ async function searchFlights(origin, destination) {
   }
 
   const data = await res.json();
-  const best = data.bestFlights ?? [];
-  const other = data.otherFlights ?? [];
-  return { offers: [...best, ...other], error: null };
+  const raw = [...(data.bestFlights ?? []), ...(data.otherFlights ?? [])];
+
+  // Transform to FlightOffer format (same as hasdata.ts searchFlights)
+  const offers = raw.map((r, i) => ({
+    id: String(i),
+    price: { total: String(r.price), currency: "USD" },
+    itineraries: [{
+      duration: `PT${Math.floor(r.totalDuration / 60)}H${r.totalDuration % 60}M`,
+      segments: (r.flights ?? []).map(f => ({
+        departure: { iataCode: f.departureAirport?.id ?? "", at: f.departureAirport?.time ?? "" },
+        arrival: { iataCode: f.arrivalAirport?.id ?? "", at: f.arrivalAirport?.time ?? "" },
+        carrierCode: (f.flightNumber ?? "").split(" ")[0] ?? "",
+        number: (f.flightNumber ?? "").split(" ")[1] ?? "",
+        duration: `PT${Math.floor((f.duration ?? 0) / 60)}H${(f.duration ?? 0) % 60}M`,
+        numberOfStops: 0,
+      })),
+    }],
+    numberOfBookableSeats: 9,
+  }));
+
+  return { offers, error: null };
 }
 
 // ─── Step 4: Seed ────────────────────────────────────────────────────────────

@@ -848,7 +848,7 @@ function buildCandidates(
       for (const searchDate of datesToSearch) {
       const offers = lookupFlights(commercialFlights, originIata, destIata, searchDate);
       for (const offer of offers) {
-        const segs = offer.itineraries[0]?.segments ?? [];
+        const segs = offer.itineraries?.[0]?.segments ?? [];
         if (segs.length === 0) continue;
 
         // Reject 2+ connections
