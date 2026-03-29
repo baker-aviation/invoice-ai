@@ -9,7 +9,7 @@ import { createServiceClient } from "@/lib/supabase/service";
  * FormData: file (CSV)
  *
  * Expected CSV columns:
- *   Start Z, Start time Z, End time Z, Tail #, Trip, Salesperson, Customer, Orig, Orig FBO, Dest, Dest FBO
+ *   Start Z, Start time Z, End time Z, Tail #, Trip, Salesperson, Customer, Orig, Orig FBO, Dest, Dest FBO, Passengers
  */
 export async function POST(req: NextRequest) {
   const auth = await requireAdmin(req);
@@ -72,6 +72,8 @@ export async function POST(req: NextRequest) {
     const customer = fields[colMap.customer]?.trim() ?? null;
     const originFbo = colMap.origFbo !== -1 ? (fields[colMap.origFbo]?.trim() || null) : null;
     const destFbo = colMap.destFbo !== -1 ? (fields[colMap.destFbo]?.trim() || null) : null;
+    const passengersRaw = colMap.passengers !== -1 ? (fields[colMap.passengers]?.trim() || null) : null;
+    const passengers = passengersRaw && passengersRaw !== "null" ? passengersRaw : null;
 
     const departure = parseZuluDateTime(startDate, startTime);
     const arrival = endTime ? parseZuluDateTime(startDate, endTime, departure) : null;
@@ -87,6 +89,7 @@ export async function POST(req: NextRequest) {
       customer,
       origin_fbo: originFbo,
       destination_fbo: destFbo,
+      passengers,
       updated_at: new Date().toISOString(),
     });
   }
@@ -169,6 +172,7 @@ type ColMap = {
   dest: number;
   origFbo: number;
   destFbo: number;
+  passengers: number;
 };
 
 function findColumns(headers: string[]): ColMap | null {
@@ -184,11 +188,12 @@ function findColumns(headers: string[]): ColMap | null {
   const dest = norm.findIndex((h) => h === "dest");
   const origFbo = norm.findIndex((h) => h === "orig fbo");
   const destFbo = norm.findIndex((h) => h === "dest fbo");
+  const passengers = norm.findIndex((h) => h === "passengers");
 
   if ([startZ, startTimeZ, endTimeZ, tail, trip, salesperson, customer, orig, dest].some((i) => i === -1)) {
     return null;
   }
-  return { startZ, startTimeZ, endTimeZ, tail, trip, salesperson, customer, orig, dest, origFbo, destFbo };
+  return { startZ, startTimeZ, endTimeZ, tail, trip, salesperson, customer, orig, dest, origFbo, destFbo, passengers };
 }
 
 /**

@@ -615,6 +615,41 @@ export async function GET(req: NextRequest) {
   }
   if (snapshotBackfills.length > 0) await Promise.all(snapshotBackfills);
 
+  // Fetch passenger data from trip_salespersons and attach to trips
+  const tripTails = [...new Set((trips ?? []).map((t) => t.tail_number).filter(Boolean))];
+  if (tripTails.length > 0) {
+    const { data: paxRows } = await supa
+      .from("trip_salespersons")
+      .select("trip_id, tail_number, origin_icao, destination_icao, passengers")
+      .in("tail_number", tripTails)
+      .not("passengers", "is", null);
+
+    if (paxRows && paxRows.length > 0) {
+      // Build lookup: tail+origin+dest → passengers
+      const paxMap = new Map<string, string>();
+      for (const p of paxRows) {
+        if (p.passengers) {
+          paxMap.set(`${p.tail_number}|${p.origin_icao}|${p.destination_icao}`, p.passengers);
+        }
+      }
+
+      // Attach to each trip's legs
+      for (const t of trips ?? []) {
+        const route = t.route_icaos ?? [];
+        const legPax: Array<{ dep: string; arr: string; passengers: string }> = [];
+        for (let i = 0; i < route.length - 1; i++) {
+          const dep = route[i];
+          const arr = route[i + 1];
+          // Try ICAO match, also try without K prefix for 3-letter codes
+          const key = `${t.tail_number}|${dep}|${arr}`;
+          const pax = paxMap.get(key);
+          if (pax) legPax.push({ dep, arr, passengers: pax });
+        }
+        if (legPax.length > 0) t.leg_passengers = legPax;
+      }
+    }
+  }
+
   return NextResponse.json({ trips: trips ?? [] });
 }
 

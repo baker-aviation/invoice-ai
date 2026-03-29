@@ -694,6 +694,8 @@ export type IntlTrip = {
   jetinsight_url?: string | null;
   // Per-flight departure/arrival times (keyed by flight ID)
   schedule_snapshot?: Record<string, { dep: string; arr: string | null }> | null;
+  // Passenger names per leg (from JI CSV upload)
+  leg_passengers?: Array<{ dep: string; arr: string; passengers: string }>;
 };
 
 export type IntlTripClearance = {
