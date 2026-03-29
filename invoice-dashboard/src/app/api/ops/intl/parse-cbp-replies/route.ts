@@ -4,7 +4,7 @@ import { createServiceClient } from "@/lib/supabase/service";
 import { getGcsStorage } from "@/lib/gcs-upload";
 
 // ---------------------------------------------------------------------------
-// MS Graph token (same pattern as send-docs-email)
+// MS Graph token
 // ---------------------------------------------------------------------------
 async function getGraphToken(): Promise<string> {
   const tenant = process.env.MS_TENANT_ID;
@@ -34,37 +34,26 @@ async function getGraphToken(): Promise<string> {
 // Parsing helpers
 // ---------------------------------------------------------------------------
 
-function parseSubject(subject: string): {
-  tail: string | null;
-  dateStr: string | null;
-  clearanceType: "outbound_clearance" | "inbound_clearance" | null;
-} {
+const MONTH_MAP: Record<string, string> = {
+  JAN: "01", FEB: "02", MAR: "03", APR: "04", MAY: "05", JUN: "06",
+  JUL: "07", AUG: "08", SEP: "09", OCT: "10", NOV: "11", DEC: "12",
+};
+
+function extractTailAndDate(subject: string): { tail: string | null; dateStr: string | null } {
   const clean = subject.replace(/^(Re|RE|Fwd|FW):\s*/gi, "").trim();
 
-  // Clearance type
-  const isOutbound = /outbound/i.test(clean);
-  const isInbound = /landing\s*rights|inbound/i.test(clean);
-  const clearanceType = isOutbound
-    ? "outbound_clearance"
-    : isInbound
-    ? "inbound_clearance"
-    : null;
-
-  // Tail number: N-prefix + digits + letters, or just digits+letters (prepend N)
+  // Tail number
   const tailMatch =
     clean.match(/\b(N\d{1,5}[A-Z]{0,2})\b/i) ||
     clean.match(/\b(\d{2,5}[A-Z]{1,2})\b/i);
   let tail = tailMatch ? tailMatch[1].toUpperCase() : null;
   if (tail && !tail.startsWith("N")) tail = "N" + tail;
 
-  // Date: "3/29", "03/29", "29MAR"
+  // Date: "3/29", "03/29", "29MAR", "29Mar"
   let dateStr: string | null = null;
   const slashMatch = clean.match(/(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/);
-  const monthNames: Record<string, string> = {
-    JAN: "01", FEB: "02", MAR: "03", APR: "04", MAY: "05", JUN: "06",
-    JUL: "07", AUG: "08", SEP: "09", OCT: "10", NOV: "11", DEC: "12",
-  };
-  const ddMonMatch = clean.match(/(\d{1,2})(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)/i);
+  const ddMonMatch = clean.match(/(\d{1,2})\s*(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)/i);
+  const monDdMatch = clean.match(/(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\w*\s+(\d{1,2})/i);
 
   if (slashMatch) {
     const m = slashMatch[1].padStart(2, "0");
@@ -73,43 +62,35 @@ function parseSubject(subject: string): {
     dateStr = `${y.length === 2 ? "20" + y : y}-${m}-${d}`;
   } else if (ddMonMatch) {
     const d = ddMonMatch[1].padStart(2, "0");
-    const m = monthNames[ddMonMatch[2].toUpperCase()];
+    const m = MONTH_MAP[ddMonMatch[2].toUpperCase()];
+    dateStr = `${new Date().getFullYear()}-${m}-${d}`;
+  } else if (monDdMatch) {
+    const m = MONTH_MAP[monDdMatch[1].toUpperCase()];
+    const d = monDdMatch[2].padStart(2, "0");
     dateStr = `${new Date().getFullYear()}-${m}-${d}`;
   }
 
-  return { tail, dateStr, clearanceType };
+  return { tail, dateStr };
 }
 
-function parseBody(bodyHtml: string): {
+function parseCbpBody(bodyHtml: string): {
   status: "approved" | "denied" | "info";
   logNumber: string | null;
   officer: string | null;
 } {
-  // Strip HTML and collapse whitespace
-  const text = bodyHtml
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  // Extract reply portion (before the quoted original)
+  const text = bodyHtml.replace(/<[^>]+>/g, " ").replace(/&nbsp;/gi, " ").replace(/\s+/g, " ").trim();
   const replyPart = text.split(/From: Baker|_{10,}/)[0] || text;
 
-  // Status
   let status: "approved" | "denied" | "info" = "info";
   if (/\b(denied|not\s+approved|rejected)\b/i.test(replyPart)) {
     status = "denied";
-  } else if (
-    /\b(approved|clearance\s+granted|confirmed|authorized|log\s*#\s*\d)/i.test(replyPart)
-  ) {
+  } else if (/\b(approved|clearance\s+granted|confirmed|authorized|log\s*#\s*\d)/i.test(replyPart)) {
     status = "approved";
   }
 
-  // Log number
   const logMatch = replyPart.match(/log\s*#?\s*:?\s*(\d{4,6})/i);
   const logNumber = logMatch ? logMatch[1] : null;
 
-  // Officer
   let officer: string | null = null;
   const officerMatch =
     replyPart.match(/(?:officer|by)\s*:?\s+([A-Z][A-Za-z.]+(?:\s+[A-Z][A-Za-z.]*)?)/i) ||
@@ -120,16 +101,137 @@ function parseBody(bodyHtml: string): {
   return { status, logNumber, officer };
 }
 
-// ---------------------------------------------------------------------------
-// GET — fetch CBP replies for a trip
-// ---------------------------------------------------------------------------
-export async function GET(req: NextRequest) {
-  // Vercel cron calls GET with Authorization header — run the parser
-  if (verifyCronSecret(req)) {
-    return runParser();
+function parseHandlerBody(bodyHtml: string): {
+  status: "confirmed" | "needs_info" | "info";
+  note: string;
+} {
+  const text = bodyHtml.replace(/<[^>]+>/g, " ").replace(/&nbsp;/gi, " ").replace(/\s+/g, " ").trim();
+  const replyPart = text.split(/From: Baker|_{10,}/)[0] || text;
+
+  // Action items the handler is requesting
+  if (/\b(please\s+(?:provide|send)|kindly\s+provide)\s+.{0,30}(gendec|eapis|outbound|itinerary|passport)/i.test(replyPart)) {
+    const match = replyPart.match(/(?:please\s+(?:provide|send)|kindly\s+provide)\s+(.{0,60}?)(?:\.|$)/i);
+    return { status: "needs_info", note: match ? match[0].trim().substring(0, 100) : "Handler needs info" };
   }
 
-  // Normal authenticated GET — fetch replies for a trip
+  // Confirmations
+  if (/\b(confirmed|well\s+received|received|approved|handling\s+confirmed|services\s+confirmed|clearance\s+granted)\b/i.test(replyPart)) {
+    return { status: "confirmed", note: "Handler confirmed" };
+  }
+
+  return { status: "info", note: "Handler reply" };
+}
+
+// ---------------------------------------------------------------------------
+// Email category detection
+// ---------------------------------------------------------------------------
+type EmailCategory = "cbp" | "pinnacle" | "handler" | "skip";
+
+function categorizeEmail(from: string, subject: string): EmailCategory {
+  const addr = from.toLowerCase();
+  if (addr.includes("cbp.dhs.gov")) return "cbp";
+  if (addr.includes("pinnacle-ops.com")) return "pinnacle";
+
+  // Known handler/FBO domains
+  const handlerDomains = [
+    "atlanticaviation.com", "jetaviation.com", "signatureaviation.com",
+    "signatureflight.co", "bohlke.com", "avservcostarica.com",
+    "realalfafly.com", "sa-stt.com", "airninetwo.com",
+    "xjet.com", "flyexclusive.com", "rossaviation.com",
+    "banyanair.com", "sheltairaviation.com", "millionair.com",
+  ];
+  if (handlerDomains.some((d) => addr.includes(d))) return "handler";
+
+  // FBO-like addresses (ops@, fbo@, frontdesk@, handling@ at non-baker domains)
+  if (!addr.includes("baker-aviation") && /^(ops|fbo|frontdesk|handling|csr|dispatch)\b/i.test(addr)) return "handler";
+
+  return "skip";
+}
+
+// ---------------------------------------------------------------------------
+// Shared: find trip by tail + date
+// ---------------------------------------------------------------------------
+async function findTrip(
+  supa: ReturnType<typeof createServiceClient>,
+  tail: string | null,
+  dateStr: string | null,
+): Promise<{ tripId: string | null; confidence: "high" | "low" | "unmatched" }> {
+  if (tail && dateStr) {
+    const dateBefore = new Date(new Date(dateStr + "T00:00:00Z").getTime() - 86400000).toISOString().slice(0, 10);
+    const dateAfter = new Date(new Date(dateStr + "T00:00:00Z").getTime() + 86400000).toISOString().slice(0, 10);
+    const { data: trips } = await supa
+      .from("intl_trips")
+      .select("id, trip_date")
+      .eq("tail_number", tail)
+      .gte("trip_date", dateBefore)
+      .lte("trip_date", dateAfter);
+    if (trips && trips.length > 0) {
+      const exact = trips.find((t) => t.trip_date === dateStr);
+      return { tripId: exact?.id ?? trips[0].id, confidence: exact ? "high" : "low" };
+    }
+  }
+  if (tail) {
+    const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+    const { data: trips } = await supa
+      .from("intl_trips")
+      .select("id")
+      .eq("tail_number", tail)
+      .gte("trip_date", weekAgo)
+      .order("trip_date", { ascending: false })
+      .limit(1);
+    if (trips?.[0]) return { tripId: trips[0].id, confidence: "low" };
+  }
+  return { tripId: null, confidence: "unmatched" };
+}
+
+// ---------------------------------------------------------------------------
+// Shared: download non-inline attachments to GCS
+// ---------------------------------------------------------------------------
+type GcsAttachment = { name: string; gcs_key: string; gcs_bucket: string; content_type: string };
+
+async function downloadAttachments(
+  token: string,
+  mailbox: string,
+  msgId: string,
+  gcsPrefix: string,
+): Promise<GcsAttachment[]> {
+  const attachments: GcsAttachment[] = [];
+  try {
+    const res = await fetch(
+      `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/messages/${msgId}/attachments`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    if (!res.ok) return [];
+    const data = await res.json();
+    const storage = await getGcsStorage();
+    const bucket = process.env.GCS_BUCKET || "baker-aviation-invoice-pdfs";
+
+    for (const att of data.value ?? []) {
+      if (att.isInline || !att.contentBytes) continue;
+      const safeName = (att.name || "attachment").replace(/\//g, "_");
+      const gcsKey = `${gcsPrefix}/${Date.now()}-${safeName}`;
+      try {
+        const buf = Buffer.from(att.contentBytes, "base64");
+        await storage.bucket(bucket).file(gcsKey).save(buf, {
+          contentType: att.contentType || "application/octet-stream",
+        });
+        attachments.push({ name: att.name || "attachment", gcs_key: gcsKey, gcs_bucket: bucket, content_type: att.contentType || "application/octet-stream" });
+      } catch (e) {
+        console.error(`[parse-handling] Failed to save attachment ${safeName}:`, e);
+      }
+    }
+  } catch (e) {
+    console.error("[parse-handling] Failed to fetch attachments:", e);
+  }
+  return attachments;
+}
+
+// ---------------------------------------------------------------------------
+// GET — cron or fetch replies for a trip
+// ---------------------------------------------------------------------------
+export async function GET(req: NextRequest) {
+  if (verifyCronSecret(req)) return runParser(48);
+
   const auth = await requireAuth(req);
   if (!isAuthed(auth)) return auth.error;
 
@@ -148,16 +250,30 @@ export async function GET(req: NextRequest) {
 }
 
 // ---------------------------------------------------------------------------
-// POST — poll handling mailbox, parse CBP replies, update clearances
+// POST — manual trigger from dashboard
 // ---------------------------------------------------------------------------
 export async function POST(req: NextRequest) {
   const auth = await requireAuth(req);
   if (!isAuthed(auth)) return auth.error;
-  return runParser();
+
+  // Allow custom lookback for backfill (e.g. ?lookback=30d)
+  const lookbackParam = req.nextUrl.searchParams.get("lookback");
+  let lookbackHours = 48;
+  if (lookbackParam) {
+    const match = lookbackParam.match(/^(\d+)([dhm])$/);
+    if (match) {
+      const val = parseInt(match[1]);
+      lookbackHours = match[2] === "d" ? val * 24 : match[2] === "h" ? val : val / 60;
+    }
+  }
+
+  return runParser(lookbackHours);
 }
 
-async function runParser() {
-
+// ---------------------------------------------------------------------------
+// Main parser: CBP + Pinnacle + Handler emails
+// ---------------------------------------------------------------------------
+async function runParser(lookbackHours = 48) {
   const supa = createServiceClient();
   const mailbox = process.env.OUTLOOK_HANDLING_MAILBOX || process.env.OUTLOOK_SHARED_MAILBOX;
   if (!mailbox) {
@@ -168,41 +284,39 @@ async function runParser() {
   try {
     token = await getGraphToken();
   } catch (err) {
-    console.error("[parse-cbp-replies] Token error:", err);
+    console.error("[parse-handling] Token error:", err);
     return NextResponse.json({ error: "Graph auth failed" }, { status: 500 });
   }
 
-  // Fetch recent CBP emails (last 48 hours)
-  const since = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+  const since = new Date(Date.now() - lookbackHours * 60 * 60 * 1000).toISOString();
+  const pageSize = lookbackHours > 72 ? 250 : 100;
   const graphUrl =
-    `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/messages` +
-    `?$search="from:cbp.dhs.gov"&$top=50&$select=id,subject,from,receivedDateTime,body,hasAttachments`;
+    `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/mailFolders/Inbox/messages` +
+    `?$top=${pageSize}&$select=id,subject,from,receivedDateTime,body,hasAttachments&$orderby=receivedDateTime desc` +
+    `&$filter=receivedDateTime ge ${since}`;
 
-  const msgRes = await fetch(graphUrl, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  const msgRes = await fetch(graphUrl, { headers: { Authorization: `Bearer ${token}` } });
   if (!msgRes.ok) {
     const errText = await msgRes.text();
-    console.error("[parse-cbp-replies] Graph messages failed:", msgRes.status, errText);
+    console.error("[parse-handling] Graph messages failed:", msgRes.status, errText);
     return NextResponse.json({ error: "Failed to fetch emails" }, { status: 500 });
   }
 
   const msgData = await msgRes.json();
-  const messages: Array<{
+  type GraphMessage = {
     id: string;
     subject: string;
     from: { emailAddress: { address: string; name: string } };
     receivedDateTime: string;
     body: { content: string; contentType: string };
     hasAttachments: boolean;
-  }> = (msgData.value ?? []).filter((m: { receivedDateTime: string }) =>
-    new Date(m.receivedDateTime) >= new Date(since)
-  );
+  };
+  const allMessages: GraphMessage[] = msgData.value ?? [];
 
-  // Check which message IDs we've already processed
-  const messageIds = messages.map((m) => m.id);
+  // Check which we've already processed
+  const messageIds = allMessages.map((m) => m.id);
   if (messageIds.length === 0) {
-    return NextResponse.json({ ok: true, messagesScanned: 0, repliesProcessed: 0 });
+    return NextResponse.json({ ok: true, messagesScanned: 0, cbp: 0, pinnacle: 0, handler: 0 });
   }
 
   const { data: existingReplies } = await supa
@@ -211,193 +325,196 @@ async function runParser() {
     .in("message_id", messageIds);
   const processedIds = new Set((existingReplies ?? []).map((r) => r.message_id));
 
+  const stats = { cbp: 0, pinnacle: 0, handler: 0, skipped: 0, autoApproved: 0, permitsAttached: 0 };
   const results: Array<Record<string, unknown>> = [];
-  let autoApproved = 0;
 
-  for (const msg of messages) {
+  for (const msg of allMessages) {
     if (processedIds.has(msg.id)) continue;
 
-    const { tail, dateStr, clearanceType } = parseSubject(msg.subject);
-    const { status, logNumber, officer } = parseBody(msg.body.content);
+    const fromAddr = msg.from.emailAddress.address;
+    const category = categorizeEmail(fromAddr, msg.subject);
+    if (category === "skip") continue;
 
-    // Match to trip
-    let tripId: string | null = null;
+    const { tail, dateStr } = extractTailAndDate(msg.subject);
+    const { tripId, confidence } = await findTrip(supa, tail, dateStr);
     let clearanceId: string | null = null;
-    let matchConfidence: "high" | "low" | "unmatched" = "unmatched";
+    let matchConfidence = confidence;
 
-    if (tail && dateStr) {
-      // Find trip by tail + date (±1 day)
-      const dateBefore = new Date(new Date(dateStr + "T00:00:00Z").getTime() - 86400000)
-        .toISOString()
-        .slice(0, 10);
-      const dateAfter = new Date(new Date(dateStr + "T00:00:00Z").getTime() + 86400000)
-        .toISOString()
-        .slice(0, 10);
+    // ── CBP emails ───────────────────────────────────────────────────
+    if (category === "cbp") {
+      const clean = msg.subject.replace(/^(Re|RE|Fwd|FW):\s*/gi, "").trim();
+      const isOutbound = /outbound/i.test(clean);
+      const isInbound = /landing\s*rights|inbound/i.test(clean);
+      const clearanceType = isOutbound ? "outbound_clearance" : isInbound ? "inbound_clearance" : null;
 
-      const { data: trips } = await supa
-        .from("intl_trips")
-        .select("id, trip_date")
-        .eq("tail_number", tail)
-        .gte("trip_date", dateBefore)
-        .lte("trip_date", dateAfter);
+      const fromIcaoMatch = fromAddr.match(/^(K[A-Z]{2,3})[-_]/i);
+      const fromIcao = fromIcaoMatch ? fromIcaoMatch[1].toUpperCase() : null;
 
-      if (trips && trips.length > 0) {
-        // Prefer exact date match
-        const exact = trips.find((t) => t.trip_date === dateStr);
-        tripId = exact?.id ?? trips[0].id;
-        matchConfidence = exact ? "high" : "low";
-      }
-    } else if (tail) {
-      // Try tail only (recent trips)
-      const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
-      const { data: trips } = await supa
-        .from("intl_trips")
-        .select("id")
-        .eq("tail_number", tail)
-        .gte("trip_date", weekAgo)
-        .order("trip_date", { ascending: false })
-        .limit(1);
-      if (trips?.[0]) {
-        tripId = trips[0].id;
-        matchConfidence = "low";
-      }
-    }
+      const { status, logNumber, officer } = parseCbpBody(msg.body.content);
 
-    // Extract airport ICAO from the from address (e.g. KMIA_GAP@cbp.dhs.gov → KMIA)
-    const fromIcaoMatch = msg.from.emailAddress.address.match(/^(K[A-Z]{2,3})[-_]/i);
-    const fromIcao = fromIcaoMatch ? fromIcaoMatch[1].toUpperCase() : null;
+      // Find clearance
+      if (tripId) {
+        const { data: clearances } = await supa
+          .from("intl_trip_clearances")
+          .select("id, status, clearance_type, airport_icao")
+          .eq("trip_id", tripId);
 
-    // Match to clearance using multiple signals:
-    // 1. clearanceType from subject ("Outbound" / "Landing Rights")
-    // 2. fromIcao from email address (matches clearance airport_icao)
-    if (tripId) {
-      const { data: clearances } = await supa
-        .from("intl_trip_clearances")
-        .select("id, status, clearance_type, airport_icao")
-        .eq("trip_id", tripId);
-
-      if (clearances && clearances.length > 0) {
-        let candidates = clearances;
-
-        // Filter by clearance type from subject if we have it
-        if (clearanceType) {
-          const typed = candidates.filter((c) => c.clearance_type === clearanceType);
-          if (typed.length > 0) candidates = typed;
-        }
-
-        // Filter by airport ICAO from the from address
-        if (fromIcao) {
-          const byAirport = candidates.filter((c) => c.airport_icao === fromIcao);
-          if (byAirport.length > 0) {
-            candidates = byAirport;
-            if (matchConfidence === "unmatched") matchConfidence = "low";
+        if (clearances && clearances.length > 0) {
+          let candidates = clearances;
+          if (clearanceType) {
+            const typed = candidates.filter((c) => c.clearance_type === clearanceType);
+            if (typed.length > 0) candidates = typed;
           }
-        }
-
-        // Prefer non-approved clearance (the one waiting for CBP response)
-        const pending = candidates.find((c) => c.status !== "approved");
-        clearanceId = pending?.id ?? candidates[0]?.id ?? null;
-      }
-    }
-
-    // Download attachments if any
-    const attachments: Array<{ name: string; gcs_key: string; gcs_bucket: string; content_type: string }> = [];
-    if (msg.hasAttachments) {
-      try {
-        const attRes = await fetch(
-          `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/messages/${msg.id}/attachments`,
-          { headers: { Authorization: `Bearer ${token}` } },
-        );
-        if (attRes.ok) {
-          const attData = await attRes.json();
-          const storage = await getGcsStorage();
-          const bucket = process.env.GCS_BUCKET || "baker-aviation-invoice-pdfs";
-
-          for (const att of attData.value ?? []) {
-            // Skip inline images (CID attachments)
-            if (att.isInline || !att.contentBytes) continue;
-
-            const safeName = (att.name || "attachment").replace(/\//g, "_");
-            const gcsKey = `intl/cbp-replies/${Date.now()}-${safeName}`;
-
-            try {
-              const buf = Buffer.from(att.contentBytes, "base64");
-              await storage.bucket(bucket).file(gcsKey).save(buf, {
-                contentType: att.contentType || "application/octet-stream",
-              });
-              attachments.push({
-                name: att.name || "attachment",
-                gcs_key: gcsKey,
-                gcs_bucket: bucket,
-                content_type: att.contentType || "application/octet-stream",
-              });
-            } catch (e) {
-              console.error(`[parse-cbp-replies] Failed to save attachment ${safeName}:`, e);
-            }
+          if (fromIcao) {
+            const byAirport = candidates.filter((c) => c.airport_icao === fromIcao);
+            if (byAirport.length > 0) { candidates = byAirport; if (matchConfidence === "unmatched") matchConfidence = "low"; }
           }
+          const pending = candidates.find((c) => c.status !== "approved");
+          clearanceId = pending?.id ?? candidates[0]?.id ?? null;
         }
-      } catch (e) {
-        console.error("[parse-cbp-replies] Failed to fetch attachments:", e);
       }
+
+      // Download attachments
+      const attachments = msg.hasAttachments ? await downloadAttachments(token, mailbox, msg.id, "intl/cbp-replies") : [];
+
+      // Insert reply record
+      await supa.from("intl_cbp_replies").insert({
+        message_id: msg.id, trip_id: tripId, clearance_id: clearanceId,
+        from_address: fromAddr, subject: msg.subject, status,
+        log_number: logNumber, officer,
+        raw_body: msg.body.content.substring(0, 10000),
+        match_confidence: matchConfidence,
+        attachments: attachments.length > 0 ? attachments : [],
+      });
+
+      // Auto-approve
+      if (status === "approved" && clearanceId) {
+        const notesParts = ["CBP Approved"];
+        if (logNumber) notesParts.push(`Log# ${logNumber}`);
+        if (officer) notesParts.push(`Officer: ${officer}`);
+        notesParts.push(`(auto-parsed ${new Date().toISOString().slice(0, 16)}Z)`);
+        await supa.from("intl_trip_clearances").update({ status: "approved", notes: notesParts.join(" — ") }).eq("id", clearanceId);
+        stats.autoApproved++;
+      }
+
+      stats.cbp++;
+      results.push({ category: "cbp", subject: msg.subject, status, tripId, clearanceId, matchConfidence, logNumber });
     }
 
-    // Insert reply record
-    const { error: insertErr } = await supa.from("intl_cbp_replies").insert({
-      message_id: msg.id,
-      trip_id: tripId,
-      clearance_id: clearanceId,
-      from_address: msg.from.emailAddress.address,
-      subject: msg.subject,
-      status,
-      log_number: logNumber,
-      officer,
-      raw_body: msg.body.content.substring(0, 10000),
-      match_confidence: matchConfidence,
-      attachments: attachments.length > 0 ? attachments : [],
-    });
+    // ── Pinnacle permit confirmations ────────────────────────────────
+    else if (category === "pinnacle") {
+      const isPerm = /permit\s*confirm/i.test(msg.subject);
 
-    if (insertErr) {
-      console.error("[parse-cbp-replies] Insert error:", insertErr);
-      continue;
+      // Download permit PDF attachments
+      const attachments = msg.hasAttachments ? await downloadAttachments(token, mailbox, msg.id, "intl/permits") : [];
+
+      // Attach first PDF to the matching overflight/landing clearance
+      let attachedTo: string | null = null;
+      if (isPerm && tripId && attachments.length > 0) {
+        const pdfAtt = attachments.find((a) => a.content_type === "application/pdf") ?? attachments[0];
+
+        // Find overflight or landing permit clearances without files
+        const { data: clearances } = await supa
+          .from("intl_trip_clearances")
+          .select("id, clearance_type, status, file_gcs_key")
+          .eq("trip_id", tripId)
+          .in("clearance_type", ["overflight_permit", "landing_permit"]);
+
+        // Prefer clearances without a file already
+        const noFile = (clearances ?? []).filter((c) => !c.file_gcs_key);
+        const target = noFile[0] ?? clearances?.[0];
+
+        if (target) {
+          await supa.from("intl_trip_clearances").update({
+            file_gcs_bucket: pdfAtt.gcs_bucket,
+            file_gcs_key: pdfAtt.gcs_key,
+            file_filename: pdfAtt.name,
+            file_content_type: pdfAtt.content_type,
+            status: "approved",
+            notes: `Permit from Pinnacle (auto-attached ${new Date().toISOString().slice(0, 10)})`,
+          }).eq("id", target.id);
+          attachedTo = target.id;
+          clearanceId = target.id;
+          stats.permitsAttached++;
+        }
+      }
+
+      // Log in intl_cbp_replies (reuse table for all email types)
+      await supa.from("intl_cbp_replies").insert({
+        message_id: msg.id, trip_id: tripId, clearance_id: clearanceId,
+        from_address: fromAddr, subject: msg.subject,
+        status: isPerm ? "approved" : "info",
+        log_number: null, officer: null,
+        raw_body: msg.body.content.substring(0, 10000),
+        match_confidence: matchConfidence,
+        attachments: attachments.length > 0 ? attachments : [],
+      });
+
+      stats.pinnacle++;
+      results.push({ category: "pinnacle", subject: msg.subject, tripId, attachedTo, attachments: attachments.length });
     }
 
-    // Auto-update clearance if approved
-    let autoUpdated = false;
-    if (status === "approved" && clearanceId) {
-      const notesParts = ["CBP Approved"];
-      if (logNumber) notesParts.push(`Log# ${logNumber}`);
-      if (officer) notesParts.push(`Officer: ${officer}`);
-      notesParts.push(`(auto-parsed ${new Date().toISOString().slice(0, 16)}Z)`);
+    // ── Handler/FBO confirmations ────────────────────────────────────
+    else if (category === "handler") {
+      const { status: handlerStatus, note } = parseHandlerBody(msg.body.content);
 
-      await supa
-        .from("intl_trip_clearances")
-        .update({ status: "approved", notes: notesParts.join(" — ") })
-        .eq("id", clearanceId);
-      autoUpdated = true;
-      autoApproved++;
+      // Try to match to a clearance by airport from the email address
+      // FBO addresses often have airport codes: sjufbo@, PLSFrontDesk@, pty@, anu@, SXMFrontDesk@
+      const addrPart = fromAddr.split("@")[0].toUpperCase();
+      const icaoAliases: Record<string, string> = {
+        SJU: "TJSJ", STT: "TIST", STX: "TISX", SXM: "TNCM",
+        PTY: "MPTO", PLS: "MBPV", ANU: "TAPA", NAS: "MYNN",
+        PVD: "KPVD", MDW: "KMDW", FLL: "KFLL",
+      };
+      let handlerIcao: string | null = null;
+      for (const [code, icao] of Object.entries(icaoAliases)) {
+        if (addrPart.includes(code)) { handlerIcao = icao; break; }
+      }
+      // Also try K-prefix from address (e.g., kfllops@)
+      const kMatch = addrPart.match(/\b(K[A-Z]{2,3})\b/);
+      if (!handlerIcao && kMatch) handlerIcao = kMatch[1];
+
+      if (tripId && handlerIcao) {
+        const { data: clearances } = await supa
+          .from("intl_trip_clearances")
+          .select("id, airport_icao, clearance_type")
+          .eq("trip_id", tripId);
+        const match = (clearances ?? []).find((c) => c.airport_icao === handlerIcao);
+        if (match) clearanceId = match.id;
+      }
+
+      // Update handler_status on the clearance
+      if (clearanceId) {
+        await supa.from("intl_trip_clearances").update({
+          handler_status: {
+            status: handlerStatus,
+            from: fromAddr,
+            note,
+            date: new Date(msg.receivedDateTime).toISOString().slice(0, 10),
+          },
+        }).eq("id", clearanceId);
+      }
+
+      // Log it
+      await supa.from("intl_cbp_replies").insert({
+        message_id: msg.id, trip_id: tripId, clearance_id: clearanceId,
+        from_address: fromAddr, subject: msg.subject,
+        status: handlerStatus === "confirmed" ? "approved" : "info",
+        log_number: null, officer: null,
+        raw_body: msg.body.content.substring(0, 10000),
+        match_confidence: matchConfidence,
+        attachments: [],
+      });
+
+      stats.handler++;
+      results.push({ category: "handler", subject: msg.subject, handlerStatus, note, tripId, clearanceId, handlerIcao });
     }
-
-    results.push({
-      messageId: msg.id,
-      subject: msg.subject,
-      from: msg.from.emailAddress.address,
-      status,
-      logNumber,
-      officer,
-      tripId,
-      clearanceId,
-      matchConfidence,
-      autoUpdated,
-      attachments: attachments.length,
-    });
   }
 
   return NextResponse.json({
     ok: true,
-    messagesScanned: messages.length,
-    repliesProcessed: results.length,
-    repliesSkipped: messages.length - results.length,
-    autoApproved,
+    messagesScanned: allMessages.length,
+    ...stats,
     results,
   });
 }
