@@ -518,20 +518,43 @@ export async function GET(req: NextRequest) {
         }
       }
 
-      // Clean up orphaned trips: existing trips for these tails whose flights
-      // no longer appear in any detected trip (schedule was cancelled/removed)
-      const orphanedIds = (allExisting ?? [])
+      // Clean up orphaned trips: existing trips whose flights no longer
+      // appear in any detected trip (schedule was cancelled/changed)
+      const orphanCandidates = (allExisting ?? [])
         .filter((e) => !matchedExistingIds.has(e.id))
         .filter((e) => {
           // Only orphan if ALL its flight_ids are absent from detected trips
           if (!e.flight_ids?.length) return false;
           return e.flight_ids.every((fid: string) => !detectedFlightIdSets.has(fid));
-        })
-        .map((e) => e.id);
+        });
 
-      // Don't auto-delete — just log for now. Trips might be manually created.
-      if (orphanedIds.length > 0) {
-        console.log(`[intl/trips] ${orphanedIds.length} orphaned trip(s) found:`, orphanedIds);
+      if (orphanCandidates.length > 0) {
+        // Check which orphans have been started (any clearance beyond not_started)
+        const orphanIds = orphanCandidates.map((e) => e.id);
+        const { data: startedClearances } = await supa
+          .from("intl_trip_clearances")
+          .select("trip_id, status")
+          .in("trip_id", orphanIds);
+
+        const startedTripIds = new Set(
+          (startedClearances ?? [])
+            .filter((c) => c.status !== "not_started")
+            .map((c) => c.trip_id)
+        );
+
+        // Auto-delete unstarted orphans (no work to lose)
+        const safeToDelete = orphanIds.filter((id) => !startedTripIds.has(id));
+        if (safeToDelete.length > 0) {
+          await supa.from("intl_trip_clearances").delete().in("trip_id", safeToDelete);
+          await supa.from("intl_trips").delete().in("id", safeToDelete);
+          console.log(`[intl/trips] Deleted ${safeToDelete.length} orphaned unstarted trip(s)`);
+        }
+
+        // Log started orphans — don't delete, someone was working on them
+        const startedOrphans = orphanIds.filter((id) => startedTripIds.has(id));
+        if (startedOrphans.length > 0) {
+          console.log(`[intl/trips] ${startedOrphans.length} orphaned STARTED trip(s) kept:`, startedOrphans);
+        }
       }
     }
   }
