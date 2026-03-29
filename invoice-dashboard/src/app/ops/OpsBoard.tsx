@@ -460,15 +460,10 @@ function AlertCard({ alert, onAck, acked, ackedByName, pinned, onTogglePin }: { 
   const [expanded, setExpanded] = useState(false);
   const [acking, setAcking] = useState(false);
 
-  async function handleAck(e: React.MouseEvent) {
+  function handleAck(e: React.MouseEvent) {
     e.stopPropagation();
     setAcking(true);
-    try {
-      await fetch(`/api/ops/alerts/${alert.id}/acknowledge`, { method: "POST" });
-      onAck(alert.id);
-    } catch {
-      setAcking(false);
-    }
+    onAck(alert.id);
   }
 
   const isNotam = alert.alert_type.startsWith("NOTAM");
@@ -533,9 +528,8 @@ function AlertCard({ alert, onAck, acked, ackedByName, pinned, onTogglePin }: { 
           {acked ? (
             <button
               type="button"
-              onClick={async (e) => {
+              onClick={(e) => {
                 e.stopPropagation();
-                await fetch(`/api/ops/alerts/${alert.id}/acknowledge`, { method: "DELETE" });
                 onAck(alert.id);
               }}
               className="text-xs text-gray-400 hover:text-orange-600 bg-gray-100 hover:bg-orange-50 border border-transparent hover:border-orange-200 rounded px-1.5 py-0.5 transition-colors cursor-pointer"
@@ -1101,16 +1095,33 @@ export default function OpsBoard({ initialFlights, bakerPprAirports, suppressedR
   }, [showAcknowledged]);
 
   const handleAck = useCallback((alertId: string, flightId: string) => {
-    // Shared NOTAMs (flight_id null on the alert) use per-flight ack table
     const compositeKey = `${alertId}:${flightId}`;
-    setNotamFlightAcks((prev) => new Set(prev).add(compositeKey));
-    setLocalAckedIds((prev) => new Set(prev).add(compositeKey));
-    fetch("/api/ops/alerts/notam-ack", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ alert_id: alertId, flight_id: flightId }),
-    }).catch(() => {});
-  }, []);
+    const alreadyAcked = notamFlightAcks.has(compositeKey) || localAckedIds.has(compositeKey);
+
+    if (alreadyAcked) {
+      // Un-ack: remove from sets and delete server-side
+      setNotamFlightAcks((prev) => { const n = new Set(prev); n.delete(compositeKey); return n; });
+      setLocalAckedIds((prev) => { const n = new Set(prev); n.delete(compositeKey); return n; });
+      if (flightId) {
+        fetch("/api/ops/alerts/notam-ack", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ alert_id: alertId, flight_id: flightId }),
+        }).catch(() => {});
+      }
+    } else {
+      // Ack: add to sets and persist server-side
+      setNotamFlightAcks((prev) => new Set(prev).add(compositeKey));
+      setLocalAckedIds((prev) => new Set(prev).add(compositeKey));
+      if (flightId) {
+        fetch("/api/ops/alerts/notam-ack", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ alert_id: alertId, flight_id: flightId }),
+        }).catch(() => {});
+      }
+    }
+  }, [notamFlightAcks, localAckedIds]);
 
   const handleAckAll = useCallback((flightId: string, alertIds: string[]) => {
     setNotamFlightAcks((prev) => {

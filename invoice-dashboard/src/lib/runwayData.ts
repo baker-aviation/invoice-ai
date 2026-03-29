@@ -199,8 +199,12 @@ function parseRecurringSchedule(
 
   const startHHMM = timeMatch[1];
   const endHHMM = timeMatch[2];
-  const startMinUTC = parseInt(startHHMM.slice(0, 2)) * 60 + parseInt(startHHMM.slice(2));
-  const endMinUTC = parseInt(endHHMM.slice(0, 2)) * 60 + parseInt(endHHMM.slice(2));
+  const sh = parseInt(startHHMM.slice(0, 2)), sm = parseInt(startHHMM.slice(2));
+  const eh = parseInt(endHHMM.slice(0, 2)), em = parseInt(endHHMM.slice(2));
+  // Validate hours/minutes are within range
+  if (sh > 23 || sm > 59 || eh > 23 || em > 59) return null;
+  const startMinUTC = sh * 60 + sm;
+  const endMinUTC = eh * 60 + em;
 
   // Need overall validity dates
   const startStr = dates.effective_start ?? dates.start_date_utc;
@@ -243,7 +247,7 @@ function recurringOverlapsWindow(schedule: RecurringSchedule, window: TimeWindow
     const d = new Date(day);
     const dayOfWeek = d.getUTCDay();
     if (!schedule.days.has(dayOfWeek)) continue;
-    if (day < schedule.validFrom - dayMs || day > schedule.validTo + dayMs) continue;
+    if (day < schedule.validFrom - dayMs || day > schedule.validTo) continue;
 
     // Build the actual closure window for this specific day
     let closureStart = day + schedule.startMinUTC * 60000;
