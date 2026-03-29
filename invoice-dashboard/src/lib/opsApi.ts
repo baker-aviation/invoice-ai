@@ -1,5 +1,6 @@
 import { createServiceClient } from "@/lib/supabase/service";
 import { toIcao } from "@/lib/iataToIcao";
+import { getRunwaySuppressedIds, detectAllRunwaysClosed, type AllRwysClosedAlert } from "@/lib/runwayData";
 
 export type NotamDates = {
   effective_start: string | null;
@@ -54,6 +55,10 @@ export type FlightsResponse = {
   ok: boolean;
   flights: Flight[];
   count: number;
+  /** NOTAM_RUNWAY alert IDs suppressed because airport still has 5000+ ft paved open */
+  suppressedRunwayNotamIds?: string[];
+  /** Flights where ALL runways are closed within ±2hrs of departure/arrival */
+  allRunwaysClosedAlerts?: AllRwysClosedAlert[];
 };
 
 // ---------------------------------------------------------------------------
@@ -206,6 +211,12 @@ export async function fetchFlights(params: {
     }
   }
 
+  // Compute suppressed NOTAM_RUNWAY IDs (airport still has 5000+ ft paved open).
+  // Alerts stay attached to flights — frontend uses these IDs to show/hide.
+  const allAlerts: OpsAlert[] = [];
+  for (const alerts of alertsByFlight.values()) allAlerts.push(...alerts);
+  const suppressedRunwayNotamIds = getRunwaySuppressedIds(allAlerts);
+
   const orphanAlerts: OpsAlert[] = (orphanRows ?? []).map((row) => ({
     id: row.id as string,
     flight_id: null,
@@ -330,7 +341,10 @@ export async function fetchFlights(params: {
     }
   }
 
-  return { ok: true, flights, count: flights.length };
+  // Detect flights where ALL runways are closed within ±2hrs of departure/arrival
+  const allRunwaysClosedAlerts = detectAllRunwaysClosed(flights);
+
+  return { ok: true, flights, count: flights.length, suppressedRunwayNotamIds, allRunwaysClosedAlerts };
 }
 
 // ---------------------------------------------------------------------------
@@ -642,6 +656,7 @@ export type IntlTripClearance = {
   file_gcs_key: string | null;
   file_filename: string | null;
   file_content_type: string | null;
+  handler_status: { status: string; from: string; note: string; date: string } | null;
   created_at: string;
   updated_at: string;
 };

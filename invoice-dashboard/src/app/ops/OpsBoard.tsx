@@ -3,6 +3,7 @@
 import { useState, useMemo, useCallback, useEffect } from "react";
 import Link from "next/link";
 import type { Flight, OpsAlert, NotamPin, CustomNotamAlert } from "@/lib/opsApi";
+import type { AllRwysClosedAlert } from "@/lib/runwayData";
 import { fmtTimeInTz } from "@/lib/airportTimezones";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -620,25 +621,30 @@ function ClientAlertCard({ alert, onDismiss, dismissed, dismissedByName, pinned,
   }
 
   const isLate = alert.type === "AFTER_HOURS";
+  const isRwyClosed = alert.type === "ALL_RWYS_CLOSED";
 
   return (
     <div
       className={`rounded-lg border text-sm ${
         dismissed
           ? "border-gray-200 bg-gray-50/60 opacity-60"
-          : isLate
-            ? "border-purple-200 bg-purple-50/60"
-            : "border-blue-200 bg-blue-50/60"
+          : isRwyClosed
+            ? "border-red-300 bg-red-50/80"
+            : isLate
+              ? "border-purple-200 bg-purple-50/60"
+              : "border-blue-200 bg-blue-50/60"
       }`}
     >
       <div className="px-3 py-2 flex items-center gap-2">
-        <span className={`w-2 h-2 rounded-full shrink-0 ${dismissed ? "bg-gray-400" : isLate ? "bg-purple-500" : "bg-blue-500"}`} />
+        <span className={`w-2 h-2 rounded-full shrink-0 ${dismissed ? "bg-gray-400" : isRwyClosed ? "bg-red-600" : isLate ? "bg-purple-500" : "bg-blue-500"}`} />
         <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-mono font-semibold ${
           dismissed
             ? "bg-gray-100 text-gray-500 border border-gray-200"
-            : isLate
-              ? "bg-purple-100 text-purple-800 border border-purple-200"
-              : "bg-blue-100 text-blue-800 border border-blue-200"
+            : isRwyClosed
+              ? "bg-red-100 text-red-800 border border-red-300"
+              : isLate
+                ? "bg-purple-100 text-purple-800 border border-purple-200"
+                : "bg-blue-100 text-blue-800 border border-blue-200"
         }`}>
           {alert.label}
         </span>
@@ -681,11 +687,13 @@ function ClientAlertCard({ alert, onDismiss, dismissed, dismissedByName, pinned,
 // ─── Flight card ──────────────────────────────────────────────────────────────
 
 function FlightCard({
-  flight, isAcked, showAcknowledged, onAck, onAckAll, clientAlerts, dismissedClientAlerts, onDismissClient, userMap, dismissedByMap, pinnedIds, onTogglePin, pinnedKeys, onTogglePinKey,
+  flight, isAcked, showAcknowledged, showFiltered, suppressedIds, onAck, onAckAll, clientAlerts, dismissedClientAlerts, onDismissClient, userMap, dismissedByMap, pinnedIds, onTogglePin, pinnedKeys, onTogglePinKey,
 }: {
   flight: Flight;
   isAcked: (a: OpsAlert) => boolean;
   showAcknowledged: boolean;
+  showFiltered: boolean;
+  suppressedIds: Set<string>;
   onAck: (id: string) => void;
   onAckAll: (flightId: string, alertIds: string[]) => void;
   clientAlerts: ClientAlert[];
@@ -698,11 +706,17 @@ function FlightCard({
   pinnedKeys?: Set<string>;
   onTogglePinKey?: (key: string, pin: boolean) => void;
 }) {
-  const visibleAlerts = (flight.alerts ?? []).filter((a) => showAcknowledged || !isAcked(a));
+  const visibleAlerts = (flight.alerts ?? []).filter((a) => {
+    const isSuppressed = suppressedIds.has(a.id);
+    if (showFiltered) return isSuppressed; // filtered tab: only show suppressed
+    if (isSuppressed) return false; // normal view: hide suppressed
+    return showAcknowledged || !isAcked(a);
+  });
   const alerts = visibleAlerts;
-  const unackedServerAlerts = (flight.alerts ?? []).filter((a) => !isAcked(a));
-  const activeClientAlerts = clientAlerts.filter((ca) => showAcknowledged || !dismissedClientAlerts.has(ca.key));
-  const hasCritical = alerts.some((a) => a.severity === "critical");
+  const unackedServerAlerts = (flight.alerts ?? []).filter((a) => !isAcked(a) && !suppressedIds.has(a.id));
+  const activeClientAlerts = showFiltered ? [] : clientAlerts.filter((ca) => showAcknowledged || !dismissedClientAlerts.has(ca.key));
+  const hasRwyClosed = activeClientAlerts.some((ca) => ca.type === "ALL_RWYS_CLOSED");
+  const hasCritical = hasRwyClosed || alerts.some((a) => a.severity === "critical");
   const hasWarning = alerts.some((a) => a.severity === "warning");
   const hasLate = activeClientAlerts.some((ca) => ca.type === "AFTER_HOURS");
   const hasAirport = activeClientAlerts.some((ca) => ca.type.startsWith("AIRPORT_"));
@@ -920,7 +934,7 @@ function filterAlerts(flights: Flight[]): Flight[] {
   });
 }
 
-export default function OpsBoard({ initialFlights, bakerPprAirports }: { initialFlights: Flight[]; bakerPprAirports: string[] }) {
+export default function OpsBoard({ initialFlights, bakerPprAirports, suppressedRunwayNotamIds = [], allRunwaysClosedAlerts = [] }: { initialFlights: Flight[]; bakerPprAirports: string[]; suppressedRunwayNotamIds?: string[]; allRunwaysClosedAlerts?: AllRwysClosedAlert[] }) {
   const now = useMemo(() => new Date(), []);
   const BAKER_PPR_AIRPORTS = useMemo(() => new Set(bakerPprAirports), [bakerPprAirports]);
   const [activeFilter, setActiveFilter] = useState<AlertFilter>("ALL");
@@ -931,6 +945,8 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
   const [activeRange, setActiveRange] = useState<TimeRange>("7D");
   const [localAckedIds, setLocalAckedIds] = useState<Set<string>>(new Set());
   const [showAcknowledged, setShowAcknowledged] = useState(false);
+  const [showFiltered, setShowFiltered] = useState(false);
+  const suppressedIds = useMemo(() => new Set(suppressedRunwayNotamIds), [suppressedRunwayNotamIds]);
   const [pinnedIds, setPinnedIds] = useState<Set<string>>(new Set());
   const [customAlerts, setCustomAlerts] = useState<CustomNotamAlert[]>([]);
   const [showAddCustom, setShowAddCustom] = useState(false);
@@ -1090,11 +1106,34 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
   // Apply alert type filtering
   const withFilteredAlerts = useMemo(() => filterAlerts(initialFlights), [initialFlights]);
 
-  // Generate client-side alerts (KJAC/KSNA + after-hours)
+  // Index all-runways-closed alerts by flight ID
+  const rwysClosedByFlight = useMemo(() => {
+    const map = new Map<string, AllRwysClosedAlert[]>();
+    for (const a of allRunwaysClosedAlerts) {
+      if (!map.has(a.flightId)) map.set(a.flightId, []);
+      map.get(a.flightId)!.push(a);
+    }
+    return map;
+  }, [allRunwaysClosedAlerts]);
+
+  // Generate client-side alerts (KJAC/KSNA + after-hours + all-rwys-closed)
   const clientAlertsByFlight = useMemo(() => {
     const map = new Map<string, ClientAlert[]>();
     for (const f of withFilteredAlerts) {
       const alerts: ClientAlert[] = [];
+
+      // ALL RUNWAYS CLOSED — critical alert at top
+      for (const rc of rwysClosedByFlight.get(f.id) ?? []) {
+        const phase = rc.phase === "departure" ? "Departing" : "Landing";
+        alerts.push({
+          key: `all-rwys-closed-${rc.phase}-${rc.airportIcao}-${f.id}`,
+          flightId: f.id,
+          type: "ALL_RWYS_CLOSED",
+          label: "ALL RWYS CLSD",
+          severity: "critical",
+          message: `${phase} ${rc.airportIcao} — all runways ≥5000 ft closed ${rc.closureWindow}`,
+        });
+      }
 
       // Check departure and arrival against restricted airports
       const seen = new Set<string>();
@@ -1160,7 +1199,7 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
       }
     }
     return map;
-  }, [withFilteredAlerts, BAKER_PPR_AIRPORTS]);
+  }, [withFilteredAlerts, BAKER_PPR_AIRPORTS, rwysClosedByFlight]);
 
   // Apply time range
   const cutoff = useMemo(() => {
@@ -1270,13 +1309,14 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
       }));
   }, [filtered]);
 
-  // Stats
+  // Stats (exclude suppressed runway NOTAMs from counts)
+  const isVisible = (a: OpsAlert) => !isAcked(a) && !suppressedIds.has(a.id);
   const totalFlights = timeFiltered.length;
-  const totalAlerts = timeFiltered.reduce((n, f) => n + (f.alerts?.filter((a) => !isAcked(a)).length ?? 0), 0);
-  const criticalFlights = timeFiltered.filter((f) => f.alerts?.some((a) => a.severity === "critical" && !isAcked(a))).length;
+  const totalAlerts = timeFiltered.reduce((n, f) => n + (f.alerts?.filter(isVisible).length ?? 0), 0);
+  const criticalFlights = timeFiltered.filter((f) => f.alerts?.some((a) => a.severity === "critical" && isVisible(a))).length;
   const warningFlights = timeFiltered.filter((f) =>
-    f.alerts?.some((a) => a.severity === "warning" && !isAcked(a)) &&
-    !f.alerts?.some((a) => a.severity === "critical" && !isAcked(a))
+    f.alerts?.some((a) => a.severity === "warning" && isVisible(a)) &&
+    !f.alerts?.some((a) => a.severity === "critical" && isVisible(a))
   ).length;
 
   // Alert counts per category (for pill badges)
@@ -1284,9 +1324,9 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
     const counts: Record<string, number> = { NOTAMS: 0, PPR: 0, OCEANIC: 0, LATE: 0 };
     const flightsCounted = { NOTAMS: new Set<string>(), PPR: new Set<string>(), OCEANIC: new Set<string>(), LATE: new Set<string>() };
     for (const f of timeFiltered) {
-      // Server alerts — count flights with NOTAM alerts
+      // Server alerts — count flights with NOTAM alerts (excluding suppressed runway NOTAMs)
       for (const a of f.alerts ?? []) {
-        if (isAcked(a)) continue;
+        if (isAcked(a) || suppressedIds.has(a.id)) continue;
         if (a.alert_type.startsWith("NOTAM") && !flightsCounted.NOTAMS.has(f.id)) {
           counts.NOTAMS++;
           flightsCounted.NOTAMS.add(f.id);
@@ -1321,7 +1361,7 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
       }
     }
     return counts;
-  }, [timeFiltered, isAcked, clientAlertsByFlight, dismissedClientAlerts, BAKER_PPR_AIRPORTS]);
+  }, [timeFiltered, isAcked, suppressedIds, clientAlertsByFlight, dismissedClientAlerts, BAKER_PPR_AIRPORTS]);
 
   // EDCT alerts for status box: unacknowledged, future or within last 24 hours
   const edctAlerts = useMemo(() => {
@@ -1536,13 +1576,13 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
             })}
           </div>
 
-          {/* Unacknowledged / All toggle */}
+          {/* Unacknowledged / All / Filtered toggle */}
           <div className="flex rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm ml-auto">
             <button
               type="button"
-              onClick={() => setShowAcknowledged(false)}
+              onClick={() => { setShowAcknowledged(false); setShowFiltered(false); }}
               className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
-                !showAcknowledged
+                !showAcknowledged && !showFiltered
                   ? "bg-slate-800 text-white shadow-sm"
                   : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
               }`}
@@ -1551,15 +1591,33 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
             </button>
             <button
               type="button"
-              onClick={() => setShowAcknowledged(true)}
+              onClick={() => { setShowAcknowledged(true); setShowFiltered(false); }}
               className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
-                showAcknowledged
+                showAcknowledged && !showFiltered
                   ? "bg-slate-800 text-white shadow-sm"
                   : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
               }`}
             >
               All
             </button>
+            {suppressedIds.size > 0 && (
+              <button
+                type="button"
+                onClick={() => { setShowFiltered(!showFiltered); setShowAcknowledged(false); }}
+                className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors flex items-center gap-1 ${
+                  showFiltered
+                    ? "bg-orange-500 text-white shadow-sm"
+                    : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
+                }`}
+              >
+                Filtered
+                <span className={`inline-flex items-center justify-center min-w-[16px] h-4 px-1 text-[10px] font-bold rounded-full ${
+                  showFiltered ? "bg-white/30 text-white" : "bg-orange-100 text-orange-700"
+                }`}>
+                  {suppressedIds.size}
+                </span>
+              </button>
+            )}
           </div>
         </div>
 
@@ -1677,11 +1735,11 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
         <div className="space-y-1">
           {byDay.map(({ date, flights: dayFlights }) => {
             const dayCritical = dayFlights.filter((f) =>
-              f.alerts?.some((a) => a.severity === "critical" && !isAcked(a))
+              f.alerts?.some((a) => a.severity === "critical" && isVisible(a))
             ).length;
             const dayWarning = dayFlights.filter((f) =>
-              f.alerts?.some((a) => a.severity === "warning" && !isAcked(a)) &&
-              !f.alerts?.some((a) => a.severity === "critical" && !isAcked(a))
+              f.alerts?.some((a) => a.severity === "warning" && isVisible(a)) &&
+              !f.alerts?.some((a) => a.severity === "critical" && isVisible(a))
             ).length;
 
             return (
@@ -1693,12 +1751,16 @@ export default function OpsBoard({ initialFlights, bakerPprAirports }: { initial
                   warningCount={dayWarning}
                 />
                 <div className="grid gap-2 pt-2">
-                  {dayFlights.map((f) => (
+                  {dayFlights
+                    .filter((f) => !showFiltered || f.alerts?.some((a) => suppressedIds.has(a.id)))
+                    .map((f) => (
                     <FlightCard
                       key={f.id}
                       flight={f}
                       isAcked={isAcked}
                       showAcknowledged={showAcknowledged}
+                      showFiltered={showFiltered}
+                      suppressedIds={suppressedIds}
                       onAck={handleAck}
                       onAckAll={handleAckAll}
                       clientAlerts={clientAlertsByFlight.get(f.id) ?? []}

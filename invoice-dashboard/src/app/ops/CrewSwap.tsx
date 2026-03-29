@@ -1816,6 +1816,21 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
   // Phase 4: Flight change alerts
   const [swapAlerts, setSwapAlerts] = useState<SwapAlert[]>([]);
   const [alertCount, setAlertCount] = useState(0);
+  // Gap detection (new airports + missing cache pairs)
+  const [gapAlerts, setGapAlerts] = useState<{ newAirports: { icao: string; iata: string; suggested: string | null; distance: number | null; flights: number }[]; missingPairs: number } | null>(null);
+  useEffect(() => {
+    const wedStr = selectedWed.toISOString().slice(0, 10);
+    fetch(`/api/crew/detect-gaps?swap_date=${wedStr}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (!d) return;
+        const newAirports = (d.airports?.new_airports ?? []).map((a: Record<string, unknown>) => ({
+          icao: a.icao, iata: a.iata, suggested: a.suggested_alias_iata, distance: a.distance_miles, flights: a.appears_in_flights,
+        }));
+        setGapAlerts({ newAirports, missingPairs: d.cache?.missing_pairs?.length ?? 0 });
+      })
+      .catch(() => {});
+  }, [selectedWed]);
   // Excluded tails (MX, owner-flown, etc.)
   const [excludedTails, setExcludedTails] = useState<Set<string>>(new Set());
   // ICS fleet (all tails from ics_sources)
@@ -3579,6 +3594,36 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
           </div>
         )}
       </div>
+
+      {/* Gap Detection Alerts */}
+      {gapAlerts && (gapAlerts.newAirports.length > 0 || gapAlerts.missingPairs > 0) && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 space-y-2">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold text-amber-800 uppercase tracking-wider">Coverage Gaps Detected</span>
+          </div>
+          {gapAlerts.newAirports.length > 0 && (
+            <div className="text-xs text-amber-700 space-y-1">
+              <div className="font-medium">New airports with no commercial alias ({gapAlerts.newAirports.length}):</div>
+              {gapAlerts.newAirports.map(a => (
+                <div key={a.icao} className="flex items-center gap-2 ml-2">
+                  <span className="font-mono font-bold">{a.iata}</span>
+                  <span className="text-amber-500">({a.flights} flights)</span>
+                  {a.suggested ? (
+                    <span className="text-amber-600">suggested: <span className="font-mono font-bold">{a.suggested}</span> ({a.distance}mi)</span>
+                  ) : (
+                    <span className="text-red-600">no nearby commercial airport found</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+          {gapAlerts.missingPairs > 0 && (
+            <div className="text-xs text-amber-700">
+              <span className="font-medium">{gapAlerts.missingPairs.toLocaleString()} city pairs</span> not yet cached for {selectedWed.toISOString().slice(0, 10)}. Run &quot;Seed Flights&quot; to fill.
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Phase 3: Swap Points Preview */}
       <div className="rounded-lg border bg-white shadow-sm overflow-hidden">

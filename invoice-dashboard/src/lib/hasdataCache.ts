@@ -16,6 +16,7 @@ import { createServiceClient } from "@/lib/supabase/service";
 import { searchFlights } from "@/lib/hasdata";
 import { DEFAULT_AIRPORT_ALIASES } from "@/lib/airportAliases";
 import { extractSwapPointsPublic, type FlightLeg } from "@/lib/swapOptimizer";
+import { isCommercialAirport, findNearbyCommercialAirports, hasCoords } from "@/lib/driveTime";
 import type { FlightOffer } from "@/lib/amadeus";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -432,5 +433,156 @@ export async function getHasdataCacheStats(date: string): Promise<HasdataCacheSt
     pairs_with_direct: withDirect,
     min_price_overall: minPrice,
     last_fetched: latestFetch || null,
+  };
+}
+
+// ─── New Airport Detection ──────────────────────────────────────────────────
+
+export type NewAirportAlert = {
+  icao: string;
+  iata: string;
+  is_commercial: boolean;
+  suggested_alias: string | null; // nearest commercial ICAO
+  suggested_alias_iata: string | null;
+  distance_miles: number | null;
+  appears_in_flights: number; // how many flights reference this airport
+  first_seen_date: string; // earliest flight date
+};
+
+/**
+ * Detect airports that appear in the flights table but have no alias mapping.
+ * Returns a list of unaliased non-commercial airports with suggested aliases
+ * based on proximity to the nearest commercial airport.
+ *
+ * Run after JI schedule sync to catch new airports before swap planning.
+ */
+export async function detectNewAirports(options?: {
+  lookAheadDays?: number;  // default 14 — scan flights this many days ahead
+}): Promise<{
+  new_airports: NewAirportAlert[];
+  total_flight_airports: number;
+  already_aliased: number;
+  commercial: number;
+}> {
+  const supa = createServiceClient();
+  const lookAhead = options?.lookAheadDays ?? 14;
+
+  const start = new Date().toISOString();
+  const end = new Date(Date.now() + lookAhead * 86400_000).toISOString();
+
+  // Get all airports from upcoming flights
+  const { data: flights } = await supa
+    .from("flights")
+    .select("departure_icao, arrival_icao, scheduled_departure")
+    .gte("scheduled_departure", start)
+    .lte("scheduled_departure", end);
+
+  const airportFlightCount = new Map<string, { count: number; earliest: string }>();
+  for (const f of flights ?? []) {
+    for (const icao of [f.departure_icao, f.arrival_icao]) {
+      if (!icao) continue;
+      const upper = icao.toUpperCase();
+      const existing = airportFlightCount.get(upper);
+      const dep = f.scheduled_departure as string;
+      if (existing) {
+        existing.count++;
+        if (dep < existing.earliest) existing.earliest = dep;
+      } else {
+        airportFlightCount.set(upper, { count: 1, earliest: dep });
+      }
+    }
+  }
+
+  // Build set of known aliases (both DB and defaults)
+  const { data: dbAliases } = await supa
+    .from("airport_aliases")
+    .select("fbo_icao");
+  const aliasedSet = new Set<string>();
+  for (const a of dbAliases ?? []) aliasedSet.add(a.fbo_icao.toUpperCase());
+  for (const a of DEFAULT_AIRPORT_ALIASES) aliasedSet.add(a.fbo_icao.toUpperCase());
+
+  // Find gaps
+  const newAirports: NewAirportAlert[] = [];
+  let commercial = 0;
+  let aliased = 0;
+
+  for (const [icao, info] of airportFlightCount) {
+    const iata = icao.length === 4 && icao.startsWith("K") ? icao.slice(1) : icao;
+
+    if (isCommercialAirport(icao)) {
+      commercial++;
+      continue;
+    }
+    if (aliasedSet.has(icao)) {
+      aliased++;
+      continue;
+    }
+
+    // This airport has no alias — find nearest commercial
+    let suggested: string | null = null;
+    let suggestedIata: string | null = null;
+    let distance: number | null = null;
+
+    if (hasCoords(icao)) {
+      // Search within 100 miles
+      const nearby = findNearbyCommercialAirports(icao, 100);
+      if (nearby.length > 0) {
+        suggested = nearby[0].icao;
+        suggestedIata = suggested.length === 4 && suggested.startsWith("K") ? suggested.slice(1) : suggested;
+        distance = nearby[0].distanceMiles;
+      }
+    }
+
+    newAirports.push({
+      icao,
+      iata,
+      is_commercial: false,
+      suggested_alias: suggested,
+      suggested_alias_iata: suggestedIata,
+      distance_miles: distance,
+      appears_in_flights: info.count,
+      first_seen_date: info.earliest.slice(0, 10),
+    });
+  }
+
+  // Sort by flight count descending (most impactful gaps first)
+  newAirports.sort((a, b) => b.appears_in_flights - a.appears_in_flights);
+
+  return {
+    new_airports: newAirports,
+    total_flight_airports: airportFlightCount.size,
+    already_aliased: aliased,
+    commercial,
+  };
+}
+
+/**
+ * Detect city pairs needed for a swap date that aren't cached yet.
+ * Returns the missing pairs so they can be seeded.
+ */
+export async function detectMissingCachePairs(swapDate: string): Promise<{
+  missing_pairs: CityPair[];
+  total_needed: number;
+  already_cached: number;
+}> {
+  const needed = await computeCityPairMatrix(swapDate);
+
+  const supa = createServiceClient();
+  const { data: cached } = await supa
+    .from("hasdata_flight_cache")
+    .select("origin_iata, destination_iata")
+    .eq("cache_date", swapDate);
+
+  const cachedSet = new Set<string>();
+  for (const r of cached ?? []) {
+    cachedSet.add(`${r.origin_iata}|${r.destination_iata}`);
+  }
+
+  const missing = needed.filter(p => !cachedSet.has(`${p.origin}|${p.destination}`));
+
+  return {
+    missing_pairs: missing,
+    total_needed: needed.length,
+    already_cached: cachedSet.size,
   };
 }

@@ -1211,6 +1211,29 @@ function ClearanceCard({ clearance, countries, tripId, updating, onStatusChange,
         </div>
       )}
 
+      {/* Handler status badge */}
+      {clearance.handler_status && (
+        <div className={`mt-1.5 flex items-center gap-2 text-xs rounded px-2 py-1.5 ${
+          (clearance.handler_status as { status: string }).status === "confirmed"
+            ? "bg-indigo-50 text-indigo-700"
+            : (clearance.handler_status as { status: string }).status === "needs_info"
+            ? "bg-orange-50 text-orange-700"
+            : "bg-gray-50 text-gray-600"
+        }`}>
+          <span className="font-semibold">
+            {(clearance.handler_status as { status: string }).status === "confirmed"
+              ? "Handler Confirmed"
+              : (clearance.handler_status as { status: string }).status === "needs_info"
+              ? "Handler Needs Info"
+              : "Handler Reply"}
+          </span>
+          <span className="truncate">{(clearance.handler_status as { from?: string }).from}</span>
+          {(clearance.handler_status as { status: string }).status === "needs_info" && (
+            <span className="ml-auto text-orange-600 font-medium">{(clearance.handler_status as { note?: string }).note}</span>
+          )}
+        </div>
+      )}
+
       {/* Notes + File */}
       <div className="mt-2 flex items-start gap-4">
         {/* Notes */}
