@@ -11,6 +11,7 @@ import {
 } from "@/lib/flightaware";
 import { TRIPS } from "@/lib/maintenanceData";
 import { findNearestAirport } from "@/lib/airportCoords";
+import { sendIntlAlertSlack } from "@/lib/intlAlertSlack";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
@@ -628,6 +629,111 @@ async function pollDiscovery(
 }
 
 // ---------------------------------------------------------------------------
+// Verify pending diversions (delayed alert verification)
+// ---------------------------------------------------------------------------
+
+/**
+ * Check pending diversion records that are at least 5 minutes old.
+ * Re-verify against the freshly-updated fa_flights table:
+ * - If FA still shows diverted → confirm and fire the alert + Slack
+ * - If FA no longer shows diverted → suppress (false positive)
+ * - Auto-confirm anything older than 30 min (safety net)
+ */
+async function verifyPendingDiversions(): Promise<{ confirmed: number; suppressed: number }> {
+  const supa = createServiceClient();
+  const fiveMinAgo = new Date(Date.now() - 5 * 60_000).toISOString();
+  const thirtyMinAgo = new Date(Date.now() - 30 * 60_000).toISOString();
+
+  const { data: pending } = await supa
+    .from("pending_diversions")
+    .select("id, fa_flight_id, registration, origin_icao, destination_icao, original_destination, flight_id, diversion_message, distance_suspect, created_at")
+    .eq("status", "pending")
+    .lte("created_at", fiveMinAgo);
+
+  if (!pending || pending.length === 0) return { confirmed: 0, suppressed: 0 };
+
+  console.log(`[FA Poll] Verifying ${pending.length} pending diversion(s)`);
+
+  let confirmed = 0;
+  let suppressed = 0;
+
+  for (const p of pending) {
+    const isStale = new Date(p.created_at).getTime() < new Date(thirtyMinAgo).getTime();
+
+    // Look up the flight in fa_flights (freshly updated by pollEnRoute/pollDiscovery)
+    const { data: faRows } = await supa
+      .from("fa_flights")
+      .select("fa_flight_id, status, diverted, cancelled")
+      .eq("fa_flight_id", p.fa_flight_id)
+      .limit(1);
+
+    const faFlight = faRows?.[0];
+    const stillDiverted = faFlight?.diverted === true;
+
+    // Check for an alert that was already created (e.g. by another path)
+    const { count: existingAlert } = await supa
+      .from("intl_leg_alerts")
+      .select("id", { count: "exact", head: true })
+      .eq("flight_id", p.flight_id)
+      .eq("alert_type", "diversion")
+      .eq("acknowledged", false);
+
+    if ((existingAlert ?? 0) > 0) {
+      // Alert already exists — mark as confirmed and move on
+      await supa.from("pending_diversions")
+        .update({ status: "confirmed", verified_at: new Date().toISOString() })
+        .eq("id", p.id);
+      confirmed++;
+      continue;
+    }
+
+    if (stillDiverted || isStale) {
+      // Confirmed: FA still shows diverted (or record is >30min old — safety net)
+      const reason = isStale && !stillDiverted ? "auto-confirmed (>30min)" : "FA confirms diverted";
+      console.log(`[FA Poll] Diversion CONFIRMED for ${p.registration}: ${reason}`);
+
+      // Insert the alert
+      await supa.from("intl_leg_alerts").insert({
+        flight_id: p.flight_id,
+        alert_type: "diversion",
+        severity: "critical",
+        message: p.diversion_message,
+      });
+
+      // Fire Slack
+      await sendIntlAlertSlack([{
+        flight_id: p.flight_id,
+        alert_type: "diversion",
+        severity: "critical",
+        message: p.diversion_message,
+      }]);
+
+      await supa.from("pending_diversions")
+        .update({ status: "confirmed", verified_at: new Date().toISOString() })
+        .eq("id", p.id);
+      confirmed++;
+    } else {
+      // Suppressed: FA no longer shows flight as diverted
+      console.log(`[FA Poll] Diversion SUPPRESSED for ${p.registration}: FA status=${faFlight?.status ?? "not found"}`);
+
+      await supa.from("pending_diversions")
+        .update({ status: "suppressed", verified_at: new Date().toISOString() })
+        .eq("id", p.id);
+      suppressed++;
+    }
+  }
+
+  // Cleanup: delete records older than 24h to prevent table bloat
+  const oneDayAgo = new Date(Date.now() - 24 * 3600_000).toISOString();
+  await supa.from("pending_diversions")
+    .delete()
+    .neq("status", "pending")
+    .lt("created_at", oneDayAgo);
+
+  return { confirmed, suppressed };
+}
+
+// ---------------------------------------------------------------------------
 // Main handler
 // ---------------------------------------------------------------------------
 
@@ -664,6 +770,14 @@ export async function GET(req: NextRequest) {
     console.log("[FA Poll] Skipping discovery (interval not elapsed)");
   }
 
+  // Verify pending diversions (delayed alert verification)
+  const diversionResult = await verifyPendingDiversions();
+  if (diversionResult.confirmed > 0 || diversionResult.suppressed > 0) {
+    console.log(
+      `[FA Poll] Diversions: ${diversionResult.confirmed} confirmed, ${diversionResult.suppressed} suppressed`,
+    );
+  }
+
   const elapsed = Date.now() - startMs;
   console.log(`[FA Poll] Complete in ${(elapsed / 1000).toFixed(1)}s`);
 
@@ -683,5 +797,6 @@ export async function GET(req: NextRequest) {
           cleaned: discoveryResult.cleaned,
         }
       : "skipped",
+    diversions: diversionResult,
   });
 }

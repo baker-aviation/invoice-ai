@@ -3,6 +3,11 @@ import { requireAuth, isAuthed, verifyCronSecret } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 import { isInternationalIcao } from "@/lib/intlUtils";
 import { sendIntlAlertSlack } from "@/lib/intlAlertSlack";
+import {
+  isDiversionDistanceReasonable,
+  createPendingDiversion,
+  hasPendingDiversion,
+} from "@/lib/diversionCheck";
 
 /**
  * POST /api/ops/intl/run-checks
@@ -324,31 +329,56 @@ async function runChecks() {
             .eq("acknowledged", false);
 
           if ((count ?? 0) === 0) {
-            // Find delay from the active sibling entry (ghost entry has garbage values)
-            const sibling = faRows.find((s) =>
-              !s.cancelled && !s.diverted &&
-              s.origin_icao === faOrigin &&
-              s.tail === fa.tail
-            );
-            let delayMin: number | null = null;
-            if (sibling?.actual_departure && sibling?.departure_time) {
-              const diff = Math.round(
-                (new Date(sibling.actual_departure).getTime() - new Date(sibling.departure_time).getTime()) / 60000
-              );
-              if (diff > 0) delayMin = diff;
-            }
-            const delayNote = delayMin && delayMin >= DELAY_THRESHOLD_MIN ? ` (delayed ${delayMin}min)` : "";
+            // Check if webhook already created a pending diversion for this flight
+            const alreadyPending = fa.fa_flight_id
+              ? await hasPendingDiversion(fa.fa_flight_id, dbFlight.id)
+              : false;
 
-            const divMsg = divertedTo !== originalDest
-              ? `DIVERTED: ${fa.tail} ${faOrigin}→${originalDest} diverted to ${divertedTo}${delayNote}. Check permits and customs for new routing.`
-              : `DIVERTED: ${fa.tail} ${faOrigin}→${originalDest} has been diverted${delayNote}. Check permits and customs for new routing.`;
-            alertsToCreate.push({
-              flight_id: dbFlight.id,
-              alert_type: "diversion",
-              severity: "critical",
-              message: divMsg,
-            });
-            faDelayCount++;
+            if (!alreadyPending) {
+              // Distance sanity check
+              const distCheck = isDiversionDistanceReasonable({
+                origin_icao: faOrigin,
+                destination_icao: originalDest,
+                diverted_to_icao: divertedTo,
+              });
+
+              if (!distCheck.reasonable) {
+                console.log(`[intl/run-checks] Suppressed bogus diversion for ${fa.tail}: ${distCheck.reason}`);
+              } else {
+                // Find delay from the active sibling entry (ghost entry has garbage values)
+                const sibling = faRows.find((s) =>
+                  !s.cancelled && !s.diverted &&
+                  s.origin_icao === faOrigin &&
+                  s.tail === fa.tail
+                );
+                let delayMin: number | null = null;
+                if (sibling?.actual_departure && sibling?.departure_time) {
+                  const diff = Math.round(
+                    (new Date(sibling.actual_departure).getTime() - new Date(sibling.departure_time).getTime()) / 60000
+                  );
+                  if (diff > 0) delayMin = diff;
+                }
+                const delayNote = delayMin && delayMin >= DELAY_THRESHOLD_MIN ? ` (delayed ${delayMin}min)` : "";
+
+                const divMsg = divertedTo !== originalDest
+                  ? `DIVERTED: ${fa.tail} ${faOrigin}→${originalDest} diverted to ${divertedTo}${delayNote}. Check permits and customs for new routing.`
+                  : `DIVERTED: ${fa.tail} ${faOrigin}→${originalDest} has been diverted${delayNote}. Check permits and customs for new routing.`;
+
+                // Hold for verification instead of firing immediately
+                await createPendingDiversion({
+                  fa_flight_id: fa.fa_flight_id,
+                  registration: fa.tail,
+                  origin_icao: faOrigin,
+                  destination_icao: divertedTo,
+                  original_destination: originalDest,
+                  flight_id: dbFlight.id,
+                  message: divMsg,
+                  source: "run-checks",
+                });
+                console.log(`[intl/run-checks] Diversion held for verification: ${fa.tail} ${faOrigin}→${originalDest} → ${divertedTo}`);
+                faDelayCount++;
+              }
+            }
           }
           continue;
         }
