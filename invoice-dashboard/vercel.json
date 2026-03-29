@@ -32,6 +32,10 @@
     {
       "path": "/api/ops/intl/parse-cbp-replies",
       "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/ops/intl/run-checks",
+      "schedule": "*/15 * * * *"
     }
   ]
 }
