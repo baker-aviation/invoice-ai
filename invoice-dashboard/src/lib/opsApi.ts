@@ -701,7 +701,7 @@ export type IntlTripClearance = {
   trip_id: string;
   clearance_type: "outbound_clearance" | "landing_permit" | "inbound_clearance" | "overflight_permit";
   airport_icao: string;
-  status: "not_started" | "submitted" | "approved";
+  status: "not_started" | "submitted" | "received" | "approved";
   sort_order: number;
   notes: string | null;
   file_gcs_bucket: string | null;

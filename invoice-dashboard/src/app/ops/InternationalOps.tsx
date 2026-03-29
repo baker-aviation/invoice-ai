@@ -144,7 +144,7 @@ export default function InternationalOps({ flights: _parentFlights }: { flights:
 // TRIP BOARD — trip-centric view with clearance progress
 // ===========================================================================
 
-const CLEARANCE_STATUSES = ["not_started", "submitted", "approved"] as const;
+const CLEARANCE_STATUSES = ["not_started", "submitted", "received", "approved"] as const;
 const CLEARANCE_LABELS: Record<string, string> = {
   outbound_clearance: "OB Clearance",
   landing_permit: "Landing Permit",
@@ -161,6 +161,7 @@ const CLEARANCE_LABELS_FULL: Record<string, string> = {
 function clearanceStatusColor(s: string) {
   switch (s) {
     case "approved": return "bg-green-100 text-green-800";
+    case "received": return "bg-yellow-100 text-yellow-800";
     case "submitted": return "bg-blue-100 text-blue-800";
     default: return "bg-gray-100 text-gray-600";
   }
@@ -169,6 +170,7 @@ function clearanceStatusColor(s: string) {
 function clearanceStatusLabel(s: string) {
   switch (s) {
     case "approved": return "Approved";
+    case "received": return "Received";
     case "submitted": return "Submitted";
     default: return "Not Started";
   }
