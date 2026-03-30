@@ -753,6 +753,8 @@ export type IntlTrip = {
   schedule_snapshot?: Record<string, { dep: string; arr: string | null }> | null;
   // Passenger names per leg (from JI CSV upload)
   leg_passengers?: Array<{ dep: string; arr: string; passengers: string }>;
+  // Salesperson name (from JI CSV upload)
+  salesperson?: string;
 };
 
 export type IntlTripClearance = {
