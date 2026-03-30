@@ -128,6 +128,12 @@ function getFleetType(icaoType: string | null | undefined): string {
 }
 /** Group order: Challenger first, then Citation X, then Other */
 const FLEET_ORDER = ["Challenger 300", "Challenger 350", "Citation X", "Other"];
+/** Filter buttons: combine CL300 + CL350 into a single "Challenger" toggle */
+const FLEET_FILTER_BUTTONS: { label: string; types: string[]; activeClass: string }[] = [
+  { label: "Challenger", types: ["Challenger 300", "Challenger 350"], activeClass: "bg-indigo-100 text-indigo-700" },
+  { label: "CitX", types: ["Citation X"], activeClass: "bg-teal-100 text-teal-700" },
+  { label: "Other", types: ["Other"], activeClass: "bg-gray-200 text-gray-700" },
+];
 
 const DUTY_FLIGHT_TYPES = new Set(["revenue", "owner", "positioning", "ferry", "charter"]);
 const MAX_LEG_DURATION_MIN = 8 * 60; // cap any single leg at 8h (longest Baker legs are ~5h)
@@ -519,7 +525,14 @@ const SEVERITY_COLORS: Record<string, string> = {
 
 /** Find the active (unacknowledged) EDCT alert for a flight */
 function getActiveEdct(f: Flight): OpsAlert | null {
-  return f.alerts?.find(a => a.alert_type === "EDCT" && a.edct_time && !a.acknowledged_at) ?? null;
+  const now = Date.now();
+  return f.alerts?.find(a => {
+    if (a.alert_type !== "EDCT" || !a.edct_time || a.acknowledged_at) return false;
+    // Ignore stale EDCTs: if the EDCT time is more than 2h in the past,
+    // the flight has already departed and the EDCT is moot.
+    if (new Date(a.edct_time).getTime() < now - 2 * 60 * 60 * 1000) return false;
+    return true;
+  }) ?? null;
 }
 
 /** EDCT source: SWIM vs ForeFlight */
@@ -2194,29 +2207,27 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
         {/* Fleet type */}
         <div className="flex items-center gap-2">
           <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Aircraft:</span>
-          {FLEET_ORDER.map((ft) => {
-            const active = fleetTypeFilter.has(ft);
+          {FLEET_FILTER_BUTTONS.map((btn) => {
+            const active = btn.types.every((t) => fleetTypeFilter.has(t));
             return (
               <button
-                key={ft}
+                key={btn.label}
                 onClick={() => {
                   setFleetTypeFilter((prev) => {
                     const next = new Set(prev);
-                    if (next.has(ft)) next.delete(ft);
-                    else next.add(ft);
+                    if (active) {
+                      btn.types.forEach((t) => next.delete(t));
+                    } else {
+                      btn.types.forEach((t) => next.add(t));
+                    }
                     return next;
                   });
                 }}
                 className={`px-3 py-1 text-xs font-medium rounded-full transition-all ${
-                  active
-                    ? ft === "Challenger 300" ? "bg-indigo-100 text-indigo-700"
-                    : ft === "Challenger 350" ? "bg-violet-100 text-violet-700"
-                    : ft === "Citation X" ? "bg-teal-100 text-teal-700"
-                    : "bg-gray-200 text-gray-700"
-                    : "bg-gray-100 text-gray-400 opacity-50"
+                  active ? btn.activeClass : "bg-gray-100 text-gray-400 opacity-50"
                 }`}
               >
-                {ft === "Challenger 300" ? "CL300" : ft === "Challenger 350" ? "CL350" : ft === "Citation X" ? "CitX" : ft}
+                {btn.label}
               </button>
             );
           })}

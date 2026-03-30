@@ -32,7 +32,14 @@ const DUTY_FLIGHT_TYPES = new Set(["revenue", "owner", "positioning", "ferry", "
 
 /** Find the active (unacknowledged) EDCT alert for a flight */
 function getActiveEdct(f: Flight): { edct_time: string } | null {
-  return f.alerts?.find(a => a.alert_type === "EDCT" && a.edct_time && !a.acknowledged_at) as { edct_time: string } | null ?? null;
+  const now = Date.now();
+  return f.alerts?.find(a => {
+    if (a.alert_type !== "EDCT" || !a.edct_time || a.acknowledged_at) return false;
+    // Ignore stale EDCTs: if the EDCT time is more than 2h in the past,
+    // the flight has already departed and the EDCT is moot.
+    if (new Date(a.edct_time).getTime() < now - 2 * 60 * 60 * 1000) return false;
+    return true;
+  }) as { edct_time: string } | null ?? null;
 }
 
 /* ── Types ──────────────────────────────────────────── */
