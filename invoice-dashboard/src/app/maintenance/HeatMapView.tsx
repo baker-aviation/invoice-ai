@@ -254,18 +254,20 @@ export default function HeatMapView({ flights, liveVanPositions, liveVanIsLive }
       eligible.push(f);
     }
 
-    // EOD filter: only keep the last arrival per tail in the window
+    // EOD filter: keep the last arrival per tail PER DAY (ET calendar date)
     if (eodOnly) {
-      const lastByTail = new Map<string, Flight>();
+      const lastByTailDay = new Map<string, Flight>();
       for (const f of eligible) {
         const tail = f.tail_number ?? "";
         if (!tail) continue;
-        const prev = lastByTail.get(tail);
+        const etDate = new Date(f.scheduled_arrival!).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+        const key = `${tail}|${etDate}`;
+        const prev = lastByTailDay.get(key);
         if (!prev || (f.scheduled_arrival ?? "") > (prev.scheduled_arrival ?? "")) {
-          lastByTail.set(tail, f);
+          lastByTailDay.set(key, f);
         }
       }
-      eligible = [...lastByTail.values()];
+      eligible = [...lastByTailDay.values()];
     }
 
     const byAirport = new Map<string, Flight[]>();
