@@ -3510,8 +3510,9 @@ export function solveOffgoingFirst(params: {
           const hoursAfterNoon = Math.max(0, localHour - 12);
           timingPenalty = Math.min(150, hoursAfterNoon * 12);
         }
+        const afterLiveBonus = sp.position === "after_live" ? 80 : 0;
         const ease = -minDrive + (selfCommercial ? 30 : 0) + commAirports.length * 2
-          - (isInternational ? 200 : 0) - timingPenalty;
+          - (isInternational ? 500 : 0) - timingPenalty + afterLiveBonus;
         if (ease > bestEase) { bestEase = ease; swapPoint = sp; }
       }
     }

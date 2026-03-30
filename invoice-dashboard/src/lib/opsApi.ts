@@ -129,6 +129,63 @@ function extractNotamDates(rawData: unknown): NotamDates | null {
 const ALERT_COLUMNS =
   "id, flight_id, alert_type, severity, airport_icao, departure_icao, arrival_icao, tail_number, subject, body, edct_time, original_departure_time, acknowledged_at, acknowledged_by, created_at, raw_data, source_message_id";
 
+/**
+ * Lightweight flight fetch — returns flights with empty alerts arrays.
+ * Use this when you only need flight schedule data (no EDCT/NOTAM/alert loading).
+ */
+export async function fetchFlightsLite(params: {
+  lookahead_hours?: number;
+  lookback_hours?: number;
+} = {}): Promise<FlightsResponse> {
+  const supa = createServiceClient();
+  const lookahead = params.lookahead_hours ?? 120;
+  const lookback = params.lookback_hours ?? 168;
+
+  const now = new Date();
+  const past = new Date(now.getTime() - lookback * 3600_000).toISOString();
+  const future = new Date(now.getTime() + lookahead * 3600_000).toISOString();
+
+  const { data: flightRows, error } = await supa
+    .from("flights")
+    .select("id, ics_uid, tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, summary, flight_type, pic, sic, pax_count, jetinsight_url, fa_flight_id")
+    .gte("scheduled_departure", past)
+    .lte("scheduled_departure", future)
+    .order("scheduled_departure", { ascending: true });
+
+  if (error) throw new Error(`fetchFlightsLite failed: ${error.message}`);
+  if (!flightRows?.length) return { ok: true, flights: [], count: 0 };
+
+  // Deduplicate cross-feed flights
+  const seen = new Map<string, number>();
+  const flights: Flight[] = [];
+  for (const f of flightRows) {
+    if (f.tail_number && f.departure_icao && f.arrival_icao) {
+      const sig = `${f.tail_number}|${f.departure_icao}|${f.arrival_icao}|${f.scheduled_departure}`;
+      if (seen.has(sig)) continue;
+      seen.set(sig, flights.length);
+    }
+    flights.push({
+      id: f.id as string,
+      ics_uid: f.ics_uid as string,
+      tail_number: f.tail_number as string | null,
+      departure_icao: f.departure_icao as string | null,
+      arrival_icao: f.arrival_icao as string | null,
+      scheduled_departure: f.scheduled_departure as string,
+      scheduled_arrival: f.scheduled_arrival as string | null,
+      summary: f.summary as string | null,
+      flight_type: f.flight_type as string | null,
+      pic: f.pic as string | null,
+      sic: f.sic as string | null,
+      pax_count: f.pax_count as number | null,
+      jetinsight_url: f.jetinsight_url as string | null,
+      fa_flight_id: f.fa_flight_id as string | null,
+      alerts: [],
+    });
+  }
+
+  return { ok: true, flights, count: flights.length };
+}
+
 export async function fetchFlights(params: {
   lookahead_hours?: number;
   lookback_hours?: number;

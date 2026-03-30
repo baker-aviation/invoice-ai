@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic";
 
 import { Topbar } from "@/components/Topbar";
 import { AutoRefresh } from "@/components/AutoRefresh";
-import { fetchFlights, fetchMxNotes, fetchMelItems, fetchAircraftTags } from "@/lib/opsApi";
+import { fetchFlightsLite, fetchMxNotes, fetchMelItems, fetchAircraftTags } from "@/lib/opsApi";
 import { createServiceClient } from "@/lib/supabase/service";
 import VanPositioningClient from "./VanPositioningWrapper";
 
@@ -13,7 +13,7 @@ export default async function MaintenancePage() {
   const future = new Date(now.getTime() + 7 * 86400000).toISOString();
 
   const [flightData, mxNotes, melItems, aircraftTags, { data: fboRows }] = await Promise.all([
-    fetchFlights({ lookahead_hours: 120, lookback_hours: 168 }).catch(() => ({
+    fetchFlightsLite({ lookahead_hours: 120, lookback_hours: 168 }).catch(() => ({
       ok: false,
       flights: [],
       count: 0,
