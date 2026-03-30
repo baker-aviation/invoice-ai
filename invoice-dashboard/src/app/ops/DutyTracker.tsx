@@ -656,10 +656,13 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
             continue;
           }
           // Find EDCT-shifted duty off for this DP's legs
+          // Match by route + time proximity (within 6h) to avoid picking up a
+          // same-route leg from a different day when routes repeat across days.
           let edctDpLastArr = 0;
           for (const leg of dp.legs) {
             const edctLeg = edctLegs.find(el =>
-              el.departure_icao === leg.departure_icao && el.arrival_icao === leg.arrival_icao
+              el.departure_icao === leg.departure_icao && el.arrival_icao === leg.arrival_icao &&
+              Math.abs(el.startMs - leg.startMs) < 6 * 60 * 60 * 1000
             );
             edctDpLastArr = Math.max(edctDpLastArr, edctLeg?.endMs ?? leg.endMs);
           }

@@ -1532,7 +1532,9 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
       if (!hasEdct) continue; // skip tails without EDCTs
 
       // Build EDCT-shifted intervals from normal intervals
-      const edctIntervals = normalDuty.intervals.map(iv => ({ ...iv }));
+      // Preserve original startMs so we can determine which day each leg belongs to
+      // after EDCT shifts + cascade reorder the array.
+      const edctIntervals = normalDuty.intervals.map(iv => ({ ...iv, origStartMs: iv.startMs }));
       for (const iv of edctIntervals) {
         // Skip legs that have actually departed — EDCT is moot once airborne
         if (iv.source === "actual" && iv.startMs < Date.now()) continue;
@@ -1596,10 +1598,11 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
         // Find the last EDCT interval that departs today (or was part of today's original DP)
         let edctTodayLastArr = 0;
         for (const iv of edctIntervals) {
-          // Use original intervals to determine which legs belong to "today's duty"
-          const origIv = normalDuty.intervals.find(o => o.depIcao === iv.depIcao && o.arrIcao === iv.arrIcao);
-          const origDep = origIv?.startMs ?? iv.startMs;
-          if (origDep >= todayUtcDate && origDep < todayUtcEnd) {
+          // Use the interval's pre-shift departure to determine if it's a "today" leg.
+          // Previous route-only matching (find by depIcao/arrIcao) returned the wrong
+          // interval when the same route appeared on consecutive days, causing tomorrow's
+          // arrival to be counted as today's — which clamped rest to 0.
+          if (iv.origStartMs >= todayUtcDate && iv.origStartMs < todayUtcEnd) {
             edctTodayLastArr = Math.max(edctTodayLastArr, iv.endMs);
           }
         }

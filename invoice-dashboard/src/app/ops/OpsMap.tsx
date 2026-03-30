@@ -10,6 +10,7 @@ import { MapContainer, TileLayer, Marker, Popup, Tooltip, Polyline, CircleMarker
 L.Map.addInitHook("addHandler", "gestureHandling", GestureHandling);
 import type { AircraftPosition, FlightInfoMap } from "@/app/maintenance/MapView";
 import { getAirportInfo } from "@/lib/airportCoords";
+import { getAirportTimezone } from "@/lib/airportTimezones";
 import type { FaaDelay, FaaAfp } from "@/app/api/ops/faa-delays/route";
 import type { FlowControlLine } from "@/app/api/ops/flow-controls/route";
 
@@ -56,15 +57,31 @@ function acDataLabel(ac: AircraftPosition, _fi: FlightInfoMap | undefined, fleet
   return `<div style="color:${color};font-family:ui-monospace,monospace;font-size:11px;font-weight:700;white-space:nowrap;${bg};line-height:1.3">${ac.tail}${alertHtml}${flHtml}</div>`;
 }
 
-function fmtEta(iso: string | null | undefined): string {
+function fmtEta(iso: string | null | undefined, destIcao?: string | null): string {
   if (!iso) return "\u2014";
   const d = new Date(iso);
   const now = new Date();
   const diffMs = d.getTime() - now.getTime();
   const diffMin = Math.round(diffMs / 60000);
-  const time = d.toLocaleTimeString("en-US", {
+  const zulu = d.toLocaleTimeString("en-US", {
     hour: "2-digit", minute: "2-digit", hour12: true, timeZone: "UTC",
-  }) + " UTC";
+  }) + " Z";
+  // Build local time string for the destination airport
+  let local = "";
+  const tz = getAirportTimezone(destIcao);
+  if (tz) {
+    try {
+      const localTime = d.toLocaleTimeString("en-US", {
+        hour: "2-digit", minute: "2-digit", hour12: true, timeZone: tz,
+      });
+      const tzAbbr = d
+        .toLocaleString("en-US", { timeZoneName: "short", timeZone: tz })
+        .split(" ")
+        .pop() ?? "";
+      local = ` / ${localTime} ${tzAbbr}`;
+    } catch { /* fall back to Zulu only */ }
+  }
+  const time = zulu + local;
   if (diffMin <= 0) return time;
   const hrs = Math.floor(diffMin / 60);
   const mins = diffMin % 60;
@@ -513,14 +530,7 @@ function useFaaDelays(enabled: boolean): { airports: DelayAirport[]; updated: st
 /* ── Flow Controls (reroutes / CTOPs / AFPs from SWIM) ── */
 
 const FLOW_COLORS = [
-  "#f97316", // orange
-  "#06b6d4", // cyan
-  "#a855f7", // purple
-  "#eab308", // yellow
-  "#ec4899", // pink
-  "#14b8a6", // teal
-  "#f43f5e", // rose
-  "#84cc16", // lime
+  "#22c55e", // bright green — distinct from red Challenger in-flight lines
 ];
 
 function useFlowControls(enabled: boolean): FlowControlLine[] {
@@ -935,7 +945,7 @@ export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHold
                     </div>
                   )}
                   {fi?.arrival_time && (
-                    <div className="text-xs font-semibold text-green-700">ETA: {fmtEta(fi.arrival_time)}</div>
+                    <div className="text-xs font-semibold text-green-700">ETA: {fmtEta(fi.arrival_time, fi.destination_icao)}</div>
                   )}
                   <div className="text-xs">
                     {ac.on_ground ? (
