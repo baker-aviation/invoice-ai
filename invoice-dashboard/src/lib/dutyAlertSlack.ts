@@ -1,8 +1,9 @@
 import "server-only";
 
 import { postSlackMessage } from "@/lib/slack";
-import { fmtDuration, fmtZulu, fmtDateShort } from "@/lib/dutyCalc";
+import { fmtDuration, fmtZulu } from "@/lib/dutyCalc";
 import type { DutyPeriod, RestPeriod, LegInterval } from "@/lib/dutyCalc";
+import { getAirportTimezone } from "@/lib/airportTimezones";
 
 export const DUTY_ALERT_CHANNEL = "C0APKG2KBT5"; // #10-24-issues
 
@@ -54,9 +55,32 @@ function stripK(icao: string | null): string {
   return u;
 }
 
+/** Format ms timestamp in an airport's local timezone, e.g. "1830 EDT". Falls back to Zulu. */
+function fmtLocalTime(ms: number, icao: string | null): string {
+  const tz = getAirportTimezone(icao);
+  if (!tz) return fmtZulu(ms);
+  const d = new Date(ms);
+  const hh = d.toLocaleString("en-US", { hour: "2-digit", hour12: false, timeZone: tz }).padStart(2, "0");
+  const mm = d.toLocaleString("en-US", { minute: "2-digit", timeZone: tz }).padStart(2, "0");
+  const tzAbbr = d.toLocaleString("en-US", { timeZoneName: "short", timeZone: tz }).split(" ").pop() ?? "";
+  return `${hh}${mm} ${tzAbbr}`;
+}
+
+/** Format ms timestamp as "Mar 30" in an airport's local timezone. Falls back to UTC. */
+function fmtLocalDate(ms: number, icao: string | null): string {
+  const tz = getAirportTimezone(icao) ?? "UTC";
+  return new Date(ms).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: tz });
+}
+
+/** Get the "rest location" ICAO — last arrival of the preceding duty period. */
+function restAirport(dp: DutyPeriod): string | null {
+  const lastLeg = dp.legs[dp.legs.length - 1];
+  return lastLeg?.arrival_icao ?? null;
+}
+
 function fmtDpLegs(dp: DutyPeriod): string {
   return dp.legs
-    .map(l => `${fmtLegRoute(l)} (${fmtZulu(l.startMs)}-${fmtZulu(l.endMs)} ${l.source === "actual" ? "actual" : l.source === "fa-estimate" ? "FA est" : "sched"})`)
+    .map(l => `${fmtLegRoute(l)} (${fmtLocalTime(l.startMs, l.departure_icao)}-${fmtLocalTime(l.endMs, l.arrival_icao)} ${l.source === "actual" ? "actual" : l.source === "fa-estimate" ? "FA est" : "sched"})`)
     .join(" · ");
 }
 
@@ -81,7 +105,7 @@ export function buildFlightTimeBlocks(params: FlightTimeAlertParams): { blocks: 
           `${emoji} *PROJECTED ${severity === "red" ? "OVERAGE" : "CAUTION"}*`,
           `*${tail}* is projected to ${severity === "red" ? "exceed" : "approach"} the 10hr flight time limit in a rolling 24hr window`,
           `\n*Projected flight time:* ${fmtDuration(flightMinutes)} ${severity === "red" ? "(limit: 10h 00m)" : "(caution at 9h 00m)"}`,
-          breachLeg ? `*Triggering leg:* ${fmtLegRoute(breachLeg)} (departs ${fmtZulu(breachLeg.startMs)})` : null,
+          breachLeg ? `*Triggering leg:* ${fmtLegRoute(breachLeg)} (departs ${fmtLocalTime(breachLeg.startMs, breachLeg.departure_icao)})` : null,
           dutyPeriod ? `*DP legs:* ${fmtDpLegs(dutyPeriod)}` : null,
           suggestion ? `:bulb: ${suggestion}` : null,
         ].filter(Boolean).join("\n"),
@@ -99,6 +123,7 @@ export function buildFlightTimeBlocks(params: FlightTimeAlertParams): { blocks: 
 
 export function buildRestBlocks(params: RestAlertParams): { blocks: SlackBlock[]; fallback: string } {
   const { tail, severity, restMinutes, restPeriod, dpBefore, dpAfter } = params;
+  const restIcao = restAirport(dpBefore);
   const emoji = severity === "red" ? ":rotating_light:" : ":warning:";
   const label = severity === "red" ? "Rest Violation" : "Rest Caution";
   const headerText = `${tail} — ${label} (Projected)`;
@@ -116,9 +141,9 @@ export function buildRestBlocks(params: RestAlertParams): { blocks: SlackBlock[]
           `${emoji} *PROJECTED REST SHORTAGE*`,
           `*${tail}* is projected to have insufficient rest before next duty period`,
           `\n*Projected rest:* ${fmtDuration(restMinutes)} ${severity === "red" ? "(minimum required: 10h)" : "(caution below 11h)"}`,
-          `*Current DP ends:* ${fmtDateShort(dpBefore.dutyOffMs)} ${fmtZulu(dpBefore.dutyOffMs)} (est)`,
-          `*Next DP begins:* ${fmtDateShort(dpAfter.dutyOnMs)} ${fmtZulu(dpAfter.dutyOnMs)}`,
-          `*Rest window:* ${fmtZulu(restPeriod.startMs)} → ${fmtZulu(restPeriod.stopMs)}`,
+          `*Current DP ends:* ${fmtLocalDate(dpBefore.dutyOffMs, restIcao)} ${fmtLocalTime(dpBefore.dutyOffMs, restIcao)} (est)`,
+          `*Next DP begins:* ${fmtLocalDate(dpAfter.dutyOnMs, restIcao)} ${fmtLocalTime(dpAfter.dutyOnMs, restIcao)}`,
+          `*Rest window:* ${fmtLocalTime(restPeriod.startMs, restIcao)} → ${fmtLocalTime(restPeriod.stopMs, restIcao)}`,
         ].filter(Boolean).join("\n"),
       },
     },
