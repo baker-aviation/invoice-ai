@@ -39,9 +39,10 @@ async function computePairs() {
     }
   }
 
-  // Get swap points from flights around Apr 2
-  const start = "2026-04-01T00:00:00Z";
-  const end = "2026-04-03T23:59:59Z";
+  // Get swap points from flights around swap date
+  const sd = new Date(SWAP_DATE + "T12:00:00Z");
+  const start = new Date(sd.getTime() - 86400000).toISOString();
+  const end = new Date(sd.getTime() + 2 * 86400000).toISOString();
   const { data: flights } = await supa
     .from("flights")
     .select("departure_icao, arrival_icao, flight_type")
@@ -56,13 +57,44 @@ async function computePairs() {
     if (arr) swapAirports.add(arr.toUpperCase());
   }
 
-  // FBO → Commercial airport aliases
-  const { data: aliases } = await supa.from("airport_aliases").select("fbo_icao, commercial_icao, preferred");
+  // FBO → Commercial airport aliases (hardcoded — DB table is empty, aliases are in airportAliases.ts)
+  const { data: dbAliases } = await supa.from("airport_aliases").select("fbo_icao, commercial_icao, preferred");
   const aliasMap = new Map();
-  for (const a of aliases ?? []) {
+  // DB aliases first
+  for (const a of dbAliases ?? []) {
     const fbo = a.fbo_icao.length === 4 && a.fbo_icao.startsWith("K") ? a.fbo_icao.slice(1) : a.fbo_icao;
     const comm = a.commercial_icao.length === 4 && a.commercial_icao.startsWith("K") ? a.commercial_icao.slice(1) : a.commercial_icao;
     if (!aliasMap.has(fbo) || a.preferred) aliasMap.set(fbo, comm);
+  }
+  // Hardcoded defaults (mirrors airportAliases.ts)
+  const DEFAULTS = {
+    TEB: "EWR", MMU: "EWR", HPN: "JFK", OPF: "MIA", FXE: "FLL", BCT: "FLL",
+    DWH: "IAH", SGR: "HOU", CXO: "IAH", ADS: "DFW", FTW: "DFW",
+    VNY: "BUR", CRQ: "SAN", SMO: "LAX", HWD: "OAK", PAO: "SJC", CCR: "OAK",
+    ASH: "BOS", BED: "BOS", OXC: "BDL", GAI: "IAD", JYO: "IAD", HEF: "IAD",
+    PDK: "ATL", RYY: "ATL", SGJ: "JAX", ORL: "MCO", SFB: "MCO", ISM: "MCO",
+    TRM: "PSP", IWA: "PHX", SDL: "PHX", FFZ: "PHX", DVT: "PHX",
+    EGE: "DEN", APA: "DEN", BJC: "DEN", TWF: "BOI",
+    HKY: "CLT", INT: "GSO", LFT: "MSY", BTR: "MSY", DHN: "MGM",
+    PWK: "ORD", DPA: "ORD", FCM: "MSP", GRK: "AUS",
+    PIE: "TPA", SPG: "TPA", VDF: "TPA", FRG: "JFK", ISP: "JFK", HVN: "BDL",
+    SWF: "EWR", AGS: "ATL", JQF: "CLT", UDD: "PSP", OSU: "CMH", NUQ: "SJC",
+    SUA: "PBI", BUY: "GSO", TTN: "PHL", RUE: "XNA",
+    APF: "RSW", TMB: "MIA", SEF: "MCO", BZN: "BZN", JAC: "JAC", HDN: "DEN",
+    SBA: "SBA", STS: "SFO", CLL: "IAH", MDD: "MAF", ACT: "DFW",
+    ILG: "PHL", BAF: "BDL", BVY: "BOS", LWM: "BOS", ABE: "PHL",
+    CAK: "CLE", MQS: "PHL", AAO: "CMH", CGF: "CLE",
+    AIK: "CAE", SSI: "JAX", MYR: "MYR", PGA: "SLC",
+    AFO: "DEN", EKS: "BZN", SUN: "BOI", TEX: "DEN",
+    KPC: "OAK", APC: "OAK", GYY: "MDW", MKC: "MCI", YIP: "DTW",
+    MTN: "BWI", VRB: "PBI", BFI: "SEA", JWN: "BNA", JZI: "CHS",
+    TIX: "MCO", UGN: "ORD", LGB: "LGB", CMA: "BUR", MHR: "SMF",
+    EDC: "AUS", FMY: "RSW", MKY: "RSW", PGD: "RSW", VNC: "SRQ",
+    PTK: "DTW", SUS: "STL", OGD: "SLC", MLI: "MLI", BLM: "EWR",
+    PSM: "BOS", SIG: "ORF",
+  };
+  for (const [fbo, comm] of Object.entries(DEFAULTS)) {
+    if (!aliasMap.has(fbo)) aliasMap.set(fbo, comm);
   }
 
   // Build pairs: home ↔ swap (resolving FBOs to commercial)

@@ -39,7 +39,7 @@ const LIGHT_TILES = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
 const TILE_ATTRIB = '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>';
 const COVERAGE_RADIUS_M = 200_000; // 200km van coverage radius
 
-const WINDOW_OPTIONS = [6, 12, 24, 48] as const;
+const WINDOW_OPTIONS = [24, 48, 72, 96] as const;
 
 // ---------------------------------------------------------------------------
 // Color scale — blue → green → yellow → orange → red
