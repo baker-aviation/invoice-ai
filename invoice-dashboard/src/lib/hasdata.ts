@@ -56,11 +56,13 @@ export async function searchFlights(params: {
   adults?: number;
   max?: number;
 }): Promise<FlightSearchResult> {
-  const { origin, destination, date, adults = 1, max = 10 } = params;
+  const { origin, destination, date, adults = 1, max = 20 } = params;
 
   const orig = icaoToIata(origin);
   const dest = icaoToIata(destination);
 
+  // "best" = Google Flights default sort (balances price + timing + connections).
+  // "price" misses early morning flights that the optimizer needs for timing constraints.
   const qs = new URLSearchParams({
     departureId: orig,
     arrivalId: dest,
@@ -69,7 +71,7 @@ export async function searchFlights(params: {
     adults: String(adults),
     travelClass: "economy",
     currency: "USD",
-    sortBy: "price",
+    sortBy: "best",
   });
 
   const res = await fetch(`${BASE_URL}?${qs}`, {
