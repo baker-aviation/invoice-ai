@@ -1723,6 +1723,14 @@ export function buildSwapPlan(params: {
     let picSwapPoint = swapPoints[0]; // default
     const swapPointScores: { icao: string; iata: string; position: string; ease: number; drive_min: number; is_commercial: boolean; is_international: boolean; timing_penalty: number; proximity_bonus: number; after_live_bonus: number; comm_airports: number; selected: boolean }[] = [];
 
+    // HARD RULE: always prefer domestic after_live over international before_live
+    const domesticAfterLive2 = swapPoints.find(sp => {
+      if (sp.position !== "after_live") return false;
+      const upper = sp.icao.toUpperCase();
+      return upper.startsWith("K") || upper.startsWith("CY");
+    });
+    if (domesticAfterLive2) picSwapPoint = domesticAfterLive2;
+
     // If assignment phase already proved a swap point, use it directly — avoids
     // the transport phase independently picking a different (wrong) swap point.
     const assignedPicSwapIcao = assignment.oncoming_pic_swap_icao;
@@ -2402,8 +2410,17 @@ function buildFeasibilityMatrix(params: {
     // buildSwapPlan — ensures the feasibility matrix evaluates the same point that
     // will actually be used for transport planning.
     let swapPointsToTry = swapPoints;
-    if (role === "PIC" && swapPoints.length > 1 && (commercialFlights || preComputedRoutes)) {
-      let bestSp = swapPoints[0];
+    // HARD RULE: always prefer domestic after_live over international
+    if (role === "PIC") {
+      const domesticAfterLive3 = swapPoints.find(sp => {
+        if (sp.position !== "after_live") return false;
+        const upper = sp.icao.toUpperCase();
+        return upper.startsWith("K") || upper.startsWith("CY");
+      });
+      if (domesticAfterLive3) swapPointsToTry = [domesticAfterLive3];
+    }
+    if (role === "PIC" && swapPointsToTry.length > 1 && (commercialFlights || preComputedRoutes)) {
+      let bestSp = swapPointsToTry[0];
       let bestEase = -Infinity;
       for (const sp of swapPoints) {
         const commAirports = findAllCommercialAirports(sp.icao, aliases);
@@ -3485,9 +3502,18 @@ export function solveOffgoingFirst(params: {
       continue;
     }
 
-    // Pick PIC swap point using same ease formula as buildSwapPlan
+    // Pick PIC swap point — HARD RULE: always prefer domestic over international.
+    // If there's a domestic after_live point, use it. Period.
     let swapPoint = swapPoints[0];
-    if (swapPoints.length > 1) {
+    const domesticAfterLive = swapPoints.find(sp => {
+      if (sp.position !== "after_live") return false;
+      const upper = sp.icao.toUpperCase();
+      return upper.startsWith("K") || upper.startsWith("CY");
+    });
+    if (domesticAfterLive) {
+      swapPoint = domesticAfterLive;
+      console.log(`[SwapPoint] ${tail}: forced domestic after_live ${toIata(domesticAfterLive.icao)} over ${toIata(swapPoints[0].icao)}`);
+    } else if (swapPoints.length > 1) {
       let bestEase = -Infinity;
       for (const sp of swapPoints) {
         const commAirports = findAllCommercialAirports(sp.icao, aliases);
