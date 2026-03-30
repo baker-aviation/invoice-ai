@@ -61,8 +61,6 @@ export async function searchFlights(params: {
   const orig = icaoToIata(origin);
   const dest = icaoToIata(destination);
 
-  // "best" = Google Flights default sort (balances price + timing + connections).
-  // "price" misses early morning flights that the optimizer needs for timing constraints.
   const qs = new URLSearchParams({
     departureId: orig,
     arrivalId: dest,
@@ -71,7 +69,7 @@ export async function searchFlights(params: {
     adults: String(adults),
     travelClass: "economy",
     currency: "USD",
-    sortBy: "best",
+    sortBy: "price",
   });
 
   const res = await fetch(`${BASE_URL}?${qs}`, {
@@ -102,11 +100,12 @@ export async function searchFlights(params: {
   console.log(`[HasData] ${orig}->${dest} ${date}: status=${data.requestMetadata?.status} best=${(data.bestFlights ?? []).length} other=${(data.otherFlights ?? []).length}`);
 
   // Combine bestFlights + otherFlights, prefer major carriers over budget
+  // Take ALL flights — don't truncate. The optimizer needs early morning departures
+  // that sort to the end of price-sorted results. HasData typically returns 15-25 per route.
   const all = [...(data.bestFlights ?? []), ...(data.otherFlights ?? [])];
   const filtered = filterBudgetCarriers(all);
-  const limited = filtered.slice(0, max);
 
-  const offers: FlightOffer[] = limited.map((r, i) => ({
+  const offers: FlightOffer[] = filtered.map((r, i) => ({
     id: String(i),
     price: { total: String(r.price), currency: "USD" },
     itineraries: [{
