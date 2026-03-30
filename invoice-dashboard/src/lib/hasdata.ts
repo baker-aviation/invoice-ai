@@ -56,7 +56,7 @@ export async function searchFlights(params: {
   adults?: number;
   max?: number;
 }): Promise<FlightSearchResult> {
-  const { origin, destination, date, adults = 1, max = 10 } = params;
+  const { origin, destination, date, adults = 1, max = 20 } = params;
 
   const orig = icaoToIata(origin);
   const dest = icaoToIata(destination);
@@ -100,11 +100,12 @@ export async function searchFlights(params: {
   console.log(`[HasData] ${orig}->${dest} ${date}: status=${data.requestMetadata?.status} best=${(data.bestFlights ?? []).length} other=${(data.otherFlights ?? []).length}`);
 
   // Combine bestFlights + otherFlights, prefer major carriers over budget
+  // Take ALL flights — don't truncate. The optimizer needs early morning departures
+  // that sort to the end of price-sorted results. HasData typically returns 15-25 per route.
   const all = [...(data.bestFlights ?? []), ...(data.otherFlights ?? [])];
   const filtered = filterBudgetCarriers(all);
-  const limited = filtered.slice(0, max);
 
-  const offers: FlightOffer[] = limited.map((r, i) => ({
+  const offers: FlightOffer[] = filtered.map((r, i) => ({
     id: String(i),
     price: { total: String(r.price), currency: "USD" },
     itineraries: [{

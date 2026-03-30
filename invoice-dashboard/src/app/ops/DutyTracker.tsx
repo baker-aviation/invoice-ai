@@ -13,59 +13,38 @@ import {
 import type { Flight } from "@/lib/opsApi";
 import type { FlightInfoMap } from "@/app/maintenance/MapView";
 import { fmtTimeInTz } from "@/lib/airportTimezones";
+import {
+  FLIGHT_TIME_RED_MIN,
+  FLIGHT_TIME_YELLOW_MIN,
+  REST_RED_HOURS,
+  REST_YELLOW_HOURS,
+  MAX_LEG_DURATION_MIN,
+  MIN_REST_GAP_MS,
+  LEAD_TIME_MIN,
+  POST_TIME_MIN,
+  DUTY_FLIGHT_TYPES,
+  fmtDuration,
+  fmtZulu,
+  fmtDateShort,
+  getActiveEdct,
+  findMaxRolling24,
+  getThreeDayWindowMs,
+  groupIntoDutyPeriods,
+  buildDP,
+  relabelDPs,
+  buildRestPeriods,
+  findBreachLeg,
+  computeSuggestion,
+} from "@/lib/dutyCalc";
+import type { LegInterval, DutyPeriod, RestPeriod } from "@/lib/dutyCalc";
 
-/* ── Constants ──────────────────────────────────────── */
+/* ── Constants (local) ──────────────────────────────── */
 
 const POLL_INTERVAL_MS = 300_000; // 5 min — duty data doesn't need real-time
-// Part 135.267(b)(2): 10h limit for two-pilot crew in any 24 consecutive hours
-const FLIGHT_TIME_RED_MIN = 600; // 10 hours — hard limit
-const FLIGHT_TIME_YELLOW_MIN = 540; // 9 hours — caution (within 1hr of limit)
-const REST_RED_HOURS = 10; // minimum required rest
-const REST_YELLOW_HOURS = 11; // within 1hr of minimum
-const MAX_LEG_DURATION_MIN = 8 * 60; // cap any single leg at 8h (sanity — longest Baker legs are ~5h)
-const MIN_REST_GAP_MS = 8 * 60 * 60 * 1000; // 8h minimum to split duty periods
-const LEAD_TIME_MIN = 60; // duty starts 60min before first leg
-const POST_TIME_MIN = 30; // duty ends 30min after last leg
 
-// Only include revenue/charter and positioning legs for duty tracking
-const DUTY_FLIGHT_TYPES = new Set(["revenue", "owner", "positioning", "ferry", "charter"]);
-
-/** Find the active (unacknowledged) EDCT alert for a flight */
-function getActiveEdct(f: Flight): { edct_time: string } | null {
-  return f.alerts?.find(a => a.alert_type === "EDCT" && a.edct_time && !a.acknowledged_at) as { edct_time: string } | null ?? null;
-}
-
-/* ── Types ──────────────────────────────────────────── */
-
-type LegInterval = {
-  departure_icao: string | null;
-  arrival_icao: string | null;
-  startMs: number;
-  endMs: number;
-  durationMin: number;
-  source: "actual" | "fa-estimate" | "scheduled";
-  depIso: string;
-  arrIso: string;
-  flightType: string | null;
-};
+/* ── Chart-only types & helpers (not shared — rendering only) ─ */
 
 type ChartPoint = { timeMs: number; hours: number };
-
-type DutyPeriod = {
-  label: string; // "DP 1", "DP 2", etc.
-  dateLabel: string; // e.g. "Mar 6"
-  legs: LegInterval[];
-  dutyOnMs: number;
-  dutyOffMs: number;
-  dutyMinutes: number;
-  flightMinutes: number;
-};
-
-type RestPeriod = {
-  startMs: number; // duty off of previous DP
-  stopMs: number; // duty on of next DP
-  minutes: number;
-};
 
 type TailData = {
   tail: string;
@@ -74,22 +53,12 @@ type TailData = {
   maxRolling24hrMin: number;
   chartPoints: ChartPoint[];
   hasFlightsTomorrow: boolean;
-  breachLegKey: string | null; // "dpIdx-legIdx" of the leg that pushes past 10h
-  suggestion: string | null; // fix suggestion text
-  // EDCT-adjusted variant (only present when tail has active EDCTs)
+  breachLegKey: string | null;
+  suggestion: string | null;
   edctMaxRolling24hrMin: number | null;
   edctRestPeriods: RestPeriod[] | null;
   edctChartPoints: ChartPoint[] | null;
 };
-
-
-/* ── Helpers ──────────────────────────────────────────── */
-
-function fmtDuration(minutes: number): string {
-  const h = Math.floor(minutes / 60);
-  const m = Math.round(minutes % 60);
-  return `${h}h ${m.toString().padStart(2, "0")}m`;
-}
 
 function sourceLabel(src: "actual" | "fa-estimate" | "scheduled"): string {
   if (src === "actual") return "Actual";
@@ -118,52 +87,6 @@ function sourceBadgeClass(src: "actual" | "fa-estimate" | "scheduled"): string {
   return "bg-gray-100 text-gray-500";
 }
 
-function fmtZulu(ms: number): string {
-  const d = new Date(ms);
-  const hh = d.getUTCHours().toString().padStart(2, "0");
-  const mm = d.getUTCMinutes().toString().padStart(2, "0");
-  return `${hh}${mm}Z`;
-}
-
-function fmtDateShort(ms: number): string {
-  const d = new Date(ms);
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
-}
-
-/**
- * Find the max rolling 24hr flight time, but only for windows that include
- * at least one future leg (startMs or endMs >= now). Past-only windows are
- * informational — we can't change them, so don't alert on them.
- * Past legs still COUNT toward future windows (they're in the rolling total).
- */
-function findMaxRolling24(legs: LegInterval[]): number {
-  if (legs.length === 0) return 0;
-  const WINDOW_MS = 24 * 60 * 60 * 1000;
-  const nowMs = Date.now();
-  const checkPoints = new Set<number>();
-  for (const leg of legs) {
-    checkPoints.add(leg.startMs);
-    checkPoints.add(leg.endMs);
-    checkPoints.add(leg.startMs + WINDOW_MS);
-    checkPoints.add(leg.endMs + WINDOW_MS);
-  }
-  let maxTotalMs = 0;
-  for (const windowEnd of checkPoints) {
-    const windowStart = windowEnd - WINDOW_MS;
-    // Only consider windows that include at least one future/in-progress leg
-    const hasFutureLeg = legs.some(l => l.endMs >= nowMs && l.startMs < windowEnd && l.endMs > windowStart);
-    if (!hasFutureLeg) continue;
-    let totalMs = 0;
-    for (const leg of legs) {
-      const os = Math.max(leg.startMs, windowStart);
-      const oe = Math.min(leg.endMs, windowEnd);
-      if (oe > os) totalMs += oe - os;
-    }
-    if (totalMs > maxTotalMs) maxTotalMs = totalMs;
-  }
-  return maxTotalMs / 60_000;
-}
-
 function buildRolling24Chart(legs: LegInterval[]): ChartPoint[] {
   if (legs.length === 0) return [];
   const WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -187,167 +110,6 @@ function buildRolling24Chart(legs: LegInterval[]): ChartPoint[] {
     t += STEP_MS;
   }
   return points;
-}
-
-/** Group sorted legs into duty periods (split at gaps >= MIN_REST_GAP_MS) */
-function groupIntoDutyPeriods(legs: LegInterval[]): DutyPeriod[] {
-  if (legs.length === 0) return [];
-  const dps: DutyPeriod[] = [];
-  let currentLegs: LegInterval[] = [legs[0]];
-
-  for (let i = 1; i < legs.length; i++) {
-    const gap = legs[i].startMs - legs[i - 1].endMs;
-    if (gap >= MIN_REST_GAP_MS) {
-      dps.push(buildDP(currentLegs, dps.length + 1));
-      currentLegs = [legs[i]];
-    } else {
-      currentLegs.push(legs[i]);
-    }
-  }
-  dps.push(buildDP(currentLegs, dps.length + 1));
-  return dps;
-}
-
-function buildDP(legs: LegInterval[], num: number): DutyPeriod {
-  const firstDep = legs[0].startMs;
-  const lastArr = legs[legs.length - 1].endMs;
-  const dutyOnMs = firstDep - LEAD_TIME_MIN * 60_000;
-  const dutyOffMs = lastArr + POST_TIME_MIN * 60_000;
-  return {
-    label: `DP ${num}`, // will be replaced after grouping by date
-    dateLabel: fmtDateShort(firstDep),
-    legs,
-    dutyOnMs,
-    dutyOffMs,
-    dutyMinutes: (dutyOffMs - dutyOnMs) / 60_000,
-    flightMinutes: legs.reduce((s, l) => s + l.durationMin, 0),
-  };
-}
-
-/** Relabel DPs: use date as label, add "- DP N" suffix when multiple DPs share a date */
-function relabelDPs(dps: DutyPeriod[]): void {
-  const countByDate = new Map<string, number>();
-  for (const dp of dps) {
-    countByDate.set(dp.dateLabel, (countByDate.get(dp.dateLabel) ?? 0) + 1);
-  }
-  const seenByDate = new Map<string, number>();
-  for (const dp of dps) {
-    const count = countByDate.get(dp.dateLabel) ?? 1;
-    if (count > 1) {
-      const idx = (seenByDate.get(dp.dateLabel) ?? 0) + 1;
-      seenByDate.set(dp.dateLabel, idx);
-      dp.label = `${dp.dateLabel} - DP ${idx}`;
-    } else {
-      dp.label = dp.dateLabel;
-    }
-  }
-}
-
-function buildRestPeriods(dps: DutyPeriod[]): RestPeriod[] {
-  const rests: RestPeriod[] = [];
-  for (let i = 0; i < dps.length - 1; i++) {
-    const startMs = dps[i].dutyOffMs;
-    const stopMs = dps[i + 1].dutyOnMs;
-    rests.push({ startMs, stopMs, minutes: Math.max(0, (stopMs - startMs) / 60_000) });
-  }
-  return rests;
-}
-
-/** Find the leg that pushes the rolling 24hr total past 10h.
- *  Returns "dpIdx-legIdx" key or null. */
-function findBreachLeg(dps: DutyPeriod[]): string | null {
-  const WINDOW_MS = 24 * 60 * 60 * 1000;
-  const nowMs = Date.now();
-  const allLegs: { dpIdx: number; legIdx: number; leg: LegInterval }[] = [];
-  for (let d = 0; d < dps.length; d++) {
-    for (let l = 0; l < dps[d].legs.length; l++) {
-      allLegs.push({ dpIdx: d, legIdx: l, leg: dps[d].legs[l] });
-    }
-  }
-  allLegs.sort((a, b) => a.leg.startMs - b.leg.startMs);
-
-  // For each FUTURE leg, compute rolling 24hr total at that leg's end
-  // Only flag legs that haven't departed yet — past breaches can't be fixed
-  for (let i = 0; i < allLegs.length; i++) {
-    if (allLegs[i].leg.startMs < nowMs) continue; // skip already-departed legs
-    const windowEnd = allLegs[i].leg.endMs;
-    const windowStart = windowEnd - WINDOW_MS;
-    let totalMin = 0;
-    for (let j = 0; j <= i; j++) {
-      const os = Math.max(allLegs[j].leg.startMs, windowStart);
-      const oe = Math.min(allLegs[j].leg.endMs, windowEnd);
-      if (oe > os) totalMin += (oe - os) / 60_000;
-    }
-    if (totalMin >= FLIGHT_TIME_YELLOW_MIN) {
-      return `${allLegs[i].dpIdx}-${allLegs[i].legIdx}`;
-    }
-  }
-  return null;
-}
-
-/** Compute a fix suggestion: find the earliest departure time for the breach leg
- *  that keeps the rolling 24hr total under 10h. */
-function computeSuggestion(dps: DutyPeriod[], breachKey: string | null): string | null {
-  if (!breachKey) return null;
-  const [dpIdxStr, legIdxStr] = breachKey.split("-");
-  const dpIdx = parseInt(dpIdxStr);
-  const legIdx = parseInt(legIdxStr);
-  const dp = dps[dpIdx];
-  if (!dp) return null;
-  const breachLeg = dp.legs[legIdx];
-  if (!breachLeg) return null;
-
-  const route = `${breachLeg.departure_icao ?? "?"}-${breachLeg.arrival_icao ?? "?"}`;
-
-  // Collect all legs BEFORE the breach leg
-  const priorLegs: LegInterval[] = [];
-  for (let d = 0; d < dps.length; d++) {
-    for (let l = 0; l < dps[d].legs.length; l++) {
-      if (d === dpIdx && l === legIdx) break;
-      priorLegs.push(dps[d].legs[l]);
-    }
-    if (d === dpIdx) break;
-  }
-
-  // Scan forward from breach leg's current start time minute-by-minute
-  // to find the earliest departure where rolling 24hr stays under 10h
-  const WINDOW_MS = 24 * 60 * 60 * 1000;
-  const legDurMs = breachLeg.durationMin * 60_000;
-  const STEP = 5 * 60_000; // 5 minute steps
-  const MAX_SHIFT = 12 * 60 * 60_000; // don't look more than 12h out
-
-  for (let shift = STEP; shift <= MAX_SHIFT; shift += STEP) {
-    const newStart = breachLeg.startMs + shift;
-    const newEnd = newStart + legDurMs;
-    const windowStart = newEnd - WINDOW_MS;
-
-    let totalMin = 0;
-    for (const leg of priorLegs) {
-      const os = Math.max(leg.startMs, windowStart);
-      const oe = Math.min(leg.endMs, newEnd);
-      if (oe > os) totalMin += (oe - os) / 60_000;
-    }
-    totalMin += breachLeg.durationMin;
-
-    if (totalMin < FLIGHT_TIME_RED_MIN) {
-      const d = new Date(newStart);
-      const hh = d.getUTCHours().toString().padStart(2, "0");
-      const mm = d.getUTCMinutes().toString().padStart(2, "0");
-      return `Slide ${route} to depart ${hh}${mm}Z or later`;
-    }
-  }
-
-  return `Consider removing or shortening ${route}`;
-}
-
-/** Get yesterday 0000Z to end of tomorrow 2359Z */
-function getThreeDayWindowMs(): { startMs: number; endMs: number } {
-  const now = new Date();
-  const todayUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-  return {
-    startMs: todayUtc - 24 * 60 * 60 * 1000, // yesterday 0000Z
-    endMs: todayUtc + 2 * 24 * 60 * 60 * 1000, // end of tomorrow 2359Z
-  };
 }
 
 /* ── Component ──────────────────────────────────────── */
@@ -656,10 +418,13 @@ export default function DutyTracker({ flights, scrollToTail, onScrollComplete }:
             continue;
           }
           // Find EDCT-shifted duty off for this DP's legs
+          // Match by route + time proximity (within 6h) to avoid picking up a
+          // same-route leg from a different day when routes repeat across days.
           let edctDpLastArr = 0;
           for (const leg of dp.legs) {
             const edctLeg = edctLegs.find(el =>
-              el.departure_icao === leg.departure_icao && el.arrival_icao === leg.arrival_icao
+              el.departure_icao === leg.departure_icao && el.arrival_icao === leg.arrival_icao &&
+              Math.abs(el.startMs - leg.startMs) < 6 * 60 * 60 * 1000
             );
             edctDpLastArr = Math.max(edctDpLastArr, edctLeg?.endMs ?? leg.endMs);
           }

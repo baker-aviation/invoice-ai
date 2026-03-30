@@ -8,8 +8,8 @@ import type { Flight } from "@/lib/opsApi";
 /** US ICAO prefixes (mainland K + territory P-prefixes) */
 const US_ICAO_PREFIXES = ["K", "PH", "PA", "PF", "PG", "PJ", "PK", "PM", "PO", "PP", "PW"];
 
-/** USVI/PR airports treated as international for customs purposes */
-const INTL_TREATED_ICAOS = new Set(["TIST", "TISX", "TJSJ"]);
+/** USVI/PR airports — currently treated as domestic (no customs required) */
+const INTL_TREATED_ICAOS = new Set<string>();
 
 /** Returns true if an ICAO code is outside the US (or is a US territory treated as international) */
 export function isInternationalIcao(icao: string | null): boolean {

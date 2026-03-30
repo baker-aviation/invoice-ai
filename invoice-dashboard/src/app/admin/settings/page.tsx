@@ -502,6 +502,33 @@ export default function SettingsPage() {
         </div>
       )}
 
+      {/* ── Email Signature ──────────────────────────────────────────────── */}
+      <hr className="my-8 border-gray-200" />
+      <h2 className="text-lg font-semibold text-slate-900 mb-1">Email Signature</h2>
+      <p className="text-sm text-gray-500 mb-4">
+        Your signature for international trip document emails sent from handling@baker-aviation.com.
+        Saved per browser.
+      </p>
+      <div className="mb-4">
+        <textarea
+          id="emailSig"
+          defaultValue={typeof window !== "undefined" ? localStorage.getItem("baker_email_signature") || "Best regards,\nBaker Aviation Handling" : ""}
+          rows={4}
+          className="w-full max-w-lg border border-gray-300 rounded-md px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+          placeholder="Best regards,&#10;Your Name&#10;Baker Aviation Handling"
+        />
+        <button
+          type="button"
+          onClick={() => {
+            const el = document.getElementById("emailSig") as HTMLTextAreaElement;
+            if (el) { localStorage.setItem("baker_email_signature", el.value); alert("Signature saved!"); }
+          }}
+          className="mt-2 bg-slate-900 text-white rounded-md px-5 py-2 text-sm font-medium hover:bg-slate-700"
+        >
+          Save Signature
+        </button>
+      </div>
+
       {/* ── Salesperson Slack Mapping ───────────────────────────────────────── */}
       <hr className="my-8 border-gray-200" />
       <h2 className="text-lg font-semibold text-slate-900 mb-1">Salesperson Slack Mapping</h2>

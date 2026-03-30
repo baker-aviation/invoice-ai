@@ -625,21 +625,26 @@ export async function GET(req: NextRequest) {
   if (tripTails.length > 0) {
     const { data: paxRows } = await supa
       .from("trip_salespersons")
-      .select("trip_id, tail_number, origin_icao, destination_icao, passengers")
-      .in("tail_number", tripTails)
-      .not("passengers", "is", null);
+      .select("trip_id, tail_number, origin_icao, destination_icao, passengers, salesperson_name")
+      .in("tail_number", tripTails);
 
     if (paxRows && paxRows.length > 0) {
-      // Build lookup: tail+origin+dest → passengers
+      // Build lookups
       const paxMap = new Map<string, string>();
+      const salespersonMap = new Map<string, string>(); // tail → salesperson (first match)
       for (const p of paxRows) {
-        if (p.passengers) {
-          paxMap.set(`${p.tail_number}|${p.origin_icao}|${p.destination_icao}`, p.passengers);
+        const key = `${p.tail_number}|${p.origin_icao}|${p.destination_icao}`;
+        if (p.passengers) paxMap.set(key, p.passengers);
+        if (p.salesperson_name && !salespersonMap.has(p.tail_number)) {
+          salespersonMap.set(p.tail_number, p.salesperson_name);
         }
       }
 
       // Attach to each trip's legs
       for (const t of trips ?? []) {
+        // Salesperson name
+        if (salespersonMap.has(t.tail_number)) t.salesperson = salespersonMap.get(t.tail_number)!;
+
         const route = t.route_icaos ?? [];
         const legPax: Array<{ dep: string; arr: string; passengers: string }> = [];
         for (let i = 0; i < route.length - 1; i++) {

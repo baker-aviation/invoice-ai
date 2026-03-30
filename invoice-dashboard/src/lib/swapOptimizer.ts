@@ -540,6 +540,7 @@ function buildCandidates(
   const candidates: TransportCandidate[] = [];
   const swapIcao = task.swapPoint.icao;
   const commAirports = findAllCommercialAirports(swapIcao, aliases);
+  const _debugCrew = task.name.includes("Sullivan") || task.name.includes("Ricci") || task.name.includes("Bengoechea") || task.name.includes("Weakley");
 
   // Determine deadline/target times
   const homeMidnight = task.homeAirports[0]
@@ -600,6 +601,10 @@ function buildCandidates(
     }
   }
 
+  if (_debugCrew) {
+    console.log(`[CandidateDebug] ${task.name}: buildCandidates START — swap=${toIata(swapIcao)} (${task.swapPoint.position}) commAirports=[${commAirports.map(c => toIata(c)).join(",")}] homes=[${task.homeAirports.join(",")}] deadline=${oncomingHardDeadline?.toISOString() ?? 'none'} dutyEnd=${oncomingDutyEnd?.toISOString() ?? 'none'} groundOnly=${groundOnlySwap}`);
+  }
+
   for (const homeApt of task.homeAirports) {
     const homeIata = toIata(homeApt);
     const homeIcao = toIcao(homeApt);
@@ -650,8 +655,11 @@ function buildCandidates(
 
         // 14hr duty day check: duty-on through estimated end of flying day
         if (oncomingDutyEnd && dutyOn) {
-          const { valid } = checkDutyDay(dutyOn, oncomingDutyEnd);
-          if (!valid) continue; // Exceeds 14hr duty day
+          const { valid, hours } = checkDutyDay(dutyOn, oncomingDutyEnd);
+          if (!valid) {
+            if (_debugCrew) console.log(`[CandidateDebug] ${task.name}: REJECTED ${label} — duty day ${hours.toFixed(1)}hr exceeds ${MAX_DUTY_HOURS}hr (drive dep ${depTime?.toISOString()} to dutyEnd ${oncomingDutyEnd.toISOString()})`);
+            continue;
+          }
         }
       } else {
         // Offgoing: leaving the aircraft, driving home
@@ -805,7 +813,9 @@ function buildCandidates(
       dayBefore.setDate(dayBefore.getDate() - 1);
       datesToSearch.unshift(dayBefore.toISOString().slice(0, 10));
     }
-    if (task.lateVolunteer) {
+    // Offgoing crew always searches next day — late after_live arrivals
+    // (9-10 PM) have no same-day flights home. Thursday morning works.
+    if (task.lateVolunteer || task.direction === "offgoing") {
       const dayAfter = new Date(swapDate);
       dayAfter.setDate(dayAfter.getDate() + 1);
       datesToSearch.push(dayAfter.toISOString().slice(0, 10));
@@ -856,6 +866,12 @@ function buildCandidates(
 
       for (const searchDate of datesToSearch) {
       const offers = lookupFlights(commercialFlights, originIata, destIata, searchDate);
+      if (_debugCrew && offers.length > 0) {
+        console.log(`[CandidateDebug] ${task.name} (${task.direction} ${task.role}): ${originIata}→${destIata} found ${offers.length} offers for ${searchDate}`);
+      }
+      if (_debugCrew && offers.length === 0) {
+        console.log(`[CandidateDebug] ${task.name}: ${originIata}→${destIata} NO OFFERS in cache for ${searchDate}`);
+      }
       for (const offer of offers) {
         const segs = offer.itineraries?.[0]?.segments ?? [];
         if (segs.length === 0) continue;
@@ -899,7 +915,8 @@ function buildCandidates(
           // Hard deadline: must arrive at FBO by 1800L (offgoing crew holds until then)
           // Arriving before first leg is a scoring PREFERENCE, not a hard requirement
           if (oncomingHardDeadline && fboArr.getTime() > oncomingHardDeadline.getTime()) {
-            continue; // Too late — even offgoing can't hold this long
+            if (_debugCrew) console.log(`[CandidateDebug] ${task.name}: REJECTED ${flightNum} — FBO arrival ${fboArr.toISOString()} > deadline ${oncomingHardDeadline.toISOString()}`);
+            continue;
           }
 
           // Check: duty-on not before 0400 local
@@ -910,9 +927,10 @@ function buildCandidates(
 
           // 14hr duty day check: duty-on through estimated end of flying day
           if (oncomingDutyEnd && dutyOn) {
-            const { valid } = checkDutyDay(dutyOn, oncomingDutyEnd);
+            const { valid, hours } = checkDutyDay(dutyOn, oncomingDutyEnd);
             if (!valid) {
-              continue; // Exceeds 14hr duty day
+              if (_debugCrew) console.log(`[CandidateDebug] ${task.name}: REJECTED ${flightNum} — duty day ${hours.toFixed(1)}hr exceeds ${MAX_DUTY_HOURS}hr (${dutyOn.toISOString()} to ${oncomingDutyEnd.toISOString()})`);
+              continue;
             }
           }
         } else {
@@ -932,7 +950,8 @@ function buildCandidates(
           const needLeaveAircraft = new Date(needAtAirport.getTime() - ms(driveToFboMin));
 
           if (needLeaveAircraft.getTime() < releaseTime.getTime()) {
-            continue; // Can't make this flight
+            if (_debugCrew) console.log(`[CandidateDebug] ${task.name}: REJECTED ${flightNum} — need leave ${needLeaveAircraft.toISOString()} < release ${releaseTime.toISOString()}`);
+            continue;
           }
 
           // Check midnight deadline
@@ -979,12 +998,20 @@ function buildCandidates(
           backups: [],
         };
 
+        if (_debugCrew) console.log(`[CandidateDebug] ${task.name}: ACCEPTED ${flightNum} ${originIata}→${destIata} dep=${flightDep.toISOString().slice(11,16)} fboArr=${fboArr?.toISOString().slice(11,16) ?? '?'} cost=$${Math.round(cost + groundCost)}`);
         candidates.push(candidate);
       }
       } // end for searchDate
       } // end for homeFlight
     } // end for commApt
   } // end for homeApt
+
+  if (_debugCrew) {
+    console.log(`[CandidateDebug] ${task.name}: TOTAL ${candidates.filter(c => c.type !== "none").length} viable candidates from ${commAirports.length} commercial airports`);
+    if (candidates.every(c => c.type === "none")) {
+      console.log(`[CandidateDebug] ${task.name}: ALL REJECTED. swapIcao=${swapIcao} commAirports=[${commAirports.map(c => toIata(c)).join(",")}] homeAirports=[${task.homeAirports.join(",")}]`);
+    }
+  }
 
   // If no candidates found, add a "none" placeholder
   if (candidates.length === 0) {
@@ -1344,12 +1371,16 @@ function optimizeTail(
         // else: filtered out — crew must leave FBO before oncoming arrives
       }
 
-      // Only keep candidates that pass the timing constraint
-      task.candidates = adjusted;
-      if (!adjusted.some((c) => c.type !== "none")) {
-        // All real transport options depart before oncoming arrives — unsolvable
+      // If some candidates pass, use only those. If ALL got filtered, keep the
+      // originals with a warning — better to suggest a late-departing option than
+      // show NO TRANSPORT. The ops team can manually adjust.
+      const viableAdjusted = adjusted.filter(c => c.type !== "none");
+      if (viableAdjusted.length > 0) {
+        task.candidates = adjusted;
+      } else {
+        // Keep original candidates — none pass timing but at least show options
         task.warnings.push(
-          `No offgoing transport available: all options require leaving FBO before oncoming PIC arrives + ${HANDOFF_BUFFER_MINUTES}min handoff`,
+          `Offgoing departs before oncoming PIC arrives + ${HANDOFF_BUFFER_MINUTES}min handoff — may need manual coordination`,
         );
       }
     }
@@ -1723,6 +1754,20 @@ export function buildSwapPlan(params: {
     let picSwapPoint = swapPoints[0]; // default
     const swapPointScores: { icao: string; iata: string; position: string; ease: number; drive_min: number; is_commercial: boolean; is_international: boolean; timing_penalty: number; proximity_bonus: number; after_live_bonus: number; comm_airports: number; selected: boolean }[] = [];
 
+    // HARD RULE: prefer domestic after_live ONLY when alternative is international
+    const hasIntlOption2 = swapPoints.some(sp => {
+      const upper = sp.icao.toUpperCase();
+      return !upper.startsWith("K") && !upper.startsWith("CY");
+    });
+    if (hasIntlOption2) {
+      const domesticAfterLive2 = swapPoints.find(sp => {
+        if (sp.position !== "after_live") return false;
+        const upper = sp.icao.toUpperCase();
+        return upper.startsWith("K") || upper.startsWith("CY");
+      });
+      if (domesticAfterLive2) picSwapPoint = domesticAfterLive2;
+    }
+
     // If assignment phase already proved a swap point, use it directly — avoids
     // the transport phase independently picking a different (wrong) swap point.
     const assignedPicSwapIcao = assignment.oncoming_pic_swap_icao;
@@ -1831,6 +1876,10 @@ export function buildSwapPlan(params: {
           timing_penalty: Math.round(timingPenalty), proximity_bonus: Math.round(proximityBonus),
           after_live_bonus: afterLiveBonus, comm_airports: commAirports.length, selected: false,
         });
+        // Debug log for tails with international swap points
+        if (isInternational || sp.icao === "TQPF" || tail.includes("555")) {
+          console.log(`[SwapPointDebug] ${tail} ${toIata(sp.icao)} (${sp.position}): ease=${Math.round(ease)} drive=${minDrive} intl=${isInternational} comm=${commAirports.length} timing=${Math.round(timingPenalty)} prox=${Math.round(proximityBonus)} afterLive=${afterLiveBonus}`);
+        }
         if (ease > bestEase) {
           bestEase = ease;
           picSwapPoint = sp;
@@ -2398,8 +2447,23 @@ function buildFeasibilityMatrix(params: {
     // buildSwapPlan — ensures the feasibility matrix evaluates the same point that
     // will actually be used for transport planning.
     let swapPointsToTry = swapPoints;
-    if (role === "PIC" && swapPoints.length > 1 && (commercialFlights || preComputedRoutes)) {
-      let bestSp = swapPoints[0];
+    // HARD RULE: prefer domestic after_live ONLY when alternative is international
+    if (role === "PIC") {
+      const hasIntlOption3 = swapPoints.some(sp => {
+        const upper = sp.icao.toUpperCase();
+        return !upper.startsWith("K") && !upper.startsWith("CY");
+      });
+      if (hasIntlOption3) {
+        const domesticAfterLive3 = swapPoints.find(sp => {
+          if (sp.position !== "after_live") return false;
+          const upper = sp.icao.toUpperCase();
+          return upper.startsWith("K") || upper.startsWith("CY");
+        });
+        if (domesticAfterLive3) swapPointsToTry = [domesticAfterLive3];
+      }
+    }
+    if (role === "PIC" && swapPointsToTry.length > 1 && (commercialFlights || preComputedRoutes)) {
+      let bestSp = swapPointsToTry[0];
       let bestEase = -Infinity;
       for (const sp of swapPoints) {
         const commAirports = findAllCommercialAirports(sp.icao, aliases);
@@ -3481,9 +3545,25 @@ export function solveOffgoingFirst(params: {
       continue;
     }
 
-    // Pick PIC swap point using same ease formula as buildSwapPlan
+    // HARD RULE: prefer domestic after_live ONLY when the alternative is international.
+    // When both options are domestic, let the scoring formula decide.
     let swapPoint = swapPoints[0];
-    if (swapPoints.length > 1) {
+    const hasInternationalOption = swapPoints.some(sp => {
+      const upper = sp.icao.toUpperCase();
+      return !upper.startsWith("K") && !upper.startsWith("CY");
+    });
+    if (hasInternationalOption) {
+      const domesticAfterLive = swapPoints.find(sp => {
+        if (sp.position !== "after_live") return false;
+        const upper = sp.icao.toUpperCase();
+        return upper.startsWith("K") || upper.startsWith("CY");
+      });
+      if (domesticAfterLive) {
+        swapPoint = domesticAfterLive;
+        console.log(`[SwapPoint] ${tail}: forced domestic after_live ${toIata(domesticAfterLive.icao)} over international ${toIata(swapPoints[0].icao)}`);
+      }
+    }
+    if (swapPoints.length > 1 && swapPoint === swapPoints[0]) {
       let bestEase = -Infinity;
       for (const sp of swapPoints) {
         const commAirports = findAllCommercialAirports(sp.icao, aliases);
@@ -3589,3 +3669,4 @@ export function solveOffgoingFirst(params: {
 
   return { offgoingPlans, deadlines, unsolvable };
 }
+// force rebuild 1774884943

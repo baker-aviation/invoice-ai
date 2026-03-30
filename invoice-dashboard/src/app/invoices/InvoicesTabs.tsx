@@ -2,26 +2,30 @@
 
 import { useSearchParams, useRouter } from "next/navigation";
 import { Suspense } from "react";
-import type { InvoiceListItem, AlertRow } from "@/lib/types";
+import type { InvoiceListItem, AlertRow, AlertRule } from "@/lib/types";
 import InvoicesTable from "./InvoicesTable";
 import AlertsTable from "../alerts/AlertsTable";
+import RulesTable from "./RulesTable";
 
-type Tab = "all" | "alerts" | "review";
+type Tab = "all" | "alerts" | "review" | "rules";
 
 const TABS: { key: Tab; label: string }[] = [
   { key: "all", label: "All Invoices" },
   { key: "alerts", label: "Alerts" },
   { key: "review", label: "Needs Review" },
+  { key: "rules", label: "Rules" },
 ];
 
 function TabsInner({
   invoices,
   alerts,
   pdfUrls,
+  rules,
 }: {
   invoices: InvoiceListItem[];
   alerts: AlertRow[];
   pdfUrls: Record<string, string>;
+  rules: AlertRule[];
 }) {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -29,6 +33,7 @@ function TabsInner({
 
   const alertCount = alerts.length;
   const pinCount = invoices.filter((i) => i.pinned && !i.pin_resolved).length;
+  const rulesCount = rules.length;
 
   function setTab(t: Tab) {
     const params = new URLSearchParams(searchParams.toString());
@@ -46,7 +51,7 @@ function TabsInner({
       <div className="flex items-center gap-1 border-b border-gray-200 px-6 pt-3">
         {TABS.map((t) => {
           const isActive = tab === t.key;
-          const count = t.key === "alerts" ? alertCount : t.key === "review" ? pinCount : null;
+          const count = t.key === "alerts" ? alertCount : t.key === "review" ? pinCount : t.key === "rules" ? rulesCount : null;
           return (
             <button
               key={t.key}
@@ -73,6 +78,7 @@ function TabsInner({
       {/* Tab content */}
       {tab === "all" && <InvoicesTable initialInvoices={invoices} />}
       {tab === "alerts" && <AlertsTable initialAlerts={alerts} pdfUrls={pdfUrls} />}
+      {tab === "rules" && <RulesTable initialRules={rules} />}
       {tab === "review" && <NeedsReviewTab invoices={invoices} />}
     </div>
   );
@@ -82,6 +88,7 @@ export default function InvoicesTabs(props: {
   invoices: InvoiceListItem[];
   alerts: AlertRow[];
   pdfUrls: Record<string, string>;
+  rules: AlertRule[];
 }) {
   return (
     <Suspense>

@@ -84,9 +84,44 @@ export default function InternationalOps({ flights: _parentFlights }: { flights:
 
   const unackedAlerts = alerts.filter((a) => !a.acknowledged);
 
+  // Trips needing attention: ≤7 days out with incomplete clearances, OR any clearance started
+  const tripsNeedingAttention = trips.filter((t) => {
+    const cl = t.clearances ?? [];
+    if (cl.length === 0) return false;
+    const allDone = cl.every((c) => c.status === "approved");
+    if (allDone) return false;
+    const daysOut = Math.ceil((new Date(t.trip_date + "T00:00:00").getTime() - Date.now()) / 86400000);
+    const anyStarted = cl.some((c) => c.status !== "not_started");
+    return daysOut <= 7 || anyStarted;
+  });
+
   return (
     <div className="space-y-4">
-      {/* Alert banner */}
+      {/* Trip readiness banner */}
+      {tripsNeedingAttention.length > 0 && (
+        <div className="rounded-lg border border-orange-200 bg-orange-50 px-4 py-3">
+          <p className="text-sm font-medium text-orange-800">
+            {tripsNeedingAttention.length} international trip{tripsNeedingAttention.length > 1 ? "s" : ""} need{tripsNeedingAttention.length === 1 ? "s" : ""} attention
+          </p>
+          <div className="mt-1 space-y-1">
+            {tripsNeedingAttention.slice(0, 5).map((t) => {
+              const cl = t.clearances ?? [];
+              const incomplete = cl.filter((c) => c.status !== "approved");
+              const daysOut = Math.ceil((new Date(t.trip_date + "T00:00:00").getTime() - Date.now()) / 86400000);
+              return (
+                <p key={t.id} className="text-xs text-orange-700">
+                  <span className="font-medium">{t.tail_number}</span> {t.route_icaos.join("→")} — {daysOut <= 0 ? "today" : `${daysOut}d out`} — {incomplete.length} incomplete clearance{incomplete.length > 1 ? "s" : ""}
+                </p>
+              );
+            })}
+            {tripsNeedingAttention.length > 5 && (
+              <p className="text-xs text-orange-500">and {tripsNeedingAttention.length - 5} more...</p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Delay/diversion alert banner */}
       {unackedAlerts.length > 0 && (
         <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3">
           <p className="text-sm font-medium text-red-800">
@@ -481,8 +516,11 @@ function SegmentRow({ segment, countries, expanded, onToggle, onRefresh }: {
         onClick={onToggle}
         className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-50 transition-colors"
       >
-        {/* Tail */}
-        <span className="text-sm font-semibold w-20">{trip.tail_number}</span>
+        {/* Tail + Salesperson */}
+        <span className="w-24 flex-shrink-0">
+          <span className="text-sm font-semibold block">{trip.tail_number}</span>
+          {trip.salesperson && <span className="text-[10px] text-gray-400 block truncate">{trip.salesperson}</span>}
+        </span>
 
         {/* Leg: DEP → ARR */}
         <span className="text-sm flex items-center gap-1">
@@ -516,20 +554,20 @@ function SegmentRow({ segment, countries, expanded, onToggle, onRefresh }: {
           </span>
         )}
 
-        {/* Mini clearance badges */}
-        <span className={`flex gap-1.5 ${clearances.length === 0 ? "ml-auto" : "mr-2"}`}>
-          {clearances.map((c) => (
-            <span
-              key={c.id}
-              className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${clearanceStatusColor(c.status)}`}
-              title={`${CLEARANCE_LABELS[c.clearance_type]} (${c.airport_icao}): ${clearanceStatusLabel(c.status)}`}
-            >
-              {c.clearance_type === "outbound_clearance" ? "OB" :
-               c.clearance_type === "inbound_clearance" ? "IB" :
-               c.clearance_type === "overflight_permit" ? "OVF" :
-               c.airport_icao}
-            </span>
-          ))}
+        {/* Status tags */}
+        <span className={`flex gap-1 ${clearances.length === 0 ? "ml-auto" : "mr-2"}`}>
+          {clearances.map((c) => {
+            const done = c.status === "approved";
+            const label = c.clearance_type === "outbound_clearance" ? "OB" :
+              c.clearance_type === "inbound_clearance" ? "IN" :
+              c.clearance_type === "overflight_permit" ? "OVF" : "LDG";
+            return (
+              <span key={c.id}
+                className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${done ? "bg-green-100 text-green-700" : "bg-red-100 text-red-600"}`}
+                title={`${CLEARANCE_LABELS[c.clearance_type]} (${c.airport_icao}): ${clearanceStatusLabel(c.status)}`}
+              >{label}</span>
+            );
+          })}
         </span>
 
         {/* Date badge */}
@@ -591,8 +629,11 @@ function TripRow({ trip, countries, expanded, onToggle, onRefresh }: {
         onClick={onToggle}
         className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-50 transition-colors"
       >
-        {/* Tail */}
-        <span className="text-sm font-semibold w-20">{trip.tail_number}</span>
+        {/* Tail + Salesperson */}
+        <span className="w-24 flex-shrink-0">
+          <span className="text-sm font-semibold block">{trip.tail_number}</span>
+          {trip.salesperson && <span className="text-[10px] text-gray-400 block truncate">{trip.salesperson}</span>}
+        </span>
 
         {/* Route: KTEB → MYNN → MKJP → KOPF — completed legs greyed out */}
         <span className="text-sm flex items-center gap-1 flex-wrap">
@@ -632,20 +673,28 @@ function TripRow({ trip, countries, expanded, onToggle, onRefresh }: {
           {allApproved ? "Ready" : anySubmitted ? `${approved}/${total} Cleared` : "Not Started"}
         </span>
 
-        {/* Mini clearance badges */}
-        <span className="flex gap-1.5 mr-2">
-          {clearances.map((c) => (
-            <span
-              key={c.id}
-              className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${clearanceStatusColor(c.status)}`}
-              title={`${CLEARANCE_LABELS[c.clearance_type]} (${c.airport_icao}): ${clearanceStatusLabel(c.status)}`}
-            >
-              {c.clearance_type === "outbound_clearance" ? "OB" :
-               c.clearance_type === "inbound_clearance" ? "IB" :
-               c.clearance_type === "overflight_permit" ? "OVF" :
-               c.airport_icao}
-            </span>
-          ))}
+        {/* Status tags: OB, IN, PAX, LDG, OVF — red/green */}
+        <span className="flex gap-1 mr-2">
+          {(() => {
+            const ob = clearances.filter((c) => c.clearance_type === "outbound_clearance");
+            const ib = clearances.filter((c) => c.clearance_type === "inbound_clearance");
+            const ldg = clearances.filter((c) => c.clearance_type === "landing_permit");
+            const ovf = clearances.filter((c) => c.clearance_type === "overflight_permit");
+            const hasPax = !!(trip.leg_passengers?.length);
+            const allDone = (arr: typeof clearances) => arr.length > 0 && arr.every((c) => c.status === "approved");
+            const tagClass = (done: boolean) => `text-[10px] px-1.5 py-0.5 rounded font-semibold ${done ? "bg-green-100 text-green-700" : "bg-red-100 text-red-600"}`;
+
+            const tags: Array<{ label: string; done: boolean; title: string }> = [];
+            if (ob.length > 0) tags.push({ label: "OB", done: allDone(ob), title: "US Outbound Clearance" });
+            if (ldg.length > 0) tags.push({ label: "LDG", done: allDone(ldg), title: `Landing Permit${ldg.length > 1 ? "s" : ""} (${ldg.map((c) => c.airport_icao).join(", ")})` });
+            if (ovf.length > 0) tags.push({ label: "OVF", done: allDone(ovf), title: `Overflight Permit${ovf.length > 1 ? "s" : ""} (${ovf.map((c) => c.airport_icao).join(", ")})` });
+            if (ib.length > 0) tags.push({ label: "IN", done: allDone(ib), title: "US Inbound Clearance" });
+            tags.push({ label: "PAX", done: hasPax, title: "Passenger Data on JetInsight" });
+
+            return tags.map((t) => (
+              <span key={t.label} className={tagClass(t.done)} title={t.title}>{t.label}</span>
+            ));
+          })()}
         </span>
 
         {/* Date badge */}
@@ -1490,9 +1539,11 @@ function TripDocsPanel({ tripId, tail, dep, arr }: { tripId: string; tail: strin
 
   const openEmailModal = () => {
     const docCount = selected.size;
+    const savedSig = typeof window !== "undefined" ? localStorage.getItem("baker_email_signature") : null;
+    const signature = savedSig || "Best regards,\nBaker Aviation Handling";
     setEmailSubject(`Baker Aviation — Trip Documents (${tail}, ${dep}→${arr})`);
     setEmailBody(
-      `Please find attached ${docCount} trip document${docCount > 1 ? "s" : ""} for aircraft ${tail}.\n\nPlease let us know if you need anything else.\n\nBest regards,\nBaker Aviation Handling`
+      `Please find attached ${docCount} trip document${docCount > 1 ? "s" : ""} for aircraft ${tail}.\n\nPlease let us know if you need anything else.\n\n${signature}`
     );
     setEmailTo("");
     setEmailCc("");

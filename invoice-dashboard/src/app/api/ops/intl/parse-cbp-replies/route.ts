@@ -172,17 +172,7 @@ async function findTrip(
       return { tripId: exact?.id ?? trips[0].id, confidence: exact ? "high" : "low" };
     }
   }
-  if (tail) {
-    const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
-    const { data: trips } = await supa
-      .from("intl_trips")
-      .select("id")
-      .eq("tail_number", tail)
-      .gte("trip_date", weekAgo)
-      .order("trip_date", { ascending: false })
-      .limit(1);
-    if (trips?.[0]) return { tripId: trips[0].id, confidence: "low" };
-  }
+  // No tail-only fallback — require both tail AND date to avoid wrong-trip matches
   return { tripId: null, confidence: "unmatched" };
 }
 

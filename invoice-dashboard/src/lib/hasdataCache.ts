@@ -153,18 +153,41 @@ export async function computeCityPairMatrix(swapDate: string): Promise<CityPair[
     }
   }
 
-  // Resolve swap locations to commercial airports
+  // Resolve swap locations to ALL commercial airports (not just preferred)
+  // This ensures DEN→LAX is cached when VNY maps to both BUR and LAX
   const resolvedSwapLocations = new Set<string>();
+  const allAliasMap = new Map<string, Set<string>>(); // FBO → all commercial alternatives
+  for (const a of DEFAULT_AIRPORT_ALIASES) {
+    const fbo = icaoToIata(a.fbo_icao.toUpperCase());
+    const comm = icaoToIata(a.commercial_icao.toUpperCase());
+    if (!allAliasMap.has(fbo)) allAliasMap.set(fbo, new Set());
+    allAliasMap.get(fbo)!.add(comm);
+  }
+  for (const a of dbAliases ?? []) {
+    const fbo = icaoToIata((a.fbo_icao as string).toUpperCase());
+    const comm = icaoToIata((a.commercial_icao as string).toUpperCase());
+    if (!allAliasMap.has(fbo)) allAliasMap.set(fbo, new Set());
+    allAliasMap.get(fbo)!.add(comm);
+  }
   for (const loc of swapLocations) {
-    const resolved = aliasMap.get(loc) ?? loc;
-    resolvedSwapLocations.add(resolved);
+    const allComm = allAliasMap.get(loc);
+    if (allComm) {
+      for (const comm of allComm) resolvedSwapLocations.add(comm);
+    } else {
+      resolvedSwapLocations.add(aliasMap.get(loc) ?? loc);
+    }
   }
 
-  // Resolve home airports too (some crew may list FBO codes)
+  // Resolve home airports through ALL aliases (not just preferred).
+  // Crew at VNY need both BUR and LAX cached — the optimizer tries all alternatives.
   const resolvedHomeAirports = new Set<string>();
   for (const home of homeAirports) {
-    const resolved = aliasMap.get(home) ?? home;
-    resolvedHomeAirports.add(resolved);
+    const allComm = allAliasMap.get(home);
+    if (allComm) {
+      for (const comm of allComm) resolvedHomeAirports.add(comm);
+    } else {
+      resolvedHomeAirports.add(aliasMap.get(home) ?? home);
+    }
   }
 
   // 4. Generate directional pairs and deduplicate
