@@ -810,7 +810,9 @@ function buildCandidates(
       dayBefore.setDate(dayBefore.getDate() - 1);
       datesToSearch.unshift(dayBefore.toISOString().slice(0, 10));
     }
-    if (task.lateVolunteer) {
+    // Offgoing crew always searches next day — late after_live arrivals
+    // (9-10 PM) have no same-day flights home. Thursday morning works.
+    if (task.lateVolunteer || task.direction === "offgoing") {
       const dayAfter = new Date(swapDate);
       dayAfter.setDate(dayAfter.getDate() + 1);
       datesToSearch.push(dayAfter.toISOString().slice(0, 10));
@@ -1366,12 +1368,16 @@ function optimizeTail(
         // else: filtered out — crew must leave FBO before oncoming arrives
       }
 
-      // Only keep candidates that pass the timing constraint
-      task.candidates = adjusted;
-      if (!adjusted.some((c) => c.type !== "none")) {
-        // All real transport options depart before oncoming arrives — unsolvable
+      // If some candidates pass, use only those. If ALL got filtered, keep the
+      // originals with a warning — better to suggest a late-departing option than
+      // show NO TRANSPORT. The ops team can manually adjust.
+      const viableAdjusted = adjusted.filter(c => c.type !== "none");
+      if (viableAdjusted.length > 0) {
+        task.candidates = adjusted;
+      } else {
+        // Keep original candidates — none pass timing but at least show options
         task.warnings.push(
-          `No offgoing transport available: all options require leaving FBO before oncoming PIC arrives + ${HANDOFF_BUFFER_MINUTES}min handoff`,
+          `Offgoing departs before oncoming PIC arrives + ${HANDOFF_BUFFER_MINUTES}min handoff — may need manual coordination`,
         );
       }
     }
