@@ -178,11 +178,16 @@ export async function computeCityPairMatrix(swapDate: string): Promise<CityPair[
     }
   }
 
-  // Resolve home airports too (some crew may list FBO codes)
+  // Resolve home airports through ALL aliases (not just preferred).
+  // Crew at VNY need both BUR and LAX cached — the optimizer tries all alternatives.
   const resolvedHomeAirports = new Set<string>();
   for (const home of homeAirports) {
-    const resolved = aliasMap.get(home) ?? home;
-    resolvedHomeAirports.add(resolved);
+    const allComm = allAliasMap.get(home);
+    if (allComm) {
+      for (const comm of allComm) resolvedHomeAirports.add(comm);
+    } else {
+      resolvedHomeAirports.add(aliasMap.get(home) ?? home);
+    }
   }
 
   // 4. Generate directional pairs and deduplicate
