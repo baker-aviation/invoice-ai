@@ -32,6 +32,14 @@ const MapView = dynamic(() => import("./MapView"), {
   ),
 });
 
+const HeatMapView = dynamic(() => import("./HeatMapView"), {
+  ssr: false,
+  loading: () => (
+    <div className="flex items-center justify-center h-[600px] bg-gray-100 rounded-xl text-gray-500 text-sm">
+      Loading heat map…
+    </div>
+  ),
+});
 
 // ---------------------------------------------------------------------------
 // Compute overnight positions from live API flights
@@ -5510,7 +5518,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, melItems
     return 1;
   });
   const isYesterday = dayIdx === 0;
-  const [activeTab, setActiveTab] = useState<"map" | "schedule" | "flights" | "mx-admin">("schedule");
+  const [activeTab, setActiveTab] = useState<"map" | "schedule" | "flights" | "mx-admin" | "heatmap">("schedule");
   const [viewMode, setViewMode] = useState<"map" | "list">("map");
   const [selectedVan, setSelectedVan] = useState<number | null>(null);
   const [mxNotesOpen, setMxNotesOpen] = useState(false);
@@ -6472,6 +6480,9 @@ export default function VanPositioningClient({ initialFlights, mxNotes, melItems
         <TabBtn active={activeTab === "mx-admin"} onClick={() => setActiveTab("mx-admin")}>
           MX Admin
         </TabBtn>
+        <TabBtn active={activeTab === "heatmap"} onClick={() => setActiveTab("heatmap")}>
+          Heat Map
+        </TabBtn>
       </div>
 
       {/* ── Van Map tab ── */}
@@ -6933,6 +6944,15 @@ export default function VanPositioningClient({ initialFlights, mxNotes, melItems
             })}
           </div>
         </div>
+      )}
+
+      {/* ── Heat Map tab ── */}
+      {activeTab === "heatmap" && (
+        <HeatMapView
+          flights={initialFlights}
+          liveVanPositions={liveVanPositions}
+          liveVanIsLive={liveVanIsLive}
+        />
       )}
 
     </div>
