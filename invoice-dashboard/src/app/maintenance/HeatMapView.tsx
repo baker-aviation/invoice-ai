@@ -230,6 +230,8 @@ export default function HeatMapView({ flights, liveVanPositions, liveVanIsLive }
   const { isFs, toggle: toggleFs } = useFullscreen(containerRef);
   const [windowHours, setWindowHours] = useState<number>(24);
 
+  const [eodOnly, setEodOnly] = useState(false);
+
   const { prefs, toggle: togglePref } = useMapPreferences("heatmap", {
     dark: false,
     vans: true,
@@ -243,15 +245,33 @@ export default function HeatMapView({ flights, liveVanPositions, liveVanIsLive }
 
     // Group by arrival airport — exclude repositioning/ferry flights (too volatile)
     const REPO_TYPES = new Set(["Positioning", "Ferry", "Needs pos", "Maintenance"]);
-    const byAirport = new Map<string, Flight[]>();
+    let eligible: Flight[] = [];
     for (const f of flights) {
       if (!f.arrival_icao || !f.scheduled_arrival) continue;
       if (f.flight_type && REPO_TYPES.has(f.flight_type)) continue;
       const arr = new Date(f.scheduled_arrival);
       if (arr < now || arr > cutoff) continue;
+      eligible.push(f);
+    }
 
+    // EOD filter: only keep the last arrival per tail in the window
+    if (eodOnly) {
+      const lastByTail = new Map<string, Flight>();
+      for (const f of eligible) {
+        const tail = f.tail_number ?? "";
+        if (!tail) continue;
+        const prev = lastByTail.get(tail);
+        if (!prev || (f.scheduled_arrival ?? "") > (prev.scheduled_arrival ?? "")) {
+          lastByTail.set(tail, f);
+        }
+      }
+      eligible = [...lastByTail.values()];
+    }
+
+    const byAirport = new Map<string, Flight[]>();
+    for (const f of eligible) {
       // Normalize ICAO → IATA (strip leading K for US airports)
-      const iata = f.arrival_icao.replace(/^K/, "");
+      const iata = f.arrival_icao!.replace(/^K/, "");
       if (!byAirport.has(iata)) byAirport.set(iata, []);
       byAirport.get(iata)!.push(f);
     }
@@ -274,7 +294,7 @@ export default function HeatMapView({ flights, liveVanPositions, liveVanIsLive }
     }
 
     return result.sort((a, b) => b.count - a.count);
-  }, [flights, windowHours, liveVanPositions]);
+  }, [flights, windowHours, eodOnly, liveVanPositions]);
 
   const totalArrivals = clusters.reduce((s, c) => s + c.count, 0);
 
@@ -300,9 +320,22 @@ export default function HeatMapView({ flights, liveVanPositions, liveVanIsLive }
           ))}
         </div>
 
+        {/* EOD filter */}
+        <button
+          onClick={() => setEodOnly((v) => !v)}
+          className={`px-2.5 py-1 rounded text-xs font-medium shadow-sm transition-colors ${
+            eodOnly
+              ? "bg-purple-600 text-white"
+              : "bg-white text-gray-600 border border-gray-300 hover:bg-gray-50"
+          }`}
+        >
+          EOD Only
+        </button>
+
         {/* Stats */}
         <div className="text-xs text-gray-500">
-          <span className="font-semibold text-gray-700">{totalArrivals}</span> arrival{totalArrivals !== 1 ? "s" : ""} across{" "}
+          <span className="font-semibold text-gray-700">{totalArrivals}</span>{" "}
+          {eodOnly ? "aircraft overnighting" : `arrival${totalArrivals !== 1 ? "s" : ""}`} across{" "}
           <span className="font-semibold text-gray-700">{clusters.length}</span> airport{clusters.length !== 1 ? "s" : ""}
         </div>
 
