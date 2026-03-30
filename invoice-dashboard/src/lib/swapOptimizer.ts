@@ -192,6 +192,13 @@ export type CrewSwapRow = {
   score: number;
 };
 
+export type SwapPointScore = {
+  icao: string; iata: string; position: string; ease: number;
+  drive_min: number; is_commercial: boolean; is_international: boolean;
+  timing_penalty: number; proximity_bonus: number; after_live_bonus: number;
+  comm_airports: number; selected: boolean;
+};
+
 export type SwapPlanResult = {
   swap_date: string;
   rows: CrewSwapRow[];
@@ -201,6 +208,8 @@ export type SwapPlanResult = {
   solved_count: number;
   unsolved_count: number;
   two_pass?: TwoPassStats;
+  /** Per-tail swap point scoring breakdown (for debug/transparency) */
+  swap_point_debug?: Record<string, SwapPointScore[]>;
 };
 
 export type TwoPassStats = {
@@ -1683,6 +1692,9 @@ export function buildSwapPlan(params: {
   // Higher difficulty = processed first
   tailEntries.sort((a, b) => (tailDifficulty.get(b[0]) ?? 0) - (tailDifficulty.get(a[0]) ?? 0));
 
+  // Debug: collect swap point scores per tail
+  const swapPointDebug: Record<string, typeof swapPointScores> = {};
+
   // ── Process each tail (hardest first) ───────────────────────────────
   for (const [tail, assignment] of tailEntries) {
     // Determine aircraft type
@@ -1709,6 +1721,7 @@ export function buildSwapPlan(params: {
     // - With flights: best commercial accessibility (EGE→VNY: VNY near BUR/LAX wins)
     // - Drive-only: use first swap point (default), let buildCandidates try all
     let picSwapPoint = swapPoints[0]; // default
+    const swapPointScores: { icao: string; iata: string; position: string; ease: number; drive_min: number; is_commercial: boolean; is_international: boolean; timing_penalty: number; proximity_bonus: number; after_live_bonus: number; comm_airports: number; selected: boolean }[] = [];
 
     // If assignment phase already proved a swap point, use it directly — avoids
     // the transport phase independently picking a different (wrong) swap point.
@@ -1801,16 +1814,31 @@ export function buildSwapPlan(params: {
           }
         }
 
+        // Bonus for domestic "after_live" — this is where the aircraft ENDS UP.
+        // Strongly prefer swapping at the final destination over intermediate stops,
+        // especially when the intermediate is international/remote.
+        const afterLiveBonus = sp.position === "after_live" ? 80 : 0;
+
         // Ease score: lower drive = easier, self-commercial = bonus, more options = bonus
         const ease = hardReject ? -9999 : (
           -minDrive + (selfCommercial ? 30 : 0) + (commAirports.length * 2)
-          - (isInternational ? 200 : 0) - timingPenalty + proximityBonus
+          - (isInternational ? 500 : 0) - timingPenalty + proximityBonus + afterLiveBonus
         );
+        swapPointScores.push({
+          icao: sp.icao, iata: toIata(sp.icao), position: sp.position,
+          ease: Math.round(ease), drive_min: minDrive === Infinity ? 999 : minDrive,
+          is_commercial: selfCommercial, is_international: isInternational,
+          timing_penalty: Math.round(timingPenalty), proximity_bonus: Math.round(proximityBonus),
+          after_live_bonus: afterLiveBonus, comm_airports: commAirports.length, selected: false,
+        });
         if (ease > bestEase) {
           bestEase = ease;
           picSwapPoint = sp;
         }
       }
+      // Mark the selected swap point
+      const selectedScore = swapPointScores.find(s => s.icao === picSwapPoint.icao);
+      if (selectedScore) selectedScore.selected = true;
 
       // If ALL swap points were hard-rejected (bestEase <= -9999), fall back to
       // the last swap point (typically where the aircraft ends up — after_live/idle).
@@ -1823,6 +1851,9 @@ export function buildSwapPlan(params: {
         globalWarnings.push(`${tail}: all swap points had timing conflicts — falling back to ${toIata(fallback.icao)}`);
       }
     }
+
+    // Store swap point scores for debug
+    if (swapPointScores.length > 0) swapPointDebug[tail] = swapPointScores;
 
     // Validate: never 2 SICs on the same tail (2 PICs is OK on swap day)
     const hasOncomingPic = !!assignment.oncoming_pic;
@@ -2246,6 +2277,7 @@ export function buildSwapPlan(params: {
     plan_score: avgScore,
     solved_count: solvedRows.length,
     unsolved_count: unsolvedRows.length,
+    swap_point_debug: Object.keys(swapPointDebug).length > 0 ? swapPointDebug : undefined,
   };
 }
 
@@ -2415,8 +2447,9 @@ function buildFeasibilityMatrix(params: {
         // Bonus: 0mi avg = +120, 500mi avg = +60, 1000mi+ = 0
         const proximityBonus = Math.max(0, 120 - (avgMiles / 1000) * 120);
 
+        const afterLiveBonus = sp.position === "after_live" ? 80 : 0;
         const ease = -(minDrive === Infinity ? 999 : minDrive) + (selfCommercial ? 30 : 0)
-          + commAirports.length * 2 - (isInternational ? 200 : 0) - timingPenalty + proximityBonus;
+          + commAirports.length * 2 - (isInternational ? 500 : 0) - timingPenalty + proximityBonus + afterLiveBonus;
         if (ease > bestEase) { bestEase = ease; bestSp = sp; }
       }
       swapPointsToTry = [bestSp];
