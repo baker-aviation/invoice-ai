@@ -1831,6 +1831,10 @@ export function buildSwapPlan(params: {
           timing_penalty: Math.round(timingPenalty), proximity_bonus: Math.round(proximityBonus),
           after_live_bonus: afterLiveBonus, comm_airports: commAirports.length, selected: false,
         });
+        // Debug log for tails with international swap points
+        if (isInternational || sp.icao === "TQPF" || tail.includes("555")) {
+          console.log(`[SwapPointDebug] ${tail} ${toIata(sp.icao)} (${sp.position}): ease=${Math.round(ease)} drive=${minDrive} intl=${isInternational} comm=${commAirports.length} timing=${Math.round(timingPenalty)} prox=${Math.round(proximityBonus)} afterLive=${afterLiveBonus}`);
+        }
         if (ease > bestEase) {
           bestEase = ease;
           picSwapPoint = sp;
