@@ -274,6 +274,20 @@ export async function GET(req: NextRequest) {
         flightMap.set(f.id, { dep: f.scheduled_departure, arr: f.scheduled_arrival ?? null });
       }
 
+      // Batch-fetch ALL clearances for existing trips (avoid per-trip DB calls in loop)
+      const existingTripIds = (allExisting ?? []).map((e) => e.id);
+      const allClearancesMap = new Map<string, Array<{ id: string; clearance_type: string; airport_icao: string; status: string; file_gcs_key: string | null; sort_order: number; notes: string | null }>>();
+      if (existingTripIds.length > 0) {
+        const { data: allClearances } = await supa
+          .from("intl_trip_clearances")
+          .select("id, trip_id, clearance_type, airport_icao, status, file_gcs_key, sort_order, notes")
+          .in("trip_id", existingTripIds);
+        for (const c of allClearances ?? []) {
+          if (!allClearancesMap.has(c.trip_id)) allClearancesMap.set(c.trip_id, []);
+          allClearancesMap.get(c.trip_id)!.push(c);
+        }
+      }
+
       // Track which existing trip IDs are still matched (for orphan cleanup)
       const matchedExistingIds = new Set<string>();
       const detectedFlightIdSets = new Set<string>();
@@ -377,11 +391,8 @@ export async function GET(req: NextRequest) {
 
             // Check if trip has been "started" (any clearance beyond not_started)
             // Only fire change alerts if someone is actively working this trip
-            const { data: clearanceStatuses } = await supa
-              .from("intl_trip_clearances")
-              .select("status")
-              .eq("trip_id", match.id);
-            const tripStarted = (clearanceStatuses ?? []).some(
+            const existingClearancesForTrip = allClearancesMap.get(match.id) ?? [];
+            const tripStarted = existingClearancesForTrip.some(
               (c) => c.status !== "not_started"
             );
 
@@ -408,11 +419,8 @@ export async function GET(req: NextRequest) {
                 });
               }
 
-              // Fetch existing clearances for this trip
-              const { data: existingClearances } = await supa
-                .from("intl_trip_clearances")
-                .select("*")
-                .eq("trip_id", match.id);
+              // Use pre-fetched clearances for this trip
+              const existingClearances = allClearancesMap.get(match.id) ?? [];
 
               const newClearances = buildDefaultClearances(dt, countriesWithOvfReq);
               const keepIds = new Set<string>();
@@ -531,15 +539,12 @@ export async function GET(req: NextRequest) {
       if (orphanCandidates.length > 0) {
         // Check which orphans have been started (any clearance beyond not_started)
         const orphanIds = orphanCandidates.map((e) => e.id);
-        const { data: startedClearances } = await supa
-          .from("intl_trip_clearances")
-          .select("trip_id, status")
-          .in("trip_id", orphanIds);
 
         const startedTripIds = new Set(
-          (startedClearances ?? [])
-            .filter((c) => c.status !== "not_started")
-            .map((c) => c.trip_id)
+          orphanIds.filter((id) => {
+            const cl = allClearancesMap.get(id) ?? [];
+            return cl.some((c) => c.status !== "not_started");
+          })
         );
 
         // Auto-delete unstarted orphans (no work to lose)

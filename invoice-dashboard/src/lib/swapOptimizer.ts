@@ -1693,7 +1693,7 @@ export function buildSwapPlan(params: {
   tailEntries.sort((a, b) => (tailDifficulty.get(b[0]) ?? 0) - (tailDifficulty.get(a[0]) ?? 0));
 
   // Debug: collect swap point scores per tail
-  const swapPointDebug: Record<string, typeof swapPointScores> = {};
+  const swapPointDebug: Record<string, Array<{ icao: string; iata: string; position: string; ease: number; drive_min: number; is_commercial: boolean; is_international: boolean; timing_penalty: number; proximity_bonus: number; after_live_bonus: number; comm_airports: number; selected: boolean }>> = {};
 
   // ── Process each tail (hardest first) ───────────────────────────────
   for (const [tail, assignment] of tailEntries) {

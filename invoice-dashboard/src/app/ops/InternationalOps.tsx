@@ -890,10 +890,10 @@ function TripDetail({ trip, countries, onRefresh }: {
         <div className="flex items-center justify-between">
           <h4 className="text-xs font-semibold text-gray-700">JetInsight Passenger Data Uploaded?</h4>
           <select
-            value={trip.pax_data_status ?? "not_started"}
+            value={trip.leg_passengers?.length ? "uploaded" : (trip.pax_data_status ?? "not_started")}
             onChange={(e) => updatePaxStatus(e.target.value)}
             className={`text-xs border rounded px-2 py-1 font-medium ${
-              trip.pax_data_status === "uploaded"
+              trip.leg_passengers?.length || trip.pax_data_status === "uploaded"
                 ? "border-green-300 bg-green-50 text-green-700"
                 : trip.pax_data_status === "salesperson_notified"
                 ? "border-yellow-300 bg-yellow-50 text-yellow-700"
@@ -905,6 +905,16 @@ function TripDetail({ trip, countries, onRefresh }: {
             <option value="uploaded">Passenger Data on JetInsight</option>
           </select>
         </div>
+        {trip.leg_passengers && trip.leg_passengers.length > 0 && (
+          <div className="mt-2 pt-2 border-t border-gray-100 space-y-1">
+            {trip.leg_passengers.map((lp: { dep: string; arr: string; passengers: string }, i: number) => (
+              <div key={i} className="text-xs">
+                <span className="font-medium text-gray-500">{lp.dep}→{lp.arr}:</span>{" "}
+                <span className="text-gray-700">{lp.passengers}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Route header */}
@@ -1099,21 +1109,6 @@ function TripDetail({ trip, countries, onRefresh }: {
           </div>
         );
       })()}
-
-      {/* Passengers */}
-      {trip.leg_passengers && trip.leg_passengers.length > 0 && (
-        <div className="mt-4 pt-3 border-t border-gray-200">
-          <h4 className="text-xs font-bold uppercase tracking-wide text-gray-500 mb-2">Passengers</h4>
-          <div className="space-y-1.5">
-            {trip.leg_passengers.map((lp: { dep: string; arr: string; passengers: string }, i: number) => (
-              <div key={i} className="text-xs">
-                <span className="font-medium text-gray-600">{lp.dep}→{lp.arr}:</span>{" "}
-                <span className="text-gray-700">{lp.passengers}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
       {/* Trip documents */}
       {trip.tail_number && trip.route_icaos.length >= 2 && (
