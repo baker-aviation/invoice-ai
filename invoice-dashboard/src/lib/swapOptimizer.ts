@@ -540,7 +540,7 @@ function buildCandidates(
   const candidates: TransportCandidate[] = [];
   const swapIcao = task.swapPoint.icao;
   const commAirports = findAllCommercialAirports(swapIcao, aliases);
-  const _debugCrew = task.name.includes("Sullivan") || task.name.includes("Ricci") || task.name.includes("Scott") || task.name.includes("Weakley");
+  const _debugCrew = task.name.includes("Sullivan") || task.name.includes("Ricci") || task.name.includes("Bengoechea") || task.name.includes("Weakley");
 
   // Determine deadline/target times
   const homeMidnight = task.homeAirports[0]
@@ -655,8 +655,11 @@ function buildCandidates(
 
         // 14hr duty day check: duty-on through estimated end of flying day
         if (oncomingDutyEnd && dutyOn) {
-          const { valid } = checkDutyDay(dutyOn, oncomingDutyEnd);
-          if (!valid) continue; // Exceeds 14hr duty day
+          const { valid, hours } = checkDutyDay(dutyOn, oncomingDutyEnd);
+          if (!valid) {
+            if (_debugCrew) console.log(`[CandidateDebug] ${task.name}: REJECTED ${label} — duty day ${hours.toFixed(1)}hr exceeds ${MAX_DUTY_HOURS}hr (drive dep ${depTime?.toISOString()} to dutyEnd ${oncomingDutyEnd.toISOString()})`);
+            continue;
+          }
         }
       } else {
         // Offgoing: leaving the aircraft, driving home
