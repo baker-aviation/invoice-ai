@@ -60,6 +60,28 @@ export type AlertsResponse = {
   count: number;
   alerts: AlertRow[];
 };
+
+export type AlertRule = {
+  id: string;
+  name: string;
+  is_enabled: boolean;
+  keywords: string[] | null;
+  min_handling_fee: number | null;
+  min_service_fee: number | null;
+  min_surcharge: number | null;
+  min_total: number | null;
+  min_risk_score: number | null;
+  min_line_item_amount: number | null;
+  require_charged_line_items: boolean;
+  vendor_normalized_in: string[] | null;
+  doc_type_in: string[] | null;
+  airport_code_in: string[] | null;
+  require_review_required: boolean;
+  slack_channel: string | null;
+  slack_channel_id: string | null;
+  slack_channel_name: string | null;
+  created_at: string;
+};
 /* =========================
    Fuel Prices
 ========================= */

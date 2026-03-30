@@ -2,17 +2,18 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 import { Topbar } from "@/components/Topbar";
-import { fetchInvoices, fetchAlerts } from "@/lib/invoiceApi";
+import { fetchInvoices, fetchAlerts, fetchAlertRules } from "@/lib/invoiceApi";
 import { createServiceClient } from "@/lib/supabase/service";
 import { signGcsUrl } from "@/lib/gcs";
 import InvoicesTabs from "./InvoicesTabs";
 import { AutoRefresh } from "@/components/AutoRefresh";
 
 export default async function InvoicesPage() {
-  // Fetch invoices and alerts in parallel
-  const [invoiceData, alertData] = await Promise.all([
+  // Fetch invoices, alerts, and rules in parallel
+  const [invoiceData, alertData, rules] = await Promise.all([
     fetchInvoices({ limit: 1000 }),
     fetchAlerts({ limit: 1000 }),
+    fetchAlertRules(),
   ]);
 
   const invoices = invoiceData.invoices ?? [];
@@ -43,7 +44,7 @@ export default async function InvoicesPage() {
     <>
       <Topbar title="Invoices" />
       <AutoRefresh intervalSeconds={120} />
-      <InvoicesTabs invoices={invoices} alerts={alerts} pdfUrls={pdfUrls} />
+      <InvoicesTabs invoices={invoices} alerts={alerts} pdfUrls={pdfUrls} rules={rules} />
     </>
   );
 }

@@ -58,9 +58,19 @@ def _line_item_is_charged(li: Dict[str, Any]) -> bool:
     Ignores:
       - zero (waived)
       - negative (credits)
+      - items where unit_price is explicitly 0 (waived fee mis-parsed with list price as total)
     """
     total = _to_float(li.get("total")) or 0.0
-    return total > 0.01
+    if total <= 0.01:
+        return False
+
+    # Defense: if unit_price is explicitly 0 (not null), the fee was likely waived
+    # and the parser grabbed the list price as the total instead of the net price.
+    unit_price = li.get("unit_price")
+    if unit_price is not None and _to_float(unit_price) == 0:
+        return False
+
+    return True
 
 
 def _keyword_match(

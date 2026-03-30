@@ -1,7 +1,7 @@
 import { createServiceClient } from "@/lib/supabase/service";
 import { cloudRunFetch } from "@/lib/cloud-run-fetch";
 import { signGcsUrl } from "@/lib/gcs";
-import type { AdvertisedPriceRow, AlertRow, AlertsResponse, FuelPriceRow, FuelPricesResponse, InvoiceDetailResponse, InvoiceListItem, InvoiceListResponse } from "@/lib/types";
+import type { AdvertisedPriceRow, AlertRow, AlertRule, AlertsResponse, FuelPriceRow, FuelPricesResponse, InvoiceDetailResponse, InvoiceListItem, InvoiceListResponse } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
 // Invoices — direct Supabase query to parsed_invoices
@@ -287,6 +287,44 @@ export async function fetchAlerts(params: {
   }
 
   return { ok: true, count: alerts.length, alerts };
+}
+
+// ---------------------------------------------------------------------------
+// Alert Rules — direct Supabase query to invoice_alert_rules
+// ---------------------------------------------------------------------------
+
+export async function fetchAlertRules(): Promise<AlertRule[]> {
+  const supa = createServiceClient();
+  const { data, error } = await supa
+    .from("invoice_alert_rules")
+    .select(
+      "id, name, is_enabled, keywords, min_handling_fee, min_service_fee, min_surcharge, min_total, min_risk_score, min_line_item_amount, require_charged_line_items, vendor_normalized_in, doc_type_in, airport_code_in, require_review_required, slack_channel, slack_channel_id, slack_channel_name, created_at"
+    )
+    .order("name", { ascending: true });
+
+  if (error) throw new Error(`fetchAlertRules failed: ${error.message}`);
+
+  return (data ?? []).map((row) => ({
+    id: row.id as string,
+    name: row.name as string,
+    is_enabled: (row.is_enabled as boolean) ?? false,
+    keywords: row.keywords as string[] | null,
+    min_handling_fee: row.min_handling_fee as number | null,
+    min_service_fee: row.min_service_fee as number | null,
+    min_surcharge: row.min_surcharge as number | null,
+    min_total: row.min_total as number | null,
+    min_risk_score: row.min_risk_score as number | null,
+    min_line_item_amount: row.min_line_item_amount as number | null,
+    require_charged_line_items: (row.require_charged_line_items as boolean) ?? false,
+    vendor_normalized_in: row.vendor_normalized_in as string[] | null,
+    doc_type_in: row.doc_type_in as string[] | null,
+    airport_code_in: row.airport_code_in as string[] | null,
+    require_review_required: (row.require_review_required as boolean) ?? false,
+    slack_channel: row.slack_channel as string | null,
+    slack_channel_id: row.slack_channel_id as string | null,
+    slack_channel_name: row.slack_channel_name as string | null,
+    created_at: row.created_at as string,
+  }));
 }
 
 // ---------------------------------------------------------------------------

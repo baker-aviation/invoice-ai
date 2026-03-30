@@ -720,7 +720,7 @@ def build_normal_messages(pdf_text: str) -> List[dict]:
         "- EXCLUDE lines that are purely percentage tax breakdowns (e.g., 'SALES TAX 2.9%') unless explicitly charged as a dollar amount.\n"
         "- Only fill quantity/unit_price/tax if explicitly shown on the SAME row.\n"
         "- If not explicitly shown, set those fields to null.\n"
-        "- 'total' must be the line's extended amount.\n"
+        "- 'total' must be the line's FINAL extended amount AFTER any inline discounts on that row. If a row shows both a List Price and a Total Price (or Net Price), use the TOTAL/NET as 'total', NOT the list/gross price. Example: List Price $2,390, Discount ($2,390), Total $0.00 → total should be 0.\n"
         "\n"
         "Fuel rows:\n"
         "- Use the extended TOTAL amount shown for the fuel row.\n"
@@ -826,6 +826,7 @@ def build_rescue_messages(pdf_text: str, first_pass: Dict[str, Any], reason: str
         "- Do not miss rows that are off to the right (amount column).\n"
         "- Do not treat a section subtotal as the grand total.\n"
         "- Do not drop discount/credit/waiver lines (e.g. 'Fee Waived', 'Cust Discount'). Extract them with NEGATIVE amounts. Parenthesized amounts like ($1,902.00) are negative.\n"
+        "- 'total' must be the FINAL amount for that row AFTER any inline discounts. If List Price = $2,390, Discount = ($2,390), Total = $0.00 → use 0 as total, NOT 2390.\n"
         "- If the document shows both an Invoice Number and a Ref Number, treat the Invoice Number as invoice_number.\n"
     )
 

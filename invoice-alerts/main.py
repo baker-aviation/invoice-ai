@@ -468,35 +468,25 @@ def _build_slack_alert_payload(
 ) -> Dict[str, Any]:
     tail = (tail_number or "—").strip() or "—"
 
-    fee_amount_text = "—"
     amt = _to_float(fee_amount)
+    fee_amount_text = "—"
     if amt is not None and amt > 0:
-        fee_amount_text = f"{amt} {currency}".strip()
+        fee_amount_text = f"${amt:,.2f} {currency}".strip()
 
-    pdf_line = "—"
+    fallback = f"{fee_name} | {fbo} | {airport_code} | {tail}"
+
+    # Compact section text (EDCT-style)
+    text = f"*{fee_name}* — {fee_amount_text}\n{fbo} | {airport_code} | {tail}"
     if signed_pdf_url:
-        pdf_line = f"<{signed_pdf_url}|Open PDF>"
-
-    top_line = f"🚨 {fee_name} | {fbo} | {airport_code} | {tail}"
+        text += f"\n<{signed_pdf_url}|View PDF>"
 
     return {
-        "text": top_line,
+        "text": fallback,
         "blocks": [
-            {"type": "header", "text": {"type": "plain_text", "text": "🚨 Fee Alert"}},
-            {
-                "type": "section",
-                "fields": [
-                    {"type": "mrkdwn", "text": f"*FBO:*\n{fbo}"},
-                    {"type": "mrkdwn", "text": f"*Airport Code:*\n{airport_code}"},
-                    {"type": "mrkdwn", "text": f"*Tail:*\n{tail}"},
-                    {"type": "mrkdwn", "text": f"*Fee name:*\n{fee_name or '—'}"},
-                    {"type": "mrkdwn", "text": f"*Fee amount:*\n{fee_amount_text}"},
-                ],
-            },
-            {"type": "section", "text": {"type": "mrkdwn", "text": f"*PDF:*\n{pdf_line}"}},
+            {"type": "section", "text": {"type": "mrkdwn", "text": text}},
             {
                 "type": "context",
-                "elements": [{"type": "mrkdwn", "text": f"Rule: `{rule_name}`  •  document_id: `{document_id}`"}],
+                "elements": [{"type": "mrkdwn", "text": f"Fee Alert  •  Rule: `{rule_name}`  •  `{document_id}`"}],
             },
         ],
     }

@@ -10,7 +10,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 function fmtAmount(amount: number | null, currency: string): string {
   if (amount == null || amount <= 0) return "—";
-  return `${amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}`.trim();
+  return `$${amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}`.trim();
 }
 
 export async function POST(
@@ -97,26 +97,18 @@ export async function POST(
     if (signedUrl) pdfLine = `<${signedUrl}|Open PDF>`;
   }
 
-  // Build Slack payload (matches backend format)
-  const topLine = `🚨 ${feeName} | ${fbo} | ${airportCode} | ${tail}`;
+  // Build Slack payload (compact EDCT-style format)
+  const fallback = `${feeName} | ${fbo} | ${airportCode} | ${tail}`;
+  let sectionText = `*${feeName}* — ${fmtAmount(feeAmount, currency)}\n${fbo} | ${airportCode} | ${tail}`;
+  if (pdfLine !== "—") sectionText += `\n${pdfLine.replace("Open PDF", "View PDF")}`;
+
   const slackPayload = {
-    text: topLine,
+    text: fallback,
     blocks: [
-      { type: "header", text: { type: "plain_text", text: "🚨 Fee Alert" } },
-      {
-        type: "section",
-        fields: [
-          { type: "mrkdwn", text: `*FBO:*\n${fbo}` },
-          { type: "mrkdwn", text: `*Airport Code:*\n${airportCode}` },
-          { type: "mrkdwn", text: `*Tail:*\n${tail}` },
-          { type: "mrkdwn", text: `*Fee name:*\n${feeName}` },
-          { type: "mrkdwn", text: `*Fee amount:*\n${fmtAmount(feeAmount, currency)}` },
-        ],
-      },
-      { type: "section", text: { type: "mrkdwn", text: `*PDF:*\n${pdfLine}` } },
+      { type: "section", text: { type: "mrkdwn", text: sectionText } },
       {
         type: "context",
-        elements: [{ type: "mrkdwn", text: `Rule: \`${ruleName}\`  •  document_id: \`${documentId}\`` }],
+        elements: [{ type: "mrkdwn", text: `Fee Alert  •  Rule: \`${ruleName}\`  •  \`${documentId}\`` }],
       },
     ],
   };
