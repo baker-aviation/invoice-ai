@@ -516,8 +516,33 @@ export default function VanDriverClient({
         }
       }
     }
+    // Correct overnight item positions using FlightAware actual data.
+    // If FA shows the aircraft landed at a different airport more recently
+    // than the scheduled arrival, update the displayed position.
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      const tail = item.arrFlight.tail_number;
+      if (!tail) continue;
+      const arrDateEt = item.arrFlight.scheduled_arrival
+        ? new Date(item.arrFlight.scheduled_arrival).toLocaleDateString("en-CA", { timeZone: "America/New_York" })
+        : null;
+      if (!arrDateEt || arrDateEt >= date) continue; // only correct overnight items
+      const fa = flightInfoMap.get(tail);
+      if (!fa?.destination_icao || !(fa.actual_arrival || fa.status?.includes("Landed"))) continue;
+      const faIata = fa.destination_icao.replace(/^K/, "");
+      if (faIata === item.airport) continue;
+      if ((fa.actual_arrival ?? fa.arrival_time ?? "") <= (item.arrFlight.scheduled_arrival ?? "")) continue;
+      const info = getAirportInfo(faIata);
+      item.airport = faIata;
+      item.airportInfo = info;
+      item.distKm = info ? Math.round(haversineKm(zone.lat, zone.lon, info.lat, info.lon)) : 0;
+      item.nextDep = flights
+        .filter((f) => f.tail_number === tail && f.departure_icao?.replace(/^K/, "") === faIata && f.scheduled_departure > new Date().toISOString())
+        .sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure))[0] ?? null;
+      item.nextIsRepo = item.nextDep ? isPositioningFlight(item.nextDep) : false;
+    }
     return items;
-  }, [zone, flights, date, livePublishedFlightIds, syntheticMap, apOverrideMap]);
+  }, [zone, flights, date, livePublishedFlightIds, syntheticMap, apOverrideMap, flightInfoMap]);
 
   const totalRouteKm = useMemo(() => routeDistKm(stops), [stops]);
 

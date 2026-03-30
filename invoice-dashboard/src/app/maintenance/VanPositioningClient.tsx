@@ -609,6 +609,7 @@ function computeZoneItems(
   date: string,
   baseLat: number,
   baseLon: number,
+  flightInfoMap?: Map<string, FlightInfoEntry>,
 ): VanFlightItem[] {
   // All arrivals today (any airport, not filtered by zone yet)
   // Uses van schedule date boundary (5 AM ET) so late-night Pacific flights don't bleed
@@ -753,6 +754,65 @@ function computeZoneItems(
     }
   }
 
+  // Add overnight/parked aircraft in this zone: arrived BEFORE today, still sitting there.
+  // Cross-references FlightAware so aircraft that moved show at their actual position.
+  const nowIso = new Date().toISOString();
+  const todayTails = new Set(rawItems.map((i) => i.arrFlight.tail_number).filter(Boolean));
+  const overnightArrivals = allFlights.filter((f) => {
+    if (!f.arrival_icao || !f.scheduled_arrival || !f.tail_number) return false;
+    if (isOnVanScheduleDate(f.scheduled_arrival, date)) return false;
+    if (f.scheduled_arrival > nowIso) return false;
+    if (f.departure_icao && f.departure_icao === f.arrival_icao) return false;
+    if (todayTails.has(f.tail_number)) return false;
+    if (deduped.has(f.tail_number)) return false;
+    const nextDep = allFlights.find(
+      (d) => d.tail_number === f.tail_number &&
+             d.departure_icao === f.arrival_icao &&
+             d.scheduled_departure > (f.scheduled_arrival ?? "") &&
+             d.scheduled_departure > nowIso,
+    );
+    if (!nextDep) return false;
+    return true;
+  });
+  const overnightByTail = new Map<string, Flight>();
+  for (const f of overnightArrivals) {
+    const existing = overnightByTail.get(f.tail_number!);
+    if (!existing || (f.scheduled_arrival ?? "") > (existing.scheduled_arrival ?? "")) {
+      overnightByTail.set(f.tail_number!, f);
+    }
+  }
+  for (const [, arr] of overnightByTail) {
+    let iata = arr.arrival_icao!.replace(/^K/, "");
+    if (flightInfoMap) {
+      const fa = flightInfoMap.get(arr.tail_number!);
+      if (fa?.destination_icao && (fa.actual_arrival || fa.status?.includes("Landed"))) {
+        const faIata = fa.destination_icao.replace(/^K/, "");
+        const faArrival = fa.actual_arrival ?? fa.arrival_time;
+        if (faIata !== iata && faArrival && faArrival > (arr.scheduled_arrival ?? "")) {
+          iata = faIata;
+        }
+      }
+    }
+    if (!isInZone(iata)) continue;
+    const info = getAirportInfo(iata);
+    const distKm = info ? Math.round(haversineKm(baseLat, baseLon, info.lat, info.lon)) : 0;
+    const nextDep = allFlights
+      .filter((f) => f.tail_number === arr.tail_number && f.departure_icao?.replace(/^K/, "") === iata && f.scheduled_departure > (arr.scheduled_arrival ?? "") && f.scheduled_departure > nowIso)
+      .sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure))[0] ?? null;
+    const key = arr.tail_number!;
+    if (!deduped.has(key)) {
+      deduped.set(key, {
+        arrFlight: arr,
+        nextDep,
+        isRepo: false,
+        nextIsRepo: nextDep ? isPositioningFlight(nextDep) : false,
+        airport: iata,
+        airportInfo: info,
+        distKm,
+      });
+    }
+  }
+
   return Array.from(deduped.values())
     .sort((a, b) =>
       (a.arrFlight.scheduled_arrival ?? "").localeCompare(b.arrFlight.scheduled_arrival ?? ""),
@@ -764,7 +824,7 @@ function computeZoneItems(
  * Compute ALL arrivals for a given date across all airports (no zone proximity
  * filter). Used to build the "unassigned aircraft" pool in the schedule tab.
  */
-function computeAllDayArrivals(allFlights: Flight[], date: string): VanFlightItem[] {
+function computeAllDayArrivals(allFlights: Flight[], date: string, flightInfoMap?: Map<string, FlightInfoEntry>): VanFlightItem[] {
   const arrivalsToday = allFlights.filter((f) => {
     if (!f.arrival_icao || !f.scheduled_arrival) return false;
     if (!isOnVanScheduleDate(f.scheduled_arrival, date)) return false;
@@ -859,10 +919,25 @@ function computeAllDayArrivals(allFlights: Flight[], date: string): VanFlightIte
   }
 
   for (const [, arr] of overnightByTail) {
-    const iata = arr.arrival_icao!.replace(/^K/, "");
+    let iata = arr.arrival_icao!.replace(/^K/, "");
+
+    // Cross-reference FlightAware: if FA shows this tail landed at a different
+    // airport MORE RECENTLY than the scheduled arrival, use FA's position instead.
+    // This catches cases where unscheduled/missing flights moved the aircraft.
+    if (flightInfoMap) {
+      const fa = flightInfoMap.get(arr.tail_number!);
+      if (fa?.destination_icao && (fa.actual_arrival || fa.status?.includes("Landed"))) {
+        const faIata = fa.destination_icao.replace(/^K/, "");
+        const faArrival = fa.actual_arrival ?? fa.arrival_time;
+        if (faIata !== iata && faArrival && faArrival > (arr.scheduled_arrival ?? "")) {
+          iata = faIata;
+        }
+      }
+    }
+
     const info = getAirportInfo(iata);
     const nextDep = allFlights
-      .filter((f) => f.tail_number === arr.tail_number && f.departure_icao === arr.arrival_icao && f.scheduled_departure > (arr.scheduled_arrival ?? "") && f.scheduled_departure > nowIso)
+      .filter((f) => f.tail_number === arr.tail_number && f.departure_icao?.replace(/^K/, "") === iata && f.scheduled_departure > (arr.scheduled_arrival ?? "") && f.scheduled_departure > nowIso)
       .sort((a, b) => a.scheduled_departure.localeCompare(b.scheduled_departure))[0] ?? null;
     byFlightId.set(arr.id, {
       arrFlight: arr,
@@ -2882,7 +2957,7 @@ function ScheduleTab({
     for (const zone of FIXED_VAN_ZONES) {
       const baseLat = liveVanPositions.get(zone.vanId)?.lat ?? zone.lat;
       const baseLon = liveVanPositions.get(zone.vanId)?.lon ?? zone.lon;
-      raw.set(zone.vanId, computeZoneItems(zone, allFlights, date, baseLat, baseLon));
+      raw.set(zone.vanId, computeZoneItems(zone, allFlights, date, baseLat, baseLon, flightInfoMap));
     }
     // Deduplicate: if an aircraft appears in multiple zones, prefer zones
     // where the tail has MX notes at nearby airports, then fallback to closest distance
@@ -2916,7 +2991,7 @@ function ScheduleTab({
       map.get(vanId)!.push(item);
     }
     return map;
-  }, [allFlights, date, liveVanPositions, mxNotesByTail]);
+  }, [allFlights, date, liveVanPositions, mxNotesByTail, flightInfoMap]);
 
   // Fallback: restore overrides from published assignments if localStorage was empty
   const overridesRestoredRef = useRef<string>("");
@@ -2947,8 +3022,8 @@ function ScheduleTab({
 
   // All arrivals today (no zone filter) — used for the uncovered pool
   const allDayArrivals = useMemo(
-    () => computeAllDayArrivals(allFlights, date),
-    [allFlights, date],
+    () => computeAllDayArrivals(allFlights, date, flightInfoMap),
+    [allFlights, date, flightInfoMap],
   );
 
   // Apply overrides + removals → final items per van
