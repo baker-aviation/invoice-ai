@@ -540,6 +540,7 @@ function buildCandidates(
   const candidates: TransportCandidate[] = [];
   const swapIcao = task.swapPoint.icao;
   const commAirports = findAllCommercialAirports(swapIcao, aliases);
+  const _debugCrew = task.name.includes("Sullivan") || task.name.includes("Ricci") || task.name.includes("Scott") || task.name.includes("Weakley");
 
   // Determine deadline/target times
   const homeMidnight = task.homeAirports[0]
@@ -598,6 +599,10 @@ function buildCandidates(
       const tz = getAirportTimezone(swapIcao) ?? "America/New_York";
       oncomingDutyEnd = localTimeToUtc(swapDate, 22, 0, tz);
     }
+  }
+
+  if (_debugCrew) {
+    console.log(`[CandidateDebug] ${task.name}: buildCandidates START — swap=${toIata(swapIcao)} (${task.swapPoint.position}) commAirports=[${commAirports.map(c => toIata(c)).join(",")}] homes=[${task.homeAirports.join(",")}] deadline=${oncomingHardDeadline?.toISOString() ?? 'none'} dutyEnd=${oncomingDutyEnd?.toISOString() ?? 'none'} groundOnly=${groundOnlySwap}`);
   }
 
   for (const homeApt of task.homeAirports) {
@@ -856,6 +861,12 @@ function buildCandidates(
 
       for (const searchDate of datesToSearch) {
       const offers = lookupFlights(commercialFlights, originIata, destIata, searchDate);
+      if (_debugCrew && offers.length > 0) {
+        console.log(`[CandidateDebug] ${task.name} (${task.direction} ${task.role}): ${originIata}→${destIata} found ${offers.length} offers for ${searchDate}`);
+      }
+      if (_debugCrew && offers.length === 0) {
+        console.log(`[CandidateDebug] ${task.name}: ${originIata}→${destIata} NO OFFERS in cache for ${searchDate}`);
+      }
       for (const offer of offers) {
         const segs = offer.itineraries?.[0]?.segments ?? [];
         if (segs.length === 0) continue;
@@ -899,7 +910,8 @@ function buildCandidates(
           // Hard deadline: must arrive at FBO by 1800L (offgoing crew holds until then)
           // Arriving before first leg is a scoring PREFERENCE, not a hard requirement
           if (oncomingHardDeadline && fboArr.getTime() > oncomingHardDeadline.getTime()) {
-            continue; // Too late — even offgoing can't hold this long
+            if (_debugCrew) console.log(`[CandidateDebug] ${task.name}: REJECTED ${flightNum} — FBO arrival ${fboArr.toISOString()} > deadline ${oncomingHardDeadline.toISOString()}`);
+            continue;
           }
 
           // Check: duty-on not before 0400 local
@@ -910,9 +922,10 @@ function buildCandidates(
 
           // 14hr duty day check: duty-on through estimated end of flying day
           if (oncomingDutyEnd && dutyOn) {
-            const { valid } = checkDutyDay(dutyOn, oncomingDutyEnd);
+            const { valid, hours } = checkDutyDay(dutyOn, oncomingDutyEnd);
             if (!valid) {
-              continue; // Exceeds 14hr duty day
+              if (_debugCrew) console.log(`[CandidateDebug] ${task.name}: REJECTED ${flightNum} — duty day ${hours.toFixed(1)}hr exceeds ${MAX_DUTY_HOURS}hr (${dutyOn.toISOString()} to ${oncomingDutyEnd.toISOString()})`);
+              continue;
             }
           }
         } else {
@@ -932,7 +945,8 @@ function buildCandidates(
           const needLeaveAircraft = new Date(needAtAirport.getTime() - ms(driveToFboMin));
 
           if (needLeaveAircraft.getTime() < releaseTime.getTime()) {
-            continue; // Can't make this flight
+            if (_debugCrew) console.log(`[CandidateDebug] ${task.name}: REJECTED ${flightNum} — need leave ${needLeaveAircraft.toISOString()} < release ${releaseTime.toISOString()}`);
+            continue;
           }
 
           // Check midnight deadline
@@ -979,12 +993,20 @@ function buildCandidates(
           backups: [],
         };
 
+        if (_debugCrew) console.log(`[CandidateDebug] ${task.name}: ACCEPTED ${flightNum} ${originIata}→${destIata} dep=${flightDep.toISOString().slice(11,16)} fboArr=${fboArr?.toISOString().slice(11,16) ?? '?'} cost=$${Math.round(cost + groundCost)}`);
         candidates.push(candidate);
       }
       } // end for searchDate
       } // end for homeFlight
     } // end for commApt
   } // end for homeApt
+
+  if (_debugCrew) {
+    console.log(`[CandidateDebug] ${task.name}: TOTAL ${candidates.filter(c => c.type !== "none").length} viable candidates from ${commAirports.length} commercial airports`);
+    if (candidates.every(c => c.type === "none")) {
+      console.log(`[CandidateDebug] ${task.name}: ALL REJECTED. swapIcao=${swapIcao} commAirports=[${commAirports.map(c => toIata(c)).join(",")}] homeAirports=[${task.homeAirports.join(",")}]`);
+    }
+  }
 
   // If no candidates found, add a "none" placeholder
   if (candidates.length === 0) {
