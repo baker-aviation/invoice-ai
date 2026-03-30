@@ -1878,8 +1878,8 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
   useEffect(() => {
     fetch("/api/crew/sheet-weeks").then(r => r.ok ? r.json() : { weeks: [] }).then(d => {
       setAvailableWeeks(d.weeks ?? []);
-      // Default to first week that hasn't passed
-      if (d.weeks?.length > 0 && !selectedWeek) setSelectedWeek(d.weeks[d.weeks.length - 1]);
+      // Default to most recent week (first in list)
+      if (d.weeks?.length > 0 && !selectedWeek) setSelectedWeek(d.weeks[0]);
     }).catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
