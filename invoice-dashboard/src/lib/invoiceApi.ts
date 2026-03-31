@@ -332,7 +332,7 @@ export async function fetchAlertRules(): Promise<AlertRule[]> {
 // ---------------------------------------------------------------------------
 
 const FUEL_PRICE_COLUMNS =
-  "id, document_id, airport_code, vendor_name, base_price_per_gallon, effective_price_per_gallon, gallons, fuel_total, invoice_date, tail_number, currency, price_change_pct, previous_price, previous_document_id, alert_sent, data_source, has_additive, created_at";
+  "id, document_id, airport_code, vendor_name, fuel_vendor, base_price_per_gallon, effective_price_per_gallon, gallons, fuel_total, invoice_date, tail_number, currency, price_change_pct, previous_price, previous_document_id, alert_sent, data_source, has_additive, created_at";
 
 export async function fetchFuelPrices(params: {
   limit?: number;
@@ -366,6 +366,7 @@ export async function fetchFuelPrices(params: {
     document_id: row.document_id as string,
     airport_code: row.airport_code as string | null,
     vendor_name: row.vendor_name as string | null,
+    fuel_vendor: (row.fuel_vendor as string | null) ?? null,
     base_price_per_gallon: row.base_price_per_gallon as number | null,
     effective_price_per_gallon: row.effective_price_per_gallon as number | null,
     gallons: row.gallons as number | null,

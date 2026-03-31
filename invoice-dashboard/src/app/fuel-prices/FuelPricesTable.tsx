@@ -1796,8 +1796,11 @@ export default function FuelPricesTable({
                   >
                     <td className="px-4 py-2.5 whitespace-nowrap">{fmtDate(row.invoice_date)}</td>
                     <td className="px-4 py-2.5 whitespace-nowrap font-medium">{row.airport_code || "\u2014"}</td>
-                    <td className="px-4 py-2.5 whitespace-nowrap max-w-[200px] truncate" title={row.vendor_name || ""}>
-                      {row.vendor_name || "\u2014"}
+                    <td className="px-4 py-2.5 whitespace-nowrap max-w-[200px]" title={row.vendor_name || ""}>
+                      <div className="truncate">{row.vendor_name || "\u2014"}</div>
+                      {row.fuel_vendor && (
+                        <div className="text-[10px] text-gray-400 font-normal truncate">{row.fuel_vendor}</div>
+                      )}
                     </td>
                     <td className="px-4 py-2.5 whitespace-nowrap">{row.tail_number || "\u2014"}</td>
                     <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono">
