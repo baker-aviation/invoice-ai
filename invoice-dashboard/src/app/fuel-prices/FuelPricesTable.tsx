@@ -197,13 +197,11 @@ function lookupAdvertisedPrice(
 }
 
 /** Find the cheapest advertised rate across ALL vendors for a given airport + week.
- *  For each vendor, use the exact week if available, otherwise fall back to
- *  the most recent week on or before the invoice date. This ensures vendors
- *  whose rate sheets haven't arrived yet for the current week still compete
- *  using their latest known rates. */
+ *  Only compares rates from the same week as the invoice — stale rates from
+ *  older weeks are not valid comparisons. */
 function lookupBestRate(
   advByAirportWeek: Map<string, AdvertisedPriceRow[]>,
-  advByAirport: Map<string, AdvertisedPriceRow[]>,
+  _advByAirport: Map<string, AdvertisedPriceRow[]>,
   airportCode: string | null,
   invoiceDate: string | null,
   gallons: number | null,
@@ -216,34 +214,11 @@ function lookupBestRate(
     ? [airportCode, `K${airportCode}`]
     : [airportCode];
 
-  // Gather ALL vendor rates: exact week matches + most recent week per vendor
-  const allMatches: AdvertisedPriceRow[] = [];
-  const vendorsSeen = new Set<string>();
-
-  // 1) Exact week matches
+  // Same-week matches only — no fallback to older weeks
+  let allMatches: AdvertisedPriceRow[] = [];
   for (const code of codes) {
     const m = advByAirportWeek.get(`${code}|${weekMonday}`);
-    if (m) {
-      allMatches.push(...m);
-      for (const row of m) vendorsSeen.add(row.fbo_vendor);
-    }
-  }
-
-  // 2) For vendors NOT in the exact week, fall back to their most recent week
-  for (const code of codes) {
-    const allForAirport = advByAirport.get(code);
-    if (!allForAirport) continue;
-    const recent = allForAirport.filter((a) => a.week_start <= weekMonday && !vendorsSeen.has(a.fbo_vendor));
-    // Group by vendor, take each vendor's latest week
-    const byVendor = new Map<string, AdvertisedPriceRow[]>();
-    for (const r of recent) {
-      if (!byVendor.has(r.fbo_vendor)) byVendor.set(r.fbo_vendor, []);
-      byVendor.get(r.fbo_vendor)!.push(r);
-    }
-    for (const [, rows] of byVendor) {
-      const latestWeek = rows[0].week_start; // already sorted newest first
-      allMatches.push(...rows.filter((r) => r.week_start === latestWeek));
-    }
+    if (m) allMatches = allMatches.concat(m);
   }
 
   if (allMatches.length === 0) return null;
