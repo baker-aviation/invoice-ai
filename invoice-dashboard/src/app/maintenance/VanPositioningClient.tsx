@@ -757,7 +757,13 @@ function computeZoneItems(
   // Add overnight/parked aircraft in this zone: arrived BEFORE today, still sitting there.
   // Cross-references FlightAware so aircraft that moved show at their actual position.
   const nowIso = new Date().toISOString();
-  const todayTails = new Set(rawItems.map((i) => i.arrFlight.tail_number).filter(Boolean));
+  // Build todayTails from ALL flights arriving today (globally, not zone-specific).
+  // This prevents stale overnight entries when an aircraft flew to a different zone today.
+  const todayTails = new Set(
+    allFlights
+      .filter((f) => f.tail_number && f.scheduled_arrival && isOnVanScheduleDate(f.scheduled_arrival, date) && !(f.departure_icao && f.departure_icao === f.arrival_icao))
+      .map((f) => f.tail_number),
+  );
   const overnightArrivals = allFlights.filter((f) => {
     if (!f.arrival_icao || !f.scheduled_arrival || !f.tail_number) return false;
     if (isOnVanScheduleDate(f.scheduled_arrival, date)) return false;
