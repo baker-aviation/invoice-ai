@@ -5,11 +5,13 @@ import { Topbar } from "@/components/Topbar";
 import ForeFlightClient from "./ForeFlightClient";
 import TankeringDashboard from "./TankeringDashboard";
 import DispatchFlights from "./DispatchFlights";
+import CreateFlight from "./CreateFlight";
 
 const TABS = [
   { id: "fbo", label: "FBO Fuel Check" },
   { id: "tankering", label: "Tankering Plans" },
   { id: "dispatch", label: "Dispatch" },
+  { id: "create", label: "Push Flight" },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -43,6 +45,7 @@ export default function FuelPlanningPage() {
       {tab === "fbo" && <ForeFlightClient />}
       {tab === "tankering" && <TankeringDashboard />}
       {tab === "dispatch" && <DispatchFlights />}
+      {tab === "create" && <CreateFlight />}
     </>
   );
 }

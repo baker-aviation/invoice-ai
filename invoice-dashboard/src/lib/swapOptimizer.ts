@@ -954,7 +954,7 @@ function buildCandidates(
 
         let fboArr: Date | null = null;
         let dutyOn: Date | null = null;
-        const cost = parseFloat(offer.price.total);
+        let cost = parseFloat(offer.price.total);
 
         // Add ground transport cost to/from commercial airport
         let groundCost = 0;
@@ -1031,7 +1031,16 @@ function buildCandidates(
               const thurMidnight = new Date(homeMidnight.getTime() + 24 * 60 * 60_000);
               if (homeArr.getTime() > thurMidnight.getTime()) continue;
             } else {
-              continue; // Won't make 1 AM
+              // Next-day (Thursday) flights: allow offgoing crew to arrive home by
+              // Thursday noon if no same-day flights work. This adds a hotel night
+              // but is better than "no viable transport — arrange manually".
+              const thurNoon = new Date(homeMidnight.getTime() + 12 * 60 * 60_000);
+              if (homeArr.getTime() <= thurNoon.getTime()) {
+                // Keep this candidate but add hotel cost penalty
+                cost += 150; // Hotel night estimate
+              } else {
+                continue; // Won't make Thursday noon either
+              }
             }
           }
           fboArr = null;
@@ -2680,8 +2689,9 @@ function buildFeasibilityMatrix(params: {
   offgoingDeadlines?: OncomingDeadline[];  // offgoing departure deadlines per tail+role
   picSwapPoints?: Map<string, string>;  // tail → PIC swap ICAO (for SIC same-swap-point preference)
   relaxation?: boolean;  // when true, use relaxed constraints (expanded drive limits, reduced buffers)
+  swapPointFallback?: boolean;  // when true, PIC tries ALL swap points (not just best)
 }): FeasibilityMatrixResult {
-  const { pool, role, tails, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, preComputedRoutes, preComputedOffgoing, offgoingDeadlines, picSwapPoints, relaxation } = params;
+  const { pool, role, tails, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, preComputedRoutes, preComputedOffgoing, offgoingDeadlines, picSwapPoints, relaxation, swapPointFallback } = params;
   const effectiveRentalMax = relaxation ? RELAXED_RENTAL_MAX_MINUTES : RENTAL_MAX_MINUTES;
   const matrix: FeasibilityEntry[] = [];
   const rejections: FeasibilityRejection[] = [];
@@ -2718,7 +2728,7 @@ function buildFeasibilityMatrix(params: {
         if (domesticAfterLive3) swapPointsToTry = [domesticAfterLive3];
       }
     }
-    if (role === "PIC" && swapPointsToTry.length > 1 && (commercialFlights || preComputedRoutes)) {
+    if (role === "PIC" && swapPointsToTry.length > 1 && (commercialFlights || preComputedRoutes) && !swapPointFallback) {
       let bestSp = swapPointsToTry[0];
       let bestEase = -Infinity;
       for (const sp of swapPoints) {
@@ -3081,8 +3091,21 @@ function buildFeasibilityMatrix(params: {
       const best = candidates[0];
       const viable = best ? best.type !== "none" : false;
 
-      // Determine which swap point the best candidate targets
-      const bestSwapIcao = best?.to ? toIcao(best.to) : (swapPoints[0]?.icao ?? "");
+      // Determine which swap point the best candidate targets.
+      // The candidate's "to" is the COMMERCIAL airport (e.g., SFO), but we need the
+      // actual swap point ICAO (e.g., KAPC) for buildSwapPlan to match correctly.
+      let bestSwapIcao = swapPoints[0]?.icao ?? "";
+      if (best?.to) {
+        const bestToIcao = toIcao(best.to);
+        // Find which swap point this commercial airport serves
+        for (const sp of swapPointsToTry) {
+          const comms = findAllCommercialAirports(sp.icao, aliases);
+          if (comms.some((c) => c.toUpperCase() === bestToIcao.toUpperCase()) || sp.icao.toUpperCase() === bestToIcao.toUpperCase()) {
+            bestSwapIcao = sp.icao;
+            break;
+          }
+        }
+      }
 
       // Compute proximity: min drive time from any home airport to the best swap point
       let minDriveMin = 999;
@@ -3278,6 +3301,24 @@ export function assignOncomingCrew(params: {
   // Assign PICs then SICs using feasibility matrix
   const picRejections = assignRoleWithMatrix("oncoming_pic", oncomingPool.pic, "PIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes, preComputedOffgoing, excludeTails, offgoingDeadlines, undefined, relaxation);
   allRejections.push(...picRejections);
+
+  // PIC swap point fallback: if any PIC tails are unsolved (no viable crew at the
+  // "best" swap point), retry with ALL swap points. This handles cases like N555FX
+  // where TPA (ease=-55) was picked but has a 7 AM departure — APC (ease=-92) is
+  // reachable but wasn't tried because PIC normally only tries the best swap point.
+  const unsolvedPicTails = Object.keys(result).filter((tail) =>
+    !result[tail].oncoming_pic && !excludeTails?.has(tail)
+  );
+  if (unsolvedPicTails.length > 0) {
+    console.log(`[SwapPointFallback] ${unsolvedPicTails.length} PIC tails unsolved — retrying with ALL swap points: ${unsolvedPicTails.join(", ")}`);
+    const fallbackRejections = assignRoleWithMatrix(
+      "oncoming_pic", oncomingPool.pic, "PIC", result, byTail, swapDate, aliases,
+      commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes,
+      preComputedOffgoing, new Set([...Object.keys(result).filter(t => result[t].oncoming_pic), ...(excludeTails ?? [])]),
+      offgoingDeadlines, undefined, relaxation, true,  // swapPointFallback = true
+    );
+    allRejections.push(...fallbackRejections);
+  }
 
   // Build PIC swap point map for SIC same-swap-point preference
   const picSwapPoints = new Map<string, string>();
@@ -3843,6 +3884,7 @@ function assignRoleWithMatrix(
   offgoingDeadlines?: OncomingDeadline[],
   picSwapPoints?: Map<string, string>,
   relaxation?: boolean,
+  swapPointFallback?: boolean,  // when true, PIC tries ALL swap points (not just best)
 ): FeasibilityRejection[] {
   const needingTails = Object.keys(result).filter((tail) => !result[tail][field] && !excludeTails?.has(tail));
   if (needingTails.length === 0 || pool.length === 0) return [];
@@ -3863,6 +3905,7 @@ function assignRoleWithMatrix(
     offgoingDeadlines,
     picSwapPoints,
     relaxation,
+    swapPointFallback,
   });
 
   // Only consider viable options (where real transport exists)

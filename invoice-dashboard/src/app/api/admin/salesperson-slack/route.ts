@@ -63,7 +63,7 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ ok: true });
 }
 
-/** PATCH — toggle quotes_enabled for a salesperson */
+/** PATCH — update salesperson settings (quotes_enabled, custom_summary_hour) */
 export async function PATCH(req: NextRequest) {
   const auth = await requireAdmin(req);
   if ("error" in auth) return auth.error;
@@ -71,7 +71,7 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
 
-  let body: { salesperson_name?: string; quotes_enabled?: boolean };
+  let body: { salesperson_name?: string; quotes_enabled?: boolean; custom_summary_hour?: number | null };
   try {
     body = await req.json();
   } catch {
@@ -79,14 +79,30 @@ export async function PATCH(req: NextRequest) {
   }
 
   const name = body.salesperson_name?.trim();
-  if (!name || typeof body.quotes_enabled !== "boolean") {
-    return NextResponse.json({ error: "salesperson_name and quotes_enabled (boolean) are required" }, { status: 400 });
+  if (!name) {
+    return NextResponse.json({ error: "salesperson_name is required" }, { status: 400 });
+  }
+
+  const updates: Record<string, unknown> = {};
+  if (typeof body.quotes_enabled === "boolean") {
+    updates.quotes_enabled = body.quotes_enabled;
+  }
+  if ("custom_summary_hour" in body) {
+    const h = body.custom_summary_hour;
+    if (h !== null && (typeof h !== "number" || h < 0 || h > 23 || !Number.isInteger(h))) {
+      return NextResponse.json({ error: "custom_summary_hour must be null or integer 0-23" }, { status: 400 });
+    }
+    updates.custom_summary_hour = h;
+  }
+
+  if (Object.keys(updates).length === 0) {
+    return NextResponse.json({ error: "No valid fields to update" }, { status: 400 });
   }
 
   const supa = createServiceClient();
   const { error } = await supa
     .from("salesperson_slack_map")
-    .update({ quotes_enabled: body.quotes_enabled })
+    .update(updates)
     .eq("salesperson_name", name);
 
   if (error) {

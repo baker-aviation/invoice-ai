@@ -98,6 +98,7 @@ const UpdateSchema = z.object({
   notes: z.string().optional().nullable(),
   kow_callsign: z.string().optional().nullable(),
   jet_insight_url: z.string().optional().nullable(),
+  location_override: z.string().max(10).optional().nullable(),
 });
 
 export async function PUT(req: NextRequest) {

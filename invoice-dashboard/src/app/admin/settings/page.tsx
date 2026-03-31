@@ -13,6 +13,7 @@ type SlackMapping = {
   salesperson_name: string;
   slack_user_id: string;
   quotes_enabled: boolean;
+  custom_summary_hour: number | null;
   created_at: string;
 };
 
@@ -233,6 +234,20 @@ export default function SettingsPage() {
   useEffect(() => {
     fetchQuotes();
   }, [fetchQuotes]);
+
+  async function handleSummaryHourChange(name: string, hour: number | null) {
+    try {
+      const res = await fetch("/api/admin/salesperson-slack", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ salesperson_name: name, custom_summary_hour: hour }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await fetchSlackMappings();
+    } catch (err) {
+      setSlackError(err instanceof Error ? err.message : "Failed to update summary time");
+    }
+  }
 
   async function handleToggleQuotes(name: string, enabled: boolean) {
     try {
@@ -582,6 +597,7 @@ export default function SettingsPage() {
                 <th className="text-left px-4 py-2 font-medium text-gray-600">Salesperson</th>
                 <th className="text-left px-4 py-2 font-medium text-gray-600">Slack User ID</th>
                 <th className="text-center px-4 py-2 font-medium text-gray-600 w-24">Quotes</th>
+                <th className="text-center px-4 py-2 font-medium text-gray-600 w-36">Summary Time</th>
                 <th className="text-right px-4 py-2 font-medium text-gray-600 w-36">Actions</th>
               </tr>
             </thead>
@@ -605,6 +621,25 @@ export default function SettingsPage() {
                         }`}
                       />
                     </button>
+                  </td>
+                  <td className="px-4 py-2 text-center">
+                    <select
+                      value={m.custom_summary_hour ?? 18}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value, 10);
+                        handleSummaryHourChange(m.salesperson_name, val === 18 ? null : val);
+                      }}
+                      className="border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-slate-500"
+                    >
+                      {Array.from({ length: 24 }, (_, h) => {
+                        const ampm = h === 0 ? "12am" : h < 12 ? `${h}am` : h === 12 ? "12pm" : `${h - 12}pm`;
+                        return (
+                          <option key={h} value={h}>
+                            {ampm} ET{h === 18 ? " (default)" : ""}
+                          </option>
+                        );
+                      })}
+                    </select>
                   </td>
                   <td className="px-4 py-2 text-right">
                     <div className="flex items-center justify-end gap-1">
@@ -748,7 +783,7 @@ export default function SettingsPage() {
       <p className="text-sm text-gray-500 mb-4">
         Send each salesperson a Slack DM with their sold legs for today or tomorrow.
         Salespersons with no legs get a &quot;no sold legs&quot; message.
-        Automated cron runs at 6pm EST daily (tomorrow&apos;s legs).
+        Automated cron uses each person&apos;s Summary Time (default 6pm ET).
       </p>
 
       <div className="flex gap-3">
