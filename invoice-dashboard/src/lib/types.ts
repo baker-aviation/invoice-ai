@@ -91,6 +91,7 @@ export type FuelPriceRow = {
   document_id: string;
   airport_code: string | null;
   vendor_name: string | null;
+  fuel_vendor: string | null;
   base_price_per_gallon: number | null;
   effective_price_per_gallon: number | null;
   gallons: number | null;

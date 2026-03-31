@@ -208,7 +208,7 @@ function getFlightStatus(
 }
 
 /** Turn status label for an item */
-function getTurnLabel(item: VanFlightItem): string {
+function getTurnLabel(item: VanFlightItem, fmtDepTime?: (iso: string) => string): string {
   const schedArr = item.arrFlight.scheduled_arrival;
   const todayEt = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
   const arrDate = schedArr
@@ -216,10 +216,12 @@ function getTurnLabel(item: VanFlightItem): string {
     : null;
   const isOvernight = arrDate ? arrDate < todayEt : false;
 
+  const fmt = fmtDepTime ?? fmtUtcHM;
+
   // Detect pre-departure: service airport matches a departure, not the arrival
   const arrIcaoNorm = item.arrFlight.arrival_icao?.replace(/^K/, "") ?? "";
   if (item.airport !== arrIcaoNorm && item.nextDep?.departure_icao?.replace(/^K/, "") === item.airport) {
-    const depTime = fmtUtcHM(item.nextDep.scheduled_departure);
+    const depTime = fmt(item.nextDep.scheduled_departure);
     return `Pre-Departure - Departing at ${depTime}`;
   }
 
@@ -234,7 +236,7 @@ function getTurnLabel(item: VanFlightItem): string {
   if (isOvernight) {
     const depMs = new Date(schedDep).getTime();
     const hoursUntilDep = Math.round((depMs - Date.now()) / 3600000);
-    const depTime = fmtUtcHM(schedDep);
+    const depTime = fmt(schedDep);
     const depDate = new Date(schedDep).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
     if (depDate === todayEt && hoursUntilDep < 2) {
       return `Parked - Departing soon at ${depTime}`;
@@ -248,7 +250,7 @@ function getTurnLabel(item: VanFlightItem): string {
   const gapMs = new Date(schedDep).getTime() - new Date(schedArr).getTime();
   const hours = Math.round(gapMs / 3600000);
   if (gapMs < 2 * 3600000) {
-    const depTime = fmtUtcHM(schedDep);
+    const depTime = fmt(schedDep);
     return `Quick Turn - Aircraft leaving after ${depTime}`;
   }
   if (gapMs < 8 * 3600000) {
@@ -816,11 +818,11 @@ function StopCard({
   const status = getFlightStatus(item, fi);
   const effectiveArr = getEffectiveArrival(item, flightInfoMap);
   const countdown = effectiveArr ? fmtTimeUntil(effectiveArr) : "";
-  const arrTime = effectiveArr ? fmtUtcHM(effectiveArr) : "\u2014";
+  const arrTime = effectiveArr ? fmtLocalTime(effectiveArr, item.arrFlight.arrival_icao) : "\u2014";
   const badge = flightTypeBadge(item.arrFlight);
   const schedArrLocal = fmtLocalTime(item.arrFlight.scheduled_arrival, item.arrFlight.arrival_icao);
   const faEtaLocal = fi?.arrival_time ? fmtLocalTime(fi.arrival_time, item.arrFlight.arrival_icao) : null;
-  const turnLabel = getTurnLabel(item);
+  const turnLabel = getTurnLabel(item, (iso) => fmtLocalTime(iso, item.nextDep?.departure_icao ?? item.arrFlight.arrival_icao));
   const todayEt = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
   const arrDateEt = item.arrFlight.scheduled_arrival
     ? new Date(item.arrFlight.scheduled_arrival).toLocaleDateString("en-CA", { timeZone: "America/New_York" })
@@ -920,7 +922,7 @@ function StopCard({
         {!isOvernight ? (
           <div className="flex items-center gap-3 mb-2 flex-wrap">
             <span className="text-xs text-gray-500 dark:text-gray-400">
-              Dep {fmtUtcHM(fi?.departure_time ?? item.arrFlight.scheduled_departure)}
+              Dep {fmtLocalTime(fi?.departure_time ?? item.arrFlight.scheduled_departure, item.arrFlight.departure_icao)}
             </span>
             <span className="text-gray-300 dark:text-gray-600">&rarr;</span>
             <span className="text-xs text-gray-500 dark:text-gray-400">

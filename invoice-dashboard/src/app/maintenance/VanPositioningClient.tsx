@@ -757,7 +757,13 @@ function computeZoneItems(
   // Add overnight/parked aircraft in this zone: arrived BEFORE today, still sitting there.
   // Cross-references FlightAware so aircraft that moved show at their actual position.
   const nowIso = new Date().toISOString();
-  const todayTails = new Set(rawItems.map((i) => i.arrFlight.tail_number).filter(Boolean));
+  // Build todayTails from ALL flights arriving today (globally, not zone-specific).
+  // This prevents stale overnight entries when an aircraft flew to a different zone today.
+  const todayTails = new Set(
+    allFlights
+      .filter((f) => f.tail_number && f.scheduled_arrival && isOnVanScheduleDate(f.scheduled_arrival, date) && !(f.departure_icao && f.departure_icao === f.arrival_icao))
+      .map((f) => f.tail_number),
+  );
   const overnightArrivals = allFlights.filter((f) => {
     if (!f.arrival_icao || !f.scheduled_arrival || !f.tail_number) return false;
     if (isOnVanScheduleDate(f.scheduled_arrival, date)) return false;
@@ -1849,7 +1855,7 @@ function AircraftCompactRow({
   color, zone, date,
   mxNotes, hiddenTodayMxIds, onHideMxForToday, mxVanOverrides, onVanOverride,
   legNote, onSaveNote, onDragStart, onDragOverItem, onRemove, onSetPrimaryAirport,
-  multiVisitVans, onSwapToVan, onAlsoOnVan,
+  multiVisitVans, multiVisitVanDetails, onSwapToVan, onAlsoOnVan,
 }: {
   arrFlight: Flight;
   nextDep: Flight | null;
@@ -1880,9 +1886,10 @@ function AircraftCompactRow({
   onSaveNote: (flightId: string, tailNumber: string | null, note: string) => void;
   onDragStart: (e: React.DragEvent, flightId: string, fromVanId: number) => void;
   onDragOverItem: (vanId: number, flightId: string, insertBefore: boolean) => void;
-  onRemove: (flightId: string) => void;
+  onRemove: (flightId: string, tailNumber?: string, fromVanId?: number) => void;
   onSetPrimaryAirport?: (tail: string, airport: string) => void;
   multiVisitVans?: number[];
+  multiVisitVanDetails?: { vanId: number; airports: string[] }[];
   onSwapToVan?: (flightId: string, toVanId: number) => void;
   onAlsoOnVan?: (tail: string, toVanId: number) => void;
 }) {
@@ -1934,11 +1941,18 @@ function AircraftCompactRow({
               {mxNotes.filter((n) => isMxNoteVisibleOnVan(n, zone.vanId, mxVanOverrides, hiddenTodayMxIds, date)).length} MX
             </button>
           )}
-          {multiVisitVans && multiVisitVans.length >= 2 && (
-            <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-700" title={`Also serviced by V${multiVisitVans.filter(v => v !== zone.vanId).join(", V")}`}>
-              {"\uD83D\uDD04"} {multiVisitVans.length} stops today
-            </span>
-          )}
+          {multiVisitVanDetails && multiVisitVanDetails.length >= 2 && (() => {
+            const otherVans = multiVisitVanDetails.filter((v) => v.vanId !== zone.vanId);
+            if (otherVans.length === 0) return null;
+            return (
+              <span
+                className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-700 inline-flex items-center gap-1"
+                title={otherVans.map((v) => `V${v.vanId}: ${v.airports.join(", ")}`).join(" | ")}
+              >
+                {"\uD83D\uDE90"} {otherVans.map((v) => `V${v.vanId} (${v.airports.join(", ")})`).join(", ")}
+              </span>
+            );
+          })()}
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {/* Schedule times + ETA — overnight: show arrival day + departure as hero */}
@@ -2034,7 +2048,7 @@ function AircraftCompactRow({
             </div>
           )}
           <button
-            onClick={(e) => { e.stopPropagation(); onRemove(arrFlight.id); }}
+            onClick={(e) => { e.stopPropagation(); onRemove(arrFlight.id, arrFlight.tail_number ?? undefined, zone.vanId); }}
             className="p-1 rounded-md text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors"
             title="Remove from this van"
           >
@@ -2122,6 +2136,29 @@ function AircraftCompactRow({
                         </span>
                       )}
                       {isNextLeg && <span className="text-blue-500 font-medium">← next</span>}
+                      {/* Show "Also add to VX" chip when leg arrives in a different van zone */}
+                      {onAlsoOnVan && (() => {
+                        const arrInfo = getAirportInfo(arrIcao);
+                        if (!arrInfo) return null;
+                        let nearest: { vanId: number; name: string; distKm: number } | null = null;
+                        for (const z of FIXED_VAN_ZONES) {
+                          const d = haversineKm(arrInfo.lat, arrInfo.lon, z.lat, z.lon);
+                          if (!nearest || d < nearest.distKm) nearest = { vanId: z.vanId, name: z.name, distKm: d };
+                        }
+                        if (!nearest || nearest.vanId === zone.vanId) return null;
+                        return (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onAlsoOnVan(arrFlight.tail_number ?? "", nearest!.vanId);
+                            }}
+                            className="text-[10px] font-medium text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50 border border-indigo-200 rounded px-1.5 py-0.5 transition-colors whitespace-nowrap"
+                            title={`Also assign to V${nearest.vanId} (${nearest.name}) for ${arrIcao} arrival`}
+                          >
+                            + V{nearest.vanId}
+                          </button>
+                        );
+                      })()}
                     </div>
                   );
                 })}
@@ -2140,6 +2177,78 @@ function AircraftCompactRow({
           />
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// SplitSuggestionRow — inline suggestion for splitting a multi-stop tail across vans
+// ---------------------------------------------------------------------------
+
+function SplitSuggestionRow({
+  suggestions,
+  setOverrides,
+  setRemovals,
+}: {
+  suggestions: { flightId: string; airport: string; vanId: number; vanName: string }[];
+  setOverrides: React.Dispatch<React.SetStateAction<Map<string, number>>>;
+  setRemovals: React.Dispatch<React.SetStateAction<Set<string>>>;
+}) {
+  const [edits, setEdits] = useState<Map<string, number>>(
+    () => new Map(suggestions.map((s) => [s.flightId, s.vanId])),
+  );
+
+  const uniqueVans = new Set(Array.from(edits.values()));
+
+  return (
+    <div className="mt-1.5 px-3 py-2 rounded-lg bg-indigo-50 border border-indigo-200">
+      <div className="flex items-center justify-between mb-1.5">
+        <span className="text-xs font-semibold text-indigo-700">
+          Suggested split across {uniqueVans.size} vans
+        </span>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            setOverrides((prev) => {
+              const next = new Map(prev);
+              for (const s of suggestions) {
+                next.set(s.flightId, edits.get(s.flightId) ?? s.vanId);
+              }
+              return next;
+            });
+            setRemovals((prev) => {
+              const next = new Set(prev);
+              for (const s of suggestions) next.delete(s.flightId);
+              return next;
+            });
+          }}
+          className="text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded px-3 py-1 transition-colors"
+        >
+          Accept Split
+        </button>
+      </div>
+      <div className="space-y-1">
+        {suggestions.map((s, idx) => (
+          <div key={s.flightId} className="flex items-center gap-2 text-xs">
+            <span className="text-gray-500 font-mono w-10">Leg {idx + 1}</span>
+            <span className="font-medium text-gray-700 w-10">{s.airport}</span>
+            <span className="text-gray-400">&rarr;</span>
+            <select
+              className="text-xs border border-indigo-200 rounded px-1.5 py-0.5 bg-white text-indigo-700 font-medium"
+              value={edits.get(s.flightId) ?? s.vanId}
+              onChange={(e) => {
+                setEdits((prev) => new Map(prev).set(s.flightId, Number(e.target.value)));
+              }}
+            >
+              {FIXED_VAN_ZONES.map((z) => (
+                <option key={z.vanId} value={z.vanId}>
+                  V{z.vanId} – {z.name}{z.vanId === s.vanId ? " ★" : ""}
+                </option>
+              ))}
+            </select>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -2180,6 +2289,7 @@ function VanScheduleCard({
   onAlsoOnVan,
   fboMap,
   tailToVans,
+  tailToVanDetails,
   vanDiff,
   showComparison,
   publishedItems,
@@ -2213,7 +2323,7 @@ function VanScheduleCard({
   onDragOver: (e: React.DragEvent) => void;
   onDrop: (e: React.DragEvent, toVanId: number) => void;
   onDragLeave: (e: React.DragEvent) => void;
-  onRemove: (flightId: string) => void;  // delete aircraft from this van
+  onRemove: (flightId: string, tailNumber?: string, fromVanId?: number) => void;
   onSetPrimaryAirport?: (tail: string, airport: string) => void;
   onPublishVan?: (vanId: number) => Promise<void>;
   onAddToVan?: (flightId: string, vanId: number) => void;
@@ -2221,6 +2331,7 @@ function VanScheduleCard({
   onAlsoOnVan?: (tail: string, toVanId: number) => void;
   fboMap?: Record<string, string>;
   tailToVans?: Map<string, number[]>;
+  tailToVanDetails?: Map<string, { vanId: number; airports: string[] }[]>;
   vanDiff?: { added: number; removed: number; orderChanged: boolean; mxChanged: boolean } | null;
   showComparison?: boolean;
   publishedItems?: { flightId: string; tail: string; airport: string }[];
@@ -2593,6 +2704,7 @@ function VanScheduleCard({
                     onRemove={onRemove}
                     onSetPrimaryAirport={onSetPrimaryAirport}
                     multiVisitVans={tailToVans?.get(arrFlight.tail_number ?? "")}
+                    multiVisitVanDetails={tailToVanDetails?.get(arrFlight.tail_number ?? "")}
                     onSwapToVan={onSwapToVan}
                     onAlsoOnVan={onAlsoOnVan}
                   />
@@ -2713,6 +2825,9 @@ function ScheduleTab({
   const [unscheduledOpen, setUnscheduledOpen] = useState(false);
   const [wontSeeOpen, setWontSeeOpen] = useState(false);
   const unassignedDragTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const allFlightsRef = useRef(allFlights);
+  allFlightsRef.current = allFlights;
+  const baseItemsByVanRef = useRef<Map<number, VanFlightItem[]>>(new Map());
   const unscheduledDragTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Manual overrides: flightId → target vanId (moves) + removed flight IDs
@@ -3100,6 +3215,7 @@ function ScheduleTab({
     }
     return map;
   }, [allFlights, date, liveVanPositions, mxNotesByTail, flightInfoMap, coveredVanIds, coverMap]);
+  baseItemsByVanRef.current = baseItemsByVan;
 
   // Fallback: restore overrides from published assignments if localStorage was empty
   const overridesRestoredRef = useRef<string>("");
@@ -3420,6 +3536,26 @@ function ScheduleTab({
         if (!tail) continue;
         const arr = map.get(tail) ?? [];
         if (!arr.includes(vanId)) arr.push(vanId);
+        map.set(tail, arr);
+      }
+    }
+    return map;
+  }, [finalItemsByVan]);
+
+  // Build tail → [{vanId, airports[]}] for enhanced multi-van badge
+  const tailToVanDetails = useMemo(() => {
+    const map = new Map<string, { vanId: number; airports: string[] }[]>();
+    for (const [vanId, items] of finalItemsByVan) {
+      for (const item of items) {
+        const tail = item.arrFlight.tail_number;
+        if (!tail) continue;
+        const arr = map.get(tail) ?? [];
+        const existing = arr.find((v) => v.vanId === vanId);
+        if (existing) {
+          if (!existing.airports.includes(item.airport)) existing.airports.push(item.airport);
+        } else {
+          arr.push({ vanId, airports: [item.airport] });
+        }
         map.set(tail, arr);
       }
     }
@@ -3750,7 +3886,7 @@ function ScheduleTab({
     } catch { /* ignore bad data */ }
   }, [finalItemsByVan]);
 
-  const handleRemove = useCallback((flightId: string) => {
+  const handleRemove = useCallback((flightId: string, tailNumber?: string, fromVanId?: number) => {
     // Handle unscheduled aircraft removal
     if (flightId.startsWith("unsched_")) {
       const tail = flightId.replace("unsched_", "");
@@ -3762,17 +3898,52 @@ function ScheduleTab({
       });
       return;
     }
-    // Remove any move override for this flight
+
+    // When tail + vanId are known, do a comprehensive removal:
+    // 1. Delete ALL overrides for this tail pointing to this van
+    // 2. Delete unscheduled override if it points to this van
+    // 3. Add all base + displayed flight IDs to removals
+    // This handles airport-override swaps, MX-note duplicates, and dual placements.
+    if (tailNumber && fromVanId !== undefined) {
+      // Clean up unscheduled overrides for this tail on this van
+      setUnscheduledOverrides((prev) => {
+        if (prev.get(tailNumber) !== fromVanId) return prev;
+        const next = new Map(prev);
+        next.delete(tailNumber);
+        return next;
+      });
+    }
+
+    // Remove overrides: the displayed flight + any sibling flights for this tail → this van
     setOverrides((prev) => {
-      if (!prev.has(flightId)) return prev;
       const next = new Map(prev);
       next.delete(flightId);
+      if (tailNumber && fromVanId !== undefined) {
+        const flights = allFlightsRef.current;
+        for (const [fid, vid] of prev) {
+          if (vid !== fromVanId || fid === flightId) continue;
+          const f = flights.find((fl) => fl.id === fid);
+          if (f?.tail_number === tailNumber) next.delete(fid);
+        }
+      }
       return next;
     });
-    // Add to removals
+
+    // Add to removals: displayed flight + base item flight IDs for this tail on this van
     setRemovals((prev) => {
       const next = new Set(prev);
       next.add(flightId);
+      if (tailNumber && fromVanId !== undefined) {
+        // Add base item flight IDs (airport overrides can swap the displayed arrFlight)
+        const baseItems = baseItemsByVanRef.current.get(fromVanId) ?? [];
+        for (const item of baseItems) {
+          if (item.arrFlight.tail_number === tailNumber) next.add(item.arrFlight.id);
+        }
+        // Also add ALL flight IDs for this tail today so no path can re-add it to this van
+        for (const f of allFlightsRef.current) {
+          if (f.tail_number === tailNumber) next.add(f.id);
+        }
+      }
       return next;
     });
   }, []);
@@ -4792,6 +4963,25 @@ function ScheduleTab({
                   return best;
                 };
 
+                // Compute split suggestion for multi-zone tails
+                const splitSuggestion: { flightId: string; airport: string; vanId: number; vanName: string }[] | null = (() => {
+                  if (items.length < 2) return null;
+                  const sugg: { flightId: string; airport: string; vanId: number; vanName: string }[] = [];
+                  const vanIdSet = new Set<number>();
+                  for (const item of items) {
+                    const nearest = findNearestVan(item.arrFlight.arrival_icao);
+                    if (!nearest) return null;
+                    sugg.push({
+                      flightId: item.arrFlight.id,
+                      airport: item.arrFlight.arrival_icao?.replace(/^K/, "") ?? "?",
+                      vanId: nearest.vanId,
+                      vanName: nearest.name,
+                    });
+                    vanIdSet.add(nearest.vanId);
+                  }
+                  return vanIdSet.size >= 2 ? sugg : null;
+                })();
+
                 return (
                   <div key={tailKey} className="px-4 py-2">
                     {/* Header: tail number + badges + Won't See */}
@@ -4919,6 +5109,13 @@ function ScheduleTab({
                           </div>
                         );
                       })}
+                      {splitSuggestion && (
+                        <SplitSuggestionRow
+                          suggestions={splitSuggestion}
+                          setOverrides={setOverrides}
+                          setRemovals={setRemovals}
+                        />
+                      )}
                       {nextDep && (
                         <div className="flex items-center gap-2 text-xs py-px">
                           <span className={nextIsRepo ? "text-purple-600 font-medium" : "text-blue-600 font-medium"}>
@@ -5288,6 +5485,7 @@ function ScheduleTab({
               }}
               fboMap={fboMap}
               tailToVans={tailToVans}
+              tailToVanDetails={tailToVanDetails}
               coveringZoneNames={zoneCovers.filter(([c]) => c === zone.vanId).map(([, cov]) =>
                 FIXED_VAN_ZONES.find((z) => z.vanId === cov)?.name ?? `V${cov}`)}
               coveredByLabel={(() => {

@@ -26,10 +26,13 @@ import type { FlightOffer } from "./amadeus";
 import type { PilotRoute } from "./pilotRoutes";
 import {
   MAX_DUTY_HOURS, DUTY_ON_BEFORE_COMMERCIAL, DEPLANE_BUFFER,
-  FBO_ARRIVAL_BUFFER, FBO_ARRIVAL_BUFFER_PREFERRED, DUTY_OFF_AFTER_LAST_LEG,
+  FBO_ARRIVAL_BUFFER, FBO_ARRIVAL_BUFFER_PREFERRED, RELAXED_FBO_ARRIVAL_BUFFER,
+  DUTY_OFF_AFTER_LAST_LEG,
   INTERNATIONAL_DUTY_OFF, AIRPORT_SECURITY_BUFFER, RENTAL_RETURN_BUFFER,
   EARLIEST_DUTY_ON_HOUR, UBER_MAX_MINUTES, RENTAL_MAX_MINUTES,
+  RELAXED_RENTAL_MAX_MINUTES,
   BUDGET_CARRIERS, PREFERRED_HUBS, BACKUP_FLIGHT_MIN_GAP, MAX_CONNECTIONS,
+  RELAXED_MAX_CONNECTIONS,
   EARLY_LATE_BONUS_PIC, EARLY_LATE_BONUS_SIC,
   RENTAL_HANDOFF_FUEL_COST, STAGGER_MIN_GAP_HOURS, HANDOFF_BUFFER_MINUTES,
   TEB_PENALTY_AIRPORTS, TEB_OFFGOING_PENALTY, TEB_ONCOMING_PENALTY,
@@ -210,6 +213,36 @@ export type SwapPlanResult = {
   two_pass?: TwoPassStats;
   /** Per-tail swap point scoring breakdown (for debug/transparency) */
   swap_point_debug?: Record<string, SwapPointScore[]>;
+  /** Missing flight cache pairs that could solve unsolved crew (for auto-seeding) */
+  missing_flight_pairs?: { origin: string; destination: string; crew: string; tail: string }[];
+  /** Diagnostic breakdown of WHY tails/crew are unsolved */
+  diagnostics?: {
+    unsolved_tails: {
+      tail: string;
+      role: "PIC" | "SIC";
+      reason: string;
+      type_mismatch_count: number;
+      no_route_count: number;
+      intl_restricted_count: number;
+      route_score_zero_count: number;
+      total_crew_checked: number;
+    }[];
+    unsolved_crew: {
+      name: string;
+      role: "PIC" | "SIC";
+      tails_checked: number;
+      type_mismatch_tails: string[];
+      intl_restricted_tails: string[];
+      no_route_tails: string[];
+      route_score_zero_tails: string[];
+    }[];
+    type_mismatch_blockers: {
+      tail: string;
+      role: "PIC" | "SIC";
+      tail_type: string;
+      crew_types_available: string[];
+    }[];
+  };
 };
 
 export type TwoPassStats = {
@@ -219,6 +252,9 @@ export type TwoPassStats = {
   pass2_solved: number;
   pass2_volunteers_used: { name: string; role: "PIC" | "SIC"; tail: string; type: "early" | "late" }[];
   pass2_bonus_cost: number;
+  pass3_solved: number;
+  pass3_standby_used: { name: string; role: "PIC" | "SIC"; tail: string }[];
+  pass3_relaxation: boolean;
   total_cost: number;
 };
 
@@ -964,20 +1000,24 @@ function buildCandidates(
           const needAtAirport = new Date(flightDep.getTime() - ms(buffer));
           const needLeaveAircraft = new Date(needAtAirport.getTime() - ms(driveToFboMin));
 
-          if (needLeaveAircraft.getTime() < releaseTime.getTime()) {
-            if (_debugCrew) console.log(`[CandidateDebug] ${task.name}: REJECTED ${flightNum} — need leave ${needLeaveAircraft.toISOString()} < release ${releaseTime.toISOString()}`);
+          // Allow 30min grace — crew can rush to airport if flight is tight.
+          // Hard reject only if they'd need to leave >30min before release.
+          const RELEASE_GRACE_MS = ms(30);
+          if (needLeaveAircraft.getTime() < releaseTime.getTime() - RELEASE_GRACE_MS) {
+            if (_debugCrew) console.log(`[CandidateDebug] ${task.name}: REJECTED ${flightNum} — need leave ${needLeaveAircraft.toISOString()} < release ${releaseTime.toISOString()} - 30min grace`);
             continue;
           }
 
-          // Check midnight deadline
+          // Check midnight deadline — allow 1 AM grace (crew can arrive slightly late)
           const homeArr = new Date(flightArr.getTime() + ms(DEPLANE_BUFFER));
-          if (homeArr.getTime() > homeMidnight.getTime()) {
+          const midnightGrace = new Date(homeMidnight.getTime() + ms(60)); // 1 AM
+          if (homeArr.getTime() > midnightGrace.getTime()) {
             // Skill-Bridge SIC gets Thursday midnight
             if (task.crewMember?.is_skillbridge && task.role === "SIC") {
               const thurMidnight = new Date(homeMidnight.getTime() + 24 * 60 * 60_000);
               if (homeArr.getTime() > thurMidnight.getTime()) continue;
             } else {
-              continue; // Won't make midnight
+              continue; // Won't make 1 AM
             }
           }
           fboArr = null;
@@ -1020,6 +1060,170 @@ function buildCandidates(
       } // end for homeFlight
     } // end for commApt
   } // end for homeApt
+
+  // ── Drive-to-hub for offgoing crew ────────────────────────────────────────
+  // When offgoing crew finish at a small airport late in the evening (e.g. CHS
+  // at 7:48 PM), there may be no same-day flights home from nearby airports.
+  // In that case, they can rent a car and drive 2-4 hours to a major hub (ATL,
+  // CLT, ORD, DFW, etc.) that has later flights.
+  const hasCommercialCandidates = candidates.some(c => c.type === "commercial");
+  if (task.direction === "offgoing" && !hasCommercialCandidates && commercialFlights) {
+    const MAX_DRIVE_TO_HUB_MIN = 240; // 4 hours max drive
+
+    // Find all commercial airports within 250 miles of swap point
+    const hubAirports = findNearbyCommercialAirports(swapIcao, 250);
+    // Filter out airports already checked in the regular search
+    const commAirportSet = new Set(commAirports.map(c => c.toUpperCase()));
+    const newHubs = hubAirports.filter(h => !commAirportSet.has(h.icao.toUpperCase()));
+
+    if (_debugCrew) {
+      console.log(`[CandidateDebug] ${task.name}: DRIVE-TO-HUB — no commercial candidates found, checking ${newHubs.length} hub airports within 250mi (excluded ${hubAirports.length - newHubs.length} already-checked)`);
+    }
+
+    // Build search dates for offgoing (same logic as regular search)
+    const hubDatesToSearch = [swapDate];
+    const hubDayAfter = new Date(swapDate);
+    hubDayAfter.setDate(hubDayAfter.getDate() + 1);
+    hubDatesToSearch.push(hubDayAfter.toISOString().slice(0, 10));
+
+    for (const hub of newHubs) {
+      const hubIcao = hub.icao;
+      const hubIata = toIata(hubIcao);
+
+      // Calculate drive time from swap point to this hub
+      const driveToHub = estimateDriveTime(swapIcao, hubIcao);
+      if (!driveToHub || driveToHub.estimated_drive_minutes > MAX_DRIVE_TO_HUB_MIN) continue;
+
+      const driveMin = driveToHub.estimated_drive_minutes;
+      const driveCost = 80 + Math.round(driveToHub.estimated_drive_miles * 0.50); // rental car cost
+
+      if (_debugCrew) {
+        console.log(`[CandidateDebug] ${task.name}: DRIVE-TO-HUB checking ${hubIata} (${Math.round(hub.distanceMiles)}mi, ~${Math.round(driveMin)}min drive)`);
+      }
+
+      for (const homeApt of task.homeAirports) {
+        const homeIata = toIata(homeApt);
+        const homeIcao = toIcao(homeApt);
+
+        // Expand home to nearby commercial airports (same as regular search)
+        const hubHomeFlightAirports: { iata: string; driveCost: number }[] =
+          [{ iata: homeIata, driveCost: 0 }];
+        if (!isCommercialAirport(homeIcao)) {
+          const nearbyComm = findAllCommercialAirports(homeIcao, aliases);
+          for (const nc of nearbyComm) {
+            const ncIata = toIata(nc);
+            if (ncIata === homeIata) continue;
+            const d = estimateDriveTime(homeIcao, toIcao(nc));
+            if (d && d.estimated_drive_minutes <= RENTAL_MAX_MINUTES) {
+              const cost = d.estimated_drive_minutes <= UBER_MAX_MINUTES
+                ? Math.max(25, Math.round(d.estimated_drive_miles * 2.0))
+                : 80 + Math.round(d.estimated_drive_miles * 0.50);
+              hubHomeFlightAirports.push({ iata: ncIata, driveCost: cost });
+            }
+          }
+        }
+
+        for (const homeFlight of hubHomeFlightAirports) {
+          const originIata = hubIata;
+          const destIata = homeFlight.iata;
+          const homeGroundCost = homeFlight.driveCost;
+
+          for (const searchDate of hubDatesToSearch) {
+            const offers = lookupFlights(commercialFlights, originIata, destIata, searchDate);
+            if (_debugCrew && offers.length > 0) {
+              console.log(`[CandidateDebug] ${task.name}: DRIVE-TO-HUB ${originIata}→${destIata} found ${offers.length} offers for ${searchDate}`);
+            }
+
+            for (const offer of offers) {
+              const segs = offer.itineraries?.[0]?.segments ?? [];
+              if (segs.length === 0) continue;
+              if (segs.length - 1 > MAX_CONNECTIONS) continue;
+
+              const firstSeg = segs[0];
+              const lastSeg = segs[segs.length - 1];
+
+              const flightDep = parseFlightTime(firstSeg.departure.at, firstSeg.departure.iataCode);
+              const flightArr = parseFlightTime(lastSeg.arrival.at, lastSeg.arrival.iataCode);
+              const totalFlightDuration = segs.reduce((s, sg) => s + parseDuration(sg.duration), 0);
+              const flightNum = segs.map((s) => `${s.carrierCode}${s.number}`).join("/");
+              const isDirect = segs.length === 1;
+              const isBudget = segs.some((s) => BUDGET_CARRIERS.includes(s.carrierCode));
+              const isHub = segs.length > 1 && segs.some((s) =>
+                PREFERRED_HUBS.includes(s.arrival.iataCode) || PREFERRED_HUBS.includes(s.departure.iataCode),
+              );
+
+              const flightCost = parseFloat(offer.price.total);
+
+              // Offgoing timing: crew must be released, drive to hub, clear security, then fly
+              let releaseTime = task.swapPoint.time;
+              if (task.swapPoint.position === "before_live" || task.swapPoint.position === "idle") {
+                const tz = getAirportTimezone(task.swapPoint.icao) ?? "America/New_York";
+                releaseTime = localTimeToUtc(swapDate, 5, 0, tz);
+              }
+
+              // Need: release → drive to hub → security buffer → flight departs
+              const needAtHub = new Date(flightDep.getTime() - ms(RENTAL_RETURN_BUFFER));
+              const needLeaveFbo = new Date(needAtHub.getTime() - ms(driveMin));
+
+              if (needLeaveFbo.getTime() < releaseTime.getTime()) {
+                if (_debugCrew) console.log(`[CandidateDebug] ${task.name}: DRIVE-TO-HUB REJECTED ${flightNum} — need leave FBO ${needLeaveFbo.toISOString()} < release ${releaseTime.toISOString()}`);
+                continue;
+              }
+
+              // Check midnight deadline at home
+              const homeArr = new Date(flightArr.getTime() + ms(DEPLANE_BUFFER));
+              const homeHomeMidnight = task.homeAirports[0]
+                ? midnightUtc(toIcao(task.homeAirports[0]), swapDate)
+                : homeMidnight;
+              if (homeArr.getTime() > homeHomeMidnight.getTime()) {
+                // SkillBridge SIC gets Thursday midnight
+                if (task.crewMember?.is_skillbridge && task.role === "SIC") {
+                  const thurMidnight = new Date(homeHomeMidnight.getTime() + 24 * 60 * 60_000);
+                  if (homeArr.getTime() > thurMidnight.getTime()) continue;
+                } else {
+                  continue; // Won't make midnight
+                }
+              }
+
+              const totalCost = driveCost + flightCost + homeGroundCost;
+              const totalDuration = driveMin + totalFlightDuration;
+              const displayFlightNum = `RENTAL→${hubIata} + ${flightNum}`;
+
+              const candidate: TransportCandidate = {
+                type: "rental_car",
+                flightNumber: displayFlightNum,
+                depTime: flightDep,
+                arrTime: flightArr,
+                from: toIata(swapIcao),
+                to: lastSeg.arrival.iataCode,
+                cost: totalCost,
+                durationMin: totalDuration,
+                isDirect,
+                isBudgetCarrier: isBudget,
+                hubConnection: isHub,
+                connectionCount: segs.length - 1,
+                offer,
+                drive: driveToHub,
+                fboArrivalTime: null,
+                fboLeaveTime: needLeaveFbo,
+                dutyOnTime: null,
+                score: 0,
+                backups: [],
+              };
+
+              if (_debugCrew) console.log(`[CandidateDebug] ${task.name}: DRIVE-TO-HUB ACCEPTED ${displayFlightNum} dep=${flightDep.toISOString().slice(11,16)} homeArr=${homeArr.toISOString().slice(11,16)} cost=$${Math.round(totalCost)} (rental=$${driveCost} + flight=$${Math.round(flightCost)})`);
+              candidates.push(candidate);
+            }
+          }
+        }
+      }
+    }
+
+    if (_debugCrew) {
+      const hubCandidateCount = candidates.filter(c => c.flightNumber?.startsWith("RENTAL→")).length;
+      console.log(`[CandidateDebug] ${task.name}: DRIVE-TO-HUB found ${hubCandidateCount} total drive-to-hub candidates`);
+    }
+  }
 
   if (_debugCrew) {
     console.log(`[CandidateDebug] ${task.name}: TOTAL ${candidates.filter(c => c.type !== "none").length} viable candidates from ${commAirports.length} commercial airports`);
@@ -2423,6 +2627,20 @@ type FeasibilityEntry = {
   minDriveMiles: number;  // shortest home→swap distance (for fallback tiebreak)
 };
 
+/** Tracks why a specific crew member was rejected for a specific tail */
+type RejectionReason = "type_mismatch" | "intl_restricted" | "no_route" | "route_score_zero";
+
+type FeasibilityRejection = {
+  crewName: string;
+  tail: string;
+  reason: RejectionReason;
+};
+
+type FeasibilityMatrixResult = {
+  matrix: FeasibilityEntry[];
+  rejections: FeasibilityRejection[];
+};
+
 /** Build a feasibility matrix: for every crew × tail, determine which assignments
  *  are viable. When preComputedRoutes is provided, uses cached route data from
  *  pilot_routes table (instant). Otherwise falls back to runtime evaluation
@@ -2441,9 +2659,12 @@ function buildFeasibilityMatrix(params: {
   preComputedOffgoing?: Map<string, PilotRoute[]>;  // crewMemberId → offgoing routes
   offgoingDeadlines?: OncomingDeadline[];  // offgoing departure deadlines per tail+role
   picSwapPoints?: Map<string, string>;  // tail → PIC swap ICAO (for SIC same-swap-point preference)
-}): FeasibilityEntry[] {
-  const { pool, role, tails, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, preComputedRoutes, preComputedOffgoing, offgoingDeadlines, picSwapPoints } = params;
+  relaxation?: boolean;  // when true, use relaxed constraints (expanded drive limits, reduced buffers)
+}): FeasibilityMatrixResult {
+  const { pool, role, tails, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, preComputedRoutes, preComputedOffgoing, offgoingDeadlines, picSwapPoints, relaxation } = params;
+  const effectiveRentalMax = relaxation ? RELAXED_RENTAL_MAX_MINUTES : RENTAL_MAX_MINUTES;
   const matrix: FeasibilityEntry[] = [];
+  const rejections: FeasibilityRejection[] = [];
 
   // Cache buildCandidates results by homeAirports+swapPointIcao.
   // Many crew share the same home airport, so candidates are identical — skip recomputing.
@@ -2552,6 +2773,7 @@ function buildFeasibilityMatrix(params: {
     for (const poolEntry of pool) {
       if (!isQualified(poolEntry.aircraft_type, acType)) {
         matrix.push({ crewName: poolEntry.name, tail, viable: false, bestScore: 0, bestCost: 999, offgoingCost: 0, totalCost: 999, bestType: "none", candidateCount: 0, rank: 999, bestSwapIcao: "", minDriveMiles: 9999 });
+        rejections.push({ crewName: poolEntry.name, tail, reason: "type_mismatch" });
         continue;
       }
 
@@ -2573,6 +2795,7 @@ function buildFeasibilityMatrix(params: {
         });
         if (hasIntlLeg) {
           matrix.push({ crewName: poolEntry.name, tail, viable: false, bestScore: 0, bestCost: 999, offgoingCost: 0, totalCost: 999, bestType: "none", candidateCount: 0, rank: 999, bestSwapIcao: "", minDriveMiles: 9999 });
+          rejections.push({ crewName: poolEntry.name, tail, reason: "intl_restricted" });
           continue;
         }
       }
@@ -2652,6 +2875,15 @@ function buildFeasibilityMatrix(params: {
           }
         }
 
+        if (!viable) {
+          // Track why: no relevant routes to this tail's swap points, or all routes scored 0
+          rejections.push({
+            crewName: poolEntry.name,
+            tail,
+            reason: relevantRoutes.length === 0 ? "no_route" : "route_score_zero",
+          });
+        }
+
         matrix.push({
           crewName: poolEntry.name,
           tail,
@@ -2683,7 +2915,7 @@ function buildFeasibilityMatrix(params: {
       for (const home of homeAirports) {
         for (const sp of swapPointsToTry) {
           const drive = estimateDriveTime(toIcao(home), sp.icao);
-          if (drive && drive.estimated_drive_minutes <= RENTAL_MAX_MINUTES) {
+          if (drive && drive.estimated_drive_minutes <= effectiveRentalMax) {
             hasAnyRoute = true;
             break;
           }
@@ -2721,6 +2953,7 @@ function buildFeasibilityMatrix(params: {
           bestType: "none", candidateCount: 0, rank: 100,
           bestSwapIcao: swapPoints[0]?.icao ?? "", minDriveMiles: 9999,
         });
+        rejections.push({ crewName: poolEntry.name, tail, reason: "no_route" });
         continue;
       }
 
@@ -2846,6 +3079,11 @@ function buildFeasibilityMatrix(params: {
         }
       }
 
+      if (!viable) {
+        // Had routes but all candidates scored poorly (runtime path)
+        rejections.push({ crewName: poolEntry.name, tail, reason: "route_score_zero" });
+      }
+
       matrix.push({
         crewName: poolEntry.name,
         tail,
@@ -2895,7 +3133,27 @@ function buildFeasibilityMatrix(params: {
     }
   }
 
-  return matrix;
+  // ── Diagnostic summary: tails with 0 viable crew ────────────────────────
+  const allTailsInMatrix = new Set(matrix.map((m) => m.tail));
+  for (const tail of allTailsInMatrix) {
+    const tailViable = viableByTail.get(tail);
+    if (!tailViable || tailViable.length === 0) {
+      const tailRejections = rejections.filter((r) => r.tail === tail);
+      const typeMismatch = tailRejections.filter((r) => r.reason === "type_mismatch").length;
+      const intlRestricted = tailRejections.filter((r) => r.reason === "intl_restricted").length;
+      const noRoute = tailRejections.filter((r) => r.reason === "no_route").length;
+      const routeScoreZero = tailRejections.filter((r) => r.reason === "route_score_zero").length;
+      const totalChecked = matrix.filter((m) => m.tail === tail).length;
+      console.log(
+        `[FeasMatrix] ZERO VIABLE ${role} for ${tail}: ` +
+        `${totalChecked} crew checked — ` +
+        `${typeMismatch} type_mismatch, ${intlRestricted} intl_restricted, ` +
+        `${noRoute} no_route, ${routeScoreZero} route_score_zero`
+      );
+    }
+  }
+
+  return { matrix, rejections };
 }
 
 /**
@@ -2916,14 +3174,17 @@ export function assignOncomingCrew(params: {
   preComputedOffgoing?: Map<string, PilotRoute[]>;
   excludeTails?: Set<string>;
   offgoingDeadlines?: OncomingDeadline[];
+  relaxation?: boolean;
 }): {
   assignments: Record<string, SwapAssignment>;
   standby: { pic: string[]; sic: string[] };
   details: { name: string; tail: string; cost: number; reason: string }[];
+  rejections: FeasibilityRejection[];
 } {
-  const { swapAssignments, oncomingPool, crewRoster, flights, swapDate, aliases = [], commercialFlights, preComputedRoutes, preComputedOffgoing, excludeTails, offgoingDeadlines } = params;
+  const { swapAssignments, oncomingPool, crewRoster, flights, swapDate, aliases = [], commercialFlights, preComputedRoutes, preComputedOffgoing, excludeTails, offgoingDeadlines, relaxation } = params;
   const result: Record<string, SwapAssignment> = JSON.parse(JSON.stringify(swapAssignments));
   const details: { name: string; tail: string; cost: number; reason: string }[] = [];
+  const allRejections: FeasibilityRejection[] = [];
 
   // Group flights by tail (needed for extractSwapPoints)
   const byTail = new Map<string, FlightLeg[]>();
@@ -2964,7 +3225,8 @@ export function assignOncomingCrew(params: {
   }
 
   // Assign PICs then SICs using feasibility matrix
-  assignRoleWithMatrix("oncoming_pic", oncomingPool.pic, "PIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes, preComputedOffgoing, excludeTails, offgoingDeadlines);
+  const picRejections = assignRoleWithMatrix("oncoming_pic", oncomingPool.pic, "PIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes, preComputedOffgoing, excludeTails, offgoingDeadlines, undefined, relaxation);
+  allRejections.push(...picRejections);
 
   // Build PIC swap point map for SIC same-swap-point preference
   const picSwapPoints = new Map<string, string>();
@@ -2972,7 +3234,8 @@ export function assignOncomingCrew(params: {
     if (sa.oncoming_pic_swap_icao) picSwapPoints.set(tail, sa.oncoming_pic_swap_icao);
   }
 
-  assignRoleWithMatrix("oncoming_sic", oncomingPool.sic, "SIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes, preComputedOffgoing, excludeTails, offgoingDeadlines, picSwapPoints);
+  const sicRejections = assignRoleWithMatrix("oncoming_sic", oncomingPool.sic, "SIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes, preComputedOffgoing, excludeTails, offgoingDeadlines, picSwapPoints, relaxation);
+  allRejections.push(...sicRejections);
 
   // Remaining pool → standby
   // SkillBridge SICs go first for forced standby, then sort by standby_count (lowest first)
@@ -3003,7 +3266,7 @@ export function assignOncomingCrew(params: {
     sic: unassignedSics.map((p) => p.name),
   };
 
-  return { assignments: result, standby, details };
+  return { assignments: result, standby, details, rejections: allRejections };
 }
 
 /**
@@ -3080,6 +3343,9 @@ export function twoPassAssignAndOptimize(params: {
       pass2_solved: 0,
       pass2_volunteers_used: [],
       pass2_bonus_cost: 0,
+      pass3_solved: 0,
+      pass3_standby_used: [],
+      pass3_relaxation: false,
       total_cost: pass1Cost,
     };
     return {
@@ -3174,15 +3440,319 @@ export function twoPassAssignAndOptimize(params: {
     return sum + EARLY_LATE_BONUS_SIC;
   }, 0);
 
-  // Run final transport optimizer with merged assignments
-  const finalResult = buildSwapPlan({
+  // Run transport optimizer after pass 2 merges
+  const pass2Result = buildSwapPlan({
     flights, crewRoster, aliases, swapDate, commercialFlights,
     swapAssignments: mergedAssignments,
     oncomingPool: fullPool,
     strategy: "offgoing_first",
   });
 
-  const pass2NewlySolved = pass1Unsolved - finalResult.unsolved_count;
+  const pass2NewlySolved = pass1Unsolved - pass2Result.unsolved_count;
+
+  // Merge standby from both passes
+  let mergedStandby = {
+    pic: pass2Assignment.standby.pic,
+    sic: pass2Assignment.standby.sic,
+  };
+
+  console.log(`[Two-Pass] Pass 2: ${pass2NewlySolved} additional tails solved, ${volunteersUsed.length} volunteers used, $${bonusCost} bonus cost`);
+
+  // ── Pass 3: Standby backfill with relaxed constraints ──────────────────
+  // Standby crew are currently wasted on unsolved tails. Use them with
+  // progressively relaxed constraints (expanded drive limits, reduced buffers).
+  const pass2UnsolvedRows = pass2Result.rows.filter((r) => r.travel_type === "none");
+  const pass2UnsolvedTails = new Set(pass2UnsolvedRows.map((r) => r.tail_number));
+  let pass3Solved = 0;
+  const pass3StandbyUsed: { name: string; role: "PIC" | "SIC"; tail: string }[] = [];
+  let finalAssignments = mergedAssignments;
+  let finalResult = pass2Result;
+  let allDetails = [...pass1Assignment.details, ...pass2Assignment.details];
+  let pass3Rejections: FeasibilityRejection[] = [];
+
+  if (pass2UnsolvedTails.size > 0 && (mergedStandby.pic.length > 0 || mergedStandby.sic.length > 0)) {
+    console.log(`[Pass 3] ${pass2UnsolvedTails.size} tails still unsolved ([${[...pass2UnsolvedTails].join(", ")}]). Trying ${mergedStandby.pic.length} standby PICs + ${mergedStandby.sic.length} standby SICs with relaxed constraints...`);
+
+    // Build standby pool entries from standby names
+    const standbyPicPool: OncomingPoolEntry[] = mergedStandby.pic.map((name) => {
+      const crew = crewRoster.find((c) => c.name === name);
+      return {
+        name,
+        aircraft_type: crew?.aircraft_types[0] ?? "unknown",
+        home_airports: crew?.home_airports ?? [],
+        is_skillbridge: crew?.is_skillbridge ?? false,
+      } as OncomingPoolEntry;
+    });
+    const standbySicPool: OncomingPoolEntry[] = mergedStandby.sic.map((name) => {
+      const crew = crewRoster.find((c) => c.name === name);
+      return {
+        name,
+        aircraft_type: crew?.aircraft_types[0] ?? "unknown",
+        home_airports: crew?.home_airports ?? [],
+        is_skillbridge: crew?.is_skillbridge ?? false,
+      } as OncomingPoolEntry;
+    });
+
+    // Combine standby + full pool (already assigned crew won't match needing tails)
+    const pass3Pool: OncomingPool = {
+      pic: [...standbyPicPool, ...fullPool.pic],
+      sic: [...standbySicPool, ...fullPool.sic],
+    };
+
+    // Build pass 3 assignments — start from pass 2 but clear unsolved oncoming slots
+    const pass3Assignments: Record<string, SwapAssignment> = JSON.parse(JSON.stringify(mergedAssignments));
+    for (const tail of pass2UnsolvedTails) {
+      if (pass3Assignments[tail]) {
+        const unsolvedPic = pass2UnsolvedRows.some((r) => r.tail_number === tail && r.direction === "oncoming" && r.role === "PIC");
+        const unsolvedSic = pass2UnsolvedRows.some((r) => r.tail_number === tail && r.direction === "oncoming" && r.role === "SIC");
+        if (unsolvedPic) pass3Assignments[tail].oncoming_pic = null;
+        if (unsolvedSic) pass3Assignments[tail].oncoming_sic = null;
+      }
+    }
+
+    // Run assignment with RELAXED constraints (expanded drive limits, reduced buffers)
+    const pass3Assignment = assignOncomingCrew({
+      swapAssignments: pass3Assignments,
+      oncomingPool: pass3Pool,
+      crewRoster,
+      flights,
+      swapDate,
+      aliases,
+      commercialFlights,
+      preComputedRoutes,
+      preComputedOffgoing,
+      excludeTails,
+      offgoingDeadlines,
+      relaxation: true,  // ← use relaxed constraints
+    });
+
+    // Merge pass 3 results: only update unsolved tails
+    const pass3Merged = { ...mergedAssignments };
+    for (const tail of pass2UnsolvedTails) {
+      if (pass3Assignment.assignments[tail]) {
+        const p3 = pass3Assignment.assignments[tail];
+        const prev = pass3Merged[tail];
+
+        if (p3.oncoming_pic && !prev.oncoming_pic) {
+          pass3Merged[tail] = { ...prev, oncoming_pic: p3.oncoming_pic, oncoming_pic_swap_icao: p3.oncoming_pic_swap_icao };
+          pass3StandbyUsed.push({ name: p3.oncoming_pic, role: "PIC", tail });
+        }
+        if (p3.oncoming_sic && !pass3Merged[tail].oncoming_sic) {
+          pass3Merged[tail] = { ...pass3Merged[tail], oncoming_sic: p3.oncoming_sic, oncoming_sic_swap_icao: p3.oncoming_sic_swap_icao };
+          pass3StandbyUsed.push({ name: p3.oncoming_sic, role: "SIC", tail });
+        }
+      }
+    }
+
+    // Run final transport plan with pass 3 merged assignments
+    const pass3Result = buildSwapPlan({
+      flights, crewRoster, aliases, swapDate, commercialFlights,
+      swapAssignments: pass3Merged,
+      oncomingPool: pass3Pool,
+      strategy: "offgoing_first",
+    });
+
+    pass3Solved = pass2Result.unsolved_count - pass3Result.unsolved_count;
+    finalAssignments = pass3Merged;
+    finalResult = pass3Result;
+    allDetails = [...allDetails, ...pass3Assignment.details];
+    pass3Rejections = pass3Assignment.rejections;
+
+    // Update standby — remove crew that were used in pass 3
+    const usedNames = new Set(pass3StandbyUsed.map((s) => s.name));
+    mergedStandby = {
+      pic: pass3Assignment.standby.pic.filter((n) => !usedNames.has(n)),
+      sic: pass3Assignment.standby.sic.filter((n) => !usedNames.has(n)),
+    };
+
+    console.log(`[Pass 3] ${pass3Solved} additional solved via standby backfill (${pass3StandbyUsed.length} standby crew used)`);
+
+    // Add pass 3 warnings
+    for (const s of pass3StandbyUsed) {
+      finalResult.warnings.push(`${s.name} (${s.role}) pulled from standby for ${s.tail} [relaxed constraints]`);
+    }
+  }
+
+  // Add volunteer bonus warnings
+  for (const v of volunteersUsed) {
+    const bonus = v.role === "PIC" ? EARLY_LATE_BONUS_PIC : EARLY_LATE_BONUS_SIC;
+    finalResult.warnings.push(`${v.name} (${v.role}) used as ${v.type} volunteer on ${v.tail} — $${bonus} bonus`);
+  }
+
+  // ── Improvement 4: Missing flight pairs diagnostic ──────────────────────
+  // For still-unsolved oncoming crew, identify specific flight cache gaps
+  const stillUnsolved = finalResult.rows.filter((r) => r.travel_type === "none" && r.direction === "oncoming");
+  if (stillUnsolved.length > 0) {
+    const missingPairs: { origin: string; destination: string; crew: string; tail: string }[] = [];
+    for (const row of stillUnsolved) {
+      const crew = crewRoster.find((c) => c.name === row.name);
+      if (!crew?.home_airports?.length) continue;
+      const tailLegs = flights.filter((f) => f.tail_number === row.tail_number);
+      const swapIcaos = new Set<string>();
+      for (const leg of tailLegs) {
+        if (leg.departure_icao) swapIcaos.add(leg.departure_icao);
+        if (leg.arrival_icao) swapIcaos.add(leg.arrival_icao);
+      }
+      for (const home of crew.home_airports) {
+        const homeIata = home.length <= 3 ? home : home.substring(1);
+        for (const swapIcao of swapIcaos) {
+          const swapIata = swapIcao.length === 4 && swapIcao.startsWith("K") ? swapIcao.substring(1) : swapIcao;
+          // Find the commercial airports for this swap point
+          const comms = findAllCommercialAirports(swapIcao, aliases);
+          for (const comm of comms) {
+            const commIata = comm.length === 4 && comm.startsWith("K") ? comm.substring(1) : comm;
+            if (homeIata !== commIata) {
+              missingPairs.push({ origin: homeIata, destination: commIata, crew: row.name, tail: row.tail_number });
+            }
+          }
+        }
+      }
+    }
+    // Deduplicate by origin+destination
+    const seen = new Set<string>();
+    finalResult.missing_flight_pairs = missingPairs.filter((p) => {
+      const key = `${p.origin}->${p.destination}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    if (finalResult.missing_flight_pairs.length > 0) {
+      console.log(`[FlightGaps] ${finalResult.missing_flight_pairs.length} missing flight pairs identified for ${stillUnsolved.length} unsolved oncoming crew`);
+    }
+  }
+
+  // ── Build diagnostics for unsolved crew/tails ────────────────────────────
+  // Collect all rejections from all passes (latest pass has the most complete data)
+  const allRejections: FeasibilityRejection[] = [
+    ...pass1Assignment.rejections,
+    ...pass2Assignment.rejections,
+    ...pass3Rejections,
+  ];
+
+  // Build tail aircraft type map for diagnostics
+  const diagTailAircraftType = new Map<string, string>();
+  const diagByTail = new Map<string, FlightLeg[]>();
+  for (const f of flights) {
+    if (!f.tail_number) continue;
+    if (!diagByTail.has(f.tail_number)) diagByTail.set(f.tail_number, []);
+    diagByTail.get(f.tail_number)!.push(f);
+  }
+  for (const tail of Object.keys(finalAssignments)) {
+    const sa = finalAssignments[tail];
+    const names = [sa.offgoing_pic, sa.offgoing_sic, sa.oncoming_pic, sa.oncoming_sic].filter(Boolean) as string[];
+    for (const nm of names) {
+      const crew = crewRoster.find((c) => (c.name === nm || c.jetinsight_name === nm));
+      if (crew?.aircraft_types[0]) {
+        diagTailAircraftType.set(tail, crew.aircraft_types[0]);
+        break;
+      }
+    }
+  }
+
+  const finalUnsolved = finalResult.rows.filter((r) => r.travel_type === "none");
+  let diagnostics: SwapPlanResult["diagnostics"];
+
+  if (finalUnsolved.length > 0) {
+    // Unsolved tails: for each unsolved row, summarize rejection reasons
+    const unsolvedTailDiags: NonNullable<SwapPlanResult["diagnostics"]>["unsolved_tails"] = [];
+    for (const row of finalUnsolved) {
+      if (row.direction !== "oncoming") continue; // offgoing diagnostics less relevant
+      const tailRejections = allRejections.filter((r) => r.tail === row.tail_number);
+      // Deduplicate by crewName (take latest rejection per crew member)
+      const byCrewName = new Map<string, FeasibilityRejection>();
+      for (const r of tailRejections) byCrewName.set(r.crewName, r);
+      const dedupedRejections = Array.from(byCrewName.values());
+
+      const typeMismatch = dedupedRejections.filter((r) => r.reason === "type_mismatch").length;
+      const intlRestricted = dedupedRejections.filter((r) => r.reason === "intl_restricted").length;
+      const noRoute = dedupedRejections.filter((r) => r.reason === "no_route").length;
+      const routeScoreZero = dedupedRejections.filter((r) => r.reason === "route_score_zero").length;
+      const totalChecked = dedupedRejections.length;
+
+      // Determine primary reason
+      let reason = "unknown";
+      if (typeMismatch > 0 && typeMismatch === totalChecked) {
+        reason = `All ${totalChecked} crew failed aircraft type check (tail type: ${diagTailAircraftType.get(row.tail_number) ?? "unknown"})`;
+      } else if (noRoute > 0 && noRoute + typeMismatch === totalChecked) {
+        reason = `${typeMismatch} type mismatch + ${noRoute} no transport route available`;
+      } else if (totalChecked === 0) {
+        reason = "No crew in pool for this role";
+      } else {
+        const parts: string[] = [];
+        if (typeMismatch > 0) parts.push(`${typeMismatch} type mismatch`);
+        if (intlRestricted > 0) parts.push(`${intlRestricted} intl restricted`);
+        if (noRoute > 0) parts.push(`${noRoute} no route`);
+        if (routeScoreZero > 0) parts.push(`${routeScoreZero} route scored zero`);
+        reason = parts.join(", ") || "All crew assigned to other tails (supply exhausted)";
+      }
+
+      unsolvedTailDiags.push({
+        tail: row.tail_number,
+        role: row.role,
+        reason,
+        type_mismatch_count: typeMismatch,
+        no_route_count: noRoute,
+        intl_restricted_count: intlRestricted,
+        route_score_zero_count: routeScoreZero,
+        total_crew_checked: totalChecked,
+      });
+    }
+
+    // Unsolved crew: for each oncoming pool member not assigned, show why
+    const assignedNames = new Set(allDetails.map((d) => d.name));
+    const allPoolMembers = [...oncomingPool.pic.map(p => ({ ...p, role: "PIC" as const })), ...oncomingPool.sic.map(p => ({ ...p, role: "SIC" as const }))];
+    const unsolvedCrewDiags: NonNullable<SwapPlanResult["diagnostics"]>["unsolved_crew"] = [];
+    for (const poolMember of allPoolMembers) {
+      if (assignedNames.has(poolMember.name)) continue;
+      const crewRejections = allRejections.filter((r) => r.crewName === poolMember.name);
+      // Deduplicate by tail
+      const byTailMap = new Map<string, FeasibilityRejection>();
+      for (const r of crewRejections) byTailMap.set(r.tail, r);
+      const dedupedRejections = Array.from(byTailMap.values());
+
+      unsolvedCrewDiags.push({
+        name: poolMember.name,
+        role: poolMember.role,
+        tails_checked: dedupedRejections.length,
+        type_mismatch_tails: dedupedRejections.filter((r) => r.reason === "type_mismatch").map((r) => r.tail),
+        intl_restricted_tails: dedupedRejections.filter((r) => r.reason === "intl_restricted").map((r) => r.tail),
+        no_route_tails: dedupedRejections.filter((r) => r.reason === "no_route").map((r) => r.tail),
+        route_score_zero_tails: dedupedRejections.filter((r) => r.reason === "route_score_zero").map((r) => r.tail),
+      });
+    }
+
+    // Type mismatch blockers: tails where ALL rejections are type mismatch
+    const typeMismatchBlockers: NonNullable<SwapPlanResult["diagnostics"]>["type_mismatch_blockers"] = [];
+    for (const diag of unsolvedTailDiags) {
+      if (diag.type_mismatch_count > 0 && diag.type_mismatch_count === diag.total_crew_checked) {
+        const tailType = diagTailAircraftType.get(diag.tail) ?? "unknown";
+        // Collect what aircraft types were available in the pool for this role
+        const poolForRole = diag.role === "PIC" ? oncomingPool.pic : oncomingPool.sic;
+        const crewTypes = [...new Set(poolForRole.map((p) => p.aircraft_type))];
+        typeMismatchBlockers.push({
+          tail: diag.tail,
+          role: diag.role,
+          tail_type: tailType,
+          crew_types_available: crewTypes,
+        });
+      }
+    }
+
+    diagnostics = {
+      unsolved_tails: unsolvedTailDiags,
+      unsolved_crew: unsolvedCrewDiags,
+      type_mismatch_blockers: typeMismatchBlockers,
+    };
+
+    // Log summary
+    console.log(`[Diagnostics] ${unsolvedTailDiags.length} unsolved tail slots, ${unsolvedCrewDiags.length} unsolved crew members`);
+    for (const d of unsolvedTailDiags) {
+      console.log(`[Diagnostics] Tail ${d.tail} ${d.role}: ${d.reason}`);
+    }
+    if (typeMismatchBlockers.length > 0) {
+      console.log(`[Diagnostics] ${typeMismatchBlockers.length} tails blocked purely by type mismatch — cross-type assignment could help`);
+    }
+  }
 
   const stats: TwoPassStats = {
     pass1_solved: pass1Solved,
@@ -3191,26 +3761,15 @@ export function twoPassAssignAndOptimize(params: {
     pass2_solved: pass2NewlySolved,
     pass2_volunteers_used: volunteersUsed,
     pass2_bonus_cost: bonusCost,
+    pass3_solved: pass3Solved,
+    pass3_standby_used: pass3StandbyUsed,
+    pass3_relaxation: pass3Solved > 0,
     total_cost: finalResult.total_cost + bonusCost,
   };
 
-  // Add volunteer bonus warnings
-  for (const v of volunteersUsed) {
-    const bonus = v.role === "PIC" ? EARLY_LATE_BONUS_PIC : EARLY_LATE_BONUS_SIC;
-    finalResult.warnings.push(`${v.name} (${v.role}) used as ${v.type} volunteer on ${v.tail} — $${bonus} bonus`);
-  }
-
-  // Merge standby from both passes
-  const mergedStandby = {
-    pic: pass2Assignment.standby.pic,
-    sic: pass2Assignment.standby.sic,
-  };
-
-  console.log(`[Two-Pass] Pass 2: ${pass2NewlySolved} additional tails solved, ${volunteersUsed.length} volunteers used, $${bonusCost} bonus cost`);
-
   return {
-    result: { ...finalResult, two_pass: stats },
-    assignmentResult: { assignments: mergedAssignments, standby: mergedStandby, details: [...pass1Assignment.details, ...pass2Assignment.details] },
+    result: { ...finalResult, two_pass: stats, diagnostics },
+    assignmentResult: { assignments: finalAssignments, standby: mergedStandby, details: allDetails, rejections: allRejections },
     twoPassStats: stats,
   };
 }
@@ -3232,12 +3791,13 @@ function assignRoleWithMatrix(
   excludeTails?: Set<string>,
   offgoingDeadlines?: OncomingDeadline[],
   picSwapPoints?: Map<string, string>,
-): void {
+  relaxation?: boolean,
+): FeasibilityRejection[] {
   const needingTails = Object.keys(result).filter((tail) => !result[tail][field] && !excludeTails?.has(tail));
-  if (needingTails.length === 0 || pool.length === 0) return;
+  if (needingTails.length === 0 || pool.length === 0) return [];
 
   // Build full feasibility matrix — uses pre-computed routes when available
-  const matrix = buildFeasibilityMatrix({
+  const { matrix, rejections: matrixRejections } = buildFeasibilityMatrix({
     pool,
     role,
     tails: needingTails,
@@ -3251,6 +3811,7 @@ function assignRoleWithMatrix(
     preComputedOffgoing,
     offgoingDeadlines,
     picSwapPoints,
+    relaxation,
   });
 
   // Only consider viable options (where real transport exists)
@@ -3360,6 +3921,8 @@ function assignRoleWithMatrix(
       reason,
     });
   }
+
+  return matrixRejections;
 }
 
 // ─── Helper: get flight searches for ALL pool crew × ALL swap locations ───────
@@ -3685,6 +4248,9 @@ export function solveOffgoingFirst(params: {
           offgoingName: offName, offgoingFlight: best?.flightNumber ?? null,
         });
       } else {
+        // Offgoing has no viable transport — do NOT create a deadline.
+        // No deadline = no filter on oncoming candidates, which is the least
+        // restrictive option (oncoming can arrive at any time).
         unsolvable.push({
           tail, role,
           reason: `No viable transport for offgoing ${offName} from ${swapPoint.icao}`,

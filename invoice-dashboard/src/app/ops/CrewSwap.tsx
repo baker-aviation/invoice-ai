@@ -180,6 +180,9 @@ type TwoPassStats = {
   pass2_solved: number;
   pass2_volunteers_used: { name: string; role: "PIC" | "SIC"; tail: string; type: "early" | "late" }[];
   pass2_bonus_cost: number;
+  pass3_solved?: number;
+  pass3_standby_used?: { name: string; role: "PIC" | "SIC"; tail: string }[];
+  pass3_relaxation?: boolean;
   total_cost: number;
 };
 
@@ -198,6 +201,11 @@ type SwapPlanResult = {
   crew_assignment?: {
     standby: { pic: string[]; sic: string[] };
     details: { name: string; tail: string; cost: number; reason: string }[];
+  };
+  diagnostics?: {
+    unsolved_tails: { tail: string; role: string; reason: string; type_mismatch_count: number; no_route_count: number; intl_restricted_count: number; route_score_zero_count: number; total_crew_checked: number }[];
+    unsolved_crew: { name: string; role: string; tails_checked: number; type_mismatch_tails: string[]; no_route_tails: string[]; intl_restricted_tails: string[]; route_score_zero_tails: string[] }[];
+    type_mismatch_blockers: { tail: string; role: string; tail_type: string; crew_types_available: string[] }[];
   };
 };
 
@@ -1885,20 +1893,14 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
   }, []);
   const [syncingCrewInfo, setSyncingCrewInfo] = useState(false);
 
-  // Aircraft type lookup: tail number → type code (from ics_sources table)
-  const [tailAircraftTypes, setTailAircraftTypes] = useState<Record<string, string>>({});
-  useEffect(() => {
-    fetch("/api/admin/ics-sources")
-      .then((r) => r.ok ? r.json() : { sources: [] })
-      .then((d) => {
-        const map: Record<string, string> = {};
-        for (const s of d.sources ?? []) {
-          if (s.label && s.aircraft_type) map[s.label] = s.aircraft_type;
-        }
-        setTailAircraftTypes(map);
-      })
-      .catch(() => {});
-  }, []);
+  // Aircraft type lookup: derived from icsFleet (already fetched above — no duplicate call)
+  const tailAircraftTypes = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const s of icsFleet) {
+      if (s.label && s.aircraft_type) map[s.label] = s.aircraft_type;
+    }
+    return map;
+  }, [icsFleet]);
 
   // Flight picker modal state
   const [selectedCrewSlot, setSelectedCrewSlot] = useState<{
@@ -4454,6 +4456,20 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                     ))}
                   </div>
                 )}
+                {(swapPlan.two_pass.pass3_solved ?? 0) > 0 && (
+                  <div className="mt-1">
+                    <span className="text-green-700 text-xs font-medium">
+                      Pass 3: +{swapPlan.two_pass.pass3_solved} tails via {swapPlan.two_pass.pass3_standby_used?.length ?? 0} standby crew [relaxed constraints]
+                    </span>
+                    <div className="mt-0.5 flex flex-wrap gap-2">
+                      {swapPlan.two_pass.pass3_standby_used?.map((s, i) => (
+                        <span key={i} className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-green-100 text-green-700">
+                          {s.name} ({s.role}) pulled from standby for {s.tail}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -4463,6 +4479,29 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                 {swapPlan.warnings.map((w, i) => (
                   <div key={i} className="text-xs text-amber-700">{w}</div>
                 ))}
+              </div>
+            )}
+
+            {/* Diagnostics: why unsolved? */}
+            {swapPlan.diagnostics && swapPlan.diagnostics.unsolved_tails.length > 0 && (
+              <div className="px-4 py-2 bg-red-50 border-b space-y-2">
+                <div className="text-xs font-semibold text-red-800">Unsolved Diagnostics</div>
+                <div className="space-y-1">
+                  {swapPlan.diagnostics.unsolved_tails.map((d, i) => (
+                    <div key={i} className="text-xs text-red-700">
+                      <span className="font-medium">{d.tail} {d.role}:</span> {d.reason}
+                      <span className="text-red-400 ml-1">({d.total_crew_checked} crew checked)</span>
+                    </div>
+                  ))}
+                </div>
+                {swapPlan.diagnostics.type_mismatch_blockers.length > 0 && (
+                  <div className="mt-1 p-2 bg-red-100 rounded text-xs text-red-800">
+                    <span className="font-semibold">Type mismatch blockers</span> — these tails could be solved by cross-type assignment:
+                    {swapPlan.diagnostics.type_mismatch_blockers.map((b, i) => (
+                      <div key={i} className="ml-2">{b.tail} ({b.role}): needs <span className="font-medium">{b.tail_type}</span>, pool has [{b.crew_types_available.join(", ")}]</div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 

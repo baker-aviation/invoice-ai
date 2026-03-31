@@ -27,6 +27,9 @@ export const DEPLANE_BUFFER = 30;
 /** New crew must arrive at FBO this many minutes before their scheduled flight */
 export const FBO_ARRIVAL_BUFFER = 60;
 
+/** Relaxed FBO buffer for unsolved tails in pass 3 (30 min) */
+export const RELAXED_FBO_ARRIVAL_BUFFER = 30;
+
 /** Preferred FBO arrival buffer (when possible) */
 export const FBO_ARRIVAL_BUFFER_PREFERRED = 90;
 
@@ -52,6 +55,9 @@ export const UBER_MAX_MINUTES = 60;
 
 /** Drive over UBER_MAX and under this = rental car */
 export const RENTAL_MAX_MINUTES = 300; // 5 hours — uses crew duty day, not ideal but viable
+
+/** Relaxed drive limit for unsolved tails in pass 3 (7 hours) */
+export const RELAXED_RENTAL_MAX_MINUTES = 420;
 
 /** Drives between these are rental car territory */
 export const RENTAL_MIN_MINUTES = 60;
@@ -83,6 +89,9 @@ export const EARLY_LATE_BONUS_SIC = 1000;
 
 /** Strong preference for direct flights */
 export const MAX_CONNECTIONS = 1; // never 2+ connections
+
+/** Allow 2 connections for unsolved tails in pass 3 */
+export const RELAXED_MAX_CONNECTIONS = 2;
 
 /**
  * Budget carriers — AVOID unless no other option exists.

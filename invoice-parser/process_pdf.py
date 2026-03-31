@@ -909,7 +909,9 @@ def normalize_rows(
 
     totals = raw.get("totals") or {}
     line_items = raw.get("line_items") or []
-    vendor_name = _clean_vendor_name((raw.get("vendor") or {}).get("name"))
+    vendor_obj = raw.get("vendor") or {}
+    vendor_name = _clean_vendor_name(vendor_obj.get("name"))
+    fuel_vendor = (vendor_obj.get("fuel_vendor") or "").strip() or None
 
     invoice_date_iso = normalize_date_to_iso(raw.get("invoice_date"))
 
@@ -926,6 +928,7 @@ def normalize_rows(
         "doc_type": doc_type,
         "parser_version": parser_version,
         "vendor_name": vendor_name,
+        "fuel_vendor": fuel_vendor,
         "invoice_number": raw.get("invoice_number"),
         "invoice_date": invoice_date_iso,
         "currency": raw.get("currency") or "USD",

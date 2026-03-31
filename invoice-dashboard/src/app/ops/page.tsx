@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic";
 
 import { Topbar } from "@/components/Topbar";
 import { AutoRefresh } from "@/components/AutoRefresh";
-import { fetchFlights, fetchMxNotes, fetchSwimFlowControl } from "@/lib/opsApi";
+import { fetchFlightsLite, fetchMxNotes, fetchSwimFlowControl } from "@/lib/opsApi";
 import { fetchAdvertisedPrices } from "@/lib/invoiceApi";
 import { createClient } from "@/lib/supabase/server";
 import OpsTabs from "./OpsTabs";
@@ -11,8 +11,8 @@ import OpsTabs from "./OpsTabs";
 // Vercel's 2 MB cache-item limit when flights + alerts are large).
 async function getOpsData() {
   const [data, advertisedPrices, mxNotes, swimFlow, pprRows] = await Promise.all([
-    fetchFlights({ lookahead_hours: 48, lookback_hours: 48 }).catch((e) => {
-      console.error("[ops/page] fetchFlights error:", e);
+    fetchFlightsLite({ lookahead_hours: 48, lookback_hours: 48 }).catch((e) => {
+      console.error("[ops/page] fetchFlightsLite error:", e);
       return { ok: false, flights: [] as any[], count: 0, suppressedRunwayNotamIds: [] as string[], allRunwaysClosedAlerts: [] as any[], error: String(e) };
     }),
     fetchAdvertisedPrices({ recentWeeks: 4 }).catch(() => []),

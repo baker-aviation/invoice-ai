@@ -19,10 +19,11 @@
       "vendor": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["name", "raw_name"],
+        "required": ["name", "raw_name", "fuel_vendor"],
         "properties": {
           "name": { "type": ["string", "null"] },
-          "raw_name": { "type": ["string", "null"] }
+          "raw_name": { "type": ["string", "null"] },
+          "fuel_vendor": { "type": ["string", "null"] }
         }
       },
 

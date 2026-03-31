@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import { Badge } from "@/components/Badge";
 import type { AdvertisedPriceRow, FuelPriceRow } from "@/lib/types";
+import type { TripSalesperson } from "@/lib/invoiceApi";
 
 const PAGE_SIZE = 25;
 
@@ -195,14 +196,16 @@ function lookupAdvertisedPrice(
   return allTails[0]?.price ?? matches[0]?.price ?? null;
 }
 
-/** Find the cheapest advertised rate across ALL vendors for a given airport + week */
+/** Find the cheapest advertised rate across ALL vendors for a given airport + week.
+ *  Only compares rates from the same week as the invoice — stale rates from
+ *  older weeks are not valid comparisons. */
 function lookupBestRate(
   advByAirportWeek: Map<string, AdvertisedPriceRow[]>,
-  advByAirport: Map<string, AdvertisedPriceRow[]>,
+  _advByAirport: Map<string, AdvertisedPriceRow[]>,
   airportCode: string | null,
   invoiceDate: string | null,
   gallons: number | null,
-): { price: number; vendor: string } | null {
+): { price: number; vendor: string; weekStart: string } | null {
   if (!airportCode || !invoiceDate) return null;
   const weekMonday = getWeekMonday(invoiceDate);
   const codes = airportCode.length === 4 && airportCode.startsWith("K")
@@ -211,26 +214,11 @@ function lookupBestRate(
     ? [airportCode, `K${airportCode}`]
     : [airportCode];
 
-  // Try exact week match first
+  // Same-week matches only — no fallback to older weeks
   let allMatches: AdvertisedPriceRow[] = [];
   for (const code of codes) {
     const m = advByAirportWeek.get(`${code}|${weekMonday}`);
     if (m) allMatches = allMatches.concat(m);
-  }
-
-  // Fallback: use most recent week's prices for this airport (not newer than invoice date)
-  if (allMatches.length === 0) {
-    for (const code of codes) {
-      const allForAirport = advByAirport.get(code);
-      if (!allForAirport) continue;
-      // Find the most recent week that's on or before the invoice date
-      const recent = allForAirport.filter((a) => a.week_start <= weekMonday);
-      if (recent.length > 0) {
-        // recent is already sorted newest first — grab the latest week
-        const latestWeek = recent[0].week_start;
-        allMatches = allMatches.concat(recent.filter((a) => a.week_start === latestWeek));
-      }
-    }
   }
 
   if (allMatches.length === 0) return null;
@@ -248,7 +236,7 @@ function lookupBestRate(
   for (const c of candidates) {
     if (!best || c.price < best.price) best = c;
   }
-  return best ? { price: best.price, vendor: best.fbo_vendor } : null;
+  return best ? { price: best.price, vendor: best.fbo_vendor, weekStart: best.week_start } : null;
 }
 
 /** Check if a gallon amount falls within a volume tier like "1-300" or "1201+" */
@@ -754,15 +742,17 @@ function ImportAdvertisedModal({ onClose }: { onClose: () => void }) {
 export default function FuelPricesTable({
   initialPrices,
   advertisedPrices = [],
+  salespersons = [],
 }: {
   initialPrices: FuelPriceRow[];
   advertisedPrices?: AdvertisedPriceRow[];
+  salespersons?: TripSalesperson[];
 }) {
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState("");
   const [airportFilter, setAirportFilter] = useState("");
   const [vendorFilter, setVendorFilter] = useState("");
-  const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>("invoice");
   const [viewMode, setViewMode] = useState<ViewMode>("advertised");
   const [showImportModal, setShowImportModal] = useState(false);
   const [volumeGallons, setVolumeGallons] = useState<string>("");
@@ -772,8 +762,26 @@ export default function FuelPricesTable({
   const [pullResult, setPullResult] = useState<string | null>(null);
   const [extendedAdv, setExtendedAdv] = useState<AdvertisedPriceRow[] | null>(null);
   const [loadingExtended, setLoadingExtended] = useState(false);
+  const [showWoW, setShowWoW] = useState(false);
 
   const activeAdvertisedPrices = extendedAdv ?? advertisedPrices;
+
+  // Build salesperson lookup: tail|airport(IATA)|date → salesperson_name
+  const salespersonLookup = useMemo(() => {
+    const map = new Map<string, string>();
+    if (!salespersons?.length) return map;
+    for (const s of salespersons) {
+      if (!s.tail_number || !s.scheduled_departure) continue;
+      const date = s.scheduled_departure.split("T")[0];
+      const toIata = (icao: string | null) =>
+        icao && icao.length === 4 && icao.startsWith("K") ? icao.slice(1) : icao;
+      const originIata = toIata(s.origin_icao);
+      const destIata = toIata(s.destination_icao);
+      if (originIata) map.set(`${s.tail_number}|${originIata}|${date}`, s.salesperson_name);
+      if (destIata) map.set(`${s.tail_number}|${destIata}|${date}`, s.salesperson_name);
+    }
+    return map;
+  }, [salespersons]);
 
   async function handlePullNow() {
     setIsPulling(true);
@@ -887,31 +895,32 @@ export default function FuelPricesTable({
   }, [initialPrices]);
 
   // Advertised price lookup: key = "vendor_lower|airport|week_monday" → rows
+  // Uses ALL advertised prices (not just fresh) so historical invoices match historical rates
   const advLookup = useMemo(() => {
     const lookup = new Map<string, AdvertisedPriceRow[]>();
-    for (const adv of freshAdvertisedPrices) {
+    for (const adv of activeAdvertisedPrices) {
       const key = `${adv.fbo_vendor.toLowerCase()}|${adv.airport_code}|${adv.week_start}`;
       if (!lookup.has(key)) lookup.set(key, []);
       lookup.get(key)!.push(adv);
     }
     return lookup;
-  }, [freshAdvertisedPrices]);
+  }, [activeAdvertisedPrices]);
 
   // Best-rate lookup: key = "airport|week_monday" → all vendor rows for that airport+week
   const advByAirportWeek = useMemo(() => {
     const lookup = new Map<string, AdvertisedPriceRow[]>();
-    for (const adv of freshAdvertisedPrices) {
+    for (const adv of activeAdvertisedPrices) {
       const key = `${adv.airport_code}|${adv.week_start}`;
       if (!lookup.has(key)) lookup.set(key, []);
       lookup.get(key)!.push(adv);
     }
     return lookup;
-  }, [freshAdvertisedPrices]);
+  }, [activeAdvertisedPrices]);
 
   // Fallback lookup: airport → all weeks sorted newest first (for when exact week has no match)
   const advByAirport = useMemo(() => {
     const lookup = new Map<string, AdvertisedPriceRow[]>();
-    for (const adv of freshAdvertisedPrices) {
+    for (const adv of activeAdvertisedPrices) {
       if (!lookup.has(adv.airport_code)) lookup.set(adv.airport_code, []);
       lookup.get(adv.airport_code)!.push(adv);
     }
@@ -920,7 +929,7 @@ export default function FuelPricesTable({
       rows.sort((a, b) => b.week_start.localeCompare(a.week_start));
     }
     return lookup;
-  }, [freshAdvertisedPrices]);
+  }, [activeAdvertisedPrices]);
 
   // Latest week per vendor (for freshness indicator)
   const vendorFreshness = useMemo(() => {
@@ -1449,6 +1458,21 @@ export default function FuelPricesTable({
           </div>
         )}
 
+        {/* WoW toggle (Live Feed only) */}
+        {viewMode === "all" && (
+          <button
+            type="button"
+            onClick={() => setShowWoW((v) => !v)}
+            className={`px-2.5 py-1 text-xs font-medium rounded-full border transition-colors ${
+              showWoW
+                ? "bg-indigo-100 text-indigo-800 border-indigo-300"
+                : "bg-white text-gray-500 border-gray-200 hover:border-gray-400 hover:bg-gray-50"
+            }`}
+          >
+            {showWoW ? "Hide" : "Show"} Averages
+          </button>
+        )}
+
         {/* Import button */}
         <button
           type="button"
@@ -1668,7 +1692,7 @@ export default function FuelPricesTable({
               <tr className="bg-gray-50 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                 <th className="px-4 py-3">Date</th>
                 <th className="px-4 py-3">Airport</th>
-                <th className="px-4 py-3">Vendor / FBO</th>
+                <th className="px-4 py-3">FBO</th>
                 <th className="px-4 py-3">Tail</th>
                 <th className="px-4 py-3 text-right">Gallons</th>
                 <th className="px-4 py-3 text-right">Fuel Total</th>
@@ -1678,27 +1702,31 @@ export default function FuelPricesTable({
                 {hasAdvertised && (
                   <>
                     <th className="px-4 py-3 text-right bg-blue-50/70">
-                      <span title="Cheapest contract rate across AEG, Everest, etc. for this airport + week + volume" className="text-blue-900">Best Rate</span>
+                      <span title="Cheapest contract rate across all vendors for this airport + week + volume" className="text-blue-900">Best Rate</span>
                     </th>
                     <th className="px-4 py-3 text-right bg-blue-50/70 border-r border-blue-100">
-                      <span title="How much more/less you paid vs the best available contract rate" className="text-blue-900">vs Best</span>
+                      <span title="How much more/less you paid vs the best available contract rate" className="text-blue-900">% Diff</span>
                     </th>
                   </>
                 )}
-                <th className="px-4 py-3 text-right">
-                  <span title="Average effective $/gal for this airport + vendor across all records">FBO Avg</span>
-                </th>
-                <th className="px-4 py-3 text-right">
-                  <span title="How this row's price compares to the FBO average">vs FBO</span>
-                </th>
-                <th className="px-4 py-3 text-right">
-                  <span title="Average effective $/gal across all vendors at this airport">Airport Avg</span>
-                </th>
-                <th className="px-4 py-3 text-right">
-                  <span title="How this row's price compares to the airport average">vs Apt</span>
-                </th>
+                <th className="px-4 py-3">Salesperson</th>
+                {showWoW && (
+                  <>
+                    <th className="px-4 py-3 text-right">
+                      <span title="Average effective $/gal for this airport + vendor across all records">FBO Avg</span>
+                    </th>
+                    <th className="px-4 py-3 text-right">
+                      <span title="How this row's price compares to the FBO average">vs FBO</span>
+                    </th>
+                    <th className="px-4 py-3 text-right">
+                      <span title="Average effective $/gal across all vendors at this airport">Airport Avg</span>
+                    </th>
+                    <th className="px-4 py-3 text-right">
+                      <span title="How this row's price compares to the airport average">vs Apt</span>
+                    </th>
+                  </>
+                )}
                 <th className="px-4 py-3 text-center">Source</th>
-                <th className="px-4 py-3 text-center">Invoice</th>
               </tr>
             </thead>
             <tbody className="divide-y">
@@ -1739,8 +1767,14 @@ export default function FuelPricesTable({
                   vsAptPct = ((price - aptStats.avg) / aptStats.avg) * 100;
                   vsAptPct = Math.round(vsAptPct * 10) / 10;
                 }
-                const overpriced = vsAvgPct != null && vsAvgPct > 5;
-                const underpriced = vsAvgPct != null && vsAvgPct < -5;
+                const overpriced = vsBestPct != null && vsBestPct > 5;
+                const underpriced = vsBestPct != null && vsBestPct < -5;
+
+                // Salesperson lookup by tail + airport + date
+                const spKey = row.tail_number && row.airport_code && row.invoice_date
+                  ? `${row.tail_number}|${row.airport_code}|${row.invoice_date}` : null;
+                const salesperson = spKey ? salespersonLookup.get(spKey) ?? null : null;
+
                 return (
                   <tr
                     key={row.id}
@@ -1750,8 +1784,11 @@ export default function FuelPricesTable({
                   >
                     <td className="px-4 py-2.5 whitespace-nowrap">{fmtDate(row.invoice_date)}</td>
                     <td className="px-4 py-2.5 whitespace-nowrap font-medium">{row.airport_code || "\u2014"}</td>
-                    <td className="px-4 py-2.5 whitespace-nowrap max-w-[180px] truncate" title={row.vendor_name || ""}>
-                      {row.vendor_name || "\u2014"}
+                    <td className="px-4 py-2.5 whitespace-nowrap max-w-[200px]" title={row.vendor_name || ""}>
+                      <div className="truncate">{row.vendor_name || "\u2014"}</div>
+                      {row.fuel_vendor && (
+                        <div className="text-[10px] text-gray-400 font-normal truncate">{row.fuel_vendor}</div>
+                      )}
                     </td>
                     <td className="px-4 py-2.5 whitespace-nowrap">{row.tail_number || "\u2014"}</td>
                     <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono">
@@ -1777,9 +1814,9 @@ export default function FuelPricesTable({
                       <>
                         <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono text-blue-700 font-medium bg-blue-50/40">
                           {bestRate ? (
-                            <span title={`${bestRate.vendor} contract rate`}>
+                            <span title={`${bestRate.vendor} contract rate for week of ${bestRate.weekStart}`}>
                               {fmt$(bestRate.price)}
-                              <div className="text-[10px] text-gray-400 font-normal">{bestRate.vendor}</div>
+                              <div className="text-[10px] text-gray-400 font-normal">{bestRate.vendor} · wk {fmtDate(bestRate.weekStart)}</div>
                             </span>
                           ) : <span className="text-gray-300">{"\u2014"}</span>}
                         </td>
@@ -1794,60 +1831,65 @@ export default function FuelPricesTable({
                         </td>
                       </>
                     )}
-                    <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono text-gray-500">
-                      {fboStats ? (
-                        <span title={`${fboStats.count} records | range: ${fmt$(fboStats.min)} – ${fmt$(fboStats.max)}`}>
-                          {fmt$(fboStats.avg)}
-                          <span className="text-[10px] text-gray-400 ml-1">({fboStats.count})</span>
-                        </span>
-                      ) : (
-                        <span className="text-gray-300">{"\u2014"}</span>
-                      )}
+                    <td className="px-4 py-2.5 whitespace-nowrap text-sm text-gray-600">
+                      {salesperson || <span className="text-gray-300">{"\u2014"}</span>}
                     </td>
-                    <td className="px-4 py-2.5 whitespace-nowrap text-right">
-                      {vsAvgPct != null ? (
-                        <Badge variant={overpriced ? "danger" : underpriced ? "success" : "default"}>
-                          {vsAvgPct >= 0 ? "+" : ""}{vsAvgPct}%
-                        </Badge>
-                      ) : (
-                        <span className="text-gray-300 text-xs">{"\u2014"}</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono text-gray-500">
-                      {aptStats ? (
-                        <span title={`${aptStats.count} records | range: ${fmt$(aptStats.min)} – ${fmt$(aptStats.max)}`}>
-                          {fmt$(aptStats.avg)}
-                          <span className="text-[10px] text-gray-400 ml-1">({aptStats.count})</span>
-                        </span>
-                      ) : (
-                        <span className="text-gray-300">{"\u2014"}</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-2.5 whitespace-nowrap text-right">
-                      {vsAptPct != null ? (
-                        <Badge variant={vsAptPct > 5 ? "danger" : vsAptPct < -5 ? "success" : "default"}>
-                          {vsAptPct >= 0 ? "+" : ""}{vsAptPct}%
-                        </Badge>
-                      ) : (
-                        <span className="text-gray-300 text-xs">{"\u2014"}</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-2.5 whitespace-nowrap text-center">
-                      {isBaseline ? (
-                        <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-orange-100 text-orange-800">Baseline</span>
-                      ) : sourceBadge(row.data_source)}
-                    </td>
+                    {showWoW && (
+                      <>
+                        <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono text-gray-500">
+                          {fboStats ? (
+                            <span title={`${fboStats.count} records | range: ${fmt$(fboStats.min)} – ${fmt$(fboStats.max)}`}>
+                              {fmt$(fboStats.avg)}
+                              <span className="text-[10px] text-gray-400 ml-1">({fboStats.count})</span>
+                            </span>
+                          ) : (
+                            <span className="text-gray-300">{"\u2014"}</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-2.5 whitespace-nowrap text-right">
+                          {vsAvgPct != null ? (
+                            <Badge variant={vsAvgPct > 5 ? "danger" : vsAvgPct < -5 ? "success" : "default"}>
+                              {vsAvgPct >= 0 ? "+" : ""}{vsAvgPct}%
+                            </Badge>
+                          ) : (
+                            <span className="text-gray-300 text-xs">{"\u2014"}</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono text-gray-500">
+                          {aptStats ? (
+                            <span title={`${aptStats.count} records | range: ${fmt$(aptStats.min)} – ${fmt$(aptStats.max)}`}>
+                              {fmt$(aptStats.avg)}
+                              <span className="text-[10px] text-gray-400 ml-1">({aptStats.count})</span>
+                            </span>
+                          ) : (
+                            <span className="text-gray-300">{"\u2014"}</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-2.5 whitespace-nowrap text-right">
+                          {vsAptPct != null ? (
+                            <Badge variant={vsAptPct > 5 ? "danger" : vsAptPct < -5 ? "success" : "default"}>
+                              {vsAptPct >= 0 ? "+" : ""}{vsAptPct}%
+                            </Badge>
+                          ) : (
+                            <span className="text-gray-300 text-xs">{"\u2014"}</span>
+                          )}
+                        </td>
+                      </>
+                    )}
                     <td className="px-4 py-2.5 whitespace-nowrap text-center">
                       {isJetInsight ? (
-                        <span className="text-xs text-gray-400">{"\u2014"}</span>
+                        sourceBadge(row.data_source)
                       ) : (
                         <span className="inline-flex gap-2 text-xs">
+                          {isBaseline && (
+                            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-orange-100 text-orange-800">Baseline</span>
+                          )}
                           <Link
                             href={`/invoices/${row.document_id}`}
                             className="text-blue-600 hover:text-blue-800 underline"
                             title="View this invoice"
                           >
-                            View
+                            Invoice
                           </Link>
                           {row.previous_document_id && /^[a-f0-9-]{36}$/.test(row.previous_document_id) ? (
                             <Link
@@ -1866,7 +1908,7 @@ export default function FuelPricesTable({
               })}
               {pageRows.length === 0 && (
                 <tr>
-                  <td colSpan={hasAdvertised ? 15 : 13} className="px-4 py-8 text-center text-gray-400">
+                  <td colSpan={99} className="px-4 py-8 text-center text-gray-400">
                     No fuel price records found.
                   </td>
                 </tr>
