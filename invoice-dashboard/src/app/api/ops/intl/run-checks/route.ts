@@ -41,6 +41,7 @@ async function runChecks() {
   const supa = createServiceClient();
   const now = new Date();
   const thirtyDaysOut = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
+
   const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
 
   const alertsToCreate: Array<{

@@ -530,7 +530,11 @@ function useFaaDelays(enabled: boolean): { airports: DelayAirport[]; updated: st
 /* ── Flow Controls (reroutes / CTOPs / AFPs from SWIM) ── */
 
 const FLOW_COLORS = [
-  "#22c55e", // bright green — distinct from red Challenger in-flight lines
+  "#22c55e", // green
+  "#f97316", // orange
+  "#8b5cf6", // purple
+  "#06b6d4", // cyan
+  "#eab308", // yellow
 ];
 
 function useFlowControls(enabled: boolean): FlowControlLine[] {
@@ -726,8 +730,12 @@ function MapLegend({ dark, showDelays, showFlows, flowCount }: { dark: boolean; 
         <>
           <div className={`font-semibold ${heading} text-[10px] uppercase tracking-wider mt-2 mb-1`}>Flow Controls</div>
           <div className="flex items-center gap-2">
+            <LegendLine color="#22c55e" />
+            <span className={text}>CTOP</span>
+          </div>
+          <div className="flex items-center gap-2">
             <LegendLine color="#f97316" />
-            <span className={text}>CTOP / AFP</span>
+            <span className={text}>AFP</span>
           </div>
         </>
       )}
@@ -756,7 +764,7 @@ function ToggleBtn({ label, active, onClick }: { label: string; active: boolean;
 
 export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHoldingDetectedProp }: Props) {
   const { prefs, toggle } = useMapPreferences("ops_map", {
-    darkMode: true, showRadar: false, showVans: false, showDelays: true, showFlows: false,
+    darkMode: true, showRadar: false, showVans: false, showDelays: true, showFlows: true,
   });
   const { darkMode, showRadar, showVans, showDelays, showFlows } = prefs;
   const [holdingTails, setHoldingTails] = useState<Set<string>>(new Set());

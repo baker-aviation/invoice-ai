@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireAuth, isAuthed, isRateLimited } from "@/lib/api-auth";
+import { requireAuth, isAuthed, isRateLimited, verifyCronSecret } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 import { isInternationalIcao } from "@/lib/intlUtils";
 import { getAirportInfo } from "@/lib/airportCoords";
@@ -223,11 +223,16 @@ function buildDefaultClearances(trip: DetectedTrip, countriesWithOvfReq: Country
 // ---------------------------------------------------------------------------
 
 export async function GET(req: NextRequest) {
-  const auth = await requireAuth(req);
-  if (!isAuthed(auth)) return auth.error;
+  // Allow cron to trigger detection without user auth
+  const isCron = verifyCronSecret(req);
+  if (!isCron) {
+    const auth = await requireAuth(req);
+    if (!isAuthed(auth)) return auth.error;
+  }
 
   const supa = createServiceClient();
-  const autoDetect = req.nextUrl.searchParams.get("auto_detect") !== "false";
+  // Detection runs on cron or explicit request — never on normal page load
+  const autoDetect = isCron || req.nextUrl.searchParams.get("auto_detect") === "true";
 
   if (autoDetect) {
     // Fetch flights for the next 30 days
