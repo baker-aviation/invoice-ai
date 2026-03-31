@@ -1888,20 +1888,14 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
   }, []);
   const [syncingCrewInfo, setSyncingCrewInfo] = useState(false);
 
-  // Aircraft type lookup: tail number → type code (from ics_sources table)
-  const [tailAircraftTypes, setTailAircraftTypes] = useState<Record<string, string>>({});
-  useEffect(() => {
-    fetch("/api/admin/ics-sources")
-      .then((r) => r.ok ? r.json() : { sources: [] })
-      .then((d) => {
-        const map: Record<string, string> = {};
-        for (const s of d.sources ?? []) {
-          if (s.label && s.aircraft_type) map[s.label] = s.aircraft_type;
-        }
-        setTailAircraftTypes(map);
-      })
-      .catch(() => {});
-  }, []);
+  // Aircraft type lookup: derived from icsFleet (already fetched above — no duplicate call)
+  const tailAircraftTypes = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const s of icsFleet) {
+      if (s.label && s.aircraft_type) map[s.label] = s.aircraft_type;
+    }
+    return map;
+  }, [icsFleet]);
 
   // Flight picker modal state
   const [selectedCrewSlot, setSelectedCrewSlot] = useState<{
