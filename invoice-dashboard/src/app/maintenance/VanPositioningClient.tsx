@@ -3898,9 +3898,23 @@ function ScheduleTab({
       });
       return;
     }
-    // Remove any move override for this flight, and also any sibling overrides
-    // for the same tail pointing to the same van (airport overrides can swap the
-    // displayed arrFlight, so the displayed ID may differ from the override ID).
+
+    // When tail + vanId are known, do a comprehensive removal:
+    // 1. Delete ALL overrides for this tail pointing to this van
+    // 2. Delete unscheduled override if it points to this van
+    // 3. Add all base + displayed flight IDs to removals
+    // This handles airport-override swaps, MX-note duplicates, and dual placements.
+    if (tailNumber && fromVanId !== undefined) {
+      // Clean up unscheduled overrides for this tail on this van
+      setUnscheduledOverrides((prev) => {
+        if (prev.get(tailNumber) !== fromVanId) return prev;
+        const next = new Map(prev);
+        next.delete(tailNumber);
+        return next;
+      });
+    }
+
+    // Remove overrides: the displayed flight + any sibling flights for this tail → this van
     setOverrides((prev) => {
       const next = new Map(prev);
       next.delete(flightId);
@@ -3914,15 +3928,20 @@ function ScheduleTab({
       }
       return next;
     });
-    // Add to removals — include the base item's flight ID too, since airport
-    // overrides can swap arrFlight to a different flight ID than the base.
+
+    // Add to removals: displayed flight + base item flight IDs for this tail on this van
     setRemovals((prev) => {
       const next = new Set(prev);
       next.add(flightId);
       if (tailNumber && fromVanId !== undefined) {
+        // Add base item flight IDs (airport overrides can swap the displayed arrFlight)
         const baseItems = baseItemsByVanRef.current.get(fromVanId) ?? [];
         for (const item of baseItems) {
           if (item.arrFlight.tail_number === tailNumber) next.add(item.arrFlight.id);
+        }
+        // Also add ALL flight IDs for this tail today so no path can re-add it to this van
+        for (const f of allFlightsRef.current) {
+          if (f.tail_number === tailNumber) next.add(f.id);
         }
       }
       return next;
