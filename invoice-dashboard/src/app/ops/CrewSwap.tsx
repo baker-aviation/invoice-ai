@@ -180,6 +180,9 @@ type TwoPassStats = {
   pass2_solved: number;
   pass2_volunteers_used: { name: string; role: "PIC" | "SIC"; tail: string; type: "early" | "late" }[];
   pass2_bonus_cost: number;
+  pass3_solved?: number;
+  pass3_standby_used?: { name: string; role: "PIC" | "SIC"; tail: string }[];
+  pass3_relaxation?: boolean;
   total_cost: number;
 };
 
@@ -4452,6 +4455,20 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                         {v.name} ({v.role}) — {v.type} on {v.tail}
                       </span>
                     ))}
+                  </div>
+                )}
+                {(swapPlan.two_pass.pass3_solved ?? 0) > 0 && (
+                  <div className="mt-1">
+                    <span className="text-green-700 text-xs font-medium">
+                      Pass 3: +{swapPlan.two_pass.pass3_solved} tails via {swapPlan.two_pass.pass3_standby_used?.length ?? 0} standby crew [relaxed constraints]
+                    </span>
+                    <div className="mt-0.5 flex flex-wrap gap-2">
+                      {swapPlan.two_pass.pass3_standby_used?.map((s, i) => (
+                        <span key={i} className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-green-100 text-green-700">
+                          {s.name} ({s.role}) pulled from standby for {s.tail}
+                        </span>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>
