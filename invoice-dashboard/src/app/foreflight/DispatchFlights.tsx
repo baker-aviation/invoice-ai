@@ -40,14 +40,12 @@ interface FlightSummary {
   } | null;
 }
 
-type SubResource = "flightDetail" | "performance" | "navlog" | "briefing" | "overflight" | "rwa" | "wb" | "icao";
+type SubResource = "flightDetail" | "navlog" | "briefing" | "rwa" | "wb" | "icao";
 
 const SUB_RESOURCE_LABELS: Record<SubResource, string> = {
   flightDetail: "Full Detail",
-  performance: "Performance",
   navlog: "Navlog",
   briefing: "Briefing",
-  overflight: "Overflight",
   rwa: "Runway Analysis",
   wb: "W&B",
   icao: "ICAO",
@@ -148,9 +146,6 @@ function FormattedView({ label, data }: { label: string; data: unknown }) {
   if (d.url && typeof d.url === "string") return <DocumentLinkView data={d} />;
 
   if (label === "Full Detail") return <FlightDetailView data={d} />;
-  if (label === "Performance") return <PerformanceView data={d} />;
-  if (label === "Navlog") return <NavlogView data={d} />;
-  if (label === "Overflight") return <OverflightView data={d} />;
 
   return (
     <pre className="rounded border border-gray-200 bg-gray-50 p-3 text-xs font-mono text-gray-700 overflow-x-auto max-h-[500px] overflow-y-auto">
@@ -162,33 +157,40 @@ function FormattedView({ label, data }: { label: string; data: unknown }) {
 function DocumentLinkView({ data }: { data: Record<string, unknown> }) {
   const url = data.url as string;
   const time = data.timeGenerated as string | undefined;
-  const isPdf = url.includes(".pdf") || url.includes("Report") || url.includes("Briefing") || url.includes("navlog");
 
   return (
-    <div className="space-y-3">
-      <div className="flex items-center gap-3 flex-wrap">
-        <a
-          href={url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-500 transition-colors"
-        >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-          </svg>
-          Open Document
-        </a>
-        {time && <span className="text-xs text-gray-400">Generated {fmtLocalTime(time)}</span>}
-      </div>
-      {isPdf && (
-        <iframe
-          src={url}
-          className="w-full h-[600px] rounded-lg border border-gray-200"
-          title="ForeFlight Document"
-        />
-      )}
+    <div className="flex items-center gap-3 flex-wrap">
+      <a
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-500 transition-colors"
+      >
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+        </svg>
+        Open Document
+      </a>
+      {time && <span className="text-xs text-gray-400">Generated {fmtLocalTime(time)}</span>}
     </div>
   );
+}
+
+function fmtTimeLocal(isoLocal: string | undefined, tz: string | undefined): string {
+  if (!isoLocal) return "—";
+  // isoLocal is like "2026-03-31T13:10:00" — parse and format nicely
+  const [datePart, timePart] = isoLocal.split("T");
+  if (!datePart || !timePart) return isoLocal;
+  const [, mo, dy] = datePart.split("-");
+  const [hh, mm] = timePart.split(":");
+  const months = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return `${months[Number(mo)]} ${Number(dy)}, ${hh}:${mm}${tz ? ` ${tz}` : ""}`;
+}
+
+function fmtMinutes(min: number): string {
+  const h = Math.floor(min / 60);
+  const m = Math.round(min % 60);
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
 function FlightDetailView({ data }: { data: Record<string, unknown> }) {
@@ -204,85 +206,133 @@ function FlightDetailView({ data }: { data: Record<string, unknown> }) {
   const distances = perf?.distances as Record<string, unknown> | undefined;
   const weights = perf?.weights as Record<string, unknown> | undefined;
   const weather = perf?.weather as Record<string, unknown> | undefined;
+  const routeInfo = perf?.destinationRouteInformation as Record<string, unknown> | undefined;
+  const transitions = routeInfo?.transitions as Record<string, unknown> | undefined;
+  const errors = (perf?.errors as string[]) ?? [];
+  const warnings = (perf?.warnings as string[]) ?? [];
+  const firs = (routeInfo?.overflownFirs as Record<string, unknown>[]) ?? [];
+  const countries = (routeInfo?.overflownCountries as Record<string, unknown>[]) ?? [];
+  const waypoints = (routeInfo?.waypoints as Record<string, unknown>[]) ?? [];
 
   return (
-    <div className="space-y-4">
-      {/* Flight info */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-        <div>
-          <span className="text-xs text-gray-400 block">Route</span>
-          <span className="font-mono">{fd.departure as string} → {fd.destination as string}</span>
-        </div>
-        <div>
-          <span className="text-xs text-gray-400 block">Route String</span>
-          <span className="font-mono text-xs">{route?.route as string ?? "DCT"}</span>
-        </div>
-        <div>
-          <span className="text-xs text-gray-400 block">Altitude</span>
-          <span className="font-mono">FL{String(alt?.altitude ?? "—")}</span>
-        </div>
-        <div>
-          <span className="text-xs text-gray-400 block">Callsign</span>
-          <span className="font-mono">{fd.callsign as string ?? "—"}</span>
-        </div>
-      </div>
-
-      {/* Crew */}
-      {crew.length > 0 && (
-        <div>
-          <span className="text-xs text-gray-400 block mb-1">Crew</span>
-          <div className="flex gap-3">
-            {crew.map((c, i) => (
-              <span key={i} className="text-sm">
-                <span className="text-xs font-medium text-gray-500">{c.position}</span>{" "}
-                <span className="font-medium">{crewName(c.crewId)}</span>
-                {c.weight ? <span className="text-xs text-gray-400 ml-1">({c.weight}lb)</span> : null}
-              </span>
-            ))}
-          </div>
+    <div className="space-y-5">
+      {/* Errors / Warnings */}
+      {(errors.length > 0 || warnings.length > 0) && (
+        <div className="rounded-md border border-red-200 bg-red-50 p-3">
+          {errors.map((e, i) => (
+            <p key={`e${i}`} className="text-sm font-medium text-red-700">{e}</p>
+          ))}
+          {warnings.map((w, i) => (
+            <p key={`w${i}`} className="text-sm text-amber-700">{w}</p>
+          ))}
         </div>
       )}
 
-      {/* Performance summary */}
-      {fuel ? (
-        <div>
-          <span className="text-xs text-gray-400 block mb-2">Fuel</span>
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
-            <Stat label="Flight Fuel" value={`${fmtNum(fuel.flightFuel as number)} lb`} />
-            <Stat label="Taxi Fuel" value={`${fmtNum(fuel.taxiFuel as number)} lb`} />
-            <Stat label="Fuel to Dest" value={`${fmtNum(fuel.fuelToDestination as number)} lb`} />
-            <Stat label="Reserve" value={`${fmtNum(fuel.reserveFuel as number)} lb`} />
-            <Stat label="Total Fuel" value={`${fmtNum(fuel.totalFuel as number)} lb`} />
-          </div>
-        </div>
-      ) : null}
+      {/* Flight header */}
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
+        <Stat label="Route" value={`${fd.departure as string} → ${fd.destination as string}`} />
+        <Stat label="Altitude" value={`FL${String(alt?.altitude ?? "—")}`} />
+        <Stat label="Callsign" value={String(fd.callsign ?? "—")} />
+        <Stat label="Cruise Profile" value={String(routeInfo?.cruiseProfile ?? "—")} />
+        <Stat label="AIRAC" value={String(routeInfo?.airacCycle ?? "—")} />
+      </div>
 
+      {/* Route string */}
+      {route?.route && (
+        <div>
+          <span className="text-xs text-gray-400 block mb-1">Route</span>
+          <p className="font-mono text-xs bg-gray-50 border border-gray-200 rounded px-3 py-2">{String(route.route)}</p>
+        </div>
+      )}
+
+      {/* SID/STAR */}
+      {transitions && (
+        <div className="flex gap-6 text-sm">
+          {transitions.sidName && (
+            <div>
+              <span className="text-xs text-gray-400">SID</span>
+              <div className="font-mono">{String(transitions.sidName)} via {String(transitions.sidTransitionPoint)}</div>
+            </div>
+          )}
+          {transitions.starName && (
+            <div>
+              <span className="text-xs text-gray-400">STAR</span>
+              <div className="font-mono">{String(transitions.starName)} via {String(transitions.starTransitionPoint)}</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Crew */}
+      {crew.length > 0 && (
+        <div className="flex gap-4 text-sm">
+          {crew.map((c, i) => (
+            <div key={i}>
+              <span className="text-xs text-gray-400">{c.position}</span>
+              <div className="font-medium">{crewName(c.crewId)}{c.weight ? <span className="text-xs text-gray-400 ml-1">({c.weight}lb)</span> : null}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Times */}
       {times ? (
-        <div>
-          <span className="text-xs text-gray-400 block mb-2">Times</span>
+        <div className="rounded-md border border-gray-200 bg-white p-3">
+          <span className="text-xs font-medium text-gray-500 uppercase block mb-2">Times</span>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-            <Stat label="Time to Dest" value={`${fmtNum(times.timeToDestinationMinutes as number)} min`} />
-            <Stat label="Total Time" value={`${fmtNum(times.totalTimeMinutes as number)} min`} />
-            <Stat label="ETD (Local)" value={String(times.departureTimeLocal ?? "—")} />
-            <Stat label="ETA (Local)" value={String(times.estimatedArrivalTimeLocal ?? "—")} />
+            <Stat label="ETE" value={fmtMinutes(times.timeToDestinationMinutes as number)} />
+            <Stat label="Total (w/ reserve)" value={fmtMinutes(times.totalTimeMinutes as number)} />
+            <Stat label="ETD" value={fmtTimeLocal(times.departureTimeLocal as string, times.departureTimeZone as string)} />
+            <Stat label="ETA" value={fmtTimeLocal(times.estimatedArrivalTimeLocal as string, times.arrivalTimeZone as string)} />
           </div>
         </div>
       ) : null}
 
-      {distances ? (
-        <div>
-          <span className="text-xs text-gray-400 block mb-2">Distances</span>
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
-            <Stat label="Route" value={`${fmtNum(distances.destination as number, 1)} NM`} />
-            <Stat label="Great Circle" value={`${fmtNum(distances.gcdDestination as number, 1)} NM`} />
-            {Number(distances.alternate ?? 0) > 0 ? <Stat label="To Alternate" value={`${fmtNum(distances.alternate as number, 1)} NM`} /> : null}
+      {/* Fuel */}
+      {fuel ? (
+        <div className="rounded-md border border-gray-200 bg-white p-3">
+          <span className="text-xs font-medium text-gray-500 uppercase block mb-2">Fuel</span>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+            <Stat label="Flight Fuel" value={`${fmtNum(fuel.flightFuel as number)} lb`} />
+            <Stat label="To Destination" value={`${fmtNum(fuel.fuelToDestination as number)} lb`} />
+            <Stat label="Landing Fuel" value={`${fmtNum(fuel.landingFuel as number)} lb`} />
+            <Stat label="Reserve" value={`${fmtNum(fuel.reserveFuel as number)} lb`} />
+            <Stat label="Taxi" value={`${fmtNum(fuel.taxiFuel as number)} lb`} />
+            <Stat label="Total Required" value={`${fmtNum(fuel.totalFuel as number)} lb`} />
+            <Stat label="Max Capacity" value={`${fmtNum(fuel.maxTotalFuel as number)} lb`} />
+            {typeof fuel.co2Emission === "number" ? <Stat label="CO2" value={`${fmtNum(fuel.co2Emission as number)} lb`} /> : null}
           </div>
         </div>
       ) : null}
 
+      {/* Distances + Weather side by side */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        {distances ? (
+          <div className="rounded-md border border-gray-200 bg-white p-3">
+            <span className="text-xs font-medium text-gray-500 uppercase block mb-2">Distances</span>
+            <div className="grid grid-cols-2 gap-3 text-sm">
+              <Stat label="Route" value={`${fmtNum(distances.destination as number, 1)} NM`} />
+              <Stat label="Great Circle" value={`${fmtNum(distances.gcdDestination as number, 1)} NM`} />
+            </div>
+          </div>
+        ) : null}
+
+        {weather ? (
+          <div className="rounded-md border border-gray-200 bg-white p-3">
+            <span className="text-xs font-medium text-gray-500 uppercase block mb-2">Weather</span>
+            <div className="grid grid-cols-2 gap-3 text-sm">
+              <Stat label="Wind" value={`${fmtNum(weather.averageWindDirection as number)}° / ${fmtNum(weather.averageWindVelocity as number)} kt`} />
+              <Stat label="Component" value={`${Number(weather.averageWindComponent) > 0 ? "+" : ""}${fmtNum(weather.averageWindComponent as number)} kt`} />
+              <Stat label="ISA Dev" value={`${Number(weather.averageISADeviation) > 0 ? "+" : ""}${fmtNum(weather.averageISADeviation as number, 1)}°C`} />
+            </div>
+          </div>
+        ) : null}
+      </div>
+
+      {/* Weights */}
       {weights ? (
-        <div>
-          <span className="text-xs text-gray-400 block mb-2">Weights</span>
+        <div className="rounded-md border border-gray-200 bg-white p-3">
+          <span className="text-xs font-medium text-gray-500 uppercase block mb-2">Weights</span>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
             <Stat label="Ramp" value={`${fmtNum(weights.rampWeight as number)} / ${fmtNum(weights.maxRampWeight as number)} lb`} />
             <Stat label="Takeoff" value={`${fmtNum(weights.takeOffWeight as number)} / ${fmtNum(weights.maxTakeOffWeight as number)} lb`} />
@@ -292,171 +342,61 @@ function FlightDetailView({ data }: { data: Record<string, unknown> }) {
         </div>
       ) : null}
 
-      {weather ? (
-        <div>
-          <span className="text-xs text-gray-400 block mb-2">Weather</span>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-            <Stat label="Wind Component" value={`${Number(weather.averageWindComponent) > 0 ? "+" : ""}${fmtNum(weather.averageWindComponent as number)} kt`} />
-            <Stat label="Wind Dir" value={`${fmtNum(weather.averageWindDirection as number)}°`} />
-            <Stat label="Wind Velocity" value={`${fmtNum(weather.averageWindVelocity as number)} kt`} />
-            <Stat label="ISA Dev" value={`${Number(weather.averageISADeviation) > 0 ? "+" : ""}${fmtNum(weather.averageISADeviation as number, 1)}°C`} />
-          </div>
+      {/* Overflight — countries + FIRs */}
+      {(countries.length > 0 || firs.length > 0) && (
+        <div className="rounded-md border border-gray-200 bg-white p-3">
+          <span className="text-xs font-medium text-gray-500 uppercase block mb-2">Overflight</span>
+          {countries.length > 0 && (
+            <div className="flex flex-wrap gap-2 mb-3">
+              {[...new Set(countries.map(c => c.name as string))].map((name, i) => (
+                <span key={i} className="px-2.5 py-1 bg-blue-50 border border-blue-200 rounded text-xs font-medium text-blue-700">{name}</span>
+              ))}
+            </div>
+          )}
+          {firs.length > 0 && (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left text-gray-500 border-b border-gray-100">
+                    <th className="pb-1.5 pr-3">FIR</th>
+                    <th className="pb-1.5 pr-3">Name</th>
+                    <th className="pb-1.5 pr-3">Type</th>
+                    <th className="pb-1.5 pr-3">Entry</th>
+                    <th className="pb-1.5">Exit</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {firs.map((f, i) => (
+                    <tr key={i} className="border-b border-gray-50">
+                      <td className="py-1.5 pr-3 font-mono font-medium">{f.identifier as string}</td>
+                      <td className="py-1.5 pr-3">{f.name as string}</td>
+                      <td className="py-1.5 pr-3 text-gray-500">{f.airspaceType as string}</td>
+                      <td className="py-1.5 pr-3 font-mono text-gray-500">{fmtLocalTime(f.entryTime as string)}</td>
+                      <td className="py-1.5 font-mono text-gray-500">{fmtLocalTime(f.exitTime as string)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
-      ) : null}
+      )}
+
+      {/* Route waypoints */}
+      {waypoints.length > 0 && (
+        <div className="rounded-md border border-gray-200 bg-white p-3">
+          <span className="text-xs font-medium text-gray-500 uppercase block mb-2">Route Waypoints ({waypoints.length})</span>
+          <WaypointsTable waypoints={waypoints} />
+        </div>
+      )}
 
       {/* Dispatcher notes */}
       {fd.dispatcherNotes ? (
-        <div>
-          <span className="text-xs text-gray-400 block mb-1">Dispatcher Notes</span>
-          <p className="text-sm bg-amber-50 border border-amber-200 rounded p-2">{String(fd.dispatcherNotes)}</p>
+        <div className="rounded-md border border-amber-200 bg-amber-50 p-3">
+          <span className="text-xs font-medium text-amber-700 uppercase block mb-1">Dispatcher Notes</span>
+          <p className="text-sm">{String(fd.dispatcherNotes)}</p>
         </div>
       ) : null}
-    </div>
-  );
-}
-
-function PerformanceView({ data }: { data: Record<string, unknown> }) {
-  // The performance endpoint returns similar structure to flightDetail.performance
-  // but sometimes it's the top-level object itself
-  const fuel = (data.fuel ?? data) as Record<string, unknown>;
-  const times = data.times as Record<string, unknown> | undefined;
-  const distances = data.distances as Record<string, unknown> | undefined;
-  const weights = data.weights as Record<string, unknown> | undefined;
-  const weather = data.weather as Record<string, unknown> | undefined;
-  const routeInfo = data.destinationRouteInformation as Record<string, unknown> | undefined;
-
-  return (
-    <div className="space-y-4">
-      {fuel && typeof fuel.flightFuel === "number" && (
-        <div>
-          <span className="text-xs text-gray-400 block mb-2">Fuel Breakdown</span>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-            <Stat label="Flight Fuel" value={`${fmtNum(fuel.flightFuel as number)} ${fuel.unit ?? "lb"}`} />
-            <Stat label="Taxi" value={`${fmtNum(fuel.taxiFuel as number)} ${fuel.unit ?? "lb"}`} />
-            <Stat label="To Destination" value={`${fmtNum(fuel.fuelToDestination as number)} ${fuel.unit ?? "lb"}`} />
-            <Stat label="Landing Fuel" value={`${fmtNum(fuel.landingFuel as number)} ${fuel.unit ?? "lb"}`} />
-            <Stat label="Reserve" value={`${fmtNum(fuel.reserveFuel as number)} ${fuel.unit ?? "lb"}`} />
-            <Stat label="Total" value={`${fmtNum(fuel.totalFuel as number)} ${fuel.unit ?? "lb"}`} />
-            <Stat label="Max Total" value={`${fmtNum(fuel.maxTotalFuel as number)} ${fuel.unit ?? "lb"}`} />
-            {typeof fuel.co2Emission === "number" && <Stat label="CO₂" value={`${fmtNum(fuel.co2Emission as number)} lb`} />}
-          </div>
-        </div>
-      )}
-      {times && (
-        <div>
-          <span className="text-xs text-gray-400 block mb-2">Times</span>
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
-            <Stat label="To Destination" value={`${fmtNum(times.timeToDestinationMinutes as number)} min`} />
-            <Stat label="Total" value={`${fmtNum(times.totalTimeMinutes as number)} min`} />
-            <Stat label="Departure (Local)" value={String(times.departureTimeLocal ?? "—")} />
-            <Stat label="ETA (Local)" value={String(times.estimatedArrivalTimeLocal ?? "—")} />
-            <Stat label="Dep TZ" value={String(times.departureTimeZone ?? "—")} />
-            <Stat label="Arr TZ" value={String(times.arrivalTimeZone ?? "—")} />
-          </div>
-        </div>
-      )}
-      {distances && (
-        <div>
-          <span className="text-xs text-gray-400 block mb-2">Distances</span>
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
-            <Stat label="Route to Dest" value={`${fmtNum(distances.destination as number, 1)} NM`} />
-            <Stat label="Great Circle" value={`${fmtNum(distances.gcdDestination as number, 1)} NM`} />
-            {Number(distances.alternate ?? 0) > 0 ? <Stat label="To Alternate" value={`${fmtNum(distances.alternate as number, 1)} NM`} /> : null}
-          </div>
-        </div>
-      )}
-      {weights && (
-        <div>
-          <span className="text-xs text-gray-400 block mb-2">Weights</span>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-            <Stat label="Ramp" value={`${fmtNum(weights.rampWeight as number)} / ${fmtNum(weights.maxRampWeight as number)}`} />
-            <Stat label="Takeoff" value={`${fmtNum(weights.takeOffWeight as number)} / ${fmtNum(weights.maxTakeOffWeight as number)}`} />
-            <Stat label="ZFW" value={`${fmtNum(weights.zeroFuelWeight as number)} / ${fmtNum(weights.maxZeroFuelWeight as number)}`} />
-            <Stat label="Landing" value={`${fmtNum(weights.landingWeight as number)} / ${fmtNum(weights.maxLandingWeight as number)}`} />
-          </div>
-        </div>
-      )}
-      {weather && (
-        <div>
-          <span className="text-xs text-gray-400 block mb-2">Weather</span>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-            <Stat label="Avg Wind" value={`${fmtNum(weather.averageWindDirection as number)}° / ${fmtNum(weather.averageWindVelocity as number)} kt`} />
-            <Stat label="Wind Component" value={`${(weather.averageWindComponent as number) > 0 ? "+" : ""}${fmtNum(weather.averageWindComponent as number)} kt`} />
-            <Stat label="ISA Dev" value={`${(weather.averageISADeviation as number) > 0 ? "+" : ""}${fmtNum(weather.averageISADeviation as number, 1)}°C`} />
-          </div>
-        </div>
-      )}
-      {routeInfo && (
-        <div>
-          <span className="text-xs text-gray-400 block mb-2">Route Waypoints</span>
-          <WaypointsTable waypoints={(routeInfo.waypoints as Record<string, unknown>[]) ?? []} />
-        </div>
-      )}
-    </div>
-  );
-}
-
-function NavlogView({ data }: { data: Record<string, unknown> }) {
-  // Navlog can contain waypoints, fuel data, etc.
-  const waypoints = (data.waypoints ?? data.legs ?? data.fixes) as Record<string, unknown>[] | undefined;
-  if (waypoints && waypoints.length > 0) {
-    return <WaypointsTable waypoints={waypoints} />;
-  }
-  return (
-    <pre className="rounded border border-gray-200 bg-gray-50 p-3 text-xs font-mono text-gray-700 overflow-x-auto max-h-[500px] overflow-y-auto">
-      {JSON.stringify(data, null, 2)}
-    </pre>
-  );
-}
-
-function OverflightView({ data }: { data: Record<string, unknown> }) {
-  const firs = (data.overflownFirs ?? data.firs) as Record<string, unknown>[] | undefined;
-  const countries = (data.overflownCountries ?? data.countries) as Record<string, unknown>[] | undefined;
-
-  return (
-    <div className="space-y-4">
-      {countries && countries.length > 0 && (
-        <div>
-          <span className="text-xs text-gray-400 block mb-2">Countries</span>
-          <div className="flex flex-wrap gap-2">
-            {[...new Set(countries.map(c => c.name as string))].map((name, i) => (
-              <span key={i} className="px-2.5 py-1 bg-blue-50 border border-blue-200 rounded text-xs font-medium text-blue-700">{name}</span>
-            ))}
-          </div>
-        </div>
-      )}
-      {firs && firs.length > 0 && (
-        <div>
-          <span className="text-xs text-gray-400 block mb-2">FIRs</span>
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="text-left text-gray-500 border-b border-gray-100">
-                  <th className="pb-1.5 pr-3">FIR</th>
-                  <th className="pb-1.5 pr-3">Name</th>
-                  <th className="pb-1.5 pr-3">Entry</th>
-                  <th className="pb-1.5">Exit</th>
-                </tr>
-              </thead>
-              <tbody>
-                {firs.map((f, i) => (
-                  <tr key={i} className="border-b border-gray-50">
-                    <td className="py-1.5 pr-3 font-mono font-medium">{f.identifier as string}</td>
-                    <td className="py-1.5 pr-3">{f.name as string}</td>
-                    <td className="py-1.5 pr-3 font-mono text-gray-500">{fmtLocalTime(f.entryTime as string)}</td>
-                    <td className="py-1.5 font-mono text-gray-500">{fmtLocalTime(f.exitTime as string)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-      {(!firs || firs.length === 0) && (!countries || countries.length === 0) && (
-        <pre className="rounded border border-gray-200 bg-gray-50 p-3 text-xs font-mono text-gray-700 overflow-x-auto max-h-[500px] overflow-y-auto">
-          {JSON.stringify(data, null, 2)}
-        </pre>
-      )}
     </div>
   );
 }
