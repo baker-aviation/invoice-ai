@@ -802,7 +802,11 @@ function buildCandidates(
           fboArr = new Date(arrTime.getTime() + driveMinToFbo * 60_000);
           dutyOn = depTime;
 
-          if (oncomingHardDeadline && fboArr.getTime() > oncomingHardDeadline.getTime()) continue;
+          if (oncomingHardDeadline && fboArr.getTime() > oncomingHardDeadline.getTime()) {
+            const lateMin = (fboArr.getTime() - oncomingHardDeadline.getTime()) / 60_000;
+            if (lateMin > 360) continue; // >6hr late = truly not viable
+            // Keep with penalty (same logic as commercial flights)
+          }
           if (oncomingDutyEnd && dutyOn) {
             const { valid } = checkDutyDay(dutyOn, oncomingDutyEnd);
             if (!valid) continue;
@@ -926,6 +930,7 @@ function buildCandidates(
       for (const offer of offers) {
         const segs = offer.itineraries?.[0]?.segments ?? [];
         if (segs.length === 0) continue;
+        let missedDeadline = false;
 
         // Reject 2+ connections
         if (segs.length - 1 > MAX_CONNECTIONS) continue;
@@ -963,11 +968,20 @@ function buildCandidates(
           fboArr = fboArrivalAfterCommercial(flightArr, driveToFboMin);
           dutyOn = dutyOnForCommercial(flightDep);
 
-          // Hard deadline: must arrive at FBO by 1800L (offgoing crew holds until then)
-          // Arriving before first leg is a scoring PREFERENCE, not a hard requirement
+          // Hard deadline: must arrive at FBO before aircraft departs.
+          // If ALL candidates miss the deadline, we still keep them (heavily penalized)
+          // so the feasibility matrix marks this crew as viable with a late-arrival penalty.
+          // This prevents offgoing deadline cascading from making tails completely unsolvable.
+          let missedDeadline = false;
           if (oncomingHardDeadline && fboArr.getTime() > oncomingHardDeadline.getTime()) {
-            if (_debugCrew) console.log(`[CandidateDebug] ${task.name}: REJECTED ${flightNum} — FBO arrival ${fboArr.toISOString()} > deadline ${oncomingHardDeadline.toISOString()}`);
-            continue;
+            // How late are we? If more than 6 hours past deadline, truly not viable
+            const lateMinutes = (fboArr.getTime() - oncomingHardDeadline.getTime()) / 60_000;
+            if (lateMinutes > 360) {
+              if (_debugCrew) console.log(`[CandidateDebug] ${task.name}: REJECTED ${flightNum} — FBO arrival ${fboArr.toISOString()} > deadline ${oncomingHardDeadline.toISOString()} (${Math.round(lateMinutes)}min late, >6hr)`);
+              continue;
+            }
+            missedDeadline = true;
+            if (_debugCrew) console.log(`[CandidateDebug] ${task.name}: LATE ${flightNum} — FBO arrival ${fboArr.toISOString()} > deadline ${oncomingHardDeadline.toISOString()} (${Math.round(lateMinutes)}min late, keeping with penalty)`);
           }
 
           // Check: duty-on not before 0400 local
@@ -1053,7 +1067,13 @@ function buildCandidates(
           backups: [],
         };
 
-        if (_debugCrew) console.log(`[CandidateDebug] ${task.name}: ACCEPTED ${flightNum} ${originIata}→${destIata} dep=${flightDep.toISOString().slice(11,16)} fboArr=${fboArr?.toISOString().slice(11,16) ?? '?'} cost=$${Math.round(cost + groundCost)}`);
+        // Apply heavy penalty if candidate misses the deadline (but was kept as fallback)
+        if (missedDeadline) {
+          candidate.score = -50; // Will be overridden by scoreCandidate, but signals low priority
+          candidate.cost += 500; // $500 penalty for late arrival
+        }
+
+        if (_debugCrew) console.log(`[CandidateDebug] ${task.name}: ${missedDeadline ? 'LATE-ACCEPTED' : 'ACCEPTED'} ${flightNum} ${originIata}→${destIata} dep=${flightDep.toISOString().slice(11,16)} fboArr=${fboArr?.toISOString().slice(11,16) ?? '?'} cost=$${Math.round(cost + groundCost)}`);
         candidates.push(candidate);
       }
       } // end for searchDate
