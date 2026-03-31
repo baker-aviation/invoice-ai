@@ -1637,8 +1637,22 @@ def pull_edct(
 _TZ_OFFSETS = {
     "EST": "-0500", "EDT": "-0400", "CST": "-0600", "CDT": "-0500",
     "MST": "-0700", "MDT": "-0600", "PST": "-0800", "PDT": "-0700",
+    "AST": "-0400", "ADT": "-0300",  # Atlantic (Puerto Rico, USVI)
     "UTC": "+0000", "Z": "+0000", "GMT": "+0000",
 }
+
+# Territories where ICAO code differs from FAA/domestic K-prefix code
+# ForeFlight uses ICAO (TJSJ), JetInsight uses FAA (KSJU)
+_TERRITORY_ICAO_TO_FAA = {
+    "TJSJ": "KSJU",  # San Juan, Puerto Rico
+    "TJBQ": "KBQN",  # Aguadilla, Puerto Rico
+    "TJPS": "KPSE",  # Ponce, Puerto Rico
+    "TJIG": "KSIG",  # San Juan Isla Grande
+    "TIST": "KSTT",  # St. Thomas, USVI
+    "TISX": "KSTX",  # St. Croix, USVI
+    "TUPJ": "KTPJ",  # Tortola, BVI (sometimes in JI feeds)
+}
+_TERRITORY_FAA_TO_ICAO = {v: k for k, v in _TERRITORY_ICAO_TO_FAA.items()}
 
 
 def _normalize_edct_time(raw: str) -> str:
@@ -1748,30 +1762,44 @@ def _parse_edct_email(subject: str, body: str, msg_id: str) -> Dict[str, Any]:
 
 def _find_flight_for_alert(supa, alert: Dict) -> Optional[str]:
     """Match an alert to a flight by airport pair within a ±12h window.
-    Also backfills tail_number on the alert from the matched flight."""
+    Also backfills tail_number on the alert from the matched flight.
+    Tries territory code aliases (TJSJ↔KSJU) if exact match fails."""
     dep = alert.get("departure_icao")
     arr = alert.get("arrival_icao")
     if not dep or not arr:
         return None
 
+    # Build list of (dep, arr) combos to try — original first, then aliases
+    dep_codes = [dep]
+    arr_codes = [arr]
+    if dep in _TERRITORY_ICAO_TO_FAA:
+        dep_codes.append(_TERRITORY_ICAO_TO_FAA[dep])
+    elif dep in _TERRITORY_FAA_TO_ICAO:
+        dep_codes.append(_TERRITORY_FAA_TO_ICAO[dep])
+    if arr in _TERRITORY_ICAO_TO_FAA:
+        arr_codes.append(_TERRITORY_ICAO_TO_FAA[arr])
+    elif arr in _TERRITORY_FAA_TO_ICAO:
+        arr_codes.append(_TERRITORY_FAA_TO_ICAO[arr])
+
     now = datetime.now(timezone.utc)
-    res = (
-        supa.table(FLIGHTS_TABLE)
-        .select("id, tail_number")
-        .eq("departure_icao", dep)
-        .eq("arrival_icao", arr)
-        .gte("scheduled_departure", (now - timedelta(hours=2)).isoformat())
-        .lte("scheduled_departure", (now + timedelta(hours=12)).isoformat())
-        .limit(1)
-        .execute()
-    )
-    rows = res.data or []
-    if not rows:
-        return None
-    # Backfill tail_number from flight if not already parsed from email
-    if not alert.get("tail_number") and rows[0].get("tail_number"):
-        alert["tail_number"] = rows[0]["tail_number"]
-    return rows[0]["id"]
+    for d in dep_codes:
+        for a in arr_codes:
+            res = (
+                supa.table(FLIGHTS_TABLE)
+                .select("id, tail_number")
+                .eq("departure_icao", d)
+                .eq("arrival_icao", a)
+                .gte("scheduled_departure", (now - timedelta(hours=2)).isoformat())
+                .lte("scheduled_departure", (now + timedelta(hours=12)).isoformat())
+                .limit(1)
+                .execute()
+            )
+            rows = res.data or []
+            if rows:
+                if not alert.get("tail_number") and rows[0].get("tail_number"):
+                    alert["tail_number"] = rows[0]["tail_number"]
+                return rows[0]["id"]
+    return None
 
 
 # ─── TFR proximity checking (FAA GeoServer WFS API) ──────────────────────────
