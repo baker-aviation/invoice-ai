@@ -275,7 +275,7 @@ const RAW: [string, string, boolean][] = [
 
   // Texas
   ["KMFE", "KMFE", true],    // McAllen (IS commercial — AA/United)
-  ["KGPI", "KGPI", true],    // Glacier Park (IS commercial — same as Kalispell)
+  ["KGPI", "KFCA", true],    // Glacier Park/Kalispell — commercial IATA is FCA, not GPI
   ["KFAT", "KFAT", true],    // Fresno (IS commercial)
 
   // Mountain / Remote

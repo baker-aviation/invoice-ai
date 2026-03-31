@@ -2768,8 +2768,39 @@ function buildFeasibilityMatrix(params: {
         const proximityBonus = Math.max(0, 120 - (avgMiles / 1000) * 120);
 
         const afterLiveBonus = sp.position === "after_live" ? 80 : 0;
+
+        // Flight-existence check: if the commercial flight map has ZERO flights
+        // to this swap airport from ANY crew home, heavily penalize this swap point.
+        // Prevents selecting airports with no cached flights (e.g., SBA with 0 flights).
+        let hasAnyFlightsToSwap = false;
+        if (commercialFlights) {
+          const destIatas = commAirports.map((c) => toIata(c));
+          for (const p of pool) {
+            for (const home of p.home_airports) {
+              const homeIata = toIata(toIcao(home));
+              const homeIcao = toIcao(home);
+              const homeSearchIatas = [homeIata];
+              if (!isCommercialAirport(homeIcao)) {
+                const nearbyComm = findAllCommercialAirports(homeIcao, aliases);
+                for (const nc of nearbyComm) homeSearchIatas.push(toIata(nc));
+              }
+              for (const oi of homeSearchIatas) {
+                for (const di of destIatas) {
+                  if (lookupFlights(commercialFlights, oi, di, swapDate).length > 0) {
+                    hasAnyFlightsToSwap = true; break;
+                  }
+                }
+                if (hasAnyFlightsToSwap) break;
+              }
+              if (hasAnyFlightsToSwap) break;
+            }
+            if (hasAnyFlightsToSwap) break;
+          }
+        }
+        const noFlightsPenalty = hasAnyFlightsToSwap ? 0 : -300;
+
         const ease = -(minDrive === Infinity ? 999 : minDrive) + (selfCommercial ? 30 : 0)
-          + commAirports.length * 2 - (isInternational ? 500 : 0) - timingPenalty + proximityBonus + afterLiveBonus;
+          + commAirports.length * 2 - (isInternational ? 500 : 0) - timingPenalty + proximityBonus + afterLiveBonus + noFlightsPenalty;
         if (ease > bestEase) { bestEase = ease; bestSp = sp; }
       }
       swapPointsToTry = [bestSp];
