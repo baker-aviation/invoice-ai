@@ -1,7 +1,7 @@
 export const dynamic = "force-dynamic";
 
-import SuperAdminDashboard from "./SuperAdminDashboard";
+import SuperAdminTabs from "./SuperAdminTabs";
 
 export default function SuperAdminPage() {
-  return <SuperAdminDashboard />;
+  return <SuperAdminTabs />;
 }
