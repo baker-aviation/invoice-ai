@@ -1886,7 +1886,7 @@ function AircraftCompactRow({
   onSaveNote: (flightId: string, tailNumber: string | null, note: string) => void;
   onDragStart: (e: React.DragEvent, flightId: string, fromVanId: number) => void;
   onDragOverItem: (vanId: number, flightId: string, insertBefore: boolean) => void;
-  onRemove: (flightId: string) => void;
+  onRemove: (flightId: string, tailNumber?: string, fromVanId?: number) => void;
   onSetPrimaryAirport?: (tail: string, airport: string) => void;
   multiVisitVans?: number[];
   multiVisitVanDetails?: { vanId: number; airports: string[] }[];
@@ -2048,7 +2048,7 @@ function AircraftCompactRow({
             </div>
           )}
           <button
-            onClick={(e) => { e.stopPropagation(); onRemove(arrFlight.id); }}
+            onClick={(e) => { e.stopPropagation(); onRemove(arrFlight.id, arrFlight.tail_number ?? undefined, zone.vanId); }}
             className="p-1 rounded-md text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors"
             title="Remove from this van"
           >
@@ -2323,7 +2323,7 @@ function VanScheduleCard({
   onDragOver: (e: React.DragEvent) => void;
   onDrop: (e: React.DragEvent, toVanId: number) => void;
   onDragLeave: (e: React.DragEvent) => void;
-  onRemove: (flightId: string) => void;  // delete aircraft from this van
+  onRemove: (flightId: string, tailNumber?: string, fromVanId?: number) => void;
   onSetPrimaryAirport?: (tail: string, airport: string) => void;
   onPublishVan?: (vanId: number) => Promise<void>;
   onAddToVan?: (flightId: string, vanId: number) => void;
@@ -2825,6 +2825,8 @@ function ScheduleTab({
   const [unscheduledOpen, setUnscheduledOpen] = useState(false);
   const [wontSeeOpen, setWontSeeOpen] = useState(false);
   const unassignedDragTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const allFlightsRef = useRef(allFlights);
+  allFlightsRef.current = allFlights;
   const unscheduledDragTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Manual overrides: flightId → target vanId (moves) + removed flight IDs
@@ -3882,7 +3884,7 @@ function ScheduleTab({
     } catch { /* ignore bad data */ }
   }, [finalItemsByVan]);
 
-  const handleRemove = useCallback((flightId: string) => {
+  const handleRemove = useCallback((flightId: string, tailNumber?: string, fromVanId?: number) => {
     // Handle unscheduled aircraft removal
     if (flightId.startsWith("unsched_")) {
       const tail = flightId.replace("unsched_", "");
@@ -3894,11 +3896,20 @@ function ScheduleTab({
       });
       return;
     }
-    // Remove any move override for this flight
+    // Remove any move override for this flight, and also any sibling overrides
+    // for the same tail pointing to the same van (airport overrides can swap the
+    // displayed arrFlight, so the displayed ID may differ from the override ID).
     setOverrides((prev) => {
-      if (!prev.has(flightId)) return prev;
       const next = new Map(prev);
       next.delete(flightId);
+      if (tailNumber && fromVanId !== undefined) {
+        const flights = allFlightsRef.current;
+        for (const [fid, vid] of prev) {
+          if (vid !== fromVanId || fid === flightId) continue;
+          const f = flights.find((fl) => fl.id === fid);
+          if (f?.tail_number === tailNumber) next.delete(fid);
+        }
+      }
       return next;
     });
     // Add to removals
