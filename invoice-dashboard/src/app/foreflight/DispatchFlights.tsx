@@ -36,7 +36,12 @@ interface FlightSummary {
   filingInfo: {
     filingStatus: string;
     ctot: string | null;
-    atcMessages: unknown[];
+    atcMessages: Array<{
+      content: string;
+      type: string;
+      sender: string;
+      timestamp: string;
+    }>;
   } | null;
 }
 
@@ -716,6 +721,39 @@ export default function DispatchFlights() {
                                   );
                                 })}
                               </div>
+
+                              {/* ATC Filing Messages */}
+                              {flight.filingInfo?.atcMessages && flight.filingInfo.atcMessages.length > 0 ? (
+                                <div className="rounded-lg border border-gray-200 bg-white p-4 mt-3">
+                                  <span className="text-xs font-medium text-gray-700 uppercase block mb-3">
+                                    Filing Messages ({flight.filingInfo.atcMessages.length})
+                                  </span>
+                                  <div className="space-y-2">
+                                    {flight.filingInfo.atcMessages.map((msg, i) => (
+                                      <div key={i} className={`rounded border p-3 ${
+                                        msg.type === "ACK" ? "border-green-200 bg-green-50" :
+                                        msg.type === "FPL" ? "border-blue-200 bg-blue-50" :
+                                        msg.type === "CNL" ? "border-red-200 bg-red-50" :
+                                        "border-gray-200 bg-gray-50"
+                                      }`}>
+                                        <div className="flex items-center justify-between mb-1.5">
+                                          <div className="flex items-center gap-2">
+                                            <span className={`px-2 py-0.5 rounded text-xs font-bold ${
+                                              msg.type === "ACK" ? "bg-green-200 text-green-800" :
+                                              msg.type === "FPL" ? "bg-blue-200 text-blue-800" :
+                                              msg.type === "CNL" ? "bg-red-200 text-red-800" :
+                                              "bg-gray-200 text-gray-800"
+                                            }`}>{msg.type}</span>
+                                            <span className="text-xs text-gray-500 font-mono">{msg.sender}</span>
+                                          </div>
+                                          <span className="text-xs text-gray-400">{fmtLocalTime(msg.timestamp)}</span>
+                                        </div>
+                                        <pre className="text-xs font-mono text-gray-700 whitespace-pre-wrap leading-relaxed">{msg.content}</pre>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              ) : null}
 
                               {/* Loaded data sections */}
                               {flightDetail && Object.entries(flightDetail).map(([key, val]) => (
