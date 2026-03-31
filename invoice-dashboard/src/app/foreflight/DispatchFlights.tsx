@@ -217,7 +217,7 @@ function FlightDetailView({ data }: { data: Record<string, unknown> }) {
   return (
     <div className="space-y-5">
       {/* Errors / Warnings */}
-      {(errors.length > 0 || warnings.length > 0) && (
+      {(errors.length > 0 || warnings.length > 0) ? (
         <div className="rounded-md border border-red-200 bg-red-50 p-3">
           {errors.map((e, i) => (
             <p key={`e${i}`} className="text-sm font-medium text-red-700">{e}</p>
@@ -226,7 +226,7 @@ function FlightDetailView({ data }: { data: Record<string, unknown> }) {
             <p key={`w${i}`} className="text-sm text-amber-700">{w}</p>
           ))}
         </div>
-      )}
+      ) : null}
 
       {/* Flight header */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
@@ -238,30 +238,30 @@ function FlightDetailView({ data }: { data: Record<string, unknown> }) {
       </div>
 
       {/* Route string */}
-      {route?.route && (
+      {route?.route ? (
         <div>
           <span className="text-xs text-gray-400 block mb-1">Route</span>
           <p className="font-mono text-xs bg-gray-50 border border-gray-200 rounded px-3 py-2">{String(route.route)}</p>
         </div>
-      )}
+      ) : null}
 
       {/* SID/STAR */}
-      {transitions && (
+      {transitions ? (
         <div className="flex gap-6 text-sm">
-          {transitions.sidName && (
+          {transitions.sidName ? (
             <div>
               <span className="text-xs text-gray-400">SID</span>
               <div className="font-mono">{String(transitions.sidName)} via {String(transitions.sidTransitionPoint)}</div>
             </div>
-          )}
-          {transitions.starName && (
+          ) : null}
+          {transitions.starName ? (
             <div>
               <span className="text-xs text-gray-400">STAR</span>
               <div className="font-mono">{String(transitions.starName)} via {String(transitions.starTransitionPoint)}</div>
             </div>
-          )}
+          ) : null}
         </div>
-      )}
+      ) : null}
 
       {/* Crew */}
       {crew.length > 0 && (
@@ -343,17 +343,17 @@ function FlightDetailView({ data }: { data: Record<string, unknown> }) {
       ) : null}
 
       {/* Overflight — countries + FIRs */}
-      {(countries.length > 0 || firs.length > 0) && (
+      {(countries.length > 0 || firs.length > 0) ? (
         <div className="rounded-md border border-gray-200 bg-white p-3">
           <span className="text-xs font-medium text-gray-500 uppercase block mb-2">Overflight</span>
-          {countries.length > 0 && (
+          {countries.length > 0 ? (
             <div className="flex flex-wrap gap-2 mb-3">
               {[...new Set(countries.map(c => c.name as string))].map((name, i) => (
                 <span key={i} className="px-2.5 py-1 bg-blue-50 border border-blue-200 rounded text-xs font-medium text-blue-700">{name}</span>
               ))}
             </div>
-          )}
-          {firs.length > 0 && (
+          ) : null}
+          {firs.length > 0 ? (
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
                 <thead>
@@ -378,17 +378,17 @@ function FlightDetailView({ data }: { data: Record<string, unknown> }) {
                 </tbody>
               </table>
             </div>
-          )}
+          ) : null}
         </div>
-      )}
+      ) : null}
 
       {/* Route waypoints */}
-      {waypoints.length > 0 && (
+      {waypoints.length > 0 ? (
         <div className="rounded-md border border-gray-200 bg-white p-3">
           <span className="text-xs font-medium text-gray-500 uppercase block mb-2">Route Waypoints ({waypoints.length})</span>
           <WaypointsTable waypoints={waypoints} />
         </div>
-      )}
+      ) : null}
 
       {/* Dispatcher notes */}
       {fd.dispatcherNotes ? (
