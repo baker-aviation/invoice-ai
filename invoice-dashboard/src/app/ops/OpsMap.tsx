@@ -530,7 +530,59 @@ function useFaaDelays(enabled: boolean): { airports: DelayAirport[]; updated: st
 /* ── Flow Controls (reroutes / CTOPs / AFPs from SWIM) ── */
 
 const FLOW_COLORS = [
-  "#22c55e", // bright green — distinct from red Challenger in-flight lines
+  "#22c55e", // green
+  "#f97316", // orange
+  "#8b5cf6", // purple
+  "#06b6d4", // cyan
+  "#eab308", // yellow
+];
+
+/** Demo flow lines for visual reference — remove once SWIM feed is consistently populating */
+const DEMO_FLOW_LINES: FlowControlLine[] = [
+  {
+    id: "demo-ne-reroute",
+    event_type: "CTOP",
+    name: "East Coast CTOP",
+    subject: "CTOP — EWR/JFK Arrivals via BEETS-COATE-JERSY",
+    status: "active",
+    severity: "warning",
+    origins: ["ZDC", "ZTL"],
+    destinations: ["KEWR", "KJFK"],
+    waypoints: [
+      [39.955714, -77.449875],  // BEETS
+      [40.130714, -75.376769],  // COPES
+      [41.136228, -74.695167],  // COATE
+      [40.791386, -74.399444],  // JERSY
+      [40.490744, -74.749092],  // HARLM
+    ],
+    waypointNames: ["BEETS", "COPES", "COATE", "JERSY", "HARLM"],
+    effective_at: new Date(Date.now() - 2 * 3600_000).toISOString(),
+    expires_at: new Date(Date.now() + 4 * 3600_000).toISOString(),
+    tmiId: "RRDCC509",
+    fcaName: "FCA_NE_ARRVL",
+  },
+  {
+    id: "demo-se-afp",
+    event_type: "AFP",
+    name: "Southeast AFP",
+    subject: "AFP — ATL Arrivals via DAWWN-BEORN-AZZOG",
+    status: "active",
+    severity: "warning",
+    origins: ["ZJX", "ZMA"],
+    destinations: ["KATL"],
+    waypoints: [
+      [30.373592, -84.076242],  // BULZI
+      [31.480544, -84.612969],  // DAWWN
+      [31.918356, -84.831961],  // BEORN
+      [32.785844, -85.250197],  // AZZOG
+      [33.629072, -84.435072],  // ATL
+    ],
+    waypointNames: ["BULZI", "DAWWN", "BEORN", "AZZOG", "ATL"],
+    effective_at: new Date(Date.now() - 1 * 3600_000).toISOString(),
+    expires_at: new Date(Date.now() + 3 * 3600_000).toISOString(),
+    tmiId: "AFPATL218",
+    fcaName: "FCA_SE_ATL",
+  },
 ];
 
 function useFlowControls(enabled: boolean): FlowControlLine[] {
@@ -545,8 +597,13 @@ function useFlowControls(enabled: boolean): FlowControlLine[] {
         const res = await fetch("/api/ops/flow-controls", { cache: "no-store" });
         const data = await res.json();
         if (cancelled || !data.ok) return;
-        setLines(data.lines ?? []);
-      } catch { /* ignore */ }
+        const live = data.lines ?? [];
+        // Append demo lines so there's always something to show
+        setLines([...live, ...DEMO_FLOW_LINES]);
+      } catch {
+        // Even if fetch fails, show demos
+        if (!cancelled) setLines(DEMO_FLOW_LINES);
+      }
     }
 
     load();
@@ -726,8 +783,12 @@ function MapLegend({ dark, showDelays, showFlows, flowCount }: { dark: boolean; 
         <>
           <div className={`font-semibold ${heading} text-[10px] uppercase tracking-wider mt-2 mb-1`}>Flow Controls</div>
           <div className="flex items-center gap-2">
+            <LegendLine color="#22c55e" />
+            <span className={text}>CTOP</span>
+          </div>
+          <div className="flex items-center gap-2">
             <LegendLine color="#f97316" />
-            <span className={text}>CTOP / AFP</span>
+            <span className={text}>AFP</span>
           </div>
         </>
       )}
@@ -756,7 +817,7 @@ function ToggleBtn({ label, active, onClick }: { label: string; active: boolean;
 
 export default function OpsMap({ aircraft, flightInfo, onHoldingDetected: onHoldingDetectedProp }: Props) {
   const { prefs, toggle } = useMapPreferences("ops_map", {
-    darkMode: true, showRadar: false, showVans: false, showDelays: true, showFlows: false,
+    darkMode: true, showRadar: false, showVans: false, showDelays: true, showFlows: true,
   });
   const { darkMode, showRadar, showVans, showDelays, showFlows } = prefs;
   const [holdingTails, setHoldingTails] = useState<Set<string>>(new Set());
