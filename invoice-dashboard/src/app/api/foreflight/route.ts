@@ -110,13 +110,46 @@ export async function GET(req: NextRequest) {
   }
 }
 
-/** POST /api/foreflight — create a flight plan and get fuel/performance back */
+/**
+ * POST /api/foreflight — two modes:
+ *   - Default (no action): create temp flight for fuel calc, then auto-delete
+ *   - ?action=create: push a real flight to ForeFlight dispatch (keeps it)
+ */
 export async function POST(req: NextRequest) {
   const auth = await requireAuth(req);
   if (!isAuthed(auth)) return auth.error;
 
+  const action = req.nextUrl.searchParams.get("action");
+
   try {
     const body = await req.json();
+
+    // ─── action=create: push full flight to ForeFlight dispatch ───
+    if (action === "create") {
+      const { flight } = body;
+      if (!flight?.departure || !flight?.destination || !flight?.aircraftRegistration || !flight?.scheduledTimeOfDeparture) {
+        return NextResponse.json(
+          { error: "flight.departure, destination, aircraftRegistration, and scheduledTimeOfDeparture required" },
+          { status: 400 },
+        );
+      }
+
+      const flightReq = { flight };
+      const res = await fetch(`${FF_BASE}/Flights`, {
+        method: "POST",
+        headers: { "x-api-key": apiKey(), "Content-Type": "application/json" },
+        body: JSON.stringify(flightReq),
+      });
+
+      const parsed = await safeParseFF(res);
+      if (!parsed.ok) {
+        return NextResponse.json({ error: parsed.error, request: flightReq }, { status: parsed.status });
+      }
+
+      return NextResponse.json(parsed.data);
+    }
+
+    // ─── Default: temp flight for fuel calc (auto-deletes) ───
     const {
       departure,
       destination,
@@ -136,13 +169,12 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Build ForeFlight flight plan request
     const flightReq: Record<string, unknown> = {
       flight: {
         departure,
         destination,
         aircraftRegistration,
-        scheduledTimeOfDeparture: new Date(Date.now() + 3600_000).toISOString(), // 1hr from now
+        scheduledTimeOfDeparture: new Date(Date.now() + 3600_000).toISOString(),
         ...(cruiseProfileUUID && { cruiseProfileUUID }),
         ...(alternate && { alternate }),
         ...(route && {
@@ -170,29 +202,22 @@ export async function POST(req: NextRequest) {
 
     const res = await fetch(`${FF_BASE}/Flights`, {
       method: "POST",
-      headers: {
-        "x-api-key": apiKey(),
-        "Content-Type": "application/json",
-      },
+      headers: { "x-api-key": apiKey(), "Content-Type": "application/json" },
       body: JSON.stringify(flightReq),
     });
 
     const parsed = await safeParseFF(res);
     if (!parsed.ok) {
-      return NextResponse.json(
-        { error: parsed.error, request: flightReq },
-        { status: parsed.status },
-      );
+      return NextResponse.json({ error: parsed.error, request: flightReq }, { status: parsed.status });
     }
     const data = parsed.data as Record<string, unknown>;
 
-    // Clean up — delete the flight we just created so it doesn't clutter dispatch
     const flightId = data.flightId as string | undefined;
     if (flightId) {
       fetch(`${FF_BASE}/Flights/${encodeURIComponent(flightId)}`, {
         method: "DELETE",
         headers: { "x-api-key": apiKey() },
-      }).catch(() => {}); // fire and forget
+      }).catch(() => {});
     }
 
     return NextResponse.json({ ...data, _request: flightReq });
