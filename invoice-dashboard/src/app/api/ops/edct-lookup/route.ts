@@ -227,7 +227,19 @@ export async function POST(req: NextRequest) {
     results.push(...batchResults);
   }
 
-  const found = results.filter((r) => r.found);
+  const allFound = results.filter((r) => r.found);
+
+  // Deduplicate by tail+destination — territory variants produce multiple hits
+  const dedupMap = new Map<string, FaaEdctResult>();
+  for (const r of allFound) {
+    const arrNorm = stripK(r.destination);
+    const key = `${r.tail}|${arrNorm}|${r.edct_time ?? "cancelled"}`;
+    const existing = dedupMap.get(key);
+    if (!existing || (r.callsign !== r.tail && existing.callsign === existing.tail)) {
+      dedupMap.set(key, r);
+    }
+  }
+  const found = [...dedupMap.values()];
 
   // Store any found EDCTs as ops_alerts (upsert by source_message_id to avoid duplicates)
   // Skip EDCTs from before today (UTC) and cancelled ones — keep until end of day
@@ -238,7 +250,10 @@ export async function POST(req: NextRequest) {
     for (const edct of found) {
       if (edct.edct_time && new Date(edct.edct_time).getTime() < todayStart) continue;
 
-      const sourceId = `faa-edct-${edct.callsign}-${edct.origin}-${edct.destination}`;
+      // Normalize source_id to avoid territory dupes (KSJU vs TJSJ)
+      const normDept = stripK(edct.origin);
+      const normArr = stripK(edct.destination);
+      const sourceId = `faa-edct-${edct.callsign}-${normDept}-${normArr}`;
       const delayStr = edct.delay_minutes != null ? `${edct.delay_minutes}min delay` : "";
       const ctrlStr = edct.control_element ? ` — ${edct.control_element}` : "";
 
