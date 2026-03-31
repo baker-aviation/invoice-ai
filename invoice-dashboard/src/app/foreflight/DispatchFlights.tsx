@@ -144,17 +144,50 @@ function FormattedView({ label, data }: { label: string; data: unknown }) {
   const d = data as Record<string, unknown>;
   if (!d) return <p className="text-xs text-gray-400">No data</p>;
 
+  // Detect URL-based responses (RWA, Briefing, W&B, ICAO, Navlog can return {url, timeGenerated})
+  if (d.url && typeof d.url === "string") return <DocumentLinkView data={d} />;
+
   if (label === "Full Detail") return <FlightDetailView data={d} />;
   if (label === "Performance") return <PerformanceView data={d} />;
   if (label === "Navlog") return <NavlogView data={d} />;
   if (label === "Overflight") return <OverflightView data={d} />;
 
-  // For briefing, RWA, W&B, ICAO — default to formatted JSON since
-  // structure can vary. User can toggle raw JSON for full detail.
   return (
     <pre className="rounded border border-gray-200 bg-gray-50 p-3 text-xs font-mono text-gray-700 overflow-x-auto max-h-[500px] overflow-y-auto">
       {JSON.stringify(data, null, 2)}
     </pre>
+  );
+}
+
+function DocumentLinkView({ data }: { data: Record<string, unknown> }) {
+  const url = data.url as string;
+  const time = data.timeGenerated as string | undefined;
+  const isPdf = url.includes(".pdf") || url.includes("Report") || url.includes("Briefing") || url.includes("navlog");
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-3 flex-wrap">
+        <a
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-500 transition-colors"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          </svg>
+          Open Document
+        </a>
+        {time && <span className="text-xs text-gray-400">Generated {fmtLocalTime(time)}</span>}
+      </div>
+      {isPdf && (
+        <iframe
+          src={url}
+          className="w-full h-[600px] rounded-lg border border-gray-200"
+          title="ForeFlight Document"
+        />
+      )}
+    </div>
   );
 }
 
