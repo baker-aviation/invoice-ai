@@ -908,31 +908,32 @@ export default function FuelPricesTable({
   }, [initialPrices]);
 
   // Advertised price lookup: key = "vendor_lower|airport|week_monday" → rows
+  // Uses ALL advertised prices (not just fresh) so historical invoices match historical rates
   const advLookup = useMemo(() => {
     const lookup = new Map<string, AdvertisedPriceRow[]>();
-    for (const adv of freshAdvertisedPrices) {
+    for (const adv of activeAdvertisedPrices) {
       const key = `${adv.fbo_vendor.toLowerCase()}|${adv.airport_code}|${adv.week_start}`;
       if (!lookup.has(key)) lookup.set(key, []);
       lookup.get(key)!.push(adv);
     }
     return lookup;
-  }, [freshAdvertisedPrices]);
+  }, [activeAdvertisedPrices]);
 
   // Best-rate lookup: key = "airport|week_monday" → all vendor rows for that airport+week
   const advByAirportWeek = useMemo(() => {
     const lookup = new Map<string, AdvertisedPriceRow[]>();
-    for (const adv of freshAdvertisedPrices) {
+    for (const adv of activeAdvertisedPrices) {
       const key = `${adv.airport_code}|${adv.week_start}`;
       if (!lookup.has(key)) lookup.set(key, []);
       lookup.get(key)!.push(adv);
     }
     return lookup;
-  }, [freshAdvertisedPrices]);
+  }, [activeAdvertisedPrices]);
 
   // Fallback lookup: airport → all weeks sorted newest first (for when exact week has no match)
   const advByAirport = useMemo(() => {
     const lookup = new Map<string, AdvertisedPriceRow[]>();
-    for (const adv of freshAdvertisedPrices) {
+    for (const adv of activeAdvertisedPrices) {
       if (!lookup.has(adv.airport_code)) lookup.set(adv.airport_code, []);
       lookup.get(adv.airport_code)!.push(adv);
     }
@@ -941,7 +942,7 @@ export default function FuelPricesTable({
       rows.sort((a, b) => b.week_start.localeCompare(a.week_start));
     }
     return lookup;
-  }, [freshAdvertisedPrices]);
+  }, [activeAdvertisedPrices]);
 
   // Latest week per vendor (for freshness indicator)
   const vendorFreshness = useMemo(() => {
