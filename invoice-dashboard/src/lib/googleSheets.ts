@@ -123,7 +123,7 @@ export async function listWeeklySheets(): Promise<string[]> {
   const sheets = await listSheets();
   return sheets
     .map(s => s.title)
-    .filter(n => /^[A-Z]{3}\s+\d+-[A-Z]{3}\s+\d+\s*\([AB]\)$/i.test(n));
+    .filter(n => /[A-Z]{3}\s+\d+-[A-Z]{3}\s+\d+\s*\([AB]\)/i.test(n));
 }
 
 export { CREW_INFO_SHEET_ID };
