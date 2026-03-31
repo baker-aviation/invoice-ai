@@ -241,9 +241,11 @@ export async function buildHasdataCache(
   let pairs = await computeCityPairMatrix(swapDate);
 
   if (mode === "seed") {
-    await supa.from("hasdata_flight_cache").delete().eq("cache_date", swapDate);
-    console.log(`[HasdataCache] Cleared existing cache for ${swapDate}`);
-  } else if (mode === "fill") {
+    // NEVER delete the cache — too expensive to rebuild. Just upsert over existing.
+    // The old behavior wiped everything, losing manually-seeded pairs.
+    console.log(`[HasdataCache] Seed mode: will upsert over existing (no delete)`);
+  }
+  if (mode === "fill") {
     // Only fetch pairs not already cached — skips pairs with any existing row
     const { data: existing } = await supa
       .from("hasdata_flight_cache")
