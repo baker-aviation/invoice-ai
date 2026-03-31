@@ -3385,17 +3385,12 @@ export function twoPassAssignAndOptimize(params: {
 } {
   const { swapAssignments, oncomingPool, crewRoster, flights, swapDate, aliases, commercialFlights, preComputedRoutes, preComputedOffgoing, excludeTails, offgoingDeadlines } = params;
 
-  // ── Pass 1: Normal Wednesday only (exclude early/late volunteers) ──────
-  const normalPool: OncomingPool = {
-    pic: oncomingPool.pic.filter((p) => !p.early_volunteer && !p.late_volunteer),
-    sic: oncomingPool.sic.filter((p) => !p.early_volunteer && !p.late_volunteer),
-  };
-
-  // Also include SkillBridge crew in pass 1 — they can be forced, no bonus
-  const skillbridgeEarlyPic = oncomingPool.pic.filter((p) => p.is_skillbridge && (p.early_volunteer || p.late_volunteer));
-  const skillbridgeEarlySic = oncomingPool.sic.filter((p) => p.is_skillbridge && (p.early_volunteer || p.late_volunteer));
-  normalPool.pic.push(...skillbridgeEarlyPic);
-  normalPool.sic.push(...skillbridgeEarlySic);
+  // ── Pass 1: Use FULL pool (volunteers included) ──────────────────────
+  // Previously excluded early/late volunteers from Pass 1 to save bonuses,
+  // but this gutted the pool by ~50% when many crew are volunteers, causing
+  // far worse results. Now we use the full pool and track which assignments
+  // used volunteers so we can compute bonus costs accurately.
+  const normalPool = oncomingPool;
 
   const pass1Assignment = assignOncomingCrew({
     swapAssignments,
@@ -3447,82 +3442,45 @@ export function twoPassAssignAndOptimize(params: {
     };
   }
 
-  // ── Pass 2: Add early/late volunteers for unsolved tails ──────────────
-  console.log(`[Two-Pass] Pass 1: ${pass1Solved} solved, ${pass1Unsolved} unsolved (${[...unsolvedTails].join(", ")}). Running Pass 2 with volunteers...`);
+  // ── Pass 2: Volunteer bonus tracking ─────────────────────────────────
+  // Since Pass 1 now uses the full pool (including volunteers), Pass 2 doesn't
+  // re-run assignment. Instead, we just identify which Pass 1 assignments used
+  // paid (non-SkillBridge) early/late volunteers so we can compute bonus costs.
+  console.log(`[Two-Pass] Pass 1: ${pass1Solved} solved, ${pass1Unsolved} unsolved (${[...unsolvedTails].join(", ")})`);
 
-  // Get paid (non-SkillBridge) early/late volunteers
-  const volunteerPic = oncomingPool.pic.filter(
-    (p) => (p.early_volunteer || p.late_volunteer) && !p.is_skillbridge,
-  );
-  const volunteerSic = oncomingPool.sic.filter(
-    (p) => (p.early_volunteer || p.late_volunteer) && !p.is_skillbridge,
-  );
-
-  // Build a new assignment set — start from pass 1 but clear oncoming for unsolved tails
-  const pass2Assignments: Record<string, SwapAssignment> = JSON.parse(JSON.stringify(pass1Assignment.assignments));
-  for (const tail of unsolvedTails) {
-    if (pass2Assignments[tail]) {
-      // Only clear oncoming slots that were unsolved
-      const unsolvedPic = unsolvedRows.some((r) => r.tail_number === tail && r.direction === "oncoming" && r.role === "PIC");
-      const unsolvedSic = unsolvedRows.some((r) => r.tail_number === tail && r.direction === "oncoming" && r.role === "SIC");
-      if (unsolvedPic) pass2Assignments[tail].oncoming_pic = null;
-      if (unsolvedSic) pass2Assignments[tail].oncoming_sic = null;
-    }
+  const volunteerNames = new Set<string>();
+  for (const p of oncomingPool.pic) {
+    if ((p.early_volunteer || p.late_volunteer) && !p.is_skillbridge) volunteerNames.add(p.name);
+  }
+  for (const p of oncomingPool.sic) {
+    if ((p.early_volunteer || p.late_volunteer) && !p.is_skillbridge) volunteerNames.add(p.name);
   }
 
-  // Run assignment with full pool (volunteers included) but only for unsolved tails
-  const fullPool: OncomingPool = {
-    pic: [...normalPool.pic, ...volunteerPic],
-    sic: [...normalPool.sic, ...volunteerSic],
-  };
-
-  const pass2Assignment = assignOncomingCrew({
-    swapAssignments: pass2Assignments,
-    oncomingPool: fullPool,
-    crewRoster,
-    flights,
-    swapDate,
-    aliases,
-    commercialFlights,
-    preComputedRoutes,
-    preComputedOffgoing,
-    excludeTails,
-    offgoingDeadlines,
-  });
+  // Pass 2 is now a no-op (same pool). Reuse pass 1 results directly.
+  const fullPool = normalPool;
+  const pass2Assignment = pass1Assignment;
+  const pass2Assignments = pass1Assignment.assignments;
 
   // Merge pass 2 results into pass 1: only replace unsolved tails
+  // Since Pass 1 now uses full pool, mergedAssignments = pass1 assignments
   const mergedAssignments = { ...pass1Assignment.assignments };
+
+  // Identify which assigned crew are paid volunteers (for bonus tracking)
   const volunteersUsed: TwoPassStats["pass2_volunteers_used"] = [];
-  const volunteerNames = new Set([
-    ...volunteerPic.map((p) => p.name),
-    ...volunteerSic.map((p) => p.name),
-  ]);
-
-  for (const tail of unsolvedTails) {
-    if (pass2Assignment.assignments[tail]) {
-      const p2 = pass2Assignment.assignments[tail];
-      const p1 = mergedAssignments[tail];
-
-      if (p2.oncoming_pic && !p1.oncoming_pic) {
-        mergedAssignments[tail] = { ...p1, oncoming_pic: p2.oncoming_pic, oncoming_pic_swap_icao: p2.oncoming_pic_swap_icao };
-        if (volunteerNames.has(p2.oncoming_pic)) {
-          const entry = oncomingPool.pic.find((p) => p.name === p2.oncoming_pic);
-          volunteersUsed.push({
-            name: p2.oncoming_pic, role: "PIC", tail,
-            type: entry?.early_volunteer ? "early" : "late",
-          });
-        }
-      }
-      if (p2.oncoming_sic && !p1.oncoming_sic) {
-        mergedAssignments[tail] = { ...mergedAssignments[tail], oncoming_sic: p2.oncoming_sic, oncoming_sic_swap_icao: p2.oncoming_sic_swap_icao };
-        if (volunteerNames.has(p2.oncoming_sic)) {
-          const entry = oncomingPool.sic.find((p) => p.name === p2.oncoming_sic);
-          volunteersUsed.push({
-            name: p2.oncoming_sic, role: "SIC", tail,
-            type: entry?.early_volunteer ? "early" : "late",
-          });
-        }
-      }
+  for (const [tail, sa] of Object.entries(mergedAssignments)) {
+    if (sa.oncoming_pic && volunteerNames.has(sa.oncoming_pic)) {
+      const entry = oncomingPool.pic.find((p) => p.name === sa.oncoming_pic);
+      volunteersUsed.push({
+        name: sa.oncoming_pic, role: "PIC", tail,
+        type: entry?.early_volunteer ? "early" : "late",
+      });
+    }
+    if (sa.oncoming_sic && volunteerNames.has(sa.oncoming_sic)) {
+      const entry = oncomingPool.sic.find((p) => p.name === sa.oncoming_sic);
+      volunteersUsed.push({
+        name: sa.oncoming_sic, role: "SIC", tail,
+        type: entry?.early_volunteer ? "early" : "late",
+      });
     }
   }
 
