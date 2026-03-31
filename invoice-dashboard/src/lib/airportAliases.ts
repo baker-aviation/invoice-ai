@@ -382,6 +382,13 @@ const RAW: [string, string, boolean][] = [
   ["MSLP", "MSLP", true],    // San Salvador, El Salvador (IS commercial)
   ["TAPA", "TAPA", true],    // Antigua (IS commercial)
   ["MMAN", "MMAN", true],    // Monterrey Mexico (IS commercial — AA/United)
+  ["MYAM", "MYNN", true],    // Exuma/Marsh Harbour Bahamas → Nassau
+  ["KESN", "KBWI", true],    // Easton MD → Baltimore (70mi)
+  ["KSHD", "KIAD", true],    // Shenandoah Valley VA → Dulles (91mi)
+  ["KLUK", "KCVG", true],    // Cincinnati Lunken → CVG (10mi)
+  ["KBKW", "KCRW", true],    // Beckley WV → Charleston WV
+  ["KBKW", "KROA", false],   // Beckley WV → Roanoke (backup)
+  ["KHXD", "KSAV", true],    // Hilton Head → Savannah (30mi)
   ["1B1", "KBOS", true],     // Hudson MA → Boston (30mi)
 
   // International — FBO to nearest commercial
