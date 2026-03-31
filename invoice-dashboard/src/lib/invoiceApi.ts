@@ -445,3 +445,26 @@ export async function fetchAdvertisedPrices(opts?: { recentWeeks?: number }): Pr
 
   return allRows;
 }
+
+// ---------------------------------------------------------------------------
+// Trip Salespersons — trip_salespersons table
+// ---------------------------------------------------------------------------
+
+export type TripSalesperson = {
+  tail_number: string;
+  origin_icao: string | null;
+  destination_icao: string | null;
+  scheduled_departure: string | null;
+  salesperson_name: string;
+};
+
+export async function fetchTripSalespersons(): Promise<TripSalesperson[]> {
+  const supa = createServiceClient();
+  const { data, error } = await supa
+    .from("trip_salespersons")
+    .select("tail_number, origin_icao, destination_icao, scheduled_departure, salesperson_name")
+    .order("scheduled_departure", { ascending: false });
+
+  if (error) throw new Error(`fetchTripSalespersons failed: ${error.message}`);
+  return (data ?? []) as TripSalesperson[];
+}
