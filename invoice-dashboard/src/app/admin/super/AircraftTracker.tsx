@@ -24,6 +24,7 @@ interface Aircraft {
   notes: string | null;
   kow_callsign: string | null;
   jet_insight_url: string | null;
+  location_override: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -606,30 +607,53 @@ export default function AircraftTracker() {
             {filtered.map((row) => (
               <tr key={row.id} className="hover:bg-zinc-800/50 transition-colors">
                 {visibleColumns.map((col) => {
-                  // ── Location (virtual column) ──
+                  // ── Location (hybrid: manual override > FlightAware) ──
                   if (col.key === "location") {
+                    const isEditingLoc = editCell?.id === row.id && editCell?.field === "location_override";
+                    const isSavingLoc = saving === `${row.id}:location_override`;
+                    const override = row.location_override;
+                    const faLoc = locations[row.tail_number];
                     const isFlying = row.part_135_flying?.trim().toLowerCase() === "yes";
-                    if (isFlying) {
-                      return (
-                        <td key="location" className={`${col.width} px-3 py-1.5 whitespace-nowrap`}>
-                          <span className="text-zinc-600">—</span>
-                        </td>
+
+                    // Determine display value: override > FlightAware > dash
+                    let displayNode: React.ReactNode;
+                    if (override) {
+                      displayNode = <span className="text-cyan-400 font-medium">{override}</span>;
+                    } else if (isFlying) {
+                      displayNode = <span className="text-zinc-600">—</span>;
+                    } else if (loadingLocations) {
+                      displayNode = <span className="text-zinc-600 text-xs">...</span>;
+                    } else if (faLoc) {
+                      displayNode = (
+                        <span
+                          className="text-cyan-400/60"
+                          title={[faLoc.airport_name, faLoc.city, faLoc.state].filter(Boolean).join(", ") + " (FlightAware)"}
+                        >
+                          {faLoc.airport_code}
+                        </span>
                       );
+                    } else {
+                      displayNode = <span className="text-zinc-600 text-xs">N/A</span>;
                     }
-                    const loc = locations[row.tail_number];
+
                     return (
-                      <td key="location" className={`${col.width} px-3 py-1.5 whitespace-nowrap`}>
-                        {loadingLocations ? (
-                          <span className="text-zinc-600 text-xs">...</span>
-                        ) : loc ? (
-                          <span
-                            className="text-cyan-400"
-                            title={[loc.airport_name, loc.city, loc.state].filter(Boolean).join(", ")}
-                          >
-                            {loc.airport_code}
-                          </span>
+                      <td
+                        key="location"
+                        className={`${col.width} px-3 py-1.5 whitespace-nowrap cursor-pointer ${isSavingLoc ? "opacity-50" : ""}`}
+                        onClick={() => !isEditingLoc && startEdit(row.id, "location_override", override)}
+                      >
+                        {isEditingLoc ? (
+                          <input
+                            ref={editRef}
+                            value={editValue}
+                            onChange={(e) => setEditValue(e.target.value.toUpperCase())}
+                            onBlur={saveEdit}
+                            onKeyDown={handleEditKeyDown}
+                            placeholder={faLoc?.airport_code ?? "e.g. TEB"}
+                            className="w-full bg-zinc-900 border border-blue-500 rounded px-1.5 py-0.5 text-sm text-white outline-none placeholder-zinc-600"
+                          />
                         ) : (
-                          <span className="text-zinc-600 text-xs">N/A</span>
+                          displayNode
                         )}
                       </td>
                     );
