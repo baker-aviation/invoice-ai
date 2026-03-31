@@ -2136,6 +2136,29 @@ function AircraftCompactRow({
                         </span>
                       )}
                       {isNextLeg && <span className="text-blue-500 font-medium">← next</span>}
+                      {/* Show "Also add to VX" chip when leg arrives in a different van zone */}
+                      {onAlsoOnVan && (() => {
+                        const arrInfo = getAirportInfo(arrIcao);
+                        if (!arrInfo) return null;
+                        let nearest: { vanId: number; name: string; distKm: number } | null = null;
+                        for (const z of FIXED_VAN_ZONES) {
+                          const d = haversineKm(arrInfo.lat, arrInfo.lon, z.lat, z.lon);
+                          if (!nearest || d < nearest.distKm) nearest = { vanId: z.vanId, name: z.name, distKm: d };
+                        }
+                        if (!nearest || nearest.vanId === zone.vanId) return null;
+                        return (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onAlsoOnVan(arrFlight.tail_number ?? "", nearest!.vanId);
+                            }}
+                            className="text-[10px] font-medium text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50 border border-indigo-200 rounded px-1.5 py-0.5 transition-colors whitespace-nowrap"
+                            title={`Also assign to V${nearest.vanId} (${nearest.name}) for ${arrIcao} arrival`}
+                          >
+                            + V{nearest.vanId}
+                          </button>
+                        );
+                      })()}
                     </div>
                   );
                 })}
