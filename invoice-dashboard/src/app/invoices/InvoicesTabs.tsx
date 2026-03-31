@@ -1,7 +1,6 @@
 "use client";
 
-import { useSearchParams, useRouter } from "next/navigation";
-import { Suspense, useState } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import type { InvoiceListItem, AlertRow, AlertRule } from "@/lib/types";
 import InvoicesTable from "./InvoicesTable";
@@ -18,35 +17,27 @@ const TABS: { key: Tab; label: string }[] = [
   { key: "rules", label: "Rules" },
 ];
 
-function TabsInner({
+export default function InvoicesTabs({
   invoices,
   alerts,
   pdfUrls,
   rules,
+  initialTab,
 }: {
   invoices: InvoiceListItem[];
   alerts: AlertRow[];
   pdfUrls: Record<string, string>;
   rules: AlertRule[];
+  initialTab?: string;
 }) {
-  const searchParams = useSearchParams();
-  const router = useRouter();
-  const tab = (searchParams.get("tab") as Tab) || "all";
+  const [tab, setTab] = useState<Tab>(
+    TABS.some((t) => t.key === initialTab) ? (initialTab as Tab) : "all"
+  );
 
   const alertCount = alerts.length;
   const pinCount = invoices.filter((i) => i.pinned && !i.pin_resolved).length;
   const reviewedCount = invoices.filter((i) => i.pinned && i.pin_resolved).length;
   const rulesCount = rules.length;
-
-  function setTab(t: Tab) {
-    const params = new URLSearchParams(searchParams.toString());
-    if (t === "all") {
-      params.delete("tab");
-    } else {
-      params.set("tab", t);
-    }
-    router.replace(`/invoices?${params.toString()}`, { scroll: false });
-  }
 
   return (
     <div>
@@ -90,19 +81,6 @@ function TabsInner({
       {tab === "review" && <NeedsReviewTab invoices={invoices} />}
       {tab === "reviewed" && <ReviewedTab invoices={invoices} />}
     </div>
-  );
-}
-
-export default function InvoicesTabs(props: {
-  invoices: InvoiceListItem[];
-  alerts: AlertRow[];
-  pdfUrls: Record<string, string>;
-  rules: AlertRule[];
-}) {
-  return (
-    <Suspense>
-      <TabsInner {...props} />
-    </Suspense>
   );
 }
 

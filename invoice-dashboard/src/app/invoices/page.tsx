@@ -8,7 +8,12 @@ import { signGcsUrl } from "@/lib/gcs";
 import InvoicesTabs from "./InvoicesTabs";
 import { AutoRefresh } from "@/components/AutoRefresh";
 
-export default async function InvoicesPage() {
+export default async function InvoicesPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ tab?: string }>;
+}) {
+  const { tab } = await searchParams;
   // Fetch invoices, alerts, and rules in parallel
   const [invoiceData, alertData, rules] = await Promise.all([
     fetchInvoices({ limit: 1000 }),
@@ -44,7 +49,7 @@ export default async function InvoicesPage() {
     <>
       <Topbar title="Invoices" />
       <AutoRefresh intervalSeconds={120} />
-      <InvoicesTabs invoices={invoices} alerts={alerts} pdfUrls={pdfUrls} rules={rules} />
+      <InvoicesTabs invoices={invoices} alerts={alerts} pdfUrls={pdfUrls} rules={rules} initialTab={tab} />
     </>
   );
 }

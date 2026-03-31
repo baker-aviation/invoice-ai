@@ -24,11 +24,15 @@ export default async function InvoiceDetailPage({
     ? "/invoices?tab=alerts"
     : from === "review"
     ? "/invoices?tab=review"
+    : from === "reviewed"
+    ? "/invoices?tab=reviewed"
     : "/invoices";
   const backLabel = from === "alerts"
     ? "← Back to Alerts"
     : from === "review"
     ? "← Back to Review"
+    : from === "reviewed"
+    ? "← Back to Reviewed"
     : "← Back to Invoices";
 
   const supabase = await createClient();
