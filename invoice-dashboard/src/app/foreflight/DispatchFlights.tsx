@@ -45,10 +45,11 @@ interface FlightSummary {
   } | null;
 }
 
-type SubResource = "flightDetail" | "navlog" | "briefing" | "rwa" | "wb" | "icao";
+type SubResource = "flightDetail" | "navlog" | "briefing" | "rwa" | "wb" | "icao" | "atcMessages";
 
 const SUB_RESOURCE_LABELS: Record<SubResource, string> = {
   flightDetail: "Full Detail",
+  atcMessages: "ATC Messages",
   navlog: "Navlog",
   briefing: "Briefing",
   rwa: "Runway Analysis",
@@ -151,6 +152,7 @@ function FormattedView({ label, data }: { label: string; data: unknown }) {
   if (d.url && typeof d.url === "string") return <DocumentLinkView data={d} />;
 
   if (label === "Full Detail") return <FlightDetailView data={d} />;
+  if (label === "ATC Messages") return <AtcMessagesView data={d} />;
 
   return (
     <pre className="rounded border border-gray-200 bg-gray-50 p-3 text-xs font-mono text-gray-700 overflow-x-auto max-h-[500px] overflow-y-auto">
@@ -177,6 +179,38 @@ function DocumentLinkView({ data }: { data: Record<string, unknown> }) {
         Open Document
       </a>
       {time && <span className="text-xs text-gray-400">Generated {fmtLocalTime(time)}</span>}
+    </div>
+  );
+}
+
+function AtcMessagesView({ data }: { data: Record<string, unknown> }) {
+  const messages = (data.messages ?? []) as Array<{ content: string; type: string; sender: string; timestamp: string }>;
+  if (messages.length === 0) return <p className="text-xs text-gray-400">No ATC messages for this flight.</p>;
+
+  return (
+    <div className="space-y-2">
+      {messages.map((msg, i) => (
+        <div key={i} className={`rounded border p-3 ${
+          msg.type === "ACK" ? "border-green-200 bg-green-50" :
+          msg.type === "FPL" ? "border-blue-200 bg-blue-50" :
+          msg.type === "CNL" ? "border-red-200 bg-red-50" :
+          "border-gray-200 bg-gray-50"
+        }`}>
+          <div className="flex items-center justify-between mb-1.5">
+            <div className="flex items-center gap-2">
+              <span className={`px-2 py-0.5 rounded text-xs font-bold ${
+                msg.type === "ACK" ? "bg-green-200 text-green-800" :
+                msg.type === "FPL" ? "bg-blue-200 text-blue-800" :
+                msg.type === "CNL" ? "bg-red-200 text-red-800" :
+                "bg-gray-200 text-gray-800"
+              }`}>{msg.type}</span>
+              <span className="text-xs text-gray-500 font-mono">{msg.sender}</span>
+            </div>
+            <span className="text-xs text-gray-400">{fmtLocalTime(msg.timestamp)}</span>
+          </div>
+          <pre className="text-xs font-mono text-gray-700 whitespace-pre-wrap leading-relaxed">{msg.content}</pre>
+        </div>
+      ))}
     </div>
   );
 }
@@ -696,7 +730,21 @@ export default function DispatchFlights() {
                                   return (
                                     <button
                                       key={sub}
-                                      onClick={(e) => { e.stopPropagation(); fetchSubResource(flight.flightId, sub); }}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (sub === "atcMessages") {
+                                          // Load from list data — no API call needed
+                                          setDetailCache(prev => ({
+                                            ...prev,
+                                            [flight.flightId]: {
+                                              ...prev[flight.flightId],
+                                              atcMessages: { messages: flight.filingInfo?.atcMessages ?? [] },
+                                            },
+                                          }));
+                                        } else {
+                                          fetchSubResource(flight.flightId, sub);
+                                        }
+                                      }}
                                       disabled={isLoading}
                                       className={`px-3 py-1.5 text-xs font-medium rounded-md border transition-colors ${
                                         loaded
@@ -721,39 +769,6 @@ export default function DispatchFlights() {
                                   );
                                 })}
                               </div>
-
-                              {/* ATC Filing Messages */}
-                              {flight.filingInfo?.atcMessages && flight.filingInfo.atcMessages.length > 0 ? (
-                                <div className="rounded-lg border border-gray-200 bg-white p-4 mt-3">
-                                  <span className="text-xs font-medium text-gray-700 uppercase block mb-3">
-                                    Filing Messages ({flight.filingInfo.atcMessages.length})
-                                  </span>
-                                  <div className="space-y-2">
-                                    {flight.filingInfo.atcMessages.map((msg, i) => (
-                                      <div key={i} className={`rounded border p-3 ${
-                                        msg.type === "ACK" ? "border-green-200 bg-green-50" :
-                                        msg.type === "FPL" ? "border-blue-200 bg-blue-50" :
-                                        msg.type === "CNL" ? "border-red-200 bg-red-50" :
-                                        "border-gray-200 bg-gray-50"
-                                      }`}>
-                                        <div className="flex items-center justify-between mb-1.5">
-                                          <div className="flex items-center gap-2">
-                                            <span className={`px-2 py-0.5 rounded text-xs font-bold ${
-                                              msg.type === "ACK" ? "bg-green-200 text-green-800" :
-                                              msg.type === "FPL" ? "bg-blue-200 text-blue-800" :
-                                              msg.type === "CNL" ? "bg-red-200 text-red-800" :
-                                              "bg-gray-200 text-gray-800"
-                                            }`}>{msg.type}</span>
-                                            <span className="text-xs text-gray-500 font-mono">{msg.sender}</span>
-                                          </div>
-                                          <span className="text-xs text-gray-400">{fmtLocalTime(msg.timestamp)}</span>
-                                        </div>
-                                        <pre className="text-xs font-mono text-gray-700 whitespace-pre-wrap leading-relaxed">{msg.content}</pre>
-                                      </div>
-                                    ))}
-                                  </div>
-                                </div>
-                              ) : null}
 
                               {/* Loaded data sections */}
                               {flightDetail && Object.entries(flightDetail).map(([key, val]) => (
