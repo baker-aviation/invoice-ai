@@ -229,11 +229,12 @@ export async function POST(req: NextRequest) {
 
   const allFound = results.filter((r) => r.found);
 
-  // Deduplicate by tail+destination — territory variants produce multiple hits
+  // Deduplicate by tail+route — territory variants and callsign/N-number produce multiple hits
   const dedupMap = new Map<string, FaaEdctResult>();
   for (const r of allFound) {
+    const deptNorm = stripK(r.origin);
     const arrNorm = stripK(r.destination);
-    const key = `${r.tail}|${arrNorm}|${r.edct_time ?? "cancelled"}`;
+    const key = `${r.tail}|${deptNorm}|${arrNorm}`;
     const existing = dedupMap.get(key);
     if (!existing || (r.callsign !== r.tail && existing.callsign === existing.tail)) {
       dedupMap.set(key, r);

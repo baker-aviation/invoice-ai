@@ -312,8 +312,11 @@ export async function GET(req: NextRequest) {
 
   const dedupMap = new Map<string, FaaEdctResult>();
   for (const r of currentResults) {
+    const deptNorm = stripK(r.origin);
     const arrNorm = stripK(r.destination);
-    const key = `${r.tail}|${arrNorm}|${r.edct_time ?? "cancelled"}`;
+    // One result per physical flight (tail + route) — pilots file under both
+    // KOW callsign and N-number, FAA may return different slots for each
+    const key = `${r.tail}|${deptNorm}|${arrNorm}`;
     const existing = dedupMap.get(key);
     // Prefer KOW callsign over N-number (has salesperson lookup + cleaner display)
     if (!existing || (r.callsign !== r.tail && existing.callsign === existing.tail)) {
