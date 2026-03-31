@@ -301,12 +301,26 @@ export async function GET(req: NextRequest) {
   }
 
   // 6. Filter to current — require edct_time unless cancelled (pilots shop for slots)
+  // Deduplicate by tail+destination — territory variants (KSJU/TJSJ) and callsign/N-number
+  // produce multiple hits for the same physical flight. Keep the KOW callsign version if available.
   const todayStartMs = new Date(todayStart).getTime();
-  const found = results.filter((r) =>
+  const currentResults = results.filter((r) =>
     r.found && (r.edct_time
       ? new Date(r.edct_time).getTime() >= todayStartMs
       : r.cancelled)
   );
+
+  const dedupMap = new Map<string, FaaEdctResult>();
+  for (const r of currentResults) {
+    const arrNorm = stripK(r.destination);
+    const key = `${r.tail}|${arrNorm}|${r.edct_time ?? "cancelled"}`;
+    const existing = dedupMap.get(key);
+    // Prefer KOW callsign over N-number (has salesperson lookup + cleaner display)
+    if (!existing || (r.callsign !== r.tail && existing.callsign === existing.tail)) {
+      dedupMap.set(key, r);
+    }
+  }
+  const found = [...dedupMap.values()];
 
   // 7. Get existing FAA EDCT alerts to detect new vs updated
   // Look back 48h — an EDCT detected yesterday evening (before UTC midnight)
@@ -332,7 +346,10 @@ export async function GET(req: NextRequest) {
   const updatedEdcts: { edct: FaaEdctResult; previousEdctTime: string | null }[] = [];
 
   for (const edct of found) {
-    const sourceId = `faa-edct-${edct.callsign}-${edct.origin}-${edct.destination}`;
+    // Normalize source_id: use KOW callsign + stripped codes to avoid territory dupes
+    const normDept = stripK(edct.origin);
+    const normArr = stripK(edct.destination);
+    const sourceId = `faa-edct-${edct.callsign}-${normDept}-${normArr}`;
     const existing = existingMap.get(sourceId);
     const isNew = !existing || (existing && !existing.edct_time && !!edct.edct_time);
     const isUpdated = !isNew && existing && existing.edct_time && edct.edct_time && existing.edct_time !== edct.edct_time;
