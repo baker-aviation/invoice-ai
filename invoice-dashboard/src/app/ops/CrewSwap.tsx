@@ -202,6 +202,11 @@ type SwapPlanResult = {
     standby: { pic: string[]; sic: string[] };
     details: { name: string; tail: string; cost: number; reason: string }[];
   };
+  diagnostics?: {
+    unsolved_tails: { tail: string; role: string; reason: string; type_mismatch_count: number; no_route_count: number; intl_restricted_count: number; route_score_zero_count: number; total_crew_checked: number }[];
+    unsolved_crew: { name: string; role: string; tails_checked: number; type_mismatch_tails: string[]; no_route_tails: string[]; intl_restricted_tails: string[]; route_score_zero_tails: string[] }[];
+    type_mismatch_blockers: { tail: string; role: string; tail_type: string; crew_types_available: string[] }[];
+  };
 };
 
 type CrewInfoData = {
@@ -4474,6 +4479,29 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                 {swapPlan.warnings.map((w, i) => (
                   <div key={i} className="text-xs text-amber-700">{w}</div>
                 ))}
+              </div>
+            )}
+
+            {/* Diagnostics: why unsolved? */}
+            {swapPlan.diagnostics && swapPlan.diagnostics.unsolved_tails.length > 0 && (
+              <div className="px-4 py-2 bg-red-50 border-b space-y-2">
+                <div className="text-xs font-semibold text-red-800">Unsolved Diagnostics</div>
+                <div className="space-y-1">
+                  {swapPlan.diagnostics.unsolved_tails.map((d, i) => (
+                    <div key={i} className="text-xs text-red-700">
+                      <span className="font-medium">{d.tail} {d.role}:</span> {d.reason}
+                      <span className="text-red-400 ml-1">({d.total_crew_checked} crew checked)</span>
+                    </div>
+                  ))}
+                </div>
+                {swapPlan.diagnostics.type_mismatch_blockers.length > 0 && (
+                  <div className="mt-1 p-2 bg-red-100 rounded text-xs text-red-800">
+                    <span className="font-semibold">Type mismatch blockers</span> — these tails could be solved by cross-type assignment:
+                    {swapPlan.diagnostics.type_mismatch_blockers.map((b, i) => (
+                      <div key={i} className="ml-2">{b.tail} ({b.role}): needs <span className="font-medium">{b.tail_type}</span>, pool has [{b.crew_types_available.join(", ")}]</div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 
