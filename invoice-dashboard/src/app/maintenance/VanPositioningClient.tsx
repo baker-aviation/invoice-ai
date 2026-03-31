@@ -2827,6 +2827,7 @@ function ScheduleTab({
   const unassignedDragTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const allFlightsRef = useRef(allFlights);
   allFlightsRef.current = allFlights;
+  const baseItemsByVanRef = useRef<Map<number, VanFlightItem[]>>(new Map());
   const unscheduledDragTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Manual overrides: flightId → target vanId (moves) + removed flight IDs
@@ -3214,6 +3215,7 @@ function ScheduleTab({
     }
     return map;
   }, [allFlights, date, liveVanPositions, mxNotesByTail, flightInfoMap, coveredVanIds, coverMap]);
+  baseItemsByVanRef.current = baseItemsByVan;
 
   // Fallback: restore overrides from published assignments if localStorage was empty
   const overridesRestoredRef = useRef<string>("");
@@ -3912,10 +3914,17 @@ function ScheduleTab({
       }
       return next;
     });
-    // Add to removals
+    // Add to removals — include the base item's flight ID too, since airport
+    // overrides can swap arrFlight to a different flight ID than the base.
     setRemovals((prev) => {
       const next = new Set(prev);
       next.add(flightId);
+      if (tailNumber && fromVanId !== undefined) {
+        const baseItems = baseItemsByVanRef.current.get(fromVanId) ?? [];
+        for (const item of baseItems) {
+          if (item.arrFlight.tail_number === tailNumber) next.add(item.arrFlight.id);
+        }
+      }
       return next;
     });
   }, []);
