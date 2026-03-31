@@ -32,12 +32,26 @@ export async function POST(req: NextRequest) {
   const dateLabel = formatDateLabel(tomorrow);
 
   // 1. Load all salesperson → Slack mappings
-  const { data: slackMap } = await supa
+  const { data: allSlackMap } = await supa
     .from("salesperson_slack_map")
-    .select("salesperson_name, slack_user_id, quotes_enabled");
+    .select("salesperson_name, slack_user_id, quotes_enabled, custom_summary_hour");
 
-  if (!slackMap || slackMap.length === 0) {
+  if (!allSlackMap || allSlackMap.length === 0) {
     return NextResponse.json({ ok: true, sent: 0, message: "No salesperson Slack mappings configured" });
+  }
+
+  // If target_hour is specified (from cron), only send to people due at that hour
+  const targetHourParam = new URL(req.url).searchParams.get("target_hour");
+  let slackMap = allSlackMap;
+  if (targetHourParam !== null) {
+    const targetHour = parseInt(targetHourParam, 10);
+    slackMap = allSlackMap.filter((m) => {
+      const personHour = m.custom_summary_hour ?? 18; // default 6pm
+      return personHour === targetHour;
+    });
+    if (slackMap.length === 0) {
+      return NextResponse.json({ ok: true, sent: 0, message: `No salespersons due at hour ${targetHour}` });
+    }
   }
 
   const slackLookup = new Map<string, string>();
