@@ -2187,6 +2187,8 @@ function VanScheduleCard({
   coveredByLabel,
   onSetCoverZone,
   onClearCoverZone,
+  isInShop,
+  onToggleInShop,
 }: {
   zone: (typeof FIXED_VAN_ZONES)[number];
   color: string;
@@ -2226,6 +2228,8 @@ function VanScheduleCard({
   coveredByLabel?: string;
   onSetCoverZone?: (coveredVanId: number) => void;
   onClearCoverZone?: (coveredVanId: number) => void;
+  isInShop?: boolean;
+  onToggleInShop?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [showSlackModal, setShowSlackModal] = useState(false);
@@ -2241,7 +2245,7 @@ function VanScheduleCard({
   return (
     <div
       className={`border rounded-xl overflow-hidden bg-white shadow-sm transition-all ${
-        isDropTarget ? "ring-2 ring-blue-400 border-blue-300 bg-blue-50/30" : ""
+        isDropTarget ? "ring-2 ring-blue-400 border-blue-300 bg-blue-50/30" : isInShop ? "opacity-60" : ""
       }`}
       onDragOver={onDragOver}
       onDragEnter={() => {
@@ -2321,6 +2325,15 @@ function VanScheduleCard({
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap justify-end">
+          {onToggleInShop && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onToggleInShop(); }}
+              className={`text-xs border rounded-lg px-2 py-1 transition-colors font-medium ${isInShop ? "text-red-700 bg-red-50 border-red-300" : "text-gray-400 hover:text-red-600 hover:bg-red-50 border-gray-200 hover:border-red-300"}`}
+              title={isInShop ? "Mark van as back in service" : "Mark van as in the shop"}
+            >
+              {isInShop ? "In Shop" : "In Shop"}
+            </button>
+          )}
           {onSetCoverZone && !coveredByLabel && (
             <select
               className="text-xs border border-gray-200 rounded-lg px-1.5 py-1 text-gray-500 hover:border-blue-300 bg-white cursor-pointer"
@@ -2381,12 +2394,21 @@ function VanScheduleCard({
         </div>
       </div>
 
-      {/* Out-of-service banner when this zone is covered by another van */}
-      {coveredByLabel && (
+      {/* Out-of-service banner when this zone is covered or in the shop */}
+      {(coveredByLabel || isInShop) && (
         <div className="bg-gray-100 border-b border-gray-200 px-4 py-2 text-xs text-gray-500 flex items-center gap-2">
-          <span className="text-gray-400">Out of Service</span>
-          <span className="text-gray-300">&mdash;</span>
-          <span>Covered by {coveredByLabel}</span>
+          {isInShop ? (
+            <>
+              <span className="text-red-400">In the Shop</span>
+              {coveredByLabel && <><span className="text-gray-300">&mdash;</span><span>Covered by {coveredByLabel}</span></>}
+            </>
+          ) : (
+            <>
+              <span className="text-gray-400">Out of Service</span>
+              <span className="text-gray-300">&mdash;</span>
+              <span>Covered by {coveredByLabel}</span>
+            </>
+          )}
         </div>
       )}
 
@@ -2710,6 +2732,8 @@ function ScheduleTab({
   const [sortOverrides, setSortOverrides] = useState<Map<number, string[]>>(new Map());
   // Zone covers: [coveringVanId, coveredVanId][] — e.g. [[10, 14]] means V10 covers V14's zone
   const [zoneCovers, setZoneCovers] = useState<[number, number][]>([]);
+  // Vans currently in the shop (out of service) — vanId[]
+  const [vansInShop, setVansInShop] = useState<number[]>([]);
 
   // Track the last DB updated_at to avoid overwriting fresher data
   const draftUpdatedAtRef = useRef<string | null>(null);
@@ -2728,7 +2752,7 @@ function ScheduleTab({
 
   // Save drafts to DB (debounced) + localStorage fallback
   const saveDraftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const saveDraftToDb = useCallback((o: Map<string, number>, r: Set<string>, u: Map<string, number>, a: Map<string, string>, s: Map<number, string[]>, zc: [number, number][] = []) => {
+  const saveDraftToDb = useCallback((o: Map<string, number>, r: Set<string>, u: Map<string, number>, a: Map<string, string>, s: Map<number, string[]>, zc: [number, number][] = [], vis: number[] = []) => {
     // localStorage fallback (immediate)
     try {
       if (o.size > 0) localStorage.setItem(`vanOverrides-${date}`, JSON.stringify([...o]));
@@ -2760,6 +2784,7 @@ function ScheduleTab({
           airport_overrides: [...a],
           sort_overrides: [...s],
           zone_covers: zc,
+          vans_in_shop: vis,
           expected_updated_at: draftUpdatedAtRef.current,
         }),
       }).then(async (res) => {
@@ -2785,9 +2810,9 @@ function ScheduleTab({
   // Auto-save on every change (including parent UI-state props) — skip in read-only mode
   useEffect(() => {
     if (readOnly) return;
-    saveDraftToDb(overrides, removals, unscheduledOverrides, airportOverrides, sortOverrides, zoneCovers);
+    saveDraftToDb(overrides, removals, unscheduledOverrides, airportOverrides, sortOverrides, zoneCovers, vansInShop);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [overrides, removals, unscheduledOverrides, airportOverrides, sortOverrides, zoneCovers, wontSeeTodayTails, hiddenTodayMxIds, dismissedConflictVersion, saveDraftToDb, readOnly]);
+  }, [overrides, removals, unscheduledOverrides, airportOverrides, sortOverrides, zoneCovers, vansInShop, wontSeeTodayTails, hiddenTodayMxIds, dismissedConflictVersion, saveDraftToDb, readOnly]);
 
   // Load drafts from DB on mount/date change, fall back to localStorage
   const loadDraftsFromDb = useCallback(async (targetDate: string) => {
@@ -2804,6 +2829,7 @@ function ScheduleTab({
           setAirportOverrides(new Map(d.airport_overrides ?? []));
           setSortOverrides(new Map(d.sort_overrides ?? []));
           setZoneCovers(d.zone_covers ?? []);
+          setVansInShop(d.vans_in_shop ?? []);
           // Sync DB-backed UI state to parent
           onSyncDraftUiState?.({
             wont_see_tails: d.wont_see_tails ?? [],
@@ -2904,6 +2930,7 @@ function ScheduleTab({
       setAirportOverrides(new Map());
       setSortOverrides(new Map());
       setZoneCovers([]);
+      setVansInShop([]);
     }
     fetch(`/api/vans/publish?date=${date}`)
       .then((r) => r.json())
@@ -2925,7 +2952,7 @@ function ScheduleTab({
     }
   }, [date, loadDraftsFromDb, readOnly]);
 
-  const totalEdits = overrides.size + removals.size + unscheduledOverrides.size + airportOverrides.size + zoneCovers.length;
+  const totalEdits = overrides.size + removals.size + unscheduledOverrides.size + airportOverrides.size + zoneCovers.length + vansInShop.length;
 
   // DnD visual state
   const saveLegNote = useCallback(async (flightId: string, tailNumber: string | null, note: string) => {
@@ -3000,7 +3027,12 @@ function ScheduleTab({
   // MX preference: if an aircraft has MX notes at an airport within a zone,
   // prefer that zone over pure distance (end-of-day MX servicing).
   // Zone-cover helpers: which vans are covered (out of service), and which vans cover others
-  const coveredVanIds = useMemo(() => new Set(zoneCovers.map(([, c]) => c)), [zoneCovers]);
+  // Vans that are out of service: either covered by another van OR marked "in the shop"
+  const coveredVanIds = useMemo(() => {
+    const s = new Set(zoneCovers.map(([, c]) => c));
+    for (const id of vansInShop) s.add(id);
+    return s;
+  }, [zoneCovers, vansInShop]);
   const coverMap = useMemo(() => {
     const m = new Map<number, number[]>();
     for (const [covering, covered] of zoneCovers) {
@@ -4241,7 +4273,7 @@ function ScheduleTab({
           {totalEdits > 0 && (
             <button
               onClick={() => {
-                setOverrides(new Map()); setRemovals(new Set()); setUnscheduledOverrides(new Map()); setAirportOverrides(new Map()); setSortOverrides(new Map()); setZoneCovers([]);
+                setOverrides(new Map()); setRemovals(new Set()); setUnscheduledOverrides(new Map()); setAirportOverrides(new Map()); setSortOverrides(new Map()); setZoneCovers([]); setVansInShop([]);
                 try { localStorage.removeItem(`vanOverrides-${date}`); localStorage.removeItem(`vanRemovals-${date}`); localStorage.removeItem(`vanUnscheduled-${date}`); localStorage.removeItem(`vanAirportOverrides-${date}`); } catch {}
                 // Also clear DB so polling/refresh don't restore old overrides
                 fetch("/api/vans/drafts", {
@@ -5271,6 +5303,14 @@ function ScheduleTab({
               }}
               onClearCoverZone={readOnly ? undefined : (coveredVanId) => {
                 setZoneCovers((prev) => prev.filter(([c, cv]) => !(c === zone.vanId && cv === coveredVanId)));
+              }}
+              isInShop={vansInShop.includes(zone.vanId)}
+              onToggleInShop={readOnly ? undefined : () => {
+                setVansInShop((prev) =>
+                  prev.includes(zone.vanId)
+                    ? prev.filter((id) => id !== zone.vanId)
+                    : [...prev, zone.vanId]
+                );
               }}
             />
           </div>
