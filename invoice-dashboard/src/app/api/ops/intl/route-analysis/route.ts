@@ -99,6 +99,11 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  // ForeFlight flight-plan based overflight detection
+  // Creates a temp flight, fetches full detail (with real overflown countries), then deletes it
+  let ffOverflights: Array<{ country_name: string; country_iso: string; fir_id?: string }> = [];
+  let ffFirs: Array<Record<string, unknown>> = [];
+
   if (!ffRoute && tail && process.env.FOREFLIGHT_API_KEY) {
     const acConfig = AIRCRAFT[tail];
     const altitude = acConfig?.altitude ?? 410;
@@ -137,43 +142,68 @@ export async function GET(req: NextRequest) {
       });
 
       if (flightRes.ok) {
-        const flightData = await flightRes.json();
-        // ForeFlight wraps everything in { flight: { ... } }
-        const fd = flightData.flight ?? flightData;
-        ffFlightId = fd.flightId ?? null;
+        const createData = await flightRes.json();
+        ffFlightId = createData.flightId ?? null;
 
-        // Extract the route string — try multiple known locations
-        const routeData = fd.routeToDestination ?? fd.route ?? {};
-        ffRoute = routeData.route ?? routeData.routeString ?? fd.routeString ?? null;
-
-        // Try flightData sub-object
-        if (fd.flightData) {
-          const fdd = fd.flightData;
-          if (!ffRoute || ffRoute === "DCT") {
-            ffRoute = fdd.route ?? fdd.routeString ?? fdd.routeToDestination?.route ?? ffRoute;
-          }
-        }
-
-        // Extract route from navlog waypoints (most reliable source)
-        const navlog = fd.performance?.navlog ?? fd.performance?.waypoints;
-        if (navlog && Array.isArray(navlog) && navlog.length > 2) {
-          // Log first waypoint to understand structure
-          console.log(`[route-analysis] FF ${dep}→${arr}: navlog[0] keys=${Object.keys(navlog[0]).join(",")}`);
-          const wpRoute = navlog
-            .map((wp: Record<string, unknown>) => wp.ident ?? wp.waypointName ?? wp.name ?? wp.fixName)
-            .filter((id: unknown) => id && id !== dep && id !== arr) // exclude dep/arr
-            .join(" ");
-          if (wpRoute && wpRoute.length > 0) {
-            ffRoute = wpRoute;
-          }
-          console.log(`[route-analysis] FF ${dep}→${arr}: navlog ${navlog.length} waypoints, route=${ffRoute?.slice(0, 120) ?? "null"}`);
-        } else {
-          // Log performance keys to find navlog
-          console.log(`[route-analysis] FF ${dep}→${arr}: perf keys=${fd.performance ? Object.keys(fd.performance).join(",") : "none"}, route=${ffRoute ?? "null"}`);
-        }
-
-        // Clean up the flight plan from ForeFlight dispatch
+        // GET the full flight detail — this has the real overflown countries/FIRs
         if (ffFlightId) {
+          const detailRes = await fetch(`${FF_BASE}/Flights/${encodeURIComponent(ffFlightId)}`, {
+            headers: { "x-api-key": apiKey() },
+          });
+
+          if (detailRes.ok) {
+            const detail = await detailRes.json();
+            const perf = detail.performance;
+            const routeInfo = perf?.destinationRouteInformation;
+            const fd = detail.flightData;
+
+            // Extract route string
+            ffRoute = fd?.routeToDestination?.route ?? null;
+            if (!ffRoute || ffRoute === "DCT") {
+              // Build from waypoints
+              const wps = routeInfo?.waypoints as Array<Record<string, unknown>> | undefined;
+              if (wps && wps.length > 2) {
+                ffRoute = wps
+                  .map((wp) => wp.identifier as string)
+                  .filter((id) => id && id !== dep && id !== arr && id !== "-TOC-" && id !== "-TOD-")
+                  .join(" ");
+              }
+            }
+
+            // Extract overflown countries (the real deal — based on actual routing)
+            const rawCountries = routeInfo?.overflownCountries as Array<{ name: string; isoCode: string }> | undefined;
+            if (rawCountries && rawCountries.length > 0) {
+              // Deduplicate and exclude departure/arrival countries
+              const seen = new Set<string>();
+              ffOverflights = rawCountries
+                .filter((c) => {
+                  if (seen.has(c.isoCode)) return false;
+                  seen.add(c.isoCode);
+                  return true;
+                })
+                .map((c) => ({
+                  country_name: c.name,
+                  country_iso: c.isoCode,
+                }));
+              console.log(`[route-analysis] FF overflights ${dep}→${arr}: ${ffOverflights.map(c => c.country_iso).join(", ")}`);
+            }
+
+            // Extract FIRs
+            const rawFirs = routeInfo?.overflownFirs as Array<Record<string, unknown>> | undefined;
+            if (rawFirs && rawFirs.length > 0) {
+              ffFirs = rawFirs.map((f) => ({
+                identifier: f.identifier,
+                name: f.name,
+                airspaceType: f.airspaceType,
+                entryTime: f.entryTime,
+                exitTime: f.exitTime,
+              }));
+            }
+
+            console.log(`[route-analysis] FF ${dep}→${arr}: route=${ffRoute?.slice(0, 120) ?? "null"}, countries=${ffOverflights.length}, firs=${ffFirs.length}`);
+          }
+
+          // Clean up the flight plan from ForeFlight dispatch
           fetch(`${FF_BASE}/Flights/${encodeURIComponent(ffFlightId)}`, {
             method: "DELETE",
             headers: { "x-api-key": apiKey() },
@@ -188,10 +218,11 @@ export async function GET(req: NextRequest) {
     }
 
     if (ffError) console.warn(`[route-analysis] ForeFlight error for ${dep}→${arr}:`, ffError);
-    if (ffRoute) console.log(`[route-analysis] ForeFlight route ${dep}→${arr}:`, ffRoute);
   }
 
-  const method = ffRoute ? "foreflight+great_circle" : "great_circle";
+  // Use ForeFlight overflights if available, otherwise fall back to great-circle
+  const overflights = ffOverflights.length > 0 ? ffOverflights : gcOverflights;
+  const method = ffOverflights.length > 0 ? "foreflight" : ffRoute ? "foreflight+great_circle" : "great_circle";
 
   // Cache the result for future overflight badge lookups
   try {
@@ -200,7 +231,7 @@ export async function GET(req: NextRequest) {
       dep_icao: dep,
       arr_icao: arr,
       ff_route: ffRoute,
-      overflights: gcOverflights,
+      overflights,
       method,
       tail_used: tail ?? null,
       cached_at: new Date().toISOString(),
@@ -215,10 +246,13 @@ export async function GET(req: NextRequest) {
     foreflight: {
       route: ffRoute,
       recommendedRoutes: ffRecommendedRoutes,
+      overflownCountries: ffOverflights,
+      overflownFirs: ffFirs,
       available: !!process.env.FOREFLIGHT_API_KEY,
       error: ffError,
     },
-    overflights: gcOverflights,
+    overflights,
+    greatCircleOverflights: gcOverflights,
     method,
   });
 }
