@@ -964,20 +964,24 @@ function buildCandidates(
           const needAtAirport = new Date(flightDep.getTime() - ms(buffer));
           const needLeaveAircraft = new Date(needAtAirport.getTime() - ms(driveToFboMin));
 
-          if (needLeaveAircraft.getTime() < releaseTime.getTime()) {
-            if (_debugCrew) console.log(`[CandidateDebug] ${task.name}: REJECTED ${flightNum} — need leave ${needLeaveAircraft.toISOString()} < release ${releaseTime.toISOString()}`);
+          // Allow 30min grace — crew can rush to airport if flight is tight.
+          // Hard reject only if they'd need to leave >30min before release.
+          const RELEASE_GRACE_MS = ms(30);
+          if (needLeaveAircraft.getTime() < releaseTime.getTime() - RELEASE_GRACE_MS) {
+            if (_debugCrew) console.log(`[CandidateDebug] ${task.name}: REJECTED ${flightNum} — need leave ${needLeaveAircraft.toISOString()} < release ${releaseTime.toISOString()} - 30min grace`);
             continue;
           }
 
-          // Check midnight deadline
+          // Check midnight deadline — allow 1 AM grace (crew can arrive slightly late)
           const homeArr = new Date(flightArr.getTime() + ms(DEPLANE_BUFFER));
-          if (homeArr.getTime() > homeMidnight.getTime()) {
+          const midnightGrace = new Date(homeMidnight.getTime() + ms(60)); // 1 AM
+          if (homeArr.getTime() > midnightGrace.getTime()) {
             // Skill-Bridge SIC gets Thursday midnight
             if (task.crewMember?.is_skillbridge && task.role === "SIC") {
               const thurMidnight = new Date(homeMidnight.getTime() + 24 * 60 * 60_000);
               if (homeArr.getTime() > thurMidnight.getTime()) continue;
             } else {
-              continue; // Won't make midnight
+              continue; // Won't make 1 AM
             }
           }
           fboArr = null;
@@ -1020,6 +1024,170 @@ function buildCandidates(
       } // end for homeFlight
     } // end for commApt
   } // end for homeApt
+
+  // ── Drive-to-hub for offgoing crew ────────────────────────────────────────
+  // When offgoing crew finish at a small airport late in the evening (e.g. CHS
+  // at 7:48 PM), there may be no same-day flights home from nearby airports.
+  // In that case, they can rent a car and drive 2-4 hours to a major hub (ATL,
+  // CLT, ORD, DFW, etc.) that has later flights.
+  const hasCommercialCandidates = candidates.some(c => c.type === "commercial");
+  if (task.direction === "offgoing" && !hasCommercialCandidates && commercialFlights) {
+    const MAX_DRIVE_TO_HUB_MIN = 240; // 4 hours max drive
+
+    // Find all commercial airports within 250 miles of swap point
+    const hubAirports = findNearbyCommercialAirports(swapIcao, 250);
+    // Filter out airports already checked in the regular search
+    const commAirportSet = new Set(commAirports.map(c => c.toUpperCase()));
+    const newHubs = hubAirports.filter(h => !commAirportSet.has(h.icao.toUpperCase()));
+
+    if (_debugCrew) {
+      console.log(`[CandidateDebug] ${task.name}: DRIVE-TO-HUB — no commercial candidates found, checking ${newHubs.length} hub airports within 250mi (excluded ${hubAirports.length - newHubs.length} already-checked)`);
+    }
+
+    // Build search dates for offgoing (same logic as regular search)
+    const hubDatesToSearch = [swapDate];
+    const hubDayAfter = new Date(swapDate);
+    hubDayAfter.setDate(hubDayAfter.getDate() + 1);
+    hubDatesToSearch.push(hubDayAfter.toISOString().slice(0, 10));
+
+    for (const hub of newHubs) {
+      const hubIcao = hub.icao;
+      const hubIata = toIata(hubIcao);
+
+      // Calculate drive time from swap point to this hub
+      const driveToHub = estimateDriveTime(swapIcao, hubIcao);
+      if (!driveToHub || driveToHub.estimated_drive_minutes > MAX_DRIVE_TO_HUB_MIN) continue;
+
+      const driveMin = driveToHub.estimated_drive_minutes;
+      const driveCost = 80 + Math.round(driveToHub.estimated_drive_miles * 0.50); // rental car cost
+
+      if (_debugCrew) {
+        console.log(`[CandidateDebug] ${task.name}: DRIVE-TO-HUB checking ${hubIata} (${Math.round(hub.distanceMiles)}mi, ~${Math.round(driveMin)}min drive)`);
+      }
+
+      for (const homeApt of task.homeAirports) {
+        const homeIata = toIata(homeApt);
+        const homeIcao = toIcao(homeApt);
+
+        // Expand home to nearby commercial airports (same as regular search)
+        const hubHomeFlightAirports: { iata: string; driveCost: number }[] =
+          [{ iata: homeIata, driveCost: 0 }];
+        if (!isCommercialAirport(homeIcao)) {
+          const nearbyComm = findAllCommercialAirports(homeIcao, aliases);
+          for (const nc of nearbyComm) {
+            const ncIata = toIata(nc);
+            if (ncIata === homeIata) continue;
+            const d = estimateDriveTime(homeIcao, toIcao(nc));
+            if (d && d.estimated_drive_minutes <= RENTAL_MAX_MINUTES) {
+              const cost = d.estimated_drive_minutes <= UBER_MAX_MINUTES
+                ? Math.max(25, Math.round(d.estimated_drive_miles * 2.0))
+                : 80 + Math.round(d.estimated_drive_miles * 0.50);
+              hubHomeFlightAirports.push({ iata: ncIata, driveCost: cost });
+            }
+          }
+        }
+
+        for (const homeFlight of hubHomeFlightAirports) {
+          const originIata = hubIata;
+          const destIata = homeFlight.iata;
+          const homeGroundCost = homeFlight.driveCost;
+
+          for (const searchDate of hubDatesToSearch) {
+            const offers = lookupFlights(commercialFlights, originIata, destIata, searchDate);
+            if (_debugCrew && offers.length > 0) {
+              console.log(`[CandidateDebug] ${task.name}: DRIVE-TO-HUB ${originIata}→${destIata} found ${offers.length} offers for ${searchDate}`);
+            }
+
+            for (const offer of offers) {
+              const segs = offer.itineraries?.[0]?.segments ?? [];
+              if (segs.length === 0) continue;
+              if (segs.length - 1 > MAX_CONNECTIONS) continue;
+
+              const firstSeg = segs[0];
+              const lastSeg = segs[segs.length - 1];
+
+              const flightDep = parseFlightTime(firstSeg.departure.at, firstSeg.departure.iataCode);
+              const flightArr = parseFlightTime(lastSeg.arrival.at, lastSeg.arrival.iataCode);
+              const totalFlightDuration = segs.reduce((s, sg) => s + parseDuration(sg.duration), 0);
+              const flightNum = segs.map((s) => `${s.carrierCode}${s.number}`).join("/");
+              const isDirect = segs.length === 1;
+              const isBudget = segs.some((s) => BUDGET_CARRIERS.includes(s.carrierCode));
+              const isHub = segs.length > 1 && segs.some((s) =>
+                PREFERRED_HUBS.includes(s.arrival.iataCode) || PREFERRED_HUBS.includes(s.departure.iataCode),
+              );
+
+              const flightCost = parseFloat(offer.price.total);
+
+              // Offgoing timing: crew must be released, drive to hub, clear security, then fly
+              let releaseTime = task.swapPoint.time;
+              if (task.swapPoint.position === "before_live" || task.swapPoint.position === "idle") {
+                const tz = getAirportTimezone(task.swapPoint.icao) ?? "America/New_York";
+                releaseTime = localTimeToUtc(swapDate, 5, 0, tz);
+              }
+
+              // Need: release → drive to hub → security buffer → flight departs
+              const needAtHub = new Date(flightDep.getTime() - ms(RENTAL_RETURN_BUFFER));
+              const needLeaveFbo = new Date(needAtHub.getTime() - ms(driveMin));
+
+              if (needLeaveFbo.getTime() < releaseTime.getTime()) {
+                if (_debugCrew) console.log(`[CandidateDebug] ${task.name}: DRIVE-TO-HUB REJECTED ${flightNum} — need leave FBO ${needLeaveFbo.toISOString()} < release ${releaseTime.toISOString()}`);
+                continue;
+              }
+
+              // Check midnight deadline at home
+              const homeArr = new Date(flightArr.getTime() + ms(DEPLANE_BUFFER));
+              const homeHomeMidnight = task.homeAirports[0]
+                ? midnightUtc(toIcao(task.homeAirports[0]), swapDate)
+                : homeMidnight;
+              if (homeArr.getTime() > homeHomeMidnight.getTime()) {
+                // SkillBridge SIC gets Thursday midnight
+                if (task.crewMember?.is_skillbridge && task.role === "SIC") {
+                  const thurMidnight = new Date(homeHomeMidnight.getTime() + 24 * 60 * 60_000);
+                  if (homeArr.getTime() > thurMidnight.getTime()) continue;
+                } else {
+                  continue; // Won't make midnight
+                }
+              }
+
+              const totalCost = driveCost + flightCost + homeGroundCost;
+              const totalDuration = driveMin + totalFlightDuration;
+              const displayFlightNum = `RENTAL→${hubIata} + ${flightNum}`;
+
+              const candidate: TransportCandidate = {
+                type: "rental_car",
+                flightNumber: displayFlightNum,
+                depTime: flightDep,
+                arrTime: flightArr,
+                from: toIata(swapIcao),
+                to: lastSeg.arrival.iataCode,
+                cost: totalCost,
+                durationMin: totalDuration,
+                isDirect,
+                isBudgetCarrier: isBudget,
+                hubConnection: isHub,
+                connectionCount: segs.length - 1,
+                offer,
+                drive: driveToHub,
+                fboArrivalTime: null,
+                fboLeaveTime: needLeaveFbo,
+                dutyOnTime: null,
+                score: 0,
+                backups: [],
+              };
+
+              if (_debugCrew) console.log(`[CandidateDebug] ${task.name}: DRIVE-TO-HUB ACCEPTED ${displayFlightNum} dep=${flightDep.toISOString().slice(11,16)} homeArr=${homeArr.toISOString().slice(11,16)} cost=$${Math.round(totalCost)} (rental=$${driveCost} + flight=$${Math.round(flightCost)})`);
+              candidates.push(candidate);
+            }
+          }
+        }
+      }
+    }
+
+    if (_debugCrew) {
+      const hubCandidateCount = candidates.filter(c => c.flightNumber?.startsWith("RENTAL→")).length;
+      console.log(`[CandidateDebug] ${task.name}: DRIVE-TO-HUB found ${hubCandidateCount} total drive-to-hub candidates`);
+    }
+  }
 
   if (_debugCrew) {
     console.log(`[CandidateDebug] ${task.name}: TOTAL ${candidates.filter(c => c.type !== "none").length} viable candidates from ${commAirports.length} commercial airports`);
