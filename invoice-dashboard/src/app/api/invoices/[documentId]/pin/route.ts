@@ -92,7 +92,8 @@ export async function PATCH(req: NextRequest, { params }: Params) {
 }
 
 /**
- * DELETE /api/invoices/[documentId]/pin — Resolve a pin
+ * DELETE /api/invoices/[documentId]/pin — Resolve a pin (mark as reviewed)
+ * Body (optional): { note: string }
  */
 export async function DELETE(req: NextRequest, { params }: Params) {
   const auth = await requireAuth(req);
@@ -106,6 +107,14 @@ export async function DELETE(req: NextRequest, { params }: Params) {
     return NextResponse.json({ error: "Invalid document ID" }, { status: 400 });
   }
 
+  let resolveNote = "";
+  try {
+    const body = await req.json();
+    resolveNote = typeof body.note === "string" ? body.note.slice(0, 2000) : "";
+  } catch {
+    // No body is ok — resolve without note
+  }
+
   const supa = createServiceClient();
   const { error } = await supa
     .from("parsed_invoices")
@@ -113,6 +122,7 @@ export async function DELETE(req: NextRequest, { params }: Params) {
       pin_resolved: true,
       resolved_by: auth.userId,
       resolved_at: new Date().toISOString(),
+      resolve_note: resolveNote || null,
     })
     .eq("document_id", documentId)
     .eq("pinned", true);

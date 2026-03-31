@@ -93,6 +93,7 @@ const AIRPORT_COORDS: Record<string, [number, number]> = {
   // Mountain/West
   KAPA: [39.5701, -104.8493],  // Centennial (FBO)
   KASE: [39.2232, -106.8688],  // Aspen
+  KTEX: [37.9538, -107.9085],  // Telluride
   KBOI: [43.5644, -116.2228],  // Boise
   KCOS: [38.8058, -104.7007],  // Colorado Springs
   KDEN: [39.8561, -104.6737],  // Denver

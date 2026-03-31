@@ -4,10 +4,12 @@ import { useState } from "react";
 import { Topbar } from "@/components/Topbar";
 import ForeFlightClient from "./ForeFlightClient";
 import TankeringDashboard from "./TankeringDashboard";
+import DispatchFlights from "./DispatchFlights";
 
 const TABS = [
   { id: "fbo", label: "FBO Fuel Check" },
   { id: "tankering", label: "Tankering Plans" },
+  { id: "dispatch", label: "Dispatch" },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -40,6 +42,7 @@ export default function FuelPlanningPage() {
 
       {tab === "fbo" && <ForeFlightClient />}
       {tab === "tankering" && <TankeringDashboard />}
+      {tab === "dispatch" && <DispatchFlights />}
     </>
   );
 }

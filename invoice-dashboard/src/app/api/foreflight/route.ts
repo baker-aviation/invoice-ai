@@ -11,6 +11,16 @@ function apiKey(): string {
   return key;
 }
 
+const FLIGHT_SUB_RESOURCES: Record<string, string> = {
+  briefing: "briefing",
+  navlog: "navlog",
+  performance: "performance",
+  overflight: "overflight",
+  rwa: "rwa",
+  wb: "wb",
+  icao: "icao",
+};
+
 /** Safely parse a ForeFlight response — they sometimes return text errors even on 200 */
 async function safeParseFF(res: Response): Promise<{ ok: boolean; data?: unknown; error?: string; status: number }> {
   const text = await res.text();
@@ -52,7 +62,49 @@ export async function GET(req: NextRequest) {
       return NextResponse.json(parsed.data);
     }
 
-    return NextResponse.json({ error: "action required: aircraft | flight" }, { status: 400 });
+    if (action === "flights") {
+      const url = new URL(`${FF_BASE}/Flights/flights`);
+      const fromDate = req.nextUrl.searchParams.get("fromDate");
+      const toDate = req.nextUrl.searchParams.get("toDate");
+      const search = req.nextUrl.searchParams.get("search");
+      const tags = req.nextUrl.searchParams.get("tags");
+      if (fromDate) url.searchParams.set("fromDate", fromDate);
+      if (toDate) url.searchParams.set("toDate", toDate);
+      if (search) url.searchParams.set("search", search);
+      if (tags) url.searchParams.set("tags", tags);
+      const res = await fetch(url.toString(), {
+        headers: { "x-api-key": apiKey() },
+      });
+      const parsed = await safeParseFF(res);
+      if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: parsed.status });
+      return NextResponse.json(parsed.data);
+    }
+
+    if (action === "flightDetail") {
+      const flightId = req.nextUrl.searchParams.get("flightId");
+      if (!flightId) return NextResponse.json({ error: "flightId required" }, { status: 400 });
+      const res = await fetch(`${FF_BASE}/Flights/${encodeURIComponent(flightId)}`, {
+        headers: { "x-api-key": apiKey() },
+      });
+      const parsed = await safeParseFF(res);
+      if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: parsed.status });
+      return NextResponse.json(parsed.data);
+    }
+
+    if (action && action in FLIGHT_SUB_RESOURCES) {
+      const flightId = req.nextUrl.searchParams.get("flightId");
+      if (!flightId) return NextResponse.json({ error: "flightId required" }, { status: 400 });
+      const sub = FLIGHT_SUB_RESOURCES[action];
+      const res = await fetch(
+        `${FF_BASE}/Flights/${encodeURIComponent(flightId)}/${sub}`,
+        { headers: { "x-api-key": apiKey() } },
+      );
+      const parsed = await safeParseFF(res);
+      if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: parsed.status });
+      return NextResponse.json(parsed.data);
+    }
+
+    return NextResponse.json({ error: "action required: aircraft | flight | flights | flightDetail | briefing | navlog | performance | overflight | rwa | wb | icao" }, { status: 400 });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }

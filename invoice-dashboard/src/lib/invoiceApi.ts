@@ -8,7 +8,7 @@ import type { AdvertisedPriceRow, AlertRow, AlertRule, AlertsResponse, FuelPrice
 // ---------------------------------------------------------------------------
 
 const INVOICE_COLUMNS =
-  "id, document_id, created_at, vendor_name, invoice_number, invoice_date, airport_code, tail_number, currency, total, doc_type, review_required, risk_score, line_items, category_override, pinned, pin_note, pinned_by, pinned_at, pin_resolved, resolved_by, resolved_at";
+  "id, document_id, created_at, vendor_name, invoice_number, invoice_date, airport_code, tail_number, currency, total, doc_type, review_required, risk_score, line_items, category_override, pinned, pin_note, pinned_by, pinned_at, pin_resolved, resolved_by, resolved_at, resolve_note";
 
 export async function fetchInvoices(params: {
   limit?: number;
@@ -85,6 +85,7 @@ export async function fetchInvoices(params: {
       pin_resolved: (row.pin_resolved as boolean) ?? false,
       resolved_by: row.resolved_by as string | null,
       resolved_at: row.resolved_at as string | null,
+      resolve_note: row.resolve_note as string | null,
     };
   });
 

@@ -20,6 +20,7 @@ export type InvoiceListItem = {
   pin_resolved?: boolean;
   resolved_by?: string | null;
   resolved_at?: string | null;
+  resolve_note?: string | null;
 };
 
 export type InvoiceListResponse = {

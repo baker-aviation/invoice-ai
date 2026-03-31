@@ -10,6 +10,7 @@ type PinState = {
   pin_resolved: boolean;
   resolved_by: string | null;
   resolved_at: string | null;
+  resolve_note: string | null;
 };
 
 export default function PinButton({
@@ -21,7 +22,9 @@ export default function PinButton({
 }) {
   const [state, setState] = useState<PinState>(initial);
   const [showForm, setShowForm] = useState(false);
+  const [showResolveForm, setShowResolveForm] = useState(false);
   const [note, setNote] = useState(state.pin_note ?? "");
+  const [resolveNote, setResolveNote] = useState("");
   const [loading, setLoading] = useState(false);
 
   const isActive = state.pinned && !state.pin_resolved;
@@ -72,16 +75,22 @@ export default function PinButton({
   }
 
   async function handleResolve() {
-    if (!confirm("Resolve this pin? It will move to history.")) return;
     setLoading(true);
     try {
-      const res = await fetch(`/api/invoices/${documentId}/pin`, { method: "DELETE" });
+      const res = await fetch(`/api/invoices/${documentId}/pin`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ note: resolveNote }),
+      });
       if (res.ok) {
         setState((s) => ({
           ...s,
           pin_resolved: true,
+          resolve_note: resolveNote || null,
           resolved_at: new Date().toISOString(),
         }));
+        setShowResolveForm(false);
+        setResolveNote("");
       }
     } finally {
       setLoading(false);
@@ -179,13 +188,36 @@ export default function PinButton({
             </p>
           )}
         </div>
-        <button
-          onClick={handleResolve}
-          disabled={loading}
-          className="rounded-md border border-red-300 px-3 py-1.5 text-sm text-red-700 hover:bg-red-100 disabled:opacity-50 whitespace-nowrap"
-        >
-          {loading ? "…" : "Resolve"}
-        </button>
+        {showResolveForm ? (
+          <div className="flex flex-col gap-2 items-end">
+            <input
+              type="text"
+              value={resolveNote}
+              onChange={(e) => setResolveNote(e.target.value)}
+              placeholder="Review notes…"
+              className="border rounded px-2 py-1 text-sm w-56"
+              autoFocus
+              onKeyDown={(e) => e.key === "Enter" && handleResolve()}
+            />
+            <div className="flex gap-2">
+              <button onClick={() => setShowResolveForm(false)} className="text-xs text-gray-500">Cancel</button>
+              <button
+                onClick={handleResolve}
+                disabled={loading}
+                className="rounded-md bg-green-600 px-3 py-1 text-xs text-white hover:bg-green-700 disabled:opacity-50"
+              >
+                {loading ? "…" : "Mark Reviewed"}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button
+            onClick={() => setShowResolveForm(true)}
+            className="rounded-md border border-green-300 px-3 py-1.5 text-sm text-green-700 hover:bg-green-100 disabled:opacity-50 whitespace-nowrap"
+          >
+            Mark Reviewed
+          </button>
+        )}
       </div>
     </div>
   );
