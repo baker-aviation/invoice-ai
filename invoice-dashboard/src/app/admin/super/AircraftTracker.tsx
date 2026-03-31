@@ -30,9 +30,13 @@ interface Aircraft {
 
 type EditableField = keyof Omit<Aircraft, "id" | "created_at" | "updated_at">;
 
-const DISPLAY_COLUMNS: { key: EditableField; label: string; width: string }[] = [
+// "location" is a virtual column — not an Aircraft field, rendered separately
+type ColumnKey = EditableField | "location";
+
+const DISPLAY_COLUMNS: { key: ColumnKey; label: string; width: string }[] = [
   { key: "tail_number", label: "Tail #", width: "w-24" },
   { key: "aircraft_type", label: "Type", width: "w-28" },
+  { key: "location", label: "Location", width: "w-32" },
   { key: "part_135_flying", label: "135 Flying", width: "w-24" },
   { key: "wb_date", label: "W&B Date", width: "w-28" },
   { key: "wb_on_jet_insight", label: "W&B on JI", width: "w-24" },
@@ -75,6 +79,8 @@ const YES_NO_FIELDS: Set<EditableField> = new Set([
 const YES_NO_OPTIONS = ["Yes", "No", "Unsure", "N/A", ""];
 const STATUS_OPTIONS = ["Not Started", "Configured", "Validated", ""];
 
+const STORAGE_KEY = "aircraft-tracker-hidden-cols";
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function yesNoColor(val: string | null): string {
@@ -91,6 +97,24 @@ function isUrl(val: string | null): boolean {
   return val.startsWith("http://") || val.startsWith("https://");
 }
 
+function loadHiddenColumns(): Set<string> {
+  if (typeof window === "undefined") return new Set();
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    return saved ? new Set(JSON.parse(saved)) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+type LocationResult = {
+  airport_code: string;
+  airport_name: string | null;
+  city: string | null;
+  state: string | null;
+  last_seen: string | null;
+};
+
 // ─── Component ──────────────────────────────────────────────────────────────
 
 export default function AircraftTracker() {
@@ -99,9 +123,20 @@ export default function AircraftTracker() {
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [typeFilter, setTypeFilter] = useState<string>("all");
+  const [flyingFilter, setFlyingFilter] = useState<string>("all");
   const [showAddForm, setShowAddForm] = useState(false);
   const [seeding, setSeeding] = useState(false);
-  const [saving, setSaving] = useState<string | null>(null); // "id:field" being saved
+  const [saving, setSaving] = useState<string | null>(null);
+
+  // Column visibility
+  const [hiddenColumns, setHiddenColumns] = useState<Set<string>>(loadHiddenColumns);
+  const [showColumnPicker, setShowColumnPicker] = useState(false);
+  const columnPickerRef = useRef<HTMLDivElement>(null);
+
+  // FlightAware locations
+  const [locations, setLocations] = useState<Record<string, LocationResult | null>>({});
+  const [loadingLocations, setLoadingLocations] = useState(false);
 
   // Inline edit state
   const [editCell, setEditCell] = useState<{ id: string; field: EditableField } | null>(null);
@@ -113,6 +148,35 @@ export default function AircraftTracker() {
   const [newType, setNewType] = useState("");
   const [newStatus, setNewStatus] = useState("");
   const [addError, setAddError] = useState<string | null>(null);
+
+  // ── Persist hidden columns ─────────────────────────────────────────────
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify([...hiddenColumns]));
+  }, [hiddenColumns]);
+
+  const toggleColumn = (key: string) => {
+    setHiddenColumns((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  // Close column picker on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (columnPickerRef.current && !columnPickerRef.current.contains(e.target as Node)) {
+        setShowColumnPicker(false);
+      }
+    };
+    if (showColumnPicker) document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showColumnPicker]);
+
+  // Visible columns
+  const visibleColumns = DISPLAY_COLUMNS.filter((col) => !hiddenColumns.has(col.key));
 
   // ── Fetch ───────────────────────────────────────────────────────────────
 
@@ -130,7 +194,44 @@ export default function AircraftTracker() {
     }
   }, []);
 
-  useEffect(() => { fetchAircraft(); }, [fetchAircraft]);
+  useEffect(() => {
+    fetchAircraft();
+  }, [fetchAircraft]);
+
+  // ── Fetch FlightAware Locations ────────────────────────────────────────
+
+  const fetchLocations = useCallback(
+    async (list: Aircraft[]) => {
+      // Only look up aircraft NOT flying 135 (still in conformity)
+      const nonFlying = list.filter(
+        (a) => a.part_135_flying?.trim().toLowerCase() !== "yes",
+      );
+      if (nonFlying.length === 0) return;
+
+      const tails = nonFlying.map((a) => a.tail_number);
+      setLoadingLocations(true);
+      try {
+        const res = await fetch("/api/admin/aircraft-tracker/locations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tail_numbers: tails }),
+        });
+        if (!res.ok) throw new Error("Location fetch failed");
+        const data = await res.json();
+        setLocations(data.locations ?? {});
+      } catch (err) {
+        console.error("Failed to fetch locations:", err);
+      } finally {
+        setLoadingLocations(false);
+      }
+    },
+    [],
+  );
+
+  // Auto-fetch locations once aircraft load
+  useEffect(() => {
+    if (aircraft.length > 0) fetchLocations(aircraft);
+  }, [aircraft, fetchLocations]);
 
   // ── Inline Edit ─────────────────────────────────────────────────────────
 
@@ -151,7 +252,6 @@ export default function AircraftTracker() {
     const original = aircraft.find((a) => a.id === id);
     if (!original) return;
 
-    // No change — just close
     const oldVal = original[field] ?? "";
     if (editValue === oldVal) {
       cancelEdit();
@@ -257,12 +357,23 @@ export default function AircraftTracker() {
 
   // ── Filter ──────────────────────────────────────────────────────────────
 
+  const uniqueTypes = [...new Set(aircraft.map((a) => a.aircraft_type).filter(Boolean))].sort() as string[];
+
   const filtered = aircraft.filter((a) => {
-    const matchSearch = !search || a.tail_number.toLowerCase().includes(search.toLowerCase()) ||
-      (a.aircraft_type?.toLowerCase().includes(search.toLowerCase()));
-    const matchStatus = statusFilter === "all" ||
+    const matchSearch =
+      !search ||
+      a.tail_number.toLowerCase().includes(search.toLowerCase()) ||
+      a.aircraft_type?.toLowerCase().includes(search.toLowerCase());
+    const matchStatus =
+      statusFilter === "all" ||
       (statusFilter === "none" ? !a.overall_status : a.overall_status === statusFilter);
-    return matchSearch && matchStatus;
+    const matchType = typeFilter === "all" || a.aircraft_type === typeFilter;
+    const matchFlying =
+      flyingFilter === "all" ||
+      (flyingFilter === "yes"
+        ? a.part_135_flying?.trim().toLowerCase() === "yes"
+        : a.part_135_flying?.trim().toLowerCase() !== "yes");
+    return matchSearch && matchStatus && matchType && matchFlying;
   });
 
   // ── Stats ─────────────────────────────────────────────────────────────
@@ -336,7 +447,9 @@ export default function AircraftTracker() {
       {error && (
         <div className="bg-red-900/30 border border-red-700 text-red-300 px-4 py-2 rounded-lg text-sm">
           {error}
-          <button onClick={() => setError(null)} className="ml-2 underline">dismiss</button>
+          <button onClick={() => setError(null)} className="ml-2 underline">
+            dismiss
+          </button>
         </div>
       )}
 
@@ -378,7 +491,7 @@ export default function AircraftTracker() {
       )}
 
       {/* Controls */}
-      <div className="flex gap-3">
+      <div className="flex gap-3 flex-wrap items-center">
         <input
           placeholder="Search tail # or type..."
           value={search}
@@ -396,7 +509,71 @@ export default function AircraftTracker() {
           <option value="Validated">Validated</option>
           <option value="none">No Status</option>
         </select>
-        <span className="text-zinc-500 text-sm self-center">{filtered.length} shown</span>
+        <select
+          value={typeFilter}
+          onChange={(e) => setTypeFilter(e.target.value)}
+          className="bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-1.5 text-sm text-white"
+        >
+          <option value="all">All Types</option>
+          {uniqueTypes.map((t) => (
+            <option key={t} value={t}>
+              {t}
+            </option>
+          ))}
+        </select>
+        <select
+          value={flyingFilter}
+          onChange={(e) => setFlyingFilter(e.target.value)}
+          className="bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-1.5 text-sm text-white"
+        >
+          <option value="all">All 135 Status</option>
+          <option value="yes">135 Flying</option>
+          <option value="no">Not 135 Yet</option>
+        </select>
+
+        {/* Column visibility toggle */}
+        <div className="relative" ref={columnPickerRef}>
+          <button
+            onClick={() => setShowColumnPicker(!showColumnPicker)}
+            className="px-3 py-1.5 text-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-600 rounded-lg transition-colors"
+          >
+            Columns{" "}
+            {hiddenColumns.size > 0 && (
+              <span className="text-xs text-amber-400 ml-1">({hiddenColumns.size} hidden)</span>
+            )}
+          </button>
+          {showColumnPicker && (
+            <div className="absolute top-full right-0 mt-1 z-50 bg-zinc-800 border border-zinc-600 rounded-lg shadow-xl p-3 w-56 max-h-80 overflow-y-auto">
+              <div className="flex justify-between items-center mb-2">
+                <span className="text-xs font-medium text-zinc-400 uppercase">Toggle Columns</span>
+                {hiddenColumns.size > 0 && (
+                  <button
+                    onClick={() => setHiddenColumns(new Set())}
+                    className="text-xs text-blue-400 hover:text-blue-300"
+                  >
+                    Show All
+                  </button>
+                )}
+              </div>
+              {DISPLAY_COLUMNS.map((col) => (
+                <label
+                  key={col.key}
+                  className="flex items-center gap-2 py-1 px-1 rounded hover:bg-zinc-700/50 cursor-pointer text-sm"
+                >
+                  <input
+                    type="checkbox"
+                    checked={!hiddenColumns.has(col.key)}
+                    onChange={() => toggleColumn(col.key)}
+                    className="rounded border-zinc-500 bg-zinc-900 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                  />
+                  <span className="text-zinc-200">{col.label}</span>
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <span className="text-zinc-500 text-sm">{filtered.length} shown</span>
       </div>
 
       {/* Table */}
@@ -404,12 +581,15 @@ export default function AircraftTracker() {
         <table className="min-w-full text-sm">
           <thead>
             <tr className="bg-zinc-800 border-b border-zinc-700">
-              {DISPLAY_COLUMNS.map((col) => (
+              {visibleColumns.map((col) => (
                 <th
                   key={col.key}
                   className={`${col.width} px-3 py-2 text-left text-xs font-medium text-zinc-400 uppercase tracking-wider whitespace-nowrap`}
                 >
                   {col.label}
+                  {col.key === "location" && loadingLocations && (
+                    <span className="ml-1 inline-block w-3 h-3 border border-zinc-500 border-t-blue-400 rounded-full animate-spin align-middle" />
+                  )}
                 </th>
               ))}
               <th className="w-16 px-3 py-2" />
@@ -418,41 +598,76 @@ export default function AircraftTracker() {
           <tbody className="divide-y divide-zinc-800">
             {filtered.map((row) => (
               <tr key={row.id} className="hover:bg-zinc-800/50 transition-colors">
-                {DISPLAY_COLUMNS.map((col) => {
-                  const isEditing = editCell?.id === row.id && editCell?.field === col.key;
-                  const isSaving = saving === `${row.id}:${col.key}`;
-                  const val = row[col.key];
+                {visibleColumns.map((col) => {
+                  // ── Location (virtual column) ──
+                  if (col.key === "location") {
+                    const isFlying = row.part_135_flying?.trim().toLowerCase() === "yes";
+                    if (isFlying) {
+                      return (
+                        <td key="location" className={`${col.width} px-3 py-1.5 whitespace-nowrap`}>
+                          <span className="text-zinc-600">—</span>
+                        </td>
+                      );
+                    }
+                    const loc = locations[row.tail_number];
+                    return (
+                      <td key="location" className={`${col.width} px-3 py-1.5 whitespace-nowrap`}>
+                        {loadingLocations ? (
+                          <span className="text-zinc-600 text-xs">...</span>
+                        ) : loc ? (
+                          <span
+                            className="text-cyan-400"
+                            title={[loc.airport_name, loc.city, loc.state].filter(Boolean).join(", ")}
+                          >
+                            {loc.airport_code}
+                          </span>
+                        ) : (
+                          <span className="text-zinc-600 text-xs">N/A</span>
+                        )}
+                      </td>
+                    );
+                  }
+
+                  // ── Normal editable columns ──
+                  const field = col.key as EditableField;
+                  const isEditing = editCell?.id === row.id && editCell?.field === field;
+                  const isSaving = saving === `${row.id}:${field}`;
+                  const val = row[field];
 
                   return (
                     <td
                       key={col.key}
                       className={`${col.width} px-3 py-1.5 whitespace-nowrap cursor-pointer ${isSaving ? "opacity-50" : ""}`}
-                      onClick={() => !isEditing && startEdit(row.id, col.key, val)}
+                      onClick={() => !isEditing && startEdit(row.id, field, val)}
                     >
-                      {isEditing && YES_NO_FIELDS.has(col.key) ? (
+                      {isEditing && YES_NO_FIELDS.has(field) ? (
                         <select
                           autoFocus
                           value={editValue}
-                          onChange={(e) => { setEditValue(e.target.value); }}
+                          onChange={(e) => setEditValue(e.target.value)}
                           onBlur={saveEdit}
                           onKeyDown={handleEditKeyDown}
                           className="w-full bg-zinc-900 border border-blue-500 rounded px-1 py-0.5 text-sm text-white outline-none"
                         >
                           {YES_NO_OPTIONS.map((opt) => (
-                            <option key={opt} value={opt}>{opt || "— clear —"}</option>
+                            <option key={opt} value={opt}>
+                              {opt || "— clear —"}
+                            </option>
                           ))}
                         </select>
-                      ) : isEditing && col.key === "overall_status" ? (
+                      ) : isEditing && field === "overall_status" ? (
                         <select
                           autoFocus
                           value={editValue}
-                          onChange={(e) => { setEditValue(e.target.value); }}
+                          onChange={(e) => setEditValue(e.target.value)}
                           onBlur={saveEdit}
                           onKeyDown={handleEditKeyDown}
                           className="w-full bg-zinc-900 border border-blue-500 rounded px-1 py-0.5 text-sm text-white outline-none"
                         >
                           {STATUS_OPTIONS.map((opt) => (
-                            <option key={opt} value={opt}>{opt || "— clear —"}</option>
+                            <option key={opt} value={opt}>
+                              {opt || "— clear —"}
+                            </option>
                           ))}
                         </select>
                       ) : isEditing ? (
@@ -464,7 +679,7 @@ export default function AircraftTracker() {
                           onKeyDown={handleEditKeyDown}
                           className="w-full bg-zinc-900 border border-blue-500 rounded px-1.5 py-0.5 text-sm text-white outline-none"
                         />
-                      ) : col.key === "overall_status" && val ? (
+                      ) : field === "overall_status" && val ? (
                         <span
                           className={`inline-block px-2 py-0.5 text-xs rounded border ${
                             STATUS_COLORS[val] ?? "bg-zinc-800 text-zinc-300 border-zinc-600"
@@ -472,7 +687,7 @@ export default function AircraftTracker() {
                         >
                           {val}
                         </span>
-                      ) : col.key === "jet_insight_url" && isUrl(val) ? (
+                      ) : field === "jet_insight_url" && isUrl(val) ? (
                         <a
                           href={val!}
                           target="_blank"
@@ -503,7 +718,7 @@ export default function AircraftTracker() {
             ))}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={DISPLAY_COLUMNS.length + 1} className="text-center py-8 text-zinc-500">
+                <td colSpan={visibleColumns.length + 1} className="text-center py-8 text-zinc-500">
                   {aircraft.length === 0
                     ? 'No aircraft yet — click "Seed from Excel" to import data'
                     : "No aircraft match your filters"}
