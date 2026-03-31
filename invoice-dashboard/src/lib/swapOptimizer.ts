@@ -3625,25 +3625,6 @@ function assignRoleWithMatrix(
     viableCrewPerTail.set(opt.tail, (viableCrewPerTail.get(opt.tail) ?? 0) + 1);
   }
 
-  // ── Crew-constraint rank adjustment ────────────────────────────────────
-  // Constrained crew (few viable tails) get a rank bonus so Kuhn's prefers
-  // to use them on their limited options, saving flexible crew for other tails.
-  for (const opt of viableOptions) {
-    const crewViable = viableTailsPerCrew.get(opt.crewName) ?? 0;
-    if (crewViable <= 2) {
-      opt.rank -= 12; // Strong boost for heavily constrained crew
-    } else if (crewViable <= 4) {
-      opt.rank -= 6;  // Moderate boost
-    }
-    // Also boost options on constrained tails (few viable crew)
-    const tailViable = viableCrewPerTail.get(opt.tail) ?? 0;
-    if (tailViable <= 2) {
-      opt.rank -= 8;
-    } else if (tailViable <= 4) {
-      opt.rank -= 4;
-    }
-  }
-
   // ── Maximum bipartite matching (Kuhn's algorithm) ─────────────────────
   // Greedy can't backtrack: if it assigns a flexible crew to an easy tail,
   // a hard tail with only that crew available ends up empty. Maximum matching
@@ -4046,19 +4027,13 @@ export function solveOffgoingFirst(params: {
           offgoingName: offName, offgoingFlight: best?.flightNumber ?? null,
         });
       } else {
-        // Offgoing has no viable transport but DON'T block oncoming assignment.
-        // Set a generous fallback deadline (end of swap day) so oncoming crew can
-        // still be assigned. Offgoing transport will need manual arrangement.
-        const fallbackDeadline = new Date(`${swapDate}T23:30:00`);
-        deadlines.push({
-          tail, role, swapPoint: swapPoint.icao, deadline: fallbackDeadline,
-          offgoingName: offName, offgoingFlight: null,
-        });
+        // Offgoing has no viable transport — do NOT create a deadline.
+        // No deadline = no filter on oncoming candidates, which is the least
+        // restrictive option (oncoming can arrive at any time).
         unsolvable.push({
           tail, role,
-          reason: `No viable transport for offgoing ${offName} from ${swapPoint.icao} (oncoming not blocked)`,
+          reason: `No viable transport for offgoing ${offName} from ${swapPoint.icao}`,
         });
-        console.log(`[OffgoingDecouple] ${tail} ${role}: offgoing ${offName} has no transport from ${toIata(swapPoint.icao)} — using fallback deadline ${fallbackDeadline.toISOString()} so oncoming is not blocked`);
       }
     }
   }
