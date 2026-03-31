@@ -954,7 +954,7 @@ function buildCandidates(
 
         let fboArr: Date | null = null;
         let dutyOn: Date | null = null;
-        const cost = parseFloat(offer.price.total);
+        let cost = parseFloat(offer.price.total);
 
         // Add ground transport cost to/from commercial airport
         let groundCost = 0;
@@ -1031,7 +1031,16 @@ function buildCandidates(
               const thurMidnight = new Date(homeMidnight.getTime() + 24 * 60 * 60_000);
               if (homeArr.getTime() > thurMidnight.getTime()) continue;
             } else {
-              continue; // Won't make 1 AM
+              // Next-day (Thursday) flights: allow offgoing crew to arrive home by
+              // Thursday noon if no same-day flights work. This adds a hotel night
+              // but is better than "no viable transport — arrange manually".
+              const thurNoon = new Date(homeMidnight.getTime() + 12 * 60 * 60_000);
+              if (homeArr.getTime() <= thurNoon.getTime()) {
+                // Keep this candidate but add hotel cost penalty
+                cost += 150; // Hotel night estimate
+              } else {
+                continue; // Won't make Thursday noon either
+              }
             }
           }
           fboArr = null;
