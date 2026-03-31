@@ -259,36 +259,28 @@ export async function GET(req: NextRequest) {
 
   // 4. Build deduplicated flight list — check both KOW callsign AND N-number
   // Pilots sometimes file under N-number to shop for better EDCT slots
-  // For territory airports (PR/USVI), also try the ICAO variant since pilots
-  // may file under TJSJ while JetInsight stores KSJU
+  // toFaaCode() handles territory conversion (KSJU→TJSJ) at query time
   const seen = new Set<string>();
   const flights: FlightInput[] = [];
-
-  function addFlight(cs: string, tail: string, dept: string, arr: string) {
-    const key = `${cs}|${dept}|${arr}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    flights.push({ callsign: cs, tail, dept, arr });
-  }
-
   for (const f of flightRows) {
     if (!f.tail_number || !f.departure_icao || !f.arrival_icao) continue;
     const tail = f.tail_number.toUpperCase();
     const callsign = callsignMap.get(tail);
-    const dept = f.departure_icao as string;
-    const arr = f.arrival_icao as string;
 
-    // Build alternate codes for territories (KSJU↔TJSJ)
-    const deptAlt = TERRITORY_FAA_TO_ICAO[dept] ?? TERRITORY_ICAO_TO_FAA[dept] ?? null;
-    const arrAlt = TERRITORY_FAA_TO_ICAO[arr] ?? TERRITORY_ICAO_TO_FAA[arr] ?? null;
-    const deptCodes = deptAlt ? [dept, deptAlt] : [dept];
-    const arrCodes = arrAlt ? [arr, arrAlt] : [arr];
-
-    for (const d of deptCodes) {
-      for (const a of arrCodes) {
-        if (callsign) addFlight(callsign, tail, d, a);
-        addFlight(tail, tail, d, a);
+    // Add KOW callsign lookup
+    if (callsign) {
+      const key = `${callsign}|${f.departure_icao}|${f.arrival_icao}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        flights.push({ callsign, tail, dept: f.departure_icao, arr: f.arrival_icao });
       }
+    }
+
+    // Also add N-number lookup (pilots may file under tail number)
+    const nKey = `${tail}|${f.departure_icao}|${f.arrival_icao}`;
+    if (!seen.has(nKey)) {
+      seen.add(nKey);
+      flights.push({ callsign: tail, tail, dept: f.departure_icao, arr: f.arrival_icao });
     }
   }
 
