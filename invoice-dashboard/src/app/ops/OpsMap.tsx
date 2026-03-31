@@ -537,54 +537,6 @@ const FLOW_COLORS = [
   "#eab308", // yellow
 ];
 
-/** Demo flow lines for visual reference — remove once SWIM feed is consistently populating */
-const DEMO_FLOW_LINES: FlowControlLine[] = [
-  {
-    id: "demo-ne-reroute",
-    event_type: "CTOP",
-    name: "East Coast CTOP",
-    subject: "CTOP — EWR/JFK Arrivals via BEETS-COATE-JERSY",
-    status: "active",
-    severity: "warning",
-    origins: ["ZDC", "ZTL"],
-    destinations: ["KEWR", "KJFK"],
-    waypoints: [
-      [39.955714, -77.449875],  // BEETS
-      [40.130714, -75.376769],  // COPES
-      [41.136228, -74.695167],  // COATE
-      [40.791386, -74.399444],  // JERSY
-      [40.490744, -74.749092],  // HARLM
-    ],
-    waypointNames: ["BEETS", "COPES", "COATE", "JERSY", "HARLM"],
-    effective_at: new Date(Date.now() - 2 * 3600_000).toISOString(),
-    expires_at: new Date(Date.now() + 4 * 3600_000).toISOString(),
-    tmiId: "RRDCC509",
-    fcaName: "FCA_NE_ARRVL",
-  },
-  {
-    id: "demo-se-afp",
-    event_type: "AFP",
-    name: "Southeast AFP",
-    subject: "AFP — ATL Arrivals via DAWWN-BEORN-AZZOG",
-    status: "active",
-    severity: "warning",
-    origins: ["ZJX", "ZMA"],
-    destinations: ["KATL"],
-    waypoints: [
-      [30.373592, -84.076242],  // BULZI
-      [31.480544, -84.612969],  // DAWWN
-      [31.918356, -84.831961],  // BEORN
-      [32.785844, -85.250197],  // AZZOG
-      [33.629072, -84.435072],  // ATL
-    ],
-    waypointNames: ["BULZI", "DAWWN", "BEORN", "AZZOG", "ATL"],
-    effective_at: new Date(Date.now() - 1 * 3600_000).toISOString(),
-    expires_at: new Date(Date.now() + 3 * 3600_000).toISOString(),
-    tmiId: "AFPATL218",
-    fcaName: "FCA_SE_ATL",
-  },
-];
-
 function useFlowControls(enabled: boolean): FlowControlLine[] {
   const [lines, setLines] = useState<FlowControlLine[]>([]);
 
@@ -597,13 +549,8 @@ function useFlowControls(enabled: boolean): FlowControlLine[] {
         const res = await fetch("/api/ops/flow-controls", { cache: "no-store" });
         const data = await res.json();
         if (cancelled || !data.ok) return;
-        const live = data.lines ?? [];
-        // Append demo lines so there's always something to show
-        setLines([...live, ...DEMO_FLOW_LINES]);
-      } catch {
-        // Even if fetch fails, show demos
-        if (!cancelled) setLines(DEMO_FLOW_LINES);
-      }
+        setLines(data.lines ?? []);
+      } catch { /* ignore */ }
     }
 
     load();
