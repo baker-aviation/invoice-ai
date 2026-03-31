@@ -40,6 +40,24 @@ function stripK(code: string): string {
   return u;
 }
 
+// Territories where ICAO differs from FAA K-prefix (ForeFlight uses ICAO, JetInsight uses FAA)
+const TERRITORY_FAA_TO_ICAO: Record<string, string> = {
+  KSJU: "TJSJ", KBQN: "TJBQ", KPSE: "TJPS", KSIG: "TJIG", // Puerto Rico
+  KSTT: "TIST", KSTX: "TISX", // USVI
+};
+const TERRITORY_ICAO_TO_FAA: Record<string, string> = Object.fromEntries(
+  Object.entries(TERRITORY_FAA_TO_ICAO).map(([k, v]) => [v, k]),
+);
+
+/** Get the ICAO code for FAA query — territories need ICAO, not stripped K-prefix */
+function toFaaCode(icao: string): string {
+  // If it's a territory stored as K-prefix (KSJU), use the real ICAO (TJSJ)
+  const territory = TERRITORY_FAA_TO_ICAO[icao.toUpperCase()];
+  if (territory) return territory;
+  // Normal US domestic — strip K
+  return stripK(icao);
+}
+
 function parseFaaDateTime(s: string): string | null {
   const m = s.match(/(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2})/);
   if (!m) return null;
@@ -69,8 +87,8 @@ function fmtLocal(iso: string | null, airportIcao: string | null): string {
 // ─── FAA Lookup ────────────────────────────────────────────────────────
 
 async function lookupEdct(flight: FlightInput): Promise<FaaEdctResult> {
-  const dept = stripK(flight.dept);
-  const arr = stripK(flight.arr);
+  const dept = toFaaCode(flight.dept);
+  const arr = toFaaCode(flight.arr);
   const result: FaaEdctResult = {
     callsign: flight.callsign, tail: flight.tail,
     origin: flight.dept, destination: flight.arr,
@@ -241,27 +259,36 @@ export async function GET(req: NextRequest) {
 
   // 4. Build deduplicated flight list — check both KOW callsign AND N-number
   // Pilots sometimes file under N-number to shop for better EDCT slots
+  // For territory airports (PR/USVI), also try the ICAO variant since pilots
+  // may file under TJSJ while JetInsight stores KSJU
   const seen = new Set<string>();
   const flights: FlightInput[] = [];
+
+  function addFlight(cs: string, tail: string, dept: string, arr: string) {
+    const key = `${cs}|${dept}|${arr}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    flights.push({ callsign: cs, tail, dept, arr });
+  }
+
   for (const f of flightRows) {
     if (!f.tail_number || !f.departure_icao || !f.arrival_icao) continue;
     const tail = f.tail_number.toUpperCase();
     const callsign = callsignMap.get(tail);
+    const dept = f.departure_icao as string;
+    const arr = f.arrival_icao as string;
 
-    // Add KOW callsign lookup
-    if (callsign) {
-      const key = `${callsign}|${f.departure_icao}|${f.arrival_icao}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        flights.push({ callsign, tail, dept: f.departure_icao, arr: f.arrival_icao });
+    // Build alternate codes for territories (KSJU↔TJSJ)
+    const deptAlt = TERRITORY_FAA_TO_ICAO[dept] ?? TERRITORY_ICAO_TO_FAA[dept] ?? null;
+    const arrAlt = TERRITORY_FAA_TO_ICAO[arr] ?? TERRITORY_ICAO_TO_FAA[arr] ?? null;
+    const deptCodes = deptAlt ? [dept, deptAlt] : [dept];
+    const arrCodes = arrAlt ? [arr, arrAlt] : [arr];
+
+    for (const d of deptCodes) {
+      for (const a of arrCodes) {
+        if (callsign) addFlight(callsign, tail, d, a);
+        addFlight(tail, tail, d, a);
       }
-    }
-
-    // Also add N-number lookup (pilots may file under tail number)
-    const nKey = `${tail}|${f.departure_icao}|${f.arrival_icao}`;
-    if (!seen.has(nKey)) {
-      seen.add(nKey);
-      flights.push({ callsign: tail, tail, dept: f.departure_icao, arr: f.arrival_icao });
     }
   }
 

@@ -49,6 +49,7 @@ export async function GET(req: NextRequest) {
     hidden_mx_ids: data?.hidden_mx_ids ?? [],
     airport_overrides: data?.airport_overrides ?? [],
     sort_overrides: data?.sort_overrides ?? [],
+    zone_covers: data?.zone_covers ?? [],
     updated_at: data?.updated_at ?? null,
   });
 }
@@ -60,7 +61,7 @@ export async function POST(req: NextRequest) {
   const body = await req.json();
   const { date, overrides, removals, unscheduled, leg_notes,
     wont_see_tails, dismissed_conflicts, hidden_mx_ids, airport_overrides, sort_overrides,
-    expected_updated_at } = body;
+    zone_covers, expected_updated_at } = body;
   if (!date) return NextResponse.json({ error: "date required" }, { status: 400 });
 
   const supa = createServiceClient();
@@ -76,6 +77,7 @@ export async function POST(req: NextRequest) {
     hidden_mx_ids: hidden_mx_ids ?? [],
     airport_overrides: airport_overrides ?? [],
     sort_overrides: sort_overrides ?? [],
+    zone_covers: zone_covers ?? [],
     updated_by: auth.userId,
     updated_at: now,
   };

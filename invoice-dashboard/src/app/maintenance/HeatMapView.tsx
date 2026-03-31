@@ -113,13 +113,17 @@ function fmtEta(iso: string | null | undefined): string {
   const now = new Date();
   const diffMs = d.getTime() - now.getTime();
   const diffMin = Math.round(diffMs / 60000);
+  const datePart = d.toLocaleDateString("en-US", {
+    month: "short", day: "numeric", timeZone: "America/New_York",
+  });
   const time = d.toLocaleTimeString("en-US", {
     hour: "2-digit", minute: "2-digit", hour12: true, timeZone: "America/New_York",
   });
-  if (diffMin <= 0) return `${time} ET`;
+  const full = `${datePart} ${time} ET`;
+  if (diffMin <= 0) return full;
   const hrs = Math.floor(diffMin / 60);
   const mins = diffMin % 60;
-  return hrs > 0 ? `${time} ET (${hrs}h ${mins}m)` : `${time} ET (${mins}m)`;
+  return hrs > 0 ? `${full} (${hrs}h ${mins}m)` : `${full} (${mins}m)`;
 }
 
 function findNearestVan(
@@ -462,9 +466,9 @@ export default function HeatMapView({ flights, liveVanPositions, liveVanIsLive }
                     {cluster.info.name} ({cluster.icao})
                   </div>
                   <div className="text-gray-500">
-                    {cluster.info.city}, {cluster.info.state}
+                    {[cluster.info.city, cluster.info.state].filter(Boolean).join(", ") || cluster.icao}
                     {cluster.nearestVanDist !== null && (
-                      <> &middot; V{cluster.nearestVanId} is {cluster.nearestVanDist} km away</>
+                      <> &middot; V{cluster.nearestVanId} is {Math.round(cluster.nearestVanDist * 0.621371)} mi away</>
                     )}
                   </div>
                   <div className="divide-y divide-gray-100 max-h-52 overflow-y-auto">

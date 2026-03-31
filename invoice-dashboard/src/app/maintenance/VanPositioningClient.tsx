@@ -2183,6 +2183,10 @@ function VanScheduleCard({
   vanDiff,
   showComparison,
   publishedItems,
+  coveringZoneNames,
+  coveredByLabel,
+  onSetCoverZone,
+  onClearCoverZone,
 }: {
   zone: (typeof FIXED_VAN_ZONES)[number];
   color: string;
@@ -2218,6 +2222,10 @@ function VanScheduleCard({
   vanDiff?: { added: number; removed: number; orderChanged: boolean; mxChanged: boolean } | null;
   showComparison?: boolean;
   publishedItems?: { flightId: string; tail: string; airport: string }[];
+  coveringZoneNames?: string[];
+  coveredByLabel?: string;
+  onSetCoverZone?: (coveredVanId: number) => void;
+  onClearCoverZone?: (coveredVanId: number) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [showSlackModal, setShowSlackModal] = useState(false);
@@ -2284,8 +2292,19 @@ function VanScheduleCard({
               }
               const locationLabel = liveCityState ?? ((samsaraVanName && parseVanDisplayName(samsaraVanName)) || null);
               return (
-                <div className="font-semibold text-sm">
-                  {zone.name}{locationLabel ? <span className="text-gray-400 font-normal"> ({locationLabel})</span> : ""} <span className="text-gray-400 font-normal">({items.length} aircraft)</span>
+                <div className="font-semibold text-sm flex items-center gap-1.5 flex-wrap">
+                  <span>{zone.name}{locationLabel ? <span className="text-gray-400 font-normal"> ({locationLabel})</span> : ""} <span className="text-gray-400 font-normal">({items.length} aircraft)</span></span>
+                  {coveringZoneNames && coveringZoneNames.length > 0 && coveringZoneNames.map((name) => {
+                    const coveredZone = FIXED_VAN_ZONES.find((z) => z.name === name);
+                    return (
+                      <span key={name} className="text-[11px] bg-blue-100 text-blue-700 rounded-full px-2 py-0.5 font-medium inline-flex items-center gap-1">
+                        + {name}
+                        {onClearCoverZone && coveredZone && (
+                          <button onClick={(e) => { e.stopPropagation(); onClearCoverZone(coveredZone.vanId); }} className="text-blue-400 hover:text-red-500 leading-none">&times;</button>
+                        )}
+                      </span>
+                    );
+                  })}
                 </div>
               );
             })()}
@@ -2302,6 +2321,19 @@ function VanScheduleCard({
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap justify-end">
+          {onSetCoverZone && !coveredByLabel && (
+            <select
+              className="text-xs border border-gray-200 rounded-lg px-1.5 py-1 text-gray-500 hover:border-blue-300 bg-white cursor-pointer"
+              value=""
+              onChange={(e) => { e.stopPropagation(); const v = parseInt(e.target.value); if (!isNaN(v)) onSetCoverZone(v); }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <option value="">Cover zone...</option>
+              {FIXED_VAN_ZONES
+                .filter((z) => z.vanId !== zone.vanId && !coveringZoneNames?.includes(z.name))
+                .map((z) => <option key={z.vanId} value={z.vanId}>V{z.vanId} {z.name}</option>)}
+            </select>
+          )}
           {(liveAddress || liveVanPos) && (
             <button
               onClick={(e) => { e.stopPropagation(); setShowLocation((v) => !v); }}
@@ -2348,6 +2380,15 @@ function VanScheduleCard({
           <span className="text-gray-400 text-sm">{expanded ? "▲" : "▼"}</span>
         </div>
       </div>
+
+      {/* Out-of-service banner when this zone is covered by another van */}
+      {coveredByLabel && (
+        <div className="bg-gray-100 border-b border-gray-200 px-4 py-2 text-xs text-gray-500 flex items-center gap-2">
+          <span className="text-gray-400">Out of Service</span>
+          <span className="text-gray-300">&mdash;</span>
+          <span>Covered by {coveredByLabel}</span>
+        </div>
+      )}
 
       {/* Side-by-side comparison: Published vs Current — visible without expanding */}
       {showComparison && publishedItems && (
@@ -2667,6 +2708,8 @@ function ScheduleTab({
   });
 
   const [sortOverrides, setSortOverrides] = useState<Map<number, string[]>>(new Map());
+  // Zone covers: [coveringVanId, coveredVanId][] — e.g. [[10, 14]] means V10 covers V14's zone
+  const [zoneCovers, setZoneCovers] = useState<[number, number][]>([]);
 
   // Track the last DB updated_at to avoid overwriting fresher data
   const draftUpdatedAtRef = useRef<string | null>(null);
@@ -2685,7 +2728,7 @@ function ScheduleTab({
 
   // Save drafts to DB (debounced) + localStorage fallback
   const saveDraftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const saveDraftToDb = useCallback((o: Map<string, number>, r: Set<string>, u: Map<string, number>, a: Map<string, string>, s: Map<number, string[]>) => {
+  const saveDraftToDb = useCallback((o: Map<string, number>, r: Set<string>, u: Map<string, number>, a: Map<string, string>, s: Map<number, string[]>, zc: [number, number][] = []) => {
     // localStorage fallback (immediate)
     try {
       if (o.size > 0) localStorage.setItem(`vanOverrides-${date}`, JSON.stringify([...o]));
@@ -2716,6 +2759,7 @@ function ScheduleTab({
           hidden_mx_ids: hiddenMxIdsRef.current,
           airport_overrides: [...a],
           sort_overrides: [...s],
+          zone_covers: zc,
           expected_updated_at: draftUpdatedAtRef.current,
         }),
       }).then(async (res) => {
@@ -2741,9 +2785,9 @@ function ScheduleTab({
   // Auto-save on every change (including parent UI-state props) — skip in read-only mode
   useEffect(() => {
     if (readOnly) return;
-    saveDraftToDb(overrides, removals, unscheduledOverrides, airportOverrides, sortOverrides);
+    saveDraftToDb(overrides, removals, unscheduledOverrides, airportOverrides, sortOverrides, zoneCovers);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [overrides, removals, unscheduledOverrides, airportOverrides, sortOverrides, wontSeeTodayTails, hiddenTodayMxIds, dismissedConflictVersion, saveDraftToDb, readOnly]);
+  }, [overrides, removals, unscheduledOverrides, airportOverrides, sortOverrides, zoneCovers, wontSeeTodayTails, hiddenTodayMxIds, dismissedConflictVersion, saveDraftToDb, readOnly]);
 
   // Load drafts from DB on mount/date change, fall back to localStorage
   const loadDraftsFromDb = useCallback(async (targetDate: string) => {
@@ -2759,6 +2803,7 @@ function ScheduleTab({
           setUnscheduledOverrides(new Map(d.unscheduled ?? []));
           setAirportOverrides(new Map(d.airport_overrides ?? []));
           setSortOverrides(new Map(d.sort_overrides ?? []));
+          setZoneCovers(d.zone_covers ?? []);
           // Sync DB-backed UI state to parent
           onSyncDraftUiState?.({
             wont_see_tails: d.wont_see_tails ?? [],
@@ -2812,6 +2857,7 @@ function ScheduleTab({
           setUnscheduledOverrides(new Map(d.unscheduled ?? []));
           setAirportOverrides(new Map(d.airport_overrides ?? []));
           setSortOverrides(new Map(d.sort_overrides ?? []));
+          setZoneCovers(d.zone_covers ?? []);
           // Sync DB-backed UI state from other admins
           onSyncDraftUiState?.({
             wont_see_tails: d.wont_see_tails ?? [],
@@ -2857,6 +2903,7 @@ function ScheduleTab({
       setUnscheduledOverrides(new Map());
       setAirportOverrides(new Map());
       setSortOverrides(new Map());
+      setZoneCovers([]);
     }
     fetch(`/api/vans/publish?date=${date}`)
       .then((r) => r.json())
@@ -2878,7 +2925,7 @@ function ScheduleTab({
     }
   }, [date, loadDraftsFromDb, readOnly]);
 
-  const totalEdits = overrides.size + removals.size + unscheduledOverrides.size + airportOverrides.size;
+  const totalEdits = overrides.size + removals.size + unscheduledOverrides.size + airportOverrides.size + zoneCovers.length;
 
   // DnD visual state
   const saveLegNote = useCallback(async (flightId: string, tailNumber: string | null, note: string) => {
@@ -2952,12 +2999,41 @@ function ScheduleTab({
   // so each aircraft only appears in the closest van's card.
   // MX preference: if an aircraft has MX notes at an airport within a zone,
   // prefer that zone over pure distance (end-of-day MX servicing).
+  // Zone-cover helpers: which vans are covered (out of service), and which vans cover others
+  const coveredVanIds = useMemo(() => new Set(zoneCovers.map(([, c]) => c)), [zoneCovers]);
+  const coverMap = useMemo(() => {
+    const m = new Map<number, number[]>();
+    for (const [covering, covered] of zoneCovers) {
+      const arr = m.get(covering) ?? [];
+      arr.push(covered);
+      m.set(covering, arr);
+    }
+    return m;
+  }, [zoneCovers]);
+
   const baseItemsByVan = useMemo(() => {
     const raw = new Map<number, VanFlightItem[]>();
     for (const zone of FIXED_VAN_ZONES) {
+      // If this zone is covered by another van → produce empty items (out of service)
+      if (coveredVanIds.has(zone.vanId)) {
+        raw.set(zone.vanId, []);
+        continue;
+      }
+
       const baseLat = liveVanPositions.get(zone.vanId)?.lat ?? zone.lat;
       const baseLon = liveVanPositions.get(zone.vanId)?.lon ?? zone.lon;
-      raw.set(zone.vanId, computeZoneItems(zone, allFlights, date, baseLat, baseLon, flightInfoMap));
+      const items = computeZoneItems(zone, allFlights, date, baseLat, baseLon, flightInfoMap);
+
+      // If this van covers other zones, also pull aircraft from those zones
+      // Uses the covered zone's lat/lon for the 200km arrival filter,
+      // but this van's GPS position for drive-distance calculation
+      for (const coveredId of coverMap.get(zone.vanId) ?? []) {
+        const coveredZone = FIXED_VAN_ZONES.find((z) => z.vanId === coveredId);
+        if (!coveredZone) continue;
+        items.push(...computeZoneItems(coveredZone, allFlights, date, baseLat, baseLon, flightInfoMap));
+      }
+
+      raw.set(zone.vanId, items);
     }
     // Deduplicate: if an aircraft appears in multiple zones, prefer zones
     // where the tail has MX notes at nearby airports, then fallback to closest distance
@@ -2991,7 +3067,7 @@ function ScheduleTab({
       map.get(vanId)!.push(item);
     }
     return map;
-  }, [allFlights, date, liveVanPositions, mxNotesByTail, flightInfoMap]);
+  }, [allFlights, date, liveVanPositions, mxNotesByTail, flightInfoMap, coveredVanIds, coverMap]);
 
   // Fallback: restore overrides from published assignments if localStorage was empty
   const overridesRestoredRef = useRef<string>("");
@@ -4165,7 +4241,7 @@ function ScheduleTab({
           {totalEdits > 0 && (
             <button
               onClick={() => {
-                setOverrides(new Map()); setRemovals(new Set()); setUnscheduledOverrides(new Map()); setAirportOverrides(new Map()); setSortOverrides(new Map());
+                setOverrides(new Map()); setRemovals(new Set()); setUnscheduledOverrides(new Map()); setAirportOverrides(new Map()); setSortOverrides(new Map()); setZoneCovers([]);
                 try { localStorage.removeItem(`vanOverrides-${date}`); localStorage.removeItem(`vanRemovals-${date}`); localStorage.removeItem(`vanUnscheduled-${date}`); localStorage.removeItem(`vanAirportOverrides-${date}`); } catch {}
                 // Also clear DB so polling/refresh don't restore old overrides
                 fetch("/api/vans/drafts", {
@@ -5180,6 +5256,22 @@ function ScheduleTab({
               }}
               fboMap={fboMap}
               tailToVans={tailToVans}
+              coveringZoneNames={zoneCovers.filter(([c]) => c === zone.vanId).map(([, cov]) =>
+                FIXED_VAN_ZONES.find((z) => z.vanId === cov)?.name ?? `V${cov}`)}
+              coveredByLabel={(() => {
+                const cover = zoneCovers.find(([, c]) => c === zone.vanId);
+                if (!cover) return undefined;
+                const z = FIXED_VAN_ZONES.find((fz) => fz.vanId === cover[0]);
+                return z ? `V${z.vanId} (${z.name})` : `V${cover[0]}`;
+              })()}
+              onSetCoverZone={readOnly ? undefined : (coveredVanId) => {
+                // Prevent circular: don't cover a van that already covers us
+                if (zoneCovers.some(([c]) => c === coveredVanId && zoneCovers.some(([, cv]) => cv === zone.vanId))) return;
+                setZoneCovers((prev) => [...prev, [zone.vanId, coveredVanId]]);
+              }}
+              onClearCoverZone={readOnly ? undefined : (coveredVanId) => {
+                setZoneCovers((prev) => prev.filter(([c, cv]) => !(c === zone.vanId && cv === coveredVanId)));
+              }}
             />
           </div>
         );
