@@ -215,6 +215,34 @@ export type SwapPlanResult = {
   swap_point_debug?: Record<string, SwapPointScore[]>;
   /** Missing flight cache pairs that could solve unsolved crew (for auto-seeding) */
   missing_flight_pairs?: { origin: string; destination: string; crew: string; tail: string }[];
+  /** Diagnostic breakdown of WHY tails/crew are unsolved */
+  diagnostics?: {
+    unsolved_tails: {
+      tail: string;
+      role: "PIC" | "SIC";
+      reason: string;
+      type_mismatch_count: number;
+      no_route_count: number;
+      intl_restricted_count: number;
+      route_score_zero_count: number;
+      total_crew_checked: number;
+    }[];
+    unsolved_crew: {
+      name: string;
+      role: "PIC" | "SIC";
+      tails_checked: number;
+      type_mismatch_tails: string[];
+      intl_restricted_tails: string[];
+      no_route_tails: string[];
+      route_score_zero_tails: string[];
+    }[];
+    type_mismatch_blockers: {
+      tail: string;
+      role: "PIC" | "SIC";
+      tail_type: string;
+      crew_types_available: string[];
+    }[];
+  };
 };
 
 export type TwoPassStats = {
@@ -2599,6 +2627,20 @@ type FeasibilityEntry = {
   minDriveMiles: number;  // shortest home→swap distance (for fallback tiebreak)
 };
 
+/** Tracks why a specific crew member was rejected for a specific tail */
+type RejectionReason = "type_mismatch" | "intl_restricted" | "no_route" | "route_score_zero";
+
+type FeasibilityRejection = {
+  crewName: string;
+  tail: string;
+  reason: RejectionReason;
+};
+
+type FeasibilityMatrixResult = {
+  matrix: FeasibilityEntry[];
+  rejections: FeasibilityRejection[];
+};
+
 /** Build a feasibility matrix: for every crew × tail, determine which assignments
  *  are viable. When preComputedRoutes is provided, uses cached route data from
  *  pilot_routes table (instant). Otherwise falls back to runtime evaluation
@@ -2618,10 +2660,11 @@ function buildFeasibilityMatrix(params: {
   offgoingDeadlines?: OncomingDeadline[];  // offgoing departure deadlines per tail+role
   picSwapPoints?: Map<string, string>;  // tail → PIC swap ICAO (for SIC same-swap-point preference)
   relaxation?: boolean;  // when true, use relaxed constraints (expanded drive limits, reduced buffers)
-}): FeasibilityEntry[] {
+}): FeasibilityMatrixResult {
   const { pool, role, tails, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, preComputedRoutes, preComputedOffgoing, offgoingDeadlines, picSwapPoints, relaxation } = params;
   const effectiveRentalMax = relaxation ? RELAXED_RENTAL_MAX_MINUTES : RENTAL_MAX_MINUTES;
   const matrix: FeasibilityEntry[] = [];
+  const rejections: FeasibilityRejection[] = [];
 
   // Cache buildCandidates results by homeAirports+swapPointIcao.
   // Many crew share the same home airport, so candidates are identical — skip recomputing.
@@ -2730,6 +2773,7 @@ function buildFeasibilityMatrix(params: {
     for (const poolEntry of pool) {
       if (!isQualified(poolEntry.aircraft_type, acType)) {
         matrix.push({ crewName: poolEntry.name, tail, viable: false, bestScore: 0, bestCost: 999, offgoingCost: 0, totalCost: 999, bestType: "none", candidateCount: 0, rank: 999, bestSwapIcao: "", minDriveMiles: 9999 });
+        rejections.push({ crewName: poolEntry.name, tail, reason: "type_mismatch" });
         continue;
       }
 
@@ -2751,6 +2795,7 @@ function buildFeasibilityMatrix(params: {
         });
         if (hasIntlLeg) {
           matrix.push({ crewName: poolEntry.name, tail, viable: false, bestScore: 0, bestCost: 999, offgoingCost: 0, totalCost: 999, bestType: "none", candidateCount: 0, rank: 999, bestSwapIcao: "", minDriveMiles: 9999 });
+          rejections.push({ crewName: poolEntry.name, tail, reason: "intl_restricted" });
           continue;
         }
       }
@@ -2830,6 +2875,15 @@ function buildFeasibilityMatrix(params: {
           }
         }
 
+        if (!viable) {
+          // Track why: no relevant routes to this tail's swap points, or all routes scored 0
+          rejections.push({
+            crewName: poolEntry.name,
+            tail,
+            reason: relevantRoutes.length === 0 ? "no_route" : "route_score_zero",
+          });
+        }
+
         matrix.push({
           crewName: poolEntry.name,
           tail,
@@ -2899,6 +2953,7 @@ function buildFeasibilityMatrix(params: {
           bestType: "none", candidateCount: 0, rank: 100,
           bestSwapIcao: swapPoints[0]?.icao ?? "", minDriveMiles: 9999,
         });
+        rejections.push({ crewName: poolEntry.name, tail, reason: "no_route" });
         continue;
       }
 
@@ -3024,6 +3079,11 @@ function buildFeasibilityMatrix(params: {
         }
       }
 
+      if (!viable) {
+        // Had routes but all candidates scored poorly (runtime path)
+        rejections.push({ crewName: poolEntry.name, tail, reason: "route_score_zero" });
+      }
+
       matrix.push({
         crewName: poolEntry.name,
         tail,
@@ -3073,7 +3133,27 @@ function buildFeasibilityMatrix(params: {
     }
   }
 
-  return matrix;
+  // ── Diagnostic summary: tails with 0 viable crew ────────────────────────
+  const allTailsInMatrix = new Set(matrix.map((m) => m.tail));
+  for (const tail of allTailsInMatrix) {
+    const tailViable = viableByTail.get(tail);
+    if (!tailViable || tailViable.length === 0) {
+      const tailRejections = rejections.filter((r) => r.tail === tail);
+      const typeMismatch = tailRejections.filter((r) => r.reason === "type_mismatch").length;
+      const intlRestricted = tailRejections.filter((r) => r.reason === "intl_restricted").length;
+      const noRoute = tailRejections.filter((r) => r.reason === "no_route").length;
+      const routeScoreZero = tailRejections.filter((r) => r.reason === "route_score_zero").length;
+      const totalChecked = matrix.filter((m) => m.tail === tail).length;
+      console.log(
+        `[FeasMatrix] ZERO VIABLE ${role} for ${tail}: ` +
+        `${totalChecked} crew checked — ` +
+        `${typeMismatch} type_mismatch, ${intlRestricted} intl_restricted, ` +
+        `${noRoute} no_route, ${routeScoreZero} route_score_zero`
+      );
+    }
+  }
+
+  return { matrix, rejections };
 }
 
 /**
@@ -3099,10 +3179,12 @@ export function assignOncomingCrew(params: {
   assignments: Record<string, SwapAssignment>;
   standby: { pic: string[]; sic: string[] };
   details: { name: string; tail: string; cost: number; reason: string }[];
+  rejections: FeasibilityRejection[];
 } {
   const { swapAssignments, oncomingPool, crewRoster, flights, swapDate, aliases = [], commercialFlights, preComputedRoutes, preComputedOffgoing, excludeTails, offgoingDeadlines, relaxation } = params;
   const result: Record<string, SwapAssignment> = JSON.parse(JSON.stringify(swapAssignments));
   const details: { name: string; tail: string; cost: number; reason: string }[] = [];
+  const allRejections: FeasibilityRejection[] = [];
 
   // Group flights by tail (needed for extractSwapPoints)
   const byTail = new Map<string, FlightLeg[]>();
@@ -3143,7 +3225,8 @@ export function assignOncomingCrew(params: {
   }
 
   // Assign PICs then SICs using feasibility matrix
-  assignRoleWithMatrix("oncoming_pic", oncomingPool.pic, "PIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes, preComputedOffgoing, excludeTails, offgoingDeadlines, undefined, relaxation);
+  const picRejections = assignRoleWithMatrix("oncoming_pic", oncomingPool.pic, "PIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes, preComputedOffgoing, excludeTails, offgoingDeadlines, undefined, relaxation);
+  allRejections.push(...picRejections);
 
   // Build PIC swap point map for SIC same-swap-point preference
   const picSwapPoints = new Map<string, string>();
@@ -3151,7 +3234,8 @@ export function assignOncomingCrew(params: {
     if (sa.oncoming_pic_swap_icao) picSwapPoints.set(tail, sa.oncoming_pic_swap_icao);
   }
 
-  assignRoleWithMatrix("oncoming_sic", oncomingPool.sic, "SIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes, preComputedOffgoing, excludeTails, offgoingDeadlines, picSwapPoints, relaxation);
+  const sicRejections = assignRoleWithMatrix("oncoming_sic", oncomingPool.sic, "SIC", result, byTail, swapDate, aliases, commercialFlights, crewRoster, tailAircraftType, details, preComputedRoutes, preComputedOffgoing, excludeTails, offgoingDeadlines, picSwapPoints, relaxation);
+  allRejections.push(...sicRejections);
 
   // Remaining pool → standby
   // SkillBridge SICs go first for forced standby, then sort by standby_count (lowest first)
@@ -3182,7 +3266,7 @@ export function assignOncomingCrew(params: {
     sic: unassignedSics.map((p) => p.name),
   };
 
-  return { assignments: result, standby, details };
+  return { assignments: result, standby, details, rejections: allRejections };
 }
 
 /**
@@ -3384,6 +3468,7 @@ export function twoPassAssignAndOptimize(params: {
   let finalAssignments = mergedAssignments;
   let finalResult = pass2Result;
   let allDetails = [...pass1Assignment.details, ...pass2Assignment.details];
+  let pass3Rejections: FeasibilityRejection[] = [];
 
   if (pass2UnsolvedTails.size > 0 && (mergedStandby.pic.length > 0 || mergedStandby.sic.length > 0)) {
     console.log(`[Pass 3] ${pass2UnsolvedTails.size} tails still unsolved ([${[...pass2UnsolvedTails].join(", ")}]). Trying ${mergedStandby.pic.length} standby PICs + ${mergedStandby.sic.length} standby SICs with relaxed constraints...`);
@@ -3471,6 +3556,7 @@ export function twoPassAssignAndOptimize(params: {
     finalAssignments = pass3Merged;
     finalResult = pass3Result;
     allDetails = [...allDetails, ...pass3Assignment.details];
+    pass3Rejections = pass3Assignment.rejections;
 
     // Update standby — remove crew that were used in pass 3
     const usedNames = new Set(pass3StandbyUsed.map((s) => s.name));
@@ -3535,6 +3621,139 @@ export function twoPassAssignAndOptimize(params: {
     }
   }
 
+  // ── Build diagnostics for unsolved crew/tails ────────────────────────────
+  // Collect all rejections from all passes (latest pass has the most complete data)
+  const allRejections: FeasibilityRejection[] = [
+    ...pass1Assignment.rejections,
+    ...pass2Assignment.rejections,
+    ...pass3Rejections,
+  ];
+
+  // Build tail aircraft type map for diagnostics
+  const diagTailAircraftType = new Map<string, string>();
+  const diagByTail = new Map<string, FlightLeg[]>();
+  for (const f of flights) {
+    if (!f.tail_number) continue;
+    if (!diagByTail.has(f.tail_number)) diagByTail.set(f.tail_number, []);
+    diagByTail.get(f.tail_number)!.push(f);
+  }
+  for (const tail of Object.keys(finalAssignments)) {
+    const sa = finalAssignments[tail];
+    const names = [sa.offgoing_pic, sa.offgoing_sic, sa.oncoming_pic, sa.oncoming_sic].filter(Boolean) as string[];
+    for (const nm of names) {
+      const crew = crewRoster.find((c) => (c.name === nm || c.jetinsight_name === nm));
+      if (crew?.aircraft_types[0]) {
+        diagTailAircraftType.set(tail, crew.aircraft_types[0]);
+        break;
+      }
+    }
+  }
+
+  const finalUnsolved = finalResult.rows.filter((r) => r.travel_type === "none");
+  let diagnostics: SwapPlanResult["diagnostics"];
+
+  if (finalUnsolved.length > 0) {
+    // Unsolved tails: for each unsolved row, summarize rejection reasons
+    const unsolvedTailDiags: NonNullable<SwapPlanResult["diagnostics"]>["unsolved_tails"] = [];
+    for (const row of finalUnsolved) {
+      if (row.direction !== "oncoming") continue; // offgoing diagnostics less relevant
+      const tailRejections = allRejections.filter((r) => r.tail === row.tail_number);
+      // Deduplicate by crewName (take latest rejection per crew member)
+      const byCrewName = new Map<string, FeasibilityRejection>();
+      for (const r of tailRejections) byCrewName.set(r.crewName, r);
+      const dedupedRejections = Array.from(byCrewName.values());
+
+      const typeMismatch = dedupedRejections.filter((r) => r.reason === "type_mismatch").length;
+      const intlRestricted = dedupedRejections.filter((r) => r.reason === "intl_restricted").length;
+      const noRoute = dedupedRejections.filter((r) => r.reason === "no_route").length;
+      const routeScoreZero = dedupedRejections.filter((r) => r.reason === "route_score_zero").length;
+      const totalChecked = dedupedRejections.length;
+
+      // Determine primary reason
+      let reason = "unknown";
+      if (typeMismatch > 0 && typeMismatch === totalChecked) {
+        reason = `All ${totalChecked} crew failed aircraft type check (tail type: ${diagTailAircraftType.get(row.tail_number) ?? "unknown"})`;
+      } else if (noRoute > 0 && noRoute + typeMismatch === totalChecked) {
+        reason = `${typeMismatch} type mismatch + ${noRoute} no transport route available`;
+      } else if (totalChecked === 0) {
+        reason = "No crew in pool for this role";
+      } else {
+        const parts: string[] = [];
+        if (typeMismatch > 0) parts.push(`${typeMismatch} type mismatch`);
+        if (intlRestricted > 0) parts.push(`${intlRestricted} intl restricted`);
+        if (noRoute > 0) parts.push(`${noRoute} no route`);
+        if (routeScoreZero > 0) parts.push(`${routeScoreZero} route scored zero`);
+        reason = parts.join(", ") || "All crew assigned to other tails (supply exhausted)";
+      }
+
+      unsolvedTailDiags.push({
+        tail: row.tail_number,
+        role: row.role,
+        reason,
+        type_mismatch_count: typeMismatch,
+        no_route_count: noRoute,
+        intl_restricted_count: intlRestricted,
+        route_score_zero_count: routeScoreZero,
+        total_crew_checked: totalChecked,
+      });
+    }
+
+    // Unsolved crew: for each oncoming pool member not assigned, show why
+    const assignedNames = new Set(allDetails.map((d) => d.name));
+    const allPoolMembers = [...oncomingPool.pic.map(p => ({ ...p, role: "PIC" as const })), ...oncomingPool.sic.map(p => ({ ...p, role: "SIC" as const }))];
+    const unsolvedCrewDiags: NonNullable<SwapPlanResult["diagnostics"]>["unsolved_crew"] = [];
+    for (const poolMember of allPoolMembers) {
+      if (assignedNames.has(poolMember.name)) continue;
+      const crewRejections = allRejections.filter((r) => r.crewName === poolMember.name);
+      // Deduplicate by tail
+      const byTailMap = new Map<string, FeasibilityRejection>();
+      for (const r of crewRejections) byTailMap.set(r.tail, r);
+      const dedupedRejections = Array.from(byTailMap.values());
+
+      unsolvedCrewDiags.push({
+        name: poolMember.name,
+        role: poolMember.role,
+        tails_checked: dedupedRejections.length,
+        type_mismatch_tails: dedupedRejections.filter((r) => r.reason === "type_mismatch").map((r) => r.tail),
+        intl_restricted_tails: dedupedRejections.filter((r) => r.reason === "intl_restricted").map((r) => r.tail),
+        no_route_tails: dedupedRejections.filter((r) => r.reason === "no_route").map((r) => r.tail),
+        route_score_zero_tails: dedupedRejections.filter((r) => r.reason === "route_score_zero").map((r) => r.tail),
+      });
+    }
+
+    // Type mismatch blockers: tails where ALL rejections are type mismatch
+    const typeMismatchBlockers: NonNullable<SwapPlanResult["diagnostics"]>["type_mismatch_blockers"] = [];
+    for (const diag of unsolvedTailDiags) {
+      if (diag.type_mismatch_count > 0 && diag.type_mismatch_count === diag.total_crew_checked) {
+        const tailType = diagTailAircraftType.get(diag.tail) ?? "unknown";
+        // Collect what aircraft types were available in the pool for this role
+        const poolForRole = diag.role === "PIC" ? oncomingPool.pic : oncomingPool.sic;
+        const crewTypes = [...new Set(poolForRole.map((p) => p.aircraft_type))];
+        typeMismatchBlockers.push({
+          tail: diag.tail,
+          role: diag.role,
+          tail_type: tailType,
+          crew_types_available: crewTypes,
+        });
+      }
+    }
+
+    diagnostics = {
+      unsolved_tails: unsolvedTailDiags,
+      unsolved_crew: unsolvedCrewDiags,
+      type_mismatch_blockers: typeMismatchBlockers,
+    };
+
+    // Log summary
+    console.log(`[Diagnostics] ${unsolvedTailDiags.length} unsolved tail slots, ${unsolvedCrewDiags.length} unsolved crew members`);
+    for (const d of unsolvedTailDiags) {
+      console.log(`[Diagnostics] Tail ${d.tail} ${d.role}: ${d.reason}`);
+    }
+    if (typeMismatchBlockers.length > 0) {
+      console.log(`[Diagnostics] ${typeMismatchBlockers.length} tails blocked purely by type mismatch — cross-type assignment could help`);
+    }
+  }
+
   const stats: TwoPassStats = {
     pass1_solved: pass1Solved,
     pass1_unsolved: pass1Unsolved,
@@ -3549,8 +3768,8 @@ export function twoPassAssignAndOptimize(params: {
   };
 
   return {
-    result: { ...finalResult, two_pass: stats },
-    assignmentResult: { assignments: finalAssignments, standby: mergedStandby, details: allDetails },
+    result: { ...finalResult, two_pass: stats, diagnostics },
+    assignmentResult: { assignments: finalAssignments, standby: mergedStandby, details: allDetails, rejections: allRejections },
     twoPassStats: stats,
   };
 }
@@ -3573,12 +3792,12 @@ function assignRoleWithMatrix(
   offgoingDeadlines?: OncomingDeadline[],
   picSwapPoints?: Map<string, string>,
   relaxation?: boolean,
-): void {
+): FeasibilityRejection[] {
   const needingTails = Object.keys(result).filter((tail) => !result[tail][field] && !excludeTails?.has(tail));
-  if (needingTails.length === 0 || pool.length === 0) return;
+  if (needingTails.length === 0 || pool.length === 0) return [];
 
   // Build full feasibility matrix — uses pre-computed routes when available
-  const matrix = buildFeasibilityMatrix({
+  const { matrix, rejections: matrixRejections } = buildFeasibilityMatrix({
     pool,
     role,
     tails: needingTails,
@@ -3702,6 +3921,8 @@ function assignRoleWithMatrix(
       reason,
     });
   }
+
+  return matrixRejections;
 }
 
 // ─── Helper: get flight searches for ALL pool crew × ALL swap locations ───────
