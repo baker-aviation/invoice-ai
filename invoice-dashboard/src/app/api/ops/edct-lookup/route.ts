@@ -250,10 +250,7 @@ export async function POST(req: NextRequest) {
     for (const edct of found) {
       if (edct.edct_time && new Date(edct.edct_time).getTime() < todayStart) continue;
 
-      // Normalize source_id to avoid territory dupes (KSJU vs TJSJ)
-      const normDept = stripK(edct.origin);
-      const normArr = stripK(edct.destination);
-      const sourceId = `faa-edct-${edct.callsign}-${normDept}-${normArr}`;
+      const sourceId = `faa-edct-${edct.callsign}-${edct.origin}-${edct.destination}`;
       const delayStr = edct.delay_minutes != null ? `${edct.delay_minutes}min delay` : "";
       const ctrlStr = edct.control_element ? ` — ${edct.control_element}` : "";
 

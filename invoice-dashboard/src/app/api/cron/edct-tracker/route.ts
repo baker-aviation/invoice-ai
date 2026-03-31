@@ -346,10 +346,7 @@ export async function GET(req: NextRequest) {
   const updatedEdcts: { edct: FaaEdctResult; previousEdctTime: string | null }[] = [];
 
   for (const edct of found) {
-    // Normalize source_id: use KOW callsign + stripped codes to avoid territory dupes
-    const normDept = stripK(edct.origin);
-    const normArr = stripK(edct.destination);
-    const sourceId = `faa-edct-${edct.callsign}-${normDept}-${normArr}`;
+    const sourceId = `faa-edct-${edct.callsign}-${edct.origin}-${edct.destination}`;
     const existing = existingMap.get(sourceId);
     const isNew = !existing || (existing && !existing.edct_time && !!edct.edct_time);
     const isUpdated = !isNew && existing && existing.edct_time && edct.edct_time && existing.edct_time !== edct.edct_time;
