@@ -196,14 +196,18 @@ function lookupAdvertisedPrice(
   return allTails[0]?.price ?? matches[0]?.price ?? null;
 }
 
-/** Find the cheapest advertised rate across ALL vendors for a given airport + week */
+/** Find the cheapest advertised rate across ALL vendors for a given airport + week.
+ *  For each vendor, use the exact week if available, otherwise fall back to
+ *  the most recent week on or before the invoice date. This ensures vendors
+ *  whose rate sheets haven't arrived yet for the current week still compete
+ *  using their latest known rates. */
 function lookupBestRate(
   advByAirportWeek: Map<string, AdvertisedPriceRow[]>,
   advByAirport: Map<string, AdvertisedPriceRow[]>,
   airportCode: string | null,
   invoiceDate: string | null,
   gallons: number | null,
-): { price: number; vendor: string } | null {
+): { price: number; vendor: string; weekStart: string } | null {
   if (!airportCode || !invoiceDate) return null;
   const weekMonday = getWeekMonday(invoiceDate);
   const codes = airportCode.length === 4 && airportCode.startsWith("K")
@@ -212,25 +216,33 @@ function lookupBestRate(
     ? [airportCode, `K${airportCode}`]
     : [airportCode];
 
-  // Try exact week match first
-  let allMatches: AdvertisedPriceRow[] = [];
+  // Gather ALL vendor rates: exact week matches + most recent week per vendor
+  const allMatches: AdvertisedPriceRow[] = [];
+  const vendorsSeen = new Set<string>();
+
+  // 1) Exact week matches
   for (const code of codes) {
     const m = advByAirportWeek.get(`${code}|${weekMonday}`);
-    if (m) allMatches = allMatches.concat(m);
+    if (m) {
+      allMatches.push(...m);
+      for (const row of m) vendorsSeen.add(row.fbo_vendor);
+    }
   }
 
-  // Fallback: use most recent week's prices for this airport (not newer than invoice date)
-  if (allMatches.length === 0) {
-    for (const code of codes) {
-      const allForAirport = advByAirport.get(code);
-      if (!allForAirport) continue;
-      // Find the most recent week that's on or before the invoice date
-      const recent = allForAirport.filter((a) => a.week_start <= weekMonday);
-      if (recent.length > 0) {
-        // recent is already sorted newest first — grab the latest week
-        const latestWeek = recent[0].week_start;
-        allMatches = allMatches.concat(recent.filter((a) => a.week_start === latestWeek));
-      }
+  // 2) For vendors NOT in the exact week, fall back to their most recent week
+  for (const code of codes) {
+    const allForAirport = advByAirport.get(code);
+    if (!allForAirport) continue;
+    const recent = allForAirport.filter((a) => a.week_start <= weekMonday && !vendorsSeen.has(a.fbo_vendor));
+    // Group by vendor, take each vendor's latest week
+    const byVendor = new Map<string, AdvertisedPriceRow[]>();
+    for (const r of recent) {
+      if (!byVendor.has(r.fbo_vendor)) byVendor.set(r.fbo_vendor, []);
+      byVendor.get(r.fbo_vendor)!.push(r);
+    }
+    for (const [, rows] of byVendor) {
+      const latestWeek = rows[0].week_start; // already sorted newest first
+      allMatches.push(...rows.filter((r) => r.week_start === latestWeek));
     }
   }
 
@@ -249,7 +261,7 @@ function lookupBestRate(
   for (const c of candidates) {
     if (!best || c.price < best.price) best = c;
   }
-  return best ? { price: best.price, vendor: best.fbo_vendor } : null;
+  return best ? { price: best.price, vendor: best.fbo_vendor, weekStart: best.week_start } : null;
 }
 
 /** Check if a gallon amount falls within a volume tier like "1-300" or "1201+" */
@@ -1827,9 +1839,9 @@ export default function FuelPricesTable({
                       <>
                         <td className="px-4 py-2.5 whitespace-nowrap text-right font-mono text-blue-700 font-medium bg-blue-50/40">
                           {bestRate ? (
-                            <span title={`${bestRate.vendor} contract rate`}>
+                            <span title={`${bestRate.vendor} contract rate for week of ${bestRate.weekStart}`}>
                               {fmt$(bestRate.price)}
-                              <div className="text-[10px] text-gray-400 font-normal">{bestRate.vendor}</div>
+                              <div className="text-[10px] text-gray-400 font-normal">{bestRate.vendor} · wk {fmtDate(bestRate.weekStart)}</div>
                             </span>
                           ) : <span className="text-gray-300">{"\u2014"}</span>}
                         </td>
