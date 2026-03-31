@@ -1881,24 +1881,27 @@ def _filter_vip_inner_rings(features: List[Dict[str, Any]]) -> List[Dict[str, An
     when the airport is truly inside the restricted core.
     """
     # Compute centroid + effective radius per feature
-    meta: List[Tuple[int, float, float, float]] = []  # (idx, lat, lon, radius)
+    meta: List[Tuple[int, float, float, float, str]] = []  # (idx, lat, lon, radius, notam_key)
     for i, f in enumerate(features):
         ring = _get_feature_ring(f)
+        notam_key = f.get("properties", {}).get("NOTAM_KEY", "")
         if ring and len(ring) >= 3:
             clon, clat = _polygon_centroid(ring)
             radius = _max_vertex_dist_nm(clat, clon, ring)
-            meta.append((i, clat, clon, radius))
+            meta.append((i, clat, clon, radius, notam_key))
         else:
-            meta.append((i, 0.0, 0.0, -1.0))  # no geometry → keep as-is
+            meta.append((i, 0.0, 0.0, -1.0, notam_key))  # no geometry → keep as-is
 
-    # Group by centroid proximity (within 5nm = same TFR complex)
+    # Group by SAME notam key + centroid proximity (within 5nm).
+    # Different NOTAM keys = different TFRs even if co-located (e.g. permanent
+    # Mar-a-Lago 1nm bubble vs. active VIP 10nm event TFR).
     used: set = set()
     keep_indices: set = set()
 
     for mi in range(len(meta)):
         if mi in used:
             continue
-        idx_i, lat_i, lon_i, rad_i = meta[mi]
+        idx_i, lat_i, lon_i, rad_i, key_i = meta[mi]
         if rad_i < 0:
             keep_indices.add(idx_i)
             used.add(mi)
@@ -1909,10 +1912,10 @@ def _filter_vip_inner_rings(features: List[Dict[str, Any]]) -> List[Dict[str, An
         for mj in range(mi + 1, len(meta)):
             if mj in used:
                 continue
-            _, lat_j, lon_j, rad_j = meta[mj]
+            _, lat_j, lon_j, rad_j, key_j = meta[mj]
             if rad_j < 0:
                 continue
-            if _haversine_nm(lat_i, lon_i, lat_j, lon_j) < 5.0:
+            if key_i and key_j and key_i == key_j and _haversine_nm(lat_i, lon_i, lat_j, lon_j) < 5.0:
                 group.append(mj)
                 used.add(mj)
 
@@ -2018,6 +2021,16 @@ def _run_check_tfrs(flights: List[Dict]) -> Dict[str, Any]:
 
     # VIP TFRs have inner + outer ring as separate features — keep only inner
     features = _filter_vip_inner_rings(features)
+
+    # Exclude permanent SFRAs (e.g. DC SFRA) — too noisy for routine flights
+    pre_sfra = len(features)
+    features = [
+        f for f in features
+        if "SPECIAL FLIGHT RULES AREA" not in f.get("properties", {}).get("TITLE", "").upper()
+        and "SFRA" not in f.get("properties", {}).get("TITLE", "").upper()
+    ]
+    if len(features) < pre_sfra:
+        print(f"TFR check: excluded {pre_sfra - len(features)} SFRA feature(s)", flush=True)
 
     print(f"TFR check: {len(features)} TFRs, checking {len(flight_airports)} airports", flush=True)
 
