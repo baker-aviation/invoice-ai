@@ -187,35 +187,20 @@ export async function POST(req: NextRequest) {
   }
 
   // Override callsigns with the real mapping + add N-number lookups
-  // For territory airports (PR/USVI), also try ICAO variant
+  // toFaaCode() handles territory conversion (KSJU→TJSJ) at query time
   const expanded: FlightInput[] = [];
   const seenKeys = new Set<string>();
-
-  function addExpanded(cs: string, tail: string, dept: string, arr: string) {
-    const key = `${cs}|${dept}|${arr}`;
-    if (seenKeys.has(key)) return;
-    seenKeys.add(key);
-    expanded.push({ callsign: cs, tail, dept, arr });
-  }
-
   for (const f of flights) {
-    const tail = f.tail.toUpperCase();
-    const mapped = callsignMap.get(tail);
-    const dept = f.dept;
-    const arr = f.arr;
-
-    // Build alternate codes for territories (KSJU↔TJSJ)
-    const deptAlt = TERRITORY_FAA_TO_ICAO[dept] ?? TERRITORY_ICAO_TO_FAA[dept] ?? null;
-    const arrAlt = TERRITORY_FAA_TO_ICAO[arr] ?? TERRITORY_ICAO_TO_FAA[arr] ?? null;
-    const deptCodes = deptAlt ? [dept, deptAlt] : [dept];
-    const arrCodes = arrAlt ? [arr, arrAlt] : [arr];
-
-    for (const d of deptCodes) {
-      for (const a of arrCodes) {
-        if (mapped) addExpanded(mapped, tail, d, a);
-        addExpanded(tail, tail, d, a);
-      }
+    const mapped = callsignMap.get(f.tail.toUpperCase());
+    // KOW callsign lookup
+    if (mapped) {
+      f.callsign = mapped;
+      const key = `${mapped}|${f.dept}|${f.arr}`;
+      if (!seenKeys.has(key)) { seenKeys.add(key); expanded.push({ ...f, callsign: mapped }); }
     }
+    // N-number lookup (pilots may file under tail)
+    const nKey = `${f.tail.toUpperCase()}|${f.dept}|${f.arr}`;
+    if (!seenKeys.has(nKey)) { seenKeys.add(nKey); expanded.push({ ...f, callsign: f.tail.toUpperCase() }); }
   }
 
   // Fire lookups in batches of 10 to avoid FAA rate limiting
