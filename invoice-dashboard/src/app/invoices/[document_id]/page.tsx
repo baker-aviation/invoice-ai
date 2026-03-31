@@ -86,6 +86,7 @@ export default async function InvoiceDetailPage({
               pin_resolved: invoices[0]?.pin_resolved ?? false,
               resolved_by: invoices[0]?.resolved_by ?? null,
               resolved_at: invoices[0]?.resolved_at ?? null,
+              resolve_note: invoices[0]?.resolve_note ?? null,
             }}
           />
           <span className="text-xs text-gray-400 ml-auto">document_id: {document_id}</span>
