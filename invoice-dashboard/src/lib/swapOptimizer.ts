@@ -397,6 +397,12 @@ function normalizeName(name: string): string {
 
 function findCrewByName(roster: CrewMember[], name: string, role: "PIC" | "SIC"): CrewMember | null {
   const norm = normalizeName(name);
+  // Check jetinsight_name first (DB-stored legal name mapping)
+  const jiMatch = roster.find((c) => c.role === role && c.jetinsight_name && normalizeName(c.jetinsight_name) === norm);
+  if (jiMatch) return jiMatch;
+  const jiMatchAny = roster.find((c) => c.jetinsight_name && normalizeName(c.jetinsight_name) === norm);
+  if (jiMatchAny) return jiMatchAny;
+  // Exact display name match
   const exact = roster.find((c) => c.role === role && normalizeName(c.name) === norm);
   if (exact) return exact;
   const normParts = norm.split(" ");
@@ -407,6 +413,9 @@ function findCrewByName(roster: CrewMember[], name: string, role: "PIC" | "SIC")
     return cParts[cParts.length - 1] === lastName;
   });
   if (lastNameMatches.length === 1) return lastNameMatches[0];
+  // Also try cross-role for jetinsight names with wrong role
+  const crossRole = roster.find((c) => normalizeName(c.name) === norm);
+  if (crossRole) return crossRole;
   return roster.find(
     (c) => c.role === role && (normalizeName(c.name).includes(norm) || norm.includes(normalizeName(c.name))),
   ) ?? null;
@@ -561,9 +570,10 @@ function buildCandidates(
       // Crew must arrive FBO_ARRIVAL_BUFFER minutes before departure
       oncomingHardDeadline = new Date(depTime.getTime() - ms(FBO_ARRIVAL_BUFFER));
     } else {
-      // after_live / idle — no departure constraint, use 10pm local
+      // after_live / idle — no departure constraint, use 11pm local
+      // 10 PM was too aggressive — offgoing can hold 15-30 extra min easily
       const tz = getAirportTimezone(swapIcao) ?? "America/New_York";
-      oncomingHardDeadline = localTimeToUtc(swapDate, 22, 0, tz);
+      oncomingHardDeadline = localTimeToUtc(swapDate, 23, 0, tz);
     }
   }
 
@@ -587,7 +597,11 @@ function buildCandidates(
   // For offgoing crew: duty-end = when they arrive home (checked per-candidate)
   let oncomingDutyEnd: Date | null = null;
   if (task.direction === "oncoming" && tailLegs) {
-    const wedLegs = tailLegs.filter((f) => f.scheduled_departure.slice(0, 10) === swapDate);
+    // Use local date at departure airport (same as extractSwapPoints) — not UTC slice
+    const wedLegs = tailLegs.filter((f) => {
+      const tz = getAirportTimezone(f.departure_icao) ?? "America/New_York";
+      return new Date(f.scheduled_departure).toLocaleDateString("en-CA", { timeZone: tz }) === swapDate;
+    });
     const lastLeg = wedLegs[wedLegs.length - 1];
     if (lastLeg?.scheduled_arrival) {
       oncomingDutyEnd = dutyOff(new Date(lastLeg.scheduled_arrival), false);
@@ -595,9 +609,10 @@ function buildCandidates(
       // No arrival time — estimate 3hr flight + off-duty buffer
       oncomingDutyEnd = new Date(new Date(lastLeg.scheduled_departure).getTime() + ms(180) + ms(DUTY_OFF_AFTER_LAST_LEG));
     } else {
-      // No legs — estimate duty ends at 2200L (conservative for unscheduled tails)
-      const tz = getAirportTimezone(swapIcao) ?? "America/New_York";
-      oncomingDutyEnd = localTimeToUtc(swapDate, 22, 0, tz);
+      // No legs on swap day — idle tail. Don't set an artificial duty end.
+      // The 10 PM default was killing all morning flights (6 AM dep = 16hr duty).
+      // Duty will be re-evaluated when actual legs get scheduled.
+      oncomingDutyEnd = null;
     }
   }
 
@@ -2526,7 +2541,8 @@ function buildFeasibilityMatrix(params: {
       if (picSp) {
         const matched = swapPoints.find((sp) => sp.icao.toUpperCase() === picSp.toUpperCase());
         if (matched) {
-          swapPointsToTry = [matched]; // force SIC to PIC's swap point
+          // Try PIC's swap point first, then fall back to others if no viable transport
+          swapPointsToTry = [matched, ...swapPoints.filter(sp => sp !== matched)];
         }
       }
     }
@@ -2675,13 +2691,23 @@ function buildFeasibilityMatrix(params: {
         if (hasAnyRoute) break;
       }
 
-      // Check flight map if no ground route
+      // Check flight map if no ground route — expand FBO homes to commercial
       if (!hasAnyRoute && commercialFlights) {
         for (const home of homeAirports) {
-          const homeIata = toIata(home);
-          for (const destIata of swapIatas) {
-            const key = `${homeIata}-${destIata}-${swapDate}`;
-            if (commercialFlights.has(key)) { hasAnyRoute = true; break; }
+          const homeIcao = toIcao(home);
+          // Expand non-commercial home airports to nearby commercial (same as buildCandidates)
+          const homeSearchIatas = [toIata(home)];
+          if (!isCommercialAirport(homeIcao)) {
+            const nearbyComm = findAllCommercialAirports(homeIcao, aliases);
+            for (const nc of nearbyComm) homeSearchIatas.push(toIata(nc));
+          }
+          for (const originIata of homeSearchIatas) {
+            for (const destIata of swapIatas) {
+              if (lookupFlights(commercialFlights, originIata, destIata, swapDate).length > 0) {
+                hasAnyRoute = true; break;
+              }
+            }
+            if (hasAnyRoute) break;
           }
           if (hasAnyRoute) break;
         }
@@ -2756,9 +2782,11 @@ function buildFeasibilityMatrix(params: {
             candidates.push(...meetsDeadline);
             if (noneCandidate) candidates.push(noneCandidate);
           } else {
-            // No candidate beats the offgoing deadline — not viable
-            candidates.length = 0;
-            candidates.push({ type: "none" as const, flightNumber: null, depTime: null, arrTime: null, from: "", to: "", cost: 0, durationMin: 0, isDirect: false, isBudgetCarrier: false, hubConnection: false, connectionCount: 0, offer: null, drive: null, fboArrivalTime: null, fboLeaveTime: null, dutyOnTime: null, score: 0, backups: [] });
+            // No candidate beats the offgoing deadline — penalize but keep them
+            // (user can manually coordinate a slightly late handoff)
+            for (const c of candidates) {
+              if (c.type !== "none") c.score = Math.max(1, c.score - 20);
+            }
           }
         }
       }
@@ -3229,24 +3257,22 @@ function assignRoleWithMatrix(
   let viableOptions = matrix.filter((m) => m.viable);
 
   // ── Grade-based pairing enforcement (sum >= 4) ─────────────────────────
-  // When assigning SICs, filter out pairings where PIC + SIC grade < 4.
-  // E.g., grade-1 SIC can't pair with grade-1 or grade-2 PIC.
+  // When assigning SICs, penalize (don't block) pairings where PIC + SIC grade < 4.
+  // Hard-blocking left tails unsolved when the only available SIC was low-grade.
   if (role === "SIC") {
     const MIN_GRADE_SUM = 4;
-    viableOptions = viableOptions.filter((opt) => {
+    for (const opt of viableOptions) {
       const sicCrew = crewRoster.find((c) => c.name === opt.crewName && c.role === "SIC");
       const sicGrade = sicCrew?.grade ?? 3;
-      // Find the PIC already assigned to this tail
       const picName = result[opt.tail]?.oncoming_pic;
-      if (!picName) return true; // No PIC assigned yet — allow, will re-check later
+      if (!picName) continue;
       const picCrew = crewRoster.find((c) => c.name === picName && c.role === "PIC");
       const picGrade = picCrew?.grade ?? 3;
       if (sicGrade + picGrade < MIN_GRADE_SUM) {
-        console.log(`[GradeCheck] Blocked ${opt.crewName} (SIC grade ${sicGrade}) + ${picName} (PIC grade ${picGrade}) = ${sicGrade + picGrade} < ${MIN_GRADE_SUM}`);
-        return false;
+        opt.rank += 25; // Strong penalty instead of hard block
+        console.log(`[GradeCheck] Penalized ${opt.crewName} (SIC grade ${sicGrade}) + ${picName} (PIC grade ${picGrade}) = ${sicGrade + picGrade} < ${MIN_GRADE_SUM}`);
       }
-      return true;
-    });
+    }
   }
 
   // Count viable tails per crew AND viable crew per tail
