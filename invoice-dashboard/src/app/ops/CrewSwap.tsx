@@ -741,7 +741,7 @@ function isLiveFlightType(type: string | null): boolean {
 
 // ─── Swap Sheet (Excel-matching layout) ─────────────────────────────────────
 
-function SwapSheetRow({ row }: { row: CrewSwapRow }) {
+function SwapSheetRow({ row, onArrivalOverride }: { row: CrewSwapRow; onArrivalOverride?: (tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing", newTimeHHMM: string) => void }) {
   const ac = AIRCRAFT_COLORS[row.aircraft_type];
   const rowBg = ac ? `${ac.bg}/30` : "";
 
@@ -804,9 +804,18 @@ function SwapSheetRow({ row }: { row: CrewSwapRow }) {
 
       {/* Available / Arrival Time */}
       <td className="px-3 py-1.5 text-xs text-gray-600">
-        {row.available_time ? fmtShortTime(row.available_time)
-          : row.arrival_time ? fmtShortTime(row.arrival_time)
-          : "—"}
+        {onArrivalOverride && (row.travel_type === "uber" || row.travel_type === "rental_car" || row.travel_type === "drive") && (row.available_time || row.arrival_time) ? (
+          <input
+            type="time"
+            className="border border-gray-300 rounded px-1 py-0.5 text-xs w-[5.5rem] focus:ring-1 focus:ring-blue-400 focus:border-blue-400"
+            defaultValue={(() => { const d = new Date(row.available_time ?? row.arrival_time!); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; })()}
+            onBlur={(e) => onArrivalOverride(row.tail_number, row.role, row.direction, e.target.value)}
+          />
+        ) : (
+          row.available_time ? fmtShortTime(row.available_time)
+            : row.arrival_time ? fmtShortTime(row.arrival_time)
+            : "—"
+        )}
       </td>
 
       {/* Cost */}
@@ -835,24 +844,25 @@ function SwapSheetRow({ row }: { row: CrewSwapRow }) {
   );
 }
 
-function SwapSheet({ rows, view, impacts, impactedTails, lockedTails, onLockTail, onAssignCrew, pool, onChangeTransport, onSwapPointChange, badPairings, checkairmen, flights, selectedWed, tailAircraftTypes }: {
+function SwapSheet({ rows, view, impacts, impactedTails, lockedTails, onLockTail, onAssignCrew, pool, onChangeTransport, onSwapPointChange, onArrivalOverride, badPairings, checkairmen, flights, selectedWed, tailAircraftTypes }: {
   rows: CrewSwapRow[]; view: "role" | "aircraft"; impacts?: PlanImpact[]; impactedTails?: Set<string>;
   lockedTails?: Set<string>; onLockTail?: (tail: string) => void;
   onAssignCrew?: (tail: string, role: "PIC" | "SIC", name: string | null) => void;
   pool?: OncomingPool | null;
   onChangeTransport?: (tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing", row: CrewSwapRow) => void;
   onSwapPointChange?: (tail: string, newSwapPoint: string) => void;
+  onArrivalOverride?: (tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing", newTimeHHMM: string) => void;
   badPairings?: CrewInfoData["bad_pairings"];
   checkairmen?: CrewInfoData["checkairmen"];
   flights?: Flight[];
   selectedWed?: Date;
   tailAircraftTypes?: Record<string, string>;
 }) {
-  if (view === "aircraft") return <SwapSheetByTail rows={rows} impacts={impacts} impactedTails={impactedTails} lockedTails={lockedTails} onLockTail={onLockTail} onAssignCrew={onAssignCrew} pool={pool} onChangeTransport={onChangeTransport} onSwapPointChange={onSwapPointChange} badPairings={badPairings} checkairmen={checkairmen} flights={flights} selectedWed={selectedWed} tailAircraftTypes={tailAircraftTypes} />;
-  return <SwapSheetByRole rows={rows} />;
+  if (view === "aircraft") return <SwapSheetByTail rows={rows} impacts={impacts} impactedTails={impactedTails} lockedTails={lockedTails} onLockTail={onLockTail} onAssignCrew={onAssignCrew} pool={pool} onChangeTransport={onChangeTransport} onSwapPointChange={onSwapPointChange} onArrivalOverride={onArrivalOverride} badPairings={badPairings} checkairmen={checkairmen} flights={flights} selectedWed={selectedWed} tailAircraftTypes={tailAircraftTypes} />;
+  return <SwapSheetByRole rows={rows} onArrivalOverride={onArrivalOverride} />;
 }
 
-function SwapSheetByRole({ rows }: { rows: CrewSwapRow[] }) {
+function SwapSheetByRole({ rows, onArrivalOverride }: { rows: CrewSwapRow[]; onArrivalOverride?: (tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing", newTimeHHMM: string) => void }) {
   const byArrival = (a: CrewSwapRow, b: CrewSwapRow) =>
     (a.arrival_time ?? "").localeCompare(b.arrival_time ?? "");
   const byDeparture = (a: CrewSwapRow, b: CrewSwapRow) =>
@@ -891,13 +901,13 @@ function SwapSheetByRole({ rows }: { rows: CrewSwapRow[] }) {
         </thead>
         <tbody>
           <SectionHeader title="Oncoming Pilots — Pilot In-Command" count={oncomingPics.length} color="bg-green-50 text-green-700 border-t-2 border-green-300" />
-          {oncomingPics.map((r, i) => <SwapSheetRow key={`op-${i}`} row={r} />)}
+          {oncomingPics.map((r, i) => <SwapSheetRow key={`op-${i}`} row={r} onArrivalOverride={onArrivalOverride} />)}
           <SectionHeader title="Oncoming Pilots — Second In-Command" count={oncomingSics.length} color="bg-green-50 text-green-600" />
-          {oncomingSics.map((r, i) => <SwapSheetRow key={`os-${i}`} row={r} />)}
+          {oncomingSics.map((r, i) => <SwapSheetRow key={`os-${i}`} row={r} onArrivalOverride={onArrivalOverride} />)}
           <SectionHeader title="Offgoing Pilots — Pilot In-Command" count={offgoingPics.length} color="bg-red-50 text-red-700 border-t-2 border-red-300" />
-          {offgoingPics.map((r, i) => <SwapSheetRow key={`fp-${i}`} row={r} />)}
+          {offgoingPics.map((r, i) => <SwapSheetRow key={`fp-${i}`} row={r} onArrivalOverride={onArrivalOverride} />)}
           <SectionHeader title="Offgoing Pilots — Second In-Command" count={offgoingSics.length} color="bg-red-50 text-red-600" />
-          {offgoingSics.map((r, i) => <SwapSheetRow key={`fs-${i}`} row={r} />)}
+          {offgoingSics.map((r, i) => <SwapSheetRow key={`fs-${i}`} row={r} onArrivalOverride={onArrivalOverride} />)}
         </tbody>
       </table>
       {rows.length === 0 && (
@@ -909,7 +919,7 @@ function SwapSheetByRole({ rows }: { rows: CrewSwapRow[] }) {
   );
 }
 
-function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail, onAssignCrew, pool, onChangeTransport, onSwapPointChange, badPairings, checkairmen, flights, selectedWed, tailAircraftTypes }: {
+function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail, onAssignCrew, pool, onChangeTransport, onSwapPointChange, onArrivalOverride, badPairings, checkairmen, flights, selectedWed, tailAircraftTypes }: {
   rows: CrewSwapRow[];
   impacts?: PlanImpact[];
   impactedTails?: Set<string>;
@@ -919,6 +929,7 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
   pool?: OncomingPool | null;
   onChangeTransport?: (tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing", row: CrewSwapRow) => void;
   onSwapPointChange?: (tail: string, newSwapPoint: string) => void;
+  onArrivalOverride?: (tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing", newTimeHHMM: string) => void;
   badPairings?: CrewInfoData["bad_pairings"];
   checkairmen?: CrewInfoData["checkairmen"];
   flights?: Flight[];
@@ -1222,9 +1233,21 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                     <span className="text-[11px] text-gray-500">dep {fmtShortTime(row.departure_time, row.swap_location)}</span>
                   )}
                   {(row.available_time ?? row.arrival_time) && (
+                    onArrivalOverride && (row.travel_type === "uber" || row.travel_type === "rental_car" || row.travel_type === "drive") ? (
+                      <span className="text-[11px] text-gray-500 flex items-center gap-1">
+                        {row.direction === "oncoming" ? "avail" : "arr"}
+                        <input
+                          type="time"
+                          className="border border-gray-300 rounded px-0.5 py-0 text-[11px] w-[4.8rem] focus:ring-1 focus:ring-blue-400 focus:border-blue-400"
+                          defaultValue={(() => { const d = new Date((row.available_time ?? row.arrival_time)!); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; })()}
+                          onBlur={(e) => onArrivalOverride(row.tail_number, row.role, row.direction, e.target.value)}
+                        />
+                      </span>
+                    ) : (
                     <span className="text-[11px] text-gray-500">
                       {row.direction === "oncoming" ? "avail" : "arr"} {fmtShortTime(row.available_time ?? row.arrival_time, row.swap_location)}
                     </span>
+                    )
                   )}
                   {row.cost_estimate != null && (
                     <span className="text-[11px] text-gray-400">${row.cost_estimate}</span>
@@ -2204,6 +2227,26 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
       setLockedTails((prev) => new Set(prev).add(tail));
       addToast("success", `${name} assigned to ${tail} (locked)`);
     }
+  }
+
+  /** Manual override of arrival/available time for ground transport rows */
+  function handleArrivalOverride(tail: string, role: "PIC" | "SIC", direction: "oncoming" | "offgoing", newTimeHHMM: string) {
+    if (!swapPlan) return;
+    setSwapPlan((prev) => {
+      if (!prev) return prev;
+      const newRows = prev.rows.map((r) => {
+        if (r.tail_number !== tail || r.role !== role || r.direction !== direction) return r;
+        // Build a new ISO timestamp using the existing date but overridden HH:MM
+        const base = r.available_time ?? r.arrival_time ?? r.departure_time;
+        if (!base) return r;
+        const d = new Date(base);
+        const [hh, mm] = newTimeHHMM.split(":").map(Number);
+        d.setHours(hh, mm, 0, 0);
+        const iso = d.toISOString();
+        return { ...r, available_time: iso, arrival_time: iso, notes: r.notes ? `${r.notes} (time override)` : "Manual time override" };
+      });
+      return { ...prev, rows: newRows };
+    });
   }
 
   // Plan persistence
@@ -4747,7 +4790,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
             ) : (
               <SwapSheet rows={swapPlan.rows} view={swapView} impacts={savedPlanMeta ? planImpacts : []} impactedTails={savedPlanMeta ? impactedTails : new Set()}
                 lockedTails={lockedTails} onLockTail={toggleLockTail} onAssignCrew={assignCrew} pool={oncomingPool}
-                onChangeTransport={openFlightPicker} onSwapPointChange={handleSwapPointChange}
+                onChangeTransport={openFlightPicker} onSwapPointChange={handleSwapPointChange} onArrivalOverride={handleArrivalOverride}
                 badPairings={crewInfoData?.bad_pairings} checkairmen={crewInfoData?.checkairmen}
                 flights={flights} selectedWed={selectedWed} tailAircraftTypes={tailAircraftTypes} />
             )}
