@@ -912,16 +912,24 @@ function AddCustomAlertForm({ onAdd }: { onAdd: (data: { airport_icao?: string; 
 
 // ─── Main board ───────────────────────────────────────────────────────────────
 
-// Normalize NOTAM body for dedup: strip leading 3-letter airport code, collapse whitespace, uppercase.
-// "BOS RWY 14/32 CLSD EXC TAX 30MIN PPR 617-561-1919" → "RWY 14/32 CLSD EXC TAX 30MIN PPR 617-561-1919"
+// Normalize NOTAM body for dedup: strip airport prefix, daily schedules, phone numbers.
+// Domestic "AD AP CLSD DLY 0630-1315" and ICAO "SNA AD AP CLSD" should match.
 function normalizeNotamBody(body: string | null, icao: string | null): string {
   if (!body) return "";
   let s = body.toUpperCase().replace(/\s+/g, " ").trim();
-  // Strip leading 3-letter FAA location ID (e.g. "BOS ", "ORL ") that NMS prepends
+  // Strip leading 3-letter FAA location ID (e.g. "BOS ", "ORL ", "SNA ")
   if (icao && icao.length === 4) {
     const faaId = icao.slice(1); // KBOS → BOS
     if (s.startsWith(faaId + " ")) s = s.slice(faaId.length + 1);
   }
+  // Strip daily schedule patterns: "DLY 0630-1315", "DLY 0100-1000"
+  s = s.replace(/\bDLY\s+\d{4}-\d{4}\b/g, "").trim();
+  // Strip phone numbers: "206-296-7334", "617-561-1919"
+  s = s.replace(/\b\d{3}-\d{3}-\d{4}\b/g, "").trim();
+  // Strip time ranges embedded in body: "0630-1315", "0100-1000" (standalone, not part of runway IDs)
+  s = s.replace(/\b\d{4}-\d{4}\b/g, "").trim();
+  // Collapse any resulting double spaces
+  s = s.replace(/\s+/g, " ").trim();
   return s;
 }
 
