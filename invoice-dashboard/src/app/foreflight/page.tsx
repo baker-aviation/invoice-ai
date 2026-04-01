@@ -6,12 +6,14 @@ import ForeFlightClient from "./ForeFlightClient";
 import TankeringDashboard from "./TankeringDashboard";
 import DispatchFlights from "./DispatchFlights";
 import CreateFlight from "./CreateFlight";
+import WebhookEvents from "./WebhookEvents";
 
 const TABS = [
   { id: "fbo", label: "FBO Fuel Check" },
   { id: "tankering", label: "Tankering Plans" },
   { id: "dispatch", label: "Dispatch" },
   { id: "create", label: "Push Flight" },
+  { id: "webhooks", label: "Webhooks" },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -46,6 +48,7 @@ export default function FuelPlanningPage() {
       {tab === "tankering" && <TankeringDashboard />}
       {tab === "dispatch" && <DispatchFlights />}
       {tab === "create" && <CreateFlight />}
+      {tab === "webhooks" && <WebhookEvents />}
     </>
   );
 }
