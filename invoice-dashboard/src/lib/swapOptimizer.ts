@@ -2921,10 +2921,21 @@ function buildFeasibilityMatrix(params: {
         const proximityNorm = Math.min(100, (minDriveMin / 300) * 50);
         let rank = costNorm * 0.40 + reliabilityNorm * 0.25 + proximityNorm * 0.20 + crewDiff * 0.15;
 
-        // Checkairman conservation: slightly penalize assigning a CA to a standard tail.
+        // Checkairman conservation: strongly avoid auto-assigning checkairmen unless needed.
         const crewMemberObj = crewRoster.find((c) => c.name === poolEntry.name && c.role === role);
         if (crewMemberObj?.is_checkairman) {
-          rank += 5;
+          rank += 30; // strong avoidance — prefer non-checkairmen unless last resort
+          // If checkairman_types is set, block assignment to non-matching tail types
+          if (crewMemberObj.checkairman_types.length > 0) {
+            const tailTypeNorm = acType.toLowerCase().replace(/[\s_-]/g, "");
+            const typesMatch = crewMemberObj.checkairman_types.some(
+              (ct) => tailTypeNorm.includes(ct.toLowerCase().replace(/[\s_-]/g, ""))
+                || ct.toLowerCase().replace(/[\s_-]/g, "").includes(tailTypeNorm),
+            );
+            if (!typesMatch) {
+              rank += 50; // effectively block wrong-type tail assignment
+            }
+          }
         }
 
         // SIC same-swap-point preference: penalize SIC rank when their best swap point
@@ -3141,7 +3152,18 @@ function buildFeasibilityMatrix(params: {
       // Checkairman conservation (same as pre-computed path)
       const crewMemberObj2 = crewRoster.find((c) => c.name === poolEntry.name && c.role === role);
       if (crewMemberObj2?.is_checkairman) {
-        rank += 5;
+        rank += 30; // strong avoidance — prefer non-checkairmen unless last resort
+        // If checkairman_types is set, block assignment to non-matching tail types
+        if (crewMemberObj2.checkairman_types.length > 0) {
+          const tailTypeNorm = acType.toLowerCase().replace(/[\s_-]/g, "");
+          const typesMatch = crewMemberObj2.checkairman_types.some(
+            (ct) => tailTypeNorm.includes(ct.toLowerCase().replace(/[\s_-]/g, ""))
+              || ct.toLowerCase().replace(/[\s_-]/g, "").includes(tailTypeNorm),
+          );
+          if (!typesMatch) {
+            rank += 50; // effectively block wrong-type tail assignment
+          }
+        }
       }
 
       // SIC same-swap-point preference (same as pre-computed path)
