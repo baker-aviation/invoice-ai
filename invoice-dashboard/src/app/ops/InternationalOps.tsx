@@ -737,8 +737,43 @@ function TripDetail({ trip, countries, onRefresh }: {
   const [autoCreatingOvf, setAutoCreatingOvf] = useState(false);
   const [legRoutes, setLegRoutes] = useState<Array<{ dep: string; arr: string; route: string | null; method: string }>>([]);
   const [cbpReplies, setCbpReplies] = useState<Record<string, CbpReply>>({});
+  const [countryReqs, setCountryReqs] = useState<Record<string, { country: string; reqs: CountryRequirement[] }>>({});
 
   const clearances = trip.clearances ?? [];
+
+  // Fetch country requirements for landing countries
+  useEffect(() => {
+    // Find international airports where we land (not overflights)
+    const landingIcaos = trip.route_icaos.filter((icao) => isInternationalIcao(icao));
+    if (landingIcaos.length === 0 || countries.length === 0) return;
+
+    // Match airports to countries via ICAO prefix
+    const countryIds = new Set<string>();
+    const icaoToCountry = new Map<string, { id: string; name: string }>();
+    for (const icao of landingIcaos) {
+      for (const c of countries) {
+        if (c.icao_prefixes?.some((p: string) => icao.startsWith(p))) {
+          countryIds.add(c.id);
+          icaoToCountry.set(icao, { id: c.id, name: c.name });
+          break;
+        }
+      }
+    }
+
+    // Fetch requirements for each country
+    for (const countryId of countryIds) {
+      fetch(`/api/ops/intl/countries/${countryId}/requirements`)
+        .then((r) => r.json())
+        .then((d) => {
+          const reqs = (d.requirements ?? []) as CountryRequirement[];
+          if (reqs.length > 0) {
+            const country = [...icaoToCountry.values()].find((c) => c.id === countryId);
+            setCountryReqs((prev) => ({ ...prev, [countryId]: { country: country?.name ?? "Unknown", reqs } }));
+          }
+        })
+        .catch(() => {});
+    }
+  }, [trip.route_icaos, countries]);
 
   // Fetch CBP replies for this trip
   useEffect(() => {
@@ -963,6 +998,25 @@ function TripDetail({ trip, countries, onRefresh }: {
           </div>
         )}
       </div>
+
+      {/* Country requirements for landing countries */}
+      {Object.values(countryReqs).length > 0 && (
+        <div className="space-y-2">
+          {Object.values(countryReqs).map(({ country, reqs }) => (
+            <div key={country} className="bg-yellow-50 border border-yellow-200 rounded-lg px-3 py-2">
+              <h4 className="text-xs font-semibold text-yellow-800 mb-1">{country} — Requirements</h4>
+              <div className="space-y-1">
+                {reqs.map((r) => (
+                  <div key={r.id} className="text-xs text-yellow-700">
+                    <span className="font-medium">{r.name}</span>
+                    {r.description && <span className="whitespace-pre-wrap"> — {r.description}</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Route header */}
       <div className="flex items-center justify-between">
@@ -2059,12 +2113,15 @@ function CountryDetail({ country, requirements, loadingReqs, onAddReq, showAddRe
                 <option value="overflight">Overflight</option>
                 <option value="customs">Customs</option>
                 <option value="handling">Handling</option>
+                <option value="note">Note</option>
               </select>
             </div>
             <div className="flex-1">
               <label className="text-[10px] text-gray-500">Description</label>
-              <input value={newReq.description} onChange={(e) => setNewReq({ ...newReq, description: e.target.value })}
-                className="block w-full text-xs border border-gray-300 rounded px-2 py-1" />
+              <textarea value={newReq.description} onChange={(e) => setNewReq({ ...newReq, description: e.target.value })}
+                rows={3}
+                className="block w-full text-xs border border-gray-300 rounded px-2 py-1 resize-y"
+                placeholder="Paste lists, questions, or multi-line notes here..." />
             </div>
             <button onClick={onAddReq} className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700">Save</button>
             <button onClick={() => setShowAddReq(false)} className="px-2 py-1 text-xs text-gray-500">Cancel</button>
@@ -2129,7 +2186,8 @@ function ReqCard({ req, editing, onEdit, onSave, onDelete }: {
 
   const typeBg = req.requirement_type === "overflight" ? "bg-orange-100 text-orange-700" :
     req.requirement_type === "landing" ? "bg-blue-100 text-blue-700" :
-    req.requirement_type === "customs" ? "bg-purple-100 text-purple-700" : "bg-gray-100 text-gray-600";
+    req.requirement_type === "customs" ? "bg-purple-100 text-purple-700" :
+    req.requirement_type === "note" ? "bg-yellow-100 text-yellow-700" : "bg-gray-100 text-gray-600";
 
   if (editing) {
     return (
@@ -2148,13 +2206,15 @@ function ReqCard({ req, editing, onEdit, onSave, onDelete }: {
               <option value="overflight">Overflight</option>
               <option value="customs">Customs</option>
               <option value="handling">Handling</option>
+              <option value="note">Note</option>
             </select>
           </div>
         </div>
         <div>
           <label className="text-[10px] text-gray-500">Description</label>
-          <input value={edit.description} onChange={(e) => setEdit({ ...edit, description: e.target.value })}
-            className="block w-full text-xs border border-gray-300 rounded px-2 py-1" />
+          <textarea value={edit.description} onChange={(e) => setEdit({ ...edit, description: e.target.value })}
+            rows={3}
+            className="block w-full text-xs border border-gray-300 rounded px-2 py-1 resize-y" />
         </div>
         <div>
           <label className="text-[10px] text-gray-500">Required Documents (comma-separated)</label>
@@ -2181,7 +2241,7 @@ function ReqCard({ req, editing, onEdit, onSave, onDelete }: {
         <button onClick={onEdit} className="ml-auto opacity-0 group-hover:opacity-100 text-xs text-blue-600 hover:text-blue-800 transition-opacity">Edit</button>
         <button onClick={onDelete} className="opacity-0 group-hover:opacity-100 text-xs text-red-400 hover:text-red-600 transition-opacity">Delete</button>
       </div>
-      {req.description && <p className="text-xs text-gray-500 mt-1">{req.description}</p>}
+      {req.description && <p className="text-xs text-gray-500 mt-1 whitespace-pre-wrap">{req.description}</p>}
       {req.required_documents.length > 0 && (
         <div className="flex gap-1 mt-1">
           <span className="text-[10px] text-gray-400">Docs:</span>
