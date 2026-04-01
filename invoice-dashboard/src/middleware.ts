@@ -51,8 +51,7 @@ export async function middleware(request: NextRequest) {
     request.nextUrl.pathname.startsWith("/api/cron/") ||
     request.nextUrl.pathname.startsWith("/api/fuel-prices/advertised/pull-mailbox") ||
     request.nextUrl.pathname.startsWith("/api/fuel-planning/shared-plan/") ||
-    request.nextUrl.pathname.startsWith("/api/public/form") ||
-    request.nextUrl.pathname.startsWith("/api/public/info-session") ||
+    request.nextUrl.pathname.startsWith("/api/public/") ||
     request.nextUrl.pathname.startsWith("/form/")
   ) {
     return NextResponse.next();

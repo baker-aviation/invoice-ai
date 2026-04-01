@@ -625,6 +625,49 @@ function ScheduleSection({ flights, mxNotes: initialMxNotes = [], onMoveNote, on
   const [mxNotes, setMxNotes] = useState(initialMxNotes);
   const [dragOverFlightId, setDragOverFlightId] = useState<string | null>(null);
   const dragNoteRef = useRef<string | null>(null);
+  const [legVanOpen, setLegVanOpen] = useState<string | null>(null); // flightId with open dropdown
+  const [legVanAssignments, setLegVanAssignments] = useState<Map<string, number>>(new Map());
+
+  // Load existing draft overrides for visible dates
+  useEffect(() => {
+    const dates = new Set<string>();
+    for (const f of flights) {
+      if (f.scheduled_arrival) dates.add(etDateKey(f.scheduled_arrival));
+      else if (f.scheduled_departure) dates.add(etDateKey(f.scheduled_departure));
+    }
+    async function load() {
+      const map = new Map<string, number>();
+      for (const d of dates) {
+        try {
+          const res = await fetch(`/api/vans/drafts?date=${d}`);
+          const data = await res.json();
+          for (const [fid, vid] of (data.overrides ?? []) as [string, number][]) {
+            map.set(fid, vid);
+          }
+        } catch { /* ignore */ }
+      }
+      if (map.size > 0) setLegVanAssignments(map);
+    }
+    load();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function assignVanToLeg(flightId: string, vanId: number | null, date: string) {
+    setLegVanAssignments((prev) => {
+      const next = new Map(prev);
+      if (vanId != null) next.set(flightId, vanId);
+      else next.delete(flightId);
+      return next;
+    });
+    setLegVanOpen(null);
+    try {
+      await fetch("/api/vans/drafts", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date, flightId, vanId }),
+      });
+    } catch { /* toast would be nice but best-effort for now */ }
+  }
 
   async function handleMoveNote(noteId: string, newAirport: string, arrivalDate?: string | null) {
     // Find nearest van for the new airport
@@ -894,6 +937,44 @@ function ScheduleSection({ flights, mxNotes: initialMxNotes = [], onMoveNote, on
                               {arrMxNotes.length} MX @ {(f.arrival_icao || "").replace(/^K/, "")}
                             </span>
                           )}
+                          {/* Van assign button */}
+                          {!flightIsPast && (() => {
+                            const assignedVanId = legVanAssignments.get(f.id);
+                            const isOpen = legVanOpen === f.id;
+                            const legDate = f.scheduled_arrival ? etDateKey(f.scheduled_arrival) : etDateKey(f.scheduled_departure);
+                            if (isOpen) {
+                              return (
+                                <select
+                                  autoFocus
+                                  value={assignedVanId ?? ""}
+                                  onChange={(e) => {
+                                    const val = e.target.value ? Number(e.target.value) : null;
+                                    assignVanToLeg(f.id, val, legDate);
+                                  }}
+                                  onBlur={() => setLegVanOpen(null)}
+                                  className="text-[10px] font-medium rounded px-1 py-0.5 border border-gray-300 cursor-pointer bg-white"
+                                >
+                                  <option value="">No van</option>
+                                  {FIXED_VAN_ZONES.map((z) => (
+                                    <option key={z.vanId} value={z.vanId}>V{z.vanId} {z.name}</option>
+                                  ))}
+                                </select>
+                              );
+                            }
+                            return (
+                              <button
+                                onClick={() => setLegVanOpen(f.id)}
+                                className={`px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors ${
+                                  assignedVanId
+                                    ? "bg-green-100 text-green-700 hover:bg-green-200"
+                                    : "bg-gray-100 text-gray-400 hover:bg-gray-200 hover:text-gray-600"
+                                }`}
+                                title="Assign van for service"
+                              >
+                                {assignedVanId ? `V${assignedVanId}` : "V"}
+                              </button>
+                            );
+                          })()}
                         </div>
                       </div>
 

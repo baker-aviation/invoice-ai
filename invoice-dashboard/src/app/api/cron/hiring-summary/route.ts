@@ -109,7 +109,7 @@ export async function GET(req: NextRequest) {
 
   blocks.push({
     type: "context",
-    elements: [{ type: "mrkdwn", text: `_Sent at ${new Date().toLocaleString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit", hour12: true })} ET_` }],
+    elements: [{ type: "mrkdwn", text: `_Sent at ${new Date().toLocaleString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit", hour12: true })} ET_ • <https://baker-ai-gamma.vercel.app/jobs/pipeline|View Pipeline>` }],
   });
 
   await postSlackMessage({
