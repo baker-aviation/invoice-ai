@@ -25,7 +25,7 @@ import { getCrewDifficulty } from "./airportTiers";
 import type { FlightOffer } from "./amadeus";
 import type { PilotRoute } from "./pilotRoutes";
 import {
-  MAX_DUTY_HOURS, DUTY_ON_BEFORE_COMMERCIAL, DEPLANE_BUFFER,
+  MAX_DUTY_HOURS, DUTY_ON_BEFORE_COMMERCIAL, DEPLANE_BUFFER, TERMINAL_TO_FBO_BUFFER,
   FBO_ARRIVAL_BUFFER, FBO_ARRIVAL_BUFFER_PREFERRED, RELAXED_FBO_ARRIVAL_BUFFER,
   DUTY_OFF_AFTER_LAST_LEG,
   INTERNATIONAL_DUTY_OFF, AIRPORT_SECURITY_BUFFER, RENTAL_RETURN_BUFFER,
@@ -396,7 +396,10 @@ export function fboArrivalAfterCommercial(
   flightArrTime: Date,
   driveToFboMin: number,
 ): Date {
-  return new Date(flightArrTime.getTime() + ms(DEPLANE_BUFFER) + ms(driveToFboMin));
+  // When crew arrives at a commercial airport and needs to get to a separate FBO:
+  // deplane (30min) + terminal-to-FBO Uber (15min if driving to FBO, 0 if same airport) + drive
+  const terminalToFbo = driveToFboMin > 0 ? TERMINAL_TO_FBO_BUFFER : 0;
+  return new Date(flightArrTime.getTime() + ms(DEPLANE_BUFFER) + ms(terminalToFbo) + ms(driveToFboMin));
 }
 
 /** Latest departure time for offgoing crew to make it home by midnight */

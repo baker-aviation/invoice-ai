@@ -21,8 +21,11 @@ export const MAX_FLIGHT_HOURS_24 = 10;
 /** Duty-on starts this many minutes before commercial flight departure (from home airport) */
 export const DUTY_ON_BEFORE_COMMERCIAL = 60;
 
-/** After commercial landing, time to deplane and get to rental/Uber */
+/** After commercial landing, time to deplane and get to rental/Uber pickup */
 export const DEPLANE_BUFFER = 30;
+
+/** Extra time for Uber from commercial terminal to FBO (opposite side of airport) */
+export const TERMINAL_TO_FBO_BUFFER = 15;
 
 /** New crew must arrive at FBO this many minutes before their scheduled flight */
 export const FBO_ARRIVAL_BUFFER = 60;
