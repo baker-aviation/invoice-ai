@@ -489,7 +489,10 @@ function AssignView({ rows, onAssignCrew, onRecomputeTail, swapDate, standbyPics
           role === "PIC" ? "bg-blue-50 border-blue-200" : "bg-indigo-50 border-indigo-200"
         } ${dragCrew?.name === name ? "opacity-50" : ""}`}
       >
-        <div className="font-medium text-gray-900">{name}</div>
+        <div className="font-medium text-gray-900">
+          {name}
+          {durationMinutes ? <span className="text-[9px] text-gray-400 font-normal ml-1">({Math.round(durationMinutes / 60 * 10) / 10}hr travel)</span> : null}
+        </div>
         <div className="flex items-center gap-1 mt-0.5">
           <span className="text-[9px] text-gray-400">{homeAirports.join("/")}</span>
           {typeTag && <span className={`text-[8px] px-1 rounded ${role === "PIC" ? "bg-blue-100 text-blue-600" : "bg-indigo-100 text-indigo-600"}`}>{typeTag}</span>}
@@ -519,6 +522,7 @@ function AssignView({ rows, onAssignCrew, onRecomputeTail, swapDate, standbyPics
                       aircraftType={crewRow?.aircraft_type ?? "unknown"}
                       fromTail={null}
                       isSkillbridge={crewRow?.is_skillbridge}
+                      durationMinutes={crewRow?.duration_minutes}
                     />
                   );
                 })}
@@ -537,6 +541,7 @@ function AssignView({ rows, onAssignCrew, onRecomputeTail, swapDate, standbyPics
                       aircraftType={crewRow?.aircraft_type ?? "unknown"}
                       fromTail={null}
                       isSkillbridge={crewRow?.is_skillbridge}
+                      durationMinutes={crewRow?.duration_minutes}
                     />
                   );
                 })}
@@ -579,6 +584,7 @@ function AssignView({ rows, onAssignCrew, onRecomputeTail, swapDate, standbyPics
                     aircraftType={current.aircraft_type}
                     fromTail={tail}
                     isSkillbridge={current.is_skillbridge}
+                    durationMinutes={current.duration_minutes}
                   />
                 ) : (
                   <div className="text-[10px] text-gray-400 text-center py-1">
@@ -748,6 +754,7 @@ function SwapSheetRow({ row }: { row: CrewSwapRow }) {
             <span className={`inline-block w-2.5 h-2.5 rounded-full ${ac.bg} border ${ac.text.replace("text-", "border-")}`} />
           )}
           <span className="font-medium text-gray-900">{row.name}</span>
+          {row.duration_minutes ? <span className="text-xs text-gray-400 ml-1">({Math.round(row.duration_minutes / 60 * 10) / 10}hr travel)</span> : null}
           <span className="text-gray-400 text-xs">
             ({row.home_airports.join("/") || "??"})
           </span>
