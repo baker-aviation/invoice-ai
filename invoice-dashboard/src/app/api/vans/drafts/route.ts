@@ -129,3 +129,37 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({ ok: true, updated_at: now });
 }
+
+/**
+ * PATCH /api/vans/drafts
+ * Atomically add or remove a single flight→van override for a date.
+ * Body: { date, flightId, vanId } — vanId=null removes the override.
+ */
+export async function PATCH(req: NextRequest) {
+  const auth = await requireAuth(req);
+  if (!isAuthed(auth)) return auth.error;
+
+  const { date, flightId, vanId } = await req.json();
+  if (!date || !flightId) return NextResponse.json({ error: "date and flightId required" }, { status: 400 });
+
+  const supa = createServiceClient();
+  const { data: existing } = await supa
+    .from("van_draft_overrides")
+    .select("overrides")
+    .eq("date", date)
+    .maybeSingle();
+
+  const overrides: [string, number][] = (existing?.overrides as [string, number][]) ?? [];
+  // Remove any existing override for this flight
+  const filtered = overrides.filter(([fid]) => fid !== flightId);
+  // Add new override if vanId is set
+  if (vanId != null) filtered.push([flightId, vanId]);
+
+  const now = new Date().toISOString();
+  const { error } = await supa
+    .from("van_draft_overrides")
+    .upsert({ date, overrides: filtered, updated_by: auth.userId, updated_at: now }, { onConflict: "date" });
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ ok: true, updated_at: now });
+}
