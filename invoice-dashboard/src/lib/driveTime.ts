@@ -557,7 +557,7 @@ export async function loadDriveTimeCache(): Promise<number> {
   const sb = createServiceClient();
   const { data, error } = await sb
     .from("drive_time_cache")
-    .select("origin_icao, destination_icao, drive_minutes, drive_miles, source");
+    .select("origin_icao, destination_icao, duration_seconds, distance_meters");
 
   if (error) {
     console.error("[driveTime] Failed to load drive_time_cache:", error.message);
@@ -567,9 +567,9 @@ export async function loadDriveTimeCache(): Promise<number> {
   let count = 0;
   for (const row of data ?? []) {
     driveCache.set(cacheKey(row.origin_icao, row.destination_icao), {
-      minutes: Number(row.drive_minutes),
-      miles: Number(row.drive_miles),
-      source: row.source,
+      minutes: Number(row.duration_seconds) / 60,
+      miles: Number(row.distance_meters) / 1609.344,
+      source: "osrm",
     });
     count++;
   }
@@ -632,9 +632,8 @@ export async function fetchOSRMDriveTime(
         {
           origin_icao: o,
           destination_icao: d,
-          drive_minutes: Math.round(minutes * 10) / 10,
-          drive_miles: Math.round(miles * 10) / 10,
-          source: "osrm",
+          duration_seconds: Math.round(minutes * 60),
+          distance_meters: Math.round(miles * 1609.344),
           fetched_at: new Date().toISOString(),
         },
         { onConflict: "origin_icao,destination_icao" },
