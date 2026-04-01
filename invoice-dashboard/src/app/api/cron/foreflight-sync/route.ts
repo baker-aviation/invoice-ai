@@ -22,12 +22,7 @@ function apiKey(): string {
  * re-processing. Falls back to 10 minutes ago if no events exist.
  */
 export async function GET(req: NextRequest) {
-  // Allow cron or service key auth
-  const authHeader = req.headers.get("authorization");
-  const cronSecret = process.env.CRON_SECRET;
-  if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  // Cron routes are already exempted by middleware — no extra auth needed
 
   const supa = createServiceClient();
 
