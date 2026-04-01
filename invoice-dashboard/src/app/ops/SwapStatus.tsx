@@ -5,6 +5,18 @@ import { getAirportTimezone } from "@/lib/airportTimezones";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
+type LegDetail = {
+  flight_number: string;
+  status: string;
+  delay_minutes: number | null;
+  origin: string;
+  destination: string;
+  scheduled_departure: string | null;
+  actual_departure: string | null;
+  estimated_arrival: string | null;
+  actual_arrival: string | null;
+};
+
 type CrewTravel = {
   name: string;
   role: "PIC" | "SIC";
@@ -31,6 +43,8 @@ type CrewTravel = {
   live_departure: string | null;
   live_arrival: string | null;
   delay_minutes: number | null;
+  leg_details: LegDetail[];
+  connection_at_risk: boolean;
 };
 
 type SwapStatusData = {
@@ -51,6 +65,14 @@ function fmtTime24(timeStr: string | null): string {
   const m = timeStr.match(/^(\d{2})(\d{2})L?$/);
   if (m) return `${m[1]}:${m[2]}L`;
   return timeStr;
+}
+
+function fmtLocalTime(isoTime: string, airportCode: string): string {
+  const tz = getAirportTimezone(airportCode) ?? "America/New_York";
+  const d = new Date(isoTime);
+  const time = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: tz });
+  const tzAbbr = d.toLocaleTimeString("en-US", { timeZoneName: "short", timeZone: tz }).split(" ").pop() ?? "";
+  return `${time} ${tzAbbr}`;
 }
 
 function statusColor(status: CrewTravel["status"]): string {
@@ -99,6 +121,14 @@ function transportBadge(type: CrewTravel["transport_type"]): { label: string; cl
   }
 }
 
+function legDelayBadge(leg: LegDetail): { text: string; cls: string } {
+  if (leg.status === "Cancelled") return { text: "CANX", cls: "text-red-600 font-bold" };
+  if (leg.delay_minutes != null && leg.delay_minutes > 10) return { text: `+${leg.delay_minutes}m`, cls: "text-amber-700 font-bold" };
+  if (leg.status === "Landed" || leg.status === "Arrived") return { text: "landed", cls: "text-green-600" };
+  if (leg.status === "En Route" || leg.status === "Departed") return { text: "en route", cls: "text-blue-600" };
+  return { text: "on time", cls: "text-gray-500" };
+}
+
 const AIRCRAFT_BADGE: Record<string, { cls: string; label: string }> = {
   citation_x: { cls: "bg-green-100 text-green-700", label: "CX" },
   challenger: { cls: "bg-yellow-100 text-yellow-700", label: "CL" },
@@ -141,16 +171,35 @@ function CrewCard({ crew, onStatusOverride }: {
 
       {/* Transport + status */}
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${tb.cls}`}>{tb.label}</span>
-          {crew.flight_numbers.length > 0 && (
+          {crew.leg_details && crew.leg_details.length > 0 ? (
             <span className="font-mono text-xs text-gray-700">
-              {crew.flight_numbers.join(" → ")}
+              {crew.leg_details.map((leg, i) => {
+                const badge = legDelayBadge(leg);
+                return (
+                  <span key={leg.flight_number}>
+                    {i > 0 && <span className="text-gray-400"> {"\u2192"} </span>}
+                    <span>{leg.flight_number}</span>
+                    {" "}
+                    <span className={`text-[9px] ${badge.cls}`}>{badge.text}</span>
+                  </span>
+                );
+              })}
+            </span>
+          ) : crew.flight_numbers.length > 0 ? (
+            <span className="font-mono text-xs text-gray-700">
+              {crew.flight_numbers.join(" \u2192 ")}
+            </span>
+          ) : null}
+          {crew.transport_type === "uber" || crew.transport_type === "rental" ? (
+            <span className="text-[10px] text-gray-500">{crew.swap_location && `\u2192 ${crew.swap_location}`}</span>
+          ) : null}
+          {crew.connection_at_risk && (
+            <span className="text-[9px] px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-medium border border-red-200">
+              Connection at risk
             </span>
           )}
-          {crew.transport_type === "uber" || crew.transport_type === "rental" ? (
-            <span className="text-[10px] text-gray-500">{crew.swap_location && `→ ${crew.swap_location}`}</span>
-          ) : null}
         </div>
         <div className="flex items-center gap-1.5">
           <span className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${sc}`}>{sl}</span>
@@ -178,11 +227,11 @@ function CrewCard({ crew, onStatusOverride }: {
         {crew.date && <span>Date: {crew.date}</span>}
         {crew.duty_on && <span>Duty On: <span className="font-mono text-gray-700">{fmtTime24(crew.duty_on)}</span></span>}
         {crew.live_departure ? (
-          <span>Dep: <span className="font-mono text-blue-700">{new Date(crew.live_departure).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "America/New_York" })} ET</span></span>
+          <span>Dep: <span className="font-mono text-blue-700">{fmtLocalTime(crew.live_departure, crew.direction === "offgoing" ? crew.swap_location : (crew.home_airports[0] ?? crew.swap_location))}</span></span>
         ) : crew.duty_on ? null : null}
         {crew.live_arrival ? (
           <span>ETA: <span className={`font-mono ${crew.delay_minutes && crew.delay_minutes > 15 ? "text-amber-700 font-bold" : "text-green-700"}`}>
-            {new Date(crew.live_arrival).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "America/New_York" })} ET
+            {fmtLocalTime(crew.live_arrival, crew.direction === "oncoming" ? crew.swap_location : (crew.home_airports[0] ?? crew.swap_location))}
           </span></span>
         ) : crew.arrival_time ? (
           <span>Sched Arr: <span className="font-mono text-gray-700">{fmtTime24(crew.arrival_time)}</span></span>
@@ -225,6 +274,7 @@ function SummaryBar({ data }: { data: SwapStatusData }) {
   const cancelled = flights.filter(c => c.status === "cancelled").length;
   const scheduled = flights.filter(c => c.status === "scheduled").length;
   const unverified = flights.filter(c => !c.verified_ticket).length;
+  const connectionsAtRisk = flights.filter(c => c.connection_at_risk).length;
 
   return (
     <div className="flex items-center gap-3 flex-wrap text-xs">
@@ -235,6 +285,7 @@ function SummaryBar({ data }: { data: SwapStatusData }) {
       {enRoute > 0 && <span className="px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">{enRoute} en route</span>}
       {delayed > 0 && <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800">{delayed} delayed</span>}
       {cancelled > 0 && <span className="px-2 py-0.5 rounded-full bg-red-100 text-red-800">{cancelled} cancelled</span>}
+      {connectionsAtRisk > 0 && <span className="px-2 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200">{connectionsAtRisk} connection{connectionsAtRisk > 1 ? "s" : ""} at risk</span>}
       {scheduled > 0 && <span className="text-gray-400">{scheduled} scheduled</span>}
       {unverified > 0 && <span className="px-2 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-200">{unverified} unverified</span>}
     </div>
@@ -249,7 +300,7 @@ export default function SwapStatus() {
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<"all" | "oncoming" | "offgoing">("all");
   const [statusFilter, setStatusFilter] = useState<"all" | "flights_only" | "problems" | "standby">("all");
-  const [viewMode, setViewMode] = useState<"list" | "cards">("list");
+  const [viewMode, setViewMode] = useState<"list" | "cards" | "tail">("list");
 
   const [enriching, setEnriching] = useState(false);
 
@@ -312,7 +363,7 @@ export default function SwapStatus() {
       if (statusFilter === "flights_only") {
         list = list.filter(c => c.transport_type === "commercial" || c.transport_type === "brightline");
       } else if (statusFilter === "problems") {
-        list = list.filter(c => c.status === "delayed" || c.status === "cancelled" || (!c.verified_ticket && c.transport_type === "commercial"));
+        list = list.filter(c => c.status === "delayed" || c.status === "cancelled" || c.connection_at_risk || (!c.verified_ticket && c.transport_type === "commercial"));
       }
     }
 
@@ -389,7 +440,7 @@ export default function SwapStatus() {
           ))}
         </div>
         <div className="flex bg-gray-100 rounded-lg p-0.5">
-          {(["list", "cards"] as const).map(v => (
+          {(["list", "cards", "tail"] as const).map(v => (
             <button
               key={v}
               onClick={() => setViewMode(v)}
@@ -397,7 +448,7 @@ export default function SwapStatus() {
                 viewMode === v ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"
               }`}
             >
-              {v === "list" ? "List" : "Cards"}
+              {v === "list" ? "List" : v === "cards" ? "Cards" : "By Tail"}
             </button>
           ))}
         </div>
@@ -435,7 +486,7 @@ export default function SwapStatus() {
                 const sc = statusColor(crew.status);
                 const tb = transportBadge(crew.transport_type);
                 const eta = crew.live_arrival
-                  ? new Date(crew.live_arrival).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "America/New_York" })
+                  ? fmtLocalTime(crew.live_arrival, crew.direction === "oncoming" ? crew.swap_location : (crew.home_airports[0] ?? crew.swap_location))
                   : crew.arrival_time ? fmtTime24(crew.arrival_time) : "—";
                 return (
                   <tr key={`${crew.name}-${crew.direction}`} className={`hover:bg-gray-50 ${
@@ -459,8 +510,31 @@ export default function SwapStatus() {
                     <td className="px-2 py-1.5">
                       <span className={`text-[9px] px-1 py-0.5 rounded font-medium ${tb.cls}`}>{tb.label}</span>
                     </td>
-                    <td className="px-2 py-1.5 font-mono text-[10px] text-gray-700 whitespace-nowrap">
-                      {crew.flight_numbers.length > 0 ? crew.flight_numbers.join(" → ") : "—"}
+                    <td className="px-2 py-1.5 font-mono text-[10px] text-gray-700">
+                      {crew.leg_details && crew.leg_details.length > 0 ? (
+                        <div className="space-y-0.5">
+                          <div className="whitespace-nowrap">
+                            {crew.leg_details.map((leg, i) => {
+                              const badge = legDelayBadge(leg);
+                              return (
+                                <span key={leg.flight_number}>
+                                  {i > 0 && <span className="text-gray-400"> {"\u2192"} </span>}
+                                  <span>{leg.flight_number}</span>
+                                  {" "}
+                                  <span className={`text-[9px] ${badge.cls}`}>{badge.text}</span>
+                                </span>
+                              );
+                            })}
+                          </div>
+                          {crew.connection_at_risk && (
+                            <span className="inline-block text-[9px] px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-medium border border-red-200">
+                              Connection at risk
+                            </span>
+                          )}
+                        </div>
+                      ) : crew.flight_numbers.length > 0 ? (
+                        <span className="whitespace-nowrap">{crew.flight_numbers.join(" \u2192 ")}</span>
+                      ) : "—"}
                     </td>
                     <td className="px-2 py-1.5 text-[10px] text-gray-500">{crew.date ?? "—"}</td>
                     <td className="px-2 py-1.5 font-mono text-[10px] text-gray-600">{crew.duty_on ? fmtTime24(crew.duty_on) : "—"}</td>
@@ -468,7 +542,17 @@ export default function SwapStatus() {
                       {eta}
                     </td>
                     <td className="px-2 py-1.5 text-[10px]">
-                      {crew.delay_minutes != null && crew.delay_minutes > 0 ? (
+                      {crew.leg_details && crew.leg_details.length > 1 ? (
+                        <div className="space-y-0.5">
+                          {crew.leg_details.map(leg => (
+                            <div key={leg.flight_number} className="whitespace-nowrap">
+                              {leg.delay_minutes != null && leg.delay_minutes > 0 ? (
+                                <span className="text-amber-700 font-bold">+{leg.delay_minutes}m</span>
+                              ) : <span className="text-gray-400">0m</span>}
+                            </div>
+                          ))}
+                        </div>
+                      ) : crew.delay_minutes != null && crew.delay_minutes > 0 ? (
                         <span className="text-amber-700 font-bold">+{crew.delay_minutes}m</span>
                       ) : "—"}
                     </td>
@@ -499,7 +583,133 @@ export default function SwapStatus() {
         </div>
       )}
 
-      {data && filtered.length === 0 && (
+      {/* By Tail view */}
+      {data && viewMode === "tail" && (() => {
+        // Apply statusFilter to all crew (both directions), ignoring direction filter
+        const applyStatusFilter = (list: CrewTravel[]) => {
+          if (statusFilter === "standby") return list.filter(c => c.transport_type === "standby");
+          let result = list.filter(c => c.transport_type !== "standby");
+          if (statusFilter === "flights_only") result = result.filter(c => c.transport_type === "commercial" || c.transport_type === "brightline");
+          else if (statusFilter === "problems") result = result.filter(c => c.status === "delayed" || c.status === "cancelled" || (!c.verified_ticket && c.transport_type === "commercial"));
+          return result;
+        };
+
+        const filteredOncoming = applyStatusFilter(data.oncoming);
+        const filteredOffgoing = applyStatusFilter(data.offgoing);
+        const allFiltered = [...filteredOncoming, ...filteredOffgoing];
+
+        // Collect unique tail numbers (skip empty — no-tail standby crew)
+        const tailSet = new Set<string>();
+        allFiltered.forEach(c => { if (c.tail_number) tailSet.add(c.tail_number); });
+
+        // Sort: tails with problems first, then alphabetically
+        const hasProblem = (tail: string) =>
+          allFiltered.some(c => c.tail_number === tail && (c.status === "delayed" || c.status === "cancelled"));
+
+        const tails = Array.from(tailSet).sort((a, b) => {
+          const pa = hasProblem(a) ? 0 : 1;
+          const pb = hasProblem(b) ? 0 : 1;
+          if (pa !== pb) return pa - pb;
+          return a.localeCompare(b);
+        });
+
+        const TailMiniTable = ({ crew, label }: { crew: CrewTravel[]; label: string }) => {
+          if (crew.length === 0) return null;
+          return (
+            <div>
+              <div className={`text-[10px] font-bold uppercase tracking-wider px-1 py-0.5 ${
+                label === "Oncoming" ? "text-blue-600" : "text-orange-600"
+              }`}>{label}</div>
+              <table className="w-full text-xs">
+                <thead className="text-[9px] text-gray-400 uppercase tracking-wider">
+                  <tr>
+                    <th className="px-1.5 py-0.5 text-left">Role</th>
+                    <th className="px-1.5 py-0.5 text-left">Name</th>
+                    <th className="px-1.5 py-0.5 text-left">Transport</th>
+                    <th className="px-1.5 py-0.5 text-left">Flight</th>
+                    <th className="px-1.5 py-0.5 text-left">Status</th>
+                    <th className="px-1.5 py-0.5 text-left">ETA</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-50">
+                  {crew.map(c => {
+                    const tb = transportBadge(c.transport_type);
+                    const sc = statusColor(c.status);
+                    const eta = c.live_arrival
+                      ? fmtLocalTime(c.live_arrival, c.direction === "oncoming" ? c.swap_location : (c.home_airports[0] ?? c.swap_location))
+                      : c.arrival_time ? fmtTime24(c.arrival_time) : "\u2014";
+                    return (
+                      <tr key={`${c.name}-${c.direction}`} className={
+                        c.status === "cancelled" ? "bg-red-50/50" :
+                        c.status === "delayed" ? "bg-amber-50/50" :
+                        c.status === "landed" || c.status === "arrived_fbo" ? "bg-green-50/30" : ""
+                      }>
+                        <td className="px-1.5 py-1">
+                          <span className={`text-[9px] px-1 py-0.5 rounded font-bold ${
+                            c.role === "PIC" ? "bg-blue-100 text-blue-700" : "bg-purple-100 text-purple-700"
+                          }`}>{c.role}</span>
+                        </td>
+                        <td className="px-1.5 py-1 font-medium text-gray-900 whitespace-nowrap">{c.name}</td>
+                        <td className="px-1.5 py-1">
+                          <span className={`text-[9px] px-1 py-0.5 rounded font-medium ${tb.cls}`}>{tb.label}</span>
+                        </td>
+                        <td className="px-1.5 py-1 font-mono text-[10px] text-gray-700 whitespace-nowrap">
+                          {c.flight_numbers.length > 0 ? c.flight_numbers.join(" \u2192 ") : "\u2014"}
+                        </td>
+                        <td className="px-1.5 py-1">
+                          <span className={`text-[9px] px-1.5 py-0.5 rounded-full border font-medium whitespace-nowrap ${sc}`}>
+                            {statusLabel(c.status, c.delay_minutes)}
+                          </span>
+                        </td>
+                        <td className={`px-1.5 py-1 font-mono text-[10px] ${c.delay_minutes && c.delay_minutes > 15 ? "text-amber-700 font-bold" : "text-gray-700"}`}>
+                          {eta}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          );
+        };
+
+        return (
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+            {tails.map(tail => {
+              const oncoming = filteredOncoming.filter(c => c.tail_number === tail);
+              const offgoing = filteredOffgoing.filter(c => c.tail_number === tail);
+              const swapLoc = [...oncoming, ...offgoing].find(c => c.swap_location)?.swap_location;
+              const tailHasProblem = hasProblem(tail);
+              const ac = [...oncoming, ...offgoing][0];
+              const acBadge = ac ? (AIRCRAFT_BADGE[ac.aircraft_type] ?? { cls: "bg-gray-100 text-gray-500", label: "?" }) : null;
+
+              return (
+                <div key={tail} className={`rounded-lg border p-3 space-y-2 ${
+                  tailHasProblem ? "border-amber-300 bg-amber-50/20" : "border-gray-200 bg-white"
+                }`}>
+                  {/* Tail header */}
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-sm font-bold text-gray-900">{tail}</span>
+                      {acBadge && <span className={`text-[10px] px-1.5 py-0.5 rounded font-mono ${acBadge.cls}`}>{acBadge.label}</span>}
+                      {tailHasProblem && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 font-medium">Issues</span>}
+                    </div>
+                    {swapLoc && <span className="text-[10px] text-gray-500">Swap: <span className="font-medium text-gray-700">{swapLoc}</span></span>}
+                  </div>
+                  {/* Crew tables */}
+                  <TailMiniTable crew={oncoming} label="Oncoming" />
+                  <TailMiniTable crew={offgoing} label="Offgoing" />
+                </div>
+              );
+            })}
+            {tails.length === 0 && (
+              <div className="col-span-2 text-center text-sm text-gray-400 py-8">No tails matching filters.</div>
+            )}
+          </div>
+        );
+      })()}
+
+      {data && filtered.length === 0 && viewMode !== "tail" && (
         <div className="text-center text-sm text-gray-400 py-8">No crew matching filters.</div>
       )}
 
