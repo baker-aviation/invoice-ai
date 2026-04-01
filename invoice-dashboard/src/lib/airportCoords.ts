@@ -10,6 +10,7 @@ export type AirportInfo = {
 
 const AIRPORTS: Record<string, AirportInfo> = {
   "1B1": { code: "1B1", name: "Columbia County", lat: 42.2913, lon: -73.7103, city: "Hudson", state: "NY" },
+  MTN: { code: "MTN", name: "Martin State", lat: 39.3257, lon: -76.4138, city: "Baltimore", state: "MD" },
   TEB: { code: "TEB", name: "Teterboro", lat: 40.8501, lon: -74.0608, city: "Teterboro", state: "NJ" },
   PSP: { code: "PSP", name: "Palm Springs Intl", lat: 33.8297, lon: -116.5067, city: "Palm Springs", state: "CA" },
   VNY: { code: "VNY", name: "Van Nuys", lat: 34.2098, lon: -118.4899, city: "Van Nuys", state: "CA" },
