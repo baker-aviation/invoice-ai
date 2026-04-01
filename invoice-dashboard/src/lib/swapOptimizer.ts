@@ -2929,7 +2929,7 @@ function buildFeasibilityMatrix(params: {
         const costNorm = Math.min(100, (totalCost / 800) * 50); // scale for round-trip
         const reliabilityNorm = 100 - entryScore;
         const proximityNorm = Math.min(100, (minDriveMin / 300) * 50);
-        let rank = costNorm * 0.40 + reliabilityNorm * 0.25 + proximityNorm * 0.20 + crewDiff * 0.15;
+        let rank = costNorm * 0.30 + reliabilityNorm * 0.25 + proximityNorm * 0.30 + crewDiff * 0.15;
 
         // Checkairman conservation: strongly avoid auto-assigning checkairmen unless needed.
         const crewMemberObj = crewRoster.find((c) => c.name === poolEntry.name && c.role === role);
@@ -2947,6 +2947,15 @@ function buildFeasibilityMatrix(params: {
             }
           }
         }
+
+        // Standby rotation preference: crew who've been on standby a lot deserve an assignment
+        const standbyCount = crewRoster.find((c) => c.name === poolEntry.name)?.standby_count ?? 0;
+        if (standbyCount >= 3) rank -= 5;  // Strong preference for crew who've been standby 3+ times
+        else if (standbyCount >= 1) rank -= 2;  // Mild preference
+
+        // Volunteer preference: crew who volunteered should be preferred
+        if (poolEntry.early_volunteer) rank -= 3;  // Volunteers should be used
+        if (poolEntry.late_volunteer) rank -= 3;
 
         // SIC same-swap-point preference: penalize SIC rank when their best swap point
         // differs from the PIC's assigned swap point on this tail. Prevents split swaps.
@@ -3157,7 +3166,8 @@ function buildFeasibilityMatrix(params: {
       const costNorm = Math.min(100, (totalCost / 800) * 50);
       const reliabilityNorm = 100 - entryScore;
       const proximityNorm = Math.min(100, (minDriveMin / 300) * 50);
-      let rank = costNorm * 0.45 + reliabilityNorm * 0.3 + proximityNorm * 0.25;
+      const crewDiff = getCrewDifficulty(homeAirports);
+      let rank = costNorm * 0.30 + reliabilityNorm * 0.25 + proximityNorm * 0.30 + crewDiff * 0.15;
 
       // Checkairman conservation (same as pre-computed path)
       const crewMemberObj2 = crewRoster.find((c) => c.name === poolEntry.name && c.role === role);
@@ -3175,6 +3185,15 @@ function buildFeasibilityMatrix(params: {
           }
         }
       }
+
+      // Standby rotation preference (same as pre-computed path)
+      const standbyCount2 = crewRoster.find((c) => c.name === poolEntry.name)?.standby_count ?? 0;
+      if (standbyCount2 >= 3) rank -= 5;  // Strong preference for crew who've been standby 3+ times
+      else if (standbyCount2 >= 1) rank -= 2;  // Mild preference
+
+      // Volunteer preference (same as pre-computed path)
+      if (poolEntry.early_volunteer) rank -= 3;  // Volunteers should be used
+      if (poolEntry.late_volunteer) rank -= 3;
 
       // SIC same-swap-point preference (same as pre-computed path)
       if (role === "SIC" && picSwapPoints) {
