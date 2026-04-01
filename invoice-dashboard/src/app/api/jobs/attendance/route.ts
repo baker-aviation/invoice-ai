@@ -29,7 +29,7 @@ export async function GET(req: NextRequest) {
 
 // ─── Google Auth: JWT → Access Token ───────────────────────────────────
 
-async function getGoogleAccessToken(scopes: string[]): Promise<string> {
+async function getGoogleAccessToken(scopes: string[], impersonateEmail?: string): Promise<string> {
   const email = process.env.GOOGLE_MEET_SA_EMAIL;
   const rawKey = process.env.GOOGLE_MEET_SA_PRIVATE_KEY;
   const adminEmail = process.env.GOOGLE_MEET_ADMIN_EMAIL;
@@ -45,7 +45,7 @@ async function getGoogleAccessToken(scopes: string[]): Promise<string> {
   const header = { alg: "RS256", typ: "JWT" };
   const payload = {
     iss: email,
-    sub: adminEmail,
+    sub: impersonateEmail ?? adminEmail,
     scope,
     aud: "https://oauth2.googleapis.com/token",
     iat: now,
@@ -87,7 +87,7 @@ async function getGoogleAccessToken(scopes: string[]): Promise<string> {
 
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`Google token exchange failed (${res.status}): ${text}`);
+    throw new Error(`Google token exchange failed for ${impersonateEmail ?? adminEmail} (${res.status}): ${text}`);
   }
 
   const data = await res.json();
@@ -102,6 +102,63 @@ function extractMeetingCode(input: string): string | null {
   const codeMatch = input.match(/^([a-z]{3}-[a-z]{4}-[a-z]{3})$/i);
   if (codeMatch) return codeMatch[1].toLowerCase();
   return null;
+}
+
+// ─── Admin Reports API: find Baker staff who attended ──────────────────
+
+async function findAttendeeViaReports(
+  token: string,
+  meetingCode: string,
+): Promise<{ email: string; items: any[] } | null> {
+  const codeVariants = [meetingCode, meetingCode.replace(/-/g, "")];
+
+  for (const code of codeVariants) {
+    const url = new URL("https://admin.googleapis.com/admin/reports/v1/activity/users/all/applications/meet");
+    url.searchParams.set("eventName", "call_ended");
+    url.searchParams.set("filters", `meeting_code==${code}`);
+    url.searchParams.set("maxResults", "200");
+
+    const res = await fetch(url.toString(), {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    if (!res.ok) continue;
+
+    const data = await res.json();
+    if (data.items?.length > 0) {
+      // Return the first attendee's email + all items for Baker staff extraction
+      const firstEmail = data.items[0]?.actor?.email?.toLowerCase();
+      return firstEmail ? { email: firstEmail, items: data.items } : null;
+    }
+  }
+  return null;
+}
+
+/** Extract Baker staff from Admin Reports items (the proven old approach) */
+function extractInternalFromReports(items: any[]): Map<string, { email: string; displayName: string; durationSec: number; date: string }> {
+  const byKey = new Map<string, { email: string; displayName: string; durationSec: number; date: string }>();
+
+  for (const item of items) {
+    const email = item.actor?.email?.toLowerCase();
+    if (!email) continue;
+
+    const eventTime = item.id?.time ?? item.events?.[0]?.parameters?.find((p: any) => p.name === "start_timestamp")?.value;
+    const date = eventTime ? new Date(eventTime).toISOString().split("T")[0] : new Date().toISOString().split("T")[0];
+
+    const params = item.events?.[0]?.parameters ?? [];
+    const displayName = params.find((p: any) => p.name === "display_name")?.value ?? "";
+    const duration = parseInt(params.find((p: any) => p.name === "duration_seconds")?.intValue ?? "0", 10);
+
+    const key = `${email}|${date}`;
+    const existing = byKey.get(key);
+    if (existing) {
+      existing.durationSec += duration;
+      if (!existing.displayName && displayName) existing.displayName = displayName;
+    } else {
+      byKey.set(key, { email, displayName, durationSec: duration, date });
+    }
+  }
+  return byKey;
 }
 
 // ─── Meet API v2 helpers ───────────────────────────────────────────────
@@ -122,7 +179,6 @@ interface ConferenceRecord {
   space: string;
 }
 
-/** Fetch all participants for a conference record (handles pagination) */
 async function listParticipants(token: string, conferenceRecord: string): Promise<MeetParticipant[]> {
   const all: MeetParticipant[] = [];
   let pageToken: string | undefined;
@@ -145,33 +201,6 @@ async function listParticipants(token: string, conferenceRecord: string): Promis
   return all;
 }
 
-/** Resolve signed-in user IDs → emails via Admin Directory API (internal users only) */
-async function resolveEmails(token: string, userIds: string[]): Promise<Map<string, string>> {
-  const emailMap = new Map<string, string>();
-  if (userIds.length === 0) return emailMap;
-
-  const results = await Promise.allSettled(
-    userIds.map(async (uid) => {
-      const numericId = uid.replace("users/", "");
-      const res = await fetch(
-        `https://admin.googleapis.com/admin/directory/v1/users/${numericId}?projection=basic`,
-        { headers: { Authorization: `Bearer ${token}` } },
-      );
-      if (!res.ok) return null;
-      const user = await res.json();
-      return { uid, email: (user.primaryEmail as string)?.toLowerCase() };
-    }),
-  );
-
-  for (const r of results) {
-    if (r.status === "fulfilled" && r.value?.email) {
-      emailMap.set(r.value.uid, r.value.email);
-    }
-  }
-  return emailMap;
-}
-
-/** Normalize a name for fuzzy comparison */
 function normName(n: string): string {
   return n.toLowerCase().replace(/[^a-z]/g, "");
 }
@@ -200,175 +229,93 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    // 1. Get tokens — Meet API + Admin Directory for email resolution
-    const meetToken = await getGoogleAccessToken([
-      "https://www.googleapis.com/auth/meetings.space.readonly",
-    ]);
-    const adminToken = await getGoogleAccessToken([
-      "https://www.googleapis.com/auth/admin.directory.user.readonly",
+    // ── Step 1: Admin Reports API to find a known attendee ─────────────
+    // This always works for Baker staff and gives us someone to impersonate
+    const reportsToken = await getGoogleAccessToken([
+      "https://www.googleapis.com/auth/admin.reports.audit.readonly",
     ]);
 
-    // 2. Look up the space by meeting code
-    const spaceRes = await fetch(`https://meet.googleapis.com/v2/spaces/${meetingCode}`, {
-      headers: { Authorization: `Bearer ${meetToken}` },
-    });
+    const reportsResult = await findAttendeeViaReports(reportsToken, meetingCode);
+    const internalFromReports = reportsResult
+      ? extractInternalFromReports(reportsResult.items)
+      : new Map();
 
-    if (!spaceRes.ok) {
-      const text = await spaceRes.text();
-      return NextResponse.json({
-        error: `Google Meet space lookup failed (${spaceRes.status}). ` +
-          (spaceRes.status === 403
-            ? "The Google Meet REST API may not be enabled or the service account lacks the meetings.space.readonly scope. " +
-              "Enable it at: console.cloud.google.com → APIs & Services → Enable 'Google Meet REST API', " +
-              "then add the scope in Admin Console → Security → API Controls → Domain-wide Delegation."
-            : text.slice(0, 500)),
-      }, { status: 502 });
-    }
-
-    const space = await spaceRes.json();
-    const spaceName: string = space.name; // "spaces/xxxxx"
-
-    // 3. List all conference records for this space
+    // ── Step 2: Try Meet REST API by impersonating a known attendee ────
+    // The Meet API only returns records for meetings the user participated in
+    let meetParticipants: MeetParticipant[] = [];
     let conferences: ConferenceRecord[] = [];
-    let confPageToken: string | undefined;
-    let confDebug: any = {};
-    do {
-      const confUrl = new URL("https://meet.googleapis.com/v2/conferenceRecords");
-      confUrl.searchParams.set("filter", `space.name="${spaceName}"`);
-      confUrl.searchParams.set("pageSize", "100");
-      if (confPageToken) confUrl.searchParams.set("pageToken", confPageToken);
+    let meetDebug: any = { attempted: false };
 
-      const confRes = await fetch(confUrl.toString(), {
-        headers: { Authorization: `Bearer ${meetToken}` },
-      });
-
-      const confData = await confRes.json().catch(() => null);
-      confDebug = {
-        status: confRes.status,
-        filterUsed: `space.name="${spaceName}"`,
-        url: confUrl.toString().replace(/Bearer [^"]+/, "Bearer ***"),
-        response: confData,
-      };
-
-      if (!confRes.ok) {
-        console.error("[attendance] conferenceRecords failed:", confRes.status, confData);
-        break;
-      }
-
-      conferences.push(...(confData?.conferenceRecords ?? []));
-      confPageToken = confData?.nextPageToken;
-    } while (confPageToken);
-
-    if (conferences.length === 0) {
-      // Try listing ANY conference records (without filter) to verify API access
-      const testUrl = new URL("https://meet.googleapis.com/v2/conferenceRecords");
-      testUrl.searchParams.set("pageSize", "5");
-      const testRes = await fetch(testUrl.toString(), {
-        headers: { Authorization: `Bearer ${meetToken}` },
-      });
-      const testData = await testRes.json().catch(() => null);
-
-      return NextResponse.json({
-        ok: true,
-        meetingCode,
-        totalParticipants: 0,
-        matched: [],
-        markedCount: 0,
-        unmatched: [],
-        internal: [],
-        _debug: {
-          meetLink,
-          spaceName,
-          spaceResponse: space,
-          conferencesFound: 0,
-          confDebug,
-          unfilteredTest: { status: testRes.status, data: testData },
-          adminEmail: process.env.GOOGLE_MEET_ADMIN_EMAIL,
-        },
-      });
-    }
-
-    // 4. Fetch participants from all conference records (parallel)
-    const allRawParticipants: { participant: MeetParticipant; sessionDate: string }[] = [];
-
-    await Promise.all(
-      conferences.map(async (conf) => {
-        const participants = await listParticipants(meetToken, conf.name);
-        const date = conf.startTime
-          ? new Date(conf.startTime).toISOString().split("T")[0]
-          : new Date().toISOString().split("T")[0];
-
-        for (const p of participants) {
-          allRawParticipants.push({ participant: p, sessionDate: date });
-        }
-      }),
-    );
-
-    // 5. Collect unique signed-in user IDs for email resolution
-    const signedInUserIds = new Set<string>();
-    for (const { participant } of allRawParticipants) {
-      if (participant.signedinUser?.user) {
-        signedInUserIds.add(participant.signedinUser.user);
-      }
-    }
-
-    const emailMap = await resolveEmails(adminToken, [...signedInUserIds]);
-
-    // 6. Deduplicate participants by (identifier + date)
-    //    identifier = resolved email for signed-in users, or displayName for anonymous/phone
-    interface ResolvedParticipant {
-      displayName: string;
-      email: string; // empty string if unknown
-      durationSec: number;
-      date: string;
-      type: "signedin" | "anonymous" | "phone";
-    }
-
-    const byKey = new Map<string, ResolvedParticipant>();
-
-    for (const { participant: p, sessionDate } of allRawParticipants) {
-      let displayName = "";
-      let email = "";
-      let type: ResolvedParticipant["type"] = "anonymous";
-
-      if (p.signedinUser) {
-        displayName = p.signedinUser.displayName ?? "";
-        email = emailMap.get(p.signedinUser.user) ?? "";
-        type = "signedin";
-      } else if (p.anonymousUser) {
-        displayName = p.anonymousUser.displayName ?? "Anonymous";
-        type = "anonymous";
-      } else if (p.phoneUser) {
-        displayName = p.phoneUser.displayName ?? "Phone User";
-        type = "phone";
-      }
-
-      // Duration from earliest join to latest leave
-      let durationSec = 0;
-      if (p.earliestStartTime && p.latestEndTime) {
-        durationSec = Math.round(
-          (new Date(p.latestEndTime).getTime() - new Date(p.earliestStartTime).getTime()) / 1000,
+    if (reportsResult?.email) {
+      try {
+        // Impersonate the attendee we found via Admin Reports
+        const meetToken = await getGoogleAccessToken(
+          ["https://www.googleapis.com/auth/meetings.space.readonly"],
+          reportsResult.email,
         );
-      }
 
-      const key = email
-        ? `${email}|${sessionDate}`
-        : `${normName(displayName)}|${type}|${sessionDate}`;
+        // Look up space
+        const spaceRes = await fetch(`https://meet.googleapis.com/v2/spaces/${meetingCode}`, {
+          headers: { Authorization: `Bearer ${meetToken}` },
+        });
 
-      const existing = byKey.get(key);
-      if (existing) {
-        // Keep longer duration (participant may have multiple sessions)
-        if (durationSec > existing.durationSec) existing.durationSec = durationSec;
-        if (!existing.displayName && displayName) existing.displayName = displayName;
-        if (!existing.email && email) existing.email = email;
-      } else {
-        byKey.set(key, { displayName, email, durationSec, date: sessionDate, type });
+        if (spaceRes.ok) {
+          const space = await spaceRes.json();
+          const spaceName: string = space.name;
+
+          // List conference records
+          let confPageToken: string | undefined;
+          do {
+            const confUrl = new URL("https://meet.googleapis.com/v2/conferenceRecords");
+            confUrl.searchParams.set("filter", `space.name="${spaceName}"`);
+            confUrl.searchParams.set("pageSize", "100");
+            if (confPageToken) confUrl.searchParams.set("pageToken", confPageToken);
+
+            const confRes = await fetch(confUrl.toString(), {
+              headers: { Authorization: `Bearer ${meetToken}` },
+            });
+            if (!confRes.ok) break;
+
+            const confData = await confRes.json();
+            conferences.push(...(confData.conferenceRecords ?? []));
+            confPageToken = confData.nextPageToken;
+          } while (confPageToken);
+
+          // Fetch participants from all conference records
+          if (conferences.length > 0) {
+            const allParts = await Promise.all(
+              conferences.map((conf) => listParticipants(meetToken, conf.name)),
+            );
+            meetParticipants = allParts.flat();
+          }
+
+          meetDebug = {
+            attempted: true,
+            impersonated: reportsResult.email,
+            spaceName,
+            conferencesFound: conferences.length,
+            participantsFound: meetParticipants.length,
+          };
+        } else {
+          meetDebug = {
+            attempted: true,
+            impersonated: reportsResult.email,
+            spaceError: spaceRes.status,
+          };
+        }
+      } catch (meetErr) {
+        meetDebug = {
+          attempted: true,
+          impersonated: reportsResult.email,
+          error: String(meetErr),
+        };
       }
     }
 
-    const participants = [...byKey.values()];
+    // ── Step 3: Build participant list ──────────────────────────────────
+    // If Meet API worked, use it (has external participants).
+    // Always supplement with Admin Reports data for Baker staff.
 
-    // 7. Match against applicants (by email first, then display name)
     const supa = createServiceClient();
     const { data: allApplicants } = await supa
       .from("job_application_parse")
@@ -379,54 +326,167 @@ export async function POST(req: NextRequest) {
     const unmatched: { name: string; email: string; durationMin: number; date: string }[] = [];
     const internal: { name: string; email: string; durationMin: number; date: string }[] = [];
 
-    for (const p of participants) {
-      // Check if internal Baker staff (by resolved email)
-      const isInternal = p.email &&
-        (p.email.endsWith("@baker-aviation.com") || p.email.endsWith("@airninetwo.com"));
+    // Track which emails we've already processed (to avoid duplicates)
+    const seen = new Set<string>();
 
-      if (isInternal) {
-        internal.push({
-          name: p.displayName || p.email.split("@")[0],
-          email: p.email,
-          durationMin: Math.round(p.durationSec / 60),
-          date: p.date,
-        });
-        continue;
+    // Process Meet API participants (these include external attendees)
+    if (meetParticipants.length > 0) {
+      // Resolve emails for signed-in users via Admin Directory
+      const adminToken = await getGoogleAccessToken([
+        "https://www.googleapis.com/auth/admin.directory.user.readonly",
+      ]);
+
+      const signedInUserIds = new Set<string>();
+      for (const p of meetParticipants) {
+        if (p.signedinUser?.user) signedInUserIds.add(p.signedinUser.user);
       }
 
-      // Try matching applicant by email first, then display name
-      let app = p.email
-        ? (allApplicants ?? []).find((a) => a.email?.toLowerCase() === p.email)
-        : null;
-
-      if (!app && p.displayName) {
-        const pNorm = normName(p.displayName);
-        app = (allApplicants ?? []).find((a) => {
-          if (!a.candidate_name) return false;
-          return normName(a.candidate_name) === pNorm;
-        }) ?? null;
+      // Batch resolve internal user emails
+      const emailMap = new Map<string, string>();
+      if (signedInUserIds.size > 0) {
+        const results = await Promise.allSettled(
+          [...signedInUserIds].map(async (uid) => {
+            const numericId = uid.replace("users/", "");
+            const res = await fetch(
+              `https://admin.googleapis.com/admin/directory/v1/users/${numericId}?projection=basic`,
+              { headers: { Authorization: `Bearer ${adminToken}` } },
+            );
+            if (!res.ok) return null;
+            const user = await res.json();
+            return { uid, email: (user.primaryEmail as string)?.toLowerCase() };
+          }),
+        );
+        for (const r of results) {
+          if (r.status === "fulfilled" && r.value?.email) {
+            emailMap.set(r.value.uid, r.value.email);
+          }
+        }
       }
 
-      if (app) {
-        matched.push({
-          applicationId: app.application_id,
-          name: app.candidate_name,
-          email: p.email || app.email?.toLowerCase() || "",
-          durationSec: p.durationSec,
-          stage: app.pipeline_stage,
-          date: p.date,
-        });
-      } else {
-        unmatched.push({
-          name: p.displayName || p.email || "Unknown",
-          email: p.email,
-          durationMin: Math.round(p.durationSec / 60),
-          date: p.date,
-        });
+      // Deduplicate Meet participants by (key + conference date)
+      const byKey = new Map<string, { displayName: string; email: string; durationSec: number; date: string }>();
+
+      for (let ci = 0; ci < conferences.length; ci++) {
+        const conf = conferences[ci];
+        const confDate = conf.startTime
+          ? new Date(conf.startTime).toISOString().split("T")[0]
+          : new Date().toISOString().split("T")[0];
+
+        // Find participants that belong to this conference (by index range from flat array)
+        // Since we used Promise.all + flat(), we need to track offsets
+        // Actually, let's just iterate all meetParticipants and extract date from the participant's own times
+      }
+
+      // Simpler approach: use each participant's own join time for the date
+      for (const p of meetParticipants) {
+        let displayName = "";
+        let email = "";
+
+        if (p.signedinUser) {
+          displayName = p.signedinUser.displayName ?? "";
+          email = emailMap.get(p.signedinUser.user) ?? "";
+        } else if (p.anonymousUser) {
+          displayName = p.anonymousUser.displayName ?? "Anonymous";
+        } else if (p.phoneUser) {
+          displayName = p.phoneUser.displayName ?? "Phone User";
+        }
+
+        const date = p.earliestStartTime
+          ? new Date(p.earliestStartTime).toISOString().split("T")[0]
+          : new Date().toISOString().split("T")[0];
+
+        let durationSec = 0;
+        if (p.earliestStartTime && p.latestEndTime) {
+          durationSec = Math.round(
+            (new Date(p.latestEndTime).getTime() - new Date(p.earliestStartTime).getTime()) / 1000,
+          );
+        }
+
+        const key = email
+          ? `${email}|${date}`
+          : `${normName(displayName)}|${date}`;
+
+        const existing = byKey.get(key);
+        if (existing) {
+          if (durationSec > existing.durationSec) existing.durationSec = durationSec;
+          if (!existing.displayName && displayName) existing.displayName = displayName;
+          if (!existing.email && email) existing.email = email;
+        } else {
+          byKey.set(key, { displayName, email, durationSec, date });
+        }
+      }
+
+      // Categorize
+      for (const p of byKey.values()) {
+        const isInternal = p.email &&
+          (p.email.endsWith("@baker-aviation.com") || p.email.endsWith("@airninetwo.com"));
+
+        const dedupKey = p.email ? `${p.email}|${p.date}` : `${normName(p.displayName)}|${p.date}`;
+        if (seen.has(dedupKey)) continue;
+        seen.add(dedupKey);
+
+        if (isInternal) {
+          internal.push({
+            name: p.displayName || p.email.split("@")[0],
+            email: p.email,
+            durationMin: Math.round(p.durationSec / 60),
+            date: p.date,
+          });
+          continue;
+        }
+
+        // Match against applicants by email or name
+        let app = p.email
+          ? (allApplicants ?? []).find((a) => a.email?.toLowerCase() === p.email)
+          : null;
+
+        if (!app && p.displayName) {
+          const pNorm = normName(p.displayName);
+          if (pNorm) {
+            app = (allApplicants ?? []).find((a) => {
+              if (!a.candidate_name) return false;
+              return normName(a.candidate_name) === pNorm;
+            }) ?? null;
+          }
+        }
+
+        if (app) {
+          matched.push({
+            applicationId: app.application_id,
+            name: app.candidate_name,
+            email: p.email || app.email?.toLowerCase() || "",
+            durationSec: p.durationSec,
+            stage: app.pipeline_stage,
+            date: p.date,
+          });
+        } else {
+          unmatched.push({
+            name: p.displayName || p.email || "Unknown",
+            email: p.email,
+            durationMin: Math.round(p.durationSec / 60),
+            date: p.date,
+          });
+        }
       }
     }
 
-    // 8. Auto-mark attendance for matched applicants in info_session stage
+    // Always add Baker staff from Admin Reports (fills gaps if Meet API missed any)
+    for (const p of internalFromReports.values()) {
+      const dedupKey = `${p.email}|${p.date}`;
+      if (seen.has(dedupKey)) continue;
+      seen.add(dedupKey);
+
+      internal.push({
+        name: p.displayName || p.email.split("@")[0],
+        email: p.email,
+        durationMin: Math.round(p.durationSec / 60),
+        date: p.date,
+      });
+    }
+
+    const totalParticipants = matched.length + unmatched.length + internal.length;
+
+    // ── Step 4: Auto-mark attendance ───────────────────────────────────
     let markedCount = 0;
     for (const m of matched) {
       if (m.stage !== "info_session") continue;
@@ -441,13 +501,13 @@ export async function POST(req: NextRequest) {
       if (!error) markedCount++;
     }
 
-    // 9. Save attendance record
-    if (participants.length > 0) {
+    // ── Step 5: Save attendance record ─────────────────────────────────
+    if (totalParticipants > 0) {
       await supa.from("info_session_attendance").insert({
         meeting_code: meetingCode,
         meet_link: meetLink,
         meeting_date: new Date().toISOString().split("T")[0],
-        total_participants: participants.length,
+        total_participants: totalParticipants,
         matched: matched.map((m) => ({ name: m.name, email: m.email, durationMin: Math.round(m.durationSec / 60), stage: m.stage, date: m.date })),
         unmatched: unmatched.map((u) => `${u.name}${u.email ? ` (${u.email})` : ""}`),
         checked_by: auth.email ?? null,
@@ -457,22 +517,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       ok: true,
       meetingCode,
-      totalParticipants: participants.length,
+      totalParticipants,
       matched,
       markedCount,
       unmatched,
       internal,
       _debug: {
         meetLink,
-        spaceName,
-        conferencesFound: conferences.length,
-        signedInResolved: emailMap.size,
-        signedInTotal: signedInUserIds.size,
-        participantsByType: {
-          signedin: participants.filter((p) => p.type === "signedin").length,
-          anonymous: participants.filter((p) => p.type === "anonymous").length,
-          phone: participants.filter((p) => p.type === "phone").length,
-        },
+        meetApi: meetDebug,
+        reportsAttendeeFound: reportsResult?.email ?? null,
+        internalFromReports: internalFromReports.size,
       },
     });
   } catch (err) {
