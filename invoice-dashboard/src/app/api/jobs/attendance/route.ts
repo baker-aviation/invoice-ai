@@ -238,14 +238,52 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `Could not extract meeting code from: ${meetLink}` }, { status: 400 });
   }
 
+  const debugLog: any = { steps: [] };
+
   try {
     // ── Step 1: Admin Reports API to find a known attendee ─────────────
-    // This always works for Baker staff and gives us someone to impersonate
+    debugLog.steps.push("getting_reports_token");
     const reportsToken = await getGoogleAccessToken([
       "https://www.googleapis.com/auth/admin.reports.audit.readonly",
     ]);
+    debugLog.steps.push("got_reports_token");
 
-    const reportsResult = await findAttendeeViaReports(reportsToken, meetingCode);
+    // Inline Reports API call with full debug
+    let reportsResult: { email: string; items: any[] } | null = null;
+    const reportsDebugInline: any = { codeVariants: [meetingCode, meetingCode.replace(/-/g, "")], attempts: [] };
+
+    for (const code of [meetingCode, meetingCode.replace(/-/g, "")]) {
+      const url = new URL("https://admin.googleapis.com/admin/reports/v1/activity/users/all/applications/meet");
+      url.searchParams.set("eventName", "call_ended");
+      url.searchParams.set("filters", `meeting_code==${code}`);
+      url.searchParams.set("maxResults", "200");
+
+      const res = await fetch(url.toString(), {
+        headers: { Authorization: `Bearer ${reportsToken}` },
+      });
+
+      let body: any = null;
+      try { body = await res.json(); } catch {}
+
+      reportsDebugInline.attempts.push({
+        code,
+        status: res.status,
+        ok: res.ok,
+        itemCount: body?.items?.length ?? 0,
+        errorMessage: body?.error?.message ?? null,
+        firstActorEmail: body?.items?.[0]?.actor?.email ?? null,
+      });
+
+      if (res.ok && body?.items?.length > 0) {
+        const firstEmail = body.items[0]?.actor?.email?.toLowerCase();
+        if (firstEmail) {
+          reportsResult = { email: firstEmail, items: body.items };
+          break;
+        }
+      }
+    }
+    debugLog.reports = reportsDebugInline;
+
     const internalFromReports = reportsResult
       ? extractInternalFromReports(reportsResult.items)
       : new Map();
@@ -536,8 +574,7 @@ export async function POST(req: NextRequest) {
         meetLink,
         meetApi: meetDebug,
         reportsAttendeeFound: reportsResult?.email ?? null,
-        reportsDebug: (reportsResult as any)?._debug ?? null,
-        internalFromReports: internalFromReports.size,
+        ...debugLog,
       },
     });
   } catch (err) {
