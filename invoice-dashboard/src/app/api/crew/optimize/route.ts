@@ -7,6 +7,7 @@ import { DEFAULT_AIRPORT_ALIASES } from "@/lib/airportAliases";
 import type { PilotRoute } from "@/lib/pilotRoutes";
 import { detectCurrentRotation } from "@/lib/crewRotationDetect";
 import { getHasdataCacheForOptimizer } from "@/lib/hasdataCache";
+import { loadDriveTimeCache } from "@/lib/driveTime";
 
 const OptimizeRequestSchema = z.object({
   swap_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -268,6 +269,13 @@ export async function POST(req: NextRequest) {
     }
 
     console.log(`[Swap Optimizer] lock_tails: optimizing ${Object.keys(swapAssignments).length} tails, ${lockTailSet.size} locked`);
+  }
+
+  // ── STEP 0.5: Load OSRM drive time cache from Supabase into memory ──
+  const dtStart = Date.now();
+  const dtCount = await loadDriveTimeCache();
+  if (dtCount > 0) {
+    console.log(`[Swap Optimizer] Loaded ${dtCount} OSRM drive times in ${Date.now() - dtStart}ms`);
   }
 
   // ── STEP 1: Load HasData flight cache (Google Flights — sole data source) ──
