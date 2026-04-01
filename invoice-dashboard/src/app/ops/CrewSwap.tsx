@@ -473,8 +473,8 @@ function AssignView({ rows, onAssignCrew, onRecomputeTail, swapDate, standbyPics
   }
 
   // Crew card component
-  function CrewCard({ name, role, homeAirports, aircraftType, fromTail, isSkillbridge }: {
-    name: string; role: "PIC" | "SIC"; homeAirports: string[]; aircraftType: string; fromTail: string | null; isSkillbridge?: boolean;
+  function CrewCard({ name, role, homeAirports, aircraftType, fromTail, isSkillbridge, durationMinutes }: {
+    name: string; role: "PIC" | "SIC"; homeAirports: string[]; aircraftType: string; fromTail: string | null; isSkillbridge?: boolean; durationMinutes?: number | null;
   }) {
     const typeTag = aircraftType === "citation_x" ? "CX" : aircraftType === "challenger" ? "CL" : aircraftType === "dual" ? "DL" : "";
     return (
