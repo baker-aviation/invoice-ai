@@ -123,6 +123,80 @@ function extractNotamDates(rawData: unknown): NotamDates | null {
 }
 
 // ---------------------------------------------------------------------------
+// NOTAM time-relevance: only attach a NOTAM to a flight if the NOTAM's
+// effective period overlaps with ±5 hours of the flight at that airport.
+// ---------------------------------------------------------------------------
+
+const NOTAM_RELEVANCE_HOURS = 5;
+
+/** Parse an ISO or ICAO-compact date string into a timestamp (ms). Returns NaN on failure. */
+function parseNotamTs(s: string | null | undefined): number {
+  if (!s) return NaN;
+  // ICAO compact: YYMMDDHHmm (10 digits)
+  if (/^\d{10}$/.test(s)) {
+    const yr = 2000 + Number(s.slice(0, 2));
+    const mo = Number(s.slice(2, 4)) - 1;
+    const dy = Number(s.slice(4, 6));
+    const hr = Number(s.slice(6, 8));
+    const mn = Number(s.slice(8, 10));
+    return Date.UTC(yr, mo, dy, hr, mn);
+  }
+  return new Date(s).getTime();
+}
+
+/** Try to extract start/end timestamps from NOTAM body text as a fallback. */
+function parseBodyDates(body: string | null): { start: number; end: number } {
+  if (!body) return { start: NaN, end: NaN };
+  // B) 2603011400 C) 2603151800
+  const fromM = body.match(/\bB\)\s*(\d{10})\b/);
+  const toM = body.match(/\bC\)\s*(\d{10})\b/);
+  if (fromM) return { start: parseNotamTs(fromM[1]), end: toM ? parseNotamTs(toM[1]) : NaN };
+  // WEF/TIL
+  const wefM = body.match(/WEF\s+(\d{10})/);
+  const tilM = body.match(/TIL\s+(\d{10})/);
+  if (wefM) return { start: parseNotamTs(wefM[1]), end: tilM ? parseNotamTs(tilM[1]) : NaN };
+  // Domestic: 2603011400-2603151800
+  const domM = body.match(/\b(\d{10})-(\d{10})\b/);
+  if (domM) return { start: parseNotamTs(domM[1]), end: parseNotamTs(domM[2]) };
+  return { start: NaN, end: NaN };
+}
+
+/**
+ * Check if a NOTAM's effective period overlaps with ±NOTAM_RELEVANCE_HOURS
+ * around a flight time. Returns true (show it) if dates can't be determined.
+ */
+function notamOverlapsFlight(alert: OpsAlert, flightTimeIso: string | null): boolean {
+  if (!flightTimeIso) return true; // can't check — show it
+  const flightTs = new Date(flightTimeIso).getTime();
+  if (isNaN(flightTs)) return true;
+
+  const nd = alert.notam_dates;
+  let start = parseNotamTs(nd?.effective_start) || parseNotamTs(nd?.start_date_utc);
+  let end = parseNotamTs(nd?.effective_end) || parseNotamTs(nd?.end_date_utc);
+
+  // Fallback: parse dates from NOTAM body text
+  if (isNaN(start) && isNaN(end)) {
+    const bodyDates = parseBodyDates(alert.body);
+    start = bodyDates.start;
+    end = bodyDates.end;
+  }
+
+  // If we still can't determine dates, show the NOTAM (fail open)
+  if (isNaN(start) && isNaN(end)) return true;
+
+  const buffer = NOTAM_RELEVANCE_HOURS * 3600_000;
+  const windowStart = flightTs - buffer;
+  const windowEnd = flightTs + buffer;
+
+  // NOTAM with only a start date: treat as point-in-time
+  if (isNaN(end)) return start <= windowEnd && start >= windowStart;
+  // NOTAM with only an end date
+  if (isNaN(start)) return end >= windowStart;
+  // Full range: check overlap
+  return start <= windowEnd && end >= windowStart;
+}
+
+// ---------------------------------------------------------------------------
 // Flights — direct Supabase queries to flights + ops_alerts
 // ---------------------------------------------------------------------------
 
@@ -307,15 +381,22 @@ export async function fetchFlights(params: {
     const fid = f.id as string;
     if (!alertsByFlight.has(fid)) alertsByFlight.set(fid, []);
     const flightAlerts = alertsByFlight.get(fid)!;
-    // Attach NOTAMs from departure and arrival airports (dedup by alert ID)
+    // Attach NOTAMs from departure and arrival airports (dedup by alert ID).
+    // Only include NOTAMs whose effective period overlaps ±5h of the flight
+    // at that airport — filters out closures for other days.
     const seen = new Set(flightAlerts.map((a) => a.id));
-    for (const icao of [f.departure_icao as string | null, f.arrival_icao as string | null]) {
+    const depIcao = (f.departure_icao as string | null)?.toUpperCase();
+    const arrIcao = (f.arrival_icao as string | null)?.toUpperCase();
+    for (const [icao, flightTime] of [
+      [depIcao, f.scheduled_departure as string | null],
+      [arrIcao, f.scheduled_arrival as string | null],
+    ] as const) {
       if (!icao) continue;
-      for (const notam of notamAlertsByAirport.get(icao.toUpperCase()) ?? []) {
-        if (!seen.has(notam.id)) {
-          seen.add(notam.id);
-          flightAlerts.push(notam);
-        }
+      for (const notam of notamAlertsByAirport.get(icao) ?? []) {
+        if (seen.has(notam.id)) continue;
+        if (!notamOverlapsFlight(notam, flightTime)) continue;
+        seen.add(notam.id);
+        flightAlerts.push(notam);
       }
     }
   }
