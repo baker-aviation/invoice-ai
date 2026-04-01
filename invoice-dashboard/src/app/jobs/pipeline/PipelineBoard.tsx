@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { JobRow, PipelineStage } from "@/lib/types";
 import { PIPELINE_STAGES } from "@/lib/types";
 
@@ -80,15 +80,32 @@ const CATEGORY_LABELS: Record<string, string> = {
   other: "Other",
 };
 
-function MeetingLinkTool({ storageKey, placeholder, borderColor }: { storageKey: string; placeholder?: string; borderColor?: string }) {
-  const [meetLink, setMeetLink] = useState(() => {
-    try { return localStorage.getItem(storageKey) ?? ""; } catch { return ""; }
-  });
+function MeetingLinkTool({ settingsKey, placeholder, borderColor }: { settingsKey: string; placeholder?: string; borderColor?: string }) {
+  const [meetLink, setMeetLink] = useState("");
   const [copied, setCopied] = useState(false);
+  const [loaded, setLoaded] = useState(false);
 
+  // Load from hiring_settings on mount
+  useEffect(() => {
+    fetch("/api/jobs/settings")
+      .then((r) => r.json())
+      .then((d) => { if (d.settings?.[settingsKey]) setMeetLink(d.settings[settingsKey]); })
+      .catch(() => {})
+      .finally(() => setLoaded(true));
+  }, [settingsKey]);
+
+  const saveTimeout = useRef<NodeJS.Timeout | null>(null);
   const handleChange = (val: string) => {
     setMeetLink(val);
-    try { localStorage.setItem(storageKey, val); } catch {}
+    // Debounced save to hiring_settings
+    if (saveTimeout.current) clearTimeout(saveTimeout.current);
+    saveTimeout.current = setTimeout(() => {
+      fetch("/api/jobs/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: settingsKey, value: val }),
+      }).catch(() => {});
+    }, 1000);
   };
 
   return (
@@ -169,7 +186,11 @@ function InfoSessionTools({ jobs, onAttendanceChecked }: { jobs: JobRow[]; onAtt
 
   const handleCheckAttendance = async () => {
     let meetLink = "";
-    try { meetLink = localStorage.getItem("info_session_meet_link") ?? ""; } catch {}
+    try {
+      const r = await fetch("/api/jobs/settings");
+      const d = await r.json();
+      meetLink = d.settings?.info_session_meet_link ?? "";
+    } catch {}
     if (!meetLink) {
       setAttendanceError("Enter a Google Meet link first");
       return;
@@ -223,7 +244,7 @@ function InfoSessionTools({ jobs, onAttendanceChecked }: { jobs: JobRow[]; onAtt
           {copied ? "Copied!" : `Copy ${emails.length} Email${emails.length !== 1 ? "s" : ""}`}
         </button>
       </div>
-      <MeetingLinkTool storageKey="info_session_meet_link" placeholder="Google Meet link..." />
+      <MeetingLinkTool settingsKey="info_session_meet_link" placeholder="Google Meet link..." />
       <button
         onClick={handleCheckAttendance}
         disabled={checking}
@@ -1199,6 +1220,21 @@ export default function PipelineBoard({
                 : j,
             ),
           );
+        } else {
+          // Update email status if auto-send happened
+          const data = await res.json().catch(() => ({}));
+          if (data.emailResult?.sent) {
+            const now = new Date().toISOString();
+            const statusField = newStage === "info_session" ? "info_session_email_status" : "interview_email_status";
+            const sentField = newStage === "info_session" ? "info_session_email_sent_at" : "interview_email_sent_at";
+            setJobs((prev) =>
+              prev.map((j) =>
+                j.application_id === appId
+                  ? { ...j, [statusField]: "sent", [sentField]: now } as any
+                  : j,
+              ),
+            );
+          }
         }
       } catch {
         // Revert on network error
@@ -1417,7 +1453,7 @@ export default function PipelineBoard({
                   )}
                   {stage === "interview_scheduled" && (
                     <div className="px-3 py-2 border-t border-fuchsia-100">
-                      <MeetingLinkTool storageKey="interview_meet_link" placeholder="Calendly or Meet link..." borderColor="fuchsia" />
+                      <MeetingLinkTool settingsKey="interview_calendly_url" placeholder="Calendly or Meet link..." borderColor="fuchsia" />
                     </div>
                   )}
 
