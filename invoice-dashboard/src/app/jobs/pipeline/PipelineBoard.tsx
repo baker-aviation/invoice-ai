@@ -26,6 +26,7 @@ const STAGE_META: Record<
   },
   tims_review: {
     label: "Tim's Review",
+    subtitle: "Dropping from Info Session sends interest check email",
     color: "border-teal-200",
     headerColor: "bg-teal-100 text-teal-700",
   },
@@ -129,6 +130,22 @@ function MeetingLinkTool({ settingsKey, placeholder, borderColor }: { settingsKe
           {copied ? "Copied!" : "Copy Meet Link"}
         </button>
       )}
+    </div>
+  );
+}
+
+function CollapsibleDateGroup({ dateLabel, count, defaultOpen, children }: { dateLabel: string; count: number; defaultOpen: boolean; children: React.ReactNode }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="border-b border-emerald-100 last:border-b-0">
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full px-2 py-1 font-bold text-emerald-800 bg-emerald-100/50 text-left flex items-center gap-1 hover:bg-emerald-100 transition-colors"
+      >
+        <span className="text-[10px]">{open ? "▾" : "▸"}</span>
+        {dateLabel} <span className="font-normal text-emerald-500">({count})</span>
+      </button>
+      {open && children}
     </div>
   );
 }
@@ -284,15 +301,14 @@ function InfoSessionTools({ jobs, onAttendanceChecked }: { jobs: JobRow[]; onAtt
             <div className="px-2 py-1 font-semibold text-emerald-700 border-b border-emerald-200">
               {attendanceResult.summary} ({attendanceResult.totalParticipants} total)
             </div>
-            {sortedDates.map((date) => {
+            {sortedDates.map((date, dateIdx) => {
               const group = dateMap.get(date)!;
               const dateLabel = date === "unknown" ? "Unknown date" : fmtShortDate(date);
               const count = group.matched.length + group.unmatched.length + group.internal.length;
+              const isLatest = dateIdx === 0;
+              const [expanded, setExpanded] = [isLatest, () => {}]; // latest always open
               return (
-                <div key={date} className="border-b border-emerald-100 last:border-b-0">
-                  <div className="px-2 py-1 font-bold text-emerald-800 bg-emerald-100/50">
-                    {dateLabel} <span className="font-normal text-emerald-500">({count})</span>
-                  </div>
+                <CollapsibleDateGroup key={date} dateLabel={dateLabel} count={count} defaultOpen={isLatest}>
                   {group.matched.length > 0 && (
                     <div className="px-2 py-0.5 space-y-0.5">
                       <div className="font-semibold text-emerald-600">In Pipeline:</div>
@@ -325,7 +341,7 @@ function InfoSessionTools({ jobs, onAttendanceChecked }: { jobs: JobRow[]; onAtt
                       ))}
                     </div>
                   )}
-                </div>
+                </CollapsibleDateGroup>
               );
             })}
           </div>
