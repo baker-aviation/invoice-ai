@@ -632,7 +632,7 @@ export type Country = {
 export type CountryRequirement = {
   id: string;
   country_id: string;
-  requirement_type: "overflight" | "landing" | "customs" | "handling";
+  requirement_type: "overflight" | "landing" | "customs" | "handling" | "note";
   name: string;
   description: string | null;
   required_documents: string[];

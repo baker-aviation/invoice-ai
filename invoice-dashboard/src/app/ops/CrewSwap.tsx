@@ -212,7 +212,6 @@ type SwapPlanResult = {
 type CrewInfoData = {
   bad_pairings: { pic: string; sic: string; severity: string; notes: string }[];
   checkairmen: { name: string; rotation: string; citation_x: boolean; challenger: boolean }[];
-  training_needed: { name: string; indoc: boolean; emergency_drill: boolean }[];
   recurrency_299: { name: string; month: string; needs_299: boolean }[];
   pic_swap_table: { old_pic: string | null; new_pic: string | null; tail: string | null }[];
   crewing_checklist: { assignees: { name: string; tasks: Record<string, boolean | string> }[] } | null;
@@ -474,8 +473,8 @@ function AssignView({ rows, onAssignCrew, onRecomputeTail, swapDate, standbyPics
   }
 
   // Crew card component
-  function CrewCard({ name, role, homeAirports, aircraftType, fromTail, isSkillbridge }: {
-    name: string; role: "PIC" | "SIC"; homeAirports: string[]; aircraftType: string; fromTail: string | null; isSkillbridge?: boolean;
+  function CrewCard({ name, role, homeAirports, aircraftType, fromTail, isSkillbridge, durationMinutes }: {
+    name: string; role: "PIC" | "SIC"; homeAirports: string[]; aircraftType: string; fromTail: string | null; isSkillbridge?: boolean; durationMinutes?: number | null;
   }) {
     const typeTag = aircraftType === "citation_x" ? "CX" : aircraftType === "challenger" ? "CL" : aircraftType === "dual" ? "DL" : "";
     return (
@@ -847,10 +846,14 @@ function SwapSheet({ rows, view, impacts, impactedTails, lockedTails, onLockTail
 }
 
 function SwapSheetByRole({ rows }: { rows: CrewSwapRow[] }) {
-  const oncomingPics = rows.filter((r) => r.direction === "oncoming" && r.role === "PIC");
-  const oncomingSics = rows.filter((r) => r.direction === "oncoming" && r.role === "SIC");
-  const offgoingPics = rows.filter((r) => r.direction === "offgoing" && r.role === "PIC");
-  const offgoingSics = rows.filter((r) => r.direction === "offgoing" && r.role === "SIC");
+  const byArrival = (a: CrewSwapRow, b: CrewSwapRow) =>
+    (a.arrival_time ?? "").localeCompare(b.arrival_time ?? "");
+  const byDeparture = (a: CrewSwapRow, b: CrewSwapRow) =>
+    (a.departure_time ?? "").localeCompare(b.departure_time ?? "");
+  const oncomingPics = rows.filter((r) => r.direction === "oncoming" && r.role === "PIC").sort(byArrival);
+  const oncomingSics = rows.filter((r) => r.direction === "oncoming" && r.role === "SIC").sort(byArrival);
+  const offgoingPics = rows.filter((r) => r.direction === "offgoing" && r.role === "PIC").sort(byDeparture);
+  const offgoingSics = rows.filter((r) => r.direction === "offgoing" && r.role === "SIC").sort(byDeparture);
 
   const SectionHeader = ({ title, count, color }: { title: string; count: number; color: string }) => (
     <tr>
@@ -1548,7 +1551,6 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
 function CrewInfoPanel({ data }: { data: CrewInfoData }) {
   const [showBadPairings, setShowBadPairings] = useState(true);
   const [showCheckairmen, setShowCheckairmen] = useState(false);
-  // training_needed section removed per user request
   const [showChecklist, setShowChecklist] = useState(false);
   const [showCalendar, setShowCalendar] = useState(false);
   const [showPicSwap, setShowPicSwap] = useState(false);
@@ -1657,8 +1659,6 @@ function CrewInfoPanel({ data }: { data: CrewInfoData }) {
           </div>
         ))}
       </CollapsibleSection>
-
-      {/* Training Needed section removed */}
 
       {/* Crewing Checklist */}
       {data.crewing_checklist && data.crewing_checklist.assignees.length > 0 && (
@@ -1853,6 +1853,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
   const [addedTails, setAddedTails] = useState<{ tail: string; type: string; location: string }[]>([]);
   // Required crew pairings (CA + trainee on same tail)
   const [requiredPairings, setRequiredPairings] = useState<{ pic: string; sic: string; reason: string }[]>([]);
+  const [pairingCrewFilter, setPairingCrewFilter] = useState("");
 
   // Review tab: crew overrides
   const [airportOverrides, setAirportOverrides] = useState<Record<string, string>>({}); // crew name → temp airport
@@ -2892,7 +2893,6 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
         setCrewInfoData({
           bad_pairings: data.bad_pairings ?? [],
           checkairmen: data.checkairmen ?? [],
-          training_needed: data.training_needed ?? [],
           recurrency_299: data.recurrency_299 ?? [],
           pic_swap_table: data.pic_swap_table ?? [],
           crewing_checklist: data.crewing_checklist ?? null,
@@ -2927,7 +2927,6 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
         setCrewInfoData({
           bad_pairings: data.bad_pairings ?? [],
           checkairmen: data.checkairmen ?? [],
-          training_needed: data.training_needed ?? [],
           recurrency_299: data.recurrency_299 ?? [],
           pic_swap_table: data.pic_swap_table ?? [],
           crewing_checklist: data.crewing_checklist ?? null,
@@ -2987,7 +2986,6 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
         setCrewInfoData({
           bad_pairings: data.bad_pairings ?? [],
           checkairmen: data.checkairmen ?? [],
-          training_needed: data.training_needed ?? [],
           recurrency_299: data.recurrency_299 ?? [],
           pic_swap_table: data.pic_swap_table ?? [],
           crewing_checklist: data.crewing_checklist ?? null,
@@ -4109,6 +4107,15 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
             <span className="text-[10px] text-gray-400">CA + trainee on same tail (.299, training rides)</span>
           </div>
           <div className="p-4 text-xs space-y-3">
+            {/* Type-to-search filter */}
+            <input
+              type="text"
+              placeholder="Filter crew names..."
+              value={pairingCrewFilter}
+              onChange={(e) => setPairingCrewFilter(e.target.value)}
+              className="w-full text-xs border rounded px-2 py-1.5 bg-white placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-purple-300"
+            />
+
             {/* Existing pairings */}
             {requiredPairings.length > 0 && (
               <div className="space-y-1">
@@ -4134,7 +4141,9 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                   <label className="text-[10px] text-gray-500">Checkairman (PIC)</label>
                   <select id="pairing-pic" className="w-full text-xs border rounded px-2 py-1.5 bg-white">
                     <option value="">Select CA...</option>
-                    {(crewInfoData?.checkairmen ?? []).map((ca) => {
+                    {(crewInfoData?.checkairmen ?? [])
+                      .filter((ca) => !pairingCrewFilter || ca.name.toLowerCase().includes(pairingCrewFilter.toLowerCase()))
+                      .map((ca) => {
                       const typeLabel = ca.citation_x && ca.challenger ? "CX+CL" : ca.citation_x ? "CX" : ca.challenger ? "CL" : "";
                       return <option key={ca.name} value={ca.name}>{ca.name} [{typeLabel}] (Rot {ca.rotation})</option>;
                     })}
@@ -4145,15 +4154,17 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                   <select id="pairing-sic" className="w-full text-xs border rounded px-2 py-1.5 bg-white">
                     <option value="">Select crew...</option>
                     {/* Show crew needing recurrency */}
-                    {(crewInfoData?.recurrency_299 ?? []).length > 0 && (
+                    {(crewInfoData?.recurrency_299 ?? []).filter((r) => !pairingCrewFilter || r.name.toLowerCase().includes(pairingCrewFilter.toLowerCase())).length > 0 && (
                       <optgroup label=".299 Recurrency">
-                        {crewInfoData!.recurrency_299.map((r) => (
+                        {crewInfoData!.recurrency_299
+                          .filter((r) => !pairingCrewFilter || r.name.toLowerCase().includes(pairingCrewFilter.toLowerCase()))
+                          .map((r) => (
                           <option key={`299-${r.name}`} value={r.name}>{r.name} (.299 {r.month})</option>
                         ))}
                       </optgroup>
                     )}
                     <optgroup label="All Crew">
-                      {crew.filter((c) => c.active && c.role === "SIC").map((c) => (
+                      {crew.filter((c) => c.active && c.role === "SIC" && (!pairingCrewFilter || c.name.toLowerCase().includes(pairingCrewFilter.toLowerCase()))).map((c) => (
                         <option key={c.id} value={c.name}>{c.name}</option>
                       ))}
                     </optgroup>
