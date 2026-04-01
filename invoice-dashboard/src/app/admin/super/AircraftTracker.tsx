@@ -586,17 +586,14 @@ export default function AircraftTracker() {
                 >
                   {col.label}
                   {col.key === "location" && (
-                    loadingLocations ? (
-                      <span className="ml-1 inline-block w-3 h-3 border border-zinc-500 border-t-blue-400 rounded-full animate-spin align-middle" />
-                    ) : (
-                      <button
-                        onClick={() => fetchLocations(aircraft)}
-                        className="ml-1 text-zinc-500 hover:text-cyan-400 transition-colors align-middle"
-                        title="Refresh locations"
-                      >
-                        ↻
-                      </button>
-                    )
+                    <button
+                      onClick={() => fetchLocations(aircraft)}
+                      disabled={loadingLocations}
+                      className="ml-2 px-1.5 py-0.5 text-[10px] bg-cyan-900/50 hover:bg-cyan-800/60 text-cyan-400 border border-cyan-800 rounded transition-colors disabled:opacity-50"
+                      title="Fetch locations from FlightAware"
+                    >
+                      {loadingLocations ? "..." : "FA"}
+                    </button>
                   )}
                 </th>
               ))}

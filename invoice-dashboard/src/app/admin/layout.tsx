@@ -16,7 +16,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const pathname = usePathname();
   const isSuper = pathname.startsWith("/admin/super");
   return (
-    <div className={`p-6 mx-auto ${isSuper ? "max-w-6xl" : "max-w-4xl"}`}>
+    <div className={`p-6 mx-auto ${isSuper ? "max-w-full" : "max-w-4xl"}`}>
       <h1 className="text-2xl font-bold text-slate-900 mb-1">Admin</h1>
       <nav className="flex gap-1 mb-6 border-b border-gray-200">
         {ADMIN_NAV.map((item) => {
