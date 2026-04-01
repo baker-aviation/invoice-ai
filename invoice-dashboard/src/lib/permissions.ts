@@ -16,6 +16,8 @@ export const SECTIONS = [
   { key: "vehicles", label: "Vehicles", paths: ["/vehicles"] },
   { key: "fees", label: "Fees", paths: ["/fees"] },
   { key: "pilots", label: "Pilots", paths: ["/pilots"] },
+  { key: "aircraft", label: "Aircraft", paths: ["/aircraft"] },
+  { key: "jetinsight", label: "JetInsight", paths: ["/jetinsight"] },
 ] as const;
 
 export type SectionKey = (typeof SECTIONS)[number]["key"];

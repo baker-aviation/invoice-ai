@@ -1,8 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import type { PilotProfile, OnboardingItem } from "@/lib/types";
+import type { JetInsightDocument } from "@/lib/jetinsight/types";
+
+type Tab = "profile" | "onboarding" | "compliance";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -95,11 +98,102 @@ function ChecklistItem({
 }
 
 // ---------------------------------------------------------------------------
+// Compliance Docs Tab
+// ---------------------------------------------------------------------------
+
+function ComplianceDocsTab({ pilotId }: { pilotId: number }) {
+  const [docs, setDocs] = useState<JetInsightDocument[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch(`/api/jetinsight/documents?entity_type=crew&entity_id=${pilotId}`)
+      .then((r) => r.json())
+      .then((d) => setDocs(d.documents ?? []))
+      .finally(() => setLoading(false));
+  }, [pilotId]);
+
+  if (loading)
+    return <p className="py-4 text-sm text-gray-500">Loading compliance documents...</p>;
+
+  if (docs.length === 0)
+    return (
+      <div className="py-8 text-center text-gray-400">
+        <p>No compliance documents synced yet.</p>
+        <p className="mt-1 text-xs">
+          Sync documents from the JetInsight tab.
+        </p>
+      </div>
+    );
+
+  // Group by category
+  const grouped = new Map<string, JetInsightDocument[]>();
+  for (const d of docs) {
+    const key = d.category;
+    const arr = grouped.get(key) ?? [];
+    arr.push(d);
+    grouped.set(key, arr);
+  }
+
+  return (
+    <div className="space-y-4">
+      {[...grouped.entries()].map(([category, categoryDocs]) => (
+        <div key={category}>
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">
+            {category}
+          </h3>
+          <div className="space-y-1">
+            {categoryDocs.map((d) => (
+              <div
+                key={d.id}
+                className="flex items-center justify-between rounded-md border border-gray-100 px-3 py-2"
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium text-gray-900">
+                    {d.document_name}
+                  </p>
+                  <div className="flex items-center gap-2 text-xs text-gray-500">
+                    {d.subcategory && <span>{d.subcategory}</span>}
+                    {d.aircraft_type && (
+                      <span className="rounded bg-gray-100 px-1.5 py-0.5 text-xs">
+                        {d.aircraft_type}
+                      </span>
+                    )}
+                    {d.uploaded_on && (
+                      <span>
+                        Uploaded: {new Date(d.uploaded_on).toLocaleDateString()}
+                      </span>
+                    )}
+                    {d.size_bytes && (
+                      <span>{Math.round(d.size_bytes / 1024)} KB</span>
+                    )}
+                  </div>
+                </div>
+                {d.signed_url && (
+                  <a
+                    href={d.signed_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="ml-3 flex-shrink-0 rounded-md bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100"
+                  >
+                    Download
+                  </a>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main Component
 // ---------------------------------------------------------------------------
 
 export default function PilotDetailClient({ pilot: initialPilot }: { pilot: PilotProfile }) {
   const [pilot, setPilot] = useState(initialPilot);
+  const [activeTab, setActiveTab] = useState<Tab>("profile");
   const items = pilot.onboarding_items ?? [];
   const sicItems = items.filter((i) => i.required_for === "all");
   const picItems = items.filter((i) => i.required_for === "pic_only");
@@ -124,25 +218,48 @@ export default function PilotDetailClient({ pilot: initialPilot }: { pilot: Pilo
   const pct = prog.total === 0 ? 0 : Math.round((prog.completed / prog.total) * 100);
 
   return (
-    <div className="p-4 sm:p-6 max-w-4xl">
+    <div className="p-4 sm:p-6 max-w-5xl">
       <Link href="/pilots" className="text-sm text-blue-600 hover:underline mb-4 inline-block">
         &larr; Back to Pilots
       </Link>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Profile Info */}
-        <div className="bg-white rounded-xl border shadow-sm p-5">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-base font-semibold">Profile</h2>
-            <div className="flex gap-2">
-              <Badge label={pilot.role} color={pilot.role === "PIC" ? "blue" : "gray"} />
-              {pilot.available_to_fly ? (
-                <Badge label="Available" color="green" />
-              ) : (
-                <Badge label="Onboarding" color="yellow" />
-              )}
-            </div>
-          </div>
+      {/* Header */}
+      <div className="mb-6 flex items-center gap-3">
+        <h1 className="text-xl font-bold text-gray-900">{pilot.full_name}</h1>
+        <Badge label={pilot.role} color={pilot.role === "PIC" ? "blue" : "gray"} />
+        {pilot.available_to_fly ? (
+          <Badge label="Available" color="green" />
+        ) : (
+          <Badge label="Onboarding" color="yellow" />
+        )}
+      </div>
+
+      {/* Tab bar */}
+      <div className="mb-6 flex gap-1 rounded-lg bg-slate-100 p-1">
+        {(
+          [
+            { key: "profile", label: "Profile" },
+            { key: "onboarding", label: `Onboarding (${pct}%)` },
+            { key: "compliance", label: "Compliance Docs" },
+          ] as { key: Tab; label: string }[]
+        ).map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setActiveTab(t.key)}
+            className={`rounded-md px-4 py-2 text-sm font-medium transition-colors ${
+              activeTab === t.key
+                ? "bg-white text-slate-900 shadow-sm"
+                : "text-slate-600 hover:text-slate-900"
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Profile tab */}
+      {activeTab === "profile" && (
+        <div className="bg-white rounded-xl border shadow-sm p-5 max-w-lg">
           <InfoRow label="Email" value={pilot.email} />
           <InfoRow label="Phone" value={pilot.phone} />
           <InfoRow label="Employee ID" value={pilot.employee_id} />
@@ -153,14 +270,11 @@ export default function PilotDetailClient({ pilot: initialPilot }: { pilot: Pilo
           <InfoRow label="Medical Expiry" value={pilot.medical_expiry} />
           <InfoRow label="Passport Expiry" value={pilot.passport_expiry} />
         </div>
+      )}
 
-        {/* Onboarding Checklist */}
-        <div className="bg-white rounded-xl border shadow-sm p-5">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-base font-semibold">Onboarding Checklist</h2>
-            <span className="text-sm text-gray-500">{pct}% complete</span>
-          </div>
-
+      {/* Onboarding tab */}
+      {activeTab === "onboarding" && (
+        <div className="bg-white rounded-xl border shadow-sm p-5 max-w-lg">
           {/* Progress bar */}
           <div className="h-2 bg-gray-200 rounded-full overflow-hidden mb-4">
             <div
@@ -169,7 +283,6 @@ export default function PilotDetailClient({ pilot: initialPilot }: { pilot: Pilo
             />
           </div>
 
-          {/* SIC Items */}
           {sicItems.length > 0 && (
             <div className="mb-4">
               <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
@@ -186,7 +299,6 @@ export default function PilotDetailClient({ pilot: initialPilot }: { pilot: Pilo
             </div>
           )}
 
-          {/* PIC-only Items */}
           {picItems.length > 0 && (
             <div>
               <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
@@ -207,7 +319,14 @@ export default function PilotDetailClient({ pilot: initialPilot }: { pilot: Pilo
             <div className="text-center text-gray-400 py-4">No onboarding items.</div>
           )}
         </div>
-      </div>
+      )}
+
+      {/* Compliance docs tab */}
+      {activeTab === "compliance" && (
+        <div className="bg-white rounded-xl border shadow-sm p-5">
+          <ComplianceDocsTab pilotId={pilot.id} />
+        </div>
+      )}
     </div>
   );
 }
