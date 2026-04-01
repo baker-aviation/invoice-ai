@@ -3682,7 +3682,7 @@ export function twoPassAssignAndOptimize(params: {
 
   // ── Improvement 4: Missing flight pairs diagnostic ──────────────────────
   // For still-unsolved oncoming crew, identify specific flight cache gaps
-  const stillUnsolved = finalResult.rows.filter((r) => r.travel_type === "none" && r.direction === "oncoming");
+  const stillUnsolved = finalResult.rows.filter((r) => r.travel_type === "none");
   if (stillUnsolved.length > 0) {
     const missingPairs: { origin: string; destination: string; crew: string; tail: string }[] = [];
     for (const row of stillUnsolved) {
@@ -3703,7 +3703,13 @@ export function twoPassAssignAndOptimize(params: {
           for (const comm of comms) {
             const commIata = comm.length === 4 && comm.startsWith("K") ? comm.substring(1) : comm;
             if (homeIata !== commIata) {
-              missingPairs.push({ origin: homeIata, destination: commIata, crew: row.name, tail: row.tail_number });
+              if (row.direction === "offgoing") {
+                // Offgoing: swap → home (crew needs to get home after the swap)
+                missingPairs.push({ origin: commIata, destination: homeIata, crew: row.name, tail: row.tail_number });
+              } else {
+                // Oncoming: home → swap (crew needs to get to the swap point)
+                missingPairs.push({ origin: homeIata, destination: commIata, crew: row.name, tail: row.tail_number });
+              }
             }
           }
         }
@@ -3718,7 +3724,7 @@ export function twoPassAssignAndOptimize(params: {
       return true;
     });
     if (finalResult.missing_flight_pairs.length > 0) {
-      console.log(`[FlightGaps] ${finalResult.missing_flight_pairs.length} missing flight pairs identified for ${stillUnsolved.length} unsolved oncoming crew`);
+      console.log(`[FlightGaps] ${finalResult.missing_flight_pairs.length} missing flight pairs identified for ${stillUnsolved.length} unsolved crew`);
     }
   }
 
