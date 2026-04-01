@@ -1047,7 +1047,6 @@ function turnBadgeClass(label: string): string {
 // Slack share modal for a van's schedule
 // ---------------------------------------------------------------------------
 
-type SlackChannel = { id: string; name: string };
 /** Build Slack-ready item payloads from VanFlightItems. Used by single share and bulk share. */
 function buildSlackItems(items: VanFlightItem[], flightInfoMap: Map<string, FlightInfoEntry>, fboMap?: Record<string, string>, mxNotesByTail?: Map<string, MxNote[]>, viewDate?: string) {
   return items.map((item) => {
@@ -1127,7 +1126,7 @@ function buildSlackItems(items: VanFlightItem[], flightInfoMap: Map<string, Flig
   });
 }
 
-type SlackShareState = "idle" | "loading-channels" | "picking" | "sending" | "success" | "error";
+type SlackShareState = "idle" | "sending" | "success" | "error";
 
 function SlackShareModal({
   vanName,
@@ -1150,69 +1149,47 @@ function SlackShareModal({
   mxNotesByTail?: Map<string, MxNote[]>;
   onClose: () => void;
 }) {
-  const [state, setState] = useState<SlackShareState>("loading-channels");
-  const [channels, setChannels] = useState<SlackChannel[]>([]);
+  const [state, setState] = useState<SlackShareState>("sending");
   const [error, setError] = useState<string | null>(null);
-  const [search, setSearch] = useState("");
 
   useEffect(() => {
-    async function loadChannels() {
+    async function send() {
       try {
-        const res = await fetch("/api/vans/share-slack");
+        const payload = {
+          date,
+          vans: [{
+            vanName,
+            vanId,
+            homeAirport,
+            items: buildSlackItems(items, flightInfoMap, fboMap, mxNotesByTail, date),
+          }],
+        };
+        const res = await fetch("/api/vans/share-slack-bulk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
         const data = await res.json();
-        if (!data.ok) {
-          setError(data.error ?? "Failed to load channels");
+        if (data.ok) {
+          setState("success");
+          setTimeout(onClose, 1500);
+        } else {
+          setError(data.error ?? "Failed to share");
           setState("error");
-          return;
         }
-        setChannels(data.channels);
-        setState("picking");
       } catch (e) {
         setError(String(e));
         setState("error");
       }
     }
-    loadChannels();
+    send();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  async function handleShare(channel: SlackChannel) {
-    setState("sending");
-    try {
-      const payload = {
-        channel: channel.id,
-        vanName,
-        vanId,
-        homeAirport,
-        date,
-        items: buildSlackItems(items, flightInfoMap, fboMap, mxNotesByTail, date),
-      };
-      const res = await fetch("/api/vans/share-slack", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const data = await res.json();
-      if (data.ok) {
-        setState("success");
-        setTimeout(onClose, 1500);
-      } else {
-        setError(data.error ?? "Failed to share");
-        setState("error");
-      }
-    } catch (e) {
-      setError(String(e));
-      setState("error");
-    }
-  }
-
-  const filtered = channels.filter((c) =>
-    c.name.toLowerCase().includes(search.toLowerCase())
-  );
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
       <div
-        className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4 overflow-hidden"
+        className="bg-white rounded-xl shadow-xl w-full max-w-sm mx-4 overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="px-4 py-3 border-b flex items-center justify-between">
@@ -1220,44 +1197,10 @@ function SlackShareModal({
           <button onClick={onClose} className="text-gray-400 hover:text-gray-700 text-lg leading-none">&times;</button>
         </div>
 
-        {state === "loading-channels" && (
-          <div className="px-4 py-8 text-center text-sm text-gray-400 animate-pulse">Loading Slack channels...</div>
-        )}
-
         {state === "error" && (
           <div className="px-4 py-6 text-center space-y-2">
             <div className="text-sm text-red-600">{error}</div>
             <button onClick={onClose} className="text-xs text-gray-500 hover:underline">Close</button>
-          </div>
-        )}
-
-        {state === "picking" && (
-          <div className="max-h-80 overflow-y-auto">
-            <div className="px-4 py-2 sticky top-0 bg-white border-b">
-              <input
-                type="text"
-                placeholder="Search channels..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="w-full text-sm border rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-300"
-              />
-            </div>
-            {filtered.length === 0 ? (
-              <div className="px-4 py-6 text-sm text-gray-400 text-center">No channels found</div>
-            ) : (
-              <div className="divide-y">
-                {filtered.map((ch) => (
-                  <button
-                    key={ch.id}
-                    onClick={() => handleShare(ch)}
-                    className="w-full px-4 py-2.5 text-left text-sm hover:bg-blue-50 transition-colors flex items-center gap-2"
-                  >
-                    <span className="text-gray-400">#</span>
-                    <span className="font-medium text-gray-700">{ch.name}</span>
-                  </button>
-                ))}
-              </div>
-            )}
           </div>
         )}
 
