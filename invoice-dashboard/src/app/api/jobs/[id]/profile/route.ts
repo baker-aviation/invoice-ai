@@ -110,6 +110,15 @@ export async function PATCH(
     update.info_session_attended_at = body.info_session_attended_at ?? null;
   }
 
+  // Interview email status
+  if ("interview_email_status" in body) {
+    const validStatuses = ["unknown", "sent", "not_sent"];
+    if (body.interview_email_status !== null && (typeof body.interview_email_status !== "string" || !validStatuses.includes(body.interview_email_status))) {
+      return NextResponse.json({ error: "Invalid interview_email_status" }, { status: 400 });
+    }
+    update.interview_email_status = body.interview_email_status ?? null;
+  }
+
   // Structured notes
   if ("structured_notes" in body) {
     const sn = body.structured_notes;

@@ -10,6 +10,8 @@ import ProfileEditor from "./ProfileEditor";
 import ReviewBadge from "./ReviewBadge";
 import HrReviewedBadge from "./HrReviewedBadge";
 import PushToScreeningButton from "./PushToScreeningButton";
+import NextStepButton from "./NextStepButton";
+import InlineNotes from "./InlineNotes";
 import OfferPreview from "./OfferPreview";
 
 function fmtDate(s: any) {
@@ -181,6 +183,10 @@ export default async function JobDetailPage({
                   applicationId={Number(applicationId)}
                   initialHrReviewed={!!job?.hr_reviewed}
                 />
+                <NextStepButton
+                  applicationId={Number(applicationId)}
+                  currentStage={job?.pipeline_stage ?? null}
+                />
                 <PushToScreeningButton
                   applicationId={Number(applicationId)}
                   currentStage={job?.pipeline_stage ?? null}
@@ -281,38 +287,13 @@ export default async function JobDetailPage({
                 </div>
               ) : null}
 
-              {/* Structured notes display (read-only) */}
-              {job?.structured_notes && Object.values(job.structured_notes).some(Boolean) && (
-                <div className="md:col-span-4 mt-2 space-y-2">
-                  <div className="text-sm font-semibold text-gray-700">Review Notes</div>
-                  <div className="grid gap-2 md:grid-cols-2">
-                    {job.structured_notes.hr_notes && (
-                      <div className="rounded border border-blue-100 bg-blue-50/40 border-l-4 border-l-blue-300 p-2">
-                        <div className="text-xs font-medium text-gray-500">HR Notes</div>
-                        <div className="mt-1 text-sm whitespace-pre-wrap">{job.structured_notes.hr_notes}</div>
-                      </div>
-                    )}
-                    {job.structured_notes.prd_review_notes && (
-                      <div className="rounded border border-blue-100 bg-blue-50/40 border-l-4 border-l-blue-300 p-2">
-                        <div className="text-xs font-medium text-gray-500">PRD Review Notes</div>
-                        <div className="mt-1 text-sm whitespace-pre-wrap">{job.structured_notes.prd_review_notes}</div>
-                      </div>
-                    )}
-                    {job.structured_notes.tims_notes && (
-                      <div className="rounded border border-blue-100 bg-blue-50/40 border-l-4 border-l-blue-300 p-2">
-                        <div className="text-xs font-medium text-gray-500">Tim&apos;s Notes</div>
-                        <div className="mt-1 text-sm whitespace-pre-wrap">{job.structured_notes.tims_notes}</div>
-                      </div>
-                    )}
-                    {job.structured_notes.chief_pilot_notes && (
-                      <div className="rounded border border-blue-100 bg-blue-50/40 border-l-4 border-l-blue-300 p-2">
-                        <div className="text-xs font-medium text-gray-500">Chief Pilot Notes</div>
-                        <div className="mt-1 text-sm whitespace-pre-wrap">{job.structured_notes.chief_pilot_notes}</div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
+              {/* Inline editable review notes */}
+              <div className="md:col-span-4 mt-2">
+                <InlineNotes
+                  applicationId={Number(applicationId)}
+                  initialNotes={job?.structured_notes ?? null}
+                />
+              </div>
             </div>
 
             {/* Profile editor (edit/reject/delete actions) */}

@@ -11,13 +11,8 @@ import { PIPELINE_STAGES } from "@/lib/types";
 
 const STAGE_META: Record<
   PipelineStage,
-  { label: string; color: string; headerColor: string }
+  { label: string; subtitle?: string; color: string; headerColor: string }
 > = {
-  prd_faa_review: {
-    label: "Pending PRD Upload",
-    color: "border-orange-200",
-    headerColor: "bg-orange-100 text-orange-700",
-  },
   chief_pilot_review: {
     label: "Chief Pilot Review",
     color: "border-red-200",
@@ -38,13 +33,14 @@ const STAGE_META: Record<
     color: "border-teal-200",
     headerColor: "bg-teal-100 text-teal-700",
   },
-  interview_pre: {
-    label: "Need to Schedule Interview",
-    color: "border-violet-200",
-    headerColor: "bg-violet-100 text-violet-700",
+  prd_faa_review: {
+    label: "PRD / FAA Review",
+    color: "border-orange-200",
+    headerColor: "bg-orange-100 text-orange-700",
   },
   interview_scheduled: {
     label: "Scheduled for Interview",
+    subtitle: "Dropping here will send scheduling email",
     color: "border-fuchsia-200",
     headerColor: "bg-fuchsia-100 text-fuchsia-700",
   },
@@ -813,6 +809,52 @@ function SendInterviewEmailButton({ job }: { job: JobRow }) {
   );
 }
 
+function InterviewEmailStatusDropdown({ job }: { job: JobRow }) {
+  const [status, setStatus] = useState<string>(job.interview_email_status ?? "unknown");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  async function handleChange(newStatus: string) {
+    setStatus(newStatus);
+    setSaving(true);
+    setSaved(false);
+    try {
+      await fetch(`/api/jobs/${job.application_id}/profile`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ interview_email_status: newStatus }),
+      });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch {} finally {
+      setSaving(false);
+    }
+  }
+
+  const colors: Record<string, string> = {
+    unknown: "bg-gray-50 text-gray-500 border-gray-200",
+    sent: "bg-emerald-50 text-emerald-700 border-emerald-200",
+    not_sent: "bg-amber-50 text-amber-700 border-amber-200",
+  };
+
+  return (
+    <div className="mt-2 flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+      <select
+        value={status}
+        onChange={(e) => handleChange(e.target.value)}
+        disabled={saving}
+        className={`text-[10px] font-medium rounded border px-1.5 py-0.5 ${colors[status] ?? colors.unknown} cursor-pointer`}
+      >
+        <option value="unknown">Email: Unknown</option>
+        <option value="sent">Email: Sent</option>
+        <option value="not_sent">Email: Not Sent</option>
+      </select>
+      {saving && <span className="text-[9px] text-gray-400">saving...</span>}
+      {saved && <span className="text-[9px] text-emerald-500">saved</span>}
+    </div>
+  );
+}
+
 function SendInfoSessionEmailButton({ job }: { job: JobRow }) {
   const [sending, setSending] = useState(false);
   const [sentAt, setSentAt] = useState<string | null>((job as any).info_session_email_sent_at ?? null);
@@ -973,11 +1015,9 @@ function CandidateCard({
         </div>
       )}
 
-      {/* Interview scheduling email button */}
-      {stage === "interview_pre" && (
-        <div className="mt-2">
-          <SendInterviewEmailButton job={job} />
-        </div>
+      {/* Interview email status dropdown */}
+      {stage === "interview_scheduled" && (
+        <InterviewEmailStatusDropdown job={job} />
       )}
 
       {/* Info session email button */}
@@ -1355,6 +1395,11 @@ export default function PipelineBoard({
                   </>
                 )}
               </button>
+              {!isCollapsed && meta.subtitle && (
+                <div className="px-2 py-0.5 text-[9px] text-amber-600 bg-amber-50 border-b border-amber-200 text-center font-medium">
+                  {meta.subtitle}
+                </div>
+              )}
 
               {!isCollapsed && (
                 <>
