@@ -1861,6 +1861,7 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
   // Required crew pairings (CA + trainee on same tail)
   const [requiredPairings, setRequiredPairings] = useState<{ pic: string; sic: string; reason: string }[]>([]);
   const [pairingCrewFilter, setPairingCrewFilter] = useState("");
+  const [batchPairingSics, setBatchPairingSics] = useState<Set<string>>(new Set());
 
   // Review tab: crew overrides
   const [airportOverrides, setAirportOverrides] = useState<Record<string, string>>({}); // crew name → temp airport
@@ -4143,66 +4144,119 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
             {/* Add new pairing */}
             <div className="border rounded p-3 bg-gray-50">
               <div className="text-[10px] font-bold text-gray-500 uppercase mb-2">Add Pairing</div>
-              <div className="grid grid-cols-3 gap-2">
-                <div>
-                  <label className="text-[10px] text-gray-500">Checkairman (PIC)</label>
-                  <select id="pairing-pic" className="w-full text-xs border rounded px-2 py-1.5 bg-white">
-                    <option value="">Select CA...</option>
-                    {(crewInfoData?.checkairmen ?? [])
-                      .filter((ca) => !pairingCrewFilter || ca.name.toLowerCase().includes(pairingCrewFilter.toLowerCase()))
-                      .map((ca) => {
-                      const typeLabel = ca.citation_x && ca.challenger ? "CX+CL" : ca.citation_x ? "CX" : ca.challenger ? "CL" : "";
-                      return <option key={ca.name} value={ca.name}>{ca.name} [{typeLabel}] (Rot {ca.rotation})</option>;
-                    })}
-                  </select>
-                </div>
-                <div>
-                  <label className="text-[10px] text-gray-500">Trainee (SIC)</label>
-                  <select id="pairing-sic" className="w-full text-xs border rounded px-2 py-1.5 bg-white">
-                    <option value="">Select crew...</option>
-                    {/* Show crew needing recurrency */}
-                    {(crewInfoData?.recurrency_299 ?? []).filter((r) => !pairingCrewFilter || r.name.toLowerCase().includes(pairingCrewFilter.toLowerCase())).length > 0 && (
-                      <optgroup label=".299 Recurrency">
-                        {crewInfoData!.recurrency_299
-                          .filter((r) => !pairingCrewFilter || r.name.toLowerCase().includes(pairingCrewFilter.toLowerCase()))
-                          .map((r) => (
-                          <option key={`299-${r.name}`} value={r.name}>{r.name} (.299 {r.month})</option>
-                        ))}
-                      </optgroup>
-                    )}
-                    <optgroup label="All Crew">
-                      {crew.filter((c) => c.active && c.role === "SIC" && (!pairingCrewFilter || c.name.toLowerCase().includes(pairingCrewFilter.toLowerCase()))).map((c) => (
-                        <option key={c.id} value={c.name}>{c.name}</option>
-                      ))}
-                    </optgroup>
-                  </select>
-                </div>
-                <div>
-                  <label className="text-[10px] text-gray-500">Reason</label>
-                  <div className="flex gap-1">
-                    <select id="pairing-reason" className="flex-1 text-xs border rounded px-2 py-1.5 bg-white">
+              <div className="space-y-2">
+                {/* Row 1: PIC + Reason */}
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] text-gray-500">Checkairman (PIC)</label>
+                    <select id="pairing-pic" className="w-full text-xs border rounded px-2 py-1.5 bg-white">
+                      <option value="">Select CA...</option>
+                      {(crewInfoData?.checkairmen ?? [])
+                        .filter((ca) => !pairingCrewFilter || ca.name.toLowerCase().includes(pairingCrewFilter.toLowerCase()))
+                        .map((ca) => {
+                        const typeLabel = ca.citation_x && ca.challenger ? "CX+CL" : ca.citation_x ? "CX" : ca.challenger ? "CL" : "";
+                        return <option key={ca.name} value={ca.name}>{ca.name} [{typeLabel}] (Rot {ca.rotation})</option>;
+                      })}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-gray-500">Reason</label>
+                    <select id="pairing-reason" className="w-full text-xs border rounded px-2 py-1.5 bg-white">
                       <option value=".299 check ride">.299 Check Ride</option>
                       <option value="INDOC training">INDOC Training</option>
                       <option value="Emergency drill">Emergency Drill</option>
                       <option value="Line check">Line Check</option>
                       <option value="Other">Other</option>
                     </select>
-                    <button
-                      onClick={() => {
-                        const pic = (document.getElementById("pairing-pic") as HTMLSelectElement)?.value;
-                        const sic = (document.getElementById("pairing-sic") as HTMLSelectElement)?.value;
-                        const reason = (document.getElementById("pairing-reason") as HTMLSelectElement)?.value;
-                        if (pic && sic) {
-                          setRequiredPairings((prev) => [...prev, { pic, sic, reason }]);
-                          (document.getElementById("pairing-pic") as HTMLSelectElement).value = "";
-                          (document.getElementById("pairing-sic") as HTMLSelectElement).value = "";
-                        }
-                      }}
-                      className="px-3 py-1.5 text-xs font-medium rounded bg-purple-100 text-purple-700 hover:bg-purple-200"
-                    >
-                      Add
-                    </button>
                   </div>
+                </div>
+
+                {/* Row 2: SIC selection — checkbox list for multi-select */}
+                <div>
+                  <label className="text-[10px] text-gray-500 mb-1 block">
+                    Trainee(s) (SIC) — check one or more
+                    {batchPairingSics.size > 0 && (
+                      <span className="ml-1 text-purple-600 font-medium">({batchPairingSics.size} selected)</span>
+                    )}
+                  </label>
+                  <div className="border rounded bg-white max-h-36 overflow-y-auto">
+                    {/* .299 Recurrency crew first */}
+                    {(crewInfoData?.recurrency_299 ?? []).filter((r) => !pairingCrewFilter || r.name.toLowerCase().includes(pairingCrewFilter.toLowerCase())).length > 0 && (
+                      <>
+                        <div className="text-[9px] font-bold text-orange-600 uppercase px-2 pt-1.5 pb-0.5 bg-orange-50 sticky top-0">.299 Recurrency</div>
+                        {crewInfoData!.recurrency_299
+                          .filter((r) => !pairingCrewFilter || r.name.toLowerCase().includes(pairingCrewFilter.toLowerCase()))
+                          .map((r) => (
+                          <label key={`299-${r.name}`} className="flex items-center gap-2 px-2 py-1 hover:bg-purple-50 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={batchPairingSics.has(r.name)}
+                              onChange={(e) => {
+                                setBatchPairingSics((prev) => {
+                                  const next = new Set(prev);
+                                  if (e.target.checked) next.add(r.name); else next.delete(r.name);
+                                  return next;
+                                });
+                              }}
+                              className="rounded border-gray-300 text-purple-600 focus:ring-purple-500"
+                            />
+                            <span className="text-xs">{r.name}</span>
+                            <span className="text-[9px] text-orange-500">(.299 {r.month})</span>
+                          </label>
+                        ))}
+                      </>
+                    )}
+                    {/* All SIC crew */}
+                    <div className="text-[9px] font-bold text-gray-500 uppercase px-2 pt-1.5 pb-0.5 bg-gray-50 sticky top-0">All SIC Crew</div>
+                    {crew.filter((c) => c.active && c.role === "SIC" && (!pairingCrewFilter || c.name.toLowerCase().includes(pairingCrewFilter.toLowerCase()))).map((c) => (
+                      <label key={c.id} className="flex items-center gap-2 px-2 py-1 hover:bg-purple-50 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={batchPairingSics.has(c.name)}
+                          onChange={(e) => {
+                            setBatchPairingSics((prev) => {
+                              const next = new Set(prev);
+                              if (e.target.checked) next.add(c.name); else next.delete(c.name);
+                              return next;
+                            });
+                          }}
+                          className="rounded border-gray-300 text-purple-600 focus:ring-purple-500"
+                        />
+                        <span className="text-xs">{c.name}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Action buttons */}
+                <div className="flex gap-2 justify-end">
+                  {batchPairingSics.size > 0 && (
+                    <button
+                      onClick={() => setBatchPairingSics(new Set())}
+                      className="px-2 py-1.5 text-xs rounded text-gray-500 hover:text-gray-700 hover:bg-gray-200"
+                    >
+                      Clear
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      const pic = (document.getElementById("pairing-pic") as HTMLSelectElement)?.value;
+                      const reason = (document.getElementById("pairing-reason") as HTMLSelectElement)?.value;
+                      if (!pic || batchPairingSics.size === 0) return;
+                      const newPairings = Array.from(batchPairingSics).map((sic) => ({ pic, sic, reason }));
+                      setRequiredPairings((prev) => [...prev, ...newPairings]);
+                      setBatchPairingSics(new Set());
+                      (document.getElementById("pairing-pic") as HTMLSelectElement).value = "";
+                    }}
+                    disabled={batchPairingSics.size === 0}
+                    className={`px-3 py-1.5 text-xs font-medium rounded ${
+                      batchPairingSics.size > 0
+                        ? "bg-purple-100 text-purple-700 hover:bg-purple-200"
+                        : "bg-gray-100 text-gray-400 cursor-not-allowed"
+                    }`}
+                  >
+                    {batchPairingSics.size > 1 ? `Pair All Selected (${batchPairingSics.size})` : "Add Pairing"}
+                  </button>
                 </div>
               </div>
             </div>
