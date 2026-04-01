@@ -235,7 +235,13 @@ export default function AircraftTracker() {
 
   const startEdit = (id: string, field: EditableField, currentValue: string | null) => {
     setEditCell({ id, field });
-    setEditValue(currentValue ?? "");
+    // Normalize casing to match dropdown options so controlled value matches an <option>
+    let val = currentValue ?? "";
+    if (YES_NO_FIELDS.has(field) && val) {
+      const match = YES_NO_OPTIONS.find((o) => o.toLowerCase() === val.toLowerCase());
+      if (match) val = match;
+    }
+    setEditValue(val);
     setTimeout(() => editRef.current?.focus(), 0);
   };
 
