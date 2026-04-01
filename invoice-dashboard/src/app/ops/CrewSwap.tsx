@@ -1102,7 +1102,24 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                     const isDifferent = crewSwapLoc !== swapLoc;
                     // PIC can swap anywhere, SIC only at SIC-eligible points
                     const availablePts = role === "PIC" ? allPts : allPts;
-                    if (availablePts.length > 1 && onChangeTransport) {
+                    // Extract repo/positioning leg airports for manual override
+                    const crewRepoAirports: string[] = [];
+                    if (flights && selectedWed) {
+                      const wedStr = selectedWed.toISOString().slice(0, 10);
+                      const tailFlights = flights.filter((f) => f.tail_number === tail && f.scheduled_departure?.startsWith(wedStr));
+                      const repoSet = new Set<string>();
+                      for (const f of tailFlights) {
+                        if (!isLiveFlightType(f.flight_type)) {
+                          const depIata = f.departure_icao?.length === 4 && f.departure_icao.startsWith("K") ? f.departure_icao.slice(1) : f.departure_icao;
+                          const arrIata = f.arrival_icao?.length === 4 && f.arrival_icao.startsWith("K") ? f.arrival_icao.slice(1) : f.arrival_icao;
+                          if (depIata && !availablePts.includes(depIata)) repoSet.add(depIata);
+                          if (arrIata && !availablePts.includes(arrIata)) repoSet.add(arrIata);
+                        }
+                      }
+                      crewRepoAirports.push(...repoSet);
+                    }
+                    const totalCrewOptions = availablePts.length + crewRepoAirports.length;
+                    if (totalCrewOptions > 1 && onChangeTransport) {
                       return (
                         <select
                           className={`text-[9px] border rounded px-1 py-0.5 font-mono ${
@@ -1123,6 +1140,9 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                         >
                           {availablePts.map((pt) => (
                             <option key={pt} value={pt}>@ {pt}</option>
+                          ))}
+                          {crewRepoAirports.map((pt) => (
+                            <option key={`repo-${pt}`} value={pt} className="text-gray-400">@ {pt} (repo)</option>
                           ))}
                         </select>
                       );
@@ -1261,7 +1281,24 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                 {ac && <span className={`text-[10px] px-1.5 py-0.5 rounded ${ac.bg} ${ac.text}`}>{ac.label}</span>}
                 {(() => {
                   const allPts = [...new Set(onPic?.all_swap_points ?? onSic?.all_swap_points ?? offPic?.all_swap_points ?? [])];
-                  if (allPts.length > 1 && onSwapPointChange) {
+                  // Extract repo/positioning leg airports for manual override
+                  const repoAirports: string[] = [];
+                  if (flights && selectedWed) {
+                    const wedStr = selectedWed.toISOString().slice(0, 10);
+                    const tailFlights = flights.filter((f) => f.tail_number === tail && f.scheduled_departure?.startsWith(wedStr));
+                    const repoSet = new Set<string>();
+                    for (const f of tailFlights) {
+                      if (!isLiveFlightType(f.flight_type)) {
+                        const depIata = f.departure_icao?.length === 4 && f.departure_icao.startsWith("K") ? f.departure_icao.slice(1) : f.departure_icao;
+                        const arrIata = f.arrival_icao?.length === 4 && f.arrival_icao.startsWith("K") ? f.arrival_icao.slice(1) : f.arrival_icao;
+                        if (depIata && !allPts.includes(depIata)) repoSet.add(depIata);
+                        if (arrIata && !allPts.includes(arrIata)) repoSet.add(arrIata);
+                      }
+                    }
+                    repoAirports.push(...repoSet);
+                  }
+                  const totalOptions = allPts.length + repoAirports.length;
+                  if (totalOptions > 1 && onSwapPointChange) {
                     return (
                       <select
                         className="font-mono text-xs text-gray-500 bg-white border rounded px-1.5 py-0.5 cursor-pointer hover:border-blue-300"
@@ -1270,6 +1307,9 @@ function SwapSheetByTail({ rows, impacts, impactedTails, lockedTails, onLockTail
                       >
                         {allPts.map((pt) => (
                           <option key={pt} value={pt}>@ {pt}</option>
+                        ))}
+                        {repoAirports.map((pt) => (
+                          <option key={`repo-${pt}`} value={pt} className="text-gray-400">@ {pt} (repo)</option>
                         ))}
                       </select>
                     );
