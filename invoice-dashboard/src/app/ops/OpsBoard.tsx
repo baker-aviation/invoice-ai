@@ -912,15 +912,28 @@ function AddCustomAlertForm({ onAdd }: { onAdd: (data: { airport_icao?: string; 
 
 // ─── Main board ───────────────────────────────────────────────────────────────
 
+// Normalize NOTAM body for dedup: strip leading 3-letter airport code, collapse whitespace, uppercase.
+// "BOS RWY 14/32 CLSD EXC TAX 30MIN PPR 617-561-1919" → "RWY 14/32 CLSD EXC TAX 30MIN PPR 617-561-1919"
+function normalizeNotamBody(body: string | null, icao: string | null): string {
+  if (!body) return "";
+  let s = body.toUpperCase().replace(/\s+/g, " ").trim();
+  // Strip leading 3-letter FAA location ID (e.g. "BOS ", "ORL ") that NMS prepends
+  if (icao && icao.length === 4) {
+    const faaId = icao.slice(1); // KBOS → BOS
+    if (s.startsWith(faaId + " ")) s = s.slice(faaId.length + 1);
+  }
+  return s;
+}
+
 function filterAlerts(flights: Flight[]): Flight[] {
   return flights.map((f) => {
     const shown = (f.alerts ?? []).filter((a) => ALERT_TYPES_SHOWN.has(a.alert_type));
-    // Deduplicate NOTAMs by subject (NOTAM number) + airport to avoid
-    // the same NOTAM appearing multiple times for one flight.
+    // Deduplicate NOTAMs by normalized body + airport to collapse
+    // domestic (03/533) vs ICAO (A5247/26) duplicates from the FAA API.
     const seen = new Set<string>();
     const deduped = shown.filter((a) => {
       if (!a.alert_type.startsWith("NOTAM")) return true;
-      const key = `${a.subject ?? ""}|${a.airport_icao ?? ""}`;
+      const key = `${normalizeNotamBody(a.body, a.airport_icao)}|${a.airport_icao ?? ""}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;

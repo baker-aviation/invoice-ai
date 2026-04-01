@@ -232,7 +232,8 @@ export async function PATCH(
       }, { status: 404 });
     }
 
-    const origin = req.headers.get("origin") || "https://baker-ai-gamma.vercel.app";
+    // Always use production URL for email assets (logo, links)
+    const origin = "https://baker-ai-gamma.vercel.app";
     let emailResult: { sent: boolean; error?: string } | null = null;
 
     // Auto-send info session email

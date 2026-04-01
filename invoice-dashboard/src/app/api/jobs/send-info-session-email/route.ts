@@ -135,7 +135,7 @@ export async function POST(req: NextRequest) {
       .replace(/\{\{name\}\}/g, firstName)
       .replace(/\{\{meet_link\}\}/g, meetLink);
 
-    const origin = req.headers.get("origin") || "https://baker-ai-gamma.vercel.app";
+    const origin = "https://baker-ai-gamma.vercel.app";
     const logoUrl = `${origin}/logo3.png`;
     const htmlBody = buildHtmlEmail(emailText, logoUrl);
 
