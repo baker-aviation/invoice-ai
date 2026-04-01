@@ -356,25 +356,13 @@ function fmtShortTime(iso: string | null, airportIcao?: string | null): string {
 }
 
 /**
- * Sort tails: Challengers first (numeric), then Citations (numeric).
- * Uses tailAircraftTypes or falls back to CrewSwapRow aircraft_type.
+ * Sort tails alphabetically by tail number to match JetInsight order.
  */
 function sortTailEntries<T>(
   entries: [string, T][],
-  getType: (tail: string, data: T) => string,
+  _getType: (tail: string, data: T) => string,
 ): [string, T][] {
-  const typeOrder: Record<string, number> = { challenger: 0, CL30: 0, dual: 1, citation_x: 2, C750: 2 };
-  return entries.sort(([a, aData], [b, bData]) => {
-    const aType = getType(a, aData);
-    const bType = getType(b, bData);
-    const aOrder = typeOrder[aType] ?? 3;
-    const bOrder = typeOrder[bType] ?? 3;
-    if (aOrder !== bOrder) return aOrder - bOrder;
-    // Within same type, sort by numeric portion of tail number
-    const aNum = parseInt(a.replace(/\D/g, "")) || 0;
-    const bNum = parseInt(b.replace(/\D/g, "")) || 0;
-    return aNum - bNum;
-  });
+  return entries.sort(([a], [b]) => a.localeCompare(b));
 }
 
 const AIRCRAFT_COLORS: Record<string, { bg: string; text: string; label: string }> = {
@@ -4167,22 +4155,26 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
               <div className="space-y-2">
                 <div className="font-medium text-gray-700">{crewInfoData.target_week_crew.date_range} (Rotation {crewInfoData.target_week_crew.rotation})</div>
                 <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <div className="font-bold text-gray-600 mb-1">Captains (PICs)</div>
-                    <div className="text-[10px] text-green-700 mb-0.5">Citation X ({crewInfoData.target_week_crew.pic.citation_x.length}): {crewInfoData.target_week_crew.pic.citation_x.join(", ")}</div>
-                    <div className="text-[10px] text-yellow-700 mb-0.5">Challenger ({crewInfoData.target_week_crew.pic.challenger.length}): {crewInfoData.target_week_crew.pic.challenger.join(", ")}</div>
-                    {crewInfoData.target_week_crew.pic.dual.length > 0 && (
-                      <div className="text-[10px] text-purple-700">Dual ({crewInfoData.target_week_crew.pic.dual.length}): {crewInfoData.target_week_crew.pic.dual.join(", ")}</div>
-                    )}
-                  </div>
-                  <div>
-                    <div className="font-bold text-gray-600 mb-1">First Officers (SICs)</div>
-                    <div className="text-[10px] text-green-700 mb-0.5">Citation X ({crewInfoData.target_week_crew.sic.citation_x.length}): {crewInfoData.target_week_crew.sic.citation_x.join(", ")}</div>
-                    <div className="text-[10px] text-yellow-700 mb-0.5">Challenger ({crewInfoData.target_week_crew.sic.challenger.length}): {crewInfoData.target_week_crew.sic.challenger.join(", ")}</div>
-                    {crewInfoData.target_week_crew.sic.dual.length > 0 && (
-                      <div className="text-[10px] text-purple-700">Dual ({crewInfoData.target_week_crew.sic.dual.length}): {crewInfoData.target_week_crew.sic.dual.join(", ")}</div>
-                    )}
-                  </div>
+                  {(["pic", "sic"] as const).map((role) => {
+                    const rd = crewInfoData.target_week_crew![role];
+                    const dualCount = rd.dual.length;
+                    const cxTotal = rd.citation_x.length + dualCount;
+                    const clTotal = rd.challenger.length + dualCount;
+                    return (
+                      <div key={role}>
+                        <div className="font-bold text-gray-600 mb-1">{role === "pic" ? "Captains (PICs)" : "First Officers (SICs)"}</div>
+                        <div className="text-[10px] text-green-700 mb-0.5">
+                          Citation X ({rd.citation_x.length}{dualCount > 0 ? ` + ${dualCount} dual = ${cxTotal}` : ""}): {rd.citation_x.join(", ")}
+                        </div>
+                        <div className="text-[10px] text-yellow-700 mb-0.5">
+                          Challenger ({rd.challenger.length}{dualCount > 0 ? ` + ${dualCount} dual = ${clTotal}` : ""}): {rd.challenger.join(", ")}
+                        </div>
+                        {dualCount > 0 && (
+                          <div className="text-[10px] text-purple-700">Dual-Rated ({dualCount}): {rd.dual.join(", ")}</div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             ) : (
