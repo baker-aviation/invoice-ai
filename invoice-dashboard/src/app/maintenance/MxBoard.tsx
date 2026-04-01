@@ -74,7 +74,13 @@ export default function MxBoard({
   const [showCreateNote, setShowCreateNote] = useState<string | null>(null); // tail
   const [showCreateMel, setShowCreateMel] = useState<string | null>(null); // tail
   const [loading, setLoading] = useState(false);
+  const [toast, setToast] = useState<{ message: string; type: "error" | "success" } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  function showToast(message: string, type: "error" | "success" = "error") {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 4000);
+  }
 
   // Build per-tail data
   const allTails = useMemo(() => {
@@ -222,26 +228,42 @@ export default function MxBoard({
   }
 
   async function acknowledgeNote(noteId: string) {
-    setNotes((prev) => prev.filter((n) => n.id !== noteId));
+    const prev = notes;
+    setNotes((p) => p.filter((n) => n.id !== noteId));
     try {
-      await fetch(`/api/ops/mx-notes/${noteId}`, { method: "DELETE" });
-    } catch { /* ignore */ }
+      const res = await fetch(`/api/ops/mx-notes/${noteId}`, { method: "DELETE" });
+      if (!res.ok) {
+        setNotes(prev);
+        showToast("Failed to dismiss note");
+      }
+    } catch {
+      setNotes(prev);
+      showToast("Failed to dismiss note");
+    }
   }
 
   async function assignNote(noteId: string, vanId: number | null, scheduledDate: string | null) {
+    const prev = notes;
     // Optimistic update
-    setNotes((prev) =>
-      prev.map((n) =>
+    setNotes((p) =>
+      p.map((n) =>
         n.id === noteId ? { ...n, assigned_van: vanId, scheduled_date: scheduledDate } : n,
       ),
     );
     try {
-      await fetch(`/api/ops/mx-notes/${noteId}`, {
+      const res = await fetch(`/api/ops/mx-notes/${noteId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ assigned_van: vanId, scheduled_date: scheduledDate }),
       });
-    } catch { /* ignore */ }
+      if (!res.ok) {
+        setNotes(prev);
+        showToast("Failed to save assignment");
+      }
+    } catch {
+      setNotes(prev);
+      showToast("Failed to save assignment");
+    }
   }
 
   async function loadAttachments(noteId: string) {
@@ -263,28 +285,37 @@ export default function MxBoard({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ filename: file.name }),
       });
-      if (!presignRes.ok) return;
+      if (!presignRes.ok) { showToast("Failed to upload file"); return; }
       const { attachment, upload_url } = await presignRes.json();
-      await fetch(upload_url, {
+      const uploadRes = await fetch(upload_url, {
         method: "PUT",
         headers: { "Content-Type": attachment.content_type },
         body: file,
       });
+      if (!uploadRes.ok) { showToast("File upload failed"); return; }
       await loadAttachments(noteId);
-    } catch { /* ignore */ }
+    } catch { showToast("Failed to upload file"); }
   }
 
   async function deleteAttachment(noteId: string, attachmentId: number) {
-    setNotes((prev) =>
-      prev.map((n) =>
+    const prev = notes;
+    setNotes((p) =>
+      p.map((n) =>
         n.id === noteId
           ? { ...n, attachments: (n.attachments ?? []).filter((a) => a.id !== attachmentId) }
           : n,
       ),
     );
     try {
-      await fetch(`/api/ops/mx-notes/${noteId}/attachments?attachment_id=${attachmentId}`, { method: "DELETE" });
-    } catch { /* ignore */ }
+      const res = await fetch(`/api/ops/mx-notes/${noteId}/attachments?attachment_id=${attachmentId}`, { method: "DELETE" });
+      if (!res.ok) {
+        setNotes(prev);
+        showToast("Failed to delete attachment");
+      }
+    } catch {
+      setNotes(prev);
+      showToast("Failed to delete attachment");
+    }
   }
 
   // ── MEL CRUD ──
@@ -323,14 +354,22 @@ export default function MxBoard({
   }
 
   async function clearMel(melId: number) {
-    setMels((prev) => prev.filter((m) => m.id !== melId));
+    const prev = mels;
+    setMels((p) => p.filter((m) => m.id !== melId));
     try {
-      await fetch(`/api/ops/mel-items/${melId}`, {
+      const res = await fetch(`/api/ops/mel-items/${melId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: "cleared" }),
       });
-    } catch { /* ignore */ }
+      if (!res.ok) {
+        setMels(prev);
+        showToast("Failed to clear MEL");
+      }
+    } catch {
+      setMels(prev);
+      showToast("Failed to clear MEL");
+    }
   }
 
   // ── Summary stats ──
@@ -345,6 +384,12 @@ export default function MxBoard({
 
   return (
     <div className="space-y-4">
+      {/* ── Error/success toast ── */}
+      {toast && (
+        <div className={`fixed top-4 right-4 z-50 px-4 py-2.5 rounded-lg shadow-lg text-sm font-medium transition-all ${toast.type === "error" ? "bg-red-600 text-white" : "bg-green-600 text-white"}`}>
+          {toast.message}
+        </div>
+      )}
       {/* ── Header stats ── */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-gray-50 border border-gray-200">
@@ -467,6 +512,7 @@ export default function MxBoard({
                         onMoveNote={(noteId, newAirport) => {
                           setNotes((prev) => prev.map((n) => n.id === noteId ? { ...n, airport_icao: newAirport } : n));
                         }}
+                        onAssignVan={assignNote}
                       />
                     )}
 
@@ -484,6 +530,8 @@ export default function MxBoard({
                         onDeleteAttachment={deleteAttachment}
                         fileInputRef={fileInputRef}
                         loading={loading}
+                        onRefreshNotes={refreshNotes}
+                        onError={showToast}
                       />
                     )}
 
@@ -573,7 +621,7 @@ function fmtGroundTime(min: number): string {
   return m > 0 ? `${h}h${m}m` : `${h}h`;
 }
 
-function ScheduleSection({ flights, mxNotes: initialMxNotes = [], onMoveNote }: { flights: Flight[]; mxNotes?: MxNoteWithAttachments[]; onMoveNote?: (noteId: string, newAirport: string) => void }) {
+function ScheduleSection({ flights, mxNotes: initialMxNotes = [], onMoveNote, onAssignVan }: { flights: Flight[]; mxNotes?: MxNoteWithAttachments[]; onMoveNote?: (noteId: string, newAirport: string) => void; onAssignVan?: (noteId: string, vanId: number | null, scheduledDate: string | null) => void }) {
   const [mxNotes, setMxNotes] = useState(initialMxNotes);
   const [dragOverFlightId, setDragOverFlightId] = useState<string | null>(null);
   const dragNoteRef = useRef<string | null>(null);
@@ -584,16 +632,23 @@ function ScheduleSection({ flights, mxNotes: initialMxNotes = [], onMoveNote }: 
     const newVanId = van ? van.vanId : null;
     // Derive scheduled_date from the flight's arrival (YYYY-MM-DD in ET)
     const scheduledDate = arrivalDate ? etDateKey(arrivalDate) : null;
+    const prev = mxNotes;
     // Optimistic update
-    setMxNotes((prev) => prev.map((n) => n.id === noteId ? { ...n, airport_icao: newAirport, assigned_van: newVanId, scheduled_date: scheduledDate } : n));
+    setMxNotes((p) => p.map((n) => n.id === noteId ? { ...n, airport_icao: newAirport, assigned_van: newVanId, scheduled_date: scheduledDate } : n));
     try {
-      await fetch(`/api/ops/mx-notes/${noteId}`, {
+      const res = await fetch(`/api/ops/mx-notes/${noteId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ airport_icao: newAirport, assigned_van: newVanId, scheduled_date: scheduledDate }),
       });
-      onMoveNote?.(noteId, newAirport);
-    } catch { /* ignore */ }
+      if (!res.ok) {
+        setMxNotes(prev);
+      } else {
+        onMoveNote?.(noteId, newAirport);
+      }
+    } catch {
+      setMxNotes(prev);
+    }
   }
 
   if (flights.length === 0) {
@@ -859,11 +914,23 @@ function ScheduleSection({ flights, mxNotes: initialMxNotes = [], onMoveNote }: 
                             >
                               <span className="font-bold shrink-0">MX</span>
                               <span className="truncate flex-1">{n.subject || n.body || n.description}</span>
-                              {n.assigned_van && (
-                                <span className="px-1 py-0.5 rounded bg-green-100 text-green-700 text-[10px] font-medium shrink-0">
-                                  V{n.assigned_van}
-                                </span>
-                              )}
+                              <select
+                                value={n.assigned_van ?? ""}
+                                onClick={(e) => e.stopPropagation()}
+                                onMouseDown={(e) => e.stopPropagation()}
+                                onChange={(e) => {
+                                  e.stopPropagation();
+                                  const val = e.target.value ? Number(e.target.value) : null;
+                                  onAssignVan?.(n.id, val, n.scheduled_date ?? null);
+                                  setMxNotes((prev) => prev.map((x) => x.id === n.id ? { ...x, assigned_van: val } : x));
+                                }}
+                                className={`text-[10px] font-medium rounded px-1 py-0.5 border-none cursor-pointer shrink-0 ${n.assigned_van ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}
+                              >
+                                <option value="">No van</option>
+                                {FIXED_VAN_ZONES.map((z) => (
+                                  <option key={z.vanId} value={z.vanId}>V{z.vanId} {z.name}</option>
+                                ))}
+                              </select>
                               <span className="text-[10px] text-orange-400 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 select-none">
                                 ⠿ drag to move
                               </span>
@@ -909,6 +976,8 @@ function NotesSection({
   onDeleteAttachment,
   fileInputRef,
   loading,
+  onRefreshNotes,
+  onError,
 }: {
   tail: string;
   notes: MxNoteWithAttachments[];
@@ -921,21 +990,33 @@ function NotesSection({
   onDeleteAttachment: (noteId: string, attachmentId: number) => void;
   fileInputRef: React.RefObject<HTMLInputElement | null>;
   loading: boolean;
+  onRefreshNotes: () => Promise<void>;
+  onError: (message: string) => void;
 }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editSubject, setEditSubject] = useState("");
   const [editBody, setEditBody] = useState("");
+  const [saving, setSaving] = useState(false);
 
   async function saveEdit(noteId: string) {
+    setSaving(true);
     try {
-      await fetch(`/api/ops/mx-notes/${noteId}`, {
+      const res = await fetch(`/api/ops/mx-notes/${noteId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ subject: editSubject, body: editBody }),
       });
+      if (!res.ok) {
+        onError("Failed to save edit");
+        setSaving(false);
+        return;
+      }
       setEditingId(null);
-      window.location.reload();
-    } catch { /* ignore */ }
+      await onRefreshNotes();
+    } catch {
+      onError("Failed to save edit");
+    }
+    setSaving(false);
   }
 
   return (
@@ -1003,8 +1084,8 @@ function NotesSection({
                     className="w-full text-sm border border-gray-200 rounded px-2.5 py-1 focus:outline-none focus:ring-1 focus:ring-blue-400"
                   />
                   <div className="flex gap-2">
-                    <button onClick={() => saveEdit(note.id)} className="px-2.5 py-1 text-xs font-medium text-white bg-blue-600 rounded">Save</button>
-                    <button onClick={() => setEditingId(null)} className="px-2.5 py-1 text-xs text-gray-500">Cancel</button>
+                    <button onClick={() => saveEdit(note.id)} disabled={saving} className="px-2.5 py-1 text-xs font-medium text-white bg-blue-600 rounded disabled:opacity-50">{saving ? "Saving..." : "Save"}</button>
+                    <button onClick={() => setEditingId(null)} disabled={saving} className="px-2.5 py-1 text-xs text-gray-500">Cancel</button>
                   </div>
                 </div>
               ) : (
