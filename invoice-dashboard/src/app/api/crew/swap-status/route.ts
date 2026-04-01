@@ -369,17 +369,59 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    // Build origin hints for connecting flights to disambiguate same-number routes.
+    // For "AA820/AA1033", after fetching AA820 we know its destination, which is
+    // AA1033's origin. First pass fetches all legs, second pass re-fetches any
+    // connections where the first leg's destination gives us the origin hint.
+    const originHints = new Map<string, string>(); // flightNumber → expected origin IATA
+
     // Fetch live status from FlightAware (skip if no commercial flights)
     let faStatusMap = new Map<string, CommercialFlightStatus>();
     if (commercialFlightLegs.size > 0) {
       try {
-        // Fetch each date group
+        // First pass: fetch all flights
         for (const [date, flights] of flightsByDate) {
-          const dateResults = await batchGetCommercialStatus(flights, date);
+          const dateResults = await batchGetCommercialStatus(flights, date, originHints);
           for (const [fn, status] of dateResults) {
             faStatusMap.set(fn, status);
           }
         }
+
+        // Second pass: for connections, use first leg's destination as second leg's origin
+        const needsRefetch: { fn: string; date: string; origin: string }[] = [];
+        for (const crew of allCrew) {
+          if (crew.flight_numbers.length < 2) continue;
+          for (let i = 1; i < crew.flight_numbers.length; i++) {
+            const prevFa = faStatusMap.get(crew.flight_numbers[i - 1]);
+            const currFn = crew.flight_numbers[i];
+            if (prevFa?.destination_iata && !originHints.has(currFn)) {
+              originHints.set(currFn, prevFa.destination_iata);
+              // Check if current result's origin matches — if not, refetch
+              const currFa = faStatusMap.get(currFn);
+              if (currFa && currFa.origin_iata && currFa.origin_iata !== prevFa.destination_iata) {
+                let flightDate = swapDate;
+                if (crew.date) {
+                  const dm = crew.date.match(/(\d{1,2})\/(\d{1,2})/);
+                  if (dm) flightDate = `2026-${dm[1].padStart(2, "0")}-${dm[2].padStart(2, "0")}`;
+                }
+                needsRefetch.push({ fn: currFn, date: flightDate, origin: prevFa.destination_iata });
+              }
+            }
+          }
+        }
+
+        // Re-fetch mismatched connections with origin hint
+        if (needsRefetch.length > 0) {
+          console.log(`[SwapStatus] Re-fetching ${needsRefetch.length} connection legs with origin hints`);
+          for (const { fn, date, origin } of needsRefetch) {
+            const hintsMap = new Map([[fn, origin]]);
+            const results = await batchGetCommercialStatus([fn], date, hintsMap);
+            for (const [key, status] of results) {
+              faStatusMap.set(key, status);
+            }
+          }
+        }
+
         console.log(`[SwapStatus] FA enrichment: ${faStatusMap.size}/${commercialFlightLegs.size} flights resolved`);
       } catch (e) {
         console.error("[SwapStatus] FA enrichment failed (using time-based guess):", e instanceof Error ? e.message : e);
