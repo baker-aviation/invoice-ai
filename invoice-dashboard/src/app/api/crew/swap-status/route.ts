@@ -2,6 +2,22 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin, isAuthed } from "@/lib/api-auth";
 import { listSheets, getSheetData } from "@/lib/googleSheets";
 import { batchGetCommercialStatus, type CommercialFlightStatus } from "@/lib/flightaware";
+import { DEFAULT_AIRPORT_ALIASES } from "@/lib/airportAliases";
+
+// Build a fast lookup: FBO IATA → Set of commercial IATA alternatives
+const _fboToCommercial = new Map<string, Set<string>>();
+for (const a of DEFAULT_AIRPORT_ALIASES) {
+  const fbo = a.fbo_icao.replace(/^K/, "").toUpperCase();
+  const comm = a.commercial_icao.replace(/^K/, "").toUpperCase();
+  if (!_fboToCommercial.has(fbo)) _fboToCommercial.set(fbo, new Set([fbo]));
+  _fboToCommercial.get(fbo)!.add(comm);
+}
+
+/** Get all commercial IATA codes that serve a given FBO/airport */
+function commercialAlternatives(airportIata: string): Set<string> {
+  const upper = airportIata.toUpperCase();
+  return _fboToCommercial.get(upper) ?? new Set([upper]);
+}
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300; // 5 min — may need to query ~100 flights at 1/sec
@@ -369,17 +385,41 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // Build origin hints for connecting flights to disambiguate same-number routes.
-    // For "AA820/AA1033", after fetching AA820 we know its destination, which is
-    // AA1033's origin. First pass fetches all legs, second pass re-fetches any
-    // connections where the first leg's destination gives us the origin hint.
+    // Build origin hints to disambiguate same-number routes.
+    // AA1033 can operate DFW→ORD and ORD→BOS on the same day.
+    // Use crew context (swap_location, home_airports) + airport aliases
+    // to figure out which airport each leg should depart from.
     const originHints = new Map<string, string>(); // flightNumber → expected origin IATA
+
+    // Pre-build hints from crew context
+    for (const crew of allCrew) {
+      if (crew.transport_type !== "commercial" || crew.flight_numbers.length === 0) continue;
+      const swapAlts = commercialAlternatives(crew.swap_location);
+      const homeAlts = crew.home_airports.length > 0
+        ? commercialAlternatives(crew.home_airports[0])
+        : new Set<string>();
+
+      if (crew.direction === "offgoing") {
+        // Offgoing: first leg departs from swap area
+        // Pick the preferred commercial airport for the swap location
+        const preferred = [...swapAlts][0];
+        if (preferred && !originHints.has(crew.flight_numbers[0])) {
+          originHints.set(crew.flight_numbers[0], preferred);
+        }
+      } else {
+        // Oncoming: first leg departs from home area
+        const preferred = [...homeAlts][0];
+        if (preferred && !originHints.has(crew.flight_numbers[0])) {
+          originHints.set(crew.flight_numbers[0], preferred);
+        }
+      }
+    }
 
     // Fetch live status from FlightAware (skip if no commercial flights)
     let faStatusMap = new Map<string, CommercialFlightStatus>();
     if (commercialFlightLegs.size > 0) {
       try {
-        // First pass: fetch all flights
+        // First pass: fetch all flights with context-based origin hints
         for (const [date, flights] of flightsByDate) {
           const dateResults = await batchGetCommercialStatus(flights, date, originHints);
           for (const [fn, status] of dateResults) {
@@ -387,30 +427,34 @@ export async function GET(req: NextRequest) {
           }
         }
 
-        // Second pass: for connections, use first leg's destination as second leg's origin
+        // Second pass: for connections, use first leg's actual destination
+        // as second leg's origin (more precise than alias-based hints)
         const needsRefetch: { fn: string; date: string; origin: string }[] = [];
         for (const crew of allCrew) {
           if (crew.flight_numbers.length < 2) continue;
           for (let i = 1; i < crew.flight_numbers.length; i++) {
             const prevFa = faStatusMap.get(crew.flight_numbers[i - 1]);
             const currFn = crew.flight_numbers[i];
-            if (prevFa?.destination_iata && !originHints.has(currFn)) {
-              originHints.set(currFn, prevFa.destination_iata);
-              // Check if current result's origin matches — if not, refetch
+            if (prevFa?.destination_iata) {
+              // Check if current result's origin matches the connection
               const currFa = faStatusMap.get(currFn);
               if (currFa && currFa.origin_iata && currFa.origin_iata !== prevFa.destination_iata) {
+                originHints.set(currFn, prevFa.destination_iata);
                 let flightDate = swapDate;
                 if (crew.date) {
                   const dm = crew.date.match(/(\d{1,2})\/(\d{1,2})/);
                   if (dm) flightDate = `2026-${dm[1].padStart(2, "0")}-${dm[2].padStart(2, "0")}`;
                 }
                 needsRefetch.push({ fn: currFn, date: flightDate, origin: prevFa.destination_iata });
+              } else if (!currFa) {
+                // Not yet fetched — add hint for future fetch
+                originHints.set(currFn, prevFa.destination_iata);
               }
             }
           }
         }
 
-        // Re-fetch mismatched connections with origin hint
+        // Re-fetch mismatched connections with precise origin from first leg
         if (needsRefetch.length > 0) {
           console.log(`[SwapStatus] Re-fetching ${needsRefetch.length} connection legs with origin hints`);
           for (const { fn, date, origin } of needsRefetch) {
