@@ -24,6 +24,7 @@ import type { FlightOffer } from "@/lib/amadeus";
 export type CityPair = {
   origin: string;      // IATA code
   destination: string;  // IATA code
+  date?: string;        // YYYY-MM-DD — when set, seeds for this specific date
 };
 
 export type HasdataCacheResult = {
@@ -238,7 +239,18 @@ export async function buildHasdataCache(
   const errors: string[] = [];
   let offersCached = 0;
 
+  // Seed both swap day and next day. The optimizer searches next-day flights
+  // for offgoing crew (late arrivals need Thursday morning flights home).
+  const nextDay = new Date(swapDate);
+  nextDay.setDate(nextDay.getDate() + 1);
+  const nextDayStr = nextDay.toISOString().slice(0, 10);
+  const datesToSeed = [swapDate, nextDayStr];
+
   let pairs = await computeCityPairMatrix(swapDate);
+  // Duplicate pairs for next day
+  const nextDayPairs = pairs.map((p) => ({ ...p, date: nextDayStr }));
+  const swapDayPairs = pairs.map((p) => ({ ...p, date: swapDate }));
+  let allPairs = [...swapDayPairs, ...nextDayPairs];
 
   if (mode === "seed") {
     // NEVER delete the cache — too expensive to rebuild. Just upsert over existing.
@@ -246,20 +258,26 @@ export async function buildHasdataCache(
     console.log(`[HasdataCache] Seed mode: will upsert over existing (no delete)`);
   }
   if (mode === "fill") {
-    // Only fetch pairs not already cached — skips pairs with any existing row
-    const { data: existing } = await supa
-      .from("hasdata_flight_cache")
-      .select("origin_iata, destination_iata")
-      .eq("cache_date", swapDate);
-    const cached = new Set((existing ?? []).map((r) => `${r.origin_iata}-${r.destination_iata}`));
-    const before = pairs.length;
-    pairs = pairs.filter((p) => !cached.has(`${p.origin}-${p.destination}`));
-    console.log(`[HasdataCache] Fill mode: ${pairs.length} uncached pairs (skipping ${before - pairs.length} already cached)`);
-    if (pairs.length === 0) {
-      console.log(`[HasdataCache] Cache is complete for ${swapDate} — nothing to fetch`);
+    // Only fetch pairs not already cached — skips pairs with any existing row for their date
+    const cachedKeys = new Set<string>();
+    for (const d of datesToSeed) {
+      const { data: existing } = await supa
+        .from("hasdata_flight_cache")
+        .select("origin_iata, destination_iata")
+        .eq("cache_date", d);
+      for (const r of existing ?? []) {
+        cachedKeys.add(`${r.origin_iata}-${r.destination_iata}-${d}`);
+      }
+    }
+    const before = allPairs.length;
+    allPairs = allPairs.filter((p) => !cachedKeys.has(`${p.origin}-${p.destination}-${p.date}`));
+    console.log(`[HasdataCache] Fill mode: ${allPairs.length} uncached pairs (skipping ${before - allPairs.length} already cached)`);
+    if (allPairs.length === 0) {
+      console.log(`[HasdataCache] Cache is complete for ${datesToSeed.join("+")} — nothing to fetch`);
       return { pairs_queried: 0, offers_cached: 0, errors: [], duration_ms: Date.now() - start };
     }
   }
+  pairs = allPairs;
 
   // Process in batches of 50 concurrent, 200ms delay between batches
   const BATCH_SIZE = 50;
@@ -274,7 +292,7 @@ export async function buildHasdataCache(
           const result = await searchFlights({
             origin: pair.origin,
             destination: pair.destination,
-            date: swapDate,
+            date: pair.date ?? swapDate,
             max: 10,
           });
           return { pair, offers: result.offers, error: null };
@@ -302,7 +320,7 @@ export async function buildHasdataCache(
       );
 
       rows.push({
-        cache_date: swapDate,
+        cache_date: r.pair.date ?? swapDate,
         origin_iata: r.pair.origin,
         destination_iata: r.pair.destination,
         flight_offers: JSON.stringify(offers),
@@ -361,36 +379,46 @@ export async function getHasdataCacheForOptimizer(
 }> {
   const supa = createServiceClient();
 
-  // Only load rows that have flights (skip empty pairs — typically 40-50% of cache)
+  // Load swap-day AND next-day flights. The optimizer searches Thursday
+  // (day after swap) for offgoing crew with late arrivals, and for oncoming
+  // volunteers who can go a day early/late.
+  const nextDay = new Date(date);
+  nextDay.setDate(nextDay.getDate() + 1);
+  const nextDayStr = nextDay.toISOString().slice(0, 10);
+  const datesToLoad = [date, nextDayStr];
+
   const PAGE_SIZE = 5000;
-  const allRows: { origin_iata: string; destination_iata: string; flight_offers: unknown; offer_count: number }[] = [];
-  let from = 0;
-  while (true) {
-    const { data, error } = await supa
-      .from("hasdata_flight_cache")
-      .select("origin_iata, destination_iata, flight_offers, offer_count")
-      .eq("cache_date", date)
-      .gt("offer_count", 0) // skip empty pairs
-      .range(from, from + PAGE_SIZE - 1);
+  const allRows: { cache_date: string; origin_iata: string; destination_iata: string; flight_offers: unknown; offer_count: number }[] = [];
 
-    if (error) {
-      console.warn(`[HasdataCache] Error loading page ${from} for ${date}:`, error.message);
-      break;
+  for (const d of datesToLoad) {
+    let from = 0;
+    while (true) {
+      const { data, error } = await supa
+        .from("hasdata_flight_cache")
+        .select("cache_date, origin_iata, destination_iata, flight_offers, offer_count")
+        .eq("cache_date", d)
+        .gt("offer_count", 0)
+        .range(from, from + PAGE_SIZE - 1);
+
+      if (error) {
+        console.warn(`[HasdataCache] Error loading page ${from} for ${d}:`, error.message);
+        break;
+      }
+      if (!data || data.length === 0) break;
+
+      allRows.push(...(data as typeof allRows));
+      if (data.length < PAGE_SIZE) break;
+      from += PAGE_SIZE;
     }
-    if (!data || data.length === 0) break;
-
-    allRows.push(...data);
-    if (data.length < PAGE_SIZE) break;
-    from += PAGE_SIZE;
   }
 
-  console.log(`[HasdataCache] Loaded ${allRows.length} rows with flights for ${date} (skipped empty pairs)`);
+  console.log(`[HasdataCache] Loaded ${allRows.length} rows with flights for ${datesToLoad.join("+")} (skipped empty pairs)`);
 
   const offerMap = new Map<string, FlightOffer[]>();
   let totalFlights = 0;
 
   for (const row of allRows) {
-    const key = `${row.origin_iata}-${row.destination_iata}-${date}`;
+    const key = `${row.origin_iata}-${row.destination_iata}-${row.cache_date}`;
     const offers = (typeof row.flight_offers === "string"
       ? JSON.parse(row.flight_offers as string)
       : row.flight_offers) as FlightOffer[];
