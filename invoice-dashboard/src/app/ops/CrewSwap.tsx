@@ -4498,6 +4498,25 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                 {routeStatus.is_stale && " — stale"}
               </span>
             )}
+            {/* Load FREEZE button (also on Plan tab for visibility) */}
+            {freezeTabs.length > 0 && (
+              <div className="relative">
+                <button
+                  onClick={() => { if (freezeTabs.length === 1) loadFreezeSheet(freezeTabs[0]); else setShowFreezeMenu(!showFreezeMenu); }}
+                  disabled={loadingFreeze}
+                  className={`px-2.5 py-1.5 text-[10px] font-medium border rounded-lg ${loadingFreeze ? "bg-gray-100 text-gray-400" : "bg-amber-50 text-amber-700 hover:bg-amber-100 border-amber-200"}`}
+                >
+                  {loadingFreeze ? "Loading..." : "Load FREEZE"}
+                </button>
+                {showFreezeMenu && freezeTabs.length > 1 && (
+                  <div className="absolute right-0 top-full mt-1 bg-white border rounded-lg shadow-lg z-50 min-w-[240px]">
+                    {freezeTabs.map(tab => (
+                      <button key={tab} onClick={() => loadFreezeSheet(tab)} className="w-full text-left px-3 py-2 text-xs hover:bg-amber-50 border-b last:border-b-0 text-gray-700">{tab}</button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
             {/* Strategy toggle */}
             <div className="flex rounded-lg border overflow-hidden">
               <button
