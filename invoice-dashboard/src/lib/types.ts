@@ -134,18 +134,16 @@ export type AdvertisedPriceRow = {
 
 export type HiringStage =
   | "prd_faa_review"
-  | "chief_pilot_review"
   | "screening"
   | "info_session"
   | "tims_review"
-  | "interview_pre"
   | "interview_scheduled"
   | "interview_post"
   | "pending_offer"
   | "offer"
   | "hired";
 
-export const PIPELINE_STAGES = ["prd_faa_review", "chief_pilot_review", "screening", "info_session", "tims_review", "interview_pre", "interview_scheduled", "interview_post", "pending_offer", "offer", "hired"] as const;
+export const PIPELINE_STAGES = ["screening", "info_session", "tims_review", "prd_faa_review", "interview_scheduled", "interview_post", "pending_offer", "offer", "hired"] as const;
 export type PipelineStage = (typeof PIPELINE_STAGES)[number];
 
 export type JobRow = {
@@ -199,6 +197,12 @@ export type JobRow = {
 
   info_session_attended?: boolean | null;
   info_session_attended_at?: string | null;
+
+  interest_check_sent_at?: string | null;
+  interest_check_response?: string | null; // 'yes' | 'no' | null
+
+  info_session_email_status?: string | null; // 'unknown' | 'sent' | 'not_sent' | null
+  interview_email_status?: string | null; // 'unknown' | 'sent' | 'not_sent' | null
 
   offer_sent_at?: string | null;
   offer_status?: string | null; // null | "draft" | "sent" | "accepted" | "declined"

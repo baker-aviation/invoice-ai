@@ -10,7 +10,7 @@ const JOB_COLUMNS =
   "id, application_id, created_at, updated_at, hiring_stage, category, employment_type, candidate_name, email, phone, location, total_time_hours, turbine_time_hours, pic_time_hours, sic_time_hours, has_citation_x, has_challenger_300_type_rating, type_ratings, has_part_135, has_part_121, soft_gate_pic_met, soft_gate_pic_status, needs_review, notes, model, info_session_data, structured_notes, rejected_at, rejection_reason, deleted_at";
 
 const JOB_COLUMNS_WITH_STAGE =
-  "id, application_id, created_at, updated_at, pipeline_stage, category, employment_type, candidate_name, email, phone, location, total_time_hours, turbine_time_hours, pic_time_hours, sic_time_hours, has_citation_x, has_challenger_300_type_rating, type_ratings, has_part_135, has_part_121, soft_gate_pic_met, soft_gate_pic_status, needs_review, notes, model, info_session_data, structured_notes, rejected_at, rejection_reason, deleted_at, offer_status, offer_sent_at, hr_reviewed, previously_rejected, rejection_type, interview_email_sent_at";
+  "id, application_id, created_at, updated_at, pipeline_stage, category, employment_type, candidate_name, email, phone, location, total_time_hours, turbine_time_hours, pic_time_hours, sic_time_hours, has_citation_x, has_challenger_300_type_rating, type_ratings, has_part_135, has_part_121, soft_gate_pic_met, soft_gate_pic_status, needs_review, notes, model, info_session_data, structured_notes, rejected_at, rejection_reason, deleted_at, offer_status, offer_sent_at, hr_reviewed, previously_rejected, rejection_type, interview_email_sent_at, interest_check_sent_at, interest_check_response, interview_email_status, info_session_email_status";
 
 const JOB_COLUMNS_BASE =
   "id, application_id, created_at, updated_at, category, employment_type, candidate_name, email, phone, location, total_time_hours, turbine_time_hours, pic_time_hours, sic_time_hours, has_citation_x, has_challenger_300_type_rating, type_ratings, has_part_135, has_part_121, soft_gate_pic_met, soft_gate_pic_status, needs_review, notes, model, info_session_data";
@@ -68,7 +68,7 @@ export async function fetchJobs(
   if (error) {
     console.warn("[fetchJobs] Full column query failed, trying with pipeline_stage only:", error.message);
     // Fallback: base columns + pipeline_stage (skip newer columns like offer_status etc.)
-    const fallbackCols = JOB_COLUMNS_BASE + ", pipeline_stage, structured_notes, rejected_at, rejection_reason, rejection_type, deleted_at, hr_reviewed, previously_rejected, interview_email_sent_at, offer_status, offer_sent_at";
+    const fallbackCols = JOB_COLUMNS_BASE + ", pipeline_stage, structured_notes, rejected_at, rejection_reason, rejection_type, deleted_at, hr_reviewed, previously_rejected, interview_email_sent_at, offer_status, offer_sent_at, interest_check_sent_at, interest_check_response, interview_email_status, info_session_email_status";
     const retry2 = await queryJobs(supa, fallbackCols, params);
     if (retry2.error) {
       console.warn("[fetchJobs] Pipeline column query also failed, using base:", retry2.error.message);
@@ -182,7 +182,7 @@ export async function fetchJobDetail(applicationId: string | number): Promise<Jo
 
   if (first.error) {
     // Fallback: base columns + pipeline_stage (skip newest columns)
-    const fallbackCols = JOB_COLUMNS_BASE + ", pipeline_stage, structured_notes, rejected_at, rejection_reason, rejection_type, deleted_at, hr_reviewed, previously_rejected, interview_email_sent_at, offer_status, offer_sent_at";
+    const fallbackCols = JOB_COLUMNS_BASE + ", pipeline_stage, structured_notes, rejected_at, rejection_reason, rejection_type, deleted_at, hr_reviewed, previously_rejected, interview_email_sent_at, offer_status, offer_sent_at, interest_check_sent_at, interest_check_response, interview_email_status, info_session_email_status";
     const retry2 = await supa
       .from("job_application_parse")
       .select(fallbackCols)

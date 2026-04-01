@@ -1943,14 +1943,30 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
   // Google Sheets week selector
   const [availableWeeks, setAvailableWeeks] = useState<string[]>([]);
   const [selectedWeek, setSelectedWeek] = useState<string>("");
+  // FREEZE sheet import
+  const [freezeTabs, setFreezeTabs] = useState<string[]>([]);
+  const [loadingFreeze, setLoadingFreeze] = useState(false);
+  const [showFreezeMenu, setShowFreezeMenu] = useState(false);
+  const freezeMenuRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     fetch("/api/crew/sheet-weeks").then(r => r.ok ? r.json() : { weeks: [] }).then(d => {
       setAvailableWeeks(d.weeks ?? []);
+      setFreezeTabs(d.freeze_tabs ?? []);
       // Default to most recent week (first in list)
       if (d.weeks?.length > 0 && !selectedWeek) setSelectedWeek(d.weeks[0]);
     }).catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  // Close freeze menu on outside click
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (freezeMenuRef.current && !freezeMenuRef.current.contains(e.target as Node)) {
+        setShowFreezeMenu(false);
+      }
+    }
+    if (showFreezeMenu) document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [showFreezeMenu]);
   const [syncingCrewInfo, setSyncingCrewInfo] = useState(false);
 
   // Aircraft type lookup: derived from icsFleet (already fetched above — no duplicate call)
@@ -2928,6 +2944,65 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
     }
   }
 
+  // Load FREEZE sheet assignments as locked starting points
+  async function loadFreezeSheet(tab: string) {
+    setLoadingFreeze(true);
+    setShowFreezeMenu(false);
+    try {
+      const res = await fetch(`/api/crew/freeze?tab=${encodeURIComponent(tab)}`);
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({ error: "Failed to load FREEZE sheet" }));
+        addToast("error", data.error ?? "Failed to load FREEZE sheet");
+        return;
+      }
+      const data = await res.json();
+      const entries = data.entries as Array<{
+        name: string;
+        role: "PIC" | "SIC";
+        tail_number: string | null;
+        swap_location: string | null;
+        flight_number: string | null;
+        depart_time: string | null;
+        arrival_time: string | null;
+        price: number | null;
+        home_airports: string[];
+      }>;
+      if (!entries || entries.length === 0) {
+        addToast("warning", "FREEZE sheet is empty — no assignments found");
+        return;
+      }
+
+      // Convert FreezeEntry[] → SwapAssignment records + locked tails
+      const newAssignments: Record<string, SwapAssignment> = { ...(swapAssignments ?? {}) };
+      const newLocked = new Set(lockedTails);
+      let assignedCount = 0;
+
+      for (const entry of entries) {
+        if (!entry.tail_number) continue;
+        const tail = entry.tail_number;
+        if (!newAssignments[tail]) {
+          newAssignments[tail] = { oncoming_pic: null, oncoming_sic: null, offgoing_pic: null, offgoing_sic: null };
+        }
+        if (entry.role === "PIC") {
+          newAssignments[tail].oncoming_pic = entry.name;
+        } else {
+          newAssignments[tail].oncoming_sic = entry.name;
+        }
+        newLocked.add(tail);
+        assignedCount++;
+      }
+
+      setSwapAssignments(newAssignments);
+      try { localStorage.setItem("swap_assignments", JSON.stringify(newAssignments)); } catch {}
+      setLockedTails(newLocked);
+      addToast("success", `Loaded ${assignedCount} assignments from FREEZE sheet (${newLocked.size} tails locked)`);
+    } catch (e) {
+      addToast("error", e instanceof Error ? e.message : "Failed to load FREEZE sheet");
+    } finally {
+      setLoadingFreeze(false);
+    }
+  }
+
   // Upload Excel roster
   async function syncFromGoogleSheet() {
     setSyncingCrewInfo(true);
@@ -3377,6 +3452,32 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
             >
               {syncingCrewInfo ? "Syncing..." : "Sync from Sheet"}
             </button>
+            {freezeTabs.length > 0 && (
+              <div className="relative" ref={freezeMenuRef}>
+                <button
+                  onClick={() => setShowFreezeMenu(!showFreezeMenu)}
+                  disabled={loadingFreeze}
+                  className={`px-3 py-1.5 text-xs font-medium border rounded-lg ${
+                    loadingFreeze ? "bg-gray-100 text-gray-400" : "bg-amber-50 text-amber-700 hover:bg-amber-100 border-amber-200"
+                  }`}
+                >
+                  {loadingFreeze ? "Loading..." : "Load FREEZE"}
+                </button>
+                {showFreezeMenu && (
+                  <div className="absolute right-0 top-full mt-1 bg-white border rounded-lg shadow-lg z-50 min-w-[240px] max-h-60 overflow-y-auto">
+                    {freezeTabs.map(tab => (
+                      <button
+                        key={tab}
+                        onClick={() => loadFreezeSheet(tab)}
+                        className="w-full text-left px-3 py-2 text-xs hover:bg-amber-50 border-b last:border-b-0 text-gray-700"
+                      >
+                        {tab}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
             <label className={`px-3 py-1.5 text-xs font-medium border rounded-lg cursor-pointer ${
               uploading ? "bg-gray-100 text-gray-400" : "bg-blue-50 text-blue-700 hover:bg-blue-100 border-blue-200"
             }`}>

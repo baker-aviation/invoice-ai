@@ -137,25 +137,42 @@ function guessStatus(crew: CrewTravel): CrewTravel["status"] {
 }
 
 export async function GET(req: NextRequest) {
-  const auth = await requireAdmin(req);
-  if (!isAuthed(auth)) return auth.error;
+  const serviceKey = req.headers.get("x-service-key");
+  const envKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const isServiceAuth = serviceKey && envKey && serviceKey.trim() === envKey.trim();
+  if (!isServiceAuth) {
+    const auth = await requireAdmin(req);
+    if (!isAuthed(auth)) return auth.error;
+  }
 
   // ?live=true enables FlightAware enrichment (separate call to avoid timeout)
   const live = req.nextUrl.searchParams.get("live") === "true";
+  // ?tab=... overrides auto-detection (e.g., ?tab=FREEZE APR 1-APR 8 (B))
+  const tabOverride = req.nextUrl.searchParams.get("tab");
 
   try {
-    // Find the current swap sheet (closest to today with "MAR 25" or next swap)
     const sheets = await listSheets();
     const sheetNames = sheets.map(s => s.title);
 
-    // Find the sheet that starts with "MAR 25" or the most recent weekly sheet
-    let targetSheet = sheetNames.find(s => s.includes("MAR 25"));
-    if (!targetSheet) {
-      // Find weekly sheets and pick the closest to today
-      const weeklySheets = sheetNames.filter(n =>
-        /^[A-Z]{3}\s+\d+-[A-Z]{3}\s+\d+\s*\([AB]\)$/i.test(n)
-      );
-      targetSheet = weeklySheets[0] ?? null;
+    let targetSheet: string | null = null;
+
+    if (tabOverride) {
+      // User explicitly selected a tab
+      targetSheet = sheetNames.find(s => s === tabOverride) ?? null;
+    } else {
+      // Auto-detect: prefer FREEZE tab for current swap period, then weekly tabs
+      // FREEZE tabs are finalized plans — always prefer over draft weekly sheets
+      const freezeSheets = sheetNames.filter(n => /^FREEZE\b/i.test(n));
+      if (freezeSheets.length > 0) {
+        targetSheet = freezeSheets[0]; // Most recent FREEZE tab
+      }
+      if (!targetSheet) {
+        // Fall back to weekly sheets — find most recent
+        const weeklySheets = sheetNames.filter(n =>
+          /^[A-Z]{3}\s+\d+-[A-Z]{3}\s+\d+\s*\([AB]\)$/i.test(n)
+        );
+        targetSheet = weeklySheets[0] ?? null;
+      }
     }
 
     if (!targetSheet) {
@@ -173,10 +190,10 @@ export async function GET(req: NextRequest) {
       const col2 = String(row[2] ?? "").trim();
       const col2Upper = col2.toUpperCase();
 
-      if (col2Upper === "ONCOMING PILOTS") { inOncoming = true; continue; }
+      if (col2Upper === "ONCOMING PILOTS" || col2Upper === "PILOT IN COMMAND") { inOncoming = true; currentRole = "PIC"; continue; }
       if (col2Upper === "OFFGOING PILOTS") { inOncoming = false; continue; }
-      if (col2Upper === "PILOT IN-COMMAND") { currentRole = "PIC"; continue; }
-      if (col2Upper === "SECOND IN-COMMAND") { currentRole = "SIC"; continue; }
+      if (col2Upper === "PILOT IN-COMMAND" || col2Upper.includes("PILOT IN")) { currentRole = "PIC"; continue; }
+      if (col2Upper === "SECOND IN-COMMAND" || col2Upper.includes("SECOND IN")) { currentRole = "SIC"; continue; }
       if (col2Upper.startsWith("NAME (HOME") || col2Upper === "SKILLBRIDGE" || !col2) continue;
 
       const parsed = parseCrewCell(col2);

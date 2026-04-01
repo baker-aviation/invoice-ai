@@ -929,9 +929,11 @@ function filterAlerts(flights: Flight[]): Flight[] {
   });
 }
 
-export default function OpsBoard({ initialFlights, bakerPprAirports, suppressedRunwayNotamIds = [], allRunwaysClosedAlerts = [] }: { initialFlights: Flight[]; bakerPprAirports: string[]; suppressedRunwayNotamIds?: string[]; allRunwaysClosedAlerts?: AllRwysClosedAlert[] }) {
+export default function OpsBoard({ initialFlights, bakerPprAirports, suppressedRunwayNotamIds = [], allRunwaysClosedAlerts = [], alertsLoading = false }: { initialFlights: Flight[]; bakerPprAirports: string[]; suppressedRunwayNotamIds?: string[]; allRunwaysClosedAlerts?: AllRwysClosedAlert[]; alertsLoading?: boolean }) {
   const now = useMemo(() => new Date(), []);
   const BAKER_PPR_AIRPORTS = useMemo(() => new Set(bakerPprAirports), [bakerPprAirports]);
+  const flights = initialFlights;
+
   const [activeFilter, setActiveFilter] = useState<AlertFilter>("ALL");
   const [notamSub, setNotamSub] = useState<NotamSubFilter>("ALL_NOTAMS");
   const [pprSub, setPprSub] = useState<PprSubFilter>("ALL_PPR");
@@ -970,7 +972,7 @@ export default function OpsBoard({ initialFlights, bakerPprAirports, suppressedR
 
   // Load per-flight NOTAM acks
   useEffect(() => {
-    const flightIds = initialFlights.map((f) => f.id);
+    const flightIds = flights.map((f) => f.id);
     if (flightIds.length === 0) return;
     // Batch flight IDs (URL length limit)
     const batches: string[][] = [];
@@ -994,7 +996,7 @@ export default function OpsBoard({ initialFlights, bakerPprAirports, suppressedR
       setNotamFlightAcks(acks);
       setNotamAckUsers(users);
     }).catch(() => {});
-  }, [initialFlights]);
+  }, [flights]);
 
   const togglePin = useCallback(async (alertId: string, pin: boolean) => {
     if (pin) {
@@ -1173,7 +1175,7 @@ export default function OpsBoard({ initialFlights, bakerPprAirports, suppressedR
   }, []);
 
   // Apply alert type filtering
-  const withFilteredAlerts = useMemo(() => filterAlerts(initialFlights), [initialFlights]);
+  const withFilteredAlerts = useMemo(() => filterAlerts(flights), [flights]);
 
   // Index all-runways-closed alerts by flight ID
   const rwysClosedByFlight = useMemo(() => {
@@ -1586,7 +1588,11 @@ export default function OpsBoard({ initialFlights, bakerPprAirports, suppressedR
           </div>
         </div>
         <div className="ml-auto text-xs text-gray-400">
-          Updated {now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC" })}Z
+          {alertsLoading ? (
+            <span className="text-blue-500 animate-pulse">Loading alerts…</span>
+          ) : (
+            <>Updated {now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC" })}Z</>
+          )}
         </div>
       </div>
 

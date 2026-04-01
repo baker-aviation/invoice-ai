@@ -110,6 +110,17 @@ export async function PATCH(
     update.info_session_attended_at = body.info_session_attended_at ?? null;
   }
 
+  // Email status fields
+  for (const field of ["interview_email_status", "info_session_email_status"] as const) {
+    if (field in body) {
+      const validStatuses = ["unknown", "sent", "not_sent"];
+      if (body[field] !== null && (typeof body[field] !== "string" || !validStatuses.includes(body[field] as string))) {
+        return NextResponse.json({ error: `Invalid ${field}` }, { status: 400 });
+      }
+      update[field] = body[field] ?? null;
+    }
+  }
+
   // Structured notes
   if ("structured_notes" in body) {
     const sn = body.structured_notes;

@@ -1,5 +1,15 @@
-// Drive time estimates using straight-line (haversine) distance + speed heuristic.
-// No external API needed — good enough for crew swap planning.
+// Drive time estimates — OSRM for real road routing, haversine as fallback.
+// OSRM results cached in Supabase `drive_time_cache` and in-memory Map.
+
+import { createServiceClient } from "@/lib/supabase/service";
+
+// ─── In-memory OSRM cache (populated by loadDriveTimeCache / fetchOSRMDriveTime) ──
+// Key: "ORIG|DEST", Value: { minutes, miles, source }
+const driveCache = new Map<string, { minutes: number; miles: number; source: string }>();
+
+function cacheKey(a: string, b: string): string {
+  return `${a.toUpperCase()}|${b.toUpperCase()}`;
+}
 
 // ─── Airport coordinates (US airports commonly used by Baker) ────────────────
 // ICAO → [lat, lon]. Add more as needed.
@@ -398,30 +408,47 @@ export type DriveEstimate = {
 };
 
 /**
- * Estimate drive time between two airports using straight-line distance.
- * Uses distance-dependent road multiplier (1.2x highway / 1.3x city) and 55 mph avg.
+ * Estimate drive time between two airports.
+ * Checks the in-memory OSRM cache first (populated by loadDriveTimeCache or warmDriveTimeCache).
+ * Falls back to haversine + road multiplier if no cached OSRM data.
  * All drive times rounded UP to nearest 15 minutes.
  */
 export function estimateDriveTime(originIcao: string, destIcao: string): DriveEstimate | null {
-  const orig = AIRPORT_COORDS[originIcao.toUpperCase()];
-  const dest = AIRPORT_COORDS[destIcao.toUpperCase()];
+  const o = originIcao.toUpperCase();
+  const d = destIcao.toUpperCase();
+  const orig = AIRPORT_COORDS[o];
+  const dest = AIRPORT_COORDS[d];
   if (!orig || !dest) return null;
 
   const straightMiles = haversineMiles(orig[0], orig[1], dest[0], dest[1]);
-  // Short distances (<50mi) use 1.3x (city driving is windier)
-  // Longer distances use 1.2x (highways are straighter)
+
+  // Check in-memory OSRM cache first
+  const cached = driveCache.get(cacheKey(o, d));
+  if (cached) {
+    const driveMinutes = Math.ceil(cached.minutes / 15) * 15;
+    return {
+      origin: o,
+      destination: d,
+      straight_line_miles: Math.round(straightMiles),
+      estimated_drive_miles: Math.round(cached.miles),
+      estimated_drive_minutes: driveMinutes,
+      feasible: driveMinutes <= 240,
+    };
+  }
+
+  // Fallback: haversine + road multiplier
   const roadMultiplier = straightMiles > 50 ? 1.2 : 1.3;
   const driveMiles = straightMiles * roadMultiplier;
   const rawMinutes = (driveMiles / 55) * 60; // 55 mph average
-  const driveMinutes = Math.ceil(rawMinutes / 15) * 15; // round UP to nearest 15 min
+  const driveMinutes = Math.ceil(rawMinutes / 15) * 15;
 
   return {
-    origin: originIcao.toUpperCase(),
-    destination: destIcao.toUpperCase(),
+    origin: o,
+    destination: d,
     straight_line_miles: Math.round(straightMiles),
     estimated_drive_miles: Math.round(driveMiles),
     estimated_drive_minutes: driveMinutes,
-    feasible: driveMinutes <= 240, // 4 hour cutoff
+    feasible: driveMinutes <= 240,
   };
 }
 
@@ -507,4 +534,203 @@ export function findNearbyCommercialAirports(
 
   results.sort((a, b) => a.distanceMiles - b.distanceMiles);
   return results;
+}
+
+// ─── OSRM Integration ────────────────────────────────────────────────────────
+// Free, keyless routing API. Results are cached in Supabase `drive_time_cache`
+// and in the module-level `driveCache` Map for synchronous access.
+
+const OSRM_BASE = "https://router.project-osrm.org/route/v1/driving";
+const OSRM_DELAY_MS = 200; // rate limit: ~5 req/sec
+
+/** Sleep helper for rate limiting */
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * Load ALL cached drive times from Supabase into the in-memory Map.
+ * Call once at startup (e.g., before the optimizer runs).
+ * Returns the number of entries loaded.
+ */
+export async function loadDriveTimeCache(): Promise<number> {
+  const sb = createServiceClient();
+  const { data, error } = await sb
+    .from("drive_time_cache")
+    .select("origin_icao, destination_icao, drive_minutes, drive_miles, source");
+
+  if (error) {
+    console.error("[driveTime] Failed to load drive_time_cache:", error.message);
+    return 0;
+  }
+
+  let count = 0;
+  for (const row of data ?? []) {
+    driveCache.set(cacheKey(row.origin_icao, row.destination_icao), {
+      minutes: Number(row.drive_minutes),
+      miles: Number(row.drive_miles),
+      source: row.source,
+    });
+    count++;
+  }
+
+  console.log(`[driveTime] Loaded ${count} cached drive times into memory`);
+  return count;
+}
+
+/**
+ * Fetch drive time from OSRM for a single airport pair.
+ * Stores result in both Supabase and in-memory cache.
+ * Returns null if OSRM fails (caller should fall back to haversine).
+ */
+export async function fetchOSRMDriveTime(
+  originIcao: string,
+  destIcao: string,
+): Promise<{ minutes: number; miles: number } | null> {
+  const o = originIcao.toUpperCase();
+  const d = destIcao.toUpperCase();
+
+  // Already in memory?
+  const existing = driveCache.get(cacheKey(o, d));
+  if (existing) return { minutes: existing.minutes, miles: existing.miles };
+
+  const orig = AIRPORT_COORDS[o];
+  const dest = AIRPORT_COORDS[d];
+  if (!orig || !dest) return null;
+
+  // OSRM uses lon,lat order (AIRPORT_COORDS stores [lat, lon])
+  const url = `${OSRM_BASE}/${orig[1]},${orig[0]};${dest[1]},${dest[0]}?overview=false`;
+
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+    if (!res.ok) {
+      console.warn(`[driveTime] OSRM HTTP ${res.status} for ${o}→${d}`);
+      return null;
+    }
+
+    const json = await res.json() as {
+      code: string;
+      routes?: { duration: number; distance: number }[];
+    };
+
+    if (json.code !== "Ok" || !json.routes?.length) {
+      console.warn(`[driveTime] OSRM no route for ${o}→${d}: ${json.code}`);
+      return null;
+    }
+
+    const route = json.routes[0];
+    const minutes = route.duration / 60;              // seconds → minutes
+    const miles = route.distance / 1609.344;          // meters → miles
+
+    // Store in memory
+    driveCache.set(cacheKey(o, d), { minutes, miles, source: "osrm" });
+
+    // Store in Supabase (fire and forget — don't block on this)
+    const sb = createServiceClient();
+    sb.from("drive_time_cache")
+      .upsert(
+        {
+          origin_icao: o,
+          destination_icao: d,
+          drive_minutes: Math.round(minutes * 10) / 10,
+          drive_miles: Math.round(miles * 10) / 10,
+          source: "osrm",
+          fetched_at: new Date().toISOString(),
+        },
+        { onConflict: "origin_icao,destination_icao" },
+      )
+      .then(({ error }) => {
+        if (error) console.warn(`[driveTime] Supabase upsert failed for ${o}→${d}:`, error.message);
+      });
+
+    return { minutes, miles };
+  } catch (err) {
+    console.warn(`[driveTime] OSRM fetch error for ${o}→${d}:`, err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
+/**
+ * Async drive time lookup: cache → OSRM → haversine fallback.
+ * Use this when you can await (e.g., transport-options route).
+ */
+export async function getAccurateDriveTime(
+  originIcao: string,
+  destIcao: string,
+): Promise<DriveEstimate | null> {
+  const o = originIcao.toUpperCase();
+  const d = destIcao.toUpperCase();
+  const orig = AIRPORT_COORDS[o];
+  const dest = AIRPORT_COORDS[d];
+  if (!orig || !dest) return null;
+
+  const straightMiles = haversineMiles(orig[0], orig[1], dest[0], dest[1]);
+
+  // Try OSRM (checks in-memory cache first, then fetches)
+  const osrm = await fetchOSRMDriveTime(o, d);
+  if (osrm) {
+    const driveMinutes = Math.ceil(osrm.minutes / 15) * 15;
+    return {
+      origin: o,
+      destination: d,
+      straight_line_miles: Math.round(straightMiles),
+      estimated_drive_miles: Math.round(osrm.miles),
+      estimated_drive_minutes: driveMinutes,
+      feasible: driveMinutes <= 240,
+    };
+  }
+
+  // Fallback to haversine
+  return estimateDriveTime(o, d);
+}
+
+/**
+ * Pre-fetch OSRM drive times for multiple airport pairs in batch.
+ * Rate-limited to ~5 req/sec. Skips pairs already in the in-memory cache.
+ * Call this once before the optimizer runs to warm the cache.
+ *
+ * @param pairs - Array of [originIcao, destIcao] tuples
+ * @returns Number of new OSRM lookups performed
+ */
+export async function warmDriveTimeCache(
+  pairs: [string, string][],
+): Promise<number> {
+  // Deduplicate
+  const needed = new Map<string, [string, string]>();
+  for (const [a, b] of pairs) {
+    const key = cacheKey(a, b);
+    if (!driveCache.has(key) && !needed.has(key)) {
+      needed.set(key, [a.toUpperCase(), b.toUpperCase()]);
+    }
+  }
+
+  if (needed.size === 0) {
+    console.log("[driveTime] warmDriveTimeCache: all pairs already cached");
+    return 0;
+  }
+
+  console.log(`[driveTime] warmDriveTimeCache: fetching ${needed.size} pairs from OSRM...`);
+  let fetched = 0;
+  let failures = 0;
+
+  for (const [, [o, d]] of needed) {
+    const result = await fetchOSRMDriveTime(o, d);
+    if (result) {
+      fetched++;
+    } else {
+      failures++;
+    }
+    // Rate limit — wait between requests (not after the last one)
+    if (fetched + failures < needed.size) {
+      await sleep(OSRM_DELAY_MS);
+    }
+  }
+
+  console.log(`[driveTime] warmDriveTimeCache: ${fetched} fetched, ${failures} failed (haversine fallback)`);
+  return fetched;
+}
+
+/** Get the current in-memory cache size (for diagnostics). */
+export function driveCacheSize(): number {
+  return driveCache.size;
 }
