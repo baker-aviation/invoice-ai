@@ -126,4 +126,14 @@ export async function listWeeklySheets(): Promise<string[]> {
     .filter(n => /[A-Z]{3}\s+\d+-[A-Z]{3}\s+\d+\s*\([AB]\)/i.test(n));
 }
 
+/**
+ * List FREEZE tabs (e.g., "FREEZE APR 1-APR 8 (B)").
+ */
+export async function listFreezeSheets(): Promise<string[]> {
+  const sheets = await listSheets();
+  return sheets
+    .map(s => s.title)
+    .filter(n => /^FREEZE\b/i.test(n));
+}
+
 export { CREW_INFO_SHEET_ID };

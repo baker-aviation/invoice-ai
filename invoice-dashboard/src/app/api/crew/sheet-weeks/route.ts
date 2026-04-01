@@ -1,17 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin, isAuthed } from "@/lib/api-auth";
-import { listWeeklySheets } from "@/lib/googleSheets";
+import { listWeeklySheets, listFreezeSheets } from "@/lib/googleSheets";
 
 export const dynamic = "force-dynamic";
 
-/** GET /api/crew/sheet-weeks — list available weekly swap tabs from Google Sheets */
+/** GET /api/crew/sheet-weeks — list available weekly swap tabs + freeze tabs from Google Sheets */
 export async function GET(req: NextRequest) {
   const auth = await requireAdmin(req);
   if (!isAuthed(auth)) return auth.error;
 
   try {
-    const weeks = await listWeeklySheets();
-    return NextResponse.json({ weeks });
+    const [weeks, freezeTabs] = await Promise.all([
+      listWeeklySheets(),
+      listFreezeSheets(),
+    ]);
+    return NextResponse.json({ weeks, freeze_tabs: freezeTabs });
   } catch (e) {
     return NextResponse.json(
       { error: e instanceof Error ? e.message : "Failed to list weeks" },
