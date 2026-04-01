@@ -43,6 +43,9 @@ export default function WebhookEvents() {
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [limit, setLimit] = useState(50);
 
+  const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState<string | null>(null);
+
   const fetchEvents = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -57,6 +60,23 @@ export default function WebhookEvents() {
       setLoading(false);
     }
   }, [limit]);
+
+  const handleSync = useCallback(async () => {
+    setSyncing(true);
+    setSyncResult(null);
+    try {
+      const res = await fetch("/api/cron/foreflight-sync");
+      const data = await res.json();
+      if (!res.ok) { setError(data.error ?? `HTTP ${res.status}`); return; }
+      setSyncResult(`Synced: ${data.inserted ?? 0} new, ${data.skipped ?? 0} unchanged`);
+      // Auto-refresh the list
+      await fetchEvents();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setSyncing(false);
+    }
+  }, [fetchEvents]);
 
   useEffect(() => { fetchEvents(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -77,6 +97,13 @@ export default function WebhookEvents() {
               <option value={100}>Last 100</option>
             </select>
             <button
+              onClick={handleSync}
+              disabled={syncing}
+              className="px-4 py-1.5 bg-green-600 text-white text-sm font-medium rounded-md hover:bg-green-500 disabled:opacity-50 transition-colors"
+            >
+              {syncing ? "Syncing..." : "Sync ForeFlight"}
+            </button>
+            <button
               onClick={fetchEvents}
               disabled={loading}
               className="px-4 py-1.5 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-500 disabled:opacity-50 transition-colors"
@@ -88,6 +115,7 @@ export default function WebhookEvents() {
         <p className="text-sm text-gray-500">
           Real-time events from ForeFlight Dispatch. Each event auto-fetches the full flight detail.
         </p>
+        {syncResult && <p className="mt-2 text-sm text-green-600">{syncResult}</p>}
         {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
       </div>
 
