@@ -891,7 +891,14 @@ function computeAllDayArrivals(allFlights: Flight[], date: string, flightInfoMap
   // Add overnight/parked aircraft: arrived BEFORE today, next departure is in the future.
   // These are sitting at an airport and serviceable by a van today.
   const nowIso = new Date().toISOString();
-  const todayTails = new Set(rawItems.map((i) => i.arrFlight.tail_number).filter(Boolean));
+  // Use ALL flights with today arrivals (not just filtered rawItems) so transient tails
+  // that were excluded by the transit filter still block stale overnight entries.
+  // Mirrors the todayTails logic in computeZoneItems.
+  const todayTails = new Set(
+    allFlights
+      .filter((f) => f.tail_number && f.scheduled_arrival && isOnVanScheduleDate(f.scheduled_arrival, date) && !(f.departure_icao && f.departure_icao === f.arrival_icao))
+      .map((f) => f.tail_number),
+  );
   const overnightArrivals = allFlights.filter((f) => {
     if (!f.arrival_icao || !f.scheduled_arrival || !f.tail_number) return false;
     // Must have arrived before today (using van schedule date boundary)
@@ -2605,8 +2612,17 @@ function VanScheduleCard({
             // Split items into overnight (parked) vs today's arrivals
             const todayEt = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
             const isViewingToday = date === todayEt;
+            // Safety: exclude "overnight" items whose tail actually has an inbound
+            // arrival today (e.g. stale draft override for a tail that has since moved)
+            const todayArrivalTails = allFlights ? new Set(
+              allFlights
+                .filter((f) => f.tail_number && f.scheduled_arrival && isOnVanScheduleDate(f.scheduled_arrival, date) && !(f.departure_icao && f.departure_icao === f.arrival_icao))
+                .map((f) => f.tail_number),
+            ) : new Set<string>();
             const overnightItems = items.filter(({ arrFlight }) =>
-              arrFlight.scheduled_arrival ? !isOnVanScheduleDate(arrFlight.scheduled_arrival, date) : false
+              arrFlight.scheduled_arrival
+                ? !isOnVanScheduleDate(arrFlight.scheduled_arrival, date) && !todayArrivalTails.has(arrFlight.tail_number ?? "")
+                : false
             );
             const todayItems = items.filter(({ arrFlight }) =>
               !arrFlight.scheduled_arrival || isOnVanScheduleDate(arrFlight.scheduled_arrival, date)
