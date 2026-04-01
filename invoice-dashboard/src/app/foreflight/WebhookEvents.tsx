@@ -109,15 +109,17 @@ export default function WebhookEvents() {
               <tbody>
                 {events.map(ev => {
                   const isExpanded = expandedId === ev.id;
-                  const fd = ev.flight_data?.flightData as Record<string, unknown> | undefined;
-                  const perf = ev.flight_data?.performance as Record<string, unknown> | undefined;
-                  const tail = (fd?.aircraftRegistration ?? "") as string;
-                  const dep = (fd?.departure ?? "") as string;
-                  const dest = (fd?.destination ?? "") as string;
+                  // Modified endpoint stores data at top level; webhook stores under flightData
+                  const raw = ev.flight_data ?? {};
+                  const fd = (raw.flightData ?? raw) as Record<string, unknown>;
+                  const perf = (raw.performance ?? {}) as Record<string, unknown>;
+                  const tail = (fd.aircraftRegistration ?? "") as string;
+                  const dep = (fd.departure ?? "") as string;
+                  const dest = (fd.destination ?? "") as string;
                   const fuel = perf?.fuel as Record<string, unknown> | undefined;
                   const times = perf?.times as Record<string, unknown> | undefined;
-                  const crew = (fd?.crew ?? []) as Array<{ position: string; crewId: string }>;
-                  const atcMessages = (ev.flight_data as Record<string, unknown>)?.filingInfo as Record<string, unknown> | undefined;
+                  const crew = (fd.crew ?? []) as Array<{ position: string; crewId: string }>;
+                  const filingInfo = (fd.filingInfo ?? raw.filingInfo ?? {}) as Record<string, unknown>;
 
                   return (
                     <tr key={ev.id} className="border-b border-gray-100">
@@ -188,11 +190,11 @@ export default function WebhookEvents() {
                             )}
 
                             {/* ATC Messages if Filing event */}
-                            {ev.change_type === "Filing" && atcMessages && (
+                            {ev.change_type === "Filing" && filingInfo && (
                               <div>
                                 <span className="text-xs text-gray-400 block mb-1">ATC Messages</span>
                                 <div className="space-y-1">
-                                  {((atcMessages.atcMessages ?? []) as Array<{ type: string; sender: string; content: string; timestamp: string }>).map((msg, i) => (
+                                  {((filingInfo.atcMessages ?? []) as Array<{ type: string; sender: string; content: string; timestamp: string }>).map((msg, i) => (
                                     <div key={i} className={`rounded border p-2 text-xs ${
                                       msg.type === "ACK" ? "border-green-200 bg-green-50" :
                                       msg.type === "FPL" ? "border-blue-200 bg-blue-50" :
