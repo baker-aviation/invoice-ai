@@ -240,51 +240,77 @@ function InfoSessionTools({ jobs, onAttendanceChecked }: { jobs: JobRow[]; onAtt
       {attendanceError && (
         <div className="text-[10px] px-2 py-1 rounded bg-red-50 text-red-600">{attendanceError}</div>
       )}
-      {attendanceResult && (
-        <div className="text-[10px] rounded border border-emerald-200 bg-emerald-50 overflow-hidden">
-          <div className="px-2 py-1 font-semibold text-emerald-700 border-b border-emerald-200">
-            {attendanceResult.summary} ({attendanceResult.totalParticipants} total)
-          </div>
-          {attendanceResult.matched.length > 0 && (
-            <div className="px-2 py-1 space-y-0.5">
-              <div className="font-semibold text-emerald-600">In Pipeline:</div>
-              {attendanceResult.matched.map((m, i) => (
-                <div key={`${m.email}-${i}`} className="text-emerald-700 flex items-center gap-1 flex-wrap">
-                  <span>{m.name}</span>
-                  <span className="text-emerald-400">({Math.round(m.durationSec / 60)}m)</span>
-                  {m.date && <span className="text-[9px] text-emerald-400">{fmtShortDate(m.date)}</span>}
-                  {m.stage && (
-                    <span className="text-[9px] px-1 rounded bg-emerald-100 text-emerald-600">{m.stage.replace(/_/g, " ")}</span>
+      {attendanceResult && (() => {
+        // Group all participants by date (most recent first)
+        const dateMap = new Map<string, {
+          matched: typeof attendanceResult.matched;
+          unmatched: typeof attendanceResult.unmatched;
+          internal: typeof attendanceResult.internal;
+        }>();
+        const ensureDate = (d: string) => {
+          if (!dateMap.has(d)) dateMap.set(d, { matched: [], unmatched: [], internal: [] });
+          return dateMap.get(d)!;
+        };
+        for (const m of attendanceResult.matched) ensureDate(m.date ?? "unknown").matched.push(m);
+        for (const u of attendanceResult.unmatched) {
+          if (typeof u === "string") { ensureDate("unknown").unmatched.push(u as any); }
+          else ensureDate(u.date ?? "unknown").unmatched.push(u);
+        }
+        for (const s of (attendanceResult.internal ?? [])) ensureDate(s.date ?? "unknown").internal.push(s);
+        const sortedDates = [...dateMap.keys()].sort((a, b) => b.localeCompare(a));
+
+        return (
+          <div className="text-[10px] rounded border border-emerald-200 bg-emerald-50 overflow-hidden">
+            <div className="px-2 py-1 font-semibold text-emerald-700 border-b border-emerald-200">
+              {attendanceResult.summary} ({attendanceResult.totalParticipants} total)
+            </div>
+            {sortedDates.map((date) => {
+              const group = dateMap.get(date)!;
+              const dateLabel = date === "unknown" ? "Unknown date" : fmtShortDate(date);
+              const count = group.matched.length + group.unmatched.length + group.internal.length;
+              return (
+                <div key={date} className="border-b border-emerald-100 last:border-b-0">
+                  <div className="px-2 py-1 font-bold text-emerald-800 bg-emerald-100/50">
+                    {dateLabel} <span className="font-normal text-emerald-500">({count})</span>
+                  </div>
+                  {group.matched.length > 0 && (
+                    <div className="px-2 py-0.5 space-y-0.5">
+                      <div className="font-semibold text-emerald-600">In Pipeline:</div>
+                      {group.matched.map((m, i) => (
+                        <div key={`${m.email}-${i}`} className="text-emerald-700 flex items-center gap-1 flex-wrap">
+                          <span>{m.name}</span>
+                          <span className="text-emerald-400">({Math.round(m.durationSec / 60)}m)</span>
+                          {m.stage && (
+                            <span className="text-[9px] px-1 rounded bg-emerald-100 text-emerald-600">{m.stage.replace(/_/g, " ")}</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {group.unmatched.length > 0 && (
+                    <div className="px-2 py-0.5 space-y-0.5">
+                      <div className="font-semibold text-gray-500">Not in pipeline:</div>
+                      {group.unmatched.map((u, i) => (
+                        <div key={typeof u === "string" ? u : `${u.email}-${i}`} className="text-gray-500">
+                          {typeof u === "string" ? u : <>{u.name} ({u.durationMin}m)</>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {group.internal.length > 0 && (
+                    <div className="px-2 py-0.5 space-y-0.5">
+                      <div className="font-semibold text-gray-400">Baker staff:</div>
+                      {group.internal.map((s, i) => (
+                        <div key={`${s.email}-${i}`} className="text-gray-400">{s.name} ({s.durationMin}m)</div>
+                      ))}
+                    </div>
                   )}
                 </div>
-              ))}
-            </div>
-          )}
-          {attendanceResult.unmatched.length > 0 && (
-            <div className="px-2 py-1 border-t border-emerald-200 space-y-0.5">
-              <div className="font-semibold text-gray-500">Not in pipeline:</div>
-              {attendanceResult.unmatched.map((u, i) => (
-                <div key={typeof u === "string" ? u : `${u.email}-${i}`} className="text-gray-500">
-                  {typeof u === "string" ? u : <>{u.name} ({u.durationMin}m) {u.date && <span className="text-gray-400">{fmtShortDate(u.date)}</span>}</>}
-                </div>
-              ))}
-            </div>
-          )}
-          {(attendanceResult.internal?.length ?? 0) > 0 && (
-            <div className="px-2 py-1 border-t border-emerald-200 space-y-0.5">
-              <div className="font-semibold text-gray-400">Baker staff:</div>
-              {attendanceResult.internal.map((s, i) => (
-                <div key={`${s.email}-${i}`} className="text-gray-400">{s.name} ({s.durationMin}m) {s.date && <span>{fmtShortDate(s.date)}</span>}</div>
-              ))}
-            </div>
-          )}
-          {attendanceResult.matched.length === 0 && attendanceResult.unmatched.length === 0 && (attendanceResult.internal?.length ?? 0) === 0 && attendanceResult.totalParticipants > 0 && (
-            <div className="px-2 py-1 text-gray-400 text-[9px] break-all">
-              {attendanceResult.totalParticipants} participants — matched:{attendanceResult.matched.length} unmatched:{attendanceResult.unmatched.length} internal:{attendanceResult.internal?.length ?? "undefined"}
-            </div>
-          )}
-        </div>
-      )}
+              );
+            })}
+          </div>
+        );
+      })()}
       {/* History toggle */}
       <button
         onClick={loadHistory}
