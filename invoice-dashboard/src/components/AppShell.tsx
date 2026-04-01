@@ -18,6 +18,8 @@ const NAV = [
   // { href: "/fees", label: "Fees", exact: false, adminOnly: false },
   { href: "/foreflight", label: "Fuel Planning", exact: false, adminOnly: false },
   { href: "/pilots", label: "Pilots", exact: false, adminOnly: false },
+  { href: "/aircraft", label: "Aircraft", exact: false, adminOnly: false },
+  { href: "/jetinsight", label: "JetInsight", exact: false, adminOnly: true },
   { href: "/health", label: "Health", exact: false, adminOnly: true },
   { href: "/admin/settings", label: "Admin", exact: false, adminOnly: true },
 ];
