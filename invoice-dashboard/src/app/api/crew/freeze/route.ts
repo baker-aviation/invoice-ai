@@ -224,8 +224,14 @@ function compareFreezeToPlan(
  * against the active swap plan in Supabase.
  */
 export async function GET(req: NextRequest) {
-  const auth = await requireAdmin(req);
-  if (!isAuthed(auth)) return auth.error;
+  // Allow service-key auth for CLI/script access
+  const serviceKey = req.headers.get("x-service-key");
+  const envKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const isServiceAuth = serviceKey && envKey && serviceKey.trim() === envKey.trim();
+  if (!isServiceAuth) {
+    const auth = await requireAdmin(req);
+    if (!isAuthed(auth)) return auth.error;
+  }
 
   const tab = req.nextUrl.searchParams.get("tab");
   if (!tab) {
