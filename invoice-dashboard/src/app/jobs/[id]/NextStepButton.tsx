@@ -39,10 +39,10 @@ export default function NextStepButton({
     if (!confirm(`Move this candidate to "${nextLabel}"?`)) return;
     setMoving(true);
     try {
-      await fetch("/api/jobs/pipeline", {
+      await fetch(`/api/jobs/${applicationId}/stage`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ application_id: applicationId, stage: nextStage }),
+        body: JSON.stringify({ stage: nextStage }),
       });
       router.refresh();
     } catch {} finally {

@@ -4,7 +4,6 @@ import { updateHiringStage, createCandidate } from "@/lib/jobApi";
 import type { HiringStage } from "@/lib/types";
 
 const VALID_STAGES: HiringStage[] = [
-  "chief_pilot_review",
   "screening",
   "info_session",
   "tims_review",

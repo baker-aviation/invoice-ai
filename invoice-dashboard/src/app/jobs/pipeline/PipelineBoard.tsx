@@ -13,11 +13,6 @@ const STAGE_META: Record<
   PipelineStage,
   { label: string; subtitle?: string; color: string; headerColor: string }
 > = {
-  chief_pilot_review: {
-    label: "Chief Pilot Review",
-    color: "border-red-200",
-    headerColor: "bg-red-100 text-red-700",
-  },
   screening: {
     label: "Screening",
     color: "border-blue-200",
@@ -25,6 +20,7 @@ const STAGE_META: Record<
   },
   info_session: {
     label: "Info Session",
+    subtitle: "Dropping here will send invite email",
     color: "border-cyan-200",
     headerColor: "bg-cyan-100 text-cyan-700",
   },
@@ -809,10 +805,22 @@ function SendInterviewEmailButton({ job }: { job: JobRow }) {
   );
 }
 
-function InterviewEmailStatusDropdown({ job }: { job: JobRow }) {
-  const [status, setStatus] = useState<string>(job.interview_email_status ?? "unknown");
+function EmailStatusDropdown({ job, field }: { job: JobRow; field: "interview_email_status" | "info_session_email_status" }) {
+  const sentAtField = field === "interview_email_status" ? "interview_email_sent_at" : "info_session_email_sent_at";
+  const sentAt = (job as any)[sentAtField];
+  const [status, setStatus] = useState<string>((job as any)[field] ?? (sentAt ? "sent" : "unknown"));
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+
+  // If email was auto-sent, show green badge instead of dropdown
+  if (sentAt && status === "sent") {
+    const dateStr = new Date(sentAt).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    return (
+      <div className="mt-2 text-[10px] text-emerald-600 font-medium">
+        Email sent {dateStr}
+      </div>
+    );
+  }
 
   async function handleChange(newStatus: string) {
     setStatus(newStatus);
@@ -822,7 +830,7 @@ function InterviewEmailStatusDropdown({ job }: { job: JobRow }) {
       await fetch(`/api/jobs/${job.application_id}/profile`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ interview_email_status: newStatus }),
+        body: JSON.stringify({ [field]: newStatus }),
       });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
@@ -1015,17 +1023,15 @@ function CandidateCard({
         </div>
       )}
 
-      {/* Interview email status dropdown */}
+      {/* Email status for auto-send stages */}
       {stage === "interview_scheduled" && (
-        <InterviewEmailStatusDropdown job={job} />
+        <EmailStatusDropdown job={job} field="interview_email_status" />
+      )}
+      {stage === "info_session" && (
+        <EmailStatusDropdown job={job} field="info_session_email_status" />
       )}
 
-      {/* Info session email button */}
-      {stage === "info_session" && (
-        <div className="mt-2">
-          <SendInfoSessionEmailButton job={job} />
-        </div>
-      )}
+      {/* Info session email button (kept for manual resend) */}
 
       {/* Info session attendance toggle */}
       {stage === "info_session" && (
