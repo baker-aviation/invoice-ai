@@ -46,10 +46,6 @@
       "schedule": "3,13,23,33,43,53 * * * *"
     },
     {
-      "path": "/api/cron/foreflight-sync",
-      "schedule": "*/5 * * * *"
-    },
-    {
       "path": "/api/cron/hiring-summary",
       "schedule": "0 22 * * *"
     }
