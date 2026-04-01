@@ -6,6 +6,16 @@ import { batchGetCommercialStatus, type CommercialFlightStatus } from "@/lib/fli
 export const dynamic = "force-dynamic";
 export const maxDuration = 300; // 5 min — may need to query ~100 flights at 1/sec
 
+// ── In-memory cache ─────────────────────────────────────────────────────────
+// Sheet data changes rarely on swap day → cache 10 min
+// FlightAware live status changes frequently → cache 2 min
+const SHEET_CACHE_MS = 10 * 60 * 1000; // 10 min
+const LIVE_CACHE_MS = 2 * 60 * 1000;   // 2 min
+
+type CacheEntry<T> = { data: T; timestamp: number };
+let sheetCache: CacheEntry<{ tab: string; oncoming: CrewTravel[]; offgoing: CrewTravel[]; swapDate: string; faTotal: number }> | null = null;
+let liveCache: CacheEntry<{ oncoming: CrewTravel[]; offgoing: CrewTravel[]; faResolved: number }> | null = null;
+
 type CrewTravel = {
   name: string;
   role: "PIC" | "SIC";
@@ -149,8 +159,41 @@ export async function GET(req: NextRequest) {
   const live = req.nextUrl.searchParams.get("live") === "true";
   // ?tab=... overrides auto-detection (e.g., ?tab=FREEZE APR 1-APR 8 (B))
   const tabOverride = req.nextUrl.searchParams.get("tab");
+  // ?refresh=true forces cache bypass
+  const forceRefresh = req.nextUrl.searchParams.get("refresh") === "true";
 
   try {
+    // ── Check live cache (FlightAware enriched) ──
+    if (live && !forceRefresh && !tabOverride && liveCache && (Date.now() - liveCache.timestamp < LIVE_CACHE_MS) && sheetCache) {
+      return NextResponse.json({
+        swap_date: sheetCache.data.swapDate,
+        sheet_name: sheetCache.data.tab,
+        oncoming: liveCache.data.oncoming,
+        offgoing: liveCache.data.offgoing,
+        fa_flights_resolved: liveCache.data.faResolved,
+        fa_flights_total: sheetCache.data.faTotal,
+        last_updated: new Date(liveCache.timestamp).toISOString(),
+        cached: true,
+      });
+    }
+
+    // ── Check sheet cache (no live enrichment) ──
+    if (!live && !forceRefresh && !tabOverride && sheetCache && (Date.now() - sheetCache.timestamp < SHEET_CACHE_MS)) {
+      // Re-run guessStatus since time has passed
+      const oncoming = sheetCache.data.oncoming.map(c => ({ ...c, status: guessStatus(c) }));
+      const offgoing = sheetCache.data.offgoing.map(c => ({ ...c, status: guessStatus(c) }));
+      return NextResponse.json({
+        swap_date: sheetCache.data.swapDate,
+        sheet_name: sheetCache.data.tab,
+        oncoming,
+        offgoing,
+        fa_flights_resolved: null,
+        fa_flights_total: sheetCache.data.faTotal,
+        last_updated: new Date(sheetCache.timestamp).toISOString(),
+        cached: true,
+      });
+    }
+
     const sheets = await listSheets();
     const sheetNames = sheets.map(s => s.title);
 
@@ -266,6 +309,20 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    // Save sheet data to cache (before live enrichment mutates the entries)
+    if (!tabOverride) {
+      sheetCache = {
+        data: {
+          tab: targetSheet,
+          oncoming: oncoming.map(c => ({ ...c })),
+          offgoing: offgoing.map(c => ({ ...c })),
+          swapDate,
+          faTotal: commercialFlightLegs.size,
+        },
+        timestamp: Date.now(),
+      };
+    }
+
     // Without ?live=true, return sheet data with time-based status guesses only
     if (!live) {
       return NextResponse.json({
@@ -377,6 +434,18 @@ export async function GET(req: NextRequest) {
         crew.live_departure = lastLegStatus.actual_departure ?? lastLegStatus.estimated_departure ?? null;
         crew.live_arrival = lastLegStatus.actual_arrival ?? lastLegStatus.estimated_arrival ?? null;
       }
+    }
+
+    // Cache live-enriched results
+    if (!tabOverride) {
+      liveCache = {
+        data: {
+          oncoming: oncoming.map(c => ({ ...c })),
+          offgoing: offgoing.map(c => ({ ...c })),
+          faResolved: faStatusMap.size,
+        },
+        timestamp: Date.now(),
+      };
     }
 
     return NextResponse.json({
