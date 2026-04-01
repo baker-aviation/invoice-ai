@@ -109,8 +109,9 @@ function extractMeetingCode(input: string): string | null {
 async function findAttendeeViaReports(
   token: string,
   meetingCode: string,
-): Promise<{ email: string; items: any[] } | null> {
+): Promise<{ email: string; items: any[]; _debug: any } | null> {
   const codeVariants = [meetingCode, meetingCode.replace(/-/g, "")];
+  const debugInfo: any = { codeVariants, results: [] };
 
   for (const code of codeVariants) {
     const url = new URL("https://admin.googleapis.com/admin/reports/v1/activity/users/all/applications/meet");
@@ -122,16 +123,25 @@ async function findAttendeeViaReports(
       headers: { Authorization: `Bearer ${token}` },
     });
 
+    const body = await res.json().catch(() => null);
+    debugInfo.results.push({
+      code,
+      status: res.status,
+      itemCount: body?.items?.length ?? 0,
+      hasItems: !!body?.items,
+      error: body?.error ?? null,
+    });
+
     if (!res.ok) continue;
 
-    const data = await res.json();
-    if (data.items?.length > 0) {
-      // Return the first attendee's email + all items for Baker staff extraction
-      const firstEmail = data.items[0]?.actor?.email?.toLowerCase();
-      return firstEmail ? { email: firstEmail, items: data.items } : null;
+    if (body?.items?.length > 0) {
+      const firstEmail = body.items[0]?.actor?.email?.toLowerCase();
+      debugInfo.firstEmail = firstEmail;
+      return firstEmail ? { email: firstEmail, items: body.items, _debug: debugInfo } : null;
     }
   }
-  return null;
+  debugInfo.outcome = "no_items_found";
+  return { email: "", items: [], _debug: debugInfo } as any;
 }
 
 /** Extract Baker staff from Admin Reports items (the proven old approach) */
@@ -526,6 +536,7 @@ export async function POST(req: NextRequest) {
         meetLink,
         meetApi: meetDebug,
         reportsAttendeeFound: reportsResult?.email ?? null,
+        reportsDebug: (reportsResult as any)?._debug ?? null,
         internalFromReports: internalFromReports.size,
       },
     });
