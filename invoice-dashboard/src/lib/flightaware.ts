@@ -488,6 +488,7 @@ export type CommercialFlightStatus = {
 export async function getCommercialFlightStatus(
   flightNumber: string,
   targetDate: string, // YYYY-MM-DD
+  expectedOrigin?: string | null, // IATA code to disambiguate (e.g., "ORD")
 ): Promise<CommercialFlightStatus | null> {
   // FA API wants ICAO idents (AAL1042 not AA1042)
   const iataToIcao: Record<string, string> = {
@@ -524,11 +525,28 @@ export async function getCommercialFlightStatus(
     if (flights.length === 0) return null;
 
     // Pick the flight that matches the target date (FA may return multiple days)
-    // Compare scheduled_out date against targetDate
-    const f = flights.find(fl => {
+    // and optionally the expected origin airport (same flight number can operate
+    // on multiple routes, e.g., AA1033 DFW→ORD and AA1033 ORD→BOS).
+    const dateMatches = flights.filter(fl => {
       const depDate = (fl.scheduled_out ?? fl.estimated_out ?? "").slice(0, 10);
       return depDate === targetDate;
-    }) ?? flights[0]; // fallback to first if no exact date match
+    });
+
+    let f: FaFlight;
+    if (dateMatches.length === 0) {
+      f = flights[0]; // fallback
+    } else if (dateMatches.length === 1 || !expectedOrigin) {
+      f = dateMatches[0];
+    } else {
+      // Disambiguate by origin airport
+      const originUpper = expectedOrigin.toUpperCase();
+      const originMatch = dateMatches.find(fl => {
+        const iata = fl.origin?.code_iata?.toUpperCase();
+        const icao = fl.origin?.code_icao?.toUpperCase();
+        return iata === originUpper || icao === originUpper || icao === `K${originUpper}`;
+      });
+      f = originMatch ?? dateMatches[0];
+    }
 
     const depDelay = f.departure_delay != null ? Math.round(f.departure_delay / 60) : null;
     const arrDelay = f.arrival_delay != null ? Math.round(f.arrival_delay / 60) : null;
@@ -580,15 +598,18 @@ const _commercialCache = new Map<string, { status: CommercialFlightStatus; cache
 export async function batchGetCommercialStatus(
   flightNumbers: string[],
   targetDate: string,
+  originHints?: Map<string, string>, // flightNumber → expected origin IATA
 ): Promise<Map<string, CommercialFlightStatus>> {
   const results = new Map<string, CommercialFlightStatus>();
   const unique = [...new Set(flightNumbers)];
   const now = Date.now();
 
-  // Return cached landed flights immediately (they won't change)
+  // Return cached flights immediately (they won't change once landed)
   const toFetch: string[] = [];
   for (const fn of unique) {
-    const cached = _commercialCache.get(`${fn}|${targetDate}`);
+    const hint = originHints?.get(fn);
+    const cacheKey = hint ? `${fn}|${targetDate}|${hint}` : `${fn}|${targetDate}`;
+    const cached = _commercialCache.get(cacheKey);
     if (cached) {
       // Landed flights are permanent; others cache for 5 min
       const ttl = (cached.status.status === "Landed" || cached.status.status === "Cancelled") ? 3600_000 : 300_000;
@@ -604,10 +625,12 @@ export async function batchGetCommercialStatus(
 
   for (let i = 0; i < toFetch.length; i++) {
     const fn = toFetch[i];
-    const status = await getCommercialFlightStatus(fn, targetDate);
+    const hint = originHints?.get(fn);
+    const status = await getCommercialFlightStatus(fn, targetDate, hint);
     if (status) {
       results.set(fn, status);
-      _commercialCache.set(`${fn}|${targetDate}`, { status, cachedAt: now });
+      const cacheKey = hint ? `${fn}|${targetDate}|${hint}` : `${fn}|${targetDate}`;
+      _commercialCache.set(cacheKey, { status, cachedAt: now });
     }
     // Rate limit: 100 req/sec on Premium — batch freely
     // Small pause every 50 to avoid burst issues
