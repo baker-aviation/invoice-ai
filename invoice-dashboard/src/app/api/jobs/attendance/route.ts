@@ -231,6 +231,7 @@ export async function POST(req: NextRequest) {
     // 3. List all conference records for this space
     let conferences: ConferenceRecord[] = [];
     let confPageToken: string | undefined;
+    let confDebug: any = {};
     do {
       const confUrl = new URL("https://meet.googleapis.com/v2/conferenceRecords");
       confUrl.searchParams.set("filter", `space.name="${spaceName}"`);
@@ -240,14 +241,33 @@ export async function POST(req: NextRequest) {
       const confRes = await fetch(confUrl.toString(), {
         headers: { Authorization: `Bearer ${meetToken}` },
       });
-      if (!confRes.ok) break;
 
-      const confData = await confRes.json();
-      conferences.push(...(confData.conferenceRecords ?? []));
-      confPageToken = confData.nextPageToken;
+      const confData = await confRes.json().catch(() => null);
+      confDebug = {
+        status: confRes.status,
+        filterUsed: `space.name="${spaceName}"`,
+        url: confUrl.toString().replace(/Bearer [^"]+/, "Bearer ***"),
+        response: confData,
+      };
+
+      if (!confRes.ok) {
+        console.error("[attendance] conferenceRecords failed:", confRes.status, confData);
+        break;
+      }
+
+      conferences.push(...(confData?.conferenceRecords ?? []));
+      confPageToken = confData?.nextPageToken;
     } while (confPageToken);
 
     if (conferences.length === 0) {
+      // Try listing ANY conference records (without filter) to verify API access
+      const testUrl = new URL("https://meet.googleapis.com/v2/conferenceRecords");
+      testUrl.searchParams.set("pageSize", "5");
+      const testRes = await fetch(testUrl.toString(), {
+        headers: { Authorization: `Bearer ${meetToken}` },
+      });
+      const testData = await testRes.json().catch(() => null);
+
       return NextResponse.json({
         ok: true,
         meetingCode,
@@ -256,7 +276,15 @@ export async function POST(req: NextRequest) {
         markedCount: 0,
         unmatched: [],
         internal: [],
-        _debug: { meetLink, spaceName, conferencesFound: 0 },
+        _debug: {
+          meetLink,
+          spaceName,
+          spaceResponse: space,
+          conferencesFound: 0,
+          confDebug,
+          unfilteredTest: { status: testRes.status, data: testData },
+          adminEmail: process.env.GOOGLE_MEET_ADMIN_EMAIL,
+        },
       });
     }
 
