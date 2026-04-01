@@ -1382,6 +1382,13 @@ function scoreCandidate(
     else if (bufferMin >= -120) score -= 2;                      // Up to 2hr late — acceptable
     else if (bufferMin >= -240) score -= 5;                      // Up to 4hr late — less ideal
     else score -= 10;                                             // 4+ hr late — poor
+
+    // ── Early arrival bonus (get new crews in ASAP) ────────────────────
+    // Nudge the optimizer toward earlier flights when costs are similar.
+    const arrLocalHour = getLocalHour(c.fboArrivalTime, task.swapPoint.icao);
+    if (arrLocalHour < 12) score += 15;        // Before noon — outstanding
+    else if (arrLocalHour < 14) score += 8;    // Before 2pm — great
+    else if (arrLocalHour < 16) score += 3;    // Before 4pm — decent
   }
 
   // ── Duty-on timing (avoid before 0400L) ────────────────────────────────
