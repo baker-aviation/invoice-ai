@@ -200,6 +200,9 @@ export type JobRow = {
   info_session_attended?: boolean | null;
   info_session_attended_at?: string | null;
 
+  interest_check_sent_at?: string | null;
+  interest_check_response?: string | null; // 'yes' | 'no' | null
+
   offer_sent_at?: string | null;
   offer_status?: string | null; // null | "draft" | "sent" | "accepted" | "declined"
 

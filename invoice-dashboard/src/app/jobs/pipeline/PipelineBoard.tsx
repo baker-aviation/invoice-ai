@@ -151,6 +151,8 @@ function InfoSessionTools({ jobs, onAttendanceChecked }: { jobs: JobRow[]; onAtt
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [expandedRecord, setExpandedRecord] = useState<number | null>(null);
+  const [sendingInterest, setSendingInterest] = useState(false);
+  const [interestResult, setInterestResult] = useState<{ sent: number; skipped: number; errors: string[] } | null>(null);
 
   // Load history on first expand
   const loadHistory = async () => {
@@ -308,6 +310,54 @@ function InfoSessionTools({ jobs, onAttendanceChecked }: { jobs: JobRow[]; onAtt
                 </div>
               );
             })}
+          </div>
+        );
+      })()}
+      {/* Send Still Interested? */}
+      {(() => {
+        const attended = jobs.filter((j) => j.info_session_attended && j.email && !j.interest_check_sent_at);
+        if (attended.length === 0 && !interestResult) return null;
+        return (
+          <div className="space-y-1">
+            {attended.length > 0 && (
+              <button
+                disabled={sendingInterest}
+                onClick={async () => {
+                  if (!confirm(`Send "Still interested?" email to ${attended.length} candidate${attended.length !== 1 ? "s" : ""}?`)) return;
+                  setSendingInterest(true);
+                  setInterestResult(null);
+                  try {
+                    const res = await fetch("/api/jobs/send-interest-check", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ application_ids: attended.map((j) => j.application_id) }),
+                    });
+                    const data = await res.json();
+                    if (data.ok) {
+                      setInterestResult(data);
+                      onAttendanceChecked?.();
+                    } else {
+                      setInterestResult({ sent: 0, skipped: 0, errors: [data.error] });
+                    }
+                  } catch (err: any) {
+                    setInterestResult({ sent: 0, skipped: 0, errors: [err.message] });
+                  } finally {
+                    setSendingInterest(false);
+                  }
+                }}
+                className="w-full text-[10px] font-medium px-2 py-1.5 rounded border border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100 transition-colors disabled:opacity-50"
+              >
+                {sendingInterest ? "Sending..." : `Send "Still Interested?" to ${attended.length}`}
+              </button>
+            )}
+            {interestResult && (
+              <div className="text-[10px] px-2 py-1 rounded bg-emerald-50 border border-emerald-200 text-emerald-700">
+                Sent {interestResult.sent}, skipped {interestResult.skipped}
+                {interestResult.errors.length > 0 && (
+                  <div className="text-red-500 mt-0.5">{interestResult.errors.join(", ")}</div>
+                )}
+              </div>
+            )}
           </div>
         );
       })()}
