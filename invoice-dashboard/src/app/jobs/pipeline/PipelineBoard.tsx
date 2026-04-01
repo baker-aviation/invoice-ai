@@ -134,6 +134,86 @@ function MeetingLinkTool({ settingsKey, placeholder, borderColor }: { settingsKe
   );
 }
 
+function DateGroupContent({ group }: { group: { matched: any[]; unmatched: any[]; internal: any[] } }) {
+  return (
+    <>
+      {group.matched.length > 0 && (
+        <div className="px-2 py-0.5 space-y-0.5">
+          <div className="font-semibold text-emerald-600">In Pipeline:</div>
+          {group.matched.map((m: any, i: number) => (
+            <div key={`${m.email}-${i}`} className="text-emerald-700 flex items-center gap-1 flex-wrap">
+              <span>{m.name}</span>
+              <span className="text-emerald-400">({Math.round(m.durationSec / 60)}m)</span>
+              {m.stage && (
+                <span className="text-[9px] px-1 rounded bg-emerald-100 text-emerald-600">{m.stage.replace(/_/g, " ")}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {group.unmatched.length > 0 && (
+        <div className="px-2 py-0.5 space-y-0.5">
+          <div className="font-semibold text-gray-500">Not in pipeline:</div>
+          {group.unmatched.map((u: any, i: number) => (
+            <div key={typeof u === "string" ? u : `${u.email}-${i}`} className="text-gray-500">
+              {typeof u === "string" ? u : <>{u.name} ({u.durationMin}m)</>}
+            </div>
+          ))}
+        </div>
+      )}
+      {group.internal.length > 0 && (
+        <div className="px-2 py-0.5 space-y-0.5">
+          <div className="font-semibold text-gray-400">Baker staff:</div>
+          {group.internal.map((s: any, i: number) => (
+            <div key={`${s.email}-${i}`} className="text-gray-400">{s.name} ({s.durationMin}m)</div>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+function AttendanceDateList({ sortedDates, dateMap }: { sortedDates: string[]; dateMap: Map<string, any> }) {
+  const [showOlder, setShowOlder] = useState(false);
+  const recent = sortedDates.slice(0, 3);
+  const older = sortedDates.slice(3);
+
+  return (
+    <>
+      {recent.map((date, i) => {
+        const group = dateMap.get(date)!;
+        const dateLabel = date === "unknown" ? "Unknown date" : fmtShortDate(date);
+        const count = group.matched.length + group.unmatched.length + group.internal.length;
+        return (
+          <CollapsibleDateGroup key={date} dateLabel={dateLabel} count={count} defaultOpen={i === 0}>
+            <DateGroupContent group={group} />
+          </CollapsibleDateGroup>
+        );
+      })}
+      {older.length > 0 && (
+        <div className="border-b border-emerald-100">
+          <button
+            onClick={() => setShowOlder(!showOlder)}
+            className="w-full px-2 py-1 text-[10px] text-gray-500 bg-gray-50 hover:bg-gray-100 transition-colors text-center font-medium"
+          >
+            {showOlder ? "Hide older sessions" : `Show ${older.length} older session${older.length !== 1 ? "s" : ""}...`}
+          </button>
+          {showOlder && older.map((date) => {
+            const group = dateMap.get(date)!;
+            const dateLabel = date === "unknown" ? "Unknown date" : fmtShortDate(date);
+            const count = group.matched.length + group.unmatched.length + group.internal.length;
+            return (
+              <CollapsibleDateGroup key={date} dateLabel={dateLabel} count={count} defaultOpen={false}>
+                <DateGroupContent group={group} />
+              </CollapsibleDateGroup>
+            );
+          })}
+        </div>
+      )}
+    </>
+  );
+}
+
 function CollapsibleDateGroup({ dateLabel, count, defaultOpen, children }: { dateLabel: string; count: number; defaultOpen: boolean; children: React.ReactNode }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
@@ -301,49 +381,7 @@ function InfoSessionTools({ jobs, onAttendanceChecked }: { jobs: JobRow[]; onAtt
             <div className="px-2 py-1 font-semibold text-emerald-700 border-b border-emerald-200">
               {attendanceResult.summary} ({attendanceResult.totalParticipants} total)
             </div>
-            {sortedDates.map((date, dateIdx) => {
-              const group = dateMap.get(date)!;
-              const dateLabel = date === "unknown" ? "Unknown date" : fmtShortDate(date);
-              const count = group.matched.length + group.unmatched.length + group.internal.length;
-              const isLatest = dateIdx === 0;
-              const [expanded, setExpanded] = [isLatest, () => {}]; // latest always open
-              return (
-                <CollapsibleDateGroup key={date} dateLabel={dateLabel} count={count} defaultOpen={isLatest}>
-                  {group.matched.length > 0 && (
-                    <div className="px-2 py-0.5 space-y-0.5">
-                      <div className="font-semibold text-emerald-600">In Pipeline:</div>
-                      {group.matched.map((m, i) => (
-                        <div key={`${m.email}-${i}`} className="text-emerald-700 flex items-center gap-1 flex-wrap">
-                          <span>{m.name}</span>
-                          <span className="text-emerald-400">({Math.round(m.durationSec / 60)}m)</span>
-                          {m.stage && (
-                            <span className="text-[9px] px-1 rounded bg-emerald-100 text-emerald-600">{m.stage.replace(/_/g, " ")}</span>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {group.unmatched.length > 0 && (
-                    <div className="px-2 py-0.5 space-y-0.5">
-                      <div className="font-semibold text-gray-500">Not in pipeline:</div>
-                      {group.unmatched.map((u, i) => (
-                        <div key={typeof u === "string" ? u : `${u.email}-${i}`} className="text-gray-500">
-                          {typeof u === "string" ? u : <>{u.name} ({u.durationMin}m)</>}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {group.internal.length > 0 && (
-                    <div className="px-2 py-0.5 space-y-0.5">
-                      <div className="font-semibold text-gray-400">Baker staff:</div>
-                      {group.internal.map((s, i) => (
-                        <div key={`${s.email}-${i}`} className="text-gray-400">{s.name} ({s.durationMin}m)</div>
-                      ))}
-                    </div>
-                  )}
-                </CollapsibleDateGroup>
-              );
-            })}
+            <AttendanceDateList sortedDates={sortedDates} dateMap={dateMap} />
           </div>
         );
       })()}
