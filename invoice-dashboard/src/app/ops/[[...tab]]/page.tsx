@@ -5,7 +5,7 @@ import { AutoRefresh } from "@/components/AutoRefresh";
 import { fetchFlightsLite, fetchMxNotes, fetchSwimFlowControl } from "@/lib/opsApi";
 import { fetchAdvertisedPrices } from "@/lib/invoiceApi";
 import { createClient } from "@/lib/supabase/server";
-import OpsTabs from "./OpsTabs";
+import OpsTabs from "../OpsTabs";
 
 // Fetch ops data on each request (no unstable_cache — payload exceeds
 // Vercel's 2 MB cache-item limit when flights + alerts are large).
@@ -23,7 +23,9 @@ async function getOpsData() {
   return { data, advertisedPrices, mxNotes, swimFlow, pprRows };
 }
 
-export default async function OpsPage() {
+export default async function OpsPage({ params }: { params: Promise<{ tab?: string[] }> }) {
+  const { tab: tabSegments } = await params;
+  const initialTab = tabSegments?.[0] ?? null;
   let error: string | null = null;
   const { data, advertisedPrices, mxNotes, swimFlow, pprRows } = await getOpsData().catch((e) => {
     error = String(e);
@@ -48,7 +50,7 @@ export default async function OpsPage() {
           <strong>API error:</strong> {displayError}
         </div>
       )}
-      <OpsTabs flights={data.flights} bakerPprAirports={bakerPprAirports} advertisedPrices={advertisedPrices} mxNotes={mxNotes} swimFlow={swimFlow} suppressedRunwayNotamIds={data.suppressedRunwayNotamIds ?? []} allRunwaysClosedAlerts={data.allRunwaysClosedAlerts ?? []} />
+      <OpsTabs flights={data.flights} bakerPprAirports={bakerPprAirports} advertisedPrices={advertisedPrices} mxNotes={mxNotes} swimFlow={swimFlow} suppressedRunwayNotamIds={data.suppressedRunwayNotamIds ?? []} allRunwaysClosedAlerts={data.allRunwaysClosedAlerts ?? []} initialTab={initialTab} />
     </>
   );
 }
