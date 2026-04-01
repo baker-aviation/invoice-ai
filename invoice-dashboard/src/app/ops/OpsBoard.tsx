@@ -938,15 +938,21 @@ function filterAlerts(flights: Flight[]): Flight[] {
     const shown = (f.alerts ?? []).filter((a) => ALERT_TYPES_SHOWN.has(a.alert_type));
     // Deduplicate NOTAMs by normalized body + airport to collapse
     // domestic (03/533) vs ICAO (A5247/26) duplicates from the FAA API.
-    const seen = new Set<string>();
-    const deduped = shown.filter((a) => {
-      if (!a.alert_type.startsWith("NOTAM")) return true;
+    // Keep the version with the longer body (more detail, e.g. "DLY 0630-1315").
+    const notamByKey = new Map<string, OpsAlert>();
+    const nonNotams: OpsAlert[] = [];
+    for (const a of shown) {
+      if (!a.alert_type.startsWith("NOTAM")) {
+        nonNotams.push(a);
+        continue;
+      }
       const key = `${normalizeNotamBody(a.body, a.airport_icao)}|${a.airport_icao ?? ""}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-    return { ...f, alerts: deduped };
+      const existing = notamByKey.get(key);
+      if (!existing || (a.body ?? "").length > (existing.body ?? "").length) {
+        notamByKey.set(key, a);
+      }
+    }
+    return { ...f, alerts: [...nonNotams, ...notamByKey.values()] };
   });
 }
 
