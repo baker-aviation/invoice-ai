@@ -16,6 +16,18 @@ type CacheEntry<T> = { data: T; timestamp: number };
 let sheetCache: CacheEntry<{ tab: string; oncoming: CrewTravel[]; offgoing: CrewTravel[]; swapDate: string; faTotal: number }> | null = null;
 let liveCache: CacheEntry<{ oncoming: CrewTravel[]; offgoing: CrewTravel[]; faResolved: number }> | null = null;
 
+type LegDetail = {
+  flight_number: string;
+  status: string; // "Scheduled" | "Departed" | "En Route" | "Landed" | "Arrived"
+  delay_minutes: number | null;
+  origin: string; // IATA (from ICAO)
+  destination: string; // IATA (from ICAO)
+  scheduled_departure: string | null; // ISO
+  actual_departure: string | null; // ISO
+  estimated_arrival: string | null; // ISO
+  actual_arrival: string | null; // ISO
+};
+
 type CrewTravel = {
   name: string;
   role: "PIC" | "SIC";
@@ -41,6 +53,8 @@ type CrewTravel = {
   live_departure: string | null;
   live_arrival: string | null;
   delay_minutes: number | null;
+  leg_details: LegDetail[];
+  connection_at_risk: boolean;
 };
 
 const EMOJI_TYPE: Record<string, string> = {
@@ -275,6 +289,8 @@ export async function GET(req: NextRequest) {
         live_departure: null,
         live_arrival: null,
         delay_minutes: null,
+        leg_details: [],
+        connection_at_risk: false,
       };
 
       // Guess status based on time
@@ -370,13 +386,85 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    // Helper: convert ICAO code to IATA-ish (strip K prefix for US)
+    const icaoToIata = (icao: string | undefined | null): string => {
+      if (!icao) return "?";
+      // US airports: KJFK → JFK, KLAX → LAX
+      if (icao.length === 4 && icao.startsWith("K")) return icao.slice(1);
+      // Canadian: CYYZ → YYZ
+      if (icao.length === 4 && icao.startsWith("C")) return icao.slice(1);
+      return icao;
+    };
+
+    // Helper: describe a single leg's delay concisely
+    const legDelayLabel = (fa: CommercialFlightStatus): string => {
+      const delay = fa.arrival_delay_minutes ?? fa.departure_delay_minutes ?? 0;
+      if (fa.cancelled) return "cancelled";
+      if (delay > 10) return `+${delay}m late`;
+      if (fa.status === "Landed" || fa.status === "Arrived") return "landed";
+      if (fa.status === "En Route" || fa.status === "Departed") return "en route";
+      return "on time";
+    };
+
     // Apply FA status to crew entries
     for (const crew of allCrew) {
       if (crew.transport_type !== "commercial" || crew.flight_numbers.length === 0) continue;
 
-      // For connections, use the LAST leg's status (that's what determines arrival)
-      // But if any leg is cancelled/delayed, flag it
-      let worstStatus: CrewTravel["status"] = "arrived_fbo";
+      // ── Build leg_details ──
+      const legs: LegDetail[] = [];
+      for (const fn of crew.flight_numbers) {
+        const fa = faStatusMap.get(fn);
+        if (fa) {
+          legs.push({
+            flight_number: fn,
+            status: fa.cancelled ? "Cancelled" : (fa.status ?? "Scheduled"),
+            delay_minutes: fa.arrival_delay_minutes ?? fa.departure_delay_minutes ?? null,
+            origin: icaoToIata(fa.origin_icao),
+            destination: icaoToIata(fa.destination_icao),
+            scheduled_departure: fa.estimated_departure ?? null,
+            actual_departure: fa.actual_departure ?? null,
+            estimated_arrival: fa.estimated_arrival ?? null,
+            actual_arrival: fa.actual_arrival ?? null,
+          });
+        } else {
+          // No FA data yet — placeholder
+          legs.push({
+            flight_number: fn,
+            status: "Scheduled",
+            delay_minutes: null,
+            origin: "",
+            destination: "",
+            scheduled_departure: null,
+            actual_departure: null,
+            estimated_arrival: null,
+            actual_arrival: null,
+          });
+        }
+      }
+      crew.leg_details = legs;
+
+      // ── Connection risk detection ──
+      // If leg N's ETA is less than 45min before leg N+1's scheduled departure
+      const CONNECTION_MIN_BUFFER = 45; // minutes
+      crew.connection_at_risk = false;
+      let connectionGapMinutes: number | null = null;
+      if (legs.length >= 2) {
+        for (let i = 0; i < legs.length - 1; i++) {
+          const thisLeg = legs[i];
+          const nextLeg = legs[i + 1];
+          const thisArrival = thisLeg.actual_arrival ?? thisLeg.estimated_arrival;
+          const nextDeparture = nextLeg.actual_departure ?? nextLeg.scheduled_departure;
+          if (thisArrival && nextDeparture) {
+            const gap = (new Date(nextDeparture).getTime() - new Date(thisArrival).getTime()) / 60000;
+            if (gap < CONNECTION_MIN_BUFFER) {
+              crew.connection_at_risk = true;
+              connectionGapMinutes = Math.round(gap);
+            }
+          }
+        }
+      }
+
+      // ── Overall status from legs (same logic as before, but enriched) ──
       let totalDelay = 0;
       let anyLanded = false;
       let allLanded = true;
@@ -418,14 +506,12 @@ export async function GET(req: NextRequest) {
           const firstFa = faStatusMap.get(crew.flight_numbers[0]);
           if (firstFa?.status === "Landed" || firstFa?.status === "Arrived") {
             crew.status = "en_route"; // in transit between connections
-            crew.status_detail = `${crew.flight_numbers[0]} landed, connecting to ${crew.flight_numbers[crew.flight_numbers.length - 1]}`;
           }
         }
 
         if (totalDelay > 15) {
           crew.delay_minutes = totalDelay;
           if ((crew.status as string) !== "cancelled") {
-            crew.status_detail = `Delayed ${totalDelay}min`;
             if (crew.status === "scheduled") crew.status = "delayed";
           }
         }
@@ -433,6 +519,41 @@ export async function GET(req: NextRequest) {
         // Set live times from FA
         crew.live_departure = lastLegStatus.actual_departure ?? lastLegStatus.estimated_departure ?? null;
         crew.live_arrival = lastLegStatus.actual_arrival ?? lastLegStatus.estimated_arrival ?? null;
+      }
+
+      // ── Build descriptive status_detail from per-leg info ──
+      if ((crew.status as string) !== "cancelled") {
+        const faLegs = crew.flight_numbers.map(fn => faStatusMap.get(fn)).filter(Boolean) as CommercialFlightStatus[];
+        if (faLegs.length > 0) {
+          if (crew.flight_numbers.length === 1) {
+            // Single leg: "AA820 +42min late" or "AA820 on time"
+            const fa = faLegs[0];
+            const delay = fa.arrival_delay_minutes ?? fa.departure_delay_minutes ?? 0;
+            if (fa.cancelled) {
+              crew.status_detail = `${crew.flight_numbers[0]} cancelled`;
+            } else if (delay > 10) {
+              crew.status_detail = `${crew.flight_numbers[0]} +${delay}min late`;
+            } else if (fa.status === "Landed" || fa.status === "Arrived") {
+              crew.status_detail = `${crew.flight_numbers[0]} landed`;
+            } else if (fa.status === "En Route" || fa.status === "Departed") {
+              crew.status_detail = `${crew.flight_numbers[0]} en route`;
+            } else {
+              crew.status_detail = `${crew.flight_numbers[0]} on time`;
+            }
+          } else {
+            // Multi-leg: "AA820 +42min late, AA1033 on time — connection tight (38min)"
+            const parts = crew.flight_numbers.map(fn => {
+              const fa = faStatusMap.get(fn);
+              if (!fa) return `${fn} pending`;
+              return `${fn} ${legDelayLabel(fa)}`;
+            });
+            let detail = parts.join(", ");
+            if (crew.connection_at_risk && connectionGapMinutes != null) {
+              detail += ` — connection tight (${connectionGapMinutes}min)`;
+            }
+            crew.status_detail = detail;
+          }
+        }
       }
     }
 
