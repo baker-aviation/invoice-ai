@@ -1470,6 +1470,8 @@ function isMxNoteVisibleOnVan(
 ): boolean {
   if (isMxHiddenForToday(note, hiddenIds)) return false;
   if (!shouldShowMxOnVan(note, vanId, overrides)) return false;
+  // If scheduled_date matches the view date, always show
+  if (note.scheduled_date === viewDate) return true;
   const toEtDate = (iso: string) => new Date(iso).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
   const startDate = note.start_time ? toEtDate(note.start_time) : null;
   const endDate = note.end_time ? toEtDate(note.end_time) : startDate;
@@ -1560,6 +1562,8 @@ function MxNoteInline({ notes, hiddenIds, onHideForToday, vanOverrides, onVanOve
     if (isMel(n)) return false;
     // Filter by van — only show notes that belong to this van
     if (vanId != null && !shouldShowMxOnVan(n, vanId, vanOverrides)) return false;
+    // If scheduled_date matches the view date, always show
+    if (n.scheduled_date === targetDate) return true;
     // Compare dates in ET timezone (ISO strings are UTC, display is ET)
     const startDate = n.start_time ? toEtDate(n.start_time) : null;
     const endDate = n.end_time ? toEtDate(n.end_time) : startDate;
