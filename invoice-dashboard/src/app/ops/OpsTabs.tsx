@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import type { Flight, MxNote, SwimFlowEvent } from "@/lib/opsApi";
 import type { AllRwysClosedAlert } from "@/lib/runwayData";
 import type { AdvertisedPriceRow } from "@/lib/types";
@@ -19,6 +19,28 @@ export default function OpsTabs({ flights, bakerPprAirports, advertisedPrices, m
   const [scrollToTail, setScrollToTail] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
+
+  // Lazy-load full flights+alerts once (persists across tab switches).
+  // initialFlights from page.tsx use fetchFlightsLite (no alerts).
+  const [alertFlights, setAlertFlights] = useState<Flight[] | null>(null);
+  const [alertSuppressedIds, setAlertSuppressedIds] = useState(suppressedRunwayNotamIds);
+  const [alertRwysClosed, setAlertRwysClosed] = useState(allRunwaysClosedAlerts);
+  const [alertsLoading, setAlertsLoading] = useState(true);
+  const fetchedRef = useRef(false);
+
+  useEffect(() => {
+    if (fetchedRef.current) return;
+    fetchedRef.current = true;
+    fetch("/api/ops/flights?lookahead_hours=720&lookback_hours=12")
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.flights) setAlertFlights(data.flights);
+        if (data.suppressedRunwayNotamIds) setAlertSuppressedIds(data.suppressedRunwayNotamIds);
+        if (data.allRunwaysClosedAlerts) setAlertRwysClosed(data.allRunwaysClosedAlerts);
+      })
+      .catch((err) => console.error("[OpsTabs] alert fetch error:", err))
+      .finally(() => setAlertsLoading(false));
+  }, []);
 
   function switchToDuty(tail?: string) {
     setScrollToTail(tail ?? null);
@@ -84,7 +106,7 @@ export default function OpsTabs({ flights, bakerPprAirports, advertisedPrices, m
       ) : tab === "Flight Time & Rest" ? (
         <DutyTracker flights={flights} scrollToTail={scrollToTail} onScrollComplete={() => setScrollToTail(null)} />
       ) : tab === "NOTAMs & PPRs" ? (
-        <OpsBoard initialFlights={flights} bakerPprAirports={bakerPprAirports} suppressedRunwayNotamIds={suppressedRunwayNotamIds} allRunwaysClosedAlerts={allRunwaysClosedAlerts} />
+        <OpsBoard initialFlights={alertFlights ?? flights} bakerPprAirports={bakerPprAirports} suppressedRunwayNotamIds={alertSuppressedIds} allRunwaysClosedAlerts={alertRwysClosed} alertsLoading={alertsLoading} />
       ) : tab === "Crew Swap" ? (
         <CrewSwap flights={flights} />
       ) : tab === "Swap Status" ? (
