@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireAdmin, isAuthed } from "@/lib/api-auth";
+import { requireAdmin } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
 
 export const dynamic = "force-dynamic";
@@ -29,7 +29,7 @@ export async function GET(req: NextRequest) {
 
 // ─── Google Auth: JWT → Access Token ───────────────────────────────────
 
-async function getGoogleAccessToken(): Promise<string> {
+async function getGoogleAccessToken(scopes: string[]): Promise<string> {
   const email = process.env.GOOGLE_MEET_SA_EMAIL;
   const rawKey = process.env.GOOGLE_MEET_SA_PRIVATE_KEY;
   const adminEmail = process.env.GOOGLE_MEET_ADMIN_EMAIL;
@@ -39,7 +39,7 @@ async function getGoogleAccessToken(): Promise<string> {
   }
 
   const key = rawKey.replace(/\\n/g, "\n");
-  const scope = "https://www.googleapis.com/auth/admin.reports.audit.readonly";
+  const scope = scopes.join(" ");
   const now = Math.floor(Date.now() / 1000);
 
   const header = { alg: "RS256", typ: "JWT" };
@@ -57,7 +57,6 @@ async function getGoogleAccessToken(): Promise<string> {
 
   const unsigned = `${b64url(header)}.${b64url(payload)}`;
 
-  // Import PEM key and sign
   const pemBody = key
     .replace("-----BEGIN PRIVATE KEY-----", "")
     .replace("-----END PRIVATE KEY-----", "")
@@ -80,7 +79,6 @@ async function getGoogleAccessToken(): Promise<string> {
 
   const jwt = `${unsigned}.${Buffer.from(signature).toString("base64url")}`;
 
-  // Exchange JWT for access token
   const res = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -99,13 +97,83 @@ async function getGoogleAccessToken(): Promise<string> {
 // ─── Extract meeting code from URL ─────────────────────────────────────
 
 function extractMeetingCode(input: string): string | null {
-  // "https://meet.google.com/esm-cnwb-xxx" → "esm-cnwb-xxx"
   const urlMatch = input.match(/meet\.google\.com\/([a-z]{3}-[a-z]{4}-[a-z]{3})/i);
   if (urlMatch) return urlMatch[1].toLowerCase();
-  // Already a code like "esm-cnwb-xxx"
   const codeMatch = input.match(/^([a-z]{3}-[a-z]{4}-[a-z]{3})$/i);
   if (codeMatch) return codeMatch[1].toLowerCase();
   return null;
+}
+
+// ─── Meet API v2 helpers ───────────────────────────────────────────────
+
+interface MeetParticipant {
+  name: string;
+  earliestStartTime?: string;
+  latestEndTime?: string;
+  signedinUser?: { user: string; displayName: string };
+  anonymousUser?: { displayName: string };
+  phoneUser?: { displayName: string };
+}
+
+interface ConferenceRecord {
+  name: string;
+  startTime: string;
+  endTime?: string;
+  space: string;
+}
+
+/** Fetch all participants for a conference record (handles pagination) */
+async function listParticipants(token: string, conferenceRecord: string): Promise<MeetParticipant[]> {
+  const all: MeetParticipant[] = [];
+  let pageToken: string | undefined;
+
+  do {
+    const url = new URL(`https://meet.googleapis.com/v2/${conferenceRecord}/participants`);
+    url.searchParams.set("pageSize", "250");
+    if (pageToken) url.searchParams.set("pageToken", pageToken);
+
+    const res = await fetch(url.toString(), {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) break;
+
+    const data = await res.json();
+    all.push(...(data.participants ?? []));
+    pageToken = data.nextPageToken;
+  } while (pageToken);
+
+  return all;
+}
+
+/** Resolve signed-in user IDs → emails via Admin Directory API (internal users only) */
+async function resolveEmails(token: string, userIds: string[]): Promise<Map<string, string>> {
+  const emailMap = new Map<string, string>();
+  if (userIds.length === 0) return emailMap;
+
+  const results = await Promise.allSettled(
+    userIds.map(async (uid) => {
+      const numericId = uid.replace("users/", "");
+      const res = await fetch(
+        `https://admin.googleapis.com/admin/directory/v1/users/${numericId}?projection=basic`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      if (!res.ok) return null;
+      const user = await res.json();
+      return { uid, email: (user.primaryEmail as string)?.toLowerCase() };
+    }),
+  );
+
+  for (const r of results) {
+    if (r.status === "fulfilled" && r.value?.email) {
+      emailMap.set(r.value.uid, r.value.email);
+    }
+  }
+  return emailMap;
+}
+
+/** Normalize a name for fuzzy comparison */
+function normName(n: string): string {
+  return n.toLowerCase().replace(/[^a-z]/g, "");
 }
 
 // ─── Main endpoint ─────────────────────────────────────────────────────
@@ -132,79 +200,147 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    // 1. Get Google access token
-    const token = await getGoogleAccessToken();
+    // 1. Get tokens — Meet API + Admin Directory for email resolution
+    const meetToken = await getGoogleAccessToken([
+      "https://www.googleapis.com/auth/meetings.space.readonly",
+    ]);
+    const adminToken = await getGoogleAccessToken([
+      "https://www.googleapis.com/auth/admin.directory.user.readonly",
+    ]);
 
-    // 2. Query Admin Reports API for call_ended events
-    // Try with dashes first, then without (Google may store either format)
-    const codeVariants = [meetingCode, meetingCode.replace(/-/g, "")];
-    let items: any[] = [];
-    let rawResponse: any = null;
-    let usedCode = meetingCode;
+    // 2. Look up the space by meeting code
+    const spaceRes = await fetch(`https://meet.googleapis.com/v2/spaces/${meetingCode}`, {
+      headers: { Authorization: `Bearer ${meetToken}` },
+    });
 
-    for (const code of codeVariants) {
-      const reportsUrl = new URL("https://admin.googleapis.com/admin/reports/v1/activity/users/all/applications/meet");
-      reportsUrl.searchParams.set("eventName", "call_ended");
-      reportsUrl.searchParams.set("filters", `meeting_code==${code}`);
-      reportsUrl.searchParams.set("maxResults", "200");
+    if (!spaceRes.ok) {
+      const text = await spaceRes.text();
+      return NextResponse.json({
+        error: `Google Meet space lookup failed (${spaceRes.status}). ` +
+          (spaceRes.status === 403
+            ? "The Google Meet REST API may not be enabled or the service account lacks the meetings.space.readonly scope. " +
+              "Enable it at: console.cloud.google.com → APIs & Services → Enable 'Google Meet REST API', " +
+              "then add the scope in Admin Console → Security → API Controls → Domain-wide Delegation."
+            : text.slice(0, 500)),
+      }, { status: 502 });
+    }
 
-      const reportsRes = await fetch(reportsUrl.toString(), {
-        headers: { Authorization: `Bearer ${token}` },
+    const space = await spaceRes.json();
+    const spaceName: string = space.name; // "spaces/xxxxx"
+
+    // 3. List all conference records for this space
+    let conferences: ConferenceRecord[] = [];
+    let confPageToken: string | undefined;
+    do {
+      const confUrl = new URL("https://meet.googleapis.com/v2/conferenceRecords");
+      confUrl.searchParams.set("filter", `space.name="${spaceName}"`);
+      confUrl.searchParams.set("pageSize", "100");
+      if (confPageToken) confUrl.searchParams.set("pageToken", confPageToken);
+
+      const confRes = await fetch(confUrl.toString(), {
+        headers: { Authorization: `Bearer ${meetToken}` },
       });
+      if (!confRes.ok) break;
 
-      if (!reportsRes.ok) {
-        const text = await reportsRes.text();
-        return NextResponse.json({
-          error: `Google Reports API error (${reportsRes.status}): ${text.slice(0, 500)}`,
-        }, { status: 502 });
-      }
+      const confData = await confRes.json();
+      conferences.push(...(confData.conferenceRecords ?? []));
+      confPageToken = confData.nextPageToken;
+    } while (confPageToken);
 
-      const data = await reportsRes.json();
-      rawResponse = data;
-      if (data.items?.length > 0) {
-        items = data.items;
-        usedCode = code;
-        break;
+    if (conferences.length === 0) {
+      return NextResponse.json({
+        ok: true,
+        meetingCode,
+        totalParticipants: 0,
+        matched: [],
+        markedCount: 0,
+        unmatched: [],
+        internal: [],
+        _debug: { meetLink, spaceName, conferencesFound: 0 },
+      });
+    }
+
+    // 4. Fetch participants from all conference records (parallel)
+    const allRawParticipants: { participant: MeetParticipant; sessionDate: string }[] = [];
+
+    await Promise.all(
+      conferences.map(async (conf) => {
+        const participants = await listParticipants(meetToken, conf.name);
+        const date = conf.startTime
+          ? new Date(conf.startTime).toISOString().split("T")[0]
+          : new Date().toISOString().split("T")[0];
+
+        for (const p of participants) {
+          allRawParticipants.push({ participant: p, sessionDate: date });
+        }
+      }),
+    );
+
+    // 5. Collect unique signed-in user IDs for email resolution
+    const signedInUserIds = new Set<string>();
+    for (const { participant } of allRawParticipants) {
+      if (participant.signedinUser?.user) {
+        signedInUserIds.add(participant.signedinUser.user);
       }
     }
 
-    // If still empty, try without any meeting code filter to verify API access
-    if (items.length === 0) {
-      const testUrl = new URL("https://admin.googleapis.com/admin/reports/v1/activity/users/all/applications/meet");
-      testUrl.searchParams.set("eventName", "call_ended");
-      testUrl.searchParams.set("maxResults", "5");
-      const testRes = await fetch(testUrl.toString(), {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const testData = testRes.ok ? await testRes.json() : null;
-      rawResponse = { filteredResult: rawResponse, unfilteredSample: testData };
+    const emailMap = await resolveEmails(adminToken, [...signedInUserIds]);
+
+    // 6. Deduplicate participants by (identifier + date)
+    //    identifier = resolved email for signed-in users, or displayName for anonymous/phone
+    interface ResolvedParticipant {
+      displayName: string;
+      email: string; // empty string if unknown
+      durationSec: number;
+      date: string;
+      type: "signedin" | "anonymous" | "phone";
     }
 
-    // 3. Extract participants, deduplicate by email+date (recurring meet links span sessions)
-    const byKey = new Map<string, { email: string; displayName: string; durationSec: number; date: string }>();
-    for (const item of items) {
-      const email = item.actor?.email?.toLowerCase();
-      if (!email) continue;
+    const byKey = new Map<string, ResolvedParticipant>();
 
-      const eventTime = item.id?.time ?? item.events?.[0]?.parameters?.find((p: any) => p.name === "start_timestamp")?.value;
-      const date = eventTime ? new Date(eventTime).toISOString().split("T")[0] : new Date().toISOString().split("T")[0];
+    for (const { participant: p, sessionDate } of allRawParticipants) {
+      let displayName = "";
+      let email = "";
+      let type: ResolvedParticipant["type"] = "anonymous";
 
-      const params = item.events?.[0]?.parameters ?? [];
-      const displayName = params.find((p: any) => p.name === "display_name")?.value ?? "";
-      const duration = parseInt(params.find((p: any) => p.name === "duration_seconds")?.intValue ?? "0", 10);
+      if (p.signedinUser) {
+        displayName = p.signedinUser.displayName ?? "";
+        email = emailMap.get(p.signedinUser.user) ?? "";
+        type = "signedin";
+      } else if (p.anonymousUser) {
+        displayName = p.anonymousUser.displayName ?? "Anonymous";
+        type = "anonymous";
+      } else if (p.phoneUser) {
+        displayName = p.phoneUser.displayName ?? "Phone User";
+        type = "phone";
+      }
 
-      const key = `${email}|${date}`;
+      // Duration from earliest join to latest leave
+      let durationSec = 0;
+      if (p.earliestStartTime && p.latestEndTime) {
+        durationSec = Math.round(
+          (new Date(p.latestEndTime).getTime() - new Date(p.earliestStartTime).getTime()) / 1000,
+        );
+      }
+
+      const key = email
+        ? `${email}|${sessionDate}`
+        : `${normName(displayName)}|${type}|${sessionDate}`;
+
       const existing = byKey.get(key);
       if (existing) {
-        existing.durationSec += duration;
+        // Keep longer duration (participant may have multiple sessions)
+        if (durationSec > existing.durationSec) existing.durationSec = durationSec;
         if (!existing.displayName && displayName) existing.displayName = displayName;
+        if (!existing.email && email) existing.email = email;
       } else {
-        byKey.set(key, { email, displayName, durationSec: duration, date });
+        byKey.set(key, { displayName, email, durationSec, date: sessionDate, type });
       }
     }
+
     const participants = [...byKey.values()];
 
-    // 4. Match against ALL applicants (any pipeline stage) to show names
+    // 7. Match against applicants (by email first, then display name)
     const supa = createServiceClient();
     const { data: allApplicants } = await supa
       .from("job_application_parse")
@@ -213,32 +349,48 @@ export async function POST(req: NextRequest) {
 
     const matched: { applicationId: number; name: string; email: string; durationSec: number; stage: string | null; date: string }[] = [];
     const unmatched: { name: string; email: string; durationMin: number; date: string }[] = [];
-
     const internal: { name: string; email: string; durationMin: number; date: string }[] = [];
 
     for (const p of participants) {
-      const isInternal = p.email.endsWith("@baker-aviation.com") || p.email.endsWith("@airninetwo.com");
+      // Check if internal Baker staff (by resolved email)
+      const isInternal = p.email &&
+        (p.email.endsWith("@baker-aviation.com") || p.email.endsWith("@airninetwo.com"));
 
       if (isInternal) {
-        internal.push({ name: p.displayName || p.email.split("@")[0], email: p.email, durationMin: Math.round(p.durationSec / 60), date: p.date });
+        internal.push({
+          name: p.displayName || p.email.split("@")[0],
+          email: p.email,
+          durationMin: Math.round(p.durationSec / 60),
+          date: p.date,
+        });
         continue;
       }
 
-      const app = (allApplicants ?? []).find(
-        (a) => a.email?.toLowerCase() === p.email,
-      );
+      // Try matching applicant by email first, then display name
+      let app = p.email
+        ? (allApplicants ?? []).find((a) => a.email?.toLowerCase() === p.email)
+        : null;
+
+      if (!app && p.displayName) {
+        const pNorm = normName(p.displayName);
+        app = (allApplicants ?? []).find((a) => {
+          if (!a.candidate_name) return false;
+          return normName(a.candidate_name) === pNorm;
+        }) ?? null;
+      }
+
       if (app) {
         matched.push({
           applicationId: app.application_id,
           name: app.candidate_name,
-          email: p.email,
+          email: p.email || app.email?.toLowerCase() || "",
           durationSec: p.durationSec,
           stage: app.pipeline_stage,
           date: p.date,
         });
       } else {
         unmatched.push({
-          name: p.displayName || p.email,
+          name: p.displayName || p.email || "Unknown",
           email: p.email,
           durationMin: Math.round(p.durationSec / 60),
           date: p.date,
@@ -246,7 +398,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 5. Auto-mark attendance for matched applicants in info_session stage
+    // 8. Auto-mark attendance for matched applicants in info_session stage
     let markedCount = 0;
     for (const m of matched) {
       if (m.stage !== "info_session") continue;
@@ -261,7 +413,7 @@ export async function POST(req: NextRequest) {
       if (!error) markedCount++;
     }
 
-    // 6. Save attendance record (only if there were actual participants)
+    // 9. Save attendance record
     if (participants.length > 0) {
       await supa.from("info_session_attendance").insert({
         meeting_code: meetingCode,
@@ -269,7 +421,7 @@ export async function POST(req: NextRequest) {
         meeting_date: new Date().toISOString().split("T")[0],
         total_participants: participants.length,
         matched: matched.map((m) => ({ name: m.name, email: m.email, durationMin: Math.round(m.durationSec / 60), stage: m.stage, date: m.date })),
-        unmatched: unmatched.map((u) => `${u.name} (${u.email})`),
+        unmatched: unmatched.map((u) => `${u.name}${u.email ? ` (${u.email})` : ""}`),
         checked_by: auth.email ?? null,
       });
     }
@@ -284,11 +436,15 @@ export async function POST(req: NextRequest) {
       internal,
       _debug: {
         meetLink,
-        extractedCode: meetingCode,
-        usedCode,
-        codeVariantsTried: codeVariants,
-        googleItemCount: items.length,
-        rawResponse,
+        spaceName,
+        conferencesFound: conferences.length,
+        signedInResolved: emailMap.size,
+        signedInTotal: signedInUserIds.size,
+        participantsByType: {
+          signedin: participants.filter((p) => p.type === "signedin").length,
+          anonymous: participants.filter((p) => p.type === "anonymous").length,
+          phone: participants.filter((p) => p.type === "phone").length,
+        },
       },
     });
   } catch (err) {
