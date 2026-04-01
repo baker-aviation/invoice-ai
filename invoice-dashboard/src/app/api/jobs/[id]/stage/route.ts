@@ -209,6 +209,15 @@ export async function PATCH(
 
   try {
     const supa = createServiceClient();
+
+    // Fetch previous stage for transition-specific logic
+    const { data: prev } = await supa
+      .from("job_application_parse")
+      .select("pipeline_stage")
+      .eq("application_id", Number(id))
+      .maybeSingle();
+    const previousStage = prev?.pipeline_stage ?? null;
+
     const { data, error: updateErr } = await supa
       .from("job_application_parse")
       .update({ pipeline_stage: isRemove ? "" : stage })
@@ -244,6 +253,34 @@ export async function PATCH(
     // Auto-send interview scheduling email
     if (stage === "interview_scheduled") {
       emailResult = await sendAutoEmail(supa, Number(id), "interview", origin);
+    }
+
+    // Auto-send "Still Interested?" email when moving from info_session → tims_review
+    let interestCheckSent = false;
+    if (stage === "tims_review" && previousStage === "info_session") {
+      try {
+        const { data: candidate } = await supa
+          .from("job_application_parse")
+          .select("id, candidate_name, email, interest_check_sent_at")
+          .eq("application_id", Number(id))
+          .maybeSingle();
+
+        if (candidate?.email && !candidate.interest_check_sent_at) {
+          const icRes = await fetch(new URL("/api/jobs/send-interest-check", origin).toString(), {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              cookie: req.headers.get("cookie") ?? "",
+              authorization: req.headers.get("authorization") ?? "",
+            },
+            body: JSON.stringify({ application_ids: [Number(id)] }),
+          });
+          const icData = await icRes.json().catch(() => ({}));
+          interestCheckSent = icData.sent > 0;
+        }
+      } catch (err) {
+        console.error("[stage] Interest check send failed:", err);
+      }
     }
 
     // Auto-create pilot profile when moved to "hired"
@@ -299,7 +336,7 @@ export async function PATCH(
       }
     }
 
-    return NextResponse.json({ ok: true, stage, emailResult });
+    return NextResponse.json({ ok: true, stage, emailResult, interestCheckSent });
   } catch (err) {
     console.error("[jobs/stage] Database error:", err);
     return NextResponse.json({ error: "Database error" }, { status: 500 });

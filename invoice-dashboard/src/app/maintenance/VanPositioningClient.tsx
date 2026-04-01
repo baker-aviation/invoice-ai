@@ -1098,6 +1098,8 @@ function buildSlackItems(items: VanFlightItem[], flightInfoMap: Map<string, Flig
     const mxNoteTexts = tailNotes
       .filter((n) => {
         if (isMel(n)) return false;
+        // If scheduled_date matches today, always show regardless of start/end time
+        if (n.scheduled_date === todayStr) return true;
         const startDate = n.start_time ? toEtDate(n.start_time) : null;
         const endDate = n.end_time ? toEtDate(n.end_time) : startDate; // no end_time = single-day
         if (!startDate && !endDate) return true;
@@ -5060,7 +5062,7 @@ function ScheduleTab({
                         const cat = getFilterCategory(ft);
                         const isMaint = dep === arrIcao;
                         const nearest = findNearestVan(item.arrFlight.arrival_icao);
-                        const isInternational = !item.airportInfo || !isContiguous48(item.airportInfo.state ?? "");
+                        const isInternational = item.airportInfo && !isContiguous48(item.airportInfo.state ?? "");
                         return (
                           <div
                             key={item.arrFlight.id}

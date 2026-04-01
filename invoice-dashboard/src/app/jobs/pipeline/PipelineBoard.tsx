@@ -162,6 +162,11 @@ function InfoSessionTools({ jobs, onAttendanceChecked }: { jobs: JobRow[]; onAtt
   const [expandedRecord, setExpandedRecord] = useState<number | null>(null);
   const [sendingInterest, setSendingInterest] = useState(false);
   const [interestResult, setInterestResult] = useState<{ sent: number; skipped: number; errors: string[] } | null>(null);
+  const [showBroadcast, setShowBroadcast] = useState(false);
+  const [broadcastMsg, setBroadcastMsg] = useState("");
+  const [broadcastSubject, setBroadcastSubject] = useState("Baker Aviation — Info Session Update");
+  const [sendingBroadcast, setSendingBroadcast] = useState(false);
+  const [broadcastResult, setBroadcastResult] = useState<{ sent: number; total: number } | null>(null);
 
   // Load history on first expand
   const loadHistory = async () => {
@@ -374,6 +379,63 @@ function InfoSessionTools({ jobs, onAttendanceChecked }: { jobs: JobRow[]; onAtt
           </div>
         );
       })()}
+      {/* Broadcast announcement */}
+      <button
+        onClick={() => setShowBroadcast(!showBroadcast)}
+        className="w-full text-[10px] font-medium px-2 py-1 rounded border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors"
+      >
+        {showBroadcast ? "Cancel Announcement" : "Send Announcement"}
+      </button>
+      {showBroadcast && (
+        <div className="space-y-1.5 p-2 rounded border border-blue-200 bg-blue-50/50">
+          <input
+            type="text"
+            value={broadcastSubject}
+            onChange={(e) => setBroadcastSubject(e.target.value)}
+            placeholder="Email subject..."
+            className="w-full text-[10px] px-2 py-1 rounded border border-gray-200 focus:border-blue-400 focus:outline-none"
+          />
+          <textarea
+            value={broadcastMsg}
+            onChange={(e) => setBroadcastMsg(e.target.value)}
+            placeholder="Type your announcement... Use {{name}} for first name."
+            rows={4}
+            className="w-full text-[10px] px-2 py-1 rounded border border-gray-200 focus:border-blue-400 focus:outline-none resize-y"
+          />
+          <button
+            disabled={sendingBroadcast || !broadcastMsg.trim()}
+            onClick={async () => {
+              const count = jobs.filter((j) => j.email).length;
+              if (!confirm(`Send this announcement to ${count} candidate${count !== 1 ? "s" : ""} in Info Session?`)) return;
+              setSendingBroadcast(true);
+              setBroadcastResult(null);
+              try {
+                const res = await fetch("/api/jobs/send-broadcast", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ stage: "info_session", subject: broadcastSubject, message: broadcastMsg }),
+                });
+                const data = await res.json();
+                if (data.ok) {
+                  setBroadcastResult({ sent: data.sent, total: data.total });
+                  setBroadcastMsg("");
+                  setShowBroadcast(false);
+                }
+              } catch {} finally {
+                setSendingBroadcast(false);
+              }
+            }}
+            className="w-full text-[10px] font-medium px-2 py-1.5 rounded border border-blue-300 bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 transition-colors"
+          >
+            {sendingBroadcast ? "Sending..." : `Send to ${jobs.filter((j) => j.email).length} candidates`}
+          </button>
+        </div>
+      )}
+      {broadcastResult && (
+        <div className="text-[10px] px-2 py-1 rounded bg-emerald-50 border border-emerald-200 text-emerald-700">
+          Announcement sent to {broadcastResult.sent}/{broadcastResult.total}
+        </div>
+      )}
       {/* History toggle */}
       <button
         onClick={loadHistory}
@@ -958,11 +1020,13 @@ function CandidateCard({
   onDragStart,
   stage,
   onToggleAttendance,
+  hasPrd,
 }: {
   job: JobRow;
   onDragStart: (e: React.DragEvent, applicationId: number) => void;
   stage: PipelineStage;
   onToggleAttendance?: (applicationId: number, attended: boolean) => void;
+  hasPrd?: boolean;
 }) {
   const isPilot =
     job.category === "pilot_pic" || job.category === "pilot_sic";
@@ -1031,6 +1095,18 @@ function CandidateCard({
         {/* Previously Rejected badge */}
         {job.previously_rejected && (
           <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-red-50 text-red-600 border-red-200">Prev. Rejected</span>
+        )}
+        {/* PRD upload status for prd_faa_review stage */}
+        {stage === "prd_faa_review" && (
+          hasPrd
+            ? <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-emerald-50 text-emerald-700 border-emerald-200">PRD ✓</span>
+            : <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-red-50 text-red-600 border-red-200">No PRD</span>
+        )}
+        {/* Interest check response for tims_review */}
+        {stage === "tims_review" && job.interest_check_response && (
+          job.interest_check_response === "yes"
+            ? <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-emerald-50 text-emerald-700 border-emerald-200">Interested</span>
+            : <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-red-50 text-red-600 border-red-200">Not Interested</span>
         )}
         {job.location && (
           <span className="text-[10px] text-gray-400 truncate max-w-[100px]">
@@ -1122,6 +1198,15 @@ export default function PipelineBoard({
   const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
   const [expandedColumns, setExpandedColumns] = useState<Set<PipelineStage>>(new Set());
   const [collapsedColumns, setCollapsedColumns] = useState<Set<PipelineStage>>(new Set());
+  const [prdUploaded, setPrdUploaded] = useState<Set<number>>(new Set());
+
+  // Fetch PRD file status on mount
+  useEffect(() => {
+    fetch("/api/jobs/prd-status")
+      .then((r) => r.json())
+      .then((d) => { if (d.withPrd) setPrdUploaded(new Set(d.withPrd)); })
+      .catch(() => {});
+  }, []);
 
   // Track pending API calls so we can dedup
   const pendingRef = useRef(new Set<string>());
@@ -1478,6 +1563,7 @@ export default function PipelineBoard({
                           onDragStart={handleDragStart}
                           stage={stage}
                           onToggleAttendance={handleToggleAttendance}
+                          hasPrd={stage === "prd_faa_review" ? prdUploaded.has(job.application_id) : undefined}
                         />
                       </div>
                     ))}

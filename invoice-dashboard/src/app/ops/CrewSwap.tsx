@@ -2972,13 +2972,16 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
         return;
       }
 
-      // Convert FreezeEntry[] → SwapAssignment records + locked tails
+      // Convert FreezeEntry[] → SwapAssignment records + locked tails + locked rows
       const newAssignments: Record<string, SwapAssignment> = { ...(swapAssignments ?? {}) };
       const newLocked = new Set(lockedTails);
+      const freezeRows: CrewSwapRow[] = [];
       let assignedCount = 0;
 
       for (const entry of entries) {
-        if (!entry.tail_number) continue;
+        if (!entry.tail_number || !entry.name) continue;
+        // Skip header rows that slipped through parsing
+        if (entry.name.toUpperCase().includes("PILOT") || entry.name.toUpperCase().includes("COMMAND")) continue;
         const tail = entry.tail_number;
         if (!newAssignments[tail]) {
           newAssignments[tail] = { oncoming_pic: null, oncoming_sic: null, offgoing_pic: null, offgoing_sic: null };
@@ -2990,12 +2993,77 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
         }
         newLocked.add(tail);
         assignedCount++;
+
+        // Determine transport type from flight number
+        const fn = (entry.flight_number ?? "").trim().toLowerCase();
+        let travelType: CrewSwapRow["travel_type"] = "none";
+        if (fn.includes("uber")) travelType = "uber";
+        else if (fn.includes("rental")) travelType = "rental_car";
+        else if (fn.includes("drive") || fn.includes("self")) travelType = "drive";
+        else if (/[a-z]{1,3}\d+/i.test(fn)) travelType = "commercial";
+
+        // Build a locked row with transport data from the sheet
+        freezeRows.push({
+          name: entry.name,
+          home_airports: entry.home_airports ?? [],
+          role: entry.role,
+          direction: "oncoming",
+          aircraft_type: "unknown",
+          tail_number: tail,
+          swap_location: entry.swap_location,
+          all_swap_points: entry.swap_location ? [entry.swap_location] : [],
+          travel_type: travelType,
+          flight_number: entry.flight_number,
+          departure_time: entry.depart_time,
+          arrival_time: entry.arrival_time,
+          travel_from: entry.home_airports?.[0] ?? null,
+          travel_to: entry.swap_location,
+          cost_estimate: entry.price,
+          duration_minutes: null,
+          available_time: entry.arrival_time,
+          duty_on_time: entry.depart_time,
+          duty_off_time: null,
+          is_checkairman: false,
+          checkairman_types: [],
+          is_skillbridge: false,
+          grade: 3,
+          volunteer_status: null,
+          notes: (entry as Record<string, unknown>).notes as string | null ?? "From FREEZE sheet",
+          warnings: [],
+          alt_flights: [],
+          backup_flight: null,
+          score: 100,
+        });
       }
 
       setSwapAssignments(newAssignments);
       try { localStorage.setItem("swap_assignments", JSON.stringify(newAssignments)); } catch {}
       setLockedTails(newLocked);
-      addToast("success", `Loaded ${assignedCount} assignments from FREEZE sheet (${newLocked.size} tails locked)`);
+
+      // If we have a swap plan, merge the freeze rows into it as locked
+      if (swapPlan) {
+        // Remove existing oncoming rows for locked tails, replace with freeze data
+        const unlockedRows = swapPlan.rows.filter(r =>
+          !(r.direction === "oncoming" && newLocked.has(r.tail_number))
+        );
+        const mergedRows = [...freezeRows, ...unlockedRows];
+        setSwapPlan({ ...swapPlan, rows: mergedRows });
+      } else {
+        // Create a new plan from freeze data
+        const totalCost = freezeRows.reduce((s, r) => s + (r.cost_estimate ?? 0), 0);
+        setSwapPlan({
+          ok: true,
+          swap_date: selectedWed.toISOString().slice(0, 10),
+          rows: freezeRows,
+          warnings: ["Plan loaded from FREEZE sheet — run Optimize to fill gaps"],
+          routes_used: 0,
+          total_cost: totalCost,
+          plan_score: 100,
+          solved_count: freezeRows.filter(r => r.travel_type !== "none").length,
+          unsolved_count: freezeRows.filter(r => r.travel_type === "none").length,
+        });
+      }
+      addToast("success", `Loaded ${assignedCount} crew from FREEZE sheet (${newLocked.size} tails locked, ${freezeRows.filter(r => r.travel_type !== "none").length} with transport)`);
     } catch (e) {
       addToast("error", e instanceof Error ? e.message : "Failed to load FREEZE sheet");
     } finally {
@@ -4497,6 +4565,25 @@ export default function CrewSwap({ flights: parentFlights }: { flights: Flight[]
                 {routeStatus.last_computed && ` (${new Date(routeStatus.last_computed).toLocaleString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false })})`}
                 {routeStatus.is_stale && " — stale"}
               </span>
+            )}
+            {/* Load FREEZE button (also on Plan tab for visibility) */}
+            {freezeTabs.length > 0 && (
+              <div className="relative">
+                <button
+                  onClick={() => { if (freezeTabs.length === 1) loadFreezeSheet(freezeTabs[0]); else setShowFreezeMenu(!showFreezeMenu); }}
+                  disabled={loadingFreeze}
+                  className={`px-2.5 py-1.5 text-[10px] font-medium border rounded-lg ${loadingFreeze ? "bg-gray-100 text-gray-400" : "bg-amber-50 text-amber-700 hover:bg-amber-100 border-amber-200"}`}
+                >
+                  {loadingFreeze ? "Loading..." : "Load FREEZE"}
+                </button>
+                {showFreezeMenu && freezeTabs.length > 1 && (
+                  <div className="absolute right-0 top-full mt-1 bg-white border rounded-lg shadow-lg z-50 min-w-[240px]">
+                    {freezeTabs.map(tab => (
+                      <button key={tab} onClick={() => loadFreezeSheet(tab)} className="w-full text-left px-3 py-2 text-xs hover:bg-amber-50 border-b last:border-b-0 text-gray-700">{tab}</button>
+                    ))}
+                  </div>
+                )}
+              </div>
             )}
             {/* Strategy toggle */}
             <div className="flex rounded-lg border overflow-hidden">
