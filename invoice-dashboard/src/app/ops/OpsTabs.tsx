@@ -14,8 +14,22 @@ import SwapStatus from "./SwapStatus";
 const TABS = ["Current Ops", "Flight Time & Rest", "NOTAMs & PPRs", "Crew Swap", "Swap Status", "International"] as const;
 type Tab = (typeof TABS)[number];
 
-export default function OpsTabs({ flights, bakerPprAirports, advertisedPrices, mxNotes = [], swimFlow = [], suppressedRunwayNotamIds = [], allRunwaysClosedAlerts = [] }: { flights: Flight[]; bakerPprAirports: string[]; advertisedPrices: AdvertisedPriceRow[]; mxNotes?: MxNote[]; swimFlow?: SwimFlowEvent[]; suppressedRunwayNotamIds?: string[]; allRunwaysClosedAlerts?: AllRwysClosedAlert[] }) {
-  const [tab, setTab] = useState<Tab>("Current Ops");
+const TAB_SLUGS: Record<Tab, string> = {
+  "Current Ops": "",
+  "Flight Time & Rest": "duty",
+  "NOTAMs & PPRs": "notams",
+  "Crew Swap": "crewswap",
+  "Swap Status": "swapstatus",
+  "International": "international",
+};
+const SLUG_TO_TAB: Record<string, Tab> = Object.fromEntries(
+  Object.entries(TAB_SLUGS).map(([tab, slug]) => [slug, tab as Tab])
+) as Record<string, Tab>;
+
+export default function OpsTabs({ flights, bakerPprAirports, advertisedPrices, mxNotes = [], swimFlow = [], suppressedRunwayNotamIds = [], allRunwaysClosedAlerts = [], initialTab }: { flights: Flight[]; bakerPprAirports: string[]; advertisedPrices: AdvertisedPriceRow[]; mxNotes?: MxNote[]; swimFlow?: SwimFlowEvent[]; suppressedRunwayNotamIds?: string[]; allRunwaysClosedAlerts?: AllRwysClosedAlert[]; initialTab?: string | null }) {
+  const [tab, setTab] = useState<Tab>(
+    (initialTab ? SLUG_TO_TAB[initialTab] : null) ?? "Current Ops"
+  );
   const [scrollToTail, setScrollToTail] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
@@ -45,6 +59,7 @@ export default function OpsTabs({ flights, bakerPprAirports, advertisedPrices, m
   function switchToDuty(tail?: string) {
     setScrollToTail(tail ?? null);
     setTab("Flight Time & Rest");
+    window.history.replaceState(null, "", "/ops/duty");
   }
 
   async function handleResync() {
@@ -78,7 +93,11 @@ export default function OpsTabs({ flights, bakerPprAirports, advertisedPrices, m
         {TABS.map((t) => (
           <button
             key={t}
-            onClick={() => setTab(t)}
+            onClick={() => {
+              setTab(t);
+              const slug = TAB_SLUGS[t];
+              window.history.replaceState(null, "", slug ? `/ops/${slug}` : "/ops");
+            }}
             className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
               tab === t
                 ? "border-blue-600 text-blue-600"
