@@ -14,6 +14,7 @@ type SlackMapping = {
   slack_user_id: string;
   quotes_enabled: boolean;
   custom_summary_hour: number | null;
+  custom_summary_day: string | null;
   created_at: string;
 };
 
@@ -235,17 +236,17 @@ export default function SettingsPage() {
     fetchQuotes();
   }, [fetchQuotes]);
 
-  async function handleSummaryHourChange(name: string, hour: number | null) {
+  async function handleExtraSummaryChange(name: string, updates: { custom_summary_hour?: number | null; custom_summary_day?: string }) {
     try {
       const res = await fetch("/api/admin/salesperson-slack", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ salesperson_name: name, custom_summary_hour: hour }),
+        body: JSON.stringify({ salesperson_name: name, ...updates }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       await fetchSlackMappings();
     } catch (err) {
-      setSlackError(err instanceof Error ? err.message : "Failed to update summary time");
+      setSlackError(err instanceof Error ? err.message : "Failed to update extra summary");
     }
   }
 
@@ -597,7 +598,7 @@ export default function SettingsPage() {
                 <th className="text-left px-4 py-2 font-medium text-gray-600">Salesperson</th>
                 <th className="text-left px-4 py-2 font-medium text-gray-600">Slack User ID</th>
                 <th className="text-center px-4 py-2 font-medium text-gray-600 w-24">Quotes</th>
-                <th className="text-center px-4 py-2 font-medium text-gray-600 w-36">Summary Time</th>
+                <th className="text-center px-4 py-2 font-medium text-gray-600 w-52">Extra Summary</th>
                 <th className="text-right px-4 py-2 font-medium text-gray-600 w-36">Actions</th>
               </tr>
             </thead>
@@ -623,23 +624,38 @@ export default function SettingsPage() {
                     </button>
                   </td>
                   <td className="px-4 py-2 text-center">
-                    <select
-                      value={m.custom_summary_hour ?? 18}
-                      onChange={(e) => {
-                        const val = parseInt(e.target.value, 10);
-                        handleSummaryHourChange(m.salesperson_name, val === 18 ? null : val);
-                      }}
-                      className="border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-slate-500"
-                    >
-                      {Array.from({ length: 24 }, (_, h) => {
-                        const ampm = h === 0 ? "12am" : h < 12 ? `${h}am` : h === 12 ? "12pm" : `${h - 12}pm`;
-                        return (
-                          <option key={h} value={h}>
-                            {ampm} ET{h === 18 ? " (default)" : ""}
-                          </option>
-                        );
-                      })}
-                    </select>
+                    <div className="flex items-center justify-center gap-1.5">
+                      <select
+                        value={m.custom_summary_hour ?? "none"}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (val === "none") {
+                            handleExtraSummaryChange(m.salesperson_name, { custom_summary_hour: null });
+                          } else {
+                            handleExtraSummaryChange(m.salesperson_name, { custom_summary_hour: parseInt(val, 10) });
+                          }
+                        }}
+                        className="border border-gray-300 rounded px-1.5 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-slate-500"
+                      >
+                        <option value="none">None</option>
+                        {Array.from({ length: 24 }, (_, h) => {
+                          const ampm = h === 0 ? "12am" : h < 12 ? `${h}am` : h === 12 ? "12pm" : `${h - 12}pm`;
+                          return (
+                            <option key={h} value={h}>{ampm}</option>
+                          );
+                        })}
+                      </select>
+                      {m.custom_summary_hour !== null && (
+                        <select
+                          value={m.custom_summary_day ?? "tomorrow"}
+                          onChange={(e) => handleExtraSummaryChange(m.salesperson_name, { custom_summary_day: e.target.value })}
+                          className="border border-gray-300 rounded px-1.5 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-slate-500"
+                        >
+                          <option value="today">Today</option>
+                          <option value="tomorrow">Tomorrow</option>
+                        </select>
+                      )}
+                    </div>
                   </td>
                   <td className="px-4 py-2 text-right">
                     <div className="flex items-center justify-end gap-1">
@@ -783,7 +799,8 @@ export default function SettingsPage() {
       <p className="text-sm text-gray-500 mb-4">
         Send each salesperson a Slack DM with their sold legs for today or tomorrow.
         Salespersons with no legs get a &quot;no sold legs&quot; message.
-        Automated cron uses each person&apos;s Summary Time (default 6pm ET).
+        Automated cron sends to everyone at 6pm ET. Extra summaries fire at
+        each person&apos;s configured time (if set above).
       </p>
 
       <div className="flex gap-3">

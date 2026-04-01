@@ -71,7 +71,7 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
 
-  let body: { salesperson_name?: string; quotes_enabled?: boolean; custom_summary_hour?: number | null };
+  let body: { salesperson_name?: string; quotes_enabled?: boolean; custom_summary_hour?: number | null; custom_summary_day?: string };
   try {
     body = await req.json();
   } catch {
@@ -93,6 +93,12 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: "custom_summary_hour must be null or integer 0-23" }, { status: 400 });
     }
     updates.custom_summary_hour = h;
+  }
+  if ("custom_summary_day" in body) {
+    if (body.custom_summary_day !== "today" && body.custom_summary_day !== "tomorrow") {
+      return NextResponse.json({ error: "custom_summary_day must be 'today' or 'tomorrow'" }, { status: 400 });
+    }
+    updates.custom_summary_day = body.custom_summary_day;
   }
 
   if (Object.keys(updates).length === 0) {

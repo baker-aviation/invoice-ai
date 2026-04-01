@@ -9,8 +9,9 @@ import { POST as runDailySummary } from "./daily-summary/route";
  *
  * Called by Vercel Cron every 15 minutes.
  * - Always runs the departure check (flights departing within 75 min)
- * - Sends the daily summary to salespeople whose custom_summary_hour
- *   matches the current ET hour (default 18 = 6pm for people with no override)
+ * - At 6pm ET, sends the normal daily summary to ALL salespeople (tomorrow's legs)
+ * - At any hour, sends an EXTRA custom summary to salespeople whose
+ *   custom_summary_hour matches (for their configured day: today or tomorrow)
  *
  * Calls sub-routes directly (no HTTP fetch) to avoid Vercel auth protection
  * blocking internal requests on preview/dev deployments.
@@ -44,18 +45,10 @@ export async function GET(req: NextRequest) {
   }).formatToParts(new Date()).find((p) => p.type === "hour");
   const hour = parseInt(etHour?.value ?? "-1", 10);
 
-  // Check if any salesperson is due for their summary this hour
-  const supa = createServiceClient();
-  const { data: duePeople } = await supa
-    .from("salesperson_slack_map")
-    .select("salesperson_name, custom_summary_hour")
-    .or(`custom_summary_hour.eq.${hour},${hour === 18 ? "custom_summary_hour.is.null" : "custom_summary_hour.eq.-999"}`);
-
-  if (duePeople && duePeople.length > 0) {
+  // At 6pm ET, send the normal daily summary to EVERYONE (tomorrow's legs)
+  if (hour === 18) {
     try {
-      const summaryUrl = new URL(req.url);
-      summaryUrl.searchParams.set("target_hour", String(hour));
-      const summaryReq = new NextRequest(summaryUrl, {
+      const summaryReq = new NextRequest(req.url, {
         method: "POST",
         headers: { authorization: req.headers.get("authorization") ?? "" },
       });
@@ -63,6 +56,29 @@ export async function GET(req: NextRequest) {
       results.dailySummary = await res.json();
     } catch (err) {
       results.dailySummary = { error: err instanceof Error ? err.message : "unknown" };
+    }
+  }
+
+  // Check if any salesperson has a custom_summary_hour matching NOW
+  const supa = createServiceClient();
+  const { data: customPeople } = await supa
+    .from("salesperson_slack_map")
+    .select("salesperson_name, custom_summary_hour, custom_summary_day")
+    .eq("custom_summary_hour", hour);
+
+  if (customPeople && customPeople.length > 0) {
+    try {
+      const customUrl = new URL(req.url);
+      customUrl.searchParams.set("summary_type", "custom");
+      customUrl.searchParams.set("target_hour", String(hour));
+      const customReq = new NextRequest(customUrl, {
+        method: "POST",
+        headers: { authorization: req.headers.get("authorization") ?? "" },
+      });
+      const res = await runDailySummary(customReq);
+      results.customSummary = await res.json();
+    } catch (err) {
+      results.customSummary = { error: err instanceof Error ? err.message : "unknown" };
     }
   }
 

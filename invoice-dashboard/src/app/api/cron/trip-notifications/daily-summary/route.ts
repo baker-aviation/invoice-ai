@@ -8,7 +8,12 @@ import { getRandomQuote } from "@/lib/quotes";
  * POST /api/cron/trip-notifications/daily-summary
  *
  * Cron-authenticated version of the daily summary.
- * Same logic as /api/admin/trip-notifications/daily-summary but uses CRON_SECRET.
+ *
+ * Query params (set by cron dispatcher):
+ *   summary_type=custom  — only send to people with custom_summary_hour matching target_hour
+ *   target_hour=N        — the ET hour to match (used with summary_type=custom)
+ *
+ * Without params, sends the normal 6pm summary to ALL salespeople (tomorrow's legs).
  */
 export async function POST(req: NextRequest) {
   if (!verifyCronSecret(req)) {
@@ -21,38 +26,50 @@ export async function POST(req: NextRequest) {
   }
 
   const supa = createServiceClient();
-
-  // "Tomorrow" in EST
-  const estNow = new Date(
-    new Date().toLocaleString("en-US", { timeZone: "America/New_York" })
-  );
-  const tomorrow = new Date(estNow);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  const tomorrowStr = tomorrow.toISOString().slice(0, 10);
-  const dateLabel = formatDateLabel(tomorrow);
+  const params = new URL(req.url).searchParams;
+  const summaryType = params.get("summary_type") ?? "default";
+  const isCustom = summaryType === "custom";
+  const targetHour = params.get("target_hour");
 
   // 1. Load all salesperson → Slack mappings
   const { data: allSlackMap } = await supa
     .from("salesperson_slack_map")
-    .select("salesperson_name, slack_user_id, quotes_enabled, custom_summary_hour");
+    .select("salesperson_name, slack_user_id, quotes_enabled, custom_summary_hour, custom_summary_day");
 
   if (!allSlackMap || allSlackMap.length === 0) {
     return NextResponse.json({ ok: true, sent: 0, message: "No salesperson Slack mappings configured" });
   }
 
-  // If target_hour is specified (from cron), only send to people due at that hour
-  const targetHourParam = new URL(req.url).searchParams.get("target_hour");
+  // For custom sends, filter to only people with matching custom_summary_hour
   let slackMap = allSlackMap;
-  if (targetHourParam !== null) {
-    const targetHour = parseInt(targetHourParam, 10);
-    slackMap = allSlackMap.filter((m) => {
-      const personHour = m.custom_summary_hour ?? 18; // default 6pm
-      return personHour === targetHour;
-    });
+  if (isCustom && targetHour !== null) {
+    const hr = parseInt(targetHour, 10);
+    slackMap = allSlackMap.filter((m) => m.custom_summary_hour === hr);
     if (slackMap.length === 0) {
-      return NextResponse.json({ ok: true, sent: 0, message: `No salespersons due at hour ${targetHour}` });
+      return NextResponse.json({ ok: true, sent: 0, message: `No salespersons with custom hour ${hr}` });
     }
   }
+
+  // Build per-person day map (custom sends use their custom_summary_day)
+  const dayByPerson = new Map<string, "today" | "tomorrow">();
+  for (const m of slackMap) {
+    const day = isCustom ? (m.custom_summary_day as "today" | "tomorrow") ?? "tomorrow" : "tomorrow";
+    dayByPerson.set(m.salesperson_name.toLowerCase(), day);
+  }
+
+  // Determine which dates we need to query
+  const estNow = new Date(
+    new Date().toLocaleString("en-US", { timeZone: "America/New_York" })
+  );
+  const today = new Date(estNow);
+  const tomorrow = new Date(estNow);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+
+  const todayStr = today.toISOString().slice(0, 10);
+  const tomorrowStr = tomorrow.toISOString().slice(0, 10);
+
+  const needsToday = [...dayByPerson.values()].includes("today");
+  const needsTomorrow = [...dayByPerson.values()].includes("tomorrow");
 
   const slackLookup = new Map<string, string>();
   const quotesLookup = new Map<string, boolean>();
@@ -61,67 +78,75 @@ export async function POST(req: NextRequest) {
     quotesLookup.set(m.salesperson_name.toLowerCase(), m.quotes_enabled ?? false);
   }
 
-  // 2. Query trip_salespersons for tomorrow's legs
-  const tomorrowStart = new Date(`${tomorrowStr}T00:00:00-05:00`);
-  const tomorrowEnd = new Date(`${tomorrowStr}T23:59:59-05:00`);
+  // 2. Query trip_salespersons for the needed date(s)
   const LIVE_TYPES = ["Revenue", "Owner", "Charter"];
 
-  const { data: legs, error: legsErr } = await supa
-    .from("trip_salespersons")
-    .select("trip_id, tail_number, origin_icao, destination_icao, scheduled_departure, salesperson_name, customer")
-    .gte("scheduled_departure", tomorrowStart.toISOString())
-    .lte("scheduled_departure", tomorrowEnd.toISOString());
+  async function loadLegsForDate(dateStr: string) {
+    const dayStart = new Date(`${dateStr}T00:00:00-05:00`);
+    const dayEnd = new Date(`${dateStr}T23:59:59-05:00`);
 
-  if (legsErr) {
-    return NextResponse.json({ error: "Failed to query trip_salespersons", detail: legsErr.message }, { status: 500 });
-  }
+    const { data: legs } = await supa
+      .from("trip_salespersons")
+      .select("trip_id, tail_number, origin_icao, destination_icao, scheduled_departure, salesperson_name, customer")
+      .gte("scheduled_departure", dayStart.toISOString())
+      .lte("scheduled_departure", dayEnd.toISOString());
 
-  // Filter to live legs only + fetch jetinsight_url
-  type LegRow = NonNullable<typeof legs>[number];
-  const filteredLegs: (LegRow & { flight_type?: string; jetinsight_url?: string | null })[] = [];
-  const liveLegsByPerson = new Map<string, typeof filteredLegs>();
+    type LegRow = NonNullable<typeof legs>[number];
+    const filtered: (LegRow & { flight_type?: string; jetinsight_url?: string | null })[] = [];
 
-  for (const leg of legs ?? []) {
-    const { data: matchingFlights } = await supa
-      .from("flights")
-      .select("flight_type, jetinsight_url")
-      .eq("tail_number", leg.tail_number)
-      .eq("departure_icao", leg.origin_icao)
-      .eq("arrival_icao", leg.destination_icao)
-      .gte("scheduled_departure", new Date(new Date(leg.scheduled_departure).getTime() - 2 * 3600_000).toISOString())
-      .lte("scheduled_departure", new Date(new Date(leg.scheduled_departure).getTime() + 2 * 3600_000).toISOString())
-      .in("flight_type", LIVE_TYPES)
-      .limit(1);
+    for (const leg of legs ?? []) {
+      const { data: matchingFlights } = await supa
+        .from("flights")
+        .select("flight_type, jetinsight_url")
+        .eq("tail_number", leg.tail_number)
+        .eq("departure_icao", leg.origin_icao)
+        .eq("arrival_icao", leg.destination_icao)
+        .gte("scheduled_departure", new Date(new Date(leg.scheduled_departure).getTime() - 2 * 3600_000).toISOString())
+        .lte("scheduled_departure", new Date(new Date(leg.scheduled_departure).getTime() + 2 * 3600_000).toISOString())
+        .in("flight_type", LIVE_TYPES)
+        .limit(1);
 
-    if (matchingFlights && matchingFlights.length > 0) {
-      filteredLegs.push({ ...leg, flight_type: matchingFlights[0].flight_type, jetinsight_url: matchingFlights[0].jetinsight_url });
+      if (matchingFlights && matchingFlights.length > 0) {
+        filtered.push({ ...leg, flight_type: matchingFlights[0].flight_type, jetinsight_url: matchingFlights[0].jetinsight_url });
+      }
     }
+
+    // Pre-fetch all flights for this date to find prior legs
+    const { data: allDayFlights } = await supa
+      .from("flights")
+      .select("tail_number, departure_icao, arrival_icao, scheduled_departure, flight_type, jetinsight_url")
+      .gte("scheduled_departure", dayStart.toISOString())
+      .lte("scheduled_departure", dayEnd.toISOString())
+      .not("tail_number", "is", null)
+      .order("scheduled_departure", { ascending: true });
+
+    return { filtered, allDayFlights: allDayFlights ?? [] };
   }
 
-  // Pre-fetch all flights for tomorrow to find prior legs
-  const { data: allTomorrowFlights } = await supa
-    .from("flights")
-    .select("tail_number, departure_icao, arrival_icao, scheduled_departure, flight_type, jetinsight_url")
-    .gte("scheduled_departure", tomorrowStart.toISOString())
-    .lte("scheduled_departure", tomorrowEnd.toISOString())
-    .not("tail_number", "is", null)
-    .order("scheduled_departure", { ascending: true });
+  const todayData = needsToday ? await loadLegsForDate(todayStr) : null;
+  const tomorrowData = needsTomorrow ? await loadLegsForDate(tomorrowStr) : null;
 
-  // 3. Group legs by salesperson
-  for (const leg of filteredLegs) {
-    const key = leg.salesperson_name.toLowerCase();
-    if (!liveLegsByPerson.has(key)) liveLegsByPerson.set(key, []);
-    liveLegsByPerson.get(key)!.push(leg);
+  // 3. Group legs by salesperson per date
+  function groupByPerson(legs: { salesperson_name: string }[]) {
+    const map = new Map<string, typeof legs>();
+    for (const leg of legs) {
+      const key = leg.salesperson_name.toLowerCase();
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(leg);
+    }
+    // Sort each person's legs by departure
+    for (const [, personLegs] of map) {
+      personLegs.sort((a: any, b: any) =>
+        (a.scheduled_departure ?? "").localeCompare(b.scheduled_departure ?? "")
+      );
+    }
+    return map;
   }
 
-  // 4. Sort each person's legs by departure time
-  for (const [, personLegs] of liveLegsByPerson) {
-    personLegs.sort((a, b) =>
-      (a.scheduled_departure ?? "").localeCompare(b.scheduled_departure ?? "")
-    );
-  }
+  const todayByPerson = todayData ? groupByPerson(todayData.filtered) : new Map();
+  const tomorrowByPerson = tomorrowData ? groupByPerson(tomorrowData.filtered) : new Map();
 
-  // 5. Send DMs
+  // 4. Send DMs
   let sent = 0;
   let skipped = 0;
   const errors: string[] = [];
@@ -132,12 +157,22 @@ export async function POST(req: NextRequest) {
       slackMap.find((m) => m.salesperson_name.toLowerCase() === spNameLower)
         ?.salesperson_name ?? spNameLower;
 
-    // Skip if already sent for this date
+    const personDay = dayByPerson.get(spNameLower) ?? "tomorrow";
+    const dateStr = personDay === "today" ? todayStr : tomorrowStr;
+    const targetDate = personDay === "today" ? today : tomorrow;
+    const dateLabel = formatDateLabel(targetDate);
+    const greeting = personDay === "today" ? "Good Morning" : "Good Evening";
+    const intro = personDay === "today" ? "Today" : "Tomorrow";
+    const legsByPerson = personDay === "today" ? todayByPerson : tomorrowByPerson;
+    const allDayFlights = personDay === "today" ? todayData?.allDayFlights ?? [] : tomorrowData?.allDayFlights ?? [];
+
+    // Dedup: check if already sent for this date + type
     const { data: alreadySent } = await supa
       .from("salesperson_summary_sent")
       .select("id")
       .eq("salesperson_name", displayName)
-      .eq("summary_date", tomorrowStr)
+      .eq("summary_date", dateStr)
+      .eq("summary_type", summaryType)
       .limit(1);
     if (alreadySent && alreadySent.length > 0) {
       skipped++;
@@ -145,13 +180,13 @@ export async function POST(req: NextRequest) {
     }
 
     const firstName = displayName.split(" ")[0];
-    const personLegs = liveLegsByPerson.get(spNameLower);
+    const personLegs = legsByPerson.get(spNameLower) as any[] | undefined;
 
     let message: string;
     const wantsQuote = quotesLookup.get(spNameLower) === true;
 
     if (!personLegs || personLegs.length === 0) {
-      message = `Good Evening ${firstName},\n\nFor ${dateLabel}, you have no sold legs.`;
+      message = `${greeting} ${firstName},\n\nFor ${dateLabel}, you have no sold legs.`;
     } else {
       const legLines: string[] = [];
       for (const leg of personLegs) {
@@ -161,8 +196,7 @@ export async function POST(req: NextRequest) {
         const broker = leg.customer || "Unknown";
         legLines.push(`• ${dep}-${arr} ${time} ${leg.tail_number} Broker - ${broker}`);
 
-        // Prior leg alert: find earlier flight on same tail arriving at this leg's departure
-        const priorLeg = findPriorLeg(allTomorrowFlights ?? [], leg.tail_number, leg.origin_icao, leg.scheduled_departure);
+        const priorLeg = findPriorLeg(allDayFlights, leg.tail_number, leg.origin_icao, leg.scheduled_departure);
         if (priorLeg) {
           const pDep = formatIcao(priorLeg.departure_icao);
           const pArr = formatIcao(priorLeg.arrival_icao);
@@ -171,7 +205,6 @@ export async function POST(req: NextRequest) {
           legLines.push(`  Prior leg: ${pDep}-${pArr} dep ${pTime} (${pType})`);
         }
 
-        // Always use the salesperson's trip_id for the URL (not the flight's jetinsight_url)
         if (leg.trip_id) {
           legLines.push(`  <https://portal.jetinsight.com/trips/${leg.trip_id}|Open in JetInsight>`);
         } else if (leg.jetinsight_url) {
@@ -180,15 +213,14 @@ export async function POST(req: NextRequest) {
       }
 
       message = [
-        `Good Evening ${firstName},`,
+        `${greeting} ${firstName},`,
         "",
-        `Tomorrow you have sold the following legs:`,
+        `${intro} you have sold the following legs:`,
         "",
         ...legLines,
       ].join("\n");
     }
 
-    // Append motivational quote if enabled for this salesperson
     if (wantsQuote) {
       const quote = await getRandomQuote();
       if (quote) {
@@ -212,12 +244,13 @@ export async function POST(req: NextRequest) {
         continue;
       }
 
-      // Log to summary table
+      // Log to summary table with summary_type for separate dedup
       await supa.from("salesperson_summary_sent").upsert({
         salesperson_name: displayName,
-        summary_date: tomorrowStr,
+        summary_date: dateStr,
         leg_count: personLegs?.length ?? 0,
-      }, { onConflict: "salesperson_name,summary_date" });
+        summary_type: summaryType,
+      }, { onConflict: "salesperson_name,summary_date,summary_type" });
 
       sentDetails.push({ salesperson: displayName, legCount: personLegs?.length ?? 0 });
       sent++;
@@ -228,8 +261,10 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({
     ok: true,
-    date: tomorrowStr,
+    date: needsToday && needsTomorrow ? `${todayStr} / ${tomorrowStr}` : (needsToday ? todayStr : tomorrowStr),
+    summaryType,
     sent,
+    skipped,
     total: slackMap.length,
     sentDetails,
     ...(errors.length > 0 ? { errors } : {}),
@@ -278,7 +313,6 @@ function findPriorLeg(
 ): typeof allFlights[number] | null {
   if (!scheduledDeparture) return null;
   const depTime = new Date(scheduledDeparture).getTime();
-  // Find flights on same tail arriving at this leg's departure airport, departing before this leg
   const candidates = allFlights.filter(
     (f) =>
       f.tail_number === tailNumber &&
@@ -286,6 +320,5 @@ function findPriorLeg(
       new Date(f.scheduled_departure).getTime() < depTime,
   );
   if (candidates.length === 0) return null;
-  // Return the closest one (latest departure before this leg)
   return candidates[candidates.length - 1];
 }
