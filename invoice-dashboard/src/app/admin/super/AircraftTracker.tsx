@@ -244,14 +244,15 @@ export default function AircraftTracker() {
     setEditValue("");
   };
 
-  const saveEdit = async () => {
-    if (!editCell) return;
-    const { id, field } = editCell;
+  const saveWithValue = async (value: string, cell?: { id: string; field: EditableField }) => {
+    const target = cell ?? editCell;
+    if (!target) return;
+    const { id, field } = target;
     const original = aircraft.find((a) => a.id === id);
     if (!original) return;
 
     const oldVal = original[field] ?? "";
-    if (editValue === oldVal) {
+    if (value === oldVal) {
       cancelEdit();
       return;
     }
@@ -263,7 +264,7 @@ export default function AircraftTracker() {
       const res = await fetch("/api/admin/aircraft-tracker", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, [field]: editValue || null }),
+        body: JSON.stringify({ id, [field]: value || null }),
       });
       if (!res.ok) throw new Error("Save failed");
       const data = await res.json();
@@ -274,6 +275,8 @@ export default function AircraftTracker() {
       setSaving(null);
     }
   };
+
+  const saveEdit = () => saveWithValue(editValue);
 
   const handleEditKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") saveEdit();
@@ -672,8 +675,11 @@ export default function AircraftTracker() {
                         <select
                           autoFocus
                           value={editValue}
-                          onChange={(e) => setEditValue(e.target.value)}
-                          onBlur={saveEdit}
+                          onChange={(e) => {
+                            setEditValue(e.target.value);
+                            saveWithValue(e.target.value, { id: row.id, field });
+                          }}
+                          onBlur={cancelEdit}
                           onKeyDown={handleEditKeyDown}
                           className="w-full bg-zinc-900 border border-blue-500 rounded px-1 py-0.5 text-sm text-white outline-none"
                         >
@@ -687,8 +693,11 @@ export default function AircraftTracker() {
                         <select
                           autoFocus
                           value={editValue}
-                          onChange={(e) => setEditValue(e.target.value)}
-                          onBlur={saveEdit}
+                          onChange={(e) => {
+                            setEditValue(e.target.value);
+                            saveWithValue(e.target.value, { id: row.id, field });
+                          }}
+                          onBlur={cancelEdit}
                           onKeyDown={handleEditKeyDown}
                           className="w-full bg-zinc-900 border border-blue-500 rounded px-1 py-0.5 text-sm text-white outline-none"
                         >
