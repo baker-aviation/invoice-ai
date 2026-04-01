@@ -514,7 +514,7 @@ function AddCandidateModal({
         location: form.location.trim() || null,
         category: form.category || null,
         notes: form.notes.trim() || null,
-        pipeline_stage: "prd_faa_review",
+        pipeline_stage: "screening",
       };
       if (isPilot) {
         if (form.total_time_hours) payload.total_time_hours = Number(form.total_time_hours);
@@ -558,7 +558,7 @@ function AddCandidateModal({
         application_id: data.application_id,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
-        pipeline_stage: "prd_faa_review",
+        pipeline_stage: "screening",
         category: form.category || null,
         employment_type: null,
         candidate_name: form.candidate_name.trim(),
@@ -829,9 +829,15 @@ function SendInterviewEmailButton({ job }: { job: JobRow }) {
 function EmailStatusDropdown({ job, field }: { job: JobRow; field: "interview_email_status" | "info_session_email_status" }) {
   const sentAtField = field === "interview_email_status" ? "interview_email_sent_at" : "info_session_email_sent_at";
   const sentAt = (job as any)[sentAtField];
-  const [status, setStatus] = useState<string>((job as any)[field] ?? (sentAt ? "sent" : "unknown"));
+  const propStatus = (job as any)[field] ?? (sentAt ? "sent" : "unknown");
+  const [status, setStatus] = useState<string>(propStatus);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+
+  // Sync when parent updates the job prop (e.g., after auto-send)
+  useEffect(() => {
+    setStatus(propStatus);
+  }, [propStatus, sentAt]);
 
   // If email was auto-sent, show green badge instead of dropdown
   if (sentAt && status === "sent") {
