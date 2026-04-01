@@ -375,12 +375,13 @@ function TripBoard({ trips, countries, onRefresh }: { trips: IntlTrip[]; countri
             try {
               const res = await fetch("/api/ops/intl/parse-cbp-replies", { method: "POST" });
               const data = await res.json();
-              const n = data.repliesProcessed ?? 0;
+              if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+              const n = data.repliesProcessed ?? data.cbp ?? 0;
               const a = data.autoApproved ?? 0;
               setCbpMsg(n === 0 ? "No new replies" : `${n} new repl${n > 1 ? "ies" : "y"}${a > 0 ? `, ${a} auto-approved` : ""}`);
               if (n > 0) onRefresh();
-              setTimeout(() => setCbpMsg(null), 4000);
-            } catch { setCbpMsg("Error"); }
+              setTimeout(() => setCbpMsg(null), 6000);
+            } catch (err) { setCbpMsg(err instanceof Error ? err.message : "Error"); }
             setCbpChecking(false);
           }}
           disabled={cbpChecking}
