@@ -265,13 +265,17 @@ export async function POST(req: NextRequest) {
       let body: any = null;
       try { body = await res.json(); } catch {}
 
+      const firstItem = body?.items?.[0];
       reportsDebugInline.attempts.push({
         code,
         status: res.status,
         ok: res.ok,
         itemCount: body?.items?.length ?? 0,
         errorMessage: body?.error?.message ?? null,
-        firstActorEmail: body?.items?.[0]?.actor?.email ?? null,
+        firstActorEmail: firstItem?.actor?.email ?? null,
+        firstItemKeys: firstItem ? Object.keys(firstItem) : null,
+        firstItemActor: firstItem?.actor ?? null,
+        firstItemSample: firstItem ? JSON.stringify(firstItem).slice(0, 500) : null,
       });
 
       if (res.ok && body?.items?.length > 0) {
