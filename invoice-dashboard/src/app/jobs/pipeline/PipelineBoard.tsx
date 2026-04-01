@@ -1156,11 +1156,15 @@ function CandidateCard({
             ? <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-emerald-50 text-emerald-700 border-emerald-200">PRD ✓</span>
             : <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-red-50 text-red-600 border-red-200">No PRD</span>
         )}
-        {/* Interest check response for tims_review */}
-        {stage === "tims_review" && job.interest_check_response && (
+        {/* Interest check status for tims_review */}
+        {stage === "tims_review" && (
           job.interest_check_response === "yes"
             ? <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-emerald-50 text-emerald-700 border-emerald-200">Interested</span>
-            : <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-red-50 text-red-600 border-red-200">Not Interested</span>
+            : job.interest_check_response === "no"
+            ? <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-red-50 text-red-600 border-red-200">Not Interested</span>
+            : job.interest_check_sent_at
+            ? <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-amber-50 text-amber-700 border-amber-200">Interest check sent</span>
+            : <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-gray-50 text-gray-400 border-gray-200">No interest check</span>
         )}
         {job.location && (
           <span className="text-[10px] text-gray-400 truncate max-w-[100px]">
