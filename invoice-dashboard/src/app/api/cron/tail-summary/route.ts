@@ -252,8 +252,9 @@ function buildSummaryBlocks(
 
     let text = `*${type}*\n`;
     for (const item of typeItems) {
+      text += `\n  *${item.tail}*\n`;
       for (const bullet of item.bullets) {
-        text += `  \u2022 *${item.tail}* \u2014 ${bullet}\n`;
+        text += `    \u2022 ${bullet}\n`;
       }
     }
 
