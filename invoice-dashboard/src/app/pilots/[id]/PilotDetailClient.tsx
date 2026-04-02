@@ -5,7 +5,7 @@ import Link from "next/link";
 import type { PilotProfile, OnboardingItem } from "@/lib/types";
 import type { JetInsightDocument } from "@/lib/jetinsight/types";
 
-type Tab = "profile" | "onboarding" | "compliance";
+type Tab = "profile" | "onboarding" | "compliance" | "stats";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -241,6 +241,7 @@ export default function PilotDetailClient({ pilot: initialPilot }: { pilot: Pilo
             { key: "profile", label: "Profile" },
             { key: "onboarding", label: `Onboarding (${pct}%)` },
             { key: "compliance", label: "Compliance Docs" },
+            { key: "stats", label: "Flight Stats" },
           ] as { key: Tab; label: string }[]
         ).map((t) => (
           <button
@@ -327,6 +328,201 @@ export default function PilotDetailClient({ pilot: initialPilot }: { pilot: Pilo
           <ComplianceDocsTab pilotId={pilot.id} />
         </div>
       )}
+
+      {activeTab === "stats" && (
+        <FlightStatsTab pilotId={pilot.id} />
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Flight Stats Tab
+// ---------------------------------------------------------------------------
+
+interface FlightStats {
+  totalFlights: number;
+  flightsAsPic: number;
+  flightsAsSic: number;
+  totalFlightHrs: number;
+  picHrs: number;
+  sicHrs: number;
+  totalBlockHrs: number;
+  totalNauticalMiles: number;
+  totalPax: number;
+  totalFuelBurn: number;
+  aircraftTypes: string[];
+  avgBurnByType: Array<{ type: string; avgBurnRate: number }>;
+  dateRange: { first: string | null; last: string | null };
+}
+
+interface MonthlyData {
+  month: string;
+  picHrs: number;
+  sicHrs: number;
+  flights: number;
+}
+
+interface RecentFlight {
+  date: string;
+  tail: string;
+  type: string;
+  route: string;
+  flightHrs: number;
+  fuelBurn: number;
+  burnRate: number;
+  pax: number;
+  asPic: boolean;
+}
+
+function FlightStatsTab({ pilotId }: { pilotId: number }) {
+  const [stats, setStats] = useState<FlightStats | null>(null);
+  const [monthly, setMonthly] = useState<MonthlyData[]>([]);
+  const [recent, setRecent] = useState<RecentFlight[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch(`/api/pilots/${pilotId}/flight-stats`)
+      .then((r) => r.json())
+      .then((d) => {
+        setStats(d.stats ?? null);
+        setMonthly(d.monthly ?? []);
+        setRecent(d.recentFlights ?? []);
+      })
+      .finally(() => setLoading(false));
+  }, [pilotId]);
+
+  if (loading) return <p className="py-4 text-sm text-gray-500">Loading flight stats...</p>;
+  if (!stats || stats.totalFlights === 0)
+    return (
+      <div className="py-8 text-center text-gray-400">
+        <p>No flight data available.</p>
+        <p className="mt-1 text-xs">Post-flight data is imported from JetInsight CSV exports.</p>
+      </div>
+    );
+
+  return (
+    <div className="space-y-6">
+      {/* KPI Cards */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <KpiCard label="Total Flights" value={stats.totalFlights} />
+        <KpiCard label="Flight Hours" value={stats.totalFlightHrs} sub={`PIC: ${stats.picHrs} | SIC: ${stats.sicHrs}`} />
+        <KpiCard label="As PIC" value={stats.flightsAsPic} />
+        <KpiCard label="As SIC" value={stats.flightsAsSic} />
+        <KpiCard label="Nautical Miles" value={stats.totalNauticalMiles.toLocaleString()} />
+        <KpiCard label="Passengers Carried" value={stats.totalPax} />
+        <KpiCard label="Total Fuel Burn" value={`${(stats.totalFuelBurn / 1000).toFixed(1)}K lbs`} />
+        <KpiCard label="Aircraft Types" value={stats.aircraftTypes.join(", ") || "-"} />
+      </div>
+
+      {/* Date range */}
+      {stats.dateRange.first && (
+        <p className="text-xs text-gray-400">
+          Data from {new Date(stats.dateRange.first).toLocaleDateString()} to{" "}
+          {new Date(stats.dateRange.last!).toLocaleDateString()}
+        </p>
+      )}
+
+      {/* Avg burn rate by type */}
+      {stats.avgBurnByType.length > 0 && (
+        <div className="rounded-xl border bg-white p-5 shadow-sm">
+          <h3 className="mb-3 text-sm font-semibold uppercase tracking-wider text-gray-400">
+            Avg Fuel Burn Rate
+          </h3>
+          <div className="flex gap-6">
+            {stats.avgBurnByType.map((t) => (
+              <div key={t.type}>
+                <p className="text-lg font-semibold text-gray-900">
+                  {t.avgBurnRate} <span className="text-sm font-normal text-gray-500">lbs/hr</span>
+                </p>
+                <p className="text-xs text-gray-500">{t.type}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Monthly breakdown */}
+      {monthly.length > 0 && (
+        <div className="rounded-xl border bg-white p-5 shadow-sm">
+          <h3 className="mb-3 text-sm font-semibold uppercase tracking-wider text-gray-400">
+            Monthly Breakdown
+          </h3>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-gray-200 text-left text-xs text-gray-500">
+                <th className="pb-2 font-medium">Month</th>
+                <th className="pb-2 font-medium">Flights</th>
+                <th className="pb-2 font-medium">PIC Hours</th>
+                <th className="pb-2 font-medium">SIC Hours</th>
+                <th className="pb-2 font-medium">Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {monthly.map((m) => (
+                <tr key={m.month} className="border-b border-gray-50">
+                  <td className="py-2 font-medium text-gray-900">{m.month}</td>
+                  <td className="py-2 text-gray-700">{m.flights}</td>
+                  <td className="py-2 text-gray-700">{m.picHrs.toFixed(1)}</td>
+                  <td className="py-2 text-gray-700">{m.sicHrs.toFixed(1)}</td>
+                  <td className="py-2 font-medium text-gray-900">{(m.picHrs + m.sicHrs).toFixed(1)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Recent flights */}
+      {recent.length > 0 && (
+        <div className="rounded-xl border bg-white p-5 shadow-sm">
+          <h3 className="mb-3 text-sm font-semibold uppercase tracking-wider text-gray-400">
+            Recent Flights
+          </h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-200 text-left text-xs text-gray-500">
+                  <th className="pb-2 font-medium">Date</th>
+                  <th className="pb-2 font-medium">Role</th>
+                  <th className="pb-2 font-medium">Tail</th>
+                  <th className="pb-2 font-medium">Route</th>
+                  <th className="pb-2 font-medium">Hours</th>
+                  <th className="pb-2 font-medium">Burn Rate</th>
+                  <th className="pb-2 font-medium">Pax</th>
+                </tr>
+              </thead>
+              <tbody>
+                {recent.map((f, i) => (
+                  <tr key={i} className="border-b border-gray-50">
+                    <td className="py-2 text-gray-900">{new Date(f.date).toLocaleDateString()}</td>
+                    <td className="py-2">
+                      <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${f.asPic ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-600"}`}>
+                        {f.asPic ? "PIC" : "SIC"}
+                      </span>
+                    </td>
+                    <td className="py-2 text-gray-700">{f.tail}</td>
+                    <td className="py-2 font-medium text-gray-900">{f.route}</td>
+                    <td className="py-2 text-gray-700">{f.flightHrs?.toFixed(1) ?? "-"}</td>
+                    <td className="py-2 text-gray-700">{f.burnRate ? `${Math.round(f.burnRate)} lbs/hr` : "-"}</td>
+                    <td className="py-2 text-gray-500">{f.pax ?? "-"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function KpiCard({ label, value, sub }: { label: string; value: string | number; sub?: string }) {
+  return (
+    <div className="rounded-lg border border-gray-200 bg-white p-3">
+      <p className="text-xs text-gray-500">{label}</p>
+      <p className="mt-1 text-xl font-semibold text-gray-900">{value}</p>
+      {sub && <p className="mt-0.5 text-xs text-gray-400">{sub}</p>}
     </div>
   );
 }
