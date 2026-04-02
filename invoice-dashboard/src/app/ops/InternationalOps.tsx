@@ -16,7 +16,7 @@ import { isInternationalIcao } from "@/lib/intlUtils";
 // ---------------------------------------------------------------------------
 // Sub-tabs within International
 // ---------------------------------------------------------------------------
-const SUB_TABS = ["Flight Board", "Country Profiles", "Documents", "US Customs", "Alerts"] as const;
+const SUB_TABS = ["Flight Board", "Country Profiles", "Documents", "US Customs", "Alerts", "Settings"] as const;
 type SubTab = (typeof SUB_TABS)[number];
 
 // ---------------------------------------------------------------------------
@@ -166,8 +166,10 @@ export default function InternationalOps({ flights: _parentFlights }: { flights:
         <DocumentLibrary />
       ) : subTab === "US Customs" ? (
         <CustomsTracker />
-      ) : (
+      ) : subTab === "Alerts" ? (
         <AlertsPanel alerts={alerts} onRefresh={loadAlerts} />
+      ) : (
+        <IntlSettings />
       )}
     </div>
   );
@@ -1325,11 +1327,11 @@ function TripBundlePanel({ tripId }: { tripId: string }) {
             {docs.map((d) => (
               <div key={d.id} className="flex items-center gap-2 rounded px-2 py-1.5 hover:bg-gray-50 group">
                 <input type="checkbox" checked={selected.has(`${d.id}`)} onChange={() => toggleDoc(`${d.id}`)} className="rounded border-gray-300" />
-                <span className="flex-1 text-sm text-gray-900 truncate">{d.document_name}</span>
-                <span className="text-xs text-gray-400 hidden group-hover:inline">{d.category}</span>
+                <span className="flex-1 text-sm text-gray-900 truncate">{d.section === "Trip" ? d.category : d.document_name}</span>
+                <span className="text-xs text-gray-400 hidden group-hover:inline">{d.section === "Trip" ? d.document_name : d.category}</span>
                 {d.signed_url && (
                   <>
-                    <button onClick={() => { setPreviewUrl(d.signed_url); setPreviewName(d.document_name); }} className="text-xs text-blue-600 hover:text-blue-800 opacity-0 group-hover:opacity-100">Preview</button>
+                    <button onClick={() => { setPreviewUrl(d.signed_url); setPreviewName(d.category || d.document_name); }} className="text-xs text-blue-600 hover:text-blue-800 opacity-0 group-hover:opacity-100">Preview</button>
                     <a href={d.signed_url} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:text-blue-800 opacity-0 group-hover:opacity-100">Download</a>
                   </>
                 )}
@@ -3136,6 +3138,103 @@ function AlertsPanel({ alerts, onRefresh }: { alerts: IntlLegAlert[]; onRefresh:
           )}
         </div>
       ))}
+    </div>
+  );
+}
+
+// ===========================================================================
+// INTL SETTINGS — company doc selector for international trips
+// ===========================================================================
+function IntlSettings() {
+  const [docs, setDocs] = useState<Array<{ id: number; category: string; document_name: string }>>([]);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/ops/intl/company-doc-settings")
+      .then((r) => r.json())
+      .then((d) => {
+        setDocs(d.docs ?? []);
+        setSelectedIds(new Set(d.selectedIds ?? []));
+      })
+      .finally(() => setLoading(false));
+  }, []);
+
+  const toggleDoc = (id: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+    setSaved(false);
+  };
+
+  const selectAll = () => { setSelectedIds(new Set(docs.map((d) => d.id))); setSaved(false); };
+  const selectNone = () => { setSelectedIds(new Set()); setSaved(false); };
+
+  const save = async () => {
+    setSaving(true);
+    await fetch("/api/ops/intl/company-doc-settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ selectedIds: [...selectedIds] }),
+    });
+    setSaving(false);
+    setSaved(true);
+  };
+
+  if (loading) return <p className="text-sm text-gray-400 animate-pulse">Loading...</p>;
+
+  // Group by category
+  const grouped = new Map<string, Array<{ id: number; document_name: string }>>();
+  for (const d of docs) {
+    const arr = grouped.get(d.category) ?? [];
+    arr.push({ id: d.id, document_name: d.document_name });
+    grouped.set(d.category, arr);
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h3 className="text-sm font-semibold text-gray-700">Company Documents for International Trips</h3>
+          <p className="text-xs text-gray-400">Select which company documents appear in the trip detail panel. {selectedIds.size === 0 ? "All shown when none selected." : `${selectedIds.size} selected.`}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button onClick={selectAll} className="text-xs text-blue-600 hover:text-blue-800">Select all</button>
+          <button onClick={selectNone} className="text-xs text-blue-600 hover:text-blue-800">Select none</button>
+          <button onClick={save} disabled={saving} className="rounded bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">
+            {saving ? "Saving..." : saved ? "Saved" : "Save"}
+          </button>
+        </div>
+      </div>
+
+      <div className="space-y-4">
+        {[...grouped.entries()].map(([category, categoryDocs]) => (
+          <div key={category}>
+            <h4 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-1">{category}</h4>
+            <div className="space-y-0.5 pl-2">
+              {categoryDocs.map((d) => (
+                <label key={d.id} className="flex items-center gap-2 rounded px-2 py-1.5 hover:bg-gray-50 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(d.id)}
+                    onChange={() => toggleDoc(d.id)}
+                    className="rounded border-gray-300"
+                  />
+                  <span className="text-sm text-gray-900">{d.document_name}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {docs.length === 0 && (
+        <p className="text-sm text-gray-400">No company documents synced yet. Run a sync from the JetInsight tab.</p>
+      )}
     </div>
   );
 }
