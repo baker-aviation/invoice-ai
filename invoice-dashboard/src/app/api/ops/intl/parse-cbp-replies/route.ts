@@ -245,6 +245,15 @@ export async function GET(req: NextRequest) {
 // POST — manual trigger from dashboard
 // ---------------------------------------------------------------------------
 export async function POST(req: NextRequest) {
+  try {
+    return await handlePost(req);
+  } catch (err) {
+    console.error("[parse-cbp-replies] Unhandled POST error:", err);
+    return NextResponse.json({ error: err instanceof Error ? err.message : "Unknown error", stack: err instanceof Error ? err.stack?.split("\n").slice(0, 3) : undefined }, { status: 500 });
+  }
+}
+
+async function handlePost(req: NextRequest) {
   const auth = await requireAuth(req);
   if (!isAuthed(auth)) return auth.error;
 
