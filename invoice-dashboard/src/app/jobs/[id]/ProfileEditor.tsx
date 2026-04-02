@@ -45,7 +45,7 @@ type ProfileData = {
   rejection_reason: string | null;
 };
 
-export default function ProfileEditor({ data }: { data: ProfileData }) {
+export default function ProfileEditor({ data, currentStage }: { data: ProfileData; currentStage: string | null }) {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -245,6 +245,7 @@ export default function ProfileEditor({ data }: { data: ProfileData }) {
             applicationId={data.applicationId}
             candidateName={data.candidate_name ?? ""}
             candidateEmail={data.email ?? null}
+            currentStage={currentStage}
             onClose={() => setShowRejectModal(false)}
           />
         )}

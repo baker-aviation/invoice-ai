@@ -17,6 +17,17 @@ const STAGE_LABELS: Record<string, string> = {
   hired: "Hired",
 };
 
+async function fetchNextInStage(stage: string, exclude: number): Promise<number | null> {
+  try {
+    const res = await fetch(`/api/jobs/next-in-stage?stage=${stage}&exclude=${exclude}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.application_id ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export default function NextStepButton({
   applicationId,
   currentStage,
@@ -36,7 +47,6 @@ export default function NextStepButton({
   const nextLabel = STAGE_LABELS[nextStage] ?? nextStage.replace(/_/g, " ");
 
   async function handleMove() {
-    if (!confirm(`Move this candidate to "${nextLabel}"?`)) return;
     setMoving(true);
     try {
       await fetch(`/api/jobs/${applicationId}/stage`, {
@@ -44,8 +54,17 @@ export default function NextStepButton({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ stage: nextStage }),
       });
+
+      // Auto-advance to the next candidate in the same stage
+      const nextAppId = await fetchNextInStage(currentStage!, applicationId);
+      if (nextAppId) {
+        router.push(`/jobs/${nextAppId}`);
+      } else {
+        router.push("/jobs/pipeline");
+      }
+    } catch {
       router.refresh();
-    } catch {} finally {
+    } finally {
       setMoving(false);
     }
   }

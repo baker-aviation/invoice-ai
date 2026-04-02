@@ -315,6 +315,7 @@ export default async function JobDetailPage({
                 rejected_at: job?.rejected_at ?? null,
                 rejection_reason: job?.rejection_reason ?? null,
               }}
+              currentStage={job?.pipeline_stage ?? null}
             />
           </div>
 

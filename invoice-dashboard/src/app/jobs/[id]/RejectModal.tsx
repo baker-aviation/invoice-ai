@@ -26,15 +26,28 @@ const TYPE_CONFIG: Record<RejectionType, { label: string; description: string; c
   },
 };
 
+async function fetchNextInStage(stage: string, exclude: number): Promise<number | null> {
+  try {
+    const res = await fetch(`/api/jobs/next-in-stage?stage=${stage}&exclude=${exclude}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.application_id ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export default function RejectModal({
   applicationId,
   candidateName,
   candidateEmail,
+  currentStage,
   onClose,
 }: {
   applicationId: number;
   candidateName: string;
   candidateEmail: string | null;
+  currentStage: string | null;
   onClose: () => void;
 }) {
   const router = useRouter();
@@ -66,10 +79,23 @@ export default function RejectModal({
       const data = await res.json();
       setResult(data);
       if (data.ok && (data.emailSent || !sendEmail) && !data.emailError) {
-        setTimeout(() => {
-          onClose();
-          router.refresh();
-        }, 2000);
+        // Auto-advance to next candidate in the same stage
+        if (currentStage) {
+          const nextAppId = await fetchNextInStage(currentStage, applicationId);
+          setTimeout(() => {
+            onClose();
+            if (nextAppId) {
+              router.push(`/jobs/${nextAppId}`);
+            } else {
+              router.push("/jobs/pipeline");
+            }
+          }, 1500);
+        } else {
+          setTimeout(() => {
+            onClose();
+            router.refresh();
+          }, 2000);
+        }
       } else if (data.ok) {
         // Rejection saved but email had an issue — don't auto-close
         router.refresh();
@@ -204,7 +230,11 @@ export default function RejectModal({
                     <div className="text-xs text-red-500 mt-1">Rejection was saved. You may need to send the email manually.</div>
                   </div>
                 )}
-                {!result.emailError && <div className="text-xs text-gray-400">Closing...</div>}
+                {!result.emailError && (
+                  <div className="text-xs text-gray-400">
+                    {currentStage ? "Loading next candidate..." : "Closing..."}
+                  </div>
+                )}
                 {result.emailError && (
                   <button onClick={onClose} className="text-xs text-gray-500 hover:text-gray-700 mt-2">Close</button>
                 )}
