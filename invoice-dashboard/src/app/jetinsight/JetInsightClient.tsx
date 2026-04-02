@@ -347,13 +347,23 @@ function StatCard({
 
 function CrewDocsTab() {
   const [docs, setDocs] = useState<JetInsightDocument[]>([]);
+  const [pilots, setPilots] = useState<Map<string, { name: string; role: string; email: string }>>(new Map());
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch("/api/jetinsight/documents?entity_type=crew")
-      .then((r) => r.json())
-      .then((d) => setDocs(d.documents ?? []))
+    Promise.all([
+      fetch("/api/jetinsight/documents?entity_type=crew").then((r) => r.json()),
+      fetch("/api/pilots").then((r) => r.json()),
+    ])
+      .then(([docsData, pilotsData]) => {
+        setDocs(docsData.documents ?? []);
+        const map = new Map<string, { name: string; role: string; email: string }>();
+        for (const p of pilotsData.pilots ?? []) {
+          map.set(String(p.id), { name: p.full_name, role: p.role, email: p.email ?? "" });
+        }
+        setPilots(map);
+      })
       .finally(() => setLoading(false));
   }, []);
 
@@ -373,9 +383,18 @@ function CrewDocsTab() {
     grouped.set(d.entity_id, arr);
   }
 
+  // Sort by pilot name
+  const sorted = [...grouped.entries()].sort((a, b) => {
+    const nameA = pilots.get(a[0])?.name ?? a[0];
+    const nameB = pilots.get(b[0])?.name ?? b[0];
+    return nameA.localeCompare(nameB);
+  });
+
   return (
     <div className="space-y-2">
-      {[...grouped.entries()].map(([entityId, entityDocs]) => (
+      {sorted.map(([entityId, entityDocs]) => {
+        const pilot = pilots.get(entityId);
+        return (
         <div
           key={entityId}
           className="rounded-lg border border-slate-200 bg-white"
@@ -386,9 +405,21 @@ function CrewDocsTab() {
             }
             className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-slate-50"
           >
-            <span className="font-medium text-slate-900">
-              {entityId}
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="font-medium text-slate-900">
+                {pilot?.name ?? entityId}
+              </span>
+              {pilot?.role && (
+                <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${
+                  pilot.role === "PIC" ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-600"
+                }`}>
+                  {pilot.role}
+                </span>
+              )}
+              {pilot?.email && (
+                <span className="text-xs text-slate-400">{pilot.email}</span>
+              )}
+            </div>
             <span className="text-sm text-slate-500">
               {entityDocs.length} doc{entityDocs.length !== 1 && "s"}
             </span>
@@ -399,7 +430,8 @@ function CrewDocsTab() {
             </div>
           )}
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
