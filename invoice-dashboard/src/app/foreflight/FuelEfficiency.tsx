@@ -68,28 +68,45 @@ export default function FuelEfficiency() {
 
   async function syncPredictions() {
     setSyncing(true);
-    setSyncMsg("Pulling ForeFlight flight plans...");
-    let totalStored = 0;
-    let offset = 0;
-    let done = false;
+    setSyncMsg("Fetching flight list from ForeFlight...");
 
     try {
-      while (!done) {
-        setSyncMsg(`Pulling ForeFlight plans (batch at offset ${offset})... ${totalStored} stored so far`);
+      // Step 1: Get list of flights needing sync (single API call)
+      const listRes = await fetch("/api/fuel-planning/sync-predictions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ months, action: "list" }),
+      });
+      const listData = await listRes.json();
+      if (!listRes.ok) throw new Error(listData.error);
+
+      const flights = listData.flights as Array<{ id: string }>;
+      if (flights.length === 0) {
+        setSyncMsg(`All ${listData.total} flights already synced`);
+        setSyncing(false);
+        return;
+      }
+
+      setSyncMsg(`Found ${flights.length} new flights to sync (${listData.alreadySynced} already done)`);
+
+      // Step 2: Process in batches of 10, sending specific IDs each time
+      let totalStored = 0;
+      const batchSize = 10;
+
+      for (let i = 0; i < flights.length; i += batchSize) {
+        const batch = flights.slice(i, i + batchSize);
+        setSyncMsg(`Syncing flights ${i + 1}–${Math.min(i + batchSize, flights.length)} of ${flights.length}... (${totalStored} stored)`);
+
         const res = await fetch("/api/fuel-planning/sync-predictions", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ months, offset }),
+          body: JSON.stringify({ flightIds: batch.map((f) => f.id) }),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error);
         totalStored += data.stored ?? 0;
-        if (data.done || (data.remaining ?? 0) <= 0) {
-          done = true;
-        } else {
-          offset = data.nextOffset ?? offset + 10;
-        }
       }
+
       setSyncMsg(`Done: ${totalStored} predictions synced`);
       loadData();
     } catch (err) {

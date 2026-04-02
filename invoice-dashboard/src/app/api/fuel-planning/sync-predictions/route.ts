@@ -5,15 +5,17 @@ import { requireAdmin } from "@/lib/api-auth";
 export const maxDuration = 300;
 
 const FF_API = "https://public-api.foreflight.com/public/api";
-const BATCH_SIZE = 10; // Fetch 10 flight details per API call
-const DELAY_MS = 500; // 0.5s between ForeFlight API calls
+const BATCH_SIZE = 10;
+const DELAY_MS = 500;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * POST /api/fuel-planning/sync-predictions
- * Pull ForeFlight flight plans and store predicted fuel data.
- * Body: { months?: number, offset?: number }
+ *
+ * Two modes:
+ *   1. { months, action: "list" }  — fetch flight list from ForeFlight, return IDs needing sync
+ *   2. { flightIds: [...] }        — fetch details + store predictions for specific flights
  */
 export async function POST(req: NextRequest) {
   const auth = await requireAdmin(req);
@@ -27,96 +29,97 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  let body: { months?: number; offset?: number };
+  let body: { months?: number; offset?: number; action?: string; flightIds?: string[] };
   try {
     body = await req.json();
   } catch {
     body = {};
   }
 
-  const months = body.months ?? 3;
-  const offset = body.offset ?? 0;
   const supa = createServiceClient();
 
-  // Calculate date range
-  const toDate = new Date();
-  const fromDate = new Date();
-  fromDate.setMonth(fromDate.getMonth() - months);
-
   try {
-    // Step 1: Get flight list from ForeFlight
-    const listRes = await fetch(
-      `${FF_API}/Flights/flights?fromDate=${fromDate.toISOString().split("T")[0]}&toDate=${toDate.toISOString().split("T")[0]}`,
-      {
-        headers: {
-          "x-api-key": apiKey,
-          Accept: "application/json",
+    // ─── Mode 1: List flights needing sync ───
+    if (body.action === "list" || (!body.flightIds && !body.offset)) {
+      const months = body.months ?? 3;
+      const toDate = new Date();
+      const fromDate = new Date();
+      fromDate.setMonth(fromDate.getMonth() - months);
+
+      const listRes = await fetch(
+        `${FF_API}/Flights/flights?fromDate=${fromDate.toISOString().split("T")[0]}&toDate=${toDate.toISOString().split("T")[0]}`,
+        {
+          headers: { "x-api-key": apiKey, Accept: "application/json" },
+          signal: AbortSignal.timeout(90_000),
         },
-        signal: AbortSignal.timeout(30_000),
-      },
-    );
+      );
 
-    if (!listRes.ok) {
-      throw new Error(`ForeFlight API: ${listRes.status} ${listRes.statusText}`);
-    }
+      if (!listRes.ok) {
+        throw new Error(`ForeFlight API: ${listRes.status} ${listRes.statusText}`);
+      }
 
-    const listData = await listRes.json();
-    const allFlights = (listData.flights ?? []) as Array<{
-      flightId: string;
-      departure: string;
-      destination: string;
-      aircraftRegistration: string;
-      departureTime: string;
-      callSign: string;
-    }>;
+      const listData = await listRes.json();
+      const allFlights = (listData.flights ?? []) as Array<{
+        flightId: string;
+        departure: string;
+        destination: string;
+        aircraftRegistration: string;
+        departureTime: string;
+        callSign: string;
+      }>;
 
-    // Filter to Baker Aviation aircraft (N-numbers we know)
-    const bakerFlights = allFlights.filter(
-      (f) => f.aircraftRegistration?.startsWith("N"),
-    );
+      const bakerFlights = allFlights.filter(
+        (f) => f.aircraftRegistration?.startsWith("N"),
+      );
 
-    // Check which ones we already have
-    const { data: existing } = await supa
-      .from("foreflight_predictions")
-      .select("foreflight_id");
+      const { data: existing } = await supa
+        .from("foreflight_predictions")
+        .select("foreflight_id");
 
-    const existingIds = new Set(
-      (existing ?? []).map((e) => e.foreflight_id),
-    );
+      const existingIds = new Set(
+        (existing ?? []).map((e) => e.foreflight_id),
+      );
 
-    const newFlights = bakerFlights.filter(
-      (f) => !existingIds.has(f.flightId),
-    );
+      const newFlights = bakerFlights.filter(
+        (f) => !existingIds.has(f.flightId),
+      );
 
-    // Process batch starting at offset
-    const batch = newFlights.slice(offset, offset + BATCH_SIZE);
-
-    if (batch.length === 0) {
       return NextResponse.json({
         ok: true,
-        done: true,
         total: bakerFlights.length,
         alreadySynced: existingIds.size,
-        remaining: 0,
+        needsSync: newFlights.length,
+        // Send flight metadata so frontend can batch them back
+        flights: newFlights.map((f) => ({
+          id: f.flightId,
+          dep: f.departure,
+          dest: f.destination,
+          tail: f.aircraftRegistration,
+          time: f.departureTime,
+          callsign: f.callSign,
+        })),
       });
     }
 
+    // ─── Mode 2: Process specific flight IDs ───
+    const flightIds = body.flightIds ?? [];
+    if (flightIds.length === 0) {
+      return NextResponse.json({ ok: true, done: true, stored: 0 });
+    }
+
+    const batch = flightIds.slice(0, BATCH_SIZE);
     let stored = 0;
     let skipped = 0;
     const errors: string[] = [];
 
-    // Step 2: Fetch performance for each flight
-    for (const flight of batch) {
+    for (const flightId of batch) {
       await sleep(DELAY_MS);
 
       try {
         const detailRes = await fetch(
-          `${FF_API}/Flights/${flight.flightId}`,
+          `${FF_API}/Flights/${flightId}`,
           {
-            headers: {
-              "x-api-key": apiKey,
-              Accept: "application/json",
-            },
+            headers: { "x-api-key": apiKey, Accept: "application/json" },
             signal: AbortSignal.timeout(15_000),
           },
         );
@@ -128,28 +131,27 @@ export async function POST(req: NextRequest) {
 
         const detail = await detailRes.json();
         const perf = detail.performance;
+        const flightData = detail.flightData ?? detail.flight ?? detail;
 
         if (!perf?.fuel?.fuelToDestination) {
           skipped++;
           continue;
         }
 
-        const depTime = flight.departureTime
-          ? new Date(flight.departureTime)
-          : null;
+        const depTime = flightData.scheduledTimeOfDeparture ?? flightData.departureTime;
         const flightDate = depTime
-          ? depTime.toISOString().split("T")[0]
+          ? new Date(depTime).toISOString().split("T")[0]
           : new Date().toISOString().split("T")[0];
 
         const routeInfo = perf.destinationRouteInformation;
 
         await supa.from("foreflight_predictions").upsert(
           {
-            foreflight_id: flight.flightId,
-            tail_number: flight.aircraftRegistration,
-            departure_icao: flight.departure,
-            destination_icao: flight.destination,
-            departure_time: flight.departureTime,
+            foreflight_id: flightId,
+            tail_number: flightData.aircraftRegistration ?? null,
+            departure_icao: flightData.departure ?? null,
+            destination_icao: flightData.destination ?? null,
+            departure_time: depTime ?? null,
             arrival_time: perf.times?.estimatedArrivalTime ?? null,
             fuel_to_dest_lbs: perf.fuel.fuelToDestination,
             total_fuel_lbs: perf.fuel.totalFuel,
@@ -166,7 +168,7 @@ export async function POST(req: NextRequest) {
             wind_component: perf.weather?.averageWindComponent ?? null,
             isa_deviation: perf.weather?.averageISADeviation ?? null,
             cruise_profile: routeInfo?.cruiseProfile ?? null,
-            callsign: flight.callSign,
+            callsign: flightData.callsign ?? flightData.callSign ?? null,
             flight_date: flightDate,
           },
           { onConflict: "foreflight_id" },
@@ -175,20 +177,17 @@ export async function POST(req: NextRequest) {
         stored++;
       } catch (err) {
         errors.push(
-          `${flight.flightId}: ${err instanceof Error ? err.message : String(err)}`,
+          `${flightId}: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
     }
 
     return NextResponse.json({
       ok: true,
-      done: false,
       stored,
       skipped,
-      errors,
-      nextOffset: offset + batch.length,
-      total: bakerFlights.length,
-      remaining: newFlights.length - offset - batch.length,
+      errors: errors.length > 0 ? errors : undefined,
+      processed: batch.length,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
