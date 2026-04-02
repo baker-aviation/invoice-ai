@@ -177,16 +177,36 @@ function extractPassengerNames(html: string): string[] {
   const names: string[] = [];
 
   // Try parsing the embedded passenger_data JSON
+  // Only include passengers who are allocated to this trip (is_allocated=true)
+  // If none are allocated, fall back to checking pax count from schedule data
   const jsonMatch = html.match(/passenger_data\s*=\s*(\[[\s\S]*?\]);/);
   if (jsonMatch) {
     try {
-      const paxData = JSON.parse(jsonMatch[1]) as Array<{ name: string }>;
-      for (const p of paxData) {
-        if (p.name?.trim()) {
-          names.push(p.name.trim());
+      const paxData = JSON.parse(jsonMatch[1]) as Array<{
+        name: string;
+        is_allocated: boolean;
+      }>;
+
+      // Only take allocated passengers (actually assigned to this trip's legs)
+      const allocated = paxData.filter((p) => p.is_allocated);
+      if (allocated.length > 0) {
+        for (const p of allocated) {
+          if (p.name?.trim()) names.push(p.name.trim());
         }
+        return [...new Set(names)];
       }
-      return [...new Set(names)]; // deduplicate
+
+      // If no one is allocated but pax count is small (≤ max seats), take all
+      // This handles trips where ops didn't click the allocate checkboxes
+      if (paxData.length <= 12) {
+        for (const p of paxData) {
+          if (p.name?.trim()) names.push(p.name.trim());
+        }
+        return [...new Set(names)];
+      }
+
+      // Large unallocated list = customer's full passenger database, skip
+      return [];
     } catch {
       // Fall through to HTML parsing
     }
