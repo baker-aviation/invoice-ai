@@ -56,6 +56,7 @@ async function fetchPage(path: string, cookie: string): Promise<string> {
       Accept: "text/html,application/xhtml+xml",
     },
     redirect: "follow",
+    signal: AbortSignal.timeout(30_000), // 30s timeout per request
   });
 
   if (!res.ok) {
@@ -91,6 +92,7 @@ async function downloadToGcs(
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Baker-Aviation-Sync/1.0",
     },
     redirect: "follow",
+    signal: AbortSignal.timeout(30_000), // 30s timeout per request
   });
 
   if (!res.ok) {
@@ -225,9 +227,7 @@ export async function syncCrewDocs(
   const supa = createServiceClient();
 
   for (const doc of docEntries) {
-    await sleep(DELAY_MS);
-
-    // Check if already synced
+    // Check if already synced (no delay needed for DB check)
     const { data: existing } = await supa
       .from("jetinsight_documents")
       .select("id")
@@ -240,6 +240,9 @@ export async function syncCrewDocs(
       result.docsSkipped++;
       continue;
     }
+
+    // Rate limit only before actual downloads
+    await sleep(DELAY_MS);
 
     // Download to GCS
     const safeName = doc.filename.replace(/[^a-zA-Z0-9._-]/g, "_");
@@ -317,9 +320,7 @@ export async function syncAircraftDocs(
   const supa = createServiceClient();
 
   for (const doc of docEntries) {
-    await sleep(DELAY_MS);
-
-    // Check if already synced
+    // Check if already synced (no delay needed for DB check)
     const { data: existing } = await supa
       .from("jetinsight_documents")
       .select("id")
@@ -332,6 +333,8 @@ export async function syncAircraftDocs(
       result.docsSkipped++;
       continue;
     }
+
+    await sleep(DELAY_MS);
 
     const safeName = doc.filename.replace(/[^a-zA-Z0-9._-]/g, "_");
     const gcsKey = `${GCS_PREFIX}/aircraft/${tail}/${sanitizeCategory(doc.category)}/${Date.now()}-${safeName}`;

@@ -9,7 +9,7 @@ import {
 
 export const maxDuration = 300; // Vercel Pro: 5 min max
 
-const BATCH_SIZE = 5; // Process 5 entities per API call
+const BATCH_SIZE = 3; // Process 3 entities per API call (fits in 300s Vercel limit)
 
 /**
  * POST /api/jetinsight/sync — Trigger a JetInsight sync
