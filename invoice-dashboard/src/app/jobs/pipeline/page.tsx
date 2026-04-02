@@ -7,7 +7,7 @@ import JobsNav from "../JobsNav";
 import PipelineBoard from "./PipelineBoard";
 
 export default async function PipelinePage() {
-  const data = await fetchJobs({ limit: 500 });
+  const data = await fetchJobs({ limit: 2000, pipeline_only: true });
   const jobs = data.jobs ?? [];
 
   return (

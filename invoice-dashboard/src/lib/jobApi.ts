@@ -26,6 +26,7 @@ async function queryJobs(
     soft_gate_pic_met?: "true" | "false";
     has_citation_x?: "true" | "false";
     has_challenger_300_type_rating?: "true" | "false";
+    pipeline_only?: boolean;
   },
 ) {
   let query = supa
@@ -41,6 +42,14 @@ async function queryJobs(
   if (params.has_citation_x) query = query.eq("has_citation_x", params.has_citation_x === "true");
   if (params.has_challenger_300_type_rating) {
     query = query.eq("has_challenger_300_type_rating", params.has_challenger_300_type_rating === "true");
+  }
+
+  // Only return candidates with a valid pipeline stage (for pipeline board)
+  if (params.pipeline_only) {
+    query = query.in("pipeline_stage", [
+      "screening", "info_session", "tims_review", "prd_faa_review",
+      "interview_scheduled", "interview_post", "pending_offer", "offer", "hired",
+    ]);
   }
 
   // Hide soft-deleted rows by default
@@ -59,6 +68,7 @@ export async function fetchJobs(
     soft_gate_pic_met?: "true" | "false";
     has_citation_x?: "true" | "false";
     has_challenger_300_type_rating?: "true" | "false";
+    pipeline_only?: boolean;
   } = {},
 ): Promise<JobsListResponse> {
   const supa = createServiceClient();
