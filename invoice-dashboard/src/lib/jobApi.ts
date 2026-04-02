@@ -232,6 +232,7 @@ export async function fetchJobDetail(applicationId: string | number): Promise<Jo
         size_bytes: f.size_bytes,
         created_at: f.created_at,
         signed_url,
+        file_category: f.file_category ?? null,
       };
     }),
   );

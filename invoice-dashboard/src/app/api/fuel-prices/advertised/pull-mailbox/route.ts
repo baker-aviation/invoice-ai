@@ -46,7 +46,7 @@ async function handlePull(req: NextRequest) {
   const authError = await checkAuth(req);
   if (authError) return authError;
 
-  const lookbackMinutes = Number(req.nextUrl.searchParams.get("lookback_minutes") || "720");
+  const lookbackMinutes = Number(req.nextUrl.searchParams.get("lookback_minutes") || "2880");
   const maxMessages = Number(req.nextUrl.searchParams.get("max_messages") || "50");
   // Default to searching all folders — some vendor emails land in subfolders
   const allFolders = req.nextUrl.searchParams.get("all_folders") !== "false";
