@@ -6,6 +6,7 @@ import {
   syncCrewIndex,
   syncCrewDocs,
   syncAircraftDocs,
+  syncCompanyDocs,
 } from "@/lib/jetinsight/scraper";
 import { syncTripDocs } from "@/lib/jetinsight/trip-sync";
 import { syncPostFlightData } from "@/lib/jetinsight/postflight-sync";
@@ -125,6 +126,12 @@ export async function GET(req: NextRequest) {
       totalSkipped += r.docsSkipped;
       errors.push(...r.errors);
     }
+
+    // Step 5: Sync company docs
+    const companyResult = await syncCompanyDocs(cookie);
+    totalDownloaded += companyResult.docsDownloaded;
+    totalSkipped += companyResult.docsSkipped;
+    errors.push(...companyResult.errors);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg === "SESSION_EXPIRED") {

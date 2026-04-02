@@ -295,6 +295,99 @@ export async function syncCrewDocs(
 }
 
 /**
+ * Sync company-level documents from /compliance/documents/operator.
+ * Same HTML structure as aircraft docs (Bootstrap panels with download links).
+ */
+export async function syncCompanyDocs(
+  cookie: string,
+): Promise<EntitySyncResult> {
+  const result: EntitySyncResult = {
+    entityType: "aircraft", // reused type field
+    entityId: "baker_aviation",
+    docsDownloaded: 0,
+    docsSkipped: 0,
+    errors: [],
+  };
+
+  let docEntries: DocEntry[];
+  try {
+    const html = await fetchPage(
+      `/compliance/documents/operator`,
+      cookie,
+    );
+    docEntries = parseAircraftDocPage(html);
+  } catch (err) {
+    result.errors.push(
+      `Failed to fetch company doc page: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return result;
+  }
+
+  const supa = createServiceClient();
+
+  for (const doc of docEntries) {
+    let uploadedOn: string | null = null;
+    if (doc.uploadedOn) {
+      const parts = doc.uploadedOn.split("/");
+      if (parts.length === 3) {
+        uploadedOn = `${parts[2]}-${parts[0].padStart(2, "0")}-${parts[1].padStart(2, "0")}`;
+      }
+    }
+
+    const { data: existing } = await supa
+      .from("jetinsight_documents")
+      .select("id, uploaded_on")
+      .eq("entity_type", "company")
+      .eq("entity_id", "baker_aviation")
+      .eq("jetinsight_uuid", doc.checkUuid)
+      .maybeSingle();
+
+    if (existing && (!uploadedOn || existing.uploaded_on === uploadedOn)) {
+      result.docsSkipped++;
+      continue;
+    }
+
+    if (existing) {
+      await supa.from("jetinsight_documents").delete().eq("id", existing.id);
+    }
+
+    await sleep(DELAY_MS);
+
+    const safeName = doc.filename.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const gcsKey = `${GCS_PREFIX}/company/${sanitizeCategory(doc.category)}/${Date.now()}-${safeName}`;
+
+    try {
+      const gcsResult = await downloadToGcs(doc.downloadUrl, cookie, gcsKey);
+
+      await supa.from("jetinsight_documents").insert({
+        entity_type: "company",
+        entity_id: "baker_aviation",
+        jetinsight_uuid: doc.checkUuid,
+        category: doc.category,
+        subcategory: null,
+        aircraft_type: null,
+        document_name: doc.filename,
+        uploaded_on: uploadedOn,
+        version_label: doc.versionLabel || null,
+        gcs_bucket: getBucket(),
+        gcs_key: gcsResult.gcsKey,
+        size_bytes: gcsResult.sizeBytes,
+        content_type: gcsResult.contentType,
+        jetinsight_url: doc.downloadUrl,
+      });
+
+      result.docsDownloaded++;
+    } catch (err) {
+      result.errors.push(
+        `${doc.filename}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  return result;
+}
+
+/**
  * Sync all documents for a single aircraft tail.
  */
 export async function syncAircraftDocs(

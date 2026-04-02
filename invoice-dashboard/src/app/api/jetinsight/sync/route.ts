@@ -5,6 +5,7 @@ import {
   syncCrewIndex,
   syncCrewDocs,
   syncAircraftDocs,
+  syncCompanyDocs,
 } from "@/lib/jetinsight/scraper";
 import { runScheduleSync } from "@/lib/jetinsight/schedule-sync";
 import { syncTripDocs } from "@/lib/jetinsight/trip-sync";
@@ -284,6 +285,12 @@ export async function POST(req: NextRequest) {
       const pfMonths = body.offset ?? 3; // reuse offset field for months
       const result = await syncPostFlightData(pfMonths);
       return NextResponse.json({ ok: !result.sessionExpired, result });
+    }
+
+    // ── Company documents ─────────────────────────────────────────
+    if (syncType === "company_docs") {
+      const result = await syncCompanyDocs(cookie);
+      return NextResponse.json({ ok: true, result });
     }
 
     return NextResponse.json(
