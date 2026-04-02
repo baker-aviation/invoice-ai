@@ -26,12 +26,7 @@ export async function POST(req: NextRequest) {
   const auth = await requireAdmin(req);
   if ("error" in auth) return auth.error;
 
-  if (await isRateLimited(auth.userId, 3, 10_000)) {
-    return NextResponse.json(
-      { error: "Too many requests. Please wait a moment." },
-      { status: 429 },
-    );
-  }
+  // No rate limit during batch syncs — the client loops automatically
 
   let body: { type?: string; entityId?: string; offset?: number };
   try {
