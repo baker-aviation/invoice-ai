@@ -85,9 +85,22 @@ function getHeatRadius(count: number): number {
 
 const VAN_COLOR = "#22c55e";
 const VAN_MOVE_COLOR = "#f59e0b"; // amber
+const VAN_SHOP_COLOR = "#ef4444"; // red
 
-function vanDivIcon(needsMove: boolean): L.DivIcon {
-  const color = needsMove ? VAN_MOVE_COLOR : VAN_COLOR;
+function vanDivIcon(status: "ok" | "move" | "shop"): L.DivIcon {
+  if (status === "shop") {
+    // Wrench icon for in-shop vans
+    return L.divIcon({
+      html: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="${VAN_SHOP_COLOR}" style="filter:drop-shadow(0 1px 3px rgba(0,0,0,0.5))">
+        <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+      </svg>`,
+      className: "",
+      iconSize: [24, 24],
+      iconAnchor: [12, 12],
+      popupAnchor: [0, -14],
+    });
+  }
+  const color = status === "move" ? VAN_MOVE_COLOR : VAN_COLOR;
   return L.divIcon({
     html: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="28" height="28" fill="${color}" style="filter:drop-shadow(0 1px 3px rgba(0,0,0,0.5))">
       <path d="M1 12.5V11l2-6h11l3 4h3a2 2 0 012 2v1.5h-1a2.5 2.5 0 00-5 0H8a2.5 2.5 0 00-5 0H1zm4.5 2a1.5 1.5 0 110-3 1.5 1.5 0 010 3zm12 0a1.5 1.5 0 110-3 1.5 1.5 0 010 3zM5 7l-1.5 4h5V7H5zm4.5 0v4h4.5L12 7H9.5z"/>
@@ -214,6 +227,18 @@ export default function NightBeforeTab({ flights, liveVanPositions, liveVanIsLiv
     dark: false,
     lines: true,
   });
+
+  // Load vans-in-shop from today's schedule draft
+  const [vansInShop, setVansInShop] = useState<Set<number>>(new Set());
+  useEffect(() => {
+    const today = new Date().toLocaleDateString("en-CA");
+    fetch(`/api/vans/drafts?date=${today}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d?.vans_in_shop?.length) setVansInShop(new Set(d.vans_in_shop as number[]));
+      })
+      .catch(() => {});
+  }, []);
 
   // Date selection: tomorrow + 2 more days
   const dateOptions = useMemo(() => {
@@ -353,7 +378,8 @@ export default function NightBeforeTab({ flights, liveVanPositions, liveVanIsLiv
   }, [flights, selectedDate, liveVanPositions, liveVanIsLive]);
 
   const totalArrivals = demandClusters.reduce((s, c) => s + c.count, 0);
-  const needsMoveCount = moves.filter((m) => m.aircraftCount > 0 && !m.inPosition).length;
+  const needsMoveCount = moves.filter((m) => m.aircraftCount > 0 && !m.inPosition && !vansInShop.has(m.vanId)).length;
+  const shopCount = vansInShop.size;
 
   return (
     <div ref={containerRef} className="relative space-y-3">
@@ -382,6 +408,11 @@ export default function NightBeforeTab({ flights, liveVanPositions, liveVanIsLiv
           {needsMoveCount > 0 && (
             <span className="ml-2 px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium">
               {needsMoveCount} van{needsMoveCount !== 1 ? "s" : ""} need repositioning
+            </span>
+          )}
+          {shopCount > 0 && (
+            <span className="ml-1 px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-medium">
+              {shopCount} in shop
             </span>
           )}
         </div>
@@ -425,9 +456,9 @@ export default function NightBeforeTab({ flights, liveVanPositions, liveVanIsLiv
           <DarkModeFilter enabled={prefs.dark} />
           <MapResizer />
 
-          {/* Move lines: van current → demand position */}
+          {/* Move lines: van current → demand position (skip in-shop vans) */}
           {prefs.lines && moves.map((m) => {
-            if (m.aircraftCount === 0 || !m.demandPos) return null;
+            if (m.aircraftCount === 0 || !m.demandPos || vansInShop.has(m.vanId)) return null;
             return (
               <Polyline
                 key={`line-${m.vanId}`}
@@ -507,12 +538,14 @@ export default function NightBeforeTab({ flights, liveVanPositions, liveVanIsLiv
           {/* Van markers (current positions) */}
           {moves.map((m) => {
             const isLive = liveVanIsLive?.get(m.vanId) ?? false;
-            const needsMove = m.aircraftCount > 0 && !m.inPosition;
+            const isShop = vansInShop.has(m.vanId);
+            const needsMove = !isShop && m.aircraftCount > 0 && !m.inPosition;
+            const iconStatus = isShop ? "shop" : needsMove ? "move" : "ok";
             return (
               <Marker
                 key={`van-${m.vanId}`}
                 position={[m.currentPos.lat, m.currentPos.lon]}
-                icon={vanDivIcon(needsMove)}
+                icon={vanDivIcon(iconStatus)}
               >
                 <Tooltip
                   direction="top"
@@ -521,21 +554,27 @@ export default function NightBeforeTab({ flights, liveVanPositions, liveVanIsLiv
                   permanent
                 >
                   <div style={{
-                    color: needsMove ? VAN_MOVE_COLOR : VAN_COLOR,
+                    color: isShop ? VAN_SHOP_COLOR : needsMove ? VAN_MOVE_COLOR : VAN_COLOR,
                     fontFamily: "ui-monospace, monospace",
                     fontSize: 10,
                     whiteSpace: "nowrap",
                     textShadow: "0 1px 3px rgba(0,0,0,0.9), 0 0 6px rgba(0,0,0,0.6)",
                   }}>
                     <b>V{m.vanId}</b>
-                    {!isLive && <span style={{ color: "#9ca3af" }}> ?</span>}
+                    {isShop && <span style={{ color: VAN_SHOP_COLOR }}> SHOP</span>}
+                    {!isShop && !isLive && <span style={{ color: "#9ca3af" }}> ?</span>}
                   </div>
                 </Tooltip>
                 <Popup maxWidth={280}>
                   <div className="text-xs space-y-1.5">
-                    <div className="font-bold text-sm">Van {m.vanId} — {m.zone.name}</div>
+                    <div className="font-bold text-sm">
+                      Van {m.vanId} — {m.zone.name}
+                      {isShop && <span className="ml-2 px-1.5 py-0.5 rounded bg-red-100 text-red-700 text-[10px] font-medium">In Shop</span>}
+                    </div>
                     <div className="text-gray-500">Currently: {m.currentLabel}</div>
-                    {m.aircraftCount > 0 ? (
+                    {isShop ? (
+                      <div className="text-red-500 font-medium">Out of service — mark on Schedule tab to update</div>
+                    ) : m.aircraftCount > 0 ? (
                       <>
                         <div className={`font-medium ${m.inPosition ? "text-green-600" : "text-amber-700"}`}>
                           {m.inPosition
@@ -571,6 +610,12 @@ export default function NightBeforeTab({ flights, liveVanPositions, liveVanIsLiv
             </svg>
             <span className={prefs.dark ? "text-gray-300" : "text-gray-700"}>Needs to move</span>
           </div>
+          <div className="flex items-center gap-2">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill={VAN_SHOP_COLOR}>
+              <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+            </svg>
+            <span className={prefs.dark ? "text-gray-300" : "text-gray-700"}>In shop</span>
+          </div>
           {[1, 2, 3, 5].map((c) => (
             <div key={c} className="flex items-center gap-2">
               <span className="inline-block rounded-full" style={{
@@ -591,7 +636,7 @@ export default function NightBeforeTab({ flights, liveVanPositions, liveVanIsLiv
           <h3 className="text-sm font-bold text-gray-700">Repositioning Needed</h3>
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-2">
             {moves
-              .filter((m) => m.aircraftCount > 0 && !m.inPosition)
+              .filter((m) => m.aircraftCount > 0 && !m.inPosition && !vansInShop.has(m.vanId))
               .sort((a, b) => b.distanceMi - a.distanceMi)
               .map((m) => (
                 <div key={m.vanId} className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs space-y-1.5">
