@@ -136,4 +136,56 @@ export async function listFreezeSheets(): Promise<string[]> {
     .filter(n => /^FREEZE\b/i.test(n));
 }
 
+/**
+ * Fetch a sheet's data from an arbitrary spreadsheet by ID.
+ */
+export async function getSheetDataFromSpreadsheet(
+  spreadsheetId: string,
+  sheetName: string,
+): Promise<unknown[][]> {
+  const token = await getAccessToken();
+  const encoded = encodeURIComponent(sheetName);
+  const res = await fetch(
+    `${SHEETS_API}/${spreadsheetId}/values/${encoded}?valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=FORMATTED_STRING`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(
+      `Sheets API error for "${sheetName}" in ${spreadsheetId}: ${res.status} ${text}`,
+    );
+  }
+  const data = await res.json();
+  return data.values ?? [];
+}
+
+/**
+ * List sheet names from an arbitrary spreadsheet by ID.
+ */
+export async function listSheetsFromSpreadsheet(
+  spreadsheetId: string,
+): Promise<{ title: string; sheetId: number; index: number }[]> {
+  const token = await getAccessToken();
+  const res = await fetch(
+    `${SHEETS_API}/${spreadsheetId}?fields=sheets.properties`,
+    {
+      headers: { Authorization: `Bearer ${token}` },
+    },
+  );
+  if (!res.ok)
+    throw new Error(
+      `Sheets API error: ${res.status} ${await res.text()}`,
+    );
+  const data = await res.json();
+  return (data.sheets ?? []).map(
+    (s: {
+      properties: { title: string; sheetId: number; index: number };
+    }) => ({
+      title: s.properties.title,
+      sheetId: s.properties.sheetId,
+      index: s.properties.index,
+    }),
+  );
+}
+
 export { CREW_INFO_SHEET_ID };

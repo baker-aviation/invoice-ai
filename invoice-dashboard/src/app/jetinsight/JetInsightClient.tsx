@@ -144,7 +144,7 @@ function OverviewTab() {
 
     try {
       // Phase 1: Schedule JSON enrichment
-      setSyncResult("Phase 1/6: Enriching flights from schedule JSON...");
+      setSyncResult("Phase 1/7: Enriching flights from schedule JSON...");
       const schedRes = await fetch("/api/jetinsight/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -155,7 +155,7 @@ function OverviewTab() {
       const enriched = schedData.result?.flightsCreated ?? schedData.result?.flightsEnriched ?? 0;
 
       // Phase 2: Post-flight data (replaces CSV upload)
-      setSyncResult("Phase 2/6: Pulling post-flight data from JetInsight...");
+      setSyncResult("Phase 2/7: Pulling post-flight data from JetInsight...");
       const pfRes = await fetch("/api/jetinsight/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -166,7 +166,7 @@ function OverviewTab() {
       const pfInserted = pfData.result?.inserted ?? 0;
 
       // Phase 3: Crew index
-      setSyncResult("Phase 3/6: Syncing crew index...");
+      setSyncResult("Phase 3/7: Syncing crew index...");
       const indexRes = await fetch("/api/jetinsight/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -181,7 +181,7 @@ function OverviewTab() {
       let crewDone = false;
       while (!crewDone) {
         setSyncResult(
-          `Phase 4/6: Crew documents (batch at offset ${crewOffset})... ${totalDownloaded} downloaded so far`,
+          `Phase 4/7: Crew documents (batch at offset ${crewOffset})... ${totalDownloaded} downloaded so far`,
         );
         const res = await fetch("/api/jetinsight/sync", {
           method: "POST",
@@ -205,7 +205,7 @@ function OverviewTab() {
       let acDone = false;
       while (!acDone) {
         setSyncResult(
-          `Phase 5/6: Aircraft documents (batch at offset ${acOffset})... ${totalDownloaded} downloaded so far`,
+          `Phase 5/7: Aircraft documents (batch at offset ${acOffset})... ${totalDownloaded} downloaded so far`,
         );
         const res = await fetch("/api/jetinsight/sync", {
           method: "POST",
@@ -229,7 +229,7 @@ function OverviewTab() {
       let tripDone = false;
       while (!tripDone) {
         setSyncResult(
-          `Phase 6/6: Trip documents (batch at offset ${tripOffset})... ${totalDownloaded} downloaded so far`,
+          `Phase 6/7: Trip documents (batch at offset ${tripOffset})... ${totalDownloaded} downloaded so far`,
         );
         const res = await fetch("/api/jetinsight/sync", {
           method: "POST",
@@ -247,6 +247,17 @@ function OverviewTab() {
           tripOffset = data.nextOffset ?? tripOffset + 3;
         }
       }
+
+      // Phase 7: Company docs
+      setSyncResult("Phase 7/7: Company documents...");
+      const compRes = await fetch("/api/jetinsight/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "company_docs" }),
+      });
+      const compData = await compRes.json();
+      totalDownloaded += compData.result?.docsDownloaded ?? 0;
+      totalSkipped += compData.result?.docsSkipped ?? 0;
 
       setSyncResult(
         `Sync complete: ${enriched} flights enriched, ${pfInserted} post-flight records, ${crewCount} crew found, ${totalDownloaded} docs downloaded, ${totalSkipped} skipped, ${totalErrors} errors`,
