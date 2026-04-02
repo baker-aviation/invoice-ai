@@ -10,6 +10,8 @@ interface PilotEfficiency {
   weightedFleetAvg: number;
   variancePct: number;
   avgStartFuel: number;
+  matchedPredictions: number;
+  ffVariancePct: number | null;
   byType: Array<{
     type: string;
     flights: number;
@@ -23,11 +25,14 @@ interface PilotEfficiency {
     type: string;
     route: string;
     hrs: number;
+    actualBurn: number;
     burnRate: number;
     fleetAvg: number;
     variance: number;
     startFuel: number;
     takeoffWt: number;
+    predictedBurn: number | null;
+    predictedVariance: number | null;
   }>;
 }
 
@@ -35,12 +40,16 @@ export default function FuelEfficiency() {
   const [pilots, setPilots] = useState<PilotEfficiency[]>([]);
   const [fleetAvg, setFleetAvg] = useState<Record<string, number>>({});
   const [totalFlights, setTotalFlights] = useState(0);
+  const [predictionsCount, setPredictionsCount] = useState(0);
+  const [matchedCount, setMatchedCount] = useState(0);
   const [dateRange, setDateRange] = useState({ start: "", end: "" });
   const [loading, setLoading] = useState(true);
   const [months, setMonths] = useState(3);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
 
-  useEffect(() => {
+  function loadData() {
     setLoading(true);
     fetch(`/api/fuel-planning/efficiency?months=${months}`)
       .then((r) => r.json())
@@ -48,10 +57,46 @@ export default function FuelEfficiency() {
         setPilots(d.pilots ?? []);
         setFleetAvg(d.fleetAvg ?? {});
         setTotalFlights(d.totalFlights ?? 0);
+        setPredictionsCount(d.predictionsCount ?? 0);
+        setMatchedCount(d.matchedCount ?? 0);
         setDateRange(d.dateRange ?? { start: "", end: "" });
       })
       .finally(() => setLoading(false));
-  }, [months]);
+  }
+
+  useEffect(() => { loadData(); }, [months]);
+
+  async function syncPredictions() {
+    setSyncing(true);
+    setSyncMsg("Pulling ForeFlight flight plans...");
+    let totalStored = 0;
+    let offset = 0;
+    let done = false;
+
+    try {
+      while (!done) {
+        setSyncMsg(`Pulling ForeFlight plans (batch at offset ${offset})... ${totalStored} stored so far`);
+        const res = await fetch("/api/fuel-planning/sync-predictions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ months, offset }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error);
+        totalStored += data.stored ?? 0;
+        if (data.done || (data.remaining ?? 0) <= 0) {
+          done = true;
+        } else {
+          offset = data.nextOffset ?? offset + 10;
+        }
+      }
+      setSyncMsg(`Done: ${totalStored} predictions synced`);
+      loadData();
+    } catch (err) {
+      setSyncMsg(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    setSyncing(false);
+  }
 
   if (loading) return <p className="px-6 py-4 text-sm text-gray-500">Loading...</p>;
 
@@ -72,20 +117,35 @@ export default function FuelEfficiency() {
             Fuel Burn Analysis — {totalFlights} flights
           </h3>
           <p className="text-xs text-gray-400">
-            {dateRange.start} to {dateRange.end} | Pilots with 3+ flights shown
+            {dateRange.start} to {dateRange.end} | {predictionsCount} ForeFlight predictions | {matchedCount} matched to actuals
           </p>
         </div>
-        <select
-          value={months}
-          onChange={(e) => setMonths(Number(e.target.value))}
-          className="rounded-md border border-gray-300 px-3 py-1.5 text-sm"
-        >
-          <option value={1}>Last 1 month</option>
-          <option value={3}>Last 3 months</option>
-          <option value={6}>Last 6 months</option>
-          <option value={12}>Last 12 months</option>
-        </select>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={syncPredictions}
+            disabled={syncing}
+            className="rounded-md bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+          >
+            {syncing ? "Syncing..." : "Pull ForeFlight Plans"}
+          </button>
+          <select
+            value={months}
+            onChange={(e) => setMonths(Number(e.target.value))}
+            className="rounded-md border border-gray-300 px-3 py-1.5 text-sm"
+          >
+            <option value={1}>Last 1 month</option>
+            <option value={3}>Last 3 months</option>
+            <option value={6}>Last 6 months</option>
+            <option value={12}>Last 12 months</option>
+          </select>
+        </div>
       </div>
+
+      {syncMsg && (
+        <div className={`rounded-md px-4 py-2 text-sm ${syncMsg.startsWith("Error") ? "bg-red-50 text-red-700" : "bg-green-50 text-green-700"}`}>
+          {syncMsg}
+        </div>
+      )}
 
       {/* Fleet averages */}
       <div className="flex gap-4">
@@ -104,7 +164,7 @@ export default function FuelEfficiency() {
         {pilots.map((p) => {
           const isHeavy = p.variancePct > 5;
           const isLight = p.variancePct < -5;
-          const isTankering = p.avgStartFuel > 8000; // rough heuristic
+          const isTankering = p.avgStartFuel > 8000;
 
           return (
             <div key={p.name} className="rounded-lg border border-gray-200 bg-white">
@@ -117,13 +177,29 @@ export default function FuelEfficiency() {
                   <span className="text-xs text-gray-400">
                     {p.flights} flights | {p.totalHrs} hrs
                   </span>
-                </div>
-                <div className="flex items-center gap-3">
                   {isTankering && p.variancePct > 3 && (
                     <span className="rounded-full bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-600">
                       Possible tankering
                     </span>
                   )}
+                </div>
+                <div className="flex items-center gap-3">
+                  {/* ForeFlight comparison badge */}
+                  {p.ffVariancePct !== null && p.matchedPredictions > 0 && (
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                        p.ffVariancePct > 10
+                          ? "bg-red-100 text-red-700"
+                          : p.ffVariancePct < -5
+                            ? "bg-green-100 text-green-700"
+                            : "bg-gray-100 text-gray-600"
+                      }`}
+                    >
+                      {p.ffVariancePct > 0 ? "+" : ""}{p.ffVariancePct}% vs FF plan
+                      <span className="ml-1 text-gray-400">({p.matchedPredictions})</span>
+                    </span>
+                  )}
+                  {/* Fleet comparison badge */}
                   <div className="text-right">
                     <span className="text-sm font-semibold text-gray-900">
                       {p.avgBurnRate} lbs/hr
@@ -137,8 +213,7 @@ export default function FuelEfficiency() {
                             : "bg-gray-100 text-gray-600"
                       }`}
                     >
-                      {p.variancePct > 0 ? "+" : ""}
-                      {p.variancePct}% vs fleet
+                      {p.variancePct > 0 ? "+" : ""}{p.variancePct}% vs fleet
                     </span>
                   </div>
                 </div>
@@ -168,36 +243,48 @@ export default function FuelEfficiency() {
                   </div>
 
                   {/* Recent flights */}
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className="border-b border-gray-200 text-left text-gray-500">
-                        <th className="pb-1 font-medium">Date</th>
-                        <th className="pb-1 font-medium">Tail</th>
-                        <th className="pb-1 font-medium">Route</th>
-                        <th className="pb-1 font-medium">Hours</th>
-                        <th className="pb-1 font-medium">Burn Rate</th>
-                        <th className="pb-1 font-medium">Fleet Avg</th>
-                        <th className="pb-1 font-medium">Variance</th>
-                        <th className="pb-1 font-medium">Start Fuel</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {p.recentFlights.map((f, i) => (
-                        <tr key={i} className="border-b border-gray-50">
-                          <td className="py-1.5">{new Date(f.date).toLocaleDateString()}</td>
-                          <td className="py-1.5">{f.tail}</td>
-                          <td className="py-1.5 font-medium">{f.route}</td>
-                          <td className="py-1.5">{f.hrs.toFixed(1)}</td>
-                          <td className="py-1.5 font-medium">{f.burnRate}</td>
-                          <td className="py-1.5 text-gray-400">{f.fleetAvg}</td>
-                          <td className={`py-1.5 font-medium ${f.variance > 5 ? "text-red-600" : f.variance < -5 ? "text-green-600" : "text-gray-600"}`}>
-                            {f.variance > 0 ? "+" : ""}{f.variance}%
-                          </td>
-                          <td className="py-1.5 text-gray-500">{f.startFuel.toLocaleString()} lbs</td>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="border-b border-gray-200 text-left text-gray-500">
+                          <th className="pb-1 font-medium">Date</th>
+                          <th className="pb-1 font-medium">Tail</th>
+                          <th className="pb-1 font-medium">Route</th>
+                          <th className="pb-1 font-medium">Hours</th>
+                          <th className="pb-1 font-medium">Actual Burn</th>
+                          <th className="pb-1 font-medium">FF Predicted</th>
+                          <th className="pb-1 font-medium">vs FF</th>
+                          <th className="pb-1 font-medium">vs Fleet</th>
+                          <th className="pb-1 font-medium">Start Fuel</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {p.recentFlights.map((f, i) => (
+                          <tr key={i} className="border-b border-gray-50">
+                            <td className="py-1.5">{new Date(f.date).toLocaleDateString()}</td>
+                            <td className="py-1.5">{f.tail}</td>
+                            <td className="py-1.5 font-medium">{f.route}</td>
+                            <td className="py-1.5">{f.hrs.toFixed(1)}</td>
+                            <td className="py-1.5 font-medium">{f.actualBurn.toLocaleString()} lbs</td>
+                            <td className="py-1.5 text-gray-500">
+                              {f.predictedBurn ? `${f.predictedBurn.toLocaleString()} lbs` : "—"}
+                            </td>
+                            <td className={`py-1.5 font-medium ${
+                              f.predictedVariance !== null
+                                ? f.predictedVariance > 10 ? "text-red-600" : f.predictedVariance < -5 ? "text-green-600" : "text-gray-600"
+                                : "text-gray-300"
+                            }`}>
+                              {f.predictedVariance !== null ? `${f.predictedVariance > 0 ? "+" : ""}${f.predictedVariance}%` : "—"}
+                            </td>
+                            <td className={`py-1.5 font-medium ${f.variance > 5 ? "text-red-600" : f.variance < -5 ? "text-green-600" : "text-gray-600"}`}>
+                              {f.variance > 0 ? "+" : ""}{f.variance}%
+                            </td>
+                            <td className="py-1.5 text-gray-500">{f.startFuel.toLocaleString()} lbs</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               )}
             </div>
