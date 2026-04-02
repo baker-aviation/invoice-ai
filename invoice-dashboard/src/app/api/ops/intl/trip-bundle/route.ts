@@ -81,13 +81,47 @@ export async function GET(req: NextRequest) {
   > = {};
 
   if (crewNames.size > 0) {
-    const { data: profiles } = await supa
+    // Fetch ALL profiles and do flexible matching (exact, last name, partial)
+    const { data: allProfiles } = await supa
       .from("pilot_profiles")
-      .select("id, full_name, jetinsight_uuid")
-      .in("full_name", [...crewNames]);
+      .select("id, full_name, jetinsight_uuid");
 
-    for (const profile of profiles ?? []) {
-      // Try both profile ID and JI UUID as entity_id
+    const profiles = [];
+    const matchedNames = new Map<string, string>(); // crewName → profile.full_name
+
+    for (const crewName of crewNames) {
+      const nameLower = crewName.toLowerCase().trim();
+      const lastNameParts = nameLower.split(/\s+/);
+      const lastName = lastNameParts[lastNameParts.length - 1];
+      const firstName = lastNameParts[0];
+
+      let match = (allProfiles ?? []).find(
+        (p) => p.full_name?.toLowerCase().trim() === nameLower,
+      );
+
+      // Try without middle initial: "Frederick A Gilman" → "Frederick Gilman"
+      if (!match) {
+        const noMiddle = lastNameParts.filter((_, i) => i === 0 || i === lastNameParts.length - 1).join(" ");
+        match = (allProfiles ?? []).find(
+          (p) => p.full_name?.toLowerCase().trim() === noMiddle,
+        );
+      }
+
+      // Try first + last name match
+      if (!match && lastNameParts.length >= 2) {
+        match = (allProfiles ?? []).find((p) => {
+          const pParts = p.full_name?.toLowerCase().trim().split(/\s+/) ?? [];
+          return pParts[0] === firstName && pParts[pParts.length - 1] === lastName;
+        });
+      }
+
+      if (match) {
+        profiles.push(match);
+        matchedNames.set(crewName, match.full_name);
+      }
+    }
+
+    for (const profile of profiles) {
       const entityIds = [String(profile.id)];
       if (profile.jetinsight_uuid) entityIds.push(profile.jetinsight_uuid);
 
@@ -107,7 +141,11 @@ export async function GET(req: NextRequest) {
             signed_url: await signGcsUrl(d.gcs_bucket, d.gcs_key, 60),
           })),
         );
-        crewDocs[profile.full_name] = signed;
+        // Use the crew name from the flight (matches what's shown in "Crew by Leg")
+        const displayName = [...matchedNames.entries()].find(
+          ([, pName]) => pName === profile.full_name,
+        )?.[0] ?? profile.full_name;
+        crewDocs[displayName] = signed;
       }
     }
   }
@@ -168,13 +206,31 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // 5. Company docs
-  const { data: coDocs } = await supa
+  // 5. Company docs — filtered by admin selection (app_settings.intl_company_doc_ids)
+  let companyDocFilter: number[] | null = null;
+  try {
+    const { data: setting } = await supa
+      .from("app_settings")
+      .select("value")
+      .eq("key", "intl_company_doc_ids")
+      .maybeSingle();
+    if (setting?.value) {
+      companyDocFilter = JSON.parse(setting.value) as number[];
+    }
+  } catch { /* no filter = show all */ }
+
+  let coQuery = supa
     .from("jetinsight_documents")
     .select("id, category, document_name, gcs_bucket, gcs_key")
     .eq("entity_type", "company")
     .eq("entity_id", "baker_aviation")
     .order("category");
+
+  if (companyDocFilter && companyDocFilter.length > 0) {
+    coQuery = coQuery.in("id", companyDocFilter);
+  }
+
+  const { data: coDocs } = await coQuery;
 
   const companyDocs = await Promise.all(
     (coDocs ?? []).map(async (d) => ({
