@@ -355,13 +355,27 @@ function CrewDocsTab() {
     Promise.all([
       fetch("/api/jetinsight/documents?entity_type=crew").then((r) => r.json()),
       fetch("/api/pilots").then((r) => r.json()),
+      fetch("/api/jetinsight/config").then((r) => r.json()),
     ])
-      .then(([docsData, pilotsData]) => {
+      .then(([docsData, pilotsData, configData]) => {
         setDocs(docsData.documents ?? []);
         const map = new Map<string, { name: string; role: string; email: string }>();
+        // Map by pilot_profile.id
         for (const p of pilotsData.pilots ?? []) {
           map.set(String(p.id), { name: p.full_name, role: p.role, email: p.email ?? "" });
         }
+        // Also map by JetInsight UUID for crew without pilot_profiles
+        try {
+          const crewListStr = configData.config?.crew_list?.value;
+          if (crewListStr) {
+            const crewList = JSON.parse(crewListStr);
+            for (const c of crewList) {
+              if (!map.has(c.uuid)) {
+                map.set(c.uuid, { name: c.name, role: "", email: c.email ?? "" });
+              }
+            }
+          }
+        } catch { /* ignore parse errors */ }
         setPilots(map);
       })
       .finally(() => setLoading(false));

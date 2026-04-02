@@ -175,6 +175,16 @@ export async function syncCrewIndex(cookie: string): Promise<CrewEntry[]> {
     }
   }
 
+  // Save the full crew list so batch syncs can iterate through all 202+ crew
+  await supa.from("jetinsight_config").upsert(
+    {
+      config_key: "crew_list",
+      config_value: JSON.stringify(crew),
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "config_key" },
+  );
+
   return crew;
 }
 

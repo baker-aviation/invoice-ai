@@ -69,46 +69,67 @@ export async function POST(req: NextRequest) {
     if (syncType === "crew_batch") {
       const offset = body.offset ?? 0;
 
-      // Get all pilots with JetInsight UUIDs
-      const { data: profiles } = await supa
-        .from("pilot_profiles")
-        .select("id, jetinsight_uuid, full_name")
-        .not("jetinsight_uuid", "is", null)
-        .order("id")
-        .range(offset, offset + BATCH_SIZE - 1);
+      // Read the full crew list saved by crew_index sync
+      const { data: crewListRow } = await supa
+        .from("jetinsight_config")
+        .select("config_value")
+        .eq("config_key", "crew_list")
+        .single();
 
-      if (!profiles || profiles.length === 0) {
+      if (!crewListRow?.config_value) {
+        return NextResponse.json({
+          error: "Run crew_index sync first to discover crew members.",
+          status: 400,
+        });
+      }
+
+      const allCrew: Array<{ name: string; uuid: string }> = JSON.parse(
+        crewListRow.config_value,
+      );
+      const batch = allCrew.slice(offset, offset + BATCH_SIZE);
+
+      if (batch.length === 0) {
         return NextResponse.json({
           ok: true,
           done: true,
           offset,
           processed: 0,
+          total: allCrew.length,
           message: "All crew processed",
         });
       }
+
+      // Look up which crew have matching pilot_profiles
+      const { data: profiles } = await supa
+        .from("pilot_profiles")
+        .select("id, jetinsight_uuid")
+        .not("jetinsight_uuid", "is", null);
+
+      const profileByUuid = new Map(
+        (profiles ?? []).map((p) => [p.jetinsight_uuid, String(p.id)]),
+      );
 
       let docsDownloaded = 0;
       let docsSkipped = 0;
       const errors: Array<{ entity: string; message: string }> = [];
 
-      for (const p of profiles) {
-        const result = await syncCrewDocs(
-          String(p.id),
-          p.jetinsight_uuid,
-          cookie,
-        );
+      for (const c of batch) {
+        // Use pilot_profile.id if matched, otherwise JI UUID
+        const entityId = profileByUuid.get(c.uuid) ?? c.uuid;
+        const result = await syncCrewDocs(entityId, c.uuid, cookie);
         docsDownloaded += result.docsDownloaded;
         docsSkipped += result.docsSkipped;
         for (const err of result.errors) {
-          errors.push({ entity: p.full_name ?? String(p.id), message: err });
+          errors.push({ entity: c.name, message: err });
         }
       }
 
       return NextResponse.json({
         ok: true,
         done: false,
-        nextOffset: offset + profiles.length,
-        processed: profiles.length,
+        nextOffset: offset + batch.length,
+        processed: batch.length,
+        total: allCrew.length,
         docsDownloaded,
         docsSkipped,
         errors,
