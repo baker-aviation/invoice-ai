@@ -204,7 +204,7 @@ export async function syncCrewDocs(
       `/compliance/documents/${jiUuid}/crew`,
       cookie,
     );
-    docEntries = parseCrewDocPage(html, jiUuid);
+    docEntries = parseCrewDocPage(html);
   } catch (err) {
     result.errors.push(
       `Failed to fetch doc page: ${err instanceof Error ? err.message : String(err)}`,
