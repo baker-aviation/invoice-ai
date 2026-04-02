@@ -107,18 +107,69 @@ function deepFind(obj: unknown, key: string): unknown {
   return undefined;
 }
 
+/** Extract normalized performance fields from a ForeFlight response */
+function extractPerf(data: Record<string, unknown>) {
+  const perf = (data.performance ?? deepFind(data, "performance")) as Record<string, unknown> | undefined;
+  const fuel = (perf?.fuel ?? deepFind(data, "fuel")) as Record<string, number> | undefined;
+  const times = (perf?.times ?? deepFind(data, "times")) as Record<string, unknown> | undefined;
+  const distances = (perf?.distances ?? deepFind(data, "distances")) as Record<string, number> | undefined;
+  const weather = (perf?.weather ?? deepFind(data, "weather")) as Record<string, number> | undefined;
+  const weights = (perf?.weights ?? deepFind(data, "weights")) as Record<string, number> | undefined;
+
+  const fuelToDestLbs = fuel?.fuelToDestination ?? 0;
+  const totalFuelLbs = fuel?.totalFuel ?? 0;
+  const ppg = calcPpg(15);
+  return {
+    fuel: {
+      fuelToDestLbs: Math.round(fuelToDestLbs),
+      fuelToDestGal: Math.round(fuelToDestLbs / ppg),
+      totalFuelLbs: Math.round(totalFuelLbs),
+      totalFuelGal: Math.round(totalFuelLbs / ppg),
+      flightFuelLbs: Math.round(fuel?.flightFuel ?? 0),
+      taxiFuelLbs: Math.round(fuel?.taxiFuel ?? 0),
+      reserveFuelLbs: Math.round(fuel?.reserveFuel ?? 0),
+      unit: fuel?.unit ?? "lbs",
+      ppg,
+    },
+    times: {
+      flightMinutes: times?.timeToDestinationMinutes ?? 0,
+      totalMinutes: times?.totalTimeMinutes ?? 0,
+      etaLocal: times?.estimatedArrivalTimeLocal ?? null,
+    },
+    distances: {
+      routeNm: distances?.destination ?? 0,
+      greatCircleNm: distances?.gcdDestination ?? 0,
+    },
+    weather: {
+      windComponent: weather?.averageWindComponent ?? 0,
+      windDirection: weather?.averageWindDirection ?? 0,
+      windVelocity: weather?.averageWindVelocity ?? 0,
+      isaDeviation: weather?.averageISADeviation ?? 0,
+    },
+    weights: weights ? {
+      rampWeight: Math.round(weights.rampWeight ?? 0),
+      takeOffWeight: Math.round(weights.takeOffWeight ?? 0),
+      landingWeight: Math.round(weights.landingWeight ?? 0),
+      zeroFuelWeight: Math.round(weights.zeroFuelWeight ?? 0),
+    } : null,
+    warnings: (perf?.warnings as string[]) ?? [],
+    errors: (perf?.errors as string[]) ?? [],
+  };
+}
+
 export async function POST(req: NextRequest) {
   const auth = await requireAuth(req);
   if (!isAuthed(auth)) return auth.error;
 
   try {
     const body = await req.json();
-    const { departure, destination, aircraftType, altitudeOverride, cruiseProfileOverride } = body as {
+    const { departure, destination, aircraftType, altitudeOverride, cruiseProfileOverride, compare } = body as {
       departure: string;
       destination: string;
       aircraftType: "citation" | "challenger";
       altitudeOverride?: number;
       cruiseProfileOverride?: string;
+      compare?: boolean;
     };
 
     if (!departure || !destination || !aircraftType) {
@@ -158,24 +209,25 @@ export async function POST(req: NextRequest) {
       },
     };
 
-    const res = await fetch(`${FF_BASE}/Flights`, {
+    // ─── Call ForeFlight: POST /Flights (creates temp flight, then deletes) ───
+    const flightsRes = await fetch(`${FF_BASE}/Flights`, {
       method: "POST",
       headers: { "x-api-key": apiKey(), "Content-Type": "application/json" },
       body: JSON.stringify(flightReq),
     });
 
-    const parsed = await safeParseFF(res);
-    if (!parsed.ok) {
+    const flightsParsed = await safeParseFF(flightsRes);
+    if (!flightsParsed.ok) {
       return NextResponse.json(
-        { error: parsed.error, request: flightReq },
-        { status: parsed.status },
+        { error: flightsParsed.error, request: flightReq },
+        { status: flightsParsed.status },
       );
     }
 
-    const data = parsed.data as Record<string, unknown>;
+    const flightsData = flightsParsed.data as Record<string, unknown>;
 
-    // Clean up flight
-    const flightId = data.flightId as string | undefined;
+    // Clean up the temp flight
+    const flightId = flightsData.flightId as string | undefined;
     if (flightId) {
       fetch(`${FF_BASE}/Flights/${encodeURIComponent(flightId)}`, {
         method: "DELETE",
@@ -183,18 +235,30 @@ export async function POST(req: NextRequest) {
       }).catch(() => {});
     }
 
-    // Extract fuel data — search deeply in case ForeFlight nests it
-    const perf = (data.performance ?? deepFind(data, "performance")) as Record<string, unknown> | undefined;
-    const fuel = (perf?.fuel ?? deepFind(data, "fuel")) as Record<string, number> | undefined;
-    const times = (perf?.times ?? deepFind(data, "times")) as Record<string, unknown> | undefined;
-    const distances = (perf?.distances ?? deepFind(data, "distances")) as Record<string, number> | undefined;
-    const weather = (perf?.weather ?? deepFind(data, "weather")) as Record<string, number> | undefined;
+    const flightsPerf = extractPerf(flightsData);
 
-    const fuelToDestLbs = fuel?.fuelToDestination ?? 0;
-    const totalFuelLbs = fuel?.totalFuel ?? 0;
-    const ppg = calcPpg(15); // standard temp
-    const fuelToDestGal = fuelToDestLbs / ppg;
-    const totalFuelGal = totalFuelLbs / ppg;
+    // ─── Compare mode: also call POST /Flights/performance (no flight created) ───
+    let performancePerf: ReturnType<typeof extractPerf> | null = null;
+    let performanceRaw: unknown = null;
+    let performanceError: string | null = null;
+
+    if (compare) {
+      const perfRes = await fetch(`${FF_BASE}/Flights/performance`, {
+        method: "POST",
+        headers: { "x-api-key": apiKey(), "Content-Type": "application/json" },
+        body: JSON.stringify(flightReq),
+      });
+      const perfParsed = await safeParseFF(perfRes);
+      if (perfParsed.ok) {
+        const perfData = perfParsed.data as Record<string, unknown>;
+        performancePerf = extractPerf(perfData);
+        performanceRaw = perfData;
+      } else {
+        performanceError = perfParsed.error ?? `HTTP ${perfParsed.status}`;
+      }
+    }
+
+    const fuelToDestGal = flightsPerf.fuel.fuelToDestLbs / flightsPerf.fuel.ppg;
 
     // Calculate cost for each FBO option
     const fboWithCost = fboOptions.map((fbo) => ({
@@ -230,37 +294,26 @@ export async function POST(req: NextRequest) {
         departure: departure.toUpperCase(),
         destination: destination.toUpperCase(),
       },
-      fuel: {
-        fuelToDestLbs: Math.round(fuelToDestLbs),
-        fuelToDestGal: Math.round(fuelToDestGal),
-        totalFuelLbs: Math.round(totalFuelLbs),
-        totalFuelGal: Math.round(totalFuelGal),
-        flightFuelLbs: Math.round(fuel?.flightFuel ?? 0),
-        taxiFuelLbs: Math.round(fuel?.taxiFuel ?? 0),
-        reserveFuelLbs: Math.round(fuel?.reserveFuel ?? 0),
-        unit: fuel?.unit ?? "lbs",
-        ppg,
-      },
-      times: {
-        flightMinutes: times?.timeToDestinationMinutes ?? 0,
-        totalMinutes: times?.totalTimeMinutes ?? 0,
-        etaLocal: times?.estimatedArrivalTimeLocal ?? null,
-      },
-      distances: {
-        routeNm: distances?.destination ?? 0,
-        greatCircleNm: distances?.gcdDestination ?? 0,
-      },
-      weather: {
-        windComponent: weather?.averageWindComponent ?? 0,
-        windDirection: weather?.averageWindDirection ?? 0,
-        windVelocity: weather?.averageWindVelocity ?? 0,
-        isaDeviation: weather?.averageISADeviation ?? 0,
-      },
+      ...flightsPerf,
       fboOptions: fboWithCost,
-      warnings: (perf?.warnings as string[]) ?? [],
-      errors: (perf?.errors as string[]) ?? [],
-      _raw: data,
+      _raw: flightsData,
       _request: flightReq,
+      // Compare results (only present when compare=true)
+      ...(compare && {
+        comparison: {
+          flights: {
+            label: "POST /Flights (create + delete)",
+            ...flightsPerf,
+          },
+          performance: performanceError
+            ? { label: "POST /Flights/performance", error: performanceError }
+            : {
+                label: "POST /Flights/performance (no flight)",
+                ...performancePerf,
+                _raw: performanceRaw,
+              },
+        },
+      }),
     });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });

@@ -6,10 +6,13 @@ import {
   syncCrewDocs,
   syncAircraftDocs,
 } from "@/lib/jetinsight/scraper";
+import { runScheduleSync } from "@/lib/jetinsight/schedule-sync";
+import { syncTripDocs } from "@/lib/jetinsight/trip-sync";
+import { syncPostFlightData } from "@/lib/jetinsight/postflight-sync";
 
 export const maxDuration = 300; // Vercel Pro: 5 min max
 
-const BATCH_SIZE = 5; // Process 5 entities per API call
+const BATCH_SIZE = 3; // Process 3 entities per API call (fits in 300s Vercel limit)
 
 /**
  * POST /api/jetinsight/sync — Trigger a JetInsight sync
@@ -209,6 +212,78 @@ export async function POST(req: NextRequest) {
     if (syncType === "aircraft_docs" && body.entityId) {
       const result = await syncAircraftDocs(body.entityId, cookie);
       return NextResponse.json({ ok: true, result });
+    }
+
+    // ── Schedule JSON enrichment ──────────────────────────────────
+    if (syncType === "schedule") {
+      const result = await runScheduleSync();
+      return NextResponse.json({ ok: !result.sessionExpired, result });
+    }
+
+    // ── Trip documents batch (offset-based) ───────────────────────
+    if (syncType === "trip_batch") {
+      const offset = body.offset ?? 0;
+
+      // Get international trip IDs from enriched flights
+      const { data: intlFlights } = await supa
+        .from("flights")
+        .select("jetinsight_trip_id")
+        .eq("international_leg", true)
+        .not("jetinsight_trip_id", "is", null)
+        .order("jetinsight_trip_id");
+
+      // Deduplicate trip IDs
+      const allTripIds = [
+        ...new Set(
+          (intlFlights ?? [])
+            .map((f) => f.jetinsight_trip_id as string)
+            .filter(Boolean),
+        ),
+      ];
+
+      const batch = allTripIds.slice(offset, offset + BATCH_SIZE);
+
+      if (batch.length === 0) {
+        return NextResponse.json({
+          ok: true,
+          done: true,
+          offset,
+          processed: 0,
+          total: allTripIds.length,
+          message: "All trips processed",
+        });
+      }
+
+      let docsDownloaded = 0;
+      let docsSkipped = 0;
+      const errors: Array<{ entity: string; message: string }> = [];
+
+      for (const tripId of batch) {
+        const result = await syncTripDocs(tripId, cookie);
+        docsDownloaded += result.docsDownloaded;
+        docsSkipped += result.docsSkipped;
+        for (const err of result.errors) {
+          errors.push({ entity: tripId, message: err });
+        }
+      }
+
+      return NextResponse.json({
+        ok: true,
+        done: false,
+        nextOffset: offset + batch.length,
+        processed: batch.length,
+        total: allTripIds.length,
+        docsDownloaded,
+        docsSkipped,
+        errors,
+      });
+    }
+
+    // ── Post-flight data sync ──────────────────────────────────────
+    if (syncType === "post_flight") {
+      const pfMonths = body.offset ?? 3; // reuse offset field for months
+      const result = await syncPostFlightData(pfMonths);
+      return NextResponse.json({ ok: !result.sessionExpired, result });
     }
 
     return NextResponse.json(

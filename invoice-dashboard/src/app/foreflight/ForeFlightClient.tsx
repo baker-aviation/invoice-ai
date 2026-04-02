@@ -30,6 +30,22 @@ interface CruiseProfileOption {
   profileName: string;
 }
 
+interface PerfData {
+  fuel: FuelData;
+  times: { flightMinutes: number; totalMinutes: number; etaLocal: string | null };
+  distances: { routeNm: number; greatCircleNm: number };
+  weather: { windComponent: number; windDirection: number; windVelocity: number; isaDeviation: number };
+  weights?: { rampWeight: number; takeOffWeight: number; landingWeight: number; zeroFuelWeight: number } | null;
+  warnings: string[];
+  errors: string[];
+  _raw?: unknown;
+}
+
+interface ComparisonResult {
+  flights: PerfData & { label: string };
+  performance: (PerfData & { label: string }) | { label: string; error: string };
+}
+
 interface CheckResult {
   aircraft: {
     registration: string;
@@ -48,6 +64,7 @@ interface CheckResult {
   fboOptions: FboOption[];
   warnings: string[];
   errors: string[];
+  comparison?: ComparisonResult;
   _raw?: unknown;
   _request?: unknown;
 }
@@ -80,6 +97,7 @@ export default function ForeFlightClient() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<CheckResult | null>(null);
+  const [compareMode, setCompareMode] = useState(false);
 
   // Expert mode
   const [expertMode, setExpertMode] = useState(false);
@@ -105,6 +123,7 @@ export default function ForeFlightClient() {
           aircraftType,
           ...(altitudeOverride && { altitudeOverride: Number(altitudeOverride) }),
           ...(cruiseProfileOverride && { cruiseProfileOverride }),
+          ...(compareMode && { compare: true }),
         }),
       });
 
@@ -246,7 +265,7 @@ export default function ForeFlightClient() {
           </div>
         )}
 
-        <div className="mt-4">
+        <div className="mt-4 flex items-center gap-3">
           <button
             onClick={handleCheck}
             disabled={loading || !departure || !destination}
@@ -254,6 +273,15 @@ export default function ForeFlightClient() {
           >
             {loading ? "Calculating..." : "Check Fuel & FBOs"}
           </button>
+          <label className="flex items-center gap-2 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={compareMode}
+              onChange={(e) => setCompareMode(e.target.checked)}
+              className="rounded border-gray-300 text-purple-600 focus:ring-purple-500"
+            />
+            <span className="text-sm text-gray-600">Compare endpoints</span>
+          </label>
           {error && <span className="ml-3 text-sm text-red-600">{error}</span>}
         </div>
       </div>
@@ -387,6 +415,71 @@ export default function ForeFlightClient() {
               </span>
             </div>
           </div>
+
+          {/* Endpoint Comparison */}
+          {result.comparison && (
+            <div className="rounded-lg border border-purple-200 bg-white p-6">
+              <h3 className="text-md font-semibold text-gray-900 mb-1">Endpoint Comparison</h3>
+              <p className="text-xs text-gray-400 mb-4">
+                Side-by-side: <span className="text-blue-600">POST /Flights</span> (creates temp flight) vs{" "}
+                <span className="text-purple-600">POST /Flights/performance</span> (no flight created)
+              </p>
+
+              {"error" in result.comparison.performance ? (
+                <div className="rounded-md bg-red-50 border border-red-200 p-4 text-sm text-red-700">
+                  <strong>Performance endpoint error:</strong> {result.comparison.performance.error}
+                </div>
+              ) : (() => {
+                const a = result.comparison.flights;
+                const b = result.comparison.performance as PerfData & { label: string };
+                const rows: { label: string; flights: string; performance: string; diff: boolean }[] = [
+                  { label: "Fuel to Dest (lbs)", flights: fmtNum(a.fuel.fuelToDestLbs), performance: fmtNum(b.fuel.fuelToDestLbs), diff: a.fuel.fuelToDestLbs !== b.fuel.fuelToDestLbs },
+                  { label: "Total Fuel (lbs)", flights: fmtNum(a.fuel.totalFuelLbs), performance: fmtNum(b.fuel.totalFuelLbs), diff: a.fuel.totalFuelLbs !== b.fuel.totalFuelLbs },
+                  { label: "Flight Fuel (lbs)", flights: fmtNum(a.fuel.flightFuelLbs), performance: fmtNum(b.fuel.flightFuelLbs), diff: a.fuel.flightFuelLbs !== b.fuel.flightFuelLbs },
+                  { label: "Taxi Fuel (lbs)", flights: fmtNum(a.fuel.taxiFuelLbs), performance: fmtNum(b.fuel.taxiFuelLbs), diff: a.fuel.taxiFuelLbs !== b.fuel.taxiFuelLbs },
+                  { label: "Reserve Fuel (lbs)", flights: fmtNum(a.fuel.reserveFuelLbs), performance: fmtNum(b.fuel.reserveFuelLbs), diff: a.fuel.reserveFuelLbs !== b.fuel.reserveFuelLbs },
+                  { label: "Flight Time (min)", flights: fmtMin(a.times.flightMinutes as number), performance: fmtMin(b.times.flightMinutes as number), diff: a.times.flightMinutes !== b.times.flightMinutes },
+                  { label: "Total Time (min)", flights: fmtMin(a.times.totalMinutes as number), performance: fmtMin(b.times.totalMinutes as number), diff: a.times.totalMinutes !== b.times.totalMinutes },
+                  { label: "Route Distance (NM)", flights: fmtNum(a.distances.routeNm, 1), performance: fmtNum(b.distances.routeNm, 1), diff: a.distances.routeNm !== b.distances.routeNm },
+                  { label: "Wind Component (kt)", flights: fmtNum(a.weather.windComponent), performance: fmtNum(b.weather.windComponent), diff: a.weather.windComponent !== b.weather.windComponent },
+                  { label: "Wind Velocity (kt)", flights: fmtNum(a.weather.windVelocity), performance: fmtNum(b.weather.windVelocity, 1), diff: Math.abs(a.weather.windVelocity - b.weather.windVelocity) > 0.1 },
+                  { label: "ISA Deviation", flights: `${a.weather.isaDeviation > 0 ? "+" : ""}${fmtNum(a.weather.isaDeviation)}°C`, performance: `${b.weather.isaDeviation > 0 ? "+" : ""}${fmtNum(b.weather.isaDeviation)}°C`, diff: Math.abs(a.weather.isaDeviation - b.weather.isaDeviation) > 0.1 },
+                ];
+                const hasDiffs = rows.some(r => r.diff);
+                return (
+                  <>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="text-left text-xs border-b border-gray-100">
+                            <th className="pb-2 pr-4 text-gray-500">Metric</th>
+                            <th className="pb-2 pr-4 text-blue-600">POST /Flights</th>
+                            <th className="pb-2 pr-4 text-purple-600">POST /Flights/performance</th>
+                            <th className="pb-2 text-gray-400">Match</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {rows.map((r) => (
+                            <tr key={r.label} className={`border-b border-gray-50 ${r.diff ? "bg-amber-50" : ""}`}>
+                              <td className="py-2 pr-4 text-gray-600">{r.label}</td>
+                              <td className="py-2 pr-4 font-mono">{r.flights}</td>
+                              <td className="py-2 pr-4 font-mono">{r.performance}</td>
+                              <td className="py-2 text-center">{r.diff ? <span className="text-amber-600 text-xs font-medium">DIFF</span> : <span className="text-green-600 text-xs">OK</span>}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="mt-3 text-xs text-gray-400">
+                      {hasDiffs
+                        ? `${rows.filter(r => r.diff).length} difference(s) found — may be due to timing between API calls (weather updates, etc.)`
+                        : "All values match — both endpoints return identical results."}
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+          )}
 
           {/* Warnings */}
           {(result.warnings.length > 0 || result.errors.length > 0) && (

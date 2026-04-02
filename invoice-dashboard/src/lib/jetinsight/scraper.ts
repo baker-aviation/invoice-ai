@@ -56,6 +56,7 @@ async function fetchPage(path: string, cookie: string): Promise<string> {
       Accept: "text/html,application/xhtml+xml",
     },
     redirect: "follow",
+    signal: AbortSignal.timeout(30_000), // 30s timeout per request
   });
 
   if (!res.ok) {
@@ -91,6 +92,7 @@ async function downloadToGcs(
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Baker-Aviation-Sync/1.0",
     },
     redirect: "follow",
+    signal: AbortSignal.timeout(30_000), // 30s timeout per request
   });
 
   if (!res.ok) {
@@ -225,21 +227,37 @@ export async function syncCrewDocs(
   const supa = createServiceClient();
 
   for (const doc of docEntries) {
-    await sleep(DELAY_MS);
+    // Parse upload date early for dedup comparison
+    let uploadedOn: string | null = null;
+    if (doc.uploadedOn) {
+      const parts = doc.uploadedOn.split("/");
+      if (parts.length === 3) {
+        uploadedOn = `${parts[2]}-${parts[0].padStart(2, "0")}-${parts[1].padStart(2, "0")}`;
+      }
+    }
 
-    // Check if already synced
+    // Check if already synced (no delay needed for DB check)
     const { data: existing } = await supa
       .from("jetinsight_documents")
-      .select("id")
+      .select("id, uploaded_on")
       .eq("entity_type", "crew")
       .eq("entity_id", pilotProfileId)
       .eq("jetinsight_uuid", doc.checkUuid)
       .maybeSingle();
 
-    if (existing) {
+    // Skip if exists with same or newer upload date
+    if (existing && (!uploadedOn || existing.uploaded_on === uploadedOn)) {
       result.docsSkipped++;
       continue;
     }
+
+    // Delete old version if re-uploading
+    if (existing) {
+      await supa.from("jetinsight_documents").delete().eq("id", existing.id);
+    }
+
+    // Rate limit only before actual downloads
+    await sleep(DELAY_MS);
 
     // Download to GCS
     const safeName = doc.filename.replace(/[^a-zA-Z0-9._-]/g, "_");
@@ -247,15 +265,6 @@ export async function syncCrewDocs(
 
     try {
       const gcsResult = await downloadToGcs(doc.downloadUrl, cookie, gcsKey);
-
-      // Parse upload date
-      let uploadedOn: string | null = null;
-      if (doc.uploadedOn) {
-        const parts = doc.uploadedOn.split("/");
-        if (parts.length === 3) {
-          uploadedOn = `${parts[2]}-${parts[0].padStart(2, "0")}-${parts[1].padStart(2, "0")}`;
-        }
-      }
 
       await supa.from("jetinsight_documents").insert({
         entity_type: "crew",
@@ -317,35 +326,40 @@ export async function syncAircraftDocs(
   const supa = createServiceClient();
 
   for (const doc of docEntries) {
-    await sleep(DELAY_MS);
+    // Check if already synced (no delay needed for DB check)
+    // Parse upload date early for dedup comparison
+    let uploadedOn: string | null = null;
+    if (doc.uploadedOn) {
+      const parts = doc.uploadedOn.split("/");
+      if (parts.length === 3) {
+        uploadedOn = `${parts[2]}-${parts[0].padStart(2, "0")}-${parts[1].padStart(2, "0")}`;
+      }
+    }
 
-    // Check if already synced
     const { data: existing } = await supa
       .from("jetinsight_documents")
-      .select("id")
+      .select("id, uploaded_on")
       .eq("entity_type", "aircraft")
       .eq("entity_id", tail)
       .eq("jetinsight_uuid", doc.checkUuid)
       .maybeSingle();
 
-    if (existing) {
+    if (existing && (!uploadedOn || existing.uploaded_on === uploadedOn)) {
       result.docsSkipped++;
       continue;
     }
+
+    if (existing) {
+      await supa.from("jetinsight_documents").delete().eq("id", existing.id);
+    }
+
+    await sleep(DELAY_MS);
 
     const safeName = doc.filename.replace(/[^a-zA-Z0-9._-]/g, "_");
     const gcsKey = `${GCS_PREFIX}/aircraft/${tail}/${sanitizeCategory(doc.category)}/${Date.now()}-${safeName}`;
 
     try {
       const gcsResult = await downloadToGcs(doc.downloadUrl, cookie, gcsKey);
-
-      let uploadedOn: string | null = null;
-      if (doc.uploadedOn) {
-        const parts = doc.uploadedOn.split("/");
-        if (parts.length === 3) {
-          uploadedOn = `${parts[2]}-${parts[0].padStart(2, "0")}-${parts[1].padStart(2, "0")}`;
-        }
-      }
 
       await supa.from("jetinsight_documents").insert({
         entity_type: "aircraft",
