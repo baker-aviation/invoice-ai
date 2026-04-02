@@ -15,7 +15,7 @@ import type {
 } from "./types";
 
 const BASE_URL = "https://portal.jetinsight.com";
-const DELAY_MS = 2500; // Rate limit: 2.5s between requests
+const DELAY_MS = 1000; // Rate limit: 1s between requests
 const GCS_PREFIX = "jetinsight-docs";
 
 // ---------------------------------------------------------------------------
@@ -134,11 +134,8 @@ async function getConfig(
  * Updates jetinsight_uuid on matched profiles.
  */
 export async function syncCrewIndex(cookie: string): Promise<CrewEntry[]> {
-  const orgUuid = await getConfig("org_uuid");
-  if (!orgUuid) throw new Error("org_uuid not configured");
-
   const html = await fetchPage(
-    `/compliance/documents/${orgUuid}/crew`,
+    `/compliance/documents/crew`,
     cookie,
   );
   const crew = parseCrewIndex(html);
@@ -178,6 +175,16 @@ export async function syncCrewIndex(cookie: string): Promise<CrewEntry[]> {
     }
   }
 
+  // Save the full crew list so batch syncs can iterate through all 202+ crew
+  await supa.from("jetinsight_config").upsert(
+    {
+      config_key: "crew_list",
+      config_value: JSON.stringify(crew),
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "config_key" },
+  );
+
   return crew;
 }
 
@@ -207,7 +214,7 @@ export async function syncCrewDocs(
       `/compliance/documents/${jiUuid}/crew`,
       cookie,
     );
-    docEntries = parseCrewDocPage(html, jiUuid);
+    docEntries = parseCrewDocPage(html);
   } catch (err) {
     result.errors.push(
       `Failed to fetch doc page: ${err instanceof Error ? err.message : String(err)}`,

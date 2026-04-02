@@ -4,32 +4,44 @@ import type { CrewEntry, DocEntry } from "./types";
 const BASE = "https://portal.jetinsight.com";
 
 /**
- * Parse the crew index page at /compliance/documents/{org_uuid}/crew
+ * Parse the crew index page at /compliance/documents/crew
  * Returns list of crew members with their UUIDs, emails, and phones.
  */
 export function parseCrewIndex(html: string): CrewEntry[] {
   const $ = cheerio.load(html);
   const crew: CrewEntry[] = [];
+  const seen = new Set<string>();
 
   // The page has a table with columns: Name, Email, Cell, Schedule color
-  $("table tr").each((_i, row) => {
-    const cells = $(row).find("td");
-    if (cells.length < 2) return; // skip header or malformed rows
-
-    const nameLink = cells.eq(0).find("a");
-    const name = nameLink.text().trim();
-    if (!name) return;
-
-    // Extract UUID from link href: /compliance/documents/{uuid}/crew
-    const href = nameLink.attr("href") ?? "";
+  // Each name is a link: /compliance/documents/{uuid}/crew
+  $("a").each((_i, link) => {
+    const href = $(link).attr("href") ?? "";
     const uuidMatch = href.match(
-      /\/compliance\/documents\/([0-9a-f-]{36})\/crew/i,
+      /\/compliance\/documents\/([0-9a-f-]{36})\/crew$/i,
     );
     if (!uuidMatch) return;
 
     const uuid = uuidMatch[1];
-    const email = cells.eq(1).text().trim() || undefined;
-    const phone = cells.eq(2).text().trim() || undefined;
+    if (seen.has(uuid)) return;
+    seen.add(uuid);
+
+    const name = $(link).text().trim();
+    if (!name) return;
+
+    // Try to find email and phone in sibling table cells
+    const row = $(link).closest("tr");
+    let email: string | undefined;
+    let phone: string | undefined;
+
+    if (row.length) {
+      const cells = row.find("td");
+      cells.each((_j, cell) => {
+        const text = $(cell).text().trim();
+        if (text.includes("@") && !email) email = text;
+        else if (text.match(/^\d{3}[-.]?\d{3}[-.]?\d{4}$/) && !phone)
+          phone = text;
+      });
+    }
 
     crew.push({ name, uuid, email, phone });
   });
@@ -40,199 +52,218 @@ export function parseCrewIndex(html: string): CrewEntry[] {
 /**
  * Parse a crew member's document page at /compliance/documents/{uuid}/crew
  * Returns all documents with their check categories and download links.
+ *
+ * JetInsight uses Bootstrap panels:
+ *   <div class="panel panel-default">
+ *     <div class="panel-heading">Pilot check: <a>Category Name</a></div>
+ *     <div class="panel-body">
+ *       <table><tbody><tr>
+ *         <td><a href="/compliance/crew_checks/{uuid}/show_doc?user={user_uuid}">Filename</a></td>
+ *         <td><i>Uploaded on: MM/DD/YYYY</i></td>
+ *         <td><a href="/compliance/crew_checks/{uuid}/show_doc?disposition=download&user={user_uuid}"><i class="fa fa-download"></i></a></td>
+ *       </tr></tbody></table>
+ *     </div>
+ *   </div>
  */
-export function parseCrewDocPage(html: string, pilotUuid: string): DocEntry[] {
+export function parseCrewDocPage(html: string): DocEntry[] {
   const $ = cheerio.load(html);
   const docs: DocEntry[] = [];
+  const seen = new Set<string>();
 
-  // --- Section 1: "Documents from Pilot checks" ---
-  // Each check is a row with: "Pilot check: <category link>" header
-  // followed by document rows with filename link + "Uploaded on: date" + download icon
+  // Find all panels with "Pilot check:" in the heading
+  $(".panel").each((_i, panel) => {
+    const heading = $(panel).find(".panel-heading").first();
+    const headingText = heading.text().trim();
 
-  // Find all pilot check category sections
-  $("*").each((_i, el) => {
-    const text = $(el).text().trim();
+    // Extract category from "Pilot check: Category Name" or top-level categories
+    let rawCategory: string;
+    const checkMatch = headingText.match(/^Pilot check:\s*(.+)/);
+    if (checkMatch) {
+      rawCategory = checkMatch[1].trim();
+    } else {
+      // Top-level document category (PRD, Passport, etc.)
+      rawCategory = headingText.replace(/\s*\(\d+\)\s*$/, "").trim();
+      if (!rawCategory || rawCategory === "No documents") return;
+    }
 
-    // Match "Pilot check: Category Name" pattern
-    const checkMatch = text.match(/^Pilot check:\s*(.+)$/);
-    if (!checkMatch) return;
-
-    const rawCategory = checkMatch[1].trim();
-
-    // Parse category into parts
+    // Check for "for {aircraft_type}" suffix in heading
     const { category, subcategory, aircraftType } =
       parsePilotCheckCategory(rawCategory);
 
-    // Look for document links within this section's parent/sibling context
-    const container = $(el).closest("div, tr, li, section");
+    // Find download links within this panel
+    $(panel)
+      .find('a[href*="/show_doc"], a[href*="disposition=download"]')
+      .each((_j, link) => {
+        const href = $(link).attr("href") ?? "";
 
-    container.find("a").each((_j, link) => {
-      const href = $(link).attr("href") ?? "";
-      // Match download links: /compliance/crew_checks/{uuid}/show_doc?...
-      const checkUuidMatch = href.match(
-        /\/compliance\/crew_checks\/([0-9a-f-]{36})\/show_doc/i,
-      );
-      if (!checkUuidMatch) return;
+        // Skip download icon links (they duplicate the file link)
+        // We want the one with the filename text, not the <i class="fa fa-download">
+        const linkText = $(link).text().trim();
+        if (!linkText || linkText.length < 2) return;
 
-      const filename = $(link).text().trim();
-      if (!filename) return;
+        // Extract check UUID from the URL
+        const checkUuidMatch = href.match(
+          /\/crew_checks\/([0-9a-f-]{36})\/show_doc/i,
+        );
+        if (!checkUuidMatch) return;
 
-      // Look for uploaded date in siblings
-      let uploadedOn: string | undefined;
-      const parentRow = $(link).closest("div, tr, li");
-      const dateMatch = parentRow
-        .text()
-        .match(/Uploaded on:\s*(\d{2}\/\d{2}\/\d{4})/);
-      if (dateMatch) uploadedOn = dateMatch[1];
+        const checkUuid = checkUuidMatch[1];
+        if (seen.has(checkUuid)) return;
+        seen.add(checkUuid);
 
-      // Build full download URL
-      const downloadUrl = href.startsWith("http")
-        ? href
-        : `${BASE}${href}${href.includes("disposition=download") ? "" : (href.includes("?") ? "&" : "?") + "disposition=download"}`;
+        // Find uploaded date in the same table row
+        let uploadedOn: string | undefined;
+        const row = $(link).closest("tr");
+        const dateMatch = row
+          .text()
+          .match(/Uploaded on:\s*(\d{2}\/\d{2}\/\d{4})/);
+        if (dateMatch) uploadedOn = dateMatch[1];
 
-      docs.push({
-        category,
-        subcategory,
-        aircraftType,
-        checkUuid: checkUuidMatch[1],
-        filename,
-        downloadUrl,
-        uploadedOn,
+        // Build download URL (add disposition=download if not present)
+        let downloadUrl = href;
+        if (!downloadUrl.includes("disposition=download")) {
+          downloadUrl +=
+            (downloadUrl.includes("?") ? "&" : "?") + "disposition=download";
+        }
+        if (!downloadUrl.startsWith("http")) {
+          downloadUrl = `${BASE}${downloadUrl}`;
+        }
+
+        docs.push({
+          category,
+          subcategory,
+          aircraftType,
+          checkUuid,
+          filename: linkText,
+          downloadUrl,
+          uploadedOn,
+        });
       });
-    });
+
+    // Also check for document links (non-crew_checks pattern)
+    // These are top-level document categories like PRD, Passport, etc.
+    $(panel)
+      .find('a[href*="/compliance/documents/"]')
+      .each((_j, link) => {
+        const href = $(link).attr("href") ?? "";
+        const docUuidMatch = href.match(
+          /\/compliance\/documents\/([0-9a-f-]{36})\?/i,
+        );
+        if (!docUuidMatch) return;
+
+        const uuid = docUuidMatch[1];
+        if (seen.has(uuid)) return;
+
+        const linkText = $(link).text().trim();
+        if (!linkText || linkText.length < 2) return;
+
+        seen.add(uuid);
+
+        let uploadedOn: string | undefined;
+        const row = $(link).closest("tr");
+        const dateMatch = row
+          .text()
+          .match(/Uploaded on:\s*(\d{2}\/\d{2}\/\d{4})/);
+        if (dateMatch) uploadedOn = dateMatch[1];
+
+        let versionLabel: string | undefined;
+        const versionMatch = row.text().match(/Version:\s*([^\s]+)/);
+        if (versionMatch) versionLabel = versionMatch[1];
+
+        let downloadUrl = href;
+        if (!downloadUrl.includes("disposition=download")) {
+          downloadUrl +=
+            (downloadUrl.includes("?") ? "&" : "?") + "disposition=download";
+        }
+        if (!downloadUrl.startsWith("http")) {
+          downloadUrl = `${BASE}${downloadUrl}`;
+        }
+
+        docs.push({
+          category,
+          checkUuid: uuid,
+          filename: linkText,
+          downloadUrl,
+          uploadedOn,
+          versionLabel,
+        });
+      });
   });
 
-  // --- Section 2: Top-level document categories (PRD, Passport, etc.) ---
-  // These have a different structure — category headers with document rows below
-
-  // Find download links that are NOT pilot checks (different URL pattern)
-  // /compliance/documents/{uuid}?...&disposition=download
-  $("a").each((_i, link) => {
-    const href = $(link).attr("href") ?? "";
-    const docUuidMatch = href.match(
-      /\/compliance\/documents\/([0-9a-f-]{36})\?/i,
-    );
-    if (!docUuidMatch) return;
-
-    // Skip if this UUID is the pilot's own UUID (that's the page link, not a doc)
-    if (docUuidMatch[1] === pilotUuid) return;
-
-    const filename = $(link).text().trim();
-    if (!filename) return;
-
-    // Find the category from the nearest heading/section
-    let category = "Other";
-    const parentSection = $(link).closest("div, tr, li, section");
-    const sectionText = parentSection.parent().find("h3, h4, strong").first().text().trim();
-    if (sectionText) category = sectionText;
-
-    let uploadedOn: string | undefined;
-    const dateMatch = parentSection
-      .text()
-      .match(/Uploaded on:\s*(\d{2}\/\d{2}\/\d{4})/);
-    if (dateMatch) uploadedOn = dateMatch[1];
-
-    let versionLabel: string | undefined;
-    const versionMatch = parentSection
-      .text()
-      .match(/Version:\s*([^\s]+)/);
-    if (versionMatch) versionLabel = versionMatch[1];
-
-    const downloadUrl = href.startsWith("http")
-      ? href
-      : `${BASE}${href}${href.includes("disposition=download") ? "" : (href.includes("?") ? "&" : "?") + "disposition=download"}`;
-
-    docs.push({
-      category,
-      checkUuid: docUuidMatch[1],
-      filename,
-      downloadUrl,
-      uploadedOn,
-      versionLabel,
-    });
-  });
-
-  // Deduplicate by checkUuid
-  const seen = new Set<string>();
-  return docs.filter((d) => {
-    if (seen.has(d.checkUuid)) return false;
-    seen.add(d.checkUuid);
-    return true;
-  });
+  return docs;
 }
 
 /**
  * Parse an aircraft document page at /compliance/documents/{tail}/aircraft
  * Returns all documents with their categories and download links.
+ *
+ * Similar panel structure to crew docs but with different URL patterns:
+ *   <a href="/compliance/documents/{uuid}?base_item_id={tail}&category=aircraft&disposition=download">
  */
 export function parseAircraftDocPage(html: string): DocEntry[] {
   const $ = cheerio.load(html);
   const docs: DocEntry[] = [];
   const seen = new Set<string>();
 
-  // Aircraft docs have category sections (Airworthiness certificate, Insurance, etc.)
-  // with document rows containing download links
+  $(".panel").each((_i, panel) => {
+    const heading = $(panel).find(".panel-heading").first();
+    const headingText = heading.text().trim();
 
-  // Find all download links
-  $("a").each((_i, link) => {
-    const href = $(link).attr("href") ?? "";
+    // Get category name (strip count like "(2)")
+    let category = headingText
+      .replace(/\s*\(\d+\)\s*$/, "")
+      .replace(/No documents.*$/, "")
+      .trim();
+    if (!category) category = "Other";
 
-    // Match: /compliance/documents/{uuid}?base_item_id=...&category=aircraft&disposition=download
-    const docUuidMatch = href.match(
-      /\/compliance\/documents\/([0-9a-f-]{36})\?/i,
-    );
-    if (!docUuidMatch) return;
-    if (!href.includes("category=aircraft") && !href.includes("disposition=download")) return;
+    // Find download links
+    $(panel)
+      .find("a")
+      .each((_j, link) => {
+        const href = $(link).attr("href") ?? "";
+        const linkText = $(link).text().trim();
 
-    const uuid = docUuidMatch[1];
-    if (seen.has(uuid)) return;
-    seen.add(uuid);
+        // Match document UUID links
+        const docUuidMatch = href.match(
+          /\/compliance\/documents\/([0-9a-f-]{36})\?/i,
+        );
+        if (!docUuidMatch) return;
 
-    const filename = $(link).text().trim();
-    if (!filename) return;
+        const uuid = docUuidMatch[1];
+        if (seen.has(uuid)) return;
+        if (!linkText || linkText.length < 2) return;
 
-    // Find category from nearest section heading
-    let category = "Other";
-    const parentRow = $(link).closest("div, tr, li, section");
+        seen.add(uuid);
 
-    // Walk up to find the category heading
-    let prev = parentRow.prev();
-    while (prev.length) {
-      const heading = prev.find("h3, h4, strong").text().trim() || prev.text().trim();
-      if (heading && !heading.includes("Uploaded on") && !heading.includes("Version")) {
-        // Check if this looks like a category name (not a document name)
-        if (heading.match(/\(\d+\)/) || heading.match(/certificate|insurance|manual|checklist|other/i)) {
-          category = heading.replace(/\s*\(\d+\)\s*$/, "").trim();
-          break;
+        let uploadedOn: string | undefined;
+        const row = $(link).closest("tr");
+        const dateMatch = row
+          .text()
+          .match(/Uploaded on:\s*(\d{2}\/\d{2}\/\d{4})/);
+        if (dateMatch) uploadedOn = dateMatch[1];
+
+        let versionLabel: string | undefined;
+        const versionMatch = row.text().match(/Version:\s*([^\s]+)/);
+        if (versionMatch) versionLabel = versionMatch[1];
+
+        let downloadUrl = href;
+        if (!downloadUrl.includes("disposition=download")) {
+          downloadUrl +=
+            (downloadUrl.includes("?") ? "&" : "?") + "disposition=download";
         }
-      }
-      prev = prev.prev();
-    }
+        if (!downloadUrl.startsWith("http")) {
+          downloadUrl = `${BASE}${downloadUrl}`;
+        }
 
-    let uploadedOn: string | undefined;
-    const dateMatch = parentRow
-      .text()
-      .match(/Uploaded on:\s*(\d{2}\/\d{2}\/\d{4})/);
-    if (dateMatch) uploadedOn = dateMatch[1];
-
-    let versionLabel: string | undefined;
-    const versionMatch = parentRow
-      .text()
-      .match(/Version:\s*([^\s]+)/);
-    if (versionMatch) versionLabel = versionMatch[1];
-
-    const downloadUrl = href.startsWith("http")
-      ? href
-      : `${BASE}${href}`;
-
-    docs.push({
-      category,
-      checkUuid: uuid,
-      filename,
-      downloadUrl,
-      uploadedOn,
-      versionLabel,
-    });
+        docs.push({
+          category,
+          checkUuid: uuid,
+          filename: linkText,
+          downloadUrl,
+          uploadedOn,
+          versionLabel,
+        });
+      });
   });
 
   return docs;
@@ -243,7 +274,6 @@ export function parseAircraftDocPage(html: string): DocEntry[] {
  * Examples:
  *   "Medical - 1st class (under 40)" → { category: "Medical", subcategory: "1st class (under 40)" }
  *   "Simulator / checkride - 135.293(b) for CL-30" → { category: "Simulator / checkride - 135.293(b)", aircraftType: "CL-30" }
- *   "Ground / oral, aircraft specific - 135.293(a)(2-3) for CL-30" → { category: "Ground / oral, aircraft specific - 135.293(a)(2-3)", aircraftType: "CL-30" }
  */
 function parsePilotCheckCategory(raw: string): {
   category: string;
@@ -259,9 +289,7 @@ function parsePilotCheckCategory(raw: string): {
   }
 
   // Check for medical subcategories: "Medical - 1st class (under 40)"
-  const medicalMatch = raw.match(
-    /^(Medical)\s*-\s*(.+)$/i,
-  );
+  const medicalMatch = raw.match(/^(Medical)\s*-\s*(.+)$/i);
   if (medicalMatch) {
     return {
       category: medicalMatch[1],
@@ -277,10 +305,8 @@ function parsePilotCheckCategory(raw: string): {
  * Check if an HTML response is a login redirect (session expired).
  */
 export function isLoginRedirect(html: string): boolean {
-  // JetInsight redirects to login page with sign_in form
   return (
-    html.includes("sign_in") ||
-    html.includes("Forgot your password") ||
-    html.includes("recaptcha")
+    html.includes("sign_in") &&
+    (html.includes("Forgot your password") || html.includes("recaptcha"))
   );
 }

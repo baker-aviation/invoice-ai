@@ -129,23 +129,78 @@ function OverviewTab() {
   async function triggerSync() {
     setSyncing(true);
     setSyncResult(null);
+    let totalDownloaded = 0;
+    let totalSkipped = 0;
+    let totalErrors = 0;
+
     try {
-      const res = await fetch("/api/jetinsight/sync", {
+      // Phase 1: Crew index
+      setSyncResult("Phase 1/3: Syncing crew index...");
+      const indexRes = await fetch("/api/jetinsight/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type: "full" }),
+        body: JSON.stringify({ type: "crew_index" }),
       });
-      const data = await res.json();
-      if (res.ok) {
+      const indexData = await indexRes.json();
+      if (!indexRes.ok) throw new Error(indexData.error);
+      const crewCount = indexData.count ?? 0;
+
+      // Phase 2: Crew docs in batches
+      let crewOffset = 0;
+      let crewDone = false;
+      while (!crewDone) {
         setSyncResult(
-          `Sync complete: ${data.result?.docsDownloaded ?? 0} docs downloaded, ${data.result?.docsSkipped ?? 0} skipped, ${data.result?.errors?.length ?? 0} errors`,
+          `Phase 2/3: Crew documents (batch at offset ${crewOffset})... ${totalDownloaded} downloaded so far`,
         );
-        loadStats();
-      } else {
-        setSyncResult(`Error: ${data.error}`);
+        const res = await fetch("/api/jetinsight/sync", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "crew_batch", offset: crewOffset }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error);
+        totalDownloaded += data.docsDownloaded ?? 0;
+        totalSkipped += data.docsSkipped ?? 0;
+        totalErrors += data.errors?.length ?? 0;
+        if (data.done || (data.processed ?? 0) === 0) {
+          crewDone = true;
+        } else {
+          crewOffset = data.nextOffset ?? crewOffset + 5;
+        }
       }
+
+      // Phase 3: Aircraft docs in batches
+      let acOffset = 0;
+      let acDone = false;
+      while (!acDone) {
+        setSyncResult(
+          `Phase 3/3: Aircraft documents (batch at offset ${acOffset})... ${totalDownloaded} downloaded so far`,
+        );
+        const res = await fetch("/api/jetinsight/sync", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "aircraft_batch", offset: acOffset }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error);
+        totalDownloaded += data.docsDownloaded ?? 0;
+        totalSkipped += data.docsSkipped ?? 0;
+        totalErrors += data.errors?.length ?? 0;
+        if (data.done || (data.processed ?? 0) === 0) {
+          acDone = true;
+        } else {
+          acOffset = data.nextOffset ?? acOffset + 5;
+        }
+      }
+
+      setSyncResult(
+        `Sync complete: ${crewCount} crew found, ${totalDownloaded} docs downloaded, ${totalSkipped} skipped, ${totalErrors} errors`,
+      );
+      loadStats();
     } catch (err) {
-      setSyncResult(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      setSyncResult(
+        `Error after ${totalDownloaded} downloads: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
     setSyncing(false);
   }
@@ -292,13 +347,37 @@ function StatCard({
 
 function CrewDocsTab() {
   const [docs, setDocs] = useState<JetInsightDocument[]>([]);
+  const [pilots, setPilots] = useState<Map<string, { name: string; role: string; email: string }>>(new Map());
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch("/api/jetinsight/documents?entity_type=crew")
-      .then((r) => r.json())
-      .then((d) => setDocs(d.documents ?? []))
+    Promise.all([
+      fetch("/api/jetinsight/documents?entity_type=crew").then((r) => r.json()),
+      fetch("/api/pilots").then((r) => r.json()),
+      fetch("/api/jetinsight/config").then((r) => r.json()),
+    ])
+      .then(([docsData, pilotsData, configData]) => {
+        setDocs(docsData.documents ?? []);
+        const map = new Map<string, { name: string; role: string; email: string }>();
+        // Map by pilot_profile.id
+        for (const p of pilotsData.pilots ?? []) {
+          map.set(String(p.id), { name: p.full_name, role: p.role, email: p.email ?? "" });
+        }
+        // Also map by JetInsight UUID for crew without pilot_profiles
+        try {
+          const crewListStr = configData.config?.crew_list?.value;
+          if (crewListStr) {
+            const crewList = JSON.parse(crewListStr);
+            for (const c of crewList) {
+              if (!map.has(c.uuid)) {
+                map.set(c.uuid, { name: c.name, role: "", email: c.email ?? "" });
+              }
+            }
+          }
+        } catch { /* ignore parse errors */ }
+        setPilots(map);
+      })
       .finally(() => setLoading(false));
   }, []);
 
@@ -318,9 +397,18 @@ function CrewDocsTab() {
     grouped.set(d.entity_id, arr);
   }
 
+  // Sort by pilot name
+  const sorted = [...grouped.entries()].sort((a, b) => {
+    const nameA = pilots.get(a[0])?.name ?? a[0];
+    const nameB = pilots.get(b[0])?.name ?? b[0];
+    return nameA.localeCompare(nameB);
+  });
+
   return (
     <div className="space-y-2">
-      {[...grouped.entries()].map(([entityId, entityDocs]) => (
+      {sorted.map(([entityId, entityDocs]) => {
+        const pilot = pilots.get(entityId);
+        return (
         <div
           key={entityId}
           className="rounded-lg border border-slate-200 bg-white"
@@ -331,9 +419,21 @@ function CrewDocsTab() {
             }
             className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-slate-50"
           >
-            <span className="font-medium text-slate-900">
-              {entityId}
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="font-medium text-slate-900">
+                {pilot?.name ?? entityId}
+              </span>
+              {pilot?.role && (
+                <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${
+                  pilot.role === "PIC" ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-600"
+                }`}>
+                  {pilot.role}
+                </span>
+              )}
+              {pilot?.email && (
+                <span className="text-xs text-slate-400">{pilot.email}</span>
+              )}
+            </div>
             <span className="text-sm text-slate-500">
               {entityDocs.length} doc{entityDocs.length !== 1 && "s"}
             </span>
@@ -344,7 +444,8 @@ function CrewDocsTab() {
             </div>
           )}
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

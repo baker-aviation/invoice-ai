@@ -363,51 +363,69 @@ async function runParser(lookbackHours = 48) {
   }
 
   const since = new Date(Date.now() - lookbackHours * 60 * 60 * 1000).toISOString();
-  const pageSize = lookbackHours > 72 ? 250 : 100;
-  const graphUrl =
+  const pageSize = lookbackHours > 72 ? 250 : 50;
+
+  // Step 1: Fetch lightweight message list (no body — saves bandwidth + time)
+  const listUrl =
     `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/mailFolders/Inbox/messages` +
-    `?$top=${pageSize}&$select=id,subject,from,receivedDateTime,body,hasAttachments&$orderby=receivedDateTime desc` +
+    `?$top=${pageSize}&$select=id,subject,from,receivedDateTime,hasAttachments&$orderby=receivedDateTime desc` +
     `&$filter=receivedDateTime ge ${since}`;
 
-  const msgRes = await fetch(graphUrl, { headers: { Authorization: `Bearer ${token}` } });
-  if (!msgRes.ok) {
-    const errText = await msgRes.text();
-    console.error("[parse-handling] Graph messages failed:", msgRes.status, errText);
+  const listRes = await fetch(listUrl, { headers: { Authorization: `Bearer ${token}` } });
+  if (!listRes.ok) {
+    const errText = await listRes.text();
+    console.error("[parse-handling] Graph list failed:", listRes.status, errText);
     return NextResponse.json({ error: "Failed to fetch emails" }, { status: 500 });
   }
 
-  const msgData = await msgRes.json();
-  type GraphMessage = {
+  const listData = await listRes.json();
+  type GraphMessageLight = {
     id: string;
     subject: string;
     from: { emailAddress: { address: string; name: string } };
     receivedDateTime: string;
-    body: { content: string; contentType: string };
     hasAttachments: boolean;
   };
-  const allMessages: GraphMessage[] = msgData.value ?? [];
+  type GraphMessage = GraphMessageLight & { body: { content: string; contentType: string } };
+  const allLight: GraphMessageLight[] = listData.value ?? [];
 
-  // Check which we've already processed
-  const messageIds = allMessages.map((m) => m.id);
-  if (messageIds.length === 0) {
+  if (allLight.length === 0) {
     return NextResponse.json({ ok: true, messagesScanned: 0, cbp: 0, pinnacle: 0, handler: 0 });
   }
 
+  // Step 2: Filter out already-processed and non-relevant emails BEFORE fetching bodies
+  const messageIds = allLight.map((m) => m.id);
   const { data: existingReplies } = await supa
     .from("intl_cbp_replies")
     .select("message_id")
     .in("message_id", messageIds);
   const processedIds = new Set((existingReplies ?? []).map((r) => r.message_id));
 
-  const stats = { cbp: 0, pinnacle: 0, handler: 0, skipped: 0, autoApproved: 0, permitsAttached: 0 };
+  const toProcess = allLight.filter((m) => {
+    if (processedIds.has(m.id)) return false;
+    const cat = categorizeEmail(m.from.emailAddress.address, m.subject);
+    return cat !== "skip";
+  });
+
+  const stats = { cbp: 0, pinnacle: 0, handler: 0, skipped: 0, autoApproved: 0, permitsAttached: 0, messagesScanned: allLight.length };
   const results: Array<Record<string, unknown>> = [];
 
-  for (const msg of allMessages) {
-    if (processedIds.has(msg.id)) continue;
+  // Step 3: Fetch full body only for emails we need to process (max 20 per run)
+  const MAX_PER_RUN = 20;
+  for (const light of toProcess.slice(0, MAX_PER_RUN)) {
+    // Fetch full message with body
+    let msg: GraphMessage;
+    try {
+      const fullRes = await fetch(
+        `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/messages/${light.id}?$select=id,subject,from,receivedDateTime,body,hasAttachments`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      if (!fullRes.ok) continue;
+      msg = await fullRes.json();
+    } catch { continue; }
 
     const fromAddr = msg.from.emailAddress.address;
     const category = categorizeEmail(fromAddr, msg.subject);
-    if (category === "skip") continue;
 
     const { tail, dateStr } = extractTailAndDate(msg.subject);
     const { tripId, confidence } = await findTrip(supa, tail, dateStr);
@@ -600,8 +618,9 @@ async function runParser(lookbackHours = 48) {
 
   return NextResponse.json({
     ok: true,
-    messagesScanned: allMessages.length,
     ...stats,
+    toProcessCount: toProcess.length,
+    processedThisRun: Math.min(toProcess.length, MAX_PER_RUN),
     results,
   });
 }
