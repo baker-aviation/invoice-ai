@@ -8,6 +8,7 @@ import {
 } from "@/lib/jetinsight/scraper";
 import { runScheduleSync } from "@/lib/jetinsight/schedule-sync";
 import { syncTripDocs } from "@/lib/jetinsight/trip-sync";
+import { syncPostFlightData } from "@/lib/jetinsight/postflight-sync";
 
 export const maxDuration = 300; // Vercel Pro: 5 min max
 
@@ -276,6 +277,13 @@ export async function POST(req: NextRequest) {
         docsSkipped,
         errors,
       });
+    }
+
+    // ── Post-flight data sync ──────────────────────────────────────
+    if (syncType === "post_flight") {
+      const pfMonths = body.offset ?? 3; // reuse offset field for months
+      const result = await syncPostFlightData(pfMonths);
+      return NextResponse.json({ ok: !result.sessionExpired, result });
     }
 
     return NextResponse.json(

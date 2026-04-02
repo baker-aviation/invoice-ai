@@ -8,6 +8,7 @@ import {
   syncAircraftDocs,
 } from "@/lib/jetinsight/scraper";
 import { syncTripDocs } from "@/lib/jetinsight/trip-sync";
+import { syncPostFlightData } from "@/lib/jetinsight/postflight-sync";
 
 export const maxDuration = 300;
 
@@ -43,6 +44,12 @@ export async function GET(req: NextRequest) {
   const errors: string[] = [];
 
   try {
+    // Step 0: Pull post-flight data (last 1 month for daily refresh)
+    const pfResult = await syncPostFlightData(1);
+    totalDownloaded += pfResult.inserted;
+    totalSkipped += pfResult.skipped;
+    errors.push(...pfResult.errors);
+
     // Step 1: Refresh crew index (discover new crew)
     await syncCrewIndex(cookie);
 
