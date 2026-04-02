@@ -18,15 +18,52 @@ export async function GET(req: NextRequest) {
 
   const supa = createServiceClient();
 
-  // Fetch post-flight actuals
-  const { data: flights } = await supa
+  // Fetch post-flight actuals (don't filter on pic — many rows have it null)
+  const { data: rawFlights } = await supa
     .from("post_flight_data")
     .select(
-      "pic, aircraft_type, origin, destination, flight_hrs, fuel_burn_lbs, fuel_burn_lbs_hour, takeoff_wt_lbs, fuel_start_lbs, fuel_end_lbs, flight_date, tail_number, nautical_miles",
+      "pic, sic, aircraft_type, origin, destination, flight_hrs, fuel_burn_lbs, fuel_burn_lbs_hour, takeoff_wt_lbs, fuel_start_lbs, fuel_end_lbs, flight_date, tail_number, nautical_miles",
     )
     .gte("flight_date", cutoff)
-    .not("pic", "is", null)
     .order("flight_date", { ascending: false });
+
+  // For rows missing PIC, try to backfill from flights table
+  const flightsWithoutPic = (rawFlights ?? []).filter((f) => !f.pic);
+  let picLookup = new Map<string, string>();
+
+  if (flightsWithoutPic.length > 0) {
+    const { data: scheduled } = await supa
+      .from("flights")
+      .select("tail_number, departure_icao, pic, scheduled_departure")
+      .gte("scheduled_departure", cutoffDate.toISOString())
+      .not("pic", "is", null);
+
+    for (const s of scheduled ?? []) {
+      const dep = s.departure_icao ?? "";
+      const depShort = dep.replace(/^K/, "");
+      const dt = new Date(s.scheduled_departure);
+      // Index by tail+dep on the flight date AND ±1 day (post-flight dates can be off by 1)
+      for (let d = -1; d <= 1; d++) {
+        const date = new Date(dt);
+        date.setDate(date.getDate() + d);
+        const dateStr = date.toISOString().split("T")[0];
+        // Store with both ICAO (KAUS) and FAA (AUS) variants
+        picLookup.set(`${s.tail_number}:${dep}:${dateStr}`, s.pic);
+        picLookup.set(`${s.tail_number}:${depShort}:${dateStr}`, s.pic);
+      }
+    }
+  }
+
+  // Merge PIC from flights table where missing
+  const flights = (rawFlights ?? []).map((f) => {
+    if (!f.pic && f.tail_number && f.origin && f.flight_date) {
+      const origin = f.origin ?? "";
+      const key = `${f.tail_number}:${origin}:${f.flight_date}`;
+      const matchedPic = picLookup.get(key);
+      if (matchedPic) return { ...f, pic: matchedPic };
+    }
+    return f;
+  }).filter((f) => f.pic); // Still need a PIC to group by
 
   // Fetch ForeFlight predictions for same period
   const { data: predictions } = await supa
