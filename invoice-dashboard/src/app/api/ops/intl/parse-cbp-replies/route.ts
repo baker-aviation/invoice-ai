@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, isAuthed, verifyCronSecret } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
-import { getGcsStorage } from "@/lib/gcs-upload";
 
 // ---------------------------------------------------------------------------
 // MS Graph token
@@ -195,6 +194,7 @@ async function downloadAttachments(
     );
     if (!res.ok) return [];
     const data = await res.json();
+    const { getGcsStorage } = await import("@/lib/gcs-upload");
     const storage = await getGcsStorage();
     const bucket = process.env.GCS_BUCKET || "baker-aviation-invoice-pdfs";
 
