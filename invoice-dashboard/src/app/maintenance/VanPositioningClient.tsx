@@ -41,6 +41,15 @@ const HeatMapView = dynamic(() => import("./HeatMapView"), {
   ),
 });
 
+const NightBeforeTab = dynamic(() => import("./NightBeforeTab"), {
+  ssr: false,
+  loading: () => (
+    <div className="flex items-center justify-center h-[400px] bg-gray-100 rounded-xl text-gray-500 text-sm">
+      Loading planner…
+    </div>
+  ),
+});
+
 // ---------------------------------------------------------------------------
 // Compute overnight positions from live API flights
 // ---------------------------------------------------------------------------
@@ -5888,7 +5897,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, melItems
     return 1;
   });
   const isYesterday = dayIdx === 0;
-  const [activeTab, setActiveTab] = useState<"map" | "schedule" | "flights" | "mx-admin" | "heatmap">("schedule");
+  const [activeTab, setActiveTab] = useState<"map" | "schedule" | "flights" | "mx-admin" | "heatmap" | "night-before">("schedule");
   const [viewMode, setViewMode] = useState<"map" | "list">("map");
   const [selectedVan, setSelectedVan] = useState<number | null>(null);
   const [mxNotesOpen, setMxNotesOpen] = useState(false);
@@ -6853,6 +6862,9 @@ export default function VanPositioningClient({ initialFlights, mxNotes, melItems
         <TabBtn active={activeTab === "heatmap"} onClick={() => setActiveTab("heatmap")}>
           Heat Map
         </TabBtn>
+        <TabBtn active={activeTab === "night-before"} onClick={() => setActiveTab("night-before")}>
+          Night Before
+        </TabBtn>
       </div>
 
       {/* ── Van Map tab ── */}
@@ -7319,6 +7331,14 @@ export default function VanPositioningClient({ initialFlights, mxNotes, melItems
       {/* ── Heat Map tab ── */}
       {activeTab === "heatmap" && (
         <HeatMapView
+          flights={initialFlights}
+          liveVanPositions={liveVanPositions}
+          liveVanIsLive={liveVanIsLive}
+        />
+      )}
+
+      {activeTab === "night-before" && (
+        <NightBeforeTab
           flights={initialFlights}
           liveVanPositions={liveVanPositions}
           liveVanIsLive={liveVanIsLive}
