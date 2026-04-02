@@ -134,11 +134,8 @@ async function getConfig(
  * Updates jetinsight_uuid on matched profiles.
  */
 export async function syncCrewIndex(cookie: string): Promise<CrewEntry[]> {
-  const orgUuid = await getConfig("org_uuid");
-  if (!orgUuid) throw new Error("org_uuid not configured");
-
   const html = await fetchPage(
-    `/compliance/documents/${orgUuid}/crew`,
+    `/compliance/documents/crew`,
     cookie,
   );
   const crew = parseCrewIndex(html);
