@@ -11,7 +11,7 @@ import { syncTripDocs } from "@/lib/jetinsight/trip-sync";
 
 export const maxDuration = 300;
 
-const CHARLIE_SLACK_ID = "D08THFA2GNR";
+const CHARLIE_SLACK_ID = "D0AK75CPPJM";
 const BATCH_SIZE = 3;
 
 /**

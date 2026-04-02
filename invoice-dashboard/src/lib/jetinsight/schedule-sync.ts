@@ -5,7 +5,7 @@ import { parseScheduleJson, type ScheduleEvent } from "./schedule-parser";
 import { isLoginRedirect } from "./parser";
 
 const BASE_URL = "https://portal.jetinsight.com";
-const CHARLIE_SLACK_ID = "D08THFA2GNR";
+const CHARLIE_SLACK_ID = "D0AK75CPPJM";
 
 // Match window: flights within ±2 hours of JSON event are considered the same
 const MATCH_WINDOW_MS = 2 * 60 * 60 * 1000;
