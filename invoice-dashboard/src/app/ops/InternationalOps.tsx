@@ -1226,6 +1226,7 @@ function TripDetail({ trip, countries, onRefresh }: {
 // ===========================================================================
 
 function TripBundlePanel({ tripId }: { tripId: string }) {
+  type BundleDoc = { id: number; category: string; document_name: string; signed_url: string | null; section: string };
   const [data, setData] = useState<{
     legs: Array<{ dep: string; arr: string; pic: string | null; sic: string | null; departure: string | null }>;
     crewDocs: Record<string, Array<{ id: number; category: string; document_name: string; signed_url: string | null }>>;
@@ -1235,6 +1236,18 @@ function TripBundlePanel({ tripId }: { tripId: string }) {
     passengers: string[];
   } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewName, setPreviewName] = useState("");
+  const [showEmailModal, setShowEmailModal] = useState(false);
+  const [emailTo, setEmailTo] = useState("");
+  const [emailCc, setEmailCc] = useState("");
+  const [emailSubject, setEmailSubject] = useState("");
+  const [emailBody, setEmailBody] = useState("");
+  const [sending, setSending] = useState(false);
+  const [sendResult, setSendResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [downloading, setDownloading] = useState(false);
 
   useEffect(() => {
     fetch(`/api/ops/intl/trip-bundle?trip_id=${tripId}`)
@@ -1246,153 +1259,156 @@ function TripBundlePanel({ tripId }: { tripId: string }) {
   if (loading) return <p className="mt-4 text-xs text-gray-400 animate-pulse">Loading documents...</p>;
   if (!data) return null;
 
+  const allDocs: BundleDoc[] = [
+    ...data.tripDocs.map((d) => ({ ...d, section: "Trip" })),
+    ...Object.entries(data.crewDocs).flatMap(([name, docs]) => docs.map((d) => ({ ...d, section: `Crew: ${name}` }))),
+    ...data.aircraftDocs.map((d) => ({ ...d, section: "Aircraft" })),
+    ...data.companyDocs.map((d) => ({ ...d, section: "Company" })),
+  ];
+
+  const toggleDoc = (key: string) => setSelected((prev) => { const n = new Set(prev); if (n.has(key)) n.delete(key); else n.add(key); return n; });
+  const toggleSection = (docs: BundleDoc[]) => { const keys = docs.map((d) => `${d.id}`); const all = keys.every((k) => selected.has(k)); setSelected((prev) => { const n = new Set(prev); for (const k of keys) { if (all) n.delete(k); else n.add(k); } return n; }); };
+  const toggleCollapse = (s: string) => setCollapsed((prev) => { const n = new Set(prev); if (n.has(s)) n.delete(s); else n.add(s); return n; });
+  const selectedDocs = allDocs.filter((d) => selected.has(`${d.id}`));
+
+  const downloadSelected = async () => {
+    if (selectedDocs.length === 0) return;
+    if (selectedDocs.length === 1 && selectedDocs[0].signed_url) { window.open(selectedDocs[0].signed_url, "_blank"); return; }
+    setDownloading(true);
+    try {
+      const { default: JSZip } = await import("jszip");
+      const zip = new JSZip();
+      await Promise.all(selectedDocs.map(async (doc) => { if (!doc.signed_url) return; try { const res = await fetch(doc.signed_url); const blob = await res.blob(); zip.file(`${doc.section}/${doc.document_name}.pdf`, blob); } catch { /* skip */ } }));
+      const zipBlob = await zip.generateAsync({ type: "blob" });
+      const url = URL.createObjectURL(zipBlob); const a = document.createElement("a"); a.href = url; a.download = "trip-docs.zip"; a.click(); URL.revokeObjectURL(url);
+    } catch { /* ignore */ }
+    setDownloading(false);
+  };
+
+  const openEmailModal = () => {
+    const sig = typeof window !== "undefined" ? localStorage.getItem("baker_email_signature") : null;
+    setEmailSubject("Baker Aviation — Trip Documents");
+    setEmailBody(`Please find attached ${selectedDocs.length} trip document${selectedDocs.length > 1 ? "s" : ""}.\n\nPlease let us know if you need anything else.\n\n${sig || "Best regards,\nBaker Aviation Handling"}`);
+    setEmailTo(""); setEmailCc(""); setSendResult(null); setShowEmailModal(true);
+  };
+
+  const sendEmail = async () => {
+    if (!emailTo.trim()) return;
+    setSending(true); setSendResult(null);
+    try {
+      const toAddrs = emailTo.split(/[,;\s]+/).map((s) => s.trim()).filter(Boolean);
+      const ccAddrs = emailCc ? emailCc.split(/[,;\s]+/).map((s) => s.trim()).filter(Boolean) : [];
+      const res = await fetch("/api/ops/intl/send-docs-email", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ to: toAddrs, cc: ccAddrs, subject: emailSubject, body: emailBody, document_ids: selectedDocs.map((d) => String(d.id)), trip_id: tripId }) });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error || "Send failed");
+      setSendResult({ ok: true, message: `Sent to ${toAddrs.join(", ")}` });
+      setTimeout(() => setShowEmailModal(false), 2000);
+    } catch (err: unknown) { setSendResult({ ok: false, message: err instanceof Error ? err.message : "Send failed" }); }
+    setSending(false);
+  };
+
+  function DocSection({ title, docs, sectionKey }: { title: string; docs: BundleDoc[]; sectionKey: string }) {
+    if (docs.length === 0) return null;
+    const isCollapsed = collapsed.has(sectionKey);
+    const sectionSel = docs.filter((d) => selected.has(`${d.id}`)).length;
+    return (
+      <div className="mt-3">
+        <button onClick={() => toggleCollapse(sectionKey)} className="flex w-full items-center gap-2 text-left">
+          <svg className={`w-3 h-3 text-gray-400 transition-transform ${isCollapsed ? "" : "rotate-90"}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+          <span className="text-xs font-semibold uppercase tracking-wider text-gray-500">{title}</span>
+          <span className="text-xs text-gray-400">({docs.length})</span>
+          {sectionSel > 0 && <span className="text-xs text-blue-600">{sectionSel} selected</span>}
+          <button onClick={(e) => { e.stopPropagation(); toggleSection(docs); }} className="ml-auto text-[10px] text-blue-500 hover:text-blue-700">{docs.every((d) => selected.has(`${d.id}`)) ? "Deselect all" : "Select all"}</button>
+        </button>
+        {!isCollapsed && (
+          <div className="mt-1 space-y-0.5 pl-5">
+            {docs.map((d) => (
+              <div key={d.id} className="flex items-center gap-2 rounded px-2 py-1.5 hover:bg-gray-50 group">
+                <input type="checkbox" checked={selected.has(`${d.id}`)} onChange={() => toggleDoc(`${d.id}`)} className="rounded border-gray-300" />
+                <span className="flex-1 text-sm text-gray-900 truncate">{d.document_name}</span>
+                <span className="text-xs text-gray-400 hidden group-hover:inline">{d.category}</span>
+                {d.signed_url && (
+                  <>
+                    <button onClick={() => { setPreviewUrl(d.signed_url); setPreviewName(d.document_name); }} className="text-xs text-blue-600 hover:text-blue-800 opacity-0 group-hover:opacity-100">Preview</button>
+                    <a href={d.signed_url} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:text-blue-800 opacity-0 group-hover:opacity-100">Download</a>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
-    <div className="mt-4 space-y-4">
-      {data && (
-        <>
-          {/* Crew per leg */}
-          {data.legs.length > 0 && (
-            <div>
-              <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Crew by Leg</h4>
-              <div className="space-y-1">
-                {data.legs.map((leg, i) => (
-                  <div key={i} className="flex items-center gap-3 rounded-md bg-white px-3 py-2 text-sm">
-                    <span className="font-medium text-gray-900">{leg.dep} → {leg.arr}</span>
-                    {leg.pic && (
-                      <span className="text-gray-600">
-                        PIC: <span className="font-medium">{leg.pic}</span>
-                      </span>
-                    )}
-                    {leg.sic && (
-                      <span className="text-gray-600">
-                        SIC: <span className="font-medium">{leg.sic}</span>
-                      </span>
-                    )}
-                    {!leg.pic && !leg.sic && (
-                      <span className="text-gray-400">No crew assigned</span>
-                    )}
-                  </div>
-                ))}
+    <div className="mt-4">
+      {data.legs.length > 0 && data.legs.some((l) => l.pic || l.sic) && (
+        <div className="mb-3">
+          <h4 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-1">Crew by Leg</h4>
+          <div className="space-y-0.5">
+            {data.legs.map((leg, i) => (
+              <div key={i} className="flex items-center gap-3 text-sm px-2 py-1 rounded bg-gray-50">
+                <span className="font-medium text-gray-900">{leg.dep} &rarr; {leg.arr}</span>
+                {leg.pic && <span className="text-gray-600">PIC: <span className="font-medium">{leg.pic}</span></span>}
+                {leg.sic && <span className="text-gray-600">SIC: <span className="font-medium">{leg.sic}</span></span>}
               </div>
+            ))}
+          </div>
+        </div>
+      )}
+      <DocSection title="Trip Documents" docs={allDocs.filter((d) => d.section === "Trip")} sectionKey="trip" />
+      {Object.entries(data.crewDocs).map(([name]) => (
+        <DocSection key={name} title={`Aircrew \u2014 ${name}`} docs={allDocs.filter((d) => d.section === `Crew: ${name}`)} sectionKey={`crew:${name}`} />
+      ))}
+      <DocSection title="Aircraft Documents" docs={allDocs.filter((d) => d.section === "Aircraft")} sectionKey="aircraft" />
+      <DocSection title="Company Documents" docs={allDocs.filter((d) => d.section === "Company")} sectionKey="company" />
+      {data.passengers.length > 0 && (
+        <div className="mt-3">
+          <h4 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-1">Passengers</h4>
+          <div className="flex flex-wrap gap-1 pl-5">{data.passengers.map((name) => (<span key={name} className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-700">{name}</span>))}</div>
+        </div>
+      )}
+      {selected.size > 0 && (
+        <div className="mt-4 flex items-center gap-2 justify-end">
+          <button onClick={openEmailModal} className="rounded-lg bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-700">Email {selected.size} doc{selected.size !== 1 ? "s" : ""}</button>
+          <button onClick={downloadSelected} disabled={downloading} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50">{downloading ? "Zipping..." : `Download ${selected.size} doc${selected.size !== 1 ? "s" : ""}`}</button>
+        </div>
+      )}
+      {allDocs.length === 0 && data.legs.every((l) => !l.pic && !l.sic) && data.passengers.length === 0 && (
+        <p className="mt-4 text-xs text-gray-400">No documents synced yet. Run a sync from the JetInsight tab.</p>
+      )}
+      {previewUrl && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setPreviewUrl(null)}>
+          <div className="relative w-full max-w-4xl h-[85vh] bg-white rounded-lg shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-2 border-b"><span className="text-sm font-medium text-gray-900">{previewName}</span><button onClick={() => setPreviewUrl(null)} className="text-gray-400 hover:text-gray-600 text-lg">&times;</button></div>
+            <iframe src={previewUrl} className="w-full h-full rounded-b-lg" title={previewName} />
+          </div>
+        </div>
+      )}
+      {showEmailModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowEmailModal(false)}>
+          <div className="w-full max-w-lg bg-white rounded-lg shadow-xl p-6" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-semibold mb-4">Email {selectedDocs.length} Document{selectedDocs.length !== 1 ? "s" : ""}</h3>
+            <div className="space-y-3">
+              <div><label className="text-xs text-gray-500">To</label><input value={emailTo} onChange={(e) => setEmailTo(e.target.value)} placeholder="recipient@email.com" className="w-full rounded border border-gray-300 px-3 py-1.5 text-sm" /></div>
+              <div><label className="text-xs text-gray-500">CC</label><input value={emailCc} onChange={(e) => setEmailCc(e.target.value)} placeholder="cc@email.com" className="w-full rounded border border-gray-300 px-3 py-1.5 text-sm" /></div>
+              <div><label className="text-xs text-gray-500">Subject</label><input value={emailSubject} onChange={(e) => setEmailSubject(e.target.value)} className="w-full rounded border border-gray-300 px-3 py-1.5 text-sm" /></div>
+              <div><label className="text-xs text-gray-500">Body</label><textarea value={emailBody} onChange={(e) => setEmailBody(e.target.value)} rows={5} className="w-full rounded border border-gray-300 px-3 py-1.5 text-sm" /></div>
+              <div className="text-xs text-gray-400">Attaching: {selectedDocs.map((d) => d.document_name).join(", ")}</div>
+              {sendResult && <div className={`text-sm rounded px-3 py-2 ${sendResult.ok ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"}`}>{sendResult.message}</div>}
             </div>
-          )}
-
-          {/* Crew compliance docs */}
-          {Object.keys(data.crewDocs).length > 0 && (
-            <div>
-              <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Crew Documents</h4>
-              {Object.entries(data.crewDocs).map(([name, docs]) => (
-                <div key={name} className="mb-2">
-                  <p className="text-xs font-medium text-gray-700 mb-1">{name}</p>
-                  <div className="flex flex-wrap gap-1">
-                    {docs.map((d) => (
-                      <a
-                        key={d.id}
-                        href={d.signed_url ?? "#"}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex rounded bg-white border border-gray-200 px-2 py-1 text-xs text-blue-600 hover:bg-blue-50"
-                        title={d.document_name}
-                      >
-                        {d.category}
-                      </a>
-                    ))}
-                  </div>
-                </div>
-              ))}
+            <div className="mt-4 flex justify-end gap-2">
+              <button onClick={() => setShowEmailModal(false)} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800">Cancel</button>
+              <button onClick={sendEmail} disabled={sending || !emailTo.trim()} className="rounded bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-700 disabled:opacity-50">{sending ? "Sending..." : "Send"}</button>
             </div>
-          )}
-
-          {/* Trip documents (GenDec, manifests) */}
-          {data.tripDocs.length > 0 && (
-            <div>
-              <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Trip Documents</h4>
-              <div className="flex flex-wrap gap-1">
-                {data.tripDocs.map((d) => (
-                  <a
-                    key={d.id}
-                    href={d.signed_url ?? "#"}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex rounded bg-white border border-gray-200 px-2 py-1 text-xs text-blue-600 hover:bg-blue-50"
-                  >
-                    {d.category}
-                  </a>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Aircraft documents */}
-          {data.aircraftDocs.length > 0 && (
-            <div>
-              <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Aircraft Documents</h4>
-              <div className="flex flex-wrap gap-1">
-                {data.aircraftDocs.map((d) => (
-                  <a
-                    key={d.id}
-                    href={d.signed_url ?? "#"}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex rounded bg-white border border-gray-200 px-2 py-1 text-xs text-blue-600 hover:bg-blue-50"
-                    title={d.document_name}
-                  >
-                    {d.category}: {d.document_name}
-                  </a>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Company documents */}
-          {data.companyDocs.length > 0 && (
-            <div>
-              <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Company Documents</h4>
-              <div className="flex flex-wrap gap-1">
-                {data.companyDocs.map((d) => (
-                  <a
-                    key={d.id}
-                    href={d.signed_url ?? "#"}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex rounded bg-white border border-gray-200 px-2 py-1 text-xs text-blue-600 hover:bg-blue-50"
-                    title={d.document_name}
-                  >
-                    {d.category}: {d.document_name}
-                  </a>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Passengers */}
-          {data.passengers.length > 0 && (
-            <div>
-              <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Passengers</h4>
-              <div className="flex flex-wrap gap-1">
-                {data.passengers.map((name) => (
-                  <span key={name} className="rounded-full bg-white border border-gray-200 px-2 py-0.5 text-xs text-gray-700">
-                    {name}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Empty state */}
-          {data.legs.every((l) => !l.pic && !l.sic) &&
-            Object.keys(data.crewDocs).length === 0 &&
-            data.aircraftDocs.length === 0 &&
-            data.tripDocs.length === 0 &&
-            data.companyDocs.length === 0 &&
-            data.passengers.length === 0 && (
-              <p className="text-xs text-gray-400">No documents synced yet. Run a sync from the JetInsight tab.</p>
-            )}
-        </>
+          </div>
+        </div>
       )}
     </div>
   );
 }
+
 
 // ===========================================================================
 // CLEARANCE CARD — single clearance item with status control

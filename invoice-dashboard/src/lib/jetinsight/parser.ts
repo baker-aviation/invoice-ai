@@ -235,6 +235,12 @@ export function parseAircraftDocPage(html: string): DocEntry[] {
 
         seen.add(uuid);
 
+        // Clean up filename — strip "Edit all versions Category: " prefix from JetInsight UI
+        const cleanedFilename = linkText
+          .replace(/^Edit all versions\s*/i, "")
+          .replace(/^[^:]+:\s*/, "")
+          .trim() || linkText;
+
         let uploadedOn: string | undefined;
         const row = $(link).closest("tr");
         const dateMatch = row
@@ -258,7 +264,7 @@ export function parseAircraftDocPage(html: string): DocEntry[] {
         docs.push({
           category,
           checkUuid: uuid,
-          filename: linkText,
+          filename: cleanedFilename,
           downloadUrl,
           uploadedOn,
           versionLabel,
