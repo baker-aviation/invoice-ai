@@ -1215,17 +1215,7 @@ function TripDetail({ trip, countries, onRefresh }: {
         );
       })()}
 
-      {/* Trip documents (existing intl_documents) */}
-      {trip.tail_number && trip.route_icaos.length >= 2 && (
-        <TripDocsPanel
-          tripId={trip.id}
-          tail={trip.tail_number}
-          dep={trip.route_icaos[0]}
-          arr={trip.route_icaos[trip.route_icaos.length - 1]}
-        />
-      )}
-
-      {/* JetInsight synced data: crew, aircraft docs, trip docs, company docs */}
+      {/* Crew, aircraft docs, trip docs, company docs from JetInsight */}
       <TripBundlePanel tripId={trip.id} />
     </div>
   );
@@ -1244,35 +1234,22 @@ function TripBundlePanel({ tripId }: { tripId: string }) {
     companyDocs: Array<{ id: number; category: string; document_name: string; signed_url: string | null }>;
     passengers: string[];
   } | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [expanded, setExpanded] = useState(false);
+  const [loading, setLoading] = useState(true);
 
-  function loadBundle() {
-    if (data) { setExpanded(!expanded); return; }
-    setLoading(true);
-    setExpanded(true);
+  useEffect(() => {
     fetch(`/api/ops/intl/trip-bundle?trip_id=${tripId}`)
       .then((r) => r.json())
       .then((d) => setData(d))
       .finally(() => setLoading(false));
-  }
+  }, [tripId]);
+
+  if (loading) return <p className="mt-4 text-xs text-gray-400 animate-pulse">Loading documents...</p>;
+  if (!data) return null;
 
   return (
-    <div className="mt-4 rounded-lg border border-blue-200 bg-blue-50/30">
-      <button
-        onClick={loadBundle}
-        className="flex w-full items-center justify-between px-4 py-3 text-left text-sm font-medium text-blue-800 hover:bg-blue-50"
-      >
-        <span>JetInsight Documents &amp; Crew</span>
-        <span className="text-xs text-blue-500">{expanded ? "Hide" : "Show"}</span>
-      </button>
-
-      {expanded && loading && (
-        <p className="px-4 pb-3 text-xs text-gray-500">Loading...</p>
-      )}
-
-      {expanded && data && (
-        <div className="border-t border-blue-200 px-4 py-3 space-y-4">
+    <div className="mt-4 space-y-4">
+      {data && (
+        <>
           {/* Crew per leg */}
           {data.legs.length > 0 && (
             <div>
@@ -1409,9 +1386,9 @@ function TripBundlePanel({ tripId }: { tripId: string }) {
             data.tripDocs.length === 0 &&
             data.companyDocs.length === 0 &&
             data.passengers.length === 0 && (
-              <p className="text-xs text-gray-400">No JetInsight data synced for this trip yet.</p>
+              <p className="text-xs text-gray-400">No documents synced yet. Run a sync from the JetInsight tab.</p>
             )}
-        </div>
+        </>
       )}
     </div>
   );
@@ -2460,9 +2437,102 @@ function ReqCard({ req, editing, onEdit, onSave, onDelete }: {
 }
 
 // ===========================================================================
-// DOCUMENT LIBRARY
+// DOCUMENT LIBRARY — JetInsight-synced docs organized by category
 // ===========================================================================
 function DocumentLibrary() {
+  type JiDoc = { id: number; category: string; document_name: string; entity_type: string; entity_id: string; signed_url?: string | null };
+  const [crewDocs, setCrewDocs] = useState<JiDoc[]>([]);
+  const [aircraftDocs, setAircraftDocs] = useState<JiDoc[]>([]);
+  const [companyDocs, setCompanyDocs] = useState<JiDoc[]>([]);
+  const [tripDocs, setTripDocs] = useState<JiDoc[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState<string>("all");
+
+  useEffect(() => {
+    Promise.all([
+      fetch("/api/jetinsight/documents?entity_type=crew").then((r) => r.json()),
+      fetch("/api/jetinsight/documents?entity_type=aircraft").then((r) => r.json()),
+      fetch("/api/jetinsight/documents?entity_type=company").then((r) => r.json()),
+      fetch("/api/jetinsight/documents?entity_type=trip").then((r) => r.json()),
+    ])
+      .then(([crew, aircraft, company, trip]) => {
+        setCrewDocs(crew.documents ?? []);
+        setAircraftDocs(aircraft.documents ?? []);
+        setCompanyDocs(company.documents ?? []);
+        setTripDocs(trip.documents ?? []);
+      })
+      .finally(() => setLoading(false));
+  }, []);
+
+  const sections = [
+    { key: "trip", label: "Trip Documents", docs: tripDocs },
+    { key: "crew", label: "Aircrew Documents", docs: crewDocs },
+    { key: "aircraft", label: "Aircraft Documents", docs: aircraftDocs },
+    { key: "company", label: "Company Documents", docs: companyDocs },
+  ].filter((s) => filter === "all" || s.key === filter);
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex gap-2">
+          {["all", "trip", "crew", "aircraft", "company"].map((f) => (
+            <button
+              key={f}
+              onClick={() => setFilter(f)}
+              className={`px-3 py-1 text-xs rounded-full font-medium ${
+                filter === f ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+              }`}
+            >
+              {f === "all" ? "All" : f === "trip" ? "Trip" : f === "crew" ? "Aircrew" : f === "aircraft" ? "Aircraft" : "Company"}
+            </button>
+          ))}
+        </div>
+        <p className="text-xs text-gray-400">
+          {crewDocs.length + aircraftDocs.length + companyDocs.length + tripDocs.length} documents synced from JetInsight
+        </p>
+      </div>
+
+      {loading ? (
+        <p className="text-sm text-gray-400 animate-pulse">Loading documents...</p>
+      ) : (
+        <div className="space-y-6">
+          {sections.map((section) => (
+            <div key={section.key}>
+              <h3 className="text-sm font-semibold text-gray-700 mb-2">{section.label}</h3>
+              {section.docs.length === 0 ? (
+                <p className="text-xs text-gray-400">No {section.label.toLowerCase()} synced yet.</p>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                  {section.docs.map((d) => (
+                    <a
+                      key={d.id}
+                      href={d.signed_url ?? "#"}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm hover:bg-blue-50 hover:border-blue-200 transition-colors"
+                    >
+                      <span className="text-blue-600 flex-shrink-0">
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" /></svg>
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium text-gray-900 truncate">{d.document_name}</p>
+                        <p className="text-xs text-gray-500 truncate">{d.category}{d.entity_id !== "baker_aviation" ? ` — ${d.entity_id}` : ""}</p>
+                      </div>
+                    </a>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* eslint-disable @typescript-eslint/no-unused-vars */
+// Old DocumentLibrary kept as _OldDocumentLibrary for reference during migration
+function _OldDocumentLibrary() {
   const [documents, setDocuments] = useState<IntlDocument[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<string>("all");
