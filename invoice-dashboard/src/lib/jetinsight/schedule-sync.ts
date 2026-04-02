@@ -11,22 +11,23 @@ const CHARLIE_SLACK_ID = "D0AK75CPPJM";
 const MATCH_WINDOW_MS = 2 * 60 * 60 * 1000;
 
 export interface ScheduleSyncResult {
-  flightsEnriched: number;
+  flightsCreated: number;
+  flightsUpdated: number;
   mxNotesUpserted: number;
-  unmatched: number;
   errors: string[];
   sessionExpired: boolean;
 }
 
 /**
- * Fetch the JetInsight schedule JSON and enrich existing flights.
- * Returns sync result. Sends Slack DM if session expires.
+ * Fetch the JetInsight schedule JSON — PRIMARY source of flight data.
+ * Creates new flights and updates existing ones with full data.
+ * ICS sync (ops-monitor) serves as fallback when cookie is dead.
  */
 export async function runScheduleSync(): Promise<ScheduleSyncResult> {
   const result: ScheduleSyncResult = {
-    flightsEnriched: 0,
+    flightsCreated: 0,
+    flightsUpdated: 0,
     mxNotesUpserted: 0,
-    unmatched: 0,
     errors: [],
     sessionExpired: false,
   };
@@ -75,7 +76,6 @@ export async function runScheduleSync(): Promise<ScheduleSyncResult> {
 
     const text = await res.text();
 
-    // Check for session expiry (HTML login page instead of JSON)
     if (isLoginRedirect(text)) {
       result.sessionExpired = true;
       result.errors.push("Session expired");
@@ -102,21 +102,20 @@ export async function runScheduleSync(): Promise<ScheduleSyncResult> {
   // Parse events
   const events = parseScheduleJson(rawJson);
 
-  // Load existing flights for matching (past 7 days + next 30 days)
+  // Load existing flights for matching
   const { data: existingFlights } = await supa
     .from("flights")
     .select(
-      "id, tail_number, departure_icao, arrival_icao, scheduled_departure, jetinsight_event_uuid",
+      "id, ics_uid, tail_number, departure_icao, arrival_icao, scheduled_departure, jetinsight_event_uuid",
     )
     .gte("scheduled_departure", start.toISOString())
     .lte("scheduled_departure", end.toISOString());
 
   const flights = existingFlights ?? [];
 
-  // Process flight events
+  // Process events
   for (const event of events) {
     if (event.eventType === "maintenance") {
-      // Upsert MX note to ops_alerts
       try {
         await upsertMxNote(supa, event);
         result.mxNotesUpserted++;
@@ -128,42 +127,88 @@ export async function runScheduleSync(): Promise<ScheduleSyncResult> {
       continue;
     }
 
-    // Match to existing flight
+    // Build the full flight data payload
+    const flightData = {
+      tail_number: event.tailNumber,
+      departure_icao: event.departureIcao,
+      arrival_icao: event.arrivalIcao,
+      scheduled_departure: event.start,
+      scheduled_arrival: event.end,
+      summary: buildSummary(event),
+      flight_type: event.flightType,
+      pic: event.pic,
+      sic: event.sic,
+      pax_count: event.paxCount,
+      jetinsight_url: event.tripId
+        ? `${BASE_URL}/trips/${event.tripId}`
+        : null,
+      // Enrichment fields
+      flight_number: event.flightNumber,
+      customer_name: event.customerName,
+      jetinsight_trip_id: event.tripId,
+      origin_fbo: event.originFbo,
+      destination_fbo: event.destinationFbo,
+      international_leg: event.internationalLeg || null,
+      trip_stage: event.tripStage,
+      release_complete: event.releaseComplete,
+      crew_complete: event.crewComplete,
+      pax_complete: event.paxComplete,
+      faa_part: event.faaPart,
+      jetinsight_event_uuid: event.uuid,
+    };
+
+    // Try to match to existing flight
     const matched = findMatchingFlight(flights, event);
-    if (!matched) {
-      result.unmatched++;
-      continue;
-    }
 
-    // Enrich the flight
-    try {
-      const { error } = await supa
-        .from("flights")
-        .update({
-          flight_number: event.flightNumber,
-          customer_name: event.customerName,
-          jetinsight_trip_id: event.tripId,
-          origin_fbo: event.originFbo,
-          destination_fbo: event.destinationFbo,
-          international_leg: event.internationalLeg || null,
-          trip_stage: event.tripStage,
-          release_complete: event.releaseComplete,
-          crew_complete: event.crewComplete,
-          pax_complete: event.paxComplete,
-          faa_part: event.faaPart,
-          jetinsight_event_uuid: event.uuid,
-        })
-        .eq("id", matched.id);
+    if (matched) {
+      // Update existing flight (preserve ics_uid and diverted flag)
+      try {
+        const { error } = await supa
+          .from("flights")
+          .update(flightData)
+          .eq("id", matched.id);
 
-      if (error) {
-        result.errors.push(`Update flight ${matched.id}: ${error.message}`);
-      } else {
-        result.flightsEnriched++;
+        if (error) {
+          result.errors.push(`Update ${matched.id}: ${error.message}`);
+        } else {
+          result.flightsUpdated++;
+        }
+      } catch (err) {
+        result.errors.push(
+          `Update ${matched.id}: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
-    } catch (err) {
-      result.errors.push(
-        `Update flight ${matched.id}: ${err instanceof Error ? err.message : String(err)}`,
-      );
+    } else {
+      // Create new flight — JSON is the primary source
+      try {
+        const { error } = await supa.from("flights").insert({
+          ...flightData,
+          ics_uid: `ji:${event.uuid}`, // Synthetic ics_uid so ICS sync can match later
+        });
+
+        if (error) {
+          // Might be a duplicate — ignore unique constraint violations
+          if (!error.message.includes("duplicate") && !error.message.includes("unique")) {
+            result.errors.push(`Insert ${event.tailNumber} ${event.departureIcao}-${event.arrivalIcao}: ${error.message}`);
+          }
+        } else {
+          result.flightsCreated++;
+          // Add to local array so subsequent events can match against it
+          flights.push({
+            id: "", // unknown but we won't need to update it again this cycle
+            ics_uid: `ji:${event.uuid}`,
+            tail_number: event.tailNumber,
+            departure_icao: event.departureIcao,
+            arrival_icao: event.arrivalIcao,
+            scheduled_departure: event.start,
+            jetinsight_event_uuid: event.uuid,
+          });
+        }
+      } catch (err) {
+        result.errors.push(
+          `Insert ${event.tailNumber}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
   }
 
@@ -173,8 +218,8 @@ export async function runScheduleSync(): Promise<ScheduleSyncResult> {
     status: result.errors.length > 0 ? "partial" : "ok",
     crew_synced: 0,
     aircraft_synced: 0,
-    docs_downloaded: result.flightsEnriched,
-    docs_skipped: result.unmatched,
+    docs_downloaded: result.flightsCreated + result.flightsUpdated,
+    docs_skipped: 0,
     errors: result.errors.map((e) => ({ entity: "schedule", message: e })),
     duration_ms: 0,
     completed_at: new Date().toISOString(),
@@ -184,13 +229,22 @@ export async function runScheduleSync(): Promise<ScheduleSyncResult> {
 }
 
 /**
+ * Build a summary string matching the ICS format for consistency.
+ * e.g., "[N883TR] V2 Jets (TQPF - KTEB) - Revenue"
+ */
+function buildSummary(event: ScheduleEvent): string {
+  const customer = event.customerName ? ` ${event.customerName}` : "";
+  return `[${event.tailNumber}]${customer} (${event.departureIcao} - ${event.arrivalIcao}) - ${event.flightType}`;
+}
+
+/**
  * Find a matching flight in the DB for a JSON schedule event.
- * Matches by tail + departure ICAO + arrival ICAO + time within ±2 hours.
- * Prefers exact jetinsight_event_uuid match if available.
+ * Priority: jetinsight_event_uuid > ics_uid > route + time signature.
  */
 function findMatchingFlight(
   flights: Array<{
     id: string;
+    ics_uid?: string;
     tail_number: string;
     departure_icao: string;
     arrival_icao: string;
@@ -199,15 +253,20 @@ function findMatchingFlight(
   }>,
   event: ScheduleEvent,
 ): { id: string } | null {
-  // First try UUID match
+  // 1. Exact event UUID match
   const uuidMatch = flights.find(
     (f) => f.jetinsight_event_uuid === event.uuid,
   );
   if (uuidMatch) return uuidMatch;
 
-  // Then try route + time match
-  const eventTime = new Date(event.start).getTime();
+  // 2. Synthetic ics_uid match (from previous JSON sync)
+  const syntheticMatch = flights.find(
+    (f) => f.ics_uid === `ji:${event.uuid}`,
+  );
+  if (syntheticMatch) return syntheticMatch;
 
+  // 3. Route + time signature match (catches ICS-created flights)
+  const eventTime = new Date(event.start).getTime();
   return (
     flights.find((f) => {
       if (f.tail_number !== event.tailNumber) return false;
