@@ -1215,7 +1215,7 @@ function TripDetail({ trip, countries, onRefresh }: {
         );
       })()}
 
-      {/* Trip documents */}
+      {/* Trip documents (existing intl_documents) */}
       {trip.tail_number && trip.route_icaos.length >= 2 && (
         <TripDocsPanel
           tripId={trip.id}
@@ -1223,6 +1223,195 @@ function TripDetail({ trip, countries, onRefresh }: {
           dep={trip.route_icaos[0]}
           arr={trip.route_icaos[trip.route_icaos.length - 1]}
         />
+      )}
+
+      {/* JetInsight synced data: crew, aircraft docs, trip docs, company docs */}
+      <TripBundlePanel tripId={trip.id} />
+    </div>
+  );
+}
+
+// ===========================================================================
+// TRIP BUNDLE PANEL — Crew, aircraft docs, trip docs, company docs from JetInsight
+// ===========================================================================
+
+function TripBundlePanel({ tripId }: { tripId: string }) {
+  const [data, setData] = useState<{
+    legs: Array<{ dep: string; arr: string; pic: string | null; sic: string | null; departure: string | null }>;
+    crewDocs: Record<string, Array<{ id: number; category: string; document_name: string; signed_url: string | null }>>;
+    aircraftDocs: Array<{ id: number; category: string; document_name: string; signed_url: string | null }>;
+    tripDocs: Array<{ id: number; category: string; document_name: string; signed_url: string | null }>;
+    companyDocs: Array<{ id: number; category: string; document_name: string; signed_url: string | null }>;
+    passengers: string[];
+  } | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+
+  function loadBundle() {
+    if (data) { setExpanded(!expanded); return; }
+    setLoading(true);
+    setExpanded(true);
+    fetch(`/api/ops/intl/trip-bundle?trip_id=${tripId}`)
+      .then((r) => r.json())
+      .then((d) => setData(d))
+      .finally(() => setLoading(false));
+  }
+
+  return (
+    <div className="mt-4 rounded-lg border border-blue-200 bg-blue-50/30">
+      <button
+        onClick={loadBundle}
+        className="flex w-full items-center justify-between px-4 py-3 text-left text-sm font-medium text-blue-800 hover:bg-blue-50"
+      >
+        <span>JetInsight Documents &amp; Crew</span>
+        <span className="text-xs text-blue-500">{expanded ? "Hide" : "Show"}</span>
+      </button>
+
+      {expanded && loading && (
+        <p className="px-4 pb-3 text-xs text-gray-500">Loading...</p>
+      )}
+
+      {expanded && data && (
+        <div className="border-t border-blue-200 px-4 py-3 space-y-4">
+          {/* Crew per leg */}
+          {data.legs.length > 0 && (
+            <div>
+              <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Crew by Leg</h4>
+              <div className="space-y-1">
+                {data.legs.map((leg, i) => (
+                  <div key={i} className="flex items-center gap-3 rounded-md bg-white px-3 py-2 text-sm">
+                    <span className="font-medium text-gray-900">{leg.dep} → {leg.arr}</span>
+                    {leg.pic && (
+                      <span className="text-gray-600">
+                        PIC: <span className="font-medium">{leg.pic}</span>
+                      </span>
+                    )}
+                    {leg.sic && (
+                      <span className="text-gray-600">
+                        SIC: <span className="font-medium">{leg.sic}</span>
+                      </span>
+                    )}
+                    {!leg.pic && !leg.sic && (
+                      <span className="text-gray-400">No crew assigned</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Crew compliance docs */}
+          {Object.keys(data.crewDocs).length > 0 && (
+            <div>
+              <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Crew Documents</h4>
+              {Object.entries(data.crewDocs).map(([name, docs]) => (
+                <div key={name} className="mb-2">
+                  <p className="text-xs font-medium text-gray-700 mb-1">{name}</p>
+                  <div className="flex flex-wrap gap-1">
+                    {docs.map((d) => (
+                      <a
+                        key={d.id}
+                        href={d.signed_url ?? "#"}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex rounded bg-white border border-gray-200 px-2 py-1 text-xs text-blue-600 hover:bg-blue-50"
+                        title={d.document_name}
+                      >
+                        {d.category}
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Trip documents (GenDec, manifests) */}
+          {data.tripDocs.length > 0 && (
+            <div>
+              <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Trip Documents</h4>
+              <div className="flex flex-wrap gap-1">
+                {data.tripDocs.map((d) => (
+                  <a
+                    key={d.id}
+                    href={d.signed_url ?? "#"}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex rounded bg-white border border-gray-200 px-2 py-1 text-xs text-blue-600 hover:bg-blue-50"
+                  >
+                    {d.category}
+                  </a>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Aircraft documents */}
+          {data.aircraftDocs.length > 0 && (
+            <div>
+              <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Aircraft Documents</h4>
+              <div className="flex flex-wrap gap-1">
+                {data.aircraftDocs.map((d) => (
+                  <a
+                    key={d.id}
+                    href={d.signed_url ?? "#"}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex rounded bg-white border border-gray-200 px-2 py-1 text-xs text-blue-600 hover:bg-blue-50"
+                    title={d.document_name}
+                  >
+                    {d.category}: {d.document_name}
+                  </a>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Company documents */}
+          {data.companyDocs.length > 0 && (
+            <div>
+              <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Company Documents</h4>
+              <div className="flex flex-wrap gap-1">
+                {data.companyDocs.map((d) => (
+                  <a
+                    key={d.id}
+                    href={d.signed_url ?? "#"}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex rounded bg-white border border-gray-200 px-2 py-1 text-xs text-blue-600 hover:bg-blue-50"
+                    title={d.document_name}
+                  >
+                    {d.category}: {d.document_name}
+                  </a>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Passengers */}
+          {data.passengers.length > 0 && (
+            <div>
+              <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Passengers</h4>
+              <div className="flex flex-wrap gap-1">
+                {data.passengers.map((name) => (
+                  <span key={name} className="rounded-full bg-white border border-gray-200 px-2 py-0.5 text-xs text-gray-700">
+                    {name}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Empty state */}
+          {data.legs.every((l) => !l.pic && !l.sic) &&
+            Object.keys(data.crewDocs).length === 0 &&
+            data.aircraftDocs.length === 0 &&
+            data.tripDocs.length === 0 &&
+            data.companyDocs.length === 0 &&
+            data.passengers.length === 0 && (
+              <p className="text-xs text-gray-400">No JetInsight data synced for this trip yet.</p>
+            )}
+        </div>
       )}
     </div>
   );
