@@ -3,12 +3,13 @@
 import { useState, useEffect, useCallback } from "react";
 import type { JetInsightDocument, JetInsightSyncRun } from "@/lib/jetinsight/types";
 
-type Tab = "overview" | "crew" | "aircraft" | "history";
+type Tab = "overview" | "crew" | "aircraft" | "trips" | "history";
 
 const TABS: { key: Tab; label: string; slug: string }[] = [
   { key: "overview", label: "Overview", slug: "" },
   { key: "crew", label: "Crew Documents", slug: "crew" },
   { key: "aircraft", label: "Aircraft Documents", slug: "aircraft" },
+  { key: "trips", label: "Trip Documents", slug: "trips" },
   { key: "history", label: "Sync History", slug: "history" },
 ];
 
@@ -53,6 +54,7 @@ export default function JetInsightClient({
       {tab === "overview" && <OverviewTab />}
       {tab === "crew" && <CrewDocsTab />}
       {tab === "aircraft" && <AircraftDocsTab />}
+      {tab === "trips" && <TripDocsTab />}
       {tab === "history" && <HistoryTab />}
     </div>
   );
@@ -134,8 +136,19 @@ function OverviewTab() {
     let totalErrors = 0;
 
     try {
-      // Phase 1: Crew index
-      setSyncResult("Phase 1/3: Syncing crew index...");
+      // Phase 1: Schedule JSON enrichment
+      setSyncResult("Phase 1/5: Enriching flights from schedule JSON...");
+      const schedRes = await fetch("/api/jetinsight/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "schedule" }),
+      });
+      const schedData = await schedRes.json();
+      if (!schedRes.ok) throw new Error(schedData.error ?? schedData.result?.errors?.[0]?.message);
+      const enriched = schedData.result?.flightsEnriched ?? 0;
+
+      // Phase 2: Crew index
+      setSyncResult("Phase 2/5: Syncing crew index...");
       const indexRes = await fetch("/api/jetinsight/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -145,12 +158,12 @@ function OverviewTab() {
       if (!indexRes.ok) throw new Error(indexData.error);
       const crewCount = indexData.count ?? 0;
 
-      // Phase 2: Crew docs in batches
+      // Phase 3: Crew docs in batches
       let crewOffset = 0;
       let crewDone = false;
       while (!crewDone) {
         setSyncResult(
-          `Phase 2/3: Crew documents (batch at offset ${crewOffset})... ${totalDownloaded} downloaded so far`,
+          `Phase 3/5: Crew documents (batch at offset ${crewOffset})... ${totalDownloaded} downloaded so far`,
         );
         const res = await fetch("/api/jetinsight/sync", {
           method: "POST",
@@ -165,16 +178,16 @@ function OverviewTab() {
         if (data.done || (data.processed ?? 0) === 0) {
           crewDone = true;
         } else {
-          crewOffset = data.nextOffset ?? crewOffset + 5;
+          crewOffset = data.nextOffset ?? crewOffset + 3;
         }
       }
 
-      // Phase 3: Aircraft docs in batches
+      // Phase 4: Aircraft docs in batches
       let acOffset = 0;
       let acDone = false;
       while (!acDone) {
         setSyncResult(
-          `Phase 3/3: Aircraft documents (batch at offset ${acOffset})... ${totalDownloaded} downloaded so far`,
+          `Phase 4/5: Aircraft documents (batch at offset ${acOffset})... ${totalDownloaded} downloaded so far`,
         );
         const res = await fetch("/api/jetinsight/sync", {
           method: "POST",
@@ -189,12 +202,36 @@ function OverviewTab() {
         if (data.done || (data.processed ?? 0) === 0) {
           acDone = true;
         } else {
-          acOffset = data.nextOffset ?? acOffset + 5;
+          acOffset = data.nextOffset ?? acOffset + 3;
+        }
+      }
+
+      // Phase 5: Trip docs in batches (intl trips only)
+      let tripOffset = 0;
+      let tripDone = false;
+      while (!tripDone) {
+        setSyncResult(
+          `Phase 5/5: Trip documents (batch at offset ${tripOffset})... ${totalDownloaded} downloaded so far`,
+        );
+        const res = await fetch("/api/jetinsight/sync", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "trip_batch", offset: tripOffset }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error);
+        totalDownloaded += data.docsDownloaded ?? 0;
+        totalSkipped += data.docsSkipped ?? 0;
+        totalErrors += data.errors?.length ?? 0;
+        if (data.done || (data.processed ?? 0) === 0) {
+          tripDone = true;
+        } else {
+          tripOffset = data.nextOffset ?? tripOffset + 3;
         }
       }
 
       setSyncResult(
-        `Sync complete: ${crewCount} crew found, ${totalDownloaded} docs downloaded, ${totalSkipped} skipped, ${totalErrors} errors`,
+        `Sync complete: ${enriched} flights enriched, ${crewCount} crew found, ${totalDownloaded} docs downloaded, ${totalSkipped} skipped, ${totalErrors} errors`,
       );
       loadStats();
     } catch (err) {
@@ -572,6 +609,104 @@ function DocTable({ docs }: { docs: JetInsightDocument[] }) {
         ))}
       </tbody>
     </table>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Trip Documents Tab
+// ---------------------------------------------------------------------------
+
+function TripDocsTab() {
+  const [docs, setDocs] = useState<JetInsightDocument[]>([]);
+  const [paxMap, setPaxMap] = useState<Map<string, string[]>>(new Map());
+  const [loading, setLoading] = useState(true);
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch("/api/jetinsight/documents?entity_type=trip")
+      .then((r) => r.json())
+      .then((d) => setDocs(d.documents ?? []))
+      .finally(() => setLoading(false));
+  }, []);
+
+  // Load pax names when a trip is expanded
+  async function loadPax(tripId: string) {
+    if (paxMap.has(tripId)) return;
+    try {
+      const res = await fetch(`/api/jetinsight/trip-passengers?trip_id=${tripId}`);
+      if (res.ok) {
+        const data = await res.json();
+        setPaxMap((m) => new Map(m).set(tripId, data.passengers ?? []));
+      }
+    } catch { /* ignore */ }
+  }
+
+  if (loading) return <p className="text-sm text-slate-500">Loading...</p>;
+  if (docs.length === 0)
+    return (
+      <p className="text-sm text-slate-500">
+        No trip documents synced yet. Run a full sync — trip docs are pulled for international trips after schedule enrichment.
+      </p>
+    );
+
+  // Group by trip ID
+  const grouped = new Map<string, JetInsightDocument[]>();
+  for (const d of docs) {
+    const arr = grouped.get(d.entity_id) ?? [];
+    arr.push(d);
+    grouped.set(d.entity_id, arr);
+  }
+
+  return (
+    <div className="space-y-2">
+      {[...grouped.entries()].map(([tripId, tripDocs]) => (
+        <div
+          key={tripId}
+          className="rounded-lg border border-slate-200 bg-white"
+        >
+          <button
+            onClick={() => {
+              const next = expanded === tripId ? null : tripId;
+              setExpanded(next);
+              if (next) loadPax(next);
+            }}
+            className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-slate-50"
+          >
+            <div className="flex items-center gap-2">
+              <span className="font-medium text-slate-900">Trip {tripId}</span>
+              <span className="rounded bg-blue-100 px-1.5 py-0.5 text-xs font-medium text-blue-700">
+                International
+              </span>
+            </div>
+            <span className="text-sm text-slate-500">
+              {tripDocs.length} doc{tripDocs.length !== 1 && "s"}
+            </span>
+          </button>
+          {expanded === tripId && (
+            <div className="border-t border-slate-100 px-4 py-3">
+              <DocTable docs={tripDocs} />
+              {paxMap.has(tripId) && (paxMap.get(tripId)?.length ?? 0) > 0 && (
+                <div className="mt-4">
+                  <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">
+                    Passengers
+                  </h4>
+                  <div className="flex flex-wrap gap-2">
+                    {paxMap.get(tripId)!.map((name) => (
+                      <span
+                        key={name}
+                        className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs text-slate-700"
+                      >
+                        {name}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
   );
 }
 
