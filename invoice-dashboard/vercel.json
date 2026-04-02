@@ -56,6 +56,14 @@
     {
       "path": "/api/cron/jetinsight-docs",
       "schedule": "0 4 * * *"
+    },
+    {
+      "path": "/api/cron/hiring-sheet-sync",
+      "schedule": "0 */6 * * *"
+    },
+    {
+      "path": "/api/cron/tail-summary",
+      "schedule": "0 0 * * *"
     }
   ]
 }

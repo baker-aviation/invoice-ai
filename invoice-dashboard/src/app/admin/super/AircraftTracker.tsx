@@ -25,6 +25,7 @@ interface Aircraft {
   kow_callsign: string | null;
   jet_insight_url: string | null;
   location_override: string | null;
+  slack_channel_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -54,6 +55,7 @@ const DISPLAY_COLUMNS: { key: ColumnKey; label: string; width: string }[] = [
   { key: "notes", label: "Notes", width: "w-48" },
   { key: "kow_callsign", label: "KOW Callsign", width: "w-28" },
   { key: "jet_insight_url", label: "Jet Insight URL", width: "w-40" },
+  { key: "slack_channel_id", label: "Slack Channel", width: "w-28" },
 ];
 
 const STATUS_COLORS: Record<string, string> = {
