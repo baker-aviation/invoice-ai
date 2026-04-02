@@ -110,8 +110,8 @@ export async function POST(
       file_category: fileCategory,
     };
 
-    // Link LORs to the candidate's parse row
-    if (fileCategory === "lor" && parseId) {
+    // Link LORs and PRDs to the candidate's parse row
+    if ((fileCategory === "lor" || fileCategory === "prd") && parseId) {
       insertData.linked_parse_id = parseId;
     }
 

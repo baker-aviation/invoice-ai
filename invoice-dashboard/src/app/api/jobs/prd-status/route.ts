@@ -25,18 +25,18 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: true, withPrd: [] });
   }
 
-  const parseIds = candidates.map((c) => c.id);
+  const appIds = candidates.map((c) => c.application_id);
 
-  // Check which ones have PRD files
+  // Check which ones have PRD files (by application_id — works whether linked_parse_id is set or not)
   const { data: prdFiles } = await supa
     .from("job_application_files")
-    .select("linked_parse_id")
-    .in("linked_parse_id", parseIds)
+    .select("application_id")
+    .in("application_id", appIds)
     .eq("file_category", "prd");
 
-  const prdParseIds = new Set((prdFiles ?? []).map((f) => f.linked_parse_id));
+  const prdAppIds = new Set((prdFiles ?? []).map((f) => f.application_id));
   const withPrd = candidates
-    .filter((c) => prdParseIds.has(c.id))
+    .filter((c) => prdAppIds.has(c.application_id))
     .map((c) => c.application_id);
 
   return NextResponse.json({ ok: true, withPrd });

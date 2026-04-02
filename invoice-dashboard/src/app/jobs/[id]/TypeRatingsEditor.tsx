@@ -4,20 +4,41 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 
 const COMMON_RATINGS = [
-  "CE-750",
-  "CL-300",
-  "CE-500",
-  "CE-525",
-  "CE-550",
-  "CE-560",
-  "CE-680",
-  "HS-125",
-  "DA-50",
-  "RA-390",
-  "LR-JET",
-  "BE-400",
-  "GV",
-  "G-IV",
+  // Citation / Cessna
+  "CE-750",  // Citation X
+  "CE-680",  // Sovereign
+  "CE-650",  // Citation III/VI/VII
+  "CE-560",  // Citation V/Excel/XLS
+  "CE-550",  // Citation II/Bravo
+  "CE-525",  // CJ1/CJ2/CJ3/CJ4
+  "CE-510",  // Citation Mustang
+  "CE-500",  // Citation V/Ultra/Encore
+  // Bombardier / Challenger
+  "CL-30",   // Challenger 300/350
+  "CL-600",  // Challenger 600/601/604/605/650
+  "BD-700",  // Global Express/5000/6000/7500
+  // Gulfstream
+  "GLF6",    // G650
+  "GV",      // G-V/G550
+  "G-IV",    // G-IV/G450
+  "G-200",   // Galaxy/G200
+  "G-280",   // G280
+  // Embraer
+  "EMB-505", // Phenom 300
+  "EMB-500", // Phenom 100
+  "EMB-145", // ERJ-145
+  // Hawker / Beech
+  "HS-125",  // Hawker 800/900
+  "BE-400",  // Beechjet/Hawker 400
+  // Dassault Falcon
+  "DA-900",  // Falcon 900
+  "DA-50",   // Falcon 50
+  "DA-10",   // Falcon 10
+  "FA-2000", // Falcon 2000
+  // Learjet
+  "LR-JET",  // Learjet (generic)
+  // Raytheon / Premier
+  "RA-390",  // Premier I
 ];
 
 export default function TypeRatingsEditor({
@@ -56,7 +77,7 @@ export default function TypeRatingsEditor({
   function hasCitationX(list: string[]): boolean {
     return list.some((r) => {
       const u = r.toUpperCase();
-      return u.includes("CE-750") || u.includes("CE750") || u.includes("C750") || u.includes("CITATION X");
+      return u.includes("CE-750") || u.includes("CE750") || u.includes("C750") || u.includes("CITATION X") || u.includes("CITATION 750");
     });
   }
 

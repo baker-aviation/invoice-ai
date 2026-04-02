@@ -331,6 +331,17 @@ def _extract_text_docx(data: bytes) -> str:
         t = _strip_nulls(p.text) or ""
         if t.strip():
             parts.append(t)
+    # Also extract text from tables — many resumes use tables for layout
+    # (flight hours, type ratings, etc.) which doc.paragraphs skips entirely.
+    for table in doc.tables:
+        for row in table.rows:
+            row_texts: List[str] = []
+            for cell in row.cells:
+                cell_text = _strip_nulls(cell.text) or ""
+                if cell_text.strip():
+                    row_texts.append(cell_text.strip())
+            if row_texts:
+                parts.append("  ".join(row_texts))
     return "\n".join(parts).strip()
 
 
@@ -516,7 +527,7 @@ Rules:
   - If not present, return null.
 
 - type_ratings:
-  - has_citation_x: true ONLY if the resume explicitly lists "Citation X", "CE-750", "CE750", or "C750"
+  - has_citation_x: true ONLY if the resume explicitly lists "Citation X", "Citation 750", "CE-750", "CE750", or "C750"
     as a TYPE RATING held by the applicant. CRITICAL FALSE POSITIVES TO AVOID:
     * CE-500 is NOT Citation X — it is a Citation V/Ultra/Encore (completely different aircraft)
     * CE-525 is NOT Citation X — it is a CitationJet/CJ series
@@ -526,7 +537,7 @@ Rules:
     * Only CE-750 / C750 / "Citation X" is the actual Citation X
     * Do NOT set true based on Letters of Recommendation — only the applicant's own resume
   - has_challenger_300: true ONLY if the resume explicitly lists "Challenger 300", "Challenger 350",
-    "CL-300", or "CL-350" as a TYPE RATING held by the applicant.
+    "CL-30", "CL30", "CL-300", "CL300", "CL-350", or "CL350" as a TYPE RATING held by the applicant.
     Do NOT set true for generic "Challenger" without a model number, or other Bombardier/Canadair
     variants (CRJ, Global, Learjet, etc.).
     Do NOT set true based on Letters of Recommendation — only the applicant's own resume.
@@ -596,7 +607,7 @@ def _validate_type_ratings(result: Dict[str, Any]) -> Dict[str, Any]:
     # The raw_snippet must contain the actual CE-750/C750/Citation X text
     citation_x_in_snippet = any(
         tok in raw_snippet
-        for tok in ("ce-750", "ce750", "c750", "citation x")
+        for tok in ("ce-750", "ce750", "c750", "citation x", "citation 750")
     )
     if tr.get("has_citation_x") and not citation_x_in_snippet:
         print(f"VALIDATE: overriding has_citation_x → false (raw_snippet doesn't contain CE-750/C750/Citation X)", flush=True)
@@ -604,7 +615,7 @@ def _validate_type_ratings(result: Dict[str, Any]) -> Dict[str, Any]:
 
     # Also strip CE-750/CL-300 from ratings list if they don't appear in raw_snippet
     if not citation_x_in_snippet:
-        cleaned = [r for r in ratings if not any(tok in r.lower() for tok in ("ce-750", "ce750", "c750", "citation x"))]
+        cleaned = [r for r in ratings if not any(tok in r.lower() for tok in ("ce-750", "ce750", "c750", "citation x", "citation 750"))]
         if len(cleaned) != len(ratings):
             print(f"VALIDATE: removed hallucinated Citation X from ratings list", flush=True)
             ratings = cleaned
@@ -612,14 +623,14 @@ def _validate_type_ratings(result: Dict[str, Any]) -> Dict[str, Any]:
     # --- Challenger 300/350 validation ---
     challenger_in_snippet = any(
         tok in raw_snippet
-        for tok in ("cl-300", "cl300", "cl-350", "cl350", "challenger 300", "challenger 350")
+        for tok in ("cl-30", "cl30", "cl-300", "cl300", "cl-350", "cl350", "challenger 300", "challenger 350")
     )
     if tr.get("has_challenger_300") and not challenger_in_snippet:
         print(f"VALIDATE: overriding has_challenger_300 → false (raw_snippet doesn't contain CL-300/CL-350/Challenger 300)", flush=True)
         tr["has_challenger_300"] = False
 
     if not challenger_in_snippet:
-        cleaned = [r for r in ratings if not any(tok in r.lower() for tok in ("cl-300", "cl300", "cl-350", "cl350", "challenger 300", "challenger 350"))]
+        cleaned = [r for r in ratings if not any(tok in r.lower() for tok in ("cl-30", "cl30", "cl-300", "cl300", "cl-350", "cl350", "challenger 300", "challenger 350"))]
         if len(cleaned) != len(ratings):
             print(f"VALIDATE: removed hallucinated Challenger 300/350 from ratings list", flush=True)
             ratings = cleaned
@@ -1049,6 +1060,69 @@ def parse_next(limit: int = Query(10, ge=1, le=50)):
         msg += f" failures=[{fail_summary}]"
     log_pipeline_run("job-parse", items=parsed, message=msg)
     return {"ok": True, "attempted": len(apps), "results": results}
+
+
+@app.post("/jobs/reparse_all")
+def reparse_all(
+    days: int = Query(90, ge=1, le=365),
+    batch: int = Query(10, ge=1, le=50),
+    offset: int = Query(0, ge=0),
+):
+    """
+    Re-parse all applications from the last `days` days.
+    Upserts over existing parse rows — no data lost for unprocessed ones.
+    Use offset to paginate: first call offset=0, next call offset=10, etc.
+    """
+    supa = _supa()
+    cutoff = _iso_days_ago(days)
+
+    res = (
+        supa.table(APPS_TABLE)
+        .select("id,received_at,created_at")
+        .order("created_at", desc=True)
+        .limit(5000)
+        .execute()
+    )
+    apps = getattr(res, "data", None) or []
+    recent_ids: List[int] = []
+    for a in apps:
+        dt = _parse_iso_dt(a.get("received_at")) or _parse_iso_dt(a.get("created_at"))
+        if dt and dt >= cutoff:
+            recent_ids.append(int(a["id"]))
+
+    total = len(recent_ids)
+    batch_ids = recent_ids[offset : offset + batch]
+
+    print(f"REPARSE: total={total} offset={offset} batch={len(batch_ids)}", flush=True)
+
+    results: List[Dict[str, Any]] = []
+    for aid in batch_ids:
+        try:
+            out = parse_application(application_id=aid)
+            extracted = out.get("extracted") or {}
+            results.append({
+                "application_id": aid,
+                "status": "parsed",
+                "category": extracted.get("category"),
+            })
+        except HTTPException as e:
+            results.append({"application_id": aid, "status": "failed", "error": str(e.detail)})
+        except Exception as e:
+            print(f"REPARSE app={aid} error: {e}", flush=True)
+            results.append({"application_id": aid, "status": "failed", "error": str(e)})
+
+    parsed_count = sum(1 for r in results if r.get("status") == "parsed")
+    remaining = max(0, total - offset - batch)
+
+    return {
+        "ok": True,
+        "total_applications": total,
+        "offset": offset,
+        "parsed_this_batch": parsed_count,
+        "remaining": remaining,
+        "next_offset": offset + batch if remaining > 0 else None,
+        "results": results,
+    }
 
 
 @app.post("/jobs/parse_backlog")

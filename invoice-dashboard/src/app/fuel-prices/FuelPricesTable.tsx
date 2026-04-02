@@ -787,15 +787,28 @@ export default function FuelPricesTable({
     setIsPulling(true);
     setPullResult(null);
     try {
-      const res = await fetch("/api/fuel-prices/advertised/pull-mailbox?force=true", { method: "POST" });
+      const res = await fetch("/api/fuel-prices/advertised/pull-mailbox?force=true&lookback_minutes=10080", { method: "POST" });
       const data = await res.json();
       if (!res.ok) {
         setPullResult(`Error: ${data.error ?? res.statusText}`);
       } else if (data.totalInserted > 0) {
-        setPullResult(`Pulled ${data.totalInserted} prices from ${data.messagesProcessed} email(s). Refreshing...`);
+        const vendors = (data.results ?? [])
+          .flatMap((r: { files: { vendor: string; rows: number }[] }) => r.files)
+          .filter((f: { rows: number }) => f.rows > 0)
+          .map((f: { vendor: string; rows: number }) => f.vendor);
+        const uniqueVendors = [...new Set(vendors)];
+        setPullResult(`Pulled ${data.totalInserted} prices from ${uniqueVendors.join(", ")}. Refreshing...`);
         setTimeout(() => window.location.reload(), 2000);
       } else {
-        setPullResult(`Scanned ${data.messagesScanned} emails — no new rate sheets found`);
+        const failed = (data.results ?? [])
+          .flatMap((r: { files: { vendor: string; error?: string }[] }) => r.files)
+          .filter((f: { error?: string }) => f.error)
+          .map((f: { vendor: string; error?: string }) => `${f.vendor}: ${f.error}`);
+        setPullResult(
+          failed.length > 0
+            ? `Scanned ${data.messagesScanned} emails — parse errors: ${failed.join("; ")}`
+            : `Scanned ${data.messagesScanned} emails — no new rate sheets found in the past 7 days`
+        );
       }
     } catch (e) {
       setPullResult(`Error: ${String(e)}`);
