@@ -129,23 +129,78 @@ function OverviewTab() {
   async function triggerSync() {
     setSyncing(true);
     setSyncResult(null);
+    let totalDownloaded = 0;
+    let totalSkipped = 0;
+    let totalErrors = 0;
+
     try {
-      const res = await fetch("/api/jetinsight/sync", {
+      // Phase 1: Crew index
+      setSyncResult("Phase 1/3: Syncing crew index...");
+      const indexRes = await fetch("/api/jetinsight/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type: "full" }),
+        body: JSON.stringify({ type: "crew_index" }),
       });
-      const data = await res.json();
-      if (res.ok) {
+      const indexData = await indexRes.json();
+      if (!indexRes.ok) throw new Error(indexData.error);
+      const crewCount = indexData.count ?? 0;
+
+      // Phase 2: Crew docs in batches
+      let crewOffset = 0;
+      let crewDone = false;
+      while (!crewDone) {
         setSyncResult(
-          `Sync complete: ${data.result?.docsDownloaded ?? 0} docs downloaded, ${data.result?.docsSkipped ?? 0} skipped, ${data.result?.errors?.length ?? 0} errors`,
+          `Phase 2/3: Crew documents (batch at offset ${crewOffset})... ${totalDownloaded} downloaded so far`,
         );
-        loadStats();
-      } else {
-        setSyncResult(`Error: ${data.error}`);
+        const res = await fetch("/api/jetinsight/sync", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "crew_batch", offset: crewOffset }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error);
+        totalDownloaded += data.docsDownloaded ?? 0;
+        totalSkipped += data.docsSkipped ?? 0;
+        totalErrors += data.errors?.length ?? 0;
+        if (data.done || (data.processed ?? 0) === 0) {
+          crewDone = true;
+        } else {
+          crewOffset = data.nextOffset ?? crewOffset + 5;
+        }
       }
+
+      // Phase 3: Aircraft docs in batches
+      let acOffset = 0;
+      let acDone = false;
+      while (!acDone) {
+        setSyncResult(
+          `Phase 3/3: Aircraft documents (batch at offset ${acOffset})... ${totalDownloaded} downloaded so far`,
+        );
+        const res = await fetch("/api/jetinsight/sync", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "aircraft_batch", offset: acOffset }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error);
+        totalDownloaded += data.docsDownloaded ?? 0;
+        totalSkipped += data.docsSkipped ?? 0;
+        totalErrors += data.errors?.length ?? 0;
+        if (data.done || (data.processed ?? 0) === 0) {
+          acDone = true;
+        } else {
+          acOffset = data.nextOffset ?? acOffset + 5;
+        }
+      }
+
+      setSyncResult(
+        `Sync complete: ${crewCount} crew found, ${totalDownloaded} docs downloaded, ${totalSkipped} skipped, ${totalErrors} errors`,
+      );
+      loadStats();
     } catch (err) {
-      setSyncResult(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      setSyncResult(
+        `Error after ${totalDownloaded} downloads: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
     setSyncing(false);
   }

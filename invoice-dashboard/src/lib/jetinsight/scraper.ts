@@ -15,7 +15,7 @@ import type {
 } from "./types";
 
 const BASE_URL = "https://portal.jetinsight.com";
-const DELAY_MS = 2500; // Rate limit: 2.5s between requests
+const DELAY_MS = 1000; // Rate limit: 1s between requests
 const GCS_PREFIX = "jetinsight-docs";
 
 // ---------------------------------------------------------------------------
