@@ -11,6 +11,8 @@ export const DUTY_ALERT_CHANNEL = "C0APKG2KBT5"; // #10-24-issues
 
 type SlackBlock = Record<string, unknown>;
 
+export type AlertPhase = "scheduled" | "actual";
+
 export type FlightTimeAlertParams = {
   tail: string;
   severity: "red" | "yellow";
@@ -20,6 +22,7 @@ export type FlightTimeAlertParams = {
   dutyPeriod: DutyPeriod | null;
   windowStartMs?: number;
   windowEndMs?: number;
+  phase?: AlertPhase;
 };
 
 export type RestAlertParams = {
@@ -29,6 +32,7 @@ export type RestAlertParams = {
   restPeriod: RestPeriod;
   dpBefore: DutyPeriod;
   dpAfter: DutyPeriod;
+  phase?: AlertPhase;
 };
 
 export type ConfirmationAlertParams = {
@@ -87,10 +91,11 @@ function fmtDpLegs(dp: DutyPeriod): string {
 /* ── Block Kit builders ─────────────────────────────── */
 
 export function buildFlightTimeBlocks(params: FlightTimeAlertParams): { blocks: SlackBlock[]; fallback: string } {
-  const { tail, severity, flightMinutes, breachLeg, suggestion, dutyPeriod } = params;
+  const { tail, severity, flightMinutes, breachLeg, suggestion, dutyPeriod, phase } = params;
   const emoji = severity === "red" ? ":rotating_light:" : ":warning:";
   const label = severity === "red" ? "10/24 Violation" : "10/24 Caution";
-  const headerText = `${tail} — ${label} (Projected)`;
+  const phaseLabel = phase === "scheduled" ? "Scheduled" : "Live";
+  const headerText = `${tail} — ${label} (${phaseLabel})`;
 
   const blocks: SlackBlock[] = [
     {
@@ -102,9 +107,11 @@ export function buildFlightTimeBlocks(params: FlightTimeAlertParams): { blocks: 
       text: {
         type: "mrkdwn",
         text: [
-          `${emoji} *PROJECTED ${severity === "red" ? "OVERAGE" : "CAUTION"}*`,
-          `*${tail}* is projected to ${severity === "red" ? "exceed" : "approach"} the 10hr flight time limit in a rolling 24hr window`,
-          `\n*Projected flight time:* ${fmtDuration(flightMinutes)} ${severity === "red" ? "(limit: 10h 00m)" : "(caution at 9h 00m)"}`,
+          `${emoji} *${phase === "scheduled" ? "SCHEDULED TIGHT" : "PROJECTED"} ${severity === "red" ? "OVERAGE" : "CAUTION"}*`,
+          phase === "scheduled"
+            ? `*${tail}* is scheduled tight — projected to ${severity === "red" ? "exceed" : "approach"} the 10hr flight time limit`
+            : `*${tail}* is projected to ${severity === "red" ? "exceed" : "approach"} the 10hr flight time limit based on actual fleet movements`,
+          `\n*Projected flight time:* ${fmtDuration(flightMinutes)} ${severity === "red" ? "(limit: 10h 00m)" : "(caution at 9h 42m)"}`,
           breachLeg ? `*Triggering leg:* ${fmtLegRoute(breachLeg)} (departs ${fmtLocalTime(breachLeg.startMs, breachLeg.departure_icao)})` : null,
           dutyPeriod ? `*DP legs:* ${fmtDpLegs(dutyPeriod)}` : null,
           suggestion ? `:bulb: ${suggestion}` : null,
@@ -117,16 +124,17 @@ export function buildFlightTimeBlocks(params: FlightTimeAlertParams): { blocks: 
     },
   ];
 
-  const fallback = `${label}: ${tail} projected at ${fmtDuration(flightMinutes)} flight time${breachLeg ? ` (${fmtLegRoute(breachLeg)})` : ""}`;
+  const fallback = `${label} (${phaseLabel}): ${tail} projected at ${fmtDuration(flightMinutes)} flight time${breachLeg ? ` (${fmtLegRoute(breachLeg)})` : ""}`;
   return { blocks, fallback };
 }
 
 export function buildRestBlocks(params: RestAlertParams): { blocks: SlackBlock[]; fallback: string } {
-  const { tail, severity, restMinutes, restPeriod, dpBefore, dpAfter } = params;
+  const { tail, severity, restMinutes, restPeriod, dpBefore, dpAfter, phase } = params;
   const restIcao = restAirport(dpBefore);
   const emoji = severity === "red" ? ":rotating_light:" : ":warning:";
   const label = severity === "red" ? "Rest Violation" : "Rest Caution";
-  const headerText = `${tail} — ${label} (Projected)`;
+  const phaseLabel = phase === "scheduled" ? "Scheduled" : "Live";
+  const headerText = `${tail} — ${label} (${phaseLabel})`;
 
   const blocks: SlackBlock[] = [
     {
@@ -138,10 +146,12 @@ export function buildRestBlocks(params: RestAlertParams): { blocks: SlackBlock[]
       text: {
         type: "mrkdwn",
         text: [
-          `${emoji} *PROJECTED REST SHORTAGE*`,
-          `*${tail}* is projected to have insufficient rest before next duty period`,
-          `\n*Projected rest:* ${fmtDuration(restMinutes)} ${severity === "red" ? "(minimum required: 10h)" : "(caution below 11h)"}`,
-          `*Current DP ends:* ${fmtLocalDate(dpBefore.dutyOffMs, restIcao)} ${fmtLocalTime(dpBefore.dutyOffMs, restIcao)} (est)`,
+          `${emoji} *${phase === "scheduled" ? "SCHEDULED TIGHT" : "PROJECTED REST SHORTAGE"}*`,
+          phase === "scheduled"
+            ? `*${tail}* is scheduled tight — rest between duty periods may be insufficient`
+            : `*${tail}* is projected to have insufficient rest based on actual fleet movements`,
+          `\n*Projected rest:* ${fmtDuration(restMinutes)} ${severity === "red" ? "(minimum required: 10h)" : "(caution below 10h 18m)"}`,
+          `*Current DP ends:* ${fmtLocalDate(dpBefore.dutyOffMs, restIcao)} ${fmtLocalTime(dpBefore.dutyOffMs, restIcao)} (${phase === "scheduled" ? "sched" : "est"})`,
           `*Next DP begins:* ${fmtLocalDate(dpAfter.dutyOnMs, restIcao)} ${fmtLocalTime(dpAfter.dutyOnMs, restIcao)}`,
           `*Rest window:* ${fmtLocalTime(restPeriod.startMs, restIcao)} → ${fmtLocalTime(restPeriod.stopMs, restIcao)}`,
         ].filter(Boolean).join("\n"),
@@ -153,7 +163,48 @@ export function buildRestBlocks(params: RestAlertParams): { blocks: SlackBlock[]
     },
   ];
 
-  const fallback = `${label}: ${tail} projected rest ${fmtDuration(restMinutes)}`;
+  const fallback = `${label} (${phaseLabel}): ${tail} projected rest ${fmtDuration(restMinutes)}`;
+  return { blocks, fallback };
+}
+
+export type LiveUpdateParams = {
+  tail: string;
+  alertType: "flight_time" | "rest";
+  severity: "red" | "yellow";
+  currentMinutes: number;
+  previousMinutes: number;
+};
+
+export function buildLiveUpdateBlocks(params: LiveUpdateParams): { blocks: SlackBlock[]; fallback: string } {
+  const { tail, alertType, severity, currentMinutes, previousMinutes } = params;
+  const emoji = severity === "red" ? ":rotating_light:" : ":warning:";
+  const isFlightTime = alertType === "flight_time";
+
+  const metric = isFlightTime ? "flight time" : "rest";
+  const direction = isFlightTime ? "at" : "at";
+  const changed = Math.abs(currentMinutes - previousMinutes) >= 1;
+
+  const blocks: SlackBlock[] = [
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: [
+          `${emoji} *${tail}* — Live Update`,
+          isFlightTime
+            ? `Still projected tight ${direction} *${fmtDuration(currentMinutes)}* ${metric} based on actual fleet movements`
+            : `Still projected tight with *${fmtDuration(currentMinutes)}* ${metric} based on actual fleet movements`,
+          changed ? `_Previously ${fmtDuration(previousMinutes)} from schedule_` : null,
+        ].filter(Boolean).join("\n"),
+      },
+    },
+    {
+      type: "context",
+      elements: [{ type: "mrkdwn", text: `Updated at ${new Date().toISOString().slice(11, 16)}Z by Baker Ops Monitor` }],
+    },
+  ];
+
+  const fallback = `Live Update: ${tail} ${metric} now ${fmtDuration(currentMinutes)}`;
   return { blocks, fallback };
 }
 
