@@ -23,8 +23,9 @@ import { FIXED_VAN_ZONES, haversineKm, type VanZone } from "@/lib/maintenanceDat
 type LivePos = { lat: number; lon: number };
 
 type AirportCluster = {
-  icao: string;
-  info: AirportInfo;
+  icao: string;          // primary (busiest) airport code
+  airports: string[];    // all airport codes in this cluster
+  info: AirportInfo;     // coords of primary airport
   flights: Flight[];
   count: number;
   nearestVanId: number | null;
@@ -235,6 +236,7 @@ export default function HeatMapView({ flights, liveVanPositions, liveVanIsLive }
   const [windowHours, setWindowHours] = useState<number>(24);
 
   const [eodOnly, setEodOnly] = useState(false);
+  const [includeRepo, setIncludeRepo] = useState(false);
 
   const { prefs, toggle: togglePref } = useMapPreferences("heatmap", {
     dark: false,
@@ -247,12 +249,12 @@ export default function HeatMapView({ flights, liveVanPositions, liveVanIsLive }
     const now = new Date();
     const cutoff = new Date(now.getTime() + windowHours * 3600_000);
 
-    // Group by arrival airport — exclude repositioning/ferry flights (too volatile)
+    // Group by arrival airport — optionally exclude repositioning/ferry flights
     const REPO_TYPES = new Set(["Positioning", "Ferry", "Needs pos", "Maintenance"]);
     let eligible: Flight[] = [];
     for (const f of flights) {
       if (!f.arrival_icao || !f.scheduled_arrival) continue;
-      if (f.flight_type && REPO_TYPES.has(f.flight_type)) continue;
+      if (!includeRepo && f.flight_type && REPO_TYPES.has(f.flight_type)) continue;
       const arr = new Date(f.scheduled_arrival);
       if (arr < now || arr > cutoff) continue;
       eligible.push(f);
@@ -274,33 +276,59 @@ export default function HeatMapView({ flights, liveVanPositions, liveVanIsLive }
       eligible = [...lastByTailDay.values()];
     }
 
-    const byAirport = new Map<string, Flight[]>();
+    // Group flights by individual airport first
+    const byAirport = new Map<string, { info: AirportInfo; flights: Flight[] }>();
     for (const f of eligible) {
-      // Normalize ICAO → IATA (strip leading K for US airports)
       const iata = f.arrival_icao!.replace(/^K/, "");
-      if (!byAirport.has(iata)) byAirport.set(iata, []);
-      byAirport.get(iata)!.push(f);
+      const info = getAirportInfo(iata);
+      if (!info) continue;
+      let entry = byAirport.get(iata);
+      if (!entry) { entry = { info, flights: [] }; byAirport.set(iata, entry); }
+      entry.flights.push(f);
     }
 
-    // Build clusters with coordinates
-    const result: AirportCluster[] = [];
-    for (const [icao, fls] of byAirport) {
-      const info = getAirportInfo(icao);
-      if (!info) continue;
+    // Merge airports within 50mi (~80.5km) into proximity clusters
+    const CLUSTER_RADIUS_KM = 80.5; // 50 miles
+    const airportEntries = [...byAirport.entries()]
+      .sort((a, b) => b[1].flights.length - a[1].flights.length); // busiest first = cluster anchor
 
-      const nearest = findNearestVan(info.lat, info.lon, liveVanPositions);
+    const result: AirportCluster[] = [];
+    const claimed = new Set<string>();
+
+    for (const [icao, entry] of airportEntries) {
+      if (claimed.has(icao)) continue;
+      claimed.add(icao);
+
+      const airports = [icao];
+      const allFlights = [...entry.flights];
+
+      // Pull in nearby airports
+      for (const [otherIcao, otherEntry] of airportEntries) {
+        if (claimed.has(otherIcao)) continue;
+        const dist = haversineKm(entry.info.lat, entry.info.lon, otherEntry.info.lat, otherEntry.info.lon);
+        if (dist <= CLUSTER_RADIUS_KM) {
+          claimed.add(otherIcao);
+          airports.push(otherIcao);
+          allFlights.push(...otherEntry.flights);
+        }
+      }
+
+      allFlights.sort((a, b) => (a.scheduled_arrival ?? "").localeCompare(b.scheduled_arrival ?? ""));
+
+      const nearest = findNearestVan(entry.info.lat, entry.info.lon, liveVanPositions);
       result.push({
         icao,
-        info,
-        flights: fls.sort((a, b) => (a.scheduled_arrival ?? "").localeCompare(b.scheduled_arrival ?? "")),
-        count: fls.length,
+        airports,
+        info: entry.info,
+        flights: allFlights,
+        count: allFlights.length,
         nearestVanId: nearest?.vanId ?? null,
         nearestVanDist: nearest ? Math.round(nearest.dist) : null,
       });
     }
 
     return result.sort((a, b) => b.count - a.count);
-  }, [flights, windowHours, eodOnly, liveVanPositions]);
+  }, [flights, windowHours, eodOnly, includeRepo, liveVanPositions]);
 
   const totalArrivals = clusters.reduce((s, c) => s + c.count, 0);
 
@@ -338,11 +366,23 @@ export default function HeatMapView({ flights, liveVanPositions, liveVanIsLive }
           EOD Only
         </button>
 
+        {/* Include repo/ferry flights */}
+        <button
+          onClick={() => setIncludeRepo((v) => !v)}
+          className={`px-2.5 py-1 rounded text-xs font-medium shadow-sm transition-colors ${
+            includeRepo
+              ? "bg-amber-600 text-white"
+              : "bg-white text-gray-600 border border-gray-300 hover:bg-gray-50"
+          }`}
+        >
+          + Repo
+        </button>
+
         {/* Stats */}
         <div className="text-xs text-gray-500">
           <span className="font-semibold text-gray-700">{totalArrivals}</span>{" "}
           {eodOnly ? "aircraft overnighting" : `arrival${totalArrivals !== 1 ? "s" : ""}`} across{" "}
-          <span className="font-semibold text-gray-700">{clusters.length}</span> airport{clusters.length !== 1 ? "s" : ""}
+          <span className="font-semibold text-gray-700">{clusters.length}</span> zone{clusters.length !== 1 ? "s" : ""}
         </div>
 
         <div className="flex-1" />
@@ -455,7 +495,9 @@ export default function HeatMapView({ flights, liveVanPositions, liveVanIsLive }
                     ? "0 1px 3px rgba(0,0,0,0.9), 0 0 6px rgba(0,0,0,0.6)"
                     : "0 1px 2px rgba(255,255,255,0.9), 0 0 4px rgba(255,255,255,0.8)",
                 }}>
-                  {cluster.icao} ({cluster.count})
+                  {cluster.airports.length > 1
+                    ? `${cluster.airports.slice(0, 3).join("/")}${cluster.airports.length > 3 ? "…" : ""} (${cluster.count})`
+                    : `${cluster.icao} (${cluster.count})`}
                 </div>
               </Tooltip>
 
@@ -463,10 +505,14 @@ export default function HeatMapView({ flights, liveVanPositions, liveVanIsLive }
               <Popup maxWidth={320} className="heatmap-popup">
                 <div className="text-xs space-y-2">
                   <div className="font-bold text-sm">
-                    {cluster.info.name} ({cluster.icao})
+                    {cluster.airports.length > 1
+                      ? `${cluster.airports.join(", ")} area`
+                      : `${cluster.info.name} (${cluster.icao})`}
                   </div>
                   <div className="text-gray-500">
-                    {[cluster.info.city, cluster.info.state].filter(Boolean).join(", ") || cluster.icao}
+                    {cluster.airports.length > 1
+                      ? `${cluster.count} flights across ${cluster.airports.length} airports`
+                      : ([cluster.info.city, cluster.info.state].filter(Boolean).join(", ") || cluster.icao)}
                     {cluster.nearestVanDist !== null && (
                       <> &middot; V{cluster.nearestVanId} is {Math.round(cluster.nearestVanDist * 0.621371)} mi away</>
                     )}
