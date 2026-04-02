@@ -227,18 +227,33 @@ export async function syncCrewDocs(
   const supa = createServiceClient();
 
   for (const doc of docEntries) {
+    // Parse upload date early for dedup comparison
+    let uploadedOn: string | null = null;
+    if (doc.uploadedOn) {
+      const parts = doc.uploadedOn.split("/");
+      if (parts.length === 3) {
+        uploadedOn = `${parts[2]}-${parts[0].padStart(2, "0")}-${parts[1].padStart(2, "0")}`;
+      }
+    }
+
     // Check if already synced (no delay needed for DB check)
     const { data: existing } = await supa
       .from("jetinsight_documents")
-      .select("id")
+      .select("id, uploaded_on")
       .eq("entity_type", "crew")
       .eq("entity_id", pilotProfileId)
       .eq("jetinsight_uuid", doc.checkUuid)
       .maybeSingle();
 
-    if (existing) {
+    // Skip if exists with same or newer upload date
+    if (existing && (!uploadedOn || existing.uploaded_on === uploadedOn)) {
       result.docsSkipped++;
       continue;
+    }
+
+    // Delete old version if re-uploading
+    if (existing) {
+      await supa.from("jetinsight_documents").delete().eq("id", existing.id);
     }
 
     // Rate limit only before actual downloads
@@ -250,15 +265,6 @@ export async function syncCrewDocs(
 
     try {
       const gcsResult = await downloadToGcs(doc.downloadUrl, cookie, gcsKey);
-
-      // Parse upload date
-      let uploadedOn: string | null = null;
-      if (doc.uploadedOn) {
-        const parts = doc.uploadedOn.split("/");
-        if (parts.length === 3) {
-          uploadedOn = `${parts[2]}-${parts[0].padStart(2, "0")}-${parts[1].padStart(2, "0")}`;
-        }
-      }
 
       await supa.from("jetinsight_documents").insert({
         entity_type: "crew",
@@ -321,17 +327,30 @@ export async function syncAircraftDocs(
 
   for (const doc of docEntries) {
     // Check if already synced (no delay needed for DB check)
+    // Parse upload date early for dedup comparison
+    let uploadedOn: string | null = null;
+    if (doc.uploadedOn) {
+      const parts = doc.uploadedOn.split("/");
+      if (parts.length === 3) {
+        uploadedOn = `${parts[2]}-${parts[0].padStart(2, "0")}-${parts[1].padStart(2, "0")}`;
+      }
+    }
+
     const { data: existing } = await supa
       .from("jetinsight_documents")
-      .select("id")
+      .select("id, uploaded_on")
       .eq("entity_type", "aircraft")
       .eq("entity_id", tail)
       .eq("jetinsight_uuid", doc.checkUuid)
       .maybeSingle();
 
-    if (existing) {
+    if (existing && (!uploadedOn || existing.uploaded_on === uploadedOn)) {
       result.docsSkipped++;
       continue;
+    }
+
+    if (existing) {
+      await supa.from("jetinsight_documents").delete().eq("id", existing.id);
     }
 
     await sleep(DELAY_MS);
@@ -341,14 +360,6 @@ export async function syncAircraftDocs(
 
     try {
       const gcsResult = await downloadToGcs(doc.downloadUrl, cookie, gcsKey);
-
-      let uploadedOn: string | null = null;
-      if (doc.uploadedOn) {
-        const parts = doc.uploadedOn.split("/");
-        if (parts.length === 3) {
-          uploadedOn = `${parts[2]}-${parts[0].padStart(2, "0")}-${parts[1].padStart(2, "0")}`;
-        }
-      }
 
       await supa.from("jetinsight_documents").insert({
         entity_type: "aircraft",
