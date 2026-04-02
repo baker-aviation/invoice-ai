@@ -13,7 +13,7 @@ export default async function MaintenancePage() {
   const future = new Date(now.getTime() + 7 * 86400000).toISOString();
 
   const [flightData, mxNotes, melItems, aircraftTags, { data: fboRows }] = await Promise.all([
-    fetchFlightsLite({ lookahead_hours: 120, lookback_hours: 168 }).catch(() => ({
+    fetchFlightsLite({ lookahead_hours: 240, lookback_hours: 168 }).catch(() => ({
       ok: false,
       flights: [],
       count: 0,

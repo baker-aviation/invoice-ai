@@ -50,6 +50,8 @@ const NightBeforeTab = dynamic(() => import("./NightBeforeTab"), {
   ),
 });
 
+import GanttScheduleTab from "./GanttScheduleTab";
+
 // ---------------------------------------------------------------------------
 // Compute overnight positions from live API flights
 // ---------------------------------------------------------------------------
@@ -5897,7 +5899,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, melItems
     return 1;
   });
   const isYesterday = dayIdx === 0;
-  const [activeTab, setActiveTab] = useState<"map" | "schedule" | "flights" | "mx-admin" | "heatmap" | "night-before">("schedule");
+  const [activeTab, setActiveTab] = useState<"map" | "schedule" | "flights" | "mx-admin" | "heatmap" | "night-before" | "gantt">("schedule");
   const [viewMode, setViewMode] = useState<"map" | "list">("map");
   const [selectedVan, setSelectedVan] = useState<number | null>(null);
   const [mxNotesOpen, setMxNotesOpen] = useState(false);
@@ -6865,6 +6867,9 @@ export default function VanPositioningClient({ initialFlights, mxNotes, melItems
         <TabBtn active={activeTab === "night-before"} onClick={() => setActiveTab("night-before")}>
           Night Before
         </TabBtn>
+        <TabBtn active={activeTab === "gantt"} onClick={() => setActiveTab("gantt")}>
+          Fleet Schedule
+        </TabBtn>
       </div>
 
       {/* ── Van Map tab ── */}
@@ -7342,6 +7347,13 @@ export default function VanPositioningClient({ initialFlights, mxNotes, melItems
           flights={initialFlights}
           liveVanPositions={liveVanPositions}
           liveVanIsLive={liveVanIsLive}
+        />
+      )}
+
+      {activeTab === "gantt" && (
+        <GanttScheduleTab
+          flights={initialFlights}
+          mxNotes={mxNotes}
         />
       )}
 
