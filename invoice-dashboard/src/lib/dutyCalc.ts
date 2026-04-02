@@ -13,9 +13,9 @@ import type { Flight } from "@/lib/opsApi";
 
 // Part 135.267(b)(2): 10h limit for two-pilot crew in any 24 consecutive hours
 export const FLIGHT_TIME_RED_MIN = 600; // 10 hours — hard limit
-export const FLIGHT_TIME_YELLOW_MIN = 540; // 9 hours — caution (within 1hr of limit)
+export const FLIGHT_TIME_YELLOW_MIN = 582; // 9.7 hours — caution threshold
 export const REST_RED_HOURS = 10; // minimum required rest
-export const REST_YELLOW_HOURS = 11; // within 1hr of minimum
+export const REST_YELLOW_HOURS = 10.3; // caution threshold (10h 18m)
 export const MAX_LEG_DURATION_MIN = 8 * 60; // cap any single leg at 8h
 export const MIN_REST_GAP_MS = 8 * 60 * 60 * 1000; // 8h minimum to split duty periods
 export const LEAD_TIME_MIN = 60; // duty starts 60min before first leg

@@ -21,9 +21,11 @@ import type { TailDutyResult, DutyPeriod, RestPeriod, LegInterval } from "@/lib/
 import {
   buildFlightTimeBlocks,
   buildRestBlocks,
+  buildLiveUpdateBlocks,
   buildConfirmationBlocks,
   sendDutyAlert,
 } from "@/lib/dutyAlertSlack";
+import type { AlertPhase } from "@/lib/dutyAlertSlack";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
@@ -37,6 +39,7 @@ type DutyAlertRow = {
   severity: string;
   duty_period_key: string;
   status: string;
+  alert_phase: string | null;
   projected_minutes: number | null;
   confirmed_minutes: number | null;
   breach_leg: string | null;
@@ -50,18 +53,19 @@ type DutyAlertRow = {
 
 /* ── Helpers ────────────────────────────────────────── */
 
-/** Round ms to nearest 15-min boundary for stable dedup keys */
-function roundTo15Min(ms: number): number {
-  const FIFTEEN_MIN = 15 * 60 * 1000;
-  return Math.round(ms / FIFTEEN_MIN) * FIFTEEN_MIN;
+/** Floor ms to the nearest 1-hour boundary for stable dedup keys.
+ *  Using floor (not round) so a few-minute drift never crosses a boundary. */
+function floorToHour(ms: number): number {
+  const ONE_HOUR = 60 * 60 * 1000;
+  return Math.floor(ms / ONE_HOUR) * ONE_HOUR;
 }
 
 function makeFlightTimeKey(tail: string, dp: DutyPeriod): string {
-  return `${tail}|ft|${roundTo15Min(dp.dutyOnMs)}`;
+  return `${tail}|ft|${floorToHour(dp.dutyOnMs)}`;
 }
 
 function makeRestKey(tail: string, rest: RestPeriod): string {
-  return `${tail}|rest|${roundTo15Min(rest.startMs)}|${roundTo15Min(rest.stopMs)}`;
+  return `${tail}|rest|${floorToHour(rest.startMs)}|${floorToHour(rest.stopMs)}`;
 }
 
 /** Check if all legs in a duty period have actual arrival data */
@@ -78,6 +82,18 @@ function stripK(icao: string | null): string {
 
 function fmtLegRoute(leg: LegInterval): string {
   return `${stripK(leg.departure_icao)} → ${stripK(leg.arrival_icao)}`;
+}
+
+/** Determine alert phase from leg data sources.
+ *  "scheduled" if ALL legs are from ICS schedule; "actual" if any have live/FA data. */
+function detectPhase(...dps: (DutyPeriod | undefined)[]): AlertPhase {
+  for (const dp of dps) {
+    if (!dp) continue;
+    for (const leg of dp.legs) {
+      if (leg.source === "actual" || leg.source === "fa-estimate") return "actual";
+    }
+  }
+  return "scheduled";
 }
 
 /* ── Main Handler ──────────────────────────────────── */
@@ -154,7 +170,10 @@ export async function GET(req: NextRequest) {
       existingMap.set(`${row.tail_number}|${row.alert_type}|${row.duty_period_key}`, row);
     }
 
-    // 5. Detect violations / cautions and send alerts
+    // 5. Detect violations / cautions and send alerts (3-stage lifecycle)
+    // Stage 1: "Scheduled" — warning from schedule data only
+    // Stage 2: "Actual"    — live update when fleet is moving (thread reply)
+    // Stage 3: "Final"     — confirmation when all legs land (handled in step 6)
     for (const [tail, td] of results) {
       // ── 10/24 flight time check ──
       // Use EDCT-adjusted value when available (worst case)
@@ -175,43 +194,60 @@ export async function GET(req: NextRequest) {
           breachLeg = breachDp?.legs[legIdx] ?? null;
         }
 
-        // Use the breach DP for the dedup key, fallback to first DP
         const keyDp = breachDp ?? td.dutyPeriods[0];
         if (keyDp) {
           const dpKey = makeFlightTimeKey(tail, keyDp);
           const existing = existingMap.get(`${tail}|${alertType}|${dpKey}`);
+          const phase = detectPhase(breachDp ?? keyDp);
 
           if (!existing) {
-            // New alert — send Slack + insert
-            const { blocks, fallback } = buildFlightTimeBlocks({
-              tail,
-              severity,
-              flightMinutes: effectiveFlightMin,
-              breachLeg,
-              suggestion: td.suggestion,
-              dutyPeriod: breachDp,
-            });
-            const slackTs = await sendDutyAlert(blocks, fallback);
-
-            await supa.from("duty_alerts").insert({
+            // New alert — insert first, send only if insert succeeds
+            const { data: inserted, error: insertErr } = await supa.from("duty_alerts").insert({
               tail_number: tail,
               alert_type: alertType,
               severity,
               duty_period_key: dpKey,
               status: "projected",
+              alert_phase: phase,
               projected_minutes: effectiveFlightMin,
               breach_leg: breachLeg ? fmtLegRoute(breachLeg) : null,
               suggestion: td.suggestion,
-              slack_ts: slackTs,
               slack_channel: "C0APKG2KBT5",
+            }).select("id").single();
+
+            if (inserted) {
+              const { blocks, fallback } = buildFlightTimeBlocks({
+                tail, severity, flightMinutes: effectiveFlightMin,
+                breachLeg, suggestion: td.suggestion, dutyPeriod: breachDp, phase,
+              });
+              const slackTs = await sendDutyAlert(blocks, fallback);
+              if (slackTs) await supa.from("duty_alerts").update({ slack_ts: slackTs }).eq("id", inserted.id);
+
+              if (severity === "red") stats.violations++;
+              else stats.cautions++;
+              console.log(`[duty-monitor] New ${severity} flight_time (${phase}): ${tail} at ${fmtDuration(effectiveFlightMin)}`);
+            } else {
+              console.log(`[duty-monitor] Dedup caught flight_time for ${tail}: ${insertErr?.message ?? "conflict"}`);
+            }
+          } else if (existing.alert_phase === "scheduled" && phase === "actual") {
+            // Phase upgrade: scheduled → actual. Send ONE live update as thread reply.
+            const { blocks, fallback } = buildLiveUpdateBlocks({
+              tail, alertType, severity,
+              currentMinutes: effectiveFlightMin,
+              previousMinutes: existing.projected_minutes ?? effectiveFlightMin,
             });
+            if (existing.slack_ts) await sendDutyAlert(blocks, fallback, existing.slack_ts);
 
-            if (severity === "red") stats.violations++;
-            else stats.cautions++;
+            await supa.from("duty_alerts").update({
+              alert_phase: "actual",
+              projected_minutes: effectiveFlightMin,
+              severity,
+              updated_at: new Date().toISOString(),
+            }).eq("id", existing.id);
 
-            console.log(`[duty-monitor] New ${severity} flight_time alert: ${tail} at ${fmtDuration(effectiveFlightMin)}`);
+            console.log(`[duty-monitor] Phase upgrade flight_time (scheduled→actual): ${tail} at ${fmtDuration(effectiveFlightMin)}`);
           }
-          // If existing, don't re-alert (dedup)
+          // Otherwise: same phase, already alerted — skip
         }
       }
 
@@ -229,34 +265,54 @@ export async function GET(req: NextRequest) {
 
         const restKey = makeRestKey(tail, rest);
         const existing = existingMap.get(`${tail}|${alertType}|${restKey}`);
+        const phase = detectPhase(dpBefore, dpAfter);
 
         if (!existing) {
-          const { blocks, fallback } = buildRestBlocks({
-            tail,
-            severity,
-            restMinutes: rest.minutes,
-            restPeriod: rest,
-            dpBefore,
-            dpAfter,
-          });
-          const slackTs = await sendDutyAlert(blocks, fallback);
-
-          await supa.from("duty_alerts").insert({
+          // New alert — insert first, send only if insert succeeds
+          const { data: inserted, error: insertErr } = await supa.from("duty_alerts").insert({
             tail_number: tail,
             alert_type: alertType,
             severity,
             duty_period_key: restKey,
             status: "projected",
+            alert_phase: phase,
             projected_minutes: rest.minutes,
-            slack_ts: slackTs,
             slack_channel: "C0APKG2KBT5",
+          }).select("id").single();
+
+          if (inserted) {
+            const { blocks, fallback } = buildRestBlocks({
+              tail, severity, restMinutes: rest.minutes,
+              restPeriod: rest, dpBefore, dpAfter, phase,
+            });
+            const slackTs = await sendDutyAlert(blocks, fallback);
+            if (slackTs) await supa.from("duty_alerts").update({ slack_ts: slackTs }).eq("id", inserted.id);
+
+            if (severity === "red") stats.violations++;
+            else stats.cautions++;
+            console.log(`[duty-monitor] New ${severity} rest (${phase}): ${tail} at ${fmtDuration(rest.minutes)}`);
+          } else {
+            console.log(`[duty-monitor] Dedup caught rest for ${tail}: ${insertErr?.message ?? "conflict"}`);
+          }
+        } else if (existing.alert_phase === "scheduled" && phase === "actual") {
+          // Phase upgrade: scheduled → actual. Send ONE live update as thread reply.
+          const { blocks, fallback } = buildLiveUpdateBlocks({
+            tail, alertType, severity,
+            currentMinutes: rest.minutes,
+            previousMinutes: existing.projected_minutes ?? rest.minutes,
           });
+          if (existing.slack_ts) await sendDutyAlert(blocks, fallback, existing.slack_ts);
 
-          if (severity === "red") stats.violations++;
-          else stats.cautions++;
+          await supa.from("duty_alerts").update({
+            alert_phase: "actual",
+            projected_minutes: rest.minutes,
+            severity,
+            updated_at: new Date().toISOString(),
+          }).eq("id", existing.id);
 
-          console.log(`[duty-monitor] New ${severity} rest alert: ${tail} at ${fmtDuration(rest.minutes)}`);
+          console.log(`[duty-monitor] Phase upgrade rest (scheduled→actual): ${tail} at ${fmtDuration(rest.minutes)}`);
         }
+        // Otherwise: same phase, already alerted — skip
       }
     }
 
