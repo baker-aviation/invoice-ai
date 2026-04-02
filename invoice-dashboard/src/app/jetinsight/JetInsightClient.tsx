@@ -3,12 +3,13 @@
 import { useState, useEffect, useCallback } from "react";
 import type { JetInsightDocument, JetInsightSyncRun } from "@/lib/jetinsight/types";
 
-type Tab = "overview" | "crew" | "aircraft" | "trips" | "history";
+type Tab = "overview" | "crew" | "aircraft" | "company" | "trips" | "history";
 
 const TABS: { key: Tab; label: string; slug: string }[] = [
   { key: "overview", label: "Overview", slug: "" },
   { key: "crew", label: "Crew Documents", slug: "crew" },
   { key: "aircraft", label: "Aircraft Documents", slug: "aircraft" },
+  { key: "company", label: "Company Documents", slug: "company" },
   { key: "trips", label: "Trip Documents", slug: "trips" },
   { key: "history", label: "Sync History", slug: "history" },
 ];
@@ -54,6 +55,7 @@ export default function JetInsightClient({
       {tab === "overview" && <OverviewTab />}
       {tab === "crew" && <CrewDocsTab />}
       {tab === "aircraft" && <AircraftDocsTab />}
+      {tab === "company" && <CompanyDocsTab />}
       {tab === "trips" && <TripDocsTab />}
       {tab === "history" && <HistoryTab />}
     </div>
@@ -71,7 +73,7 @@ function OverviewTab() {
   const [saving, setSaving] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<string | null>(null);
-  const [stats, setStats] = useState({ crew: 0, aircraft: 0, total: 0 });
+  const [stats, setStats] = useState({ crew: 0, aircraft: 0, company: 0, total: 0 });
   const [lastRun, setLastRun] = useState<JetInsightSyncRun | null>(null);
 
   const loadConfig = useCallback(async () => {
@@ -84,9 +86,10 @@ function OverviewTab() {
   }, []);
 
   const loadStats = useCallback(async () => {
-    const [crewRes, aircraftRes, runRes] = await Promise.all([
+    const [crewRes, aircraftRes, companyRes, runRes] = await Promise.all([
       fetch("/api/jetinsight/documents?entity_type=crew&with_urls=false"),
       fetch("/api/jetinsight/documents?entity_type=aircraft&with_urls=false"),
+      fetch("/api/jetinsight/documents?entity_type=company&with_urls=false"),
       fetch("/api/jetinsight/sync/status?limit=1"),
     ]);
     if (crewRes.ok) {
@@ -96,6 +99,10 @@ function OverviewTab() {
     if (aircraftRes.ok) {
       const d = await aircraftRes.json();
       setStats((s) => ({ ...s, aircraft: d.documents?.length ?? 0 }));
+    }
+    if (companyRes.ok) {
+      const d = await companyRes.json();
+      setStats((s) => ({ ...s, company: d.documents?.length ?? 0 }));
     }
     if (runRes.ok) {
       const d = await runRes.json();
@@ -110,7 +117,7 @@ function OverviewTab() {
   }, [loadConfig, loadStats]);
 
   useEffect(() => {
-    setStats((s) => ({ ...s, total: s.crew + s.aircraft }));
+    setStats((s) => ({ ...s, total: s.crew + s.aircraft + s.company }));
   }, [stats.crew, stats.aircraft]);
 
   async function saveCookie() {
@@ -307,9 +314,10 @@ function OverviewTab() {
       </div>
 
       {/* Stats cards */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-5">
         <StatCard label="Crew Documents" value={stats.crew} />
         <StatCard label="Aircraft Documents" value={stats.aircraft} />
+        <StatCard label="Company Documents" value={stats.company} />
         <StatCard label="Total Documents" value={stats.total} />
         <StatCard
           label="Last Sync"
@@ -620,6 +628,67 @@ function DocTable({ docs }: { docs: JetInsightDocument[] }) {
         ))}
       </tbody>
     </table>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Company Documents Tab
+// ---------------------------------------------------------------------------
+
+function CompanyDocsTab() {
+  const [docs, setDocs] = useState<JetInsightDocument[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch("/api/jetinsight/documents?entity_type=company")
+      .then((r) => r.json())
+      .then((d) => setDocs(d.documents ?? []))
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading) return <p className="text-sm text-slate-500">Loading...</p>;
+  if (docs.length === 0)
+    return (
+      <p className="text-sm text-slate-500">
+        No company documents synced yet. Run a sync to pull from JetInsight.
+      </p>
+    );
+
+  // Group by category
+  const grouped = new Map<string, JetInsightDocument[]>();
+  for (const d of docs) {
+    const arr = grouped.get(d.category) ?? [];
+    arr.push(d);
+    grouped.set(d.category, arr);
+  }
+
+  return (
+    <div className="space-y-4">
+      {[...grouped.entries()].map(([category, categoryDocs]) => (
+        <div key={category} className="rounded-lg border border-slate-200 bg-white p-4">
+          <h3 className="mb-2 text-sm font-semibold text-slate-700">{category}</h3>
+          <div className="space-y-1">
+            {categoryDocs.map((d) => (
+              <div key={d.id} className="flex items-center justify-between rounded-md px-3 py-2 hover:bg-slate-50">
+                <div>
+                  <p className="text-sm font-medium text-slate-900">{d.document_name}</p>
+                  <div className="flex gap-2 text-xs text-slate-500">
+                    {d.uploaded_on && <span>Uploaded: {new Date(d.uploaded_on).toLocaleDateString()}</span>}
+                    {d.size_bytes && <span>{Math.round(d.size_bytes / 1024)} KB</span>}
+                  </div>
+                </div>
+                {d.signed_url && (
+                  <a href={d.signed_url} target="_blank" rel="noopener noreferrer"
+                    className="rounded-md bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100">
+                    Download
+                  </a>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
 
