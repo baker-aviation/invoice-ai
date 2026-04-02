@@ -94,6 +94,7 @@ export async function POST(
     ? (rejectionType as RejectionType)
     : "hard";
   const reason = typeof body.rejection_reason === "string" ? body.rejection_reason : null;
+  const emailNotes = typeof body.email_notes === "string" ? body.email_notes : null;
   const sendEmail = body.send_email !== false; // default true
 
   const supa = createServiceClient();
@@ -142,9 +143,24 @@ export async function POST(
       if (!setting?.value) {
         emailError = `Email template "${templateKey}" not configured. Go to Jobs → Admin.`;
       } else {
-        // Replace {{name}} with candidate's first name
+        // Replace {{name}} with candidate's first name, {{notes}} with email notes
         const firstName = (job.candidate_name ?? "").split(/\s+/)[0] || "Applicant";
-        const emailText = setting.value.replace(/\{\{name\}\}/g, firstName);
+        let emailText = setting.value.replace(/\{\{name\}\}/g, firstName);
+
+        if (type === "soft" && emailNotes) {
+          if (emailText.includes("{{notes}}")) {
+            emailText = emailText.replace(/\{\{notes\}\}/g, emailNotes);
+          } else {
+            // Append notes before the sign-off (last paragraph)
+            const lines = emailText.split("\n");
+            const insertIdx = Math.max(lines.length - 2, 1);
+            lines.splice(insertIdx, 0, "", emailNotes);
+            emailText = lines.join("\n");
+          }
+        } else {
+          // Remove {{notes}} placeholder if no notes provided
+          emailText = emailText.replace(/\{\{notes\}\}/g, "");
+        }
 
         const token = await getGraphToken();
         const mailbox = process.env.OUTLOOK_HR_MAILBOX || "HR@baker-aviation.com";

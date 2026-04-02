@@ -54,6 +54,7 @@ export default function RejectModal({
   const [step, setStep] = useState<"type" | "notes" | "confirm">("type");
   const [type, setType] = useState<RejectionType | null>(null);
   const [notes, setNotes] = useState("");
+  const [emailNotes, setEmailNotes] = useState("");
   const [loading, setLoading] = useState(false);
   const [sendEmail, setSendEmail] = useState(true);
   const [result, setResult] = useState<{ ok: boolean; emailSent?: boolean; emailError?: string } | null>(null);
@@ -74,6 +75,7 @@ export default function RejectModal({
           rejection_type: type,
           rejection_reason: notes.trim() || null,
           send_email: sendEmail,
+          email_notes: type === "soft" && emailNotes.trim() ? emailNotes.trim() : null,
         }),
       });
       const data = await res.json();
@@ -144,13 +146,26 @@ export default function RejectModal({
             <div className={`text-sm font-semibold ${TYPE_CONFIG[type].color}`}>
               {TYPE_CONFIG[type].label}
             </div>
+            {type === "soft" && (
+              <div>
+                <label className="block text-xs font-medium text-amber-600 mb-1">Note to include in email (optional)</label>
+                <textarea
+                  value={emailNotes}
+                  onChange={(e) => setEmailNotes(e.target.value)}
+                  placeholder={'e.g. "We\'d love to see more PIC hours before reconsidering."'}
+                  rows={2}
+                  className="w-full rounded-lg border border-amber-200 bg-amber-50/50 px-3 py-2 text-sm outline-none focus:border-amber-400 resize-none"
+                />
+                <div className="text-[10px] text-gray-400 mt-0.5">This will be included in the rejection email sent to the candidate.</div>
+              </div>
+            )}
             <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">Notes (optional)</label>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Internal notes (optional)</label>
               <textarea
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
                 placeholder="Internal notes about this rejection..."
-                rows={3}
+                rows={2}
                 className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-gray-400 resize-none"
               />
             </div>
@@ -192,9 +207,14 @@ export default function RejectModal({
                 <span className="text-sm text-gray-700">Send rejection email to candidate</span>
               </label>
             )}
+            {emailNotes && type === "soft" && (
+              <div className="text-xs text-amber-700 bg-amber-50 rounded-lg p-2 border border-amber-200">
+                <span className="font-medium">Included in email:</span> {emailNotes}
+              </div>
+            )}
             {notes && (
               <div className="text-xs text-gray-500">
-                <span className="font-medium">Notes:</span> {notes}
+                <span className="font-medium">Internal notes:</span> {notes}
               </div>
             )}
             <div className="flex gap-2">
