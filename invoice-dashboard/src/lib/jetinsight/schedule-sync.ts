@@ -259,7 +259,7 @@ async function notifySessionExpired(): Promise<void> {
   try {
     await postSlackMessage({
       channel: CHARLIE_SLACK_ID,
-      text: "JetInsight session expired. Paste a new cookie at /jetinsight to resume schedule sync.\nhttps://whiteboard.baker-aviation.com/jetinsight",
+      text: ":warning: *JetInsight session expired*\n\nThe schedule sync cookie has expired. Tap below to update it:\n\n:point_right: <https://whiteboard.baker-aviation.com/jetinsight|Update Cookie on Whiteboard>\n\nSchedule enrichment and doc sync are paused until refreshed.",
     });
   } catch {
     console.error("[jetinsight] Failed to send Slack session expiry DM");
