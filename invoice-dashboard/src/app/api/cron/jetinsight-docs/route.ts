@@ -123,7 +123,7 @@ export async function GET(req: NextRequest) {
     if (msg === "SESSION_EXPIRED") {
       await postSlackMessage({
         channel: CHARLIE_SLACK_ID,
-        text: ":warning: *JetInsight session expired*\n\nThe daily doc sync cookie has expired. Tap below to update it:\n\n:point_right: <https://whiteboard.baker-aviation.com/jetinsight|Update Cookie on Whiteboard>\n\nDoc sync is paused until refreshed.",
+        text: ":warning: *JetInsight session expired*\n\nThe daily doc sync cookie has expired. Tap below to update it:\n\n:point_right: <https://www.whitelabel-ops.com/jetinsight|Update Cookie on Whiteboard>\n\nDoc sync is paused until refreshed.",
       });
     }
     errors.push(msg);
