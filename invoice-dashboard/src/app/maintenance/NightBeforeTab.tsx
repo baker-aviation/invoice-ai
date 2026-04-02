@@ -1,14 +1,21 @@
 "use client";
 
 /**
- * NightBeforeTab — Overnight van repositioning planner.
+ * NightBeforeTab — Map-based overnight van repositioning planner.
  *
- * Shows dispatchers where vans need to be for tomorrow's first arrivals
- * and recommends overnight moves from current Samsara GPS positions.
+ * Shows a map with:
+ *  - Current van GPS positions (green truck icons)
+ *  - Tomorrow's flight arrival clusters (heat circles)
+ *  - Dashed lines from each van to its demand zone (amber = needs move, green = in position)
+ *  - A summary panel below with move recommendations
  */
 
-import { useMemo, useState } from "react";
+import { useState, useMemo, useRef, useCallback, useEffect } from "react";
+import { useMapPreferences } from "@/hooks/useMapPreferences";
+import L from "leaflet";
+import { MapContainer, TileLayer, CircleMarker, Marker, Polyline, Popup, Tooltip, useMap } from "react-leaflet";
 import type { Flight } from "@/lib/opsApi";
+import { getAirportInfo, type AirportInfo } from "@/lib/airportCoords";
 import {
   FIXED_VAN_ZONES,
   haversineKm,
@@ -17,7 +24,6 @@ import {
   type VanZone,
   type VanAssignment,
 } from "@/lib/maintenanceData";
-import { getAirportInfo } from "@/lib/airportCoords";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -25,34 +31,124 @@ import { getAirportInfo } from "@/lib/airportCoords";
 
 type LivePos = { lat: number; lon: number };
 
+type DemandCluster = {
+  icao: string;
+  airports: string[];
+  info: AirportInfo;
+  flights: Flight[];
+  count: number;
+};
+
 type VanMove = {
   vanId: number;
   zone: VanZone;
   currentPos: LivePos;
-  currentLabel: string;           // nearest airport or "Home"
-  demandAirport: string | null;   // where first arrival lands, null = no demand
-  demandLabel: string;            // airport name or "No flights"
-  tomorrowAircraft: number;       // how many aircraft assigned to this van
-  firstArrivalET: string | null;  // HH:MM ET of earliest arrival
-  distanceMi: number;             // current → demand position
-  alreadyInPosition: boolean;     // within 50mi
-  recommendation: string;
+  currentLabel: string;
+  demandPos: LivePos | null;      // where to go (null = no demand)
+  demandAirport: string | null;
+  demandLabel: string;
+  aircraftCount: number;
+  firstArrivalET: string | null;
+  distanceMi: number;
+  inPosition: boolean;
 };
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const LIGHT_TILES = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
+const TILE_ATTRIB = '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>';
+const CLUSTER_RADIUS_KM = 80.5; // 50mi
+const IN_POSITION_KM = 80.5;
+const KM_TO_MI = 0.621371;
+
+// ---------------------------------------------------------------------------
+// Color helpers
+// ---------------------------------------------------------------------------
+
+function getHeatColor(count: number): string {
+  if (count <= 1) return "#3b82f6";
+  if (count === 2) return "#22c55e";
+  if (count === 3) return "#eab308";
+  if (count === 4) return "#f97316";
+  return "#ef4444";
+}
+
+function getHeatRadius(count: number): number {
+  return Math.min(8 + count * 5, 35);
+}
+
+// ---------------------------------------------------------------------------
+// Icons
+// ---------------------------------------------------------------------------
+
+const VAN_COLOR = "#22c55e";
+const VAN_MOVE_COLOR = "#f59e0b"; // amber
+
+function vanDivIcon(needsMove: boolean): L.DivIcon {
+  const color = needsMove ? VAN_MOVE_COLOR : VAN_COLOR;
+  return L.divIcon({
+    html: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="28" height="28" fill="${color}" style="filter:drop-shadow(0 1px 3px rgba(0,0,0,0.5))">
+      <path d="M1 12.5V11l2-6h11l3 4h3a2 2 0 012 2v1.5h-1a2.5 2.5 0 00-5 0H8a2.5 2.5 0 00-5 0H1zm4.5 2a1.5 1.5 0 110-3 1.5 1.5 0 010 3zm12 0a1.5 1.5 0 110-3 1.5 1.5 0 010 3zM5 7l-1.5 4h5V7H5zm4.5 0v4h4.5L12 7H9.5z"/>
+    </svg>`,
+    className: "",
+    iconSize: [28, 28],
+    iconAnchor: [14, 14],
+    popupAnchor: [0, -16],
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Map utilities (same as HeatMapView)
+// ---------------------------------------------------------------------------
+
+function DarkModeFilter({ enabled }: { enabled: boolean }) {
+  const map = useMap();
+  useEffect(() => {
+    const pane = map.getPane("tilePane");
+    if (pane) {
+      pane.style.filter = enabled
+        ? "invert(1) hue-rotate(180deg) brightness(0.85) contrast(1.2)"
+        : "";
+    }
+  }, [enabled, map]);
+  return null;
+}
+
+function MapResizer() {
+  const map = useMap();
+  useEffect(() => {
+    const handler = () => { setTimeout(() => map.invalidateSize(), 200); };
+    document.addEventListener("fullscreenchange", handler);
+    return () => document.removeEventListener("fullscreenchange", handler);
+  }, [map]);
+  return null;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-const KM_TO_MI = 0.621371;
-const IN_POSITION_KM = 80.5; // 50mi
+const VAN_DAY_START_HOUR_ET = 5;
+
+function isOnVanDate(utcIso: string | null | undefined, etDate: string): boolean {
+  if (!utcIso) return false;
+  const shifted = new Date(new Date(utcIso).getTime() - VAN_DAY_START_HOUR_ET * 3600000);
+  return shifted.toLocaleDateString("en-CA", { timeZone: "America/New_York" }) === etDate;
+}
 
 function fmtTimeET(iso: string): string {
   return new Date(iso).toLocaleTimeString("en-US", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: true,
-    timeZone: "America/New_York",
+    hour: "2-digit", minute: "2-digit", hour12: true, timeZone: "America/New_York",
   });
+}
+
+function fmtDateET(iso: string): string {
+  const d = new Date(iso);
+  return d.toLocaleDateString("en-US", {
+    month: "short", day: "numeric", timeZone: "America/New_York",
+  }) + " " + fmtTimeET(iso);
 }
 
 function fmtDateLabel(dateStr: string): string {
@@ -60,32 +156,48 @@ function fmtDateLabel(dateStr: string): string {
   return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
 }
 
-/** Find nearest airport to a lat/lon from the van zones + a curated list */
 function nearestAirportLabel(lat: number, lon: number): string {
   let bestCode = "Unknown";
   let bestDist = Infinity;
   for (const zone of FIXED_VAN_ZONES) {
     const d = haversineKm(lat, lon, zone.lat, zone.lon);
-    if (d < bestDist) {
-      bestDist = d;
-      bestCode = zone.homeAirport;
-    }
+    if (d < bestDist) { bestDist = d; bestCode = zone.homeAirport; }
   }
-  return bestDist < 30 ? bestCode : `${bestCode} area`;
+  return bestDist < 30 ? bestCode : `near ${bestCode}`;
 }
 
-/** Get flights arriving on a specific date (5AM–5AM ET window) */
-function getArrivalsForDate(flights: Flight[], date: string): Flight[] {
-  const VAN_DAY_START_HOUR_ET = 5;
-  return flights.filter((f) => {
-    if (!f.scheduled_arrival || !f.arrival_icao) return false;
-    const shifted = new Date(new Date(f.scheduled_arrival).getTime() - VAN_DAY_START_HOUR_ET * 3600000);
-    return shifted.toLocaleDateString("en-CA", { timeZone: "America/New_York" }) === date;
-  });
+function driveLabel(km: number): string {
+  const mins = Math.round((km / 80) * 60); // ~50mph
+  if (mins < 60) return `~${mins}m drive`;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return m > 0 ? `~${h}h ${m}m drive` : `~${h}h drive`;
 }
 
 // ---------------------------------------------------------------------------
-// Component
+// Fullscreen hook
+// ---------------------------------------------------------------------------
+
+function useFullscreen(ref: React.RefObject<HTMLDivElement | null>) {
+  const [isFs, setIsFs] = useState(false);
+  const toggle = useCallback(() => {
+    if (!ref.current) return;
+    if (!document.fullscreenElement) {
+      ref.current.requestFullscreen().catch(() => {});
+    } else {
+      document.exitFullscreen().catch(() => {});
+    }
+  }, [ref]);
+  useEffect(() => {
+    const handler = () => setIsFs(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", handler);
+    return () => document.removeEventListener("fullscreenchange", handler);
+  }, []);
+  return { isFs, toggle };
+}
+
+// ---------------------------------------------------------------------------
+// Main component
 // ---------------------------------------------------------------------------
 
 type Props = {
@@ -95,16 +207,15 @@ type Props = {
 };
 
 export default function NightBeforeTab({ flights, liveVanPositions, liveVanIsLive }: Props) {
-  // Tomorrow's date
-  const tomorrow = useMemo(() => {
-    const d = new Date();
-    d.setDate(d.getDate() + 1);
-    return [d.getFullYear(), String(d.getMonth() + 1).padStart(2, "0"), String(d.getDate()).padStart(2, "0")].join("-");
-  }, []);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const { isFs, toggle: toggleFs } = useFullscreen(containerRef);
 
-  const [selectedDate, setSelectedDate] = useState(tomorrow);
+  const { prefs, toggle: togglePref } = useMapPreferences("nightbefore", {
+    dark: false,
+    lines: true,
+  });
 
-  // Date options: tomorrow and day after
+  // Date selection: tomorrow + 2 more days
   const dateOptions = useMemo(() => {
     return Array.from({ length: 3 }, (_, i) => {
       const d = new Date();
@@ -112,20 +223,68 @@ export default function NightBeforeTab({ flights, liveVanPositions, liveVanIsLiv
       return [d.getFullYear(), String(d.getMonth() + 1).padStart(2, "0"), String(d.getDate()).padStart(2, "0")].join("-");
     });
   }, []);
+  const [selectedDate, setSelectedDate] = useState(dateOptions[0]);
 
-  // Compute van assignments for the selected date
+  // ---------------------------------------------------------------------------
+  // Compute demand clusters (arrival heat map for selected date)
+  // ---------------------------------------------------------------------------
+  const demandClusters = useMemo<DemandCluster[]>(() => {
+    const arrivals = flights.filter((f) =>
+      f.arrival_icao && f.scheduled_arrival && isOnVanDate(f.scheduled_arrival, selectedDate)
+    );
+
+    // Group by airport
+    const byAirport = new Map<string, { info: AirportInfo; flights: Flight[] }>();
+    for (const f of arrivals) {
+      const iata = f.arrival_icao!.replace(/^K/, "");
+      const info = getAirportInfo(iata);
+      if (!info) continue;
+      let entry = byAirport.get(iata);
+      if (!entry) { entry = { info, flights: [] }; byAirport.set(iata, entry); }
+      entry.flights.push(f);
+    }
+
+    // Proximity clustering (same 50mi logic as heat map)
+    const entries = [...byAirport.entries()].sort((a, b) => b[1].flights.length - a[1].flights.length);
+    const result: DemandCluster[] = [];
+    const claimed = new Set<string>();
+
+    for (const [icao, entry] of entries) {
+      if (claimed.has(icao)) continue;
+      claimed.add(icao);
+      const airports = [icao];
+      const allFlights = [...entry.flights];
+
+      for (const [otherIcao, otherEntry] of entries) {
+        if (claimed.has(otherIcao)) continue;
+        if (haversineKm(entry.info.lat, entry.info.lon, otherEntry.info.lat, otherEntry.info.lon) <= CLUSTER_RADIUS_KM) {
+          claimed.add(otherIcao);
+          airports.push(otherIcao);
+          allFlights.push(...otherEntry.flights);
+        }
+      }
+
+      allFlights.sort((a, b) => (a.scheduled_arrival ?? "").localeCompare(b.scheduled_arrival ?? ""));
+      result.push({ icao, airports, info: entry.info, flights: allFlights, count: allFlights.length });
+    }
+
+    return result.sort((a, b) => b.count - a.count);
+  }, [flights, selectedDate]);
+
+  // ---------------------------------------------------------------------------
+  // Compute van moves
+  // ---------------------------------------------------------------------------
   const moves = useMemo<VanMove[]>(() => {
-    const arrivals = getArrivalsForDate(flights, selectedDate);
+    const arrivals = flights.filter((f) =>
+      f.arrival_icao && f.scheduled_arrival && isOnVanDate(f.scheduled_arrival, selectedDate)
+    );
 
-    // Compute overnight positions → van assignments using existing algorithm
     const overnightPositions = computeOvernightPositionsFromFlights(flights, selectedDate);
     const vanAssignments = assignVans(overnightPositions);
-
-    // Build a map: vanId → assignment
     const assignmentMap = new Map<number, VanAssignment>();
     for (const va of vanAssignments) assignmentMap.set(va.vanId, va);
 
-    // For each van, figure out earliest arrival among its assigned aircraft
+    // Earliest arrival per tail
     const tailFirstArrival = new Map<string, Flight>();
     for (const f of arrivals) {
       if (!f.tail_number) continue;
@@ -142,20 +301,17 @@ export default function NightBeforeTab({ flights, liveVanPositions, liveVanIsLiv
       const isLive = liveVanIsLive?.get(zone.vanId) ?? false;
       const currentLabel = isLive ? nearestAirportLabel(currentPos.lat, currentPos.lon) : `${zone.homeAirport} (home)`;
 
-      // Find the earliest arrival airport among assigned aircraft
+      let demandPos: LivePos | null = null;
       let demandAirport: string | null = null;
       let demandLabel = "No flights";
       let firstArrivalET: string | null = null;
-      let demandLat = zone.lat;
-      let demandLon = zone.lon;
 
       if (assignment && assignment.aircraft.length > 0) {
-        // Find earliest first-arrival across all assigned aircraft
         let earliestFlight: Flight | null = null;
         for (const ac of assignment.aircraft) {
-          const firstArr = tailFirstArrival.get(ac.tail);
-          if (firstArr && (!earliestFlight || (firstArr.scheduled_arrival ?? "") < (earliestFlight.scheduled_arrival ?? ""))) {
-            earliestFlight = firstArr;
+          const fa = tailFirstArrival.get(ac.tail);
+          if (fa && (!earliestFlight || (fa.scheduled_arrival ?? "") < (earliestFlight.scheduled_arrival ?? ""))) {
+            earliestFlight = fa;
           }
         }
 
@@ -165,66 +321,51 @@ export default function NightBeforeTab({ flights, liveVanPositions, liveVanIsLiv
           demandAirport = arrIcao;
           demandLabel = info ? `${info.name} (${arrIcao})` : arrIcao;
           firstArrivalET = fmtTimeET(earliestFlight.scheduled_arrival!);
-          if (info) {
-            demandLat = info.lat;
-            demandLon = info.lon;
-          }
+          demandPos = info ? { lat: info.lat, lon: info.lon } : null;
         } else {
-          // Aircraft assigned but no arrivals tomorrow — they're parked
-          demandAirport = assignment.aircraft[0].airport;
-          const info = getAirportInfo(demandAirport);
-          demandLabel = info ? `${info.name} (${demandAirport}) — parked` : `${demandAirport} — parked`;
-          if (info) { demandLat = info.lat; demandLon = info.lon; }
+          // Parked aircraft — van stays near them
+          const ap = assignment.aircraft[0].airport;
+          const info = getAirportInfo(ap);
+          demandAirport = ap;
+          demandLabel = info ? `${info.name} — parked` : `${ap} — parked`;
+          demandPos = info ? { lat: info.lat, lon: info.lon } : null;
         }
       }
 
-      const distKm = haversineKm(currentPos.lat, currentPos.lon, demandLat, demandLon);
-      const distMi = Math.round(distKm * KM_TO_MI);
-      const alreadyInPosition = distKm <= IN_POSITION_KM;
-
-      // Generate recommendation
-      let recommendation: string;
-      if (aircraftCount === 0) {
-        recommendation = "No demand — stay put";
-      } else if (alreadyInPosition) {
-        recommendation = "Already in position";
-      } else {
-        const driveHrs = Math.round(distKm / 80); // rough 50mph avg
-        const driveMins = Math.round((distKm / 80) * 60) % 60;
-        const driveLabel = driveHrs > 0 ? `~${driveHrs}h ${driveMins}m` : `~${driveMins}m`;
-        recommendation = `Move to ${demandAirport} tonight (${driveLabel} drive)`;
-      }
+      const distKm = demandPos
+        ? haversineKm(currentPos.lat, currentPos.lon, demandPos.lat, demandPos.lon)
+        : 0;
 
       return {
         vanId: zone.vanId,
         zone,
         currentPos,
         currentLabel,
+        demandPos,
         demandAirport,
         demandLabel,
-        tomorrowAircraft: aircraftCount,
+        aircraftCount,
         firstArrivalET,
-        distanceMi: distMi,
-        alreadyInPosition,
-        recommendation,
+        distanceMi: Math.round(distKm * KM_TO_MI),
+        inPosition: aircraftCount === 0 || distKm <= IN_POSITION_KM,
       };
     });
   }, [flights, selectedDate, liveVanPositions, liveVanIsLive]);
 
-  const needsMoveCount = moves.filter((m) => m.tomorrowAircraft > 0 && !m.alreadyInPosition).length;
-  const idleCount = moves.filter((m) => m.tomorrowAircraft === 0).length;
+  const totalArrivals = demandClusters.reduce((s, c) => s + c.count, 0);
+  const needsMoveCount = moves.filter((m) => m.aircraftCount > 0 && !m.inPosition).length;
 
   return (
-    <div className="space-y-4">
-      {/* Header */}
+    <div ref={containerRef} className="relative space-y-3">
+      {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-3">
-        <h2 className="text-lg font-bold text-gray-800">Overnight Van Repositioning</h2>
-        <div className="flex gap-1.5">
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs text-gray-500 font-medium mr-1">Plan for:</span>
           {dateOptions.map((d) => (
             <button
               key={d}
               onClick={() => setSelectedDate(d)}
-              className={`px-3 py-1 rounded text-xs font-medium shadow-sm transition-colors ${
+              className={`px-2.5 py-1 rounded text-xs font-medium shadow-sm transition-colors ${
                 selectedDate === d
                   ? "bg-blue-600 text-white"
                   : "bg-white text-gray-600 border border-gray-300 hover:bg-gray-50"
@@ -234,106 +375,245 @@ export default function NightBeforeTab({ flights, liveVanPositions, liveVanIsLiv
             </button>
           ))}
         </div>
-        <div className="flex-1" />
-        <div className="flex gap-3 text-xs text-gray-500">
+
+        <div className="text-xs text-gray-500">
+          <span className="font-semibold text-gray-700">{totalArrivals}</span> arrival{totalArrivals !== 1 ? "s" : ""} across{" "}
+          <span className="font-semibold text-gray-700">{demandClusters.length}</span> zone{demandClusters.length !== 1 ? "s" : ""}
           {needsMoveCount > 0 && (
-            <span className="px-2 py-1 rounded-full bg-amber-100 text-amber-700 font-medium">
+            <span className="ml-2 px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium">
               {needsMoveCount} van{needsMoveCount !== 1 ? "s" : ""} need repositioning
             </span>
           )}
-          {idleCount > 0 && (
-            <span className="px-2 py-1 rounded-full bg-gray-100 text-gray-600 font-medium">
-              {idleCount} idle
-            </span>
-          )}
+        </div>
+
+        <div className="flex-1" />
+
+        <div className="flex gap-1.5">
+          <button
+            onClick={() => togglePref("lines")}
+            className={`px-2.5 py-1 rounded text-xs font-medium shadow-sm transition-colors ${
+              prefs.lines
+                ? "bg-amber-600 text-white"
+                : "bg-white/90 text-gray-600 border border-gray-300 hover:bg-gray-50"
+            }`}
+          >
+            Move Lines
+          </button>
+          <button
+            onClick={() => togglePref("dark")}
+            className={`px-2.5 py-1 rounded text-xs font-medium shadow-sm transition-colors ${
+              prefs.dark
+                ? "bg-blue-600 text-white"
+                : "bg-white/90 text-gray-600 border border-gray-300 hover:bg-gray-50"
+            }`}
+          >
+            Dark
+          </button>
+          <button
+            onClick={toggleFs}
+            className="px-2.5 py-1 rounded text-xs font-medium shadow-sm bg-white/90 text-gray-600 border border-gray-300 hover:bg-gray-50"
+          >
+            {isFs ? "Exit FS" : "Fullscreen"}
+          </button>
         </div>
       </div>
 
-      {/* Van cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
-        {moves
-          .sort((a, b) => {
-            // Needs move first, then in-position, then idle
-            const pri = (m: VanMove) =>
-              m.tomorrowAircraft === 0 ? 2 : m.alreadyInPosition ? 1 : 0;
-            return pri(a) - pri(b) || a.vanId - b.vanId;
-          })
-          .map((m) => (
-            <div
-              key={m.vanId}
-              className={`rounded-lg border p-3 space-y-2 ${
-                m.tomorrowAircraft === 0
-                  ? "border-gray-200 bg-gray-50 opacity-60"
-                  : m.alreadyInPosition
-                  ? "border-green-200 bg-green-50"
-                  : "border-amber-300 bg-amber-50"
-              }`}
+      {/* Map */}
+      <div className="rounded-xl overflow-hidden shadow-md border border-gray-200" style={{ height: isFs ? "100vh" : 600 }}>
+        <MapContainer center={[37.5, -96]} zoom={4} style={{ height: "100%", width: "100%" }} zoomControl>
+          <TileLayer url={LIGHT_TILES} attribution={TILE_ATTRIB} />
+          <DarkModeFilter enabled={prefs.dark} />
+          <MapResizer />
+
+          {/* Move lines: van current → demand position */}
+          {prefs.lines && moves.map((m) => {
+            if (m.aircraftCount === 0 || !m.demandPos) return null;
+            return (
+              <Polyline
+                key={`line-${m.vanId}`}
+                positions={[
+                  [m.currentPos.lat, m.currentPos.lon],
+                  [m.demandPos.lat, m.demandPos.lon],
+                ]}
+                pathOptions={{
+                  color: m.inPosition ? VAN_COLOR : VAN_MOVE_COLOR,
+                  weight: m.inPosition ? 1.5 : 2.5,
+                  opacity: m.inPosition ? 0.3 : 0.7,
+                  dashArray: m.inPosition ? "4 6" : "8 6",
+                }}
+              />
+            );
+          })}
+
+          {/* Demand clusters (arrival circles) */}
+          {demandClusters.map((cluster) => (
+            <CircleMarker
+              key={`demand-${cluster.icao}`}
+              center={[cluster.info.lat, cluster.info.lon]}
+              radius={getHeatRadius(cluster.count)}
+              pathOptions={{
+                color: getHeatColor(cluster.count),
+                fillColor: getHeatColor(cluster.count),
+                fillOpacity: 0.45,
+                weight: 2,
+                opacity: 0.8,
+              }}
             >
-              {/* Van header */}
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className={`text-sm font-bold ${
-                    m.tomorrowAircraft === 0
-                      ? "text-gray-400"
-                      : m.alreadyInPosition
-                      ? "text-green-700"
-                      : "text-amber-700"
-                  }`}>
-                    V{m.vanId}
-                  </span>
-                  <span className="text-xs text-gray-500">{m.zone.name}</span>
+              <Tooltip
+                direction="top"
+                offset={[0, -getHeatRadius(cluster.count)]}
+                className="!bg-transparent !border-0 !shadow-none !p-0"
+                permanent
+              >
+                <div style={{
+                  color: prefs.dark ? "#fff" : "#1e293b",
+                  fontFamily: "ui-monospace, monospace",
+                  fontSize: 10,
+                  fontWeight: 700,
+                  whiteSpace: "nowrap",
+                  textShadow: prefs.dark
+                    ? "0 1px 3px rgba(0,0,0,0.9), 0 0 6px rgba(0,0,0,0.6)"
+                    : "0 1px 2px rgba(255,255,255,0.9), 0 0 4px rgba(255,255,255,0.8)",
+                }}>
+                  {cluster.airports.length > 1
+                    ? `${cluster.airports.slice(0, 3).join("/")}${cluster.airports.length > 3 ? "\u2026" : ""} (${cluster.count})`
+                    : `${cluster.icao} (${cluster.count})`}
                 </div>
-                <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                  m.tomorrowAircraft === 0
-                    ? "bg-gray-200 text-gray-500"
-                    : m.alreadyInPosition
-                    ? "bg-green-200 text-green-700"
-                    : "bg-amber-200 text-amber-800"
-                }`}>
-                  {m.tomorrowAircraft === 0
-                    ? "Idle"
-                    : m.alreadyInPosition
-                    ? "In Position"
-                    : `${m.distanceMi} mi away`}
-                </span>
-              </div>
-
-              {/* Current → Demand */}
-              {m.tomorrowAircraft > 0 && (
-                <div className="text-xs space-y-1">
-                  <div className="flex items-center gap-2">
-                    <span className="text-gray-400 w-12">Now:</span>
-                    <span className="font-mono font-medium text-gray-700">{m.currentLabel}</span>
+              </Tooltip>
+              <Popup maxWidth={320}>
+                <div className="text-xs space-y-2">
+                  <div className="font-bold text-sm">
+                    {cluster.airports.length > 1
+                      ? `${cluster.airports.join(", ")} area`
+                      : `${cluster.info.name} (${cluster.icao})`}
                   </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-gray-400 w-12">Need:</span>
-                    <span className="font-mono font-medium text-gray-700">{m.demandLabel}</span>
+                  <div className="text-gray-500">
+                    {cluster.count} arrival{cluster.count !== 1 ? "s" : ""} on {fmtDateLabel(selectedDate)}
                   </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-gray-400 w-12">1st arr:</span>
-                    <span className="font-mono font-medium text-gray-700">
-                      {m.firstArrivalET ?? "—"}
-                    </span>
-                    <span className="text-gray-400">· {m.tomorrowAircraft} aircraft</span>
+                  <div className="divide-y divide-gray-100 max-h-52 overflow-y-auto">
+                    {cluster.flights.map((f) => (
+                      <div key={f.id} className="py-1.5 flex items-center gap-2">
+                        <span className="font-mono font-bold text-gray-800">{f.tail_number}</span>
+                        <span className="text-gray-400">{f.departure_icao?.replace(/^K/, "") ?? "?"} &rarr; {f.arrival_icao?.replace(/^K/, "")}</span>
+                        <span className="ml-auto text-gray-500 tabular-nums">{fmtDateET(f.scheduled_arrival!)}</span>
+                      </div>
+                    ))}
                   </div>
                 </div>
-              )}
+              </Popup>
+            </CircleMarker>
+          ))}
 
-              {/* Recommendation */}
-              <div className={`text-xs font-medium pt-1 border-t ${
-                m.tomorrowAircraft === 0
-                  ? "border-gray-200 text-gray-400"
-                  : m.alreadyInPosition
-                  ? "border-green-200 text-green-600"
-                  : "border-amber-200 text-amber-700"
-              }`}>
-                {m.alreadyInPosition && m.tomorrowAircraft > 0 ? "✓ " : ""}
-                {!m.alreadyInPosition && m.tomorrowAircraft > 0 ? "→ " : ""}
-                {m.recommendation}
-              </div>
+          {/* Van markers (current positions) */}
+          {moves.map((m) => {
+            const isLive = liveVanIsLive?.get(m.vanId) ?? false;
+            const needsMove = m.aircraftCount > 0 && !m.inPosition;
+            return (
+              <Marker
+                key={`van-${m.vanId}`}
+                position={[m.currentPos.lat, m.currentPos.lon]}
+                icon={vanDivIcon(needsMove)}
+              >
+                <Tooltip
+                  direction="top"
+                  offset={[0, -16]}
+                  className="!bg-transparent !border-0 !shadow-none !p-0"
+                  permanent
+                >
+                  <div style={{
+                    color: needsMove ? VAN_MOVE_COLOR : VAN_COLOR,
+                    fontFamily: "ui-monospace, monospace",
+                    fontSize: 10,
+                    whiteSpace: "nowrap",
+                    textShadow: "0 1px 3px rgba(0,0,0,0.9), 0 0 6px rgba(0,0,0,0.6)",
+                  }}>
+                    <b>V{m.vanId}</b>
+                    {!isLive && <span style={{ color: "#9ca3af" }}> ?</span>}
+                  </div>
+                </Tooltip>
+                <Popup maxWidth={280}>
+                  <div className="text-xs space-y-1.5">
+                    <div className="font-bold text-sm">Van {m.vanId} — {m.zone.name}</div>
+                    <div className="text-gray-500">Currently: {m.currentLabel}</div>
+                    {m.aircraftCount > 0 ? (
+                      <>
+                        <div className={`font-medium ${m.inPosition ? "text-green-600" : "text-amber-700"}`}>
+                          {m.inPosition
+                            ? `In position for ${m.demandAirport}`
+                            : `Move to ${m.demandAirport} — ${m.distanceMi} mi (${driveLabel(m.distanceMi / KM_TO_MI)})`}
+                        </div>
+                        <div className="text-gray-500">
+                          {m.aircraftCount} aircraft · First arrival {m.firstArrivalET ?? "—"} ET
+                        </div>
+                      </>
+                    ) : (
+                      <div className="text-gray-400">No demand — stay put</div>
+                    )}
+                  </div>
+                </Popup>
+              </Marker>
+            );
+          })}
+        </MapContainer>
+
+        {/* Legend */}
+        <div className={`absolute bottom-3 right-3 z-[1000] ${prefs.dark ? "bg-black/70" : "bg-white/90"} backdrop-blur-sm rounded-lg shadow-md px-3 py-2.5 text-[11px] space-y-1.5`}>
+          <div className={`font-semibold ${prefs.dark ? "text-gray-400" : "text-gray-600"} text-[10px] uppercase tracking-wider mb-1`}>Legend</div>
+          <div className="flex items-center gap-2">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill={VAN_COLOR}>
+              <path d="M1 12.5V11l2-6h11l3 4h3a2 2 0 012 2v1.5h-1a2.5 2.5 0 00-5 0H8a2.5 2.5 0 00-5 0H1zm4.5 2a1.5 1.5 0 110-3 1.5 1.5 0 010 3zm12 0a1.5 1.5 0 110-3 1.5 1.5 0 010 3z"/>
+            </svg>
+            <span className={prefs.dark ? "text-gray-300" : "text-gray-700"}>In position</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill={VAN_MOVE_COLOR}>
+              <path d="M1 12.5V11l2-6h11l3 4h3a2 2 0 012 2v1.5h-1a2.5 2.5 0 00-5 0H8a2.5 2.5 0 00-5 0H1zm4.5 2a1.5 1.5 0 110-3 1.5 1.5 0 010 3zm12 0a1.5 1.5 0 110-3 1.5 1.5 0 010 3z"/>
+            </svg>
+            <span className={prefs.dark ? "text-gray-300" : "text-gray-700"}>Needs to move</span>
+          </div>
+          {[1, 2, 3, 5].map((c) => (
+            <div key={c} className="flex items-center gap-2">
+              <span className="inline-block rounded-full" style={{
+                width: Math.min(8 + c * 3, 20), height: Math.min(8 + c * 3, 20),
+                backgroundColor: getHeatColor(c), opacity: 0.7,
+              }} />
+              <span className={prefs.dark ? "text-gray-300" : "text-gray-700"}>
+                {c === 5 ? "5+" : c} arrival{c !== 1 ? "s" : ""}
+              </span>
             </div>
           ))}
+        </div>
       </div>
+
+      {/* Move summary cards (below map) */}
+      {needsMoveCount > 0 && (
+        <div className="space-y-2">
+          <h3 className="text-sm font-bold text-gray-700">Repositioning Needed</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-2">
+            {moves
+              .filter((m) => m.aircraftCount > 0 && !m.inPosition)
+              .sort((a, b) => b.distanceMi - a.distanceMi)
+              .map((m) => (
+                <div key={m.vanId} className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-amber-800">V{m.vanId} — {m.zone.name}</span>
+                    <span className="px-2 py-0.5 rounded-full bg-amber-200 text-amber-800 font-medium">
+                      {m.distanceMi} mi
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5 text-gray-600">
+                    <span className="font-mono">{m.currentLabel}</span>
+                    <span className="text-amber-500">&rarr;</span>
+                    <span className="font-mono font-medium text-amber-700">{m.demandAirport}</span>
+                  </div>
+                  <div className="text-gray-500">
+                    {m.aircraftCount} aircraft · 1st arrival {m.firstArrivalET ?? "—"} ET · {driveLabel(m.distanceMi / KM_TO_MI)}
+                  </div>
+                </div>
+              ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
