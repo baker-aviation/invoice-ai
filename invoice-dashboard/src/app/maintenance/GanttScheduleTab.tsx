@@ -269,7 +269,7 @@ export default function GanttScheduleTab({ flights, mxNotes }: Props) {
                   return (
                     <div
                       key={d}
-                      className={`px-1 py-1 border-r border-gray-100 last:border-r-0 min-h-[48px] space-y-0.5 ${
+                      className={`px-1 py-1 border-r border-gray-100 last:border-r-0 min-h-[48px] space-y-0.5 overflow-hidden ${
                         isToday ? "bg-blue-50/30" : ""
                       }`}
                     >
