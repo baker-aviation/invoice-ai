@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/service";
-import { requireAdmin } from "@/lib/api-auth";
+import { requireAuth, isAuthed } from "@/lib/api-auth";
 import { getFlightTrack } from "@/lib/flightaware";
 
 export const maxDuration = 300;
@@ -23,8 +23,8 @@ function faHeaders() {
  *   2. { faFlightIds: [...] } — pull and store tracks for specific flights
  */
 export async function POST(req: NextRequest) {
-  const auth = await requireAdmin(req);
-  if ("error" in auth) return auth.error;
+  const auth = await requireAuth(req);
+  if (!isAuthed(auth)) return auth.error;
 
   if (!process.env.FLIGHTAWARE_API_KEY) {
     return NextResponse.json({ error: "FLIGHTAWARE_API_KEY not configured" }, { status: 500 });
