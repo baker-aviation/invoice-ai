@@ -445,6 +445,109 @@ async function runChecks() {
     }
   }
 
+  // ── 9. JetInsight scraper health check ─────────────────────────────
+  // Alert if the last successful schedule sync is older than 30 minutes
+  {
+    const { data: lastSync } = await supa
+      .from("jetinsight_sync_runs")
+      .select("started_at, status")
+      .eq("sync_type", "schedule")
+      .eq("status", "ok")
+      .order("started_at", { ascending: false })
+      .limit(1);
+
+    const lastSyncTime = lastSync?.[0]?.started_at ? new Date(lastSync[0].started_at).getTime() : 0;
+    const minutesSinceSync = Math.round((now.getTime() - lastSyncTime) / 60000);
+
+    if (minutesSinceSync > 30) {
+      // Check if we already alerted recently (don't spam)
+      const { data: recentAlert } = await supa
+        .from("intl_leg_alerts")
+        .select("id")
+        .eq("alert_type", "scraper_stale")
+        .eq("acknowledged", false)
+        .limit(1);
+
+      if (!recentAlert?.length) {
+        // DM to Charlie's AI Bot channel
+        const slackToken = process.env.SLACK_BOT_TOKEN;
+        if (slackToken) {
+          await fetch("https://slack.com/api/chat.postMessage", {
+            method: "POST",
+            headers: { Authorization: `Bearer ${slackToken}`, "Content-Type": "application/json" },
+            body: JSON.stringify({
+              channel: "D0AK75CPPJM",
+              text: `:warning: JetInsight schedule scraper hasn't synced in ${minutesSinceSync} minutes. Last successful sync: ${lastSync?.[0]?.started_at ?? "never"}. International trip data may be stale. Check the scraper session at https://www.whitelabel-ops.com/jetinsight`,
+            }),
+          }).catch(() => {});
+        }
+
+        // Also insert a trackable alert so we don't re-alert
+        await supa.from("intl_leg_alerts").insert({
+          flight_id: intlFlights[0]?.id ?? "00000000-0000-0000-0000-000000000000",
+          alert_type: "scraper_stale",
+          severity: "critical",
+          message: `JetInsight scraper stale — last sync ${minutesSinceSync}min ago`,
+        });
+      }
+    }
+  }
+
+  // ── 10. Clean up intl trips that became fully domestic ────────────
+  // When flights change route but keep the same ID, the trip may now
+  // be entirely domestic. Check and remove unstarted ones.
+  {
+    const { data: allTrips } = await supa
+      .from("intl_trips")
+      .select("id, tail_number, flight_ids, trip_date")
+      .gte("trip_date", new Date(now.getTime() - 7 * 86400000).toISOString().slice(0, 10));
+
+    if (allTrips && allTrips.length > 0) {
+      // Batch-fetch all flight routes
+      const allFids = [...new Set(allTrips.flatMap((t) => t.flight_ids ?? []))];
+      const flightRoutes = new Map<string, { dep: string; arr: string }>();
+      if (allFids.length > 0) {
+        const { data: fRows } = await supa
+          .from("flights")
+          .select("id, departure_icao, arrival_icao")
+          .in("id", allFids);
+        for (const f of fRows ?? []) {
+          flightRoutes.set(f.id, { dep: f.departure_icao, arr: f.arrival_icao });
+        }
+      }
+
+      const domesticTrips: string[] = [];
+      for (const t of allTrips) {
+        if (!t.flight_ids?.length) continue;
+        const hasIntlLeg = t.flight_ids.some((fid: string) => {
+          const route = flightRoutes.get(fid);
+          if (!route) return false; // flight deleted — will be caught by orphan cleanup
+          return isInternationalIcao(route.dep) || isInternationalIcao(route.arr);
+        });
+        if (!hasIntlLeg) domesticTrips.push(t.id);
+      }
+
+      if (domesticTrips.length > 0) {
+        // Only delete unstarted ones
+        const { data: cl } = await supa
+          .from("intl_trip_clearances")
+          .select("trip_id, status")
+          .in("trip_id", domesticTrips);
+
+        const startedIds = new Set(
+          (cl ?? []).filter((c) => c.status !== "not_started").map((c) => c.trip_id)
+        );
+        const safeToDelete = domesticTrips.filter((id) => !startedIds.has(id));
+
+        if (safeToDelete.length > 0) {
+          await supa.from("intl_trip_clearances").delete().in("trip_id", safeToDelete);
+          await supa.from("intl_trips").delete().in("id", safeToDelete);
+          console.log(`[intl/run-checks] Removed ${safeToDelete.length} trip(s) that became domestic`);
+        }
+      }
+    }
+  }
+
   return NextResponse.json({
     ok: true,
     intl_flights: intlFlights.length,

@@ -37,6 +37,8 @@ interface PilotEfficiency {
     ffStartFuel: number | null;
     ffFlightFuel: number | null;
     ffLandingFuel: number | null;
+    ffTimeMin: number | null;
+    blockHrs: number;
   }>;
 }
 
@@ -268,20 +270,21 @@ export default function FuelEfficiency() {
                     <table className="w-full text-xs">
                       <thead>
                         <tr className="text-left text-gray-400 text-[10px] uppercase tracking-wide">
-                          <th colSpan={4} className="pb-0.5"></th>
-                          <th colSpan={3} className="pb-0.5 text-center text-blue-500 border-b border-blue-200">ForeFlight Predicted</th>
-                          <th colSpan={3} className="pb-0.5 text-center text-gray-600 border-b border-gray-200">JetInsight Actual</th>
+                          <th colSpan={3} className="pb-0.5"></th>
+                          <th colSpan={4} className="pb-0.5 text-center text-blue-500 border-b border-blue-200">ForeFlight Predicted</th>
+                          <th colSpan={4} className="pb-0.5 text-center text-gray-600 border-b border-gray-200">JetInsight Actual</th>
                           <th colSpan={2} className="pb-0.5"></th>
                         </tr>
                         <tr className="border-b border-gray-200 text-left text-gray-500">
                           <th className="pb-1 pt-1 font-medium">Date</th>
                           <th className="pb-1 pt-1 font-medium">Tail</th>
                           <th className="pb-1 pt-1 font-medium">Route</th>
-                          <th className="pb-1 pt-1 font-medium">Hours</th>
+                          <th className="pb-1 pt-1 font-medium text-blue-500">Time</th>
                           <th className="pb-1 pt-1 font-medium text-blue-500">Start</th>
                           <th className="pb-1 pt-1 font-medium text-blue-500">Flight</th>
                           <th className="pb-1 pt-1 font-medium text-blue-500">Landing</th>
-                          <th className="pb-1 pt-1 font-medium">Start</th>
+                          <th className="pb-1 pt-1 font-medium">Flight</th>
+                          <th className="pb-1 pt-1 font-medium">Block</th>
                           <th className="pb-1 pt-1 font-medium">Burn</th>
                           <th className="pb-1 pt-1 font-medium">Landing</th>
                           <th className="pb-1 pt-1 font-medium">vs FF</th>
@@ -294,18 +297,40 @@ export default function FuelEfficiency() {
                           const burnDelta = hasFF && f.ffFlightFuel
                             ? Math.round(f.actualBurn - f.ffFlightFuel)
                             : null;
+                          // Time comparison
+                          const ffHrs = f.ffTimeMin != null ? f.ffTimeMin / 60 : null;
+                          const timeDeltaMin = ffHrs != null && f.hrs > 0
+                            ? Math.round((f.hrs - ffHrs) * 60)
+                            : null;
+                          const fmtHrs = (h: number) => {
+                            const hh = Math.floor(h);
+                            const mm = Math.round((h - hh) * 60);
+                            return `${hh}:${String(mm).padStart(2, "0")}`;
+                          };
                           return (
                             <tr key={i} className="border-b border-gray-50">
                               <td className="py-1.5">{new Date(f.date).toLocaleDateString()}</td>
                               <td className="py-1.5">{f.tail}</td>
                               <td className="py-1.5 font-medium">{f.route}</td>
-                              <td className="py-1.5">{f.hrs.toFixed(1)}</td>
                               {/* FF Predicted */}
+                              <td className="py-1.5 text-blue-600">
+                                {ffHrs != null ? fmtHrs(ffHrs) : "—"}
+                              </td>
                               <td className="py-1.5 text-blue-600">{hasFF ? f.ffStartFuel!.toLocaleString() : "—"}</td>
                               <td className="py-1.5 text-blue-600">{f.ffFlightFuel != null ? f.ffFlightFuel.toLocaleString() : "—"}</td>
                               <td className="py-1.5 text-blue-600">{f.ffLandingFuel != null ? f.ffLandingFuel.toLocaleString() : "—"}</td>
                               {/* JetInsight Actual */}
-                              <td className="py-1.5 font-medium">{f.startFuel ? f.startFuel.toLocaleString() : "—"}</td>
+                              <td className="py-1.5 font-medium">
+                                {f.hrs > 0 ? fmtHrs(f.hrs) : "—"}
+                                {timeDeltaMin !== null && timeDeltaMin !== 0 && (
+                                  <span className={`ml-0.5 text-[10px] font-normal ${Math.abs(timeDeltaMin) > 10 ? "text-amber-600" : "text-gray-400"}`}>
+                                    ({timeDeltaMin > 0 ? "+" : ""}{timeDeltaMin}m)
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-1.5 text-gray-500">
+                                {f.blockHrs > 0 ? fmtHrs(f.blockHrs) : "—"}
+                              </td>
                               <td className="py-1.5 font-medium">{f.actualBurn.toLocaleString()}</td>
                               <td className="py-1.5 font-medium">{f.endFuel ? f.endFuel.toLocaleString() : "—"}</td>
                               {/* Variance columns */}

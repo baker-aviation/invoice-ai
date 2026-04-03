@@ -22,7 +22,7 @@ export async function GET(req: NextRequest) {
   const { data: rawFlights } = await supa
     .from("post_flight_data")
     .select(
-      "pic, sic, aircraft_type, origin, destination, flight_hrs, fuel_burn_lbs, fuel_burn_lbs_hour, takeoff_wt_lbs, fuel_start_lbs, fuel_end_lbs, flight_date, tail_number, nautical_miles",
+      "pic, sic, aircraft_type, origin, destination, flight_hrs, block_hrs, fuel_burn_lbs, fuel_burn_lbs_hour, takeoff_wt_lbs, fuel_start_lbs, fuel_end_lbs, flight_date, tail_number, nautical_miles",
     )
     .gte("flight_date", cutoff)
     .order("flight_date", { ascending: false });
@@ -159,6 +159,8 @@ export async function GET(req: NextRequest) {
       ffStartFuel: number | null;
       ffFlightFuel: number | null;
       ffLandingFuel: number | null;
+      ffTimeMin: number | null;
+      blockHrs: number;
     }>;
   }>();
 
@@ -243,6 +245,8 @@ export async function GET(req: NextRequest) {
         ffStartFuel: pred?.totalFuel ?? null,
         ffFlightFuel: pred?.flightFuel ?? null,
         ffLandingFuel: pred?.landingFuel ?? null,
+        ffTimeMin: pred?.timeMin ? Number(pred.timeMin) : null,
+        blockHrs: f.block_hrs ?? 0,
       });
     }
   }
