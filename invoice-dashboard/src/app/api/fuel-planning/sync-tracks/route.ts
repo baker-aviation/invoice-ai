@@ -32,30 +32,20 @@ export async function POST(req: NextRequest) {
 
   try {
     // Find fa_flights that have landed and don't have stored tracks yet
-    // Only pull tracks for flights in the last 10 months (FA data retention limit)
-    // and flights that lasted at least 30 min (skip short repos — no analytical value)
-    const faRetentionCutoff = new Date();
-    faRetentionCutoff.setMonth(faRetentionCutoff.getMonth() - 10);
+    // Pull tracks for last 2 months (can expand later — FA retains ~11 months)
+    const cutoff = new Date();
+    cutoff.setMonth(cutoff.getMonth() - 2);
 
     const { data: faFlights } = await supa
       .from("fa_flights")
-      .select("fa_flight_id, tail, origin_icao, destination_icao, departure_time, actual_arrival, route_distance_nm")
+      .select("fa_flight_id, tail, origin_icao, destination_icao, departure_time")
       .or("status.eq.Landed,status.eq.Arrived")
       .not("fa_flight_id", "is", null)
-      .gte("departure_time", faRetentionCutoff.toISOString())
+      .gte("departure_time", cutoff.toISOString())
       .order("departure_time", { ascending: false })
       .limit(5000);
 
-    // Filter: skip flights under 100 NM or under ~30 min (short repos with no cruise phase)
-    const worthPulling = (faFlights ?? []).filter((f: Record<string, unknown>) => {
-      const nm = Number(f.route_distance_nm ?? 0);
-      if (nm > 0 && nm < 100) return false; // skip short legs by distance
-      // Skip if departure and arrival are very close in time
-      const dep = f.departure_time ? new Date(f.departure_time as string).getTime() : 0;
-      const arr = f.actual_arrival ? new Date(f.actual_arrival as string).getTime() : 0;
-      if (dep > 0 && arr > 0 && (arr - dep) < 30 * 60 * 1000) return false; // <30 min
-      return true;
-    });
+    const worthPulling = faFlights ?? [];
 
     const { data: existingTracks } = await supa
       .from("flightaware_tracks")
