@@ -413,8 +413,8 @@ function TailDetailPopup({ tail, mxNotes, aircraftType, pos, onClose, onEditMx }
   const otherMx = tailNotes.filter((n) => !n.subject?.toUpperCase().includes("MEL") && !n.description?.toUpperCase().includes("MEL"));
 
   return (
-    <div ref={ref} className="fixed z-[9999] bg-white border border-gray-200 rounded-lg shadow-xl p-3 w-80 max-h-96 overflow-y-auto text-xs"
-      style={{ top: pos.top, left: pos.left }}>
+    <div ref={ref} className="fixed z-[9999] bg-white border border-gray-200 rounded-lg shadow-xl p-4 w-96 max-h-[80vh] overflow-y-auto text-xs"
+      style={{ top: "50%", left: "50%", transform: "translate(-50%, -50%)" }}>
       <div className="flex items-center justify-between mb-2">
         <div>
           <span className="font-bold text-sm text-gray-800 font-mono">{tail}</span>
@@ -1144,6 +1144,8 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
 
       {/* Global Tail Detail Popup */}
       {tailPopup && (
+        <>
+        <div className="fixed inset-0 bg-black/20 z-[9998]" onClick={() => setTailPopup(null)} />
         <TailDetailPopup
           tail={tailPopup.tail}
           mxNotes={localMxNotes}
@@ -1156,6 +1158,7 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
             setMxPopoverId(noteId);
           }}
         />
+        </>
       )}
     </div>
   );
