@@ -132,6 +132,15 @@ export async function middleware(request: NextRequest) {
       }
     }
 
+    // Chief pilot users can only access /jobs/chief-pilot and /login
+    if (role === "chief_pilot") {
+      if (!pathname.startsWith("/jobs/chief-pilot") && !pathname.startsWith("/login") && !pathname.startsWith("/api/")) {
+        const url = request.nextUrl.clone();
+        url.pathname = "/jobs/chief-pilot";
+        return NextResponse.redirect(url);
+      }
+    }
+
     // Users with no role assigned — show "contact admin" page
     if (!role && !pathname.startsWith("/pending") && !pathname.startsWith("/login") && !pathname.startsWith("/api/") && !pathname.startsWith("/auth/")) {
       const url = request.nextUrl.clone();

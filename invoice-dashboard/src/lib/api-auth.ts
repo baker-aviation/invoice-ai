@@ -194,6 +194,20 @@ export async function requireSuperAdmin(req: NextRequest): Promise<AuthResult> {
 }
 
 /**
+ * Validate Supabase session AND require admin or chief_pilot role.
+ */
+export async function requireChiefPilotOrAdmin(req: NextRequest): Promise<AuthResult> {
+  const auth = await requireAuth(req);
+  if ("error" in auth) return auth;
+
+  if (auth.role !== "admin" && auth.role !== "chief_pilot") {
+    return { error: NextResponse.json({ error: "Forbidden" }, { status: 403 }) };
+  }
+
+  return auth;
+}
+
+/**
  * Type guard: returns true when auth succeeded (no error).
  */
 export function isAuthed(auth: AuthResult): auth is AuthSuccess {

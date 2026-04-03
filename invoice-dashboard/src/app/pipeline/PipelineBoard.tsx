@@ -72,6 +72,7 @@ export default function PipelineBoard({ initialJobs }: { initialJobs: JobRow[] }
       pending_offer: [],
       offer: [],
       hired: [],
+      onboarding: [],
     };
     for (const j of filtered) {
       const stage = (j.hiring_stage ?? "") as HiringStage;
