@@ -5,6 +5,9 @@ import { isInternationalIcao } from "@/lib/intlUtils";
 import { getAirportInfo } from "@/lib/airportCoords";
 import { detectOverflightsFromIcao } from "@/lib/overflightDetector";
 
+// Allow up to 300s for cron-triggered trip detection
+export const maxDuration = 300;
+
 // ---------------------------------------------------------------------------
 // Trip detection: group flights into US → INTL(s) → US trips
 // ---------------------------------------------------------------------------
@@ -532,13 +535,21 @@ export async function GET(req: NextRequest) {
       }
 
       // Clean up orphaned trips: existing trips whose flights no longer
-      // appear in any detected trip (schedule was cancelled/changed)
+      // appear in any detected trip FOR THE SAME TAIL (schedule was cancelled/changed)
+      // Build per-tail flight ID sets for accurate orphan detection
+      const detectedFlightIdsByTail = new Map<string, Set<string>>();
+      for (const dt of detected) {
+        if (!detectedFlightIdsByTail.has(dt.tail_number)) detectedFlightIdsByTail.set(dt.tail_number, new Set());
+        for (const fid of dt.flight_ids) detectedFlightIdsByTail.get(dt.tail_number)!.add(fid);
+      }
+
       const orphanCandidates = (allExisting ?? [])
         .filter((e) => !matchedExistingIds.has(e.id))
         .filter((e) => {
-          // Only orphan if ALL its flight_ids are absent from detected trips
+          // Only orphan if ALL its flight_ids are absent from detected trips for THIS tail
           if (!e.flight_ids?.length) return false;
-          return e.flight_ids.every((fid: string) => !detectedFlightIdSets.has(fid));
+          const tailFlights = detectedFlightIdsByTail.get(e.tail_number) ?? new Set();
+          return e.flight_ids.every((fid: string) => !tailFlights.has(fid));
         });
 
       if (orphanCandidates.length > 0) {
