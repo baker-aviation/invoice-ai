@@ -92,25 +92,21 @@ export default function ClimbAnalysis() {
     setBackfilling(true);
     setBackfillMsg("Starting waypoint backfill...");
     let totalBackfilled = 0;
-    let offset = 0;
     let done = false;
 
     try {
       while (!done) {
-        setBackfillMsg(`Backfilling waypoints (${totalBackfilled} done, batch at ${offset})...`);
         const res = await fetch("/api/fuel-planning/sync-predictions", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "backfill-waypoints", backfillOffset: offset }),
+          body: JSON.stringify({ action: "backfill-waypoints" }),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error);
         totalBackfilled += data.backfilled ?? 0;
-        if (data.done) {
-          done = true;
-        } else {
-          offset = data.nextOffset ?? offset + 10;
-        }
+        const remaining = data.remaining ?? 0;
+        setBackfillMsg(`Backfilling waypoints... ${totalBackfilled} done, ${remaining} remaining`);
+        if (data.done) done = true;
       }
       setBackfillMsg(`Done: ${totalBackfilled} flights backfilled with waypoint data`);
       loadData();
