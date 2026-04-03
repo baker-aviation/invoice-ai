@@ -414,7 +414,7 @@ export default function UnifiedFuelEfficiency() {
                         return (
                           <tr key={`profile-${i}`}>
                             <td colSpan={13} className="p-0">
-                              <AltitudeProfileChart tail={f.tail} origin={routeOrigin} dest={routeDest} date={f.date} />
+                              <AltitudeProfileChart tail={f.tail} origin={routeOrigin} dest={routeDest} date={f.date} type={f.type} actualBurn={f.actualBurn} />
                             </td>
                           </tr>
                         );
