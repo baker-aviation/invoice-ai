@@ -183,7 +183,7 @@ export async function syncCrewIndex(cookie: string): Promise<CrewEntry[]> {
             full_name: c.name,
             email: c.email ?? null,
             jetinsight_uuid: c.uuid,
-            role: "pilot",
+            role: "PIC",
           })
           .select("id")
           .single();
