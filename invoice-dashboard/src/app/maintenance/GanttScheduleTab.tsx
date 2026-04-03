@@ -21,7 +21,7 @@ import { createClient as createBrowserSupabase } from "@/lib/supabase/client";
 // Constants
 // ---------------------------------------------------------------------------
 
-const DAYS_TO_SHOW = 9;
+const DAYS_TO_SHOW = 7;
 const DISPLAY_TZ = "America/New_York";
 
 const VAN_COLORS = [
