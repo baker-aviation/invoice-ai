@@ -15,6 +15,7 @@ import { useState, useMemo, useRef, useCallback, useEffect } from "react";
 import type { Flight, MxNote, MelItem } from "@/lib/opsApi";
 import { FIXED_VAN_ZONES } from "@/lib/maintenanceData";
 import { getAirportInfo } from "@/lib/airportCoords";
+import { createClient as createBrowserSupabase } from "@/lib/supabase/client";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -415,6 +416,20 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
   // Keep localMxNotes in sync when props change
   useEffect(() => { setLocalMxNotes(mxNotes); }, [mxNotes]);
 
+  // Aircraft type mapping for grouping (Challenger first, then Citation X)
+  const [aircraftTypes, setAircraftTypes] = useState<Map<string, string>>(new Map());
+  useEffect(() => {
+    const supa = createBrowserSupabase();
+    supa.from("aircraft_tracker").select("tail_number, aircraft_type").then(({ data }) => {
+      if (!data) return;
+      const m = new Map<string, string>();
+      for (const a of data) {
+        if (a.tail_number && a.aircraft_type) m.set(a.tail_number, a.aircraft_type);
+      }
+      setAircraftTypes(m);
+    });
+  }, []);
+
   // Start date for the grid
   const [startDate, setStartDate] = useState(() => {
     const d = new Date();
@@ -557,9 +572,19 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
       }
     }
 
-    const tails = [...tailDays.keys()].sort();
+    // Sort: group by aircraft type (Challenger first), then alphabetically
+    const TYPE_ORDER: Record<string, number> = { "Challenger 300": 0, "Cessna Citation X": 1 };
+    const tails = [...tailDays.keys()].sort((a, b) => {
+      const typeA = aircraftTypes.get(a) ?? "ZZZ";
+      const typeB = aircraftTypes.get(b) ?? "ZZZ";
+      const orderA = TYPE_ORDER[typeA] ?? 99;
+      const orderB = TYPE_ORDER[typeB] ?? 99;
+      if (orderA !== orderB) return orderA - orderB;
+      if (typeA !== typeB) return typeA.localeCompare(typeB);
+      return a.localeCompare(b);
+    });
     return { tailDays, tails };
-  }, [flights, dates]);
+  }, [flights, dates, aircraftTypes]);
 
   // MX notes by tail/date
   const mxByTailDate = useMemo(() => {
@@ -674,8 +699,11 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
               ))}
             </div>
 
-            {/* Tail rows */}
-            {tails.map((tail) => {
+            {/* Tail rows with type group headers */}
+            {tails.map((tail, idx) => {
+              const thisType = aircraftTypes.get(tail) ?? "Other";
+              const prevType = idx > 0 ? (aircraftTypes.get(tails[idx - 1]) ?? "Other") : null;
+              const showTypeHeader = thisType !== prevType;
               const dayMap = tailDays.get(tail)!;
               const mxDayMap = mxByTailDate.get(tail);
 
@@ -693,14 +721,26 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
               );
 
               return (
-                <div
-                  key={tail}
-                  className="grid border-b border-gray-100 hover:bg-gray-50/50 transition-colors"
-                  style={{ gridTemplateColumns: `100px repeat(${DAYS_TO_SHOW}, 1fr)` }}
-                >
+                <div key={tail}>
+                  {/* Type group header */}
+                  {showTypeHeader && (
+                    <div
+                      className="grid bg-gray-100 border-b border-gray-300"
+                      style={{ gridTemplateColumns: `100px repeat(${DAYS_TO_SHOW}, 1fr)` }}
+                    >
+                      <div className="col-span-full px-3 py-1.5 text-[11px] font-bold text-gray-600 uppercase tracking-wider">
+                        {thisType}
+                      </div>
+                    </div>
+                  )}
+                  <div
+                    className="grid border-b border-gray-100 hover:bg-gray-50/50 transition-colors"
+                    style={{ gridTemplateColumns: `100px repeat(${DAYS_TO_SHOW}, 1fr)` }}
+                  >
                   {/* Tail label + MELs + unscheduled MX */}
                   <div className="px-2 py-2 border-r border-gray-200 flex flex-col justify-start gap-1">
                     <span className="text-xs font-bold text-gray-800 font-mono">{tail}</span>
+                    <span className="text-[8px] text-gray-400 -mt-1">{aircraftTypes.get(tail)?.replace("Cessna ", "").replace("Challenger ", "CL") ?? ""}</span>
 
                     {/* Expiring MELs */}
                     {expiringMels.map((m) => {
@@ -901,6 +941,7 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
                       </div>
                     );
                   })}
+                </div>
                 </div>
               );
             })}
