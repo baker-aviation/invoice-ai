@@ -12,13 +12,15 @@ type UserRow = {
   last_sign_in_at: string | null;
 };
 
-const ROLES = ["admin", "dashboard", "pilot", "mx"] as const;
+const ROLES = ["admin", "dashboard", "pilot", "chief_pilot", "mx", "van"] as const;
 
 const ROLE_LABELS: Record<string, { label: string; color: string }> = {
   admin: { label: "Admin", color: "bg-purple-100 text-purple-800" },
   dashboard: { label: "Dashboard", color: "bg-slate-100 text-slate-800" },
   pilot: { label: "Pilot", color: "bg-blue-100 text-blue-800" },
+  chief_pilot: { label: "Chief Pilot", color: "bg-indigo-100 text-indigo-800" },
   mx: { label: "Maintenance", color: "bg-orange-100 text-orange-800" },
+  van: { label: "Van", color: "bg-green-100 text-green-800" },
 };
 
 export default function UsersPage() {
