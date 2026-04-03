@@ -24,16 +24,17 @@ const STAGE_META: Record<
     color: "border-cyan-200",
     headerColor: "bg-cyan-100 text-cyan-700",
   },
-  tims_review: {
-    label: "Tim's Review",
-    subtitle: "Dropping from Info Session sends interest check email",
-    color: "border-teal-200",
-    headerColor: "bg-teal-100 text-teal-700",
-  },
   prd_faa_review: {
     label: "PRD / FAA Review",
+    subtitle: "Dropping from Info Session sends interest check email",
     color: "border-orange-200",
     headerColor: "bg-orange-100 text-orange-700",
+  },
+  tims_review: {
+    label: "Tim's Review",
+    subtitle: "PRD flags & summary shown here",
+    color: "border-teal-200",
+    headerColor: "bg-teal-100 text-teal-700",
   },
   interview_scheduled: {
     label: "Scheduled for Interview",
@@ -1150,21 +1151,47 @@ function CandidateCard({
         {job.previously_rejected && (
           <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-red-50 text-red-600 border-red-200">Prev. Rejected</span>
         )}
-        {/* PRD upload status for prd_faa_review stage */}
+        {/* PRD upload + parse status for prd_faa_review stage */}
         {stage === "prd_faa_review" && (
-          hasPrd
-            ? <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-emerald-50 text-emerald-700 border-emerald-200">PRD ✓</span>
+          job.prd_parsed_at
+            ? <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-emerald-50 text-emerald-700 border-emerald-200">PRD Parsed</span>
+            : hasPrd
+            ? <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-amber-50 text-amber-700 border-amber-200">PRD Uploaded</span>
             : <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-red-50 text-red-600 border-red-200">No PRD</span>
         )}
-        {/* Interest check status for tims_review */}
-        {stage === "tims_review" && (
+        {/* Interest check status for prd_faa_review (fires on info_session→prd_faa_review transition) */}
+        {stage === "prd_faa_review" && (
           job.interest_check_response === "yes"
             ? <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-emerald-50 text-emerald-700 border-emerald-200">Interested</span>
             : job.interest_check_response === "no"
             ? <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-red-50 text-red-600 border-red-200">Not Interested</span>
             : job.interest_check_sent_at
             ? <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-amber-50 text-amber-700 border-amber-200">Interest check sent</span>
-            : <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-gray-50 text-gray-400 border-gray-200">No interest check</span>
+            : null
+        )}
+        {/* PRD flags for tims_review — this is what Tim sees */}
+        {stage === "tims_review" && job.prd_parsed_at && (
+          <>
+            {job.prd_flags && Object.entries(job.prd_flags).some(([k, v]) => k !== "flag_details" && k !== "notices_of_disapproval_count" && k !== "accidents_count" && v === true) ? (
+              <>
+                {job.prd_flags.failed_checkrides && <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-red-100 text-red-700 border-red-300">Failed Checkrides ({job.prd_flags.notices_of_disapproval_count})</span>}
+                {job.prd_flags.accidents && <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-red-100 text-red-700 border-red-300">Accidents ({job.prd_flags.accidents_count})</span>}
+                {job.prd_flags.incidents && <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-red-100 text-red-700 border-red-300">Incidents</span>}
+                {job.prd_flags.enforcements && <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-red-100 text-red-700 border-red-300">Enforcements</span>}
+                {job.prd_flags.terminations_for_cause && <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-red-100 text-red-700 border-red-300">Terminated</span>}
+                {job.prd_flags.drug_alcohol_faa && <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-red-100 text-red-700 border-red-300">D&A (FAA)</span>}
+                {job.prd_flags.drug_alcohol_employer && <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-red-100 text-red-700 border-red-300">D&A (Employer)</span>}
+                {job.prd_flags.disciplinary_actions && <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-red-100 text-red-700 border-red-300">Disciplinary</span>}
+                {job.prd_flags.unsatisfactory_training && <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-red-100 text-red-700 border-red-300">Unsat Training</span>}
+                {job.prd_flags.short_tenures && <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-amber-100 text-amber-700 border-amber-300">Short Tenures</span>}
+              </>
+            ) : (
+              <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-emerald-50 text-emerald-700 border-emerald-200">PRD Clean</span>
+            )}
+          </>
+        )}
+        {stage === "tims_review" && !job.prd_parsed_at && (
+          <span className="inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-semibold bg-gray-50 text-gray-400 border-gray-200">No PRD</span>
         )}
         {job.location && (
           <span className="text-[10px] text-gray-400 truncate max-w-[100px]">
@@ -1172,6 +1199,13 @@ function CandidateCard({
           </span>
         )}
       </div>
+
+      {/* PRD summary for Tim's review */}
+      {stage === "tims_review" && job.prd_summary && (
+        <div className="mt-1.5 text-[10px] text-gray-600 leading-tight line-clamp-3">
+          {job.prd_summary}
+        </div>
+      )}
 
       {isPilot && (job.total_time_hours || job.pic_time_hours) && (
         <div className="flex gap-3 mt-2 text-[10px] text-gray-500 font-mono">

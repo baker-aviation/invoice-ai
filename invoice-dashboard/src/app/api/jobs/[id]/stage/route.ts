@@ -255,9 +255,9 @@ export async function PATCH(
       emailResult = await sendAutoEmail(supa, Number(id), "interview", origin);
     }
 
-    // Auto-send "Still Interested?" email when moving from info_session → tims_review
+    // Auto-send "Still Interested?" email when moving from info_session → prd_faa_review
     let interestCheckSent = false;
-    if (stage === "tims_review" && previousStage === "info_session") {
+    if (stage === "prd_faa_review" && previousStage === "info_session") {
       try {
         const { data: candidate } = await supa
           .from("job_application_parse")

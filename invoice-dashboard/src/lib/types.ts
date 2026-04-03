@@ -143,7 +143,7 @@ export type HiringStage =
   | "offer"
   | "hired";
 
-export const PIPELINE_STAGES = ["screening", "info_session", "tims_review", "prd_faa_review", "interview_scheduled", "interview_post", "pending_offer", "offer", "hired"] as const;
+export const PIPELINE_STAGES = ["screening", "info_session", "prd_faa_review", "tims_review", "interview_scheduled", "interview_post", "pending_offer", "offer", "hired"] as const;
 export type PipelineStage = (typeof PIPELINE_STAGES)[number];
 
 export type JobRow = {
@@ -212,6 +212,32 @@ export type JobRow = {
 
   confidence?: any;
   raw_extraction?: any;
+
+  // PRD (Pilot Records Database) parsed data
+  prd_flags?: {
+    failed_checkrides?: boolean;
+    notices_of_disapproval_count?: number;
+    accidents?: boolean;
+    accidents_count?: number;
+    incidents?: boolean;
+    enforcements?: boolean;
+    terminations_for_cause?: boolean;
+    drug_alcohol_faa?: boolean;
+    drug_alcohol_employer?: boolean;
+    disciplinary_actions?: boolean;
+    unsatisfactory_training?: boolean;
+    short_tenures?: boolean;
+    flag_details?: string | null;
+  } | null;
+  prd_summary?: string | null;
+  prd_type_ratings?: string[] | null;
+  prd_sic_limitations?: string[] | null;
+  prd_parsed_at?: string | null;
+  prd_certificate_type?: string | null;
+  prd_certificate_number?: string | null;
+  prd_medical_class?: string | null;
+  prd_medical_date?: string | null;
+  prd_medical_limitations?: string | null;
 };
 
 export type JobsListResponse = {
