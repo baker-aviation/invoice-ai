@@ -308,14 +308,12 @@ export default function GanttScheduleTab({ flights, mxNotes }: Props) {
                               </span>
                             </div>
 
-                            {/* Company name */}
-                            {company && (
+                            {/* Pax count + crew on hover */}
+                            {f.pax_count != null && f.pax_count > 0 && (
                               <div className="text-[9px] leading-tight truncate opacity-70">
-                                {company}{f.pax_count != null && f.pax_count > 0 ? ` (${f.pax_count} pax)` : ""}
+                                {f.pax_count} pax
                               </div>
                             )}
-
-                            {/* Crew (show on hover via group) */}
                             {(f.pic || f.sic) && (
                               <div className="hidden group-hover:block text-[9px] leading-tight text-gray-500 truncate">
                                 {[f.pic, f.sic].filter(Boolean).join(" / ")}
