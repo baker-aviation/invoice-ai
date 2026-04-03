@@ -110,7 +110,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  let body: { months?: number; offset?: number; action?: string; flightIds?: string[] };
+  let body: { months?: number; offset?: number; action?: string; flightIds?: string[]; backfillOffset?: number };
   try {
     body = await req.json();
   } catch {
@@ -179,6 +179,69 @@ export async function POST(req: NextRequest) {
           time: f.departureTime,
           callsign: f.callSign,
         })),
+      });
+    }
+
+    // ─── Mode 3: Backfill waypoints for existing predictions ───
+    if (body.action === "backfill-waypoints") {
+      const bfOffset = body.backfillOffset ?? 0;
+
+      // Get predictions that don't have phase data yet
+      const { data: allPreds } = await supa
+        .from("foreflight_predictions")
+        .select("foreflight_id")
+        .order("flight_date", { ascending: false });
+
+      const { data: existingPhases } = await supa
+        .from("foreflight_flight_phases")
+        .select("foreflight_id");
+
+      const phaseIds = new Set((existingPhases ?? []).map((p) => p.foreflight_id));
+      const needsBackfill = (allPreds ?? []).filter((p) => !phaseIds.has(p.foreflight_id));
+
+      if (bfOffset >= needsBackfill.length) {
+        return NextResponse.json({ ok: true, done: true, backfilled: 0, total: needsBackfill.length });
+      }
+
+      const batch = needsBackfill.slice(bfOffset, bfOffset + BATCH_SIZE);
+      let backfilled = 0;
+      const errors: string[] = [];
+
+      for (const { foreflight_id: fid } of batch) {
+        await sleep(DELAY_MS);
+        try {
+          const res = await fetch(`${FF_API}/Flights/${fid}`, {
+            headers: { "x-api-key": apiKey, Accept: "application/json" },
+            signal: AbortSignal.timeout(15_000),
+          });
+          if (!res.ok) continue;
+
+          const detail = await res.json();
+          const routeInfo = detail.performance?.destinationRouteInformation;
+          if (!routeInfo) continue;
+
+          const result = extractPhases(routeInfo, fid);
+          if (result?.waypointRows?.length) {
+            await supa.from("foreflight_waypoints").delete().eq("foreflight_id", fid);
+            await supa.from("foreflight_waypoints").insert(result.waypointRows);
+          }
+          if (result?.phases) {
+            await supa.from("foreflight_flight_phases").upsert(result.phases, { onConflict: "foreflight_id" });
+          }
+          backfilled++;
+        } catch (err) {
+          errors.push(`${fid}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
+      return NextResponse.json({
+        ok: true,
+        done: bfOffset + batch.length >= needsBackfill.length,
+        backfilled,
+        nextOffset: bfOffset + batch.length,
+        remaining: needsBackfill.length - bfOffset - batch.length,
+        total: needsBackfill.length,
+        errors: errors.length > 0 ? errors : undefined,
       });
     }
 
