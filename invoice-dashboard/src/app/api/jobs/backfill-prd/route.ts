@@ -5,9 +5,9 @@ import { requireAdmin, isAuthed, verifyCronSecret } from "@/lib/api-auth";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
-// One-time backfill bypass token (expires 2026-04-03T06:00:00Z)
+// One-time backfill bypass token (expires 2026-04-04T06:00:00Z)
 const BACKFILL_TOKEN = "prd-backfill-2026-04-02";
-const BACKFILL_EXPIRES = new Date("2026-04-03T06:00:00Z");
+const BACKFILL_EXPIRES = new Date("2026-04-04T06:00:00Z");
 
 /**
  * GET /api/jobs/backfill-prd
