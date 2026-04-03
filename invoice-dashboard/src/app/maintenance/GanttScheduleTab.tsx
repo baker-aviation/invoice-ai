@@ -391,12 +391,13 @@ function MxQueueCard({ note, isOverdue }: { note: MxNote; isOverdue?: boolean })
 // Tail Detail Popup
 // ---------------------------------------------------------------------------
 
-function TailDetailPopup({ tail, mxNotes, aircraftType, pos, onClose }: {
+function TailDetailPopup({ tail, mxNotes, aircraftType, pos, onClose, onEditMx }: {
   tail: string;
   mxNotes: MxNote[];
   aircraftType: string;
   pos: { top: number; left: number };
   onClose: () => void;
+  onEditMx: (noteId: string, pos: { top: number; left: number }) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -430,7 +431,16 @@ function TailDetailPopup({ tail, mxNotes, aircraftType, pos, onClose }: {
             const daysLeft = endTime ? Math.ceil((endTime.getTime() - Date.now()) / 86400000) : null;
             return (
               <div key={n.id} className="rounded border border-orange-200 bg-orange-50 p-1.5 mb-1 text-[10px]">
-                <div className="font-bold text-orange-800">{n.subject ?? "MEL"}</div>
+                <div className="flex items-start justify-between">
+                  <div className="font-bold text-orange-800">{n.subject ?? "MEL"}</div>
+                  <button
+                    onClick={(e) => {
+                      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                      onEditMx(n.id, { top: rect.bottom + 4, left: rect.left });
+                    }}
+                    className="text-blue-500 hover:text-blue-700 text-[9px] font-medium ml-1 flex-shrink-0"
+                  >Edit</button>
+                </div>
                 {n.description && <div className="text-orange-700 mt-0.5">{n.description}</div>}
                 <div className="text-orange-500 mt-0.5 flex gap-2">
                   {n.airport_icao && <span>{fmtIcao(n.airport_icao)}</span>}
@@ -447,7 +457,16 @@ function TailDetailPopup({ tail, mxNotes, aircraftType, pos, onClose }: {
           <div className="text-[10px] font-bold text-red-600 uppercase tracking-wider mb-1">MX Notes ({otherMx.length})</div>
           {otherMx.map((n) => (
             <div key={n.id} className="rounded border border-red-200 bg-red-50 p-1.5 mb-1 text-[10px]">
-              <div className="font-bold text-red-800">{n.subject ?? n.description ?? "Maintenance"}</div>
+              <div className="flex items-start justify-between">
+                <div className="font-bold text-red-800">{n.subject ?? n.description ?? "Maintenance"}</div>
+                <button
+                  onClick={(e) => {
+                    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                    onEditMx(n.id, { top: rect.bottom + 4, left: rect.left });
+                  }}
+                  className="text-blue-500 hover:text-blue-700 text-[9px] font-medium ml-1 flex-shrink-0"
+                >Edit</button>
+              </div>
               {n.body && n.body !== n.subject && <div className="text-red-700 mt-0.5 whitespace-pre-wrap">{n.body}</div>}
               <div className="text-red-500 mt-0.5 flex gap-2">
                 {n.airport_icao && <span>{fmtIcao(n.airport_icao)}</span>}
@@ -820,7 +839,7 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
                     style={{ gridTemplateColumns: `100px repeat(${DAYS_TO_SHOW}, 1fr)` }}
                   >
                   {/* Tail label + MELs + unscheduled MX */}
-                  <div className="px-2 py-2 border-r border-gray-200 flex flex-col justify-start gap-1">
+                  <div data-tail-cell className="px-2 py-2 border-r border-gray-200 flex flex-col justify-start gap-1">
                     <button
                       className="text-xs font-bold text-gray-800 font-mono hover:text-blue-600 text-left cursor-pointer"
                       onClick={(e) => {
@@ -830,12 +849,20 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
                     >{tail}</button>
                     <span className="text-[8px] text-gray-400 -mt-1">{aircraftTypes.get(tail)?.replace("Cessna ", "").replace("Challenger ", "CL") ?? ""}</span>
 
-                    {/* MEL items from MX notes */}
+                    {/* MEL items from MX notes — click to see details in tail popup */}
                     {tailMelNotes.slice(0, 3).map((n) => {
                       const endTime = n.end_time ? new Date(n.end_time) : null;
                       const daysLeft = endTime ? Math.ceil((endTime.getTime() - Date.now()) / 86400000) : null;
                       return (
-                        <div key={n.id} className="text-[9px] leading-tight truncate" title={n.subject ?? n.description ?? ""}>
+                        <button
+                          key={n.id}
+                          className="text-[9px] leading-tight truncate text-left cursor-pointer hover:underline"
+                          title={n.subject ?? n.description ?? ""}
+                          onClick={(e) => {
+                            const rect = (e.currentTarget.closest("[data-tail-cell]") as HTMLElement)?.getBoundingClientRect();
+                            if (rect) setTailPopup({ tail, pos: { top: rect.bottom + 4, left: rect.left } });
+                          }}
+                        >
                           <span className={`font-bold ${daysLeft !== null && daysLeft <= 3 ? "text-red-600" : daysLeft !== null && daysLeft <= 7 ? "text-orange-600" : "text-green-700"}`}>
                             MEL
                           </span>
@@ -844,7 +871,7 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
                               {daysLeft}d
                             </span>
                           )}
-                        </div>
+                        </button>
                       );
                     })}
                     {tailMelNotes.length > 3 && (
@@ -1123,6 +1150,11 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
           aircraftType={aircraftTypes.get(tailPopup.tail) ?? ""}
           pos={tailPopup.pos}
           onClose={() => setTailPopup(null)}
+          onEditMx={(noteId, editPos) => {
+            setTailPopup(null);
+            setMxPopoverPos(editPos);
+            setMxPopoverId(noteId);
+          }}
         />
       )}
     </div>
