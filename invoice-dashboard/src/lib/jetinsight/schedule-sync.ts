@@ -229,6 +229,82 @@ export async function runScheduleSync(): Promise<ScheduleSyncResult> {
 }
 
 /**
+ * Sync salesperson names from JetInsight trip pages.
+ * Fetches /trips/{pnr} for flights with a trip ID but no salesperson.
+ */
+export async function syncSalespersons(): Promise<{
+  updated: number;
+  errors: string[];
+  sessionExpired: boolean;
+}> {
+  const result = { updated: 0, errors: [] as string[], sessionExpired: false };
+  const supa = createServiceClient();
+
+  const { data: cookieRow } = await supa
+    .from("jetinsight_config")
+    .select("config_value")
+    .eq("config_key", "session_cookie")
+    .single();
+
+  const cookie = cookieRow?.config_value;
+  if (!cookie) { result.errors.push("No cookie"); return result; }
+
+  // Find unique trip IDs missing salesperson
+  const { data: flights } = await supa
+    .from("flights")
+    .select("jetinsight_trip_id")
+    .not("jetinsight_trip_id", "is", null)
+    .is("salesperson", null)
+    .order("scheduled_departure", { ascending: false })
+    .limit(500);
+
+  const tripIds = [...new Set((flights ?? []).map((f) => f.jetinsight_trip_id as string).filter(Boolean))];
+  if (tripIds.length === 0) return result;
+
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  for (const tripId of tripIds.slice(0, 30)) { // Cap at 30 per run
+    await sleep(1000);
+    try {
+      const res = await fetch(`${BASE_URL}/trips/${tripId}`, {
+        method: "GET",
+        headers: {
+          Cookie: cookie,
+          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Baker-Aviation-Sync/1.0",
+        },
+        signal: AbortSignal.timeout(15_000),
+      });
+
+      if (!res.ok) continue;
+      const html = await res.text();
+
+      if (isLoginRedirect(html)) {
+        result.sessionExpired = true;
+        await notifySessionExpired();
+        return result;
+      }
+
+      // Extract salesperson: "Salesperson: Name"
+      const match = html.match(/Salesperson:\s*<[^>]*>([^<]+)/i);
+      const salesperson = match?.[1]?.trim();
+
+      if (salesperson) {
+        await supa
+          .from("flights")
+          .update({ salesperson })
+          .eq("jetinsight_trip_id", tripId)
+          .is("salesperson", null);
+        result.updated++;
+      }
+    } catch (err) {
+      result.errors.push(`${tripId}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  return result;
+}
+
+/**
  * Build a summary string matching the ICS format for consistency.
  * e.g., "[N883TR] V2 Jets (TQPF - KTEB) - Revenue"
  */
