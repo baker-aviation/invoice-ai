@@ -2399,6 +2399,8 @@ function DocRulesSection({ countryId }: { countryId: string }) {
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
   const [newRule, setNewRule] = useState({ doc_category: "aircraft", match_type: "name_contains", match_value: "", applies_to: "landing", notes: "" });
+  const [suggestions, setSuggestions] = useState<{ categories: string[]; sampleNames: string[] }>({ categories: [], sampleNames: [] });
+  const [showSuggestions, setShowSuggestions] = useState(false);
 
   useEffect(() => {
     setLoading(true);
@@ -2407,6 +2409,15 @@ function DocRulesSection({ countryId }: { countryId: string }) {
       .then((d) => setRules(d.rules ?? []))
       .finally(() => setLoading(false));
   }, [countryId]);
+
+  // Fetch document name suggestions when category changes
+  useEffect(() => {
+    if (!showAdd) return;
+    fetch(`/api/ops/intl/document-catalog?category=${newRule.doc_category}`)
+      .then((r) => r.json())
+      .then((d) => setSuggestions({ categories: d.categories ?? [], sampleNames: d.sampleNames ?? [] }))
+      .catch(() => {});
+  }, [newRule.doc_category, showAdd]);
 
   const addRule = async () => {
     if (!newRule.match_value && newRule.match_type !== "all") return;
@@ -2462,9 +2473,31 @@ function DocRulesSection({ countryId }: { countryId: string }) {
             </select>
           </div>
           {newRule.match_type !== "all" && (
-            <div className="flex-1">
+            <div className="flex-1 relative">
               <label className="text-[10px] text-gray-500 block">Document name to match</label>
-              <input value={newRule.match_value} onChange={(e) => setNewRule({ ...newRule, match_value: e.target.value })} placeholder="e.g. Mexico Insurance" className="w-full text-xs border border-gray-300 rounded px-2 py-1" />
+              <input
+                value={newRule.match_value}
+                onChange={(e) => { setNewRule({ ...newRule, match_value: e.target.value }); setShowSuggestions(true); }}
+                onFocus={() => setShowSuggestions(true)}
+                placeholder="Type or click a suggestion below..."
+                className="w-full text-xs border border-gray-300 rounded px-2 py-1"
+              />
+              {showSuggestions && suggestions.sampleNames.length > 0 && (
+                <div className="absolute z-10 mt-1 w-full max-h-40 overflow-y-auto bg-white border border-gray-200 rounded shadow-lg">
+                  {(newRule.doc_category === "crew" ? suggestions.categories : suggestions.sampleNames)
+                    .filter((s) => !newRule.match_value || s.toLowerCase().includes(newRule.match_value.toLowerCase()))
+                    .slice(0, 20)
+                    .map((s) => (
+                      <button
+                        key={s}
+                        onClick={() => { setNewRule({ ...newRule, match_value: s }); setShowSuggestions(false); }}
+                        className="w-full text-left px-2 py-1 text-xs hover:bg-blue-50 text-gray-700 truncate"
+                      >
+                        {s}
+                      </button>
+                    ))}
+                </div>
+              )}
             </div>
           )}
           <div>
