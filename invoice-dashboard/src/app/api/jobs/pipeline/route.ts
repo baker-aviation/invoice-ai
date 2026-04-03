@@ -13,6 +13,7 @@ const VALID_STAGES: HiringStage[] = [
   "pending_offer",
   "offer",
   "hired",
+  "onboarding",
 ];
 
 /** PATCH — move a candidate to a new hiring stage */

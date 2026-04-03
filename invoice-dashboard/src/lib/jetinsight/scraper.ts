@@ -174,6 +174,32 @@ export async function syncCrewIndex(cookie: string): Promise<CrewEntry[]> {
           .update({ jetinsight_uuid: c.uuid })
           .eq("id", matched.id);
       }
+
+      // Auto-create profile for unmatched JI crew so their docs are linkable
+      if (!matched) {
+        const { data: newProfile } = await supa
+          .from("pilot_profiles")
+          .insert({
+            full_name: c.name,
+            email: c.email ?? null,
+            jetinsight_uuid: c.uuid,
+            role: "pilot",
+          })
+          .select("id")
+          .single();
+
+        if (newProfile) {
+          // Also update any existing docs that used the JI UUID as entity_id
+          // to point to the new profile ID instead
+          await supa
+            .from("jetinsight_documents")
+            .update({ entity_id: String(newProfile.id) })
+            .eq("entity_type", "crew")
+            .eq("entity_id", c.uuid);
+
+          profiles.push({ id: newProfile.id, full_name: c.name, email: c.email ?? null, jetinsight_uuid: c.uuid });
+        }
+      }
     }
   }
 

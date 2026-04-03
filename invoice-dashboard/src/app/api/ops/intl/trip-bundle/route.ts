@@ -107,12 +107,33 @@ export async function GET(req: NextRequest) {
         );
       }
 
-      // Try first + last name match
+      // Try first + last name match (handles middle names: "Todd Ratzlaff" → "Todd McKillip Ratzlaff")
       if (!match && lastNameParts.length >= 2) {
         match = (allProfiles ?? []).find((p) => {
           const pParts = p.full_name?.toLowerCase().trim().split(/\s+/) ?? [];
           return pParts[0] === firstName && pParts[pParts.length - 1] === lastName;
         });
+      }
+
+      // Try nickname/short form: "Andrew" → "Andy", "Chris" → "Christopher"
+      if (!match && lastNameParts.length >= 2) {
+        match = (allProfiles ?? []).find((p) => {
+          const pParts = p.full_name?.toLowerCase().trim().split(/\s+/) ?? [];
+          const pLast = pParts[pParts.length - 1];
+          const pFirst = pParts[0];
+          if (pLast !== lastName) return false;
+          // Check if first name starts with the same 3+ chars (Andy/Andrew, Chris/Christopher)
+          return pFirst.startsWith(firstName.slice(0, 3)) || firstName.startsWith(pFirst.slice(0, 3));
+        });
+      }
+
+      // Last resort: last name only (if unique match)
+      if (!match && lastName.length >= 3) {
+        const lastNameMatches = (allProfiles ?? []).filter((p) => {
+          const pParts = p.full_name?.toLowerCase().trim().split(/\s+/) ?? [];
+          return pParts[pParts.length - 1] === lastName;
+        });
+        if (lastNameMatches.length === 1) match = lastNameMatches[0];
       }
 
       if (match) {

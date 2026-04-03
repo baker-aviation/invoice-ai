@@ -141,9 +141,13 @@ export type HiringStage =
   | "interview_post"
   | "pending_offer"
   | "offer"
-  | "hired";
+  | "hired"
+  | "onboarding";
 
 export const PIPELINE_STAGES = ["screening", "info_session", "prd_faa_review", "tims_review", "interview_scheduled", "interview_post", "pending_offer", "offer", "hired"] as const;
+
+/** All valid stages including hidden ones (onboarding) */
+export const ALL_STAGES = [...PIPELINE_STAGES, "onboarding"] as const;
 export type PipelineStage = (typeof PIPELINE_STAGES)[number];
 
 export type JobRow = {

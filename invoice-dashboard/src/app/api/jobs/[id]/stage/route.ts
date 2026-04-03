@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin, isAuthed, isRateLimited } from "@/lib/api-auth";
 import { createServiceClient } from "@/lib/supabase/service";
-import { PIPELINE_STAGES } from "@/lib/types";
+import { ALL_STAGES } from "@/lib/types";
 import { getItemsForRole } from "@/lib/onboardingItems";
 
 const SAFE_ID_RE = /^\d+$/;
@@ -200,9 +200,9 @@ export async function PATCH(
   const stage = body.stage;
   const isRemove = stage === "remove" || stage === null;
 
-  if (!isRemove && (!stage || !(PIPELINE_STAGES as readonly string[]).includes(stage))) {
+  if (!isRemove && (!stage || !(ALL_STAGES as readonly string[]).includes(stage))) {
     return NextResponse.json(
-      { error: `Invalid stage. Must be one of: remove, ${PIPELINE_STAGES.join(", ")}` },
+      { error: `Invalid stage. Must be one of: remove, ${ALL_STAGES.join(", ")}` },
       { status: 400 },
     );
   }
