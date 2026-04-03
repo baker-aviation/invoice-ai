@@ -1257,16 +1257,48 @@ function TripBundlePanel({ tripId }: { tripId: string }) {
   const [sending, setSending] = useState(false);
   const [sendResult, setSendResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [downloading, setDownloading] = useState(false);
+  type AutoSelectEntry = { doc_id: string | number; document_name: string; reason: string; country: string; is_required: boolean };
+  const [autoSelectData, setAutoSelectData] = useState<{ autoSelected: Record<string, AutoSelectEntry[]>; countriesResolved: Array<{ name: string; iso_code: string; type: string }> } | null>(null);
+  const [autoSelectedIds, setAutoSelectedIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
-    fetch(`/api/ops/intl/trip-bundle?trip_id=${tripId}`)
-      .then((r) => r.json())
-      .then((d) => setData(d))
-      .finally(() => setLoading(false));
+    Promise.all([
+      fetch(`/api/ops/intl/trip-bundle?trip_id=${tripId}`).then((r) => r.json()),
+      fetch(`/api/ops/intl/trip-bundle/auto-select?trip_id=${tripId}`).then((r) => r.json()).catch(() => null),
+    ]).then(([bundleData, autoData]) => {
+      setData(bundleData);
+      if (autoData?.autoSelected) {
+        setAutoSelectData(autoData);
+        // Pre-check auto-selected doc IDs
+        const ids = new Set<string>();
+        for (const docs of Object.values(autoData.autoSelected) as AutoSelectEntry[][]) {
+          for (const d of docs) {
+            if (d.doc_id !== "__all_crew__") ids.add(String(d.doc_id));
+          }
+        }
+        // If "all crew" flag, select all crew docs
+        const allCrew = (Object.values(autoData.autoSelected) as AutoSelectEntry[][]).flat().some((d) => d.doc_id === "__all_crew__");
+        if (allCrew && bundleData?.crewDocs) {
+          for (const docs of Object.values(bundleData.crewDocs) as Array<{ id: number }[]>) {
+            for (const d of docs) ids.add(String(d.id));
+          }
+        }
+        setSelected(ids);
+        setAutoSelectedIds(ids);
+      }
+    }).finally(() => setLoading(false));
   }, [tripId]);
 
   if (loading) return <p className="mt-4 text-xs text-gray-400 animate-pulse">Loading documents...</p>;
   if (!data) return null;
+
+  // Build country badge lookup for auto-selected docs
+  const docCountryMap = new Map<string, string>();
+  if (autoSelectData?.autoSelected) {
+    for (const docs of Object.values(autoSelectData.autoSelected) as AutoSelectEntry[][]) {
+      for (const d of docs) docCountryMap.set(String(d.doc_id), d.country);
+    }
+  }
 
   const allDocs: BundleDoc[] = [
     ...data.tripDocs.map((d) => ({ ...d, section: "Trip" })),
@@ -1335,6 +1367,9 @@ function TripBundlePanel({ tripId }: { tripId: string }) {
               <div key={d.id} className="flex items-center gap-2 rounded px-2 py-1.5 hover:bg-gray-50 group">
                 <input type="checkbox" checked={selected.has(`${d.id}`)} onChange={() => toggleDoc(`${d.id}`)} className="rounded border-gray-300" />
                 <span className="flex-1 text-sm text-gray-900 truncate">{d.section === "Trip" ? d.category : d.document_name}</span>
+                {docCountryMap.has(String(d.id)) && (
+                  <span className="text-[9px] px-1 py-0.5 rounded bg-blue-100 text-blue-700 font-semibold">{docCountryMap.get(String(d.id))}</span>
+                )}
                 <span className="text-xs text-gray-400 hidden group-hover:inline">{d.section === "Trip" ? d.document_name : d.category}</span>
                 {d.signed_url && (
                   <>
@@ -1364,6 +1399,18 @@ function TripBundlePanel({ tripId }: { tripId: string }) {
               </div>
             ))}
           </div>
+        </div>
+      )}
+      {/* Auto-selection summary */}
+      {autoSelectData?.countriesResolved && autoSelectData.countriesResolved.length > 0 && (
+        <div className="mt-3 flex items-center gap-2 text-xs">
+          <span className="text-gray-500">Auto-selected for:</span>
+          {autoSelectData.countriesResolved.map((c) => (
+            <span key={c.iso_code} className={`px-1.5 py-0.5 rounded font-semibold ${c.type === "landing" ? "bg-blue-100 text-blue-700" : "bg-orange-100 text-orange-700"}`}>
+              {c.iso_code} {c.type === "overflight" ? "(ovf)" : ""}
+            </span>
+          ))}
+          <span className="text-gray-400">({autoSelectedIds.size} docs pre-checked)</span>
         </div>
       )}
       <DocSection title="Trip Documents" docs={allDocs.filter((d) => d.section === "Trip")} sectionKey="trip" />
@@ -2338,6 +2385,126 @@ function CountryDetail({ country, requirements, loadingReqs, onAddReq, showAddRe
           </div>
         )}
       </div>
+
+      {/* Document Rules */}
+      <DocRulesSection countryId={country.id} />
+    </div>
+  );
+}
+
+/** Document rules section for a country profile */
+function DocRulesSection({ countryId }: { countryId: string }) {
+  type DocRule = { id: string; doc_category: string; match_type: string; match_value: string | null; is_required: boolean; applies_to: string; notes: string | null };
+  const [rules, setRules] = useState<DocRule[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showAdd, setShowAdd] = useState(false);
+  const [newRule, setNewRule] = useState({ doc_category: "aircraft", match_type: "name_contains", match_value: "", applies_to: "landing", notes: "" });
+
+  useEffect(() => {
+    setLoading(true);
+    fetch(`/api/ops/intl/countries/${countryId}/document-rules`)
+      .then((r) => r.json())
+      .then((d) => setRules(d.rules ?? []))
+      .finally(() => setLoading(false));
+  }, [countryId]);
+
+  const addRule = async () => {
+    if (!newRule.match_value && newRule.match_type !== "all") return;
+    const res = await fetch(`/api/ops/intl/countries/${countryId}/document-rules`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(newRule),
+    });
+    if (res.ok) {
+      const { rule } = await res.json();
+      setRules((prev) => [...prev, rule]);
+      setShowAdd(false);
+      setNewRule({ doc_category: "aircraft", match_type: "name_contains", match_value: "", applies_to: "landing", notes: "" });
+    }
+  };
+
+  const deleteRule = async (ruleId: string) => {
+    await fetch(`/api/ops/intl/countries/${countryId}/document-rules?rule_id=${ruleId}`, { method: "DELETE" });
+    setRules((prev) => prev.filter((r) => r.id !== ruleId));
+  };
+
+  const catColor: Record<string, string> = {
+    trip: "bg-indigo-100 text-indigo-700",
+    crew: "bg-green-100 text-green-700",
+    aircraft: "bg-blue-100 text-blue-700",
+    company: "bg-gray-100 text-gray-600",
+  };
+
+  return (
+    <div className="mt-6">
+      <div className="flex items-center justify-between mb-2">
+        <h4 className="text-sm font-semibold text-gray-700">Required Documents</h4>
+        <button onClick={() => setShowAdd(!showAdd)} className="text-xs text-blue-600 hover:text-blue-800">+ Add Rule</button>
+      </div>
+
+      {showAdd && (
+        <div className="flex flex-wrap gap-2 items-end mb-3 p-3 bg-white border border-gray-200 rounded">
+          <div>
+            <label className="text-[10px] text-gray-500 block">Category</label>
+            <select value={newRule.doc_category} onChange={(e) => setNewRule({ ...newRule, doc_category: e.target.value })} className="text-xs border border-gray-300 rounded px-2 py-1">
+              <option value="trip">Trip</option>
+              <option value="crew">Crew</option>
+              <option value="aircraft">Aircraft</option>
+              <option value="company">Company</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-[10px] text-gray-500 block">Match</label>
+            <select value={newRule.match_type} onChange={(e) => setNewRule({ ...newRule, match_type: e.target.value })} className="text-xs border border-gray-300 rounded px-2 py-1">
+              <option value="name_contains">Name contains</option>
+              <option value="exact_name">Exact name</option>
+              <option value="all">All in category</option>
+            </select>
+          </div>
+          {newRule.match_type !== "all" && (
+            <div className="flex-1">
+              <label className="text-[10px] text-gray-500 block">Document name to match</label>
+              <input value={newRule.match_value} onChange={(e) => setNewRule({ ...newRule, match_value: e.target.value })} placeholder="e.g. Mexico Insurance" className="w-full text-xs border border-gray-300 rounded px-2 py-1" />
+            </div>
+          )}
+          <div>
+            <label className="text-[10px] text-gray-500 block">Applies to</label>
+            <select value={newRule.applies_to} onChange={(e) => setNewRule({ ...newRule, applies_to: e.target.value })} className="text-xs border border-gray-300 rounded px-2 py-1">
+              <option value="landing">Landing</option>
+              <option value="overflight">Overflight</option>
+              <option value="both">Both</option>
+            </select>
+          </div>
+          <div className="flex-1">
+            <label className="text-[10px] text-gray-500 block">Notes</label>
+            <input value={newRule.notes} onChange={(e) => setNewRule({ ...newRule, notes: e.target.value })} placeholder="Optional" className="w-full text-xs border border-gray-300 rounded px-2 py-1" />
+          </div>
+          <button onClick={addRule} className="px-3 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700">Save</button>
+          <button onClick={() => setShowAdd(false)} className="px-2 py-1 text-xs text-gray-500">Cancel</button>
+        </div>
+      )}
+
+      {loading ? (
+        <p className="text-xs text-gray-400 animate-pulse">Loading...</p>
+      ) : rules.length === 0 ? (
+        <p className="text-xs text-gray-400">No document rules defined. Add rules to auto-select documents for trips to this country.</p>
+      ) : (
+        <div className="space-y-1.5">
+          {rules.map((r) => (
+            <div key={r.id} className="flex items-center gap-2 bg-white border border-gray-200 rounded px-3 py-2 group hover:border-gray-300">
+              <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${catColor[r.doc_category] ?? "bg-gray-100 text-gray-600"}`}>{r.doc_category}</span>
+              <span className="text-sm text-gray-800">
+                {r.match_type === "all" ? <em>All {r.doc_category} docs</em> : (
+                  <>{r.match_type === "name_contains" ? "contains" : "exact"}: <span className="font-medium">&ldquo;{r.match_value}&rdquo;</span></>
+                )}
+              </span>
+              <span className={`text-[10px] px-1 py-0.5 rounded ${r.applies_to === "landing" ? "bg-blue-50 text-blue-600" : r.applies_to === "overflight" ? "bg-orange-50 text-orange-600" : "bg-purple-50 text-purple-600"}`}>{r.applies_to}</span>
+              {r.notes && <span className="text-xs text-gray-400 truncate">{r.notes}</span>}
+              <button onClick={() => deleteRule(r.id)} className="ml-auto opacity-0 group-hover:opacity-100 text-xs text-red-400 hover:text-red-600">Delete</button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

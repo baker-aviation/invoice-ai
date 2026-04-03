@@ -8,11 +8,13 @@ import DispatchFlights from "./DispatchFlights";
 import CreateFlight from "./CreateFlight";
 import WebhookEvents from "./WebhookEvents";
 import FuelEfficiency from "./FuelEfficiency";
+import ClimbAnalysis from "./ClimbAnalysis";
 
 const TABS = [
   { id: "fbo", label: "FBO Fuel Check" },
   { id: "tankering", label: "Tankering Plans" },
   { id: "efficiency", label: "Fuel Efficiency" },
+  { id: "climb", label: "Climb Analysis" },
   { id: "dispatch", label: "Dispatch" },
   { id: "create", label: "Push Flight" },
   { id: "webhooks", label: "Webhooks" },
@@ -49,6 +51,7 @@ export default function FuelPlanningPage() {
       {tab === "fbo" && <ForeFlightClient />}
       {tab === "tankering" && <TankeringDashboard />}
       {tab === "efficiency" && <FuelEfficiency />}
+      {tab === "climb" && <ClimbAnalysis />}
       {tab === "dispatch" && <DispatchFlights />}
       {tab === "create" && <CreateFlight />}
       {tab === "webhooks" && <WebhookEvents />}

@@ -10,6 +10,87 @@ const DELAY_MS = 500;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+interface Waypoint {
+  identifier: string;
+  altitude: number;
+  timeOverWaypoint: string;
+  latitude?: number;
+  longitude?: number;
+  airway?: { identifier: string; airwayType: string } | null;
+}
+
+/** Extract waypoints + compute flight phases from route information */
+function extractPhases(routeInfo: Record<string, unknown>, flightId: string) {
+  const wps = (routeInfo?.waypoints ?? []) as Waypoint[];
+  if (wps.length < 2) return null;
+
+  const parseT = (s: string) => new Date(s).getTime();
+
+  // Build waypoint rows
+  const waypointRows = wps.map((wp, i) => ({
+    foreflight_id: flightId,
+    seq: i,
+    identifier: wp.identifier,
+    altitude_fl: Math.round(wp.altitude),
+    time_over: wp.timeOverWaypoint || null,
+    latitude: wp.latitude ?? null,
+    longitude: wp.longitude ?? null,
+    airway: wp.airway?.identifier ?? null,
+    airway_type: wp.airway?.airwayType ?? null,
+    is_toc: wp.identifier === "-TOC-",
+    is_tod: wp.identifier === "-TOD-",
+  }));
+
+  // Compute phase summary
+  const depTime = parseT(wps[0].timeOverWaypoint);
+  const arrTime = parseT(wps[wps.length - 1].timeOverWaypoint);
+  const toc = wps.find((w) => w.identifier === "-TOC-");
+  const tod = wps.find((w) => w.identifier === "-TOD-");
+
+  if (!toc || !tod || isNaN(depTime) || isNaN(arrTime)) return { waypointRows, phases: null };
+
+  const tocTime = parseT(toc.timeOverWaypoint);
+  const todTime = parseT(tod.timeOverWaypoint);
+  const totalMin = (arrTime - depTime) / 60_000;
+  const climbMin = (tocTime - depTime) / 60_000;
+  const cruiseMin = (todTime - tocTime) / 60_000;
+  const descentMin = (arrTime - todTime) / 60_000;
+
+  if (totalMin <= 0) return { waypointRows, phases: null };
+
+  // Find max altitude and count step climbs during cruise
+  const cruiseWps = wps.filter((w) => {
+    const t = parseT(w.timeOverWaypoint);
+    return t >= tocTime && t <= todTime && w.identifier !== "-TOC-" && w.identifier !== "-TOD-";
+  });
+  const maxAlt = Math.max(toc.altitude, tod.altitude, ...cruiseWps.map((w) => w.altitude));
+  let stepClimbs = 0;
+  let prevAlt = toc.altitude;
+  for (const wp of cruiseWps) {
+    if (Math.abs(wp.altitude - prevAlt) >= 10) stepClimbs++;
+    prevAlt = wp.altitude;
+  }
+
+  return {
+    waypointRows,
+    phases: {
+      foreflight_id: flightId,
+      climb_min: Math.round(climbMin * 10) / 10,
+      cruise_min: Math.round(cruiseMin * 10) / 10,
+      descent_min: Math.round(descentMin * 10) / 10,
+      total_min: Math.round(totalMin * 10) / 10,
+      climb_pct: Math.round((climbMin / totalMin) * 1000) / 10,
+      cruise_pct: Math.round((cruiseMin / totalMin) * 1000) / 10,
+      descent_pct: Math.round((descentMin / totalMin) * 1000) / 10,
+      initial_alt_fl: Math.round(toc.altitude),
+      max_alt_fl: Math.round(maxAlt),
+      final_cruise_fl: Math.round(tod.altitude),
+      step_climbs: stepClimbs,
+      cruise_profile: (routeInfo?.cruiseProfile as string) ?? null,
+    },
+  };
+}
+
 /**
  * POST /api/fuel-planning/sync-predictions
  *
@@ -173,6 +254,19 @@ export async function POST(req: NextRequest) {
           },
           { onConflict: "foreflight_id" },
         );
+
+        // Store waypoints + flight phases
+        if (routeInfo) {
+          const result = extractPhases(routeInfo as Record<string, unknown>, flightId);
+          if (result?.waypointRows?.length) {
+            // Delete existing waypoints for this flight (in case of re-sync)
+            await supa.from("foreflight_waypoints").delete().eq("foreflight_id", flightId);
+            await supa.from("foreflight_waypoints").insert(result.waypointRows);
+          }
+          if (result?.phases) {
+            await supa.from("foreflight_flight_phases").upsert(result.phases, { onConflict: "foreflight_id" });
+          }
+        }
 
         stored++;
       } catch (err) {
