@@ -152,7 +152,8 @@ export async function GET(req: NextRequest) {
         });
       }
     } else if (rule.match_type === "exact_name") {
-      const match = categoryDocs.find((d) => d.document_name === rule.match_value);
+      // Match against document_name OR category
+      const match = categoryDocs.find((d) => d.document_name === rule.match_value || d.category === rule.match_value);
       if (match) {
         autoSelected[rule.doc_category].push({
           doc_id: match.id,
@@ -163,8 +164,12 @@ export async function GET(req: NextRequest) {
         });
       }
     } else if (rule.match_type === "name_contains" && rule.match_value) {
+      // Match against document_name OR category (case-insensitive)
       const needle = rule.match_value.toLowerCase();
-      const matches = categoryDocs.filter((d) => d.document_name.toLowerCase().includes(needle));
+      const matches = categoryDocs.filter((d) =>
+        d.document_name.toLowerCase().includes(needle) ||
+        d.category.toLowerCase().includes(needle)
+      );
       for (const match of matches) {
         autoSelected[rule.doc_category].push({
           doc_id: match.id,
