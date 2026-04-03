@@ -25,6 +25,7 @@ interface Pilot {
   avgClimbMin: number | null; avgClimbPct: number | null;
   avgInitialAlt: number | null; avgMaxAlt: number | null; totalStepClimbs: number;
   byType: ByType[]; insights: string[]; recentFlights: RecentFlight[];
+  costImpact: number; extraLbs: number; extraGal: number;
 }
 interface FleetTypeStats { avgBurnRate: number; avgLbsNm: number; avgClimbPct: number; avgInitialAlt: number; flights: number; hours: number }
 interface Tail { tail: string; type: string; flights: number; avgBurnRate: number; avgLbsNm: number; variancePct: number }
@@ -230,6 +231,17 @@ export default function UnifiedFuelEfficiency() {
             </>
           ) : <p className="text-sm text-gray-400">—</p>}
         </div>
+        {(() => {
+          const totalCost = sortedPilots.reduce((s, p) => s + (p.costImpact > 0 ? p.costImpact : 0), 0);
+          const savingsIfBest = sortedPilots.reduce((s, p) => s + Math.max(0, p.costImpact), 0);
+          return (
+            <div className="rounded-lg border border-gray-200 bg-white px-4 py-3">
+              <p className="text-xs text-gray-500">Savings Opportunity</p>
+              <p className="text-xl font-bold text-red-600">${savingsIfBest.toLocaleString()}</p>
+              <p className="text-xs text-gray-400">if all pilots matched fleet avg</p>
+            </div>
+          );
+        })()}
       </div>
 
       {/* ─── Phase Legend + Sort ─── */}
@@ -296,6 +308,13 @@ export default function UnifiedFuelEfficiency() {
                     {p.ffVariancePct != null ? `${p.ffVariancePct > 0 ? "+" : ""}${p.ffVariancePct}%` : "—"}
                   </div>
                   <div className="text-xs text-gray-400">{p.matchedPredictions} matched</div>
+                </div>
+                <div className="text-right">
+                  <div className="text-[10px] text-gray-400 uppercase">Cost Impact</div>
+                  <div className={`font-bold ${p.costImpact > 0 ? "text-red-600" : p.costImpact < -100 ? "text-green-600" : "text-gray-600"}`}>
+                    {p.costImpact > 0 ? "+" : ""}{p.costImpact < 0 ? "-" : ""}${Math.abs(p.costImpact).toLocaleString()}
+                  </div>
+                  <div className="text-xs text-gray-400">{p.extraLbs > 0 ? "+" : ""}{p.extraLbs.toLocaleString()} lbs</div>
                 </div>
               </div>
             </button>

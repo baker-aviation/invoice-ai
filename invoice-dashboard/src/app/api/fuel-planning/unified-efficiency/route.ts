@@ -655,6 +655,24 @@ export async function GET(req: NextRequest) {
         );
       }
 
+      // Cost impact vs fleet average
+      // Extra lbs = actual burn - (fleet avg lbs/NM × same NM flown)
+      const PPG = 6.7; // lbs per gallon Jet-A
+      const PRICE_PER_GAL = 7.0;
+      let expectedBurnAtFleetAvg = 0;
+      for (const [type, data] of p.byType) {
+        expectedBurnAtFleetAvg += (fleetAvgLbsNm[type] ?? 0) * data.nm;
+      }
+      const extraLbs = Math.round(p.totalBurn - expectedBurnAtFleetAvg);
+      const extraGal = Math.round(extraLbs / PPG);
+      const costImpact = Math.round(extraGal * PRICE_PER_GAL);
+
+      if (costImpact > 500) {
+        insights.push(
+          `Fuel cost ${costImpact > 0 ? "+" : ""}$${Math.abs(costImpact).toLocaleString()} vs fleet average over ${p.flights} flights.`,
+        );
+      }
+
       return {
         name: p.name,
         flights: p.flights,
@@ -674,6 +692,9 @@ export async function GET(req: NextRequest) {
         byType,
         insights,
         recentFlights: p.recentFlights,
+        costImpact,
+        extraLbs,
+        extraGal,
       };
     })
     .sort((a, b) => b.lbsNmVariancePct - a.lbsNmVariancePct);
