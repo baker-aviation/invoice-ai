@@ -6,6 +6,7 @@ import FileViewer from "./FileViewer";
 import FormLinkButton from "./FormLinkButton";
 import AttachFileButton from "./AttachFileButton";
 import PrdParseButton from "./PrdParseButton";
+import PrdPdfViewer from "./PrdPdfViewer";
 import TypeRatingsEditor from "./TypeRatingsEditor";
 import ProfileEditor from "./ProfileEditor";
 import ReviewBadge from "./ReviewBadge";
@@ -444,14 +445,9 @@ export default async function JobDetailPage({
                   </div>
                 )}
 
-                {/* Inline PDF viewer */}
+                {/* Collapsible PDF viewer */}
                 {prdUrl ? (
-                  <iframe
-                    src={prdUrl}
-                    className="w-full rounded-lg border border-gray-200"
-                    style={{ height: "600px" }}
-                    title="PRD Document"
-                  />
+                  <PrdPdfViewer url={prdUrl} />
                 ) : (
                   <p className="text-sm text-gray-400">No PRD uploaded yet.</p>
                 )}
