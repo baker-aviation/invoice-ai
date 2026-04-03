@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyCronSecret } from "@/lib/api-auth";
-import { runScheduleSync } from "@/lib/jetinsight/schedule-sync";
+import { runScheduleSync, syncSalespersons } from "@/lib/jetinsight/schedule-sync";
 
 export const maxDuration = 60;
 
@@ -15,7 +15,10 @@ export async function GET(req: NextRequest) {
   try {
     const result = await runScheduleSync();
 
-    if (result.sessionExpired) {
+    // Also sync salespersons for new trips
+    const salResult = await syncSalespersons();
+
+    if (result.sessionExpired || salResult.sessionExpired) {
       return NextResponse.json({
         ok: false,
         error: "Session expired — Slack DM sent",

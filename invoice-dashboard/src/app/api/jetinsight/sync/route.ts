@@ -7,7 +7,7 @@ import {
   syncAircraftDocs,
   syncCompanyDocs,
 } from "@/lib/jetinsight/scraper";
-import { runScheduleSync } from "@/lib/jetinsight/schedule-sync";
+import { runScheduleSync, syncSalespersons } from "@/lib/jetinsight/schedule-sync";
 import { syncTripDocs } from "@/lib/jetinsight/trip-sync";
 import { syncPostFlightData } from "@/lib/jetinsight/postflight-sync";
 
@@ -291,6 +291,12 @@ export async function POST(req: NextRequest) {
     if (syncType === "company_docs") {
       const result = await syncCompanyDocs(cookie);
       return NextResponse.json({ ok: true, result });
+    }
+
+    // ── Salesperson sync ──────────────────────────────────────────
+    if (syncType === "salespersons") {
+      const result = await syncSalespersons();
+      return NextResponse.json({ ok: !result.sessionExpired, result });
     }
 
     return NextResponse.json(
