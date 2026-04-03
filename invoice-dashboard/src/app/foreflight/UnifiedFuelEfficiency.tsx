@@ -117,26 +117,45 @@ export default function UnifiedFuelEfficiency() {
     setSyncing(false);
   }
 
-  // Sync FlightAware ADS-B tracks
+  // Sync FlightAware ADS-B tracks (two-step: discover → fetch)
   async function syncTracks() {
     setSyncing(true);
-    setSyncMsg("Syncing ADS-B altitude tracks...");
-    let totalStored = 0;
-    let done = false;
+    setSyncMsg("Discovering historical flights from FlightAware...");
     try {
-      while (!done) {
+      // Step 1: Discover flights by callsign
+      const discoverRes = await fetch("/api/fuel-planning/sync-tracks", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "discover" }),
+        signal: AbortSignal.timeout(280_000),
+      });
+      const discoverData = await discoverRes.json();
+      if (!discoverRes.ok) throw new Error(discoverData.error);
+
+      const flights = discoverData.flights as Array<{ id: string; tail: string; origin: string; dest: string; date: string }>;
+      if (flights.length === 0) {
+        setSyncMsg(`All flights already synced (${discoverData.alreadySynced} tracks stored)`);
+        setSyncing(false);
+        return;
+      }
+
+      setSyncMsg(`Found ${flights.length} new flights across ${discoverData.callsigns} aircraft. Pulling tracks...`);
+
+      // Step 2: Fetch tracks in batches
+      let totalStored = 0;
+      const batchSize = 5;
+      for (let i = 0; i < flights.length; i += batchSize) {
+        const batch = flights.slice(i, i + batchSize);
+        setSyncMsg(`Pulling tracks ${i + 1}–${Math.min(i + batchSize, flights.length)} of ${flights.length}... (${totalStored} stored)`);
         const res = await fetch("/api/fuel-planning/sync-tracks", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "fetch" }),
-          signal: AbortSignal.timeout(280_000),
+          body: JSON.stringify({ faFlightIds: batch }),
+          signal: AbortSignal.timeout(60_000),
         });
         const d = await res.json();
         if (!res.ok) throw new Error(d.error);
         totalStored += d.stored ?? 0;
-        setSyncMsg(`Syncing ADS-B tracks... ${totalStored} stored, ${d.remaining ?? 0} remaining`);
-        if (d.done) done = true;
       }
-      setSyncMsg(`Done: ${totalStored} ADS-B tracks synced`);
+      setSyncMsg(`Done: ${totalStored} ADS-B tracks synced (${flights.length} flights processed)`);
     } catch (err) { setSyncMsg(`Error: ${err instanceof Error ? err.message : String(err)}`); }
     setSyncing(false);
   }

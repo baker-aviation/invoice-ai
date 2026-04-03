@@ -5,17 +5,22 @@ import { getFlightTrack } from "@/lib/flightaware";
 
 export const maxDuration = 300;
 
-const BATCH_SIZE = 5; // FA rate limit is ~1/sec, 5 with 1.2s delay = ~6s per batch
+const FA_BASE = "https://aeroapi.flightaware.com/aeroapi";
+const BATCH_SIZE = 5;
 const DELAY_MS = 1200;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+function faHeaders() {
+  return { "x-apikey": process.env.FLIGHTAWARE_API_KEY!, Accept: "application/json; charset=UTF-8" };
+}
+
 /**
  * POST /api/fuel-planning/sync-tracks
  *
- * Two modes:
- *   1. { action: "list" }   — find completed flights with fa_flight_id but no stored track
- *   2. { action: "fetch" }  — fetch and store tracks for next batch of unsynced flights
+ * Two-step flow:
+ *   1. { action: "discover" } — query FA historical flights by callsign, return new IDs
+ *   2. { faFlightIds: [...] } — pull and store tracks for specific flights
  */
 export async function POST(req: NextRequest) {
   const auth = await requireAdmin(req);
@@ -25,152 +30,165 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "FLIGHTAWARE_API_KEY not configured" }, { status: 500 });
   }
 
-  let body: { action?: string };
+  let body: { action?: string; faFlightIds?: Array<{ id: string; tail: string; origin: string; dest: string; date: string }> };
   try { body = await req.json(); } catch { body = {}; }
 
   const supa = createServiceClient();
 
   try {
-    // Find fa_flights that have landed and don't have stored tracks yet
-    // Pull tracks for last 2 months (can expand later — FA retains ~11 months)
-    const cutoff = new Date();
-    cutoff.setMonth(cutoff.getMonth() - 2);
+    // ─── Step 1: Discover FA flights matching our fleet ───
+    if (body.action === "discover") {
+      // Get tail→callsign mapping
+      const { data: faFlights } = await supa
+        .from("fa_flights")
+        .select("tail, ident")
+        .limit(500);
 
-    const { data: faFlights } = await supa
-      .from("fa_flights")
-      .select("fa_flight_id, tail, origin_icao, destination_icao, departure_time")
-      .or("status.eq.Landed,status.eq.Arrived")
-      .not("fa_flight_id", "is", null)
-      .gte("departure_time", cutoff.toISOString())
-      .order("departure_time", { ascending: false })
-      .limit(5000);
+      const callsignMap = new Map<string, string>();
+      for (const f of (faFlights ?? []) as Array<{ tail: string; ident: string }>) {
+        if (f.tail && f.ident && !callsignMap.has(f.tail)) {
+          callsignMap.set(f.tail, f.ident);
+        }
+      }
 
-    const worthPulling = faFlights ?? [];
+      // Already-stored tracks
+      const { data: existingTracks } = await supa
+        .from("flightaware_tracks")
+        .select("fa_flight_id")
+        .limit(10000);
+      const existingIds = new Set((existingTracks ?? []).map((t: { fa_flight_id: string }) => t.fa_flight_id));
 
-    const { data: existingTracks } = await supa
-      .from("flightaware_tracks")
-      .select("fa_flight_id")
-      .limit(10000);
+      // Last 2 months
+      const endDate = new Date();
+      const startDate = new Date();
+      startDate.setMonth(startDate.getMonth() - 2);
 
-    const existingIds = new Set((existingTracks ?? []).map((t: { fa_flight_id: string }) => t.fa_flight_id));
-    const needsSync = worthPulling.filter((f: { fa_flight_id: string }) => !existingIds.has(f.fa_flight_id));
+      const discovered: Array<{ id: string; tail: string; origin: string; dest: string; date: string }> = [];
+      const errors: string[] = [];
 
-    if (body.action === "list") {
+      for (const [tail, callsign] of callsignMap) {
+        await sleep(DELAY_MS);
+        try {
+          const res = await fetch(
+            `${FA_BASE}/flights/${callsign}?start=${startDate.toISOString()}&end=${endDate.toISOString()}`,
+            { headers: faHeaders(), signal: AbortSignal.timeout(15_000) },
+          );
+          if (!res.ok) continue;
+          const data = await res.json();
+          const flights = (data.flights ?? []) as Array<{
+            fa_flight_id: string;
+            origin?: { code_icao?: string };
+            destination?: { code_icao?: string };
+            actual_off?: string;
+            scheduled_off?: string;
+            status?: string;
+          }>;
+
+          for (const f of flights) {
+            if (existingIds.has(f.fa_flight_id)) continue;
+            const status = (f.status ?? "").toLowerCase();
+            if (!status.includes("arrived") && !status.includes("landed")) continue;
+
+            const depTime = f.actual_off ?? f.scheduled_off;
+            discovered.push({
+              id: f.fa_flight_id,
+              tail,
+              origin: f.origin?.code_icao ?? "",
+              dest: f.destination?.code_icao ?? "",
+              date: depTime ? new Date(depTime).toISOString().split("T")[0] : "",
+            });
+          }
+        } catch (err) {
+          errors.push(`${callsign}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
       return NextResponse.json({
         ok: true,
-        total: worthPulling.length,
-        skippedShort: (faFlights ?? []).length - worthPulling.length,
+        callsigns: callsignMap.size,
+        discovered: discovered.length,
         alreadySynced: existingIds.size,
-        needsSync: needsSync.length,
+        flights: discovered,
+        errors: errors.length > 0 ? errors : undefined,
       });
     }
 
-    // Fetch mode — process next batch
-    if (needsSync.length === 0) {
-      return NextResponse.json({ ok: true, done: true, stored: 0, total: existingIds.size });
+    // ─── Step 2: Fetch tracks for specific flights ───
+    const faFlightIds = body.faFlightIds ?? [];
+    if (faFlightIds.length === 0) {
+      return NextResponse.json({ ok: true, done: true, stored: 0 });
     }
 
-    const batch = needsSync.slice(0, BATCH_SIZE);
+    const batch = faFlightIds.slice(0, BATCH_SIZE);
     let stored = 0;
     let skipped = 0;
     const errors: string[] = [];
 
     for (const flight of batch) {
       await sleep(DELAY_MS);
-
       try {
-        const positions = await getFlightTrack(flight.fa_flight_id);
+        const positions = await getFlightTrack(flight.id);
 
         if (!positions || positions.length === 0) {
-          // Write tombstone so we don't retry
           await supa.from("flightaware_tracks").upsert({
-            fa_flight_id: flight.fa_flight_id,
-            tail_number: flight.tail ?? "UNKNOWN",
-            origin_icao: flight.origin_icao,
-            destination_icao: flight.destination_icao,
-            flight_date: flight.departure_time
-              ? new Date(flight.departure_time).toISOString().split("T")[0]
-              : new Date().toISOString().split("T")[0],
-            positions: [],
-            position_count: 0,
+            fa_flight_id: flight.id, tail_number: flight.tail,
+            origin_icao: flight.origin, destination_icao: flight.dest,
+            flight_date: flight.date || new Date().toISOString().split("T")[0],
+            positions: [], position_count: 0,
           }, { onConflict: "fa_flight_id" });
           skipped++;
           continue;
         }
 
-        // Compute summary stats from positions
-        const altitudes = positions
-          .map((p) => p.altitude ?? 0)
-          .filter((a) => a > 0);
+        const altitudes = positions.map((p) => p.altitude ?? 0).filter((a) => a > 0);
         const maxAlt = altitudes.length > 0 ? Math.max(...altitudes) : null;
 
-        // Climb duration: time from first position to first time at max altitude
         let climbDurationSec: number | null = null;
         if (maxAlt && positions.length >= 2) {
           const firstTime = new Date(positions[0].timestamp).getTime();
-          const maxAltPos = positions.find((p) => (p.altitude ?? 0) >= maxAlt! - 5); // within 500ft
+          const maxAltPos = positions.find((p) => (p.altitude ?? 0) >= maxAlt! - 5);
           if (maxAltPos) {
             climbDurationSec = Math.round((new Date(maxAltPos.timestamp).getTime() - firstTime) / 1000);
           }
         }
 
-        // Total duration
         let totalDurationSec: number | null = null;
         if (positions.length >= 2) {
-          const first = new Date(positions[0].timestamp).getTime();
-          const last = new Date(positions[positions.length - 1].timestamp).getTime();
-          totalDurationSec = Math.round((last - first) / 1000);
+          totalDurationSec = Math.round(
+            (new Date(positions[positions.length - 1].timestamp).getTime() - new Date(positions[0].timestamp).getTime()) / 1000,
+          );
         }
 
-        const flightDate = flight.departure_time
-          ? new Date(flight.departure_time).toISOString().split("T")[0]
-          : new Date().toISOString().split("T")[0];
-
-        // Store compact positions (only fields we need for chart)
         const compactPositions = positions.map((p) => ({
-          t: p.timestamp,
-          alt: p.altitude,
-          gs: p.groundspeed,
+          t: p.timestamp, alt: p.altitude, gs: p.groundspeed,
           lat: Math.round((p.latitude ?? 0) * 10000) / 10000,
           lon: Math.round((p.longitude ?? 0) * 10000) / 10000,
         }));
 
         await supa.from("flightaware_tracks").upsert({
-          fa_flight_id: flight.fa_flight_id,
-          tail_number: flight.tail ?? "UNKNOWN",
-          origin_icao: flight.origin_icao,
-          destination_icao: flight.destination_icao,
-          flight_date: flightDate,
-          positions: compactPositions,
-          position_count: positions.length,
+          fa_flight_id: flight.id, tail_number: flight.tail,
+          origin_icao: flight.origin, destination_icao: flight.dest,
+          flight_date: flight.date || new Date().toISOString().split("T")[0],
+          positions: compactPositions, position_count: positions.length,
           max_altitude: maxAlt ? Math.round(maxAlt) : null,
-          climb_duration_sec: climbDurationSec,
-          total_duration_sec: totalDurationSec,
+          climb_duration_sec: climbDurationSec, total_duration_sec: totalDurationSec,
         }, { onConflict: "fa_flight_id" });
 
         stored++;
       } catch (err) {
-        errors.push(`${flight.fa_flight_id}: ${err instanceof Error ? err.message : String(err)}`);
-        // Tombstone on error
+        errors.push(`${flight.id}: ${err instanceof Error ? err.message : String(err)}`);
         await supa.from("flightaware_tracks").upsert({
-          fa_flight_id: flight.fa_flight_id,
-          tail_number: flight.tail ?? "UNKNOWN",
-          flight_date: flight.departure_time
-            ? new Date(flight.departure_time).toISOString().split("T")[0]
-            : new Date().toISOString().split("T")[0],
-          positions: [],
-          position_count: 0,
+          fa_flight_id: flight.id, tail_number: flight.tail,
+          flight_date: flight.date || new Date().toISOString().split("T")[0],
+          positions: [], position_count: 0,
         }, { onConflict: "fa_flight_id" });
       }
     }
 
     return NextResponse.json({
       ok: true,
-      done: needsSync.length <= BATCH_SIZE,
-      stored,
-      skipped,
-      remaining: needsSync.length - batch.length,
-      total: worthPulling.length,
+      stored, skipped,
+      remaining: faFlightIds.length - batch.length,
       errors: errors.length > 0 ? errors : undefined,
     });
   } catch (err) {
