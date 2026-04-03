@@ -1,6 +1,9 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import dynamic from "next/dynamic";
+
+const AltitudeProfileChart = dynamic(() => import("./AltitudeProfileChart"), { ssr: false });
 
 // ---------------------------------------------------------------------------
 // Types
@@ -70,6 +73,7 @@ export default function UnifiedFuelEfficiency() {
   const [showTails, setShowTails] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
+  const [profileFlight, setProfileFlight] = useState<string | null>(null); // "pilotName:flightIndex"
 
   const loadData = useCallback(() => {
     setLoading(true);
@@ -112,6 +116,30 @@ export default function UnifiedFuelEfficiency() {
     setSyncing(false);
   }
 
+  // Sync FlightAware ADS-B tracks
+  async function syncTracks() {
+    setSyncing(true);
+    setSyncMsg("Syncing ADS-B altitude tracks...");
+    let totalStored = 0;
+    let done = false;
+    try {
+      while (!done) {
+        const res = await fetch("/api/fuel-planning/sync-tracks", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "fetch" }),
+          signal: AbortSignal.timeout(280_000),
+        });
+        const d = await res.json();
+        if (!res.ok) throw new Error(d.error);
+        totalStored += d.stored ?? 0;
+        setSyncMsg(`Syncing ADS-B tracks... ${totalStored} stored, ${d.remaining ?? 0} remaining`);
+        if (d.done) done = true;
+      }
+      setSyncMsg(`Done: ${totalStored} ADS-B tracks synced`);
+    } catch (err) { setSyncMsg(`Error: ${err instanceof Error ? err.message : String(err)}`); }
+    setSyncing(false);
+  }
+
   // Sort pilots
   const sortedPilots = [...(data?.pilots ?? [])].sort((a, b) => {
     if (sortBy === "lbsNm") return b.lbsNmVariancePct - a.lbsNmVariancePct;
@@ -141,6 +169,10 @@ export default function UnifiedFuelEfficiency() {
           <button onClick={syncForeFlight} disabled={syncing}
             className="rounded-md bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">
             {syncing ? "Syncing..." : "Sync ForeFlight"}
+          </button>
+          <button onClick={syncTracks} disabled={syncing}
+            className="rounded-md bg-purple-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-purple-700 disabled:opacity-50">
+            {syncing ? "Syncing..." : "Sync ADS-B Tracks"}
           </button>
           <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}
             className="rounded-md border border-gray-300 px-3 py-1.5 text-sm">
@@ -332,11 +364,18 @@ export default function UnifiedFuelEfficiency() {
                       {p.recentFlights.map((f, i) => {
                         const ffHrs = f.ffTimeMin != null ? f.ffTimeMin / 60 : null;
                         const fmtH = (h: number) => { const hh = Math.floor(h); const mm = Math.round((h - hh) * 60); return `${hh}:${String(mm).padStart(2, "0")}`; };
+                        const profileKey = `${p.name}:${i}`;
+                        const showProfile = profileFlight === profileKey;
+                        const [routeOrigin, routeDest] = f.route.split("-");
                         return (
-                          <tr key={i} className="border-b border-gray-50">
+                          <tr key={i} className={`border-b border-gray-50 ${showProfile ? "bg-blue-50/30" : "hover:bg-gray-50/50 cursor-pointer"}`}
+                            onClick={() => setProfileFlight(showProfile ? null : profileKey)}>
                             <td className="py-1.5">{new Date(f.date).toLocaleDateString()}</td>
                             <td className="py-1.5">{f.tail}</td>
-                            <td className="py-1.5 font-medium">{f.route}</td>
+                            <td className="py-1.5 font-medium">
+                              {f.route}
+                              {showProfile && <span className="ml-1 text-blue-500 text-[10px]">▼</span>}
+                            </td>
                             <td className="py-1.5">{Math.round(f.nm)}</td>
                             {/* Climb */}
                             <td className="py-1.5">
@@ -363,6 +402,19 @@ export default function UnifiedFuelEfficiency() {
                             </td>
                             <td className={`py-1.5 font-medium ${pctClass(f.fleetVariance)}`}>
                               {f.fleetVariance > 0 ? "+" : ""}{f.fleetVariance}%
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {/* Altitude profile chart (renders below the clicked row's parent tbody) */}
+                      {p.recentFlights.map((f, i) => {
+                        const profileKey = `${p.name}:${i}`;
+                        if (profileFlight !== profileKey) return null;
+                        const [routeOrigin, routeDest] = f.route.split("-");
+                        return (
+                          <tr key={`profile-${i}`}>
+                            <td colSpan={13} className="p-0">
+                              <AltitudeProfileChart tail={f.tail} origin={routeOrigin} dest={routeDest} date={f.date} />
                             </td>
                           </tr>
                         );
