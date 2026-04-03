@@ -30,9 +30,13 @@ interface PilotEfficiency {
     fleetAvg: number;
     variance: number;
     startFuel: number;
+    endFuel: number;
     takeoffWt: number;
     predictedBurn: number | null;
     predictedVariance: number | null;
+    ffStartFuel: number | null;
+    ffFlightFuel: number | null;
+    ffLandingFuel: number | null;
   }>;
 }
 
@@ -259,46 +263,70 @@ export default function FuelEfficiency() {
                     })}
                   </div>
 
-                  {/* Recent flights */}
+                  {/* Recent flights — FF Predicted vs JetInsight Actual */}
                   <div className="overflow-x-auto">
                     <table className="w-full text-xs">
                       <thead>
+                        <tr className="text-left text-gray-400 text-[10px] uppercase tracking-wide">
+                          <th colSpan={4} className="pb-0.5"></th>
+                          <th colSpan={3} className="pb-0.5 text-center text-blue-500 border-b border-blue-200">ForeFlight Predicted</th>
+                          <th colSpan={3} className="pb-0.5 text-center text-gray-600 border-b border-gray-200">JetInsight Actual</th>
+                          <th colSpan={2} className="pb-0.5"></th>
+                        </tr>
                         <tr className="border-b border-gray-200 text-left text-gray-500">
-                          <th className="pb-1 font-medium">Date</th>
-                          <th className="pb-1 font-medium">Tail</th>
-                          <th className="pb-1 font-medium">Route</th>
-                          <th className="pb-1 font-medium">Hours</th>
-                          <th className="pb-1 font-medium">Actual Burn</th>
-                          <th className="pb-1 font-medium">FF Predicted</th>
-                          <th className="pb-1 font-medium">vs FF</th>
-                          <th className="pb-1 font-medium">vs Fleet</th>
-                          <th className="pb-1 font-medium">Start Fuel</th>
+                          <th className="pb-1 pt-1 font-medium">Date</th>
+                          <th className="pb-1 pt-1 font-medium">Tail</th>
+                          <th className="pb-1 pt-1 font-medium">Route</th>
+                          <th className="pb-1 pt-1 font-medium">Hours</th>
+                          <th className="pb-1 pt-1 font-medium text-blue-500">Start</th>
+                          <th className="pb-1 pt-1 font-medium text-blue-500">Flight</th>
+                          <th className="pb-1 pt-1 font-medium text-blue-500">Landing</th>
+                          <th className="pb-1 pt-1 font-medium">Start</th>
+                          <th className="pb-1 pt-1 font-medium">Burn</th>
+                          <th className="pb-1 pt-1 font-medium">Landing</th>
+                          <th className="pb-1 pt-1 font-medium">vs FF</th>
+                          <th className="pb-1 pt-1 font-medium">vs Fleet</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {p.recentFlights.map((f, i) => (
-                          <tr key={i} className="border-b border-gray-50">
-                            <td className="py-1.5">{new Date(f.date).toLocaleDateString()}</td>
-                            <td className="py-1.5">{f.tail}</td>
-                            <td className="py-1.5 font-medium">{f.route}</td>
-                            <td className="py-1.5">{f.hrs.toFixed(1)}</td>
-                            <td className="py-1.5 font-medium">{f.actualBurn.toLocaleString()} lbs</td>
-                            <td className="py-1.5 text-gray-500">
-                              {f.predictedBurn ? `${f.predictedBurn.toLocaleString()} lbs` : "—"}
-                            </td>
-                            <td className={`py-1.5 font-medium ${
-                              f.predictedVariance !== null
-                                ? f.predictedVariance > 10 ? "text-red-600" : f.predictedVariance < -5 ? "text-green-600" : "text-gray-600"
-                                : "text-gray-300"
-                            }`}>
-                              {f.predictedVariance !== null ? `${f.predictedVariance > 0 ? "+" : ""}${f.predictedVariance}%` : "—"}
-                            </td>
-                            <td className={`py-1.5 font-medium ${f.variance > 5 ? "text-red-600" : f.variance < -5 ? "text-green-600" : "text-gray-600"}`}>
-                              {f.variance > 0 ? "+" : ""}{f.variance}%
-                            </td>
-                            <td className="py-1.5 text-gray-500">{f.startFuel.toLocaleString()} lbs</td>
-                          </tr>
-                        ))}
+                        {p.recentFlights.map((f, i) => {
+                          const hasFF = f.ffStartFuel != null;
+                          const burnDelta = hasFF && f.ffFlightFuel
+                            ? Math.round(f.actualBurn - f.ffFlightFuel)
+                            : null;
+                          return (
+                            <tr key={i} className="border-b border-gray-50">
+                              <td className="py-1.5">{new Date(f.date).toLocaleDateString()}</td>
+                              <td className="py-1.5">{f.tail}</td>
+                              <td className="py-1.5 font-medium">{f.route}</td>
+                              <td className="py-1.5">{f.hrs.toFixed(1)}</td>
+                              {/* FF Predicted */}
+                              <td className="py-1.5 text-blue-600">{hasFF ? f.ffStartFuel!.toLocaleString() : "—"}</td>
+                              <td className="py-1.5 text-blue-600">{f.ffFlightFuel != null ? f.ffFlightFuel.toLocaleString() : "—"}</td>
+                              <td className="py-1.5 text-blue-600">{f.ffLandingFuel != null ? f.ffLandingFuel.toLocaleString() : "—"}</td>
+                              {/* JetInsight Actual */}
+                              <td className="py-1.5 font-medium">{f.startFuel ? f.startFuel.toLocaleString() : "—"}</td>
+                              <td className="py-1.5 font-medium">{f.actualBurn.toLocaleString()}</td>
+                              <td className="py-1.5 font-medium">{f.endFuel ? f.endFuel.toLocaleString() : "—"}</td>
+                              {/* Variance columns */}
+                              <td className={`py-1.5 font-medium ${
+                                f.predictedVariance !== null
+                                  ? f.predictedVariance > 10 ? "text-red-600" : f.predictedVariance < -5 ? "text-green-600" : "text-gray-600"
+                                  : "text-gray-300"
+                              }`}>
+                                {f.predictedVariance !== null ? `${f.predictedVariance > 0 ? "+" : ""}${f.predictedVariance}%` : "—"}
+                                {burnDelta !== null && burnDelta !== 0 && (
+                                  <span className="ml-0.5 text-gray-400 font-normal">
+                                    ({burnDelta > 0 ? "+" : ""}{burnDelta.toLocaleString()})
+                                  </span>
+                                )}
+                              </td>
+                              <td className={`py-1.5 font-medium ${f.variance > 5 ? "text-red-600" : f.variance < -5 ? "text-green-600" : "text-gray-600"}`}>
+                                {f.variance > 0 ? "+" : ""}{f.variance}%
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
