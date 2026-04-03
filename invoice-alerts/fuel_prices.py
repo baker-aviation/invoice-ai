@@ -186,6 +186,28 @@ def extract_fuel_price(invoice: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         fuel_total = _to_float(fuel_line.get("total")) or (fuel_qty * base_price)
         associated = [fuel_line]
 
+    # Step 2b: pick up discount/credit lines the parser missed qty on.
+    # These show up as negative-total lines with no quantity — common when
+    # the AI parser drops qty/unit on "Cust Discount"-style rows.
+    associated_ids = {id(li) for li in associated}
+    for li in line_items:
+        if id(li) in associated_ids:
+            continue
+        li_qty = _to_float(li.get("quantity"))
+        li_total = _to_float(li.get("total"))
+        if li_qty or not li_total or li_total >= 0:
+            continue  # has qty (handled above), no total, or not a discount
+        desc = str(li.get("description") or li.get("name") or "").lower()
+        if not any(kw in desc for kw in ("discount", "credit", "rebate", "adjust")):
+            continue
+        # Sanity: discount shouldn't exceed the fuel line total
+        if abs(li_total) > fuel_total * 0.90:
+            continue
+        candidate_effective = (fuel_total + li_total) / fuel_qty
+        if MIN_INFERRED_PRICE <= candidate_effective <= MAX_INFERRED_PRICE:
+            associated.append(li)
+            fuel_total += li_total
+
     effective_price = fuel_total / fuel_qty if fuel_qty > 0 else base_price
 
     # Detect if any associated line is an additive (FSII/Prist)
