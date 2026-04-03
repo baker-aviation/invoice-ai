@@ -14,6 +14,7 @@
 import { useState, useMemo, useRef, useCallback, useEffect } from "react";
 import type { Flight, MxNote, MelItem } from "@/lib/opsApi";
 import { FIXED_VAN_ZONES } from "@/lib/maintenanceData";
+import { getAirportInfo } from "@/lib/airportCoords";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -97,8 +98,9 @@ function todayET(): string {
 // Van Picker dropdown
 // ---------------------------------------------------------------------------
 
-function VanPicker({ currentVanId, onPick, onClose }: {
+function VanPicker({ currentVanId, arrivalIcao, onPick, onClose }: {
   currentVanId: number | null;
+  arrivalIcao?: string | null;
   onPick: (vanId: number | null) => void;
   onClose: () => void;
 }) {
@@ -111,8 +113,15 @@ function VanPicker({ currentVanId, onPick, onClose }: {
     return () => document.removeEventListener("mousedown", handler);
   }, [onClose]);
 
+  const arrInfo = arrivalIcao ? getAirportInfo(arrivalIcao.replace(/^K/, "")) : null;
+
   return (
-    <div ref={ref} className="absolute top-full left-0 z-50 mt-0.5 bg-white border border-gray-200 rounded-lg shadow-lg py-1 w-40 max-h-64 overflow-y-auto text-[10px]">
+    <div ref={ref} className="absolute top-full left-0 z-50 mt-0.5 bg-white border border-gray-200 rounded-lg shadow-lg py-1 w-52 max-h-72 overflow-y-auto text-[10px]">
+      {arrInfo && (
+        <div className="px-2 py-1.5 border-b border-gray-100 text-gray-500">
+          <span className="font-mono font-bold text-gray-700">{fmtIcao(arrivalIcao!)}</span> — {arrInfo.city}{arrInfo.state ? `, ${arrInfo.state}` : ""}
+        </div>
+      )}
       {currentVanId != null && (
         <button
           onClick={() => onPick(null)}
@@ -125,7 +134,7 @@ function VanPicker({ currentVanId, onPick, onClose }: {
         <button
           key={z.vanId}
           onClick={() => onPick(z.vanId)}
-          className={`w-full text-left px-2 py-1 hover:bg-gray-50 flex items-center gap-1.5 ${
+          className={`w-full text-left px-2 py-1.5 hover:bg-gray-50 flex items-center gap-1.5 ${
             z.vanId === currentVanId ? "bg-blue-50 font-bold" : ""
           }`}
         >
@@ -133,7 +142,8 @@ function VanPicker({ currentVanId, onPick, onClose }: {
             className="w-2.5 h-2.5 rounded-full flex-shrink-0"
             style={{ backgroundColor: VAN_COLORS[(z.vanId - 1) % VAN_COLORS.length] }}
           />
-          V{z.vanId} — {z.name}
+          <span>V{z.vanId}</span>
+          <span className="text-gray-400">{z.city}</span>
         </button>
       ))}
     </div>
@@ -495,24 +505,26 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
     } catch {}
   }, []);
 
-  // Move MX to a different cell (tail + date)
-  const moveMx = useCallback(async (noteId: string, newTail: string, newDate: string) => {
+  // Move MX to a different date (same tail — MX items stay on their aircraft)
+  const moveMx = useCallback(async (noteId: string, _tail: string, newDate: string) => {
+    const note = localMxNotes.find((n) => n.id === noteId);
+    if (!note) { setMovingMxId(null); return; }
+    const tail = note.tail_number; // always keep original tail
     setMovingMxId(null);
     setMxPopoverId(null);
-    // Optimistic update
     setLocalMxNotes((prev) => prev.map((n) =>
       n.id === noteId
-        ? { ...n, tail_number: newTail, scheduled_date: newDate, start_time: null, end_time: null }
+        ? { ...n, scheduled_date: newDate, start_time: null, end_time: null }
         : n
     ));
     try {
       await fetch(`/api/ops/mx-notes/${noteId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tail_number: newTail, scheduled_date: newDate }),
+        body: JSON.stringify({ tail_number: tail, scheduled_date: newDate }),
       });
     } catch {}
-  }, []);
+  }, [localMxNotes]);
 
   // Build grid data
   const { tailDays, tails } = useMemo(() => {
@@ -676,15 +688,19 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
                     const isToday = d === today;
                     const isCreating = createMxCell?.tail === tail && createMxCell?.date === d;
 
+                    // Only allow dropping on the same tail's row
+                    const movingNote = movingMxId ? localMxNotes.find((n) => n.id === movingMxId) : null;
+                    const isDropTarget = movingNote?.tail_number === tail;
+
                     return (
                       <div
                         key={d}
                         onClick={() => {
-                          if (movingMxId) { moveMx(movingMxId, tail, d); }
+                          if (movingMxId && isDropTarget) { moveMx(movingMxId, tail, d); }
                         }}
                         className={`group/cell relative px-1 py-1 border-r border-gray-100 last:border-r-0 min-h-[48px] space-y-0.5 overflow-visible transition-colors ${
                           isToday ? "bg-blue-50/30" : ""
-                        } ${movingMxId ? "cursor-pointer hover:bg-blue-50 hover:ring-2 hover:ring-inset hover:ring-blue-300" : ""}`}
+                        } ${isDropTarget ? "cursor-pointer hover:bg-blue-50 hover:ring-2 hover:ring-inset hover:ring-blue-300" : ""}`}
                       >
                         {/* Flight blocks */}
                         {dayFlights.map((f) => {
@@ -700,7 +716,7 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
                           return (
                             <div
                               key={f.id}
-                              className={`group relative rounded border px-1.5 py-1 cursor-default ${colors.bg} ${colors.border} ${colors.text}`}
+                              className={`group relative rounded border px-1.5 py-1 cursor-default overflow-hidden ${colors.bg} ${colors.border} ${colors.text}`}
                               title={[
                                 `${dep} -> ${arr}`,
                                 `${depTime}${arrTime ? ` - ${arrTime}` : ""}`,
@@ -754,6 +770,7 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
                               {showingPicker && (
                                 <VanPicker
                                   currentVanId={vanId}
+                                  arrivalIcao={f.arrival_icao}
                                   onPick={(v) => assignVan(f.id, v, d)}
                                   onClose={() => setVanPickerFlight(null)}
                                 />
@@ -769,7 +786,7 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
                           return (
                             <div
                               key={n.id}
-                              className={`relative rounded border px-1.5 py-1 cursor-pointer transition-colors ${
+                              className={`relative rounded border px-1.5 py-1 cursor-pointer transition-colors overflow-hidden ${
                                 isBeingMoved
                                   ? "bg-blue-100 border-blue-400 text-blue-900 ring-2 ring-blue-400 animate-pulse"
                                   : "bg-red-50 border-red-200 text-red-900 hover:bg-red-100"
