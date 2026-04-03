@@ -391,13 +391,14 @@ function MxQueueCard({ note, isOverdue }: { note: MxNote; isOverdue?: boolean })
 // Tail Detail Popup
 // ---------------------------------------------------------------------------
 
-function TailDetailPopup({ tail, mxNotes, aircraftType, pos, onClose, onEditMx }: {
+function TailDetailPopup({ tail, mxNotes, aircraftType, pos, onClose, onEditMx, onCreateMx }: {
   tail: string;
   mxNotes: MxNote[];
   aircraftType: string;
   pos: { top: number; left: number };
   onClose: () => void;
   onEditMx: (noteId: string, pos: { top: number; left: number }) => void;
+  onCreateMx: (data: { subject: string; body?: string; tail_number: string; airport_icao?: string }) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -481,6 +482,75 @@ function TailDetailPopup({ tail, mxNotes, aircraftType, pos, onClose, onEditMx }
       {tailNotes.length === 0 && (
         <div className="text-gray-400 text-center py-4">No active MX items</div>
       )}
+
+      {/* Inline create form */}
+      <InlineCreateMx tail={tail} onSubmit={onCreateMx} />
+    </div>
+  );
+}
+
+function InlineCreateMx({ tail, onSubmit }: {
+  tail: string;
+  onSubmit: (data: { subject: string; body?: string; tail_number: string; airport_icao?: string }) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [subject, setSubject] = useState("");
+  const [body, setBody] = useState("");
+  const [airport, setAirport] = useState("");
+
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        className="w-full mt-2 py-1.5 rounded border border-dashed border-gray-300 text-gray-400 hover:border-red-300 hover:text-red-500 text-[10px] font-medium transition-colors"
+      >
+        + Add MX Note
+      </button>
+    );
+  }
+
+  return (
+    <div className="mt-2 rounded border border-red-200 bg-red-50 p-2 space-y-1.5">
+      <input
+        autoFocus
+        placeholder="Subject (required)"
+        value={subject}
+        onChange={(e) => setSubject(e.target.value)}
+        className="w-full px-2 py-1.5 border border-gray-200 rounded text-xs bg-white"
+      />
+      <input
+        placeholder="Airport ICAO (optional)"
+        value={airport}
+        onChange={(e) => setAirport(e.target.value.toUpperCase())}
+        className="w-full px-2 py-1.5 border border-gray-200 rounded text-xs font-mono bg-white"
+      />
+      <textarea
+        placeholder="Details (optional)"
+        value={body}
+        onChange={(e) => setBody(e.target.value)}
+        rows={2}
+        className="w-full px-2 py-1.5 border border-gray-200 rounded text-xs resize-none bg-white"
+      />
+      <div className="flex gap-2">
+        <button
+          disabled={!subject.trim()}
+          onClick={() => {
+            onSubmit({
+              subject: subject.trim(),
+              body: body.trim() || undefined,
+              tail_number: tail,
+              airport_icao: airport.trim() || undefined,
+            });
+            setSubject(""); setBody(""); setAirport(""); setOpen(false);
+          }}
+          className="px-3 py-1.5 rounded bg-red-500 text-white text-[10px] font-medium disabled:opacity-40 hover:bg-red-600"
+        >
+          Create
+        </button>
+        <button onClick={() => setOpen(false)} className="px-3 py-1.5 rounded border border-gray-200 text-[10px] hover:bg-gray-50 bg-white">
+          Cancel
+        </button>
+      </div>
     </div>
   );
 }
@@ -1157,6 +1227,7 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
             setMxPopoverPos(editPos);
             setMxPopoverId(noteId);
           }}
+          onCreateMx={createMx}
         />
         </>
       )}
