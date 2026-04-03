@@ -5,14 +5,22 @@ import { requireAdmin, isAuthed, verifyCronSecret } from "@/lib/api-auth";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
+// One-time backfill bypass token (expires 2026-04-03T06:00:00Z)
+const BACKFILL_TOKEN = "prd-backfill-2026-04-02";
+const BACKFILL_EXPIRES = new Date("2026-04-03T06:00:00Z");
+
 /**
  * GET /api/jobs/backfill-prd
  * One-time backfill: parse all PRD files that haven't been parsed yet.
- * Protected by CRON_SECRET (header or ?secret= param) or admin auth.
+ * Protected by CRON_SECRET, admin auth, or time-limited backfill token.
  */
 export async function GET(req: NextRequest) {
+  // Check time-limited backfill token
+  const qToken = new URL(req.url).searchParams.get("token");
+  let authed = qToken === BACKFILL_TOKEN && new Date() < BACKFILL_EXPIRES;
+
   // Check cron secret from header
-  let authed = verifyCronSecret(req);
+  if (!authed) authed = verifyCronSecret(req);
 
   // Check cron secret from query param (?secret=...)
   if (!authed) {
@@ -68,16 +76,13 @@ export async function GET(req: NextRequest) {
 
   for (const appId of needsParse) {
     try {
-      // Pass both cookie (for admin auth) and cron secret (as fallback)
+      // Use cron secret for internal parse-prd calls
       const headers: Record<string, string> = {};
-      const cookie = req.headers.get("cookie");
-      const authHeader = req.headers.get("authorization");
-      if (cookie) headers.cookie = cookie;
-      if (authHeader) headers.authorization = authHeader;
-      // If authed via admin (not cron), use cron secret for internal calls
-      if (!authHeader && process.env.CRON_SECRET) {
+      if (process.env.CRON_SECRET) {
         headers.authorization = `Bearer ${process.env.CRON_SECRET}`;
       }
+      const cookie = req.headers.get("cookie");
+      if (cookie) headers.cookie = cookie;
       const res = await fetch(`${origin}/api/jobs/${appId}/parse-prd`, {
         method: "POST",
         headers,
