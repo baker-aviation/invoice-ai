@@ -73,6 +73,84 @@ function fmtHours(v: number | null): string {
 }
 
 // ---------------------------------------------------------------------------
+// File viewer (inline PDF/DOCX)
+// ---------------------------------------------------------------------------
+
+function isDocx(f: any): boolean {
+  const ct = (f.content_type ?? "").toLowerCase();
+  const fn = (f.filename ?? "").toLowerCase();
+  return ct.includes("wordprocessingml") || ct.includes("msword") || fn.endsWith(".docx") || fn.endsWith(".doc");
+}
+
+function isPdf(f: any): boolean {
+  const ct = (f.content_type ?? "").toLowerCase();
+  const fn = (f.filename ?? "").toLowerCase();
+  return ct.includes("pdf") || fn.endsWith(".pdf");
+}
+
+function FileItem({ file }: { file: any }) {
+  const [open, setOpen] = useState(false);
+  const url = file.signed_url;
+  const canViewInline = !!url && (isPdf(file) || (isDocx(file) && !!file.signed_url));
+  const viewerSrc = isPdf(file) && url
+    ? url
+    : isDocx(file) && file.signed_url
+    ? `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(file.signed_url)}`
+    : null;
+
+  const categoryLabel: Record<string, string> = {
+    resume: "Resume",
+    prd: "PRD",
+    lor: "LOR",
+    cover_letter: "Cover Letter",
+  };
+
+  return (
+    <div className="border rounded-lg overflow-hidden bg-white">
+      <div className="flex items-center justify-between gap-2 px-3 py-2 text-sm">
+        <div className="min-w-0 flex-1">
+          <div className="font-medium text-xs truncate">{file.filename ?? "file"}</div>
+          <div className="text-[10px] text-gray-400">
+            {categoryLabel[file.file_category] ?? file.file_category ?? "Document"}
+            {typeof file.size_bytes === "number" ? ` · ${(file.size_bytes / 1024).toFixed(0)} KB` : ""}
+          </div>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {canViewInline && (
+            <button
+              onClick={() => setOpen(!open)}
+              className="text-[10px] px-2 py-1 rounded border border-gray-200 hover:bg-gray-50 font-medium text-gray-600"
+            >
+              {open ? "Hide" : "View"}
+            </button>
+          )}
+          {url && (
+            <a
+              href={url}
+              target="_blank"
+              rel="noreferrer"
+              className="text-[10px] text-blue-600 hover:underline whitespace-nowrap font-medium"
+            >
+              Open →
+            </a>
+          )}
+        </div>
+      </div>
+      {open && viewerSrc && (
+        <div className="border-t bg-gray-50">
+          <iframe
+            src={viewerSrc}
+            className="w-full"
+            style={{ height: "600px" }}
+            title={file.filename ?? "file"}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Candidate Detail Panel
 // ---------------------------------------------------------------------------
 
@@ -91,8 +169,28 @@ function CandidateDetail({
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [marking, setMarking] = useState(false);
+  const [files, setFiles] = useState<any[]>([]);
+  const [filesLoading, setFilesLoading] = useState(true);
   const savedTimeout = useRef<NodeJS.Timeout | null>(null);
   const isPilot = candidate.category === "pilot_pic" || candidate.category === "pilot_sic";
+
+  // Fetch files when modal opens
+  useEffect(() => {
+    async function loadFiles() {
+      try {
+        const res = await fetch(`/api/jobs/chief-pilot/files?application_id=${candidate.application_id}`);
+        if (res.ok) {
+          const data = await res.json();
+          setFiles(data.files ?? []);
+        }
+      } catch {
+        // silent
+      } finally {
+        setFilesLoading(false);
+      }
+    }
+    loadFiles();
+  }, [candidate.application_id]);
 
   async function handleSaveNotes() {
     setSaving(true);
@@ -270,6 +368,27 @@ function CandidateDetail({
               <div className="text-sm text-gray-700 whitespace-pre-wrap">{candidate.notes}</div>
             </div>
           )}
+
+          {/* Documents */}
+          <div className="rounded-lg border border-gray-100 bg-gray-50 p-3">
+            <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+              Documents
+              {!filesLoading && files.length > 0 && (
+                <span className="font-normal text-gray-400 ml-1">({files.length})</span>
+              )}
+            </div>
+            {filesLoading ? (
+              <div className="text-xs text-gray-400">Loading documents...</div>
+            ) : files.length === 0 ? (
+              <div className="text-xs text-gray-400">No documents uploaded.</div>
+            ) : (
+              <div className="space-y-2">
+                {files.map((f) => (
+                  <FileItem key={f.id} file={f} />
+                ))}
+              </div>
+            )}
+          </div>
 
           {/* Chief Pilot Notes (editable) */}
           <div className="rounded-lg border-2 border-red-200 bg-white p-3">
