@@ -71,8 +71,10 @@ export default function ClimbAnalysis() {
   const [months, setMonths] = useState(3);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [backfilling, setBackfilling] = useState(false);
+  const [backfillMsg, setBackfillMsg] = useState<string | null>(null);
 
-  useEffect(() => {
+  function loadData() {
     setLoading(true);
     fetch(`/api/fuel-planning/climb-analysis?months=${months}`)
       .then((r) => r.json())
@@ -82,7 +84,41 @@ export default function ClimbAnalysis() {
         if (d.message) setMessage(d.message);
       })
       .finally(() => setLoading(false));
-  }, [months]);
+  }
+
+  useEffect(() => { loadData(); }, [months]);
+
+  async function backfillWaypoints() {
+    setBackfilling(true);
+    setBackfillMsg("Starting waypoint backfill...");
+    let totalBackfilled = 0;
+    let offset = 0;
+    let done = false;
+
+    try {
+      while (!done) {
+        setBackfillMsg(`Backfilling waypoints (${totalBackfilled} done, batch at ${offset})...`);
+        const res = await fetch("/api/fuel-planning/sync-predictions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "backfill-waypoints", backfillOffset: offset }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error);
+        totalBackfilled += data.backfilled ?? 0;
+        if (data.done) {
+          done = true;
+        } else {
+          offset = data.nextOffset ?? offset + 10;
+        }
+      }
+      setBackfillMsg(`Done: ${totalBackfilled} flights backfilled with waypoint data`);
+      loadData();
+    } catch (err) {
+      setBackfillMsg(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    setBackfilling(false);
+  }
 
   if (loading) return <p className="px-6 py-4 text-sm text-gray-500">Loading climb data...</p>;
 
@@ -90,12 +126,32 @@ export default function ClimbAnalysis() {
     return (
       <div className="px-6 py-8 text-center text-gray-400">
         <p>{message ?? "No climb analysis data available."}</p>
-        <p className="mt-1 text-xs">Sync ForeFlight plans from the Fuel Efficiency tab — waypoint data is captured automatically.</p>
+        <p className="mt-2">
+          <button
+            onClick={backfillWaypoints}
+            disabled={backfilling}
+            className="rounded-md bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+          >
+            {backfilling ? "Backfilling..." : "Backfill Waypoint Data"}
+          </button>
+        </p>
+        {backfillMsg && (
+          <p className={`mt-2 text-xs ${backfillMsg.startsWith("Error") ? "text-red-600" : "text-green-600"}`}>
+            {backfillMsg}
+          </p>
+        )}
+        <p className="mt-1 text-xs">This re-fetches existing ForeFlight flights to extract altitude profiles.</p>
       </div>
     );
 
   return (
     <div className="px-6 py-4 space-y-6">
+      {backfillMsg && (
+        <div className={`rounded-md px-4 py-2 text-sm ${backfillMsg.startsWith("Error") ? "bg-red-50 text-red-700" : "bg-green-50 text-green-700"}`}>
+          {backfillMsg}
+        </div>
+      )}
+
       <div className="flex items-center justify-between">
         <div>
           <h3 className="text-sm font-semibold text-gray-700">Climb &amp; Descent Analysis</h3>
@@ -104,16 +160,25 @@ export default function ClimbAnalysis() {
             Fleet avg: {fleetStats?.avgClimbMin ?? 0}m climb, FL{fleetStats?.avgInitialAlt ?? 0} initial, FL{fleetStats?.avgMaxAlt ?? 0} max
           </p>
         </div>
-        <select
-          value={months}
-          onChange={(e) => setMonths(Number(e.target.value))}
-          className="rounded-md border border-gray-300 px-3 py-1.5 text-sm"
-        >
-          <option value={1}>Last 1 month</option>
-          <option value={3}>Last 3 months</option>
-          <option value={6}>Last 6 months</option>
-          <option value={12}>Last 12 months</option>
-        </select>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={backfillWaypoints}
+            disabled={backfilling}
+            className="rounded-md bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+          >
+            {backfilling ? "Backfilling..." : "Backfill Waypoints"}
+          </button>
+          <select
+            value={months}
+            onChange={(e) => setMonths(Number(e.target.value))}
+            className="rounded-md border border-gray-300 px-3 py-1.5 text-sm"
+          >
+            <option value={1}>Last 1 month</option>
+            <option value={3}>Last 3 months</option>
+            <option value={6}>Last 6 months</option>
+            <option value={12}>Last 12 months</option>
+          </select>
+        </div>
       </div>
 
       {/* Phase legend */}
