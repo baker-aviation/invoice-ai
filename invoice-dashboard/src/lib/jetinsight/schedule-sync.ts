@@ -284,8 +284,10 @@ export async function syncSalespersons(): Promise<{
         return result;
       }
 
-      // Extract salesperson: "Salesperson: Name"
-      const match = html.match(/Salesperson:\s*<[^>]*>([^<]+)/i);
+      // Extract salesperson — HTML has tags between label and name:
+      // "Salesperson: </span><span>Britt Morque</span>"
+      const stripped = html.replace(/<[^>]+>/g, "|");
+      const match = stripped.match(/Salesperson:\s*\|*\s*([A-Z][a-zA-Z]+(?: [A-Z][a-zA-Z]+)+)/);
       const salesperson = match?.[1]?.trim();
 
       if (salesperson) {
