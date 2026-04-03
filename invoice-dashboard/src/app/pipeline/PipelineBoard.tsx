@@ -11,8 +11,8 @@ import type { HiringStage, JobRow } from "@/lib/types";
 const STAGES: { key: HiringStage; label: string; color: string }[] = [
   { key: "screening", label: "Screening", color: "bg-blue-50 border-blue-300" },
   { key: "info_session", label: "Info Session", color: "bg-cyan-50 border-cyan-300" },
-  { key: "tims_review", label: "Tim's Review", color: "bg-teal-50 border-teal-300" },
   { key: "prd_faa_review", label: "PRD / FAA Review", color: "bg-orange-50 border-orange-300" },
+  { key: "tims_review", label: "Tim's Review", color: "bg-teal-50 border-teal-300" },
   { key: "interview_scheduled", label: "Scheduled for Interview", color: "bg-fuchsia-50 border-fuchsia-300" },
   { key: "interview_post", label: "Interview Completed", color: "bg-purple-50 border-purple-300" },
   { key: "pending_offer", label: "Pending Offer", color: "bg-pink-50 border-pink-300" },

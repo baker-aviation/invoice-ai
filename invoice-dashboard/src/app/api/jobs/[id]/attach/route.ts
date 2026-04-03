@@ -124,6 +124,18 @@ export async function POST(
       return NextResponse.json({ error: "Failed to save file record" }, { status: 500 });
     }
 
+    // Auto-trigger PRD parse when a PRD file is uploaded
+    if (fileCategory === "prd") {
+      const origin = new URL(req.url).origin;
+      fetch(`${origin}/api/jobs/${applicationId}/parse-prd`, {
+        method: "POST",
+        headers: {
+          cookie: req.headers.get("cookie") ?? "",
+          authorization: req.headers.get("authorization") ?? "",
+        },
+      }).catch((e) => console.error("[attach] PRD auto-parse trigger failed:", e));
+    }
+
     return NextResponse.json({ ok: true, gcs_key: gcsKey });
   } catch (err) {
     console.error("[jobs/attach] Error:", err);
