@@ -618,7 +618,8 @@ export async function GET(req: NextRequest) {
     if (t.clearances) {
       t.clearances.sort((a: { sort_order: number }, b: { sort_order: number }) => a.sort_order - b.sort_order);
     }
-    t.jetinsight_url = jetinsightMap.get(t.flight_ids?.[0]) ?? null;
+    t.jetinsight_url = jetinsightMap.get(t.flight_ids?.[0])
+      ?? (t.jetinsight_trip_id ? `https://portal.jetinsight.com/trips/${t.jetinsight_trip_id}` : null);
     // Build schedule_snapshot from live flight data
     const snap: Record<string, { dep: string; arr: string | null }> = {};
     for (const fid of t.flight_ids ?? []) {
