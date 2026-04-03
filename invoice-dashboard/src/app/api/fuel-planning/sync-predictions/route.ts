@@ -121,7 +121,7 @@ export async function POST(req: NextRequest) {
 
   try {
     // ─── Mode 1: List flights needing sync ───
-    if (body.action === "list" || (!body.flightIds && !body.offset)) {
+    if (body.action === "list" || (!body.action && !body.flightIds && !body.offset)) {
       const months = body.months ?? 3;
       const toDate = new Date();
       const fromDate = new Date();
