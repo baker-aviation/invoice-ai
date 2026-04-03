@@ -695,9 +695,16 @@ function TripRow({ trip, countries, expanded, onToggle, onRefresh }: {
             if (ib.length > 0) tags.push({ label: "IN", done: allDone(ib), title: "US Inbound Clearance" });
             tags.push({ label: "PAX", done: hasPax, title: trip.is_positioning ? "Positioning — no pax expected" : "Passenger Data on JetInsight" });
 
-            return tags.map((t) => (
-              <span key={t.label} className={tagClass(t.done)} title={t.title}>{t.label}</span>
-            ));
+            return (
+              <>
+                {trip.is_domestic_now && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-yellow-200 text-yellow-800 animate-pulse" title="Flights may no longer be international — review this trip">DOMESTIC?</span>
+                )}
+                {tags.map((t) => (
+                  <span key={t.label} className={tagClass(t.done)} title={t.title}>{t.label}</span>
+                ))}
+              </>
+            );
           })()}
         </span>
 
