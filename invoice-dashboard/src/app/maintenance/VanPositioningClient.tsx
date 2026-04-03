@@ -845,8 +845,7 @@ function computeAllDayArrivals(allFlights: Flight[], date: string, flightInfoMap
   const arrivalsToday = allFlights.filter((f) => {
     if (!f.arrival_icao || !f.scheduled_arrival) return false;
     if (!isOnVanScheduleDate(f.scheduled_arrival, date)) return false;
-    // Skip same-airport maintenance blocks (e.g. MYNN→MYNN) — not real legs
-    if (f.departure_icao && f.departure_icao === f.arrival_icao) return false;
+    // Keep same-airport maintenance blocks (e.g. FOK→FOK APU GEN) — they need van service
     // Hide "other" category flights from the AOG schedule
     const ft = inferFlightType(f);
     const cat = getFilterCategory(ft);
@@ -878,19 +877,22 @@ function computeAllDayArrivals(allFlights: Flight[], date: string, flightInfoMap
         airport: iata,
         airportInfo: info,
         distKm: 0, // no van base yet
+        isTransitStop: false,
       };
     })
-    .filter(({ arrFlight, nextDep }) => {
-      if (!nextDep) return true;
-      // Transit filter: short ground time + same-day revenue dep = just passing through
-      if (nextDep.scheduled_departure.startsWith(date)) {
+    .map((item) => {
+      const { arrFlight, nextDep } = item;
+      // Mark transit stops (short ground time before same-day revenue departure)
+      // but keep them visible instead of filtering them out
+      if (nextDep && nextDep.scheduled_departure.startsWith(date)) {
         const arrMs = new Date(arrFlight.scheduled_arrival ?? "").getTime();
         const depMs = new Date(nextDep.scheduled_departure).getTime();
         const groundHours = (depMs - arrMs) / 3_600_000;
-        if (groundHours < 2 && !isPositioningFlight(nextDep)) return false;
+        if (groundHours < 2 && !isPositioningFlight(nextDep)) {
+          item.isTransitStop = true;
+        }
       }
-      if (isPositioningFlight(nextDep)) return true;
-      return !isOnVanScheduleDate(nextDep.scheduled_departure, date);
+      return item;
     });
 
   // Dedup by flight ID only (not by tail) — keep all arrivals per tail for multi-van support
