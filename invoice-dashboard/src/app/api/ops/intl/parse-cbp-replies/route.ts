@@ -153,31 +153,167 @@ function categorizeEmail(from: string, subject: string): EmailCategory {
 }
 
 // ---------------------------------------------------------------------------
-// Shared: find trip by tail + date
+// Route airport extraction from subject
 // ---------------------------------------------------------------------------
-async function findTrip(
+function extractRouteAirports(subject: string): string[] {
+  const clean = subject.replace(/^(Re|RE|Fwd|FW):\s*/gi, "").trim();
+  const airports: string[] = [];
+
+  // Pattern 1: //ICAO-ICAO-ICAO// or //ICAO - ICAO - ICAO//
+  const slashRoute = clean.match(/\/\/((?:[A-Z0-9]{3,4})(?:\s*-\s*[A-Z0-9]{3,4})+)\/\//);
+  if (slashRoute) {
+    airports.push(...slashRoute[1].split(/\s*-\s*/).map((s) => s.length === 3 ? `K${s}` : s));
+    return [...new Set(airports)];
+  }
+
+  // Pattern 2: Pipe-delimited with ICAO: | MMSD |
+  const pipeSegs = clean.split("|").map((s) => s.trim());
+  for (const seg of pipeSegs) {
+    if (/^[A-Z]{4}$/.test(seg) && /^[CEGKLMOPSTUVYZ]/.test(seg)) airports.push(seg);
+  }
+  if (airports.length > 0) return [...new Set(airports)];
+
+  // Pattern 3: All 4-letter ICAO-like codes (conservative — known prefixes only)
+  const icaoRe = /\b([CEGKLMOPSTUVYZ][A-Z]{3})\b/g;
+  const exclude = new Set(["NONE", "FROM", "SENT", "ASAP", "CALL", "NEED", "CREW", "FUEL", "COPY", "GATE", "HOLD", "LAND", "GOOD", "WELL", "BEST", "OVER", "BACK", "HERE", "LAST", "EACH", "ONLY", "VERY", "MUST", "THIS", "THAT", "THAN", "LIKE"]);
+  let m;
+  while ((m = icaoRe.exec(clean)) !== null) {
+    if (!exclude.has(m[1]) && !/^N\d/.test(m[1])) airports.push(m[1]);
+  }
+  return [...new Set(airports)];
+}
+
+// ---------------------------------------------------------------------------
+// Cascading match pipeline: thread → route → airport+type → tail+date
+// ---------------------------------------------------------------------------
+async function matchEmail(
   supa: ReturnType<typeof createServiceClient>,
-  tail: string | null,
-  dateStr: string | null,
-): Promise<{ tripId: string | null; confidence: "high" | "low" | "unmatched" }> {
-  if (tail && dateStr) {
-    const parsed = new Date(dateStr + "T00:00:00Z");
-    if (isNaN(parsed.getTime())) return { tripId: null, confidence: "unmatched" };
-    const dateBefore = new Date(parsed.getTime() - 86400000).toISOString().slice(0, 10);
-    const dateAfter = new Date(parsed.getTime() + 86400000).toISOString().slice(0, 10);
-    const { data: trips } = await supa
-      .from("intl_trips")
-      .select("id, trip_date")
-      .eq("tail_number", tail)
-      .gte("trip_date", dateBefore)
-      .lte("trip_date", dateAfter);
-    if (trips && trips.length > 0) {
-      const exact = trips.find((t) => t.trip_date === dateStr);
-      return { tripId: exact?.id ?? trips[0].id, confidence: exact ? "high" : "low" };
+  msg: { subject: string; from: string; conversationId?: string },
+): Promise<{ tripId: string | null; clearanceId: string | null; confidence: "high" | "low" | "unmatched"; matchMethod: string }> {
+  const { tail, dateStr } = extractTailAndDate(msg.subject);
+  const routeAirports = extractRouteAirports(msg.subject);
+  const clean = msg.subject.replace(/^(Re|RE|Fwd|FW):\s*/gi, "").trim();
+  const isOutbound = /outbound/i.test(clean);
+  const isInbound = /landing\s*rights|inbound/i.test(clean);
+  const clearanceType = isOutbound ? "outbound_clearance" : isInbound ? "inbound_clearance" : null;
+  const fromIcaoMatch = msg.from.match(/^(K[A-Z]{2,3})[-_]/i);
+  const fromIcao = fromIcaoMatch ? fromIcaoMatch[1].toUpperCase() : null;
+
+  // ── Strategy 1: Conversation thread ──
+  if (msg.conversationId) {
+    const { data: sent } = await supa
+      .from("intl_doc_emails")
+      .select("trip_id")
+      .eq("conversation_id", msg.conversationId)
+      .limit(1);
+    if (sent?.[0]?.trip_id) {
+      const tripId = sent[0].trip_id;
+      const clearanceId = await findClearanceOnTrip(supa, tripId, clearanceType, fromIcao, routeAirports);
+      return { tripId, clearanceId, confidence: "high", matchMethod: "thread" };
     }
   }
-  // No tail-only fallback — require both tail AND date to avoid wrong-trip matches
-  return { tripId: null, confidence: "unmatched" };
+
+  // ── Get candidate trips by tail + date ──
+  let candidates: Array<{ id: string; trip_date: string; route_icaos: string[] }> = [];
+  if (tail && dateStr) {
+    const parsed = new Date(dateStr + "T00:00:00Z");
+    if (!isNaN(parsed.getTime())) {
+      const dateBefore = new Date(parsed.getTime() - 86400000).toISOString().slice(0, 10);
+      const dateAfter = new Date(parsed.getTime() + 86400000).toISOString().slice(0, 10);
+      const { data } = await supa
+        .from("intl_trips")
+        .select("id, trip_date, route_icaos")
+        .eq("tail_number", tail)
+        .gte("trip_date", dateBefore)
+        .lte("trip_date", dateAfter);
+      candidates = data ?? [];
+    }
+  }
+
+  if (candidates.length === 0) {
+    return { tripId: null, clearanceId: null, confidence: "unmatched", matchMethod: "no_candidates" };
+  }
+
+  // ── Strategy 2: Route extraction → score by overlap ──
+  if (routeAirports.length > 0 && candidates.length > 1) {
+    const scored = candidates.map((t) => ({
+      ...t,
+      score: routeAirports.filter((a) => t.route_icaos.includes(a)).length,
+    }));
+    scored.sort((a, b) => b.score - a.score);
+    if (scored[0].score > 0 && scored[0].score > (scored[1]?.score ?? 0)) {
+      const tripId = scored[0].id;
+      const clearanceId = await findClearanceOnTrip(supa, tripId, clearanceType, fromIcao, routeAirports);
+      return { tripId, clearanceId, confidence: "high", matchMethod: "route" };
+    }
+  }
+
+  // ── Strategy 3: Airport + clearance type across all candidates ──
+  if (fromIcao && candidates.length > 1) {
+    for (const t of candidates) {
+      const { data: cl } = await supa
+        .from("intl_trip_clearances")
+        .select("id, clearance_type, airport_icao")
+        .eq("trip_id", t.id)
+        .eq("airport_icao", fromIcao);
+      if (cl && cl.length > 0) {
+        const match = clearanceType ? cl.find((c) => c.clearance_type === clearanceType) : cl[0];
+        if (match) {
+          return { tripId: t.id, clearanceId: match.id, confidence: "high", matchMethod: "airport_type" };
+        }
+      }
+    }
+  }
+
+  // ── Strategy 4: Single candidate → use it ──
+  if (candidates.length === 1) {
+    const tripId = candidates[0].id;
+    const clearanceId = await findClearanceOnTrip(supa, tripId, clearanceType, fromIcao, routeAirports);
+    return { tripId, clearanceId, confidence: "low", matchMethod: "tail_date" };
+  }
+
+  // ── Strategy 5: Multiple candidates, no signal → ambiguous ──
+  return { tripId: null, clearanceId: null, confidence: "unmatched", matchMethod: "ambiguous" };
+}
+
+/** Find the best clearance on a known trip using available signals */
+async function findClearanceOnTrip(
+  supa: ReturnType<typeof createServiceClient>,
+  tripId: string,
+  clearanceType: string | null,
+  fromIcao: string | null,
+  routeAirports: string[],
+): Promise<string | null> {
+  const { data: clearances } = await supa
+    .from("intl_trip_clearances")
+    .select("id, clearance_type, airport_icao, status")
+    .eq("trip_id", tripId);
+  if (!clearances?.length) return null;
+
+  let cands = clearances;
+
+  // Filter by clearance type
+  if (clearanceType) {
+    const typed = cands.filter((c) => c.clearance_type === clearanceType);
+    if (typed.length > 0) cands = typed;
+  }
+
+  // Filter by airport from email address
+  if (fromIcao) {
+    const byAirport = cands.filter((c) => c.airport_icao === fromIcao);
+    if (byAirport.length > 0) cands = byAirport;
+    else return null; // Airport doesn't match any clearance — don't guess
+  }
+
+  // Filter by route airports from subject
+  if (routeAirports.length > 0 && !fromIcao) {
+    const byRoute = cands.filter((c) => routeAirports.includes(c.airport_icao));
+    if (byRoute.length > 0) cands = byRoute;
+  }
+
+  // Prefer non-approved
+  const pending = cands.find((c) => c.status !== "approved");
+  return pending?.id ?? cands[0]?.id ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -382,7 +518,7 @@ async function runParser(lookbackHours = 48) {
   // Step 1: Fetch lightweight message list (no body — saves bandwidth + time)
   const listUrl =
     `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/mailFolders/Inbox/messages` +
-    `?$top=${pageSize}&$select=id,subject,from,receivedDateTime,hasAttachments&$orderby=receivedDateTime desc` +
+    `?$top=${pageSize}&$select=id,subject,from,receivedDateTime,hasAttachments,conversationId&$orderby=receivedDateTime desc` +
     `&$filter=receivedDateTime ge ${since}`;
 
   const listRes = await fetch(listUrl, { headers: { Authorization: `Bearer ${token}` } });
@@ -398,6 +534,7 @@ async function runParser(lookbackHours = 48) {
     subject: string;
     from: { emailAddress: { address: string; name: string } };
     receivedDateTime: string;
+    conversationId?: string;
     hasAttachments: boolean;
   };
   type GraphMessage = GraphMessageLight & { body: { content: string; contentType: string } };
@@ -431,7 +568,7 @@ async function runParser(lookbackHours = 48) {
     let msg: GraphMessage;
     try {
       const fullRes = await fetch(
-        `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/messages/${light.id}?$select=id,subject,from,receivedDateTime,body,hasAttachments`,
+        `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/messages/${light.id}?$select=id,subject,from,receivedDateTime,body,hasAttachments,conversationId`,
         { headers: { Authorization: `Bearer ${token}` } },
       );
       if (!fullRes.ok) continue;
@@ -441,57 +578,19 @@ async function runParser(lookbackHours = 48) {
     const fromAddr = msg.from.emailAddress.address;
     const category = categorizeEmail(fromAddr, msg.subject);
 
-    const { tail, dateStr } = extractTailAndDate(msg.subject);
-    const { tripId, confidence } = await findTrip(supa, tail, dateStr);
-    let clearanceId: string | null = null;
-    let matchConfidence = confidence;
+    // Use cascading match pipeline for all email types
+    const matched = await matchEmail(supa, {
+      subject: msg.subject,
+      from: fromAddr,
+      conversationId: msg.conversationId,
+    });
+    let { tripId, clearanceId } = matched;
+    const matchConfidence = matched.confidence;
+    const matchMethod = matched.matchMethod;
 
     // ── CBP emails ───────────────────────────────────────────────────
     if (category === "cbp") {
-      const clean = msg.subject.replace(/^(Re|RE|Fwd|FW):\s*/gi, "").trim();
-      const isOutbound = /outbound/i.test(clean);
-      const isInbound = /landing\s*rights|inbound/i.test(clean);
-      const clearanceType = isOutbound ? "outbound_clearance" : isInbound ? "inbound_clearance" : null;
-
-      const fromIcaoMatch = fromAddr.match(/^(K[A-Z]{2,3})[-_]/i);
-      const fromIcao = fromIcaoMatch ? fromIcaoMatch[1].toUpperCase() : null;
-
       const { status, logNumber, officer } = parseCbpBody(msg.body.content);
-
-      // Find clearance
-      if (tripId) {
-        const { data: clearances } = await supa
-          .from("intl_trip_clearances")
-          .select("id, status, clearance_type, airport_icao")
-          .eq("trip_id", tripId);
-
-        if (clearances && clearances.length > 0) {
-          let candidates = clearances;
-
-          // Filter by clearance type from subject
-          if (clearanceType) {
-            const typed = candidates.filter((c) => c.clearance_type === clearanceType);
-            if (typed.length > 0) candidates = typed;
-          }
-
-          // Filter by airport ICAO from the from address
-          if (fromIcao) {
-            const byAirport = candidates.filter((c) => c.airport_icao === fromIcao);
-            if (byAirport.length > 0) {
-              candidates = byAirport;
-              if (matchConfidence === "unmatched") matchConfidence = "low";
-            } else {
-              // Airport in email doesn't match any clearance on this trip — don't guess
-              candidates = [];
-            }
-          }
-
-          if (candidates.length > 0) {
-            const pending = candidates.find((c) => c.status !== "approved");
-            clearanceId = pending?.id ?? candidates[0]?.id ?? null;
-          }
-        }
-      }
 
       // Download attachments
       const attachments = msg.hasAttachments ? await downloadAttachments(token, mailbox, msg.id, "intl/cbp-replies") : [];
@@ -502,7 +601,7 @@ async function runParser(lookbackHours = 48) {
         from_address: fromAddr, subject: msg.subject, status,
         log_number: logNumber, officer,
         raw_body: msg.body.content.substring(0, 10000),
-        match_confidence: matchConfidence,
+        match_confidence: matchConfidence, conversation_id: msg.conversationId ?? null, match_method: matchMethod ?? null,
         attachments: attachments.length > 0 ? attachments : [],
       });
 
@@ -565,7 +664,7 @@ async function runParser(lookbackHours = 48) {
         status: isPerm ? "approved" : "info",
         log_number: null, officer: null,
         raw_body: msg.body.content.substring(0, 10000),
-        match_confidence: matchConfidence,
+        match_confidence: matchConfidence, conversation_id: msg.conversationId ?? null, match_method: matchMethod ?? null,
         attachments: attachments.length > 0 ? attachments : [],
       });
 
@@ -621,7 +720,7 @@ async function runParser(lookbackHours = 48) {
         status: handlerStatus === "confirmed" ? "approved" : "info",
         log_number: null, officer: null,
         raw_body: msg.body.content.substring(0, 10000),
-        match_confidence: matchConfidence,
+        match_confidence: matchConfidence, conversation_id: msg.conversationId ?? null, match_method: matchMethod ?? null,
         attachments: [],
       });
 

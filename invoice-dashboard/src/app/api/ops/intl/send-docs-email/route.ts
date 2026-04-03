@@ -151,41 +151,66 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Failed to authenticate with email service" }, { status: 500 });
   }
 
-  const graphPayload = {
-    message: {
-      subject: input.subject,
-      body: {
-        contentType: "HTML",
-        content: `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;">${htmlBody}</div>`,
-      },
-      toRecipients: input.to.map((addr) => ({ emailAddress: { address: addr } })),
-      ccRecipients: (input.cc ?? []).map((addr) => ({ emailAddress: { address: addr } })),
-      attachments,
+  const messagePayload = {
+    subject: input.subject,
+    body: {
+      contentType: "HTML",
+      content: `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.6;">${htmlBody}</div>`,
     },
-    saveToSentItems: true,
+    toRecipients: input.to.map((addr) => ({ emailAddress: { address: addr } })),
+    ccRecipients: (input.cc ?? []).map((addr) => ({ emailAddress: { address: addr } })),
+    attachments,
   };
 
-  const sendRes = await fetch(
-    `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/sendMail`,
+  // Step 1: Create draft message (gives us conversationId for thread matching)
+  const createRes = await fetch(
+    `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/messages`,
     {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify(graphPayload),
+      body: JSON.stringify(messagePayload),
+    },
+  );
+
+  if (!createRes.ok) {
+    const errText = await createRes.text();
+    console.error("[send-docs-email] Graph create draft failed:", createRes.status, errText);
+    return NextResponse.json(
+      { error: `Email draft failed (HTTP ${createRes.status})`, detail: errText.slice(0, 300) },
+      { status: 500 },
+    );
+  }
+
+  const draft = await createRes.json();
+  const graphMessageId = draft.id;
+  const conversationId = draft.conversationId;
+  const internetMessageId = draft.internetMessageId;
+
+  // Step 2: Send the draft
+  const sendRes = await fetch(
+    `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/messages/${graphMessageId}/send`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
     },
   );
 
   if (!sendRes.ok) {
     const errText = await sendRes.text();
-    console.error("[send-docs-email] Graph sendMail failed:", sendRes.status, errText);
+    console.error("[send-docs-email] Graph send failed:", sendRes.status, errText);
+    // Clean up draft
+    await fetch(
+      `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/messages/${graphMessageId}`,
+      { method: "DELETE", headers: { Authorization: `Bearer ${token}` } },
+    ).catch(() => {});
     return NextResponse.json(
       { error: `Email send failed (HTTP ${sendRes.status})`, detail: errText.slice(0, 300) },
       { status: 500 },
     );
   }
 
-  // Log the send to intl_doc_emails
+  // Log the send to intl_doc_emails with conversation thread IDs
   if (input.trip_id) {
-    // Look up user name for the log
     const { data: profile } = await supa
       .from("profiles")
       .select("full_name")
@@ -200,6 +225,9 @@ export async function POST(req: NextRequest) {
       document_count: attachments.length,
       sent_by: auth.userId,
       sent_by_name: profile?.full_name ?? null,
+      conversation_id: conversationId,
+      internet_message_id: internetMessageId,
+      graph_message_id: graphMessageId,
     });
   }
 

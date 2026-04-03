@@ -698,7 +698,7 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
                         onClick={() => {
                           if (movingMxId && isDropTarget) { moveMx(movingMxId, tail, d); }
                         }}
-                        className={`group/cell relative px-1 py-1 border-r border-gray-100 last:border-r-0 min-h-[48px] space-y-0.5 overflow-visible transition-colors ${
+                        className={`group/cell relative px-1 py-1 border-r border-gray-100 last:border-r-0 min-h-[48px] overflow-x-hidden transition-colors space-y-0.5 ${
                           isToday ? "bg-blue-50/30" : ""
                         } ${isDropTarget ? "cursor-pointer hover:bg-blue-50 hover:ring-2 hover:ring-inset hover:ring-blue-300" : ""}`}
                       >
@@ -791,7 +791,14 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
                                   ? "bg-blue-100 border-blue-400 text-blue-900 ring-2 ring-blue-400 animate-pulse"
                                   : "bg-red-50 border-red-200 text-red-900 hover:bg-red-100"
                               }`}
-                              onClick={(e) => { e.stopPropagation(); if (!movingMxId) setMxPopoverId(showingPopover ? null : n.id); }}
+                              onClick={(e) => {
+                                if (movingMxId && isDropTarget) {
+                                  // In move mode — let the cell handle it
+                                  return;
+                                }
+                                e.stopPropagation();
+                                setMxPopoverId(showingPopover ? null : n.id);
+                              }}
                             >
                               <div className="flex items-center gap-1 text-[10px] leading-tight">
                                 <span className="font-bold">{fmtIcao(n.airport_icao)}</span>
