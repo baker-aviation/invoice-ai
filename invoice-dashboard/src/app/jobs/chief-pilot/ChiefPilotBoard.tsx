@@ -331,7 +331,7 @@ function CandidateDetail({
             </div>
           )}
 
-          {/* PRD Summary */}
+          {/* PRD Summary + inline PRD document */}
           {candidate.prd_summary && (
             <div className="rounded-lg border border-gray-100 bg-gray-50 p-3">
               <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">PRD Summary</div>
@@ -358,6 +358,12 @@ function CandidateDetail({
                   {candidate.prd_medical_class ? ` · Medical: ${candidate.prd_medical_class} Class` : ""}
                 </div>
               )}
+              {/* Inline PRD document */}
+              {!filesLoading && files.filter((f) => f.file_category === "prd").map((f) => (
+                <div key={f.id} className="mt-3 pt-3 border-t border-gray-200">
+                  <FileItem file={f} />
+                </div>
+              ))}
             </div>
           )}
 
@@ -369,26 +375,31 @@ function CandidateDetail({
             </div>
           )}
 
-          {/* Documents */}
-          <div className="rounded-lg border border-gray-100 bg-gray-50 p-3">
-            <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
-              Documents
-              {!filesLoading && files.length > 0 && (
-                <span className="font-normal text-gray-400 ml-1">({files.length})</span>
-              )}
-            </div>
-            {filesLoading ? (
-              <div className="text-xs text-gray-400">Loading documents...</div>
-            ) : files.length === 0 ? (
-              <div className="text-xs text-gray-400">No documents uploaded.</div>
-            ) : (
-              <div className="space-y-2">
-                {files.map((f) => (
-                  <FileItem key={f.id} file={f} />
-                ))}
+          {/* Documents (excluding PRDs shown inline above) */}
+          {(() => {
+            const nonPrdFiles = files.filter((f) => f.file_category !== "prd");
+            return (
+              <div className="rounded-lg border border-gray-100 bg-gray-50 p-3">
+                <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+                  Documents
+                  {!filesLoading && nonPrdFiles.length > 0 && (
+                    <span className="font-normal text-gray-400 ml-1">({nonPrdFiles.length})</span>
+                  )}
+                </div>
+                {filesLoading ? (
+                  <div className="text-xs text-gray-400">Loading documents...</div>
+                ) : nonPrdFiles.length === 0 ? (
+                  <div className="text-xs text-gray-400">No documents uploaded.</div>
+                ) : (
+                  <div className="space-y-2">
+                    {nonPrdFiles.map((f) => (
+                      <FileItem key={f.id} file={f} />
+                    ))}
+                  </div>
+                )}
               </div>
-            )}
-          </div>
+            );
+          })()}
 
           {/* Chief Pilot Notes (editable) */}
           <div className="rounded-lg border-2 border-red-200 bg-white p-3">
