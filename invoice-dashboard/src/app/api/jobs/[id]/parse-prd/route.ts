@@ -44,9 +44,11 @@ Extract the following structured data from this PRD document. Be precise and fac
 
 const EXTRACTION_SCHEMA = {
   type: "object" as const,
+  additionalProperties: false,
   properties: {
     flags: {
       type: "object" as const,
+      additionalProperties: false,
       properties: {
         failed_checkrides: { type: "boolean" as const },
         notices_of_disapproval_count: { type: "number" as const },
@@ -73,6 +75,7 @@ const EXTRACTION_SCHEMA = {
     summary: { type: "string" as const },
     certificate: {
       type: "object" as const,
+      additionalProperties: false,
       properties: {
         certificate_type: { type: "string" as const },
         certificate_number: { type: "string" as const },
