@@ -1348,10 +1348,52 @@ function TripBundlePanel({ tripId }: { tripId: string }) {
     setSending(false);
   };
 
-  function DocSection({ title, docs, sectionKey }: { title: string; docs: BundleDoc[]; sectionKey: string }) {
+  // Priority order for aircraft/company sub-categories (important first)
+  const subCatPriority: Record<string, number> = {
+    airworthiness: 0, registration: 1, insurance: 2, noise: 3, passport: 4, medical: 5, certificate: 6,
+  };
+  function subCatOrder(cat: string): number {
+    const lower = cat.toLowerCase();
+    for (const [key, val] of Object.entries(subCatPriority)) { if (lower.includes(key)) return val; }
+    return 99;
+  }
+
+  function DocRow({ d }: { d: BundleDoc }) {
+    return (
+      <div className="flex items-center gap-2 rounded px-2 py-1.5 hover:bg-gray-50 group">
+        <input type="checkbox" checked={selected.has(`${d.id}`)} onChange={() => toggleDoc(`${d.id}`)} className="rounded border-gray-300" />
+        <span className="flex-1 text-sm text-gray-900 truncate">{d.section === "Trip" ? d.category : d.document_name}</span>
+        {docCountryMap.has(String(d.id)) && (
+          <span className="text-[9px] px-1 py-0.5 rounded bg-blue-100 text-blue-700 font-semibold">{docCountryMap.get(String(d.id))}</span>
+        )}
+        <span className="text-xs text-gray-400 hidden group-hover:inline">{d.section === "Trip" ? d.document_name : d.category}</span>
+        {d.signed_url && (
+          <>
+            <button onClick={() => { setPreviewUrl(d.signed_url); setPreviewName(d.category || d.document_name); }} className="text-xs text-blue-600 hover:text-blue-800 opacity-0 group-hover:opacity-100">Preview</button>
+            <a href={d.signed_url} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:text-blue-800 opacity-0 group-hover:opacity-100">Download</a>
+          </>
+        )}
+      </div>
+    );
+  }
+
+  function DocSection({ title, docs, sectionKey, subGroup }: { title: string; docs: BundleDoc[]; sectionKey: string; subGroup?: boolean }) {
     if (docs.length === 0) return null;
     const isCollapsed = collapsed.has(sectionKey);
     const sectionSel = docs.filter((d) => selected.has(`${d.id}`)).length;
+
+    // Sub-group by category if requested (for aircraft/company with many docs)
+    const groups = subGroup ? (() => {
+      const map = new Map<string, BundleDoc[]>();
+      for (const d of docs) {
+        // Clean category name for display
+        const cat = d.category?.replace(/^Edit all versions\s*/i, "").trim() || "Other";
+        if (!map.has(cat)) map.set(cat, []);
+        map.get(cat)!.push(d);
+      }
+      return [...map.entries()].sort((a, b) => subCatOrder(a[0]) - subCatOrder(b[0]));
+    })() : null;
+
     return (
       <div className="mt-3">
         <button onClick={() => toggleCollapse(sectionKey)} className="flex w-full items-center gap-2 text-left">
@@ -1362,23 +1404,37 @@ function TripBundlePanel({ tripId }: { tripId: string }) {
           <button onClick={(e) => { e.stopPropagation(); toggleSection(docs); }} className="ml-auto text-[10px] text-blue-500 hover:text-blue-700">{docs.every((d) => selected.has(`${d.id}`)) ? "Deselect all" : "Select all"}</button>
         </button>
         {!isCollapsed && (
-          <div className="mt-1 space-y-0.5 pl-5">
-            {docs.map((d) => (
-              <div key={d.id} className="flex items-center gap-2 rounded px-2 py-1.5 hover:bg-gray-50 group">
-                <input type="checkbox" checked={selected.has(`${d.id}`)} onChange={() => toggleDoc(`${d.id}`)} className="rounded border-gray-300" />
-                <span className="flex-1 text-sm text-gray-900 truncate">{d.section === "Trip" ? d.category : d.document_name}</span>
-                {docCountryMap.has(String(d.id)) && (
-                  <span className="text-[9px] px-1 py-0.5 rounded bg-blue-100 text-blue-700 font-semibold">{docCountryMap.get(String(d.id))}</span>
-                )}
-                <span className="text-xs text-gray-400 hidden group-hover:inline">{d.section === "Trip" ? d.document_name : d.category}</span>
-                {d.signed_url && (
-                  <>
-                    <button onClick={() => { setPreviewUrl(d.signed_url); setPreviewName(d.category || d.document_name); }} className="text-xs text-blue-600 hover:text-blue-800 opacity-0 group-hover:opacity-100">Preview</button>
-                    <a href={d.signed_url} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:text-blue-800 opacity-0 group-hover:opacity-100">Download</a>
-                  </>
-                )}
+          <div className="mt-1 pl-5">
+            {groups ? (
+              groups.map(([cat, catDocs]) => {
+                const catKey = `${sectionKey}:${cat}`;
+                const catCollapsed = collapsed.has(catKey);
+                const isOther = cat.toLowerCase() === "other";
+                return (
+                  <div key={cat} className="mt-1">
+                    <button onClick={() => toggleCollapse(catKey)} className="flex items-center gap-1.5 text-left w-full py-0.5">
+                      <svg className={`w-2.5 h-2.5 text-gray-300 transition-transform ${catCollapsed || isOther ? "" : "rotate-90"}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+                      <span className="text-[11px] font-medium text-gray-500">{cat}</span>
+                      <span className="text-[10px] text-gray-300">({catDocs.length})</span>
+                    </button>
+                    {!(catCollapsed || (isOther && !collapsed.has(`${catKey}:open`))) && (
+                      <div className="space-y-0.5 pl-3">
+                        {catDocs.map((d) => <DocRow key={d.id} d={d} />)}
+                      </div>
+                    )}
+                    {isOther && !collapsed.has(catKey) && collapsed.has(`${catKey}:open`) && (
+                      <div className="space-y-0.5 pl-3">
+                        {catDocs.map((d) => <DocRow key={d.id} d={d} />)}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            ) : (
+              <div className="space-y-0.5">
+                {docs.map((d) => <DocRow key={d.id} d={d} />)}
               </div>
-            ))}
+            )}
           </div>
         )}
       </div>
@@ -1417,8 +1473,8 @@ function TripBundlePanel({ tripId }: { tripId: string }) {
       {Object.entries(data.crewDocs).map(([name]) => (
         <DocSection key={name} title={`Aircrew \u2014 ${name}`} docs={allDocs.filter((d) => d.section === `Crew: ${name}`)} sectionKey={`crew:${name}`} />
       ))}
-      <DocSection title="Aircraft Documents" docs={allDocs.filter((d) => d.section === "Aircraft")} sectionKey="aircraft" />
-      <DocSection title="Company Documents" docs={allDocs.filter((d) => d.section === "Company")} sectionKey="company" />
+      <DocSection title="Aircraft Documents" docs={allDocs.filter((d) => d.section === "Aircraft")} sectionKey="aircraft" subGroup />
+      <DocSection title="Company Documents" docs={allDocs.filter((d) => d.section === "Company")} sectionKey="company" subGroup />
       {data.passengers.length > 0 && (
         <div className="mt-3">
           <h4 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-1">Passengers</h4>
