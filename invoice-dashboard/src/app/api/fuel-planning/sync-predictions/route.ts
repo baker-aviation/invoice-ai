@@ -121,7 +121,7 @@ export async function POST(req: NextRequest) {
 
   try {
     // ─── Mode 1: List flights needing sync ───
-    if (body.action === "list" || (!body.flightIds && !body.offset)) {
+    if (body.action === "list" || (!body.action && !body.flightIds && !body.offset)) {
       const months = body.months ?? 3;
       const toDate = new Date();
       const fromDate = new Date();
@@ -186,24 +186,27 @@ export async function POST(req: NextRequest) {
     if (body.action === "backfill-waypoints") {
       const bfOffset = body.backfillOffset ?? 0;
 
-      // Get predictions that don't have phase data yet
+      // Get predictions that don't have phase data yet (fetch ALL, not just 1000)
       const { data: allPreds } = await supa
         .from("foreflight_predictions")
         .select("foreflight_id")
-        .order("flight_date", { ascending: false });
+        .order("foreflight_id")
+        .limit(10000);
 
       const { data: existingPhases } = await supa
         .from("foreflight_flight_phases")
-        .select("foreflight_id");
+        .select("foreflight_id")
+        .limit(10000);
 
       const phaseIds = new Set((existingPhases ?? []).map((p) => p.foreflight_id));
       const needsBackfill = (allPreds ?? []).filter((p) => !phaseIds.has(p.foreflight_id));
 
-      if (bfOffset >= needsBackfill.length) {
-        return NextResponse.json({ ok: true, done: true, backfilled: 0, total: needsBackfill.length });
+      if (needsBackfill.length === 0) {
+        return NextResponse.json({ ok: true, done: true, backfilled: 0, total: (allPreds ?? []).length });
       }
 
-      const batch = needsBackfill.slice(bfOffset, bfOffset + BATCH_SIZE);
+      // Always process from the front (not offset-based) since completed ones drop out
+      const batch = needsBackfill.slice(0, BATCH_SIZE);
       let backfilled = 0;
       const errors: string[] = [];
 
@@ -214,11 +217,25 @@ export async function POST(req: NextRequest) {
             headers: { "x-api-key": apiKey, Accept: "application/json" },
             signal: AbortSignal.timeout(15_000),
           });
-          if (!res.ok) continue;
+
+          if (!res.ok) {
+            // Write tombstone so we don't retry this flight
+            await supa.from("foreflight_flight_phases").upsert(
+              { foreflight_id: fid, climb_min: null, cruise_min: null, descent_min: null, total_min: null },
+              { onConflict: "foreflight_id" },
+            );
+            continue;
+          }
 
           const detail = await res.json();
           const routeInfo = detail.performance?.destinationRouteInformation;
-          if (!routeInfo) continue;
+          if (!routeInfo) {
+            await supa.from("foreflight_flight_phases").upsert(
+              { foreflight_id: fid, climb_min: null, cruise_min: null, descent_min: null, total_min: null },
+              { onConflict: "foreflight_id" },
+            );
+            continue;
+          }
 
           const result = extractPhases(routeInfo, fid);
           if (result?.waypointRows?.length) {
@@ -227,20 +244,30 @@ export async function POST(req: NextRequest) {
           }
           if (result?.phases) {
             await supa.from("foreflight_flight_phases").upsert(result.phases, { onConflict: "foreflight_id" });
+          } else {
+            // No TOC/TOD found — write tombstone
+            await supa.from("foreflight_flight_phases").upsert(
+              { foreflight_id: fid, climb_min: null, cruise_min: null, descent_min: null, total_min: null },
+              { onConflict: "foreflight_id" },
+            );
           }
           backfilled++;
         } catch (err) {
           errors.push(`${fid}: ${err instanceof Error ? err.message : String(err)}`);
+          // Write tombstone on error too
+          await supa.from("foreflight_flight_phases").upsert(
+            { foreflight_id: fid, climb_min: null, cruise_min: null, descent_min: null, total_min: null },
+            { onConflict: "foreflight_id" },
+          );
         }
       }
 
       return NextResponse.json({
         ok: true,
-        done: bfOffset + batch.length >= needsBackfill.length,
+        done: needsBackfill.length <= BATCH_SIZE,
         backfilled,
-        nextOffset: bfOffset + batch.length,
-        remaining: needsBackfill.length - bfOffset - batch.length,
-        total: needsBackfill.length,
+        remaining: needsBackfill.length - batch.length,
+        total: (allPreds ?? []).length,
         errors: errors.length > 0 ? errors : undefined,
       });
     }

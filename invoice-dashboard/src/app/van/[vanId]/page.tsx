@@ -66,13 +66,16 @@ export default async function VanPage({ params }: { params: Promise<{ vanId: str
 
   const mxNotes = await fetchMxNotes().catch(() => []);
 
-  // Fetch airport overrides from draft overrides (e.g. N201HR → VNY)
+  // Fetch draft overrides (flight reassignments, removals, airport overrides)
   const { data: draftRow } = await supa
     .from("van_draft_overrides")
-    .select("airport_overrides")
+    .select("overrides, removals, airport_overrides, unscheduled")
     .eq("date", today)
     .maybeSingle();
   const airportOverrides: [string, string][] = (draftRow?.airport_overrides as [string, string][]) ?? [];
+  const flightOverrides: [string, number][] = (draftRow?.overrides as [string, number][]) ?? [];
+  const removals: string[] = (draftRow?.removals as string[]) ?? [];
+  const unscheduledOverrides: [string, number][] = (draftRow?.unscheduled as [string, number][]) ?? [];
 
   // Build FBO lookup from trip_salespersons (tail:dest_icao → fbo name)
   const { data: fboRows } = await supa
@@ -100,6 +103,9 @@ export default async function VanPage({ params }: { params: Promise<{ vanId: str
       mxNotes={mxNotes}
       fboMap={fboMap}
       airportOverrides={airportOverrides}
+      flightOverrides={flightOverrides}
+      removals={removals}
+      unscheduledOverrides={unscheduledOverrides}
     />
   );
 }

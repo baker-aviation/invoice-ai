@@ -92,30 +92,52 @@ export default function ClimbAnalysis() {
     setBackfilling(true);
     setBackfillMsg("Starting waypoint backfill...");
     let totalBackfilled = 0;
-    let offset = 0;
+    let totalErrors = 0;
     let done = false;
+    let consecutiveFailures = 0;
 
-    try {
-      while (!done) {
-        setBackfillMsg(`Backfilling waypoints (${totalBackfilled} done, batch at ${offset})...`);
+    while (!done) {
+      try {
         const res = await fetch("/api/fuel-planning/sync-predictions", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "backfill-waypoints", backfillOffset: offset }),
+          body: JSON.stringify({ action: "backfill-waypoints" }),
+          signal: AbortSignal.timeout(280_000),
         });
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error);
+        if (!res.ok) {
+          totalErrors++;
+          consecutiveFailures++;
+          setBackfillMsg(`Batch error (${totalErrors} total errors): ${data.error ?? res.statusText} — retrying...`);
+          if (consecutiveFailures >= 5) {
+            setBackfillMsg(`Error: Stopped after ${consecutiveFailures} consecutive failures. ${totalBackfilled} flights backfilled, ${totalErrors} errors.`);
+            break;
+          }
+          continue;
+        }
+        consecutiveFailures = 0;
         totalBackfilled += data.backfilled ?? 0;
-        if (data.done) {
-          done = true;
-        } else {
-          offset = data.nextOffset ?? offset + 10;
+        if (data.errors?.length) totalErrors += data.errors.length;
+        const remaining = data.remaining ?? 0;
+        const errStr = totalErrors > 0 ? ` (${totalErrors} errors)` : "";
+        setBackfillMsg(`Backfilling waypoints... ${totalBackfilled} done, ${remaining} remaining${errStr}`);
+        if (data.done) done = true;
+      } catch (err) {
+        totalErrors++;
+        consecutiveFailures++;
+        const msg = err instanceof Error ? err.message : String(err);
+        setBackfillMsg(`Batch failed (${totalErrors} total errors): ${msg} — continuing...`);
+        if (consecutiveFailures >= 5) {
+          setBackfillMsg(`Error: Stopped after ${consecutiveFailures} consecutive failures. ${totalBackfilled} flights backfilled, ${totalErrors} errors.`);
+          break;
         }
       }
-      setBackfillMsg(`Done: ${totalBackfilled} flights backfilled with waypoint data`);
+    }
+
+    if (done) {
+      const errStr = totalErrors > 0 ? ` (${totalErrors} errors)` : "";
+      setBackfillMsg(`Done: ${totalBackfilled} flights backfilled with waypoint data${errStr}`);
       loadData();
-    } catch (err) {
-      setBackfillMsg(`Error: ${err instanceof Error ? err.message : String(err)}`);
     }
     setBackfilling(false);
   }

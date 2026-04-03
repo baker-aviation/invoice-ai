@@ -282,6 +282,9 @@ export default function VanDriverClient({
   mxNotes,
   fboMap,
   airportOverrides,
+  flightOverrides,
+  removals,
+  unscheduledOverrides,
 }: {
   vanId: number;
   zone: VanZone;
@@ -292,6 +295,9 @@ export default function VanDriverClient({
   mxNotes?: MxNote[];
   fboMap?: Record<string, string>;
   airportOverrides?: [string, string][];
+  flightOverrides?: [string, number][];
+  removals?: string[];
+  unscheduledOverrides?: [string, number][];
 }) {
   /** Look up destination FBO for a flight from trip_salespersons data */
   const lookupFbo = useCallback((f: Flight): string | null => {
@@ -472,8 +478,31 @@ export default function VanDriverClient({
         }
       }
     } else {
-      // Fallback: auto-compute
+      // Fallback: auto-compute then apply draft overrides
       items = computeZoneItems(zone, flights, date, zone.lat, zone.lon);
+
+      // Apply flight overrides from drafts
+      if (flightOverrides?.length || removals?.length) {
+        const removalsSet = new Set(removals ?? []);
+        const overrideMap = new Map(flightOverrides ?? []);
+
+        // Remove flights that were removed or reassigned to other vans
+        items = items.filter((item) => {
+          if (removalsSet.has(item.arrFlight.id)) return false;
+          const override = overrideMap.get(item.arrFlight.id);
+          if (override !== undefined && override !== vanId) return false;
+          return true;
+        });
+
+        // Add flights that were manually assigned TO this van from other vans
+        for (const [flightId, targetVanId] of overrideMap) {
+          if (targetVanId !== vanId) continue;
+          if (items.some((item) => item.arrFlight.id === flightId)) continue;
+          const item = buildItemFromFlight(flightId, flights, zone.lat, zone.lon);
+          if (item) items.push(item);
+        }
+      }
+
       items = greedySort(items, zone.lat, zone.lon);
     }
     // Apply airport overrides (e.g. N201HR → VNY instead of raw arrival airport)
