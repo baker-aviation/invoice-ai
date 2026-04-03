@@ -1360,20 +1360,16 @@ function TripBundlePanel({ tripId }: { tripId: string }) {
 
   function DocRow({ d }: { d: BundleDoc }) {
     return (
-      <div className="flex items-center gap-2 rounded px-2 py-1.5 hover:bg-gray-50 group">
-        <input type="checkbox" checked={selected.has(`${d.id}`)} onChange={() => toggleDoc(`${d.id}`)} className="rounded border-gray-300" />
-        <span className="flex-1 text-sm text-gray-900 truncate">{d.section === "Trip" ? d.category : d.document_name}</span>
+      <label className="flex items-center gap-1.5 rounded px-1.5 py-1 hover:bg-gray-50 cursor-pointer group text-xs">
+        <input type="checkbox" checked={selected.has(`${d.id}`)} onChange={() => toggleDoc(`${d.id}`)} className="rounded border-gray-300 w-3.5 h-3.5" />
+        <span className="flex-1 text-gray-800 truncate">{d.section === "Trip" ? d.category : d.document_name}</span>
         {docCountryMap.has(String(d.id)) && (
-          <span className="text-[9px] px-1 py-0.5 rounded bg-blue-100 text-blue-700 font-semibold">{docCountryMap.get(String(d.id))}</span>
+          <span className="text-[8px] px-1 rounded bg-blue-100 text-blue-700 font-bold">{docCountryMap.get(String(d.id))}</span>
         )}
-        <span className="text-xs text-gray-400 hidden group-hover:inline">{d.section === "Trip" ? d.document_name : d.category}</span>
         {d.signed_url && (
-          <>
-            <button onClick={() => { setPreviewUrl(d.signed_url); setPreviewName(d.category || d.document_name); }} className="text-xs text-blue-600 hover:text-blue-800 opacity-0 group-hover:opacity-100">Preview</button>
-            <a href={d.signed_url} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:text-blue-800 opacity-0 group-hover:opacity-100">Download</a>
-          </>
+          <button onClick={(e) => { e.preventDefault(); setPreviewUrl(d.signed_url); setPreviewName(d.category || d.document_name); }} className="text-blue-600 hover:text-blue-800 opacity-0 group-hover:opacity-100 text-[10px]">view</button>
         )}
-      </div>
+      </label>
     );
   }
 
@@ -1406,32 +1402,30 @@ function TripBundlePanel({ tripId }: { tripId: string }) {
         {!isCollapsed && (
           <div className="mt-1 pl-5">
             {groups ? (
-              groups.map(([cat, catDocs]) => {
-                const catKey = `${sectionKey}:${cat}`;
-                const catCollapsed = collapsed.has(catKey);
-                const isOther = cat.toLowerCase() === "other";
-                return (
-                  <div key={cat} className="mt-1">
-                    <button onClick={() => toggleCollapse(catKey)} className="flex items-center gap-1.5 text-left w-full py-0.5">
-                      <svg className={`w-2.5 h-2.5 text-gray-300 transition-transform ${catCollapsed || isOther ? "" : "rotate-90"}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
-                      <span className="text-[11px] font-medium text-gray-500">{cat}</span>
-                      <span className="text-[10px] text-gray-300">({catDocs.length})</span>
-                    </button>
-                    {!(catCollapsed || (isOther && !collapsed.has(`${catKey}:open`))) && (
-                      <div className="space-y-0.5 pl-3">
-                        {catDocs.map((d) => <DocRow key={d.id} d={d} />)}
-                      </div>
-                    )}
-                    {isOther && !collapsed.has(catKey) && collapsed.has(`${catKey}:open`) && (
-                      <div className="space-y-0.5 pl-3">
-                        {catDocs.map((d) => <DocRow key={d.id} d={d} />)}
-                      </div>
-                    )}
-                  </div>
-                );
-              })
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+                {groups.map(([cat, catDocs]) => {
+                  const catKey = `${sectionKey}:${cat}`;
+                  const catCollapsed = collapsed.has(catKey);
+                  const isOther = cat.toLowerCase() === "other" || cat.toLowerCase().includes("pilot bulletin") || cat.toLowerCase().includes("manual");
+                  const isOpen = isOther ? collapsed.has(`${catKey}:open`) : !catCollapsed;
+                  return (
+                    <div key={cat} className="col-span-2">
+                      <button onClick={() => isOther ? toggleCollapse(`${catKey}:open`) : toggleCollapse(catKey)} className="flex items-center gap-1.5 text-left w-full py-0.5">
+                        <svg className={`w-2.5 h-2.5 text-gray-300 transition-transform ${isOpen ? "rotate-90" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+                        <span className="text-[11px] font-medium text-gray-500">{cat}</span>
+                        <span className="text-[10px] text-gray-300">({catDocs.length})</span>
+                      </button>
+                      {isOpen && (
+                        <div className="grid grid-cols-2 gap-x-4 pl-3">
+                          {catDocs.map((d) => <DocRow key={d.id} d={d} />)}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             ) : (
-              <div className="space-y-0.5">
+              <div className="grid grid-cols-2 gap-x-4">
                 {docs.map((d) => <DocRow key={d.id} d={d} />)}
               </div>
             )}
