@@ -7354,6 +7354,7 @@ export default function VanPositioningClient({ initialFlights, mxNotes, melItems
         <GanttScheduleTab
           flights={initialFlights}
           mxNotes={mxNotes}
+          melItems={melItems}
         />
       )}
 
