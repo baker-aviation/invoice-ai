@@ -98,9 +98,10 @@ function todayET(): string {
 // Van Picker dropdown
 // ---------------------------------------------------------------------------
 
-function VanPicker({ currentVanId, arrivalIcao, onPick, onClose }: {
+function VanPicker({ currentVanId, arrivalIcao, pos, onPick, onClose }: {
   currentVanId: number | null;
   arrivalIcao?: string | null;
+  pos?: { top: number; left: number } | null;
   onPick: (vanId: number | null) => void;
   onClose: () => void;
 }) {
@@ -116,7 +117,9 @@ function VanPicker({ currentVanId, arrivalIcao, onPick, onClose }: {
   const arrInfo = arrivalIcao ? getAirportInfo(arrivalIcao.replace(/^K/, "")) : null;
 
   return (
-    <div ref={ref} className="absolute top-full left-0 z-50 mt-0.5 bg-white border border-gray-200 rounded-lg shadow-lg py-1 w-52 max-h-72 overflow-y-auto text-[10px]">
+    <div ref={ref}
+      className="fixed z-[9999] bg-white border border-gray-200 rounded-lg shadow-xl py-1 w-52 max-h-72 overflow-y-auto text-[10px]"
+      style={pos ? { top: pos.top, left: pos.left } : {}}>
       {arrInfo && (
         <div className="px-2 py-1.5 border-b border-gray-100 text-gray-500">
           <span className="font-mono font-bold text-gray-700">{fmtIcao(arrivalIcao!)}</span> — {arrInfo.city}{arrInfo.state ? `, ${arrInfo.state}` : ""}
@@ -154,8 +157,9 @@ function VanPicker({ currentVanId, arrivalIcao, onPick, onClose }: {
 // MX Detail Popover
 // ---------------------------------------------------------------------------
 
-function MxPopover({ note, onAssignVan, onAcknowledge, onMove, onClose }: {
+function MxPopover({ note, pos, onAssignVan, onAcknowledge, onMove, onClose }: {
   note: MxNote;
+  pos?: { top: number; left: number } | null;
   onAssignVan: (vanId: number | null) => void;
   onAcknowledge: () => void;
   onMove: () => void;
@@ -173,7 +177,9 @@ function MxPopover({ note, onAssignVan, onAcknowledge, onMove, onClose }: {
   }, [onClose]);
 
   return (
-    <div ref={ref} className="absolute top-full left-0 z-50 mt-1 bg-white border border-gray-200 rounded-lg shadow-xl p-3 w-72 text-xs space-y-2">
+    <div ref={ref}
+      className="fixed z-[9999] bg-white border border-gray-200 rounded-lg shadow-xl p-3 w-72 text-xs space-y-2"
+      style={pos ? { top: pos.top, left: pos.left } : {}}>
       <div className="font-bold text-sm text-gray-800">{note.subject ?? "Maintenance"}</div>
       {note.description && <div className="text-gray-600 whitespace-pre-wrap">{note.description}</div>}
       {note.body && note.body !== note.description && <div className="text-gray-500 whitespace-pre-wrap">{note.body}</div>}
@@ -396,7 +402,10 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
   // Van assignment state: flightId -> vanId (loaded from drafts API)
   const [vanOverrides, setVanOverrides] = useState<Map<string, number>>(new Map());
   const [vanPickerFlight, setVanPickerFlight] = useState<string | null>(null);
+  const [vanPickerPos, setVanPickerPos] = useState<{ top: number; left: number } | null>(null);
+  const [vanPickerArrIcao, setVanPickerArrIcao] = useState<string | null>(null);
   const [mxPopoverId, setMxPopoverId] = useState<string | null>(null);
+  const [mxPopoverPos, setMxPopoverPos] = useState<{ top: number; left: number } | null>(null);
   const [showMxQueue, setShowMxQueue] = useState(false);
   const [createMxCell, setCreateMxCell] = useState<{ tail: string; date: string } | null>(null);
   const [localMxNotes, setLocalMxNotes] = useState<MxNote[]>(mxNotes);
@@ -736,7 +745,14 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
                                 {/* Van badge */}
                                 {vanId ? (
                                   <button
-                                    onClick={(e) => { e.stopPropagation(); setVanPickerFlight(showingPicker ? null : f.id); }}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (showingPicker) { setVanPickerFlight(null); return; }
+                                      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                                      setVanPickerPos({ top: rect.bottom + 2, left: rect.left });
+                                      setVanPickerArrIcao(f.arrival_icao ?? null);
+                                      setVanPickerFlight(f.id);
+                                    }}
                                     className="ml-auto px-1 py-0 rounded text-white text-[8px] font-bold leading-tight"
                                     style={{ backgroundColor: VAN_COLORS[(vanId - 1) % VAN_COLORS.length] }}
                                   >
@@ -744,7 +760,14 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
                                   </button>
                                 ) : (
                                   <button
-                                    onClick={(e) => { e.stopPropagation(); setVanPickerFlight(showingPicker ? null : f.id); }}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (showingPicker) { setVanPickerFlight(null); return; }
+                                      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                                      setVanPickerPos({ top: rect.bottom + 2, left: rect.left });
+                                      setVanPickerArrIcao(f.arrival_icao ?? null);
+                                      setVanPickerFlight(f.id);
+                                    }}
                                     className="ml-auto opacity-0 group-hover:opacity-40 hover:!opacity-100 text-[8px] text-gray-400"
                                   >
                                     +V
@@ -766,15 +789,7 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
                                 </div>
                               )}
 
-                              {/* Van picker dropdown */}
-                              {showingPicker && (
-                                <VanPicker
-                                  currentVanId={vanId}
-                                  arrivalIcao={f.arrival_icao}
-                                  onPick={(v) => assignVan(f.id, v, d)}
-                                  onClose={() => setVanPickerFlight(null)}
-                                />
-                              )}
+                              {/* Van picker rendered at root level via fixed positioning */}
                             </div>
                           );
                         })}
@@ -792,12 +807,12 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
                                   : "bg-red-50 border-red-200 text-red-900 hover:bg-red-100"
                               }`}
                               onClick={(e) => {
-                                if (movingMxId && isDropTarget) {
-                                  // In move mode — let the cell handle it
-                                  return;
-                                }
+                                if (movingMxId && isDropTarget) return;
                                 e.stopPropagation();
-                                setMxPopoverId(showingPopover ? null : n.id);
+                                if (showingPopover) { setMxPopoverId(null); return; }
+                                const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                                setMxPopoverPos({ top: rect.bottom + 4, left: rect.left });
+                                setMxPopoverId(n.id);
                               }}
                             >
                               <div className="flex items-center gap-1 text-[10px] leading-tight">
@@ -816,15 +831,7 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
                                 {n.subject ?? n.description ?? "Maintenance"}
                               </div>
 
-                              {showingPopover && (
-                                <MxPopover
-                                  note={n}
-                                  onAssignVan={(v) => assignMxVan(n.id, v)}
-                                  onAcknowledge={() => acknowledgeMx(n.id)}
-                                  onMove={() => { setMovingMxId(n.id); setMxPopoverId(null); }}
-                                  onClose={() => setMxPopoverId(null)}
-                                />
-                              )}
+                              {/* MX popover rendered at root level via fixed positioning */}
                             </div>
                           );
                         })}
@@ -873,6 +880,38 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
           onSchedule={() => {}}
         />
       )}
+
+      {/* Global Van Picker (fixed position, escapes overflow) */}
+      {vanPickerFlight && vanPickerPos && (
+        <VanPicker
+          currentVanId={vanOverrides.get(vanPickerFlight) ?? null}
+          arrivalIcao={vanPickerArrIcao}
+          pos={vanPickerPos}
+          onPick={(v) => {
+            // Find the date for this flight
+            const flight = flights.find((f) => f.id === vanPickerFlight);
+            const date = flight ? toETDate(flight.scheduled_departure) : dates[0];
+            assignVan(vanPickerFlight!, v, date);
+          }}
+          onClose={() => setVanPickerFlight(null)}
+        />
+      )}
+
+      {/* Global MX Popover (fixed position, escapes overflow) */}
+      {mxPopoverId && mxPopoverPos && (() => {
+        const note = localMxNotes.find((n) => n.id === mxPopoverId);
+        if (!note) return null;
+        return (
+          <MxPopover
+            note={note}
+            pos={mxPopoverPos}
+            onAssignVan={(v) => assignMxVan(note.id, v)}
+            onAcknowledge={() => acknowledgeMx(note.id)}
+            onMove={() => { setMovingMxId(note.id); setMxPopoverId(null); }}
+            onClose={() => setMxPopoverId(null)}
+          />
+        );
+      })()}
     </div>
   );
 }
