@@ -48,13 +48,13 @@ function extractTailAndDate(subject: string): { tail: string | null; dateStr: st
   let tail = tailMatch ? tailMatch[1].toUpperCase() : null;
   if (tail && !tail.startsWith("N")) tail = "N" + tail;
 
-  // Date: "3/29", "03/29", "29MAR", "29Mar"
+  // Date: "3/29", "03/29", "29MAR", "29Mar" — but NOT "691/2026" (trip numbers)
   let dateStr: string | null = null;
-  const slashMatch = clean.match(/(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/);
+  const slashMatch = clean.match(/(?:^|\s)(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?(?:\s|$)/);
   const ddMonMatch = clean.match(/(\d{1,2})\s*(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)/i);
   const monDdMatch = clean.match(/(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\w*\s+(\d{1,2})/i);
 
-  if (slashMatch) {
+  if (slashMatch && parseInt(slashMatch[1]) <= 12 && parseInt(slashMatch[2]) <= 31) {
     const m = slashMatch[1].padStart(2, "0");
     const d = slashMatch[2].padStart(2, "0");
     const y = slashMatch[3] || new Date().getFullYear().toString();
@@ -68,6 +68,9 @@ function extractTailAndDate(subject: string): { tail: string | null; dateStr: st
     const d = monDdMatch[2].padStart(2, "0");
     dateStr = `${new Date().getFullYear()}-${m}-${d}`;
   }
+
+  // Final validation
+  if (dateStr && isNaN(new Date(dateStr + "T00:00:00Z").getTime())) dateStr = null;
 
   return { tail, dateStr };
 }
@@ -158,8 +161,10 @@ async function findTrip(
   dateStr: string | null,
 ): Promise<{ tripId: string | null; confidence: "high" | "low" | "unmatched" }> {
   if (tail && dateStr) {
-    const dateBefore = new Date(new Date(dateStr + "T00:00:00Z").getTime() - 86400000).toISOString().slice(0, 10);
-    const dateAfter = new Date(new Date(dateStr + "T00:00:00Z").getTime() + 86400000).toISOString().slice(0, 10);
+    const parsed = new Date(dateStr + "T00:00:00Z");
+    if (isNaN(parsed.getTime())) return { tripId: null, confidence: "unmatched" };
+    const dateBefore = new Date(parsed.getTime() - 86400000).toISOString().slice(0, 10);
+    const dateAfter = new Date(parsed.getTime() + 86400000).toISOString().slice(0, 10);
     const { data: trips } = await supa
       .from("intl_trips")
       .select("id, trip_date")
