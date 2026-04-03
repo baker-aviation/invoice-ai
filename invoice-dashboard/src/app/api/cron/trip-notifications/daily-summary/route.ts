@@ -78,47 +78,36 @@ export async function POST(req: NextRequest) {
     quotesLookup.set(m.salesperson_name.toLowerCase(), m.quotes_enabled ?? false);
   }
 
-  // 2. Query trip_salespersons for the needed date(s)
+  // 2. Query flights directly using the salesperson field (from JetInsight sync)
   const LIVE_TYPES = ["Revenue", "Owner", "Charter"];
 
   async function loadLegsForDate(dateStr: string) {
     const dayStart = new Date(`${dateStr}T00:00:00-05:00`);
     const dayEnd = new Date(`${dateStr}T23:59:59-05:00`);
 
-    const { data: legs } = await supa
-      .from("trip_salespersons")
-      .select("trip_id, tail_number, origin_icao, destination_icao, scheduled_departure, salesperson_name, customer")
-      .gte("scheduled_departure", dayStart.toISOString())
-      .lte("scheduled_departure", dayEnd.toISOString());
-
-    type LegRow = NonNullable<typeof legs>[number];
-    const filtered: (LegRow & { flight_type?: string; jetinsight_url?: string | null })[] = [];
-
-    for (const leg of legs ?? []) {
-      const { data: matchingFlights } = await supa
-        .from("flights")
-        .select("flight_type, jetinsight_url")
-        .eq("tail_number", leg.tail_number)
-        .eq("departure_icao", leg.origin_icao)
-        .eq("arrival_icao", leg.destination_icao)
-        .gte("scheduled_departure", new Date(new Date(leg.scheduled_departure).getTime() - 2 * 3600_000).toISOString())
-        .lte("scheduled_departure", new Date(new Date(leg.scheduled_departure).getTime() + 2 * 3600_000).toISOString())
-        .in("flight_type", LIVE_TYPES)
-        .limit(1);
-
-      if (matchingFlights && matchingFlights.length > 0) {
-        filtered.push({ ...leg, flight_type: matchingFlights[0].flight_type, jetinsight_url: matchingFlights[0].jetinsight_url });
-      }
-    }
-
-    // Pre-fetch all flights for this date to find prior legs
+    // Query flights with salesperson directly — no trip_salespersons needed
     const { data: allDayFlights } = await supa
       .from("flights")
-      .select("tail_number, departure_icao, arrival_icao, scheduled_departure, flight_type, jetinsight_url")
+      .select("tail_number, departure_icao, arrival_icao, scheduled_departure, flight_type, jetinsight_url, jetinsight_trip_id, salesperson, customer_name")
       .gte("scheduled_departure", dayStart.toISOString())
       .lte("scheduled_departure", dayEnd.toISOString())
       .not("tail_number", "is", null)
       .order("scheduled_departure", { ascending: true });
+
+    // Filter to sold legs with salesperson
+    const filtered = (allDayFlights ?? [])
+      .filter((f) => f.salesperson && LIVE_TYPES.includes(f.flight_type))
+      .map((f) => ({
+        trip_id: f.jetinsight_trip_id ?? "",
+        tail_number: f.tail_number,
+        origin_icao: f.departure_icao,
+        destination_icao: f.arrival_icao,
+        scheduled_departure: f.scheduled_departure,
+        salesperson_name: f.salesperson!,
+        customer: f.customer_name ?? "",
+        flight_type: f.flight_type,
+        jetinsight_url: f.jetinsight_url,
+      }));
 
     return { filtered, allDayFlights: allDayFlights ?? [] };
   }

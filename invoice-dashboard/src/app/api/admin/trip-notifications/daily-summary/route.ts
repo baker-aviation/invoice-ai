@@ -57,58 +57,41 @@ export async function POST(req: NextRequest) {
     quotesLookup.set(m.salesperson_name.toLowerCase(), m.quotes_enabled ?? false);
   }
 
-  // 2. Query trip_salespersons for tomorrow's legs
-  //    scheduled_departure is stored as timestamptz, so filter by date in UTC
-  //    Tomorrow EST = could span two UTC days, so use a wide window
-  const tomorrowStart = new Date(`${tomorrowStr}T00:00:00-05:00`); // midnight EST
-  const tomorrowEnd = new Date(`${tomorrowStr}T23:59:59-05:00`);   // end of day EST
+  // 2. Query flights directly using salesperson field (from JetInsight sync)
+  const tomorrowStart = new Date(`${tomorrowStr}T00:00:00-05:00`);
+  const tomorrowEnd = new Date(`${tomorrowStr}T23:59:59-05:00`);
 
   const LIVE_TYPES = ["Revenue", "Owner", "Charter"];
 
-  // Join with flights to get flight_type and confirm the leg exists in the schedule
-  const { data: legs, error: legsErr } = await supa
-    .from("trip_salespersons")
-    .select("trip_id, tail_number, origin_icao, destination_icao, scheduled_departure, salesperson_name, customer")
-    .gte("scheduled_departure", tomorrowStart.toISOString())
-    .lte("scheduled_departure", tomorrowEnd.toISOString());
-
-  if (legsErr) {
-    return NextResponse.json({ error: "Failed to query trip_salespersons", detail: legsErr.message }, { status: 500 });
-  }
-
-  // Filter to live legs only by checking against flights table
-  const liveLegsByPerson = new Map<string, typeof filteredLegs>();
-  type LegRow = NonNullable<typeof legs>[number];
-  const filteredLegs: (LegRow & { flight_type?: string; jetinsight_url?: string | null })[] = [];
-
-  for (const leg of legs ?? []) {
-    // Check if there's a matching flight with a live type
-    const { data: matchingFlights } = await supa
-      .from("flights")
-      .select("flight_type, jetinsight_url")
-      .eq("tail_number", leg.tail_number)
-      .eq("departure_icao", leg.origin_icao)
-      .eq("arrival_icao", leg.destination_icao)
-      .gte("scheduled_departure", new Date(new Date(leg.scheduled_departure).getTime() - 2 * 3600_000).toISOString())
-      .lte("scheduled_departure", new Date(new Date(leg.scheduled_departure).getTime() + 2 * 3600_000).toISOString())
-      .in("flight_type", LIVE_TYPES)
-      .limit(1);
-
-    if (matchingFlights && matchingFlights.length > 0) {
-      filteredLegs.push({ ...leg, flight_type: matchingFlights[0].flight_type, jetinsight_url: matchingFlights[0].jetinsight_url });
-    }
-  }
-
-  // Pre-fetch all flights for tomorrow to find prior legs
-  const { data: allTomorrowFlights } = await supa
+  const { data: allTomorrowFlights, error: legsErr } = await supa
     .from("flights")
-    .select("tail_number, departure_icao, arrival_icao, scheduled_departure, flight_type, jetinsight_url")
+    .select("tail_number, departure_icao, arrival_icao, scheduled_departure, flight_type, jetinsight_url, jetinsight_trip_id, salesperson, customer_name")
     .gte("scheduled_departure", tomorrowStart.toISOString())
     .lte("scheduled_departure", tomorrowEnd.toISOString())
     .not("tail_number", "is", null)
     .order("scheduled_departure", { ascending: true });
 
+  if (legsErr) {
+    return NextResponse.json({ error: "Failed to query flights", detail: legsErr.message }, { status: 500 });
+  }
+
+  // Filter to sold legs with salesperson
+  const filteredLegs = (allTomorrowFlights ?? [])
+    .filter((f) => f.salesperson && LIVE_TYPES.includes(f.flight_type))
+    .map((f) => ({
+      trip_id: f.jetinsight_trip_id ?? "",
+      tail_number: f.tail_number,
+      origin_icao: f.departure_icao,
+      destination_icao: f.arrival_icao,
+      scheduled_departure: f.scheduled_departure,
+      salesperson_name: f.salesperson!,
+      customer: f.customer_name ?? "",
+      flight_type: f.flight_type,
+      jetinsight_url: f.jetinsight_url,
+    }));
+
   // 3. Group legs by salesperson (lowercase for matching)
+  const liveLegsByPerson = new Map<string, typeof filteredLegs>();
   for (const leg of filteredLegs) {
     const key = leg.salesperson_name.toLowerCase();
     if (!liveLegsByPerson.has(key)) liveLegsByPerson.set(key, []);
