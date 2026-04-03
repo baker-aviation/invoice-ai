@@ -32,13 +32,30 @@ export async function POST(req: NextRequest) {
 
   try {
     // Find fa_flights that have landed and don't have stored tracks yet
+    // Only pull tracks for flights in the last 10 months (FA data retention limit)
+    // and flights that lasted at least 30 min (skip short repos — no analytical value)
+    const faRetentionCutoff = new Date();
+    faRetentionCutoff.setMonth(faRetentionCutoff.getMonth() - 10);
+
     const { data: faFlights } = await supa
       .from("fa_flights")
-      .select("fa_flight_id, tail, origin_icao, destination_icao, departure_time")
+      .select("fa_flight_id, tail, origin_icao, destination_icao, departure_time, actual_arrival, route_distance_nm")
       .or("status.eq.Landed,status.eq.Arrived")
       .not("fa_flight_id", "is", null)
+      .gte("departure_time", faRetentionCutoff.toISOString())
       .order("departure_time", { ascending: false })
       .limit(5000);
+
+    // Filter: skip flights under 100 NM or under ~30 min (short repos with no cruise phase)
+    const worthPulling = (faFlights ?? []).filter((f: Record<string, unknown>) => {
+      const nm = Number(f.route_distance_nm ?? 0);
+      if (nm > 0 && nm < 100) return false; // skip short legs by distance
+      // Skip if departure and arrival are very close in time
+      const dep = f.departure_time ? new Date(f.departure_time as string).getTime() : 0;
+      const arr = f.actual_arrival ? new Date(f.actual_arrival as string).getTime() : 0;
+      if (dep > 0 && arr > 0 && (arr - dep) < 30 * 60 * 1000) return false; // <30 min
+      return true;
+    });
 
     const { data: existingTracks } = await supa
       .from("flightaware_tracks")
@@ -46,12 +63,13 @@ export async function POST(req: NextRequest) {
       .limit(10000);
 
     const existingIds = new Set((existingTracks ?? []).map((t: { fa_flight_id: string }) => t.fa_flight_id));
-    const needsSync = (faFlights ?? []).filter((f: { fa_flight_id: string }) => !existingIds.has(f.fa_flight_id));
+    const needsSync = worthPulling.filter((f: { fa_flight_id: string }) => !existingIds.has(f.fa_flight_id));
 
     if (body.action === "list") {
       return NextResponse.json({
         ok: true,
-        total: (faFlights ?? []).length,
+        total: worthPulling.length,
+        skippedShort: (faFlights ?? []).length - worthPulling.length,
         alreadySynced: existingIds.size,
         needsSync: needsSync.length,
       });
@@ -162,7 +180,7 @@ export async function POST(req: NextRequest) {
       stored,
       skipped,
       remaining: needsSync.length - batch.length,
-      total: (faFlights ?? []).length,
+      total: worthPulling.length,
       errors: errors.length > 0 ? errors : undefined,
     });
   } catch (err) {
