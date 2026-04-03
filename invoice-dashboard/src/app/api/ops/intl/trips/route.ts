@@ -625,44 +625,83 @@ export async function GET(req: NextRequest) {
   }
   if (snapshotBackfills.length > 0) await Promise.all(snapshotBackfills);
 
-  // Fetch passenger data from trip_salespersons and attach to trips
+  // Fetch passenger + salesperson data from trip_salespersons (CSV upload)
   const tripTails = [...new Set((trips ?? []).map((t) => t.tail_number).filter(Boolean))];
+  const salespersonMap = new Map<string, string>();
+  const csvPaxMap = new Map<string, string>();
   if (tripTails.length > 0) {
     const { data: paxRows } = await supa
       .from("trip_salespersons")
       .select("trip_id, tail_number, origin_icao, destination_icao, passengers, salesperson_name")
       .in("tail_number", tripTails);
 
-    if (paxRows && paxRows.length > 0) {
-      // Build lookups
-      const paxMap = new Map<string, string>();
-      const salespersonMap = new Map<string, string>(); // tail → salesperson (first match)
-      for (const p of paxRows) {
-        const key = `${p.tail_number}|${p.origin_icao}|${p.destination_icao}`;
-        if (p.passengers) paxMap.set(key, p.passengers);
-        if (p.salesperson_name && !salespersonMap.has(p.tail_number)) {
-          salespersonMap.set(p.tail_number, p.salesperson_name);
-        }
-      }
-
-      // Attach to each trip's legs
-      for (const t of trips ?? []) {
-        // Salesperson name
-        if (salespersonMap.has(t.tail_number)) t.salesperson = salespersonMap.get(t.tail_number)!;
-
-        const route = t.route_icaos ?? [];
-        const legPax: Array<{ dep: string; arr: string; passengers: string }> = [];
-        for (let i = 0; i < route.length - 1; i++) {
-          const dep = route[i];
-          const arr = route[i + 1];
-          // Try ICAO match, also try without K prefix for 3-letter codes
-          const key = `${t.tail_number}|${dep}|${arr}`;
-          const pax = paxMap.get(key);
-          if (pax) legPax.push({ dep, arr, passengers: pax });
-        }
-        if (legPax.length > 0) t.leg_passengers = legPax;
+    for (const p of paxRows ?? []) {
+      const key = `${p.tail_number}|${p.origin_icao}|${p.destination_icao}`;
+      if (p.passengers) csvPaxMap.set(key, p.passengers);
+      if (p.salesperson_name && !salespersonMap.has(p.tail_number)) {
+        salespersonMap.set(p.tail_number, p.salesperson_name);
       }
     }
+  }
+
+  // Fetch passenger data from JetInsight scraper (auto-synced)
+  const jiPaxMap = new Map<string, string[]>(); // ji_trip_id → passenger names
+  const jiTripIds = (trips ?? []).map((t) => t.jetinsight_trip_id).filter(Boolean) as string[];
+  if (jiTripIds.length > 0) {
+    const { data: jiPaxRows } = await supa
+      .from("jetinsight_trip_passengers")
+      .select("jetinsight_trip_id, passenger_name")
+      .in("jetinsight_trip_id", jiTripIds);
+
+    for (const p of jiPaxRows ?? []) {
+      if (!jiPaxMap.has(p.jetinsight_trip_id)) jiPaxMap.set(p.jetinsight_trip_id, []);
+      jiPaxMap.get(p.jetinsight_trip_id)!.push(p.passenger_name);
+    }
+  }
+
+  // Also fetch flight_type to identify positioning legs
+  const flightTypeMap = new Map<string, string>();
+  if (allFlightIds.size > 0) {
+    const { data: ftRows } = await supa
+      .from("flights")
+      .select("id, flight_type")
+      .in("id", [...allFlightIds]);
+    for (const f of ftRows ?? []) {
+      if (f.flight_type) flightTypeMap.set(f.id, f.flight_type);
+    }
+  }
+
+  // Attach passengers + salesperson + positioning info to each trip
+  for (const t of trips ?? []) {
+    if (salespersonMap.has(t.tail_number)) t.salesperson = salespersonMap.get(t.tail_number)!;
+
+    // Check if trip has any revenue legs (non-positioning)
+    const hasRevenueLeg = (t.flight_ids ?? []).some((fid: string) => {
+      const ft = flightTypeMap.get(fid);
+      return !ft || !/(positioning|repo|ferry|maintenance)/i.test(ft);
+    });
+
+    // Get passengers from JI scraper first, fall back to CSV
+    const jiPax = t.jetinsight_trip_id ? jiPaxMap.get(t.jetinsight_trip_id) : null;
+
+    const route = t.route_icaos ?? [];
+    const legPax: Array<{ dep: string; arr: string; passengers: string }> = [];
+
+    if (jiPax && jiPax.length > 0) {
+      // JI passengers are per-trip, not per-leg — show on first revenue leg
+      legPax.push({ dep: route[0] ?? "", arr: route[route.length - 1] ?? "", passengers: jiPax.join(", ") });
+    } else {
+      // Fall back to CSV per-leg data
+      for (let i = 0; i < route.length - 1; i++) {
+        const key = `${t.tail_number}|${route[i]}|${route[i + 1]}`;
+        const pax = csvPaxMap.get(key);
+        if (pax) legPax.push({ dep: route[i], arr: route[i + 1], passengers: pax });
+      }
+    }
+
+    if (legPax.length > 0) t.leg_passengers = legPax;
+    // Flag if this is an all-positioning trip (no pax expected)
+    t.is_positioning = !hasRevenueLeg;
   }
 
   return NextResponse.json({ trips: trips ?? [] });

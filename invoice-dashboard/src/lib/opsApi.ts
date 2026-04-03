@@ -836,6 +836,8 @@ export type IntlTrip = {
   leg_passengers?: Array<{ dep: string; arr: string; passengers: string }>;
   // Salesperson name (from JI CSV upload)
   salesperson?: string;
+  // True if all legs are positioning (no pax expected)
+  is_positioning?: boolean;
 };
 
 export type IntlTripClearance = {
