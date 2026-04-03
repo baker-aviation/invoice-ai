@@ -1,22 +1,29 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/service";
-import { requireAdmin, isAuthed } from "@/lib/api-auth";
+import { requireAdmin, isAuthed, verifyCronSecret } from "@/lib/api-auth";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
-function verifyCronSecret(req: NextRequest): boolean {
-  const secret = req.headers.get("authorization")?.replace("Bearer ", "");
-  return secret === process.env.CRON_SECRET;
-}
-
 /**
  * GET /api/jobs/backfill-prd
  * One-time backfill: parse all PRD files that haven't been parsed yet.
- * Protected by CRON_SECRET or admin auth.
+ * Protected by CRON_SECRET (header or ?secret= param) or admin auth.
  */
 export async function GET(req: NextRequest) {
-  if (!verifyCronSecret(req)) {
+  // Check cron secret from header
+  let authed = verifyCronSecret(req);
+
+  // Check cron secret from query param (?secret=...)
+  if (!authed) {
+    const qSecret = new URL(req.url).searchParams.get("secret");
+    if (qSecret && process.env.CRON_SECRET && qSecret === process.env.CRON_SECRET) {
+      authed = true;
+    }
+  }
+
+  // Fall back to admin auth
+  if (!authed) {
     const auth = await requireAdmin(req);
     if (!isAuthed(auth)) return auth.error;
   }
