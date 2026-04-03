@@ -679,15 +679,58 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
               const dayMap = tailDays.get(tail)!;
               const mxDayMap = mxByTailDate.get(tail);
 
+              // MELs for this tail
+              const tailMels = melItems.filter((m) => m.tail_number === tail && m.status === "open");
+              const expiringMels = tailMels.filter((m) => {
+                if (!m.expiration_date) return false;
+                const days = Math.ceil((new Date(m.expiration_date).getTime() - Date.now()) / 86400000);
+                return days <= 14 && days > 0;
+              });
+
+              // Unscheduled MX for this tail (no date, not acknowledged)
+              const unschedMx = localMxNotes.filter((n) =>
+                n.tail_number === tail && !n.scheduled_date && !n.start_time && !n.acknowledged_at
+              );
+
               return (
                 <div
                   key={tail}
                   className="grid border-b border-gray-100 hover:bg-gray-50/50 transition-colors"
                   style={{ gridTemplateColumns: `100px repeat(${DAYS_TO_SHOW}, 1fr)` }}
                 >
-                  {/* Tail label */}
-                  <div className="px-2 py-2 border-r border-gray-200 flex flex-col justify-start">
+                  {/* Tail label + MELs + unscheduled MX */}
+                  <div className="px-2 py-2 border-r border-gray-200 flex flex-col justify-start gap-1">
                     <span className="text-xs font-bold text-gray-800 font-mono">{tail}</span>
+
+                    {/* Expiring MELs */}
+                    {expiringMels.map((m) => {
+                      const days = Math.ceil((new Date(m.expiration_date!).getTime() - Date.now()) / 86400000);
+                      return (
+                        <div key={m.id} className="text-[9px] leading-tight" title={m.description}>
+                          <span className={`font-bold ${days <= 3 ? "text-red-600" : days <= 7 ? "text-orange-600" : "text-amber-600"}`}>
+                            MEL {m.category}
+                          </span>
+                          <span className={`ml-0.5 ${days <= 3 ? "text-red-500" : "text-gray-500"}`}>
+                            {days}d
+                          </span>
+                        </div>
+                      );
+                    })}
+
+                    {/* Unscheduled MX items (clickable to enter move mode) */}
+                    {unschedMx.map((n) => (
+                      <button
+                        key={n.id}
+                        onClick={() => {
+                          setMovingMxId(n.id);
+                          setMxPopoverId(null);
+                        }}
+                        className="text-left text-[9px] leading-tight rounded px-1 py-0.5 bg-red-50 border border-red-200 text-red-700 hover:bg-red-100 truncate"
+                        title={`Click to schedule: ${n.subject ?? n.description ?? "MX"}`}
+                      >
+                        {n.subject ?? n.description ?? "MX"}
+                      </button>
+                    ))}
                   </div>
 
                   {/* Day cells */}
@@ -768,7 +811,7 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
                                       setVanPickerArrIcao(f.arrival_icao ?? null);
                                       setVanPickerFlight(f.id);
                                     }}
-                                    className="ml-auto opacity-0 group-hover:opacity-40 hover:!opacity-100 text-[8px] text-gray-400"
+                                    className="ml-auto opacity-30 hover:opacity-100 text-[8px] text-gray-400 relative z-10 px-0.5"
                                   >
                                     +V
                                   </button>
