@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/service";
+import { requireAdmin, isAuthed } from "@/lib/api-auth";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -12,11 +13,12 @@ function verifyCronSecret(req: NextRequest): boolean {
 /**
  * GET /api/jobs/backfill-prd
  * One-time backfill: parse all PRD files that haven't been parsed yet.
- * Protected by CRON_SECRET.
+ * Protected by CRON_SECRET or admin auth.
  */
 export async function GET(req: NextRequest) {
   if (!verifyCronSecret(req)) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const auth = await requireAdmin(req);
+    if (!isAuthed(auth)) return auth.error;
   }
 
   const supa = createServiceClient();
@@ -59,14 +61,19 @@ export async function GET(req: NextRequest) {
 
   for (const appId of needsParse) {
     try {
+      // Pass both cookie (for admin auth) and cron secret (as fallback)
+      const headers: Record<string, string> = {};
+      const cookie = req.headers.get("cookie");
+      const authHeader = req.headers.get("authorization");
+      if (cookie) headers.cookie = cookie;
+      if (authHeader) headers.authorization = authHeader;
+      // If authed via admin (not cron), use cron secret for internal calls
+      if (!authHeader && process.env.CRON_SECRET) {
+        headers.authorization = `Bearer ${process.env.CRON_SECRET}`;
+      }
       const res = await fetch(`${origin}/api/jobs/${appId}/parse-prd`, {
         method: "POST",
-        headers: {
-          authorization: req.headers.get("authorization") ?? "",
-          // Use cron secret as admin auth bypass — the parse route uses requireAdmin
-          // So we pass it along; if the parse route rejects, that's fine
-          cookie: req.headers.get("cookie") ?? "",
-        },
+        headers,
       });
       const data = await res.json();
       if (data.ok) {

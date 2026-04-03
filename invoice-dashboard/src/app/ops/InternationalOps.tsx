@@ -684,7 +684,7 @@ function TripRow({ trip, countries, expanded, onToggle, onRefresh }: {
             const ib = clearances.filter((c) => c.clearance_type === "inbound_clearance");
             const ldg = clearances.filter((c) => c.clearance_type === "landing_permit");
             const ovf = clearances.filter((c) => c.clearance_type === "overflight_permit");
-            const hasPax = !!(trip.leg_passengers?.length);
+            const hasPax = !!(trip.leg_passengers?.length) || !!trip.is_positioning;
             const allDone = (arr: typeof clearances) => arr.length > 0 && arr.every((c) => c.status === "approved");
             const tagClass = (done: boolean) => `text-[10px] px-1.5 py-0.5 rounded font-semibold ${done ? "bg-green-100 text-green-700" : "bg-red-100 text-red-600"}`;
 
@@ -693,7 +693,7 @@ function TripRow({ trip, countries, expanded, onToggle, onRefresh }: {
             if (ldg.length > 0) tags.push({ label: "LDG", done: allDone(ldg), title: `Landing Permit${ldg.length > 1 ? "s" : ""} (${ldg.map((c) => c.airport_icao).join(", ")})` });
             if (ovf.length > 0) tags.push({ label: "OVF", done: allDone(ovf), title: `Overflight Permit${ovf.length > 1 ? "s" : ""} (${ovf.map((c) => c.airport_icao).join(", ")})` });
             if (ib.length > 0) tags.push({ label: "IN", done: allDone(ib), title: "US Inbound Clearance" });
-            tags.push({ label: "PAX", done: hasPax, title: "Passenger Data on JetInsight" });
+            tags.push({ label: "PAX", done: hasPax, title: trip.is_positioning ? "Positioning — no pax expected" : "Passenger Data on JetInsight" });
 
             return tags.map((t) => (
               <span key={t.label} className={tagClass(t.done)} title={t.title}>{t.label}</span>

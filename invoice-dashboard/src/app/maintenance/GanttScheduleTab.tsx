@@ -144,10 +144,11 @@ function VanPicker({ currentVanId, onPick, onClose }: {
 // MX Detail Popover
 // ---------------------------------------------------------------------------
 
-function MxPopover({ note, onAssignVan, onAcknowledge, onClose }: {
+function MxPopover({ note, onAssignVan, onAcknowledge, onMove, onClose }: {
   note: MxNote;
   onAssignVan: (vanId: number | null) => void;
   onAcknowledge: () => void;
+  onMove: () => void;
   onClose: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -187,6 +188,12 @@ function MxPopover({ note, onAssignVan, onAcknowledge, onClose }: {
             />
           )}
         </div>
+        <button
+          onClick={onMove}
+          className="px-2 py-1 rounded border border-gray-200 hover:bg-blue-50 text-blue-700 text-[10px]"
+        >
+          Move
+        </button>
         <button
           onClick={onAcknowledge}
           className="px-2 py-1 rounded border border-gray-200 hover:bg-green-50 text-green-700 text-[10px]"
@@ -383,6 +390,8 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
   const [showMxQueue, setShowMxQueue] = useState(false);
   const [createMxCell, setCreateMxCell] = useState<{ tail: string; date: string } | null>(null);
   const [localMxNotes, setLocalMxNotes] = useState<MxNote[]>(mxNotes);
+  // MX move mode: select an MX note, then click a destination cell
+  const [movingMxId, setMovingMxId] = useState<string | null>(null);
 
   // Keep localMxNotes in sync when props change
   useEffect(() => { setLocalMxNotes(mxNotes); }, [mxNotes]);
@@ -486,6 +495,25 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
     } catch {}
   }, []);
 
+  // Move MX to a different cell (tail + date)
+  const moveMx = useCallback(async (noteId: string, newTail: string, newDate: string) => {
+    setMovingMxId(null);
+    setMxPopoverId(null);
+    // Optimistic update
+    setLocalMxNotes((prev) => prev.map((n) =>
+      n.id === noteId
+        ? { ...n, tail_number: newTail, scheduled_date: newDate, start_time: null, end_time: null }
+        : n
+    ));
+    try {
+      await fetch(`/api/ops/mx-notes/${noteId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tail_number: newTail, scheduled_date: newDate }),
+      });
+    } catch {}
+  }, []);
+
   // Build grid data
   const { tailDays, tails } = useMemo(() => {
     const dateSet = new Set(dates);
@@ -556,6 +584,18 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
             <button onClick={() => shiftDays(7)} className="px-2 py-1 rounded text-sm font-medium border border-gray-300 bg-white hover:bg-gray-50 text-gray-600">&raquo;</button>
           </div>
           <h2 className="text-lg font-bold text-gray-800">{rangeLabel}</h2>
+          {/* Move mode banner */}
+          {movingMxId && (
+            <div className="flex items-center gap-2 px-3 py-1 rounded-lg bg-blue-100 border border-blue-300 text-blue-800 text-xs font-medium animate-pulse">
+              Click a cell to move MX item
+              <button
+                onClick={() => setMovingMxId(null)}
+                className="text-blue-500 hover:text-blue-700 font-bold"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
           <div className="flex-1" />
           <div className="text-xs text-gray-500">
             <span className="font-semibold text-gray-700">{tails.length}</span> aircraft
@@ -639,9 +679,12 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
                     return (
                       <div
                         key={d}
-                        className={`group/cell relative px-1 py-1 border-r border-gray-100 last:border-r-0 min-h-[48px] space-y-0.5 overflow-visible ${
+                        onClick={() => {
+                          if (movingMxId) { moveMx(movingMxId, tail, d); }
+                        }}
+                        className={`group/cell relative px-1 py-1 border-r border-gray-100 last:border-r-0 min-h-[48px] space-y-0.5 overflow-visible transition-colors ${
                           isToday ? "bg-blue-50/30" : ""
-                        }`}
+                        } ${movingMxId ? "cursor-pointer hover:bg-blue-50 hover:ring-2 hover:ring-inset hover:ring-blue-300" : ""}`}
                       >
                         {/* Flight blocks */}
                         {dayFlights.map((f) => {
@@ -722,11 +765,16 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
                         {/* MX note blocks */}
                         {dayMx.map((n) => {
                           const showingPopover = mxPopoverId === n.id;
+                          const isBeingMoved = movingMxId === n.id;
                           return (
                             <div
                               key={n.id}
-                              className="relative rounded border px-1.5 py-1 bg-red-50 border-red-200 text-red-900 cursor-pointer hover:bg-red-100 transition-colors"
-                              onClick={() => setMxPopoverId(showingPopover ? null : n.id)}
+                              className={`relative rounded border px-1.5 py-1 cursor-pointer transition-colors ${
+                                isBeingMoved
+                                  ? "bg-blue-100 border-blue-400 text-blue-900 ring-2 ring-blue-400 animate-pulse"
+                                  : "bg-red-50 border-red-200 text-red-900 hover:bg-red-100"
+                              }`}
+                              onClick={(e) => { e.stopPropagation(); if (!movingMxId) setMxPopoverId(showingPopover ? null : n.id); }}
                             >
                               <div className="flex items-center gap-1 text-[10px] leading-tight">
                                 <span className="font-bold">{fmtIcao(n.airport_icao)}</span>
@@ -749,6 +797,7 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
                                   note={n}
                                   onAssignVan={(v) => assignMxVan(n.id, v)}
                                   onAcknowledge={() => acknowledgeMx(n.id)}
+                                  onMove={() => { setMovingMxId(n.id); setMxPopoverId(null); }}
                                   onClose={() => setMxPopoverId(null)}
                                 />
                               )}
