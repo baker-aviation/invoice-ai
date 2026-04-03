@@ -5,6 +5,7 @@ import { fetchJobDetail, fetchLinkedLors, fetchPreviousRejections } from "@/lib/
 import FileViewer from "./FileViewer";
 import FormLinkButton from "./FormLinkButton";
 import AttachFileButton from "./AttachFileButton";
+import PrdParseButton from "./PrdParseButton";
 import TypeRatingsEditor from "./TypeRatingsEditor";
 import ProfileEditor from "./ProfileEditor";
 import ReviewBadge from "./ReviewBadge";
@@ -346,24 +347,113 @@ export default async function JobDetailPage({
             </div>
           )}
 
-          {/* PRD Document */}
+          {/* PRD Section — Document + Analysis combined */}
           {(() => {
             const prdFiles = files.filter((f: any) => f.file_category === "prd");
+            const prdUrl = prdFiles[0]?.signed_url ?? null;
             return (
-              <div className="rounded-xl border bg-white p-4 shadow-sm">
-                <div className="flex items-center justify-between mb-2">
+              <div className="rounded-xl border bg-white p-4 shadow-sm space-y-3">
+                <div className="flex items-center justify-between">
                   <h3 className="text-sm font-semibold text-gray-900">PRD Document</h3>
-                  <AttachFileButton applicationId={Number(applicationId)} parseId={job.id} defaultCategory="prd" />
+                  <div className="flex items-center gap-2">
+                    {prdFiles.length > 0 && !job.prd_parsed_at && (
+                      <PrdParseButton applicationId={Number(applicationId)} />
+                    )}
+                    {job.prd_parsed_at && (
+                      <span className="text-[10px] text-gray-400">
+                        Parsed {new Date(job.prd_parsed_at).toLocaleDateString()}
+                      </span>
+                    )}
+                    <AttachFileButton applicationId={Number(applicationId)} parseId={job.id} defaultCategory="prd" />
+                  </div>
                 </div>
-                {prdFiles.length === 0 ? (
-                  <p className="text-sm text-gray-400">No PRD uploaded yet.</p>
+
+                {/* PRD Analysis (if parsed) */}
+                {job.prd_parsed_at && (
+                  <div className="space-y-3">
+                    {/* Flags */}
+                    {job.prd_flags && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {Object.entries(job.prd_flags).some(([k, v]) => k !== "flag_details" && k !== "notices_of_disapproval_count" && k !== "accidents_count" && v === true) ? (
+                          <>
+                            {job.prd_flags.failed_checkrides && <span className="inline-block rounded-full border px-2 py-0.5 text-xs font-semibold bg-red-100 text-red-700 border-red-300">Failed Checkrides ({job.prd_flags.notices_of_disapproval_count})</span>}
+                            {job.prd_flags.accidents && <span className="inline-block rounded-full border px-2 py-0.5 text-xs font-semibold bg-red-100 text-red-700 border-red-300">Accidents ({job.prd_flags.accidents_count})</span>}
+                            {job.prd_flags.incidents && <span className="inline-block rounded-full border px-2 py-0.5 text-xs font-semibold bg-red-100 text-red-700 border-red-300">Incidents</span>}
+                            {job.prd_flags.enforcements && <span className="inline-block rounded-full border px-2 py-0.5 text-xs font-semibold bg-red-100 text-red-700 border-red-300">Enforcements</span>}
+                            {job.prd_flags.terminations_for_cause && <span className="inline-block rounded-full border px-2 py-0.5 text-xs font-semibold bg-red-100 text-red-700 border-red-300">Terminated for Cause</span>}
+                            {job.prd_flags.drug_alcohol_faa && <span className="inline-block rounded-full border px-2 py-0.5 text-xs font-semibold bg-red-100 text-red-700 border-red-300">Drug/Alcohol (FAA)</span>}
+                            {job.prd_flags.drug_alcohol_employer && <span className="inline-block rounded-full border px-2 py-0.5 text-xs font-semibold bg-red-100 text-red-700 border-red-300">Drug/Alcohol (Employer)</span>}
+                            {job.prd_flags.disciplinary_actions && <span className="inline-block rounded-full border px-2 py-0.5 text-xs font-semibold bg-red-100 text-red-700 border-red-300">Disciplinary Actions</span>}
+                            {job.prd_flags.unsatisfactory_training && <span className="inline-block rounded-full border px-2 py-0.5 text-xs font-semibold bg-red-100 text-red-700 border-red-300">Unsatisfactory Training</span>}
+                            {job.prd_flags.short_tenures && <span className="inline-block rounded-full border px-2 py-0.5 text-xs font-semibold bg-amber-100 text-amber-700 border-amber-300">Short Tenures</span>}
+                          </>
+                        ) : (
+                          <span className="inline-block rounded-full border px-2 py-0.5 text-xs font-semibold bg-emerald-50 text-emerald-700 border-emerald-200">PRD Clean — No Flags</span>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Flag details */}
+                    {job.prd_flags?.flag_details && job.prd_flags.flag_details !== "Clean record — no flags." && (
+                      <div className="text-xs text-gray-600 bg-red-50 border border-red-200 rounded-lg p-2 whitespace-pre-line">
+                        {job.prd_flags.flag_details}
+                      </div>
+                    )}
+
+                    {/* Summary */}
+                    {job.prd_summary && (
+                      <div className="text-sm text-gray-700">{job.prd_summary}</div>
+                    )}
+
+                    {/* Certificate & Medical */}
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      {job.prd_certificate_type && (
+                        <div><span className="text-gray-400">Certificate:</span> {job.prd_certificate_type}</div>
+                      )}
+                      {job.prd_medical_class && (
+                        <div><span className="text-gray-400">Medical:</span> {job.prd_medical_class} Class{job.prd_medical_date ? ` (${job.prd_medical_date})` : ""}</div>
+                      )}
+                {job.prd_medical_limitations && job.prd_medical_limitations !== "None" && (
+                  <div className="col-span-2"><span className="text-gray-400">Medical Limitations:</span> <span className="text-red-600">{job.prd_medical_limitations}</span></div>
+                )}
+              </div>
+
+              {/* FAA Type Ratings */}
+              {job.prd_type_ratings && job.prd_type_ratings.length > 0 && (
+                <div>
+                  <div className="text-xs text-gray-400 mb-1">FAA Type Ratings</div>
+                  <div className="flex flex-wrap gap-1">
+                    {job.prd_type_ratings.map((tr: string) => (
+                      <span key={tr} className="inline-block rounded border px-1.5 py-0.5 text-[10px] font-mono bg-blue-50 text-blue-700 border-blue-200">{tr}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* SIC Limitations */}
+              {job.prd_sic_limitations && job.prd_sic_limitations.length > 0 && (
+                <div>
+                  <div className="text-xs text-gray-400 mb-1">SIC-Only Limitations</div>
+                  <div className="flex flex-wrap gap-1">
+                    {job.prd_sic_limitations.map((lim: string) => (
+                      <span key={lim} className="inline-block rounded border px-1.5 py-0.5 text-[10px] font-mono bg-amber-50 text-amber-700 border-amber-200">{lim}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+                  </div>
+                )}
+
+                {/* Inline PDF viewer */}
+                {prdUrl ? (
+                  <iframe
+                    src={prdUrl}
+                    className="w-full rounded-lg border border-gray-200"
+                    style={{ height: "600px" }}
+                    title="PRD Document"
+                  />
                 ) : (
-                  prdFiles.map((f: any) => (
-                    <a key={f.id} href={f.signed_url} target="_blank" rel="noreferrer"
-                      className="flex items-center gap-2 text-sm text-blue-600 hover:underline">
-                      <span>📄</span> {f.filename}
-                    </a>
-                  ))
+                  <p className="text-sm text-gray-400">No PRD uploaded yet.</p>
                 )}
               </div>
             );
