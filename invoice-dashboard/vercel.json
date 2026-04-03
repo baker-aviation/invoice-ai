@@ -64,6 +64,10 @@
     {
       "path": "/api/cron/tail-summary",
       "schedule": "0 10 * * *"
+    },
+    {
+      "path": "/api/cron/sync-tracks",
+      "schedule": "0 8 * * *"
     }
   ]
 }
