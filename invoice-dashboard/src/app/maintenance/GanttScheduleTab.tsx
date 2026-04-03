@@ -388,6 +388,85 @@ function MxQueueCard({ note, isOverdue }: { note: MxNote; isOverdue?: boolean })
 }
 
 // ---------------------------------------------------------------------------
+// Tail Detail Popup
+// ---------------------------------------------------------------------------
+
+function TailDetailPopup({ tail, mxNotes, aircraftType, pos, onClose }: {
+  tail: string;
+  mxNotes: MxNote[];
+  aircraftType: string;
+  pos: { top: number; left: number };
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [onClose]);
+
+  const tailNotes = mxNotes.filter((n) => n.tail_number === tail && !n.acknowledged_at);
+  const mels = tailNotes.filter((n) => n.subject?.toUpperCase().includes("MEL") || n.description?.toUpperCase().includes("MEL"));
+  const otherMx = tailNotes.filter((n) => !n.subject?.toUpperCase().includes("MEL") && !n.description?.toUpperCase().includes("MEL"));
+
+  return (
+    <div ref={ref} className="fixed z-[9999] bg-white border border-gray-200 rounded-lg shadow-xl p-3 w-80 max-h-96 overflow-y-auto text-xs"
+      style={{ top: pos.top, left: pos.left }}>
+      <div className="flex items-center justify-between mb-2">
+        <div>
+          <span className="font-bold text-sm text-gray-800 font-mono">{tail}</span>
+          <span className="ml-2 text-gray-400 text-[10px]">{aircraftType}</span>
+        </div>
+        <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-lg">&times;</button>
+      </div>
+
+      {mels.length > 0 && (
+        <div className="mb-2">
+          <div className="text-[10px] font-bold text-orange-600 uppercase tracking-wider mb-1">MEL Items ({mels.length})</div>
+          {mels.map((n) => {
+            const endTime = n.end_time ? new Date(n.end_time) : null;
+            const daysLeft = endTime ? Math.ceil((endTime.getTime() - Date.now()) / 86400000) : null;
+            return (
+              <div key={n.id} className="rounded border border-orange-200 bg-orange-50 p-1.5 mb-1 text-[10px]">
+                <div className="font-bold text-orange-800">{n.subject ?? "MEL"}</div>
+                {n.description && <div className="text-orange-700 mt-0.5">{n.description}</div>}
+                <div className="text-orange-500 mt-0.5 flex gap-2">
+                  {n.airport_icao && <span>{fmtIcao(n.airport_icao)}</span>}
+                  {daysLeft !== null && <span className={daysLeft <= 3 ? "text-red-600 font-bold" : ""}>{daysLeft}d left</span>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {otherMx.length > 0 && (
+        <div>
+          <div className="text-[10px] font-bold text-red-600 uppercase tracking-wider mb-1">MX Notes ({otherMx.length})</div>
+          {otherMx.map((n) => (
+            <div key={n.id} className="rounded border border-red-200 bg-red-50 p-1.5 mb-1 text-[10px]">
+              <div className="font-bold text-red-800">{n.subject ?? n.description ?? "Maintenance"}</div>
+              {n.body && n.body !== n.subject && <div className="text-red-700 mt-0.5 whitespace-pre-wrap">{n.body}</div>}
+              <div className="text-red-500 mt-0.5 flex gap-2">
+                {n.airport_icao && <span>{fmtIcao(n.airport_icao)}</span>}
+                {n.start_time && <span>{fmtTime(n.start_time)}{n.end_time ? ` - ${fmtTime(n.end_time)}` : ""}</span>}
+                {n.assigned_van && <span>V{n.assigned_van}</span>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {tailNotes.length === 0 && (
+        <div className="text-gray-400 text-center py-4">No active MX items</div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main Component
 // ---------------------------------------------------------------------------
 
@@ -412,6 +491,10 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
   const [localMxNotes, setLocalMxNotes] = useState<MxNote[]>(mxNotes);
   // MX move mode: select an MX note, then click a destination cell
   const [movingMxId, setMovingMxId] = useState<string | null>(null);
+  // Drag state for MX items
+  const [draggingMxId, setDraggingMxId] = useState<string | null>(null);
+  // Tail detail popup
+  const [tailPopup, setTailPopup] = useState<{ tail: string; pos: { top: number; left: number } } | null>(null);
 
   // Keep localMxNotes in sync when props change
   useEffect(() => { setLocalMxNotes(mxNotes); }, [mxNotes]);
@@ -707,17 +790,16 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
               const dayMap = tailDays.get(tail)!;
               const mxDayMap = mxByTailDate.get(tail);
 
-              // MELs for this tail
-              const tailMels = melItems.filter((m) => m.tail_number === tail && m.status === "open");
-              const expiringMels = tailMels.filter((m) => {
-                if (!m.expiration_date) return false;
-                const days = Math.ceil((new Date(m.expiration_date).getTime() - Date.now()) / 86400000);
-                return days <= 14 && days > 0;
-              });
+              // MELs from MX notes (ops_alerts with "MEL" in subject)
+              const tailMelNotes = localMxNotes.filter((n) =>
+                n.tail_number === tail && !n.acknowledged_at &&
+                (n.subject?.toUpperCase().includes("MEL") || n.description?.toUpperCase().includes("MEL"))
+              );
 
-              // Unscheduled MX for this tail (no date, not acknowledged)
+              // Unscheduled MX for this tail (no date, not acknowledged, not a MEL)
               const unschedMx = localMxNotes.filter((n) =>
-                n.tail_number === tail && !n.scheduled_date && !n.start_time && !n.acknowledged_at
+                n.tail_number === tail && !n.scheduled_date && !n.start_time && !n.acknowledged_at &&
+                !n.subject?.toUpperCase().includes("MEL")
               );
 
               return (
@@ -739,23 +821,35 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
                   >
                   {/* Tail label + MELs + unscheduled MX */}
                   <div className="px-2 py-2 border-r border-gray-200 flex flex-col justify-start gap-1">
-                    <span className="text-xs font-bold text-gray-800 font-mono">{tail}</span>
+                    <button
+                      className="text-xs font-bold text-gray-800 font-mono hover:text-blue-600 text-left cursor-pointer"
+                      onClick={(e) => {
+                        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                        setTailPopup({ tail, pos: { top: rect.bottom + 4, left: rect.left } });
+                      }}
+                    >{tail}</button>
                     <span className="text-[8px] text-gray-400 -mt-1">{aircraftTypes.get(tail)?.replace("Cessna ", "").replace("Challenger ", "CL") ?? ""}</span>
 
-                    {/* Expiring MELs */}
-                    {expiringMels.map((m) => {
-                      const days = Math.ceil((new Date(m.expiration_date!).getTime() - Date.now()) / 86400000);
+                    {/* MEL items from MX notes */}
+                    {tailMelNotes.slice(0, 3).map((n) => {
+                      const endTime = n.end_time ? new Date(n.end_time) : null;
+                      const daysLeft = endTime ? Math.ceil((endTime.getTime() - Date.now()) / 86400000) : null;
                       return (
-                        <div key={m.id} className="text-[9px] leading-tight" title={m.description}>
-                          <span className={`font-bold ${days <= 3 ? "text-red-600" : days <= 7 ? "text-orange-600" : "text-amber-600"}`}>
-                            MEL {m.category}
+                        <div key={n.id} className="text-[9px] leading-tight truncate" title={n.subject ?? n.description ?? ""}>
+                          <span className={`font-bold ${daysLeft !== null && daysLeft <= 3 ? "text-red-600" : daysLeft !== null && daysLeft <= 7 ? "text-orange-600" : "text-green-700"}`}>
+                            MEL
                           </span>
-                          <span className={`ml-0.5 ${days <= 3 ? "text-red-500" : "text-gray-500"}`}>
-                            {days}d
-                          </span>
+                          {daysLeft !== null && (
+                            <span className={`ml-0.5 ${daysLeft <= 3 ? "text-red-500" : daysLeft <= 7 ? "text-orange-500" : "text-green-600"}`}>
+                              {daysLeft}d
+                            </span>
+                          )}
                         </div>
                       );
                     })}
+                    {tailMelNotes.length > 3 && (
+                      <div className="text-[8px] text-gray-400">+{tailMelNotes.length - 3} more</div>
+                    )}
 
                     {/* Unscheduled MX items (clickable to enter move mode) */}
                     {unschedMx.map((n) => (
@@ -789,6 +883,23 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
                         key={d}
                         onClick={() => {
                           if (movingMxId && isDropTarget) { moveMx(movingMxId, tail, d); }
+                        }}
+                        onDragOver={(e) => {
+                          // Only accept drops on same tail
+                          if (!draggingMxId) return;
+                          const note = localMxNotes.find((n) => n.id === draggingMxId);
+                          if (note?.tail_number === tail) {
+                            e.preventDefault();
+                            e.dataTransfer.dropEffect = "move";
+                          }
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          const noteId = e.dataTransfer.getData("text/plain");
+                          if (noteId) {
+                            moveMx(noteId, tail, d);
+                            setDraggingMxId(null);
+                          }
                         }}
                         className={`group/cell relative px-1 py-1 border-r border-gray-100 last:border-r-0 min-h-[48px] overflow-x-hidden transition-colors space-y-0.5 ${
                           isToday ? "bg-blue-50/30" : ""
@@ -884,9 +995,16 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
                           return (
                             <div
                               key={n.id}
-                              className={`relative rounded border px-1.5 py-1 cursor-pointer transition-colors overflow-hidden ${
-                                isBeingMoved
-                                  ? "bg-blue-100 border-blue-400 text-blue-900 ring-2 ring-blue-400 animate-pulse"
+                              draggable
+                              onDragStart={(e) => {
+                                e.dataTransfer.setData("text/plain", n.id);
+                                e.dataTransfer.effectAllowed = "move";
+                                setDraggingMxId(n.id);
+                              }}
+                              onDragEnd={() => setDraggingMxId(null)}
+                              className={`relative rounded border px-1.5 py-1 cursor-grab active:cursor-grabbing transition-colors overflow-hidden ${
+                                isBeingMoved || draggingMxId === n.id
+                                  ? "bg-blue-100 border-blue-400 text-blue-900 ring-2 ring-blue-400 opacity-50"
                                   : "bg-red-50 border-red-200 text-red-900 hover:bg-red-100"
                               }`}
                               onClick={(e) => {
@@ -996,6 +1114,17 @@ export default function GanttScheduleTab({ flights, mxNotes = [], melItems = [] 
           />
         );
       })()}
+
+      {/* Global Tail Detail Popup */}
+      {tailPopup && (
+        <TailDetailPopup
+          tail={tailPopup.tail}
+          mxNotes={localMxNotes}
+          aircraftType={aircraftTypes.get(tailPopup.tail) ?? ""}
+          pos={tailPopup.pos}
+          onClose={() => setTailPopup(null)}
+        />
+      )}
     </div>
   );
 }
