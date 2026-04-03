@@ -69,7 +69,7 @@ export async function GET(req: NextRequest) {
   const { data: predictions } = await supa
     .from("foreflight_predictions")
     .select(
-      "tail_number, departure_icao, destination_icao, flight_date, fuel_to_dest_lbs, total_fuel_lbs, takeoff_weight, time_to_dest_min, route_nm, cruise_profile",
+      "tail_number, departure_icao, destination_icao, flight_date, fuel_to_dest_lbs, total_fuel_lbs, flight_fuel_lbs, taxi_fuel_lbs, takeoff_weight, landing_weight, time_to_dest_min, route_nm, cruise_profile",
     )
     .gte("flight_date", cutoff);
 
@@ -81,7 +81,11 @@ export async function GET(req: NextRequest) {
   const predMap = new Map<string, {
     fuelToDest: number;
     totalFuel: number;
+    flightFuel: number | null;
+    taxiFuel: number | null;
+    landingFuel: number | null;
     takeoffWeight: number | null;
+    landingWeight: number | null;
     timeMin: number | null;
     routeNm: number | null;
   }>();
@@ -91,10 +95,16 @@ export async function GET(req: NextRequest) {
     const depNorm = p.departure_icao?.replace(/^K/, "") ?? "";
     const destNorm = p.destination_icao?.replace(/^K/, "") ?? "";
     const key = `${p.tail_number}:${depNorm}:${destNorm}:${p.flight_date}`;
+    const flightFuel = p.flight_fuel_lbs ? Number(p.flight_fuel_lbs) : null;
+    const totalFuel = p.total_fuel_lbs ? Number(p.total_fuel_lbs) : 0;
     predMap.set(key, {
       fuelToDest: p.fuel_to_dest_lbs,
-      totalFuel: p.total_fuel_lbs,
-      takeoffWeight: p.takeoff_weight,
+      totalFuel,
+      flightFuel,
+      taxiFuel: p.taxi_fuel_lbs ? Number(p.taxi_fuel_lbs) : null,
+      landingFuel: flightFuel != null ? Math.round(totalFuel - flightFuel) : null,
+      takeoffWeight: p.takeoff_weight ? Number(p.takeoff_weight) : null,
+      landingWeight: p.landing_weight ? Number(p.landing_weight) : null,
       timeMin: p.time_to_dest_min,
       routeNm: p.route_nm,
     });
@@ -142,9 +152,13 @@ export async function GET(req: NextRequest) {
       fleetAvg: number;
       variance: number;
       startFuel: number;
+      endFuel: number;
       takeoffWt: number;
       predictedBurn: number | null;
       predictedVariance: number | null;
+      ffStartFuel: number | null;
+      ffFlightFuel: number | null;
+      ffLandingFuel: number | null;
     }>;
   }>();
 
@@ -222,9 +236,13 @@ export async function GET(req: NextRequest) {
         fleetAvg: avg,
         variance: avg > 0 ? Math.round(((burnRate - avg) / avg) * 100) : 0,
         startFuel: f.fuel_start_lbs ?? 0,
+        endFuel: f.fuel_end_lbs ?? 0,
         takeoffWt: f.takeoff_wt_lbs ?? 0,
         predictedBurn,
         predictedVariance,
+        ffStartFuel: pred?.totalFuel ?? null,
+        ffFlightFuel: pred?.flightFuel ?? null,
+        ffLandingFuel: pred?.landingFuel ?? null,
       });
     }
   }
