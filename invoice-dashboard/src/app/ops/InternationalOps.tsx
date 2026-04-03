@@ -2473,30 +2473,26 @@ function DocRulesSection({ countryId }: { countryId: string }) {
             </select>
           </div>
           {newRule.match_type !== "all" && (
-            <div className="flex-1 relative">
-              <label className="text-[10px] text-gray-500 block">Document name to match</label>
-              <input
-                value={newRule.match_value}
-                onChange={(e) => { setNewRule({ ...newRule, match_value: e.target.value }); setShowSuggestions(true); }}
-                onFocus={() => setShowSuggestions(true)}
-                placeholder="Type or click a suggestion below..."
-                className="w-full text-xs border border-gray-300 rounded px-2 py-1"
-              />
-              {showSuggestions && suggestions.sampleNames.length > 0 && (
-                <div className="absolute z-10 mt-1 w-full max-h-40 overflow-y-auto bg-white border border-gray-200 rounded shadow-lg">
-                  {(newRule.doc_category === "crew" ? suggestions.categories : suggestions.sampleNames)
-                    .filter((s) => !newRule.match_value || s.toLowerCase().includes(newRule.match_value.toLowerCase()))
-                    .slice(0, 20)
-                    .map((s) => (
-                      <button
-                        key={s}
-                        onClick={() => { setNewRule({ ...newRule, match_value: s }); setShowSuggestions(false); }}
-                        className="w-full text-left px-2 py-1 text-xs hover:bg-blue-50 text-gray-700 truncate"
-                      >
-                        {s}
-                      </button>
-                    ))}
-                </div>
+            <div className="flex-1">
+              <label className="text-[10px] text-gray-500 block">Document type</label>
+              {(newRule.doc_category === "crew" ? suggestions.categories : suggestions.sampleNames).length > 0 ? (
+                <select
+                  value={newRule.match_value}
+                  onChange={(e) => setNewRule({ ...newRule, match_value: e.target.value })}
+                  className="w-full text-xs border border-gray-300 rounded px-2 py-1"
+                >
+                  <option value="">— Select —</option>
+                  {(newRule.doc_category === "crew" ? suggestions.categories : suggestions.sampleNames).map((s) => (
+                    <option key={s} value={s}>{s}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  value={newRule.match_value}
+                  onChange={(e) => setNewRule({ ...newRule, match_value: e.target.value })}
+                  placeholder="e.g. Passport, Medical..."
+                  className="w-full text-xs border border-gray-300 rounded px-2 py-1"
+                />
               )}
             </div>
           )}
