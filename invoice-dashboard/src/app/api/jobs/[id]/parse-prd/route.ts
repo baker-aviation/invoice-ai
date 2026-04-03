@@ -106,14 +106,22 @@ function isChallenger300(rating: string): boolean {
   return r.includes("CL-30") || r === "CL30" || r.includes("CHALLENGER 3");
 }
 
+function verifyCronSecret(req: NextRequest): boolean {
+  const secret = req.headers.get("authorization")?.replace("Bearer ", "");
+  return secret === process.env.CRON_SECRET;
+}
+
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const auth = await requireAdmin(req);
-  if (!isAuthed(auth)) return auth.error;
-  if (await isRateLimited(auth.userId, 5)) {
-    return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
+  // Allow cron secret OR admin auth
+  if (!verifyCronSecret(req)) {
+    const auth = await requireAdmin(req);
+    if (!isAuthed(auth)) return auth.error;
+    if (await isRateLimited(auth.userId, 5)) {
+      return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
+    }
   }
 
   const { id } = await params;
@@ -155,17 +163,8 @@ export async function POST(
     const bucket = storage.bucket(prdFile.gcs_bucket);
     const [buffer] = await bucket.file(prdFile.gcs_key).download();
 
-    // Extract text from PDF
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const pdfParse = require("pdf-parse") as (buf: Buffer) => Promise<{ text: string; numpages: number }>;
-    const pdf = await pdfParse(buffer);
-    const pdfText = pdf.text;
-
-    if (!pdfText || pdfText.trim().length < 100) {
-      return NextResponse.json({ error: "Could not extract text from PRD PDF" }, { status: 422 });
-    }
-
-    // Send to OpenAI for structured extraction
+    // Send PDF directly to OpenAI as base64 (avoids pdf-parse DOMMatrix issues in serverless)
+    const pdfBase64 = buffer.toString("base64");
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
     const completion = await openai.chat.completions.create({
@@ -181,7 +180,19 @@ export async function POST(
       },
       messages: [
         { role: "system", content: PRD_EXTRACTION_PROMPT },
-        { role: "user", content: `Here is the full text of the PRD document:\n\n${pdfText.slice(0, 30000)}` },
+        {
+          role: "user",
+          content: [
+            {
+              type: "file",
+              file: {
+                filename: prdFile.filename ?? "prd.pdf",
+                file_data: `data:application/pdf;base64,${pdfBase64}`,
+              },
+            },
+            { type: "text", text: "Parse this PRD document and extract the structured data." },
+          ],
+        },
       ],
     });
 
