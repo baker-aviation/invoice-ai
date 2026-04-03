@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/service";
-import { requireAdmin } from "@/lib/api-auth";
+import { requireAuth, isAuthed } from "@/lib/api-auth";
 import { getFlightTrack } from "@/lib/flightaware";
 
 export const maxDuration = 300;
@@ -23,8 +23,8 @@ function faHeaders() {
  *   2. { faFlightIds: [...] } — pull and store tracks for specific flights
  */
 export async function POST(req: NextRequest) {
-  const auth = await requireAdmin(req);
-  if ("error" in auth) return auth.error;
+  const auth = await requireAuth(req);
+  if (!isAuthed(auth)) return auth.error;
 
   if (!process.env.FLIGHTAWARE_API_KEY) {
     return NextResponse.json({ error: "FLIGHTAWARE_API_KEY not configured" }, { status: 500 });
@@ -36,21 +36,8 @@ export async function POST(req: NextRequest) {
   const supa = createServiceClient();
 
   try {
-    // ─── Step 1: Discover FA flights matching our fleet ───
+    // ─── Step 1: Discover FA flights needing track pulls ───
     if (body.action === "discover") {
-      // Get tail→callsign mapping
-      const { data: faFlights } = await supa
-        .from("fa_flights")
-        .select("tail, ident")
-        .limit(500);
-
-      const callsignMap = new Map<string, string>();
-      for (const f of (faFlights ?? []) as Array<{ tail: string; ident: string }>) {
-        if (f.tail && f.ident && !callsignMap.has(f.tail)) {
-          callsignMap.set(f.tail, f.ident);
-        }
-      }
-
       // Already-stored tracks
       const { data: existingTracks } = await supa
         .from("flightaware_tracks")
@@ -58,45 +45,86 @@ export async function POST(req: NextRequest) {
         .limit(10000);
       const existingIds = new Set((existingTracks ?? []).map((t: { fa_flight_id: string }) => t.fa_flight_id));
 
-      // Last 2 months
-      const endDate = new Date();
-      const startDate = new Date();
-      startDate.setMonth(startDate.getMonth() - 2);
+      const cutoff = new Date();
+      cutoff.setMonth(cutoff.getMonth() - 2);
+
+      // Source 1: flights table (webhook-captured, goes back weeks/months — FREE, no FA API calls)
+      const { data: icsFlights } = await supa
+        .from("flights")
+        .select("fa_flight_id, tail_number, departure_icao, arrival_icao, scheduled_departure")
+        .not("fa_flight_id", "is", null)
+        .gte("scheduled_departure", cutoff.toISOString())
+        .limit(5000);
 
       const discovered: Array<{ id: string; tail: string; origin: string; dest: string; date: string }> = [];
-      const errors: string[] = [];
 
+      for (const f of (icsFlights ?? []) as Array<Record<string, string>>) {
+        if (!f.fa_flight_id || existingIds.has(f.fa_flight_id)) continue;
+        const depDate = f.scheduled_departure ? new Date(f.scheduled_departure).toISOString().split("T")[0] : "";
+        discovered.push({
+          id: f.fa_flight_id,
+          tail: f.tail_number ?? "",
+          origin: f.departure_icao ?? "",
+          dest: f.arrival_icao ?? "",
+          date: depDate,
+        });
+      }
+
+      // Source 2: fa_flights table (recent active flights)
+      const { data: faActive } = await supa
+        .from("fa_flights")
+        .select("fa_flight_id, tail, origin_icao, destination_icao, departure_time")
+        .or("status.eq.Landed,status.eq.Arrived")
+        .not("fa_flight_id", "is", null)
+        .gte("departure_time", cutoff.toISOString())
+        .limit(5000);
+
+      const seenIds = new Set(discovered.map((d) => d.id));
+      for (const f of (faActive ?? []) as Array<Record<string, string>>) {
+        if (!f.fa_flight_id || existingIds.has(f.fa_flight_id) || seenIds.has(f.fa_flight_id)) continue;
+        const depDate = f.departure_time ? new Date(f.departure_time).toISOString().split("T")[0] : "";
+        discovered.push({
+          id: f.fa_flight_id,
+          tail: f.tail ?? "",
+          origin: f.origin_icao ?? "",
+          dest: f.destination_icao ?? "",
+          date: depDate,
+        });
+      }
+
+      // Source 3: FA API discovery by callsign (last ~7 days only)
+      const { data: faFlightsForCallsign } = await supa
+        .from("fa_flights").select("tail, ident").limit(500);
+      const callsignMap = new Map<string, string>();
+      for (const f of (faFlightsForCallsign ?? []) as Array<{ tail: string; ident: string }>) {
+        if (f.tail && f.ident && !callsignMap.has(f.tail)) callsignMap.set(f.tail, f.ident);
+      }
+
+      const seenIds2 = new Set(discovered.map((d) => d.id));
+      const errors: string[] = [];
       for (const [tail, callsign] of callsignMap) {
         await sleep(DELAY_MS);
         try {
+          const weekAgo = new Date(); weekAgo.setDate(weekAgo.getDate() - 7);
           const res = await fetch(
-            `${FA_BASE}/flights/${callsign}?start=${startDate.toISOString()}&end=${endDate.toISOString()}`,
+            `${FA_BASE}/flights/${callsign}?start=${weekAgo.toISOString()}&end=${new Date().toISOString()}`,
             { headers: faHeaders(), signal: AbortSignal.timeout(15_000) },
           );
           if (!res.ok) continue;
           const data = await res.json();
-          const flights = (data.flights ?? []) as Array<{
-            fa_flight_id: string;
-            origin?: { code_icao?: string };
-            destination?: { code_icao?: string };
-            actual_off?: string;
-            scheduled_off?: string;
-            status?: string;
-          }>;
-
-          for (const f of flights) {
-            if (existingIds.has(f.fa_flight_id)) continue;
-            const status = (f.status ?? "").toLowerCase();
+          for (const f of (data.flights ?? []) as Array<Record<string, unknown>>) {
+            const fid = f.fa_flight_id as string;
+            if (!fid || existingIds.has(fid) || seenIds2.has(fid)) continue;
+            const status = ((f.status as string) ?? "").toLowerCase();
             if (!status.includes("arrived") && !status.includes("landed")) continue;
-
-            const depTime = f.actual_off ?? f.scheduled_off;
+            const depTime = (f.actual_off ?? f.scheduled_off) as string;
             discovered.push({
-              id: f.fa_flight_id,
-              tail,
-              origin: f.origin?.code_icao ?? "",
-              dest: f.destination?.code_icao ?? "",
+              id: fid, tail,
+              origin: (f.origin as Record<string, string>)?.code_icao ?? "",
+              dest: (f.destination as Record<string, string>)?.code_icao ?? "",
               date: depTime ? new Date(depTime).toISOString().split("T")[0] : "",
             });
+            seenIds2.add(fid);
           }
         } catch (err) {
           errors.push(`${callsign}: ${err instanceof Error ? err.message : String(err)}`);
@@ -105,9 +133,9 @@ export async function POST(req: NextRequest) {
 
       return NextResponse.json({
         ok: true,
-        callsigns: callsignMap.size,
         discovered: discovered.length,
         alreadySynced: existingIds.size,
+        sources: { icsFlights: (icsFlights ?? []).length, faActive: (faActive ?? []).length, faApi: callsignMap.size },
         flights: discovered,
         errors: errors.length > 0 ? errors : undefined,
       });
