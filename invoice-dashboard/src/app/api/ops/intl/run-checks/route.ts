@@ -538,11 +538,21 @@ async function runChecks() {
           (cl ?? []).filter((c) => c.status !== "not_started").map((c) => c.trip_id)
         );
         const safeToDelete = domesticTrips.filter((id) => !startedIds.has(id));
+        const startedDomestic = domesticTrips.filter((id) => startedIds.has(id));
 
         if (safeToDelete.length > 0) {
           await supa.from("intl_trip_clearances").delete().in("trip_id", safeToDelete);
           await supa.from("intl_trips").delete().in("id", safeToDelete);
           console.log(`[intl/run-checks] Removed ${safeToDelete.length} trip(s) that became domestic`);
+        }
+
+        // Flag started trips that went domestic (don't delete — work in progress)
+        if (startedDomestic.length > 0) {
+          await supa.from("intl_trips")
+            .update({ notes: "⚠ FLIGHTS MAY NO LONGER BE INTERNATIONAL — review and remove if no longer needed" })
+            .in("id", startedDomestic)
+            .is("notes", null); // only set if notes not already set
+          console.log(`[intl/run-checks] Flagged ${startedDomestic.length} started trip(s) as possibly domestic`);
         }
       }
     }

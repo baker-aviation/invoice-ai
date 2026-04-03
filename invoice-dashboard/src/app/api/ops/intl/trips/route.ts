@@ -599,14 +599,16 @@ export async function GET(req: NextRequest) {
   }
   const jetinsightMap = new Map<string, string>();
   const flightTimesMap = new Map<string, { dep: string; arr: string | null }>();
+  const flightRouteMap = new Map<string, { dep: string; arr: string }>();
   if (allFlightIds.size > 0) {
     const { data: flightRows } = await supa
       .from("flights")
-      .select("id, jetinsight_url, scheduled_departure, scheduled_arrival")
+      .select("id, jetinsight_url, scheduled_departure, scheduled_arrival, departure_icao, arrival_icao")
       .in("id", [...allFlightIds]);
     for (const f of flightRows ?? []) {
       if (f.jetinsight_url) jetinsightMap.set(f.id, f.jetinsight_url);
       flightTimesMap.set(f.id, { dep: f.scheduled_departure, arr: f.scheduled_arrival ?? null });
+      if (f.departure_icao && f.arrival_icao) flightRouteMap.set(f.id, { dep: f.departure_icao, arr: f.arrival_icao });
     }
   }
 
@@ -713,6 +715,14 @@ export async function GET(req: NextRequest) {
     if (legPax.length > 0) t.leg_passengers = legPax;
     // Flag if this is an all-positioning trip (no pax expected)
     t.is_positioning = !hasRevenueLeg;
+
+    // Check if all flights are now domestic (route changed but trip still exists)
+    const allDomestic = (t.flight_ids ?? []).every((fid: string) => {
+      const route = flightRouteMap.get(fid);
+      if (!route) return true; // flight deleted
+      return !isInternationalIcao(route.dep) && !isInternationalIcao(route.arr);
+    });
+    if (allDomestic && (t.flight_ids ?? []).length > 0) t.is_domestic_now = true;
   }
 
   return NextResponse.json({ trips: trips ?? [] });

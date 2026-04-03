@@ -512,6 +512,81 @@ async function runParser(lookbackHours = 48) {
     return NextResponse.json({ error: "Graph auth failed" }, { status: 500 });
   }
 
+  // ── Step 0: Scan Sent Items to capture outbound emails with conversationId ──
+  // This enables thread matching for emails sent from Outlook (not just dashboard)
+  let sentItemsCaptured = 0;
+  try {
+    const sentSince = new Date(Date.now() - lookbackHours * 60 * 60 * 1000).toISOString();
+    const sentUrl =
+      `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/mailFolders/SentItems/messages` +
+      `?$top=50&$select=id,subject,toRecipients,sentDateTime,conversationId,internetMessageId&$orderby=sentDateTime desc` +
+      `&$filter=sentDateTime ge ${sentSince}`;
+
+    const sentRes = await fetch(sentUrl, { headers: { Authorization: `Bearer ${token}` } });
+    if (sentRes.ok) {
+      const sentData = await sentRes.json();
+      const sentMessages: Array<{
+        id: string; subject: string; sentDateTime: string; conversationId: string; internetMessageId: string;
+        toRecipients: Array<{ emailAddress: { address: string } }>;
+      }> = sentData.value ?? [];
+
+      // Filter to emails sent to CBP or handlers
+      const cbpHandlerSent = sentMessages.filter((m) => {
+        const recipients = m.toRecipients?.map((r) => r.emailAddress.address.toLowerCase()) ?? [];
+        return recipients.some((r) =>
+          r.includes("cbp.dhs.gov") || r.includes("pinnacle-ops.com") ||
+          ["atlanticaviation.com", "jetaviation.com", "signatureaviation.com", "bohlke.com", "avservcostarica.com", "realalfafly.com", "sa-stt.com"].some((d) => r.includes(d))
+        );
+      });
+
+      if (cbpHandlerSent.length > 0) {
+        // Check which we've already captured
+        const sentConvIds = cbpHandlerSent.map((m) => m.conversationId).filter(Boolean);
+        const { data: existing } = await supa
+          .from("intl_doc_emails")
+          .select("conversation_id")
+          .in("conversation_id", sentConvIds);
+        const existingConvIds = new Set((existing ?? []).map((r) => r.conversation_id));
+
+        for (const m of cbpHandlerSent) {
+          if (!m.conversationId || existingConvIds.has(m.conversationId)) continue;
+
+          // Extract tail + date to find trip
+          const { tail, dateStr } = extractTailAndDate(m.subject);
+          let tripId: string | null = null;
+          if (tail && dateStr) {
+            const parsed = new Date(dateStr + "T00:00:00Z");
+            if (!isNaN(parsed.getTime())) {
+              const db = new Date(parsed.getTime() - 86400000).toISOString().slice(0, 10);
+              const da = new Date(parsed.getTime() + 86400000).toISOString().slice(0, 10);
+              const { data: trips } = await supa
+                .from("intl_trips").select("id, trip_date").eq("tail_number", tail)
+                .gte("trip_date", db).lte("trip_date", da).limit(1);
+              if (trips?.[0]) tripId = trips[0].id;
+            }
+          }
+
+          const { error: insertErr } = await supa.from("intl_doc_emails").insert({
+            trip_id: tripId,
+            sent_to: m.toRecipients.map((r) => r.emailAddress.address),
+            sent_cc: [],
+            subject: m.subject,
+            document_count: 0,
+            sent_by: null,
+            sent_by_name: "Outlook",
+            conversation_id: m.conversationId,
+            internet_message_id: m.internetMessageId,
+            graph_message_id: m.id,
+          });
+          if (!insertErr) sentItemsCaptured++;
+          existingConvIds.add(m.conversationId);
+        }
+      }
+    }
+  } catch (e) {
+    console.log("[parse-handling] Sent Items scan error (non-fatal):", e instanceof Error ? e.message : e);
+  }
+
   const since = new Date(Date.now() - lookbackHours * 60 * 60 * 1000).toISOString();
   const pageSize = lookbackHours > 72 ? 250 : 50;
 
@@ -732,6 +807,7 @@ async function runParser(lookbackHours = 48) {
   return NextResponse.json({
     ok: true,
     ...stats,
+    sentItemsCaptured,
     toProcessCount: toProcess.length,
     processedThisRun: Math.min(toProcess.length, MAX_PER_RUN),
     results,

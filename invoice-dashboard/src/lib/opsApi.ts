@@ -838,6 +838,8 @@ export type IntlTrip = {
   salesperson?: string;
   // True if all legs are positioning (no pax expected)
   is_positioning?: boolean;
+  // True if all flights became domestic (route changed, trip may be stale)
+  is_domestic_now?: boolean;
 };
 
 export type IntlTripClearance = {
