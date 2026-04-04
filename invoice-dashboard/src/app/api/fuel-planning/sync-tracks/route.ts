@@ -92,7 +92,8 @@ export async function POST(req: NextRequest) {
         });
       }
 
-      // Source 3: FA API discovery by callsign (last ~7 days only)
+      // Source 3: FA /history/flights/ API — walk back in 7-day windows
+      // Discovers flights the webhook missed (goes back months)
       const { data: faFlightsForCallsign } = await supa
         .from("fa_flights").select("tail, ident").limit(500);
       const callsignMap = new Map<string, string>();
@@ -102,32 +103,50 @@ export async function POST(req: NextRequest) {
 
       const seenIds2 = new Set(discovered.map((d) => d.id));
       const errors: string[] = [];
+
+      // Walk back from today in 7-day chunks to the cutoff date
+      const now = new Date();
+      const weekChunks: Array<{ start: string; end: string }> = [];
+      const walkDate = new Date(now);
+      while (walkDate > cutoff) {
+        const chunkEnd = new Date(walkDate);
+        walkDate.setDate(walkDate.getDate() - 7);
+        const chunkStart = walkDate < cutoff ? new Date(cutoff) : new Date(walkDate);
+        weekChunks.push({
+          start: chunkStart.toISOString(),
+          end: chunkEnd.toISOString(),
+        });
+      }
+
+      let faApiCalls = 0;
       for (const [tail, callsign] of callsignMap) {
-        await sleep(DELAY_MS);
-        try {
-          const weekAgo = new Date(); weekAgo.setDate(weekAgo.getDate() - 7);
-          const res = await fetch(
-            `${FA_BASE}/flights/${callsign}?start=${weekAgo.toISOString()}&end=${new Date().toISOString()}`,
-            { headers: faHeaders(), signal: AbortSignal.timeout(15_000) },
-          );
-          if (!res.ok) continue;
-          const data = await res.json();
-          for (const f of (data.flights ?? []) as Array<Record<string, unknown>>) {
-            const fid = f.fa_flight_id as string;
-            if (!fid || existingIds.has(fid) || seenIds2.has(fid)) continue;
-            const status = ((f.status as string) ?? "").toLowerCase();
-            if (!status.includes("arrived") && !status.includes("landed")) continue;
-            const depTime = (f.actual_off ?? f.scheduled_off) as string;
-            discovered.push({
-              id: fid, tail,
-              origin: (f.origin as Record<string, string>)?.code_icao ?? "",
-              dest: (f.destination as Record<string, string>)?.code_icao ?? "",
-              date: depTime ? new Date(depTime).toISOString().split("T")[0] : "",
-            });
-            seenIds2.add(fid);
+        for (const chunk of weekChunks) {
+          await sleep(DELAY_MS);
+          faApiCalls++;
+          try {
+            const res = await fetch(
+              `${FA_BASE}/history/flights/${callsign}?start=${chunk.start}&end=${chunk.end}`,
+              { headers: faHeaders(), signal: AbortSignal.timeout(15_000) },
+            );
+            if (!res.ok) continue;
+            const data = await res.json();
+            for (const f of (data.flights ?? []) as Array<Record<string, unknown>>) {
+              const fid = f.fa_flight_id as string;
+              if (!fid || existingIds.has(fid) || seenIds2.has(fid)) continue;
+              const status = ((f.status as string) ?? "").toLowerCase();
+              if (!status.includes("arrived") && !status.includes("landed")) continue;
+              const depTime = (f.actual_off ?? f.scheduled_off) as string;
+              discovered.push({
+                id: fid, tail,
+                origin: (f.origin as Record<string, string>)?.code_icao ?? "",
+                dest: (f.destination as Record<string, string>)?.code_icao ?? "",
+                date: depTime ? new Date(depTime).toISOString().split("T")[0] : "",
+              });
+              seenIds2.add(fid);
+            }
+          } catch (err) {
+            errors.push(`${callsign}/${chunk.start.slice(0, 10)}: ${err instanceof Error ? err.message : String(err)}`);
           }
-        } catch (err) {
-          errors.push(`${callsign}: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
 
@@ -135,7 +154,7 @@ export async function POST(req: NextRequest) {
         ok: true,
         discovered: discovered.length,
         alreadySynced: existingIds.size,
-        sources: { icsFlights: (icsFlights ?? []).length, faActive: (faActive ?? []).length, faApi: callsignMap.size },
+        sources: { icsFlights: (icsFlights ?? []).length, faActive: (faActive ?? []).length, faApiCalls },
         flights: discovered,
         errors: errors.length > 0 ? errors : undefined,
       });
