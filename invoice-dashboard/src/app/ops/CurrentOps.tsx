@@ -3002,8 +3002,11 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                             const tt = (f.alerts ?? []).find((a) => a.alert_type === "TIGHT_TURN" && !a.acknowledged_at);
                             if (!tt) return null;
                             return (
-                              <span className="text-[10px] font-bold text-orange-600 cursor-help" title={tt.body ?? tt.subject ?? "Tight turnaround"}>
-                                TIGHT TURN
+                              <span className="relative group/tt">
+                                <span className="text-[10px] font-bold text-orange-600 cursor-help">TIGHT TURN</span>
+                                <span className="hidden group-hover/tt:block absolute left-0 top-full mt-1 z-50 w-56 px-2.5 py-1.5 text-[11px] text-gray-700 bg-white border border-orange-200 rounded shadow-lg whitespace-normal leading-snug">
+                                  {tt.body ?? tt.subject}
+                                </span>
                               </span>
                             );
                           })()}
