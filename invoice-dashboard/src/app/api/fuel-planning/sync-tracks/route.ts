@@ -104,14 +104,21 @@ export async function POST(req: NextRequest) {
       const seenIds2 = new Set(discovered.map((d) => d.id));
       const errors: string[] = [];
 
-      // Walk back from today in 7-day chunks to the cutoff date
+      // Walk back from today in 7-day chunks
+      // FA track data is only available for ~3 weeks back, so don't discover older flights
+      // (discovery itself is cheap but every track pull on an empty flight wastes $0.01)
+      const trackRetentionDays = 21;
+      const trackCutoff = new Date();
+      trackCutoff.setDate(trackCutoff.getDate() - trackRetentionDays);
+      const effectiveCutoff = cutoff > trackCutoff ? cutoff : trackCutoff;
+
       const now = new Date();
       const weekChunks: Array<{ start: string; end: string }> = [];
       const walkDate = new Date(now);
-      while (walkDate > cutoff) {
+      while (walkDate > effectiveCutoff) {
         const chunkEnd = new Date(walkDate);
         walkDate.setDate(walkDate.getDate() - 7);
-        const chunkStart = walkDate < cutoff ? new Date(cutoff) : new Date(walkDate);
+        const chunkStart = walkDate < effectiveCutoff ? new Date(effectiveCutoff) : new Date(walkDate);
         weekChunks.push({
           start: chunkStart.toISOString(),
           end: chunkEnd.toISOString(),
