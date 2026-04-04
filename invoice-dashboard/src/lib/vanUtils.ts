@@ -363,9 +363,13 @@ export function buildItemFromFlight(
   allFlights: Flight[],
   baseLat: number,
   baseLon: number,
+  date?: string,
 ): VanFlightItem | null {
   const arr = allFlights.find((f) => f.id === flightId);
   if (!arr || !arr.arrival_icao) return null;
+
+  // Skip flights that don't arrive on the target date
+  if (date && !isOnEtDate(arr.scheduled_arrival, date)) return null;
 
   const iata = arr.arrival_icao.replace(/^K/, "");
   const info = getAirportInfo(iata);
