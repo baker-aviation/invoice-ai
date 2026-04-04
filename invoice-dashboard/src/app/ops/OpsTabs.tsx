@@ -121,7 +121,7 @@ export default function OpsTabs({ flights, bakerPprAirports, advertisedPrices, m
 
       {/* Tab content */}
       {tab === "Current Ops" ? (
-        <CurrentOps flights={flights} onSwitchToDuty={switchToDuty} advertisedPrices={advertisedPrices} mxNotes={mxNotes} swimFlow={swimFlow} />
+        <CurrentOps flights={alertFlights ?? flights} onSwitchToDuty={switchToDuty} advertisedPrices={advertisedPrices} mxNotes={mxNotes} swimFlow={swimFlow} />
       ) : tab === "Flight Time & Rest" ? (
         <DutyTracker flights={flights} scrollToTail={scrollToTail} onScrollComplete={() => setScrollToTail(null)} />
       ) : tab === "NOTAMs & PPRs" ? (
