@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/service";
 import { requireAuth } from "@/lib/api-auth";
+import { extractAltitudeSegments } from "@/lib/altitudeSegments";
 
 // Phase burn rate constants (validated from fleet data analysis)
 const PHASE_RATES: Record<string, { climb: number; cruise: number; descent: number }> = {
@@ -167,7 +168,7 @@ export async function GET(req: NextRequest) {
       .select("foreflight_id, departure_icao, destination_icao, departure_time, fuel_to_dest_lbs, route_nm")
       .eq("tail_number", tail).eq("flight_date", date).limit(10),
     supa.from("flightaware_tracks")
-      .select("positions, position_count, max_altitude, origin_icao, destination_icao")
+      .select("positions, position_count, max_altitude, origin_icao, destination_icao, segments_summary")
       .eq("tail_number", tail).eq("flight_date", date).limit(10),
   ]);
 
@@ -250,6 +251,22 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  // Extract altitude segments for step climb analysis
+  let segmentsSummary = null;
+  if (actual.length > 5) {
+    // Check if pre-computed segments exist on the track record
+    const storedSummary = trackData ? (trackData as Record<string, unknown>).segments_summary : null;
+    if (storedSummary) {
+      segmentsSummary = storedSummary;
+    } else {
+      segmentsSummary = extractAltitudeSegments(
+        actual.map((p) => ({ minutesFromDep: p.minutesFromDep, altitudeFl: p.altitudeFl })),
+        aircraftType,
+        routeNm,
+      );
+    }
+  }
+
   // Compute attribution if we have all three data sources
   let attribution = null;
   if (ffBurn > 0 && actualBurn > 0 && (actual.length > 0 || ffClimbMin != null)) {
@@ -277,6 +294,8 @@ export async function GET(req: NextRequest) {
     maxPlannedAlt: planned.length > 0 ? Math.max(...planned.map((p) => p.altitudeFl)) : null,
     maxActualAlt: actual.length > 0 ? Math.max(...actual.map((p) => p.altitudeFl)) : null,
     attribution,
+    segments: segmentsSummary,
+    optimalAlt: OPTIMAL_ALT[aircraftType] ?? 470,
     phases: {
       planned: { climbMin: ffClimbMin, cruiseMin: ffCruiseMin, descentMin: ffDescentMin, maxAlt: ffMaxAlt },
       actual: actualPhases,
