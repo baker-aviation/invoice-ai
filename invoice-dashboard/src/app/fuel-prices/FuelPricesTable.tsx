@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import { Badge } from "@/components/Badge";
 import type { AdvertisedPriceRow, FuelPriceRow } from "@/lib/types";
-import type { TripSalesperson } from "@/lib/invoiceApi";
+type SalespersonEntry = { tail_number: string; airport_iata: string; date: string; salesperson: string };
 
 const PAGE_SIZE = 25;
 
@@ -746,7 +746,7 @@ export default function FuelPricesTable({
 }: {
   initialPrices: FuelPriceRow[];
   advertisedPrices?: AdvertisedPriceRow[];
-  salespersons?: TripSalesperson[];
+  salespersons?: SalespersonEntry[];
 }) {
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState("");
@@ -766,19 +766,12 @@ export default function FuelPricesTable({
 
   const activeAdvertisedPrices = extendedAdv ?? advertisedPrices;
 
-  // Build salesperson lookup: tail|airport(IATA)|date → salesperson_name
+  // Build salesperson lookup: tail|airport(IATA)|date → salesperson
   const salespersonLookup = useMemo(() => {
     const map = new Map<string, string>();
     if (!salespersons?.length) return map;
     for (const s of salespersons) {
-      if (!s.tail_number || !s.scheduled_departure) continue;
-      const date = s.scheduled_departure.split("T")[0];
-      const toIata = (icao: string | null) =>
-        icao && icao.length === 4 && icao.startsWith("K") ? icao.slice(1) : icao;
-      const originIata = toIata(s.origin_icao);
-      const destIata = toIata(s.destination_icao);
-      if (originIata) map.set(`${s.tail_number}|${originIata}|${date}`, s.salesperson_name);
-      if (destIata) map.set(`${s.tail_number}|${destIata}|${date}`, s.salesperson_name);
+      map.set(`${s.tail_number}|${s.airport_iata}|${s.date}`, s.salesperson);
     }
     return map;
   }, [salespersons]);

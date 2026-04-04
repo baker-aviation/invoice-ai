@@ -77,18 +77,18 @@ export default async function VanPage({ params }: { params: Promise<{ vanId: str
   const removals: string[] = (draftRow?.removals as string[]) ?? [];
   const unscheduledOverrides: [string, number][] = (draftRow?.unscheduled as [string, number][]) ?? [];
 
-  // Build FBO lookup from trip_salespersons (tail:dest_icao → fbo name)
+  // Build FBO lookup from flights table (populated by JetInsight scraper)
   const { data: fboRows } = await supa
-    .from("trip_salespersons")
-    .select("tail_number, destination_icao, destination_fbo")
+    .from("flights")
+    .select("tail_number, arrival_icao, destination_fbo")
     .not("destination_fbo", "is", null)
     .gte("scheduled_departure", past)
     .lte("scheduled_departure", future);
 
   const fboMap: Record<string, string> = {};
   for (const row of fboRows ?? []) {
-    if (row.tail_number && row.destination_icao && row.destination_fbo) {
-      fboMap[`${row.tail_number}:${row.destination_icao}`] = row.destination_fbo;
+    if (row.tail_number && row.arrival_icao && row.destination_fbo) {
+      fboMap[`${row.tail_number}:${row.arrival_icao}`] = row.destination_fbo;
     }
   }
 

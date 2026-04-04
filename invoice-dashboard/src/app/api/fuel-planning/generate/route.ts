@@ -123,7 +123,7 @@ export async function POST(req: NextRequest) {
 
     const { data: flightRows } = await supa
       .from("flights")
-      .select("tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival")
+      .select("tail_number, departure_icao, arrival_icao, scheduled_departure, scheduled_arrival, origin_fbo")
       .gte("scheduled_departure", dayStart)
       .lte("scheduled_departure", dayEnd)
       .order("scheduled_departure", { ascending: true });
@@ -138,18 +138,11 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // 2b. Get FBO assignments from trip_salespersons (JetInsight CSV upload)
-    const { data: tripFboRows } = await supa
-      .from("trip_salespersons")
-      .select("tail_number, origin_icao, destination_icao, origin_fbo, destination_fbo, scheduled_departure")
-      .gte("scheduled_departure", dayStart)
-      .lte("scheduled_departure", dayEnd);
-
-    // Build lookup: "TAIL|ORIG_ICAO" → FBO name
+    // 2b. Build FBO lookup from flights data (populated by JetInsight scraper)
     const fboByLeg = new Map<string, string>();
-    for (const r of tripFboRows ?? []) {
-      if (r.origin_fbo && r.tail_number && r.origin_icao) {
-        fboByLeg.set(`${r.tail_number.toUpperCase()}|${r.origin_icao}`, r.origin_fbo);
+    for (const r of flightRows ?? []) {
+      if (r.origin_fbo && r.tail_number && r.departure_icao) {
+        fboByLeg.set(`${r.tail_number.toUpperCase()}|${r.departure_icao}`, r.origin_fbo);
       }
     }
 
@@ -226,7 +219,7 @@ export async function POST(req: NextRequest) {
           if (r) { depRate = r.price; depVendor = r.vendor; break; }
         }
 
-        // FBO fee lookup: use origin_fbo from trip_salespersons if available, else best match at airport
+        // FBO fee lookup: use origin_fbo from flights if available, else best match at airport
         const legWaiver = getFboWaiver(leg.departure_icao, leg.origin_fbo, acType);
 
         return {

@@ -47,7 +47,7 @@ export async function POST(req: NextRequest) {
       .order("scheduled_departure", { ascending: true }),
     supa
       .from("flights")
-      .select("id, tail_number, departure_icao, arrival_icao, scheduled_departure, flight_type, summary, jetinsight_url")
+      .select("id, tail_number, departure_icao, arrival_icao, scheduled_departure, flight_type, summary, jetinsight_url, salesperson, customer_name, jetinsight_trip_id")
       .gte("scheduled_departure", todayStart.toISOString())
       .lte("scheduled_departure", todayEnd.toISOString())
       .not("tail_number", "is", null)
@@ -91,95 +91,88 @@ export async function POST(req: NextRequest) {
     if (alertTriggerTime < now || alertTriggerTime > windowEnd) continue;
     checked++;
 
-    // 4. Find matching trip_salespersons
-    const { data: trips } = await supa
-      .from("trip_salespersons")
-      .select("trip_id, salesperson_name, origin_icao, destination_icao, customer")
-      .eq("tail_number", flight.tail_number)
-      .eq("origin_icao", flight.departure_icao)
-      .eq("destination_icao", flight.arrival_icao);
+    // 4. Get salesperson from flights table directly (populated by JetInsight scraper)
+    const spName = flight.salesperson;
+    if (!spName) continue;
 
-    if (!trips || trips.length === 0) continue;
+    const tripId = flight.jetinsight_trip_id ?? null;
 
-    for (const trip of trips) {
-      // 5. Check dedup (keyed on live flight, so alert only fires once per leg)
-      const { data: existing } = await supa
-        .from("salesperson_notifications_sent")
-        .select("id")
-        .eq("flight_id", flight.id)
-        .eq("trip_id", trip.trip_id)
-        .limit(1);
+    // 5. Check dedup (keyed on live flight, so alert only fires once per leg)
+    const dedupQ = supa
+      .from("salesperson_notifications_sent")
+      .select("id")
+      .eq("flight_id", flight.id);
+    if (tripId) dedupQ.eq("trip_id", tripId);
+    const { data: existing } = await dedupQ.limit(1);
 
-      if (existing && existing.length > 0) {
-        skipped++;
+    if (existing && existing.length > 0) {
+      skipped++;
+      continue;
+    }
+
+    const slackUserId = slackLookup.get(spName.toLowerCase());
+    if (!slackUserId) {
+      skipped++;
+      continue;
+    }
+
+    // 6. Format and send DM
+    const depTime = formatTimeLocal(flight.scheduled_departure, flight.departure_icao);
+    const depIcao = formatIcao(flight.departure_icao);
+    const arrIcao = formatIcao(flight.arrival_icao);
+    const broker = flight.customer_name || "Unknown";
+
+    const lines = [
+      `You have a trip departing ${priorLeg ? "soon" : "in ~1hr"} (${depTime}) on tail *${flight.tail_number}* going ${depIcao} - ${arrIcao}.`,
+      `Broker is ${broker}.`,
+    ];
+    if (priorLeg) {
+      const pDep = formatIcao(priorLeg.departure_icao);
+      const pArr = formatIcao(priorLeg.arrival_icao);
+      const pTime = formatDepTimeMilitary(priorLeg.scheduled_departure, priorLeg.departure_icao);
+      const pType = priorLeg.flight_type || "Positioning";
+      lines.push(`Prior leg: ${pDep}-${pArr} dep ${pTime} (${pType}) — must land first`);
+    }
+    lines.push(`Crew should be at the FBO now.`);
+    lines.push(`Please check in and manage.`);
+    if (tripId) {
+      lines.push(`<https://portal.jetinsight.com/trips/${tripId}|Open in JetInsight>`);
+    } else if (flight.jetinsight_url) {
+      lines.push(`<${flight.jetinsight_url}|Open in JetInsight>`);
+    }
+    const message = lines.join("\n");
+
+    try {
+      const slackRes = await fetch("https://slack.com/api/chat.postMessage", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${slackToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ channel: slackUserId, text: message }),
+      });
+      const slackData = await slackRes.json();
+
+      if (!slackData.ok) {
+        errors.push(`Slack error for ${spName}: ${slackData.error}`);
         continue;
       }
 
-      const slackUserId = slackLookup.get(trip.salesperson_name.toLowerCase());
-      if (!slackUserId) {
-        skipped++;
-        continue;
-      }
+      await supa.from("salesperson_notifications_sent").insert({
+        flight_id: flight.id,
+        trip_id: tripId,
+        salesperson_name: spName,
+      });
 
-      // 6. Format and send DM
-      const depTime = formatTimeLocal(flight.scheduled_departure, flight.departure_icao);
-      const depIcao = formatIcao(flight.departure_icao);
-      const arrIcao = formatIcao(flight.arrival_icao);
-      const broker = trip.customer || "Unknown";
-
-      const lines = [
-        `You have a trip departing ${priorLeg ? "soon" : "in ~1hr"} (${depTime}) on tail *${flight.tail_number}* going ${depIcao} - ${arrIcao}.`,
-        `Broker is ${broker}.`,
-      ];
-      if (priorLeg) {
-        const pDep = formatIcao(priorLeg.departure_icao);
-        const pArr = formatIcao(priorLeg.arrival_icao);
-        const pTime = formatDepTimeMilitary(priorLeg.scheduled_departure, priorLeg.departure_icao);
-        const pType = priorLeg.flight_type || "Positioning";
-        lines.push(`Prior leg: ${pDep}-${pArr} dep ${pTime} (${pType}) — must land first`);
-      }
-      lines.push(`Crew should be at the FBO now.`);
-      lines.push(`Please check in and manage.`);
-      // Always use the salesperson's trip_id for the URL (not the flight's jetinsight_url)
-      if (trip.trip_id) {
-        lines.push(`<https://portal.jetinsight.com/trips/${trip.trip_id}|Open in JetInsight>`);
-      } else if (flight.jetinsight_url) {
-        lines.push(`<${flight.jetinsight_url}|Open in JetInsight>`);
-      }
-      const message = lines.join("\n");
-
-      try {
-        const slackRes = await fetch("https://slack.com/api/chat.postMessage", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${slackToken}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ channel: slackUserId, text: message }),
-        });
-        const slackData = await slackRes.json();
-
-        if (!slackData.ok) {
-          errors.push(`Slack error for ${trip.salesperson_name}: ${slackData.error}`);
-          continue;
-        }
-
-        await supa.from("salesperson_notifications_sent").insert({
-          flight_id: flight.id,
-          trip_id: trip.trip_id,
-          salesperson_name: trip.salesperson_name,
-        });
-
-        sentDetails.push({
-          salesperson: trip.salesperson_name,
-          tail: flight.tail_number,
-          route: `${depIcao} → ${arrIcao}`,
-          time: depTime,
-        });
-        sent++;
-      } catch (err) {
-        errors.push(`Failed to DM ${trip.salesperson_name}: ${err instanceof Error ? err.message : "unknown"}`);
-      }
+      sentDetails.push({
+        salesperson: spName,
+        tail: flight.tail_number,
+        route: `${depIcao} → ${arrIcao}`,
+        time: depTime,
+      });
+      sent++;
+    } catch (err) {
+      errors.push(`Failed to DM ${spName}: ${err instanceof Error ? err.message : "unknown"}`);
     }
   }
 

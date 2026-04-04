@@ -1091,6 +1091,10 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
         pax_count: null,
         jetinsight_url: null,
         fa_flight_id: null,
+        salesperson: null,
+        customer_name: null,
+        origin_fbo: null,
+        destination_fbo: null,
         alerts: [],
       });
     }
@@ -3240,7 +3244,7 @@ export default function CurrentOps({ flights: initialFlights, onSwitchToDuty, ad
                         {(() => {
                           const LIVE = ["Revenue", "Owner", "Charter"];
                           if (!LIVE.includes(type)) return null;
-                          const sp = findSalesperson(tripSalespersons, f.tail_number, f.departure_icao, f.arrival_icao, f.scheduled_departure);
+                          const sp = f.salesperson ?? findSalesperson(tripSalespersons, f.tail_number, f.departure_icao, f.arrival_icao, f.scheduled_departure);
                           if (!sp) return null;
                           return <span className="text-xs text-gray-700">{sp}</span>;
                         })()}

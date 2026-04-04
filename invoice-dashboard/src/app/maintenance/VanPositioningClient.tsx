@@ -1097,7 +1097,7 @@ function buildSlackItems(items: VanFlightItem[], flightInfoMap: Map<string, Flig
     } else {
       slackStatus = "Scheduled";
     }
-    // Look up FBO name from trip_salespersons (try both ICAO formats)
+    // Look up FBO name from flights data (try both ICAO formats)
     const arrIcao = item.arrFlight.arrival_icao ?? "";
     const arrIcaoStripped = arrIcao.replace(/^K/, "");
     const fbo = fboMap?.[`${item.arrFlight.tail_number}:${arrIcao}`]
@@ -3322,6 +3322,10 @@ function ScheduleTab({
         pax_count: null,
         jetinsight_url: null,
         fa_flight_id: null,
+        salesperson: null,
+        customer_name: null,
+        origin_fbo: null,
+        destination_fbo: null,
         alerts: [],
       };
       const item: VanFlightItem = {
