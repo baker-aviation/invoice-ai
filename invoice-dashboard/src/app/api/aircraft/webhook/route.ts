@@ -8,6 +8,7 @@ import {
   createPendingDiversion,
 } from "@/lib/diversionCheck";
 import { getFlightTrack } from "@/lib/flightaware";
+import { extractAltitudeSegments } from "@/lib/altitudeSegments";
 
 export const dynamic = "force-dynamic";
 
@@ -137,21 +138,36 @@ export async function POST(req: NextRequest) {
             if (positions.length >= 2) {
               totalSec = Math.round((new Date(positions[positions.length - 1].timestamp).getTime() - new Date(positions[0].timestamp).getTime()) / 1000);
             }
+            const compactPositions = positions.map((p) => ({
+              t: p.timestamp, alt: p.altitude, gs: p.groundspeed,
+              lat: Math.round((p.latitude ?? 0) * 10000) / 10000,
+              lon: Math.round((p.longitude ?? 0) * 10000) / 10000,
+            }));
+
+            // Compute altitude segments for step climb analysis
+            const depTime = new Date(positions[0].timestamp).getTime();
+            const segPositions = positions
+              .filter((p) => p.altitude != null)
+              .map((p) => ({
+                minutesFromDep: (new Date(p.timestamp).getTime() - depTime) / 60000,
+                altitudeFl: p.altitude ?? 0,
+              }));
+            // Determine aircraft type from tail (N5xxFX = CL-30, else CE-750)
+            const acType = /^N5\d{2}FX$/i.test(registration) ? "CL-30" : "CE-750";
+            const segSummary = extractAltitudeSegments(segPositions, acType, 0); // routeNm=0 for now
+
             await supa.from("flightaware_tracks").upsert({
               fa_flight_id: faFlightId,
               tail_number: registration,
               origin_icao: origin ?? null,
               destination_icao: destination ?? null,
               flight_date: new Date().toISOString().split("T")[0],
-              positions: positions.map((p) => ({
-                t: p.timestamp, alt: p.altitude, gs: p.groundspeed,
-                lat: Math.round((p.latitude ?? 0) * 10000) / 10000,
-                lon: Math.round((p.longitude ?? 0) * 10000) / 10000,
-              })),
+              positions: compactPositions,
               position_count: positions.length,
               max_altitude: maxAlt ? Math.round(maxAlt) : null,
               climb_duration_sec: climbSec,
               total_duration_sec: totalSec,
+              segments_summary: segSummary,
             }, { onConflict: "fa_flight_id" });
             console.log(`[FA Webhook] Track captured for ${faFlightId} (${positions.length} positions)`);
           } catch (err) {
