@@ -222,7 +222,7 @@ export default function UnifiedFuelEfficiency() {
           <div key={type} className="rounded-lg border border-gray-200 bg-white px-4 py-3">
             <p className="text-xs text-gray-500">{type} Efficiency</p>
             <p className="text-xl font-bold text-gray-900">{stats.avgLbsNm.toFixed(2)} <span className="text-sm font-normal text-gray-400">lbs/NM</span></p>
-            <p className="text-xs text-gray-400">{fmt(stats.avgBurnRate)} lbs/hr | {stats.flights} flights</p>
+            <p className="text-xs text-gray-400">{fmt(Math.round(stats.avgBurnRate / 6.7))} gal/hr | {stats.flights} flights</p>
           </div>
         ))}
         <div className="rounded-lg border border-gray-200 bg-white px-4 py-3">
@@ -263,19 +263,14 @@ export default function UnifiedFuelEfficiency() {
         })()}
       </div>
 
-      {/* ─── Phase Legend + Sort ─── */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4 text-xs text-gray-500">
-          <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-red-400 inline-block" /> Climb</span>
-          <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-blue-400 inline-block" /> Cruise</span>
-          <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-amber-400 inline-block" /> Descent</span>
-        </div>
+      {/* ─── Sort Controls ─── */}
+      <div className="flex items-center justify-end">
         <div className="flex items-center gap-2 text-xs text-gray-500">
           <span>Sort by:</span>
           {(["lbsNm", "burnRate", "climbPct", "ffVar"] as const).map((s) => (
             <button key={s} onClick={() => setSortBy(s)}
               className={`px-2 py-0.5 rounded ${sortBy === s ? "bg-blue-100 text-blue-700 font-medium" : "hover:bg-gray-100"}`}>
-              {{ lbsNm: "lbs/NM", burnRate: "lbs/hr", climbPct: "Climb %", ffVar: "vs FF" }[s]}
+              {{ lbsNm: "lbs/NM", burnRate: "gal/hr", climbPct: "Climb %", ffVar: "vs FF" }[s]}
             </button>
           ))}
         </div>
@@ -297,7 +292,7 @@ export default function UnifiedFuelEfficiency() {
                   {p.avgStartFuel > 8000 && p.burnRateVariancePct > 3 && <Badge color="blue">Possible tankering</Badge>}
                   {p.totalStepClimbs > p.flights && <Badge color="blue">Step climbs</Badge>}
                 </div>
-                {p.avgClimbPct != null && (
+                {false && p.avgClimbPct != null && (
                   <div className="mt-1.5 w-full max-w-xs">
                     <PhaseBar climb={p.avgClimbMin ?? 0} cruise={(p.recentFlights[0]?.cruiseMin ?? 0) || 0} descent={(p.recentFlights[0]?.descentMin ?? 0) || 0} />
                   </div>
@@ -310,8 +305,8 @@ export default function UnifiedFuelEfficiency() {
                   <div className={`text-xs font-medium ${pctClass(p.lbsNmVariancePct)}`}>{p.lbsNmVariancePct > 0 ? "+" : ""}{p.lbsNmVariancePct.toFixed(1)}%</div>
                 </div>
                 <div className="text-right">
-                  <div className="text-[10px] text-gray-400 uppercase">lbs/hr</div>
-                  <div className="font-bold">{fmt(p.avgBurnRate)}</div>
+                  <div className="text-[10px] text-gray-400 uppercase">gal/hr</div>
+                  <div className="font-bold">{fmt(Math.round(p.avgBurnRate / 6.7))}</div>
                   <div className={`text-xs font-medium ${pctClass(p.burnRateVariancePct)}`}>{p.burnRateVariancePct > 0 ? "+" : ""}{p.burnRateVariancePct}%</div>
                 </div>
                 {p.avgClimbPct != null && (
@@ -365,7 +360,7 @@ export default function UnifiedFuelEfficiency() {
                             ({lbsNmDiff > 0 ? "+" : ""}{lbsNmDiff}% vs {t.fleetAvgLbsNm.toFixed(2)})
                           </span>
                         </div>
-                        <p className="text-xs text-gray-400">{t.avgBurnRate} lbs/hr | {t.flights} flights, {t.hours} hrs</p>
+                        <p className="text-xs text-gray-400">{Math.round(t.avgBurnRate / 6.7)} gal/hr | {t.flights} flights, {t.hours} hrs</p>
                       </div>
                     );
                   })}
