@@ -24,13 +24,15 @@ interface Pilot {
   avgStartFuel: number; ffVariancePct: number | null; matchedPredictions: number;
   avgClimbMin: number | null; avgClimbPct: number | null;
   avgInitialAlt: number | null; avgMaxAlt: number | null; totalStepClimbs: number;
+  avgCruiseFl: number | null;
   byType: ByType[]; insights: string[]; recentFlights: RecentFlight[];
   costImpact: number; extraLbs: number; extraGal: number;
 }
 interface FleetTypeStats { avgBurnRate: number; avgLbsNm: number; avgClimbPct: number; avgInitialAlt: number; flights: number; hours: number }
+
 interface Tail { tail: string; type: string; flights: number; avgBurnRate: number; avgLbsNm: number; variancePct: number }
 interface Data {
-  fleetStats: { byType: Record<string, FleetTypeStats>; ffAccuracy: number; totalFlights: number; matchedFlights: number; dateRange: { start: string; end: string } };
+  fleetStats: { byType: Record<string, FleetTypeStats>; ffAccuracy: number; fleetCruiseFl: number | null; totalFlights: number; matchedFlights: number; dateRange: { start: string; end: string } };
   pilots: Pilot[]; tails: Tail[];
 }
 
@@ -164,7 +166,7 @@ export default function UnifiedFuelEfficiency() {
   const sortedPilots = [...(data?.pilots ?? [])].sort((a, b) => {
     if (sortBy === "lbsNm") return b.lbsNmVariancePct - a.lbsNmVariancePct;
     if (sortBy === "burnRate") return b.burnRateVariancePct - a.burnRateVariancePct;
-    if (sortBy === "climbPct") return (b.avgClimbPct ?? 0) - (a.avgClimbPct ?? 0);
+    if (sortBy === "climbPct") return (a.avgCruiseFl ?? 999) - (b.avgCruiseFl ?? 999); // lowest cruise FL first
     if (sortBy === "ffVar") return (b.ffVariancePct ?? 0) - (a.ffVariancePct ?? 0);
     return 0;
   });
@@ -220,9 +222,10 @@ export default function UnifiedFuelEfficiency() {
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         {types.map(([type, stats]) => (
           <div key={type} className="rounded-lg border border-gray-200 bg-white px-4 py-3">
-            <p className="text-xs text-gray-500">{type} Efficiency</p>
+            <p className="text-xs text-gray-500">{type}</p>
             <p className="text-xl font-bold text-gray-900">{stats.avgLbsNm.toFixed(2)} <span className="text-sm font-normal text-gray-400">lbs/NM</span></p>
-            <p className="text-xs text-gray-400">{fmt(Math.round(stats.avgBurnRate / 6.7))} gal/hr | {stats.flights} flights</p>
+            <p className="text-sm font-semibold text-gray-700">{fmt(Math.round(stats.avgBurnRate / 6.7))} <span className="text-xs font-normal text-gray-400">gal/hr</span></p>
+            <p className="text-xs text-gray-400">{stats.flights} flights</p>
           </div>
         ))}
         <div className="rounded-lg border border-gray-200 bg-white px-4 py-3">
@@ -232,11 +235,11 @@ export default function UnifiedFuelEfficiency() {
           </p>
           <p className="text-xs text-gray-400">actual vs predicted</p>
         </div>
-        {types.length > 0 && types[0][1].avgClimbPct > 0 && (
+        {fleetStats.fleetCruiseFl != null && (
           <div className="rounded-lg border border-gray-200 bg-white px-4 py-3">
-            <p className="text-xs text-gray-500">Avg Climb Phase</p>
-            <p className="text-xl font-bold text-gray-900">{types[0][1].avgClimbPct}%</p>
-            <p className="text-xs text-gray-400">FL{types[0][1].avgInitialAlt} initial</p>
+            <p className="text-xs text-gray-500">Fleet Avg Cruise</p>
+            <p className="text-xl font-bold text-gray-900">FL{fleetStats.fleetCruiseFl}</p>
+            <p className="text-xs text-gray-400">from ADS-B data</p>
           </div>
         )}
         <div className="rounded-lg border border-gray-200 bg-white px-4 py-3">
@@ -270,7 +273,7 @@ export default function UnifiedFuelEfficiency() {
           {(["lbsNm", "burnRate", "climbPct", "ffVar"] as const).map((s) => (
             <button key={s} onClick={() => setSortBy(s)}
               className={`px-2 py-0.5 rounded ${sortBy === s ? "bg-blue-100 text-blue-700 font-medium" : "hover:bg-gray-100"}`}>
-              {{ lbsNm: "lbs/NM", burnRate: "gal/hr", climbPct: "Climb %", ffVar: "vs FF" }[s]}
+              {{ lbsNm: "lbs/NM", burnRate: "gal/hr", climbPct: "Cruise FL", ffVar: "vs FF" }[s]}
             </button>
           ))}
         </div>
@@ -288,7 +291,7 @@ export default function UnifiedFuelEfficiency() {
                   <span className="text-xs text-gray-400">{p.flights} flights | {p.totalHrs} hrs</span>
                   {p.lbsNmVariancePct > 8 && <Badge color="red">High burn</Badge>}
                   {p.lbsNmVariancePct < -5 && <Badge color="green">Efficient</Badge>}
-                  {p.avgClimbPct != null && p.avgClimbPct > 15 && <Badge color="amber">High climb %</Badge>}
+                  {p.avgCruiseFl != null && fleetStats.fleetCruiseFl != null && p.avgCruiseFl < fleetStats.fleetCruiseFl - 20 && <Badge color="amber">Low cruise FL</Badge>}
                   {p.avgStartFuel > 8000 && p.burnRateVariancePct > 3 && <Badge color="blue">Possible tankering</Badge>}
                   {p.totalStepClimbs > p.flights && <Badge color="blue">Step climbs</Badge>}
                 </div>
@@ -298,7 +301,7 @@ export default function UnifiedFuelEfficiency() {
                   </div>
                 )}
               </div>
-              <div className="flex items-center gap-5 text-sm shrink-0">
+              <div className="grid grid-cols-5 gap-1 text-sm shrink-0" style={{ width: 420 }}>
                 <div className="text-right">
                   <div className="text-[10px] text-gray-400 uppercase">lbs/NM</div>
                   <div className="font-bold">{p.avgLbsNm.toFixed(2)}</div>
@@ -309,26 +312,26 @@ export default function UnifiedFuelEfficiency() {
                   <div className="font-bold">{fmt(Math.round(p.avgBurnRate / 6.7))}</div>
                   <div className={`text-xs font-medium ${pctClass(p.burnRateVariancePct)}`}>{p.burnRateVariancePct > 0 ? "+" : ""}{p.burnRateVariancePct}%</div>
                 </div>
-                {p.avgClimbPct != null && (
-                  <div className="text-right">
-                    <div className="text-[10px] text-gray-400 uppercase">Climb</div>
-                    <div className="font-bold">{p.avgClimbPct}%</div>
-                    <div className="text-xs text-gray-400">FL{p.avgInitialAlt}</div>
+                <div className="text-right">
+                  <div className="text-[10px] text-gray-400 uppercase">Cruise FL</div>
+                  <div className={`font-bold ${p.avgCruiseFl != null && fleetStats.fleetCruiseFl != null && p.avgCruiseFl < fleetStats.fleetCruiseFl - 15 ? "text-amber-600" : ""}`}>
+                    {p.avgCruiseFl != null ? `FL${p.avgCruiseFl}` : "—"}
                   </div>
-                )}
+                  <div className="text-xs text-gray-400">{p.avgCruiseFl != null ? `fleet FL${fleetStats.fleetCruiseFl}` : "no ADS-B"}</div>
+                </div>
                 <div className="text-right">
                   <div className="text-[10px] text-gray-400 uppercase">vs FF</div>
                   <div className={`font-bold ${pctClass(p.ffVariancePct ?? 0, 10)}`}>
                     {p.ffVariancePct != null ? `${p.ffVariancePct > 0 ? "+" : ""}${p.ffVariancePct}%` : "—"}
                   </div>
-                  <div className="text-xs text-gray-400">{p.matchedPredictions} matched</div>
+                  <div className="text-xs text-gray-400">{p.matchedPredictions > 0 ? `${p.matchedPredictions} matched` : ""}</div>
                 </div>
                 <div className="text-right">
                   <div className="text-[10px] text-gray-400 uppercase">Cost Impact</div>
                   <div className={`font-bold ${p.costImpact > 0 ? "text-red-600" : p.costImpact < -100 ? "text-green-600" : "text-gray-600"}`}>
                     {p.costImpact > 0 ? "+" : ""}{p.costImpact < 0 ? "-" : ""}${Math.abs(p.costImpact).toLocaleString()}
                   </div>
-                  <div className="text-xs text-gray-400">{p.extraLbs > 0 ? "+" : ""}{p.extraLbs.toLocaleString()} lbs</div>
+                  <div className="text-xs text-gray-400">{p.extraLbs > 0 ? "+" : ""}{Math.round(p.extraLbs / 6.7).toLocaleString()} gal</div>
                 </div>
               </div>
             </button>

@@ -28,7 +28,7 @@ export async function GET(req: NextRequest) {
   // ---------------------------------------------------------------------------
   // Parallel data fetch — 4 tables at once
   // ---------------------------------------------------------------------------
-  const [rawFlightsRes, predictionsRes, phasesRes, scheduledRes] =
+  const [rawFlightsRes, predictionsRes, phasesRes, scheduledRes, tracksRes] =
     await Promise.all([
       // 1. Post-flight actuals
       supa
@@ -68,6 +68,13 @@ export async function GET(req: NextRequest) {
         .select("tail_number, departure_icao, pic, scheduled_departure")
         .gte("scheduled_departure", cutoffDate.toISOString())
         .not("pic", "is", null),
+
+      // 5. FlightAware tracks with segments_summary for avg cruise FL
+      supa
+        .from("flightaware_tracks")
+        .select("tail_number, origin_icao, destination_icao, flight_date, segments_summary, max_altitude")
+        .gte("flight_date", cutoff)
+        .gt("position_count", 5),
     ]);
 
   /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -75,6 +82,7 @@ export async function GET(req: NextRequest) {
   const predictions = (predictionsRes.data ?? []) as any[];
   const phases = (phasesRes.data ?? []) as any[];
   const scheduled = (scheduledRes.data ?? []) as any[];
+  const tracks = (tracksRes.data ?? []) as any[];
   /* eslint-enable @typescript-eslint/no-explicit-any */
 
   // Dedupe: when multiple rows exist for same tail+origin+dest+date, keep the one
@@ -94,6 +102,18 @@ export async function GET(req: NextRequest) {
     }
   }
   const rawFlights = [...dedupeMap.values()];
+
+  // Build track lookup: tail+origin+dest+date → max cruise FL from ADS-B
+  const trackCruiseFl = new Map<string, number>();
+  for (const t of tracks) {
+    const dep = (t.origin_icao ?? "").replace(/^K/, "");
+    const dest = (t.destination_icao ?? "").replace(/^K/, "");
+    const key = `${t.tail_number}:${dep}:${dest}:${t.flight_date}`;
+    // Use segments_summary if available, otherwise max_altitude
+    const summary = t.segments_summary as { maxCruiseAlt?: number } | null;
+    const cruiseFl = summary?.maxCruiseAlt ?? (t.max_altitude ? Math.round(t.max_altitude / 1) : null);
+    if (cruiseFl && cruiseFl > 50) trackCruiseFl.set(key, cruiseFl);
+  }
 
   // ---------------------------------------------------------------------------
   // PIC backfill from flights table (same logic as efficiency/route.ts)
@@ -326,6 +346,9 @@ export async function GET(req: NextRequest) {
     maxAltSum: number;
     totalStepClimbs: number;
     climbFlights: number; // flights with phase data
+    // ADS-B cruise altitude
+    cruiseFlSum: number;
+    cruiseFlCount: number;
     // Per type
     byType: Map<
       string,
@@ -442,6 +465,8 @@ export async function GET(req: NextRequest) {
         maxAltSum: 0,
         totalStepClimbs: 0,
         climbFlights: 0,
+        cruiseFlSum: 0,
+        cruiseFlCount: 0,
         byType: new Map(),
         recentFlights: [],
       };
@@ -470,6 +495,16 @@ export async function GET(req: NextRequest) {
       pilot.maxAltSum += phase.maxAlt;
       pilot.totalStepClimbs += phase.stepClimbs;
       pilot.climbFlights++;
+    }
+
+    // ADS-B actual cruise altitude
+    const originNorm = (f.origin ?? "").replace(/^K/, "");
+    const destNorm = (f.destination ?? "").replace(/^K/, "");
+    const trackKey = `${f.tail_number}:${originNorm}:${destNorm}:${f.flight_date}`;
+    const cruiseFl = trackCruiseFl.get(trackKey);
+    if (cruiseFl) {
+      pilot.cruiseFlSum += cruiseFl;
+      pilot.cruiseFlCount++;
     }
 
     // Per type
@@ -552,6 +587,11 @@ export async function GET(req: NextRequest) {
   const fleetInitialAltAll =
     [...pilotMap.values()].reduce((s, p) => s + p.initialAltSum, 0) /
     (Math.max([...pilotMap.values()].reduce((s, p) => s + p.climbFlights, 0), 1));
+  const fleetCruiseFlAll = (() => {
+    const totalFl = [...pilotMap.values()].reduce((s, p) => s + p.cruiseFlSum, 0);
+    const totalCount = [...pilotMap.values()].reduce((s, p) => s + p.cruiseFlCount, 0);
+    return totalCount > 0 ? Math.round(totalFl / totalCount) : null;
+  })();
 
   const pilotsResult = [...pilotMap.values()]
     .filter((p) => p.flights >= 3)
@@ -620,6 +660,11 @@ export async function GET(req: NextRequest) {
           ? Math.round(p.maxAltSum / p.climbFlights)
           : null;
 
+      // ADS-B actual cruise altitude
+      const avgCruiseFl = p.cruiseFlCount > 0
+        ? Math.round(p.cruiseFlSum / p.cruiseFlCount)
+        : null;
+
       // Per-type breakdown
       const byType = [...p.byType.entries()].map(([type, data]) => ({
         type,
@@ -649,7 +694,11 @@ export async function GET(req: NextRequest) {
         );
       }
 
-      if (avgInitialAlt !== null && avgInitialAlt < fleetInitialAltAll - 20) {
+      if (avgCruiseFl !== null && fleetCruiseFlAll !== null && avgCruiseFl < fleetCruiseFlAll - 15) {
+        insights.push(
+          `Avg cruise altitude FL${avgCruiseFl} is below fleet avg FL${fleetCruiseFlAll}. Higher altitude = less drag = less fuel.`,
+        );
+      } else if (avgInitialAlt !== null && avgInitialAlt < fleetInitialAltAll - 20) {
         insights.push(
           `Avg initial cruise altitude FL${avgInitialAlt} is below fleet avg FL${Math.round(fleetInitialAltAll)}. Higher altitude = less drag.`,
         );
@@ -708,6 +757,7 @@ export async function GET(req: NextRequest) {
         avgClimbPct,
         avgInitialAlt,
         avgMaxAlt,
+        avgCruiseFl,
         totalStepClimbs: p.totalStepClimbs,
         byType,
         insights,
@@ -762,6 +812,7 @@ export async function GET(req: NextRequest) {
     fleetStats: {
       byType: byTypeResponse,
       ffAccuracy,
+      fleetCruiseFl: fleetCruiseFlAll,
       totalFlights: flights.filter(
         (f) =>
           f.fuel_burn_lbs ||
