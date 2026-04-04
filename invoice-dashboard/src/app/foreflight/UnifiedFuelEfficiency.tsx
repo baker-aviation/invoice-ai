@@ -376,8 +376,7 @@ export default function UnifiedFuelEfficiency() {
                   <table className="w-full text-xs">
                     <thead>
                       <tr className="text-left text-gray-400 text-[10px] uppercase tracking-wide">
-                        <th colSpan={4} className="pb-0.5" />
-                        <th colSpan={1} className="pb-0.5 text-center border-b border-red-200 text-red-400">Climb</th>
+                        <th colSpan={5} className="pb-0.5" />
                         <th colSpan={3} className="pb-0.5 text-center border-b border-blue-200 text-blue-500">FF Predicted</th>
                         <th colSpan={3} className="pb-0.5 text-center border-b border-gray-200 text-gray-500">Actual</th>
                         <th colSpan={2} className="pb-0.5" />
@@ -387,7 +386,7 @@ export default function UnifiedFuelEfficiency() {
                         <th className="pb-1 pt-1 font-medium">Tail</th>
                         <th className="pb-1 pt-1 font-medium">Route</th>
                         <th className="pb-1 pt-1 font-medium">NM</th>
-                        <th className="pb-1 pt-1 font-medium text-red-400">Phase</th>
+                        <th className="pb-1 pt-1 font-medium">Climb</th>
                         <th className="pb-1 pt-1 font-medium text-blue-500">Time</th>
                         <th className="pb-1 pt-1 font-medium text-blue-500">Fuel</th>
                         <th className="pb-1 pt-1 font-medium text-blue-500">Landing</th>

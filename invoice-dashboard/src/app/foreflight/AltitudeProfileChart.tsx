@@ -134,7 +134,7 @@ export default function AltitudeProfileChart({ tail, origin, dest, date, type, a
             formatter={((v: any, name: any) => [`FL${v}`, name === "planned" ? "FF Planned" : "ADS-B Actual"]) as any}
             labelFormatter={(v) => { const h = Math.floor(Number(v) / 60); const m = Math.round(Number(v) % 60); return `T+${h > 0 ? `${h}h ${m}m` : `${m}m`}`; }} />
           <ReferenceLine y={optimalAlt} stroke="#22c55e" strokeDasharray="4 4" strokeWidth={1} />
-          <Line type="stepAfter" dataKey="planned" stroke="#3b82f6" strokeWidth={2} strokeDasharray="6 3" dot={false} connectNulls />
+          <Line type="monotone" dataKey="planned" stroke="#3b82f6" strokeWidth={2} strokeDasharray="6 3" dot={false} connectNulls />
           <Line type="monotone" dataKey="actual" stroke="#ef4444" strokeWidth={1.5} dot={false} connectNulls />
         </LineChart>
       </ResponsiveContainer>

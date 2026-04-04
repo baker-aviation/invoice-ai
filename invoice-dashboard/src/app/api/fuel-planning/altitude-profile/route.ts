@@ -159,8 +159,12 @@ export async function GET(req: NextRequest) {
   }
 
   const supa = createServiceClient();
-  const originNorm = (origin ?? "").replace(/^K/, "");
-  const destNorm = (dest ?? "").replace(/^K/, "");
+  const originRaw = origin ?? "";
+  const destRaw = dest ?? "";
+  const originNorm = originRaw.replace(/^K/, "");
+  const destNorm = destRaw.replace(/^K/, "");
+  const originLast3 = originRaw.slice(-3);
+  const destLast3 = destRaw.slice(-3);
 
   // Parallel fetch: prediction, phase, and track data
   const [predResult, trackResult] = await Promise.all([
@@ -172,11 +176,19 @@ export async function GET(req: NextRequest) {
       .eq("tail_number", tail).eq("flight_date", date).limit(10),
   ]);
 
-  // Match prediction
+  // Match prediction — try exact, then K-stripped, then last-3-chars
   const matchedPred = (predResult.data ?? []).find((p: Record<string, string>) => {
-    const pDep = (p.departure_icao ?? "").replace(/^K/, "");
-    const pDest = (p.destination_icao ?? "").replace(/^K/, "");
-    return pDep === originNorm && pDest === destNorm;
+    const pDep = p.departure_icao ?? "";
+    const pDest = p.destination_icao ?? "";
+    // Exact match (TQPF === TQPF)
+    if (pDep === originRaw && pDest === destRaw) return true;
+    // K-stripped match (KTEB → TEB)
+    const pDepNorm = pDep.replace(/^K/, "");
+    const pDestNorm = pDest.replace(/^K/, "");
+    if (pDepNorm === originNorm && pDestNorm === destNorm) return true;
+    // Last 3 chars match (TQPF → QPF)
+    if (pDep.slice(-3) === originLast3 && pDest.slice(-3) === destLast3) return true;
+    return false;
   }) as Record<string, unknown> | undefined;
 
   // Fetch waypoints + phases if we have a prediction
